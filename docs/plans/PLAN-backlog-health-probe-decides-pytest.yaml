@@ -1,0 +1,646 @@
+schema_version: 5
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: backlog-health-probe-decides-pytest
+intent: >-
+  Make the backlog-health probe -- the sole sandboxed executor of rec-authored acceptance
+  commands, and the static verdict source PLAN-trailer-acceptance-static-gate (slice A) reuses --
+  actually decide a pytest-shaped acceptance command, so the trailer-acceptance closure gate
+  becomes verifiable end to end rather than resting on a verdict source that cannot run the one
+  acceptance idiom this repository writes most.
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-backlog-health-probe-decides-pytest.yaml
+phase: >-
+  Soft-warn exception category ad_hoc_rec (carrying rec-4005); names NO tier_item, so the Tier
+  Item Freshness Gate is skipped. Precedent: PLAN-backlog-health-detection (the plan that built
+  this package and workflow) and PLAN-trailer-acceptance-static-gate scoped themselves
+  identically. T1.13 and T2.54 are intersected only incidentally (one ci_rca_taxonomy row, one
+  scripts/checks/ file) and are deliberately NOT claimed -- neither of their open criteria is
+  advanced or foreclosed.
+scope:
+  - file: docs/plans/PLAN-backlog-health-probe-decides-pytest.yaml
+    action: Modify
+    purpose: >-
+      This plan's own path -- always touched per docs/contracts/implement-scope-boundary.yaml's
+      implementing_plan_bookkeeping sanction row. Flip implementation_declared to true after code
+      review and a completed full-tier pass. Omitting this row leaves the plan out of the diff and
+      makes validate_graduation_completeness, validate_scope_boundary and validate_vp_replay all
+      no-op, satisfying VP step 7 VACUOUSLY.
+  - file: .github/workflows/backlog-health.yml
+    action: Modify
+    purpose: >-
+      In the PROBE job's "Activate venv" step only (line 109's block), change the existing install
+      line to the COMBINED one-line form `.venv/bin/pip install -r requirements.txt -r
+      requirements-fast.txt`. Do NOT add a fourth line. The combined form is MANDATORY, not
+      cosmetic: config/composite_action_body_baseline.yaml line 91 pins
+      ".github/workflows/backlog-health.yml::probe::activate-venv" at 3, that body is exactly 3
+      effective lines today (venv create, pip upgrade, requirements install), and a fourth line
+      makes validate_composite_action_shell_bodies fail with "R3-workflow: GREW to 4 lines
+      (baseline ceiling 3)". That Entry is pre=True, so it gates the PR and would redden VP step 6.
+      config/composite_action_body_baseline.yaml is deliberately NOT in this plan's scope: raising
+      that ceiling needs a `# raise-approved: dec-NNN` marker naming a Decision that authorizes
+      this baseline key or workflow path, and no such Decision exists. The census
+      and escalate jobs are NOT touched: neither executes a rec-authored command, so neither needs
+      a test runner. requirements-fast.txt is chosen over requirements-dev.txt on measured grounds
+      (see context): 13 direct pins against roughly 290, and ZERO new distributions enter CI
+      because ci.yml's pr-validate job already installs this exact file on every PR. The probe
+      job's permissions block, `persist-credentials: false`, the absence of `id-token`, and the
+      sandbox's empty net namespace are all UNCHANGED -- Decision 143's privilege boundary is
+      untouched; only the install surface of an already-credential-free job widens.
+      pytest ALONE is not sufficient and must not be substituted: pyproject.toml's addopts carry
+      --randomly-seed, --disable-socket and --allow-hosts, so a pytest-only pin exits 4 with
+      "unrecognized arguments" on every invocation (measured live in the sandbox at authoring
+      time). requirements-fast.txt supplies pytest-randomly and pytest-socket.
+  - file: scripts/backlog_health/probe.py
+    action: Modify
+    purpose: >-
+      In _isolated_argv, drop the `exec ` prefix so the inner program reads
+      "... && ulimit -u {pid_cap} && {cmd}" rather than "... && exec {cmd}". In bash, `exec A && B`
+      replaces the shell with A and B NEVER RUNS -- verified at authoring time:
+      `bash -c 'exec /bin/echo A && /bin/echo B'` prints only A. 805 of 958 probeable acceptance
+      commands (84.0%) are compound, so today only their first simple command is executed and the
+      verdict is attributed to the whole command. Removing `exec` restores AND/OR-list semantics
+      (exit status = the list's status). The mount, the ro bind and the `ulimit -u` cap all sit
+      BEFORE the command in the same `&&` chain and are unaffected; dropping `exec` leaves one
+      extra bash process inside the namespace, which the existing pid cap already bounds.
+      Do NOT also "fix" TimeoutExpired's grandchild reach here -- that is rec-3691's territory and
+      is out of this plan's scope boundary. KNOWN RESIDUAL, unchanged by this edit and deliberately
+      NOT fixed (Decision 59 scope boundary): for a cmd carrying a top-level `;` or `||`, the
+      `mount && ulimit && {cmd}` chain lets the command's tail run even when the bind mount or the
+      pid cap failed. No isolation property regresses -- `unshare -rmn` engages the user, mount and
+      net namespaces before any of this, so the command is still networkless and still outside the
+      host mount namespace. Add a one-line comment at that exact line recording the residual; a
+      `{ ...; }` group or a trailing `|| exit 1` would close it, but both change the chain's
+      grammar for every acceptance command at once, which is more than a one-token change and
+      belongs in its own rec. 133 SLOC, 367 headroom.
+  - file: scripts/backlog_health/census.py
+    action: Modify
+    purpose: >-
+      Anchor parse_pytest_target on a real pytest INVOCATION rather than on the first `.py` path
+      anywhere in the string. Today it returns _PYTEST_TARGET_RE's first match over the whole
+      command, which on the dominant `grep -q X tests/f.py && pytest tests/f.py::Node` shape is
+      the GREP's file, carrying no `::node` -- so the node-existence half of the
+      expected_fail_missing_node routing is silently skipped for 80 of 98 pytest-carrying
+      probeable commands (measured). The fix locates the invocation token first (a whitespace- or
+      start-delimited `pytest`, optionally preceded by `-m `) and searches for the target only
+      AFTER it. The delimiter matters: a bare substring anchor matches inside
+      `scripts/checks/_pytest_diff.py` and would parse `pytest_diff.py` as a test target -- 4 open
+      recs carry exactly that shape today, and a word-boundary anchor correctly returns None for
+      them. Measured effect of the anchored parse over today's 98: 3 carry no invocation token, 13
+      name a directory or -k form with no .py target, 36 resolve to a node that exists (stay
+      probeable), 46 resolve to a node that does NOT exist and move to expected_fail_missing_node
+      -- the bucket Decision 55 created so an unwritten test reads as "not written yet" rather
+      than "fails". Without this, VP steps 1-2 would CONVERT those 46 into probed fails. 250 SLOC,
+      250 headroom.
+  - file: tests/test_backlog_health_probe.py
+    action: Modify
+    purpose: >-
+      Add test_compound_command_runs_every_segment to the EXISTING TestRunOne class. It must prove
+      SEMANTICS, not absence of a token: build the argv via run_one with an injected runner,
+      extract the inner bash program, strip the mount/ulimit prefix, and execute the remaining
+      command portion through a real `bash -c` whose command writes a marker file from its SECOND
+      `&&` segment -- asserting the marker exists. A test that merely greps the argv for "exec"
+      would pass against a reintroduction that re-execs under a different spelling. 125 SLOC.
+  - file: tests/test_backlog_health_census.py
+    action: Modify
+    purpose: >-
+      Add test_target_is_anchored_to_the_pytest_invocation to the EXISTING TestParsePytestTarget
+      class (line 102). Three arms, all drawn from real open recs: the grep-guarded shape returns
+      the pytest node (not the grep's file); a command naming scripts/checks/_pytest_diff.py with
+      no pytest invocation returns None; a `pytest <dir> -q` form returns None rather than a
+      spurious path. 170 SLOC.
+  - file: tests/test_backlog_health_workflow.py
+    action: Modify
+    purpose: >-
+      Add test_probe_job_installs_the_test_runner, a module-level function beside the two existing
+      ones. It parses the workflow with yaml, walks the PROBE job's steps, and asserts a step body
+      installs requirements-fast.txt AND that the same body still installs requirements.txt --
+      then asserts the census and escalate jobs do NOT gain the test-runner install, so the
+      widening stays scoped to the one job that executes untrusted input. 38 SLOC.
+  - file: scripts/checks/ci_guards/validate_sandbox_runner_test_deps.py
+    action: Create
+    purpose: >-
+      The inheritance mechanism, chosen over amending the MERGED slice A plan document (see
+      context for why). A new registered check binding on POSITIVE EVIDENCE, armed by EITHER of
+      two markers in a job's step bodies -- never only the first:
+      (M1) the unprivileged-user-namespace sysctl string `apparmor_restrict_unprivileged_userns=0`
+      (live today at .github/workflows/backlog-health.yml:118); OR
+      (M2) a step body invoking the sandbox executor -- the `scripts.backlog_health` module, and
+      specifically its `probe` verb (live today at :121), plus any module that imports
+      scripts.backlog_health.probe.
+      A job matching either MUST install requirements-fast.txt in that same job at or before the
+      matching step. M2 is the STRONGER evidence and the reason M1 alone is insufficient: M1 is an
+      OS-specific PRECONDITION for the sandbox, not the sandbox itself. Two ways a job escapes M1
+      while still needing a test runner, both real: (a) ubuntu-22.04, a self-hosted runner, or a
+      future ubuntu-latest whose AppArmor default relaxes engages `unshare -rmn` with no sysctl
+      step at all -- the probe then returns REAL verdicts with pytest absent, which is exactly the
+      false-FAIL population this guard exists to prevent; (b) Decision 162's R3 ratchet actively
+      pushes workflow bodies out of .github/workflows/ into scripts/ci/ or a composite action, so
+      a sysctl that follows the repo's own standing instruction walks out of this guard's view
+      (see context for that governance tension, named rather than patched around). M2 also fires
+      on slice A's evaluator job BY CONSTRUCTION, since that evaluator reuses this same module.
+      Comment defence: scripts/checks/ci_guards/_workflow_shell_bodies.py's `_effective_lines`
+      (line 56, module-private) drops blank and FULL-LINE comments, which kills the commented-out
+      sysctl spoof, but it does NOT strip TRAILING comments -- so `run: echo hi #
+      apparmor_restrict_unprivileged_userns=0` would still spoof M1. Strip trailing comments in
+      this guard's own narrow helper and cover it with a mirror-test arm; do not relocate the
+      sibling's module-private `_blank_shell_comments` out of
+      validate_workflow_dependency_install.py (that would trip Decision 162 r3 touch-it-fix-it on
+      a module this plan otherwise does not touch). MUST declare examined(n,
+      unit="jobs") on the non-vacuous branch and skipped(reason) otherwise -- it is NOT in
+      config/check_accounting_baseline.yaml and cannot be added there (Decision 170 clause 3,
+      shrink-only and _BASELINE_SEED-frozen). Sibling precedent to mirror for structure, NOT to
+      extend: validate_workflow_dependency_install answers a different question (does the invoked
+      module's own import closure need installing) and cannot express "this job executes untrusted
+      commands and needs a test runner". Target under 200 SLOC; the 500 default applies (no
+      config/sloc_budgets.yaml entry, no raise -- Decision 128).
+  - file: scripts/checks/ci_guards/_manifest.py
+    action: Modify
+    purpose: >-
+      One Entry literal registering validate_sandbox_runner_test_deps, with BARE STRING LITERAL
+      module/attr (Decision 169 -- a computed or combined "module:attr" value is invisible to
+      scripts.dependency_graph's AST edge scan). pre=True with pre_globs narrowed to
+      ".github/workflows/**", this check's own module, its test file and
+      scripts/checks/ci_guards/_workflow_shell_bodies.py, so the fast tier only pays for it when a
+      workflow or the guard itself changes (Decision 182's non-test half is budgeted by
+      subtraction and preflight already reports 4 fast-tier breaches in 7 days).
+      full_segment="full_after_lint", matching its sibling. 242 SLOC.
+  - file: config/ci_rca_taxonomy.yaml
+    action: Modify
+    purpose: >-
+      One function_to_category row, `validate_sandbox_runner_test_deps: dependency_gap`, the value
+      its nearest sibling validate_workflow_dependency_install actually carries
+      (config/ci_rca_taxonomy.yaml line 120) and the better fit for a missing install. No
+      validator distinguishes the legal values, so nothing would catch a mismatched one -- the
+      value is a deliberate call, not a default. validate_ci_rca_taxonomy fails on
+      any registered check absent from this map, so the row lands in the same PR as the
+      registration or the taxonomy guard reddens.
+  - file: tests/checks/ci_guards/test_validate_sandbox_runner_test_deps.py
+    action: Create
+    purpose: >-
+      Mirror-rule test file (Decision 131). Must contain
+      TestSandboxRunnerTestDeps::test_sysctl_job_without_test_runner_install_is_flagged (VP step 4's
+      graduated node) plus, at minimum: a positive arm (a job with the sysctl AND the install
+      passes); an M2 arm -- a job with NO sysctl that invokes `scripts.backlog_health probe`
+      without the install IS flagged, the arm that covers the ubuntu-22.04 / self-hosted /
+      relaxed-default and the Decision-162-relocation escapes; a full-line comment arm (a
+      commented-out sysctl line does not arm the guard); a TRAILING comment arm (`run: echo hi #
+      apparmor_restrict_unprivileged_userns=0` does not arm it either); a scoping arm (a job
+      matching NEITHER marker is never required to install the test runner); an accounting arm
+      asserting examined()/skipped() is declared on both branches (Decision 170); and a live arm
+      over the real .github/workflows/backlog-health.yml, which carries BOTH markers today
+      (:118 and :121) and must pass once the install lands.
+  - file: config/agent/verification_registry/entries/backlog-health-probe-installs-test-runner.yaml
+    action: Create
+    purpose: >-
+      Graduation shard for VP step 1 (Decision 176 one-record-per-file, filename equals check_id).
+      primitive_slot test_selector; guard_target .github/workflows/backlog-health.yml; guard_symbol
+      probe; plan_slug backlog-health-probe-decides-pytest; graduated_at (the implementing
+      session's date) and graduated_by (implement-agent) -- every live shard carries both, so
+      omitting them would make this the odd record out; check_spec.node_id set to VP step 1's
+      exact node id.
+  - file: config/agent/verification_registry/entries/backlog-health-probe-runs-compound-commands.yaml
+    action: Create
+    purpose: >-
+      Graduation shard for VP step 2. primitive_slot test_selector; guard_target
+      scripts/backlog_health/probe.py; guard_symbol _isolated_argv; plan_slug
+      backlog-health-probe-decides-pytest; graduated_at and graduated_by as above;
+      check_spec.node_id set to VP step 2's exact node id.
+  - file: config/agent/verification_registry/entries/backlog-health-census-anchors-pytest-target.yaml
+    action: Create
+    purpose: >-
+      Graduation shard for VP step 3. primitive_slot test_selector; guard_target
+      scripts/backlog_health/census.py; guard_symbol parse_pytest_target; plan_slug
+      backlog-health-probe-decides-pytest; graduated_at and graduated_by as above;
+      check_spec.node_id set to VP step 3's exact node id.
+  - file: config/agent/verification_registry/entries/sandbox-runner-test-deps-guard.yaml
+    action: Create
+    purpose: >-
+      Graduation shard for VP step 4. primitive_slot test_selector; guard_target
+      scripts/checks/ci_guards/validate_sandbox_runner_test_deps.py; guard_symbol
+      validate_sandbox_runner_test_deps; plan_slug backlog-health-probe-decides-pytest;
+      graduated_at and graduated_by as above; check_spec.node_id set to VP step 4's exact node
+      id.
+bundled_recommendations:
+  - rec-4005
+followon_recs: []
+infrastructure_dependencies: []
+acceptance_criteria:
+  - >-
+    The backlog-health PROBE job installs requirements-fast.txt in addition to requirements.txt,
+    and the census and escalate jobs do not. The probe job's permissions block still reads
+    `contents: read` only, still carries no id-token, and still sets persist-credentials false.
+  - >-
+    scripts/backlog_health/probe.py no longer execs the rec-authored command: a compound
+    acceptance command runs EVERY segment, and the verdict is the AND/OR list's status rather than
+    its first simple command's status. Proven by executing a two-segment command whose second
+    segment leaves an observable side effect, not by grepping the argv for the token "exec".
+  - >-
+    census.parse_pytest_target resolves the target from the pytest invocation, not from the first
+    .py path in the string: the grep-guarded shape returns the pytest node id, a command naming
+    scripts/checks/_pytest_diff.py with no pytest invocation returns None, and a directory-or--k
+    invocation returns None.
+  - >-
+    A new registered check fails any workflow job that carries EITHER the unprivileged-user-
+    namespace sysctl string OR a step invoking the scripts.backlog_health sandbox executor,
+    without installing requirements-fast.txt in the same job; and passes the repaired
+    backlog-health probe job, which carries both markers. The two-marker arming is load-bearing,
+    not belt-and-braces: the sysctl alone is an Ubuntu 23.10/24.04 AppArmor default, not a
+    timeless property, so a job on ubuntu-22.04, on a self-hosted runner, or on a future
+    ubuntu-latest whose default relaxes would engage the sandbox with no sysctl step and return
+    real verdicts with pytest absent. It declares examined()/skipped() on both branches and is
+    mapped in config/ci_rca_taxonomy.yaml.
+  - >-
+    The four graduation shards exist, each filename equals its check_id, each check_id equals its
+    VP step's graduation_check_id, and each is ADMITTED by validate_verification_registry's
+    differential gate (fails at origin/main, passes at HEAD) -- never tautological, never skipped.
+  - >-
+    rec-4005 is status=closed in the warehouse after the squash-merge, via the Resolves: trailer.
+  - >-
+    END-TO-END, the criterion this plan exists for: a post-merge workflow_dispatch of
+    backlog-health reports isolation_available true AND its probe verdict distribution differs
+    from the pre-fix baseline in the direction measured at authoring time -- FEWER passes, since
+    the dominant correction is the removal of truncated first-segment false passes. Authoring-time
+    local replication of the probe against the live 958-entry probeable corpus: today
+    {fail 827, pass 111, timeout 20}; repaired {fail 873, pass 64, timeout 21}; 104 verdicts change
+    (75 pass->fail, 28 fail->pass, 1 fail->timeout). NOT CLAIMED as an exact prediction of the CI
+    run: the rec corpus moves daily. What IS claimed is the sign of the pass-count change.
+  - >-
+    The repaired probe stays inside its budget: the same local replication ran all 958 entries in
+    336.8s against a 25-minute global budget and a 30-minute job timeout, with 958 of 958 decided.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: >-
+      The probe job installs a test runner, and only the probe job does.
+    command: bin/venv-python -m pytest "tests/test_backlog_health_workflow.py::test_probe_job_installs_the_test_runner" -q
+    expected: >-
+      Exit 0 with a "1 passed" summary line. On the un-implemented tree this command exits 4 with
+      "ERROR: not found" for the node id, which
+      scripts.checks.verification._vp_replay_classify classifies target_absent -- a valid
+      Decision 189 red-before outcome.
+    expected_literals:
+      - "1 passed"
+    fix_if: >-
+      Exit 4 after implementation means the function was named or placed differently; the node id
+      is pinned by this step and by the shard. A failure naming the census or escalate job means
+      the install was added to all three "Activate venv" blocks rather than the probe job's alone.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: backlog-health-probe-installs-test-runner
+  - step: 2
+    phase: pre-deploy
+    action: >-
+      A compound acceptance command runs every segment under the probe's own isolation wrapper.
+    command: bin/venv-python -m pytest "tests/test_backlog_health_probe.py::TestRunOne::test_compound_command_runs_every_segment" -q
+    expected: >-
+      Exit 0 with a "1 passed" summary line. On the un-implemented tree the node id does not
+      exist, so the command exits 4 -- target_absent, a valid red-before outcome.
+    expected_literals:
+      - "1 passed"
+    fix_if: >-
+      A pass achieved by asserting on the argv string rather than on a side effect of the second
+      segment does not discharge this step -- re-read the test body before accepting it. A genuine
+      failure here means the inner program still carries `exec` before the command, or that the
+      mount/ulimit prefix was removed along with it.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: backlog-health-probe-runs-compound-commands
+  - step: 3
+    phase: pre-deploy
+    action: >-
+      The pytest target is parsed from the pytest invocation, not from the first .py path.
+    command: bin/venv-python -m pytest "tests/test_backlog_health_census.py::TestParsePytestTarget::test_target_is_anchored_to_the_pytest_invocation" -q
+    expected: >-
+      Exit 0 with a "1 passed" summary line. On the un-implemented tree the class exists but the
+      method does not, so the command exits 4 -- target_absent, a valid red-before outcome.
+    expected_literals:
+      - "1 passed"
+    fix_if: >-
+      A failure on the _pytest_diff.py arm means the anchor is a bare substring rather than a
+      delimited token. A failure on the grep-guarded arm means the search still starts at position
+      zero instead of after the invocation.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: backlog-health-census-anchors-pytest-target
+  - step: 4
+    phase: pre-deploy
+    action: >-
+      The inheritance guard flags a sandbox-running job that omits the test-runner install.
+    command: bin/venv-python -m pytest "tests/checks/ci_guards/test_validate_sandbox_runner_test_deps.py::TestSandboxRunnerTestDeps::test_sysctl_job_without_test_runner_install_is_flagged" -q
+    expected: >-
+      Exit 0 with a "1 passed" summary line. On the un-implemented tree the test file does not
+      exist, so the command exits 4 -- target_absent, a valid red-before outcome.
+    expected_literals:
+      - "1 passed"
+    fix_if: >-
+      A pass while the live-workflow arm fails means the guard flags the repaired backlog-health
+      probe job -- the install is being looked for in the wrong job or the wrong step body. A
+      guard that never flags anything is vacuous: the accounting arm and examined(0) would expose
+      it.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: sandbox-runner-test-deps-guard
+  - step: 5
+    phase: pre-deploy
+    action: >-
+      Run every touched test file together, so a fix for one half cannot silently redden the other
+      three modules this plan edits.
+    command: bin/venv-python -m pytest tests/test_backlog_health_probe.py tests/test_backlog_health_census.py tests/test_backlog_health_workflow.py tests/test_backlog_health_classify.py tests/test_backlog_health___main__.py tests/checks/ci_guards/test_validate_sandbox_runner_test_deps.py -q
+    expected: >-
+      Exit 0, every test passing. classify.py and __main__.py are included deliberately although
+      this plan does not edit them: classify.py consumes probe verdicts and census buckets, and a
+      census re-bucketing that broke its join would surface here and nowhere else in this plan.
+    fix_if: >-
+      A classify or __main__ failure means the census re-bucketing changed a shape those modules
+      depend on -- fix the producer, never the consumer's assertion.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      Subsumed: this step is breadth over the same four node ids steps 1-4 already graduate, plus
+      two consumer modules whose own suites are already standing tests in their own right. The
+      still-graduating step whose selector literally contains this step's own load-bearing node
+      ids is step 1 (tests/test_backlog_health_workflow.py), step 2 and step 3
+      (tests/test_backlog_health_probe.py and tests/test_backlog_health_census.py respectively)
+      and step 4 (the new guard's file). Graduating a whole-file selector on top of those four
+      would register a broader shard that passes for reasons unrelated to this plan's defect,
+      which is the tautology Decision 189 exists to refuse.
+  - step: 6
+    phase: pre-deploy
+    action: >-
+      Run the fast presubmit tier, where the four new shards' differential admission gate, the
+      graduation-completeness legs, the check-manifest bijection, the taxonomy map and the new
+      guard itself actually fire.
+    command: bin/venv-python -m scripts.validate --pre
+    expected: >-
+      The printed summary reports zero failed checks. validate_verification_registry must report
+      all four new shards ADMITTED; validate_graduation_completeness must pass both legs;
+      validate_composite_action_shell_bodies must pass -- it is the check the combined one-line
+      install form exists to satisfy, and it reddens immediately if the probe job's Activate venv
+      body grew to 4 effective lines; validate_check_manifests, validate_ci_rca_taxonomy,
+      validate_check_accounting, validate_plan_documents, validate_sloc_limits and
+      validate_scope_boundary must all pass.
+    fix_if: >-
+      Read the summary, never the exit code -- Decision 73 makes --pre exit 0 while printing
+      "Failed checks" outside CI. A "not admitted" differential means a shard's node id does not
+      fail at origin/main. A check_accounting failure means the new guard declared
+      examined()/skipped() on only one branch. A bijection failure means the @register name and
+      the Entry name disagree. "R3-workflow: GREW to 4 lines (baseline ceiling 3)" means the
+      install was added as a fourth line instead of folded into the combined one-line form --
+      fix the workflow, never the baseline.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      The command invokes scripts.validate, which docs/contracts/vp-red-before.yaml's
+      recursion_refusal refuses statically for a graduate disposition, and Decision 73 makes its
+      exit code meaningless outside CI (exit 0 while printing failures), so it is not expressible
+      as a command_exit_zero kernel assertion. Every constituent check is already registered.
+  - step: 7
+    phase: pre-deploy
+    action: >-
+      Run the full presubmit tier locally before handoff, as handoff_policy declares.
+    command: bin/venv-python -m scripts.validate
+    expected: >-
+      The printed summary reports zero failed checks, including validate_test_coverage over the
+      three .py files this plan modifies or creates.
+    fix_if: >-
+      Per handoff_policy.timeout_disposition, a timeout is BLOCKED -- resume later and rerun the
+      full tier from the start; never commit on a partial run.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      Same recursion refusal and Decision 73 exit-code caveat as step 6, at the full tier: the
+      command invokes scripts.validate, which vp-red-before.yaml's recursion_refusal refuses
+      statically for a graduate disposition, and its exit code is not a kernel assertion outside
+      CI. Its constituent checks are each already registered in their own right.
+  - step: 8
+    phase: post-deploy
+    action: >-
+      RUN THIS ONLY AFTER the squash-merge has landed on main. Dispatch backlog-health with
+      dry_run=true and read the probe job's summary line -- the end-to-end evidence that the
+      repaired probe decides pytest acceptance on a real GitHub-hosted runner, which no local step
+      can supply.
+    command: "echo 'DISPATCH VIA MCP: mcp__github__actions_run_trigger(method=\"run_workflow\", owner=\"benjamin-blake\", repo=\"theseus\", workflow_id=\"backlog-health.yml\", ref=\"main\", inputs={\"dry_run\":\"true\"}), then poll mcp__github__actions_get and read the probe job via mcp__github__get_job_logs -- never the gh CLI (AGENTS.md Shell invocations)'"
+    expected: >-
+      The probe job's install log lists pytest, pytest-randomly and pytest-socket. Its summary line
+      reads isolation_available=True and reports a pass count materially BELOW the pre-fix
+      baseline of 110-111, because truncated first-segment false passes are removed. Compare
+      against the 2026-09-21 live baseline (run 35623582868, probe job 106412568194:
+      {fail 824, pass 110, timeout 18}) and the authoring-time local replication of the repaired
+      state ({fail 873, pass 64, timeout 21} over 958 entries in 336.8s). Treat the SIGN of the
+      pass-count change as the assertion; the corpus moves daily, so exact counts are evidence,
+      not a contract.
+    fix_if: >-
+      isolation_available=False means the sysctl step regressed, not this plan's change -- every
+      entry would read ISOLATION_UNAVAILABLE, which is honest but proves nothing about pytest. A
+      pass count at or ABOVE the baseline means the exec removal did not take. "No module named
+      pytest" anywhere in the probe log means the install landed in the wrong job. A
+      budget_exhausted tail means the repaired runtime exceeded 25 minutes on the hosted runner
+      against 336.8s locally -- file a rec to re-tune _DEFAULT_GLOBAL_BUDGET_S, never widen the
+      job timeout inline (Decision 55).
+    hermetic: false
+  - step: 9
+    phase: post-deploy
+    action: >-
+      Confirm the Resolves: trailer actually closed rec-4005 in the warehouse, and that the local
+      read cache agrees.
+    command: bin/venv-python -m scripts.sync.ops sync && bin/venv-python -c "import json,pathlib;r=[json.loads(l) for l in pathlib.Path('logs/.recommendations-log.jsonl').read_text().splitlines() if l.strip()];x=next(y for y in r if y['id']=='rec-4005');print(x['id'],x['status']);assert x['status']=='closed'"
+    expected: >-
+      The read-back prints "rec-4005 closed". The close is performed by rec-autoclose.yml from the
+      squash-merge commit body's `Resolves: rec-4005` trailer, not by a manual portal write.
+    fix_if: >-
+      Still open means the trailer was omitted or misspelled in the squash-merge body -- re-read
+      the merge commit before writing anything by hand. Never repair this by editing
+      logs/.recommendations-log.jsonl (Single Portal Invariant); the cache is downstream of the
+      warehouse.
+    hermetic: false
+test_obligations:
+  - source: .github/workflows/backlog-health.yml
+    behavior: >-
+      The probe job installs a test runner alongside requirements.txt; the census and escalate jobs
+      do not, so the install widening stays scoped to the one credential-free job that executes
+      untrusted input.
+    verification_step: 1
+    test_selector: tests/test_backlog_health_workflow.py::test_probe_job_installs_the_test_runner
+    red_green_expectation: >-
+      Exit 4 (node absent) before, "1 passed" after.
+  - source: scripts/backlog_health/probe.py
+    behavior: >-
+      A compound acceptance command runs every segment; the verdict is the list's status, not its
+      first simple command's status.
+    verification_step: 2
+    test_selector: tests/test_backlog_health_probe.py::TestRunOne::test_compound_command_runs_every_segment
+    red_green_expectation: >-
+      Exit 4 (node absent) before, "1 passed" after.
+  - source: scripts/backlog_health/census.py
+    behavior: >-
+      parse_pytest_target resolves the target from a delimited pytest invocation token, returning
+      None when the command merely names a file whose path contains the substring "pytest".
+    verification_step: 3
+    test_selector: tests/test_backlog_health_census.py::TestParsePytestTarget::test_target_is_anchored_to_the_pytest_invocation
+    red_green_expectation: >-
+      Exit 4 (method absent from the existing class) before, "1 passed" after.
+  - source: scripts/checks/ci_guards/validate_sandbox_runner_test_deps.py
+    behavior: >-
+      A workflow job carrying EITHER the unprivileged-userns sysctl marker or a scripts.backlog_health
+      executor invocation, without a requirements-fast.txt install in the same job, is flagged; a
+      job carrying neither marker is never required to install it.
+    verification_step: 4
+    test_selector: tests/checks/ci_guards/test_validate_sandbox_runner_test_deps.py::TestSandboxRunnerTestDeps::test_sysctl_job_without_test_runner_install_is_flagged
+    red_green_expectation: >-
+      Exit 4 (file absent) before, "1 passed" after.
+  - source: scripts/checks/ci_guards/_manifest.py
+    behavior: >-
+      The new check's Entry is present with bare string-literal module/attr and narrowed pre_globs,
+      so registry dispatch resolves it and the bijection holds.
+    verification_step: 6
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: >-
+      The manifest row is data consumed by two checks that already own it as their whole subject:
+      validate_check_manifests enforces the bare-literal grammar and graph-node resolution, and
+      TestBijection asserts registered-names equals manifest-names. Both run inside step 6. A
+      dedicated new test asserting "this Entry exists" would restate the bijection at narrower
+      scope and would pass for any Entry, including a malformed one -- the duplication Decision 86
+      forbids and the tautology Decision 189 refuses.
+  - source: config/ci_rca_taxonomy.yaml
+    behavior: >-
+      Every registered check, including the new one, is mapped to a failure category.
+    verification_step: 6
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: >-
+      validate_ci_rca_taxonomy already enforces exactly this property over the whole registered
+      roster and fails on any unmapped check; it runs inside step 6. A second test asserting the
+      single new row exists would be a narrower restatement of a standing total check.
+  - source: config/agent/verification_registry/entries/backlog-health-probe-installs-test-runner.yaml
+    behavior: >-
+      check_id equals VP step 1's graduation_check_id and the materialized check_spec is admitted
+      by the differential gate (fails at origin/main, passes at HEAD).
+    verification_step: 6
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: >-
+      A graduation shard's correctness property IS validate_verification_registry's differential
+      admission gate, which re-runs a real git worktree revert against origin/main for every
+      new-in-diff row inside step 6. A unit test over the YAML would assert field presence, which
+      is strictly weaker than the differential that already runs.
+  - source: config/agent/verification_registry/entries/backlog-health-probe-runs-compound-commands.yaml
+    behavior: >-
+      check_id equals VP step 2's graduation_check_id and the materialized check_spec is admitted
+      by the differential gate.
+    verification_step: 6
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: >-
+      Same as the sibling shard above: the differential admission gate inside step 6 is the
+      authoritative and strictly stronger verification of this file, and a field-presence unit test
+      would restate it weakly.
+  - source: config/agent/verification_registry/entries/backlog-health-census-anchors-pytest-target.yaml
+    behavior: >-
+      check_id equals VP step 3's graduation_check_id and the materialized check_spec is admitted
+      by the differential gate.
+    verification_step: 6
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: >-
+      Same as the sibling shards above: the differential admission gate inside step 6 is the
+      authoritative and strictly stronger verification of this file, and a field-presence unit test
+      would restate it weakly.
+  - source: config/agent/verification_registry/entries/sandbox-runner-test-deps-guard.yaml
+    behavior: >-
+      check_id equals VP step 4's graduation_check_id and the materialized check_spec is admitted
+      by the differential gate.
+    verification_step: 6
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: >-
+      Same as the sibling shards above: the differential admission gate inside step 6 is the
+      authoritative and strictly stronger verification of this file, and a field-presence unit test
+      would restate it weakly.
+constraints:
+  - >-
+    The probe job stays credential-free: no id-token, permissions contents:read only,
+    persist-credentials false, and no network reachable inside the sandbox. Only the install
+    surface changes (Decision 143's boundary is untouched; see the scout's SPIRIT NOTE).
+  - >-
+    Do NOT install requirements-dev.txt. Do NOT invent a new narrow requirements file --
+    requirements-fast.txt already is one, and a second would be a surface agents must keep in sync.
+  - >-
+    scripts/backlog_health/probe.py remains the SOLE executor of rec-authored commands; no other
+    module in the package may reach subprocess with rec-derived argv, and every rec_relevance call
+    outside it keeps run_acceptance_probe=False (Decision 103, the package's AST invariant).
+  - >-
+    Do NOT edit docs/plans/PLAN-trailer-acceptance-static-gate.yaml or
+    docs/plans/PLAN-trailer-acceptance-junit-verdict.yaml. Slice A is a merged plan document and
+    slice B is being revised by another agent; the inheritance obligation is carried mechanically
+    by the new check, not by editing either file.
+  - >-
+    Do not fix rec-3691 (TimeoutExpired kills only the direct unshare child) inline -- it is a
+    different defect on the same file and is out of this plan's scope boundary (Decision 59).
+  - No rescue agents or workaround loops (Decision 55).
+context:
+  - "rec-4005 (bundled): the defect this plan repairs, filed 2026-09-22 with all three measurements."
+  - "Prerequisite for PLAN-trailer-acceptance-static-gate (slice A, merged 5ce6e4b5, NOT yet implemented): its evaluator reuses scripts.backlog_health census+probe as its static verdict source, and its own VP idiom is pytest node-ids throughout."
+  - "MEASURED 2026-09-22 on 1333 open recs: buckets probeable 958, expected_fail_missing_node 372, unprobeable_unsafe 1, unprobeable_shape 2. pytest-shaped acceptance is 470 of 1333 (35%)."
+  - "MEASURED: 98 of 958 probeable commands carry a word-boundary pytest token; only 16 reach pytest under today's exec truncation."
+  - "MEASURED, pytest attributable alone: replaying those 98 under the real unshare sandbox with a requirements.txt-only venv vs one that also has requirements-fast.txt changes 10 verdicts (9 pass->fail, 1 timeout->fail) -- 10 of 958 (1.04%). SMALL, and stated as such."
+  - "MEASURED, both fixes together: today {fail 827, pass 111, timeout 20} vs repaired {fail 873, pass 64, timeout 21}; 104 of 958 verdicts change. The local baseline reproduces the live 2026-09-21 run ({fail 824, pass 110, timeout 18} over 952) within 3/1/2, which is the fidelity warrant for these numbers."
+  - "NOT CLAIMED: no share of the live run's 824 fails is attributed to the missing pytest beyond the 10 measured above. An independent measurement puts roughly 30% of this repo's acceptance commands genuinely not holding; this plan does not dispute that."
+  - "exec truncation verified directly, not inferred: bash -c 'exec /bin/echo A && /bin/echo B' prints only A. 805 of 958 probeable commands (84.0%) are compound; 13 more were unparseable by the authoring-time lexer and are excluded from that count rather than assumed compound."
+  - "Coupling, the reason all three fixes land together: exec truncation is what MASKS the pytest gap (82 of 98 never reach pytest), so installing pytest alone moves 10 verdicts; removing exec alone would raise the wrong-FAIL population toward 98 AND convert 46 honest expected_fail_missing_node recs into probed fails. Each fix makes the others' absence worse."
+  - "Option review, recorded rather than assumed. (a) requirements-dev.txt: ~290 pins into the one job that executes untrusted input -- rejected on surface. (b) requirements-fast.txt: 13 pins, ALREADY installed by ci.yml pr-validate on every PR, so zero new distributions enter CI -- CHOSEN. (c) a new narrow file: duplicates (b) and creates a second surface to sync -- rejected. (d) a pytest-only pin: measured to exit 4 'unrecognized arguments: --randomly-seed=last --disable-socket' under pyproject addopts -- rejected as non-functional. (e) decline to probe pytest and return an honest unmeasurable: NOT unreasonable and costs no install surface, but it forecloses the stated purpose -- slice A's gate could then never decide the 35% of the backlog, and its own acceptance idiom, that is pytest-shaped. Rejected on purpose-fit, not on principle."
+  - "Slice A inheritance mechanism, chosen deliberately: a registered CI guard keyed on the unprivileged-userns sysctl marker, NOT an amendment to the merged slice A plan, NOT a superseding note, NOT a scope row editing it, NOT a follow-on rec. Rationale: Decision 163 -- a universal obligation is enforced structurally, not documented; a prose obligation in a merged plan rots silently, and slice A's evaluator job trips the guard by construction the moment it is authored."
+  - "Positive-evidence containment, stated at the strength the evidence supports and no further. On ubuntu-latest TODAY (the 23.10/24.04 AppArmor default), a sandbox job omitting the sysctl cannot engage isolation, so probe.run_all returns ISOLATION_UNAVAILABLE for every entry -- honest, never a false fail. That is an OS-version-scoped fact, NOT a timeless one: ubuntu-22.04, a self-hosted runner, or a relaxed future default all engage unshare -rmn with no sysctl present, returning real verdicts with pytest absent. This is why the guard arms on the executor marker too; neither marker's absence is ever read as 'nothing needed'."
+  - "Governance tension, named rather than patched around: Decision 162 R3 pushes workflow bodies out of .github/workflows/ into scripts/ci/ or composite actions -- the same ratchet that forces this plan's combined one-line install form. A sandbox job whose sysctl step relocates under that standing instruction walks out of a sysctl-only guard's view while still needing a test runner. The executor marker keeps the guard armed across that relocation. If a future relocation moves the EXECUTOR invocation off the workflow surface too, the guard needs re-siting, which is a rec -- never a third marker bolted on inline."
+  - "Budget: the repaired probe ran all 958 entries in 336.8s locally against _DEFAULT_GLOBAL_BUDGET_S of 25 minutes and a 30-minute job timeout; 958 of 958 decided."
+  - "Decision-scout verdict + CITE list (verbatim decision ids): FLAGS_FOUND. CITE: Decision 62, Decision 55, Decision 169, Decision 170, Decision 132, Decision 176, Decision 189, Decision 131, Decision 163. CONTRADICT NOTE: Decision 182 (fast-tier non-test budget -- resolved by narrowed pre_globs), Decision 103 (no second relevance evaluator -- resolved by an explicit constraint). SPIRIT NOTE: Decision 143 (install surface of the untrusted-execution job -- resolved by choosing the 13-pin file already in CI and leaving the permissions block untouched). ROADMAP: T1.13, T2.54, T4.23 all RELATED; CONFLICT 0. Decisions triaged: 150 of 150."
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - only the plan-cited decision sections
+  - docs/contracts/vp-red-before.yaml and docs/contracts/verification-registry.yaml read before authoring the four shards
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+execution_steps:
+  - >-
+    .github/workflows/backlog-health.yml -- in the PROBE job's Activate venv step only, replace the
+    existing install line with the combined one-line form
+    `.venv/bin/pip install -r requirements.txt -r requirements-fast.txt`, holding that body at 3
+    effective lines (config/composite_action_body_baseline.yaml line 91). Leave census and escalate
+    untouched, and do not touch the baseline file.
+  - >-
+    scripts/backlog_health/probe.py -- drop the `exec ` prefix in _isolated_argv; update the
+    module docstring's sandbox description so it no longer implies exec semantics.
+  - >-
+    scripts/backlog_health/census.py -- anchor parse_pytest_target on a delimited pytest
+    invocation token; update its docstring and the module docstring's bucket description.
+  - >-
+    tests/test_backlog_health_workflow.py, tests/test_backlog_health_probe.py,
+    tests/test_backlog_health_census.py -- add the three pinned node ids, each asserting behaviour
+    rather than token presence.
+  - >-
+    scripts/checks/ci_guards/validate_sandbox_runner_test_deps.py -- new registered check armed by
+    EITHER the sysctl marker or the scripts.backlog_health executor marker, stripping full-line AND
+    trailing comments, with examined()/skipped() on both branches; register it in _manifest.py with
+    narrowed pre_globs and map it `dependency_gap` in config/ci_rca_taxonomy.yaml.
+  - >-
+    tests/checks/ci_guards/test_validate_sandbox_runner_test_deps.py -- mirror-rule test file with
+    the pinned node id plus the positive, executor-marker, full-line-comment, trailing-comment,
+    scoping, accounting and live-workflow arms.
+  - >-
+    config/agent/verification_registry/entries/ -- create the four shards, filename equals
+    check_id equals the VP step's graduation_check_id.
+  - >-
+    Execute Verification Plan -- run each step; loop until pass; on unrecoverable failure stop and
+    RCA (Decision 55).
+  - >-
+    Flip this plan's implementation_declared to true after code review and a completed full-tier
+    pass, then squash-merge with a `Resolves: rec-4005` trailer.
+  - 'Report: what was implemented, verification results'
+work_areas: []
+rollback: >-
+  Each of the three repairs reverts independently. Reverting the workflow install alone returns
+  every pytest-carrying acceptance command to a guaranteed FAIL. Reverting the exec removal alone
+  returns every compound command to first-segment-only execution. Reverting the census anchor alone
+  returns 46 recs from expected_fail_missing_node to probeable. The new check and its manifest Entry
+  revert together (deleting the Entry alone breaks the bijection). Nothing here gates a PR or a
+  merge: backlog-health is schedule-plus-dispatch only and is deliberately absent from
+  terraform/github/repo.tf's required_status_checks (Decision 62 amendment / CD.12, alarm-not-gate).
