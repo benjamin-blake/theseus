@@ -370,7 +370,7 @@ class TestGenerateIntegration:
 
     def test_dormant_tables_present(self) -> None:
         doc = generate()
-        for tbl in ("ops_priority_queue", "ops_session_log"):
+        for tbl in ("ops_priority_queue",):
             assert tbl in doc["ops_tables"], f"{tbl} should be in ops_tables"
             assert doc["ops_tables"][tbl]["status"] == "dormant"
 

@@ -3,7 +3,19 @@
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.checks.contracts.validate_portal_drift import validate_portal_drift
+from scripts.checks.contracts.validate_portal_drift import _OPS_TABLE_TOKENS, validate_portal_drift
+
+
+def test_ops_table_tokens_excludes_retired_ops_session_log() -> None:
+    """PLAN-t2-26-retire-ops-session-log: the retired table's token is gone, survivors remain."""
+    assert "ops_session_log" not in _OPS_TABLE_TOKENS
+    assert set(_OPS_TABLE_TOKENS) == {
+        "ops_recommendations",
+        "ops_decisions",
+        "ops_execution_plans",
+        "ops_priority_queue",
+        "telemetry",
+    }
 
 
 class TestValidatePortalDrift:

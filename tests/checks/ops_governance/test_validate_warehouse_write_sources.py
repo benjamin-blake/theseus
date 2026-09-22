@@ -46,7 +46,7 @@ class TestValidateWarehouseWriteSources:
         scripts_dir.mkdir()
         portal_file = scripts_dir / "ops_data_portal.py"
         portal_file.write_text(
-            'writer.write("ops_session_log", merged)\n',
+            'writer.write("ops_entity_counters", merged)\n',
             encoding="utf-8",
         )
         with patch("scripts.checks._common.ROOT", tmp_path):

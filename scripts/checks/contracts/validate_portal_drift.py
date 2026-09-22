@@ -15,7 +15,6 @@ _HEADER_SCAN_LINES = 6
 _OPS_TABLE_TOKENS = (
     "ops_recommendations",
     "ops_decisions",
-    "ops_session_log",
     "ops_execution_plans",
     "ops_priority_queue",
     "telemetry",
@@ -31,11 +30,13 @@ def validate_portal_drift(failed: list[str]) -> None:
         import yaml
     except Exception as exc:  # noqa: BLE001 -- never raise at check time (rec-2027 pattern)
         failed.append(f"Portal drift: yaml import failed: {exc}")
+        registry.skipped("yaml import failed")
         return
 
     prompts_path = _common.ROOT / "EVALUATION-PROMPTS.yaml"
     if not prompts_path.is_file():
         failed.append("Portal drift: EVALUATION-PROMPTS.yaml is missing")
+        registry.skipped("EVALUATION-PROMPTS.yaml missing")
         return
 
     try:
@@ -43,6 +44,7 @@ def validate_portal_drift(failed: list[str]) -> None:
         data = yaml.safe_load(text) or {}
     except (OSError, yaml.YAMLError) as exc:
         failed.append(f"Portal drift: EVALUATION-PROMPTS.yaml failed to parse: {exc}")
+        registry.skipped("EVALUATION-PROMPTS.yaml failed to parse")
         return
 
     for question in data.get("questions", []) or []:
@@ -74,3 +76,5 @@ def validate_portal_drift(failed: list[str]) -> None:
     for token in _OPS_TABLE_TOKENS:
         if token in lower_text:
             failed.append(f"Portal drift: ops-table token {token!r} appears in EVALUATION-PROMPTS.yaml")
+
+    registry.examined(len(_PORTAL_FILES) + len(_OPS_TABLE_TOKENS), unit="portal_files_and_tokens")

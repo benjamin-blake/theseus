@@ -367,6 +367,18 @@ def test_ops_table_names_includes_recommendations():
     assert len(names) >= 2
 
 
+def test_ops_table_names_excludes_retired_ops_session_log():
+    """PLAN-t2-26-retire-ops-session-log (T2.26): the retired table is gone from the registry."""
+    names = schema.ops_table_names()
+    assert "ops_session_log" not in names
+
+
+def test_resolve_table_spec_raises_for_retired_ops_session_log():
+    """PLAN-t2-26-retire-ops-session-log (T2.26): resolve_table_spec refuses the retired table."""
+    with pytest.raises(schema.SchemaGateError, match="unknown ops table"):
+        schema.resolve_table_spec("ops_session_log")
+
+
 # ---------------------------------------------------------------------------
 # SQL byte-identity check: schema builders vs runtime re-exports (VP1)
 # ---------------------------------------------------------------------------

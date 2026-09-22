@@ -76,11 +76,11 @@ def test_apply_backend_routing_rewrites_all_migrated_tables():
         "error",
     )
     untouched = Check(
-        "ops_session_log",
-        "session_id",
+        "market_data",
+        "trade_id",
         "not_null",
-        "SELECT COUNT(*) AS violation FROM agent_platform.ops_session_log_current WHERE session_id IS NULL",
-        "session log id",
+        "SELECT COUNT(*) AS violation FROM agent_platform.market_data_current WHERE trade_id IS NULL",
+        "market data trade id",
         "error",
     )
     original_sql = untouched.sql

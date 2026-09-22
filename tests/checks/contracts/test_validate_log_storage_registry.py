@@ -17,14 +17,14 @@ from scripts.checks.contracts.validate_log_storage_registry import validate_log_
 _CONTRACT_NAME = "log-storage.yaml"
 
 
-def _write_contract(contracts_dir: Path, table_routing: dict[str, str], queue_key: str) -> None:
-    doc = {"routing": {"ops_table_routing": table_routing, "priority_queue_key": queue_key}}
+def _write_contract(contracts_dir: Path, queue_key: str) -> None:
+    doc = {"routing": {"priority_queue_key": queue_key}}
     (contracts_dir / _CONTRACT_NAME).write_text(yaml.dump(doc), encoding="utf-8")
 
 
 class TestGreenPath:
     def test_matching_routing_passes(self, tmp_path: Path) -> None:
-        _write_contract(tmp_path, dict(s3_log_store.FALLBACK_OPS_TABLE_ROUTING), s3_log_store.FALLBACK_PRIORITY_QUEUE_KEY)
+        _write_contract(tmp_path, s3_log_store.FALLBACK_PRIORITY_QUEUE_KEY)
 
         failed: list[str] = []
         validate_log_storage_registry(failed, contracts_dir=tmp_path)
@@ -33,21 +33,13 @@ class TestGreenPath:
 
 
 class TestDriftRedPath:
-    def test_divergent_table_routing_fails(self, tmp_path: Path) -> None:
-        _write_contract(tmp_path, {".other.jsonl": "ops_other"}, s3_log_store.FALLBACK_PRIORITY_QUEUE_KEY)
-
-        failed: list[str] = []
-        validate_log_storage_registry(failed, contracts_dir=tmp_path)
-
-        assert any("declares ops_table_routing=" in f for f in failed)
-
     def test_divergent_queue_key_fails(self, tmp_path: Path) -> None:
-        _write_contract(tmp_path, dict(s3_log_store.FALLBACK_OPS_TABLE_ROUTING), "wrong/key.jsonl")
+        _write_contract(tmp_path, "wrong/key.jsonl")
 
         failed: list[str] = []
         validate_log_storage_registry(failed, contracts_dir=tmp_path)
 
-        assert failed != []
+        assert any("declares priority_queue_key=" in f for f in failed)
 
 
 class TestAbsentEmptyTarget:
@@ -68,13 +60,13 @@ class TestAbsentEmptyTarget:
         assert any("missing or empty" in f for f in failed)
 
     def test_missing_queue_key_fails(self, tmp_path: Path) -> None:
-        doc = {"routing": {"ops_table_routing": {".x.jsonl": "ops_x"}}}
+        doc = {"routing": {"note": "no priority_queue_key here"}}
         (tmp_path / _CONTRACT_NAME).write_text(yaml.dump(doc), encoding="utf-8")
 
         failed: list[str] = []
         validate_log_storage_registry(failed, contracts_dir=tmp_path)
 
-        assert any("missing a non-empty" in f for f in failed)
+        assert any("missing a non-empty priority_queue_key" in f for f in failed)
 
 
 class TestMissingFile:
