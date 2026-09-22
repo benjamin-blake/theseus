@@ -59,6 +59,12 @@ scope:
   - file: docs/contracts/data-modeling-standard.yaml
     action: Modify
     purpose: drop ops_session_log from write_modes.scd2.example_tables; amendment_log entry
+  - file: docs/DECISIONS.md
+    action: Modify
+    purpose: >-
+      dated trailing-bracket annotation on Decision 78 correcting clause 2's ops_session_log entry
+      from migrate to retire, and naming git history as the replacement for session-log semantics.
+      docs/decisions-index.json regenerates as the sanctioned decisions_index_regeneration companion
   - file: docs/ROADMAP-PLATFORM.yaml
     action: Modify
     purpose: >-
@@ -176,7 +182,7 @@ verification_plan:
     expected_literals: ["CONTRACT_BODIES_CLEAN"]
   - step: 4
     phase: pre-deploy
-    action: prove every roadmap criterion that named the retired table is re-grounded, index-free
+    action: prove every roadmap criterion and the Decision 78 clause-2 correction are re-grounded, index-free
     command: >-
       bin/venv-python -c "import yaml;
       d=yaml.safe_load(open('docs/ROADMAP-PLATFORM.yaml'));
@@ -191,6 +197,8 @@ verification_plan:
       assert 'scripts/s3_log_store.py' in ti['T2.26']['files_in_scope'], ti['T2.26']['files_in_scope'];
       cd40=[c for c in d['candidate_decisions'] if c['id']=='CD.40'][0];
       assert any('clause 1 realized' in str(x) for x in cd40['discipline_points']), cd40['discipline_points'];
+      dec=open('docs/DECISIONS.md', encoding='utf-8').read();
+      assert 'RETIRED, not migrated' in dec and 'git history' in dec, 'Decision 78 clause-2 annotation missing';
       print('ROADMAP_REGROUNDED')"
     expected: >-
       prints the marker. Asserts only DURABLE wording properties -- no criterion status field is
@@ -255,7 +263,8 @@ verification_plan:
     action: run every touched module's mirror-home suite
     command: >-
       bin/venv-python -m pytest tests/sync/ops tests/s3_log_store tests/checks/contracts
-      tests/checks/ops_governance tests/contracts_enforcement tests/platform_roadmap_models
+      tests/checks/ops_governance tests/checks/decisions tests/contracts_enforcement
+      tests/platform_roadmap_models
       tests/test_schema_to_field_semantics.py tests/test_data_quality_execute.py
       tests/test_ducklake_scd2_schema.py -q
     expected: all suites pass with no skips introduced by the deletions
@@ -465,6 +474,17 @@ test_obligations:
       An illustrative example_tables list plus an amendment_log entry. The write_modes semantics,
       the design_time_walk and every enforced rule are untouched, so there is no behavior change
       to red-before; VP step 3's graduated check asserts the token's absence structurally.
+  - source: docs/DECISIONS.md
+    behavior: >-
+      the decision corpus stays parseable and docs/decisions-index.json stays in sync after the
+      Decision 78 annotation
+    verification_step: 8
+    test_selector: tests/checks/decisions
+    waiver_reason: >-
+      A dated append-only annotation to a ratified body carries no behavior of its own -- the
+      corpus is prose. What CAN break is mechanical and is guarded: validate_decisions_index_freshness
+      fails on drift if the index is not regenerated, validate_decisions_size gates the corpus
+      ceiling, and VP step 4 asserts the annotation's own text landed.
 constraints:
   - No rescue agents or workaround loops (Decision 55); forward-fix only, closure needs proof (Decision 103)
   - >-
@@ -543,6 +563,24 @@ execution_steps:
     docs/contracts/session-id.yaml and data-modeling-standard.yaml -- re-ground the live bodies and add
     one amendment_log entry each. Do NOT touch storage-substrate.yaml: its tables index carries no
     ops_session_log entry, so an amendment_log entry there would record no amendment.
+  - >-
+    docs/DECISIONS.md -- append a dated trailing-bracket annotation after Decision 78's **Related:**
+    line (blank line, then the bracket block, matching the 2026-09-13 precedent on Decision 137).
+    Do NOT rewrite clause 2 or any other body text -- Decision 177 locks ratified bodies to
+    append-only, and a dated annotation is the sanctioned correction dialect (its mechanical guard,
+    validate_live_entry_immutability, was retired by Decision 178). Exact text: "[Amendment
+    2026-09-22, PLAN-t2-26-retire-ops-session-log (T2.26): clause 2's ops_session_log entry is
+    corrected -- that table is RETIRED, not migrated. It was never provisioned in the personal
+    account, so there was no data to move; the retirement deletes a registration the closed
+    DuckLake writer/reader boundary was still advertising. CD.40 records the retire disposition and
+    T2.26 is the doer. The semantics ops_session_log was to carry -- a per-session record of what
+    changed and why -- are served by git history, which is already the authoritative log of session
+    outcomes (Decision 174's precedent: retirement is by deletion, with provenance in git history);
+    turn-grain telemetry on the canonical telemetry_observations / telemetry_transcripts pair
+    (Decisions 95/96/97, built at T3.20) covers the forward event-tier need. Clause 2's other named
+    tables are unaffected.]" Then regenerate the index:
+    bin/venv-python -m scripts.decisions_index --write. Post-merge, sync the corpus to the
+    warehouse: bin/venv-python -m scripts.ops_data_portal --backfill-decisions-md.
   - >-
     docs/ROADMAP-PLATFORM.yaml -- re-ground T2.26 c3, T3.20 c7, T2.11b criterion index 2 and T2.15
     criterion index 1; widen T2.26 files_in_scope; add the
