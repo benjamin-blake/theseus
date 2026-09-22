@@ -25,7 +25,7 @@ Parameters
 
 Licensor:             Benjamin Blake
 
-Licensed Work:        Theseus
+Licensed Work:        On The Loop
 
 Additional Use Grant: You may make use of the Licensed Work for any purpose
                       that is not a production use. This enumeration is
@@ -47,7 +47,8 @@ _VALID_LICENSING = (
     "# Licensing boundary\n\n"
     "Every version up to and including commit `4de9df86e02b7eeccf58df83e74f6061fc1303e2` is\n"
     "Apache-2.0. The rule is self-verifying: read the LICENSE file as published by the Licensor\n"
-    "at that commit.\n"
+    "at that commit.\n\n"
+    "On The Loop is the same Licensed Work formerly named Theseus.\n"
 )
 
 _VALID_README = "# theseus\n\nLicensed under the Business Source License 1.1. See LICENSING.md.\n"
@@ -110,7 +111,7 @@ class TestLicenceArtefactConsistency:
         assert any("lacks its non-limitation clause" in f for f in failed)
 
     def test_bracket_placeholder_in_parameters_fails(self, tmp_path: Path) -> None:
-        templated = _VALID_LICENSE.replace("Licensed Work:        Theseus", "Licensed Work:        [Name]")
+        templated = _VALID_LICENSE.replace("Licensed Work:        On The Loop", "Licensed Work:        [Name]")
         failed = _run(_tree(tmp_path, LICENSE=templated))
         assert any("still contains a bracket placeholder" in f for f in failed)
 
@@ -146,6 +147,18 @@ class TestLicenceArtefactConsistency:
     def test_readme_not_linking_licensing_fails(self, tmp_path: Path) -> None:
         failed = _run(_tree(tmp_path, **{"README.md": "# theseus\n\nBusiness Source License 1.1.\n"}))
         assert any("does not link LICENSING.md" in f for f in failed)
+
+
+def test_licensed_work_names_the_ratified_mark(tmp_path: Path) -> None:
+    old_mark = _VALID_LICENSE.replace("Licensed Work:        On The Loop", "Licensed Work:        Theseus")
+    failed = _run(_tree(tmp_path, LICENSE=old_mark))
+    assert any("does not name the ratified mark" in f for f in failed)
+
+
+def test_licensing_continuity_note_names_both_marks(tmp_path: Path) -> None:
+    without_note = _VALID_LICENSING.replace("On The Loop is the same Licensed Work formerly named Theseus.\n", "")
+    failed = _run(_tree(tmp_path, **{"LICENSING.md": without_note}))
+    assert any("carries no continuity note" in f for f in failed)
 
 
 class TestClassASlugHygiene:

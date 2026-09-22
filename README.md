@@ -1,4 +1,4 @@
-# theseus
+# On The Loop
 
 This file is a curated projection of `CLAUDE.md` and `docs/ROADMAP-PLATFORM.yaml` - the canonical sources of truth for this repository. Where this file conflicts with those sources, the canonical sources win. For agent consumption, load those files directly.
 

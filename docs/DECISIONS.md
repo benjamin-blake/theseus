@@ -2,6 +2,98 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 198: Theseus and Guerdon retired as external brands; On The Loop Labs Limited and On The Loop supersede the brand hierarchy (amends Decisions 101, 195, 196) (Decided)
+
+```yaml
+number: 198
+status: Decided
+decided_date: "2026-09-21"
+amends: [101, 195, 196]
+significance:
+  value: numbered_decision
+  justification: >-
+    A durable architectural commitment: retiring the external brand hierarchy for a single
+    ratified mark carries reversal-relevant consequences across the public-content boundary, the
+    Licensed Work identity and ~29 downstream enforcement surfaces. Two narrower routings were
+    considered and rejected. field_semantics: docs/contracts/package-registry-reservation.yaml was
+    considered as the home for the identifier map, since it already carries the ontheloop
+    namespace, but rejected -- it is a Class D contract for registry-reservation mechanics, not
+    brand governance, and is itself follow-on work (rec-3995) that must CITE this Decision, not
+    host it. operational_fact: Decision 195 clause 4 typed the org-handle choice ALONE as
+    operational_fact because a bare pick is freely revisable; recording the handle here closes
+    that clause's own reversal condition rather than re-litigating the typing -- the handle stops
+    being freely revisable once bound to a ratified trademark and a public Licensed Work name, the
+    same OIDC-subject irreversibility argument rec-3902 makes for the org id (not the distribution
+    namespace ontheloop's separate crates.io-immutability argument).
+```
+
+**Status:** Decided
+**Date:** 2026-09-21
+**Warehouse ID:** dec-198 (synced to ops_decisions via `ops_data_portal --backfill-decisions-md` post-merge, per Decision 84)
+
+**Problem:**
+Decision 101 named Theseus (platform) and Guerdon (trading product) as external brands. UK
+trademark UK00004363856 (registered 2026-03-27, classes 9 and 42) is limited by "namely" to
+deterministic runtime software / customers' calculation and decision logic / real-time pricing and
+risk / market-data processing and operational analytics -- a specification threading around
+"operational analytics" for a dashboards tier was judged infeasible. `theseus` is also already
+taken on PyPI, npm and crates.io (`ontheloop` is unclaimed on all three; measured 2026-09-21,
+`docs/contracts/package-registry-reservation.yaml` amendment_log). The cheapest moment to rename
+is before adoption, not after.
+
+**Decision:**
+1. **Retirement.** Theseus and Guerdon are retired as external brands. On The Loop Labs Limited
+   (company no. 17468271, registered in England and Wales, registered office 66 Paul Street,
+   London, EC2A 4NA) owns the platform (Decision 195); **On The Loop** is the external brand for
+   both the platform and its products -- one mark covers both, the company name doubling as the
+   product name (Grafana Labs / Vercel pattern). Guerdon's forward intent (the trading product)
+   moves to the not-yet-created private commercial repository (Decision 184). Semanto is
+   UNCHANGED: it survives as the internal marketing/comms roadmap name only, never a public-facing
+   mark (`docs/ROADMAP-SEMANTO.yaml`; rec-3986 tracks its own residual brand text).
+2. **Decision 101 amendment map** (see the dated blockquote there): clause (a)'s naming hierarchy
+   replaced in full; clause (d)'s Guerdon trading-alpha sentence replaced with a brand-neutral
+   successor keeping the securities-law prohibition word-for-word in substance; clause (e)'s
+   Domain line becomes `onthelooplabs.com`; clause (f)'s primary-audience line updated. Clauses
+   (b), (c) and the remainder of clause (d) (the public-content boundary itself) are UNAFFECTED.
+3. **Identifier map.** Org handle `otl-labs`; web `onthelooplabs.com`; email `otl-labs.com`;
+   distribution namespace `ontheloop`; CLI alias `otl`. Decision 196 clause 7's "undecided
+   organisation handle" is now decided; `otl` remains the CLI alias of `ontheloop`, a distinct
+   identifier from the org handle.
+4. **Decision 195 clause 4 is PARTIALLY discharged.** The org-handle-decided reversal condition
+   is recorded here (`otl-labs`); rec-3905 stays OPEN for its own deliverable
+   (`docs/contracts/github-org-transfer.yaml`).
+5. **Licensed Work rename.** LICENSE's Licensed Work parameter and the forward-standing
+   licensed-work prose (LICENSING.md, CONTRIBUTING.md, COMMERCIAL-LICENSE.md, README.md's H1) move
+   to On The Loop. The `Licensor:` line stays `Benjamin Blake` until Decision 195's founder-to-
+   company IP assignment legally executes (Decision 195 clause 2) -- untouched here.
+6. **Deferred residue.** `docs/ROADMAP-SEMANTO.yaml` (rec-3986), the packaged-asset Lambda
+   deploy-trigger gap (rec-3990), the exit-criteria-ledger contract-vs-enforcer divergence
+   surfaced while converting T2.11b's criteria (rec-3992), and
+   `docs/contracts/package-registry-reservation.yaml`'s header, which still asserts the retired
+   hierarchy and calls On The Loop a CANDIDATE name (rec-3995, cannot cite this Decision before it
+   exists) -- all untouched by this merge.
+
+```yaml reversal-conditions
+decision: 198
+review_by: 2027-03-31
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: trademark-conflict-found
+    kind: manual
+    description: "A live conflicting mark surfaces in classes 9/42 that clearance missed: re-open the naming hierarchy."
+  - id: org-handle-reopened
+    kind: manual
+    description: "otl-labs proves unusable (taken, policy-rejected): re-decide the handle and amend clause 3's identifier map."
+```
+
+**Related:** Decision 101 (amended -- naming hierarchy, public-content boundary lead-in, domain,
+positioning), Decision 195 (amended -- clause 4 org-handle discharge), Decision 196 (amended --
+clause 7 handle reconciliation), Decision 184 (Guerdon's forward intent destination), Decision 171
+(BUSL-1.1 licensing this rename rides). rec-3922 (this plan's bundled rec), rec-3902/rec-3905
+(org-handle/transfer sequence), rec-3986/rec-3990/rec-3992/rec-3995 (deferred residue).
+
+---
+
 ## Decision 197: Work-item mechanism boundary -- the mechanism ships, the data does not; roadmap tier items and recommendations converge on one work-item model behind a storage port, and the executor's pick surface is kind-generic from its first implementation (Decided)
 
 ```yaml
@@ -109,6 +201,10 @@ conditions:
 
 **Related:** Decision 184 (free-tier boundary this extends to the decision corpus), Decision 134 (clause 5's retirement end-state this amends), Decisions 84, 93, 133, 167, 171, 177, 178, 179; T1.5, T4.24; the north-star amendment guard (rec-3959, clause 3's authority policy).
 
+> **Amended by Decision 198 (2026-09-21):** Clause 7's "undecided organisation handle" is now
+> decided (`otl-labs`, Decision 195 clause 4 / Decision 198). `otl` remains the CLI alias of the
+> `ontheloop` product/distribution namespace, a separate identifier from the org handle.
+
 ---
 
 ## Decision 195: On The Loop Labs Limited owns the platform; founder-to-company IP assignment, the AWS account-ownership consequence it reopens, and the undecided GitHub organisation handle (amends Decision 106) (Decided)
@@ -187,6 +283,11 @@ unverified-provenance question), Decision 177 (append-only bodies), Decision 167
 Decision 150 / Decision 75 (operational_fact routing for the org-handle choice). rec-3905
 (org-handle work), rec-3921 / rec-3922 / rec-3923 / rec-3924 (follow-on sequence this plan is
 keystone of).
+
+> **Amended by Decision 198 (2026-09-21):** Clause 4's canonical GitHub organisation handle is
+> decided: `otl-labs`. The `org-handle-decided` reversal condition above is PARTIALLY discharged
+> -- the handle is recorded here, but rec-3905 stays open for its own deliverable
+> (`docs/contracts/github-org-transfer.yaml`). See Decision 198 for the full identifier map.
 
 ---
 
@@ -5876,6 +5977,30 @@ to this numbered Decision).
 > source-available, NOT OSI open source, and contributions now require a copyright assignment
 > or equivalently broad grant (`CONTRIBUTING.md`). Points (a), (c), (d) and (e) are unedited;
 > see Decision 171 for the full derivation.
+
+> **Amended by Decision 198 (2026-09-21):** Theseus and Guerdon are retired as external brands;
+> On The Loop Labs Limited (company) and On The Loop (product) replace them as the sole external
+> mark, superseding clause (a)'s naming hierarchy in full:
+> - **On The Loop Labs Limited** = the owning company (Decision 195).
+> - **On The Loop** = the external brand for both the platform and its products; one mark covers
+>   both (Grafana Labs / Vercel pattern). Guerdon's forward intent (the trading product) moves to
+>   the not-yet-created private commercial repository (Decision 184).
+> - **Semanto** survives unchanged as the internal marketing/comms roadmap name only, never a
+>   public-facing mark (`docs/ROADMAP-SEMANTO.yaml`, rec-3986).
+>
+> Clause (d)'s Guerdon trading-alpha sentence is replaced: never publish any hosted product's
+> trading alpha, performance figures, or returns. Publishing performance figures exposes
+> investment-solicitation and securities-law risk. This restates the original prohibition
+> brand-neutrally. Clause (d)'s site reference follows clause (e)'s domain change below: the
+> boundary still binds to the public site, now at `onthelooplabs.com`.
+>
+> Clause (e)'s Domain line is replaced: `onthelooplabs.com` (Cloudflare-managed DNS).
+>
+> Clause (f)'s primary-audience line is replaced: primary audience is data-engineering hiring
+> managers AND early adopters of the On The Loop product line.
+>
+> Clauses (b), (c) and the remainder of clause (d) (the AWS-specifics bullet and the
+> public-content boundary itself) are UNAFFECTED.
 
 **Problem:**
 The platform and its trading product were operating under purely internal identifiers (repo
