@@ -9,10 +9,13 @@ command (see probe.py's module docstring for the sole-executor invariant this pa
 Buckets (measured at a702e438 over 1079 open recs -- see PLAN-backlog-health-detection Context):
   probeable                    -- a safe, single-line, non-pytest-or-existing-node command; sent
                                    to probe.py under sandboxed isolation.
-  expected_fail_missing_node   -- a pytest node-id whose file or named test does not exist on
-                                   disk today. Deliberately never probed (Decision 55: an exit-4
-                                   "unwritten" state IS the correct signal for ~283 recs authored
-                                   in the 2026-08 sweep -- see the plan's constraints).
+  expected_fail_missing_node   -- a pytest node-id (resolved from the actual pytest invocation
+                                   token, never from the first `.py` path anywhere in the
+                                   command -- see parse_pytest_target) whose file or named test
+                                   does not exist on disk today. Deliberately never probed
+                                   (Decision 55: an exit-4 "unwritten" state IS the correct signal
+                                   for ~283 recs authored in the 2026-08 sweep -- see the plan's
+                                   constraints).
   unprobeable_unsafe           -- a command matching a destructive/network/privileged shape
                                    (rm -rf, sudo, curl, git push, ...). Never sent to probe.py.
   unprobeable_shape            -- a command outside the shapes above that this module cannot
@@ -93,6 +96,7 @@ _PROSE_PREFIXES: tuple[str, ...] = (
 
 _MAX_SHAPE_LEN = 500
 _PYTEST_TARGET_RE = re.compile(r"([\w./-]+\.py)(::([\w:.\[\]-]+))?")
+_PYTEST_INVOCATION_RE = re.compile(r"(?<![\w-])pytest(?![\w-])")
 
 
 def is_prose(cmd: str) -> bool:
@@ -123,10 +127,19 @@ def _is_malshaped(cmd: str) -> bool:
 
 def parse_pytest_target(cmd: str) -> Optional[tuple[str, Optional[str]]]:
     """Extract (file_path, node_or_None) from a `pytest <path>[::<node>]` invocation inside
-    `cmd`, or None if `cmd` is not recognisably a single pytest node-id invocation."""
-    if "pytest" not in cmd:
+    `cmd`, or None if `cmd` is not recognisably a single pytest node-id invocation.
+
+    Anchored on a real pytest INVOCATION token -- a word-boundary-delimited `pytest`, found
+    anywhere in `cmd` -- never on the first `.py` path in the whole string: a command like
+    `grep -q X tests/f.py && pytest tests/f.py::Node` must resolve to the pytest node, not the
+    grep's file, and a path that merely CONTAINS the substring "pytest" (e.g.
+    scripts/checks/_pytest_diff.py) with no invocation must never be mistaken for one. Only the
+    text AFTER the matched invocation token is searched for the target, so a `.py` path that
+    precedes the invocation (as in the grep-guarded shape above) is never returned."""
+    invocation = _PYTEST_INVOCATION_RE.search(cmd)
+    if invocation is None:
         return None
-    match = _PYTEST_TARGET_RE.search(cmd)
+    match = _PYTEST_TARGET_RE.search(cmd, invocation.end())
     if match is None:
         return None
     return match.group(1), match.group(3)

@@ -110,6 +110,18 @@ class TestParsePytestTarget:
         result = census.parse_pytest_target("bin/venv-python -m pytest tests/test_x.py::test_y -q")
         assert result == ("tests/test_x.py", "test_y")
 
+    def test_target_is_anchored_to_the_pytest_invocation(self) -> None:
+        grep_guarded = census.parse_pytest_target(
+            "grep -q rec_id tests/test_x.py && bin/venv-python -m pytest tests/test_x.py::test_y -q"
+        )
+        assert grep_guarded == ("tests/test_x.py", "test_y")
+
+        no_invocation = census.parse_pytest_target("bin/venv-python scripts/checks/_pytest_diff.py")
+        assert no_invocation is None
+
+        directory_form = census.parse_pytest_target("bin/venv-python -m pytest tests/checks/ci_guards/ -q")
+        assert directory_form is None
+
 
 class TestMakeReader:
     def test_delegates_to_ducklake_reader_client(self, monkeypatch: pytest.MonkeyPatch) -> None:
