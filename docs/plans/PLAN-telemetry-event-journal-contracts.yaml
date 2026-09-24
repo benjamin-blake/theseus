@@ -95,7 +95,8 @@ scope:
     action: Modify
     purpose: >-
       Identity note (deterministic write-boundary derivation from caller-supplied source refs for
-      event tables, pointing at Decision 199) and a derived-state rule scoped NARROWLY to append_only telemetry, deferring
+      event tables, pointing at Decision 199; design_time_walk step 3's "minted once" re-worded to
+      match) and a derived-state rule scoped NARROWLY to append_only telemetry, deferring
       materialization-mode policy to T2.52 c1.
   - file: docs/contracts/storage-substrate.yaml
     action: Modify
@@ -106,7 +107,8 @@ scope:
   - file: docs/DECISIONS.md
     action: Modify
     purpose: >-
-      Add Decision 199 (telemetry event-journal model; amends 95, 96, 97) and Decision 200 (tenant
+      Add Decision 199 (telemetry event-journal model; amends 95, 96 -- cl.1 and cl.3's mint-once
+      pointer -- and 97) and Decision 200 (tenant
       and project identity; amends 197 clause 2); append dated "Amended by" blockquotes to 95, 96,
       97 and 197 without rewriting any existing line (Decision 177).
   - file: docs/decisions-index.json
@@ -382,7 +384,9 @@ test_obligations:
   - source: docs/contracts/telemetry_sessions.yaml
     behavior: >-
       Event-journal shape: partition day(event_timestamp); event_id/event_kind/event_timestamp/
-      external_ref/entity_ref/tenant_id/project_id/producer/created_timestamp NOT NULL; no ingested_at; roll-up and
+      external_ref/entity_ref/tenant_id/project_id/producer/created_timestamp NOT NULL; every other
+      NOT NULL stored field is carried on every event_kind or is nullable with its owning
+      event_kind named (per-event-kind nullability constraint); no ingested_at; roll-up and
       start/end fields derived with timing read.
     verification_step: 1
     test_selector: tests/checks/contracts/test_telemetry_event_journal_contracts.py::test_sessions_event_journal_shape
@@ -403,8 +407,8 @@ test_obligations:
     red_green_expectation: red before, green after
   - source: docs/contracts/telemetry_agents.yaml
     behavior: >-
-      event_id row identity and shared event fields present (incl. external_ref, entity_ref,
-      session_ref, observation_ref NOT NULL); started_at/ended_at/duration_seconds
+      event_id row identity and shared event fields present (external_ref, entity_ref and
+      session_ref NOT NULL; observation_ref NULLABLE, following the optional observation_id FK); started_at/ended_at/duration_seconds
       and token totals derived with timing read.
     verification_step: 1
     test_selector: tests/checks/contracts/test_telemetry_event_journal_contracts.py::test_agents_event_journal_shape
@@ -505,14 +509,19 @@ constraints:
     model_call row); it is DERIVED iff it is a function of other rows (start/end/duration, counts,
     roll-ups, unions, session state). Derived fields stay declared in the contract (so readers have
     one schema) with derivation {timing: read, derived_by: <reader verb>}.
+  - >-
+    Per-event-kind nullability: every STORED field declared NOT NULL is either carried on every
+    event_kind row, or is declared nullable with its owning event_kind(s) recorded in the field's
+    governance_notes_local (e.g. workflow/execution_attempt owned by open; outcome owned by close).
+    A field observed at only one event_kind is never NOT NULL table-wide.
   - "Credential scrubbing (CD.40) is unchanged; PII scrubbing and erasure are deferred together (rec-4029)."
   - No rescue agents or workaround loops (Decision 55).
 context:
   - "Decision-scout verdict: FLAGS_FOUND (run 2); resolved: D197 NOTE -> Decision 200 amends [197] cl.2 scoped; T3.20 c4 stays open (no partial status, Decision 136). Decisions triaged: 151 of 151. Roadmap items intersected: 10; CONFLICT: 0; RELATED: 7"
   - "CITE: 95, 96, 97, 81, 84, 88, 137, 118, 168, 167, 177, 86, 147, 114, 188, 136, 197; related 78, 67, 184, 196, 93, 191, 150, 105, 192, 59, 55"
-  - "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=REVISE r1 (6 fixed), r2 (3 fixed), r3 (F1 FK derivation -> paired *_ref rule + amends 97 cl.3 + rec-4030; F2-F7 fixed); confirming round 4 pending"
+  - "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=REVISE r1 (6 fixed), r2 (3 fixed), r3 (F1 FK derivation -> paired *_ref rule + amends 97 cl.3 + rec-4030; F2-F7 fixed); r4 confirming REVISE (5 small findings, fixed); operator escalated to a 3-perspective review, up to 3 rounds"
   - "Design provenance: two Fable advice consults this session (writer boundary + sequencing; derived state + verification + capture scope). Operator rulings recorded in rec-4024..4029 contexts."
-  - "Decision 199 content: event-journal grain (amends 95 cl.1 'one row per session'); partition day(event_timestamp), write time = envelope created_timestamp, CD.9's day(last_updated_timestamp) does not apply to telemetry (amends 96 cl.1); ENTITY keys (session_id, observation_id, transcript_id) = ULID-formatted deterministic ids derived AT THE WRITE BOUNDARY from hash(tenant_id, project_id, entity_ref), where every event row of an entity carries the entity's source-stable entity_ref (e.g. harness sessionId / toolUseId), so open and close rows written across a producer restart resolve to one key; entity keys are not guaranteed time-sortable (ordering comes from event_timestamp) -- amends 97 cl.1 and cl.2 for entity keys; FKs likewise derived at the boundary from paired caller-supplied *_ref columns (session_ref, parent_session_ref, observation_ref, parent_observation_ref) instead of producer-side propagation -- amends 97 cl.3; entity keys are ULID-encoded but NOT time-ordered (lexicon identity.scheme says so); event_timestamp is source-derived, never emit time; external_ref is the telemetry verbs' realization of T1.10's client-supplied idempotency key; row identity event_id = ULID-shaped, k-sortable, derived AT THE WRITE BOUNDARY (the writer holds the stamped tenant_id/project_id) from event_timestamp + hash(tenant_id, project_id, external_ref), so a retried or re-parsed event re-derives the same id -- satisfying mint-once's idempotency purpose (amends 97 cl.2) and consistent with the DMS rule identity-ulid-at-boundary ('at the write boundary, never client-side') -- the DMS identity note must also reconcile that rule's 'never a natural-key primary key': the key is a derived surrogate over tenant-scoped source refs, not the natural key itself; producers supply only the source-stable external_ref (NOT NULL; producers with no native id supply '<session_id>:<producer>:<sequence>'); derived-at-read state is partition-bounded by session_id + a day window with a declared lookback bound (sessions crossing UTC midnight or resumed later), answering Decision 81 cl.8's full-scan rationale; materialization only on a Decision 88 cl.2 measurement, mode owned by T2.52 c1; in-row content's per-file column stats in the Neon catalog are a Decision 88 cl.1(iii) egress risk routed to rec-4024 as a measure-before-volume obligation; in-row content makes erasure a rewrite + snapshot-expiry operation (recorded; rec-4029)."
+  - "Decision 199 content: event-journal grain (amends 95 cl.1 'one row per session'); partition day(event_timestamp), write time = envelope created_timestamp, CD.9's day(last_updated_timestamp) does not apply to telemetry (amends 96 cl.1); ENTITY keys (session_id, observation_id, transcript_id) = ULID-formatted deterministic ids derived AT THE WRITE BOUNDARY from hash(tenant_id, project_id, entity_ref), where every event row of an entity carries the entity's source-stable entity_ref (e.g. harness sessionId / toolUseId), so open and close rows written across a producer restart resolve to one key; entity keys are not guaranteed time-sortable (ordering comes from event_timestamp) -- amends 97 cl.1 and cl.2 for entity keys; FKs likewise derived at the boundary from paired caller-supplied *_ref columns (session_ref, parent_session_ref, observation_ref, parent_observation_ref) instead of producer-side propagation -- amends 97 cl.3; entity keys are ULID-encoded but NOT time-ordered (lexicon identity.scheme says so); event_timestamp is source-derived, never emit time; external_ref is the telemetry verbs' realization of T1.10's client-supplied idempotency key; row identity event_id = ULID-shaped, k-sortable, derived AT THE WRITE BOUNDARY (the writer holds the stamped tenant_id/project_id) from event_timestamp + hash(tenant_id, project_id, external_ref), so a retried or re-parsed event re-derives the same id -- satisfying mint-once's idempotency purpose (amends 97 cl.2) and consistent with the DMS rule identity-ulid-at-boundary ('at the write boundary, never client-side') -- the DMS identity note must also reconcile that rule's 'never a natural-key primary key': the key is a derived surrogate over tenant-scoped source refs, not the natural key itself; producers supply only the source-stable external_ref (NOT NULL; producers with no native id supply '<session_ref>:<producer>:<sequence>' (a caller-held source ref, never a boundary-derived id)); derived-at-read state is partition-bounded by session_id + a day window with a declared lookback bound (sessions crossing UTC midnight or resumed later), answering Decision 81 cl.8's full-scan rationale; materialization only on a Decision 88 cl.2 measurement, mode owned by T2.52 c1; in-row content's per-file column stats in the Neon catalog are a Decision 88 cl.1(iii) egress risk routed to rec-4024 as a measure-before-volume obligation; in-row content makes erasure a rewrite + snapshot-expiry operation (recorded; rec-4029)."
   - "Decision 200 content: tenant_id + project_id NOT NULL on telemetry, stamped by the write boundary, never caller-supplied, part of the id hash; local tier = single deployment-configured tenant constant; cloud tier resolves tenant from the caller's authenticated identity; amends 197 cl.2 -- re-maps its 'tenancy (project_id)' wording: tenancy is tenant_id (deployment owner), project_id is repository identity; both columns always present, tenancy ENFORCEMENT (auth mapping, isolation) remains the cloud-adapter property."
   - "Not in Decisions (routing, Decision 86): append_events verb rationale -> rec-4024 / docs/contracts/ducklake_writer.yaml; smoke-first -> T3.20 c8; PII/erasure -> rec-4029; T4.19 record-outcome criterion -> rec-4027."
   - "Existing text to reuse: telemetry_sessions governance_notes already records the running->terminal second session row (Decision 97 mint-once reuse)."
@@ -544,10 +553,14 @@ execution_steps:
     event_timestamp (SOURCE-derived from the originating record, never emit time, so a re-parse
     re-derives the same event_id), external_ref (NOT NULL; the event's source-stable ref),
     entity_ref (NOT NULL; the owning entity's source-stable ref, carried by every event of that
-    entity), and one *_ref input column paired with EVERY id column (session_ref on all four,
-    parent_session_ref on sessions, observation_ref on transcripts and agents,
-    parent_observation_ref on observations) so the boundary derives all ids and no id is ever
-    caller-supplied, created_timestamp (writer envelope, write time),
+    entity), and one *_ref input column paired with EVERY foreign-key id column (session_ref on
+    observations, transcripts and agents; parent_session_ref on sessions; observation_ref on
+    transcripts and agents; parent_observation_ref on observations) so the boundary derives all
+    ids and no id is ever caller-supplied. A paired ref's nullability FOLLOWS its id's: session_ref
+    NOT NULL wherever present, observation_ref NOT NULL on transcripts but NULLABLE on agents
+    (observation_id is an optional FK there), parent_session_ref and parent_observation_ref
+    NULLABLE. On telemetry_sessions the entity key session_id derives from entity_ref (no separate
+    session_ref there), created_timestamp (writer envelope, write time),
     tenant_id and project_id ($ref, tightened NOT NULL), producer, producer_version,
     parser_version; sessions also external_session_id. Remove ingested_at (all), local_path and
     created_at (transcripts). Re-mark derived fields. Set governance.partition_by to
