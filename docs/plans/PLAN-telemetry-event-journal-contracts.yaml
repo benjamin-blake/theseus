@@ -6,10 +6,10 @@ slug: telemetry-event-journal-contracts
 intent: >-
   Re-model the canonical telemetry contracts as append-only event journals whose state, friction classification
   and cost are derived at read; settle one normative, restart-proof identity model (boundary-derived ids over tenant/project/source
-  refs, backed by SCD2 tenant and project dimensions); and fix the content tier (inline plus blob port) -- recorded
-  in Decisions 199 and 200 -- so the writer (rec-4024), verification harness (rec-4025) and turn capture (rec-4026)
-  build against one settled schema. Friction telemetry is the foundation of automated RCA and recursive self-improvement
-  (PROJECT_CONTEXT).
+  refs, backed by writer-minted tenant/project ids whose SCD2 dimensions are authored with their registration in
+  rec-4024); and fix the content tier (inline plus blob port) -- recorded in Decisions 199 and 200 -- so the writer
+  (rec-4024), verification harness (rec-4025) and turn capture (rec-4026) build against one settled schema. Friction
+  telemetry is the foundation of automated RCA and recursive self-improvement (PROJECT_CONTEXT).
 plan_type: IMPLEMENTATION
 verification_tier: V2
 plan_path: docs/plans/PLAN-telemetry-event-journal-contracts.yaml
@@ -170,18 +170,22 @@ acceptance_criteria:
   dq_intent.required_when {event_kind: [...]}; no such field is NOT NULL table-wide.
 - >-
   telemetry_transcripts declares content (nullable; the payload as the model received it, after credential scrub),
-  content_uri (nullable; port-relative key tenant/project/session_id/transcript_id resolved by the blob-port adapter),
-  content_sha256, content_bytes and content_truncated (NOT NULL; hash/bytes over the stored full payload -- a harness
-  sidecar file (e.g. tool-results) when present, content_truncated true when only a preview survives), purpose in
-  {prompt, response, thinking, tool_input, tool_result, system}, origin in {human, harness, agent, tool} (hook/harness-generated
-  tool_result text is origin harness), event_kind point only; exactly-one-of content/content_uri as a dq expression;
-  dq_intent.content_inline_threshold_bytes: 65536 on content; no local_path, s3_key, size_bytes, created_at or raw_turn.
+  content_uri (nullable; content-addressed port-relative key tenant/project/session_id/<content_sha256> resolved
+  by the blob-port adapter), content_sha256, content_bytes and content_truncated (NOT NULL; computed over the ONE
+  stored payload: when the harness persisted a sidecar (e.g. tool-results) the stored payload is the full sidecar
+  and the in-transcript preview is not stored; when the sidecar is unavailable the preview is stored and content_truncated
+  is true), purpose in {prompt, response, thinking, tool_input, tool_result, system}, origin in {human, harness,
+  agent, tool} (hook/harness-generated tool_result text is origin harness), event_kind point only; exactly-one-of
+  content/content_uri as a dq expression; dq_intent.content_inline_threshold_bytes: 65536 on content; no local_path,
+  s3_key, size_bytes, created_at or raw_turn.
 - >-
-  telemetry_observations: observation_type includes turn and tool_call; model_call grain = one row per provider
-  response id (entity_ref), tokens_input, tokens_output, tokens_cache_read, tokens_cache_creation stored on it once;
-  outcome in {success, error, blocked, interrupted} required_when close for tool_call; process_event name grammar
-  '<source>:<signature>' (e.g. hook:never_on_main, gate:validate_scope_boundary); NO stored friction_class, classifier_version
-  or tier (friction derived at read; rec-4032 reserves the labels table).
+  telemetry_observations: event_kind in {open, close} for turn/tool_call/phase/step and {point} for model_call/process_event
+  (agents: {open, close}; transcripts: {point}; sessions: {open, resume, compact, close, annotate}); observation_type
+  includes turn and tool_call; model_call grain = one row per provider response id (entity_ref), tokens_input, tokens_output,
+  tokens_cache_read, tokens_cache_creation stored on it once; outcome in {success, error, blocked, interrupted}
+  required_when close for tool_call; process_event name grammar '<source>:<signature>' (e.g. hook:never_on_main,
+  gate:validate_scope_boundary); NO stored friction_class, classifier_version or tier (friction derived at read;
+  rec-4032 reserves the labels table).
 - >-
   Identity is normative, stated once in telemetry-event-envelope.yaml and referenced identically by session-id.yaml,
   observation-id.yaml, parent-observation-id.yaml, telemetry_transcripts (transcript_id), telemetry_agents (agent_run_id)
@@ -190,15 +194,29 @@ acceptance_criteria:
   ROOT session_started_at ms + the first 80 bits (bytes 0-9, big-endian) of H); event_id = ULID(48-bit event_timestamp
   ms + first 80 bits of H over external_ref with tag '<table>:event'); FKs use the PARENT's domain tag so they equal
   the parent key; external_ref grammar '<source_record_id>#<block_index>/<row_role>'; refs unique within (tenant,
-  project, table); row uniqueness (event_id, parser_version) and readers use rows whose parser_version is the max
-  per (session_id, producer); ids never caller-supplied.
+  project, table); DuckLake enforces no uniqueness, so dedupe is a READ-SIDE invariant: readers keep one row per
+  event_id (max parser_version, then earliest created_timestamp; rows sharing an event_id from different producers
+  are duplicates of one event), and the writer's anti-join on (event_id, parser_version) is best-effort; a parser
+  change that stops emitting a row kind must re-emit the whole root tree and is otherwise a documented limitation;
+  model_call external_ref is '<provider_response_id>/model_call' for EVERY producer (Claude Code transcript parser
+  and LiteLLM alike) and is owned by the last source record carrying that response id (final usage), so one API
+  response yields one model_call row whichever producer or record saw it; a failed call with no response id uses
+  the producer call id (e.g. litellm_call_id); session_started_at is pinned as the first record carrying a timestamp
+  in the ROOT transcript, parsed as UTC and truncated (not rounded) to ms -- a producer that cannot read the root
+  defers, never guesses; producers without a transcript (LiteLLM, CI annotate) receive session_ref/project_ref and
+  the root session_started_at via producer metadata, or decode session_started_at from a held session_id's ULID
+  prefix; ids never caller-supplied.
 - >-
   Session trees: every row of a root session and all its sub-agent sessions carries the ROOT session's session_started_at
   (source-derived from the first record of the root transcript, never a warehouse lookup), so a trace tree is one
   partition; sub-agent session entity_ref '<sessionId>:<agentId>' (agentId deterministic across re-parse), parent_session_ref
   = parent sessionId; telemetry_agents entity_ref = spawning toolUseId, session_ref = child session ref, observation_ref
-  (nullable) = spawning tool_call ref; turn entity_ref = the source prompt id; rec_ids stored on open/annotate session
-  events, joined tenant-locally.
+  (nullable) = spawning tool_call ref; turn entity_ref = '<session entity_ref>/<promptId>' (sub-agent records may
+  reuse the parent's promptId); per-row entity_ref/observation_ref: process_event entity_ref = its external_ref
+  and observation_ref = the tool_call/turn it concerns; transcript entity_ref = '<source_record_id>#<block_index>',
+  with observation_ref = the turn (prompt), the model_call (thinking, response, tool_input) or the tool_call (tool_result);
+  annotate rows: external_ref '<source_id>#0/annotate:<attribute>', event_timestamp = the source event time, latest
+  event_timestamp wins per (session, attribute); rec_ids stored on open/annotate session events, joined tenant-locally.
 - >-
   docs/contracts/tenant-id.yaml exists as a ratified Class C contract; project-id.yaml names no git-remote identity
   and no 'theseus' default; session-id, observation-id, parent-observation-id and project-id are at contract_version
@@ -208,10 +226,11 @@ acceptance_criteria:
   Every changed contract.description and field description/semantics carries a new amendment_log entry satisfying
   check_amendment_for_diff; each changed Class D contract carries a new top-level amendment_log entry.
 - >-
-  docs/DECISIONS.md carries exactly one '## Decision 199:' (amends [95, 96, 97], body naming 96 clauses 1 and 3
-  and EACH of 97 clauses 1, 2, 3 and 4 individually, e.g. 'clause 2') and one '## Decision 200:' (amends [197]),
-  each with a bare yaml envelope, numbered_decision significance with a contract-first justification (200's justification
-  rests on the 197 cl.2 re-map and the cross-tier tenancy model), a trailing '---' separator, and <= 6144 bytes.
+  docs/DECISIONS.md carries exactly one '## Decision 199:' (amends [95, 96, 97], body naming 95 clauses 1, 2 and
+  4, 96 clauses 1 and 3, and EACH of 97 clauses 1, 2, 3 and 4 individually, e.g. 'clause 2') and one '## Decision
+  200:' (amends [197]), each with a bare yaml envelope, numbered_decision significance with a contract-first justification
+  (200's justification rests on the 197 cl.2 re-map and the cross-tier tenancy model), a trailing '---' separator,
+  and <= 6144 bytes.
 - >-
   Decisions 95, 96 and 97 carry dated blockquotes naming Decision 199 and 197 one naming Decision 200; no line of
   those spans is removed versus origin/main.
@@ -264,8 +283,8 @@ verification_plan:
   phase: pre-deploy
   action: >-
     Confirm the amendment ritual: the eight ritual contracts through check_amendment_for_diff and the four Class
-    D contracts through check_amendment_log_for_class_d, against origin/main. (The two NEW dimension contracts and
-    tenant-id.yaml have no base and are covered by step 1 and the full-tier drift gate.)
+    D contracts through check_amendment_log_for_class_d, against origin/main. (The new Class C contracts telemetry-event-envelope.yaml
+    and tenant-id.yaml have no base and are covered by step 1 and the full-tier drift gate.)
   command: >-
     bin/venv-python -c "import subprocess,yaml;from scripts.contracts_schema import ContractDocument;from scripts.contracts_enforcement
     import check_amendment_for_diff;from scripts.checks.contracts._population import check_amendment_log_for_class_d;base=lambda
@@ -352,16 +371,18 @@ verification_plan:
   phase: pre-deploy
   action: >-
     Stale-reference sweep: (a) no retired FIELD KEY survives in the four telemetry contracts; (b) no retired partition
-    basis, raw_turn or mint-once/never-re-mints phrase survives in the LIVE text (field descriptions/semantics,
-    governance, governance_notes; case-insensitive, whitespace-normalised) of the telemetry, identity, lexicon (history
+    basis, raw_turn, mint-once/never-re-mints/propagated-never-re-derived/grandfathered phrase survives in the LIVE
+    text (field descriptions, semantics, governance_notes(_local), populated_by, derivation.formula, top-level governance
+    and governance_notes; case-insensitive, whitespace-normalised) of the telemetry, identity, lexicon (history
     blocks excluded) and storage-substrate telemetry_tables surfaces.
   command: >-
     bin/venv-python -c "import yaml,re;load=lambda f:yaml.safe_load(open('docs/contracts/%s.yaml'%f,encoding='utf-8'));retired={'telemetry_sessions':{'ingested_at'},'telemetry_observations':{'ingested_at','friction_class','classifier_version','tier'},'telemetry_transcripts':{'ingested_at','local_path','s3_key','size_bytes','created_at'},'telemetry_agents':{'ingested_at'}};keys={t:sorted(set((load(t).get('fields')
     or {}))&r) for t,r in retired.items()};keys={k:v for k,v in keys.items() if v};live=lambda d:' '.join(str(v.get(a,''))
-    for v in (d.get('fields') or {}).values() for a in ('description','semantics'))+' '+str(d.get('governance')
+    for v in (d.get('fields') or {}).values() for a in ('description','semantics','governance_notes','governance_notes_local','populated_by'))+'
+    '+' '.join(str((v.get('derivation') or {}).get('formula','')) for v in (d.get('fields') or {}).values())+' '+str(d.get('governance')
     or '')+' '+str(d.get('governance_notes') or '');pat=re.compile(r'day\(started_at\)|day\(created_at\)|day\(event_timestamp\)|minted
-    exactly once|never re-mints|raw_turn|event_time_column: started_at',re.I);texts={f:' '.join(live(load(f)).split())
-    for f in ('telemetry_sessions','telemetry_observations','telemetry_transcripts','telemetry_agents','observation-id','parent-observation-id','session-id')};texts['telemetry-lexicon']='
+    (?:exactly )?once|never re-mints|propagated[^.]{0,80}never re-derived|grandfathered until|raw_turn|event_time_column:
+    started_at',re.I);texts={f:' '.join(live(load(f)).split()) for f in ('telemetry_sessions','telemetry_observations','telemetry_transcripts','telemetry_agents','observation-id','parent-observation-id','session-id')};texts['telemetry-lexicon']='
     '.join(yaml.safe_dump({k:v for k,v in load('telemetry-lexicon').items() if k not in ('amendment_log','previous_versions')}).split());texts['storage-substrate']='
     '.join(yaml.safe_dump(load('storage-substrate').get('tables',{}).get('telemetry_tables',{})).split());phr={f:pat.findall(t)
     for f,t in texts.items()};phr={k:v for k,v in phr.items() if v};print('retired-keys',keys,'stale-phrases',phr);assert
@@ -544,7 +565,8 @@ test_obligations:
 - source: docs/contracts/_joins.yaml
   behavior: >-
     Event-journal cardinality notes (parent side = derived entity), existing self-tree join re-stated (no new id),
-    tenant/project dimension joins, planning_session_id note -> rec-4030.
+    agents->child-session and agents->spawning-observation joins; dimension joins deferred to rec-4024; the planning_session_id
+    join entry's note points at rec-4030.
   verification_step: 3
   command: >-
     bin/venv-python -c "import subprocess,yaml;from scripts.contracts_schema import ContractDocument;from scripts.contracts_enforcement
@@ -570,7 +592,9 @@ constraints:
   Contracts, Decisions, roadmap, one test file and its graduated registry row ONLY. No code under src/, scripts/
   or .claude/, no generator change, no field_semantics change, no ops_* contract creation, no table provisioning,
   no blob-port code (rec-4024, rec-4026, rec-4033). Every contract stays <= 500 effective lines (structural size
-  cap); if one would exceed it, move shared definitions into the envelope -- never raise a budget.
+  cap). Relief path, in order: shared definitions into the envelope; compact v1 collapse-mapping and draft-lineage
+  narrative into the previous_versions entry / contract-level amendment summary; terse prose and flow-style dq_intent/amendment
+  entries. If a table is still over 500, STOP and report -- never raise a budget.
 - >-
   No change to scripts/contracts_schema.py: new properties go inside existing free-dict blocks (derivation, dq_intent,
   governance). If something cannot be expressed, STOP and report -- never widen the schema. Every NEW inline field
@@ -603,6 +627,14 @@ constraints:
 - >-
   Decision 199 'answers' Decision 81 cl.8 -- never write 'amends Decision 81' (validate_supersession_annotations
   would demand a victim annotation).
+- >-
+  Roadmap text: new or re-worded criteria and notes (T3.20 c8, T2.18 c8, T2.36 c1/c5, T4.23) must not place a non-terminal
+  item id next to a docs/contracts/roadmap-liveness.yaml leg_c_blocking_phrase_grammar phrase ('gated on', 'blocked
+  by', 'requires ... complete', ...) -- leg C would demand a blocked_by, which would break the exact map asserted
+  by registry check roadmap-blocked-by-transcription-exact.
+- >-
+  Terminology: the transcripts 'inline content' tier is a column-level choice and is distinct from DuckLake data
+  inlining, which stays disabled for telemetry (CD.34); the lexicon says so.
 - No rescue agents or workaround loops (Decision 55).
 context:
 - >-
@@ -610,16 +642,19 @@ context:
   93, 191, 150, 105, 192, 59, 55.
 - >-
   gates: plan-critique r1-r4 REVISE (all fixed); operator-escalated 3-perspective review: round 1 REVISE x3 -> Fable
-  consult #3 + rulings -> rewrite; round 2 REVISE x3 + decision-scout run 3 FLAGS_FOUND (D184 blob-port local adapter
-  -> T4.23 criterion; D137 dims partition -> rec-4024; D84 project minting -> writer registration verb; D81 spirit
-  -> time-prefixed keys) -> fixed; round 3 pending. Decisions triaged: 151 of 151. Roadmap items intersected: 11;
-  CONFLICT: 0; RELATED: 8.
+  consult #3 + rulings -> rewrite; round 3 REVISE x3 (text-level) -> fixed; round 2 REVISE x3 + decision-scout run
+  3 FLAGS_FOUND (D184 blob-port local adapter -> T4.23 criterion; D137 dims partition -> rec-4024; D84 project minting
+  -> writer registration verb; D81 spirit -> time-prefixed keys) -> fixed; Decisions triaged: 151 of 151. Roadmap
+  items intersected: 11; CONFLICT: 0; RELATED: 8.
 - >-
-  Operator rulings (2026-09-24): project identity = writer-minted opaque ULID committed in-repo + SCD2 project/tenant
-  dimensions (contracts moved to rec-4024 by the reconcile gate); entity keys time-prefixed by the root session
-  start; shared telemetry-event-envelope contract (size cap, DRY); friction derived at read for MVP, labels table
-  later (rec-4032); content = hybrid blob port, 64 KiB inline threshold; partition day(session_started_at); cost
-  derived at read, static prices (rec-4031).
+  Round 3 (final) of the operator-escalated review returned REVISE x3 with text-level findings only; all applied
+  (95 cl.2/cl.4, read-side dedupe + cross-producer model_call identity, session_started_at pin, annotate provenance,
+  content-addressed blobs, event_kind sets, per-row refs, size relief path, leg-C phrasing, widened sweep). Operator
+  rulings (2026-09-24): project identity = writer-minted opaque ULID committed in-repo + SCD2 project/tenant dimensions
+  (contracts moved to rec-4024 by the reconcile gate); entity keys time-prefixed by the root session start; shared
+  telemetry-event-envelope contract (size cap, DRY); friction derived at read for MVP, labels table later (rec-4032);
+  content = hybrid blob port, 64 KiB inline threshold; partition day(session_started_at); cost derived at read,
+  static prices (rec-4031).
 - >-
   Routing (Decision 86): append_events verb, blob port, inlining and dimension provisioning -> rec-4024 (context
   updated); capture rules -> rec-4026 (context updated); smoke-first -> T3.20 c8; PII/erasure -> rec-4029; T4.19
@@ -628,9 +663,13 @@ context:
 - >-
   Gotchas: check_amendment_for_diff is per FIELD (scripts/contracts_enforcement.py:55); ChangeClass has no field_remove
   -- record removals in the contract-level amendment_log summary; previous_versions entry shape: {contract_version:
-  1, ratified_at, ratified_via, superseded_on: <date>, summary}; validate_supersession_annotations reads prose --
-  any 'amends Decision N' phrase in 199/200 beyond 95/96/97/197 needs a victim annotation; new Decision entries
-  end with a '---' separator (validate_decision_entry_conformance).
+  1, ratified_at, ratified_via, superseded_on: <date>, summary}; converting an inline field to a $ref field changes
+  its description to None -- category 6 then requires a field-level amendment_log entry on the $ref entry; a $ref
+  field can only override governance_notes_local, joins, amendment_log and dq_intent_local, so per-table meaning
+  of a shared field goes in governance_notes_local; project registration must be idempotent under concurrency (unique
+  constraint or advisory lock on (tenant_id, project_ref) -- rec-4024), stated in project-id.yaml; validate_supersession_annotations
+  reads prose -- any 'amends Decision N' phrase in 199/200 beyond 95/96/97/197 needs a victim annotation; new Decision
+  entries end with a '---' separator (validate_decision_entry_conformance).
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
@@ -657,26 +696,28 @@ execution_steps:
   Update telemetry-lexicon.yaml, _joins.yaml, data-modeling-standard.yaml and storage-substrate.yaml per their scope
   purposes, each with a new amendment_log entry. Rerun VP steps 1, 2 and 3 until green.
 - >-
-  Decision 199 commitments: event-journal grain (amends 95 cl.1); partition day(session_started_at) with source-derived
-  event_timestamp as event-time column and created_timestamp as write time, CD.9 day(last_updated_timestamp) not
-  applicable (amends 96 cl.1; 96 cl.3's mint-once pointer follows 97); identity per the normative hash spec in telemetry-event-envelope.yaml
+  Decision 199 commitments: event-journal grain (amends 95 cl.1 sessions, cl.2 observations as open/close event
+  rows, cl.4 agents as an agent-run event grain); partition day(session_started_at) with source-derived event_timestamp
+  as event-time column and created_timestamp as write time, CD.9 day(last_updated_timestamp) not applicable (amends
+  96 cl.1; 96 cl.3's mint-once pointer follows 97); identity per the normative hash spec in telemetry-event-envelope.yaml
   -- entity and FK keys derived at the write boundary from caller-supplied refs as ULIDs time-prefixed by the ROOT
-  session start (so key-only lookups prune by day and a trace tree clusters), event_id a k-sortable ULID over event
-  time, row uniqueness (event_id, parser_version) with per-(session, producer) parser supersession (amends 97 cl.1-4,
-  retiring the UUID4 grandfather); external_ref realizes T1.10's idempotency key for telemetry; state, friction
-  classification and cost derived at read in named reader verbs, bounded to a session's single day(session_started_at)
-  partition (answers Decision 81 cl.8), materialization only on a Decision 88 cl.2 measurement (mode: T2.52 c1);
-  content tier = inline <= threshold else blob port (S3 / local dir), blob put before row write, orphans swept (rec-4033);
-  the content column's catalog-stats egress is a measure-before-volume obligation on rec-4024.Decision 200 commitments:
-  tenant_id and project_id are opaque immutable ULIDs minted by the writer's registration verb, NOT NULL on telemetry,
-  resolved at the write boundary (tenant: configured constant locally / authenticated identity in cloud; project:
-  caller-sent project_ref, an unknown ref auto-registering an 'unregistered' row whose id is permanent), included
-  in every id hash; SCD2 dimensions ops_tenants/ops_projects (contracts authored with registration in rec-4024)
-  carry mutable attributes, and unregistered projects are remapped via canonical_project_id, never by rewriting
-  facts; amends 197 cl.2 (tenancy is tenant_id; project_id is repository identity; columns always present, tenancy
-  ENFORCEMENT stays the cloud-adapter property).  Add Decisions 199 and 200 at the top of docs/DECISIONS.md (newest-first,
-  after the preamble), modelled on Decision 198's envelope and trailing separator; append dated 'Amended by' blockquotes
-  to 95, 96, 97 and 197. Regenerate docs/decisions-index.json. Run VP steps 4 and 5.
+  session start (reader verbs decode the prefix into a session_started_at partition predicate, and a trace tree
+  clusters), event_id a k-sortable ULID over event time, row uniqueness (event_id, parser_version) with per-(session,
+  producer) parser supersession (amends 97 cl.1-4, retiring the UUID4 grandfather); external_ref realizes T1.10's
+  idempotency key for telemetry; state, friction classification and cost derived at read in named reader verbs,
+  bounded to a session's single day(session_started_at) partition (answers Decision 81 cl.8), materialization only
+  on a Decision 88 cl.2 measurement (mode: T2.52 c1); content tier = inline <= threshold else blob port (S3 / local
+  dir), blob put before row write, orphans swept (rec-4033); the content column's catalog-stats egress is a measure-before-volume
+  obligation on rec-4024.Decision 200 commitments: tenant_id and project_id are opaque immutable ULIDs minted by
+  the writer's registration verb, NOT NULL on telemetry, resolved at the write boundary (tenant: configured constant
+  locally / authenticated identity in cloud; project: caller-sent project_ref, an unknown ref auto-registering an
+  'unregistered' row whose id is permanent), included in every id hash; SCD2 dimensions ops_tenants/ops_projects
+  (contracts authored with registration in rec-4024) carry mutable attributes, and unregistered projects are remapped
+  via canonical_project_id, never by rewriting facts; amends 197 cl.2 (tenancy is tenant_id; project_id is repository
+  identity; columns always present, tenancy ENFORCEMENT stays the cloud-adapter property).  Add Decisions 199 and
+  200 at the top of docs/DECISIONS.md (newest-first, after the preamble), modelled on Decision 198's envelope and
+  trailing separator; append dated 'Amended by' blockquotes to 95, 96, 97 and 197. Regenerate docs/decisions-index.json.
+  Run VP steps 4 and 5.
 - >-
   Roadmap text: T2.36 depends_on [T2.26] with comment 'rec-3792 superseded: pre-write GC safety is c5; T2.18 c2
   soak stays on T2.18'; c1 partition -> day(session_started_at); c5 re-grounded onto Decision 188 G1-G4 + the append_only
