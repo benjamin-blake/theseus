@@ -27,7 +27,7 @@ scope:
 - file: docs/contracts/telemetry_observations.yaml
   action: Modify
   purpose: >-
-    Event-journal grain (open/close for phase/step/turn/tool_call, one closed row for model_call/process_event);
+    Event-journal grain (open/close for phase/step/turn/tool_call, one point row for model_call/process_event);
     observation_type + turn/tool_call; token classes + cost_usd_reported on model_call; friction NOT stored (derived
     at read from observed process_event facts with stable name signatures); shared fields; contract_version 2.
 - file: docs/contracts/telemetry_transcripts.yaml
@@ -198,14 +198,17 @@ acceptance_criteria:
   event_id (max parser_version, then earliest created_timestamp; rows sharing an event_id from different producers
   are duplicates of one event), and the writer's anti-join on (event_id, parser_version) is best-effort; a parser
   change that stops emitting a row kind must re-emit the whole root tree and is otherwise a documented limitation;
-  model_call external_ref is '<provider_response_id>/model_call' for EVERY producer (Claude Code transcript parser
-  and LiteLLM alike) and is owned by the last source record carrying that response id (final usage), so one API
-  response yields one model_call row whichever producer or record saw it; a failed call with no response id uses
-  the producer call id (e.g. litellm_call_id); session_started_at is pinned as the first record carrying a timestamp
-  in the ROOT transcript, parsed as UTC and truncated (not rounded) to ms -- a producer that cannot read the root
-  defers, never guesses; producers without a transcript (LiteLLM, CI annotate) receive session_ref/project_ref and
-  the root session_started_at via producer metadata, or decode session_started_at from a held session_id's ULID
-  prefix; ids never caller-supplied.
+  model_call external_ref is '<provider_response_id>/model_call' for EVERY producer and is owned by the last source
+  record carrying that response id (final usage); because event_id embeds each producer's own event_timestamp, model_call
+  rows are de-duplicated on the producer-independent ENTITY key observation_id (response-id hash under the root
+  prefix), one row per observation_id with fixed precedence: provider-reported usage from the transcript parser
+  (producer claude_code) over litellm, then earliest created_timestamp -- so one API response yields one model_call
+  row whichever producer or record saw it; parser_version is an INTEGER declared in the envelope; a failed call
+  with no response id uses the producer call id (e.g. litellm_call_id); session_started_at is pinned as the first
+  record carrying a timestamp in the ROOT transcript, parsed as UTC and truncated (not rounded) to ms -- a producer
+  that cannot read the root defers, never guesses; producers without a transcript (LiteLLM, CI annotate) receive
+  session_ref/project_ref and the root session_started_at via producer metadata, or decode session_started_at from
+  a held session_id's ULID prefix; ids never caller-supplied.
 - >-
   Session trees: every row of a root session and all its sub-agent sessions carries the ROOT session's session_started_at
   (source-derived from the first record of the root transcript, never a warehouse lookup), so a trace tree is one
@@ -214,9 +217,11 @@ acceptance_criteria:
   (nullable) = spawning tool_call ref; turn entity_ref = '<session entity_ref>/<promptId>' (sub-agent records may
   reuse the parent's promptId); per-row entity_ref/observation_ref: process_event entity_ref = its external_ref
   and observation_ref = the tool_call/turn it concerns; transcript entity_ref = '<source_record_id>#<block_index>',
-  with observation_ref = the turn (prompt), the model_call (thinking, response, tool_input) or the tool_call (tool_result);
-  annotate rows: external_ref '<source_id>#0/annotate:<attribute>', event_timestamp = the source event time, latest
-  event_timestamp wins per (session, attribute); rec_ids stored on open/annotate session events, joined tenant-locally.
+  with observation_ref = the turn (prompt, and system -- harness-injected content belongs to the turn it is injected
+  into), the model_call (thinking, response, tool_input) or the tool_call (tool_result); tool_call entity_ref =
+  toolUseId; annotate rows: external_ref '<source_record_id>#0/annotate:<attribute>' (the source record is e.g.
+  the CI run or PR event), event_timestamp = the source event time, latest event_timestamp wins per (session, attribute);
+  rec_ids stored on open/annotate session events, joined tenant-locally.
 - >-
   docs/contracts/tenant-id.yaml exists as a ratified Class C contract; project-id.yaml names no git-remote identity
   and no 'theseus' default; session-id, observation-id, parent-observation-id and project-id are at contract_version
@@ -665,11 +670,12 @@ context:
   -- record removals in the contract-level amendment_log summary; previous_versions entry shape: {contract_version:
   1, ratified_at, ratified_via, superseded_on: <date>, summary}; converting an inline field to a $ref field changes
   its description to None -- category 6 then requires a field-level amendment_log entry on the $ref entry; a $ref
-  field can only override governance_notes_local, joins, amendment_log and dq_intent_local, so per-table meaning
-  of a shared field goes in governance_notes_local; project registration must be idempotent under concurrency (unique
-  constraint or advisory lock on (tenant_id, project_ref) -- rec-4024), stated in project-id.yaml; validate_supersession_annotations
-  reads prose -- any 'amends Decision N' phrase in 199/200 beyond 95/96/97/197 needs a victim annotation; new Decision
-  entries end with a '---' separator (validate_decision_entry_conformance).
+  field can only override governance_notes_local, joins, amendment_log and dq_intent_local -- and dq_intent_local
+  REPLACES the whole dq_intent (scripts/contracts.py:268), so it must restate every dq key it keeps (not_null included);
+  so per-table meaning of a shared field goes in governance_notes_local; project registration must be idempotent
+  under concurrency (unique constraint or advisory lock on (tenant_id, project_ref) -- rec-4024), stated in project-id.yaml;
+  validate_supersession_annotations reads prose -- any 'amends Decision N' phrase in 199/200 beyond 95/96/97/197
+  needs a victim annotation; new Decision entries end with a '---' separator (validate_decision_entry_conformance).
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
@@ -702,13 +708,14 @@ execution_steps:
   96 cl.1; 96 cl.3's mint-once pointer follows 97); identity per the normative hash spec in telemetry-event-envelope.yaml
   -- entity and FK keys derived at the write boundary from caller-supplied refs as ULIDs time-prefixed by the ROOT
   session start (reader verbs decode the prefix into a session_started_at partition predicate, and a trace tree
-  clusters), event_id a k-sortable ULID over event time, row uniqueness (event_id, parser_version) with per-(session,
-  producer) parser supersession (amends 97 cl.1-4, retiring the UUID4 grandfather); external_ref realizes T1.10's
-  idempotency key for telemetry; state, friction classification and cost derived at read in named reader verbs,
-  bounded to a session's single day(session_started_at) partition (answers Decision 81 cl.8), materialization only
-  on a Decision 88 cl.2 measurement (mode: T2.52 c1); content tier = inline <= threshold else blob port (S3 / local
-  dir), blob put before row write, orphans swept (rec-4033); the content column's catalog-stats egress is a measure-before-volume
-  obligation on rec-4024.Decision 200 commitments: tenant_id and project_id are opaque immutable ULIDs minted by
+  clusters), event_id a k-sortable ULID over event time, read-side dedupe (one row per event_id: max integer parser_version
+  then earliest created_timestamp; model_call one row per observation_id with the fixed producer precedence), writer
+  anti-join best-effort (amends 97 cl.1-4, retiring the UUID4 grandfather); external_ref realizes T1.10's idempotency
+  key for telemetry; state, friction classification and cost derived at read in named reader verbs, bounded to a
+  session's single day(session_started_at) partition (answers Decision 81 cl.8), materialization only on a Decision
+  88 cl.2 measurement (mode: T2.52 c1); content tier = inline <= threshold else blob port (S3 / local dir), blob
+  put before row write, orphans swept (rec-4033); the content column's catalog-stats egress is a measure-before-volume
+  obligation on rec-4024. Decision 200 commitments: tenant_id and project_id are opaque immutable ULIDs minted by
   the writer's registration verb, NOT NULL on telemetry, resolved at the write boundary (tenant: configured constant
   locally / authenticated identity in cloud; project: caller-sent project_ref, an unknown ref auto-registering an
   'unregistered' row whose id is permanent), included in every id hash; SCD2 dimensions ops_tenants/ops_projects
