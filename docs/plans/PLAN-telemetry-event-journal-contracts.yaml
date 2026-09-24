@@ -55,19 +55,34 @@ scope:
       config value (the Decision 196 otl-init surface) with the normalized git remote as fallback;
       boundary-stamped. Retire the stale "theseus" default (Decision 198). Base field stays
       nullable; telemetry inheritors tighten to NOT NULL (Invariant 5, tighten-only).
+  - file: docs/contracts/observation-id.yaml
+    action: Modify
+    purpose: >-
+      Re-ground mint-once-at-open to write-boundary derivation (Decision 199, amending Decision 97
+      cl.1/cl.2 for entity keys): observation_id = f(tenant_id, project_id, entity_ref), so a close
+      or point event written after a producer restart/re-parse resolves to the same id; amendment_log.
+  - file: docs/contracts/session-id.yaml
+    action: Modify
+    purpose: >-
+      Same re-grounding for session_id: derived at the write boundary from tenant_id, project_id and
+      the source-stable session ref (external_session_id for the Claude Code producer); the
+      grandfathered UUID4 note retired; amendment_log.
   - file: docs/contracts/telemetry-lexicon.yaml
     action: Modify
     purpose: >-
       Vocabulary for event journal, event_kind values, turn, tool_call, origin, event_timestamp,
       producer, derived-at-read (decision-scout CITE on Decision 95). REWRITE the `temporal` block
       (event_time_column -> event_timestamp; partition map -> day(event_timestamp) for all four
-      tables) and `identity.rule` (write-boundary derivation per Decision 199) -- left as-is they
-      would contradict the four contracts they govern.
+      tables) and `identity.rule` (write-boundary derivation per Decision 199 for BOTH entity keys
+      and event_id, worded identically to observation-id.yaml and session-id.yaml) -- left as-is
+      they would contradict the contracts they govern.
   - file: docs/contracts/_joins.yaml
     action: Modify
     purpose: >-
-      Re-state join cardinalities for event-journal grain (fan-out warning), add tenant/project
-      and observation self-parent joins.
+      Re-state join cardinalities for event-journal grain (fan-out warning: the parent side is the
+      derived entity, not the raw event table), re-state the EXISTING
+      parent_observation_id_join_observations_self_tree for event-journal grain (no new self-parent
+      join id), and add tenant/project joins.
   - file: docs/contracts/data-modeling-standard.yaml
     action: Modify
     purpose: >-
@@ -116,8 +131,8 @@ infrastructure_dependencies:
 acceptance_criteria:
   - >-
     Each of the four telemetry contracts declares governance.partition_by "day(event_timestamp)",
-    carries NOT NULL fields event_id, event_kind, event_timestamp, external_ref, tenant_id,
-    project_id, producer and created_timestamp, and no longer declares ingested_at. "NOT NULL"
+    carries NOT NULL fields event_id, event_kind, event_timestamp, external_ref, entity_ref,
+    tenant_id, project_id, producer and created_timestamp, and no longer declares ingested_at. "NOT NULL"
     means, after scripts.contracts.resolve_refs: `nullable` is False OR
     `dq_intent.not_null.enforced` is True (the existing NULLABILITY AXES convention -- a `$ref`'d
     field such as project_id or tenant_id tightens via `dq_intent_local`, since resolve_refs
@@ -137,6 +152,15 @@ acceptance_criteria:
   - >-
     telemetry_observations' observation_type vocabulary includes turn and tool_call, and it
     declares external_ref, cost_usd, friction_class and classifier_version.
+  - >-
+    observation-id.yaml, session-id.yaml, telemetry_transcripts.yaml (transcript_id) and the
+    lexicon identity.rule all state write-boundary derivation from (tenant_id, project_id,
+    entity_ref) for entity keys and from (tenant_id, project_id, external_ref, event_timestamp)
+    for event_id, and none still states "minted exactly ONCE at the boundary call that opens".
+  - >-
+    telemetry-lexicon.yaml's temporal block names event_timestamp as the event-time column and
+    day(event_timestamp) for all four tables; storage-substrate.yaml's telemetry_tables
+    disposition names day(event_timestamp) and neither day(started_at) nor day(created_at).
   - >-
     docs/contracts/tenant-id.yaml exists as a ratified Class C contract whose tenant_id field is
     NOT NULL and whose populated_by names the write boundary; project-id.yaml no longer names
@@ -277,7 +301,7 @@ verification_plan:
       bin/venv-python -m scripts.roadmap.platform_roadmap > /dev/null && bin/venv-python -c "import yaml;raw=open('docs/ROADMAP-PLATFORM.yaml',encoding='utf-8').read();n=raw.count(chr(10));d={i['id']:i for i in yaml.safe_load(raw)['tier_items']};
       t26,t36,t320=d['T2.26'],d['T2.36'],d['T3.20'];c=lambda i,k:[x for x in i['exit_criteria'] if x['id']==k][0];
       checks={'lines':n<=10000,'t226':t26['status']=='complete' and bool(t26.get('completed_at')),'t236dep':t36['depends_on']==['T2.26'],'t236c1':'day(event_timestamp)' in c(t36,'c1')['text'],
-      't320dep':t320['depends_on']==['T2.36','T1.10'],'t320c8':c(t320,'c8')['status']=='open','t320c4':c(t320,'c4')['status']=='open','outbox':'Decision 51 outbox' not in t320['intent']};
+      't320dep':t320['depends_on']==['T2.36','T1.10'],'statuses':t36['status']=='not_started' and t320['status']=='not_started','t320c8':c(t320,'c8')['status']=='open','t320c4':c(t320,'c4')['status']=='open','outbox':'Decision 51 outbox' not in t320['intent']};
       print(n,checks);assert all(checks.values());print('ROADMAP_OK')"
     expected: Exit 0 and the success marker printed, with the line count at or under 10000.
     fix_if: >-
@@ -307,8 +331,9 @@ verification_plan:
     hermetic: true
     graduation: waive
     graduation_waiver_reason: >-
-      A one-time retirement sweep of specific literals; after merge the four contracts' shape is
-      guarded by the graduated step-1 test, so a standing duplicate adds nothing.
+      A one-time retirement sweep of specific literals. After merge every swept file is guarded by
+      the graduated step-1 test module (four telemetry contracts plus the lexicon temporal/identity
+      and storage-substrate disposition assertions), so a standing duplicate adds nothing.
     expected_literals: []
   - step: 8
     phase: pre-deploy
@@ -363,19 +388,29 @@ test_obligations:
     test_selector: tests/checks/contracts/test_telemetry_event_journal_contracts.py::test_tenant_and_project_identity
     red_green_expectation: red before, green after
   - source: docs/contracts/telemetry-lexicon.yaml
-    behavior: temporal and identity blocks re-grounded to day(event_timestamp) and write-boundary derivation; no retired literal survives.
-    verification_step: 7
-    command: 'bin/venv-python -c "import yaml,re;fs=[''telemetry_sessions'',''telemetry_observations'',''telemetry_transcripts'',''telemetry_agents'',''telemetry-lexicon'',''storage-substrate''];pat=re.compile(r''day\(started_at\)|day\(created_at\)|ingested_at|local_path|event_time_column: started_at''); strip=lambda d:{k:(strip(v) if isinstance(v,dict) else v) for k,v in d.items() if k not in (''amendment_log'',''previous_versions'')}; hits=[f for f in fs if pat.search(yaml.safe_dump(strip(yaml.safe_load(open(''docs/contracts/%s.yaml''%f,encoding=''utf-8'')))))];print(''stale'',hits);assert not hits;print(''SWEEP_OK'')"'
-    red_green_expectation: red before (lexicon names event_time_column started_at), green after
+    behavior: temporal block names event_timestamp / day(event_timestamp) for all four tables; identity.rule states write-boundary derivation.
+    verification_step: 1
+    test_selector: tests/checks/contracts/test_telemetry_event_journal_contracts.py::test_lexicon_temporal_and_identity
+    red_green_expectation: red before (event_time_column started_at, mint-once rule), green after
   - source: docs/contracts/storage-substrate.yaml
-    behavior: telemetry_tables disposition re-grounded to the event-journal model and day(event_timestamp).
-    verification_step: 7
-    command: 'bin/venv-python -c "import yaml,re;fs=[''telemetry_sessions'',''telemetry_observations'',''telemetry_transcripts'',''telemetry_agents'',''telemetry-lexicon'',''storage-substrate''];pat=re.compile(r''day\(started_at\)|day\(created_at\)|ingested_at|local_path|event_time_column: started_at''); strip=lambda d:{k:(strip(v) if isinstance(v,dict) else v) for k,v in d.items() if k not in (''amendment_log'',''previous_versions'')}; hits=[f for f in fs if pat.search(yaml.safe_dump(strip(yaml.safe_load(open(''docs/contracts/%s.yaml''%f,encoding=''utf-8'')))))];print(''stale'',hits);assert not hits;print(''SWEEP_OK'')"'
+    behavior: telemetry_tables disposition names day(event_timestamp) and no retired partition basis.
+    verification_step: 1
+    test_selector: tests/checks/contracts/test_telemetry_event_journal_contracts.py::test_storage_substrate_disposition
     red_green_expectation: red before (disposition names day(started_at)), green after
+  - source: docs/contracts/observation-id.yaml
+    behavior: observation_id derived at the write boundary from (tenant_id, project_id, entity_ref); mint-once-at-open wording retired.
+    verification_step: 1
+    test_selector: tests/checks/contracts/test_telemetry_event_journal_contracts.py::test_entity_key_identity_rule
+    red_green_expectation: red before (mint-once wording), green after
+  - source: docs/contracts/session-id.yaml
+    behavior: session_id derived at the write boundary from (tenant_id, project_id, entity_ref); UUID4 grandfather note retired.
+    verification_step: 1
+    test_selector: tests/checks/contracts/test_telemetry_event_journal_contracts.py::test_entity_key_identity_rule
+    red_green_expectation: red before, green after
   - source: docs/ROADMAP-PLATFORM.yaml
     behavior: T2.26 complete; T2.36/T3.20 edges and criteria re-grounded; Decision 51 outbox struck; <= 10,000 lines.
     verification_step: 6
-    command: 'bin/venv-python -m scripts.roadmap.platform_roadmap > /dev/null && bin/venv-python -c "import yaml;raw=open(''docs/ROADMAP-PLATFORM.yaml'',encoding=''utf-8'').read();n=raw.count(chr(10));d={i[''id'']:i for i in yaml.safe_load(raw)[''tier_items'']}; t26,t36,t320=d[''T2.26''],d[''T2.36''],d[''T3.20''];c=lambda i,k:[x for x in i[''exit_criteria''] if x[''id'']==k][0]; checks={''lines'':n<=10000,''t226'':t26[''status'']==''complete'' and bool(t26.get(''completed_at'')),''t236dep'':t36[''depends_on'']==[''T2.26''],''t236c1'':''day(event_timestamp)'' in c(t36,''c1'')[''text''], ''t320dep'':t320[''depends_on'']==[''T2.36'',''T1.10''],''t320c8'':c(t320,''c8'')[''status'']==''open'',''t320c4'':c(t320,''c4'')[''status'']==''open'',''outbox'':''Decision 51 outbox'' not in t320[''intent'']}; print(n,checks);assert all(checks.values());print(''ROADMAP_OK'')"'
+    command: 'bin/venv-python -m scripts.roadmap.platform_roadmap > /dev/null && bin/venv-python -c "import yaml;raw=open(''docs/ROADMAP-PLATFORM.yaml'',encoding=''utf-8'').read();n=raw.count(chr(10));d={i[''id'']:i for i in yaml.safe_load(raw)[''tier_items'']}; t26,t36,t320=d[''T2.26''],d[''T2.36''],d[''T3.20''];c=lambda i,k:[x for x in i[''exit_criteria''] if x[''id'']==k][0]; checks={''lines'':n<=10000,''t226'':t26[''status'']==''complete'' and bool(t26.get(''completed_at'')),''t236dep'':t36[''depends_on'']==[''T2.26''],''t236c1'':''day(event_timestamp)'' in c(t36,''c1'')[''text''], ''t320dep'':t320[''depends_on'']==[''T2.36'',''T1.10''],''statuses'':t36[''status'']==''not_started'' and t320[''status'']==''not_started'',''t320c8'':c(t320,''c8'')[''status'']==''open'',''t320c4'':c(t320,''c4'')[''status'']==''open'',''outbox'':''Decision 51 outbox'' not in t320[''intent'']}; print(n,checks);assert all(checks.values());print(''ROADMAP_OK'')"'
     red_green_expectation: red before (T2.26 in_progress, outbox text present), green after
   - source: docs/decisions-index.json
     behavior: Generated index reflects Decisions 199 and 200.
@@ -436,16 +471,16 @@ constraints:
 context:
   - "Decision-scout verdict: FLAGS_FOUND (run 2); resolved: D197 NOTE -> Decision 200 amends [197] cl.2 scoped; T3.20 c4 stays open (no partial status, Decision 136). Decisions triaged: 151 of 151. Roadmap items intersected: 10; CONFLICT: 0; RELATED: 7"
   - "CITE: 95, 96, 97, 81, 84, 88, 137, 118, 168, 167, 177, 86, 147, 114, 188, 136, 197; related 78, 67, 184, 196, 93, 191, 150, 105, 192, 59, 55"
-  - "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=REVISE round 1 (6 findings addressed); confirming round pending"
+  - "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=REVISE r1 (6 fixed), REVISE r2 (F1 entity-key identity, F2 lexicon/substrate test coverage, F3 join dup: fixed); round 3 pending"
   - "Design provenance: two Fable advice consults this session (writer boundary + sequencing; derived state + verification + capture scope). Operator rulings recorded in rec-4024..4029 contexts."
-  - "Decision 199 content: event-journal grain (amends 95 cl.1 'one row per session'); partition day(event_timestamp), write time = envelope created_timestamp, CD.9's day(last_updated_timestamp) does not apply to telemetry (amends 96 cl.1); row identity event_id = ULID-shaped, k-sortable, derived AT THE WRITE BOUNDARY (the writer holds the stamped tenant_id/project_id) from event_timestamp + hash(tenant_id, project_id, external_ref), so a retried or re-parsed event re-derives the same id -- satisfying mint-once's idempotency purpose (amends 97 cl.2) and consistent with the DMS rule identity-ulid-at-boundary ('at the write boundary, never client-side'); producers supply only the source-stable external_ref (NOT NULL; producers with no native id supply '<session_id>:<producer>:<sequence>'); derived-at-read state is partition-bounded by session_id + a day window with a declared lookback bound (sessions crossing UTC midnight or resumed later), answering Decision 81 cl.8's full-scan rationale; materialization only on a Decision 88 cl.2 measurement, mode owned by T2.52 c1; in-row content's per-file column stats in the Neon catalog are a Decision 88 cl.1(iii) egress risk routed to rec-4024 as a measure-before-volume obligation; in-row content makes erasure a rewrite + snapshot-expiry operation (recorded; rec-4029)."
+  - "Decision 199 content: event-journal grain (amends 95 cl.1 'one row per session'); partition day(event_timestamp), write time = envelope created_timestamp, CD.9's day(last_updated_timestamp) does not apply to telemetry (amends 96 cl.1); ENTITY keys (session_id, observation_id, transcript_id) = ULID-formatted deterministic ids derived AT THE WRITE BOUNDARY from hash(tenant_id, project_id, entity_ref), where every event row of an entity carries the entity's source-stable entity_ref (e.g. harness sessionId / toolUseId), so open and close rows written across a producer restart resolve to one key; entity keys are not guaranteed time-sortable (ordering comes from event_timestamp) -- amends 97 cl.1 and cl.2 for entity keys; external_ref is the telemetry verbs' realization of T1.10's client-supplied idempotency key; row identity event_id = ULID-shaped, k-sortable, derived AT THE WRITE BOUNDARY (the writer holds the stamped tenant_id/project_id) from event_timestamp + hash(tenant_id, project_id, external_ref), so a retried or re-parsed event re-derives the same id -- satisfying mint-once's idempotency purpose (amends 97 cl.2) and consistent with the DMS rule identity-ulid-at-boundary ('at the write boundary, never client-side') -- the DMS identity note must also reconcile that rule's 'never a natural-key primary key': the key is a derived surrogate over tenant-scoped source refs, not the natural key itself; producers supply only the source-stable external_ref (NOT NULL; producers with no native id supply '<session_id>:<producer>:<sequence>'); derived-at-read state is partition-bounded by session_id + a day window with a declared lookback bound (sessions crossing UTC midnight or resumed later), answering Decision 81 cl.8's full-scan rationale; materialization only on a Decision 88 cl.2 measurement, mode owned by T2.52 c1; in-row content's per-file column stats in the Neon catalog are a Decision 88 cl.1(iii) egress risk routed to rec-4024 as a measure-before-volume obligation; in-row content makes erasure a rewrite + snapshot-expiry operation (recorded; rec-4029)."
   - "Decision 200 content: tenant_id + project_id NOT NULL on telemetry, stamped by the write boundary, never caller-supplied, part of the id hash; local tier = single deployment-configured tenant constant; cloud tier resolves tenant from the caller's authenticated identity; amends 197 cl.2 -- re-maps its 'tenancy (project_id)' wording: tenancy is tenant_id (deployment owner), project_id is repository identity; both columns always present, tenancy ENFORCEMENT (auth mapping, isolation) remains the cloud-adapter property."
   - "Not in Decisions (routing, Decision 86): append_events verb rationale -> rec-4024 / docs/contracts/ducklake_writer.yaml; smoke-first -> T3.20 c8; PII/erasure -> rec-4029; T4.19 record-outcome criterion -> rec-4027."
   - "Existing text to reuse: telemetry_sessions governance_notes already records the running->terminal second session row (Decision 97 mint-once reuse)."
   - "Gotcha: check_amendment_for_diff is per FIELD -- every field whose description/semantics changes needs its own field-level amendment_log entry, not just the contract-level one (scripts/contracts_enforcement.py:55)."
   - "Gotcha: ChangeClass is a closed 8-value set with no field_remove; removals (ingested_at, local_path, transcripts.created_at) are not diff-checked but must be recorded in the contract-level amendment_log summary."
   - "Gotcha: _joins.yaml one_to_many joins from telemetry_sessions now fan out (several rows per session_id); state that the parent side is the derived session entity, not the raw event table."
-  - "Roadmap text to write (freshness gate, operator-confirmed): T2.36 depends_on [T2.26] with inline comment citing rec-3792 (superseded); T2.36 intent note + c5 re-grounded onto Decision 188 G1-G4 and the append_only maintenance_policy class; files_in_scope adds scripts/schema_to_field_semantics.py and field_semantics.static.yaml; T2.18 c8 note records the dropped edge; T3.20 intent strikes the Decision 51 outbox and the CD.17 executor gate (cursor-over-transcript durability instead), depends_on [T2.36, T1.10], new open c8 smoke-first promotion gate, progress_note records c4 partial."
+  - "Roadmap text to write (freshness gate, operator-confirmed): T2.36 and T3.20 stay status not_started (annotation/bookkeeping only); T2.36 depends_on [T2.26] with inline comment citing rec-3792 (superseded) and the one-line rationale 'pre-write GC safety is c5; T2.18 c2 soak stays on T2.18'; T3.20's dropped T3.2 edge carries 'verifier consumes the pipeline; gate kept as c8'; T2.36 intent note + c5 re-grounded onto Decision 188 G1-G4 and the append_only maintenance_policy class; files_in_scope adds scripts/schema_to_field_semantics.py and field_semantics.static.yaml; T2.18 c8 note records the dropped edge; T3.20 intent strikes the Decision 51 outbox and the CD.17 executor gate (cursor-over-transcript durability instead), depends_on [T2.36, T1.10], new open c8 smoke-first promotion gate, progress_note records c4 partial."
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
@@ -454,18 +489,21 @@ pre_implementation_checklist:
   - Acceptance criteria understood and verifiable
 execution_steps:
   - >-
-    Create tests/checks/contracts/test_telemetry_event_journal_contracts.py with the five test
+    Create tests/checks/contracts/test_telemetry_event_journal_contracts.py with the eight test
     functions named in test_obligations, loading contracts via scripts.contracts (load_contract +
     resolve_refs) so $ref-inherited nullability is exercised. Run it and confirm it FAILS on the
     unchanged contracts (red).
   - >-
-    Create docs/contracts/tenant-id.yaml (Class C, ratified, modelled on project-id.yaml) and
-    re-ground docs/contracts/project-id.yaml (repository identity, boundary-stamped, no "theseus"
+    Re-ground observation-id.yaml and session-id.yaml (write-boundary entity-key derivation), create
+    docs/contracts/tenant-id.yaml (Class C, ratified, modelled on project-id.yaml) and re-ground
+    docs/contracts/project-id.yaml (repository identity, boundary-stamped, no "theseus"
     default) with amendment_log entries.
   - >-
     Re-model the four telemetry contracts per the stored-vs-derived rule and acceptance criteria:
     add event_id, event_kind (sessions: open|resume|compact|close; observations and agents:
-    open|close|point), event_timestamp, external_ref (NOT NULL), created_timestamp (writer envelope, write time),
+    open|close|point), event_timestamp, external_ref (NOT NULL; the event's source-stable ref),
+    entity_ref (NOT NULL; the owning entity's source-stable ref, carried by every event of that
+    entity so open/close rows resolve to one entity key), created_timestamp (writer envelope, write time),
     tenant_id and project_id ($ref, tightened NOT NULL), producer, producer_version,
     parser_version; sessions also external_session_id. Remove ingested_at (all), local_path and
     created_at (transcripts). Re-mark derived fields. Set governance.partition_by to
