@@ -1,0 +1,745 @@
+schema_version: 5
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: telemetry-event-journal-contracts
+intent: >-
+  Re-model the canonical telemetry contracts as append-only event journals whose state, friction classification
+  and cost are derived at read; settle one normative, restart-proof identity model (boundary-derived ids over tenant/project/source
+  refs, backed by writer-minted tenant/project ids whose SCD2 dimensions are authored with their registration in
+  rec-4024); and fix the content tier (inline plus blob port) -- recorded in Decisions 199 and 200 -- so the writer
+  (rec-4024), verification harness (rec-4025) and turn capture (rec-4026) build against one settled schema. Friction
+  telemetry is the foundation of automated RCA and recursive self-improvement (PROJECT_CONTEXT).
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-telemetry-event-journal-contracts.yaml
+phase: >-
+  T2.36 (telemetry re-lands on DuckLake) and T3.20 (agent-turn capture) -- contract/decision groundwork for both.
+  Closes NO exit criterion (T2.36 c1 needs tables provisioned by rec-4024; T3.20 c4 stays open, Decision 136). Also
+  lands operator-confirmed Tier Item Freshness Gate bookkeeping on T2.26, T2.36, T2.18, T2.19 and T3.20.
+scope:
+- file: docs/contracts/telemetry_sessions.yaml
+  action: Modify
+  purpose: >-
+    Event-journal grain (one row per session lifecycle event: open|resume|compact|close|annotate), stored-vs-derived
+    split, shared event/identity/anchor fields, partition day(session_started_at), contract_version 2 (Decision
+    118 ritual).
+- file: docs/contracts/telemetry_observations.yaml
+  action: Modify
+  purpose: >-
+    Event-journal grain (open/close for phase/step/turn/tool_call, one point row for model_call/process_event);
+    observation_type + turn/tool_call; token classes + cost_usd_reported on model_call; friction NOT stored (derived
+    at read from observed process_event facts with stable name signatures); shared fields; contract_version 2.
+- file: docs/contracts/telemetry_transcripts.yaml
+  action: Modify
+  purpose: >-
+    Pointer model replaced by the hybrid content model behind a blob port (inline content <= threshold XOR content_uri),
+    per-block rows with purpose + origin vocabularies, thinking captured provider-neutrally, shared fields, contract_version
+    2.
+- file: docs/contracts/telemetry_agents.yaml
+  action: Modify
+  purpose: >-
+    Agent-run event grain with a derived entity key (entity_ref = spawning tool call ref), child-session and spawning-observation
+    refs, derived token totals via the child session, shared fields, contract_version 2.
+- file: docs/contracts/telemetry-event-envelope.yaml
+  action: Create
+  purpose: >-
+    New Class C contract defining ONCE the shared event/identity fields every telemetry table $refs: event_id, event_kind,
+    event_timestamp, session_started_at, source_ordinal, external_ref, entity_ref, producer, producer_version, parser_version,
+    created_timestamp (tenant_id/project_id via their own Class C contracts). Carries the normative identity spec.
+    Keeps every telemetry contract under the 500-line structural cap (DRY).
+- file: docs/contracts/tenant-id.yaml
+  action: Create
+  purpose: >-
+    New Class C invariant: opaque immutable tenant id (ULID minted at registration), NOT NULL, resolved at the write
+    boundary (local tier: configured constant; cloud tier: caller's authenticated identity), never caller-supplied.
+    The SCD2 tenant dimension is modelled by Decision 200 but its contract is authored with its registration in
+    rec-4024.
+- file: docs/contracts/project-id.yaml
+  action: Modify
+  purpose: >-
+    project_id = opaque immutable ULID minted by the writer's registration verb, committed in-repo and sent by the
+    caller as project_ref; an unknown project_ref auto-registers an 'unregistered' row whose id is permanent; name/remote
+    are attributes of the SCD2 project dimension (contract authored in rec-4024); the stale 'theseus' default retired
+    (Decision 198); contract_version 2 with a previous_versions entry. Base stays nullable; telemetry inheritors
+    tighten to NOT NULL.
+- file: docs/contracts/observation-id.yaml
+  action: Modify
+  purpose: >-
+    Mint-once-at-open replaced by the normative write-boundary derivation (Decision 199, amending 97 cl.1/cl.2):
+    time-prefixed by the ROOT session_started_at, not the node's own open time; contract_version 2 with a previous_versions
+    entry.
+- file: docs/contracts/parent-observation-id.yaml
+  action: Modify
+  purpose: >-
+    Producer-side propagation ('never re-mints', 97 cl.3) replaced by boundary derivation from parent_observation_ref
+    using the parent's domain tag; contract_version 2 with a previous_versions entry.
+- file: docs/contracts/session-id.yaml
+  action: Modify
+  purpose: >-
+    session_id/parent_session_id derived at the boundary from entity_ref / parent_session_ref (sub-agent session
+    entity_ref '<sessionId>:<agentId>'); the UUID4 grandfather retired (97 cl.4) with the live legacy producer scripts/session/preflight.py
+    open_telemetry_session named as pending rec-4030; the planning_session_id soft-FK note points at rec-4030; contract_version
+    2 with a previous_versions entry.
+- file: docs/contracts/telemetry-lexicon.yaml
+  action: Modify
+  purpose: >-
+    REWRITE temporal (event_time_column event_timestamp; partition map day(session_started_at) for all four tables)
+    and identity (normative hash spec; entity keys = 'ULID-shaped hash ids', not time-ordered; event_id = ULID);
+    add vocabulary: event journal, event_kind values, turn, tool_call, origin, purpose, session_started_at, source_ordinal,
+    producer, blob port, derived-at-read.
+- file: docs/contracts/_joins.yaml
+  action: Modify
+  purpose: >-
+    Re-state cardinalities for event-journal grain (fan-out warning: parent side = derived entity), re-state the
+    EXISTING parent_observation_id_join_observations_self_tree (no new id), add agents->child session and agents->spawning
+    observation joins; dimension joins are deferred to rec-4024 with the dimension contracts.
+- file: docs/contracts/data-modeling-standard.yaml
+  action: Modify
+  purpose: >-
+    Reconcile rule identity-ulid-at-boundary's STATEMENT (and design_time_walk step 3) with boundary derivation
+    for event tables via a carve-out pointing at Decision 199; add a derived-state rule scoped to append_only telemetry
+    (derived at read in named reader verbs; derivation.timing read = no physical column; materialization mode owned
+    by T2.52 c1).
+- file: docs/contracts/storage-substrate.yaml
+  action: Modify
+  purpose: >-
+    telemetry_tables entry (incl. disposition) re-grounded: event journal, day(session_started_at), shared envelope
+    contract, content blob port; new amendment_log entry (Class D, Decision 168).
+- file: docs/DECISIONS.md
+  action: Modify
+  purpose: >-
+    Add Decision 199 (telemetry event-journal model; amends 95, 96 cl.1+cl.3, 97 cl.1-4) and Decision 200 (tenant
+    and project identity + SCD2 dimensions; amends 197 cl.2); append dated 'Amended by' blockquotes to 95, 96, 97,
+    197 without rewriting any line (Decision 177).
+- file: docs/decisions-index.json
+  action: Modify
+  purpose: Regenerate so validate_decisions_index_freshness stays green.
+- file: docs/ROADMAP-PLATFORM.yaml
+  action: Modify
+  purpose: >-
+    Operator-confirmed freshness-gate bookkeeping on T2.26, T2.36, T2.18, T2.19 and T3.20, plus a T4.23 forward-work
+    criterion for the blob-port local adapter (Decision 184 cl.2); stays <= 10,000 lines (Decision 114).
+- file: .secrets.baseline
+  action: Modify
+  purpose: detect-secrets line-number drift for existing ROADMAP hex-entropy entries only.
+- file: tests/checks/contracts/test_telemetry_event_journal_contracts.py
+  action: Create
+  purpose: >-
+    Red-before/green-after invariants over every contract in scope (see test_obligations); phrase checks case-insensitive
+    on whitespace-normalised text.
+- file: config/agent/verification_registry/entries/telemetry-event-journal-contract-shape.yaml
+  action: Create
+  purpose: >-
+    Verification-registry row for the graduated VP step 1 (graduation_check_id telemetry-event-journal-contract-shape),
+    per validate_graduation_completeness.
+bundled_recommendations: []
+followon_recs:
+- rec-4024
+- rec-4025
+- rec-4026
+- rec-4027
+- rec-4028
+- rec-4029
+- rec-4030
+- rec-4031
+- rec-4032
+- rec-4033
+infrastructure_dependencies:
+- >-
+  data-pipeline (src/lambdas/data-pipeline/manifest.yaml, active) packages docs/ROADMAP-PLATFORM.yaml as an asset,
+  so compute_affected_artifacts() reports it. NO deploy is performed or needed (Decision 198 precedent; asserted
+  by VP step 8; rec-3990 tracks the asset deploy-trigger gap). No other scope file is Lambda-packaged; no .tf file
+  is in scope.
+acceptance_criteria:
+- >-
+  docs/contracts/telemetry-event-envelope.yaml (Class C, ratified) defines event_id, event_kind, event_timestamp,
+  session_started_at, source_ordinal, external_ref, entity_ref, producer, producer_version, parser_version and created_timestamp
+  once; each of the four telemetry contracts $refs all of them plus tenant_id and project_id (tightened NOT NULL),
+  declares governance.partition_by "day(session_started_at)", no longer declares ingested_at, and is at most 500
+  effective lines (config/structural_size_budgets.yaml contracts class). NOT NULL means, after scripts.contracts.resolve_refs:
+  nullable is False OR dq_intent.not_null.enforced is True (a $ref'd field tightens via dq_intent_local).
+- >-
+  Stored-vs-derived: every derived field carries derivation {timing: read, derived_by: <forward-declared reader-verb
+  id>, formula, inputs, realized: false}; start/end/duration derived on sessions, observations and agents; roll-ups
+  use distinct *_total names; steps_total STORED (known at open); post-close facts (pr_url, ci_outcome, coverage_after)
+  are owned by the annotate event_kind; cost_usd derived at read (static price mapping for MVP; rec-4031), cost_usd_reported
+  stored when a provider reports it.
+- >-
+  Per-event-kind nullability is structured: a stored field observed at only some event_kinds is nullable and declares
+  dq_intent.required_when {event_kind: [...]}; no such field is NOT NULL table-wide.
+- >-
+  telemetry_transcripts declares content (nullable; the payload as the model received it, after credential scrub),
+  content_uri (nullable; content-addressed port-relative key tenant/project/session_id/<content_sha256> resolved
+  by the blob-port adapter), content_sha256, content_bytes and content_truncated (NOT NULL; computed over the ONE
+  stored payload: when the harness persisted a sidecar (e.g. tool-results) the stored payload is the full sidecar
+  and the in-transcript preview is not stored; when the sidecar is unavailable the preview is stored and content_truncated
+  is true), purpose in {prompt, response, thinking, tool_input, tool_result, system}, origin in {human, harness,
+  agent, tool} (hook/harness-generated tool_result text is origin harness), event_kind point only; exactly-one-of
+  content/content_uri as a dq expression; dq_intent.content_inline_threshold_bytes: 65536 on content; no local_path,
+  s3_key, size_bytes, created_at or raw_turn.
+- >-
+  telemetry_observations: event_kind in {open, close} for turn/tool_call/phase/step and {point} for model_call/process_event
+  (agents: {open, close}; transcripts: {point}; sessions: {open, resume, compact, close, annotate}); observation_type
+  includes turn and tool_call; model_call grain = one row per provider response id (entity_ref), tokens_input, tokens_output,
+  tokens_cache_read, tokens_cache_creation stored on it once; outcome in {success, error, blocked, interrupted}
+  required_when close for tool_call; process_event name grammar '<source>:<signature>' (e.g. hook:never_on_main,
+  gate:validate_scope_boundary); NO stored friction_class, classifier_version or tier (friction derived at read;
+  rec-4032 reserves the labels table).
+- >-
+  Identity is normative, stated once in telemetry-event-envelope.yaml and referenced identically by session-id.yaml,
+  observation-id.yaml, parent-observation-id.yaml, telemetry_transcripts (transcript_id), telemetry_agents (agent_run_id)
+  and the lexicon: H = sha256 over 4-byte big-endian length-prefixed UTF-8 (NFC) fields [domain tag '<table>:<id_role>',
+  tenant_id, project_id, ref] with tenant_id/project_id in canonical uppercase ULID form; entity and FK keys = ULID(48-bit
+  ROOT session_started_at ms + the first 80 bits (bytes 0-9, big-endian) of H); event_id = ULID(48-bit event_timestamp
+  ms + first 80 bits of H over external_ref with tag '<table>:event'); FKs use the PARENT's domain tag so they equal
+  the parent key; external_ref grammar '<source_record_id>#<block_index>/<row_role>'; refs unique within (tenant,
+  project, table); DuckLake enforces no uniqueness, so dedupe is a READ-SIDE invariant: readers keep one row per
+  event_id (max parser_version, then earliest created_timestamp; rows sharing an event_id from different producers
+  are duplicates of one event), and the writer's anti-join on (event_id, parser_version) is best-effort; a parser
+  change that stops emitting a row kind must re-emit the whole root tree and is otherwise a documented limitation;
+  model_call external_ref is '<provider_response_id>/model_call' for EVERY producer and is owned by the last source
+  record carrying that response id (final usage); because event_id embeds each producer's own event_timestamp, model_call
+  rows are de-duplicated on the producer-independent ENTITY key observation_id (response-id hash under the root
+  prefix), one row per observation_id with fixed precedence: provider-reported usage from the transcript parser
+  (producer claude_code) over litellm, then earliest created_timestamp -- so one API response yields one model_call
+  row whichever producer or record saw it; parser_version is an INTEGER declared in the envelope; a failed call
+  with no response id uses the producer call id (e.g. litellm_call_id); session_started_at is pinned as the first
+  record carrying a timestamp in the ROOT transcript, parsed as UTC and truncated (not rounded) to ms -- a producer
+  that cannot read the root defers, never guesses; producers without a transcript (LiteLLM, CI annotate) receive
+  session_ref/project_ref and the root session_started_at via producer metadata, or decode session_started_at from
+  a held session_id's ULID prefix; ids never caller-supplied.
+- >-
+  Session trees: every row of a root session and all its sub-agent sessions carries the ROOT session's session_started_at
+  (source-derived from the first record of the root transcript, never a warehouse lookup), so a trace tree is one
+  partition; sub-agent session entity_ref '<sessionId>:<agentId>' (agentId deterministic across re-parse), parent_session_ref
+  = parent sessionId; telemetry_agents entity_ref = spawning toolUseId, session_ref = child session ref, observation_ref
+  (nullable) = spawning tool_call ref; turn entity_ref = '<session entity_ref>/<promptId>' (sub-agent records may
+  reuse the parent's promptId); per-row entity_ref/observation_ref: process_event entity_ref = its external_ref
+  and observation_ref = the tool_call/turn it concerns; transcript entity_ref = '<source_record_id>#<block_index>',
+  with observation_ref = the turn (prompt, and system -- harness-injected content belongs to the turn it is injected
+  into), the model_call (thinking, response, tool_input) or the tool_call (tool_result); tool_call entity_ref =
+  toolUseId; annotate rows: external_ref '<source_record_id>#0/annotate:<attribute>' (the source record is e.g.
+  the CI run or PR event), event_timestamp = the source event time, latest event_timestamp wins per (session, attribute);
+  rec_ids stored on open/annotate session events, joined tenant-locally.
+- >-
+  docs/contracts/tenant-id.yaml exists as a ratified Class C contract; project-id.yaml names no git-remote identity
+  and no 'theseus' default; session-id, observation-id, parent-observation-id and project-id are at contract_version
+  2 with previous_versions entries; NO ops_tenants/ops_projects contract is created here (rec-4024 authors them
+  with their registration).
+- >-
+  Every changed contract.description and field description/semantics carries a new amendment_log entry satisfying
+  check_amendment_for_diff; each changed Class D contract carries a new top-level amendment_log entry.
+- >-
+  docs/DECISIONS.md carries exactly one '## Decision 199:' (amends [95, 96, 97], body naming 95 clauses 1, 2 and
+  4, 96 clauses 1 and 3, and EACH of 97 clauses 1, 2, 3 and 4 individually, e.g. 'clause 2') and one '## Decision
+  200:' (amends [197]), each with a bare yaml envelope, numbered_decision significance with a contract-first justification
+  (200's justification rests on the 197 cl.2 re-map and the cross-tier tenancy model), a trailing '---' separator,
+  and <= 6144 bytes.
+- >-
+  Decisions 95, 96 and 97 carry dated blockquotes naming Decision 199 and 197 one naming Decision 200; no line of
+  those spans is removed versus origin/main.
+- >-
+  docs/ROADMAP-PLATFORM.yaml: T2.26 complete, completed_at set, Decision 147 clause 2 compact form (no progress_note,
+  no decomposition_hints, one-line intent; files_in_scope reduced to the single guard-read entry scripts/s3_log_store.py
+  that registry check ops-session-log-roadmap-regrounded asserts -- the Decision 147 cl.1 retained-literal carve-out);
+  every pointer to 'T2.26's progress_note' (T2.18 c4, T2.18 c8, T2.19, T3.20 c5) re-pointed to PLAN-t2-26-retire-ops-session-log;
+  T2.36 depends_on [T2.26], c1 names day(session_started_at), c5 re-grounded; T3.20 depends_on [T2.36, T1.10], open
+  c8 smoke-first gate, c4 open, no Decision 51 outbox text; T2.36 and T3.20 stay not_started; T4.23 gains an open
+  forward-work criterion for the content blob-port local adapter; <= 10,000 lines.
+- >-
+  tests/checks/contracts/test_telemetry_event_journal_contracts.py fails on the pre-change tree and passes on the
+  implemented tree; phrase assertions are case-insensitive over whitespace-normalised text.
+- >-
+  bin/venv-python -m scripts.decisions_index --check reports current, and both bin/venv-python -m scripts.validate
+  --pre and the full tier bin/venv-python -m scripts.validate exit 0.
+verification_plan:
+- step: 1
+  phase: pre-deploy
+  action: >-
+    Run the new contract-invariant test module (loads every scope contract through scripts.contracts load_contract
+    + resolve_refs and asserts the event-journal, identity, content, dimension, lexicon and substrate invariants).
+  command: bin/venv-python -m pytest tests/checks/contracts/test_telemetry_event_journal_contracts.py -q
+  expected: 'Exit 0, all tests passed. Red before: the module does not exist on the pre-change tree.'
+  fix_if: >-
+    A failing assertion names the contract and field; fix the contract, not the test, unless the test encodes something
+    the acceptance criteria do not require.
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: telemetry-event-journal-contract-shape
+  expected_literals: []
+- step: 2
+  phase: pre-deploy
+  action: >-
+    Confirm every contract still parses through the ritual document model and the lexicon still resolves its canonical
+    tables.
+  command: >-
+    bin/venv-python -m pytest tests/test_contracts.py tests/test_contracts_schema.py tests/checks/contracts/test_validate_telemetry_lexicon_tables.py
+    -q
+  expected: Exit 0; no contract fails to load under extra=forbid.
+  fix_if: >-
+    An unknown key means a property was added outside FieldSpec/ContractGovernance -- express it inside an existing
+    free-dict block (derivation, dq_intent) instead; never widen the schema.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: Existing registered test modules; graduating them again duplicates standing coverage.
+  expected_literals: []
+- step: 3
+  phase: pre-deploy
+  action: >-
+    Confirm the amendment ritual: the eight ritual contracts through check_amendment_for_diff and the four Class
+    D contracts through check_amendment_log_for_class_d, against origin/main. (The new Class C contracts telemetry-event-envelope.yaml
+    and tenant-id.yaml have no base and are covered by step 1 and the full-tier drift gate.)
+  command: >-
+    bin/venv-python -c "import subprocess,yaml;from scripts.contracts_schema import ContractDocument;from scripts.contracts_enforcement
+    import check_amendment_for_diff;from scripts.checks.contracts._population import check_amendment_log_for_class_d;base=lambda
+    f:yaml.safe_load(subprocess.run(['git','show','origin/main:docs/contracts/%s.yaml'%f],capture_output=True,text=True,check=True).stdout);head=lambda
+    f:yaml.safe_load(open('docs/contracts/%s.yaml'%f,encoding='utf-8'));errs=[];[errs.extend(check_amendment_for_diff(ContractDocument.model_validate(base(f)),ContractDocument.model_validate(head(f))))
+    for f in ('telemetry_sessions', 'telemetry_observations', 'telemetry_transcripts', 'telemetry_agents', 'project-id',
+    'observation-id', 'parent-observation-id', 'session-id')];[errs.append(f+': '+e) for f in ('storage-substrate',
+    'telemetry-lexicon', '_joins', 'data-modeling-standard') for e in [check_amendment_log_for_class_d(base(f),head(f))]
+    if e];print(chr(10).join(errs) or 'AMENDMENTS_OK');assert not errs"
+  expected: Exit 0 and the success marker printed.
+  fix_if: >-
+    A category-6 error names a field -- add a field-level amendment_log entry with a consistent change_class/semantic_break
+    pairing; a Class D error means a body change with no new top-level amendment_log entry. Never drop a file from
+    the lists.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: >-
+    Diff-relative to origin/main by construction; the standing equivalent is scripts.validate's contract drift gate.
+- step: 4
+  phase: pre-deploy
+  action: >-
+    Confirm Decisions 199 and 200 exist once each with parseable envelopes, the required amends edges, numbered_decision
+    significance, <= 6144 bytes, and that Decision 199 names Decision 97 clauses 1 to 4.
+  command: >-
+    bin/venv-python -c "import re,yaml;raw=open('docs/DECISIONS.md',encoding='utf-8').read();h=[(m.start(),int(m.group(1)))
+    for m in re.finditer(r'^## Decision (\d+):',raw,re.M)];want={199:{95,96,97},200:{197}};cnt={n:sum(1 for _,k
+    in h if k==n) for n in want};assert all(v==1 for v in cnt.values()),cnt;spans={n:raw[s:(h[i+1][0] if i+1<len(h)
+    else len(raw))] for i,(s,n) in enumerate(h) if n in want};env={n:yaml.safe_load(re.search(r'\x60\x60\x60yaml\n(.*?)\n\x60\x60\x60',sp,re.S).group(1))
+    for n,sp in spans.items()};bad=[n for n in want if not (env[n]['number']==n and set(env[n]['amends'])>=want[n]
+    and env[n]['significance']['value']=='numbered_decision' and len(spans[n].encode('utf-8'))<=6144)];cl=[c for
+    c in ('clause 1','clause 2','clause 3','clause 4') if c not in spans[199].lower().replace('cl.','clause ')];print('bad',bad,'missing-97-clauses',cl);assert
+    not bad and not cl;print('DECISIONS_OK')"
+  expected: Exit 0 and the success marker printed.
+  fix_if: >-
+    A heading count other than 1 is a numbering race -- renumber and update every pointer. Over the cap: move normative
+    detail into the contracts (governance_notes), never a larger entry.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: >-
+    Pinned to two entry numbers -- a standing row would assert a frozen fact; validate_decisions_size guards the
+    cap generally.
+  expected_literals: []
+- step: 5
+  phase: pre-deploy
+  action: Confirm Decisions 95, 96, 97 and 197 lost no line and each carries its dated amendment blockquote.
+  command: >-
+    bin/venv-python -c "import re,subprocess;raw=open('docs/DECISIONS.md',encoding='utf-8').read();base=subprocess.run(['git','show','origin/main:docs/DECISIONS.md'],capture_output=True,text=True,check=True).stdout;spans=lambda
+    t:{int(m.group(1)):m.group(0) for m in re.finditer(r'^## Decision (\d+):.*?(?=^## Decision \d+:|\Z)',t,re.M|re.S)};b=spans(base);c=spans(raw);bad=[n
+    for n in (95,96,97,197) if any(l not in c[n].splitlines() for l in b[n].splitlines())];miss=[n for n,t in ((95,'Decision
+    199'),(96,'Decision 199'),(97,'Decision 199'),(197,'Decision 200')) if not re.search(r'^> \*\*Amended by '+t,c[n],re.M)];print('lost-lines',bad,'missing-annotation',miss);assert
+    not bad and not miss;print('APPEND_ONLY_OK')"
+  expected: Exit 0 and the success marker printed.
+  fix_if: Restore any removed body line verbatim; amendments are appended blockquotes only (Decision 177).
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: >-
+    Diff-relative to origin/main and pinned to four entries; validate_supersession_annotations is the standing guard
+    for the annotation half.
+- step: 6
+  phase: pre-deploy
+  action: >-
+    Confirm the roadmap bookkeeping: schema loads; T2.26 complete and compact (no progress_note); T2.36/T3.20 edges,
+    criteria and statuses; outbox text struck; no dangling pointer to T2.26's removed progress_note; <= 10,000 lines.
+  command: >-
+    bin/venv-python -m scripts.roadmap.platform_roadmap > /dev/null && bin/venv-python -c "import yaml;raw=open('docs/ROADMAP-PLATFORM.yaml',encoding='utf-8').read();n=raw.count(chr(10));d={i['id']:i
+    for i in yaml.safe_load(raw)['tier_items']};t26,t36,t320=d['T2.26'],d['T2.36'],d['T3.20'];c=lambda i,k:[x for
+    x in i['exit_criteria'] if x['id']==k][0];checks={'lines':n<=10000,'t226':t26['status']=='complete' and bool(t26.get('completed_at'))
+    and 'progress_note' not in t26 and t26.get('files_in_scope')==['scripts/s3_log_store.py'],'t423':any('blob'
+    in x['text'].lower() and x['status']=='open' for x in d['T4.23']['exit_criteria']),'t236dep':t36['depends_on']==['T2.26'],'t236c1':'day(session_started_at)'
+    in c(t36,'c1')['text'],'t320dep':t320['depends_on']==['T2.36','T1.10'],'statuses':t36['status']=='not_started'
+    and t320['status']=='not_started','t320c8':c(t320,'c8')['status']=='open','t320c4':c(t320,'c4')['status']=='open','outbox':'Decision
+    51 outbox' not in t320['intent'],'dangling':(chr(84)+'2.26'+chr(39)+'s progress_note') not in raw};print(n,checks);assert
+    all(checks.values());print('ROADMAP_OK')"
+  expected: Exit 0 and the success marker printed, line count at or under 10000.
+  fix_if: >-
+    Over the ceiling: confirm T2.26 is fully in the Decision 147 clause 2 compact form; never trim a live item or
+    raise the ceiling. A dangling pointer: re-point it to PLAN-t2-26-retire-ops-session-log.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: >-
+    One-off bookkeeping state of specific items; validate_platform_roadmap is the standing schema and ceiling guard.
+  expected_literals: []
+- step: 7
+  phase: pre-deploy
+  action: >-
+    Stale-reference sweep: (a) no retired FIELD KEY survives in the four telemetry contracts; (b) no retired partition
+    basis, raw_turn, mint-once/never-re-mints/propagated-never-re-derived/grandfathered phrase survives in the LIVE
+    text (field descriptions, semantics, governance_notes(_local), populated_by, derivation.formula, top-level governance
+    and governance_notes; case-insensitive, whitespace-normalised) of the telemetry, identity, lexicon (history
+    blocks excluded) and storage-substrate telemetry_tables surfaces.
+  command: >-
+    bin/venv-python -c "import yaml,re;load=lambda f:yaml.safe_load(open('docs/contracts/%s.yaml'%f,encoding='utf-8'));retired={'telemetry_sessions':{'ingested_at'},'telemetry_observations':{'ingested_at','friction_class','classifier_version','tier'},'telemetry_transcripts':{'ingested_at','local_path','s3_key','size_bytes','created_at'},'telemetry_agents':{'ingested_at'}};keys={t:sorted(set((load(t).get('fields')
+    or {}))&r) for t,r in retired.items()};keys={k:v for k,v in keys.items() if v};live=lambda d:' '.join(str(v.get(a,''))
+    for v in (d.get('fields') or {}).values() for a in ('description','semantics','governance_notes','governance_notes_local','populated_by'))+'
+    '+' '.join(str((v.get('derivation') or {}).get('formula','')) for v in (d.get('fields') or {}).values())+' '+str(d.get('governance')
+    or '')+' '+str(d.get('governance_notes') or '');pat=re.compile(r'day\(started_at\)|day\(created_at\)|day\(event_timestamp\)|minted
+    (?:exactly )?once|never re-mints|propagated[^.]{0,80}never re-derived|grandfathered until|raw_turn|event_time_column:
+    started_at',re.I);texts={f:' '.join(live(load(f)).split()) for f in ('telemetry_sessions','telemetry_observations','telemetry_transcripts','telemetry_agents','observation-id','parent-observation-id','session-id')};texts['telemetry-lexicon']='
+    '.join(yaml.safe_dump({k:v for k,v in load('telemetry-lexicon').items() if k not in ('amendment_log','previous_versions')}).split());texts['storage-substrate']='
+    '.join(yaml.safe_dump(load('storage-substrate').get('tables',{}).get('telemetry_tables',{})).split());phr={f:pat.findall(t)
+    for f,t in texts.items()};phr={k:v for k,v in phr.items() if v};print('retired-keys',keys,'stale-phrases',phr);assert
+    not keys and not phr;print('SWEEP_OK')"
+  expected: Exit 0 and the success marker printed; the stale map is empty.
+  fix_if: Rewrite the named file's live text to the new model; never delete history entries to pass.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: One-time retirement sweep; after merge every swept file is guarded by the graduated
+    step-1 module.
+  expected_literals: []
+- step: 8
+  phase: pre-deploy
+  action: >-
+    Assert the ground for NO Lambda redeploy despite touching the data-pipeline packaged roadmap asset (Decision
+    198 precedent).
+  command: >-
+    grep -q 'the schedule stays disabled' src/lambdas/data-pipeline/manifest.yaml && ! grep -q 'ROADMAP-PLATFORM'
+    .github/workflows/deploy-prod-lambdas.yml
+  expected: 'Exit 0: schedules still disabled and the deploy channel does not path-trigger on the roadmap.'
+  fix_if: >-
+    If schedules are re-enabled the V2 tier no longer holds -- escalate to V3 via the governed deploy-prod-lambdas
+    workflow, never a local build_lambda --deploy. If the workflow path-triggers on the roadmap, rec-3990 landed;
+    retire this step.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: >-
+    Green on the un-implemented tree (both facts hold today), so graduating would redden this plan's own PR under
+    RED-BEFORE replay; its durable form is rec-3990.
+  expected_literals: []
+- step: 9
+  phase: pre-deploy
+  action: >-
+    Confirm the decisions index is current and the fast tier (which carries the structural size cap, contract drift,
+    reconcile gate and plan checks) passes before the full run.
+  command: bin/venv-python -m scripts.decisions_index --check && bin/venv-python -m scripts.validate --pre
+  expected: Both exit 0.
+  fix_if: >-
+    Regenerate the index (bin/venv-python -m scripts.decisions_index) and rerun; a structural-size failure means
+    a contract is over 500 effective lines -- move shared definitions into the envelope; fix any other failure at
+    its root (Decision 55).
+  hermetic: false
+  graduation: not-applicable
+- step: 10
+  phase: pre-deploy
+  action: Run the full validation tier per the handoff policy.
+  command: bin/venv-python -m scripts.validate
+  expected: Exit 0.
+  fix_if: Fix the root cause (Decision 55); never skip a check.
+  hermetic: false
+  graduation: not-applicable
+test_obligations:
+- source: docs/contracts/telemetry_sessions.yaml
+  behavior: >-
+    Event-journal shape: event_kind in open|resume|compact|close|annotate; partition day(session_started_at); shared
+    NOT NULL fields present; no ingested_at; derived fields carry derivation.timing read; per-event-kind nullability
+    expressed as dq_intent.required_when.
+  verification_step: 1
+  test_selector: tests/checks/contracts/test_telemetry_event_journal_contracts.py::test_sessions_event_journal_shape
+  red_green_expectation: red before (module absent / fields absent), green after
+- source: docs/contracts/telemetry_observations.yaml
+  behavior: >-
+    observation_type includes turn and tool_call; model_call entity_ref = provider response id; four token classes
+    + cost_usd_reported on model_call; outcome vocabulary incl. success|error|blocked|interrupted required_when
+    close; process_event name grammar '<source>:<signature>'; stored tier retired (friction derived); roll-ups use
+    *_total derived names; session_ref NOT NULL, parent_observation_ref nullable.
+  verification_step: 1
+  test_selector: >-
+    tests/checks/contracts/test_telemetry_event_journal_contracts.py::test_observations_event_journal_shape
+  red_green_expectation: red before, green after
+- source: docs/contracts/telemetry_transcripts.yaml
+  behavior: >-
+    Hybrid content model: content (inline, nullable) XOR content_uri (port-relative key), content_sha256/content_bytes/content_truncated
+    NOT NULL, dq_intent.content_inline_threshold_bytes 65536 on content, purpose and origin vocabularies, event_kind
+    point only, session_ref and observation_ref NOT NULL; retired keys local_path, s3_key, size_bytes, created_at,
+    ingested_at absent.
+  verification_step: 1
+  test_selector: tests/checks/contracts/test_telemetry_event_journal_contracts.py::test_transcripts_content_model
+  red_green_expectation: red before, green after
+- source: docs/contracts/telemetry_agents.yaml
+  behavior: >-
+    Agent-run grain keyed agent_run_id (domain tag telemetry_agents:agent_run_id) derived from entity_ref = spawning
+    toolUseId; session_ref (child) NOT NULL, observation_ref (spawning tool_call) nullable; carries the ROOT session_started_at;
+    token totals derived via the child session's model_call observations.
+  verification_step: 1
+  test_selector: tests/checks/contracts/test_telemetry_event_journal_contracts.py::test_agents_event_journal_shape
+  red_green_expectation: red before, green after
+- source: docs/contracts/telemetry-event-envelope.yaml
+  behavior: >-
+    Shared fields defined once (NOT NULL, types, source-derived timestamps); normative identity spec present; every
+    telemetry table $refs each envelope field.
+  verification_step: 1
+  test_selector: tests/checks/contracts/test_telemetry_event_journal_contracts.py::test_event_envelope_shared_fields
+  red_green_expectation: red before (file absent), green after
+- source: config/agent/verification_registry/entries/telemetry-event-journal-contract-shape.yaml
+  behavior: Registry row for the graduated step-1 check.
+  verification_step: 10
+  command: bin/venv-python -m scripts.validate
+  waiver_reason: >-
+    Generated verification-registry metadata for step 1's graduation; validate_graduation_completeness (full tier)
+    is its standing check.
+- source: docs/contracts/tenant-id.yaml
+  behavior: >-
+    Ratified Class C tenant_id: opaque immutable id, NOT NULL, resolved at the write boundary, never caller-supplied.
+  verification_step: 1
+  test_selector: tests/checks/contracts/test_telemetry_event_journal_contracts.py::test_tenant_and_project_identity
+  red_green_expectation: red before (file absent), green after
+- source: docs/contracts/project-id.yaml
+  behavior: >-
+    project_id is a writer-minted opaque ULID resolved from the caller-sent project_ref (unregistered auto-registration
+    with a permanent id); no git-remote identity; no 'theseus' default; contract_version 2.
+  verification_step: 1
+  test_selector: tests/checks/contracts/test_telemetry_event_journal_contracts.py::test_tenant_and_project_identity
+  red_green_expectation: red before, green after
+- source: docs/contracts/observation-id.yaml
+  behavior: >-
+    Write-boundary derivation (normative hash spec, root-session time prefix) for observation_id; mint-once wording
+    retired; contract_version 2.
+  verification_step: 1
+  test_selector: tests/checks/contracts/test_telemetry_event_journal_contracts.py::test_entity_key_identity_rule
+  red_green_expectation: red before, green after
+- source: docs/contracts/parent-observation-id.yaml
+  behavior: >-
+    parent_observation_id derived at the boundary from parent_observation_ref with the parent's domain tag; propagation
+    wording retired.
+  verification_step: 1
+  test_selector: tests/checks/contracts/test_telemetry_event_journal_contracts.py::test_entity_key_identity_rule
+  red_green_expectation: red before, green after
+- source: docs/contracts/session-id.yaml
+  behavior: >-
+    session_id derived from entity_ref (sub-agent '<sessionId>:<agentId>', sharing the root session_started_at);
+    parent_session_id from parent_session_ref; UUID4 grandfather retired (97 cl.4) with the live preflight minter
+    named as pending rec-4030; contract_version 2.
+  verification_step: 1
+  test_selector: tests/checks/contracts/test_telemetry_event_journal_contracts.py::test_entity_key_identity_rule
+  red_green_expectation: red before, green after
+- source: docs/contracts/telemetry-lexicon.yaml
+  behavior: >-
+    temporal: event_timestamp event-time column, partition day(session_started_at) (root session start) for all
+    four tables; identity: the normative hash spec, entity keys = ULID(root session_started_at ms + 80 hash bits),
+    event_id = ULID(event_timestamp ms + 80 hash bits).
+  verification_step: 1
+  test_selector: tests/checks/contracts/test_telemetry_event_journal_contracts.py::test_lexicon_temporal_and_identity
+  red_green_expectation: red before, green after
+- source: docs/contracts/storage-substrate.yaml
+  behavior: >-
+    telemetry_tables disposition names day(session_started_at), the shared envelope and the blob port; no retired
+    partition basis.
+  verification_step: 1
+  test_selector: tests/checks/contracts/test_telemetry_event_journal_contracts.py::test_storage_substrate_disposition
+  red_green_expectation: red before, green after
+- source: docs/contracts/data-modeling-standard.yaml
+  behavior: >-
+    identity-ulid-at-boundary rule statement carries the event-table carve-out pointing at Decision 199; derived-state
+    rule scoped to append_only telemetry and deferring materialization to T2.52 c1; derivation.timing read means
+    no physical column.
+  verification_step: 1
+  test_selector: tests/checks/contracts/test_telemetry_event_journal_contracts.py::test_data_modeling_standard_notes
+  red_green_expectation: red before, green after
+- source: docs/ROADMAP-PLATFORM.yaml
+  behavior: >-
+    T2.26 complete and compact; T2.36/T3.20 re-grounded; no dangling progress_note pointer; <= 10,000 lines.
+  verification_step: 6
+  command: >-
+    bin/venv-python -m scripts.roadmap.platform_roadmap > /dev/null && bin/venv-python -c "import yaml;raw=open('docs/ROADMAP-PLATFORM.yaml',encoding='utf-8').read();n=raw.count(chr(10));d={i['id']:i
+    for i in yaml.safe_load(raw)['tier_items']};t26,t36,t320=d['T2.26'],d['T2.36'],d['T3.20'];c=lambda i,k:[x for
+    x in i['exit_criteria'] if x['id']==k][0];checks={'lines':n<=10000,'t226':t26['status']=='complete' and bool(t26.get('completed_at'))
+    and 'progress_note' not in t26 and t26.get('files_in_scope')==['scripts/s3_log_store.py'],'t423':any('blob'
+    in x['text'].lower() and x['status']=='open' for x in d['T4.23']['exit_criteria']),'t236dep':t36['depends_on']==['T2.26'],'t236c1':'day(session_started_at)'
+    in c(t36,'c1')['text'],'t320dep':t320['depends_on']==['T2.36','T1.10'],'statuses':t36['status']=='not_started'
+    and t320['status']=='not_started','t320c8':c(t320,'c8')['status']=='open','t320c4':c(t320,'c4')['status']=='open','outbox':'Decision
+    51 outbox' not in t320['intent'],'dangling':(chr(84)+'2.26'+chr(39)+'s progress_note') not in raw};print(n,checks);assert
+    all(checks.values());print('ROADMAP_OK')"
+  red_green_expectation: red before (T2.26 in_progress, outbox text present), green after
+- source: docs/decisions-index.json
+  behavior: Generated index reflects Decisions 199 and 200.
+  verification_step: 9
+  command: bin/venv-python -m scripts.decisions_index --check
+  red_green_expectation: red before regeneration, green after
+- source: docs/contracts/_joins.yaml
+  behavior: >-
+    Event-journal cardinality notes (parent side = derived entity), existing self-tree join re-stated (no new id),
+    agents->child-session and agents->spawning-observation joins; dimension joins deferred to rec-4024; the planning_session_id
+    join entry's note points at rec-4030.
+  verification_step: 3
+  command: >-
+    bin/venv-python -c "import subprocess,yaml;from scripts.contracts_schema import ContractDocument;from scripts.contracts_enforcement
+    import check_amendment_for_diff;from scripts.checks.contracts._population import check_amendment_log_for_class_d;base=lambda
+    f:yaml.safe_load(subprocess.run(['git','show','origin/main:docs/contracts/%s.yaml'%f],capture_output=True,text=True,check=True).stdout);head=lambda
+    f:yaml.safe_load(open('docs/contracts/%s.yaml'%f,encoding='utf-8'));errs=[];[errs.extend(check_amendment_for_diff(ContractDocument.model_validate(base(f)),ContractDocument.model_validate(head(f))))
+    for f in ('telemetry_sessions', 'telemetry_observations', 'telemetry_transcripts', 'telemetry_agents', 'project-id',
+    'observation-id', 'parent-observation-id', 'session-id')];[errs.append(f+': '+e) for f in ('storage-substrate',
+    'telemetry-lexicon', '_joins', 'data-modeling-standard') for e in [check_amendment_log_for_class_d(base(f),head(f))]
+    if e];print(chr(10).join(errs) or 'AMENDMENTS_OK');assert not errs"
+  waiver_reason: >-
+    Logical join registry with no programmatic consumer or cardinality validator today; amendment discipline checked
+    by step 3; join correctness exercised by rec-4025's golden fixtures.
+- source: .secrets.baseline
+  behavior: detect-secrets line-number drift for existing ROADMAP entries only.
+  verification_step: 10
+  command: bin/venv-python -m scripts.validate
+  waiver_reason: >-
+    Mechanical line-number regeneration by the detect-secrets hook; no hash or new secret; the hook verifies the
+    baseline on every commit.
+constraints:
+- >-
+  Contracts, Decisions, roadmap, one test file and its graduated registry row ONLY. No code under src/, scripts/
+  or .claude/, no generator change, no field_semantics change, no ops_* contract creation, no table provisioning,
+  no blob-port code (rec-4024, rec-4026, rec-4033). Every contract stays <= 500 effective lines (structural size
+  cap). Relief path, in order: shared definitions into the envelope; compact v1 collapse-mapping and draft-lineage
+  narrative into the previous_versions entry / contract-level amendment summary; terse prose and flow-style dq_intent/amendment
+  entries. If a table is still over 500, STOP and report -- never raise a budget.
+- >-
+  No change to scripts/contracts_schema.py: new properties go inside existing free-dict blocks (derivation, dq_intent,
+  governance). If something cannot be expressed, STOP and report -- never widen the schema. Every NEW inline field
+  carries description, semantics, populated_by and dq_intent (drift-gate category 2). Per-field notes: governance_notes
+  on inline fields, governance_notes_local on $ref fields.
+- >-
+  Decision 177: bodies of 95, 96, 97, 197 are never edited; amendments are appended dated blockquotes. Each new
+  Decision <= 6144 bytes (Decision 167); normative detail lives in the contracts, the Decisions state the commitments.
+- >-
+  Decision 114/147: roadmap <= 10,000 lines. The newly completed T2.26 takes the Decision 147 clause 2 compact form;
+  keep id, tier, name, status, completed_at, depends_on, related_candidate_decisions, effort, strategic and exit_criteria
+  byte-for-byte; compact BEFORE adding text elsewhere. No live item is trimmed.
+- >-
+  Decision 95 stands where not amended: each sub-agent has its OWN session linked by parent_session_id; the collapse
+  of draft child tables into observation_type stands.
+- >-
+  Stored-vs-derived rule: STORED iff a fact observed at a single event and recorded on that event's row; DERIVED
+  iff a function of other rows (start/end/duration, counts, roll-ups, unions, session state, friction classification,
+  cost). Derived fields stay declared (one schema for readers) with derivation.timing read and get NO physical column.
+- >-
+  event_timestamp and session_started_at are SOURCE-derived (from the originating record), never emit time; source_ordinal
+  orders rows within a session; the writer rejects implausible event_timestamp (> created_timestamp + skew) -- the
+  rule is declared here, enforced by rec-4024.
+- >-
+  Credential scrubbing (CD.40) unchanged; PII scrubbing and erasure deferred together (rec-4029). The blob port
+  makes erasure of large payloads an object delete.
+- >-
+  Removal rationale for retired fields lives ONLY in amendment_log / previous_versions, never in live descriptions
+  or governance notes (VP step 7 checks field keys and live text).
+- >-
+  Decision 199 'answers' Decision 81 cl.8 -- never write 'amends Decision 81' (validate_supersession_annotations
+  would demand a victim annotation).
+- >-
+  Roadmap text: new or re-worded criteria and notes (T3.20 c8, T2.18 c8, T2.36 c1/c5, T4.23) must not place a non-terminal
+  item id next to a docs/contracts/roadmap-liveness.yaml leg_c_blocking_phrase_grammar phrase ('gated on', 'blocked
+  by', 'requires ... complete', ...) -- leg C would demand a blocked_by, which would break the exact map asserted
+  by registry check roadmap-blocked-by-transcription-exact.
+- >-
+  Terminology: the transcripts 'inline content' tier is a column-level choice and is distinct from DuckLake data
+  inlining, which stays disabled for telemetry (CD.34); the lexicon says so.
+- No rescue agents or workaround loops (Decision 55).
+context:
+- >-
+  CITE: 95, 96, 97, 81, 84, 88, 137, 118, 168, 167, 177, 86, 147, 114, 188, 136, 197, 184, 196; related 78, 67,
+  93, 191, 150, 105, 192, 59, 55.
+- >-
+  gates: plan-critique r1-r4 REVISE (all fixed); operator-escalated 3-perspective review: round 1 REVISE x3 -> Fable
+  consult #3 + rulings -> rewrite; round 3 REVISE x3 (text-level) -> fixed; round 2 REVISE x3 + decision-scout run
+  3 FLAGS_FOUND (D184 blob-port local adapter -> T4.23 criterion; D137 dims partition -> rec-4024; D84 project minting
+  -> writer registration verb; D81 spirit -> time-prefixed keys) -> fixed; Decisions triaged: 151 of 151. Roadmap
+  items intersected: 11; CONFLICT: 0; RELATED: 8.
+- >-
+  Round 3 (final) of the operator-escalated review returned REVISE x3 with text-level findings only; all applied
+  (95 cl.2/cl.4, read-side dedupe + cross-producer model_call identity, session_started_at pin, annotate provenance,
+  content-addressed blobs, event_kind sets, per-row refs, size relief path, leg-C phrasing, widened sweep). Operator
+  rulings (2026-09-24): project identity = writer-minted opaque ULID committed in-repo + SCD2 project/tenant dimensions
+  (contracts moved to rec-4024 by the reconcile gate); entity keys time-prefixed by the root session start; shared
+  telemetry-event-envelope contract (size cap, DRY); friction derived at read for MVP, labels table later (rec-4032);
+  content = hybrid blob port, 64 KiB inline threshold; partition day(session_started_at); cost derived at read,
+  static prices (rec-4031).
+- >-
+  Routing (Decision 86): append_events verb, blob port, inlining and dimension provisioning -> rec-4024 (context
+  updated); capture rules -> rec-4026 (context updated); smoke-first -> T3.20 c8; PII/erasure -> rec-4029; T4.19
+  -> rec-4027; planning_session_id -> rec-4030; price table -> rec-4031; labels table -> rec-4032; blob orphan sweep
+  -> rec-4033.
+- >-
+  Gotchas: check_amendment_for_diff is per FIELD (scripts/contracts_enforcement.py:55); ChangeClass has no field_remove
+  -- record removals in the contract-level amendment_log summary; previous_versions entry shape: {contract_version:
+  1, ratified_at, ratified_via, superseded_on: <date>, summary}; converting an inline field to a $ref field changes
+  its description to None -- category 6 then requires a field-level amendment_log entry on the $ref entry; a $ref
+  field can only override governance_notes_local, joins, amendment_log and dq_intent_local -- and dq_intent_local
+  REPLACES the whole dq_intent (scripts/contracts.py:268), so it must restate every dq key it keeps (not_null included);
+  so per-table meaning of a shared field goes in governance_notes_local; project registration must be idempotent
+  under concurrency (unique constraint or advisory lock on (tenant_id, project_ref) -- rec-4024), stated in project-id.yaml;
+  validate_supersession_annotations reads prose -- any 'amends Decision N' phrase in 199/200 beyond 95/96/97/197
+  needs a victim annotation; new Decision entries end with a '---' separator (validate_decision_entry_conformance).
+pre_implementation_checklist:
+- Branch confirmed not on main
+- docs/PROJECT_CONTEXT.md read
+- >-
+  Only the plan-cited decision sections read: 95, 96, 97, 197, 147, 167, 177, 198 (envelope/annotation exemplar)
+- All files in scope located and readable
+- Acceptance criteria understood and verifiable
+execution_steps:
+- >-
+  Create tests/checks/contracts/test_telemetry_event_journal_contracts.py with the test functions named in test_obligations
+  (load contracts via scripts.contracts load_contract + resolve_refs; phrase checks case-insensitive on whitespace-normalised
+  text). Run it and confirm it FAILS on the unchanged tree.
+- >-
+  Create telemetry-event-envelope.yaml and tenant-id.yaml (Class C, ratified); re-ground project-id.yaml, session-id.yaml,
+  observation-id.yaml and parent-observation-id.yaml to the normative identity spec, each with amendment_log entries.
+- >-
+  Re-model the four telemetry contracts per the constraints and acceptance criteria (shared fields; per-table event_kind
+  vocabularies; paired *_ref columns whose nullability follows their id; derived fields with derivation.timing read;
+  dq_intent.required_when for per-event-kind fields; transcripts hybrid content model); set governance.partition_by
+  day(session_started_at); contract_version 2 with refreshed ratified_at/ratified_via, a previous_versions entry
+  (shape in context), contract- and field-level amendment_log entries, governance_notes citing Decisions 199 and
+  200.
+- >-
+  Update telemetry-lexicon.yaml, _joins.yaml, data-modeling-standard.yaml and storage-substrate.yaml per their scope
+  purposes, each with a new amendment_log entry. Rerun VP steps 1, 2 and 3 until green.
+- >-
+  Decision 199 commitments: event-journal grain (amends 95 cl.1 sessions, cl.2 observations as open/close event
+  rows, cl.4 agents as an agent-run event grain); partition day(session_started_at) with source-derived event_timestamp
+  as event-time column and created_timestamp as write time, CD.9 day(last_updated_timestamp) not applicable (amends
+  96 cl.1; 96 cl.3's mint-once pointer follows 97); identity per the normative hash spec in telemetry-event-envelope.yaml
+  -- entity and FK keys derived at the write boundary from caller-supplied refs as ULIDs time-prefixed by the ROOT
+  session start (reader verbs decode the prefix into a session_started_at partition predicate, and a trace tree
+  clusters), event_id a k-sortable ULID over event time, read-side dedupe (one row per event_id: max integer parser_version
+  then earliest created_timestamp; model_call one row per observation_id with the fixed producer precedence), writer
+  anti-join best-effort (amends 97 cl.1-4, retiring the UUID4 grandfather); external_ref realizes T1.10's idempotency
+  key for telemetry; state, friction classification and cost derived at read in named reader verbs, bounded to a
+  session's single day(session_started_at) partition (answers Decision 81 cl.8), materialization only on a Decision
+  88 cl.2 measurement (mode: T2.52 c1); content tier = inline <= threshold else blob port (S3 / local dir), blob
+  put before row write, orphans swept (rec-4033); the content column's catalog-stats egress is a measure-before-volume
+  obligation on rec-4024. Decision 200 commitments: tenant_id and project_id are opaque immutable ULIDs minted by
+  the writer's registration verb, NOT NULL on telemetry, resolved at the write boundary (tenant: configured constant
+  locally / authenticated identity in cloud; project: caller-sent project_ref, an unknown ref auto-registering an
+  'unregistered' row whose id is permanent), included in every id hash; SCD2 dimensions ops_tenants/ops_projects
+  (contracts authored with registration in rec-4024) carry mutable attributes, and unregistered projects are remapped
+  via canonical_project_id, never by rewriting facts; amends 197 cl.2 (tenancy is tenant_id; project_id is repository
+  identity; columns always present, tenancy ENFORCEMENT stays the cloud-adapter property).  Add Decisions 199 and
+  200 at the top of docs/DECISIONS.md (newest-first, after the preamble), modelled on Decision 198's envelope and
+  trailing separator; append dated 'Amended by' blockquotes to 95, 96, 97 and 197. Regenerate docs/decisions-index.json.
+  Run VP steps 4 and 5.
+- >-
+  Roadmap text: T2.36 depends_on [T2.26] with comment 'rec-3792 superseded: pre-write GC safety is c5; T2.18 c2
+  soak stays on T2.18'; c1 partition -> day(session_started_at); c5 re-grounded onto Decision 188 G1-G4 + the append_only
+  maintenance_policy class; files_in_scope + generator and static sidecar. T3.20: intent strikes the Decision 51
+  outbox and CD.17 executor gate (cursor-over-transcript durability instead); depends_on [T2.36, T1.10] with comment
+  'verifier consumes the pipeline; gate kept as c8'; new open c8 smoke-first gate; progress_note records c4 partial.
+  T2.18 c8 note records the dropped edge. T4.23: new open forward-work criterion 'the content blob port has a local-directory
+  adapter under the local catalog root (Decision 184 cl.2 port rule; Decision 199)'. Re-point T2.18 c4/c8, T2.19,
+  T3.20 c5 'SCOPE EXTENSION' pointers to PLAN-t2-26-retire-ops-session-log.  Apply the roadmap bookkeeping above
+  -- compact T2.26 FIRST, then add text -- and accept the .secrets.baseline line drift. Run VP steps 6 and 7.
+- >-
+  Write config/agent/verification_registry/entries/telemetry-event-journal-contract-shape.yaml for the graduated
+  step-1 check (model on an existing test_selector entry). Execute VP steps 8, 9 and 10 -- loop until pass; on unrecoverable
+  failure stop and RCA (Decision 55).
+- 'Report: what was implemented, verification results.'
+rollback: >-
+  Revert the merge commit: every change is to contracts, Decisions, the roadmap and one test file; nothing is provisioned
+  or deployed.
