@@ -1,15 +1,13 @@
 name: rec-autoclose
-# Layer 2 durable closure edge: reads Resolves: rec-NNNN trailers from the squash-merge
-# commit and closes each named rec via the ops portal (Decision 84 single-portal invariant).
-# Idempotency lives here: the workflow checks current status before writing and tolerates
-# absent-id errors.  No-op when no trailer is present.
+# DECISIONS.md backfill edge (Decision 201 relocation): closure of Resolves: rec-NNNN trailers
+# moved to ci.yml's trailer-census / trailer-acceptance-evaluate / trailer-closure jobs, which
+# add the closure-time acceptance-verdict gate this workflow never carried. This workflow now
+# retains only the DECISIONS.md -> ops_decisions backfill (Decision 84 single-portal invariant),
+# gated on a DECISIONS.md change in the merge commit, and stays a ci_rca-watched workflow via
+# that backfill step's failed-counter exit (Decision 155).
 #
-# Merge-leg gate (rec-3775 / rec-3901): a trailer whose merge diff is confined to docs/plans/ (a
-# plan-only merge) -- or whose diff is empty/unresolvable, the true-merge-commit shape -- is
-# REFUSED: every named rec is left OPEN rather than closed, since a plan-only merge fixes nothing
-# the trailer's recs claim is resolved. The refusal is loud-not-red: it does not touch this
-# workflow's exit code, so a correct refusal never files a spurious source=ci_rca rec. See
-# docs/contracts/git-ops.yaml::resolves_trailer and scripts/ops_portal/trailer_closure_gate.py.
+# See docs/contracts/git-ops.yaml::resolves_trailer and docs/contracts/git-ops.yaml::
+# trailer_acceptance_gate for the current closure path and its refusal semantics.
 
 on:
   push:
@@ -58,59 +56,6 @@ jobs:
         with:
           role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/agent-platform-github-ci-branch
           aws-region: eu-west-2
-
-      - name: Close resolved recs from Resolves trailer
-        env:
-          DUCKLAKE_WRITER_URL: ${{ secrets.DUCKLAKE_WRITER_URL }}
-        run: |
-          cd "$GITHUB_WORKSPACE"
-          git log -1 --format=%B HEAD > /tmp/commit_msg.txt
-
-          .venv/bin/python << 'PYEOF'
-          import json
-          import os
-          import sys
-          from pathlib import Path
-
-          sys.path.insert(0, os.environ.get("GITHUB_WORKSPACE", str(Path.cwd())))
-
-          from scripts.rec_trailer import parse_resolves_trailer
-          from scripts.ops_data_portal import sync
-          from scripts.ops_portal.ci_rca_lifecycle import close_recs_from_trailer
-
-          commit_sha = os.environ.get("GITHUB_SHA", "unknown")
-          repo = os.environ.get("GITHUB_REPOSITORY", "unknown")
-          run_id = os.environ.get("GITHUB_RUN_ID", "unknown")
-          run_url = f"https://github.com/{repo}/actions/runs/{run_id}"
-
-          commit_msg = Path("/tmp/commit_msg.txt").read_text(encoding="utf-8")
-          ids = parse_resolves_trailer(commit_msg)
-          if not ids:
-              print("rec-autoclose: no Resolves trailer found -- no-op")
-              sys.exit(0)
-
-          print(f"rec-autoclose: found trailer ids: {ids}")
-
-          # Sync local cache so status checks reflect current warehouse state.
-          try:
-              sync()
-          except Exception as exc:
-              print(f"rec-autoclose: sync warning ({exc}); continuing with possibly stale cache")
-
-          # Read local cache to check current status before writing (idempotency).
-          recs_cache: dict = {}
-          cache_path = Path("logs/.recommendations-log.jsonl")
-          if cache_path.exists():
-              for line in cache_path.read_text(encoding="utf-8").splitlines():
-                  if line.strip():
-                      try:
-                          r = json.loads(line)
-                          recs_cache[r["id"]] = r
-                      except (json.JSONDecodeError, KeyError):
-                          pass
-
-          sys.exit(close_recs_from_trailer(ids, commit_sha, run_url, recs_cache))
-          PYEOF
 
       - name: Backfill decisions to warehouse
         if: "!cancelled() && steps.install-dependencies.outcome == 'success' && steps.aws-creds.outcome == 'success' && steps.detect-decisions.outputs.changed == 'true'"

@@ -2,6 +2,97 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 201: Closure-time acceptance-verdict precondition -- a verdict LAYER asserted at update_rec, with a static evaluator wired in (amends Decision 103, 186) (Decided)
+
+```yaml
+number: 201
+status: Decided
+decided_date: "2026-09-25"
+amends: [103, 186]
+significance:
+  value: numbered_decision
+  justification: >-
+    A standing closure precondition binding every verdict-supplying path, plus a four-value
+    vocabulary distinct in axis from vp-red-before.yaml's -- reversal-relevant. Field-semantics
+    home considered and rejected: ci-rca-lifecycle.yaml (24 lines of headroom, too little for
+    this shape) in favour of git-ops.yaml (196 lines, resolves_trailer already lives there); the
+    CHOICE and the enforcement commitment are this Decision's content, not restated in either.
+```
+
+**Status:** Decided
+**Date:** 2026-09-25
+**Warehouse ID:** dec-201 (synced via `ops_data_portal --backfill-decisions-md` post-merge, Decision 84)
+
+**Problem:**
+rec-autoclose closed a rec named in a `Resolves:` trailer without checking that rec's own
+acceptance oracle against the closing commit. Measured: 30 of 100 auto-closed recs failed their
+own acceptance at the closing commit (24 plain literal greps that did not hold, 4
+inverted/negated flags, 2 grep-without--q; zero from `||`-chains, pipelines or quoted
+alternation); rec-940 reproduces live today (`grep -q "enable_pr_auto_merge"
+.claude/skills/implement/SKILL.md`, zero matches on main).
+
+**Decision:**
+1. **The verdict LAYER, not the oracle.** A four-value vocabulary -- `{holds, fails,
+   unmeasurable, out_of_grammar}` (`scripts/ops_portal/closure_gate.py::ACCEPTANCE_VERDICTS`) --
+   classifies whether a rec's oracle HOLDS at the closing commit. SEPARATE axis from
+   `docs/contracts/vp-red-before.yaml`'s `OUTCOME_CLASSES` (whether a VP step correctly failed
+   BEFORE a fix existed): inverted polarity (`assertion_failed` is a PASS there; `fails` is the
+   false-closure signal here), so verbatim reuse would be drift. Intersection is exactly one
+   shared arm, `unmeasurable`, asserted by a runtime-derived totality test.
+2. **ONE ENFORCEMENT SITE (Decision 186 point 2 precedent).** `assert_acceptance_verdict`
+   (`closure_gate.py`) is asserted inside `update_rec` beside `assert_closure_obligation`. Raises
+   `AcceptanceVerdictRefused` iff a supplied record is NOT `holds`, or is mis-keyed against the
+   rec id, the sha256 of its CURRENT acceptance, or the closing sha -- and no-ops when no record
+   is supplied. NOT universal: an absent verdict is not itself refused here.
+3. **STRUCTURAL binding on the trailer path (Decision 163: executed, not declared).**
+   `close_recs_from_trailer` gains `require_acceptance_verdict`; the trailer-closure job passes
+   `True`, so a trailer-named rec with NO verdict is never passed to `update_rec` -- point 2's
+   absent-verdict gap closes structurally, one layer up. The remaining fail-open (non-trailer
+   `update_rec` callers) is owned by rec-3999, named with its two instruction surfaces in
+   `docs/contracts/git-ops.yaml::trailer_acceptance_gate`.
+4. **A static evaluator, reusing an existing sandbox.** `.github/workflows/ci.yml` gains three
+   push-only jobs (census/evaluate/closure) mirroring `backlog-health.yml`'s credential split
+   (Decision 143): the evaluator job declares `{contents: read}` only, no `id-token`, no writer
+   secret, and executes every rec-authored command through the EXISTING
+   `scripts.backlog_health.probe.run_all` sandbox -- never a new executor. `source` is `"static"`.
+5. **Two-boundary frame, grammar ratchet EXECUTED here.** `lint_acceptance_command` gains
+   `require_decidable`, executed in the census stage: no decidable assertion classifies
+   `out_of_grammar`, never probed -- write-boundary SHAPE. Verify-boundary (this Decision's
+   close-time run) checks TRUTH; the ratchet is a precondition for it, never a substitute: 24 of
+   the 30 false closures were well-formed oracles that simply did not hold. The write-boundary
+   and `validate_acceptance_literals` bindings defer to rec-4001 (measured: three shipped
+   `scripts.validate --pre` literals would be refused today).
+
+**Rationale:**
+Decision 103 permits an on-demand, per-rec probe and forbids only NEW acceptance machinery;
+reusing `scripts.backlog_health`'s ratified evaluator CLARIFIES that allowance -- the verdict
+LAYER (vocabulary, enforcement site, structural binding) crosses 103's text, never the venue.
+Decision 186 proved the enforcement shape (predicate at `update_rec`, loud-not-red, structural
+non-universality) for a different precondition; reused here for a second, independent verdict.
+
+**Amends Decision 103:** "no new acceptance machinery" is clarified, not crossed: the evaluator
+is 103's already-sanctioned on-demand per-rec mode, reused rather than duplicated.
+
+**Amends Decision 186:** point 7 and reversal condition (c) name `rec-autoclose.yml` as the
+catching workflow -- false after relocation to `ci.yml`'s trailer-closure job (dated annotation
+on 186). Condition (d) ("a caller closes around the client-side gate") was LIVE IN THE
+INSTRUCTION LAYER when authored: the implement skill's post-merge closeout fallback force-closed
+any bundled rec still open ~5 min after merge -- exactly the rec a verdict refusal now leaves
+open. Hardened by this Decision's edit to that instruction and the implement command.
+
+**Reversal conditions:** (a) require_decidable refuses a shipped, discriminating shape outside
+the `--assert-<name>` exit contract -- widen the decidable-head set, never bypass; (b) the
+rec-3999/rec-4001 residual grows rather than shrinks one quarter after filing -- escalate, never
+re-defer; (c) the post-deployment false-closure rate does not improve on the 30% baseline --
+re-audit the vocabulary or sandbox fidelity, never widen the refusal's escape.
+
+**Related:** 103/186 (amended above), 163 (structural binding), 143 (credential split), 162
+(thin-adapter spirit), 142/155 (relocation survives), 189 (axis discipline), 181 (named
+residuals), 168 (`git-ops.yaml` evaluator binding), 55/72 (no rescue loops). Roadmap refs:
+rec-3867, rec-3999, rec-4000, rec-4001.
+
+---
+
 ## Decision 199: Telemetry event-journal model -- append-only lifecycle events, write-boundary-derived identity, derived-at-read state/friction/cost (amends Decisions 95, 96 clauses 1 and 3, 97 clauses 1-4) (Decided)
 
 ```yaml
@@ -1165,6 +1256,18 @@ conditions:
 ```
 
 **Related:** 55/72, 84, 88, 103, 124, 128, 133, 142, 150, 155, 162, 165, 167, 182, 86/127.
+
+> **Amended by Decision 201 (2026-09-25):** point 7 ("`rec-autoclose.yml` CATCHES it... skips
+> that rec leaving it OPEN") and reversal condition (c) ("a rec refused at rec-autoclose is later
+> swept closed") both name `rec-autoclose.yml` as the catching workflow -- false as of Decision
+> 201's relocation: closure of Resolves: trailers now runs in `.github/workflows/ci.yml`'s
+> trailer-closure job, which is what catches a refusal (both this decision's ClosureArtifactRequired
+> and Decision 201's AcceptanceVerdictRefused) today. Separately, reversal condition (d) ("a
+> caller closes around the client-side gate") was LIVE IN THE INSTRUCTION LAYER when this
+> decision was written: the implement skill's post-merge closeout fallback instructed an agent to
+> force-close any bundled rec still open ~5 minutes after merge, which after Decision 201's
+> cutover is exactly a rec either gate refused. Decision 201 hardens that instruction (and
+> `.claude/commands/implement.md`) to route through the printed close_proposed command instead.
 
 ---
 
@@ -6014,6 +6117,13 @@ T3.8 (implementation item), T3.9 (post-merge reconciliation complement).
 requirement)" citation above is a mis-cite -- the closure-proof principle is THIS decision
 (Decision 103); Decision 70 governs Physical Deletion of Bootstrap Records, not closure-proof
 semantics.]
+
+> **Amended by Decision 201 (2026-09-25):** the "no new acceptance machinery is introduced"
+> clause is CLARIFIED, not crossed: Decision 201's trailer-acceptance verdict layer reuses
+> `scripts.backlog_health`'s already-ratified census+probe evaluator on-demand, per rec -- this
+> decision's already-sanctioned mode, not a new machine. The verdict LAYER Decision 201 adds
+> (vocabulary, enforcement site, structural binding) is what crosses this decision's text; the
+> venue-reuse alone would not have.
 
 ## Decision 102: SLOC Waiver Ratchet -- amends Decision 43 SLOC row (Decided)
 

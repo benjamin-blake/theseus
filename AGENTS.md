@@ -147,7 +147,7 @@ one-line triggers below.
 - **Presubmit tier**: see the table below -- fast `--pre` gates PRs, full tier runs pre-handoff (local) + post-merge.
 - **Squash-merge**: `mcp__github__merge_pull_request(..., merge_method="squash")` once CI is green.
 - **Never-poll wake**: event-driven only (`subscribe_pr_activity` plus the CI-green/merge-conflict comment signals) -- never sleep/poll for CI or merge status.
-- **Resolves: trailer**: when a plan bundles recommendations, name them (`Resolves: rec-NNNN[, rec-MMMM]`) in the squash-merge commit body to trigger `rec-autoclose.yml`.
+- **Resolves: trailer**: when a plan bundles recommendations, name them (`Resolves: rec-NNNN[, rec-MMMM]`) in the squash-merge commit body to trigger `ci.yml`'s closure job.
 - **Decision-record routing**: whether content clears the bar for a numbered Decision, and where it routes when it does not, is governed by `docs/contracts/decision-entry.yaml`'s `significance.routing_rule` -- never restated here.
 
 ### Two-tier presubmit model

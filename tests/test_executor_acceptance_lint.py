@@ -246,6 +246,78 @@ class TestAcceptanceDiscrimination:
             assert valid is True
 
 
+class TestRequireDecidable:
+    """require_decidable=True (Decision 201): refuse an acceptance command carrying no decidable
+    assertion in any control-operator-separated segment. Grammar shape only -- never node
+    existence.
+
+    COHESION NOTE: test_quoted_alternation_is_still_non_discriminating below exercises
+    require_discrimination, not require_decidable -- deliberately homed in THIS class (not
+    TestAcceptanceDiscrimination) so VP step 9's class-selector graduated shard, which covers
+    this whole class, also carries the quote-aware splitter regression VP step 10 waives against.
+    """
+
+    def test_quoted_alternation_is_still_non_discriminating(self):
+        # Decision 201 regression arm: the pre-existing quote-cutting false-pass in
+        # _classify_non_discriminating (a naive chain_parts[0].split("|") cut INSIDE the quoted
+        # pattern) let a lone grep carrying quoted alternation evade require_discrimination
+        # entirely. Rebuilt on the shared quote-aware _control_segments tokenizer, it is now
+        # correctly refused, exactly like the plain-literal control case.
+        with patch("shutil.which", return_value=None):
+            valid, msg = lint_acceptance_command("grep -q 'a\\|b' f", require_discrimination=True)
+            assert valid is False
+            assert "discriminate" in msg.lower()
+            valid, msg = lint_acceptance_command('grep -qE "a|b" f', require_discrimination=True)
+            assert valid is False
+            assert "discriminate" in msg.lower()
+
+    def test_prose_refused(self):
+        with patch("shutil.which", return_value=None):
+            valid, msg = lint_acceptance_command("Manual review", require_decidable=True)
+        assert valid is False
+        assert "decidable" in msg.lower()
+
+    def test_bare_pytest_path_with_no_node_id_refused(self):
+        with patch("shutil.which", return_value=None):
+            valid, _ = lint_acceptance_command("bin/venv-python -m pytest tests/x.py -q", require_decidable=True)
+        assert valid is False
+
+    def test_backtick_wrapped_grep_admitted(self):
+        with patch("shutil.which", return_value=None):
+            valid, _ = lint_acceptance_command("`grep -q foo bar.py`", require_decidable=True)
+        assert valid is True
+
+    def test_pipeline_whose_final_segment_is_grep_admitted(self):
+        # The shape scripts/backlog_health/escalate.py's four rollup recs file.
+        with patch("shutil.which", return_value=None):
+            valid, _ = lint_acceptance_command(
+                "bin/venv-python -m scripts.backlog_health escalate --dry-run 2>&1 | grep -q 'x: 0 findings'",
+                require_decidable=True,
+            )
+        assert valid is True
+
+    def test_declared_assert_flag_exit_contract_admitted(self):
+        with patch("shutil.which", return_value=None):
+            valid, _ = lint_acceptance_command(
+                "bin/venv-python -m scripts.ci_rca.probe_health --assert-clear", require_decidable=True
+            )
+        assert valid is True
+
+    def test_pytest_node_id_admitted(self):
+        with patch("shutil.which", return_value=None):
+            valid, _ = lint_acceptance_command(
+                "bin/venv-python -m pytest tests/x.py::TestClass::test_thing -q", require_decidable=True
+            )
+        assert valid is True
+
+    def test_default_false_leaves_existing_callers_unchanged(self):
+        with patch("shutil.which", return_value=None):
+            valid, _ = lint_acceptance_command("Manual review")
+            assert valid is True
+            valid, _ = lint_acceptance_command("bin/venv-python -m pytest tests/x.py -q")
+            assert valid is True
+
+
 class TestCheckoutMainSafely:
     """Tests for _checkout_main_safely."""
 

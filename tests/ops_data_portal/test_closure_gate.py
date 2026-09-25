@@ -11,17 +11,23 @@ module's vocabularies equal docs/contracts/ci-rca-lifecycle.yaml::closure_obliga
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 
+import pytest
 import yaml
 
 from scripts.ops_portal._common import ROOT
 from scripts.ops_portal.closure_gate import (
     ARTIFACT_KINDS,
+    FAILS,
+    HOLDS,
     KIND_STRENGTH,
     WAIVER_CATEGORIES,
+    AcceptanceVerdictRefused,
     _fix_commit_touches,
     _fixture_kind_fact,
+    assert_acceptance_verdict,
     changed_files,
     closure_stamps_applicable,
     is_escape_classified,
@@ -159,6 +165,91 @@ class TestStampApplicability:
         non_escape_raw = json.dumps({"last_seen": "2026-01-01"})
         assert closure_stamps_applicable(non_escape_raw) is True
         assert is_escape_classified(parse_context_json(non_escape_raw)) is False
+
+
+class TestAcceptanceVerdict:
+    """Decision 201: assert_acceptance_verdict refuses every non-holds or mis-keyed record, and
+    passes an absent one -- the predicate half of the single update_rec enforcement site."""
+
+    _REC_ID = "rec-1234"
+    _ACCEPTANCE = "grep -q foo bar.py"
+    _SHA256 = hashlib.sha256(_ACCEPTANCE.encode("utf-8")).hexdigest()
+    _CLOSING_SHA = "deadbeef"
+
+    def _holds_record(self, **overrides) -> dict:
+        record = {
+            "rec_id": self._REC_ID,
+            "sha": self._CLOSING_SHA,
+            "acceptance_sha256": self._SHA256,
+            "verdict": HOLDS,
+            "source": "static",
+            "arm": "pass",
+        }
+        record.update(overrides)
+        return record
+
+    def test_absent_record_returns_none(self) -> None:
+        # No-op proven by absence of AcceptanceVerdictRefused, not a return-value comparison
+        # (assert_acceptance_verdict's return type is None; mypy flags `is None` on it).
+        assert_acceptance_verdict("open", "closed", self._REC_ID, self._ACCEPTANCE, self._CLOSING_SHA, None)
+
+    def test_holds_record_correctly_keyed_passes(self) -> None:
+        assert_acceptance_verdict("open", "closed", self._REC_ID, self._ACCEPTANCE, self._CLOSING_SHA, self._holds_record())
+
+    def test_non_holds_verdict_refused(self) -> None:
+        with pytest.raises(AcceptanceVerdictRefused):
+            assert_acceptance_verdict(
+                "open", "closed", self._REC_ID, self._ACCEPTANCE, self._CLOSING_SHA, self._holds_record(verdict=FAILS)
+            )
+
+    def test_mismatched_rec_id_refused(self) -> None:
+        with pytest.raises(AcceptanceVerdictRefused):
+            assert_acceptance_verdict(
+                "open", "closed", self._REC_ID, self._ACCEPTANCE, self._CLOSING_SHA, self._holds_record(rec_id="rec-9999")
+            )
+
+    def test_mismatched_acceptance_sha256_refused(self) -> None:
+        with pytest.raises(AcceptanceVerdictRefused):
+            assert_acceptance_verdict(
+                "open",
+                "closed",
+                self._REC_ID,
+                self._ACCEPTANCE,
+                self._CLOSING_SHA,
+                self._holds_record(acceptance_sha256="stale"),
+            )
+
+    def test_mismatched_sha_refused_even_though_record_carries_a_sha(self) -> None:
+        """Load-bearing: the record's OWN sha field disagreeing with the independently-supplied
+        closing_sha is refused -- proving closing_sha is a caller-supplied gate input, never read
+        back out of the record itself (a self-comparison would make this arm vacuously true)."""
+        with pytest.raises(AcceptanceVerdictRefused):
+            assert_acceptance_verdict(
+                "open",
+                "closed",
+                self._REC_ID,
+                self._ACCEPTANCE,
+                self._CLOSING_SHA,
+                self._holds_record(sha="some-other-sha"),
+            )
+
+    def test_status_preserving_write_with_absent_record_is_a_noop(self) -> None:
+        assert_acceptance_verdict("open", "open", self._REC_ID, self._ACCEPTANCE, self._CLOSING_SHA, None)
+
+    def test_status_preserving_write_with_invalid_record_is_a_noop(self) -> None:
+        """Mirrors assert_closure_obligation's own gating (Decision 186 point 3): a write that is
+        not a first-hop transition into a bound status never reaches the record check at all, so
+        even a present, badly-keyed record does not raise here."""
+        assert_acceptance_verdict(
+            "closed", "closed", self._REC_ID, self._ACCEPTANCE, self._CLOSING_SHA, self._holds_record(verdict=FAILS)
+        )
+
+    def test_second_hop_into_bound_status_with_invalid_record_is_a_noop(self) -> None:
+        """The obligation was already discharged at the first hop into a bound status; a later
+        declined -> superseded hop is ungated here exactly as it is in assert_closure_obligation."""
+        assert_acceptance_verdict(
+            "declined", "superseded", self._REC_ID, self._ACCEPTANCE, self._CLOSING_SHA, self._holds_record(verdict=FAILS)
+        )
 
 
 class TestContractParity:

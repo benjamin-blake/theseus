@@ -1,4 +1,7 @@
-"""Closure-time artifact obligation for escape-classified recs (Decision 186).
+"""Closure-time artifact obligation for escape-classified recs (Decision 186); Decision 201's
+trailer-acceptance verdict precondition (ACCEPTANCE_VERDICTS, AcceptanceVerdictRefused,
+assert_acceptance_verdict) shares this module as its single predicate home, beside the closure
+obligation it is asserted next to at update_rec's own single enforcement site.
 
 Owner-concern: the escape-classified predicate, the `<kind>:<ref>` artifact grammar and its
 FIX-BOUND resolver for the four kinds, the categorised waiver vocabulary, and the single
@@ -21,6 +24,7 @@ read-only local `git diff-tree` -- no network, no reader egress (Decision 88).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import subprocess  # noqa: S404 -- one read-only local `git diff-tree` call; see module docstring
@@ -300,3 +304,62 @@ def assert_closure_obligation(
         f"--closure-waiver-category <one of {sorted(WAIVER_CATEGORIES)}> plus --closure-waiver-reason "
         '"<proof>". See docs/contracts/ci-rca-lifecycle.yaml::closure_obligation (Decision 186).'
     )
+
+
+# The ratified FOUR-VALUE trailer-acceptance vocabulary (Decision 201). A separate axis from
+# docs/contracts/vp-red-before.yaml's OUTCOME_CLASSES -- this one classifies whether a rec's own
+# oracle HOLDS at the closing commit, not whether a VP step correctly failed before a fix existed.
+HOLDS = "holds"
+FAILS = "fails"
+UNMEASURABLE = "unmeasurable"
+OUT_OF_GRAMMAR = "out_of_grammar"
+
+ACCEPTANCE_VERDICTS: frozenset[str] = frozenset({HOLDS, FAILS, UNMEASURABLE, OUT_OF_GRAMMAR})
+
+
+class AcceptanceVerdictRefused(ValueError):
+    """Raised when a supplied acceptance_verdict record does not resolve to a holds verdict
+    correctly keyed to this rec, its current acceptance text and the closing sha. Writes nothing
+    -- the caller (scripts.ops_data_portal::update_rec) never reaches _ducklake_write on this
+    path. This predicate alone never makes an ABSENT verdict a refusal (see
+    assert_acceptance_verdict); the structural binding that keeps a trailer-named rec with no
+    verdict out of update_rec entirely lives one layer up, in
+    ci_rca_lifecycle.close_recs_from_trailer's require_acceptance_verdict flag (Decision 163)."""
+
+
+def assert_acceptance_verdict(
+    existing_status: Optional[str],
+    new_status: Optional[str],
+    rec_id: str,
+    acceptance: Optional[str],
+    closing_sha: Optional[str],
+    record: Optional[dict],
+) -> None:
+    """Raise AcceptanceVerdictRefused iff this write is a transition INTO a bound status
+    ({closed, declined, superseded}) FROM a status not already bound, `record` IS supplied, and
+    it is not a holds verdict correctly keyed to `rec_id`, the sha256 of the CURRENT `acceptance`
+    text, and `closing_sha`. No-op (returns None) when `record` is None or the write is not that
+    first-hop transition -- mirroring assert_closure_obligation's own gating (Decision 186 point
+    3), so a status-preserving write or a later declined -> superseded hop is never refused here.
+
+    `closing_sha` is compared against `record["sha"]` as an INDEPENDENT gate input, supplied by
+    the caller from its own commit_sha, never read back out of `record` itself -- doing the
+    latter would make the sha arm a self-comparison, vacuously true in production while a direct
+    call to this predicate (as in the VP suite) still stayed green.
+    """
+    if record is None:
+        return
+    if new_status not in _BOUND_STATUSES or existing_status in _BOUND_STATUSES:
+        return
+    acceptance_sha256 = hashlib.sha256((acceptance or "").encode("utf-8")).hexdigest()
+    if (
+        record.get("verdict") != HOLDS
+        or record.get("rec_id") != rec_id
+        or record.get("acceptance_sha256") != acceptance_sha256
+        or record.get("sha") != closing_sha
+    ):
+        raise AcceptanceVerdictRefused(
+            f"{rec_id}: acceptance_verdict record does not resolve to a holds verdict keyed to this "
+            f"rec, its current acceptance text and closing sha {closing_sha!r} -- record={record!r}. "
+            "See docs/contracts/git-ops.yaml::trailer_acceptance_gate (Decision 201)."
+        )

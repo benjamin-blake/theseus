@@ -220,6 +220,8 @@ ENTRIES: tuple[Entry, ...] = (
             ".github/workflows/**",
             "scripts/ops_portal/**",
             "docs/contracts/git-ops.yaml",
+            "docs/contracts/ci-rca-lifecycle.yaml",
+            "scripts/rec_trailer_acceptance.py",
             "scripts/checks/ci_guards/**",
             "scripts/checks/_common.py",
             "scripts/checks/registry.py",

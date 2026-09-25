@@ -7,6 +7,7 @@ All functions remain importable from the original module via re-exports.
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 from datetime import datetime, timezone
@@ -16,14 +17,45 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-_LONE_GREP_HEAD_RE = re.compile(r"^(?:grep|rg)\b")
-_GREP_NEGATION_RE = re.compile(r"(?:^|\s)(-v|--invert-match|-L|--files-without-match)(?=\s|$)")
-_COMPARISON_ASSERTION_RE = re.compile(r"(-eq|-ne|-gt|-lt|-ge|-le|==|!=)")
+_GREP_NEGATION_FLAGS = frozenset({"-v", "--invert-match", "-L", "--files-without-match"})
+_COMPARISON_FLAGS = frozenset({"-eq", "-ne", "-gt", "-lt", "-ge", "-le"})
 _PYTEST_BARE_PATH_RE = re.compile(r"\bpytest\s+(?:-\S+\s+)*[\"']?(tests/[^\s\"']+?\.py)(::[^\s\"']+)?[\"']?")
+
+# Shell control operators a command chain splits on -- shared by _classify_non_discriminating and
+# require_decidable so neither ever inherits a splitter's quote-cutting hole independently.
+_CONTROL_OPERATORS = frozenset({"&&", "||", "|", ";"})
+_DECIDABLE_HEADS = frozenset({"grep", "rg", "test", "[", "wc"})
+_ASSERT_FLAG_RE = re.compile(r"^--assert-[\w-]+$")
+
+
+def _control_segments(cmd: str) -> list[list[str]]:
+    """Quote-aware split of `cmd` into argv-token segments on shell control operators (&&, ||,
+    |, ;), via shlex(posix=True, punctuation_chars=True) -- quoted content (a grep pattern
+    containing a literal '|', for instance) is never mistaken for a control operator, unlike a
+    naive str.split("|"). Returns [] on an unparseable (e.g. unbalanced-quote) command, never
+    raises."""
+    try:
+        lexer = shlex.shlex(cmd, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        return []
+    segments: list[list[str]] = []
+    current: list[str] = []
+    for token in tokens:
+        if token in _CONTROL_OPERATORS:
+            if current:
+                segments.append(current)
+            current = []
+        else:
+            current.append(token)
+    if current:
+        segments.append(current)
+    return segments
 
 
 def _classify_non_discriminating(cmd: str) -> tuple[bool, str]:
-    """Pure-string classification of a presumptively non-discriminating acceptance probe.
+    """Classification of a presumptively non-discriminating acceptance probe.
 
     Never executes `cmd` (Decision 103: no new acceptance machinery). Returns (True, reason)
     for either of two shapes that pass identically whether or not the underlying defect was
@@ -31,7 +63,10 @@ def _classify_non_discriminating(cmd: str) -> tuple[bool, str]:
 
     (a) A LONE grep/rg invocation for a plain literal, carrying no negation flag
         (-v/--invert-match/-L/--files-without-match), no comparison-style count assertion
-        (-eq/-ne/-gt/-lt/-ge/-le/==/!=), and no chained second assertion (&& or |).
+        (-eq/-ne/-gt/-lt/-ge/-le/==/!=), and no chained second assertion (&& or |). Segmented via
+        _control_segments (Decision 201 quote-aware fix) rather than a naive str.split("|"),
+        which used to cut INSIDE a quoted grep pattern and let a lone grep carrying quoted
+        alternation (grep -q 'a\\|b' f) evade this check entirely.
     (b) A bare `pytest <path>.py` invocation with no ::node_id, where <path> already exists on
         disk -- a probe that re-runs an existing, already-passing file gains no new assertion.
         A path that does NOT yet exist is legitimately discriminating (collection error before,
@@ -46,12 +81,16 @@ def _classify_non_discriminating(cmd: str) -> tuple[bool, str]:
     command carrying -k with no ::node_id and an existing bare path is correctly refused here,
     steering toward the CLAUDE.md-endorsed ::node_id form rather than being special-cased through.
     """
-    chain_parts = [p.strip() for p in cmd.split("&&") if p.strip()]
-    if len(chain_parts) == 1:
-        pipe_parts = [p.strip() for p in chain_parts[0].split("|") if p.strip()]
-        if len(pipe_parts) == 1 and _LONE_GREP_HEAD_RE.match(pipe_parts[0]):
-            head = pipe_parts[0]
-            if not _GREP_NEGATION_RE.search(head) and not _COMPARISON_ASSERTION_RE.search(head):
+    segments = _control_segments(cmd)
+    if len(segments) == 1:
+        tokens = segments[0]
+        if tokens and tokens[0] in ("grep", "rg"):
+            token_set = set(tokens)
+            if (
+                not (_GREP_NEGATION_FLAGS & token_set)
+                and not (_COMPARISON_FLAGS & token_set)
+                and not any("==" in t or "!=" in t for t in tokens)
+            ):
                 return True, (
                     "a lone grep/rg for a plain literal, with no negation, count assertion or "
                     "chained second assertion, passes identically whether or not the underlying "
@@ -169,7 +208,24 @@ def validate_acceptance_feasibility(acceptance: object, action: str = "") -> tup
     return AcceptanceFeasibility.FEASIBLE, ""
 
 
-def lint_acceptance_command(acceptance: object, *, require_discrimination: bool = False) -> tuple[bool, Optional[str]]:
+def _segment_is_decidable(tokens: list[str]) -> bool:
+    """A segment carries a decidable assertion when its argv head is in _DECIDABLE_HEADS, it is
+    a pytest invocation carrying a ::node_id (the word "pytest" appears anywhere in the segment
+    -- e.g. after `-m` -- with a "::"-bearing token elsewhere in it), or it carries a declared
+    `--assert-<name>` exit-contract flag (the already-ratified idiom at
+    scripts/ci_rca/probe_health.py:239 and scripts/preflight/ci_rca_gauges.py:438)."""
+    if not tokens:
+        return False
+    if tokens[0] in _DECIDABLE_HEADS:
+        return True
+    if "pytest" in tokens and any("::" in t for t in tokens):
+        return True
+    return any(_ASSERT_FLAG_RE.match(t) for t in tokens)
+
+
+def lint_acceptance_command(
+    acceptance: object, *, require_discrimination: bool = False, require_decidable: bool = False
+) -> tuple[bool, Optional[str]]:
     """Validate acceptance command for banned patterns and bash syntax.
 
     Accepts str | list[str] | list[dict] (CD.29 TypedCheck) per T0.12.5 shim.
@@ -180,6 +236,11 @@ def lint_acceptance_command(acceptance: object, *, require_discrimination: bool 
             presumptively non-discriminating probe shapes (see _classify_non_discriminating) --
             a probe that would pass identically whether or not the rec's fix ever landed.
             Default False keeps every existing caller's behaviour byte-for-byte unchanged.
+        require_decidable: keyword-only, default False (Decision 201). When True, refuses a
+            command carrying NO segment with a decidable assertion (see _segment_is_decidable) --
+            grammar shape only, never node existence, since the test may not exist yet when the
+            rec is filed. Default False keeps every existing caller's behaviour byte-for-byte
+            unchanged.
 
     Returns:
         (True, None) if valid, (False, error_msg) if invalid.
@@ -199,6 +260,18 @@ def lint_acceptance_command(acceptance: object, *, require_discrimination: bool 
             "'python scripts/validate.py --pre' instead.\n"
         )
         return False, error_msg
+
+    if require_decidable:
+        decidable_cmd = cmd[1:-1].strip() if cmd.startswith("`") and cmd.endswith("`") else cmd
+        segments = _control_segments(decidable_cmd)
+        if not segments or not any(_segment_is_decidable(seg) for seg in segments):
+            error_msg = (
+                "ERROR: acceptance probe carries no decidable assertion in any segment.\n"
+                f"  Command: {cmd}\n"
+                "  FIX: use grep/rg/test/[/wc, a pytest ::node_id, or a declared --assert-<name> "
+                "exit contract.\n"
+            )
+            return False, error_msg
 
     if require_discrimination:
         non_discriminating, reason = _classify_non_discriminating(cmd)

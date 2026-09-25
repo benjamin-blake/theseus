@@ -39,6 +39,12 @@ _ESCAPE_CLOSURE_REFUSAL_MARKER = "[REC-AUTOCLOSE] Decision 186 closure refusal"
 _MERGE_LEG_PLAN_ONLY_REFUSAL_MARKER = "[REC-AUTOCLOSE] merge-leg refusal (plan-only diff)"
 _MERGE_LEG_EMPTY_REFUSAL_MARKER = "[REC-AUTOCLOSE] merge-leg refusal (empty/unresolvable diff)"
 
+# Decision 201 acceptance-verdict refusal marker: a THIRD, distinct constant, never shared with
+# _ESCAPE_CLOSURE_REFUSAL_MARKER or either merge-leg marker above, formatted PER-REC and CARRYING
+# THE REC ID (mirrors the shipped _ESCAPE_CLOSURE_REFUSAL_MARKER precedent) -- the corrected
+# post-merge closeout fallback tests for a marker naming that rec id.
+_ACCEPTANCE_VERDICT_REFUSAL_MARKER = "[REC-AUTOCLOSE] Decision 201 acceptance-verdict refusal"
+
 # Fail-closed default: a legacy closed head with no fixed_by_sha (every rec closed before this
 # change; manual closures) cannot run the ancestry check -- so it always classifies as a
 # REGRESSION, never a silent drop (Decision 55).
@@ -389,11 +395,22 @@ def close_recs_from_trailer(
     run_url: str,
     recs_cache: dict[str, dict],
     profile: Optional[str] = None,
+    *,
+    acceptance_verdicts: Optional[dict[str, dict]] = None,
+    require_acceptance_verdict: bool = False,
 ) -> int:
-    """Close every rec named in `ids` via the ops portal -- the importable helper
-    rec-autoclose.yml's closure step delegates its loop to (the stamp_fixed_by_sha / Decision 142
-    precedent), so a Decision 186 refusal cannot redden this ci_rca:watched workflow and the
-    workflow body stays under its ratchet ceiling.
+    """Close every rec named in `ids` via the ops portal -- the importable helper ci.yml's
+    trailer-closure job delegates its loop to (the stamp_fixed_by_sha / Decision 142 precedent),
+    so a Decision 186 refusal cannot redden this ci_rca:watched workflow and the workflow body
+    stays under its ratchet ceiling.
+
+    Decision 201/163: when `require_acceptance_verdict` is True (what ci.yml's trailer-closure
+    job passes), a rec_id with no entry in `acceptance_verdicts` is NEVER passed to update_rec at
+    all -- it is left OPEN with the same loud-not-red marker treatment as an
+    AcceptanceVerdictRefused refusal, so the trailer path can never fail open on an absent
+    verdict. The default False preserves every existing caller's behaviour byte-for-byte. The
+    closing sha handed to update_rec's gate is this function's own `commit_sha` positional,
+    passed through unconditionally and independently of the closure_fix_sha stamp path.
 
     Idempotent: a rec already closed_by the cache is skipped. Passes closure_fix_sha=commit_sha
     into the closing update_rec call, CONDITIONALLY on closure_stamps_applicable over the cached
@@ -423,7 +440,12 @@ def close_recs_from_trailer(
     Returns the exit code sys.exit() should use (0 normally; 1 iff a non-gate exception occurred
     while closing any rec).
     """
-    from scripts.ops_data_portal import ClosureArtifactRequired, RecNotFound, update_rec  # noqa: PLC0415
+    from scripts.ops_data_portal import (  # noqa: PLC0415
+        AcceptanceVerdictRefused,
+        ClosureArtifactRequired,
+        RecNotFound,
+        update_rec,
+    )
 
     changed = changed_files(commit_sha, ROOT)
     if merge_leg_refuses(changed):
@@ -437,10 +459,17 @@ def close_recs_from_trailer(
     resolution = f"Auto-closed by rec-autoclose workflow: merge commit {commit_sha} (run: {run_url})"
     exit_code = 0
 
+    verdicts = acceptance_verdicts or {}
+
     for rec_id in ids:
         existing = recs_cache.get(rec_id)
         if existing and existing.get("status") == "closed":
             print(f"rec-autoclose: {rec_id} already closed -- skipping (idempotent)")
+            continue
+        if require_acceptance_verdict and rec_id not in verdicts:
+            marker = f"{_ACCEPTANCE_VERDICT_REFUSAL_MARKER}: {rec_id} left OPEN -- no acceptance verdict"
+            print(marker)
+            _mirror_refusal_to_step_summary(_ACCEPTANCE_VERDICT_REFUSAL_MARKER, marker)
             continue
         stamp_kwargs: dict = {}
         if closure_stamps_applicable(existing.get("context_v2_json") if existing else None):
@@ -450,6 +479,8 @@ def close_recs_from_trailer(
                 rec_id,
                 {"status": "closed", "resolution": resolution},
                 profile=profile,
+                acceptance_verdict=verdicts.get(rec_id),
+                closing_sha=commit_sha,
                 **stamp_kwargs,
             )
             print(f"rec-autoclose: closed {rec_id}")
@@ -457,6 +488,11 @@ def close_recs_from_trailer(
             marker = f"{_ESCAPE_CLOSURE_REFUSAL_MARKER}: {rec_id} left OPEN -- {exc}"
             print(marker)
             _mirror_refusal_to_step_summary(_ESCAPE_CLOSURE_REFUSAL_MARKER, marker)
+            continue
+        except AcceptanceVerdictRefused as exc:
+            marker = f"{_ACCEPTANCE_VERDICT_REFUSAL_MARKER}: {rec_id} left OPEN -- {exc}"
+            print(marker)
+            _mirror_refusal_to_step_summary(_ACCEPTANCE_VERDICT_REFUSAL_MARKER, marker)
             continue
         except RecNotFound as exc:
             print(f"rec-autoclose: WARN {rec_id} not found in portal ({exc}) -- skipping")

@@ -90,7 +90,9 @@ from scripts.ops_portal.closure_gate import (  # noqa: F401
     ARTIFACT_KINDS,
     KIND_STRENGTH,
     WAIVER_CATEGORIES,
+    AcceptanceVerdictRefused,
     ClosureArtifactRequired,
+    assert_acceptance_verdict,
     assert_closure_obligation,
     closure_stamps_applicable,
     parse_context_json,
@@ -456,6 +458,8 @@ def update_rec(
     closure_waiver_category: Optional[str] = None,
     closure_waiver_reason: Optional[str] = None,
     closure_fix_sha: Optional[str] = None,
+    acceptance_verdict: Optional[dict] = None,
+    closing_sha: Optional[str] = None,
 ) -> bool:
     """Merge update fields into an existing recommendation and write via the DuckLake closed boundary.
 
@@ -480,6 +484,10 @@ def update_rec(
         ClosureArtifactRequired: This write closes (bound set: closed/declined/superseded, from a
             not-already-bound status) an escape-classified rec with no resolvable
             closure_artifact and no well-formed waiver pair. Writes nothing on this path.
+        AcceptanceVerdictRefused: acceptance_verdict (Decision 201) is supplied and does not
+            resolve to a holds verdict keyed to this rec, its acceptance text and closing_sha.
+            acceptance_verdict/closing_sha are gate INPUTS, never closure_stamps -- neither is
+            stamped into context_v2_json, so closure_stamps_applicable never gates either.
         ValidationError: The merged record fails schema validation.
         RuntimeError: The warehouse is unreachable for the read step or the write fails.
     """
@@ -530,6 +538,9 @@ def update_rec(
         merged.get("status"),
         parse_context_json(existing.get("context_v2_json")),
         parse_context_json(merged.get("context_v2_json")),
+    )
+    assert_acceptance_verdict(
+        existing.get("status"), merged.get("status"), rec_id, merged.get("acceptance"), closing_sha, acceptance_verdict
     )
 
     # ops_recommendations always routes to DuckLake (Decision 81 cl.7 / T2.19).
