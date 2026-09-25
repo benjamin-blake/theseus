@@ -31,8 +31,10 @@ scope:
       when write_mode == scd2 (the S1 seam that keeps ducklake_scd2_schema.py flat); and
       validate_projection_partitions(doc) running validate_partition_spec over EVERY partition a
       field_semantics-shaped doc emits (partition_transforms, tables.*.partition, every
-      ops_tables[*].partition value). Imports no other ducklake_* module (Decision 80 acyclic
-      discipline)
+      ops_tables[*].partition value). STDLIB-ONLY (re at most): deploy-ducklake-lambdas.yml's
+      reconcile-gate job imports it via the generator with only pyyaml + pydantic installed, so a
+      third-party import would block deploy-serving. Imports no other ducklake_* module (Decision 80
+      acyclic discipline)
   - file: src/common/ducklake_scd2_schema.py
     action: Modify
     purpose: >-
@@ -88,8 +90,9 @@ scope:
     action: Modify
     purpose: >-
       smoke tables.history.partition, fields.created_timestamp.partition_role,
-      partition_transforms.history, and the history partitions of the dormant (ops_priority_queue,
-      ops_execution_plans) and smoke_ops_tables (ops_smoke_events) blocks -> the calendar-day
+      partition_transforms.history, and the history partitions of the dormant_ops_tables block
+      (ops_priority_queue, and ops_execution_plans which is status live inside that block) and
+      smoke_ops_tables (ops_smoke_events) -> the calendar-day
       triple; the created_timestamp verified_by probe text names a cross-month case
   - file: config/lambda/ducklake/field_semantics.yaml
     action: Modify
@@ -205,7 +208,11 @@ scope:
       version from pinned_duckdb_version(), Decision 99): for every table in the generated
       projection plus the smoke pair, create via the real create_scd2_tables / create_control_table,
       insert rows sharing a day-of-month across month and year boundaries, run
-      ducklake_merge_adjacent_files, and assert every live file holds exactly one UTC calendar day;
+      ducklake_merge_adjacent_files, and assert every live file holds exactly one UTC calendar day.
+      NON-VACUITY (critique r3 F1, measured: default data inlining leaves ZERO partition-value rows):
+      attach with ducklake_default_data_inlining_row_limit=0 and TimeZone UTC, mirroring
+      open_connection, and assert live file count >= distinct calendar dates written > 0 and that the
+      partition tuples read back equal the written dates, before the per-file single-day assertion;
       test_create_control_table_repeated_call_is_idempotent (rec-3808 acceptance name) and the
       scd2 twin assert a repeated non-force create raises nothing and leaves one active
       partition_info row; the layout assertion reads partition values through the SAME
@@ -748,7 +755,7 @@ constraints:
 context:
   - "Decision-scout verdict: FLAGS_FOUND. Decisions triaged: 154 of 154. Roadmap items intersected: 16; CONFLICT: 1; RELATED: 15."
   - "CITE: Decision 137, 177, 118, 79, 125, 126, 143, 128, 201; RELATED 78, 96, 99, 88, 191, 82, 55, 151, 86, 150, 141"
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PENDING (r1 REVISE, r2 REVISE -- all required findings applied)"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PROCEED after 3 round(s); round 3 autonomous"
   - >-
     Scout dispositions: WARN Decision 81 -> cl.7 annotated with 137; SPIRIT 151 -> annotations cite
     operator direction (this plan); NOTE 84 I-3 -> no query_ops in VP; NOTE 199/96 + CONFLICT
@@ -770,7 +777,8 @@ context:
   - "fork: generator partition source | chosen: contract partition_by | class: consistency-only | precedent: T2.33 projection | precedent_kind: contract | reversible: yes | persisted: scope"
   - >-
     Sequencing: telemetry slice 1 (PLAN-telemetry-kernel-identity-append, on main c89b1a19) also
-    edits the generator, its test, the data-pipeline manifest and DECISIONS.md -- whichever lands
+    edits the generator, its test, the data-pipeline manifest, DECISIONS.md and both
+    scripts/checks/ops_governance/_manifest.py + its test__manifest.py pin -- whichever lands
     second merges the other's hunks; the generator gains only straight-line calls and its new tests
     live in tests/common/test_ducklake_partition_spec.py for that reason.
   - >-
