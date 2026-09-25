@@ -2,6 +2,98 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 199: Telemetry event-journal model -- append-only lifecycle events, write-boundary-derived identity, derived-at-read state/friction/cost (amends Decisions 95, 96 clauses 1 and 3, 97 clauses 1-4) (Decided)
+
+```yaml
+number: 199
+status: Decided
+decided_date: "2026-09-24"
+amends: [95, 96, 97]
+significance:
+  value: numbered_decision
+  justification: >-
+    Replaces the telemetry write pattern and identity scheme wholesale across four Class A
+    contracts and amends 95's table definitions plus the 96/97 invariants they build on -- no
+    single contract's governance_notes can carry a cross-contract model change this shape; a
+    numbered Decision is the correct routing (docs/contracts/decision-entry.yaml significance.routing_rule).
+```
+
+**Status:** Decided
+**Date:** 2026-09-24
+**Warehouse ID:** dec-199 (synced to ops_decisions via `ops_data_portal --backfill-decisions-md` post-merge, per Decision 84)
+
+**Problem:** The ratified four-table model (Decision 95) mutates a root row in place across an open/close pair, mints identity once at the boundary and propagates it as a foreign key (Decision 97), and partitions per-table on started_at/created_at (Decision 96 clause 1). Landing turn/tool_call capture (T3.20) and a real writer (rec-4024) on this shape forces every producer to hold write-side mutable state across a session's lifetime and to propagate ids with no coordination guarantee -- unworkable once producers span processes (LiteLLM, CI annotate) with no shared memory.
+
+**Decision:**
+1. Event journal (amends Decision 95 clause 1 telemetry_sessions, clause 2 telemetry_observations, clause 4 telemetry_agents; clause 3 telemetry_transcripts is UNAMENDED by this clause -- its own content-tier change is clause 5 below). Each is an append-only journal: one row per lifecycle event (event_kind), never a row mutated in place. A span-shaped entity is an open+close row pair sharing one derived key; a point-shaped entity (model_call, process_event, a transcript blob) is one row. Session/observation/agent-run STATE, DURATION, roll-up counts, friction classification and cost are DERIVED AT READ by a named reader verb, bounded to a session's single day(session_started_at) partition (answers, does not amend, Decision 81 clause 8) -- never stored, never mutated.
+2. Temporal (amends Decision 96 clause 1's per-table partition basis; clause 3's insert-once framing stands, restated as this append-only pattern). event_timestamp is the canonical event-time column (source-derived); every table partitions on day(session_started_at) -- the ROOT session's own start time, shared by every row of that session and its sub-agent sessions, so a whole trace tree lands in one partition.
+3. Identity (amends Decision 97 clauses 1-4). Keys stay ULID-shaped (clause 1 retained) but are DERIVED at the write boundary from a caller-supplied ref via a normative hash spec (telemetry-event-envelope.yaml), replacing clause 2's mint-once and clause 3's boundary-injection/propagation: a foreign key is computed using the PARENT's own domain tag over the same ref, so it equals the parent's key with no propagation step. Clause 4's UUID4 grandfather is retired; the live producer (scripts/session/preflight.py open_telemetry_session) is not yet migrated to this derivation, tracked as pending rec-4030.
+4. Shared envelope. event_id, event_kind, event_timestamp, session_started_at, source_ordinal, external_ref, entity_ref, producer, producer_version, parser_version and created_timestamp are declared ONCE in the new Class C contract telemetry-event-envelope.yaml and $ref'd by every telemetry table, replacing the per-table ingested_at column.
+5. Content tier. telemetry_transcripts (Decision 95 clause 3, table definition unamended) stores a payload inline when it is <= 64 KiB, else spills it to a content-addressed blob port (Decision 184 clause 2: S3 in the cloud adapter, a local-directory adapter in the free tier) referenced by content_uri -- replacing the local_path/s3_key pointer pair.
+6. Tenancy and project identity are settled separately in Decision 200.
+7. Scope: REPORT-ONLY contract change. The writer (rec-4024), verification harness (rec-4025), turn capture (rec-4026), price table (rec-4031) and friction-labels table (rec-4032) build to this model; none is built here.
+
+**Rationale:** An append-only journal needs no cross-process mutable write state and tolerates concurrent/out-of-order producers by construction. Deriving identity from a domain-tag hash over a caller ref, rather than minting once and propagating, removes the coordination requirement a multi-producer trace tree cannot satisfy: any producer that knows a ref and the domain tag computes the same key another producer would. Deriving state/duration/cost at read, bounded to one partition, avoids a materialized current projection (Decision 81 clause 8's usual remedy for "latest per id") because a session's rows are already colocated by construction.
+
+```yaml reversal-conditions
+decision: 199
+review_by: 2027-03-31
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: derivation-collision-found
+    kind: manual
+    description: "The write-boundary hash derivation produces a real collision under production load: reopen clause 3's domain-tag scheme."
+  - id: derived-read-too-costly
+    kind: manual
+    description: "Read-time state/duration/friction derivation cannot meet a real consumer's latency bound even partition-bounded: pull materialization forward from T2.52 c1."
+```
+
+**Related:** Decision 95 (the model this amends), Decision 96 (temporal standard amended), Decision 97 (identity standard amended), Decision 81 clause 8 (answered, not amended), Decision 84 (DuckLake substrate), Decision 184 clause 2 (blob port rule), Decision 200 (tenant/project identity, decided alongside), T2.36 (Phase 4 rebuild), T3.20 (turn capture), rec-4024/rec-4025/rec-4026/rec-4030/rec-4031/rec-4032.
+
+---
+
+## Decision 200: Tenant and project identity for telemetry -- tenant_id and project_id are opaque writer-minted ids, always present, tenancy enforcement stays a cloud-adapter property (amends Decision 197 clause 2) (Decided)
+
+```yaml
+number: 200
+status: Decided
+decided_date: "2026-09-24"
+amends: [197]
+significance:
+  value: numbered_decision
+  justification: >-
+    Re-maps Decision 197 clause 2's tenancy/identity split for telemetry specifically (a new
+    Class C tenant_id contract, project_id tightened NOT NULL across four Class A contracts) --
+    a cross-tier tenancy commitment no contract governance_notes can carry alone; the correct
+    routing is a numbered Decision amending the clause it re-grounds.
+```
+
+**Status:** Decided
+**Date:** 2026-09-24
+**Warehouse ID:** dec-200 (synced to ops_decisions via `ops_data_portal --backfill-decisions-md` post-merge, per Decision 84)
+
+**Problem:** Decision 197 clause 2 states tenancy is `project_id`, with tenancy enforcement a cloud-adapter property -- but a cloud tenant can own multiple projects (repositories), so one column cannot carry both "which customer" and "which repository" without conflating them the moment a tenant has more than one project. Decision 199's telemetry event-journal model needs both concepts as always-present, hash-input identity columns before rec-4024 can build the writer.
+
+**Decision:**
+1. Split identity. tenant_id (new Class C contract, tenant-id.yaml) is the customer/organisation boundary; project_id (project-id.yaml, re-grounded) is repository identity. Both are opaque, immutable ULIDs minted by the writer's own registration verb (rec-4024), never caller-supplied, resolved at the write boundary: tenant_id from a configured constant (local adapter) or the caller's authenticated identity (cloud adapter); project_id from a caller-sent project_ref, auto-registering an 'unregistered' row with a permanent id on first sight rather than rejecting the write. The retired "theseus" single-project default (Decision 198) is gone -- there is no implicit project.
+2. Always present, columns always present (amends Decision 197 clause 2: tenancy is tenant_id, project_id is repository identity; tenancy ENFORCEMENT -- multi-tenant isolation -- remains the cloud-adapter property clause 2 already named; the local adapter is single-tenant by construction and resolves a fixed tenant_id). Every telemetry Class A contract $refs both, tightened NOT NULL.
+3. SCD2 dimensions deferred. ops_tenants and ops_projects (mutable attributes: name, plan, canonical remaps) are Decision 200's forward-declared companions, authored as their own Class A contracts WITH their registration in rec-4024 -- not created here. An unregistered project is remapped to its canonical row via canonical_project_id on that dimension, never by rewriting facts on rows already written with the unregistered id.
+4. Hash participation. Both ids are inputs to telemetry-event-envelope.yaml's identity hash (Decision 199), in their canonical uppercase ULID form, so two tenants' or two projects' rows can never collide on an identical entity_ref.
+
+```yaml reversal-conditions
+decision: 200
+review_by: 2027-03-31
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: registration-not-idempotent
+    kind: manual
+    description: "rec-4024's registration verb cannot be made idempotent under concurrency with a unique constraint or advisory lock: reopen clause 1's registration model."
+```
+
+**Related:** Decision 197 clause 2 (amended), Decision 199 (the identity hash tenant_id/project_id feed), Decision 198 (retired the 'theseus' default this decision removes from project-id.yaml), Decision 84 I-2 (writer-minted ids precedent), rec-4024 (registration verb + dimension contracts).
+
+---
+
 ## Decision 198: Theseus and Guerdon retired as external brands; On The Loop Labs Limited and On The Loop supersede the brand hierarchy (amends Decisions 101, 195, 196) (Decided)
 
 ```yaml
@@ -145,6 +237,11 @@ conditions:
 ```
 
 **Related:** Decision 184 (port rule, free-tier boundary), Decisions 81, 84, 87, 93, 128, 137, 147, 185; T4.3, T4.19, T4.22, T4.23, T4.24; Decision 196.
+
+> **Amended by Decision 200 (2026-09-24):** Clause 2 re-mapped for telemetry: tenancy is
+> tenant_id (a new Class C identifier, tenant-id.yaml), project_id is repository identity, and
+> both columns are always present on a telemetry row -- tenancy ENFORCEMENT remains the
+> cloud-adapter property this clause already named.
 
 ---
 
@@ -6328,6 +6425,11 @@ amendment), Decision 96 (temporal standard -- the event timestamps minted under 
 serves `day()` pruning), docs/contracts/session-id.yaml, docs/contracts/telemetry-lexicon.yaml, T0.12.6
 (per-table contracts author these keys).
 
+> **Amended by Decision 199 (2026-09-24):** Clauses 1-4 superseded by write-boundary derivation from
+> caller-supplied refs (telemetry-event-envelope.yaml's normative hash spec), replacing mint-once
+> and boundary-injection/propagation; clause 4's UUID4 grandfather is retired, with the live
+> producer's own migration tracked as pending rec-4030.
+
 ---
 
 ## Decision 96: Telemetry temporal + partition standard -- event-time day(started_at) UTC, no trade_date (Decided)
@@ -6382,6 +6484,11 @@ sweep), T2.33 (DuckLake partition-as-code -- the telemetry realization path), De
 ALTER-partitioning mechanism), Decision 78 (DuckLake adoption), Decision 84 (ops SCD2
 `last_updated_timestamp` envelope -- the concept kept distinct from telemetry),
 docs/contracts/telemetry-lexicon.yaml.
+
+> **Amended by Decision 199 (2026-09-24):** Clause 1 re-grounded to event_time_column
+> event_timestamp and partition day(session_started_at) (the ROOT session's own start time) for
+> all four tables, replacing the per-table started_at/created_at columns; clause 3's insert-once
+> framing stands, restated as the append-only event-journal write pattern.
 
 ---
 
@@ -6463,6 +6570,12 @@ ratify under), Decision 84 (DuckLake substrate; ULID envelope; backfill-from-DEC
 machine-parseable registry, not prose), T0.12.6 (re-scoped here), T0.12.7 (session-id.yaml / project-id.yaml
 Class C precedents), T2.17 (project_id realization), docs/contracts/session-id.yaml,
 docs/contracts/telemetry-lexicon.yaml, docs/ROADMAP-PLATFORM.yaml.
+
+> **Amended by Decision 199 (2026-09-24):** Clause 1 (telemetry_sessions), clause 2
+> (telemetry_observations) and clause 4 (telemetry_agents) re-grounded to the append-only
+> event-journal write pattern (one row per lifecycle event, not one row mutated in place); root
+> unification and the observation_type collapse rule stand unamended. Clause 3
+> (telemetry_transcripts) is unamended by Decision 199 -- only its content-tier model changed.
 
 ---
 

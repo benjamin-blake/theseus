@@ -1,57 +1,73 @@
 ---
 # Class C cross-system invariant: the project partition id.
 # Ratified under the CD.25 pre-codegen contract ratification ritual (tier_item T0.12.7).
-# Authored against the shipped scripts/contracts_schema.py + tests/test_contracts.py.
-#
-# FORWARD-LOOKING: no code populates this field as of 2026-06-19. The contract is the
-# authoritative spec that the future implementation (milestone T2.17) builds to --
-# this is the textbook case for CD.25 pre-codegen ratification (ratify the invariant
-# BEFORE the column exists, so codegen has a spec rather than inventing semantics).
+# Re-grounded to the write-boundary registration model at contract_version 2 (Decision 199/200,
+# telemetry event-journal re-model).
 contract:
   id: project-id
   class: C
-  contract_version: 1
+  contract_version: 2
   status: ratified
-  ratified_at: "2026-06-19"
-  ratified_via: "Step 10 multi-perspective critique + PLAN-class-c-cross-system-invariants merge to main"
+  ratified_at: "2026-09-24"
+  ratified_via: "PLAN-telemetry-event-journal-contracts merge to main (Decision 199/200)"
   description: >-
     Canonical cross-system project partition identifier intended to span every ops +
     telemetry table and every Lambda invocation, identifying which project a row belongs
-    to. Pre-codegen ratification (CD.25): the invariant is fixed before any column exists.
+    to. project_id is repository identity, distinct from tenant_id (tenant-id.yaml, Decision
+    200); both are always-present columns, with tenancy ENFORCEMENT staying a cloud-adapter
+    property (Decision 197 clause 2, re-mapped by Decision 200).
 fields:
   project_id:
     type: str
     iceberg_type: string
     nullable: true
     description: >-
-      Identifier of the project a row belongs to. Default single-project value:
-      "theseus". Multi-project partitioning is the forward path; until then every row
-      belongs to the single default project.
+      Opaque, immutable ULID identifying the project (repository) a row belongs to. Minted by the
+      writer's registration verb (rec-4024) and committed in-repo, never a client-generated value.
     semantics: >-
-      FORWARD-LOOKING -- not populated in any table or code path as of 2026-06-19
-      (zero occurrences in src/, scripts/, config/ confirmed by codebase sweep).
-      Two-phase realization at milestone T2.17: Phase A adds the column as
-      Optional[str] = None defaulting to "theseus"; Phase B flips to a not-null
-      write-time invariant. This contract is the spec both phases build to.
+      The caller sends a natural project_ref (an opaque per-repository label, resolved by the
+      caller's own configuration -- this contract names no particular derivation); the write
+      boundary resolves it to the registered project_id, auto-registering an 'unregistered' row
+      with a PERMANENT id on first sight of an unknown project_ref rather than rejecting the write.
+      No default value: there is no implicit project when project_ref is absent, only the explicit
+      unregistered-auto-registration path (see amendment_log for what this replaces). The Class C
+      baseline nullability is the loosest common value; the four telemetry Class A contracts
+      tighten it to not_null.enforced: true via dq_intent_local (Invariant 5) -- project_id is
+      always present on a telemetry row. Non-telemetry (ops) consumers may keep the looser baseline
+      until their own re-ratification.
     populated_by: >-
-      FUTURE (T2.17): harness/Lambda-injected per environment at write time. No
-      current populator. Not agent-supplied.
+      the write boundary's project-registration verb (rec-4024), resolving project_ref to
+      project_id (auto-registering 'unregistered' on first sight). No current populator.
     write_time_validation: >-
-      FUTURE (T2.17 Phase B): not-null write-time validator with an exclude_before
-      cutover. None today.
+      FUTURE (rec-4024): registration must be idempotent under concurrency (a unique constraint or
+      advisory lock on (tenant_id, project_ref)) -- stated here as the contract's requirement, built
+      there.
     dq_intent:
       not_null:
         enforced: false
     governance_notes: >-
-      Population is future-state (T2.17). Ratifying the invariant now at status:
-      ratified (NOT provisional_v0) is deliberate: Class C cross-system invariants do
-      not use the v0-provisional state (INTENT Part 7 -- a provisional cross-system
-      invariant is a contradiction in terms; they are too foundational). Phase A keeps
-      not_null unenforced (column Optional, default "theseus"); Phase B flips to
-      enforced. Per-table contracts inherit via $ref and may tighten, never loosen
-      (Invariant 5). Re-grounded from the roadmap intent's retired "AWS-migration
-      INTENT" reference onto the live T2.17 milestone.
+      Population is future-state (rec-4024). Ratifying the invariant now at status: ratified (NOT
+      provisional_v0) is deliberate: Class C cross-system invariants do not use the v0-provisional
+      state (INTENT Part 7). name and remote (repository-identity attributes an earlier draft of
+      this contract once carried) are attributes of the SCD2 ops_projects dimension Decision 200
+      forward-declares, authored as its own Class A contract in rec-4024, NOT columns of this
+      opaque id -- an unregistered project is remapped to its canonical row via canonical_project_id
+      on that dimension, never by rewriting facts on rows already written with the unregistered id.
     amendment_log:
+      - date: "2026-09-24"
+        semantic_break: true
+        change_class: governance_note_add
+        summary: >-
+          PLAN-telemetry-event-journal-contracts (Decision 199/200): re-grounded from a
+          harness/Lambda-injected default-string field (default "theseus", the now-retired brand,
+          Decision 198) to a writer-minted opaque ULID resolved from a caller-sent project_ref, with
+          unknown-ref auto-registration. name/remote moved off this field entirely, onto the
+          forward-declared SCD2 project dimension (rec-4024). semantic_break=true: the identity
+          MECHANISM changed (string default -> registered opaque id), not merely the prose.
+        migration_story: >-
+          No live populator existed for either shape (population is future-state in both), so no
+          runtime migration is required. The forward implementation (rec-4024) builds directly to
+          this contract_version 2 spec.
       - date: "2026-08-26"
         semantic_break: false
         change_class: prose_improvement
@@ -60,11 +76,21 @@ fields:
           legacy query engine trimmed; field meaning unchanged.
 governance_notes: >-
   Single-hop leaf invariant (no chained $ref; Class C contracts are leaf nodes,
-  Invariant 5). No Class A contract references project_id yet (no table carries the
-  column); the first $ref lands when T2.17 adds the column and the per-table Class A
-  contracts are (re-)ratified to include it. No _joins.yaml entry is forward-declared
-  because no join uses this key today.
+  Invariant 5). The four telemetry Class A contracts (T0.12.6, re-grounded at Decision
+  199/200) $ref project_id, tightened not_null. No _joins.yaml entry is forward-declared
+  for project_id itself; the dimension join lands with the ops_projects contract in rec-4024.
 amendment_log:
+  - date: "2026-09-24"
+    semantic_break: true
+    change_class: governance_note_add
+    summary: >-
+      PLAN-telemetry-event-journal-contracts (Decision 199/200): contract-level description
+      re-grounded to name tenant_id (tenant-id.yaml) as the distinct tenancy identifier and to
+      drop the "theseus" default framing. Accompanies the field-level amendment_log entry above
+      (CD.25 category-6 gate). semantic_break=true, mirroring the field-level entry.
+    migration_story: >-
+      Prose-only at the contract-description level; no runtime behaviour changes (no populator
+      existed for either shape).
   - date: "2026-08-26"
     semantic_break: false
     change_class: prose_improvement
@@ -77,4 +103,13 @@ amendment_log:
       outbox, ops compaction, legacy workgroup IAM) were deleted, and this contract's
       references to them were removed in the same change. No live DuckLake field or verb
       semantics changed.
-previous_versions: []
+previous_versions:
+  - contract_version: 1
+    ratified_at: "2026-06-19"
+    ratified_via: "Step 10 multi-perspective critique + PLAN-class-c-cross-system-invariants merge to main"
+    superseded_on: "2026-09-24"
+    summary: >-
+      Harness/Lambda-injected default-string project_id (Optional[str], default "theseus",
+      two-phase T2.17 realization). Superseded by the write-boundary registration model
+      (Decision 199/200): opaque writer-minted ULID, caller-sent project_ref, unregistered
+      auto-registration, no default value.

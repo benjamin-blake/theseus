@@ -1,0 +1,243 @@
+---
+# Class C cross-system invariant: the shared telemetry event/identity envelope.
+# Ratified as part of the telemetry event-journal re-model (Decision 199).
+#
+# Every telemetry Class A contract (telemetry_sessions, telemetry_observations,
+# telemetry_transcripts, telemetry_agents) $refs EVERY field on this contract once, so the
+# event-journal shape (event_kind discriminator, source-derived timestamps, the normative
+# identity hash spec) is stated HERE ONCE and never re-derived per table (DRY; keeps every
+# telemetry contract under the 500-effective-line structural cap, config/structural_size_budgets.yaml
+# contracts class). tenant_id and project_id are their OWN Class C contracts (tenant-id.yaml,
+# project-id.yaml) -- referenced alongside this envelope by every telemetry table, not folded in
+# here, because they are cross-system identity concepts with their own SCD2-dimension future (rec-4024),
+# not event-shaped fields.
+contract:
+  id: telemetry-event-envelope
+  class: C
+  contract_version: 1
+  status: ratified
+  ratified_at: "2026-09-24"
+  ratified_via: "PLAN-telemetry-event-journal-contracts merge to main (Decision 199)"
+  description: >-
+    Canonical shared event/identity envelope for the telemetry event-journal model (Decision 199,
+    amending Decisions 95, 96 clauses 1 and 3, and 97 clauses 1-4). Defines the event/identity
+    fields every telemetry table carries -- event_id, event_kind, event_timestamp,
+    session_started_at, source_ordinal, external_ref, entity_ref, producer, producer_version,
+    parser_version, created_timestamp -- and the normative write-boundary identity hash spec that
+    derives entity/FK keys and event_id from caller-supplied refs, replacing the retired
+    mint-once-and-propagate scheme (Decision 97 clauses 1-3, original).
+fields:
+  event_id:
+    type: str
+    iceberg_type: string
+    nullable: true
+    description: >-
+      ULID identifying this one event row. Format: ULID(48-bit event_timestamp ms + the first 80
+      bits of H computed over external_ref with domain tag '<table>:event'), per this contract's
+      identity spec below. Not a business/entity key -- see entity_ref for the row's FK-shaped
+      identity when the row is itself referenced by a child.
+    semantics: >-
+      k-sortable by event_timestamp. DuckLake enforces no row uniqueness, so a duplicate event_id
+      (same logical event re-emitted, e.g. by a parser re-run) is resolved READ-SIDE, never by an
+      engine constraint: keep one row per event_id, preferring the highest parser_version then the
+      earliest created_timestamp. The writer's own anti-join on (event_id, parser_version) before
+      insert is best-effort, not a substitute for the read-side rule.
+    populated_by: the write boundary, from external_ref (rec-4024's append_events verb).
+    dq_intent:
+      not_null:
+        enforced: false
+  event_kind:
+    type: str
+    iceberg_type: string
+    nullable: true
+    description: >-
+      The table-local lifecycle/point discriminator for this row: open | resume | compact | close |
+      annotate for telemetry_sessions; open | close for the span-shaped telemetry_observations
+      kinds (phase, step, turn, tool_call) and telemetry_agents; point for the instantaneous
+      telemetry_observations kinds (model_call, process_event) and every telemetry_transcripts row.
+      Each telemetry table's Class A contract tightens the accepted set for its own grain via
+      dq_intent_local.accepted_values.
+    semantics: >-
+      Distinguishes a lifecycle-boundary row (open/resume/compact/close/annotate) from an
+      instantaneous fact row (point). A span-shaped entity's start/end/duration are DERIVED at read
+      by pairing its open and close rows (see data-modeling-standard.yaml's derived-state rule) --
+      never stored on either row.
+    populated_by: the emitting producer, per its own event grammar.
+    dq_intent:
+      not_null:
+        enforced: false
+  event_timestamp:
+    type: datetime
+    iceberg_type: timestamptz
+    nullable: true
+    description: >-
+      The event-time column: the timestamp of the ORIGINATING record (source-derived), never the
+      write time. UTC, tz-aware, parsed and truncated (not rounded) to millisecond precision.
+    semantics: >-
+      The writer rejects an implausible event_timestamp (later than created_timestamp plus a
+      configured skew bound) -- the rule is declared here; the write-time validator itself is
+      rec-4024's. Distinct from created_timestamp (write time) and from session_started_at (the
+      partition basis, the ROOT session's own event_timestamp).
+    populated_by: the emitting producer, decoded from its own source record.
+    dq_intent:
+      not_null:
+        enforced: false
+  session_started_at:
+    type: datetime
+    iceberg_type: timestamptz
+    nullable: true
+    description: >-
+      The ROOT session's start time: source-derived from the FIRST timestamped record in the root
+      transcript, UTC, truncated to ms -- never a warehouse lookup, never re-derived downstream.
+      Every row of a root session AND all its sub-agent sessions carries this SAME value, so a
+      whole trace tree lands in one day() partition regardless of how deep the sub-agent nesting
+      goes or how much wall-clock time a long-running root session spans.
+    semantics: >-
+      The partition basis for all four telemetry tables (governance.partition_by
+      "day(session_started_at)"), and the 48-bit time prefix of every entity/FK ULID this contract's
+      identity spec derives (see below) -- so a session's whole trace tree, and every row's FK back
+      to it, cluster in the same partition and sort together. A producer that cannot read the root
+      transcript DEFERS emission rather than guessing this value (e.g. from a locally-observed
+      timestamp); a producer with no transcript at all (LiteLLM, CI annotate) receives it via
+      producer metadata alongside session_ref, or decodes it from a held session_id's ULID prefix.
+    populated_by: the emitting producer, pinned once per session at the root transcript's first record.
+    dq_intent:
+      not_null:
+        enforced: false
+  source_ordinal:
+    type: int
+    iceberg_type: bigint
+    nullable: true
+    description: >-
+      Orders rows within a session independently of event_timestamp precision (e.g. the source
+      record's index in the originating transcript). Ties in event_timestamp (sub-millisecond
+      originating events) still sort deterministically on source_ordinal.
+    semantics: A read-side ordering aid only; never part of any identity hash.
+    populated_by: the emitting producer, from its own source record's position.
+    dq_intent:
+      not_null:
+        enforced: false
+  external_ref:
+    type: str
+    iceberg_type: string
+    nullable: true
+    description: >-
+      The producer-supplied natural reference for THIS event, grammar
+      '<source_record_id>#<block_index>/<row_role>'. Unique within (tenant, project, table); the
+      hash input for event_id. Not a caller-facing FK -- entity_ref is the field a row uses to
+      participate as (or reference) an entity/FK key.
+    semantics: >-
+      For a model_call row specifically, external_ref is '<provider_response_id>/model_call' for
+      EVERY producer that observes that response id, and is owned by the LAST source record
+      carrying it (final usage numbers win) -- see entity_ref below for how model_call rows still
+      de-duplicate to one row per API response despite each producer's event_id differing.
+    populated_by: the emitting producer.
+    dq_intent:
+      not_null:
+        enforced: false
+  entity_ref:
+    type: str
+    iceberg_type: string
+    nullable: true
+    description: >-
+      The producer-supplied natural reference this row's own entity/FK key derives from (input to
+      the identity hash H, below), OR the reference a row uses to point at another entity's key when
+      that row is itself the FK holder. Per-row semantics are table- and event_kind-specific and
+      recorded in governance_notes_local by each telemetry table (e.g. a tool_call row's entity_ref
+      is its toolUseId; a turn row's is '<session entity_ref>/<promptId>'; an agents row's is the
+      spawning tool_call's toolUseId).
+    semantics: >-
+      Because entity/FK keys are DERIVED (see the identity spec below) rather than mint-once and
+      propagated, two producers independently computing a key from the SAME domain tag + tenant +
+      project + entity_ref arrive at the identical ULID with no coordination -- this is what lets a
+      child row's FK equal its parent's own key without the parent propagating anything.
+    populated_by: the emitting producer.
+    dq_intent:
+      not_null:
+        enforced: false
+  producer:
+    type: str
+    iceberg_type: string
+    nullable: true
+    description: >-
+      Canonical id of the emitting producer, e.g. claude_code (the transcript parser), litellm, or
+      ci_annotate. Open set; used both as provenance and, on model_call rows, as the fixed
+      precedence tiebreaker in read-side dedupe (claude_code over litellm).
+    semantics: Open set; enforcement (if any) is a Phase-4 telemetry DQ config concern, not this contract.
+    populated_by: the emitting producer, self-identifying.
+    dq_intent:
+      not_null:
+        enforced: false
+  producer_version:
+    type: str
+    iceberg_type: string
+    nullable: true
+    description: Version string of the emitting producer (distinct from parser_version below, which is integer and dedupe-authoritative).
+    semantics: Provenance only; never consulted by the read-side dedupe rule.
+    populated_by: the emitting producer.
+    dq_intent:
+      not_null:
+        enforced: false
+  parser_version:
+    type: int
+    iceberg_type: bigint
+    nullable: true
+    description: >-
+      Monotonic INTEGER version of the parsing/emission logic that produced this row. The primary
+      read-side dedupe key (alongside event_id): among rows sharing an event_id, the highest
+      parser_version wins, then the earliest created_timestamp.
+    semantics: >-
+      A parser change that stops emitting a row kind it previously emitted must re-emit the WHOLE
+      root tree under the new parser_version -- a partial re-emission is a documented limitation,
+      not silently tolerated drift.
+    populated_by: the emitting producer, from its own build/version identity.
+    dq_intent:
+      not_null:
+        enforced: false
+  created_timestamp:
+    type: datetime
+    iceberg_type: timestamptz
+    nullable: true
+    description: >-
+      UTC tz-aware write-time timestamp -- when the row was appended, distinct from event_timestamp
+      (source event time) and session_started_at (partition basis). The read-side dedupe tiebreaker
+      after parser_version.
+    semantics: >-
+      Replaces the retired per-table ingested_at column (same concept, promoted to the shared
+      envelope so every telemetry table carries one write-time field under one name).
+    populated_by: the write boundary, at append time.
+    dq_intent:
+      not_null:
+        enforced: false
+governance_notes: >-
+  IDENTITY SPEC (Decision 199, normative -- stated ONCE here, referenced by session-id.yaml,
+  observation-id.yaml, parent-observation-id.yaml, telemetry_transcripts (transcript_id),
+  telemetry_agents (agent_run_id) and telemetry-lexicon.yaml; never restated). H = sha256 over
+  4-byte big-endian length-prefixed UTF-8 (NFC-normalised) fields [domain tag '<table>:<id_role>',
+  tenant_id, project_id, ref], with tenant_id/project_id encoded in their canonical uppercase ULID
+  form. An ENTITY or FK key = ULID(48-bit ROOT session_started_at ms + the first 80 bits (bytes
+  0-9, big-endian) of H). event_id = ULID(48-bit event_timestamp ms + the first 80 bits of H
+  computed over external_ref with domain tag '<table>:event'). A FOREIGN KEY field is computed
+  using the PARENT's own domain tag over the same ref the parent used, so the child's FK value
+  equals the parent's key with no propagation step -- this is the write-boundary-derivation
+  replacement for Decision 97's retired mint-once-and-propagate rule (95 cl.1/cl.2/cl.4, 96 cl.1/
+  cl.3, 97 cl.1-4). Ids are NEVER caller-supplied: the caller supplies a natural _ref (session_ref,
+  project_ref, observation_ref, entity_ref, external_ref, parent_session_ref, parent_observation_ref)
+  and the write boundary derives the stored ULID deterministically from it.
+  MODEL_CALL DEDUPE (a worked case of the general rule): a model_call's external_ref is
+  '<provider_response_id>/model_call' for every producer, but because event_id embeds each
+  producer's own event_timestamp, model_call rows do NOT de-duplicate on event_id -- they
+  de-duplicate on the producer-independent ENTITY key (observation_id, a hash of the response id
+  under the root session's prefix), one row per observation_id, with fixed precedence
+  provider-reported usage from the transcript parser (producer claude_code) over litellm, then
+  earliest created_timestamp. A failed call with no response id uses the producer's own call id
+  (e.g. litellm_call_id) as the entity_ref input instead.
+  REFS ARE UNIQUE within (tenant, project, table); DuckLake enforces no engine uniqueness, so
+  duplicate suppression for every row kind (not only model_call) is the read-side rule stated on
+  event_id above, with the writer's own anti-join best-effort only.
+  This spec ANSWERS Decision 81 clause 8's current-write-through-projection concern for telemetry,
+  it does not amend Decision 81: state/friction/cost are derived at read (data-modeling-standard.yaml's
+  derived-state rule), but every derivation is bounded to a session's single day(session_started_at)
+  partition, so it is never the unprunable full scan clause 8 exists to avoid.
+amendment_log: []
+previous_versions: []

@@ -1,68 +1,76 @@
 ---
 # Class C cross-system invariant: the telemetry observation node identity key.
 # Ratified under the CD.25 pre-codegen contract ratification ritual (tier_item T0.12.6).
-# Authored against the shipped scripts/contracts_schema.py + scripts/contracts.py loader
-# (NOT the superseded INTENT 3E worked example, whose shapes fail extra="forbid").
+# Re-grounded to the write-boundary derivation model at contract_version 2 (Decision 199,
+# amending Decision 97 clauses 1 and 2).
 #
 # Telemetry Class A contracts $ref into contract.fields.observation_id:
-#   telemetry_observations.observation_id  -> observation_id  (PK; authored by T0.12.6)
-#   telemetry_transcripts.observation_id   -> observation_id  (FK; authored by T0.12.6)
-#   telemetry_agents.observation_id        -> observation_id  (FK; authored by T0.12.6)
-#
-# FORWARD-LOOKING: the column does not exist in the live draft. The draft telemetry tables
-# (telemetry_phases/_steps/_process_events/_model_calls) carry per-table UUID4 ids
-# (phase_id/step_id/event_id/call_id); the canonical model (Decision 95) collapses those four
-# tables into telemetry_observations with a single observation_id. This contract is the spec the
-# Phase 4 telemetry rebuild builds to (textbook CD.25 pre-codegen ratification).
+#   telemetry_observations.observation_id  -> observation_id  (PK)
+#   telemetry_transcripts.observation_id   -> observation_id  (FK)
+#   telemetry_agents.observation_id        -> observation_id  (FK)
 contract:
   id: observation-id
   class: C
-  contract_version: 1
+  contract_version: 2
   status: ratified
-  ratified_at: "2026-06-24"
-  ratified_via: "Step 10 multi-perspective critique + PLAN-ratify-class-a-telemetry-contracts merge to main (T0.12.6)"
+  ratified_at: "2026-09-24"
+  ratified_via: "PLAN-telemetry-event-journal-contracts merge to main (Decision 199)"
   description: >-
-    Canonical cross-system identity key for a single telemetry observation -- one timed node in a
-    session's trace tree (Decision 95). Primary key of telemetry_observations; foreign key on
-    telemetry_transcripts (the blob's owning node) and telemetry_agents (the node an agent row
-    annotates). Crockford-base32 ULID (Decision 97): lexicographically sortable and time-ordered, so
-    day()-partition pruning and chronological ORDER BY fall out of the key itself.
+    Canonical cross-system identity key for a single telemetry observation -- one node in a
+    session's trace tree (Decision 95, event-journal re-model Decision 199). Primary key of
+    telemetry_observations; foreign key on telemetry_transcripts (the blob's owning node) and
+    telemetry_agents (the node an agent row annotates). Crockford-base32 ULID, derived at the write
+    boundary per telemetry-event-envelope.yaml's normative identity spec -- lexicographically
+    sortable and time-ordered on the ROOT session's start time, so day()-partition pruning and
+    chronological ORDER BY fall out of the key itself.
 fields:
   observation_id:
     type: str
     iceberg_type: string
     nullable: true
     description: >-
-      ULID string identifying one observation (a phase | step | process_event | model_call node, per
-      telemetry_observations.observation_type). Primary key of telemetry_observations; foreign key on
+      ULID string identifying one observation. Primary key of telemetry_observations; foreign key on
       telemetry_transcripts.observation_id and telemetry_agents.observation_id.
     semantics: >-
-      Format: Crockford-base32 ULID (Decision 97). Minted exactly ONCE at the boundary call that opens
-      the node (the Phase 4 observation boundary open_observation, post Phase 4 rebuild), never re-derived
-      downstream; a retried/resumed write reuses the already-minted id. The Class C baseline nullability
-      is the LOOSEST common value so per-table contracts TIGHTEN via dq_intent_local without violating
-      Invariant 5 (overrides must tighten, never loosen). Per-table nullability: REQUIRED in
+      Format: Crockford-base32 ULID = ULID(48-bit ROOT session_started_at ms + the first 80 bits of
+      H computed over the caller-supplied observation_ref with domain tag
+      'telemetry_observations:observation_id'), per telemetry-event-envelope.yaml's identity spec.
+      DERIVED at the write boundary, not minted-once-and-propagated: a child row referencing this
+      observation as its FK computes the SAME value independently, using this domain tag over the
+      same ref -- there is no propagation step to get wrong. Time-prefixed by the ROOT session's
+      session_started_at (never the node's own open time), so every observation under one session
+      -- however deep its sub-agent nesting -- sorts and partitions with its session. The Class C
+      baseline nullability is the LOOSEST common value so per-table contracts TIGHTEN via
+      dq_intent_local without violating Invariant 5. Per-table nullability: REQUIRED in
       telemetry_observations (PK) and telemetry_transcripts (every blob owns a node); OPTIONAL in
       telemetry_agents (a session-scoped agent row may carry no observation_id).
     populated_by: >-
-      FUTURE (Phase 4 telemetry rebuild, post-T2.26): minted by the open_observation boundary and propagated
-      to child transcript rows as a foreign key. No current populator -- the draft has no observation_id
-      column (it has per-table phase_id/step_id/event_id/call_id UUID4s the collapse replaces).
+      the write boundary (rec-4024's append_events verb), derived from the caller-supplied
+      observation_ref per the identity spec. No current populator.
     write_time_validation: >-
       Structural, not central: PK-required in telemetry_observations; foreign key in the child tables.
-      ULID format is generator-guaranteed at the boundary (no separate validator), mirroring the ops
-      `ulid` SCD2 envelope (Decision 84).
+      ULID format and value are generator-guaranteed at the boundary (no separate validator), mirroring
+      the ops `ulid` SCD2 envelope (Decision 84).
     dq_intent:
       not_null:
         enforced: false
     governance_notes: >-
       Loosest baseline (not_null not enforced) by design: the owning/required tables tighten to enforced
-      not-null via dq_intent_local; the optional-FK use (telemetry_agents) passes through. ULID is the
-      ratified format with no live predecessor to grandfather (unlike session_id, whose live UUID4 is
-      grandfathered per Decision 97 clause 4) because the column is greenfield. Population is future-state
-      (Phase 4); ratifying the invariant now at status: ratified (NOT provisional_v0) is deliberate --
-      Class C cross-system invariants do not use the v0-provisional state (they are too foundational).
+      not-null via dq_intent_local; the optional-FK use (telemetry_agents) passes through. Population is
+      future-state (rec-4024); ratifying the invariant now at status: ratified (NOT provisional_v0) is
+      deliberate -- Class C cross-system invariants do not use the v0-provisional state.
     amendment_log:
+      - date: "2026-09-24"
+        semantic_break: true
+        change_class: governance_note_add
+        summary: >-
+          PLAN-telemetry-event-journal-contracts (Decision 199, amending 97 cl.1/cl.2): replaced
+          mint-once-at-open-and-propagate with write-boundary derivation from a caller-supplied
+          observation_ref, time-prefixed by the ROOT session_started_at rather than the node's own
+          open time. semantic_break=true: the derivation MECHANISM changed, not merely the prose.
+        migration_story: >-
+          No live populator existed under either scheme (population is future-state in both), so no
+          runtime migration is required; rec-4024 builds directly to this contract_version 2 spec.
       - date: "2026-08-26"
         semantic_break: false
         change_class: prose_improvement
@@ -70,9 +78,6 @@ fields:
           Platform cleanse: wording referencing removed product surfaces or the retired
           legacy query engine trimmed; field meaning unchanged.
 joins_using_this_key:
-  # Forward-declared. The entries land in docs/contracts/_joins.yaml with the telemetry Class A
-  # contracts (T0.12.6), per INTENT Part 5 incremental-landing -- now that the referencing contracts
-  # ratify in this same wave.
   - observation_id_join_observations_to_transcripts
   - observation_id_join_observations_to_agents
 governance_notes: >-
@@ -80,8 +85,18 @@ governance_notes: >-
   telemetry_observations.observation_id is the canonical definition; parent-observation-id.yaml
   references this key (an observation's parent pointer is itself an observation_id) but is a SEPARATE
   Class C contract per the field-per-contract convention, NOT a chained $ref. The cross-contract join
-  entries live in docs/contracts/_joins.yaml.
+  entries live in docs/contracts/_joins.yaml. The normative derivation formula lives ONCE in
+  telemetry-event-envelope.yaml; this contract states its own domain tag and defers to that spec.
 amendment_log:
+  - date: "2026-09-24"
+    semantic_break: true
+    change_class: governance_note_add
+    summary: >-
+      PLAN-telemetry-event-journal-contracts (Decision 199): contract-level description re-grounded
+      to the write-boundary derivation model and the identity-envelope pointer. Accompanies the
+      field-level amendment_log entry above (CD.25 category-6 gate). semantic_break=true, mirroring
+      the field-level entry.
+    migration_story: Prose-only at the contract-description level; no runtime behaviour changes.
   - date: "2026-08-26"
     semantic_break: false
     change_class: prose_improvement
@@ -94,4 +109,12 @@ amendment_log:
       outbox, ops compaction, legacy workgroup IAM) were deleted, and this contract's
       references to them were removed in the same change. No live DuckLake field or verb
       semantics changed.
-previous_versions: []
+previous_versions:
+  - contract_version: 1
+    ratified_at: "2026-06-24"
+    ratified_via: "Step 10 multi-perspective critique + PLAN-ratify-class-a-telemetry-contracts merge to main (T0.12.6)"
+    superseded_on: "2026-09-24"
+    summary: >-
+      Mint-once-at-open, propagated-to-children-as-FK observation_id (Decision 97 cl.1-3,
+      original). Superseded by write-boundary derivation from a caller-supplied observation_ref,
+      time-prefixed by the ROOT session_started_at (Decision 199).

@@ -1,326 +1,309 @@
 ---
-# Class A data contract for telemetry_agents -- the agent DIMENSION of the canonical session-rooted
-# trace/observation model (docs/contracts/telemetry-lexicon.yaml).
+# Class A data contract for telemetry_agents -- the agent DIMENSION/run surface of the canonical
+# session-rooted trace/observation model (docs/contracts/telemetry-lexicon.yaml), re-grounded to
+# the event-journal model at contract_version 2 (Decision 199).
 # Ratified under the CD.25 pre-codegen contract ratification ritual (tier_item T0.12.6).
 #
-# Replaces the ROOTLESS telemetry_agent_invocations (the draft's standalone fact table with no
-# session_id -- the observability defect the telemetry lexicon's root_invariant fixes). Here agent identity (agent_type, model,
-# version) is a ROOTED dimension: every agent row carries session_id, so sub-agent work joins the
-# session star schema. GREENFIELD TARGET-STATE grounded in the draft TelemetryAgentInvocations
-# dataclass; dead path pending Phase 4 (Decision 84).
-#
-# REALIZATION CHOICE (Decision 96 cl.1 left this open -- "telemetry_agents -> day(started_at), or none
-# if realized as a pure dimension; settled at T0.12.6"): ratified as a ROOTED EVENT TABLE partitioned
-# by day(started_at), NOT a pure dimension. Rationale: a scheduled-agent invocation is genuinely a timed
-# event with run-level outcome + work metrics (findings_count, recs_created, queue_entries_written); an
-# event table grounds every draft column losslessly while still serving as the agent-identity surface.
-# The pure-dimension alternative would orphan those work metrics (telemetry_sessions has no home for
-# them); rejected for that reason. (Step 10 critique may revisit.)
+# EVENT JOURNAL: an agent RUN is an open+close row pair sharing one derived agent_run_id, keyed to
+# the CHILD session it spawned (session_id) and, when it annotates a specific caller node, the
+# spawning tool_call's observation_id.
 contract:
   id: telemetry_agents
   class: A
-  contract_version: 1
+  contract_version: 2
   status: ratified
-  ratified_at: "2026-06-24"
-  ratified_via: "Step 10 multi-perspective critique + PLAN-ratify-class-a-telemetry-contracts merge to main (T0.12.6)"
+  ratified_at: "2026-09-24"
+  ratified_via: "PLAN-telemetry-event-journal-contracts merge to main (Decision 199)"
   description: >-
-    Class A schema contract for telemetry_agents: the rooted agent dimension/run surface. Identifies
-    WHICH agent (agent_type, model, provider, version) ran, rooted to the session it belongs to
-    (session_id) and optionally to a specific node (observation_id). Replaces the rootless
-    telemetry_agent_invocations (docs/contracts/telemetry-lexicon.yaml `agent` term): agent identity is rooted, and the agent's WORK is the
-    observations / linked sub-sessions that share its session_id. Insert-once event data: partition
-    day(started_at) UTC, no trade_date, no SCD2 envelope (Decision 96). ULID-target identity (Decision 97).
+    Class A schema contract for telemetry_agents: an append-only EVENT JOURNAL, one open+close row
+    pair per agent run, keyed by agent_run_id (derived from entity_ref = the spawning tool call's
+    toolUseId). session_id is the CHILD session the run belongs to (NOT NULL -- the fix for the
+    rootless draft telemetry_agent_invocations); observation_id (nullable) is the spawning
+    tool_call, when the run was spawned by one. Token totals are DERIVED via the child session's own
+    model_call observations, not stored on this table.
   projects_to:
     note: >-
-      No generated artifact yet (telemetry not on DuckLake; no telemetry field_semantics.yaml). Draft
-      source: the deleted draft dataclass TelemetryAgentInvocations (+ the emitter
-      the deleted draft agent-telemetry emitter).
+      No generated artifact yet (telemetry not on DuckLake; no telemetry field_semantics.yaml).
 fields:
-  agent_type:
-    $ref: source-lineage.yaml#/contract/fields/registry_key
+  event_id:
+    $ref: telemetry-event-envelope.yaml#/contract/fields/event_id
+    dq_intent_local: {not_null: {enforced: true}}
+    governance_notes_local: Row identity for this event-journal table. Domain tag 'telemetry_agents:event'.
+  event_kind:
+    $ref: telemetry-event-envelope.yaml#/contract/fields/event_kind
     dq_intent_local:
-      not_null:
-        enforced: true
-    governance_notes_local: >-
-      The agent-identity DIMENSION KEY: a canonical lineage key from
-      config/agent/data_quality/source_registry.yaml (Decision 66), the SAME registry
-      ops_recommendations.source draws from. Tightened to not_null enforced:true (Invariant 5): an agent
-      row must identify its agent. Collapse mapping: draft telemetry_agent_invocations.agent_name ->
-      agent_type (kebab-case canonical_id; e.g. doc-freshness, code-smell). Registry membership is
-      validated at write time (validate_source); new agent types register BEFORE first use.
-    joins:
-      - lineage_join_source_to_agent_type
+      not_null: {enforced: true}
+      accepted_values: {values: [open, close], enforced: false}
+  event_timestamp:
+    $ref: telemetry-event-envelope.yaml#/contract/fields/event_timestamp
+    dq_intent_local: {not_null: {enforced: true}}
+  session_started_at:
+    $ref: telemetry-event-envelope.yaml#/contract/fields/session_started_at
+    dq_intent_local: {not_null: {enforced: true}}
+    governance_notes_local: The ROOT session's start time -- carried even though session_id below points at the CHILD session, so the run still clusters with its whole trace tree.
+  source_ordinal:
+    $ref: telemetry-event-envelope.yaml#/contract/fields/source_ordinal
+  external_ref:
+    $ref: telemetry-event-envelope.yaml#/contract/fields/external_ref
+    dq_intent_local: {not_null: {enforced: true}}
+  entity_ref:
+    $ref: telemetry-event-envelope.yaml#/contract/fields/entity_ref
+    dq_intent_local: {not_null: {enforced: true}}
+    governance_notes_local: The spawning tool call's toolUseId -- the hash input for this row's own agent_run_id.
+  producer:
+    $ref: telemetry-event-envelope.yaml#/contract/fields/producer
+  producer_version:
+    $ref: telemetry-event-envelope.yaml#/contract/fields/producer_version
+  parser_version:
+    $ref: telemetry-event-envelope.yaml#/contract/fields/parser_version
+    dq_intent_local: {not_null: {enforced: true}}
+  created_timestamp:
+    $ref: telemetry-event-envelope.yaml#/contract/fields/created_timestamp
+    dq_intent_local: {not_null: {enforced: true}}
+  tenant_id:
+    $ref: tenant-id.yaml#/contract/fields/tenant_id
+    dq_intent_local: {not_null: {enforced: true}}
+  project_id:
+    $ref: project-id.yaml#/contract/fields/project_id
+    dq_intent_local: {not_null: {enforced: true}}
   session_id:
     $ref: session-id.yaml#/contract/fields/session_id
-    dq_intent_local:
-      not_null:
-        enforced: true
+    dq_intent_local: {not_null: {enforced: true}}
     governance_notes_local: >-
-      FOREIGN KEY to telemetry_sessions.session_id -- the fix for the rootless-invocation defect
-      (docs/contracts/telemetry-lexicon.yaml `agent` term). Tightened to not_null enforced:true (Invariant 5): every agent row is rooted.
-      A scheduled-agent invocation gets its own session (workflow=scheduled-agent) and this agent row
-      shares that session_id, so the agent's observations join it. NOTE: the draft
-      telemetry_agent_invocations has NO session_id at all -- this column is the canonical addition.
+      FOREIGN KEY to the CHILD session this agent run belongs to -- the fix for the rootless
+      telemetry_agent_invocations defect: a scheduled-agent or sub-agent invocation gets its own
+      session, and this row roots to it. Tightened NOT NULL (Invariant 5).
     joins:
       - session_id_join_telemetry_sessions_to_agents
   observation_id:
     $ref: observation-id.yaml#/contract/fields/observation_id
     governance_notes_local: >-
-      Optional FK to telemetry_observations.observation_id when the agent row annotates a SPECIFIC node
-      (e.g. a sub-agent spawned by one observation) rather than the whole session. Nullable: a
-      session-scoped agent row carries no observation_id (loosest baseline preserved, not tightened).
+      Optional FK to the SPAWNING tool_call's observation_id, when this run was spawned by one
+      (vs. a top-level/scheduled invocation with no spawning node). Stays nullable.
     joins:
       - observation_id_join_observations_to_agents
+  agent_run_id:
+    type: str
+    iceberg_type: string
+    nullable: false
+    description: ULID string identifying one agent run. Primary key of telemetry_agents.
+    semantics: >-
+      Format: ULID(48-bit ROOT session_started_at ms + the first 80 bits of H computed over
+      entity_ref with domain tag 'telemetry_agents:agent_run_id'), per
+      telemetry-event-envelope.yaml's identity spec. Both the open and close row of a run share
+      this SAME value. Table-local entity key (not a cross-system Class C key).
+    populated_by: the write boundary (rec-4024's append_events verb), derived from entity_ref.
+    write_time_validation: PK-required; ULID format and value are generator-guaranteed at the boundary.
+    dq_intent: {not_null: {enforced: true}}
+  agent_type:
+    $ref: source-lineage.yaml#/contract/fields/registry_key
+    dq_intent_local: {not_null: {enforced: true}}
+    governance_notes_local: >-
+      The agent-identity DIMENSION KEY: a canonical lineage key from
+      config/agent/data_quality/source_registry.yaml (Decision 66), the SAME registry
+      ops_recommendations.source draws from. Registry membership is validated at write time.
+    joins:
+      - lineage_join_source_to_agent_type
   agent_name:
     type: str
     iceberg_type: string
     nullable: true
-    description: >-
-      Optional human-facing display label for the agent instance, when it differs from the canonical
-      agent_type (e.g. a friendly name). Usually redundant with agent_type.
-    semantics: >-
-      The draft REQUIRED agent_name maps to the canonical agent_type ($ref above); this column is
-      retained as an OPTIONAL display alias only, so agent_type stays the single authoritative key. Null
-      when identical to agent_type.
-    populated_by: the Phase 4 agent-telemetry boundary open_invocation.
-    dq_intent:
-      not_null:
-        enforced: false
+    description: Optional human-facing display label for the agent instance, when it differs from the canonical agent_type. Usually redundant with agent_type.
+    semantics: Retained as an OPTIONAL display alias only, so agent_type stays the single authoritative key. Null when identical to agent_type.
+    populated_by: the write boundary, at the open event.
+    dq_intent: {not_null: {enforced: false}}
+    amendment_log:
+      - {date: "2026-09-24", semantic_break: false, change_class: prose_improvement, summary: "PLAN-telemetry-event-journal-contracts (Decision 199): re-grounded populated_by wording to the open event; field meaning unchanged."}
   model:
     type: str
     iceberg_type: string
     nullable: true
     description: The model the agent ran on (e.g. claude-haiku-4-5, gemini-3-pro-preview).
-    semantics: "Collapse mapping: draft model_used -> model. A dimension attribute (docs/contracts/telemetry-lexicon.yaml `agent` term)."
+    semantics: A dimension attribute (docs/contracts/telemetry-lexicon.yaml `agent` term).
+    populated_by: the write boundary, at the open event or record_model_call.
+    dq_intent: {not_null: {enforced: false}}
     amendment_log:
-      - date: "2026-08-25"
-        semantic_break: false
-        change_class: prose_improvement
-        summary: >-
-          Decision 95 was pointerized (wave restructure): re-pointed this field's authority
-          citation from "Decision 95 cl.4" to docs/contracts/telemetry-lexicon.yaml's `agent`
-          term, the surface that now owns the agent-dimension shape. No semantic change.
-    populated_by: the Phase 4 agent-telemetry boundary open_invocation / record_model_call.
-    dq_intent:
-      not_null:
-        enforced: false
+      - {date: "2026-09-24", semantic_break: false, change_class: prose_improvement, summary: "PLAN-telemetry-event-journal-contracts (Decision 199): re-grounded populated_by wording to the write-boundary model; field meaning unchanged."}
   provider:
     type: str
     iceberg_type: string
     nullable: true
-    description: "The inference provider: copilot_sdk | github_models | anthropic_max (draft enum)."
-    semantics: >-
-      Dimension attribute. Open set grounded in the draft trigger/provider enums; closed accepted_values
-      ratified into telemetry.yaml at Phase 4.
-    populated_by: the Phase 4 agent-telemetry boundary open_invocation.
-    dq_intent:
-      not_null:
-        enforced: false
+    description: "The inference provider: copilot_sdk | github_models | anthropic_max."
+    semantics: Dimension attribute. Open set; enforcement deferred to the Phase 4 telemetry DQ config.
+    populated_by: the write boundary, at the open event.
+    dq_intent: {not_null: {enforced: false}}
+    amendment_log:
+      - {date: "2026-09-24", semantic_break: false, change_class: prose_improvement, summary: "PLAN-telemetry-event-journal-contracts (Decision 199): re-grounded populated_by wording to the open event; field meaning unchanged."}
   version:
     type: str
     iceberg_type: string
     nullable: true
-    description: Agent/model version string for the dimension (docs/contracts/telemetry-lexicon.yaml `agent` term names agent_type, model, version).
-    semantics: >-
-      FORWARD-DECLARED dimension attribute: NOT in the draft TelemetryAgentInvocations. Added because
-      the telemetry lexicon's `agent` term names version as a dimension attribute; populated when the
-      Phase 4 rebuild records agent/model versioning. Nullable until then.
+    description: Agent/model version string for the dimension.
+    semantics: Dimension attribute (docs/contracts/telemetry-lexicon.yaml `agent` term).
+    populated_by: the write boundary, at the open event.
+    dq_intent: {not_null: {enforced: false}}
     amendment_log:
-      - date: "2026-08-25"
-        semantic_break: false
-        change_class: prose_improvement
-        summary: >-
-          Decision 95 was pointerized (wave restructure): re-pointed this field's description and
-          semantics authority citation from "Decision 95 cl.4" to docs/contracts/telemetry-lexicon.yaml's
-          `agent` term, the surface that now owns the agent-dimension shape. No semantic change.
-    populated_by: FUTURE (Phase 4) -- agent dimension writer.
-    dq_intent:
-      not_null:
-        enforced: false
+      - {date: "2026-09-24", semantic_break: false, change_class: prose_improvement, summary: "PLAN-telemetry-event-journal-contracts (Decision 199): re-grounded populated_by wording to the open event; field meaning unchanged."}
   trigger:
     type: str
     iceberg_type: string
     nullable: true
-    description: "How the agent run was triggered: eventbridge | manual | smoke_test | cron_workflow (draft enum)."
-    semantics: >-
-      Run-provenance attribute. Draft REQUIRED; relaxed to nullable at the baseline (an
-      interactively-rooted agent row may not have a discrete trigger). Open set; enforcement deferred.
-    populated_by: the Phase 4 agent-telemetry boundary open_invocation.
-    dq_intent:
-      not_null:
-        enforced: false
-  started_at:
-    type: datetime
-    iceberg_type: timestamptz
-    nullable: false
-    description: >-
-      UTC tz-aware ISO-8601 timestamp the agent run began. Event-time column and PARTITION BASIS:
-      day(started_at) (Decision 96 cl.1, event-table realization chosen here).
-    semantics: >-
-      Event-time, minted once at open_invocation (Decision 97 cl.2), never re-derived; tz-aware UTC,
-      naive/local rejected (Decision 96 cl.4). Draft REQUIRED_FIELD. NOT last_updated_timestamp.
-    populated_by: the Phase 4 agent-telemetry boundary open_invocation.
-    dq_intent:
-      not_null:
-        enforced: false
-    derivation:
-      formula: tz-aware UTC now() minted ONCE at the open_invocation boundary; never re-derived (Decision 97)
-      inputs: []
-      realized: false
-  ended_at:
-    type: datetime
-    iceberg_type: timestamptz
+    description: "How the agent run was triggered: eventbridge | manual | smoke_test | cron_workflow."
+    semantics: Run-provenance attribute. Open set; enforcement deferred.
+    populated_by: the write boundary, at the open event.
+    dq_intent: {not_null: {enforced: false}}
+    amendment_log:
+      - {date: "2026-09-24", semantic_break: false, change_class: prose_improvement, summary: "PLAN-telemetry-event-journal-contracts (Decision 199): re-grounded populated_by wording to the open event; field meaning unchanged."}
+  outcome:
+    type: str
+    iceberg_type: string
     nullable: true
-    description: UTC tz-aware timestamp the agent run ended. NULL while running.
-    semantics: Set at close_invocation. tz-aware UTC. Not a partition basis (started_at is).
-    populated_by: the Phase 4 agent-telemetry boundary close_invocation.
+    description: "Terminal disposition of the agent run: success | failed | timeout | throttled."
+    semantics: Stored once, on the close row.
+    populated_by: the write boundary, at the close event.
     dq_intent:
-      not_null:
-        enforced: false
+      not_null: {enforced: false}
+      required_when: {event_kind: [close]}
+      accepted_values: {values: [success, failed, timeout, throttled], enforced: false}
+    amendment_log:
+      - {date: "2026-09-24", semantic_break: false, change_class: prose_improvement, summary: "PLAN-telemetry-event-journal-contracts (Decision 199): re-grounded semantics to name this row as the close event and added dq_intent.required_when; accepted values unchanged."}
+  tokens_input_total:
+    type: int
+    iceberg_type: bigint
+    nullable: true
+    description: Total input tokens consumed across the agent run. DERIVED at read via the child session's own model_call observations -- replaces the contract_version 1 stored tokens_input.
+    semantics: A read-time aggregate over telemetry_observations rows sharing this run's session_id; no physical column.
+    populated_by: a named reader verb (rec-4024), bounded to this run's day(session_started_at) partition.
+    dq_intent: {not_null: {enforced: false}}
+    derivation: {timing: read, derived_by: "reader_verb:agent_run_token_rollup", formula: "sum(tokens_input) over telemetry_observations WHERE session_id = this.session_id AND observation_type = 'model_call'", inputs: [telemetry_observations.session_id, telemetry_observations.observation_type, telemetry_observations.tokens_input], realized: false}
+    amendment_log:
+      - date: "2026-09-24"
+        semantic_break: true
+        change_class: governance_note_add
+        summary: >-
+          PLAN-telemetry-event-journal-contracts (Decision 199): renamed from tokens_input (stored)
+          to tokens_input_total (derived at read via the child session's model_call observations,
+          the *_total roll-up naming convention). semantic_break=true: the write pattern changed.
+        migration_story: No live populator existed; rec-4024 builds directly to this derivation.
+  tokens_output_total:
+    type: int
+    iceberg_type: bigint
+    nullable: true
+    description: Total output tokens produced across the agent run. DERIVED at read, same mechanism as tokens_input_total -- replaces the contract_version 1 stored tokens_output.
+    semantics: A read-time aggregate over telemetry_observations rows sharing this run's session_id; no physical column.
+    populated_by: a named reader verb (rec-4024), bounded to this run's day(session_started_at) partition.
+    dq_intent: {not_null: {enforced: false}}
+    derivation: {timing: read, derived_by: "reader_verb:agent_run_token_rollup", formula: "sum(tokens_output) over telemetry_observations WHERE session_id = this.session_id AND observation_type = 'model_call'", inputs: [telemetry_observations.session_id, telemetry_observations.observation_type, telemetry_observations.tokens_output], realized: false}
+    amendment_log:
+      - date: "2026-09-24"
+        semantic_break: true
+        change_class: governance_note_add
+        summary: >-
+          PLAN-telemetry-event-journal-contracts (Decision 199): renamed from tokens_output (stored)
+          to tokens_output_total (derived at read), mirroring tokens_input_total.
+          semantic_break=true: the write pattern changed.
+        migration_story: No live populator existed; rec-4024 builds directly to this derivation.
   duration_seconds:
     type: int
     iceberg_type: bigint
     nullable: true
-    description: Wall-clock agent-run duration in seconds. NULL while running.
-    semantics: Derived at close. bigint (integer-promotion safety).
-    populated_by: the Phase 4 agent-telemetry boundary close_invocation.
-    dq_intent:
-      not_null:
-        enforced: false
-    derivation:
-      formula: int((ended_at - started_at).total_seconds()) at close_invocation
-      inputs: [started_at, ended_at]
-      realized: false
-  outcome:
-    type: str
-    iceberg_type: string
-    nullable: false
-    description: "Terminal disposition of the agent run: success | failed | timeout | throttled (draft enum)."
-    semantics: >-
-      Required lifecycle field (draft REQUIRED_FIELD). Open set; closed accepted_values ratified into
-      telemetry.yaml at Phase 4.
-    populated_by: the Phase 4 agent-telemetry boundary open_invocation / close_invocation.
-    dq_intent:
-      not_null:
-        enforced: false
-  tokens_input:
-    type: int
-    iceberg_type: bigint
-    nullable: true
-    description: Input tokens consumed across the agent run.
-    semantics: Optional usage metric. bigint.
-    populated_by: the Phase 4 agent-telemetry boundary record_model_call / close_invocation.
-    dq_intent:
-      not_null:
-        enforced: false
-  tokens_output:
-    type: int
-    iceberg_type: bigint
-    nullable: true
-    description: Output tokens produced across the agent run.
-    semantics: Optional usage metric. bigint.
-    populated_by: the Phase 4 agent-telemetry boundary record_model_call / close_invocation.
-    dq_intent:
-      not_null:
-        enforced: false
+    description: Wall-clock agent-run duration in seconds. DERIVED at read by pairing this run's open and close rows; NULL while the run has no close row yet.
+    semantics: close.event_timestamp minus open.event_timestamp for this agent_run_id.
+    populated_by: a named reader verb (rec-4024).
+    dq_intent: {not_null: {enforced: false}}
+    derivation: {timing: read, derived_by: "reader_verb:agent_run_state_and_duration", formula: "(close.event_timestamp - open.event_timestamp).total_seconds(), paired on agent_run_id", inputs: [event_timestamp, event_kind, agent_run_id], realized: false}
+    amendment_log:
+      - {date: "2026-09-24", semantic_break: true, change_class: governance_note_add, summary: "PLAN-telemetry-event-journal-contracts (Decision 199): re-grounded from a stored open/close-pair column to a read-derived field paired by agent_run_id; field meaning (wall-clock run duration) unchanged."}
   findings_count:
     type: int
     iceberg_type: bigint
     nullable: true
-    description: Number of findings the agent produced in the run.
-    semantics: >-
-      Agent-run WORK metric (a scheduled-agent output). Retained on the rooted event table (the
-      event-table realization choice); the pure-dimension alternative would have no home for it. bigint.
-    populated_by: the Phase 4 agent-telemetry boundary close_invocation.
-    dq_intent:
-      not_null:
-        enforced: false
+    description: Number of findings the agent produced in the run. Stored once, on the close row.
+    semantics: Agent-run WORK metric (a scheduled-agent output), observed once at close -- not a roll-up over child rows, so it keeps its plain name (no *_total).
+    populated_by: the write boundary, at the close event.
+    dq_intent: {not_null: {enforced: false}}
+    amendment_log:
+      - {date: "2026-09-24", semantic_break: false, change_class: prose_improvement, summary: "PLAN-telemetry-event-journal-contracts (Decision 199): re-grounded semantics to name the close-event row this field is stored on; field meaning unchanged."}
   recs_created:
     type: int
     iceberg_type: bigint
     nullable: true
-    description: Number of recommendations the agent filed in the run.
-    semantics: Agent-run WORK metric; cross-references ops_recommendations rows filed with this agent's source. bigint.
-    populated_by: the Phase 4 agent-telemetry boundary close_invocation.
-    dq_intent:
-      not_null:
-        enforced: false
+    description: Number of recommendations the agent filed in the run. Stored once, on the close row.
+    semantics: Agent-run WORK metric; cross-references ops_recommendations rows filed with this agent's source, joined tenant-locally.
+    populated_by: the write boundary, at the close event.
+    dq_intent: {not_null: {enforced: false}}
+    amendment_log:
+      - {date: "2026-09-24", semantic_break: false, change_class: prose_improvement, summary: "PLAN-telemetry-event-journal-contracts (Decision 199): re-grounded semantics to name tenant-local joining and the close-event row this field is stored on; field meaning unchanged."}
   queue_entries_written:
     type: int
     iceberg_type: bigint
     nullable: true
-    description: Number of priority-queue entries the agent wrote in the run.
-    semantics: Agent-run WORK metric (rec-curator-style producers). bigint.
-    populated_by: the Phase 4 agent-telemetry boundary close_invocation.
-    dq_intent:
-      not_null:
-        enforced: false
+    description: Number of priority-queue entries the agent wrote in the run. Stored once, on the close row.
+    semantics: Agent-run WORK metric (rec-curator-style producers).
+    populated_by: the write boundary, at the close event.
+    dq_intent: {not_null: {enforced: false}}
+    amendment_log:
+      - {date: "2026-09-24", semantic_break: false, change_class: prose_improvement, summary: "PLAN-telemetry-event-journal-contracts (Decision 199): re-grounded semantics to name the close-event row this field is stored on; field meaning unchanged."}
   error:
     type: str
     iceberg_type: string
     nullable: true
-    description: Error message when outcome is failed/timeout/throttled. NULL on success.
+    description: Error message when outcome is failed/timeout/throttled. NULL on success. Stored on the close row.
     semantics: Optional failure diagnostic for the agent run.
-    populated_by: the Phase 4 agent-telemetry boundary close_invocation.
-    dq_intent:
-      not_null:
-        enforced: false
+    populated_by: the write boundary, at the close event.
+    dq_intent: {not_null: {enforced: false}}
+    amendment_log:
+      - {date: "2026-09-24", semantic_break: false, change_class: prose_improvement, summary: "PLAN-telemetry-event-journal-contracts (Decision 199): re-grounded semantics to name the close-event row this field is stored on; field meaning unchanged."}
   lambda_request_id:
     type: str
     iceberg_type: string
     nullable: true
     description: AWS Lambda request id of the invocation, when the agent ran as a Lambda. NULL otherwise.
     semantics: Run provenance (CloudWatch correlation). Null for non-Lambda runs.
-    populated_by: the Phase 4 agent-telemetry boundary open_invocation (from the Lambda context).
-    dq_intent:
-      not_null:
-        enforced: false
+    populated_by: the write boundary, at the open event (from the Lambda context).
+    dq_intent: {not_null: {enforced: false}}
   workflow_run_id:
     type: str
     iceberg_type: string
     nullable: true
     description: GitHub Actions workflow run id, when the agent ran from CI. NULL otherwise.
     semantics: Run provenance (GitHub Actions correlation). Null for non-CI runs.
-    populated_by: the Phase 4 agent-telemetry boundary open_invocation.
-    dq_intent:
-      not_null:
-        enforced: false
-  ingested_at:
-    type: datetime
-    iceberg_type: timestamptz
-    nullable: false
-    description: UTC tz-aware warehouse-ingestion (append) timestamp; distinct from event-time started_at.
-    semantics: Operational append marker (writer-injected). NOT the partition basis (started_at is); NOT SCD2.
-    populated_by: the Phase 4 DuckLake telemetry writer.
-    dq_intent:
-      not_null:
-        enforced: false
+    populated_by: the write boundary, at the open event.
+    dq_intent: {not_null: {enforced: false}}
 governance:
   table_class: event
-  partition_by: "day(started_at)"
+  partition_by: "day(session_started_at)"
   write_path: >-
-    NOT PROVISIONED: the legacy draft emitter was deleted and no telemetry writer exists today.
-    TARGET (Phase 4, post-T2.26): the rooted agent writer (carrying session_id) on the DuckLake
-    telemetry substrate. Insert-once; no SCD2 merge.
+    NOT PROVISIONED: no telemetry writer exists today. TARGET (Phase 4, post-T2.26): the rooted
+    agent writer (carrying session_id) on the append_events boundary (rec-4024). Append-only; no
+    SCD2 merge, no in-place mutation.
 governance_notes: >-
-  docs/contracts/telemetry-lexicon.yaml `agent` term: telemetry_agents replaces the ROOTLESS telemetry_agent_invocations -- the canonical
-  addition is session_id (+ optional observation_id), rooting every agent row to its session. Collapse
-  mapping: agent_name -> agent_type ($ref source-lineage; agent_name retained as optional display alias);
-  model_used -> model; all run/work fields (started_at, ended_at, duration_seconds, outcome, trigger,
-  provider, tokens_*, findings_count, recs_created, queue_entries_written, error, lambda_request_id,
-  workflow_run_id) carry over; version ADDED (telemetry lexicon `agent` term dimension attribute, forward-declared);
-  session_id + observation_id ADDED (rooting). DROPPED: trade_date (Decision 96 cl.2). REALIZATION:
-  event table (day(started_at)), not pure dimension -- the choice Decision 96 cl.1 deferred to T0.12.6;
-  chosen to root the work metrics losslessly (a scheduled-agent invocation is a timed event). Decision
-  96: insert-once, partition day(started_at) UTC, tz-aware UTC, no last_updated_timestamp. Decision 97:
-  ULID-target identity, boundary-minted, FKs propagated. No merge_key (insert-once). dq_INTENT only;
-  ENFORCEMENT lands in the Phase 4 telemetry DQ config. NULLABILITY AXES: `nullable`
-  is the TARGET-SCHEMA column constraint (Phase 4 DDL); `dq_intent.not_null.enforced` is the CURRENT DQ
-  posture (false everywhere now). A `nullable: false` + `enforced: false` field is "required in the target
-  schema, not yet DQ-enforced", NOT a contradiction. REPORT-ONLY: documented, not implemented. KNOWN GAP:
-  rec-2173 (preflight telemetry health) and the broader Phase 4 re-provisioning are CODE follow-ons, not
-  this contract.
+  EVENT JOURNAL: telemetry_agents replaces the ROOTLESS telemetry_agent_invocations -- the
+  canonical addition is session_id (+ optional observation_id), rooting every agent row to its
+  session, now shaped as an open+close row pair keyed by the DERIVED agent_run_id (Decision 199,
+  amending Decision 95 clause 4, Decision 96 clauses 1 and 3, and Decision 97 clauses 1-4). Token
+  totals and duration are DERIVED at read (tokens_input_total/tokens_output_total via the child
+  session's own model_call observations; duration_seconds by pairing open/close rows) -- replacing
+  the contract_version 1 stored tokens_input/tokens_output/duration_seconds. findings_count/
+  recs_created/queue_entries_written stay STORED (observed once, at close, not aggregates over
+  child rows). Identity (agent_run_id, session_id, observation_id) is derived at the write boundary
+  per telemetry-event-envelope.yaml's normative hash spec. NULLABILITY AXES: `nullable` is the
+  TARGET-SCHEMA column constraint; `dq_intent.not_null.enforced` is the CURRENT DQ posture.
+  REPORT-ONLY: target-state, not implemented. KNOWN GAP: rec-2173 (preflight telemetry health) and
+  the broader Phase 4 re-provisioning (rec-4024) are CODE follow-ons, not this contract.
 amendment_log:
+  - date: "2026-09-24"
+    semantic_break: false
+    change_class: prose_improvement
+    summary: >-
+      PLAN-telemetry-event-journal-contracts (Decision 199): contract.description re-grounded from
+      a single mutate-in-place run row to an open+close event-journal pair keyed by the new derived
+      PK agent_run_id, naming the shared telemetry-event-envelope.yaml fields. The per-field shape
+      changes (token totals and duration moved to read-derived, ingested_at retired) are recorded
+      on their own fields' amendment_log entries; this entry covers the contract-level description.
+    migration_story: >-
+      No live telemetry writer exists (this contract stays TARGET-STATE, dq_INTENT only); the
+      Phase 4 rebuild (T2.36) and rec-4024 build directly to this contract_version 2 shape.
   - date: "2026-08-25"
     semantic_break: false
     change_class: prose_improvement
@@ -329,4 +312,14 @@ amendment_log:
       "Decision 95 cl.4" authority citation re-pointed to docs/contracts/telemetry-lexicon.yaml's
       `agent` term, the surface that now owns the agent-dimension shape Decision 95 originally
       established. No semantic change.
-previous_versions: []
+previous_versions:
+  - contract_version: 1
+    ratified_at: "2026-06-24"
+    ratified_via: "Step 10 multi-perspective critique + PLAN-ratify-class-a-telemetry-contracts merge to main (T0.12.6)"
+    superseded_on: "2026-09-24"
+    summary: >-
+      Single mutate-in-place run row (no dedicated PK field -- identity implicit); stored
+      tokens_input/tokens_output/duration_seconds; ULID mint-once identity (target);
+      day(started_at) partition. Superseded by the open+close event-journal pair keyed by the
+      derived agent_run_id (Decision 199), with token totals and duration read-derived and the
+      partition basis re-grounded to day(session_started_at).

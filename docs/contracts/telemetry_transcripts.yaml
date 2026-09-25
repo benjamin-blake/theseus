@@ -1,198 +1,298 @@
 ---
 # Class A data contract for telemetry_transcripts -- the large-payload SIDECAR of the canonical
-# session-rooted trace/observation model (Decision 95 clause 3).
+# session-rooted trace/observation model (Decision 95 clause 3), re-grounded to the event-journal
+# model + hybrid content tier at contract_version 2 (Decision 199).
 # Ratified under the CD.25 pre-codegen contract ratification ritual (tier_item T0.12.6).
 #
-# Prompt / response / transcript blobs live HERE, linked by FK to their owning observation (and
-# session), kept OUT of telemetry_observations so the node table stays small and hot. One row per blob.
-# GREENFIELD TARGET-STATE grounded in the draft TelemetryTranscripts dataclass; dead path pending
-# Phase 4 (Decision 84). Live-vs-target skew: draft `timestamp` -> canonical created_at (Decision 96
-# partition basis); draft phase_id/step_id/invocation_id FKs -> the single observation_id (Decision 95);
-# draft transcript_id UUID4 -> ULID target (Decision 97); trade_date DROPPED.
+# HYBRID CONTENT MODEL: a payload <= 64 KiB is stored INLINE (content); a larger payload is spilled
+# to the content blob port (S3 in the cloud adapter, a local directory in the free-tier adapter,
+# Decision 184 cl.2) and referenced by content_uri. Exactly one of the two is ever set.
 contract:
   id: telemetry_transcripts
   class: A
-  contract_version: 1
+  contract_version: 2
   status: ratified
-  ratified_at: "2026-06-24"
-  ratified_via: "Step 10 multi-perspective critique + PLAN-ratify-class-a-telemetry-contracts merge to main (T0.12.6)"
+  ratified_at: "2026-09-24"
+  ratified_via: "PLAN-telemetry-event-journal-contracts merge to main (Decision 199)"
   description: >-
-    Class A schema contract for telemetry_transcripts: one row per large text payload (prompt, response,
-    or full transcript) produced by an observation. PK transcript_id (ULID); FK observation_id (the
-    owning node) + session_id (the trace root). A metadata-and-pointer row -- the blob bytes live at
-    local_path / s3_key, not inline -- so telemetry_observations stays hot (Decision 95 cl.3). Insert-once
-    event data: partition day(created_at) UTC, no trade_date, no SCD2 envelope (Decision 96).
+    Class A schema contract for telemetry_transcripts: an append-only EVENT JOURNAL, one row per
+    large text payload (prompt | response | thinking | tool_input | tool_result | system) produced
+    by an observation, point-shaped (event_kind is always point -- a blob is created at a single
+    instant, never opened-then-closed). PK transcript_id (derived); FK observation_id (the owning
+    node) + session_id (the trace root). Hybrid content tier: inline for payloads <= 64 KiB, else a
+    content-addressed blob-port key (Decision 199), so telemetry_observations stays hot without a
+    hard-coded blob-or-die pointer scheme.
   projects_to:
     note: >-
-      No generated artifact yet (telemetry not on DuckLake; no telemetry field_semantics.yaml). Draft
-      source: the deleted draft dataclass TelemetryTranscripts.
+      No generated artifact yet (telemetry not on DuckLake; no telemetry field_semantics.yaml).
 fields:
+  event_id:
+    $ref: telemetry-event-envelope.yaml#/contract/fields/event_id
+    dq_intent_local: {not_null: {enforced: true}}
+    governance_notes_local: Row identity for this event-journal table. Domain tag 'telemetry_transcripts:event'.
+  event_kind:
+    $ref: telemetry-event-envelope.yaml#/contract/fields/event_kind
+    dq_intent_local:
+      not_null: {enforced: true}
+      accepted_values: {values: [point], enforced: false, note: "A blob row is always point -- a payload is created at one instant."}
+  event_timestamp:
+    $ref: telemetry-event-envelope.yaml#/contract/fields/event_timestamp
+    dq_intent_local: {not_null: {enforced: true}}
+    governance_notes_local: The blob's creation time. Replaces the retired created_at column (same event-time concept, promoted to the shared envelope).
+  session_started_at:
+    $ref: telemetry-event-envelope.yaml#/contract/fields/session_started_at
+    dq_intent_local: {not_null: {enforced: true}}
+  source_ordinal:
+    $ref: telemetry-event-envelope.yaml#/contract/fields/source_ordinal
+  external_ref:
+    $ref: telemetry-event-envelope.yaml#/contract/fields/external_ref
+    dq_intent_local: {not_null: {enforced: true}}
+    governance_notes_local: Grammar '<source_record_id>#<block_index>'; the hash input for both event_id and this row's own transcript_id.
+  entity_ref:
+    $ref: telemetry-event-envelope.yaml#/contract/fields/entity_ref
+    dq_intent_local: {not_null: {enforced: true}}
+    governance_notes_local: >-
+      Equals external_ref for a transcript row (its own entity/FK key input). observation_ref (the
+      turn for prompt/system content, the model_call for thinking/response/tool_input, the tool_call
+      for tool_result) is the SEPARATE reference this row's observation_id FK derives from.
+  producer:
+    $ref: telemetry-event-envelope.yaml#/contract/fields/producer
+  producer_version:
+    $ref: telemetry-event-envelope.yaml#/contract/fields/producer_version
+  parser_version:
+    $ref: telemetry-event-envelope.yaml#/contract/fields/parser_version
+    dq_intent_local: {not_null: {enforced: true}}
+  created_timestamp:
+    $ref: telemetry-event-envelope.yaml#/contract/fields/created_timestamp
+    dq_intent_local: {not_null: {enforced: true}}
+    governance_notes_local: Replaces the retired ingested_at column.
+  tenant_id:
+    $ref: tenant-id.yaml#/contract/fields/tenant_id
+    dq_intent_local: {not_null: {enforced: true}}
+    governance_notes_local: The first path segment of a spilled blob's content_uri (tenant/project/session_id/<sha256>).
+  project_id:
+    $ref: project-id.yaml#/contract/fields/project_id
+    dq_intent_local: {not_null: {enforced: true}}
+  observation_id:
+    $ref: observation-id.yaml#/contract/fields/observation_id
+    dq_intent_local: {not_null: {enforced: true}}
+    governance_notes_local: >-
+      FOREIGN KEY to telemetry_observations.observation_id (the node that produced this blob):
+      the turn (for prompt and system -- harness-injected content belongs to the turn it is
+      injected into), the model_call (thinking, response, tool_input), or the tool_call
+      (tool_result). Tightened NOT NULL (Invariant 5): every transcript owns a node.
+    joins:
+      - observation_id_join_observations_to_transcripts
+  session_id:
+    $ref: session-id.yaml#/contract/fields/session_id
+    dq_intent_local: {not_null: {enforced: true}}
+    governance_notes_local: FOREIGN KEY to telemetry_sessions.session_id (the trace root). A transcript is rooted (root-unification, Decision 95).
+    joins:
+      - session_id_join_telemetry_sessions_to_transcripts
   transcript_id:
     type: str
     iceberg_type: string
     nullable: false
     description: ULID string identifying one transcript blob row. Primary key of telemetry_transcripts.
     semantics: >-
-      Format: Crockford-base32 ULID (Decision 97), minted once at the emit_transcript boundary, never
-      re-derived. Table-local PK (not a cross-system key, so defined inline -- no Class C contract). Live
-      format is UUID4 (str(uuid.uuid4())), grandfathered until the Phase 4 rebuild mints ULIDs.
-    populated_by: the Phase 4 transcript boundary -- minted once at blob registration.
-    write_time_validation: PK-required; ULID format generator-guaranteed at the boundary.
-    dq_intent:
-      not_null:
-        enforced: true
-  observation_id:
-    $ref: observation-id.yaml#/contract/fields/observation_id
-    dq_intent_local:
-      not_null:
-        enforced: true
-    governance_notes_local: >-
-      FOREIGN KEY to telemetry_observations.observation_id (the node that produced this blob). Tightened
-      to not_null enforced:true (Invariant 5): every transcript owns a node (Decision 95 cl.3). Replaces
-      the draft's phase_id/step_id/invocation_id -- the canonical model roots a transcript at one
-      observation, not at an ad-hoc mix of phase/step/invocation FKs.
-    joins:
-      - observation_id_join_observations_to_transcripts
-  session_id:
-    $ref: session-id.yaml#/contract/fields/session_id
-    dq_intent_local:
-      not_null:
-        enforced: true
-    governance_notes_local: >-
-      FOREIGN KEY to telemetry_sessions.session_id (the trace root). Tightened to not_null enforced:true
-      (Invariant 5): a transcript is rooted (root-unification, Decision 95). Propagated from the owning
-      observation, never re-derived (Decision 97 cl.3).
-    joins:
-      - session_id_join_telemetry_sessions_to_transcripts
-  created_at:
-    type: datetime
-    iceberg_type: timestamptz
-    nullable: false
-    description: >-
-      UTC tz-aware ISO-8601 timestamp the transcript was created. The event-time column and PARTITION
-      BASIS for telemetry_transcripts: day(created_at) (Decision 96 cl.1 -- the one telemetry table that
-      partitions on created_at, not started_at, because a blob is created at a point in time).
-    semantics: >-
-      Collapse mapping: draft TelemetryTranscripts.timestamp -> created_at (renamed to the canonical
-      event-time term). Minted once at emit_transcript (Decision 97 cl.2); tz-aware UTC, naive/local
-      rejected (Decision 96 cl.4). NOT last_updated_timestamp (insert-once).
-    populated_by: the Phase 4 transcript boundary.
-    dq_intent:
-      not_null:
-        enforced: false
-    derivation:
-      formula: tz-aware UTC now() minted ONCE at the emit_transcript boundary; never re-derived (Decision 97)
-      inputs: []
-      realized: false
+      Format: ULID(48-bit ROOT session_started_at ms + the first 80 bits of H computed over
+      external_ref with domain tag 'telemetry_transcripts:transcript_id'), per
+      telemetry-event-envelope.yaml's identity spec. DERIVED at the write boundary, not
+      minted-once. Table-local entity key (not a cross-system Class C key -- no other table
+      references it as an FK by this name; children reach it via observation_id/session_id).
+    populated_by: the write boundary (rec-4024's append_events verb), derived from external_ref.
+    write_time_validation: PK-required; ULID format and value are generator-guaranteed at the boundary.
+    dq_intent: {not_null: {enforced: true}}
+    amendment_log:
+      - date: "2026-09-24"
+        semantic_break: true
+        change_class: governance_note_add
+        summary: >-
+          PLAN-telemetry-event-journal-contracts (Decision 199): replaced mint-once-at-registration
+          with write-boundary derivation from external_ref, per the shared identity spec.
+          semantic_break=true: the derivation MECHANISM changed, not merely the prose.
+        migration_story: No live populator existed; rec-4024 builds directly to this shape.
   purpose:
     type: str
     iceberg_type: string
     nullable: false
-    description: "What the blob is: prompt | response | transcript (the full session/agent transcript)."
+    description: "What the blob is: prompt | response | thinking | tool_input | tool_result | system."
     semantics: >-
-      Required kind discriminator for the blob. Draft REQUIRED_FIELD. Open set; closed accepted_values
-      ratified into telemetry.yaml at Phase 4.
-    populated_by: the Phase 4 transcript boundary(purpose=...).
+      Required kind discriminator. Extended (Decision 199) from the contract_version 1 set
+      (prompt | response | transcript) to the per-block vocabulary a turn-shaped trace produces;
+      "transcript" (a whole-session dump) is retired as a purpose value -- a session's transcript IS
+      the set of its rows, not a single blob.
+    populated_by: the write boundary (purpose=...).
     dq_intent:
-      not_null:
-        enforced: false
-  local_path:
+      not_null: {enforced: true}
+      accepted_values: {values: [prompt, response, thinking, tool_input, tool_result, system], enforced: false}
+    amendment_log:
+      - date: "2026-09-24"
+        semantic_break: true
+        change_class: accepted_values_narrow
+        summary: >-
+          PLAN-telemetry-event-journal-contracts (Decision 199): purpose vocabulary replaced
+          (prompt | response | transcript) -> (prompt | response | thinking | tool_input |
+          tool_result | system); "transcript" retired as a value. semantic_break=true: the
+          accepted-value set changed, not merely the prose.
+        migration_story: No live populator existed; rec-4024 builds directly to this vocabulary.
+  origin:
+    type: str
+    iceberg_type: string
+    nullable: false
+    description: "Who/what originated the content: human | harness | agent | tool."
+    semantics: >-
+      NEW field (Decision 199). hook/harness-generated tool_result TEXT is origin harness (the tool
+      itself is origin tool; the harness's own injected wrapper text around a tool_result is
+      harness) -- this distinction is what lets a reader separate genuine tool output from
+      harness-injected framing without parsing content.
+    populated_by: the write boundary (origin=...).
+    dq_intent:
+      not_null: {enforced: true}
+      accepted_values: {values: [human, harness, agent, tool], enforced: false}
+  content:
     type: str
     iceberg_type: string
     nullable: true
-    description: Filesystem path to the blob on the writing host. Draft REQUIRED; relaxed to nullable because the durable copy is s3_key.
+    description: >-
+      The payload as the model received/produced it, AFTER credential scrub (CD.40), stored INLINE
+      when its size is <= the content_inline_threshold_bytes below. NULL when the payload was
+      spilled to the blob port instead (content_uri set).
     semantics: >-
-      Where the blob was written locally (ephemeral on Claude-Code-web containers). The DURABLE pointer
-      is s3_key; local_path is best-effort provenance. Draft marks it REQUIRED, but in the canonical model
-      at least one of {local_path, s3_key} must be present -- a write-time validator (Phase 4), not a
-      column not-null, since either pointer satisfies it.
-    populated_by: the Phase 4 transcript boundary.
+      Exactly one of content / content_uri is ever set (a dq expression, not a not-null rule on
+      either alone). When the harness persisted a sidecar (e.g. large tool-results) the STORED
+      payload is the full sidecar content and any in-transcript preview is not stored separately;
+      when the sidecar is unavailable, the preview is stored here and content_truncated is true.
+    populated_by: the write boundary, after credential scrub, when size <= threshold.
     dq_intent:
-      not_null:
-        enforced: false
-  s3_key:
+      not_null: {enforced: false}
+      content_inline_threshold_bytes: 65536
+      exactly_one_of: {fields: [content, content_uri], enforced: false}
+    amendment_log:
+      - date: "2026-09-24"
+        semantic_break: true
+        change_class: governance_note_add
+        summary: >-
+          PLAN-telemetry-event-journal-contracts (Decision 199): re-grounded from the sole payload
+          field (contract_version 1 had no size tier) to the inline half of the hybrid inline/blob
+          content model. semantic_break=true: the field's own presence is now conditional on a size
+          threshold, not unconditional.
+        migration_story: No live populator existed; rec-4024/rec-4026 build directly to this shape.
+  content_uri:
     type: str
     iceberg_type: string
     nullable: true
-    description: S3 key of the durable blob copy (agent-platform-data-lake). NULL until/if uploaded.
+    description: >-
+      Content-addressed blob-port key 'tenant/project/session_id/<content_sha256>', resolved by the
+      blob-port adapter (S3 in the cloud adapter, a local directory adapter in the free tier,
+      Decision 184 cl.2). NULL when the payload was small enough to store inline (content set).
     semantics: >-
-      The durable blob location. Pairs with local_path (at least one required, enforced at write time
-      post-Phase-4). Null when the blob was not uploaded (local-only run).
-    populated_by: the Phase 4 transcript boundary / the S3 log store.
-    dq_intent:
-      not_null:
-        enforced: false
-  size_bytes:
+      Replaces the retired local_path/s3_key pointer pair (contract_version 1): one port-relative
+      key resolved by whichever adapter is configured, instead of two substrate-specific columns.
+    populated_by: the write boundary, after a blob-port put, when size > threshold.
+    dq_intent: {not_null: {enforced: false}}
+  content_sha256:
+    type: str
+    iceberg_type: string
+    nullable: false
+    description: SHA-256 of the ONE stored payload (whichever of content/content_uri is set), hex-encoded.
+    semantics: >-
+      Required regardless of tier: the content-addressing key for a spilled blob's content_uri, and
+      an integrity check for an inline payload.
+    populated_by: the write boundary, computed over the payload before storing it.
+    dq_intent: {not_null: {enforced: true}}
+  content_bytes:
     type: int
     iceberg_type: bigint
     nullable: false
-    description: Size of the blob in bytes. Draft REQUIRED_FIELD.
-    semantics: >-
-      Required payload size; used to budget transcript storage and to spot anomalous (empty / huge)
-      blobs. bigint (integer-promotion safety; matches TELEMETRY_TABLE_DTYPES).
-    populated_by: the Phase 4 transcript boundary.
-    dq_intent:
-      not_null:
-        enforced: false
+    description: Size of the ONE stored payload in bytes. Replaces the retired size_bytes column (same concept, computed over the stored payload, not a separate draft field).
+    semantics: Required; used to budget transcript storage and to spot anomalous (empty / huge) blobs, and is the threshold comparand for the inline/blob-port tier choice.
+    populated_by: the write boundary.
+    dq_intent: {not_null: {enforced: true}}
+  content_truncated:
+    type: bool
+    iceberg_type: boolean
+    nullable: false
+    description: >-
+      True iff the STORED payload is a truncated preview rather than the full content -- the case
+      where a harness-persisted sidecar was unavailable and the writer fell back to an
+      in-transcript preview. False when the stored payload (inline or blob-port) is the full
+      content.
+    semantics: NEW field (Decision 199). Computed over the ONE stored payload, never over a preview that was never stored.
+    populated_by: the write boundary.
+    dq_intent: {not_null: {enforced: true}}
   token_count:
     type: int
     iceberg_type: bigint
     nullable: true
     description: Token count of the blob, when computed. NULL if not tokenised.
-    semantics: Optional; the blob's token size (distinct from a model call's usage). bigint.
-    populated_by: the Phase 4 transcript boundary.
-    dq_intent:
-      not_null:
-        enforced: false
+    semantics: Optional; the blob's token size (distinct from a model_call's usage on telemetry_observations). bigint.
+    populated_by: the write boundary.
+    dq_intent: {not_null: {enforced: false}}
+    amendment_log:
+      - {date: "2026-09-24", semantic_break: false, change_class: prose_improvement, summary: "PLAN-telemetry-event-journal-contracts (Decision 199): re-grounded populated_by wording to the write-boundary model; field meaning unchanged."}
   model:
     type: str
     iceberg_type: string
     nullable: true
     description: The model associated with the blob (e.g. the model that produced the response).
-    semantics: "Collapse mapping: draft TelemetryTranscripts.model_used -> model (canonical column name)."
-    populated_by: the Phase 4 transcript boundary.
-    dq_intent:
-      not_null:
-        enforced: false
+    semantics: Optional attribution, mirroring telemetry_observations.model for this blob's own producing call.
+    populated_by: the write boundary.
+    dq_intent: {not_null: {enforced: false}}
+    amendment_log:
+      - {date: "2026-09-24", semantic_break: false, change_class: prose_improvement, summary: "PLAN-telemetry-event-journal-contracts (Decision 199): re-grounded populated_by wording to the write-boundary model; field meaning unchanged."}
   rec_id:
     type: str
     iceberg_type: string
     nullable: true
     description: Recommendation id the blob relates to (e.g. rec-2335). NULL when not applicable.
-    semantics: Optional cross-reference to ops_recommendations.id.
-    populated_by: the Phase 4 transcript boundary.
-    dq_intent:
-      not_null:
-        enforced: false
-  ingested_at:
-    type: datetime
-    iceberg_type: timestamptz
-    nullable: false
-    description: UTC tz-aware warehouse-ingestion (append) timestamp; distinct from event-time created_at.
-    semantics: Operational append marker (writer-injected). NOT the partition basis (created_at is); NOT SCD2.
-    populated_by: the Phase 4 DuckLake telemetry writer.
-    dq_intent:
-      not_null:
-        enforced: false
+    semantics: Optional cross-reference to ops_recommendations.id, joined tenant-locally.
+    populated_by: the write boundary.
+    dq_intent: {not_null: {enforced: false}}
+    amendment_log:
+      - {date: "2026-09-24", semantic_break: false, change_class: prose_improvement, summary: "PLAN-telemetry-event-journal-contracts (Decision 199): re-grounded semantics to name tenant-local joining; field meaning unchanged."}
 governance:
   table_class: event
-  partition_by: "day(created_at)"
+  partition_by: "day(session_started_at)"
   write_path: >-
-    NOT PROVISIONED: the legacy draft emitter was deleted and no telemetry writer exists today.
-    TARGET (Phase 4, post-T2.26): the DuckLake telemetry writer boundary.
-    Insert-once; no SCD2 merge.
+    NOT PROVISIONED: no telemetry writer exists today. TARGET (Phase 4, post-T2.26): the
+    append_events boundary (rec-4024), putting to the blob port BEFORE the row write when the
+    payload spills (orphan sweep on a failed row write: rec-4033).
 governance_notes: >-
-  COLLAPSE / RE-ROOTING (Decision 95 cl.3): the draft links blobs by phase_id / step_id /
-  invocation_id; the canonical model re-roots them onto a single observation_id (+ session_id), so a
-  transcript always hangs off exactly one node. Column renames to canonical terms: timestamp ->
-  created_at; model_used -> model. DROPPED: trade_date (Decision 96 cl.2). local_path relaxed from draft
-  REQUIRED to nullable because s3_key is the durable pointer; the canonical invariant is "at least one of
-  local_path / s3_key" (write-time validator at Phase 4, not a column not-null). Decision 96: insert-once
-  event data, partition day(created_at) UTC, tz-aware UTC, no last_updated_timestamp. Decision 97: ULID
-  identity minted once, FKs propagated. No merge_key (insert-once). dq_INTENT only; ENFORCEMENT lands in
-  the Phase 4 telemetry DQ config. NULLABILITY AXES: `nullable` is the
-  TARGET-SCHEMA column constraint (Phase 4 DDL); `dq_intent.not_null.enforced` is the CURRENT DQ posture
-  (false everywhere now). A `nullable: false` + `enforced: false` field is "required in the target schema,
-  not yet DQ-enforced", NOT a contradiction. REPORT-ONLY: documented, not implemented.
-amendment_log: []
-previous_versions: []
+  HYBRID CONTENT MODEL (Decision 199): the "inline content" tier here is a COLUMN-LEVEL choice
+  (content vs content_uri), distinct from DuckLake data inlining, which stays DISABLED for
+  telemetry (CD.34, OQ.11) regardless of which tier a given transcript row uses. Re-rooting
+  (Decision 95 cl.3): a transcript hangs off exactly one observation_id (+ session_id), never the
+  draft's ad-hoc phase_id/step_id/invocation_id mix. RETIRED: local_path, s3_key, size_bytes,
+  created_at, ingested_at -- content_uri/content_bytes/event_timestamp/created_timestamp (the
+  shared envelope) supersede them. Identity (transcript_id, observation_id, session_id) is derived
+  at the write boundary per telemetry-event-envelope.yaml's normative hash spec. NULLABILITY AXES:
+  `nullable` is the TARGET-SCHEMA column constraint; `dq_intent.not_null.enforced` is the CURRENT DQ
+  posture. REPORT-ONLY: target-state, not implemented. KNOWN GAPS: rec-4024 (writer + blob-port put
+  ordering), rec-4026 (turn-capture producer), rec-4029 (PII scrubbing/erasure -- the blob port
+  makes erasure of large payloads an object delete), rec-4033 (blob orphan sweep).
+amendment_log:
+  - date: "2026-09-24"
+    semantic_break: false
+    change_class: prose_improvement
+    summary: >-
+      PLAN-telemetry-event-journal-contracts (Decision 199): contract.description re-grounded to
+      the event-journal shape plus the hybrid inline/blob-port content model, naming the shared
+      telemetry-event-envelope.yaml fields. The per-field shape changes (the new content/origin
+      fields, retired local_path/s3_key/size_bytes/created_at/ingested_at, the purpose vocabulary
+      replacement) are recorded on their own fields' amendment_log entries; this entry covers the
+      contract-level description text.
+    migration_story: >-
+      No live telemetry writer exists (this contract stays TARGET-STATE, dq_INTENT only); the
+      Phase 4 rebuild (T2.36) and rec-4024/rec-4026 build directly to this contract_version 2 shape.
+previous_versions:
+  - contract_version: 1
+    ratified_at: "2026-06-24"
+    ratified_via: "Step 10 multi-perspective critique + PLAN-ratify-class-a-telemetry-contracts merge to main (T0.12.6)"
+    superseded_on: "2026-09-24"
+    summary: >-
+      Pointer-only model: local_path/s3_key dual pointers, no inline content tier, purpose in
+      {prompt, response, transcript}, day(created_at) partition, ULID mint-once identity (target).
+      Superseded by the hybrid inline/blob-port content model (Decision 199): content_sha256/
+      content_bytes/content_truncated always stored, content XOR content_uri, day(session_started_at)
+      partition, write-boundary-derived identity.

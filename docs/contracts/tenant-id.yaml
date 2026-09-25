@@ -1,0 +1,61 @@
+---
+# Class C cross-system invariant: the tenant partition id.
+# Ratified as part of the telemetry event-journal re-model (Decision 200, amending Decision 197
+# clause 2).
+#
+# NEW contract (no predecessor): Decision 197 clause 2 named tenancy as a cloud-adapter property
+# ("project_id" doing double duty as both repository and tenancy identity); Decision 200 splits
+# that into two opaque ids -- tenant_id (WHO; a customer/organisation boundary) and project_id
+# (WHICH REPOSITORY; unchanged identity, see project-id.yaml) -- because a single cloud tenant can
+# own multiple repositories/projects. The SCD2 tenant dimension (mutable attributes: name, plan,
+# ...) is modelled by Decision 200 but its Class A contract is authored WITH its registration in
+# rec-4024, not here -- this Class C contract carries only the opaque id invariant.
+contract:
+  id: tenant-id
+  class: C
+  contract_version: 1
+  status: ratified
+  ratified_at: "2026-09-24"
+  ratified_via: "PLAN-telemetry-event-journal-contracts merge to main (Decision 200)"
+  description: >-
+    Canonical cross-system tenant partition identifier (Decision 200, amending Decision 197 clause
+    2). Every telemetry table $refs this field, tightened NOT NULL: tenancy is always present on a
+    telemetry row, even though tenancy ENFORCEMENT (multi-tenant isolation) stays a cloud-adapter
+    property (Decision 197 clause 2, unamended) -- the local adapter is single-tenant by
+    construction and resolves a fixed configured tenant_id.
+fields:
+  tenant_id:
+    type: str
+    iceberg_type: string
+    nullable: true
+    description: >-
+      Opaque, immutable ULID identifying the tenant (customer/organisation boundary) a row belongs
+      to. Included as a hash input to every entity/FK/event_id derivation (see
+      telemetry-event-envelope.yaml's identity spec) so two tenants' rows can never collide even on
+      an identical entity_ref.
+    semantics: >-
+      Resolved at the write boundary, NEVER caller-supplied: the local adapter uses a configured
+      constant; the cloud adapter uses the caller's authenticated identity. Minted once at tenant
+      registration (rec-4024's registration verb) and never re-derived. The Class C baseline
+      nullability is the loosest common value; every telemetry table tightens it to
+      not_null.enforced: true via dq_intent_local (Invariant 5).
+    populated_by: the write boundary, from the deployment's tenant resolution (rec-4024).
+    write_time_validation: >-
+      FUTURE (rec-4024): idempotent registration under concurrency (unique constraint or advisory
+      lock), stated here as the contract's requirement, built there.
+    dq_intent:
+      not_null:
+        enforced: false
+    governance_notes: >-
+      Never loosened: a tenant_id is always present on every telemetry row in every deployment
+      shape (single-tenant local included), because "always present, enforcement varies by
+      adapter" is the whole point of Decision 200's split from Decision 197 clause 2's single
+      project_id-as-tenancy overload.
+governance_notes: >-
+  Single-hop leaf invariant (no chained $ref; Class C contracts are leaf nodes, Invariant 5). The
+  SCD2 ops_tenants dimension (mutable attributes: name, plan, canonical remaps) is Decision 200's
+  forward-declared companion, authored as its own Class A contract in rec-4024, not here -- this
+  contract fixes only the opaque-id invariant every telemetry table needs today. No _joins.yaml
+  entry is forward-declared: rec-4024 lands the dimension join alongside the dimension contract.
+amendment_log: []
+previous_versions: []
