@@ -6,7 +6,7 @@ slug: "platform-iam-personal-release"
 intent: >-
   Second half of rec-3838: release PlatformDev, PlatformAdmin and their five inline policies from
   the CI-applied terraform/personal state through one human-gated forget that touches no live
-  object, so the CD pipeline never again plans IAM its identity cannot write. The plan also locks
+  object, so the CD pipeline never again plans these seven IAM addresses, which its identity cannot write. The plan also locks
   the one-state-per-applier rule in a standing guard, records the relocation as dated Update
   amendments on Decisions 180 and 183, and makes rec-4043 (a separate admin principal) a gate on
   executor re-enable in the roadmap.
@@ -52,12 +52,13 @@ scope:
   - file: config/agent/verification_registry/entries/platform-iam-admin-root-only.yaml
     action: Create
     purpose: graduate the admin-root-only guard under this plan's slug
-  - file: tests/checks/iam_tf/test_platform_iam_bootstrap_adoption.py
-    action: Modify
+  - file: tests/checks/iam_tf/test_platform_iam_dual_copy_parity.py
+    action: Delete
     purpose: >-
-      Delete the transitional TestDualCopyParity class (terraform/personal no longer declares the
-      addresses). TestBootstrapOwnsPlatformIam, the graduated class, is untouched and must stay
-      green -- the predecessor anchors its parity sources on files this plan keeps.
+      The predecessor's transitional dual-copy parity module -- terraform/personal no longer declares
+      the addresses, so there is nothing left to compare. The graduated
+      tests/checks/iam_tf/test_platform_iam_bootstrap_adoption.py is untouched and must stay green
+      (its parity sources live in files this plan keeps).
   - file: tests/test_deploy_paths_admin_procedure.py
     action: Modify
     purpose: >-
@@ -126,9 +127,9 @@ scope:
 bundled_recommendations: ["rec-3838"]
 followon_recs: ["rec-4043", "rec-4047", "rec-4048", "rec-4049", "rec-4050", "rec-4052"]
 infrastructure_dependencies:
-  - "PRECONDITION: PLAN-platform-iam-bootstrap-adopt is fully deployed -- terraform/bootstrap state holds all seven addresses and a bootstrap plan exits 0 (step 12). Merging this plan before that would leave the seven objects unmanaged (harmless to live IAM, but it breaks the chain of custody)."
+  - "PRECONDITION: PLAN-platform-iam-bootstrap-adopt is fully deployed -- terraform/bootstrap state holds all seven addresses and a bootstrap plan exits 0 (the predecessor's step 16 proved it; this plan's step 12 re-checks it before merge). Merging this plan before that would leave the seven objects unmanaged (harmless to live IAM, but it breaks the chain of custody)."
   - "The merge routes seven `forget` actions to the tf-gated-apply Environment (scripts/terraform_apply_guard.py treats a non-inert action on an IAM-sensitive type as out-of-budget; environment-taxonomy.yaml is the classification SoT). A forget issues no AWS API call, so github_ci_apply can execute it; one human approval."
-  - "APPROVAL WINDOW: approve the gated run within 2.0 hours of merge. Until then the hourly terraform-drift plan measures the forgets as resource_changes with no resource_drift, writes a pending_codification marker before it consults pending_gated, and escalates that marker to red at 2.0h (Decision 190 point 3; ordering defect owned by rec-4050 -- if rec-4050 has landed before this merge, the window no longer applies). A missed window is recoverable: the gated-apply job has no convergence precondition, and its green write replaces the record, so approving the still-pending run converges it."
+  - "APPROVAL WINDOW: approve the gated run within 2.0 hours of merge. Until then the hourly terraform-drift plan measures the forgets as resource_changes with no resource_drift, writes a pending_codification marker before it consults pending_gated, and escalates that marker to red at 2.0h (Decision 190 point 3; ordering defect owned by rec-4050 -- if rec-4050 has landed before this merge, the window no longer applies). A missed window is recoverable: the gated-apply job has no convergence precondition, and its green write replaces the record, so approving the still-pending run converges it. Side effect: every non-escalating hourly drift tick in that window files a source=tf_drift 'pending-codification delta' rec (terraform-drift.yml:290-312) that nothing auto-closes -- step 20 closes them."
   - "Freeze: no other terraform/personal PR merges between this PR's speculative plan and the gated forget -- a state-serial bump in between makes the saved plan stale and fails closed (the 2026-09-20 failure shape); recovery is the workflow_dispatch acknowledge-and-retry path."
   - "ADMIN container (Decision 120) for steps 11-18: bin/setup-cloud-env.sh with INSTALL_TERRAFORM=1 and a non-empty provider-mirror sync materialises terraform/personal/terraform.personal.tfvars only; step 11 materialises terraform/bootstrap/terraform.bootstrap.tfvars. DEV containers cannot init any root (Decision 119)."
 acceptance_criteria:
@@ -158,10 +159,12 @@ verification_plan:
     phase: pre-deploy
     action: stale-reference sweep -- no swept surface names a deleted personal policy file, and the prose and hook pointers moved to terraform/bootstrap
     command: |-
-      ! grep -rnE 'terraform/personal/platform_(dev|admin|admin_data)_policies\.tf' terraform scripts tests .github config .claude docs/runbooks --include='*.tf' --include='*.py' --include='*.sh' --include='*.yml' --include='*.yaml' --include='*.md' --exclude=platform-dev-data-lake-read-fence.yaml && ! grep -q 'terraform/personal/platform_roles.tf' .claude/hooks/session_start_aws.sh && grep -q 'terraform/bootstrap/platform_admin_data_policies.tf' docs/runbooks/ducklake-catalog-operations.md && echo STALE_REFS_NONE
+      ! grep -rnE 'terraform/personal/platform_(dev|admin|admin_data)_policies\.tf' terraform scripts tests .github config .claude docs/runbooks --include='*.tf' --include='*.py' --include='*.sh' --include='*.yml' --include='*.yaml' --include='*.md' --exclude=platform-dev-data-lake-read-fence.yaml && ! grep -q 'terraform/personal/platform_roles.tf' .claude/hooks/session_start_aws.sh && grep -q 'terraform/bootstrap/platform_dev_policies.tf' .claude/hooks/session_start_aws.sh && grep -q 'terraform/bootstrap/platform_admin_data_policies.tf' docs/runbooks/ducklake-catalog-operations.md && grep -q 'terraform/bootstrap/platform_roles.tf' terraform/CLAUDE.md && ! grep -nE 'split-apply.*(PlatformDev|PlatformAdmin)|(PlatformDev|PlatformAdmin).*split-apply' terraform/CLAUDE.md && echo STALE_REFS_NONE
     expected: >-
-      exit 0 and the marker is printed; terraform/CLAUDE.md is inside the swept terraform/ tree; the
-      only excluded file is the declared residual shard owned by rec-4047; remaining comment-only
+      exit 0 and the marker is printed -- the old paths are gone and the hook, runbook and
+      terraform/CLAUDE.md positively name terraform/bootstrap, with no terraform/CLAUDE.md line still
+      routing PlatformDev/PlatformAdmin through the split-apply (Decision 183 reversal (b)'s co-moving
+      recovery row); the only excluded file is the declared residual shard owned by rec-4047; remaining comment-only
       pointers to terraform/personal/platform_roles.tf (which now holds the removed blocks) are
       owned by rec-4052
     fix_if: a hit remains -- repoint it to terraform/bootstrap
@@ -189,7 +192,7 @@ verification_plan:
     phase: pre-deploy
     action: the surviving adoption checks stay green after the release
     command: bin/venv-python -m pytest tests/checks/iam_tf/test_platform_iam_bootstrap_adoption.py -q
-    expected: TestBootstrapOwnsPlatformIam passes with the personal policy files deleted and platform_roles.tf reduced to removed blocks; TestDualCopyParity no longer exists
+    expected: TestBootstrapOwnsPlatformIam passes with the personal policy files deleted and platform_roles.tf reduced to removed blocks; the transitional dual-copy parity module no longer exists
     fix_if: a parity leg reads a file this plan deleted or emptied -- re-anchor it on a surviving source in the same PR, never delete the graduated class
     hermetic: false
     graduation: waive
@@ -240,14 +243,17 @@ verification_plan:
     phase: pre-deploy
     action: Decisions 180 and 183 carry dated Update annotations and their original clause texts are unchanged
     command: |-
-      bin/venv-python -c "import re,sys; d=open('docs/DECISIONS.md').read(); blk=lambda n: re.split(r'(?m)^## Decision ',d.split('## Decision '+str(n)+':',1)[1])[0]; u=lambda b: [l for l in b.splitlines() if l.startswith('> **Update (2026-') and 'terraform/bootstrap' in l]; bad=[m for m,c in [('Decision 180 lacks the dated Update',not u(blk(180))),('Decision 183 lacks the reciprocal Update',not u(blk(183))),('Decision 180 clause 6 text was edited','Rejected for now under Decision 144 clause 3' not in blk(180)),('Decision 183 point 4 text was edited','The admin split-apply is the designed complement, not break-glass' not in blk(183))] if c]; sys.exit('; '.join(bad)) if bad else print('DECISION UPDATES OK')"
+      bin/venv-python -c "import re,sys; d=open('docs/DECISIONS.md').read(); blk=lambda n: re.split(r'(?m)^## Decision ',d.split('## Decision '+str(n)+':',1)[1])[0]; u=lambda b: [q for q in re.findall(r'(?m)^> \*\*Update \(2026-[^\n]*(?:\n>[^\n]*)*', b) if 'terraform/bootstrap' in q]; bad=[m for m,c in [('Decision 180 lacks the dated Update',not u(blk(180))),('Decision 183 lacks the reciprocal Update',not u(blk(183))),('Decision 180 clause 6 text was edited','Rejected for now under Decision 144 clause 3' not in blk(180)),('Decision 183 point 4 text was edited','The admin split-apply is the designed complement, not break-glass' not in blk(183))] if c]; sys.exit('; '.join(bad)) if bad else print('DECISION UPDATES OK')"
     expected: DECISION UPDATES OK -- the two Update legs are red before and green after; the two verbatim-clause legs are green throughout (they guard Decision 177's append-only rule)
     fix_if: an Update is missing, or clause 6 / point 4 was rewritten in place -- restore the text and append instead
     hermetic: true
     expected_literals: []
     graduation: waive
     graduation_waiver_reason: >-
-      Append-only annotations; Decision 177's own validators govern the corpus thereafter.
+      A one-time, PR-relative annotation check. Decision 178 retired validate_live_entry_immutability
+      (its registry row sits in entries/deprecated/), so the append-only rule is policy-only today and
+      the two verbatim-clause legs here are this PR's only guard for it; a standing row asserting
+      these two specific annotations would add nothing once they merge.
   - step: 9
     phase: pre-deploy
     action: fast-tier presubmit is clean, including run_differential admission of the new shard, validate_plan_documents, the prose budgets and the decisions-index freshness check
@@ -323,7 +329,7 @@ verification_plan:
     phase: post-deploy
     action: ownership moved -- personal state no longer holds the seven and is converged; bootstrap still owns them with no diff
     command: |-
-      test "$(terraform -chdir=terraform/personal state list | grep -c -E '^aws_iam_role(_policy)?\.platform_(dev|admin)')" -eq 0 && terraform -chdir=terraform/personal plan -input=false -lock=false -var-file=terraform.personal.tfvars -detailed-exitcode && test "$(terraform -chdir=terraform/bootstrap state list | grep -c -E '^aws_iam_role(_policy)?\.platform_')" -eq 7 && terraform -chdir=terraform/bootstrap plan -input=false -lock=false -var-file=terraform.bootstrap.tfvars -detailed-exitcode && echo "OWNERSHIP MOVED -- personal 0 and converged, bootstrap 7 and converged"
+      terraform -chdir=terraform/personal init -input=false -backend-config=backend-sandbox.hcl && terraform -chdir=terraform/bootstrap init -input=false && test "$(terraform -chdir=terraform/personal state list | grep -c -E '^aws_iam_role(_policy)?\.platform_(dev|admin)')" -eq 0 && terraform -chdir=terraform/personal plan -input=false -lock=false -var-file=terraform.personal.tfvars -detailed-exitcode && test "$(terraform -chdir=terraform/bootstrap state list | grep -c -E '^aws_iam_role(_policy)?\.platform_')" -eq 7 && terraform -chdir=terraform/bootstrap plan -input=false -lock=false -var-file=terraform.bootstrap.tfvars -detailed-exitcode && echo "OWNERSHIP MOVED -- personal 0 and converged, bootstrap 7 and converged"
     expected: zero platform_dev/platform_admin addresses in personal state and a personal plan exiting 0 (so the next drift cycle is quiet), seven in bootstrap state and a bootstrap plan exiting 0; -lock=false keeps both reads off the apply locks
     fix_if: an address is still in personal state (the forget did not apply), or either plan shows a diff -- stop and RCA
   - step: 18
@@ -341,6 +347,19 @@ verification_plan:
     expected: rec-3838 is closed (rec-autoclose.yml on the Resolves trailer)
     fix_if: |-
       still open -- confirm the squash body carried `Resolves: rec-3838` and that rec-autoclose ran; close via update_rec only with the closure artifact the trailer gate expects
+  - step: 20
+    phase: post-deploy
+    action: close the tf_drift pending-codification recs the approval window filed
+    command: |-
+      test -n "$MERGE_TS" && bin/venv-python -c "import json,os; from scripts.ops_data_portal import sync; sync(['ops_recommendations']); rows={}; [rows.__setitem__(r['id'], r) for r in sorted((json.loads(l) for l in open('logs/.recommendations-log.jsonl') if l.strip()), key=lambda x: x.get('last_updated_timestamp') or '')]; left=[r['id'] for r in rows.values() if r.get('source')=='tf_drift' and r.get('status')=='open' and 'pending-codification delta' in (r.get('title') or '') and (r.get('created_timestamp') or '')>=os.environ['MERGE_TS']]; print('OPEN WINDOW RECS: '+(', '.join(left) or 'none')); raise SystemExit(1 if left else 0)"
+    expected: OPEN WINDOW RECS none -- either no tick fired inside the window, or each rec it filed has been closed
+    fix_if: close each listed rec with update_rec (status closed), citing step 15's green record at the merge commit as the resolution; then re-run
+  - step: 21
+    phase: post-deploy
+    action: CLEANUP (ADMIN) -- remove every scratch artifact that carries the ExternalIds or account-bearing documents; also run on any STOP
+    command: rm -rf "${TMPDIR:-/tmp}/platform-iam-release" && test ! -e "${TMPDIR:-/tmp}/platform-iam-release" && echo "SCRATCH CLEARED"
+    expected: SCRATCH CLEARED -- release.tfplan, release.json (terraform show -json emits the forgotten trust documents' sensitive values in plaintext) and the BEFORE/AFTER snapshots are gone
+    fix_if: a path survives -- remove it by hand before ending the ADMIN session
 test_obligations:
   - source: terraform/personal/platform_roles.tf
     behavior: terraform/personal declares no PlatformDev/PlatformAdmin IAM and releases all seven addresses through removed blocks with destroy = false.
@@ -379,7 +398,7 @@ test_obligations:
     behavior: The AccessDenied operator hint names the bootstrap file that now holds PlatformDev's runtime grant.
     verification_step: 2
     command: |-
-      ! grep -q 'terraform/personal/platform_roles.tf' .claude/hooks/session_start_aws.sh
+      ! grep -q 'terraform/personal/platform_roles.tf' .claude/hooks/session_start_aws.sh && grep -q 'terraform/bootstrap/platform_dev_policies.tf' .claude/hooks/session_start_aws.sh
     red_green_expectation: red before, green after
   - source: docs/decisions-index.json
     behavior: The generated index stays fresh against DECISIONS.md after the two annotations.
@@ -392,10 +411,10 @@ constraints:
   - Merge only after pre-merge gates 11-14 pass -- the predecessor's adoption complete, rec-4044 closed, the saved plan exactly seven forgets
   - The release must change no live permission; the removed blocks must never allow a destroy
   - "Approve the tf-gated-apply run within 2.0h of merge (Decision 190 point 3) unless rec-4050 has landed; the drift ordering defect is rec-4050's, not worked around here"
-  - "Freeze: no other terraform/personal PR merges between this PR's speculative plan and the gated forget"
+  - "Freeze: no other terraform/personal PR merges between this PR's speculative plan and the gated forget, and no terraform/bootstrap apply runs until the forget converges (restated from the predecessor)"
   - Decision 177 -- the Decision 180 and 183 annotations are dated append-only lines; clause 6 and point 4 texts stay verbatim; no new numbered Decision (human-directed 2026-09-25)
   - terraform/CLAUDE.md must end at or under its 11450-byte prose budget -- trim, never raise (Decision 128/166)
-  - "Public-repo boundary (Decision 101): snapshots, plan files and plan JSON stay in scratch; no ARN, account id or ExternalId in any committed file, chat or PR"
+  - "Public-repo boundary (Decision 101): snapshots, plan files and plan JSON stay in scratch and step 21 removes them, including after any STOP; no ARN, account id or ExternalId in any committed file, chat or PR"
   - Never widen the CI apply role to write these identities (Decision 180 clauses 2-3 are permanent)
   - "The only roadmap edit is T4.2 c8 (human-directed); T2.48 / T2.44 files_in_scope pointers are left as history"
 context:
@@ -403,11 +422,11 @@ context:
   - "gates: decision-scout=FLAGS_FOUND (3 rounds; every flag human-dispositioned 2026-09-25); plan-critique=PENDING"
   - "Sequence: rec-4044 (alarms) -> PLAN-platform-iam-bootstrap-adopt -> THIS PLAN (resolves rec-3838) -> rec-4043 (blocks executor re-enable via T4.2 c8, Decision 67 reversal / CD.17). Follow-ons: rec-4047 (fence shard residual), rec-4048 (retire ExternalId tfvars from personal), rec-4049 (retire CI's residual grants on the two roles), rec-4050 (drift ordering), rec-4052 (comment pointers to platform_roles.tf)."
   - "Decision 167 routing adjudication (human-directed, recorded for plan-critique 12p): routing question 1 is answered NO -- this is not a new durable commitment but the execution of an alternative Decision 180 clause 6 already recorded and deferred 'for now', so it routes to amendment_forms blockquote_update on the two affected entries instead of a numbered Decision. Scout and critique both surfaced the tension (Decision 183's own justification rejected amendment_forms for multi-entry amendments); the human kept the Update route three times."
-  - "Decision 180 Update must state: clause 6's rejected alternative is adopted in full (roles AND inline policies relocated to terraform/bootstrap); Decision 144 clause 3 is preserved because PlatformDev still declares the mandatory boundary and now shares a root with the boundary policy itself, while PlatformAdmin stays boundary-free; the premise of reversal condition (a) stated exactly -- PlatformDev has left CI-applied management (terraform/personal) and remains Terraform-managed in terraform/bootstrap, so no CI write path to PlatformDev remains, which is the basis for rec-4049's IAMRoleMetadataWrite re-narrow; why this differs from Decision 98's rejected Path C (that re-home had no race to remove; this one removes the split-apply race class)."
+  - "Decision 180 Update must state: clause 6's rejected alternative is adopted in full (roles AND inline policies relocated to terraform/bootstrap); Decision 144 clause 3 is preserved because PlatformDev still declares the mandatory boundary and now shares a root with the boundary policy itself, while PlatformAdmin stays boundary-free; reversal condition (a) quoted verbatim ('PlatformDev leaves terraform management') followed by the explicit reinterpretation -- PlatformDev has left CI-applied management (terraform/personal) while remaining Terraform-managed in terraform/bootstrap, so no CI write path to PlatformDev remains, which is the stated basis for rec-4049's IAMRoleMetadataWrite re-narrow; why this differs from Decision 98's rejected Path C (that re-home had no race to remove; this one removes the split-apply race class)."
   - "Decision 183 Update must state: point 4's split-apply no longer arises for PlatformDev/PlatformAdmin roles or inline policies (terraform/bootstrap admin applies, no -target); it survives only for any remaining terraform/personal address the CI apply role cannot execute by design (rec-3583 tracks that class); reversal (b)'s co-moving terraform/CLAUDE.md row is updated in this plan."
   - "No Lambda build/deploy/smoke-test (exemption justified): compute_affected_artifacts flags docs/ROADMAP-PLATFORM.yaml only as a bundled assets[] entry of the active data-pipeline artifact -- inert embedded documentation, not a handler or includes code file, so no dispatch or import-resolution behaviour changes (precedents: PLAN-ratify-cd25-complete-t1-12, PLAN-ratify-class-a-telemetry-contracts). Every other scope file is outside every Lambda manifest pattern."
   - "platform_roles.tf is kept as the removed-block file: deleting it would orphan the terraform/personal/platform_roles.tf key in config/structural_size_budgets.yaml, which structural-registry-section-scoped-extraction asserts, and re-anchoring that shard in place would be rejected as tautological by run_differential."
-  - "Hand-off contract with the predecessor: its graduated TestBootstrapOwnsPlatformIam anchors every personal-root parity source on files this plan keeps (main.tf, ducklake_lambdas.tf, inference_credentials.tf, neon_ducklake_catalog.tf, variables.tf) and the boundary name on bootstrap's own resource; step 4 proves the release leaves it green."
+  - "Hand-off contract with the predecessor: its graduated TestBootstrapOwnsPlatformIam anchors every personal-root parity source on files this plan keeps (main.tf, ducklake_lambdas.tf, inference_credentials.tf, neon_ducklake_catalog.tf, variables.tf) and the boundary name on bootstrap's own resource; step 4 proves the release leaves it green. The transitional parity lives in its own module, which this plan deletes whole. Decision 113 still names terraform/personal/platform_roles.tf as the Pattern B provisioning site; that pointer is left for rec-4043, which already owes Decision 113 an amendment."
   - "After the forget, the two roles leave the hourly config-vs-live drift plan; detection rests on rec-4044's event alarms until rec-3358's scheduled bootstrap plan lands (itself gated on rec-4043)."
   - "The three trust variables (platform_dev_external_id, platform_admin_external_id, agent_service_account_user_name) stay declared but unused in terraform/personal until rec-4048 retires them together with the CI-readable secret keys, the materialise delegate special-casing and the plan-comment scrubber."
   - "terraform/personal/oidc.tf:192-193 keeps both role ARNs in CI's IAMRolesRead through the forget; rec-4049 prunes them."
@@ -425,13 +444,13 @@ execution_steps:
   - "Modify terraform/personal/platform_roles.tf: delete both role blocks; add seven removed blocks (both roles, five inline policies) with lifecycle destroy = false under a banner pointing at terraform/bootstrap"
   - Delete terraform/personal/platform_dev_policies.tf, platform_admin_policies.tf and platform_admin_data_policies.tf
   - Create tests/checks/iam_tf/test_platform_iam_admin_root_only.py with its red cases (including attachments and *_exclusive resources) and graduate it as platform-iam-admin-root-only
-  - Delete TestDualCopyParity from tests/checks/iam_tf/test_platform_iam_bootstrap_adoption.py
+  - Delete the transitional tests/checks/iam_tf/test_platform_iam_dual_copy_parity.py module
   - Narrow deploy-paths.yaml's SPLIT-APPLY step and add its test; repoint terraform-cc-web-operations.yaml (admin_tier_only, the two ExternalId recovery sources, referenced_repo_paths); widen environment-taxonomy.yaml's bootstrap scope wording; add amendment_log entries to all three
   - Repoint terraform/CLAUDE.md (net byte-neutral or smaller), the DuckLake runbook pointer and the session-start hook hint
   - "Append the dated Update annotations to Decision 180 and Decision 183 with the content listed in context; regenerate docs/decisions-index.json only if its freshness check reports drift"
   - Add T4.2 exit criterion c8 (status open) naming rec-4043
   - "Run pre-deploy steps 1-10; commit; open the PR with the freeze, the 2.0h approval window and the ADMIN hand-off in its description (Decision 115); squash body carries `Resolves: rec-3838`"
-  - "ADMIN: run pre-merge gates 11-14 against the PR (PR_NUMBER, PR_HEAD_SHA); merge; the human approves the tf-gated-apply run within 2.0h; run post-deploy steps 15-19 (MERGE_SHA)"
+  - "ADMIN: run pre-merge gates 11-14 against the PR (PR_NUMBER, PR_HEAD_SHA); merge; the human approves the tf-gated-apply run within 2.0h; run post-deploy steps 15-21 (MERGE_SHA, MERGE_TS)"
   - Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)
   - "Report: what was implemented, verification results, and the follow-on queue (rec-4043 gates executor re-enable)"
 work_areas: []
