@@ -152,7 +152,9 @@ verification_plan:
       - "34 passed"
     fix_if: >-
       A non-zero grep count means a call site was missed (the class helper methods _full_state count too). An
-      F401 at step 9 means an unused compute_state_dict import was left behind.
+      F401 at step 9 means an unused compute_state_dict import was left behind. If the local green-after run
+      exceeds ~15s, set this step hermetic: false (it is already waive) so the CI replay's 30s per-step bound
+      (PER_STEP_TIMEOUT_SECONDS) cannot redden the implement PR (critique round 5, F4).
     hermetic: true
     graduation: waive
     graduation_waiver_reason: >-
@@ -219,9 +221,10 @@ verification_plan:
       Root callers in isolation -- each root-level preflight file in its OWN pytest process that collects nothing
       else, so a harness patch that only resolves when tests/session/preflight/ is co-collected (the
       "session_preflight" sys.modules entry) cannot hide behind step 5's shared session (critique round 1, F1).
-    command: bin/venv-python -m pytest tests/test_session_preflight_cache_serving.py::TestPhaseBAbsenceOfReaderCalls -q --randomly-seed=20260710 && bin/venv-python -m pytest tests/test_session_preflight_decomposition.py -q --randomly-seed=20260710
+    command: grep -Fq '(platform_roadmap, "compute_state_dict", live_state_dict)' tests/test_session_preflight_decomposition.py && grep -Fq 'patch.object(platform_roadmap, "compute_state_dict", new=live_state_dict)' tests/test_session_preflight_cache_serving.py && bin/venv-python -m pytest tests/test_session_preflight_cache_serving.py::TestPhaseBAbsenceOfReaderCalls -q --randomly-seed=20260710 && bin/venv-python -m pytest tests/test_session_preflight_decomposition.py -q --randomly-seed=20260710
     expected: >-
-      Both processes exit 0 with every collected test passing. Dry-run at base c53f2e46 (critique round 2): 1 passed
+      Both greps match (the root-harness install half of AC4, critique round 5 F1), then both processes exit 0 with
+      every collected test passing. Dry-run of the two pytest runs at base c53f2e46 (critique round 2): 1 passed
       in 11.50s, then 95 passed in 27.16s -- both reach collection and pass without the implementation.
     fix_if: >-
       ModuleNotFoundError: No module named 'session_preflight' means a "session_preflight.*" string target was used
@@ -309,7 +312,10 @@ verification_plan:
       ~148 modules against the Decision 182 breadth-derived allowance.
     fix_if: >-
       A shard "not admitted" means its node id passes at origin/main (it must be absent there). A full_suite_forced
-      true means the root tests/conftest.py was touched -- revert it.
+      true means the root tests/conftest.py was touched -- revert it. A "Fast tier exceeded budget" breach on the
+      test half: the production guard (scripts/platform_roadmap_state.py) is the only edit that widens the selection
+      to ~148 modules -- split rec-4007 into its own follow-on PR (drop its scope rows, shard and bundled entry;
+      file the split via the portal) and re-run. Never touch a budget constant or use --ignore-budget.
     hermetic: false
     graduation: waive
     graduation_waiver_reason: >-
@@ -456,7 +462,7 @@ context:
   - "Decision-scout verdict: NO_FLAGS. CITE: 128, 130, 131, 132, 176, 189, 48. RELATED: 135, 153, 182, 87, 197, 181, 163, 79, 59, 73."
   - "Decisions triaged: 153 of 153"
   - "Roadmap items intersected: 1; CONFLICT: 0; RELATED: 1 (T4.23, deferred_post_mvp, tests/ prefix only; nothing foreclosed)."
-  - "gates: decision-scout=NO_FLAGS; plan-critique=PENDING"
+  - "gates: decision-scout=NO_FLAGS; plan-critique=PROCEED after 5 round(s); round 4 (confirming) REVISE escalated, operator chose one more round; round 5 optional refinements F1-F4 applied verbatim"
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
@@ -526,13 +532,16 @@ execution_steps:
     Create all three verification-registry shards (field shape per config/agent/verification_registry/entries/
     rec-autoclose-trailer-gate-read-oserror.yaml; plan_slug roadmap-state-test-cache; graduated_by implement-agent;
     graduated_at the implementation date).
-  - Execute the Verification Plan steps 6-11 in order -- loop until pass; never weaken a bound or an assertion to pass (Decision 55).
+  - >-
+    Execute Verification Plan steps 6-9 in order; then set implementation_declared: true in this plan (the shards
+    now exist); then run VP step 10 and VP step 11, so the full-tier evidence covers validate_vp_replay's implement
+    leg on the final tree (critique round 5, F3). Loop until pass; never weaken a bound or an assertion (Decision 55).
   - >-
     Closure evidence, recorded as four SEPARATE facts (implement skill Commit Flows): (1) GitHub readiness --
     bin/venv-python -m scripts.session.github_readiness, each state recorded as reported, where unknown is unproven
     and never PASS; (2) parent validator evidence -- VP step 11's completed full-tier exit 0, Validation Summary
-    (scope: all) PASS and the matching logs/debug/validation-result.json (after setting implementation_declared:
-    true in this plan and running VP step 10); (3) structured postflight evidence --
+    (scope: all) PASS and the matching logs/debug/validation-result.json, taken after the implementation_declared
+    flip; (3) structured postflight evidence --
     bin/venv-python -m scripts.session.postflight --evidence /tmp/implementation-retrospective.json with the ten
     scripts.session.postflight_evidence.CATEGORIES keys, confirming its gitignored output; (4) the real outcome --
     commit, push, PR, CI green on the head (event-driven wake, never polled), and the squash-merge whose body
