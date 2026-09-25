@@ -79,8 +79,12 @@ scope:
       not in standing prose. The file sits within ~100 bytes of its config/prose_budgets.yaml
       budget (5151), so fund the lines by replacing the stale "State-migration ordering" section --
       it prescribes `terraform state rm`, which terraform/personal/main.tf now forbids -- with a
-      one-line pointer to the import/removed pattern; net size must not exceed the budget
-      (decompose, never raise -- Decision 128/166).
+      one-line pointer to the import/removed pattern. Net size must not exceed the budget: trim, or
+      relocate detail to a docs/contracts/*.yaml the file points at -- never raise, and never split
+      the file into fragments (config/prose_budgets.yaml header). Pre-authorised extra trims if the
+      retired section plus headroom (~714 B) is not enough: compress the step-4 import-verification
+      prose, and point the tfvars-source note at docs/contracts/terraform-cc-web-operations.yaml
+      instead of restating it.
   - file: docs/contracts/deploy-paths.yaml
     action: Modify
     purpose: >-
@@ -107,7 +111,9 @@ scope:
       BootstrapStateProvisioning the precondition naming the agent-platform-bootstrap-tfstate bucket
       ARN and object ARN; platform_dev_external_id and platform_admin_external_id are sensitive with
       no default; the three secret ARNs come from data "aws_secretsmanager_secret" lookups by name,
-      never a `-*` suffix; and every bootstrap copy of a personal-root name equals its source,
+      never a `-*` suffix; each role's trust statement carries a StringEquals sts:ExternalId condition
+      on its own sensitive variable (the Decision 113 confused-deputy defence, which outlives the
+      transitional parity module); and every bootstrap copy of a personal-root name equals its source,
       compared as templates (never rendered ARNs, Decision 101). It reads ONLY sources that survive
       the sibling plan -- bucket and counters table from terraform/personal/main.tf, function names
       and data prefixes from terraform/personal/ducklake_lambdas.tf, secret names from
@@ -116,7 +122,8 @@ scope:
       variable), and the boundary name from bootstrap's own aws_iam_policy.github_ci_apply_boundary
       -- never platform_roles.tf or the three policy files. Red cases for a dropped import, a missing
       prevent_destroy, a missing IAMFull or self-access precondition, an ExternalId variable without
-      sensitive = true or with a default, a `-*` secret ARN, and a drifted constant. Stays under the
+      sensitive = true or with a default, a trust statement without its sts:ExternalId condition, a
+      `-*` secret ARN, and a drifted constant. Stays under the
       500-SLOC limit (Decision 128) because the transitional parity class lives in its own module.
   - file: tests/checks/iam_tf/test_platform_iam_dual_copy_parity.py
     action: Create
@@ -128,10 +135,13 @@ scope:
       and per-Sid Effect, Action, Resource and Condition after a declared personal-to-bootstrap
       reference substitution map (for example aws_s3_bucket.data_lake.arn to its bootstrap local);
       and terraform/personal's provider default_tags equal bootstrap's default_tags merged with the
-      roles' resource-level tags. Built on _read_coverage's statement locator
-      (_locate_policy_statement_array / _parse_statement_array, extended for Condition) rather than a
-      new regex parser. Red cases for a one-sided Resource edit, Condition edit, role description
-      edit and default_tags edit.
+      roles' resource-level tags. Condition extraction is implemented locally in this module, reusing
+      scripts/checks/iam_tf/_read_coverage.py's _locate_policy_statement_array and the brace-depth
+      _extract_block helper it already uses -- _read_coverage.py itself is NOT edited (it is outside
+      this plan's scope; validate_scope_boundary). The module names every personal and bootstrap
+      source file it reads by path, so a one-sided .tf edit selects it in --pre (the affected-test
+      channels key on those mentions). Red cases for a one-sided Resource edit, Condition edit, role
+      description edit and default_tags edit.
   - file: config/agent/verification_registry/entries/platform-iam-bootstrap-owns-roles-and-policies.yaml
     action: Create
     purpose: graduate TestBootstrapOwnsPlatformIam (class-level node id) under this plan's slug
@@ -319,7 +329,7 @@ verification_plan:
     action: PRE-MERGE GATE -- the IAM-change alarms prerequisite has landed
     command: |-
       bin/venv-python -c "import json; from scripts.ops_data_portal import sync; sync(['ops_recommendations']); rows=[json.loads(l) for l in open('logs/.recommendations-log.jsonl') if l.strip()]; r=max((x for x in rows if x.get('id')=='rec-4044'), key=lambda x: x.get('last_updated_timestamp') or ''); assert r['status']=='closed', 'rec-4044 is '+r['status']+' -- STOP, the IAM-change alarms prerequisite has not landed'; print('rec-4044 closed')"
-    expected: rec-4044 is closed; any other status stops the plan before merge
+    expected: rec-4044 is closed; any other status stops the plan before merge. Closure is the proxy for live alarms -- rec-4044's own plan is required to prove a live alarm fire before it closes; if that evidence is absent from its resolution, stop and ask
     fix_if: plan and land rec-4044 first -- never merge import blocks for these identities into a root with no detection
     hermetic: false
     graduation: not-applicable
@@ -386,7 +396,7 @@ verification_plan:
     phase: post-deploy
     action: PlatformDev's DEP-13 fence still evaluates correctly after the adoption
     command: |-
-      bin/venv-python -c "import subprocess,json,sys; acct=subprocess.run(['aws','sts','get-caller-identity','--profile','agent_platform_admin','--query','Account','--output','text'],check=True,capture_output=True,text=True).stdout.strip(); role='arn'+':aws:iam::'+acct+':role/PlatformDev'; B='arn'+':aws:s3:::agent-platform-data-lake'; ctx=lambda pfx: ['--context-entries','ContextKeyName=s3'+':prefix,ContextKeyValues='+pfx+',ContextKeyType=string'] if pfx else []; sim=lambda a,r,pfx: json.loads(subprocess.run(['aws','iam','simulate-principal-policy','--policy-source-arn',role,'--action-names',a,'--resource-arns',r,'--profile','agent_platform_admin','--output','json']+ctx(pfx),check=True,capture_output=True,text=True).stdout)['EvaluationResults'][0]; rows=[('s3:GetObjectVersion',B+'/tfstate/personal/terraform.tfstate',None,'explicitDeny'),('s3:GetObjectVersion',B+'/tfplan/personal/probe',None,'explicitDeny'),('s3:GetObjectVersion',B+'/convergence/personal/probe',None,'explicitDeny'),('s3:GetObjectVersion',B+'/ducklake/probe.parquet',None,'allowed'),('s3:ListBucketVersions',B,'tfstate/personal/','explicitDeny'),('s3:ListBucketVersions',B,'ducklake/','allowed')]; res=[(a,pfx,want,sim(a,r,pfx)) for a,r,pfx,want in rows]; bad=[(a,pfx,want,e.get('EvalDecision'),e.get('MissingContextValues')) for a,pfx,want,e in res if (e.get('MissingContextValues') or []) or e.get('EvalDecision')!=want]; sys.exit('FENCE FAIL '+repr(bad)) if bad else print('FENCE OK -- 6 rows, both verbs, all three fenced prefixes')"
+      bin/venv-python -c "import subprocess,json,sys; run=lambda args: (lambda p: p.stdout if p.returncode==0 else sys.exit('aws call failed rc='+str(p.returncode)+' (stderr suppressed: it embeds account-bearing ARNs)'))(subprocess.run(args,capture_output=True,text=True)); acct=run(['aws','sts','get-caller-identity','--profile','agent_platform_admin','--query','Account','--output','text']).strip(); role='arn'+':aws:iam::'+acct+':role/PlatformDev'; B='arn'+':aws:s3:::agent-platform-data-lake'; ctx=lambda pfx: ['--context-entries','ContextKeyName=s3'+':prefix,ContextKeyValues='+pfx+',ContextKeyType=string'] if pfx else []; sim=lambda a,r,pfx: json.loads(run(['aws','iam','simulate-principal-policy','--policy-source-arn',role,'--action-names',a,'--resource-arns',r,'--profile','agent_platform_admin','--output','json']+ctx(pfx)))['EvaluationResults'][0]; rows=[('s3:GetObjectVersion',B+'/tfstate/personal/terraform.tfstate',None,'explicitDeny'),('s3:GetObjectVersion',B+'/tfplan/personal/probe',None,'explicitDeny'),('s3:GetObjectVersion',B+'/convergence/personal/probe',None,'explicitDeny'),('s3:GetObjectVersion',B+'/ducklake/probe.parquet',None,'allowed'),('s3:ListBucketVersions',B,'tfstate/personal/','explicitDeny'),('s3:ListBucketVersions',B,'ducklake/','allowed')]; res=[(a,pfx,want,sim(a,r,pfx)) for a,r,pfx,want in rows]; bad=[(a,pfx,want,e.get('EvalDecision'),e.get('MissingContextValues')) for a,pfx,want,e in res if (e.get('MissingContextValues') or []) or e.get('EvalDecision')!=want]; sys.exit('FENCE FAIL '+repr(bad)) if bad else print('FENCE OK -- 6 rows, both verbs, all three fenced prefixes')"
     expected: FENCE OK -- the same six rows PLAN-datalake-read-visibility step 10 proved
     fix_if: any row diverges -- the adoption changed PlatformDev's effective policy; stop and RCA
   - step: 19
@@ -496,12 +506,14 @@ constraints:
   - "Public-repo boundary (Decision 101): snapshots, plan files, plan JSON, the presented plan and the bootstrap tfvars stay in the ADMIN session, scratch or gitignored paths and are never pasted into chat, a PR or a commit -- every IAM document and ARN carries the account id, and adopt.json and the snapshots carry both ExternalIds in plaintext; step 20 removes the scratch artifacts, including after any STOP; the parity tests compare templates, never rendered ARNs"
   - "Freeze, from merge until the sibling plan's gated forget converges: no other terraform/bootstrap apply (the merged import blocks would ride along and skip steps 13-17); no terraform/personal PR touching the seven addresses, their referents, or terraform/personal/main.tf's provider default_tags; TestDualCopyParity catches a one-sided edit at PR time, and step 11 checks for open conflicting PRs"
   - "This PR's squash body must NOT carry `Resolves: rec-3838` -- the sibling plan resolves it"
+  - "No file this plan creates or modifies may carry a terraform/personal/platform_(dev|admin|admin_data)_policies.tf path string (not even a provenance comment such as 'copied from ...') -- the sibling's step 2 stale-reference sweep scans these files and could only be fixed there by an out-of-scope edit; the declared rec-4047 shard is the sole exception"
   - Do not edit docs/ROADMAP-PLATFORM.yaml (T2.48 / T2.44 files_in_scope pointers go stale; the sibling plan's single T4.2 edit is the only roadmap change in this pair)
 context:
   - "Decision-scout verdict + CITE list: FLAGS_FOUND. CITE: Decision 180, 183, 190, 144, 92, 126, 113, 101, 181, 177, 67. Decisions triaged: 153 of 153. Roadmap items intersected: 8; CONFLICT: 0; RELATED: 8."
   - "gates: decision-scout=FLAGS_FOUND (3 rounds; every flag human-dispositioned 2026-09-25 -- Decision 167 WARN kept as Update amendments in the sibling plan, Decision 127 NOTE applied here, Decision 190 NOTE deferred to rec-4050); plan-critique=PENDING"
   - "Sequence: rec-4044 (alarms) -> THIS PLAN -> PLAN-platform-iam-personal-release (resolves rec-3838; Decision 180/183 Update amendments) -> rec-4043 (separate admin principal; blocks executor re-enable via T4.2 c8, Decision 67 reversal / CD.17). rec-3358 depends on rec-4043."
   - "Design provenance (2026-09-25): an independent best-practice consult plus human forks -- move roles AND policies (a state holds only what its applier may mutate; PlatformAdmin's trust and metadata are CI-unwritable too, Decision 180 clause 3; this makes Decision 180 clauses 1-2's CI metadata-write grant on PlatformDev moot, retired by rec-4049); two PRs so the admin applies merged code only; state-free alarms before the move; BootstrapStateProvisioning moves (seed-layer self-reference made explicit, break-glass user is recovery)."
+  - "Decision 98's rejected Path C (re-home peer CI roles to bootstrap: churn with no architectural benefit) does not apply: those roles are CI-writable, while these two identities are CI-unwritable by design (Decision 180 clause 3), which is exactly what makes their personal-root home a split-apply generator."
   - "Governance lag is deliberate: the Decision 180/183 Updates and the environment-taxonomy bootstrap row land with the sibling plan, when terraform/personal stops declaring the addresses; this PR's description cites the 2026-09-25 human decision (Decision 115)."
   - "Registry repoints land HERE, not in the sibling plan: on the sibling's base the bootstrap files already exist, so an in-place repoint there would be re-submitted to run_differential and rejected as tautological (verification-registry.yaml governance notes on _modified_entries)."
   - "Declared residual (Decision 181): platform-dev-data-lake-read-fence keeps guard_target terraform/personal/platform_dev_policies.tf -- owner rec-4047 (guard_target existence is not validated, so the residual is mechanically safe). structural-registry-section-scoped-extraction is untouched because the sibling keeps terraform/personal/platform_roles.tf as the removed-block file."
@@ -537,6 +549,10 @@ rollback: >-
   Before the sibling plan merges, terraform/personal still owns all seven, so rollback is state-only
   and touches no live object: replace the seven bootstrap resource and import blocks with
   `removed { lifecycle { destroy = false } }` blocks and admin-apply terraform/bootstrap (bootstrap
-  forgets; personal keeps owning; live unchanged), then revert the guard repoints. After the
+  forgets; personal keeps owning; live unchanged). Then retire the five repointed shards and the two
+  new shards (platform-iam-bootstrap-owns-roles-and-policies, deploy-paths-admin-self-access-isolation-step)
+  by git mv to config/agent/verification_registry/entries/deprecated/ -- an in-place repoint back to
+  terraform/personal passes at the post-merge origin/main, so run_differential would reject it as
+  tautological -- and revert the test and validator repoints. After the
   sibling plan's forget, rollback is that plan's rollback. Never `state rm`, never a cross-backend
   `state mv`.

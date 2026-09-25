@@ -42,13 +42,17 @@ scope:
     purpose: >-
       Standing guard for the one-state-per-applier rule: terraform/personal declares no
       aws_iam_role named PlatformDev or PlatformAdmin, and no aws_iam_role_policy,
-      aws_iam_role_policy_attachment, aws_iam_role_policies_exclusive or
-      aws_iam_role_policy_attachments_exclusive targeting either (by resource reference or by literal
-      role name); each of the seven relocated addresses has exactly one removed block with lifecycle
+      aws_iam_role_policy_attachment, aws_iam_policy_attachment (its `roles = [...]` list),
+      aws_iam_role_policies_exclusive or aws_iam_role_policy_attachments_exclusive targeting either --
+      by resource reference or by literal role name, the literal check keyed ONLY on those resources'
+      `role` / `roles` arguments, so legitimate mentions elsewhere (rec-4044's EventBridge patterns,
+      the literal role ARNs in oidc.tf's IAMRolesRead) cannot false-positive; each of the seven relocated addresses has exactly one removed block with lifecycle
       destroy = false in terraform/personal. (That bootstrap declares and imports them is the
       predecessor's graduated TestBootstrapOwnsPlatformIam; this guard does not duplicate it.) Red
       cases for a re-added role, an inline policy attached by literal role name, a managed-policy
-      attachment, an *_exclusive resource, and a removed block missing destroy = false.
+      attachment, an aws_iam_policy_attachment naming a role in `roles`, an *_exclusive resource, and
+      a removed block missing destroy = false; a negative-of-the-negative case proving an
+      EventBridge pattern naming PlatformDev does not trip the guard.
   - file: config/agent/verification_registry/entries/platform-iam-admin-root-only.yaml
     action: Create
     purpose: graduate the admin-root-only guard under this plan's slug
@@ -62,9 +66,12 @@ scope:
   - file: tests/test_deploy_paths_admin_procedure.py
     action: Modify
     purpose: >-
-      Add a test asserting the SPLIT-APPLY step no longer names PlatformDev/PlatformAdmin
-      inline-policy writes as its trigger and instead names terraform/bootstrap as their home,
+      Add test_split_apply_step_excludes_platform_iam asserting the SPLIT-APPLY step no longer names
+      PlatformDev/PlatformAdmin inline-policy writes as its trigger and instead names terraform/bootstrap as their home,
       while the PRE-APPLY, self-access isolation and POST-APPLY steps survive in order.
+  - file: config/agent/verification_registry/entries/deploy-paths-split-apply-excludes-platform-iam.yaml
+    action: Create
+    purpose: graduate the SPLIT-APPLY narrowing test (function-level node id) under this plan's slug
   - file: docs/contracts/deploy-paths.yaml
     action: Modify
     purpose: >-
@@ -125,7 +132,7 @@ scope:
       PlatformAdmin trusts only a principal whose key exists solely in the admin container. No
       other roadmap field changes (T2.48 / T2.44 files_in_scope pointers are left as history).
 bundled_recommendations: ["rec-3838"]
-followon_recs: ["rec-4043", "rec-4047", "rec-4048", "rec-4049", "rec-4050", "rec-4052"]
+followon_recs: ["rec-4043", "rec-4047", "rec-4048", "rec-4049", "rec-4050", "rec-4052", "rec-4053"]
 infrastructure_dependencies:
   - "PRECONDITION: PLAN-platform-iam-bootstrap-adopt is fully deployed -- terraform/bootstrap state holds all seven addresses and a bootstrap plan exits 0 (the predecessor's step 16 proved it; this plan's step 12 re-checks it before merge). Merging this plan before that would leave the seven objects unmanaged (harmless to live IAM, but it breaks the chain of custody)."
   - "The merge routes seven `forget` actions to the tf-gated-apply Environment (scripts/terraform_apply_guard.py treats a non-inert action on an IAM-sensitive type as out-of-budget; environment-taxonomy.yaml is the classification SoT). A forget issues no AWS API call, so github_ci_apply can execute it; one human approval."
@@ -178,16 +185,12 @@ verification_plan:
   - step: 3
     phase: pre-deploy
     action: the admin procedure routes PlatformDev/PlatformAdmin IAM to terraform/bootstrap and keeps its guard steps in order
-    command: bin/venv-python -m pytest tests/test_deploy_paths_admin_procedure.py -q
-    expected: all tests pass, including the new SPLIT-APPLY narrowing test (red before, green after) and the pre-existing PRE-APPLY, self-access isolation and POST-APPLY ordering tests
+    command: bin/venv-python -m pytest "tests/test_deploy_paths_admin_procedure.py::test_split_apply_step_excludes_platform_iam" -q
+    expected: the new SPLIT-APPLY narrowing test passes -- red before (the function does not exist), green after; the module's other admin-procedure tests keep passing under step 10's full tier
     fix_if: the SPLIT-APPLY step still names PlatformDev/PlatformAdmin inline-policy writes as its trigger, or a guard step was lost
     hermetic: false
-    graduation: waive
-    graduation_waiver_reason: >-
-      The new assertion is a regression test on the contract's wording in the always-run suite,
-      whose sibling self-access isolation test the predecessor already graduated; the narrowing is
-      a one-time wording change whose durable enforcement is step 1's structural guard (nothing
-      left to split in terraform/personal for these roles).
+    graduation: graduate
+    graduation_check_id: deploy-paths-split-apply-excludes-platform-iam
   - step: 4
     phase: pre-deploy
     action: the surviving adoption checks stay green after the release
@@ -315,14 +318,14 @@ verification_plan:
     phase: post-deploy
     action: after merge, the human approves the tf-gated-apply run and the forget converges green
     command: |-
-      test -n "$MERGE_SHA" && bin/venv-python -c "import json,os,subprocess; r=json.loads(subprocess.run(['aws','s3','cp','s3://agent-platform-data-lake/convergence/personal/sandbox.json','-','--profile','agent_platform_admin'],check=True,capture_output=True,text=True).stdout); bad=[k for k in ('pending_gated','pending_codification','infra_error') if k in r]; assert r.get('status')=='green' and r.get('commit_sha')==os.environ['MERGE_SHA'] and not bad, (r.get('status'), r.get('commit_sha')==os.environ['MERGE_SHA'], bad); print('FORGET CONVERGED GREEN at the merge commit')"
-    expected: status green, commit_sha equals the squash-merge SHA, no pending marker
+      test -n "$MERGE_SHA" && git fetch origin main && git checkout --detach origin/main && git merge-base --is-ancestor "$MERGE_SHA" HEAD && bin/venv-python -c "import json,os,subprocess; r=json.loads(subprocess.run(['aws','s3','cp','s3://agent-platform-data-lake/convergence/personal/sandbox.json','-','--profile','agent_platform_admin'],check=True,capture_output=True,text=True).stdout); bad=[k for k in ('pending_gated','pending_codification','infra_error') if k in r]; assert r.get('status')=='green' and r.get('commit_sha')==os.environ['MERGE_SHA'] and not bad, (r.get('status'), r.get('commit_sha')==os.environ['MERGE_SHA'], bad); print('FORGET CONVERGED GREEN at the merge commit')"
+    expected: status green, commit_sha equals the squash-merge SHA, no pending marker; the ADMIN checkout now contains the merge commit, so steps 16-21 plan the merged code
     fix_if: red because the window was missed -- approving the still-pending gated run converges it; red for any other reason -- follow deploy-paths.yaml's reconcile row and RCA (Decision 55)
   - step: 16
     phase: post-deploy
     action: PlatformDev's DEP-13 fence still evaluates correctly after the release
     command: |-
-      bin/venv-python -c "import subprocess,json,sys; acct=subprocess.run(['aws','sts','get-caller-identity','--profile','agent_platform_admin','--query','Account','--output','text'],check=True,capture_output=True,text=True).stdout.strip(); role='arn'+':aws:iam::'+acct+':role/PlatformDev'; B='arn'+':aws:s3:::agent-platform-data-lake'; ctx=lambda pfx: ['--context-entries','ContextKeyName=s3'+':prefix,ContextKeyValues='+pfx+',ContextKeyType=string'] if pfx else []; sim=lambda a,r,pfx: json.loads(subprocess.run(['aws','iam','simulate-principal-policy','--policy-source-arn',role,'--action-names',a,'--resource-arns',r,'--profile','agent_platform_admin','--output','json']+ctx(pfx),check=True,capture_output=True,text=True).stdout)['EvaluationResults'][0]; rows=[('s3:GetObjectVersion',B+'/tfstate/personal/terraform.tfstate',None,'explicitDeny'),('s3:GetObjectVersion',B+'/tfplan/personal/probe',None,'explicitDeny'),('s3:GetObjectVersion',B+'/convergence/personal/probe',None,'explicitDeny'),('s3:GetObjectVersion',B+'/ducklake/probe.parquet',None,'allowed'),('s3:ListBucketVersions',B,'tfstate/personal/','explicitDeny'),('s3:ListBucketVersions',B,'ducklake/','allowed')]; res=[(a,pfx,want,sim(a,r,pfx)) for a,r,pfx,want in rows]; bad=[(a,pfx,want,e.get('EvalDecision'),e.get('MissingContextValues')) for a,pfx,want,e in res if (e.get('MissingContextValues') or []) or e.get('EvalDecision')!=want]; sys.exit('FENCE FAIL '+repr(bad)) if bad else print('FENCE OK -- 6 rows, both verbs, all three fenced prefixes')"
+      bin/venv-python -c "import subprocess,json,sys; run=lambda args: (lambda p: p.stdout if p.returncode==0 else sys.exit('aws call failed rc='+str(p.returncode)+' (stderr suppressed: it embeds account-bearing ARNs)'))(subprocess.run(args,capture_output=True,text=True)); acct=run(['aws','sts','get-caller-identity','--profile','agent_platform_admin','--query','Account','--output','text']).strip(); role='arn'+':aws:iam::'+acct+':role/PlatformDev'; B='arn'+':aws:s3:::agent-platform-data-lake'; ctx=lambda pfx: ['--context-entries','ContextKeyName=s3'+':prefix,ContextKeyValues='+pfx+',ContextKeyType=string'] if pfx else []; sim=lambda a,r,pfx: json.loads(run(['aws','iam','simulate-principal-policy','--policy-source-arn',role,'--action-names',a,'--resource-arns',r,'--profile','agent_platform_admin','--output','json']+ctx(pfx)))['EvaluationResults'][0]; rows=[('s3:GetObjectVersion',B+'/tfstate/personal/terraform.tfstate',None,'explicitDeny'),('s3:GetObjectVersion',B+'/tfplan/personal/probe',None,'explicitDeny'),('s3:GetObjectVersion',B+'/convergence/personal/probe',None,'explicitDeny'),('s3:GetObjectVersion',B+'/ducklake/probe.parquet',None,'allowed'),('s3:ListBucketVersions',B,'tfstate/personal/','explicitDeny'),('s3:ListBucketVersions',B,'ducklake/','allowed')]; res=[(a,pfx,want,sim(a,r,pfx)) for a,r,pfx,want in rows]; bad=[(a,pfx,want,e.get('EvalDecision'),e.get('MissingContextValues')) for a,pfx,want,e in res if (e.get('MissingContextValues') or []) or e.get('EvalDecision')!=want]; sys.exit('FENCE FAIL '+repr(bad)) if bad else print('FENCE OK -- 6 rows, both verbs, all three fenced prefixes')"
     expected: FENCE OK -- the same six rows PLAN-datalake-read-visibility step 10 proved
     fix_if: any row diverges -- stop and RCA; the forget must not have changed any permission
   - step: 17
@@ -374,8 +377,13 @@ test_obligations:
   - source: docs/contracts/deploy-paths.yaml
     behavior: The SPLIT-APPLY step no longer treats PlatformDev/PlatformAdmin IAM as a split trigger and routes it to terraform/bootstrap, with the procedure's guard steps intact and ordered.
     verification_step: 3
-    test_selector: tests/test_deploy_paths_admin_procedure.py
-    red_green_expectation: red before (the narrowing test fails on today's wording), green after
+    test_selector: "tests/test_deploy_paths_admin_procedure.py::test_split_apply_step_excludes_platform_iam"
+    red_green_expectation: red before, green after
+  - source: config/agent/verification_registry/entries/deploy-paths-split-apply-excludes-platform-iam.yaml
+    behavior: The graduated narrowing check is admitted by run_differential (the test function does not exist at origin/main) and is found new-in-diff under this plan's slug.
+    verification_step: 9
+    command: bin/venv-python -m scripts.validate --pre
+    red_green_expectation: red before, green after
   - source: docs/contracts/terraform-cc-web-operations.yaml
     behavior: admin_tier_only and the ExternalId recovery sources name terraform/bootstrap, not the deleted personal files or the personal state.
     verification_step: 5
@@ -420,17 +428,17 @@ constraints:
 context:
   - "Decision-scout verdict + CITE list: FLAGS_FOUND. CITE: Decision 180, 183, 190, 144, 92, 126, 113, 101, 181, 177, 67. Decisions triaged: 153 of 153. Roadmap items intersected: 8; CONFLICT: 0; RELATED: 8."
   - "gates: decision-scout=FLAGS_FOUND (3 rounds; every flag human-dispositioned 2026-09-25); plan-critique=PENDING"
-  - "Sequence: rec-4044 (alarms) -> PLAN-platform-iam-bootstrap-adopt -> THIS PLAN (resolves rec-3838) -> rec-4043 (blocks executor re-enable via T4.2 c8, Decision 67 reversal / CD.17). Follow-ons: rec-4047 (fence shard residual), rec-4048 (retire ExternalId tfvars from personal), rec-4049 (retire CI's residual grants on the two roles), rec-4050 (drift ordering), rec-4052 (comment pointers to platform_roles.tf)."
+  - "Sequence: rec-4044 (alarms) -> PLAN-platform-iam-bootstrap-adopt -> THIS PLAN (resolves rec-3838) -> rec-4043 (blocks executor re-enable via T4.2 c8, Decision 67 reversal / CD.17). Follow-ons: rec-4047 (fence shard residual), rec-4048 (retire ExternalId tfvars from personal), rec-4049 (retire CI's residual grants on the two roles; adjudicates Decision 180 reversal (a)), rec-4050 (drift ordering), rec-4052 (comment pointers to platform_roles.tf), rec-4053 (classify forget in the guard taxonomy)."
   - "Decision 167 routing adjudication (human-directed, recorded for plan-critique 12p): routing question 1 is answered NO -- this is not a new durable commitment but the execution of an alternative Decision 180 clause 6 already recorded and deferred 'for now', so it routes to amendment_forms blockquote_update on the two affected entries instead of a numbered Decision. Scout and critique both surfaced the tension (Decision 183's own justification rejected amendment_forms for multi-entry amendments); the human kept the Update route three times."
-  - "Decision 180 Update must state: clause 6's rejected alternative is adopted in full (roles AND inline policies relocated to terraform/bootstrap); Decision 144 clause 3 is preserved because PlatformDev still declares the mandatory boundary and now shares a root with the boundary policy itself, while PlatformAdmin stays boundary-free; reversal condition (a) quoted verbatim ('PlatformDev leaves terraform management') followed by the explicit reinterpretation -- PlatformDev has left CI-applied management (terraform/personal) while remaining Terraform-managed in terraform/bootstrap, so no CI write path to PlatformDev remains, which is the stated basis for rec-4049's IAMRoleMetadataWrite re-narrow; why this differs from Decision 98's rejected Path C (that re-home had no race to remove; this one removes the split-apply race class)."
+  - "Decision 180 Update must state: clause 6's rejected alternative is adopted in full (roles AND inline policies relocated to terraform/bootstrap); Decision 144 clause 3 is preserved because PlatformDev still declares the mandatory boundary and now shares a root with the boundary policy itself, while PlatformAdmin stays boundary-free; the relocation FACTS only for reversal condition (a) -- PlatformDev is no longer managed by the CI-applied root and remains Terraform-managed in terraform/bootstrap -- WITHOUT declaring condition (a) fired; whether it fires, and so licenses the IAMRoleMetadataWrite re-narrow, is adjudicated by rec-4049's own plan under the Decision 167 routing rule (both critique rounds flagged that reinterpretation as a re-decision, so it is not smuggled into this Update); why this differs from Decision 98's rejected Path C (that re-home had no race to remove; this one removes the split-apply race class)."
   - "Decision 183 Update must state: point 4's split-apply no longer arises for PlatformDev/PlatformAdmin roles or inline policies (terraform/bootstrap admin applies, no -target); it survives only for any remaining terraform/personal address the CI apply role cannot execute by design (rec-3583 tracks that class); reversal (b)'s co-moving terraform/CLAUDE.md row is updated in this plan."
   - "No Lambda build/deploy/smoke-test (exemption justified): compute_affected_artifacts flags docs/ROADMAP-PLATFORM.yaml only as a bundled assets[] entry of the active data-pipeline artifact -- inert embedded documentation, not a handler or includes code file, so no dispatch or import-resolution behaviour changes (precedents: PLAN-ratify-cd25-complete-t1-12, PLAN-ratify-class-a-telemetry-contracts). Every other scope file is outside every Lambda manifest pattern."
   - "platform_roles.tf is kept as the removed-block file: deleting it would orphan the terraform/personal/platform_roles.tf key in config/structural_size_budgets.yaml, which structural-registry-section-scoped-extraction asserts, and re-anchoring that shard in place would be rejected as tautological by run_differential."
-  - "Hand-off contract with the predecessor: its graduated TestBootstrapOwnsPlatformIam anchors every personal-root parity source on files this plan keeps (main.tf, ducklake_lambdas.tf, inference_credentials.tf, neon_ducklake_catalog.tf, variables.tf) and the boundary name on bootstrap's own resource; step 4 proves the release leaves it green. The transitional parity lives in its own module, which this plan deletes whole. Decision 113 still names terraform/personal/platform_roles.tf as the Pattern B provisioning site; that pointer is left for rec-4043, which already owes Decision 113 an amendment."
+  - "Hand-off contract with the predecessor: no file it creates names a terraform/personal/platform_*_policies.tf path (its constraint), so step 2 never needs an out-of-scope edit; its graduated TestBootstrapOwnsPlatformIam anchors every personal-root parity source on files this plan keeps (main.tf, ducklake_lambdas.tf, inference_credentials.tf, neon_ducklake_catalog.tf, variables.tf) and the boundary name on bootstrap's own resource; step 4 proves the release leaves it green. The transitional parity lives in its own module, which this plan deletes whole. Decision 113 still names terraform/personal/platform_roles.tf as the Pattern B provisioning site; that pointer is left for rec-4043, which already owes Decision 113 an amendment."
   - "After the forget, the two roles leave the hourly config-vs-live drift plan; detection rests on rec-4044's event alarms until rec-3358's scheduled bootstrap plan lands (itself gated on rec-4043)."
   - "The three trust variables (platform_dev_external_id, platform_admin_external_id, agent_service_account_user_name) stay declared but unused in terraform/personal until rec-4048 retires them together with the CI-readable secret keys, the materialise delegate special-casing and the plan-comment scrubber."
   - "terraform/personal/oidc.tf:192-193 keeps both role ARNs in CI's IAMRolesRead through the forget; rec-4049 prunes them."
-  - "Steps 11-18 need live admin credentials and run terraform in the ADMIN container (Decision 120 exception to Decision 119's DEV-container rule); every local plan uses -lock=false so it never contends with CI's apply lock."
+  - "Steps 11-21 run in ONE continuous ADMIN session (Decision 120 exception to Decision 119's DEV-container rule): the BEFORE snapshot and the bootstrap tfvars must survive the up-to-2h approval window. If the container recycles after merge, re-run step 11, and replace step 18's snapshot diff with steps 16-17 (fence proof plus a no-change bootstrap plan, which proves config equals live) and record the substitution. Every local plan uses -lock=false so it never contends with CI's apply lock."
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
@@ -460,5 +468,7 @@ rollback: >-
   terraform/personal, revert this PR's HCL and replace the removed blocks with `import {}` blocks
   for the seven addresses (a zero-diff import in personal passes the guard as no-op), then forget
   them from terraform/bootstrap with `removed { lifecycle { destroy = false } }` via an admin
-  apply. Never `state rm`, never a cross-backend `state mv`. Revert the Decision annotations with a
-  further dated Update, never an in-place edit (Decision 177).
+  apply. Retire the platform-iam-admin-root-only and deploy-paths-split-apply-excludes-platform-iam
+  registry rows by git mv to config/agent/verification_registry/entries/deprecated/ (they would
+  otherwise go red). Never `state rm`, never a cross-backend `state mv`. Revert the Decision
+  annotations with a further dated Update, never an in-place edit (Decision 177).
