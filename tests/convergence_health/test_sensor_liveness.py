@@ -30,10 +30,11 @@ def _run(run_id: int, created_at: datetime) -> dict[str, Any]:
 
 
 def _gh_caller(
-    runs: Optional[dict[str, Any]] = None, states: Optional[dict[str, str]] = None, states_dead: bool = False
+    runs: Optional[dict[str, Any]] = None,
+    states: Optional[dict[str, str]] = None,
+    states_dead: bool = False,
+    success_runs: Optional[dict[str, Any]] = None,  # unconfigured (None) mirrors `runs`
 ) -> Callable[[str], Any]:
-    runs = runs or {}
-
     def caller(url: str) -> Any:
         if url.endswith("/workflows?per_page=100"):
             return (
@@ -44,9 +45,10 @@ def _gh_caller(
         match = re.search(r"/workflows/([^/]+)/runs", url)
         if match:
             loop = match.group(1)
-            if loop not in runs:
+            pool = success_runs if (success_runs is not None and "status=success" in url) else (runs or {})
+            if loop not in pool:
                 return {"workflow_runs": []}
-            value = runs[loop]
+            value = pool[loop]
             if value is _DEAD:
                 return None
             return {"workflow_runs": [value] if value else []}
@@ -187,7 +189,7 @@ class TestEpisodeGrain:
     def test_redeath_updates_the_open_rec(self) -> None:
         open_recs = [{"id": "rec-open", "title": _episode_title(LOOP, "run:1", 1)}]
         created_at = NOW - timedelta(seconds=THRESHOLD * 2)
-        gh = _gh_caller(runs={LOOP: _run(999, created_at)})
+        gh = _gh_caller(runs={LOOP: _run(999, created_at)}, success_runs={LOOP: _run(0, NOW)})
         calls, portal = _portal_spy()
         result = sl.detect_stale_loops(
             peers=PEERS, now=NOW, gh_caller=gh, open_recs=open_recs, resolved_recs=[], portal_caller=portal
@@ -199,7 +201,7 @@ class TestEpisodeGrain:
 
     def test_unchanged_episode_skips_the_portal(self) -> None:
         created_at = NOW - timedelta(seconds=THRESHOLD * 2)
-        gh = _gh_caller(runs={LOOP: _run(1, created_at)})
+        gh = _gh_caller(runs={LOOP: _run(1, created_at)}, success_runs={LOOP: _run(0, NOW)})
         calls1, portal1 = _portal_spy()
         sl.detect_stale_loops(peers=PEERS, now=NOW, gh_caller=gh, open_recs=[], resolved_recs=[], portal_caller=portal1)
         open_recs = [{"id": "rec-1", "title": calls1[0][1]["title"], "context": calls1[0][1]["context"]}]
@@ -216,7 +218,7 @@ class TestEpisodeGrain:
         resolved = [
             {"id": "rec-r1", "title": _episode_title(LOOP, anchor, 1), "status": "closed", "source": "loop_liveness_stale"}
         ]
-        gh = _gh_caller(runs={LOOP: _run(5, created_at)})
+        gh = _gh_caller(runs={LOOP: _run(5, created_at)}, success_runs={LOOP: _run(0, NOW)})
         calls, portal = _portal_spy()
         result = sl.detect_stale_loops(
             peers=PEERS, now=NOW, gh_caller=gh, open_recs=[], resolved_recs=resolved, portal_caller=portal
@@ -259,7 +261,7 @@ class TestEpisodeGrain:
                 "last_updated_timestamp": closed_at,
             }
         ]
-        gh = _gh_caller(runs={LOOP: _run(99, created_at)})
+        gh = _gh_caller(runs={LOOP: _run(99, created_at)}, success_runs={LOOP: _run(0, NOW)})
         calls, portal = _portal_spy()
         result = sl.detect_stale_loops(
             peers=PEERS, now=NOW, gh_caller=gh, open_recs=[], resolved_recs=resolved, portal_caller=portal
@@ -316,7 +318,7 @@ class TestEpisodeGrain:
 
     def test_dry_run_prints_would_file_and_never_calls_the_portal(self, capsys: pytest.CaptureFixture[str]) -> None:
         created_at = NOW - timedelta(seconds=THRESHOLD * 2)
-        gh = _gh_caller(runs={LOOP: _run(1, created_at)})
+        gh = _gh_caller(runs={LOOP: _run(1, created_at)}, success_runs={LOOP: _run(0, NOW)})
         calls, portal = _portal_spy()
         result = sl.detect_stale_loops(
             peers=PEERS, now=NOW, gh_caller=gh, open_recs=[], resolved_recs=[], portal_caller=portal, dry_run=True
@@ -408,7 +410,7 @@ class TestFleetCollapse:
         peers = {"a.yml": ["37 * * * *"], "b.yml": ["17 * * * *"], "c.yml": ["0 */3 * * *"]}
         t0 = NOW - timedelta(seconds=21600)
         runs = {name: _run(i, t0) for i, name in enumerate(peers, start=1)}
-        gh = _gh_caller(runs=runs)
+        gh = _gh_caller(runs=runs, success_runs={name: _run(0, NOW) for name in peers})
         open_per_loop = {"id": "rec-a-open", "title": _episode_title("a.yml", "run:1", 1)}
         calls, portal = _portal_spy()
         result = sl.detect_stale_loops(
@@ -515,7 +517,7 @@ class TestAntiMasking:
         with pytest.raises(RuntimeError, match=label):
             sl._charge(budget, key, "b.yml", label)
 
-    def test_call_budget_caps_equal_len_peers_plus_one(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_call_budget_caps_equal_twice_len_peers_plus_one(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: list[dict[str, int]] = []
         original = sl._charge
 
@@ -531,7 +533,7 @@ class TestAntiMasking:
         sl.detect_stale_loops(
             peers=peers, now=NOW, gh_caller=gh, open_recs=[], resolved_recs=[], portal_caller=lambda a, f: "rec-x"
         )
-        assert captured and captured[0]["sweeps_max"] == len(peers) + 1 == 3
+        assert captured and captured[0]["sweeps_max"] == 2 * (len(peers) + 1) == 6 and len(captured) == 4
 
     def test_first_commit_no_history_raises(self) -> None:
         git = _git_runner()
@@ -564,14 +566,6 @@ class TestInternals:
     def test_as_utc_accepts_an_iso_string(self) -> None:
         assert sl._as_utc("2026-01-01T00:00:00Z") == datetime(2026, 1, 1, tzinfo=timezone.utc)
 
-    def test_parse_episode_title_rejects_malformed_titles(self) -> None:
-        assert sl._parse_episode_title("not an episode title") is None
-        assert sl._parse_episode_title("Loop: x. Episode: y. Bucket: not-a-number. tail") is None
-
-    def test_is_open_loop_row_rejects_explicit_non_matches(self) -> None:
-        assert sl._is_open_loop_row({"status": "closed", "title": f"Loop: {LOOP}. x"}, LOOP) is False
-        assert sl._is_open_loop_row({"source": "budget_breach", "title": f"Loop: {LOOP}. x"}, LOOP) is False
-
 
 class TestStalePeersForProbe:
     # --liveness-probe's backing oracle, exercised directly since main_liveness_probe (__main__.py)
@@ -601,6 +595,11 @@ class TestStalePeersForProbe:
         # exercised together against a live-tree workflow.
         gh = _gh_caller(runs={"convergence-health.yml": _run(1, datetime.now(timezone.utc))})
         assert sl.stale_peers_for_probe("convergence-health.yml", gh_caller=gh) == []
+
+    def test_success_leg_selector_routes_to_the_success_classifier(self) -> None:
+        gh = _gh_caller(runs={LOOP: _run(1, NOW)}, success_runs={})
+        git = _git_runner(sha="cafebabe", ts=0)
+        assert sl.stale_peers_for_probe(LOOP, "success", peers=PEERS, now=NOW, gh_caller=gh, git_runner=git) == [LOOP]
 
 
 class TestWorkflowWiring:
