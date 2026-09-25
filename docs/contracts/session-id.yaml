@@ -1,19 +1,20 @@
 ---
 # Class C cross-system invariant: the telemetry session correlation id.
 # Ratified under the CD.25 pre-codegen contract ratification ritual (tier_item T0.12.7).
-# Authored against the shipped scripts/contracts_schema.py + tests/test_contracts.py.
+# Re-grounded to the write-boundary derivation model at contract_version 2 (Decision 199,
+# amending Decision 97 clause 4).
 #
-# Telemetry Class A contracts $ref into contract.fields.session_id (authored by T0.12.6).
+# Telemetry Class A contracts $ref into contract.fields.session_id.
 contract:
   id: session-id
   class: C
-  contract_version: 1
+  contract_version: 2
   status: ratified
-  ratified_at: "2026-06-19"
-  ratified_via: "Step 10 multi-perspective critique + PLAN-class-c-cross-system-invariants merge to main"
+  ratified_at: "2026-09-24"
+  ratified_via: "PLAN-telemetry-event-journal-contracts merge to main (Decision 199)"
   description: >-
-    Canonical cross-system session correlation identifier. Generated once per session
-    and propagated to child telemetry rows as a foreign key. The joining key across
+    Canonical cross-system session correlation identifier, derived at the write boundary from a
+    caller-supplied session_ref (Decision 199, event-journal re-model). The joining key across
     the canonical four-table telemetry trace/observation model (telemetry_sessions /
     telemetry_observations / telemetry_transcripts / telemetry_agents, Decision 95).
 fields:
@@ -22,28 +23,33 @@ fields:
     iceberg_type: string
     nullable: true
     description: >-
-      Session correlation id (canonical TARGET format ULID per Decision 97 cl.4; live format UUID4,
-      str(uuid.uuid4()), grandfathered until open_session mints ULID) correlating all rows emitted
-      within one session. Primary key of telemetry_sessions; foreign key on telemetry_observations,
-      telemetry_transcripts, and telemetry_agents. Distinct from any external CLI's own
-      `session_id`, which is not this telemetry session.
+      Session correlation id: Crockford-base32 ULID = ULID(48-bit ROOT session_started_at ms + the
+      first 80 bits of H computed over the caller-supplied session_ref with domain tag
+      'telemetry_sessions:session_id'), per telemetry-event-envelope.yaml's identity spec.
+      Correlates all rows emitted within one session. Primary key of telemetry_sessions; foreign
+      key on telemetry_observations, telemetry_transcripts, and telemetry_agents. Distinct from any
+      external CLI's own `session_id`, which is not this telemetry session.
     semantics: >-
-      Live format: UUID4 (str(uuid.uuid4())), generator-guaranteed; canonical TARGET format ULID
-      (Decision 97 cl.4), flipping when the Phase 4 observation boundary open_session is migrated. Created
-      in the parent session and propagated to child observations as a foreign key (Decision 95
-      root-unification). The Class C baseline nullability is the LOOSEST common value so per-table
-      contracts TIGHTEN via dq_intent_local without violating Invariant 5 (overrides must tighten, never
-      loosen). Per-table nullability in the canonical four-table model: REQUIRED (not_null enforced) in
-      telemetry_sessions (PK), telemetry_observations (FK root), telemetry_transcripts (FK root), and
-      telemetry_agents (FK root -- the rootless telemetry_agent_invocations is replaced by the rooted
-      telemetry_agents, so session_id is now PRESENT and REQUIRED there, no longer absent).
+      DERIVED at the write boundary from session_ref, not mint-once-and-propagate: a child row
+      references its session via the SAME domain-tag computation, so no propagation step can drift.
+      The retired UUID4 grandfather (Decision 97 cl.4, original) is gone: the live producer
+      scripts/session/preflight.py's open_telemetry_session still mints a bare UUID4 today and is
+      NOT yet migrated to this derivation -- tracked as pending rec-4030, not silently accepted as a
+      second live format. A sub-agent session's session_ref is '<sessionId>:<agentId>' (the parent
+      CLI session id plus a deterministic per-agent id, stable across re-parse); its session_id
+      still carries the ROOT session's own session_started_at, so a whole trace tree -- root plus
+      every sub-agent session -- clusters in one day() partition. The Class C baseline nullability
+      is the LOOSEST common value so per-table contracts TIGHTEN via dq_intent_local without
+      violating Invariant 5. Per-table nullability in the canonical four-table model: REQUIRED
+      (not_null enforced) in telemetry_sessions (PK), telemetry_observations (FK root),
+      telemetry_transcripts (FK root), and telemetry_agents (FK root).
     populated_by: >-
-      the Phase 4 observation boundary open_session() mints the UUID4; entered via
-      scripts/session/preflight.py --open-session or the executor; closed via
-      scripts/session/postflight.py::close_telemetry_session().
+      the write boundary (rec-4024's append_events verb), derived from the caller-supplied
+      session_ref. The LIVE legacy producer (scripts/session/preflight.py open_telemetry_session,
+      bare UUID4 mint) is not yet migrated to this derivation -- pending rec-4030.
     write_time_validation: >-
       Structural, not central: PK-required in telemetry_sessions; foreign key in the
-      child tables. UUID format is generator-guaranteed (no separate validator).
+      child tables. ULID format and value are generator-guaranteed (no separate validator).
     dq_intent:
       not_null:
         enforced: false
@@ -51,13 +57,26 @@ fields:
       Loosest baseline (not_null not enforced) by design: the owning/required tables
       (telemetry_sessions PK, telemetry_observations, telemetry_transcripts, telemetry_agents -- the
       Decision 95 four-table model) tighten to enforced not-null via dq_intent_local.
-      ULID NOTE (Decision 97 cl.4): ULID is the canonical TARGET format for session_id; existing UUID4
-      ids are grandfathered and the format flips only when the Phase 4 observation boundary open_session is
-      migrated to mint ULIDs -- a downstream code-migration concern, NOT a format change in this contract.
       ops_execution_plans (T2.26 c9) consumes session_id via its planning_session_id
-      column (opaque-VARCHAR carry, not a renamed session_id column) -- a soft/unenforced FK that
-      must tolerate dangling references until telemetry (T2.36) lands.
+      column (opaque-VARCHAR carry, not a renamed session_id column) -- a soft/unenforced FK; its
+      dangling-reference tolerance note now points at rec-4030 (the live-producer migration), not
+      merely "until telemetry (T2.36) lands" -- T2.36 alone does not migrate the legacy UUID4
+      minter.
     amendment_log:
+      - date: "2026-09-24"
+        semantic_break: true
+        change_class: governance_note_add
+        summary: >-
+          PLAN-telemetry-event-journal-contracts (Decision 199, amending 97 cl.4): replaced the
+          UUID4-grandfathered mint-once scheme with write-boundary derivation from a
+          caller-supplied session_ref; named the live legacy producer
+          (scripts/session/preflight.py open_telemetry_session) as pending migration rec-4030
+          rather than an accepted second live format. semantic_break=true: the derivation MECHANISM
+          changed, not merely the prose.
+        migration_story: >-
+          The live producer keeps minting bare UUID4 until rec-4030 lands; this contract now states
+          that as an OPEN gap (pending rec-4030) rather than an accepted grandfather, so the
+          discrepancy stays visible instead of silently tolerated.
       - date: "2026-09-22"
         semantic_break: false
         change_class: prose_improvement
@@ -104,14 +123,23 @@ joins_using_this_key:
   - session_id_join_telemetry_sessions_to_transcripts
   - session_id_join_telemetry_sessions_to_agents
   # Landed at T2.26 (c9): ops_execution_plans consumes session_id via its planning_session_id column
-  # (opaque-VARCHAR soft-FK; the join must tolerate dangling refs until telemetry, T2.36, lands).
+  # (opaque-VARCHAR soft-FK; dangling refs tolerated pending the legacy-producer migration, rec-4030).
   - planning_session_id_join_execution_plans_to_sessions
 governance_notes: >-
   Single-hop leaf invariant (no chained $ref; Class C contracts are leaf nodes,
-  Invariant 5). The telemetry Class A contracts (T0.12.6) reference
+  Invariant 5). The telemetry Class A contracts (T0.12.6, re-grounded at Decision 199) reference
   contract.fields.session_id; the cross-contract join entries are recorded in
-  docs/contracts/_joins.yaml (landed by T0.12.6, now that the referenced contracts ratify).
+  docs/contracts/_joins.yaml. The normative derivation formula lives ONCE in
+  telemetry-event-envelope.yaml; this contract states its own domain tag and defers to that spec.
 amendment_log:
+  - date: "2026-09-24"
+    semantic_break: true
+    change_class: governance_note_add
+    summary: >-
+      PLAN-telemetry-event-journal-contracts (Decision 199): contract-level description re-grounded
+      to the write-boundary derivation model. Accompanies the field-level amendment_log entry above
+      (CD.25 category-6 gate). semantic_break=true, mirroring the field-level entry.
+    migration_story: Prose-only at the contract-description level; no runtime behaviour changes.
   - date: "2026-09-22"
     semantic_break: false
     change_class: prose_improvement
@@ -146,4 +174,13 @@ amendment_log:
       prose_improvement on fields.session_id.amendment_log.
     migration_story: >-
       Prose-only: no field, type, format, or contract_version change. semantic_break=false.
-previous_versions: []
+previous_versions:
+  - contract_version: 1
+    ratified_at: "2026-06-19"
+    ratified_via: "Step 10 multi-perspective critique + PLAN-class-c-cross-system-invariants merge to main"
+    superseded_on: "2026-09-24"
+    summary: >-
+      UUID4-minted-once-at-open_session session_id, ULID as a forward-declared target format
+      grandfathering the live UUID4 (Decision 97 cl.4, original). Superseded by write-boundary
+      derivation from a caller-supplied session_ref (Decision 199); the live UUID4 minter's own
+      migration is tracked as pending rec-4030.

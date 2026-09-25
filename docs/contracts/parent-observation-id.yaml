@@ -1,28 +1,24 @@
 ---
 # Class C cross-system invariant: the telemetry observation TREE pointer (self-reference).
 # Ratified under the CD.25 pre-codegen contract ratification ritual (tier_item T0.12.6).
-# Authored against the shipped scripts/contracts_schema.py + scripts/contracts.py loader.
+# Re-grounded to the write-boundary derivation model at contract_version 2 (Decision 199).
 #
 # Telemetry Class A contracts $ref into contract.fields.parent_observation_id:
-#   telemetry_observations.parent_observation_id -> parent_observation_id (authored by T0.12.6)
-#
-# FORWARD-LOOKING: the column does not exist in the live draft. The draft expresses nesting through
-# separate FK columns (telemetry_steps.phase_id, telemetry_model_calls.step_id, etc.); the canonical
-# model (Decision 95) replaces that ad-hoc nesting with a single self-referential parent pointer on
-# the unified telemetry_observations node table.
+#   telemetry_observations.parent_observation_id -> parent_observation_id
 contract:
   id: parent-observation-id
   class: C
-  contract_version: 1
+  contract_version: 2
   status: ratified
-  ratified_at: "2026-06-24"
-  ratified_via: "Step 10 multi-perspective critique + PLAN-ratify-class-a-telemetry-contracts merge to main (T0.12.6)"
+  ratified_at: "2026-09-24"
+  ratified_via: "PLAN-telemetry-event-journal-contracts merge to main (Decision 199)"
   description: >-
     Canonical cross-system tree pointer for telemetry observations. A nullable self-reference on
     telemetry_observations: a node's parent_observation_id is the observation_id of its enclosing node
     (a step's parent phase; a model_call's parent step), building the in-session trace tree
     (Decision 95 root-unification rule). NULL marks a top-level (root) observation directly under the
-    session. Crockford-base32 ULID, identical format to observation_id (Decision 97).
+    session. Crockford-base32 ULID, derived at the write boundary per telemetry-event-envelope.yaml's
+    identity spec, using the parent's OWN domain tag over the parent_observation_ref the caller supplies.
 fields:
   parent_observation_id:
     type: str
@@ -34,18 +30,20 @@ fields:
       observation_id (self), it forms the connected per-run trace tree.
     semantics: >-
       A REFERENCE to an observation_id (parent-observation-id.yaml and observation-id.yaml are distinct
-      Class C contracts, NOT a chained $ref -- Invariant 5 leaf rule). Received from the parent as a
-      foreign key at open_observation; a child NEVER re-mints the correlation key it did not originate
-      (Decision 97 clause 3, boundary-injection). Genuinely nullable in EVERY table that carries it
-      (null = root observation), so it is not tightened to not-null anywhere -- the loosest baseline is
-      also the per-table value.
+      Class C contracts, NOT a chained $ref -- Invariant 5 leaf rule). DERIVED at the write boundary
+      from the caller-supplied parent_observation_ref, using domain tag
+      'telemetry_observations:observation_id' (the PARENT's own domain tag, per
+      telemetry-event-envelope.yaml's FK rule) -- the same computation the parent row performs for its
+      own observation_id, so the two values are equal with no propagation step (replaces Decision 97's
+      retired boundary-injection / never-re-mints rule). Genuinely nullable in EVERY table that carries
+      it (null = root observation), so it is not tightened to not-null anywhere -- the loosest baseline
+      is also the per-table value.
     populated_by: >-
-      FUTURE (Phase 4 telemetry rebuild, post-T2.26): set by the open_observation boundary from the enclosing
-      observation's id (the module-level TelemetryContext that today threads phase_id/step_id will thread
-      parent_observation_id). No current populator -- the draft has no parent_observation_id column.
+      the write boundary (rec-4024's append_events verb), derived from the caller-supplied
+      parent_observation_ref. No current populator.
     write_time_validation: >-
       Structural: when non-null, must reference an existing telemetry_observations.observation_id in the
-      same session (referential, enforced by the trace-tree writer post-Phase-4). ULID format is
+      same session (referential, enforced by the trace-tree writer, rec-4024). ULID format and value are
       generator-guaranteed. No not-null validator (null is a valid, meaningful value).
     dq_intent:
       not_null:
@@ -54,18 +52,44 @@ fields:
       not_null is unenforced by DESIGN, not as a loosest-baseline placeholder: a root observation
       legitimately has no parent, so enforcing not-null would be incorrect in every consuming table. A
       relationships/self-FK DQ check (parent_observation_id present -> exists as an observation_id) is the
-      appropriate future enforcement, NOT not_null. Population is future-state (Phase 4); ratified now
+      appropriate future enforcement, NOT not_null. Population is future-state (rec-4024); ratified now
       (NOT provisional_v0) per the Class C foundational-invariant rule.
-    amendment_log: []
+    amendment_log:
+      - date: "2026-09-24"
+        semantic_break: true
+        change_class: governance_note_add
+        summary: >-
+          PLAN-telemetry-event-journal-contracts (Decision 199): replaced boundary-injection /
+          never-re-mints propagation with write-boundary derivation from a caller-supplied
+          parent_observation_ref, using the parent's own domain tag. semantic_break=true: the
+          derivation MECHANISM changed, not merely the prose.
+        migration_story: >-
+          No live populator existed under either scheme (population is future-state in both), so no
+          runtime migration is required; rec-4024 builds directly to this contract_version 2 spec.
 joins_using_this_key:
-  # Forward-declared. The self-join entry lands in docs/contracts/_joins.yaml with the telemetry Class A
-  # contracts (T0.12.6).
   - parent_observation_id_join_observations_self_tree
 governance_notes: >-
   Single-hop leaf invariant (Invariant 5). This key holds a value drawn from the observation_id
   keyspace (observation-id.yaml) but is defined as its OWN Class C contract because it carries distinct
   semantics (nullable tree pointer vs required node identity) and its own join; it does NOT $ref
   observation-id.yaml (chained Class-C refs are forbidden). The self-join is recorded in
-  docs/contracts/_joins.yaml.
-amendment_log: []
-previous_versions: []
+  docs/contracts/_joins.yaml. The normative derivation formula lives ONCE in
+  telemetry-event-envelope.yaml; this contract states its own domain tag and defers to that spec.
+amendment_log:
+  - date: "2026-09-24"
+    semantic_break: true
+    change_class: governance_note_add
+    summary: >-
+      PLAN-telemetry-event-journal-contracts (Decision 199): contract-level description re-grounded
+      to the write-boundary derivation model. Accompanies the field-level amendment_log entry above
+      (CD.25 category-6 gate). semantic_break=true, mirroring the field-level entry.
+    migration_story: Prose-only at the contract-description level; no runtime behaviour changes.
+previous_versions:
+  - contract_version: 1
+    ratified_at: "2026-06-24"
+    ratified_via: "Step 10 multi-perspective critique + PLAN-ratify-class-a-telemetry-contracts merge to main (T0.12.6)"
+    superseded_on: "2026-09-24"
+    summary: >-
+      Boundary-injected, never-re-minted parent_observation_id propagated from the parent as an FK
+      (Decision 97 cl.3, original). Superseded by write-boundary derivation using the parent's own
+      domain tag over a caller-supplied parent_observation_ref (Decision 199).

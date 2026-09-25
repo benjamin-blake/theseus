@@ -24,14 +24,33 @@ contract:
   evaluator:
     agent_surface: .claude/skills/planning/SKILL.md
 
-amendment_log: []
+amendment_log:
+  - date: "2026-09-24"
+    semantic_break: true
+    change_class: governance_note_add
+    summary: >-
+      PLAN-telemetry-event-journal-contracts (Decision 199): re-stated every join's cardinality
+      note for the event-journal grain (a table's "one row" is now one lifecycle event, so the
+      PARENT side of a 1:N join is a DERIVED entity -- e.g. "one session" means the set of that
+      session's open/resume/compact/close/annotate rows, not one row); re-stated
+      parent_observation_id_join_observations_self_tree under the same id (no new id introduced);
+      confirmed session_id_join_telemetry_sessions_to_agents and
+      observation_id_join_observations_to_agents already cover agents->child-session and
+      agents->spawning-observation; re-pointed planning_session_id's dangling-reference note at
+      rec-4030 (the live UUID4 producer's migration), not merely "until telemetry (T2.36) lands".
+      Dimension joins (tenant_id/project_id -> their SCD2 dimensions) are DEFERRED to rec-4024,
+      landing with the dimension contracts themselves.
 
-version: 1
-last_updated: "2026-06-24"
-landed_by: "PLAN-ratify-class-a-telemetry-contracts (T0.12.6)"
-decisions_cited: [Decision-95, Decision-96, Decision-97, Decision-66, CD.25]
+version: 2
+last_updated: "2026-09-24"
+landed_by: "PLAN-ratify-class-a-telemetry-contracts (T0.12.6); re-stated at PLAN-telemetry-event-journal-contracts (Decision 199)"
+decisions_cited: [Decision-95, Decision-96, Decision-97, Decision-199, Decision-200, Decision-66, CD.25]
 
 joins:
+  # EVENT-JOURNAL CARDINALITY NOTE (Decision 199): every "session"/"observation"/"agent run" below is
+  # now a DERIVED entity -- the set of that entity's lifecycle-event rows sharing a derived key -- not
+  # one physical row. A 1:N join's "one" side is that derived entity, not a single row.
+
   # --- session_id: the trace-root joins (telemetry_sessions 1:N children) ---
   session_id_join_telemetry_sessions_to_observations:
     key: session_id
@@ -40,21 +59,23 @@ joins:
     cardinality: one_to_many
     description: >-
       Every observation roots to its session (Decision 95 root-unification). The primary trace join:
-      reconstruct a session's trace tree by joining observations on session_id.
+      reconstruct a session's trace tree by joining observations on session_id. Parent side (one
+      session) is the derived entity -- that session_id's own open/resume/compact/close/annotate rows.
   session_id_join_telemetry_sessions_to_transcripts:
     key: session_id
     from: telemetry_sessions.session_id
     to: telemetry_transcripts.session_id
     cardinality: one_to_many
-    description: All transcript blobs emitted within a session, joined on session_id.
+    description: All transcript blobs emitted within a session, joined on session_id. Parent side is the derived session entity.
   session_id_join_telemetry_sessions_to_agents:
     key: session_id
     from: telemetry_sessions.session_id
     to: telemetry_agents.session_id
     cardinality: one_to_many
     description: >-
-      The agent dimension rows belonging to a session, joined on session_id -- the fix for the
-      rootless telemetry_agent_invocations (Decision 95 cl.4).
+      Agent-run rows rooted to their CHILD session, joined on session_id -- the fix for the rootless
+      telemetry_agent_invocations (Decision 95 cl.4), and the agents->child-session join
+      telemetry_agents' own grain names. Parent side is the derived session entity.
   parent_session_id_join_sessions_self_spawn:
     key: parent_session_id
     from: telemetry_sessions.parent_session_id
@@ -62,7 +83,8 @@ joins:
     cardinality: many_to_one
     description: >-
       Cross-agent linkage: a sub-agent session points to its spawning session via parent_session_id
-      (NULL for top-level runs). Self-join building the cross-session half of the trace tree.
+      (NULL for top-level runs). Self-join building the cross-session half of the trace tree; both
+      sides are derived session entities.
 
   # --- observation_id: the node joins ---
   observation_id_join_observations_to_transcripts:
@@ -70,15 +92,18 @@ joins:
     from: telemetry_observations.observation_id
     to: telemetry_transcripts.observation_id
     cardinality: one_to_many
-    description: A node's large-payload blobs (prompt/response/transcript), joined on observation_id.
+    description: >-
+      A node's large-payload blobs (prompt/response/thinking/tool_input/tool_result/system), joined
+      on observation_id. Parent side is the derived observation entity (its open+close row pair, when span-shaped).
   observation_id_join_observations_to_agents:
     key: observation_id
     from: telemetry_observations.observation_id
     to: telemetry_agents.observation_id
     cardinality: one_to_many
     description: >-
-      Node-scoped agent rows (e.g. a sub-agent spawned by a specific observation), joined on
-      observation_id. Optional FK -- session-scoped agent rows carry no observation_id.
+      Agent runs spawned by a specific tool_call observation, joined on observation_id -- the
+      agents->spawning-observation join telemetry_agents' own grain names. Optional FK -- session-scoped
+      agent runs carry no observation_id.
   parent_observation_id_join_observations_self_tree:
     key: parent_observation_id
     from: telemetry_observations.parent_observation_id
@@ -86,7 +111,8 @@ joins:
     cardinality: many_to_one
     description: >-
       In-session structure: a node points to its enclosing node via parent_observation_id (NULL for a
-      root observation). Self-join building the in-session half of the trace tree.
+      root observation). Self-join building the in-session half of the trace tree; both sides are
+      derived observation entities (re-stated for the event-journal grain, same join id, T0.12.6-landed).
 
   # --- planning_session_id: artifact -> producing-run linkage (OpenLineage Job/Run/Dataset) ---
   planning_session_id_join_execution_plans_to_sessions:
@@ -97,9 +123,14 @@ joins:
     description: >-
       Correlates a plan revision (ops_execution_plans, T2.26) to the telemetry session that produced
       it -- the artifact->producing-run linkage (OpenLineage Job/Run/Dataset pattern). Soft/unenforced:
-      planning_session_id is opaque-VARCHAR (UUID4 live format, ULID canonical target per Decision 97
-      cl.4; no translation table) and telemetry (T2.36) is not_started, so this join must tolerate
-      dangling references until the telemetry side lands.
+      planning_session_id is opaque-VARCHAR (UUID4 live format; write-boundary-derived id canonical
+      target per Decision 199) and the live legacy session_id minter is not yet migrated to that
+      derivation (pending rec-4030), so this join must tolerate dangling references until rec-4030 lands.
+
+  # --- dimension joins (Decision 200) -- DEFERRED, not yet forward-declared here ---
+  # tenant_id -> ops_tenants and project_id -> ops_projects join entries land with rec-4024's
+  # dimension contracts, per this file's own incremental-landing rule (INTENT Part 5): a join is
+  # recorded only once both endpoints exist as ratified contracts.
 
   # --- registry_key: cross-system lineage (source-lineage.yaml) ---
   lineage_join_source_to_agent_type:

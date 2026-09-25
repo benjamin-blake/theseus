@@ -16,12 +16,23 @@ contract:
   status: active
   description: >-
     Class D mechanism-contract envelope for this file (migration-step-3-grandfathering, T2.56
-    migration step 3). The vocabulary/model body itself is unchanged by this envelope.
+    migration step 3). The envelope itself (subject/evaluator) is unchanged; the vocabulary/model
+    body was rewritten at Decision 199 (see amendment_log below).
   subject: telemetry-lexicon
   evaluator:
     check: validate_telemetry_lexicon_tables
 
 amendment_log:
+  - date: "2026-09-24"
+    semantic_break: true
+    change_class: governance_note_add
+    summary: >-
+      PLAN-telemetry-event-journal-contracts (Decision 199): REWRITE. temporal re-grounded to
+      event_time_column event_timestamp and partition day(session_started_at) for all four tables;
+      identity re-grounded to the write-boundary-derived hash spec (ULID-shaped hash ids, not
+      time-ordered across sessions; event_id remains a genuine k-sortable ULID); vocabulary added
+      for event journal, event_kind, derived-at-read, turn, tool_call, purpose, origin, blob port,
+      producer, session_started_at, source_ordinal. canonical_tables and collapses unchanged.
   - date: "2026-08-14"
     semantic_break: false
     change_class: governance_note_add
@@ -31,14 +42,14 @@ amendment_log:
       lexicon.model.canonical_tables each resolve to an existing Class A contract and collapses
       targets name a canonical table. No change to the vocabulary/model body itself.
 
-version: 1
-last_updated: "2026-06-23"
-decisions_cited: [Decision-95, Decision-96, Decision-97, Decision-67, Decision-84, CD.25, CD.9]
+version: 2
+last_updated: "2026-09-24"
+decisions_cited: [Decision-95, Decision-96, Decision-97, Decision-199, Decision-200, Decision-67, Decision-84, CD.25, CD.9]
 
 lexicon:
   model:
-    name: session-rooted trace/observation model
-    shape: OpenTelemetry / Langfuse trace tree
+    name: session-rooted event-journal model
+    shape: OpenTelemetry / Langfuse trace tree, re-grounded to an append-only event journal (Decision 199)
     canonical_tables: [telemetry_sessions, telemetry_observations, telemetry_transcripts, telemetry_agents]
     root_invariant: >-
       Every telemetry row is reachable from a telemetry_sessions row; there are no rootless entities.
@@ -51,11 +62,36 @@ lexicon:
       telemetry_agent_invocations: telemetry_agents (rooted dimension + linked observations/sub-sessions)
 
   terms:
+    - term: event journal
+      definition: >-
+        The Decision 199 write pattern every telemetry table uses: an append-only sequence of rows, one per
+        lifecycle event (event_kind), never a row mutated in place. A span-shaped entity (a session, an
+        observation phase/step/turn/tool_call, an agent run) is an open+close row PAIR sharing one derived
+        entity key; a point-shaped entity (model_call, process_event, a transcript blob) is a single row.
+      see_also: [event_kind, derived-at-read, session, observation, agent]
+
+    - term: event_kind
+      definition: >-
+        The per-table lifecycle/point discriminator: open | resume | compact | close | annotate on
+        telemetry_sessions; open | close for span-shaped telemetry_observations kinds and telemetry_agents;
+        point for telemetry_observations' instantaneous kinds (model_call, process_event) and every
+        telemetry_transcripts row. Declared once in telemetry-event-envelope.yaml.
+      see_also: [event journal]
+
+    - term: derived-at-read
+      definition: >-
+        Session/observation/agent-run state, duration, roll-up counts, friction classification and cost are
+        NEVER stored columns -- they are computed by a named reader verb reading a session's own rows,
+        bounded to its single day(session_started_at) partition (data-modeling-standard.yaml's derived-state
+        rule; answers, does not amend, Decision 81 clause 8). A stored fact carries derivation.timing: read
+        and gets no physical column.
+      see_also: [event journal, session_started_at]
+
     - term: session
       aka: [trace, run]
       definition: >-
-        The root container of one telemetry trace. One row in telemetry_sessions, keyed by session_id.
-        The unit every other telemetry row roots to.
+        The root container of one telemetry trace. Rows in telemetry_sessions, keyed by session_id (shared
+        across every lifecycle event of that session). The unit every other telemetry row roots to.
       see_also: [session_id, parent_session_id, telemetry_sessions]
 
     - term: trace
@@ -67,32 +103,66 @@ lexicon:
     - term: observation
       replaces: [phase, step, process_event, model_call]
       definition: >-
-        A single timed node in a session's trace tree. One row in telemetry_observations, keyed by
-        observation_id, rooted by session_id, nested by parent_observation_id. The four draft event tables
-        are NOT separate tables -- they are values of observation_type.
+        A single node in a session's trace tree. Rows in telemetry_observations, keyed by observation_id,
+        rooted by session_id, nested by parent_observation_id. The four draft event tables are NOT separate
+        tables -- they are values of observation_type, extended (Decision 199 / T3.20) with turn and tool_call.
       see_also: [observation_type, observation_id, parent_observation_id, telemetry_observations]
 
     - term: observation_type
       definition: >-
-        The discriminator column on telemetry_observations that distinguishes node kinds
-        (phase | step | process_event | model_call | ...). Replaces the draft's four sibling event tables.
-        Accepted-value set ratified per-table at T0.12.6.
-      see_also: [observation]
+        The node-KIND discriminator column on telemetry_observations (phase | step | turn | tool_call |
+        process_event | model_call | ...), orthogonal to event_kind (the lifecycle/point discriminator).
+        Accepted-value set ratified per-table.
+      see_also: [observation, event_kind]
+
+    - term: turn
+      definition: >-
+        An observation_type value: one agent turn (a prompt/response exchange). entity_ref grammar
+        '<session entity_ref>/<promptId>'. Its own field additions are T3.20's build, not the event-journal
+        re-model's.
+      see_also: [observation_type, tool_call]
+
+    - term: tool_call
+      definition: >-
+        An observation_type value: one tool invocation within a turn. entity_ref = its toolUseId; the one
+        observation_type with a required close-row outcome (success | error | blocked | interrupted).
+      see_also: [observation_type, turn]
 
     - term: transcript
       definition: >-
-        A large text payload (prompt / response / full transcript) stored in telemetry_transcripts, linked
-        by FK to its observation_id (and session_id). Kept OUT of telemetry_observations so the node table
-        stays small and hot.
-      see_also: [transcript_id, telemetry_transcripts, observation]
+        A large text payload (prompt | response | thinking | tool_input | tool_result | system) stored in
+        telemetry_transcripts, linked by FK to its observation_id (and session_id). Kept OUT of
+        telemetry_observations so the node table stays small and hot. Hybrid content tier (Decision 199):
+        inline for payloads <= 64 KiB, else spilled to the content blob port.
+      see_also: [transcript_id, telemetry_transcripts, observation, blob port, purpose, origin]
+
+    - term: purpose
+      definition: >-
+        telemetry_transcripts' kind discriminator for a blob: prompt | response | thinking | tool_input |
+        tool_result | system. "transcript" (a whole-session dump) is retired -- a session's transcript IS
+        the set of its rows, not a single blob.
+      see_also: [transcript]
+
+    - term: origin
+      definition: >-
+        telemetry_transcripts' provenance discriminator for a blob's content: human | harness | agent | tool.
+        Hook/harness-generated tool_result TEXT is origin harness; the tool's own output is origin tool.
+      see_also: [transcript]
+
+    - term: blob port
+      definition: >-
+        The named port a spilled (> 64 KiB) transcript payload is written through: S3 in the cloud adapter,
+        a local directory adapter in the free tier (Decision 184 clause 2). Content-addressed key
+        'tenant/project/session_id/<content_sha256>'. Distinct from DuckLake data inlining, which stays
+        disabled for telemetry (CD.34) regardless of which content tier a row uses.
+      see_also: [transcript]
 
     - term: agent
       replaces: [agent_invocation]
       definition: >-
-        The agent dimension (agent_type, model, version) a session / observation belongs to, in
-        telemetry_agents, joined by session_id / observation_id. Replaces the rootless
-        telemetry_agent_invocations: agent identity is a rooted dimension; agent WORK is captured as
-        observations / linked sub-sessions.
+        The agent dimension/run surface (agent_type, model, version) a session belongs to, in
+        telemetry_agents, keyed by the derived agent_run_id, joined by session_id (the CHILD session) /
+        observation_id (the spawning tool_call, nullable). Replaces the rootless telemetry_agent_invocations.
       see_also: [telemetry_agents, session, observation]
 
     - term: root unification
@@ -102,6 +172,23 @@ lexicon:
         parent_observation_id. Together they form one connected trace tree per top-level run.
       see_also: [session, parent_session_id, parent_observation_id]
 
+    - term: producer
+      definition: >-
+        The emitting surface's canonical id on the shared envelope (e.g. claude_code, litellm,
+        ci_annotate), used both as provenance and as the model_call dedupe precedence tiebreaker.
+      see_also: [event journal]
+
+    - term: session_started_at
+      definition: >-
+        The ROOT session's start time, source-derived and shared by every row of that session AND all its
+        sub-agent sessions (never a warehouse lookup). The partition basis and the 48-bit time prefix of
+        every entity/FK key.
+      see_also: [derived-at-read]
+
+    - term: source_ordinal
+      definition: Orders rows within a session independently of event_timestamp precision. A read-side ordering aid; never part of an identity hash.
+      see_also: [event journal]
+
     - term: span
       status: NOT_USED
       definition: >-
@@ -110,38 +197,48 @@ lexicon:
       see_also: [observation]
 
   identity:
-    # Decision 97: ULID keys, minted once at the boundary, propagated as FKs, never re-derived downstream.
-    scheme: ULID (Crockford base32)
+    # Decision 199 (amending Decision 97): keys are DERIVED at the write boundary from caller-supplied
+    # refs, never minted-once-and-propagated. The normative hash spec lives in
+    # docs/contracts/telemetry-event-envelope.yaml; this entry restates only the per-key domain tags.
+    scheme: ULID-shaped hash ids (Crockford base32), derived at the write boundary
+    normative_spec: docs/contracts/telemetry-event-envelope.yaml    # Class C; identity hash spec
     keys:
       session_id:
-        format_target: ULID
-        format_live: UUID4    # grandfathered; flips when the Phase 4 session-open boundary mints ULID
-        contract: docs/contracts/session-id.yaml    # Class C (ratified T0.12.7; additively amended at T0.12.6)
+        format: ULID-shaped hash id (48-bit ROOT session_started_at ms + 80 hash bits)
+        contract: docs/contracts/session-id.yaml    # Class C; contract_version 2 at Decision 199
       observation_id:
-        format: ULID
-        contract: docs/contracts/observation-id.yaml    # Class C; authored at T0.12.6
+        format: ULID-shaped hash id (48-bit ROOT session_started_at ms + 80 hash bits)
+        contract: docs/contracts/observation-id.yaml    # Class C; contract_version 2 at Decision 199
       parent_observation_id:
-        format: ULID
+        format: ULID-shaped hash id, same derivation as observation_id
         references: observation_id
-        contract: docs/contracts/parent-observation-id.yaml    # Class C; authored at T0.12.6
+        contract: docs/contracts/parent-observation-id.yaml    # Class C; contract_version 2 at Decision 199
       transcript_id:
-        format: ULID
+        format: ULID-shaped hash id, table-local (telemetry_transcripts inline field)
+      agent_run_id:
+        format: ULID-shaped hash id, table-local (telemetry_agents inline field)
       parent_session_id:
-        format_target: ULID
-        format_live: UUID4    # tracks session_id realization
+        format: ULID-shaped hash id, same derivation as session_id
         references: session_id
+      event_id:
+        format: k-sortable ULID (48-bit event_timestamp ms + 80 hash bits over external_ref)
+        contract: docs/contracts/telemetry-event-envelope.yaml    # Class C; row identity, not an entity key
     rule: >-
-      Minted once at the boundary (open_session / open_observation), propagated to children as FKs, never
-      re-derived downstream (Decision 97 clauses 2-3; mirrors CD.33 clause 2 / Decision 82 for ducklake_writer).
+      Entity/FK keys are time-prefixed by the ROOT session's own session_started_at, NOT by when the
+      individual row was created -- so they are NOT time-ordered across sessions the way a plain ULID is
+      (only event_id, prefixed by its own event_timestamp, is genuinely k-sortable in that sense). A FK is
+      computed using the PARENT's own domain tag over the same ref, so it equals the parent's key with no
+      propagation step (Decision 199, superseding Decision 97's mint-once-and-propagate rule).
 
   temporal:
-    # Decision 96: telemetry is insert-once event data; partition by event time, not mutation time.
-    event_time_column: started_at
+    # Decision 96 (re-grounded by Decision 199): telemetry is an append-only event journal; partition by
+    # the ROOT session's own start time, not per-row event time and not mutation time.
+    event_time_column: event_timestamp
     partition:
-      telemetry_sessions: day(started_at)    # UTC
-      telemetry_observations: day(started_at)    # UTC
-      telemetry_transcripts: day(created_at)    # UTC
-      telemetry_agents: day(started_at)    # UTC, or none if realized as a pure dimension (settled at T0.12.6)
+      telemetry_sessions: day(session_started_at)    # UTC
+      telemetry_observations: day(session_started_at)    # UTC
+      telemetry_transcripts: day(session_started_at)    # UTC
+      telemetry_agents: day(session_started_at)    # UTC
     timestamps: timezone-aware UTC, ISO-8601; naive / local rejected at the boundary
     excluded: trade_date    # domain-partition concept; absent from telemetry
     not_applicable: last_updated_timestamp    # ops-SCD2 mutation envelope; telemetry is insert-once

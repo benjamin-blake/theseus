@@ -28,6 +28,15 @@ contract:
     check: validate_data_model_standard
 
 amendment_log:
+  - date: "2026-09-24"
+    semantic_break: true
+    change_class: governance_note_add
+    summary: >-
+      PLAN-telemetry-event-journal-contracts (Decision 199): added an event-table carve-out to
+      rule identity-ulid-at-boundary's statement (boundary-derived identity for append_only
+      telemetry, scoped, other tables unchanged) and to design_time_walk step 3; added a new rule
+      derived-state, scoped to append_only telemetry, naming derivation.timing: read / no physical
+      column and deferring materialization to tier_item T2.52 c1.
   - date: "2026-09-22"
     semantic_break: false
     change_class: prose_improvement
@@ -63,10 +72,10 @@ amendment_log:
       validate_table_registration.py is the new admission control this plan adds separately.
       semantic_break=false.
 
-version: 1
-updated_at: "2026-07-20"
-updated_by: "PLAN-scd2-modeling-defaults"
-decisions_cited: [78, 81, 84, 95, 96, 97, 141, 66, 137]
+version: 2
+updated_at: "2026-09-24"
+updated_by: "PLAN-telemetry-event-journal-contracts"
+decisions_cited: [78, 81, 84, 95, 96, 97, 141, 66, 137, 199]
 
 rules:
   - id: grain-first
@@ -78,6 +87,12 @@ rules:
       Identity is a ULID (Crockford base32), minted once at the write boundary (the writer Lambda /
       module that owns the insert), never client-side and never a natural-key primary key. Propagated
       to child rows as foreign keys, never re-derived downstream (mirrors Decision 97 / CD.33 clause 2).
+      EVENT-TABLE CARVE-OUT (Decision 199): the append_only telemetry tables derive their entity/FK
+      keys at the write boundary from a caller-supplied ref, using a normative hash spec
+      (telemetry-event-envelope.yaml), rather than minting once and propagating -- still boundary-side,
+      never client-side, but a FK equals its parent's key by construction instead of by copying a
+      value forward. This carve-out is scoped to telemetry; every other table keeps the plain
+      mint-once-and-propagate statement above.
   - id: merge-on-business-key
     statement: >-
       SCD2 merge/upsert logic keys off the table's business key (e.g. rec_id, session_id), not a
@@ -98,6 +113,15 @@ rules:
       on sanctioned exceptional physical deletes (Decision 70) or lifecycle-closure paths (Decision
       103). Those remain legitimate, narrowly-scoped exceptions to the insert-only norm, not violations
       of it.
+  - id: derived-state
+    statement: >-
+      SCOPED to append_only telemetry (Decision 199): a fact that is a function of other rows --
+      entity state, duration, roll-up counts, friction classification, cost -- is DERIVED AT READ by
+      a named reader verb, never a stored, mutated-in-place column. Such a field is still declared in
+      the Class A contract (one schema for readers) with derivation.timing: read, and gets NO physical
+      column. Materialization of a derived field (caching it back to a physical column for query
+      performance) is a distinct, separately-gated decision owned by tier_item T2.52 clause 1 -- never
+      a default a table falls into silently.
 
 design_time_walk: >-
   Walk order (relocated from the planning skill's Data-Model Assessment,
@@ -107,7 +131,9 @@ design_time_walk: >-
   merge_key + history/current split: identify the business key the table merges on, and whether
   the table needs a Type-1 current projection alongside its history table (SCD2) or history-only
   (append_only). 3. Identity: ULID, minted once at the write boundary -- never client-side, never
-  a natural-key primary key. 4. Join / correlation keys: identify session/trace FKs and
+  a natural-key primary key (rule identity-ulid-at-boundary's event-table carve-out, Decision 199,
+  applies only to the append_only telemetry tables: boundary-derived from a caller ref via the
+  normative hash spec, not minted-once-and-propagated -- still never client-side). 4. Join / correlation keys: identify session/trace FKs and
   cross-table join keys the new table participates in; consult docs/contracts/_joins.yaml (see
   this file's own `indexes` entry below). 5. Write mode: SCD2 (mutable-entity ops tables) vs
   append_only (insert-once event/telemetry tables) -- grain-first, NOT "default to SCD2"
