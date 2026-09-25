@@ -318,10 +318,10 @@ verification_plan:
       Run the fast tier (prose budget, SLOC, git-ops contract binding, Decision-entry conformance, shard admission,
       graduation completeness) on the COMMITTED tree -- an uncommitted plan or shard is invisible to the diff-derived
       legs, as this plan's own authoring session demonstrated.
-    command: bin/venv-python -m scripts.validate --pre
+    command: test -z "$(git status --porcelain)" && bin/venv-python -m scripts.validate --pre
     expected: >-
-      Zero failed checks; validate_prose_limits passes SKILL.md at or under 35,402 bytes; validate_git_ops_contract binds
-      the new paths; both shards ADMITTED.
+      The clean-tree assertion passes (everything is committed), then zero failed checks; validate_prose_limits passes
+      SKILL.md at or under 35,402 bytes; validate_git_ops_contract binds the new paths; both shards ADMITTED.
     fix_if: >-
       Read the summary, never the exit code (Decision 73). A prose-budget failure means relocate text to git-ops.yaml --
       never add a raise marker.
@@ -335,9 +335,12 @@ verification_plan:
     action: >-
       Dogfood the new order for this plan's own handoff: commit, fetch + rebase onto origin/main, run the full tier on the
       clean tree, then confirm the new checker attests it before pushing.
-    command: bin/venv-python -m scripts.validate && bin/venv-python -m scripts.session.handoff_evidence --check-push
+    command: >-
+      test -z "$(git status --porcelain)" && bin/venv-python -m scripts.validate
+      && bin/venv-python -m scripts.session.handoff_evidence --check-push
     expected: >-
-      Validation Summary (scope: all) PASS, then the checker exits 0 naming the attested tree.
+      The clean-tree assertion passes, Validation Summary (scope: all) PASS, then the checker exits 0 naming the attested
+      tree.
     fix_if: >-
       A dirty-tree refusal means something was edited after the commit -- commit it and rerun the full tier from the
       start. A timeout is BLOCKED per handoff_policy.
@@ -527,11 +530,20 @@ execution_steps:
     Execute VP steps 1-8 in order (loop until pass; STOP and RCA on a third consecutive failed fix, Decision 55). Then
     follow the NEW order for this plan's own handoff: commit, fetch + rebase, VP step 9, push.
   - >-
+    Record the handoff closure evidence as FOUR SEPARATE facts, never merged into one PASS: (1) GitHub readiness states
+    from `bin/venv-python -m scripts.session.github_readiness` (`unknown` is unproven, never PASS); (2) parent validator
+    evidence -- VP step 9's full-tier exit 0, Validation Summary (scope: all) PASS, and the new schema-4
+    logs/debug/validation-result.json whose head_tree matches the pushed commit on a clean tree; (3) structured
+    postflight evidence -- /tmp/implementation-retrospective.json through
+    `bin/venv-python -m scripts.session.postflight --evidence`; (4) the real push / PR / CI / merge outcome.
+  - >-
     PR body carries "Resolves: rec-3033". Squash-merge only once pr-validate is green on the head sha.
   - >-
     After merge: VP step 12; VP steps 10-11 in the first session whose harness loaded the new settings (post the evidence
     to the PR, per Decision 103), recording them BLOCKED until then.
-  - "Report: what was implemented, the VP compliance table, and the live gate evidence."
+  - >-
+    Report: what was implemented; the VP compliance table; the four closure facts above, each named separately; and the
+    live gate evidence from VP steps 10-11.
 work_areas: []
 rollback: >-
   Revert the squash commit: the settings entry, the pre-push hook and the reorder all go with it, restoring today's
