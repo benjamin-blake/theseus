@@ -223,9 +223,12 @@ scope:
       workflow-level concurrency group, cancel-in-progress false), so the probe's run conclusion
       never colours terraform-drift and loop_liveness_stale judges it as its own peer (the backstop if
       the probe's own filing fails). One job, permissions id-token write, contents read, actions read:
-      assume agent-platform-github-ci-planner on main with the reserved session name (the planner's
-      main-sub trust accepts no other and is workflow-agnostic) with continue-on-error plus the
-      Decision 172 fail-loud outcome guard (validate_oidc_failopen_guards); the venv install step
+      assume agent-platform-github-ci-branch (main-trusted, already the identity of the hourly
+      convergence-health sensor, explicitly DENIED convergence-record writes, no tfplan or package
+      write, already holds DuckLake writer invoke for file_rec; no role-session-name) -- NOT the
+      planner, whose reserved session reaches convergence-record and saved-plan writes (Decision 143
+      clause 1, worst-reachable-verb scoping) -- with continue-on-error plus the Decision 172
+      fail-loud outcome guard (validate_oidc_failopen_guards); the venv install step
       (validate_workflow_dependency_install); then one thin run line calling bin/venv-python -m
       scripts.ci.security_detector_probe --file-on-transition, adding --bootstrap-window while
       vars.SECURITY_DETECTOR_PROVISIONED is not 'true' (Decision 162). No terraform, no tfvars, no
@@ -234,13 +237,13 @@ scope:
     action: Create
     purpose: >-
       TestSecurityDetectorLivenessWorkflow (graduated): the workflow is scheduled hourly and
-      dispatchable; its one job assumes the planner with the reserved session name equal to
-      terraform/personal/oidc.tf's local.convergence_writer_session_name, carries the outcome guard,
+      dispatchable; its one job assumes agent-platform-github-ci-branch, never the planner and never
+      the reserved tf-drift-convergence-writer session name, carries the outcome guard,
       installs the venv, runs scripts.ci.security_detector_probe --file-on-transition, passes
       --bootstrap-window only under the SECURITY_DETECTOR_PROVISIONED condition, declares actions
       read, and never mentions terraform, CONVERGENCE_KEY, s3 cp, materialise-tfvars or a
-      terraform apply -- because that session also holds the planner's convergence-write grant, the
-      read-only shape is a security invariant, not style (Decision 202 residual).
+      terraform apply; and terraform/personal/oidc_ci_roles.tf's github_ci_branch policy document
+      grants exactly the two probe reads (Sid SecurityDetectorLivenessRead).
   - file: config/agent/verification_registry/entries/security-detector-liveness-workflow-read-only.yaml
     action: Create
     purpose: graduate TestSecurityDetectorLivenessWorkflow (test_selector, class-level node id) under this plan's slug
@@ -252,12 +255,16 @@ scope:
       loop_liveness_stale backstops a persistent red, so ci-rca watching it would double-record one
       event (the terraform-drift entry's precedent; validate_ci_rca_taxonomy is keyed on the
       workflow name).
-  - file: terraform/personal/oidc.tf
+  - file: terraform/personal/oidc_ci_roles.tf
     action: Modify
     purpose: >-
-      Comment-only: the convergence_writer_session_name comment's "EXACTLY 4 coupled sites" becomes
-      5 -- add site 5, .github/workflows/security-detector-liveness.yml's role-session-name. No
-      HCL value changes (empty speculative plan).
+      Add one read statement to data.aws_iam_policy_document.github_ci_branch, Sid
+      SecurityDetectorLivenessRead: cloudwatch:DescribeAlarms on "*" (no resource scoping) and
+      sns:ListSubscriptionsByTopic on aws_sns_topic.alerts.arn. Both are inside the boundary's
+      DataPlaneAllow (cloudwatch:*, sns:*); an inline-policy update on a boundary-carrying
+      agent-platform-* role is in-budget and auto-applies through the governed CD path at merge
+      (classification per environment-taxonomy.yaml, not restated here). Keep the policy's existing
+      size precondition green.
   - file: config/composite_action_body_baseline.yaml
     action: Modify
     purpose: r3_workflows ceilings for the new workflow's inline run bodies, equal to their measured counts (Decision 162 R3)
@@ -309,10 +316,9 @@ scope:
       cannot interpolate) and workflow AWS_DEFAULT_REGION / aws-region literals; (5) residuals
       stated, not implied: UpdateTrail and PutEventSelectors can still blind the trail -- the tamper
       alarm, the IAM-event heartbeat alarm and the hourly security-detector-liveness probe are its
-      compensating controls; and the probe runs under the planner's reserved convergence-writer
-      session (the only session its main-sub trust admits), guarded by a graduated read-only
-      workflow test -- owner rec-4069 (a dedicated read-only monitor identity, Decision 143 clause
-      1); and the alerts topic itself stays CI-writable (github_ci_apply's SNS topic grant), so
+      compensating controls; the probe runs as the existing CI branch identity, which is explicitly
+      denied convergence-record writes and holds no saved-plan write (Decision 143 clause 1); and the
+      alerts topic itself stays CI-writable (github_ci_apply's SNS topic grant), so
       alarm (4) emails through the topic it guards and the probe's subscription leg is its
       independent check; (6) rejected: AWS Config (its findings return through the same SNS path the
       probe must be independent of, misses denied attempts, adds recorder cost), a console-created
@@ -346,18 +352,20 @@ scope:
       five modified shards" -> four; the verification-registry.yaml scope purpose and its
       test_obligations behavior "four claim-preserving repoints" -> three; pre_implementation_checklist
       "Before editing the five shards ... four exit 0" -> four shards, three exit 0; execution_steps
-      "four registry shards" -> three; rollback "the five modified shards" -> four.
+      "four registry shards" -> three; rollback "the five modified shards" -> four; the
+      verification-registry.yaml scope purpose's "all five admitted by run_differential" -> four;
+      step 3's expected "red before for all five" and its waiver "re-proves all five here" -> four.
       Add one context line: the replacement check is path-independent and needs no repoint. Nothing
       else in Plan A changes; bin/venv-python -m scripts.roadmap.plan_document validates it.
 bundled_recommendations: ["rec-4044"]
-followon_recs: ["rec-4067", "rec-4069"]
+followon_recs: ["rec-4067"]
 infrastructure_dependencies:
   - "terraform/bootstrap is NEVER auto-applied (terraform/bootstrap/CLAUDE.md, T2.23): every live step below runs in an ADMIN container under agent_platform_admin, from merged main, only after a human has reviewed the presented plan and explicitly directed the apply (Decisions 120 and 126). terraform/bootstrap is hashicorp-only, so init needs no provider mirror."
   - "No pre-merge apply and no split-apply: PlatformAdmin's new grant is a bootstrap-declared managed policy, so nothing in terraform/personal changes except one comment (empty speculative plan, no-op apply)."
   - "Two-phase post-merge bootstrap apply: phase 1 targets aws_iam_policy.platform_security_admin + aws_iam_role_policy_attachment.platform_security_admin (the grant must be live before the resources that need it; Decision 183 clause 4 targeted-apply precedent); phase 2 applies the detector. Phase 1 also grants the cloudtrail reads and logs:TestMetricFilter the pre-apply checks need."
   - "The alerts topic and its email subscription stay in terraform/personal; the detector references the topic ARN by template only (no cross-root reference). The subscription must already be confirmed (step 11)."
   - "Freeze from merge until step 15: no other terraform/bootstrap apply, or the unapplied detector would ride along unreviewed."
-  - "The CI planner role needs NO new grant: it already holds cloudwatch Describe*/List* on *, sns Get*/List* on the alerts topic and sns:GetSubscriptionAttributes; the CI permissions boundary has no cloudtrail entry, which is why the probe reads alarm state, not trail status."
+  - "The probe identity is the existing agent-platform-github-ci-branch role (main-trusted, convergence-write denied); it gains one in-budget read Sid (cloudwatch:DescribeAlarms, sns:ListSubscriptionsByTopic on the alerts topic) that CD auto-applies at merge. The CI permissions boundary has no cloudtrail entry, which is why the probe reads alarm state, not trail status."
   - "Merge-to-apply window: from merge until step 16, the detector does not exist yet, so security-detector-liveness.yml runs with --bootstrap-window (warnings, green, no rec) because repo variable SECURITY_DETECTOR_PROVISIONED is unset; Benjamin sets it to true at step 16, after which a failure is red and files a rec. Never set it before step 16 passes locally."
 acceptance_criteria:
   - terraform/bootstrap declares a multi-region, global-events, log-file-validated CloudTrail trail homed in var.aws_region, its protected S3 bucket, a CloudWatch Logs group and delivery role, and five platform-security-* metric filters with alarms targeting the existing alerts topic, with no region literal and no provider alias
@@ -412,11 +420,12 @@ verification_plan:
     graduation_check_id: security-detector-probe-fails-closed
   - step: 4
     phase: pre-deploy
-    action: the liveness workflow is a read-only probe under the planner's reserved session, gated only during the bootstrap window
+    action: the liveness workflow is a read-only probe under the CI branch identity, gated only during the bootstrap window
     command: bin/venv-python -m pytest "tests/test_security_detector_liveness_workflow.py::TestSecurityDetectorLivenessWorkflow" -q
     expected: >-
       all tests pass, including red cases for a terraform step, a convergence-record or S3 access, a
-      missing outcome guard, a session name differing from oidc.tf's local, and an unconditional
+      missing outcome guard, the planner role or the reserved session name, a missing
+      SecurityDetectorLivenessRead grant, and an unconditional
       --bootstrap-window; red before (the workflow and module do not exist), green after
     fix_if: the job touches terraform, S3 or the convergence record, lacks the outcome guard, or the bootstrap gate is unconditional
     hermetic: false
@@ -441,13 +450,16 @@ verification_plan:
   - step: 6
     phase: pre-deploy
     action: both edited plans still validate
-    command: bin/venv-python -m scripts.roadmap.plan_document docs/plans/PLAN-platform-role-iam-change-alarms.yaml docs/plans/PLAN-platform-iam-bootstrap-adopt.yaml && ! grep -nE 'five (modified |registry )?shards|FIVE SHARDS|four claim-preserving|four registry shards|four exit 0|the cloudtrail shard' docs/plans/PLAN-platform-iam-bootstrap-adopt.yaml && echo "PLANS VALID, NO STALE COUNTS"
+    command: bin/venv-python -m scripts.roadmap.plan_document docs/plans/PLAN-platform-role-iam-change-alarms.yaml docs/plans/PLAN-platform-iam-bootstrap-adopt.yaml && ! grep -nE 'five (modified |registry )?shards|FIVE SHARDS|four claim-preserving|four registry shards to the bootstrap|four exit 0|the cloudtrail shard|all five admitted|for all five|re-proves all five' docs/plans/PLAN-platform-iam-bootstrap-adopt.yaml && echo "PLANS VALID, NO STALE COUNTS"
     expected: exit 0 for both plans and the marker line -- no stale shard count remains in Plan A
     fix_if: the Plan A amendment left a dangling step reference or a stale count
     hermetic: true
     expected_literals: ["PLANS VALID, NO STALE COUNTS"]
     graduation: waive
-    graduation_waiver_reason: validate --pre already runs plan_document over every plan; a row would duplicate it.
+    graduation_waiver_reason: >-
+      The schema half duplicates validate --pre (which runs plan_document over every plan); the
+      stale-count grep is a one-time check of this plan's own amendment to Plan A, with no standing
+      claim to guard once merged.
   - step: 7
     phase: pre-deploy
     action: fast-tier presubmit, including run_differential admission of the three new shards, the Decision entry conformance, the R3 baseline and the bootstrap prose budget
@@ -636,7 +648,7 @@ test_obligations:
     test_selector: "tests/test_security_detector_probe.py::TestSecurityDetectorProbe"
     red_green_expectation: red before (module absent), green after
   - source: .github/workflows/security-detector-liveness.yml
-    behavior: A separate hourly workflow runs the probe read-only under the planner's reserved session with the fail-loud outcome guard, gated only by the bootstrap-window variable, and never touches terraform, S3 or the convergence record.
+    behavior: A separate hourly workflow runs the probe read-only as the CI branch identity with the fail-loud outcome guard, gated only by the bootstrap-window variable, and never touches terraform, S3 or the convergence record.
     verification_step: 4
     test_selector: "tests/test_security_detector_liveness_workflow.py::TestSecurityDetectorLivenessWorkflow"
     red_green_expectation: red before (workflow absent), green after
@@ -650,14 +662,11 @@ test_obligations:
     verification_step: 7
     command: bin/venv-python -m scripts.validate --pre
     red_green_expectation: red before (an unclassified workflow name fails validate_ci_rca_taxonomy), green after
-  - source: terraform/personal/oidc.tf
-    behavior: Comment-only edit naming the fifth coupled site of the reserved session name.
+  - source: terraform/personal/oidc_ci_roles.tf
+    behavior: The CI branch role grants exactly the probe's two reads (DescribeAlarms on *, ListSubscriptionsByTopic on the alerts topic).
     verification_step: 4
     test_selector: "tests/test_security_detector_liveness_workflow.py::TestSecurityDetectorLivenessWorkflow"
-    waiver_reason: >-
-      A comment carries no behaviour; the coupling it documents is asserted by step 4's test (the
-      workflow's session name equals oidc.tf's local), and the PR's CI speculative plan proves the
-      rendered HCL unchanged.
+    red_green_expectation: red before (no SecurityDetectorLivenessRead Sid), green after
   - source: config/composite_action_body_baseline.yaml
     behavior: The new workflow's inline bodies are registered at their exact measured ceilings.
     verification_step: 7
@@ -722,7 +731,7 @@ test_obligations:
   - source: docs/plans/PLAN-platform-iam-bootstrap-adopt.yaml
     behavior: Plan A no longer repoints the retired shard and still validates.
     verification_step: 6
-    command: bin/venv-python -m scripts.roadmap.plan_document docs/plans/PLAN-platform-role-iam-change-alarms.yaml docs/plans/PLAN-platform-iam-bootstrap-adopt.yaml && ! grep -nE 'five (modified |registry )?shards|FIVE SHARDS|four claim-preserving|four registry shards|four exit 0|the cloudtrail shard' docs/plans/PLAN-platform-iam-bootstrap-adopt.yaml && echo "PLANS VALID, NO STALE COUNTS"
+    command: bin/venv-python -m scripts.roadmap.plan_document docs/plans/PLAN-platform-role-iam-change-alarms.yaml docs/plans/PLAN-platform-iam-bootstrap-adopt.yaml && ! grep -nE 'five (modified |registry )?shards|FIVE SHARDS|four claim-preserving|four registry shards to the bootstrap|four exit 0|the cloudtrail shard|all five admitted|for all five|re-proves all five' docs/plans/PLAN-platform-iam-bootstrap-adopt.yaml && echo "PLANS VALID, NO STALE COUNTS"
     waiver_reason: A plan document carries no runtime behaviour; step 6 validates its schema and step 5 proves it no longer names the retired check_id.
 constraints:
   - No rescue agents or workaround loops (Decision 55)
@@ -738,8 +747,8 @@ constraints:
 context:
   - "Decision-scout verdict + CITE list: FLAGS_FOUND. CITE: Decision 101, 113, 126, 156, 129, 162, 166, 167, 176, 132, 201. Decisions triaged: 154 of 154. Roadmap items intersected: 6; CONFLICT: 0; RELATED: 6."
   - "Scout flags, decided with notice (2026-09-25): 144 WARN -- Decision 202 clause 3 names the re-narrow trigger and says it does not fire; 100 WARN -- clause 6 rejects AWS Config; 190 NOTE -- distinct source security_detector_stale; 181 NOTE -- retirement recorded as a Decision-authorised claim narrowing; 180 NOTE -- policy attachment only, clause 6 not re-decided, CI-caused emails accepted."
-  - "gates: decision-scout=FLAGS_FOUND (re-run on the refined design, 2026-09-25); plan-critique=PENDING (round 1 REVISE, 13 findings, all fixed)"
-  - "Critique round 1 dispositions (all fixed, none disputed): F1 evidence from the trail's log group, not region-local lookup-events; F2 log-group read verbs granted; F3 account-agnostic patterns; F4 separate workflow plus bootstrap-window gate; F5 graduated workflow test and Decision 202 residual; F6 clause 4 scoped, residuals owned by rec-4067; F7 reversal conditions drafted, Decision 171 related; F8 closure read-back; F9 pattern length and DeleteAlarms/DisableAlarmActions; F10 enumerated S3 verbs plus a pre-phase-2 simulate; F11 calls spaced by an OK reset; F12 obligations restated in scope; F13 heartbeat start-up window."
+  - "gates: decision-scout=FLAGS_FOUND (re-run on the refined design, 2026-09-25); plan-critique=PENDING (round 1 REVISE 13 findings, round 2 REVISE 7, round 3 REVISE 4 -- all fixed, none disputed)"
+  - "Critique round 1 dispositions (all fixed, none disputed): F1 evidence from the trail's log group, not region-local lookup-events; F2 log-group read verbs granted; F3 account-agnostic patterns; F4 separate workflow plus bootstrap-window gate; F5 graduated workflow test and Decision 202 residual; F6 clause 4 scoped, residuals owned by rec-4067; F7 reversal conditions drafted, Decision 171 related; F8 closure read-back; F9 pattern length and DeleteAlarms/DisableAlarmActions; F10 enumerated S3 verbs plus a pre-phase-2 simulate; F11 calls spaced by an OK reset; F12 obligations restated in scope; F13 heartbeat start-up window. Round 2 (all fixed): R100 --name-status rename check; a standalone pre-phase-2 simulate step; every Plan A count site enumerated and grepped; escaped filter-pattern quotes; explicit PROOF_AT and untag cleanup; CreateLogStream excluded from filter 3; the percent-brace template sequence asserted absent; CI-writable alerts topic named as a residual; acceptance derived from the live rec. Round 3 (all fixed): probe identity moved from the planner's reserved session to agent-platform-github-ci-branch (Decision 143 clause 1), superseding rec-4069; the stale-count grep no longer collides with the corrected text and covers three more sites; step 6 waiver covers both halves."
   - "Design provenance (2026-09-25, rec-4044 thread): Benjamin rejected a us-east-1 EventBridge + console-trail draft; a blind Fable consult independently chose a Terraform-owned London-homed trail in bootstrap with a narrow PlatformAdmin grant (/mnt/project-files/rec-4044/fable-consult.md); Benjamin chose the London-only CloudWatch Logs path and approved the outline (/mnt/project-files/rec-4044/plan-outline.md)."
   - "Refinements over the outline, decided with notice: PlatformAdmin's grant is a bootstrap managed policy, not AdminOps inline (PlatformAdmin's inline aggregate had ~2.2 KB headroom in the 10,240 B role limit, measured baseline 7575 B on 2026-09-13 plus T2.48; Decision 156's remedy), which also removes the pre-merge split-apply and its 2-hour window; the liveness probe reads an IAM-event heartbeat alarm instead of cloudtrail:GetTrailStatus, because the CI boundary's DataPlaneAllow has no cloudtrail entry (terraform/personal/platform_dev_policies.tf:101 notes the same) and the heartbeat observes the exact global-event path the alarms need."
   - "ci-rca deferral (Related-Work): rec-4057 (validate_test_coverage on rec_trailer_acceptance.py) is open and unrelated -- different file, decision and failure category; this plan is the human-adjudicated security prerequisite of Plan A and proceeds with this logged deferral."
