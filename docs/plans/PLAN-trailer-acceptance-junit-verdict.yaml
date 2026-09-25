@@ -208,10 +208,17 @@ scope:
       NOT ENUMERATED (Decision 187 point 1, applied at the scout's flag): they iterate EVERY ci.yml
       job whose steps reference a verdict artifact and assert of each that it declares no id-token
       permission and no secret env (SCOPE AMENDMENT clarification, 2026-09-25: derive the set as
-      every job that DOWNLOADS the pytest-junit report -- never every job touching any verdict
-      artifact, which would sweep in trailer-closure, the verdict-DOCUMENT consumer that
-      legitimately holds id-token: write under slice A's credential split, and fail on the real
-      ci.yml), rather than pinning the single literal job name
+      every job that DOWNLOADS the pytest-junit report -- never every job that merely references
+      pytest-junit, which would sweep in main-validate (it uploads the report holding id-token:
+      write), and never every job touching a verdict DOCUMENT, which would sweep in trailer-closure
+      (it legitimately holds id-token: write under slice A's credential split) -- either would fail
+      on the real ci.yml. Match FAIL-CLOSED so the rename/duplicate hole stays shut: derive the
+      artifact name from the step that uploads the pytest-junit report rather than from a literal;
+      count a download-artifact step with no `name` input, or with a `pattern` input that could
+      match that name, as a pytest-junit download; and FAIL, never pass vacuously, when the derived
+      set is empty (Decision 170). Every trailer-closure download must name its artifact
+      explicitly, which keeps it outside the set by construction), rather than pinning the single
+      literal job name
       trailer-junit-verdict -- a renamed or DUPLICATED verdict job is then caught, which a name
       literal would miss. Two further assertions: every such job's artifact download step names no
       run-id (the same-run provenance binding), and docs/contracts/git-ops.yaml states the
@@ -390,9 +397,10 @@ acceptance_criteria:
     derived set, not the single job-name literal -- so a renamed or duplicated verdict job cannot
     escape it (Decision 143 boundary, Decision 187 derivation discipline). SCOPE AMENDMENT
     clarification (2026-09-25): "verdict artifact" here means the pytest-junit report a verdict is
-    READ from, i.e. the set is every ci.yml job that downloads pytest-junit; trailer-closure, which
-    downloads only verdict DOCUMENTS and legitimately holds id-token: write under slice A's
-    credential split, is outside the set by construction.
+    READ from, i.e. the set is every ci.yml job that DOWNLOADS pytest-junit (the verb is
+    load-bearing: main-validate UPLOADS it while holding id-token: write). trailer-closure, which
+    downloads the census and verdict documents but never pytest-junit, and legitimately holds
+    id-token: write under slice A's credential split, is outside the set by construction.
   - >-
     Provenance is structural: the artifact download step names no run-id and no cross-run token, so
     the report can only be the current push run's, whose head_sha is the merge commit slice A's
@@ -968,7 +976,7 @@ context:
   - "Grammar population measured with a quote-aware shlex(posix=True, punctuation_chars=True) split over 1332 open recs on 2026-09-22: 468 pytest-carrying = 315 pure single-segment ::node_id (-> JUNIT), 66 mixed &&-only, 8 mixed with another operator, 8 with a leading ! negation, 73 with no ::node_id (all -> slice A's PROBE, unchanged), and 0 untokenizable (-> REFUSE, an arm that is empty today and must still exist). The partition is provably static: 0 of 1332 open-rec acceptances fail the tokenizer, and the route is computed without reading a report, touching disk or executing anything."
   - "Integration disposition, CORRECTED at critique round 1 and re-verified per NODE rather than per file. The full tier runs pytest -m \"not integration\" (scripts/checks/_scaffolding.py::_build_unit_test_cmd), deselecting exactly 21 of 12,764 collected tests. An earlier draft claimed 3 affected recs; the true count is ONE. rec-2231 is a mixed && chain and routes to the probe, unaffected. rec-3897 names test_post_expiry_probe_is_superset_of_pre_expiry_probe_real_engine, which is NOT one of the 21 -- the earlier match was at class granularity and was wrong. Only rec-2935 is affected: it names class TestEndToEnd, whose single method IS marked, so the whole class is absent and resolves unmeasurable forever. SEVERITY, stated honestly rather than conceded: that test needs live AWS credentials slice A's evaluator job deliberately does not hold, so under slice A alone it returns fails, not holds. It would not have closed either way -- slice B changes the verdict LABEL, not closability. Rides rec-4002."
   - "IMPOSSIBILITY CLAIM RETRACTED. An earlier draft asserted the partition cannot address the integration case statically because integration-marking is a property of the test source rather than of the command text. The premise is true; the conclusion does not follow. It is not derivable from the command TEXT -- the property this partition deliberately restricts itself to -- but it IS fully derivable statically from the tree at the merge commit, the same checkout the census stage already runs in, via pytest --collect-only -m \"not integration\" <node>, with no artifact read and no absence-of-evidence, because test source cannot go missing the way a junit report can. This plan deliberately does NOT build that arm: it would cost the partition its executes-nothing property for a population of 1 rec that would not close anyway. Weighing that trade is rec-4002's, not this plan's."
-  - "NOT SPLIT FURTHER. The junit source and the routing partition cannot be separated: a source with no partition has no population to claim, and a partition with no source routes 315 recs to nothing. 15 scope rows against slice A's 34, with 2 source .py and 2 test .py."
+  - "NOT SPLIT FURTHER. The junit source and the routing partition cannot be separated: a source with no partition has no population to claim, and a partition with no source routes 315 recs to nothing. 15 scope rows against slice A's 34, with 2 source .py and 2 test .py (17 against 38 after the 2026-09-25 scope amendments to both slices)."
   - "NO new numbered Decision, by routing not omission -- see acceptance criterion 10 for the three Decision 167 property tests. The r3_workflows marker cites SLICE A's Decision, whose body is required by slice A's own scope row to name .github/workflows/ci.yml; resolve that number at implement time against DECISIONS.md, never hardcode it, and note Decision 165 point 2 re-checks the citation on every run thereafter."
   - "rec-3984 reconciliation: its acceptance as filed (three greps) is satisfied entirely by slice A, so trailer-closing it unchanged would be a false closure of exactly the kind this run exists to stop. It is UPDATED FIRST (VP step 11, pre-merge) to a pure pytest ::node_id naming tests/test_rec_trailer_acceptance.py::TestJunitRouting, which is itself pure-single-segment and therefore junit-routed, making its closure evidence of the source it asked for. rec-3867 is slice A's to supersede and is untouched here."
   - "Decision 48 tier note: V2 is claimed for parity with the landed slice A, which makes the same ci.yml edits. The V3 trigger table does not list .github/workflows/, and the artifact-store dependency's integration evidence is carried by post-deploy VP step 17 against the real merged run rather than by a tier relabel that would diverge from A."
@@ -988,7 +996,7 @@ pre_implementation_checklist:
 execution_steps:
   - Create scripts/rec_trailer_acceptance_junit.py and tests/test_rec_trailer_acceptance_junit.py -- JUNIT_ARMS, the total verdict_for_junit map, the declared GRAMMAR_ARMS with per-arm reasons, node_key inversion, index_report, outcome_for with parametrize expansion and multi-node conjunction, and junit_verdict.
   - Add the static three-arm routing partition, the rejoin disjointness refusal and the junit-verdict CLI verb to scripts/rec_trailer_acceptance.py; cover them in tests/test_rec_trailer_acceptance.py::TestJunitRouting, including the arm proving a mixed chain stays on slice A's probe path.
-  - Add the trailer-junit-verdict job to .github/workflows/ci.yml as a uses-plus-one-thin-adapter job, add it to trailer-closure's needs, and pass --junit-verdict.
+  - "Add the trailer-junit-verdict job to .github/workflows/ci.yml as a uses-plus-one-thin-adapter job that uploads its verdict document, add it to trailer-closure's needs, download that document in trailer-closure (named, continue-on-error: true), and pass --junit-verdict; register the upload in docs/contracts/github-actions-evidence.yaml and the new module in docs/contracts/file-router.yaml (SCOPE AMENDMENT rows)."
   - Register the new run body in config/composite_action_body_baseline.yaml at its measured count with a raise-approved marker citing slice A's landed Decision number.
   - Extend scripts/checks/ci_guards/validate_rec_autoclose_trailer_gate.py with the derived credential-free, run-id-absent and contract-clause assertions; raise the examined count; re-point the docstring; cover every limb in TestJunitJobAssertions.
   - Amend docs/contracts/git-ops.yaml's trailer_acceptance_gate with the sources sub-key, the source-admission rule, the declared grammar arms with their routes, and the re-scoped rec-4002 residual; add an amendment_log entry and bump contract_version.
