@@ -4,7 +4,9 @@ registration surfaces -- the scripts/checks/roadmap/_manifest.py Entry and the
 config/ci_rca_taxonomy.yaml row.
 
 Every case drives synthetic in-memory or tmp_path roadmaps; the one live-document case asserts
-the LINE GRAMMAR, never today's integers.
+the LINE GRAMMAR, never today's integers. TestCompletionCompactionContract is the exception --
+it reads the two live contract documents (tier-item-lifecycle.yaml, exit-criteria-ledger.yaml)
+as a coupling test, not a synthetic-roadmap case.
 """
 
 from __future__ import annotations
@@ -324,6 +326,74 @@ class TestBaselineMatchesDecision147:
 
     def test_decision_147_names_the_anti_regrowth_follow_on(self) -> None:
         assert "rec-2781" in load_decision_bodies()[147]
+
+
+class TestCompletionCompactionContract:
+    """docs/contracts/tier-item-lifecycle.yaml#completion_compaction is the single home of the
+    Decision 147 compact form (PLAN-roadmap-terminal-compaction); this class pins the contract
+    coupling so a future edit to either contract or to _ITEM_PROSE_FIELDS cannot silently drift
+    out of sync with the mechanical observable above.
+    """
+
+    @staticmethod
+    def _tier_item_lifecycle() -> dict:
+        return yaml.safe_load((_common.ROOT / "docs" / "contracts" / "tier-item-lifecycle.yaml").read_text(encoding="utf-8"))
+
+    @staticmethod
+    def _exit_criteria_ledger() -> dict:
+        return yaml.safe_load((_common.ROOT / "docs" / "contracts" / "exit-criteria-ledger.yaml").read_text(encoding="utf-8"))
+
+    def test_completion_compaction_names_every_compactable_field_and_cites_decision_147(self) -> None:
+        text = self._tier_item_lifecycle()["completion_compaction"]
+
+        for field in (*module._ITEM_PROSE_FIELDS, "intent", "files_in_scope", "open_questions", "known_gaps"):
+            assert field in text, field
+        assert "Decision 147" in text
+
+    def test_completion_compaction_exceptions_is_well_formed(self) -> None:
+        contract = self._tier_item_lifecycle()
+        exceptions = contract["completion_compaction_exceptions"]
+        compactable = {*module._ITEM_PROSE_FIELDS, "intent", "files_in_scope"}
+
+        assert exceptions
+        for item_id, entry in exceptions.items():
+            assert set(entry["fields"]) <= compactable, (item_id, entry["fields"])
+            pinned_by = entry["pinned_by"]
+            file_part = pinned_by.split("::")[0]
+            assert (_common.ROOT / file_part).exists(), pinned_by
+
+    def test_the_three_walk_clauses_reference_completion_compaction_and_drop_the_old_note_wording(self) -> None:
+        contract = self._tier_item_lifecycle()
+
+        for key in ("bookkeeping_walk", "tier_item_freshness_gate", "replacement_closure_check"):
+            clause = contract[key]
+            assert "completion_compaction" in clause, key
+            assert "a note citing the evidence" not in clause, key
+            assert "supersession note" not in clause, key
+
+    def test_completion_compaction_carries_the_reserved_item_and_bootstrap_clauses(self) -> None:
+        text = self._tier_item_lifecycle()["completion_compaction"]
+
+        assert "successor pointer" in text
+        assert "one-line intent" in text
+        assert "bootstrap_completion_exempt" in text
+
+    def test_the_raw_contract_text_declares_the_residual_on_one_line(self) -> None:
+        raw = (_common.ROOT / "docs" / "contracts" / "tier-item-lifecycle.yaml").read_text(encoding="utf-8")
+
+        matches = [line for line in raw.splitlines() if "completion_compaction has no enforcing check" in line]
+        assert len(matches) == 1, matches
+
+    def test_exit_criteria_ledger_status_semantics_points_at_completion_compaction(self) -> None:
+        semantics = self._exit_criteria_ledger()["fields"]["status"]["semantics"]
+
+        assert "completion_compaction" in semantics
+        assert "item's own note" not in semantics
+
+    def test_exit_criteria_ledger_known_limitation_no_longer_claims_at_least_two(self) -> None:
+        invariants = "\n".join(self._exit_criteria_ledger()["audit_invariants"])
+
+        assert "at least two .claude/skills/ entries" not in invariants
 
 
 class TestGuardAccountingDeclaration:

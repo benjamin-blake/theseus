@@ -3580,6 +3580,8 @@ This Decision is the structural mechanism Decision 145's own reversal conditions
 
 **Related:** Decision 114 (the reversal trigger this Decision responds to), Decision 110 (single-file agent-first structure, preserved), Decision 105 (candidate-decision ratification guard, whose read fields are preserved verbatim), Decision 136 (supersession-adjacent guard context), Decision 93, Decision 108 (adopts the roadmap as canonical platform-sequencing source), Decision 86 (rationale lives in DECISIONS.md, the premise this compaction acts on), Decision 84 (portal/warehouse sync for this entry), Decision 128 (anti-silent-raise posture, the rejected Path D), Decision 145 (temporary-ceiling-raise precedent named as a reversal option).
 
+[Amendment 2026-09-25: point 4's compact form is now staged at completion by docs/contracts/tier-item-lifecycle.yaml#completion_compaction, and PLAN-roadmap-terminal-compaction re-applied it (extended to resolved open_questions and closed known_gaps) after terminal regrowth re-consumed the headroom this Decision restored; this pass is norm re-application, the structural fix is overdue and owned by rec-3960.]
+
 ---
 
 ## Decision 146: DECISIONS.md is the canonical decision corpus, not an open-decisions-only file; fully-superseded entries move to the archive (retitles the stale "# Open Decisions" H1; reconciles the drifted archival policy to Decision-84-era reality) (Decided)
