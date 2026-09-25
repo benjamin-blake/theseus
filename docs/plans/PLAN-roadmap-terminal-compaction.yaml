@@ -1,0 +1,408 @@
+schema_version: 5
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: roadmap-terminal-compaction
+intent: >-
+  Restore >=500 lines of headroom under docs/ROADMAP-PLATFORM.yaml's 10,000-line ceiling (rec-4034) by re-applying
+  Decision 147's compact form to terminal records that re-grew, extending it to resolved open_questions and
+  closed known_gaps, and fixing the tier-item-lifecycle walk that re-grows them -- so required forward additions
+  (the platform's sole sequencing source) have room without a ceiling raise or a per-tier split.
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-roadmap-terminal-compaction.yaml
+phase: >-
+  Platform roadmap governance -- ad_hoc_rec (rec-4034, bundling rec-2782); names no tier_item, so the Tier Item
+  Freshness Gate is skipped (soft-warn exception). Closes NO exit criterion.
+scope:
+- file: docs/ROADMAP-PLATFORM.yaml
+  action: Modify
+  purpose: >-
+    (a) Re-apply Decision 147 points 1-2 to every terminal record check_roadmap_regrowth reports as regrown AT
+    IMPLEMENT TIME (at planning: CD.3 + T-1.12, T-1.19, T-1.21, T-1.22, T0.8, T0.13, T2.6, T2.14, T2.26, T2.41,
+    T2.42, T2.49, T2.50, T3.5, T3.8, T2.56): drop progress_note/note/decomposition_hints, collapse intent to one
+    double-quoted line under 280 bytes, set files_in_scope to [], shrink CD.3's detail to one line. EXCEPTION:
+    T-1.12 keeps decomposition_hints (pinned by
+    tests/test_implement_skill_decomposition_hints.py::TestLiveRoadmapInheritance). (b) Drop `notes` on every
+    status:resolved open_question and every status in {resolved, closed, promoted} known_gap, keeping id,
+    question|gap, resolution_tier, status, resolution_ref. (c) rec-2782: shorten the >=280-char one-line intents
+    (at planning: T-1.1, T-1.23, T0.7a, T1.16, T2.2, T2.25) to under 280 bytes. Everything else byte-identical.
+- file: docs/contracts/tier-item-lifecycle.yaml
+  action: Modify
+  purpose: >-
+    Add a `completion_compaction` key -- the single home of the Decision 147 compact form, staged in the SAME edit
+    that flips an item to status complete or reserved; narrative and closeout evidence go to the commit/PR body.
+    Point bookkeeping_walk's "all criteria pass" outcome and tier_item_freshness_gate's closeout clauses (today
+    "a note citing the evidence" / "a supersession note") at it. Append an amendment_log entry
+    (prose_improvement, semantic_break false), and a Decision 181 coverage declaration in governance_notes:
+    completion_compaction has NO enforcing check -- check_roadmap_regrowth is a report-only observable -- an
+    unenforced residual owned by rec-3960 (operator's choice at Step 6b), with the Decision 163 reversal trigger
+    "terminal regrowth recurs after completion_compaction lands -> build the blocking check".
+- file: tests/checks/roadmap/test_check_roadmap_regrowth.py
+  action: Modify
+  purpose: >-
+    Add class TestCompletionCompactionContract: completion_compaction names every
+    check_roadmap_regrowth._ITEM_PROSE_FIELDS entry plus intent and files_in_scope and cites Decision 147;
+    bookkeeping_walk and tier_item_freshness_gate both reference completion_compaction; the freshness gate no
+    longer instructs a closeout `note`.
+- file: docs/DECISIONS.md
+  action: Modify
+  purpose: >-
+    Append ONE dated amendment_forms pointer line to Decision 147 (after its Related line; Decision 177 append-only --
+    no existing line changes): point 4's compact form is now staged at completion by
+    tier-item-lifecycle.yaml#completion_compaction and was re-applied (with resolved open_questions / closed known_gaps)
+    by this plan; this pass is norm re-application, the structural fix is overdue and owned by rec-3960. Pointer only,
+    never a restatement of the rule (Decisions 150/167 routing). Dry-run at planning: decisions-index.json stays fresh.
+bundled_recommendations:
+- rec-4034
+- rec-2782
+followon_recs: []
+infrastructure_dependencies:
+- >-
+  data-pipeline (src/lambdas/data-pipeline/manifest.yaml, active) packages docs/ROADMAP-PLATFORM.yaml as an asset,
+  so compute_affected_artifacts() reports it. NO deploy is performed or needed (schedule disabled; precedent
+  PLAN-telemetry-event-journal-contracts VP step 8; rec-3990 tracks the deploy-trigger gap); asserted by VP step 9.
+  No other scope file is Lambda-packaged; no .tf file is in scope.
+acceptance_criteria:
+- docs/ROADMAP-PLATFORM.yaml is under 9,500 raw lines (rec-4034's acceptance) and check_roadmap_regrowth reports escalate=false.
+- >-
+  check_roadmap_regrowth reports zero regrown terminal candidate_decisions and exactly one regrown terminal tier_item,
+  T-1.12, whose retained decomposition_hints are the test-pinned exception.
+- No one-line intent in docs/ROADMAP-PLATFORM.yaml is 280 characters or longer (rec-2782's acceptance).
+- >-
+  Compaction changed ONLY the allowed fields on terminal records: every non-terminal tier_item, pending CD, open
+  open_question/known_gap and every other top-level section is unchanged vs origin/main; no id was added, removed or
+  reordered; every exit_criteria block and T-1.12's decomposition_hints are unchanged; compute_state_dict projections
+  are identical to origin/main's.
+- >-
+  docs/contracts/tier-item-lifecycle.yaml carries a completion_compaction key naming the Decision 147 compact form,
+  referenced from both bookkeeping_walk and tier_item_freshness_gate, and no clause still instructs writing a
+  closeout note; TestCompletionCompactionContract fails without it and passes with it.
+- validate_platform_roadmap, validate_candidate_decision_ratification and validate_candidate_decision_supersession pass.
+- Full bin/venv-python -m scripts.validate exits 0 before the implementation commit (handoff_policy).
+- rec-3960 (open) names the completion_compaction unenforced residual and its Decision 163 reversal trigger in its context.
+- rec-4034 and rec-2782 read status closed after the squash-merge (Resolves trailer).
+verification_plan:
+- step: 1
+  phase: pre-deploy
+  action: Roadmap still loads through the typed RoadmapDocument schema after compaction.
+  command: bin/venv-python -m scripts.roadmap.platform_roadmap docs/ROADMAP-PLATFORM.yaml
+  expected: Exit 0 (schema load succeeds).
+  fix_if: A Pydantic error names the field -- a dropped required field or a malformed collapsed scalar; restore it.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: >-
+    Duplicates validate_platform_roadmap, already registered in both presubmit tiers; a second standing row would
+    add no discrimination.
+  expected_literals: []
+- step: 2
+  phase: pre-deploy
+  action: rec-4034's own acceptance -- the file is under 9,500 raw lines.
+  command: test $(wc -l < docs/ROADMAP-PLATFORM.yaml) -lt 9500
+  expected: Exit 0.
+  fix_if: >-
+    Re-run check_roadmap_regrowth; a regrown record was missed or a collapsed field kept multiple lines. Do NOT delete
+    blank separator lines or join lines to hit the number (rec-3028 raw-line gameability).
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: >-
+    Graduating would install a second, lower 9,500-line ceiling as a standing gate beside Decision 114's single
+    10,000-line ceiling; check_roadmap_regrowth's escalate field is the sanctioned observable.
+  expected_literals: []
+- step: 3
+  phase: pre-deploy
+  action: >-
+    Regrowth observable reads clean -- escalate=false, no regrown terminal CD, and T-1.12 the only regrown terminal
+    tier_item (its pinned decomposition_hints).
+  command: >-
+    bin/venv-python -c "import yaml;from scripts.checks.roadmap.check_roadmap_regrowth import
+    growth_line,terminal_cd_ids,terminal_item_ids;t=open('docs/ROADMAP-PLATFORM.yaml',encoding='utf-8').read();d=yaml.safe_load(t);g=growth_line(len(t.splitlines()));cds=terminal_cd_ids(d['candidate_decisions']);its=terminal_item_ids(d['tier_items']);print(g,'CDS',cds,'ITEMS',its);assert
+    'escalate=false' in g,g;assert cds==[],cds;assert its==['T-1.12'],its;print('REGROWTH_COMPACT_OK')"
+  expected: Exit 0 and the success marker printed.
+  fix_if: The printed CDS/ITEMS lists name the records still carrying Decision-147-removed content; compact them.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: >-
+    Graduating turns the report-only regrowth observable into a blocking gate, which the operator declined at Step 6b
+    in favour of the fix-at-source contract rule; the T-1.12 exception set is also transient.
+  expected_literals: []
+- step: 4
+  phase: pre-deploy
+  action: rec-2782's own acceptance -- no one-line intent of 280+ characters remains.
+  command: >-
+    grep -cP '^    intent: .{280,}' docs/ROADMAP-PLATFORM.yaml | grep -qx 0
+  expected: Exit 0.
+  fix_if: Shorten the matching intent line(s); target under 280 BYTES so the result holds in any locale.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: >-
+    Graduating would impose a repo-wide 280-character intent cap on forward (not_started) items -- a new authoring
+    rule beyond rec-2782's completed-item scope.
+  expected_literals: []
+- step: 5
+  phase: pre-deploy
+  action: >-
+    Field-preservation differential vs origin/main -- only allowed fields changed, only on terminal records; ids,
+    order, exit_criteria, T-1.12 decomposition_hints and all non-terminal content unchanged. Mutation-tested at
+    planning (allowed drop passes; non-terminal, exit_criteria, T-1.12 and open-OQ edits each flagged).
+  command: >-
+    bin/venv-python -c "import subprocess,yaml;b=yaml.safe_load(subprocess.run(['git','show','origin/main:docs/ROADMAP-PLATFORM.yaml'],capture_output=True,text=True,check=True).stdout);h=yaml.safe_load(open('docs/ROADMAP-PLATFORM.yaml',encoding='utf-8'));rules={'tier_items':('status',{'complete','reserved'},{'progress_note','note','decomposition_hints','intent','files_in_scope'}),'candidate_decisions':('state',{'ratified','superseded'},{'detail','realization_evidence'}),'open_questions':('status',{'resolved'},{'notes'}),'known_gaps':('status',{'resolved','closed','promoted'},{'notes'})};assert
+    set(b)==set(h);bad=[k for k in b if k not in rules and b[k]!=h[k]];bad+=[(k,'order') for k in rules if [e['id']
+    for e in b[k]]!=[e['id'] for e in h[k]]];bad+=[(k,x['id'],sorted(d)) for k,(f,term,ok) in rules.items() for x,y
+    in zip(b[k],h[k]) for d in [{n for n in set(x)|set(y) if x.get(n)!=y.get(n)}] if d and not (x.get(f) in term and
+    d<=ok)];t=lambda d:next(i for i in d['tier_items'] if i['id']=='T-1.12');bad+=[] if
+    t(b).get('decomposition_hints')==t(h).get('decomposition_hints') else ['T-1.12 hints'];print(bad or
+    'PRESERVATION_OK');raise SystemExit(1 if bad else 0)"
+  expected: Exit 0 and the success marker printed.
+  fix_if: Each printed tuple names a record and the field changed outside the allowed set; restore it from origin/main.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: >-
+    Reads the origin/main image of the roadmap -- transient session state that becomes self-identical after merge,
+    so a standing row would pass vacuously.
+- step: 6
+  phase: pre-deploy
+  action: >-
+    Eligibility invariance -- compute_state_dict on origin/main's roadmap vs the compacted tree yields identical
+    projections (next_eligible, in_progress, blocked, blocked_on_cd, ratifiable_cds, gate_evaluations, ...).
+  command: >-
+    bin/venv-python -c "import subprocess,tempfile,pathlib;from scripts.platform_roadmap_state import compute_state_dict
+    as c;d=pathlib.Path(tempfile.mkdtemp());(d/'plans').symlink_to(pathlib.Path('docs/plans').resolve());p=d/'ROADMAP-PLATFORM.yaml';p.write_text(subprocess.run(['git','show','origin/main:docs/ROADMAP-PLATFORM.yaml'],capture_output=True,text=True,check=True).stdout,encoding='utf-8');b=c(p);h=c(pathlib.Path('docs/ROADMAP-PLATFORM.yaml'));assert
+    'error' not in b and 'error' not in h,(b.get('error'),h.get('error'));bad=[k for k in set(b)|set(h) if
+    k!='stale_cache_note' and b.get(k)!=h.get(k)];print(bad or 'ELIGIBILITY_INVARIANT_OK');raise SystemExit(1 if bad
+    else 0)"
+  expected: Exit 0 and the success marker printed.
+  fix_if: A named projection key diverged -- a status, depends_on, gate or CD field was altered; restore it.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: >-
+    Differential against the origin/main image -- transient session state that is vacuous once merged.
+- step: 7
+  phase: pre-deploy
+  action: >-
+    Roadmap integrity guards pass in isolation -- validate_platform_roadmap (size, met_by, criterion (ii) on
+    diff-touched ids, closes_criteria refs) plus the CD ratification and supersession guards.
+  command: >-
+    bin/venv-python -c "import sys;from scripts.checks.roadmap.validate_platform_roadmap import validate_platform_roadmap
+    as a;from scripts.checks.roadmap.validate_candidate_decision_ratification import
+    validate_candidate_decision_ratification as r;from scripts.checks.roadmap.validate_candidate_decision_supersession
+    import validate_candidate_decision_supersession as s;f=[];a(f);r(f);s(f);print(f or 'ROADMAP_GUARDS_OK');sys.exit(1
+    if f else 0)"
+  expected: Exit 0 and the success marker printed.
+  fix_if: >-
+    Criterion (ii) firing means an `- id:` line entered the diff (never add/remove/reorder ids); a ratification or
+    supersession failure means a CD field those guards read was touched -- restore it.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: All three are already registered presubmit checks; validate_platform_roadmap also diffs origin/main.
+- step: 8
+  phase: pre-deploy
+  action: >-
+    The contract-coupling test class plus every live-roadmap consumer test pass (T-1.12 inheritance pin, roadmap
+    checks, state projection, role-based tier model).
+  command: >-
+    bin/venv-python -m pytest tests/checks/roadmap/test_check_roadmap_regrowth.py
+    tests/test_implement_skill_decomposition_hints.py tests/checks/roadmap tests/platform_roadmap_state
+    tests/provider_agnostic_tier_model -q -p no:cacheprovider
+  expected: Exit 0; TestCompletionCompactionContract collected and passing.
+  fix_if: >-
+    A live-roadmap test pinning a compacted field fails -- restore that field and record it as a named exception in
+    the plan's deviation note (as T-1.12 is), never edit the pinning test.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: The pytest selectors are themselves the standing guards; a registry row would duplicate them.
+- step: 9
+  phase: pre-deploy
+  action: Assert the ground for NO data-pipeline redeploy despite touching its packaged roadmap asset.
+  command: >-
+    grep -q 'the schedule stays disabled' src/lambdas/data-pipeline/manifest.yaml && ! grep -q 'ROADMAP-PLATFORM'
+    .github/workflows/deploy-prod-lambdas.yml
+  expected: 'Exit 0: schedules still disabled and the deploy channel does not path-trigger on the roadmap.'
+  fix_if: >-
+    If schedules are re-enabled the V2 tier no longer holds -- escalate to V3 via the governed deploy-prod-lambdas
+    workflow, never a local build_lambda --deploy. If the workflow path-triggers on the roadmap, rec-3990 landed;
+    retire this step.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: >-
+    Green on the un-implemented tree (both facts hold today), so graduating would redden this plan's own PR under
+    RED-BEFORE replay; its durable form is rec-3990.
+  expected_literals: []
+- step: 10
+  phase: pre-deploy
+  action: The amended Class D contract stays valid under the contract-drift and skill-prose-relocation checks.
+  command: >-
+    bin/venv-python -c "import sys;from scripts.checks.contracts.validate_contract_drift import validate_contract_drift
+    as d;from scripts.checks.contracts.validate_skill_prose_relocation import validate_skill_prose_relocation as
+    s;f=[];d(f);s(f);print(f or 'CONTRACT_OK');sys.exit(1 if f else 0)"
+  expected: Exit 0 and the success marker printed.
+  fix_if: A missing/ill-formed amendment_log entry or a broken tier-item-lifecycle.yaml anchor; fix the contract.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: Both are registered presubmit checks; the drift check reads the origin/main base image.
+- step: 11
+  phase: pre-deploy
+  action: >-
+    Decision 147 carries exactly one appended dated pointer annotation (append-only per Decision 177 -- every
+    origin/main line of the entry survives) naming completion_compaction and rec-3960, and decisions-index.json is
+    still fresh. Red/green dry-run at planning.
+  command: >-
+    bin/venv-python -c "import re,subprocess;from scripts.decisions_index import check_index_freshness;sec=lambda
+    t:re.search(r'(?ms)^## Decision 147:.*?(?=^## Decision
+    )',t).group(0);h=sec(open('docs/DECISIONS.md',encoding='utf-8').read());b=sec(subprocess.run(['git','show','origin/main:docs/DECISIONS.md'],capture_output=True,text=True,check=True).stdout);bl=b.rstrip().splitlines();hl=h.rstrip().splitlines();add=[l
+    for l in hl if l not in bl];f=[];check_index_freshness(f);ok=all(l in hl for l in bl) and len(add)==1 and
+    add[0].startswith('[Amendment 2026-') and 'completion_compaction' in add[0] and 'rec-3960' in add[0] and not
+    f;print('D147_ANNOTATION_OK' if ok else (add,f));raise SystemExit(0 if ok else 1)"
+  expected: Exit 0 and the success marker printed.
+  fix_if: >-
+    The printed tuple shows the added lines and any freshness failure -- an edited original line, more than one added
+    line, or a stale index (regenerate only if the parsed fields genuinely changed, and add the index to Scope first).
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: >-
+    Differential against the origin/main image of DECISIONS.md -- transient session state, vacuous after merge;
+    decisions-index freshness is already a registered check.
+- step: 12
+  phase: pre-deploy
+  action: Full-tier presubmit is green on the implementation tree (handoff_policy).
+  command: bin/venv-python -m scripts.validate
+  expected: Exit 0.
+  fix_if: Diagnose the named failing check on the branch (never --ignore-budget as a fix); re-run from the start.
+  hermetic: false
+  graduation: not-applicable
+- step: 13
+  phase: post-deploy
+  action: Closure obligation -- both bundled recs read closed after the squash-merge's Resolves trailer.
+  command: >-
+    bin/venv-python -m scripts.sync.ops sync && bin/venv-python -c "import json; rows=[json.loads(l) for l in
+    open('logs/.recommendations-log.jsonl', encoding='utf-8') if l.strip()]; by={r['id']: r for r in rows};
+    bad=[i for i in ('rec-4034','rec-2782') if by.get(i, {}).get('status') != 'closed']; print(bad or
+    'RECS_CLOSED'); raise SystemExit(1 if bad else 0)"
+  expected: Exit 0 and the success marker printed.
+  fix_if: >-
+    rec-autoclose.yml did not fire or a rec's acceptance failed on main (concurrent roadmap growth can push the file
+    back over 9,500) -- inspect the workflow run; close via update_rec only with a measured resolution.
+  hermetic: false
+- step: 14
+  phase: pre-deploy
+  action: rec-3960 (the named residual owner) now names the completion_compaction residual in its context.
+  command: >-
+    bin/venv-python -m scripts.sync.ops sync && bin/venv-python -c "import json; rows=[json.loads(l) for l in
+    open('logs/.recommendations-log.jsonl', encoding='utf-8') if l.strip()]; r=[x for x in rows if x['id']=='rec-3960'][-1];
+    c=r.get('context') or ''; ok=r['status']=='open' and 'completion_compaction' in c; print('REC3960_OWNS_RESIDUAL' if ok
+    else (r['status'], c[-200:])); raise SystemExit(0 if ok else 1)"
+  expected: Exit 0 and the success marker printed.
+  fix_if: Re-run the update_rec append (portal must be reachable -- agent_platform profile); never edit the JSONL cache.
+  hermetic: false
+  graduation: not-applicable
+test_obligations:
+- source: docs/contracts/tier-item-lifecycle.yaml
+  behavior: >-
+    completion_compaction names every check_roadmap_regrowth._ITEM_PROSE_FIELDS entry plus intent and files_in_scope
+    and cites Decision 147; bookkeeping_walk and tier_item_freshness_gate both reference completion_compaction; no
+    clause instructs writing a closeout note.
+  verification_step: 8
+  test_selector: tests/checks/roadmap/test_check_roadmap_regrowth.py::TestCompletionCompactionContract
+  red_green_expectation: red before (class absent / key absent), green after
+- source: docs/ROADMAP-PLATFORM.yaml
+  behavior: >-
+    Terminal records carry only the Decision 147 compact form (T-1.12's pinned hints excepted) and the file sits under
+    the escalate threshold.
+  verification_step: 3
+  command: >-
+    bin/venv-python -c "import yaml;from scripts.checks.roadmap.check_roadmap_regrowth import
+    growth_line,terminal_cd_ids,terminal_item_ids;t=open('docs/ROADMAP-PLATFORM.yaml',encoding='utf-8').read();d=yaml.safe_load(t);g=growth_line(len(t.splitlines()));cds=terminal_cd_ids(d['candidate_decisions']);its=terminal_item_ids(d['tier_items']);print(g,'CDS',cds,'ITEMS',its);assert
+    'escalate=false' in g,g;assert cds==[],cds;assert its==['T-1.12'],its;print('REGROWTH_COMPACT_OK')"
+  red_green_expectation: red before (escalate=true, 17 regrown records), green after
+constraints:
+- >-
+  Single file, ceiling unchanged (Decisions 110, 114, 147; Decision 197 cl.8): no archive file, no per-tier split, no
+  edit to _ROADMAP_MAX_LINES or check_roadmap_regrowth.py.
+- >-
+  Never add, remove or reorder a `- id:` line in the roadmap (keeps validate_platform_roadmap criterion (ii) quiet on
+  the 88 legacy bare-string items); never touch an exit_criteria block.
+- >-
+  Terminal-only: non-terminal tier_items, pending CDs, open open_questions/known_gaps and every other top-level section
+  stay byte-identical. Keep every CD field the ratification/supersession guards read, including ratified-CD
+  discipline_points (Decision 105) -- only CD.3's detail changes.
+- >-
+  Do not reduce raw line count by deleting blank separator lines, joining lines or stripping comments -- relief must
+  come from removed content (rec-3028 raw-line gameability).
+- >-
+  If any other live-roadmap test pins a field slated for removal, keep the field and record it as a named exception
+  (as T-1.12) -- never edit the pinning test.
+- 'DECISIONS.md is append-only (Decision 177): one appended annotation line on Decision 147, nothing else.'
+- No Lambda deploy (Decision 79 deferral; see context); never a local build_lambda --deploy.
+- No rescue agents or workaround loops (Decision 55).
+context:
+- >-
+  Diagnosis: 9,847/10,000 lines, escalate=true. Growth ~37 lines/day since Decision 147 (7,329 on 2026-07-22 -> 9,991
+  on 2026-09-22); ~300 lines of it is terminal regrowth. Planning-time estimate after this plan: ~9,410 (~90 lines under
+  the escalate threshold, ~590 under the ceiling) -- weeks of relief at most; rec-3960 owns the structural valve
+  (operator deferred sequencing it next at Step 6b).
+- >-
+  Regrowth root causes (both fixed via completion_compaction): tier-item-lifecycle.yaml bookkeeping_walk flips items to
+  complete without stripping in_progress-era progress_note; tier_item_freshness_gate's closeout instructs "a note citing
+  the evidence" / "a supersession note". Evidence moves to the commit/PR body (Decision 115 routing).
+- >-
+  Target set is computed AT IMPLEMENT TIME from check_roadmap_regrowth (terminal_cd_ids / terminal_item_ids) and the
+  model's OQ/KG status fields, not frozen at the planning-time list in Scope -- items may complete in between.
+- >-
+  Pinned exception: T-1.12 decomposition_hints (tests/test_implement_skill_decomposition_hints.py::TestLiveRoadmapInheritance).
+  Ratified-CD discipline_points are read by validate_candidate_decision_ratification -- not compactable.
+- >-
+  Decision 79 deferral (scout WARN): data-pipeline (active) packages the roadmap as an asset; no redeploy because its
+  schedule is disabled and deploy-prod-lambdas.yml does not path-trigger on the roadmap (VP 9; precedent
+  PLAN-decision-198-brand-supersession, PLAN-telemetry-event-journal-contracts). rec-3990 owns the gap.
+- >-
+  Decision 181 / 163 (scout WARN + NOTE): completion_compaction is a documented expectation with a report-only
+  observable, not a structural check -- declared as an unenforced residual in the contract's governance_notes, owned by
+  rec-3960 (operator-chosen over a new rec), reversal trigger "terminal regrowth recurs after completion_compaction
+  lands -> build the blocking check". Operator chose fix-at-source over a blocking gate. rec-3960's context is updated
+  via update_rec so the owner rec actually names the residual (VP 14).
+- >-
+  Gotcha: rec-4034's acceptance (<9500) is evaluated on main at merge (rec-autoclose.yml); concurrent roadmap growth
+  between implement and merge can erase the ~90-line margin -- merge promptly, re-measure after any base merge.
+- >-
+  Gotcha: regrowth's multi-line-intent test counts PARSED lines, so a folded `>-` scalar reads as one line but still
+  costs raw lines -- collapse to a single double-quoted line.
+- "Decision-scout verdict + CITE list (verbatim decision ids): FLAGS_FOUND. CITE: 147, 197, 114, 110, 86, 177. CONTRADICT: 79 [WARN], 181 [WARN]. SPIRIT: 147 [NOTE], 163 [NOTE]. RELATED: 128, 198, 105, 136, 150, 167, 168, 166, 135, 115. Decisions triaged: 153 of 153. Roadmap items intersected: 7; CONFLICT: 0; RELATED: 7"
+- 'fork: Decision 79 data-pipeline redeploy | chosen: VP-asserted deferral to rec-3990 | class: consistency-only | precedent: PLAN-telemetry-event-journal-contracts VP 8 | precedent_kind: answered-fork | reversible: yes | persisted: infrastructure_dependencies + VP 9'
+- 'fork: test home | chosen: TestCompletionCompactionContract in the regrowth mirror test | class: consistency-only | precedent: PLAN-roadmap-touched-item-spans-and-regrowth-guard mirror test | precedent_kind: answered-fork | reversible: yes | persisted: scope row 3'
+- 'Asked forks (Step 6b, operator): full terminal compaction; fix-at-source (no blocking gate); bundle rec-2782; Decision 147 pointer annotation; rec-3960 owns the residual; rec-3960 not sequenced next.'
+- "gates: decision-scout=FLAGS_FOUND; plan-critique=PENDING"
+pre_implementation_checklist:
+- Branch confirmed not on main
+- docs/PROJECT_CONTEXT.md read
+- Decision 147 (in full) and Decision 197 clause 8 read; Decisions 79, 177, 181 clauses cited here read
+- All files in scope located and readable
+- check_roadmap_regrowth re-run to fix the implement-time target set
+- Acceptance criteria understood and verifiable
+execution_steps:
+- >-
+  Re-run check_roadmap_regrowth and list the implement-time target set (regrown terminal CDs/items; resolved OQs;
+  resolved/closed/promoted KGs; >=280-char intent lines).
+- >-
+  docs/ROADMAP-PLATFORM.yaml: apply the compact form per Scope (a)-(c) by editing field blocks in place (a small
+  line-oriented script or careful Edit calls; never a yaml.safe_dump round-trip, which would rewrite the whole file).
+  Post-condition: VP 1-6 green.
+- >-
+  docs/contracts/tier-item-lifecycle.yaml: add completion_compaction; point bookkeeping_walk's complete outcome and
+  tier_item_freshness_gate's closeout (complete and reserved) at it; add the governance_notes Decision 181 residual
+  naming rec-3960 as owner; append the amendment_log entry. Post-condition: VP 10 green.
+- >-
+  tests/checks/roadmap/test_check_roadmap_regrowth.py: add TestCompletionCompactionContract (import
+  _ITEM_PROSE_FIELDS; parse the contract with yaml.safe_load). Confirm it FAILS against the origin/main contract
+  (git stash the contract edit) before it passes.
+- 'docs/DECISIONS.md: append the single Decision 147 pointer annotation. Post-condition: VP 11 green.'
+- >-
+  Portal: call get_rec_write_guidance(), then update_rec rec-3960 to append (never overwrite) a context sentence naming
+  the completion_compaction unenforced residual (Decision 181) and its Decision 163 reversal trigger. Post-condition:
+  VP 14 green.
+- >-
+  Execute Verification Plan -- run each step; loop until pass; on unrecoverable failure stop and RCA (Decision 55).
+  Squash-merge body carries `Resolves: rec-4034, rec-2782`.
+- 'Report: lines before/after, regrowth report before/after, target set compacted, VP results.'
+rollback: >-
+  Revert the squash commit; the compaction removes only content preserved in git history, so restoration is a plain
+  revert with no data migration.
