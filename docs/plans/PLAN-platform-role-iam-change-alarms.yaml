@@ -143,7 +143,9 @@ scope:
       would escape and step 13 would mis-decode) and every pattern is
       at most 1024 characters, and the fixture names every filter at least once and carries no
       twelve-digit number; every detector
-      resource name starts platform-security-; the three new .tf files contain no region literal
+      resource name starts platform-security- and every resource and data address declared in the
+      three new files starts platform_security (the two apply gates in steps 9 and 14 key on that
+      prefix); the three new .tf files contain no region literal
       (e.g. eu-west-2, us-east-1), no provider block and no provider alias; and no CI identity
       statement (terraform/bootstrap github_ci_apply inline and reads documents, terraform/personal
       oidc*.tf CI roles) grants a mutating logs, cloudwatch, cloudtrail, s3 or iam verb on a resource
@@ -188,8 +190,11 @@ scope:
       subscriptions (sns:ListSubscriptionsByTopic, topic ARN built from the caller's account and
       region); it returns a failure list when any expected alarm is missing, has ActionsEnabled
       false, lacks the alerts topic in AlarmActions, when the heartbeat alarm's StateValue is not OK,
-      or when no email subscription is confirmed (SubscriptionArn PendingConfirmation). It never
-      prints or returns a subscription Endpoint (Actions logs are public, Decision 101).
+      or when no email subscription is confirmed (SubscriptionArn PendingConfirmation). Its output,
+      failure strings and filed rec text carry ONLY alarm names, failure classes and AWS error codes
+      -- never an Endpoint, an ARN (AlarmArn, AlarmActions, SubscriptionArn, TopicArn) or an account
+      id -- and every botocore ClientError is caught and rendered as its error code only (Actions
+      logs are public, Decision 101).
       --file-on-transition files ONE High rec through scripts.ops_data_portal file_rec (source
       security_detector_stale) only when the previous completed scheduled run of
       security-detector-liveness.yml concluded success or no previous run exists, read from the
@@ -206,7 +211,9 @@ scope:
       TestSecurityDetectorProbe (graduated): stubbed boto3 clients -- healthy fixture returns no
       failures; each failure class (alarm missing, actions disabled, wrong topic, heartbeat ALARM,
       heartbeat INSUFFICIENT_DATA, subscription pending, no subscription) is reported; no rendered
-      output ever contains the stub subscription Endpoint; the transition rule files on
+      output, failure string or filed rec text ever contains the stub subscription Endpoint, the
+      substring "arn:" or a twelve-digit sequence, including on a stubbed ClientError (AccessDenied
+      whose message embeds an ARN) path; the transition rule files on
       previous-success, on no previous run and on API error, and does not file on previous-failure;
       --bootstrap-window exits 0 and files nothing on failure; main() otherwise exits 1 on any
       failure; security_detector_stale is a registered canonical_id in
@@ -263,8 +270,9 @@ scope:
       sns:ListSubscriptionsByTopic on aws_sns_topic.alerts.arn. Both are inside the boundary's
       DataPlaneAllow (cloudwatch:*, sns:*); an inline-policy update on a boundary-carrying
       agent-platform-* role is in-budget and auto-applies through the governed CD path at merge
-      (classification per environment-taxonomy.yaml, not restated here). Keep the policy's existing
-      size precondition green.
+      (classification per environment-taxonomy.yaml, not restated here). This CI policy carries no
+      size precondition (validate_iam_policy_size is bootstrap-only); the two-action Sid is well
+      inside the inline limit.
   - file: config/composite_action_body_baseline.yaml
     action: Modify
     purpose: r3_workflows ceilings for the new workflow's inline run bodies, equal to their measured counts (Decision 162 R3)
@@ -569,7 +577,7 @@ verification_plan:
     phase: post-deploy
     action: LIVE PROOF call 1 (Benjamin runs it; the agent only reads) -- a denied lowercase TagRole from PlatformDev
     command: |-
-      echo "PROOF_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)" && aws iam tag-role --role-name platformadmin --tags Key=rec-4044-probe,Value=1 --profile agent_platform; test $? -ne 0 && echo "CALL 1 DENIED AS EXPECTED"
+      echo "PROOF_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)" && aws iam tag-role --role-name platformadmin --tags Key=rec-4044-probe,Value=1 --profile agent_platform 2>/dev/null; test $? -ne 0 && echo "CALL 1 DENIED AS EXPECTED"
     expected: >-
       the TagRole fails with AccessDenied (DailyOps grants no iam write); within about 15 minutes
       both platform-security-denied-iam-write and platform-security-platform-role-iam-change reach
@@ -643,7 +651,7 @@ test_obligations:
     test_selector: "tests/checks/iam_tf/test_platform_role_iam_change_alarms.py::TestPlatformRoleIamChangeDetector"
     red_green_expectation: red before (fixture absent), green after
   - source: scripts/ci/security_detector_probe.py
-    behavior: The probe fails on every liveness failure class, never emits the subscription endpoint, and files one rec per healthy-to-unhealthy transition.
+    behavior: The probe fails on every liveness failure class, never emits the subscription endpoint, an ARN or an account id (ClientError included), and files one rec per healthy-to-unhealthy transition.
     verification_step: 3
     test_selector: "tests/test_security_detector_probe.py::TestSecurityDetectorProbe"
     red_green_expectation: red before (module absent), green after
@@ -747,8 +755,8 @@ constraints:
 context:
   - "Decision-scout verdict + CITE list: FLAGS_FOUND. CITE: Decision 101, 113, 126, 156, 129, 162, 166, 167, 176, 132, 201. Decisions triaged: 154 of 154. Roadmap items intersected: 6; CONFLICT: 0; RELATED: 6."
   - "Scout flags, decided with notice (2026-09-25): 144 WARN -- Decision 202 clause 3 names the re-narrow trigger and says it does not fire; 100 WARN -- clause 6 rejects AWS Config; 190 NOTE -- distinct source security_detector_stale; 181 NOTE -- retirement recorded as a Decision-authorised claim narrowing; 180 NOTE -- policy attachment only, clause 6 not re-decided, CI-caused emails accepted."
-  - "gates: decision-scout=FLAGS_FOUND (re-run on the refined design, 2026-09-25); plan-critique=PENDING (round 1 REVISE 13 findings, round 2 REVISE 7, round 3 REVISE 4 -- all fixed, none disputed)"
-  - "Critique round 1 dispositions (all fixed, none disputed): F1 evidence from the trail's log group, not region-local lookup-events; F2 log-group read verbs granted; F3 account-agnostic patterns; F4 separate workflow plus bootstrap-window gate; F5 graduated workflow test and Decision 202 residual; F6 clause 4 scoped, residuals owned by rec-4067; F7 reversal conditions drafted, Decision 171 related; F8 closure read-back; F9 pattern length and DeleteAlarms/DisableAlarmActions; F10 enumerated S3 verbs plus a pre-phase-2 simulate; F11 calls spaced by an OK reset; F12 obligations restated in scope; F13 heartbeat start-up window. Round 2 (all fixed): R100 --name-status rename check; a standalone pre-phase-2 simulate step; every Plan A count site enumerated and grepped; escaped filter-pattern quotes; explicit PROOF_AT and untag cleanup; CreateLogStream excluded from filter 3; the percent-brace template sequence asserted absent; CI-writable alerts topic named as a residual; acceptance derived from the live rec. Round 3 (all fixed): probe identity moved from the planner's reserved session to agent-platform-github-ci-branch (Decision 143 clause 1), superseding rec-4069; the stale-count grep no longer collides with the corrected text and covers three more sites; step 6 waiver covers both halves."
+  - "gates: decision-scout=FLAGS_FOUND (re-run on the refined design, 2026-09-25); plan-critique=PENDING (round 1 REVISE 13 findings, round 2 REVISE 7, round 3 REVISE 4, round 4 REVISE 5 -- all fixed, none disputed)"
+  - "Critique round 1 dispositions (all fixed, none disputed): F1 evidence from the trail's log group, not region-local lookup-events; F2 log-group read verbs granted; F3 account-agnostic patterns; F4 separate workflow plus bootstrap-window gate; F5 graduated workflow test and Decision 202 residual; F6 clause 4 scoped, residuals owned by rec-4067; F7 reversal conditions drafted, Decision 171 related; F8 closure read-back; F9 pattern length and DeleteAlarms/DisableAlarmActions; F10 enumerated S3 verbs plus a pre-phase-2 simulate; F11 calls spaced by an OK reset; F12 obligations restated in scope; F13 heartbeat start-up window. Round 2 (all fixed): R100 --name-status rename check; a standalone pre-phase-2 simulate step; every Plan A count site enumerated and grepped; escaped filter-pattern quotes; explicit PROOF_AT and untag cleanup; CreateLogStream excluded from filter 3; the percent-brace template sequence asserted absent; CI-writable alerts topic named as a residual; acceptance derived from the live rec. Round 3 (all fixed): probe identity moved from the planner's reserved session to agent-platform-github-ci-branch (Decision 143 clause 1), superseding rec-4069; the stale-count grep no longer collides with the corrected text and covers three more sites; step 6 waiver covers both halves. Round 4 (all fixed): stale oidc.tf execution step removed; the CI branch policy has no size precondition; probe output and rec text carry no ARN or account id (ClientError rendered as code only); step 17 stderr suppressed; platform_security address prefix asserted in step 1."
   - "Design provenance (2026-09-25, rec-4044 thread): Benjamin rejected a us-east-1 EventBridge + console-trail draft; a blind Fable consult independently chose a Terraform-owned London-homed trail in bootstrap with a narrow PlatformAdmin grant (/mnt/project-files/rec-4044/fable-consult.md); Benjamin chose the London-only CloudWatch Logs path and approved the outline (/mnt/project-files/rec-4044/plan-outline.md)."
   - "Refinements over the outline, decided with notice: PlatformAdmin's grant is a bootstrap managed policy, not AdminOps inline (PlatformAdmin's inline aggregate had ~2.2 KB headroom in the 10,240 B role limit, measured baseline 7575 B on 2026-09-13 plus T2.48; Decision 156's remedy), which also removes the pre-merge split-apply and its 2-hour window; the liveness probe reads an IAM-event heartbeat alarm instead of cloudtrail:GetTrailStatus, because the CI boundary's DataPlaneAllow has no cloudtrail entry (terraform/personal/platform_dev_policies.tf:101 notes the same) and the heartbeat observes the exact global-event path the alarms need."
   - "ci-rca deferral (Related-Work): rec-4057 (validate_test_coverage on rec_trailer_acceptance.py) is open and unrelated -- different file, decision and failure category; this plan is the human-adjudicated security prerequisite of Plan A and proceeds with this logged deferral."
@@ -770,7 +778,7 @@ pre_implementation_checklist:
 execution_steps:
   - Create terraform/bootstrap/platform_security_admin_policy.tf, platform_security_trail.tf and platform_security_alarms.tf per scope, terraform fmt -check clean (provider-free)
   - Create tests/fixtures/platform_security_filter_events.yaml, then the two iam_tf test modules and their registry shards
-  - Create scripts/ci/security_detector_probe.py and its test and shard; register security_detector_stale; create .github/workflows/security-detector-liveness.yml, its test, shard, ci_rca_taxonomy entry, R3 baseline entries and the oidc.tf coupled-site comment
+  - Create scripts/ci/security_detector_probe.py and its test and shard; register security_detector_stale; create .github/workflows/security-detector-liveness.yml, its test, shard, ci_rca_taxonomy entry, R3 baseline entries and the oidc_ci_roles.tf SecurityDetectorLivenessRead grant
   - git mv the old shard into entries/deprecated/; add the verification-registry.yaml governance note; amend Plan A's plan file
   - Add Decision 202 to docs/DECISIONS.md; update the AdminOps comment and the bootstrap CLAUDE.md pointer
   - "DEV session: run pre-deploy steps 1-8, commit, open the PR (no Resolves trailer; ADMIN hand-off in the description, Decision 115), drive CI green, merge"
