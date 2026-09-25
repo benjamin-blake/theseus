@@ -31,6 +31,7 @@ from tests.fixtures.platform_roadmap_state import (
     _item,
     _state_from_doc,
     _write_fixture_yaml,
+    live_state_dict,
 )
 
 # ---------------------------------------------------------------------------
@@ -282,7 +283,7 @@ class TestRealizedButPendingCds:
 @pytest.mark.skipif(not _LIVE_ROADMAP.exists(), reason="live ROADMAP-PLATFORM.yaml not present")
 class TestLiveGateEvaluations:
     def _result(self):  # type: ignore[return]
-        return compute_state_dict(_LIVE_ROADMAP)
+        return live_state_dict()
 
     def test_all_four_gates_have_verdict(self) -> None:
         gates = {g["id"]: g for g in self._result().get("gate_evaluations", [])}
@@ -611,3 +612,35 @@ class TestKeylessPlanSkipsYamlParse:
         (tmp_path / "PLAN-quoted.yaml").write_text('"closes_criteria": ["A:c1"]\n')
         result = compute_followon_state(self._doc_with_one_open_criterion(), tmp_path)
         assert result["A"]["needs_followon_plan"] is False
+
+
+# ---------------------------------------------------------------------------
+# TestFollowonNoInProgressGuard -- rec-4007: a zero-in_progress roadmap never globs plans_dir.
+# ---------------------------------------------------------------------------
+
+
+class _RefusingPlansDir:
+    """A plans_dir stand-in whose glob() always raises -- a stub object rather than a Path.glob
+    monkeypatch, so pytest internals never see a patched Path."""
+
+    def is_dir(self) -> bool:
+        return True
+
+    def glob(self, pattern):
+        raise AssertionError("plans_dir globbed ... with zero in_progress items")
+
+
+class TestFollowonNoInProgressGuard:
+    def _make_doc(self, items: list[dict]) -> RoadmapDocument:
+        d = copy.deepcopy(_BASE_DOC)
+        d["tier_items"] = items
+        return RoadmapDocument.model_validate(d)
+
+    def test_zero_in_progress_never_globs_plans_dir(self) -> None:
+        doc = self._make_doc([_item("A", status="not_started"), _item("B", status="complete")])
+        assert compute_followon_state(doc, _RefusingPlansDir()) == {}
+
+    def test_one_in_progress_still_globs_plans_dir(self) -> None:
+        doc = self._make_doc([_item("A", status="in_progress")])
+        with pytest.raises(AssertionError, match="plans_dir globbed"):
+            compute_followon_state(doc, _RefusingPlansDir())

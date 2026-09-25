@@ -60,9 +60,9 @@ class TestFacadeReexports:
 
 # ---------------------------------------------------------------------------
 # TestComputeStateDictPatchInterception -- proves patch("scripts.roadmap.platform_roadmap.
-# compute_state_dict") is observed via facade attribute access: the mechanism the sole
-# external patch site (patch("session_preflight.platform_roadmap.compute_state_dict"))
-# depends on.
+# compute_state_dict") is observed via facade attribute access: the mechanism every external
+# patch site of this attribute (the package conftest, test_main_branches, and the two
+# root-level harnesses) depends on.
 # ---------------------------------------------------------------------------
 
 

@@ -6,8 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from scripts.roadmap.platform_roadmap import compute_state_dict, load
+from scripts.roadmap.platform_roadmap import load
 from scripts.session.preflight import _slim_roadmap_state
+from tests.fixtures.platform_roadmap_state import live_state_dict
 
 _LIVE_YAML = Path(__file__).parent.parent / "docs" / "ROADMAP-PLATFORM.yaml"
 
@@ -18,21 +19,21 @@ _FULL_ONLY_KEYS = ("in_progress", "blocked", "active_tier", "blocked_on_cd", "ga
 @pytest.mark.skipif(not _LIVE_YAML.exists(), reason="live ROADMAP-PLATFORM.yaml not present")
 class TestLiveRoadmapState:
     def test_required_keys_present(self) -> None:
-        result = compute_state_dict(_LIVE_YAML)
+        result = live_state_dict()
         required = ("next_eligible", "in_progress", "blocked", "strategic_pending", "active_tier")
         missing = [k for k in required if k not in result]
         assert not missing, f"missing keys: {missing}"
 
     def test_no_error_on_live_yaml(self) -> None:
-        result = compute_state_dict(_LIVE_YAML)
+        result = live_state_dict()
         assert "error" not in result, f"unexpected error: {result.get('error')}"
 
     def test_next_eligible_non_empty(self) -> None:
-        result = compute_state_dict(_LIVE_YAML)
+        result = live_state_dict()
         assert result["next_eligible"], "expected at least one eligible item on the live roadmap"
 
     def test_items_have_required_fields(self) -> None:
-        result = compute_state_dict(_LIVE_YAML)
+        result = live_state_dict()
         required_fields = ("id", "tier", "name", "effort", "strategic")
         for key in ("next_eligible", "in_progress", "strategic_pending"):
             for item in result[key]:
@@ -40,18 +41,18 @@ class TestLiveRoadmapState:
                     assert field in item, f"{key} item missing field '{field}': {item}"
 
     def test_blocked_items_have_blocked_on(self) -> None:
-        result = compute_state_dict(_LIVE_YAML)
+        result = live_state_dict()
         for item in result["blocked"]:
             assert "blocked_on" in item, f"blocked item missing 'blocked_on': {item}"
             assert isinstance(item["blocked_on"], list)
 
     def test_active_tier_is_valid(self) -> None:
-        result = compute_state_dict(_LIVE_YAML)
+        result = live_state_dict()
         valid_tiers = {"T-1", "T0", "T1", "T2", "T3", "T4", "T5", None}
         assert result["active_tier"] in valid_tiers, f"unexpected active_tier: {result['active_tier']}"
 
     def test_strategic_items_absent_from_next_eligible(self) -> None:
-        result = compute_state_dict(_LIVE_YAML)
+        result = live_state_dict()
         next_ids = {i["id"] for i in result["next_eligible"]}
         strategic_ids = {i["id"] for i in result["strategic_pending"]}
         overlap = next_ids & strategic_ids
@@ -63,7 +64,7 @@ class TestRoadmapDetailProjection:
     """T-1.20: _slim_roadmap_state slim (/plan) vs full (/orient) projection split."""
 
     def _full_state(self) -> dict:
-        return compute_state_dict(_LIVE_YAML)
+        return live_state_dict()
 
     def test_slim_omits_full_only_keys(self) -> None:
         slim = _slim_roadmap_state(self._full_state(), full=False)
@@ -123,9 +124,7 @@ class TestFollowonFieldsInPreflight:
     """T-1.23: in_progress entries carry open_criteria_count/all_plans_actioned/needs_followon_plan."""
 
     def _full_state(self) -> dict:
-        from scripts.roadmap.platform_roadmap import compute_state_dict
-
-        return compute_state_dict(_LIVE_YAML)
+        return live_state_dict()
 
     def test_in_progress_entries_carry_followon_fields(self) -> None:
         state = self._full_state()
@@ -170,9 +169,7 @@ class TestCompletionBlockedOnCdProjection:
     """T-1.20:c6 -- completion_blocked_on_cd field in full (/orient) projection."""
 
     def _full_state(self) -> dict:
-        from scripts.roadmap.platform_roadmap import compute_state_dict
-
-        return compute_state_dict(_LIVE_YAML)
+        return live_state_dict()
 
     def test_full_in_progress_carries_completion_blocked_on_cd(self) -> None:
         """Full projection in_progress entries all carry completion_blocked_on_cd."""

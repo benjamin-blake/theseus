@@ -27,7 +27,9 @@ import duckdb
 import pytest
 
 from scripts.preflight import _common, aws_infra, ci_rca_signals, context_docs, env_git
+from scripts.roadmap import platform_roadmap
 from src.common.ducklake_scd2_schema import NAMED_READS
+from tests.fixtures.platform_roadmap_state import live_state_dict
 
 # Load the module under test as a PRIVATE handle. Deliberately NOT registered as
 # sys.modules["session_preflight"] -- the sibling suite (test_session_preflight.py) registers that
@@ -382,6 +384,7 @@ class TestPhaseBAbsenceOfReaderCalls:
             patch.object(env_git, "_get_recent_main_commits", return_value=[]),
             patch.object(env_git, "run_log_sync", return_value={"status": "skipped", "files": []}),
             patch.object(ci_rca_signals, "_check_ci_rca_liveness", return_value=None),
+            patch.object(platform_roadmap, "compute_state_dict", new=live_state_dict),
             patch.object(_preflight, "PREFLIGHT_REPORT", tmp_path / ".preflight-report.json"),
             patch("builtins.print"),
         ):

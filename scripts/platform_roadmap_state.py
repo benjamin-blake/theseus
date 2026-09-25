@@ -91,6 +91,8 @@ def compute_followon_state(doc: RoadmapDocument, plans_dir: Path) -> dict[str, d
       - needs_followon_plan: bool (True iff open_criteria_count > 0 AND all_plans_actioned)
     """
     in_progress = [i for i in doc.tier_items if i.status == "in_progress"]
+    if not in_progress:
+        return {}
 
     open_criteria: dict[str, set[str]] = {}
     for item in in_progress:

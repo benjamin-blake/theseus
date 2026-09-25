@@ -13,6 +13,7 @@ import pytest
 
 boto3 = pytest.importorskip("boto3")
 
+from tests.fixtures.platform_roadmap_state import live_state_dict  # noqa: E402
 from tests.fixtures.session_preflight_module import preflight as _preflight  # noqa: E402
 
 
@@ -509,3 +510,12 @@ class TestDecisionConditionsGlue:
         output = "\n".join(printed)
         assert "--- Decisions past review date / reversal conditions fired ---" in output
         assert "Decision 901: REVIEW DUE" in output
+
+
+class TestLiveRoadmapStateWiring:
+    """rec-4006 seam B: the package autouse fixture installs live_state_dict on the facade
+    attribute main() reads (scripts.roadmap.platform_roadmap.compute_state_dict via
+    session_preflight.platform_roadmap)."""
+
+    def test_facade_attribute_is_live_state_dict(self) -> None:
+        assert _preflight.platform_roadmap.compute_state_dict is live_state_dict

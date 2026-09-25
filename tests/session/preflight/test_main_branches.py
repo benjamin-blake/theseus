@@ -53,10 +53,9 @@ class TestPytestCurrentTestAbsent:
                 patch("scripts.preflight.context_docs.read_context_files", return_value={}),
                 patch("scripts.preflight.ci_rca_signals._check_ci_rca_liveness", return_value=None),
                 patch("scripts.preflight.ci_rca_signals._check_convergence_sensor_liveness", return_value=None),
-                # Real compute_state_dict() calls (~7-10s each, unmocked in most of this package's
-                # sibling main()-level tests -- a pre-existing, repo-wide cost filed as a
-                # recommendation) are irrelevant to what this test asserts; mocking them keeps this
-                # new file from inheriting that cost for behavior it doesn't exercise.
+                # The stub overrides the package autouse fixture's live_state_dict memo, so this
+                # test skips even the one-per-process live compute for behaviour it does not
+                # exercise.
                 patch("session_preflight.platform_roadmap.compute_state_dict", return_value={}),
                 patch("session_preflight.PREFLIGHT_REPORT", preflight_report),
                 patch("builtins.print"),
@@ -86,10 +85,9 @@ class TestWrongVenvCriticalBranch:
             patch("scripts.preflight.context_docs.read_context_files", return_value={}),
             patch("scripts.preflight.ci_rca_signals._check_ci_rca_liveness", return_value=None),
             patch("scripts.preflight.ci_rca_signals._check_convergence_sensor_liveness", return_value=None),
-            # Real compute_state_dict() calls (~7-10s each, unmocked in most of this package's
-            # sibling main()-level tests -- a pre-existing, repo-wide cost filed as a
-            # recommendation) are irrelevant to what this test asserts; mocking them keeps this
-            # new file from inheriting that cost for behavior it doesn't exercise.
+            # The stub overrides the package autouse fixture's live_state_dict memo, so this
+            # test skips even the one-per-process live compute for behaviour it does not
+            # exercise.
             patch("session_preflight.platform_roadmap.compute_state_dict", return_value={}),
             patch("session_preflight.PREFLIGHT_REPORT", preflight_report),
             patch("builtins.print", side_effect=_capture),
@@ -118,10 +116,9 @@ class TestLogSyncCommittedClearsUncommitted:
             patch("scripts.preflight.context_docs.read_context_files", return_value={}),
             patch("scripts.preflight.ci_rca_signals._check_ci_rca_liveness", return_value=None),
             patch("scripts.preflight.ci_rca_signals._check_convergence_sensor_liveness", return_value=None),
-            # Real compute_state_dict() calls (~7-10s each, unmocked in most of this package's
-            # sibling main()-level tests -- a pre-existing, repo-wide cost filed as a
-            # recommendation) are irrelevant to what this test asserts; mocking them keeps this
-            # new file from inheriting that cost for behavior it doesn't exercise.
+            # The stub overrides the package autouse fixture's live_state_dict memo, so this
+            # test skips even the one-per-process live compute for behaviour it does not
+            # exercise.
             patch("session_preflight.platform_roadmap.compute_state_dict", return_value={}),
             patch("session_preflight.PREFLIGHT_REPORT", preflight_report),
             patch("builtins.print"),
@@ -150,10 +147,9 @@ class TestTerraformPendingTupleUnpack:
             patch("scripts.preflight.context_docs.read_context_files", return_value={}),
             patch("scripts.preflight.ci_rca_signals._check_ci_rca_liveness", return_value=None),
             patch("scripts.preflight.ci_rca_signals._check_convergence_sensor_liveness", return_value=None),
-            # Real compute_state_dict() calls (~7-10s each, unmocked in most of this package's
-            # sibling main()-level tests -- a pre-existing, repo-wide cost filed as a
-            # recommendation) are irrelevant to what this test asserts; mocking them keeps this
-            # new file from inheriting that cost for behavior it doesn't exercise.
+            # The stub overrides the package autouse fixture's live_state_dict memo, so this
+            # test skips even the one-per-process live compute for behaviour it does not
+            # exercise.
             patch("session_preflight.platform_roadmap.compute_state_dict", return_value={}),
             patch("session_preflight.PREFLIGHT_REPORT", preflight_report),
             patch("builtins.print"),
@@ -180,10 +176,9 @@ class TestWarmSyncExceptionWhenCredsOk:
             patch("scripts.preflight.ci_rca_signals._check_ci_rca_liveness", return_value=None),
             patch("scripts.preflight.ci_rca_signals._check_convergence_sensor_liveness", return_value=None),
             patch("scripts.sync.ops.warm_sync", side_effect=RuntimeError("neon unreachable")),
-            # Real compute_state_dict() calls (~7-10s each, unmocked in most of this package's
-            # sibling main()-level tests -- a pre-existing, repo-wide cost filed as a
-            # recommendation) are irrelevant to what this test asserts; mocking them keeps this
-            # new file from inheriting that cost for behavior it doesn't exercise.
+            # The stub overrides the package autouse fixture's live_state_dict memo, so this
+            # test skips even the one-per-process live compute for behaviour it does not
+            # exercise.
             patch("session_preflight.platform_roadmap.compute_state_dict", return_value={}),
             patch("session_preflight.PREFLIGHT_REPORT", preflight_report),
             patch("builtins.print"),
@@ -215,10 +210,9 @@ class TestProvisionalContractsEmpty:
             patch("scripts.preflight.ci_rca_signals._check_ci_rca_liveness", return_value=None),
             patch("scripts.preflight.ci_rca_signals._check_convergence_sensor_liveness", return_value=None),
             patch("scripts.preflight.context_docs._scan_provisional_contracts", return_value=[]),
-            # Real compute_state_dict() calls (~7-10s each, unmocked in most of this package's
-            # sibling main()-level tests -- a pre-existing, repo-wide cost filed as a
-            # recommendation) are irrelevant to what this test asserts; mocking them keeps this
-            # new file from inheriting that cost for behavior it doesn't exercise.
+            # The stub overrides the package autouse fixture's live_state_dict memo, so this
+            # test skips even the one-per-process live compute for behaviour it does not
+            # exercise.
             patch("session_preflight.platform_roadmap.compute_state_dict", return_value={}),
             patch("session_preflight.PREFLIGHT_REPORT", preflight_report),
             patch("builtins.print", side_effect=_capture),
