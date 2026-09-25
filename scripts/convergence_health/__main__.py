@@ -141,22 +141,23 @@ def main_sensor_liveness(profile: Optional[str] = None) -> int:
     return 0
 
 
-def main_liveness_probe(workflow: Optional[str] = None) -> int:
-    """`--liveness-probe [workflow]` acceptance oracle. Returns exit code: 0 iff the named peer (or
-    every derived peer, when `workflow` is omitted) is within its derived threshold; 1 if any is
-    stale, the named workflow is not a derived peer, or the GitHub query fails. This is the
-    discriminating, repo-local, gh-free command every filed loop_liveness_stale rec's `acceptance`
-    names -- never `gh`, which is deliberately not installed in either container.
+def main_liveness_probe(workflow: Optional[str] = None, leg: str = "cadence") -> int:
+    """`--liveness-probe [workflow] [leg]` acceptance oracle. Returns exit code: 0 iff the named
+    peer (or every derived peer, when `workflow` is omitted) is within its derived threshold on
+    `leg` ("cadence", the default and every already-filed cadence rec's bare stored form, or
+    "success"); 1 if any is stale, the named workflow is not a derived peer, or the GitHub query
+    fails. This is the discriminating, repo-local, gh-free command every filed loop_liveness_stale
+    rec's `acceptance` names -- never `gh`, which is deliberately not installed in either container.
     """
     try:
-        stale = stale_peers_for_probe(workflow)
+        stale = stale_peers_for_probe(workflow, leg=leg)
     except Exception as exc:  # noqa: BLE001
         print(f"[convergence_health] liveness_probe FAILED: {exc}")
         return 1
     if stale:
-        print(f"[convergence_health] liveness_probe STALE: {stale}")
+        print(f"[convergence_health] liveness_probe STALE ({leg}): {stale}")
         return 1
-    print(f"[convergence_health] liveness_probe OK: {workflow or 'all derived peers'}")
+    print(f"[convergence_health] liveness_probe OK ({leg}): {workflow or 'all derived peers'}")
     return 0
 
 
@@ -172,8 +173,19 @@ def _dispatch(argv: list[str]) -> int:
         return main_sensor_liveness()
     if "--liveness-probe" in argv:
         idx = argv.index("--liveness-probe")
-        workflow = argv[idx + 1] if idx + 1 < len(argv) and not argv[idx + 1].startswith("--") else None
-        return main_liveness_probe(workflow)
+        # Bare positional tokens after the flag: an optional workflow name and an optional leg
+        # selector, in either order. No real workflow filename is literally "cadence" or
+        # "success", so the two are unambiguous; a bare "cadence" or omitted selector means the
+        # cadence leg -- every already-filed cadence rec's stored acceptance carries no selector.
+        tokens = [a for a in argv[idx + 1 :] if not a.startswith("--")]
+        workflow: Optional[str] = None
+        leg = "cadence"
+        for token in tokens:
+            if token in ("cadence", "success"):
+                leg = token
+            else:
+                workflow = token
+        return main_liveness_probe(workflow, leg=leg)
     return main()
 
 

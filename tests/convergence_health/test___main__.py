@@ -327,7 +327,7 @@ class TestMainLivenessProbe:
         with patch("scripts.convergence_health.__main__.stale_peers_for_probe", return_value=[]) as probe:
             rc = main_liveness_probe("convergence-health.yml")
         assert rc == 0
-        probe.assert_called_once_with("convergence-health.yml")
+        probe.assert_called_once_with("convergence-health.yml", leg="cadence")
 
     def test_stale_returns_one(self, capsys: pytest.CaptureFixture[str]) -> None:
         with patch("scripts.convergence_health.__main__.stale_peers_for_probe", return_value=["convergence-health.yml"]):
@@ -343,6 +343,18 @@ class TestMainLivenessProbe:
             rc = main_liveness_probe("nope.yml")
         assert rc == 1
         assert "FAILED" in capsys.readouterr().out
+
+    def test_success_leg_is_passed_through(self) -> None:
+        with patch("scripts.convergence_health.__main__.stale_peers_for_probe", return_value=[]) as probe:
+            rc = main_liveness_probe("convergence-health.yml", leg="success")
+        assert rc == 0
+        probe.assert_called_once_with("convergence-health.yml", leg="success")
+
+    def test_success_leg_stale_message_names_the_leg(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with patch("scripts.convergence_health.__main__.stale_peers_for_probe", return_value=["ghas-probe.yml"]):
+            rc = main_liveness_probe("ghas-probe.yml", leg="success")
+        assert rc == 1
+        assert "STALE (success)" in capsys.readouterr().out
 
 
 class TestDispatch:
@@ -379,9 +391,25 @@ class TestDispatch:
     def test_liveness_probe_flag_routes_with_the_workflow_argument(self) -> None:
         with patch("scripts.convergence_health.__main__.main_liveness_probe", return_value=0) as entry:
             assert _dispatch(["--liveness-probe", "convergence-health.yml"]) == 0
-        entry.assert_called_once_with("convergence-health.yml")
+        entry.assert_called_once_with("convergence-health.yml", leg="cadence")
 
     def test_liveness_probe_flag_without_a_workflow_argument(self) -> None:
         with patch("scripts.convergence_health.__main__.main_liveness_probe", return_value=0) as entry:
             assert _dispatch(["--liveness-probe"]) == 0
-        entry.assert_called_once_with(None)
+        entry.assert_called_once_with(None, leg="cadence")
+
+    def test_liveness_probe_flag_with_a_workflow_and_success_leg(self) -> None:
+        with patch("scripts.convergence_health.__main__.main_liveness_probe", return_value=0) as entry:
+            assert _dispatch(["--liveness-probe", "ghas-probe.yml", "success"]) == 0
+        entry.assert_called_once_with("ghas-probe.yml", leg="success")
+
+    def test_liveness_probe_flag_with_bare_success_leg_and_no_workflow(self) -> None:
+        # The fleet-wide probe: no workflow token, just the leg selector.
+        with patch("scripts.convergence_health.__main__.main_liveness_probe", return_value=0) as entry:
+            assert _dispatch(["--liveness-probe", "success"]) == 0
+        entry.assert_called_once_with(None, leg="success")
+
+    def test_liveness_probe_flag_with_bare_cadence_leg_token(self) -> None:
+        with patch("scripts.convergence_health.__main__.main_liveness_probe", return_value=0) as entry:
+            assert _dispatch(["--liveness-probe", "ghas-probe.yml", "cadence"]) == 0
+        entry.assert_called_once_with("ghas-probe.yml", leg="cadence")

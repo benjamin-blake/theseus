@@ -18,15 +18,17 @@ clamps 2x the nominal period into [6h, 45d] -- the floor tolerates best-effort s
 the ceiling is the largest threshold whose first bucket [T, 2T) still fits the 90-day Actions
 run-retention window, so a `run:{id}` anchor never flips to `intro:{sha}` mid-bucket.
 
-EPISODE GRAIN: the open matcher keys on (loop) ALONE (mirrors
-`_budget_recs._is_open_budget_breach_row`), so a recovery-then-redeath while a rec is open UPDATES
-it rather than minting a new episode. The resolved matcher sweeps on (loop) alone too -- an
-anchor-pinned sweep cannot see across the anchor change a flap causes -- then discriminates
-client-side into two dwell legs: SAME anchor mutes on the MAX resolved bucket (`current <= max+1`);
-CROSS anchor costs one `rec_by_id` for the newest resolved rec's closure timestamp and mutes while
-`now - closed_at < threshold`. Titles are START-ANCHORED (`Loop: {k}. Episode: {a}. Bucket: {n}.
-...`) because `recs_by_title_prefix` binds the WHOLE LIKE pattern with no implicit wildcard --
-`f"Loop: {k}.%"` needs its trailing `%` or the sweep returns zero rows forever (Decision 142).
+EPISODE GRAIN: the open matcher keys on (loop, leg) -- cadence (schedule stopped firing) and
+success (fires on cadence, never succeeds; PLAN-monitor-liveness-sweep) resolve independently -- so
+a recovery-then-redeath while a rec is open UPDATES it rather than minting a new episode. The
+resolved matcher sweeps on (loop) alone (one warehouse read serves both legs, Decision 88) then
+discriminates client-side into leg, then two dwell legs: SAME anchor mutes on the MAX resolved
+bucket (`current <= max+1`); CROSS anchor costs one `rec_by_id` for the newest resolved rec's
+closure timestamp and mutes while `now - closed_at < threshold`. Titles are START-ANCHORED
+(`Loop: {k}. Episode: {a}. Bucket: {n}. ...`) because `recs_by_title_prefix` binds the WHOLE LIKE
+pattern with no implicit wildcard (Decision 142). A leg marker is appended AFTER that prefix, never
+before it; a marker-less title (every rec filed before the success leg existed, e.g. live
+rec-3860) is CADENCE -- see sensor_liveness_episodes.py.
 
 NO-OP UPDATES ARE SKIPPED (bucket-quantised title/context, so an unchanged episode writes no
 duplicate SCD2 row). FILE/UPDATE ONLY, NEVER CLOSE -- restored cadence does not auto-resolve a
@@ -51,6 +53,18 @@ import yaml
 from scripts.convergence_health.approvals import _make_github_caller
 from scripts.convergence_health.code_drift import _assert_full_history
 from scripts.convergence_health.record import _parse_utc
+from scripts.convergence_health.sensor_liveness_episodes import (
+    RESOLVED_REC_STATUSES as RESOLVED_REC_STATUSES,  # re-export: tests reach it via sl.RESOLVED_REC_STATUSES
+)
+from scripts.convergence_health.sensor_liveness_episodes import (
+    _cross_anchor_newest,
+    _episode_context,
+    _episode_title,
+    _filter_resolved_rows,
+    _is_open_loop_row,
+    _parse_episode_title,
+    _same_anchor_best_row,
+)
 from scripts.rec_episode import find_recs
 
 DEFAULT_OWNER = "benjamin-blake"
@@ -65,10 +79,6 @@ _Rows = list[_Info]
 _GhCaller = Callable[[str], Any]
 _GitRunner = Callable[[list[str]], str]
 _PortalCaller = Callable[[str, _Info], Any]
-
-# SoT: src.common.ducklake_scd2_schema.STATUS_TRANSITIONS["ops_recommendations"]["resolved"] --
-# mirrored (not imported) like budget_ingest.RESOLVED_REC_STATUSES; a test pins the two together.
-RESOLVED_REC_STATUSES: frozenset[str] = frozenset({"closed", "declined", "superseded"})
 
 _MIN_THRESHOLD_SECONDS = 6 * 3600
 _MAX_THRESHOLD_SECONDS = 45 * 86400
@@ -90,19 +100,6 @@ _DEAD_QUERY_MESSAGE = (
     "no payload (absent GH_TOKEN/GITHUB_TOKEN, or a failed query). Refusing to report an empty run "
     "population from a query that never ran -- a dead sensor and a live peer must not look the same."
 )
-_REMEDIATION_GENERIC = (
-    "State unknown; investigate a removed `schedule:` block, a delivery drop, or GitHub's own inactivity auto-disable."
-)
-_REMEDIATION_BY_STATE: dict[str, str] = {
-    "disabled_inactivity": (
-        "GitHub auto-disabled this workflow after 60 idle days (state: disabled_inactivity) -- "
-        "re-enable it from the Actions tab."
-    ),
-    "disabled_manually": "Manually disabled (state: disabled_manually) -- re-enable it from the Actions tab if unintended.",
-    "active": (
-        "state: active -- investigate a delivery drop or a removed `schedule:` block; auto-disable does not explain this."
-    ),
-}
 
 
 # --- Peer derivation: never declared, fail-loud by default on an empty result. ---
@@ -209,10 +206,11 @@ def _default_git_runner(cmd: list[str]) -> str:
     return result.stdout.strip()
 
 
-def _query_last_run(loop: str, caller: _GhCaller, api_base: str) -> Optional[_Info]:
-    """`?event=schedule&per_page=1` -- filtered so workflow_dispatch cannot masquerade as cron
-    liveness. Raises on a dead query (Decision 55)."""
-    data = caller(f"{api_base}/actions/workflows/{loop}/runs?event=schedule&per_page=1")
+def _query_last_run(loop: str, caller: _GhCaller, api_base: str, query_suffix: str = "") -> Optional[_Info]:
+    """`?event=schedule{query_suffix}&per_page=1` -- filtered so workflow_dispatch cannot
+    masquerade as cron liveness. `query_suffix` (e.g. `&status=success`) lets a sibling leg reuse
+    this query. Raises on a dead query (Decision 55) regardless of leg."""
+    data = caller(f"{api_base}/actions/workflows/{loop}/runs?event=schedule{query_suffix}&per_page=1")
     if not data:
         raise RuntimeError(_DEAD_QUERY_MESSAGE.format(loop=loop))
     runs = data.get("workflow_runs") or []
@@ -258,11 +256,20 @@ def _as_utc(value: Any) -> datetime:
     return _parse_utc(str(value or ""))
 
 
-def _assess_peer(loop: str, crons: list[str], caller: _GhCaller, runner: _GitRunner, now: datetime, api_base: str) -> _Info:
+def _assess_peer(
+    loop: str,
+    crons: list[str],
+    caller: _GhCaller,
+    runner: _GitRunner,
+    now: datetime,
+    api_base: str,
+    query_suffix: str = "",
+) -> _Info:
     """One peer's threshold, anchor, age and bucket -- shared by detect_stale_loops and
-    --liveness-probe so the two never compute staleness differently."""
+    --liveness-probe so the two never compute staleness differently. `query_suffix` lets
+    sensor_liveness_success.py reuse this arithmetic; the cadence default ("") is unchanged."""
     threshold = _peer_threshold_seconds(crons)
-    run = _query_last_run(loop, caller, api_base)
+    run = _query_last_run(loop, caller, api_base, query_suffix=query_suffix)
     if run is not None:
         anchor_ts = _parse_utc(str(run.get("created_at") or ""))
         anchor = f"run:{run.get('id')}"
@@ -281,48 +288,24 @@ def _assess_peer(loop: str, crons: list[str], caller: _GhCaller, runner: _GitRun
     }
 
 
-# --- Episode title/context: markers START-ANCHORED so recs_by_title_prefix's LIKE match works. ---
+# --- Episode title/context lives in sensor_liveness_episodes.py (re-exported above). Acceptance
+# and rec-fields assembly stay here, leg-aware. ---
 
 
-def _episode_title(loop: str, anchor: str, bucket: int) -> str:
-    return f"Loop: {loop}. Episode: {anchor}. Bucket: {bucket}. Scheduled loop has not run within its derived threshold"
-
-
-def _parse_episode_title(title: str) -> Optional[tuple[str, str, int]]:
-    """(loop, anchor, bucket) parsed back out of a title this module wrote, or None."""
-    if not title.startswith("Loop: ") or ". Episode: " not in title or ". Bucket: " not in title:
-        return None
-    try:
-        loop_part, rest = title.split(". Episode: ", 1)
-        anchor_part, rest = rest.split(". Bucket: ", 1)
-        return loop_part[len("Loop: ") :], anchor_part, int(rest.split(".", 1)[0])
-    except (ValueError, IndexError):
-        return None
-
-
-def _episode_context(info: _Info) -> str:
-    remediation = _REMEDIATION_BY_STATE.get(str(info.get("state") or ""), _REMEDIATION_GENERIC)
-    peers_note = f" Stale peers: {', '.join(info['stale_peers'])}." if info.get("stale_peers") else ""
-    return (
-        f"Loop: {info['loop']}. Episode: {info['anchor']}. Bucket: {info['bucket']}. No `?event=schedule` "
-        f"run within the derived threshold ({info['threshold_seconds'] / 3600:.1f}h); last signal age "
-        f"{info['age_seconds'] / 3600:.1f}h.{peers_note} {remediation} Never auto-closed -- restored "
-        "cadence does not resolve this rec; a human closes it once satisfied (source loop_liveness_stale, LSA-02)."
-    )
-
-
-def _probe_acceptance(loop: str) -> str:
-    """A dedicated function (never an inline f-string in a dict literal, which
-    validate_acceptance_literals' static scanner would try -- and fail -- to bash-syntax-check
-    with its interpolated segment blanked to a placeholder) so this dynamic command is skipped by
-    that scanner exactly as escalate.py's and code_drift.py's own dynamic acceptance strings are."""
+def _probe_acceptance(loop: str, leg: str = "cadence") -> str:
+    """A dedicated function, not an inline f-string (validate_acceptance_literals' static scanner
+    would bash-syntax-check and fail it) -- mirrors escalate.py's dynamic acceptance strings. The
+    default leg ("cadence") is BARE -- no selector, so every already-filed cadence rec's stored
+    acceptance is unchanged; only a non-cadence leg appends one."""
     target = "" if loop == _FLEET_LOOP_KEY else f" {loop}"
-    return f"bin/venv-python -m scripts.convergence_health --liveness-probe{target}"
+    leg_arg = "" if leg == "cadence" else f" {leg}"
+    return f"bin/venv-python -m scripts.convergence_health --liveness-probe{target}{leg_arg}"
 
 
 def _build_rec_fields(info: _Info) -> _Info:
+    leg = info.get("leg", "cadence")
     return {
-        "title": _episode_title(info["loop"], info["anchor"], info["bucket"]),
+        "title": _episode_title(info["loop"], info["anchor"], info["bucket"], leg=leg),
         "file": ".github/workflows/convergence-health.yml",
         "status": "open",
         "source": "loop_liveness_stale",
@@ -331,53 +314,25 @@ def _build_rec_fields(info: _Info) -> _Info:
         "risk": "medium",
         "verification_tier": "V2",
         "context": _episode_context(info),
-        "acceptance": _probe_acceptance(info["loop"]),
+        "acceptance": _probe_acceptance(info["loop"], leg=leg),
     }
 
 
-# --- Open/resolved matchers: open keys on (loop) alone; resolved sweeps on (loop) alone, then
-# discriminates client-side into the same-anchor and cross-anchor post-closure dwell legs. ---
+# --- Open/resolved matchers: open keys on (loop, leg); resolved sweeps on (loop) alone (one
+# warehouse read serves both legs, memoised per tick), then discriminates client-side into leg,
+# then the same-anchor and cross-anchor post-closure dwell legs. ---
 
 
-def _is_open_loop_row(rec: _Info, loop: str) -> bool:
-    """The live path (scripts.rec_episode.find_recs) already scopes on source="loop_liveness_stale"
-    and status="open" via a structural current_state read (rec-3291 / rec-3563 class fix), so both
-    keys are guaranteed present and correct on a live row. An injected `open_recs` test fixture may
-    still omit either key for brevity -- absent is treated as already-satisfied, an explicit value
-    is still honoured."""
-    status = rec.get("status")
-    if status is not None and status != "open":
-        return False
-    source = rec.get("source")
-    if source is not None and source != "loop_liveness_stale":
-        return False
-    title = rec.get("title")
-    return title is None or str(title).startswith(f"Loop: {loop}. ")
-
-
-def _find_open_loop_rec(open_recs: _Rows, loop: str) -> Optional[_Info]:
+def _find_open_loop_rec(open_recs: _Rows, loop: str, leg: str = "cadence") -> Optional[_Info]:
     for rec in open_recs:
-        if _is_open_loop_row(rec, loop):
+        if _is_open_loop_row(rec, loop, leg):
             return rec
     return None
 
 
-def _filter_resolved_rows(rows: _Rows, loop: str) -> _Rows:
-    """Exact client-side re-filter shared by the live sweep and an injected `resolved_recs` list:
-    LIKE's `_` wildcard would otherwise let `Loop: __fleet__.%` match a row titled
-    `Loop: XXfleetYY. ...`, so membership is re-checked with plain string equality."""
-    return [
-        row
-        for row in rows
-        if str(row.get("title") or "").startswith(f"Loop: {loop}. ")
-        and row.get("source") == "loop_liveness_stale"
-        and row.get("status") in RESOLVED_REC_STATUSES
-    ]
-
-
 def _fetch_resolved_loop_recs(loop: str, profile: Optional[str] = None) -> _Rows:
-    """One `recs_by_title_prefix` sweep -- `f"Loop: {loop}.%"`, trailing `%` mandatory, the verb
-    binds the WHOLE pattern -- then `_filter_resolved_rows`."""
+    """One `recs_by_title_prefix` sweep (trailing `%` mandatory, the verb binds the WHOLE pattern),
+    unfiltered by leg -- both legs share this one raw pool; the caller re-filters per leg."""
     from src.common.ducklake_reader_client import DuckLakeReader, make_reader  # noqa: PLC0415
 
     reader = cast(DuckLakeReader, make_reader(profile=profile))
@@ -385,34 +340,17 @@ def _fetch_resolved_loop_recs(loop: str, profile: Optional[str] = None) -> _Rows
     return _filter_resolved_rows(rows, loop)
 
 
-def _resolved_rows_for_loop(loop: str, resolved_recs: Optional[_Rows], profile: Optional[str]) -> _Rows:
-    """`resolved_recs` (for testing, mirroring budget_ingest.ingest_budget_breaches) is a single
-    shared candidate pool re-filtered per loop; when None, sweeps live per loop."""
+def _resolved_rows_for_loop(
+    loop: str, resolved_recs: Optional[_Rows], profile: Optional[str], leg: str, cache: dict[str, _Rows]
+) -> _Rows:
+    """`resolved_recs` (testing) is re-filtered per loop and leg; when None, sweeps live -- but only
+    ONCE per loop per tick (`cache`), so a peer stale on both legs pays one warehouse read, not two
+    (Decision 88 invariant ii)."""
     if resolved_recs is not None:
-        return _filter_resolved_rows(resolved_recs, loop)
-    return _fetch_resolved_loop_recs(loop, profile=profile)
-
-
-def _same_anchor_best_row(resolved_rows: _Rows, anchor: str) -> Optional[_Info]:
-    """The resolved row at the CURRENT anchor with the MAXIMUM bucket (never the first hit)."""
-    best: Optional[_Info] = None
-    best_bucket = -1
-    for row in resolved_rows:
-        parsed = _parse_episode_title(str(row.get("title") or ""))
-        if parsed is not None and parsed[1] == anchor and parsed[2] > best_bucket:
-            best, best_bucket = row, parsed[2]
-    return best
-
-
-def _cross_anchor_newest(resolved_rows: _Rows, anchor: str) -> Optional[_Info]:
-    """Highest-id resolved row at a DIFFERENT anchor (`recs_by_title_prefix` orders by id
-    ascending, so the last match in iteration order is newest)."""
-    newest: Optional[_Info] = None
-    for row in resolved_rows:
-        parsed = _parse_episode_title(str(row.get("title") or ""))
-        if parsed is not None and parsed[1] != anchor:
-            newest = row
-    return newest
+        return _filter_resolved_rows(resolved_recs, loop, leg)
+    if loop not in cache:
+        cache[loop] = _fetch_resolved_loop_recs(loop, profile=profile)
+    return _filter_resolved_rows(cache[loop], loop, leg)
 
 
 def _fetch_rec_by_id(rec_id: Any, profile: Optional[str] = None) -> _Info:
@@ -424,8 +362,9 @@ def _fetch_rec_by_id(rec_id: Any, profile: Optional[str] = None) -> _Info:
 
 
 def _charge(budget: dict[str, int], key: str, loop: str, label: str) -> None:
-    """Increment a structural CALL-COUNT cap (`len(peers) + 1`) and raise past it -- unreachable
-    under normal operation, so a raise here means a bug, never accumulated rec history."""
+    """Increment a structural CALL-COUNT cap and raise past it -- unreachable under normal
+    operation. Widened to `2 * (len(peers) + 1)` so a peer stale on BOTH legs (up to two sweeps,
+    two rec_by_id fetches) cannot trip a false structural-violation raise."""
     budget[key] += 1
     if budget[key] > budget[f"{key}_max"]:
         raise RuntimeError(
@@ -468,13 +407,15 @@ def _reconcile_episode(info: _Info, open_recs: _Rows, resolved_recs: Optional[_R
     one dict instead of five trailing params, mutated (via `budget`) across every episode a tick reconciles."""
     budget = ctx["budget"]
     now, portal_caller, profile, dry_run = ctx["now"], ctx["portal_caller"], ctx["profile"], ctx["dry_run"]
+    resolved_cache = ctx["resolved_cache"]
     loop = info["loop"]
+    leg = info.get("leg", "cadence")
     fields = _build_rec_fields(info)
-    existing = _find_open_loop_rec(open_recs, loop)
+    existing = _find_open_loop_rec(open_recs, loop, leg)
     resolved: Optional[_Info] = None
     if existing is None:
         _charge(budget, "sweeps", loop, "MAX_TITLE_SWEEPS")
-        resolved_rows = _resolved_rows_for_loop(loop, resolved_recs, profile)
+        resolved_rows = _resolved_rows_for_loop(loop, resolved_recs, profile, leg, resolved_cache)
         same_anchor = _same_anchor_best_row(resolved_rows, info["anchor"])
         if same_anchor is not None:
             max_bucket = _parse_episode_title(str(same_anchor["title"]))[2]  # type: ignore[index]
@@ -515,6 +456,44 @@ def _reconcile_episode(info: _Info, open_recs: _Rows, resolved_recs: Optional[_R
 # --- Top-level detection + the --liveness-probe acceptance oracle. ---
 
 
+def _reconcile_leg(
+    leg: str,
+    stale: dict[str, _Info],
+    peers: dict[str, list[str]],
+    open_recs: _Rows,
+    resolved_recs: Optional[_Rows],
+    ctx: _Info,
+    result: _Info,
+) -> None:
+    """Fleet-collapse-or-per-loop reconciliation for ONE leg. Counts DISTINCT PEERS stale on THIS
+    leg alone, never (peer, leg) pairs -- else two peers stale on both legs (distinct 2, pairs 4)
+    would spuriously collapse. The fleet episode is itself leg-keyed, so the two legs never
+    collide on the open matcher and each carries its own remediation."""
+    if not stale:
+        return
+    now = ctx["now"]
+    if len(stale) >= FLEET_COLLAPSE_MIN_STALE:
+        since_ts = max(info["anchor_ts"] for info in stale.values())
+        threshold = fleet_threshold_seconds(peers)
+        age = (now - since_ts).total_seconds()
+        fleet_info = {
+            "loop": _FLEET_LOOP_KEY,
+            "leg": leg,
+            "anchor": f"since:{since_ts.isoformat().replace('+00:00', 'Z')}",
+            "bucket": _bucket_for(age, threshold),
+            "age_seconds": age,
+            "threshold_seconds": threshold,
+            "state": None,
+            "stale_peers": sorted(stale),
+        }
+        _reconcile_episode(fleet_info, open_recs, resolved_recs, ctx, result)
+        result["fleet_collapse"] = True
+        return
+
+    for loop in sorted(stale):
+        _reconcile_episode(stale[loop], open_recs, resolved_recs, ctx, result)
+
+
 def detect_stale_loops(
     gh_caller: Optional[_GhCaller] = None,
     git_runner: Optional[_GitRunner] = None,
@@ -528,15 +507,18 @@ def detect_stale_loops(
     profile: Optional[str] = None,
     dry_run: bool = False,
 ) -> _Info:
-    """File/update exactly one deduped rec per stale loop (or one fleet rec on a correlated
-    outage). Lazy and bounded (Decision 88): a healthy tick issues zero warehouse reads. `peers`
-    is None in production -- `derive_scheduled_peers()` runs with no override, so the fail-loud
-    empty-set guard is inherited, never opt-in here. Every other dependency is injected too,
-    mirroring `budget_ingest.ingest_budget_breaches`, so the whole module is network-free to test."""
+    """File/update exactly one deduped rec per stale loop PER LEG (or one fleet rec per leg on a
+    correlated outage). Lazy and bounded (Decision 88): a healthy tick issues zero warehouse reads.
+    `peers=None` inherits derive_scheduled_peers()'s fail-loud empty-set guard. Every other
+    dependency is injected, so the module stays network-free to test. Two legs: CADENCE (stopped
+    firing?) and SUCCESS (fires but never succeeds?) -- assess_success_leg is imported here, not at
+    module scope, since that module imports `_assess_peer` from here (avoids a circular import)."""
     if now is None:
         now = datetime.now(timezone.utc)
     if peers is None:
         peers = derive_scheduled_peers()
+
+    from scripts.convergence_health.sensor_liveness_success import assess_success_leg  # noqa: PLC0415
 
     token = os.environ.get("GH_TOKEN", "") or os.environ.get("GITHUB_TOKEN", "")
     caller = gh_caller or _make_github_caller(token)
@@ -544,55 +526,56 @@ def detect_stale_loops(
     api_base = f"https://api.github.com/repos/{owner}/{repo}"
     states = _query_workflow_states(caller, api_base)
 
-    infos: dict[str, _Info] = {}
+    cadence: dict[str, _Info] = {}
+    success: dict[str, _Info] = {}
     for loop, crons in sorted(peers.items()):
-        info = _assess_peer(loop, crons, caller, runner, now, api_base)
-        info["state"] = states.get(loop)
-        infos[loop] = info
+        c_info = _assess_peer(loop, crons, caller, runner, now, api_base)
+        c_info["state"] = states.get(loop)
+        c_info["leg"] = "cadence"
+        cadence[loop] = c_info
 
-    stale = {loop: info for loop, info in infos.items() if info["bucket"] > 0}
+        s_info = assess_success_leg(loop, crons, caller, runner, now, api_base)
+        s_info["state"] = states.get(loop)
+        s_info["leg"] = "success"
+        success[loop] = s_info
+
+    cadence_stale = {loop: info for loop, info in cadence.items() if info["bucket"] > 0}
+    success_stale = {loop: info for loop, info in success.items() if info["bucket"] > 0}
     result: _Info = {
         "peers": len(peers),
-        "stale": sorted(stale),
+        "stale": sorted(cadence_stale),
+        "stale_success": sorted(success_stale),
         "filed": [],
         "updated": [],
         "unchanged": [],
         "dropped": [],
         "fleet_collapse": False,
     }
-    if not stale:
+    if not cadence_stale and not success_stale:
         return result
 
     if open_recs is None:
         open_recs = find_recs("loop_liveness_stale", profile=profile)
-    budget = {"sweeps": 0, "sweeps_max": len(peers) + 1, "ids": 0, "ids_max": len(peers) + 1}
-    ctx: _Info = {"budget": budget, "now": now, "portal_caller": portal_caller, "profile": profile, "dry_run": dry_run}
+    budget_max = 2 * (len(peers) + 1)
+    budget = {"sweeps": 0, "sweeps_max": budget_max, "ids": 0, "ids_max": budget_max}
+    ctx: _Info = {
+        "budget": budget,
+        "now": now,
+        "portal_caller": portal_caller,
+        "profile": profile,
+        "dry_run": dry_run,
+        "resolved_cache": {},
+    }
 
-    if len(stale) >= FLEET_COLLAPSE_MIN_STALE:
-        since_ts = max(info["anchor_ts"] for info in stale.values())
-        threshold = fleet_threshold_seconds(peers)
-        age = (now - since_ts).total_seconds()
-        fleet_info = {
-            "loop": _FLEET_LOOP_KEY,
-            "anchor": f"since:{since_ts.isoformat().replace('+00:00', 'Z')}",
-            "bucket": _bucket_for(age, threshold),
-            "age_seconds": age,
-            "threshold_seconds": threshold,
-            "state": None,
-            "stale_peers": sorted(stale),
-        }
-        _reconcile_episode(fleet_info, open_recs, resolved_recs, ctx, result)
-        result["fleet_collapse"] = True
-        return result
-
-    for loop in sorted(stale):
-        _reconcile_episode(stale[loop], open_recs, resolved_recs, ctx, result)
+    _reconcile_leg("cadence", cadence_stale, peers, open_recs, resolved_recs, ctx, result)
+    _reconcile_leg("success", success_stale, peers, open_recs, resolved_recs, ctx, result)
 
     return result
 
 
 def stale_peers_for_probe(
     workflow: Optional[str] = None,
+    leg: str = "cadence",
     gh_caller: Optional[_GhCaller] = None,
     git_runner: Optional[_GitRunner] = None,
     peers: Optional[dict[str, list[str]]] = None,
@@ -600,10 +583,11 @@ def stale_peers_for_probe(
     owner: str = DEFAULT_OWNER,
     repo: str = DEFAULT_REPO,
 ) -> list[str]:
-    """Names of derived peers (or just `workflow`, when named) currently past their derived
-    threshold. Backs `--liveness-probe`'s acceptance oracle (`__main__.main_liveness_probe`
-    catches errors and maps this to an exit code) -- raises on an unknown `workflow` or a dead
-    GitHub query rather than reporting a reassuring empty list."""
+    """Names of derived peers (or just `workflow`) past their threshold on `leg` ("cadence", the
+    unchanged default, or "success"). Backs `--liveness-probe`'s acceptance oracle -- raises on an
+    unknown `workflow` or a dead query rather than a reassuring empty list. The bare (cadence) form
+    must keep classifying cadence alone, never "stale on either leg", or a success-only outage
+    would regress a cadence rec's stored acceptance."""
     resolved_peers = peers if peers is not None else derive_scheduled_peers()
     if workflow is not None:
         if workflow not in resolved_peers:
@@ -618,8 +602,15 @@ def stale_peers_for_probe(
     caller = gh_caller or _make_github_caller(token)
     runner = git_runner or _default_git_runner
     api_base = f"https://api.github.com/repos/{owner}/{repo}"
-    return [
-        loop
-        for loop, crons in sorted(targets.items())
-        if _assess_peer(loop, crons, caller, runner, now, api_base)["bucket"] > 0
-    ]
+
+    if leg == "cadence":
+
+        def _assess(loop: str, crons: list[str]) -> _Info:
+            return _assess_peer(loop, crons, caller, runner, now, api_base)
+    else:
+        from scripts.convergence_health.sensor_liveness_success import assess_success_leg  # noqa: PLC0415
+
+        def _assess(loop: str, crons: list[str]) -> _Info:
+            return assess_success_leg(loop, crons, caller, runner, now, api_base)
+
+    return [loop for loop, crons in sorted(targets.items()) if _assess(loop, crons)["bucket"] > 0]
