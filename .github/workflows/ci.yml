@@ -172,6 +172,153 @@ jobs:
         if-no-files-found: ignore
         retention-days: 14
 
+  trailer-census:
+    # Decision 201 slice A: parses the Resolves: rec-NNNN trailer from the merge commit, reads
+    # each named rec via the DuckLake reader, and classifies its acceptance command -- executes
+    # nothing. Mirrors backlog-health.yml's three-job credential split (Decision 143).
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --quiet --upgrade pip
+          .venv/bin/pip install -r requirements.txt -r requirements-fast.txt
+
+      - name: Configure AWS credentials (OIDC -- branch role, reader-only usage)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/agent-platform-github-ci-branch
+          aws-region: eu-west-2
+
+      - name: Run trailer census (parse trailer, read named recs, classify -- executes nothing)
+        run: .venv/bin/python -m scripts.rec_trailer_acceptance census --artifact-dir /tmp/trailer_acceptance
+
+      - name: Upload census artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: trailer-census-${{ github.run_id }}
+          path: /tmp/trailer_acceptance/trailer_census.json
+          retention-days: 1
+
+  trailer-acceptance-evaluate:
+    # Decision 143 credential split: the ONLY job that executes rec-authored acceptance
+    # commands, delegated entirely to scripts.backlog_health.probe's unshare -rmn sandbox. Holds
+    # no AWS credential and no writer secret -- {contents: read} only.
+    needs: trailer-census
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --quiet --upgrade pip
+          .venv/bin/pip install -r requirements.txt -r requirements-fast.txt
+
+      - name: Download census artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: trailer-census-${{ github.run_id }}
+          path: /tmp/trailer_acceptance
+
+      - name: Allow unprivileged user namespaces (unshare -rmn -- Ubuntu 24.04 default AppArmor restriction)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Run trailer acceptance evaluator (sandboxed -- the sole executor of rec-authored commands)
+        run: .venv/bin/python -m scripts.rec_trailer_acceptance evaluate --artifact-dir /tmp/trailer_acceptance
+
+      - name: Upload verdict artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: trailer-acceptance-verdict-${{ github.run_id }}
+          path: /tmp/trailer_acceptance/acceptance_verdict.json
+          retention-days: 1
+
+  trailer-closure:
+    # Rejoins the (untrusted) verdict artifact against census's own entries and closes with
+    # require_acceptance_verdict=True (Decision 163: structurally cannot fail open). always()
+    # so this still runs -- and refuses loud-not-red -- even if the evaluate job above failed.
+    #
+    # Merge-leg gate (rec-3775 / rec-3901, unchanged by the Decision 201 relocation): a trailer
+    # whose merge diff is confined to docs/plans/ (a plan-only merge) -- or whose diff is
+    # empty/unresolvable, the true-merge-commit shape -- is REFUSED by
+    # scripts/ops_portal/trailer_closure_gate.py::merge_leg_refuses, called from
+    # close_recs_from_trailer before any acceptance verdict is even consulted: every named rec is
+    # left OPEN rather than closed, loud-not-red.
+    needs: [trailer-census, trailer-acceptance-evaluate]
+    if: always() && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --quiet --upgrade pip
+          .venv/bin/pip install -r requirements.txt -r requirements-fast.txt
+
+      - name: Configure AWS credentials (OIDC -- branch role)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/agent-platform-github-ci-branch
+          aws-region: eu-west-2
+
+      - name: Download census artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: trailer-census-${{ github.run_id }}
+          path: /tmp/trailer_acceptance
+
+      - name: Download verdict artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: trailer-acceptance-verdict-${{ github.run_id }}
+          path: /tmp/trailer_acceptance
+
+      - name: Close resolved recs from Resolves trailer (Decision 201 acceptance-gated)
+        env:
+          DUCKLAKE_WRITER_URL: ${{ secrets.DUCKLAKE_WRITER_URL }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: .venv/bin/python -m scripts.rec_trailer_acceptance close --artifact-dir /tmp/trailer_acceptance
+
   terraform-validate:
     # GitHub-hosted runner (CD.21 -- self-hosted runner retired). Delegates to
     # `python -m scripts.validate --terraform-only`, the single source of truth for

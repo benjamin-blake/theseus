@@ -583,8 +583,12 @@ class TestCloseRecsFromTrailerRefusalContract:
         assert rc == 0
 
     def test_rec_autoclose_step_delegates_to_helper(self) -> None:
-        """Workflow-shape pin: the closure step's python heredoc delegates to
-        close_recs_from_trailer -- the inline loop it replaces is gone, not merely duplicated."""
-        body = Path(".github/workflows/rec-autoclose.yml").read_text(encoding="utf-8")
-        assert "close_recs_from_trailer" in body
-        assert "for rec_id in ids:" not in body
+        """Workflow-shape pin (Decision 201 relocation): ci.yml's trailer-closure job delegates
+        to the scripts.rec_trailer_acceptance thin adapter (which itself calls
+        close_recs_from_trailer) -- the inline loop the original workflow step used is gone from
+        BOTH workflows, not merely duplicated."""
+        ci_body = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+        autoclose_body = Path(".github/workflows/rec-autoclose.yml").read_text(encoding="utf-8")
+        assert "scripts.rec_trailer_acceptance" in ci_body
+        assert "for rec_id in ids:" not in ci_body
+        assert "for rec_id in ids:" not in autoclose_body

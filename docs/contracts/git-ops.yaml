@@ -15,7 +15,7 @@
 contract:
   id: git-ops
   class: D
-  contract_version: 2
+  contract_version: 3
   status: ratified
   ratified_via: "PLAN-ambient-prose-contract-relocation"
   description: >-
@@ -30,6 +30,19 @@ contract:
     check: validate_git_ops_contract
 
 amendment_log:
+  - date: "2026-09-25"
+    semantic_break: true
+    change_class: field_add
+    summary: >-
+      PLAN-trailer-acceptance-static-gate (Decision 201): resolves_trailer's trigger renamed from
+      rec-autoclose.yml to .github/workflows/ci.yml's trailer-census / trailer-acceptance-evaluate
+      / trailer-closure jobs, and its manual-route fallback made CONDITIONAL -- sanctioned only
+      after a transport failure or a merge-leg refusal, FORBIDDEN after an acceptance-verdict
+      refusal (use that job's printed close_proposed command instead). Added a new
+      trailer_acceptance_gate key documenting the closure-time acceptance-verdict precondition
+      (vocabulary, verdict record fields, refusal semantics, structural binding, two declared
+      residuals owned by rec-3999/rec-4001). Bumped contract_version 2 -> 3 per this file's own
+      convention.
   - date: "2026-09-21"
     semantic_break: true
     change_class: field_add
@@ -297,10 +310,11 @@ push_pr_ci_merge_flow:
 
 resolves_trailer: >-
   When a plan's `bundled_recommendations` list is non-empty, include in the squash-merge commit
-  body: "Resolves: rec-NNNN[, rec-MMMM]". Triggers `rec-autoclose.yml` to close each rec via the
-  ops portal. CARRIER (rec-3901): the trailer belongs only on the IMPLEMENTATION merge -- the one
-  whose diff carries the code the plan's recs claim is resolved; a plan-only merge carries no
-  trailer. PLACEMENT (rec-2922): the trailer must sit in a block whose every line is
+  body: "Resolves: rec-NNNN[, rec-MMMM]". Triggers `.github/workflows/ci.yml`'s trailer-census /
+  trailer-acceptance-evaluate / trailer-closure jobs (Decision 201), which close each named rec
+  via the ops portal. CARRIER (rec-3901): the trailer belongs only on the IMPLEMENTATION merge --
+  the one whose diff carries the code the plan's recs claim is resolved; a plan-only merge carries
+  no trailer. PLACEMENT (rec-2922): the trailer must sit in a block whose every line is
   `Key: value`-shaped (never mid-paragraph -- a `Resolves:` line wrapped inside a prose paragraph
   does not parse), and it may precede the mandated `Co-Authored-By:` / `Claude-Session:`
   attribution footer. The space after the colon is REQUIRED -- `Resolves:rec-NNNN` does not
@@ -309,8 +323,44 @@ resolves_trailer: >-
   validate_rec_autoclose_trailer_gate.py). Independently of trailer well-formedness, a merge whose
   diff is confined to `docs/plans/` (or is empty/unresolvable) is REFUSED by the merge-leg gate
   (scripts/ops_portal/trailer_closure_gate.py::merge_leg_refuses) -- every named rec is left OPEN,
-  not closed. Fallback: `bin/venv-python -m scripts.ops_data_portal --update-rec rec-NNNN
-  --status closed --resolution "..."` (Decision 70).
+  not closed. FALLBACK IS CONDITIONAL (Decision 201): `bin/venv-python -m scripts.ops_data_portal
+  --update-rec rec-NNNN --status closed --resolution "..."` (Decision 70) is sanctioned ONLY after
+  a transport failure or a MERGE-LEG refusal above -- both leave a rec open for a reason
+  `update_rec`'s own gates re-check on the manual route too (assert_closure_obligation re-arms
+  unconditionally; assert_acceptance_verdict re-arms only when a verdict record is supplied, which
+  the manual route never does). It is FORBIDDEN after an acceptance-verdict refusal
+  (`trailer_acceptance_gate` below): that rec's oracle did not hold, and the manual command would
+  close it around the gate with no record supplied, defeating the very check that refused it. The
+  only sanctioned route for that case is the printed `close_proposed` command from the
+  trailer-closure job's log.
+
+trailer_acceptance_gate: >-
+  Decision 201: a closure-time acceptance-verdict precondition, asserted at
+  `scripts.ops_data_portal::update_rec` beside the Decision 186 closure obligation
+  (`scripts/ops_portal/closure_gate.py::assert_acceptance_verdict`). VOCABULARY: `{holds, fails,
+  unmeasurable, out_of_grammar}` (`closure_gate.py::ACCEPTANCE_VERDICTS`) -- a SEPARATE axis from
+  `docs/contracts/vp-red-before.yaml`'s `OUTCOME_CLASSES` (inverted polarity; intersection is
+  exactly `unmeasurable`), classifying whether a rec's own acceptance oracle holds at the closing
+  commit, never whether a VP step correctly failed before a fix existed. VERDICT RECORD FIELDS:
+  `{rec_id, sha, acceptance_sha256, verdict, source, arm}`, produced by
+  `scripts.rec_trailer_acceptance.evaluate` and rejoined (`scripts.rec_trailer_acceptance.rejoin`,
+  mirroring `scripts.backlog_health.escalate.rejoin_probe_verdicts`) against the census's own
+  entries on `rec_id` + `acceptance_sha256` before it reaches `update_rec`. REFUSAL SEMANTICS:
+  the predicate raises `AcceptanceVerdictRefused` iff a record IS supplied and its verdict is not
+  `holds`, or it is mis-keyed against the rec id, its current acceptance's sha256, or the closing
+  sha; refusal is LOUD, NOT RED (`.github/workflows/ci.yml`'s trailer-closure job catches it,
+  prints a distinct per-rec marker, leaves the rec OPEN, and exits 0). STRUCTURAL BINDING
+  (Decision 163): the trailer-closure job passes `require_acceptance_verdict=True` to
+  `close_recs_from_trailer`, so a trailer-named rec with NO verdict record is never passed to
+  `update_rec` at all -- the predicate's own non-universality (an absent record is not itself
+  refused) cannot be exploited on this path. TWO DECLARED RESIDUALS (Decision 181 clause 2): (i)
+  non-trailer callers of `update_rec` fail open on this gate -- owned by rec-3999, which also
+  names this clause's two live non-trailer instruction surfaces:
+  `.claude/commands/orient.md`'s LIKELY-RESOLVED soft prompt, and
+  `docs/contracts/ci-rca-lifecycle.yaml::closure_dependency.manual_route`; (ii) the
+  `require_decidable` grammar ratchet is unenforced at the write boundary
+  (`scripts/ops_portal/write_validators.py`) and in
+  `scripts/checks/ops_governance/validate_acceptance_literals.py` -- owned by rec-4001.
 
 merge_protocol_note: >-
   AGENTS.md's '## Merge protocol' heading and its two ci-rca bullets (post-merge full-tier

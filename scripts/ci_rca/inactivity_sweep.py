@@ -63,12 +63,11 @@ def close_inactive_recs(rows: list[dict[str, Any]], *, profile: str | None = Non
         # of this exemption. Threaded only when closure_stamps_applicable(ctx) -- the already-
         # parsed context this row holds -- so a blob-less row omits the stamp instead of hitting
         # update_rec's closure-stamp precondition.
-        kwargs: dict[str, str] = {}
+        closure_waiver_category: str | None = None
+        closure_waiver_reason: str | None = None
         if closure_stamps_applicable(ctx):
-            kwargs = {
-                "closure_waiver_category": "stale_no_recurrence",
-                "closure_waiver_reason": f"stale_no_recurrence: {proof}",
-            }
+            closure_waiver_category = "stale_no_recurrence"
+            closure_waiver_reason = f"stale_no_recurrence: {proof}"
         update_rec(
             rec_id,
             {
@@ -76,7 +75,8 @@ def close_inactive_recs(rows: list[dict[str, Any]], *, profile: str | None = Non
                 "resolution": f"CI-RCA inactivity sweep: resolution=stale_no_recurrence. Proof: {proof}.",
             },
             profile=profile,
-            **kwargs,
+            closure_waiver_category=closure_waiver_category,
+            closure_waiver_reason=closure_waiver_reason,
         )
         logger.info("Closed %s (stale_no_recurrence; %s)", rec_id, proof)
         closed.append(rec_id)

@@ -402,11 +402,16 @@ git rebase origin/main   # STOP on conflict
 git push -u origin HEAD   # this session's harness branch
 ```
 Then via GitHub MCP (owner/repo from `git remote get-url origin`):
-1. Build the PR body. If the plan `bundled_recommendations` list is non-empty, add the `Resolves: rec-NNNN[, rec-MMMM]` trailer in the PR body, which the squash-merge commit body inherits -- per `docs/contracts/git-ops.yaml` (triggers `rec-autoclose` to close each named rec after the squash-merge lands on main). If empty, omit it. Under a clear heading (e.g. `## VP Compliance`), append the VP compliance table to the PR body -- the same bounded table produced by the VP Compliance Gate, including the Attempts column and any NONDETERMINISTIC markers -- so the executed proof lands in the PR/merge record instead of vanishing chat (Decision 115: this PR-body table is PR-scoped ephemeral evidence, not the durable record -- the durable record is the tier_item criterion closure in the roadmap, staged by the bookkeeping walk below).
+1. Build the PR body. If the plan `bundled_recommendations` list is non-empty, add the `Resolves: rec-NNNN[, rec-MMMM]` trailer in the PR body, which the squash-merge commit body inherits -- per `docs/contracts/git-ops.yaml` (`ci.yml`'s trailer-closure job closes each named rec after merge). If empty, omit it. Under a clear heading (e.g. `## VP Compliance`), append the VP compliance table to the PR body -- the same bounded table produced by the VP Compliance Gate, including the Attempts column and any NONDETERMINISTIC markers -- so the executed proof lands in the PR/merge record instead of vanishing chat (Decision 115: this PR-body table is PR-scoped ephemeral evidence, not the durable record -- the durable record is the tier_item criterion closure in the roadmap, staged by the bookkeeping walk below).
 2. `mcp__github__create_pull_request(owner, repo, head=<this branch>, base="main", title="feat({slug}): {brief-description}", body=<body from step 1>)`
 3. `mcp__github__subscribe_pr_activity(...)`; end the turn (see "Wait-for-CI").
 4. On green wake: `mcp__github__merge_pull_request(..., merge_method="squash")` + `mcp__github__unsubscribe_pr_activity(...)`.
-5. **Post-merge closeout fallback**: after the merge, verify that the `rec-autoclose` workflow closed each bundled rec (check via `bin/venv-python -m scripts.ops_data_portal --sync` then `grep rec-NNNN logs/.recommendations-log.jsonl`). If a rec is still open after ~5 min, close it directly: `bin/venv-python -m scripts.ops_data_portal --update-rec rec-NNNN --status closed --resolution "Resolved by merge of {slug} -- autoclose fallback"`.
+5. **Post-merge closeout fallback (Decision 201, conditional).** WAIT for the
+   `trailer-closure` job (`mcp__github__actions_list` by merge sha -> `get_job_logs`, never
+   `$GITHUB_STEP_SUMMARY`) to CONCLUDE, then follow the conditional fallback in
+   `docs/contracts/git-ops.yaml::resolves_trailer`: a refusal marker naming the rec forbids the
+   fallback (use its `close_proposed` command); a non-refusal per-rec log line permits it;
+   anything else waits.
 
 ### STRATEGIC Commit Flow
 STRATEGIC plans are suspended (Decision 67). When restored, use the same MCP PR/subscribe/merge pattern, committing `docs/plans/briefings/` with a `scope({slug}): ...` message.

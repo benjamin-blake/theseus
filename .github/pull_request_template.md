@@ -27,8 +27,8 @@
 ## Resolves
 
 <!-- If this PR closes one or more recommendations, add the trailer to the SQUASH-MERGE commit body
-     (not just the PR description -- GitHub auto-populates the body, but rec-autoclose.yml parses
-     the squash-merge commit message):
+     (not just the PR description -- GitHub auto-populates the body, but ci.yml's trailer-census
+     job parses the squash-merge commit message):
 
      Resolves: rec-NNNN[, rec-MMMM]
 
