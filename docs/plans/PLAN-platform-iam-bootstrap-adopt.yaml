@@ -212,7 +212,7 @@ infrastructure_dependencies:
   - "terraform/bootstrap is NEVER auto-applied (terraform/bootstrap/CLAUDE.md, CD.35 Wave 4 / T2.23): every live step runs in the ADMIN container under agent_platform_admin, and the adoption apply runs from merged main only after a human has reviewed the presented plan and explicitly directed it (Decision 126 human-gated admin tier)."
   - "ADMIN container precondition (Decision 120): bin/setup-cloud-env.sh ran with INSTALL_TERRAFORM=1 and a non-empty provider-mirror sync, so TF_CLI_CONFIG_FILE is set, both roots initialise, and terraform/personal/terraform.personal.tfvars is materialised. DEV containers cannot init any root (Decision 119) -- HCL validity is delegated to CI's required terraform-validate check, which covers terraform/bootstrap."
   - "HARD PREREQUISITE, checked BEFORE merge (step 10): rec-4044 (state-free IAM-change alarms on both roles) is closed. Merging arms the seven import blocks for any later bootstrap apply, so the gate must hold before the merge, not only before step 15."
-  - "BASELINE, checked BEFORE merge (step 9): a terraform/bootstrap plan at the pre-merge origin/main exits 0, so any diff step 14 shows is attributable to this plan's seven addresses."
+  - "BASELINE and SPECULATIVE ADOPTION, checked BEFORE merge (step 9): a terraform/bootstrap plan at the pre-merge origin/main exits 0, and a plan-only adoption at the reviewed PR head is exactly seven zero-change imports -- so step 14 is a confirmation at merged main, not the first sight of the diff."
   - "No terraform/personal apply happens in this plan. The bootstrap import writes only bootstrap state, so no personal saved plan goes stale and the personal drift plan stays no-diff; the seven objects are dual-owned until the sibling plan's gated forget."
   - "IAM precedence is unaffected: no Lambda code or IAM content changes; the adoption must not change any permission (zero-diff gate)."
 acceptance_criteria:
@@ -262,11 +262,12 @@ verification_plan:
     phase: pre-deploy
     action: the standing IAM guards pass against the bootstrap copy and no longer name the personal policy files
     command: |-
-      bin/venv-python -m pytest tests/checks/iam_tf/test_platform_dev_data_lake_read_fence.py tests/checks/iam_tf/test_validate_agent_observability_read_coverage.py -q && bin/venv-python -c "import subprocess,sys,yaml; c=yaml.safe_load(open('config/agent/verification_registry/entries/platformadmin-metric-read-verbs-present.yaml'))['check_spec']['command']; sys.exit('STALE') if 'terraform/personal/platform_' in str(c) else sys.exit(subprocess.run(c).returncode)" && bin/venv-python -c "import subprocess,sys,yaml; c=yaml.safe_load(open('config/agent/verification_registry/entries/platformdev-state-convergence-denies-intact.yaml'))['check_spec']['command']; sys.exit('STALE') if 'terraform/personal/platform_' in str(c) else sys.exit(subprocess.run(c).returncode)" && bin/venv-python -c "import subprocess,sys,yaml; c=yaml.safe_load(open('config/agent/verification_registry/entries/personal-policies-carry-byte-preconditions.yaml'))['check_spec']['command']; sys.exit('STALE') if 'terraform/personal/platform_' in str(c) else sys.exit(subprocess.run(c).returncode)" && bin/venv-python -c "import subprocess,sys,yaml; c=yaml.safe_load(open('config/agent/verification_registry/entries/cloudtrail-read-only-no-write-verbs.yaml'))['check_spec']['command']; sys.exit('STALE') if 'terraform/personal/platform_' in str(c) else sys.exit(subprocess.run(c).returncode)" && bin/venv-python -c "import subprocess,sys,yaml; c=yaml.safe_load(open('config/agent/verification_registry/entries/platformdev-bounded-platformadmin-excluded.yaml'))['check_spec']['command']; sys.exit('STALE') if 'terraform/personal/platform_' in str(c) else sys.exit(subprocess.run(c).returncode)" && echo "FIVE SHARDS GREEN ON BOOTSTRAP"
+      bin/venv-python -m pytest tests/checks/iam_tf/test_platform_dev_data_lake_read_fence.py tests/checks/iam_tf/test_validate_agent_observability_read_coverage.py -q && bin/venv-python -c "import subprocess,sys,yaml; c=yaml.safe_load(open('config/agent/verification_registry/entries/platformadmin-metric-read-verbs-present.yaml'))['check_spec']['command']; sys.exit('STALE') if 'terraform/personal/' in str(c) else sys.exit(subprocess.run(c).returncode)" && bin/venv-python -c "import subprocess,sys,yaml; c=yaml.safe_load(open('config/agent/verification_registry/entries/platformdev-state-convergence-denies-intact.yaml'))['check_spec']['command']; sys.exit('STALE') if 'terraform/personal/' in str(c) else sys.exit(subprocess.run(c).returncode)" && bin/venv-python -c "import subprocess,sys,yaml; c=yaml.safe_load(open('config/agent/verification_registry/entries/personal-policies-carry-byte-preconditions.yaml'))['check_spec']['command']; sys.exit('STALE') if 'terraform/personal/' in str(c) else sys.exit(subprocess.run(c).returncode)" && bin/venv-python -c "import subprocess,sys,yaml; c=yaml.safe_load(open('config/agent/verification_registry/entries/cloudtrail-read-only-no-write-verbs.yaml'))['check_spec']['command']; sys.exit('STALE') if 'terraform/personal/' in str(c) else sys.exit(subprocess.run(c).returncode)" && bin/venv-python -c "import subprocess,sys,yaml; c=yaml.safe_load(open('config/agent/verification_registry/entries/platformdev-bounded-platformadmin-excluded.yaml'))['check_spec']['command']; sys.exit('STALE') if 'terraform/personal/' in str(c) else sys.exit(subprocess.run(c).returncode)" && echo "FIVE SHARDS GREEN ON BOOTSTRAP"
     expected: >-
       both test modules pass (the observability module includes the new red case where the two
       policies exist only under terraform/personal), and all five repointed shards exit 0 with no
-      remaining terraform/personal/platform_ path in their check_spec
+      remaining terraform/personal/ path anywhere in their check_spec (red before for all five,
+      including the cloudtrail shard, whose current check_spec names only the directory)
     fix_if: a guard still reads terraform/personal, or a repointed shard is red against the bootstrap copy
     hermetic: false
     graduation: waive
@@ -299,9 +300,10 @@ verification_plan:
     expected_literals: []
     graduation: waive
     graduation_waiver_reason: >-
-      The import half is a cheap tripwire duplicating step 1's graduated per-address assertion; the
-      no-old-path half is enforced standing by the sibling plan's step 2 sweep once it merges, so a
-      registry row here would duplicate that one merge later.
+      The import half is a cheap tripwire duplicating step 1's graduated per-address assertion. The
+      path-literal half is a one-time transitional sweep by design -- a standing row would
+      permanently re-flag the declared rec-4047 residual -- and the durable post-release invariant is
+      graduated by the sibling plan's step 1 (platform-iam-admin-root-only).
   - step: 6
     phase: pre-deploy
     action: fast-tier presubmit is clean, including run_differential admission of the two new shards and the five repointed shards, and the bootstrap CLAUDE.md prose budget
@@ -334,11 +336,22 @@ verification_plan:
     graduation: not-applicable
   - step: 9
     phase: pre-deploy
-    action: PRE-MERGE GATE (ADMIN) -- baseline, terraform/bootstrap is converged at the pre-merge origin/main
+    action: PRE-MERGE GATE (ADMIN) -- baseline converged at the pre-merge origin/main, and a speculative (plan-only) adoption at the reviewed PR head is exactly seven zero-change imports
     command: |-
-      git fetch origin main && git worktree add --detach "${TMPDIR:-/tmp}/bootstrap-baseline" origin/main && cp terraform/bootstrap/terraform.bootstrap.tfvars "${TMPDIR:-/tmp}/bootstrap-baseline/terraform/bootstrap/" && terraform -chdir="${TMPDIR:-/tmp}/bootstrap-baseline/terraform/bootstrap" init -input=false && terraform -chdir="${TMPDIR:-/tmp}/bootstrap-baseline/terraform/bootstrap" plan -input=false -lock=false -var-file=terraform.bootstrap.tfvars -detailed-exitcode; rc=$?; git worktree remove --force "${TMPDIR:-/tmp}/bootstrap-baseline"; test "$rc" -eq 0 && echo "BOOTSTRAP BASELINE CONVERGED at origin/main"
-    expected: exit 0 -- no pending bootstrap change exists before this plan; the undeclared-variable warnings for the three new tfvars keys are expected at the pre-merge commit
-    fix_if: STOP -- if the diff is only Owner/tags_all on existing bootstrap resources, step 8's owner_email differs from the value bootstrap was last applied with; reconcile the tfvars value and never apply a tag change here. Any other exit 2 means a merged bootstrap change is unapplied or live drifted -- resolve it through its own human-gated admin loop first, never fold it into the adoption
+      B="${TMPDIR:-/tmp}/bootstrap-baseline" && S="${TMPDIR:-/tmp}/bootstrap-speculative" && M="${TMPDIR:-/tmp}/platform-iam-migration" && mkdir -p "$M" && test -n "$PR_HEAD_SHA" && git fetch origin main "$PR_HEAD_SHA" && git worktree add --detach "$B" origin/main && cp terraform/bootstrap/terraform.bootstrap.tfvars "$B/terraform/bootstrap/" && terraform -chdir="$B/terraform/bootstrap" init -input=false && terraform -chdir="$B/terraform/bootstrap" plan -input=false -lock=false -var-file=terraform.bootstrap.tfvars -detailed-exitcode; rc=$?; git worktree remove --force "$B"; test "$rc" -eq 0 && echo "BOOTSTRAP BASELINE CONVERGED at origin/main" && git worktree add --detach "$S" "$PR_HEAD_SHA" && cp terraform/bootstrap/terraform.bootstrap.tfvars "$S/terraform/bootstrap/" && terraform -chdir="$S/terraform/bootstrap" init -input=false && terraform -chdir="$S/terraform/bootstrap" plan -input=false -lock=false -var-file=terraform.bootstrap.tfvars -out="$M/speculative.tfplan" && terraform -chdir="$S/terraform/bootstrap" show -json "$M/speculative.tfplan" > "$M/speculative.json"; rc=$?; git worktree remove --force "$S"; test "$rc" -eq 0 && bin/venv-python -c "import json,os,sys; p=json.load(open(os.path.join(os.environ.get('TMPDIR','/tmp'),'platform-iam-migration','speculative.json'))); rc=p.get('resource_changes',[]); want={'aws_iam_role.platform_dev','aws_iam_role.platform_admin','aws_iam_role_policy.platform_dev_runtime','aws_iam_role_policy.platform_admin_ops','aws_iam_role_policy.platform_admin_datalake','aws_iam_role_policy.platform_admin_bootstrap_state','aws_iam_role_policy.platform_admin_ducklake_breakglass'}; imp={r['address'] for r in rc if r['change'].get('importing')}; moving=[(r['address'],r['change']['actions']) for r in rc if r['change']['actions'] not in (['no-op'],['read'])]; sys.exit(f'STOP imports={sorted(imp)} changes={moving}') if imp!=want or moving else print('SPECULATIVE ADOPTION OK -- 7 zero-change imports at the PR head')"
+    expected: >-
+      both legs pass -- the baseline plan at the pre-merge origin/main exits 0 (undeclared-variable
+      warnings for the three new tfvars keys are expected there), and the plan-only adoption at the
+      reviewed, CI-green PR head reads exactly seven zero-change imports, so a rendering mismatch
+      (including an Owner-tag split between the two roots) is found BEFORE the import blocks go live
+      on main. Nothing is applied; -lock=false keeps both reads off the state lock; the plan files
+      stay in scratch and step 20 removes them.
+    fix_if: >-
+      Baseline exit 2 only on Owner/tags_all of existing bootstrap resources -- step 8's owner_email
+      differs from the value bootstrap was last applied with; reconcile the tfvars value, never apply
+      a tag change here. Any other baseline exit 2 -- a merged bootstrap change is unapplied or live
+      drifted; resolve it through its own human-gated admin loop first. Speculative STOP -- fix the
+      PR's bootstrap HCL to match live and re-run; never merge on a non-zero speculative diff.
     hermetic: false
     graduation: not-applicable
   - step: 10
@@ -426,8 +439,8 @@ verification_plan:
   - step: 20
     phase: post-deploy
     action: CLEANUP (ADMIN) -- remove every scratch artifact that carries the ExternalIds or account-bearing documents; also run on any STOP
-    command: rm -rf "${TMPDIR:-/tmp}/platform-iam-migration" "${TMPDIR:-/tmp}/bootstrap-baseline" && test ! -e "${TMPDIR:-/tmp}/platform-iam-migration" && echo "SCRATCH CLEARED"
-    expected: SCRATCH CLEARED -- adopt.tfplan, adopt.json (terraform show -json emits sensitive values in plaintext) and the BEFORE/AFTER snapshots (both trust documents) are gone; terraform/bootstrap/terraform.bootstrap.tfvars stays, gitignored, as the admin container's working input
+    command: rm -rf "${TMPDIR:-/tmp}/platform-iam-migration" "${TMPDIR:-/tmp}/bootstrap-baseline" "${TMPDIR:-/tmp}/bootstrap-speculative" && git worktree prune && test ! -e "${TMPDIR:-/tmp}/platform-iam-migration" && echo "SCRATCH CLEARED"
+    expected: SCRATCH CLEARED -- speculative and adopt plan files, their JSON (terraform show -json emits sensitive values in plaintext) and the BEFORE/AFTER snapshots (both trust documents) are gone; terraform/bootstrap/terraform.bootstrap.tfvars stays, gitignored, as the admin container's working input
     fix_if: a path survives -- remove it by hand before ending the ADMIN session
 test_obligations:
   - source: terraform/bootstrap/platform_roles.tf
@@ -479,31 +492,31 @@ test_obligations:
     behavior: The PlatformAdmin metric-read claim is asserted against the bootstrap copy.
     verification_step: 3
     command: |-
-      bin/venv-python -c "import subprocess,sys,yaml; c=yaml.safe_load(open('config/agent/verification_registry/entries/platformadmin-metric-read-verbs-present.yaml'))['check_spec']['command']; sys.exit('STALE') if 'terraform/personal/platform_' in str(c) else sys.exit(subprocess.run(c).returncode)"
+      bin/venv-python -c "import subprocess,sys,yaml; c=yaml.safe_load(open('config/agent/verification_registry/entries/platformadmin-metric-read-verbs-present.yaml'))['check_spec']['command']; sys.exit('STALE') if 'terraform/personal/' in str(c) else sys.exit(subprocess.run(c).returncode)"
     red_green_expectation: red before (the check_spec still names terraform/personal), green after
   - source: config/agent/verification_registry/entries/platformdev-state-convergence-denies-intact.yaml
     behavior: The two DenyState statements are asserted against the bootstrap copy.
     verification_step: 3
     command: |-
-      bin/venv-python -c "import subprocess,sys,yaml; c=yaml.safe_load(open('config/agent/verification_registry/entries/platformdev-state-convergence-denies-intact.yaml'))['check_spec']['command']; sys.exit('STALE') if 'terraform/personal/platform_' in str(c) else sys.exit(subprocess.run(c).returncode)"
+      bin/venv-python -c "import subprocess,sys,yaml; c=yaml.safe_load(open('config/agent/verification_registry/entries/platformdev-state-convergence-denies-intact.yaml'))['check_spec']['command']; sys.exit('STALE') if 'terraform/personal/' in str(c) else sys.exit(subprocess.run(c).returncode)"
     red_green_expectation: red before (the check_spec still names terraform/personal), green after
   - source: config/agent/verification_registry/entries/personal-policies-carry-byte-preconditions.yaml
     behavior: DailyOps and AdminOps each carry exactly one minified-measure precondition in their bootstrap copies.
     verification_step: 3
     command: |-
-      bin/venv-python -c "import subprocess,sys,yaml; c=yaml.safe_load(open('config/agent/verification_registry/entries/personal-policies-carry-byte-preconditions.yaml'))['check_spec']['command']; sys.exit('STALE') if 'terraform/personal/platform_' in str(c) else sys.exit(subprocess.run(c).returncode)"
+      bin/venv-python -c "import subprocess,sys,yaml; c=yaml.safe_load(open('config/agent/verification_registry/entries/personal-policies-carry-byte-preconditions.yaml'))['check_spec']['command']; sys.exit('STALE') if 'terraform/personal/' in str(c) else sys.exit(subprocess.run(c).returncode)"
     red_green_expectation: red before (the check_spec still names terraform/personal), green after
   - source: config/agent/verification_registry/entries/cloudtrail-read-only-no-write-verbs.yaml
     behavior: LookupEvents is present in the bootstrap-owned AdminOps and no CloudTrail write verb exists anywhere under terraform/.
     verification_step: 3
     command: |-
-      bin/venv-python -c "import subprocess,sys,yaml; c=yaml.safe_load(open('config/agent/verification_registry/entries/cloudtrail-read-only-no-write-verbs.yaml'))['check_spec']['command']; sys.exit('STALE') if 'terraform/personal/platform_' in str(c) else sys.exit(subprocess.run(c).returncode)"
-    red_green_expectation: red before (no quoted LookupEvents under terraform/bootstrap), green after
+      bin/venv-python -c "import subprocess,sys,yaml; c=yaml.safe_load(open('config/agent/verification_registry/entries/cloudtrail-read-only-no-write-verbs.yaml'))['check_spec']['command']; sys.exit('STALE') if 'terraform/personal/' in str(c) else sys.exit(subprocess.run(c).returncode)"
+    red_green_expectation: red before (its check_spec still greps terraform/personal/), green after
   - source: config/agent/verification_registry/entries/platformdev-bounded-platformadmin-excluded.yaml
     behavior: PlatformDev carries the boundary and PlatformAdmin does not, asserted against the bootstrap role declarations.
     verification_step: 3
     command: |-
-      bin/venv-python -c "import subprocess,sys,yaml; c=yaml.safe_load(open('config/agent/verification_registry/entries/platformdev-bounded-platformadmin-excluded.yaml'))['check_spec']['command']; sys.exit('STALE') if 'terraform/personal/platform_' in str(c) else sys.exit(subprocess.run(c).returncode)"
+      bin/venv-python -c "import subprocess,sys,yaml; c=yaml.safe_load(open('config/agent/verification_registry/entries/platformdev-bounded-platformadmin-excluded.yaml'))['check_spec']['command']; sys.exit('STALE') if 'terraform/personal/' in str(c) else sys.exit(subprocess.run(c).returncode)"
     red_green_expectation: red before (bootstrap role file absent), green after
   - source: docs/contracts/verification-registry.yaml
     behavior: Governance prose only -- records the five claim-preserving repoints and the declared fence-shard residual.
@@ -538,6 +551,7 @@ context:
   - "Secret ARNs carry AWS's random 6-char suffix; data sources by name return the exact ARN (DescribeSecret metadata only, Decision 157), so the rendered documents stay byte-identical. The `-*` suffix form would be a widening and is not used. After release, a recreated personal secret desyncs the bootstrap grant until a bootstrap plan runs -- rec-3358's scheduled bootstrap plan is the detector (recorded there)."
   - "validate_iam_policy_size requires a <= 10240 B precondition on every bootstrap policy; a precondition cannot reference self, so the three data policies are hoisted into locals first (the DailyOps/AdminOps rec-2793 pattern)."
   - "rec-3358 recorded a historical live-only GlueCatalog Sid on PlatformDataLakeProvisioning; today's green hourly personal drift plan implies it is gone, and step 14's zero-diff gate stops the adoption if it is not."
+  - "Out of scope, deliberately: PlatformDev's uncodified out-of-band AgentPlatformRuntime inline policy (terraform/CLAUDE.md 'Out-of-band IAM grants') stays unmanaged in both roots -- aws_iam_role.inline_policy is unset, so neither root claims it; it is why the snapshots list two PlatformDev inline policies, and it belongs to the rec-3358 live-grant-without-HCL class."
   - "Import blocks stay after adoption (precedent: terraform/bootstrap/github_ci_apply.tf:34-42); a from-scratch re-bootstrap then re-adopts instead of creating."
   - "terraform/personal/oidc.tf:192-193 keeps both role ARNs in CI's IAMRolesRead until after the sibling plan's forget (the forget still refresh-reads); rec-4049 prunes them."
   - "Steps 8-11 and 19 run terraform or live AWS in the ADMIN container (Decision 120 exception to Decision 119's DEV-container rule); step 9 uses a throwaway git worktree so the baseline plan is taken at the pre-merge origin/main without disturbing the branch checkout."
@@ -550,7 +564,7 @@ pre_implementation_checklist:
   - terraform/bootstrap/CLAUDE.md and docs/contracts/deploy-paths.yaml admin_out_of_band.procedure read in full
   - "Pre-merge gates and post-deploy steps run in an ADMIN container (INSTALL_TERRAFORM=1, non-empty provider-mirror sync) with agent_platform_admin credentials"
   - rec-4044 is closed (step 10) before the PR merges
-  - After rec-4044 merges, re-read config/agent/verification_registry/entries/cloudtrail-read-only-no-write-verbs.yaml before repointing it -- rec-4044 must adjudicate that shard and may have edited or retired it
+  - After rec-4044 merges, re-read config/agent/verification_registry/entries/cloudtrail-read-only-no-write-verbs.yaml before repointing it -- rec-4044 must adjudicate that shard and may have edited or retired it; if this branch was cut before rec-4044 merged, re-verify that repoint (and re-mirror any personal policy edit merged meanwhile, which TestDualCopyParity will flag) on every rebase
 execution_steps:
   - "Create terraform/bootstrap/platform_roles.tf: both roles copied argument-for-argument, PlatformDev's boundary referenced from aws_iam_policy.github_ci_apply_boundary within the block's first three lines, resource-level tags preserving Account/ManagedBy, prevent_destroy, two import blocks"
   - "Create terraform/bootstrap/platform_dev_policies.tf, platform_admin_policies.tf and platform_admin_data_policies.tf: the five policies copied with personal-root references replaced by bootstrap locals and by-name secret data sources, size preconditions on all five, prevent_destroy and self-access preconditions on AdminOps and BootstrapStateProvisioning, five import blocks"
