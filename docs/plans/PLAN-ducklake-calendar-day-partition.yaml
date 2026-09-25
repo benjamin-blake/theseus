@@ -6,7 +6,7 @@ slug: "ducklake-calendar-day-partition"
 intent: >-
   Make every DuckLake history table partition by UTC calendar day instead of day-of-month
   (rec-4068), and install the controls the plan-time RCA identified -- one shared calendar-prefix
-  validator enforced at generation and at resolution for every table the DuckLake writer creates,
+  validator enforced at generation and at resolution for every SCD2 and append-only DuckLake table,
   a single-source contract spec, a non-blind EC6 partition probe, a real-engine conformance test
   and a pinned UTC session -- so the durable ops substrate the telemetry and executor tiers build
   on cannot silently re-acquire an engine-semantics partition defect.
@@ -23,18 +23,28 @@ scope:
       accept temporal transforms (year/month/day/hour) only when, per column, they form exactly a
       calendar prefix -- year; year,month; year,month,day; year,month,day,hour -- in that order;
       reject an empty spec, an unknown transform, and any month/day/hour lacking its coarser
-      components. Imports no other ducklake_* module (Decision 80 acyclic discipline)
+      components. Also hosts (R1 relocation -- no new scripts/-root module, so no file-router.yaml
+      allowlist edit): parse_partition_by(value) turning a contract governance.partition_by
+      'history=<spec>; current=<spec>' (';' separates roles because the calendar triple contains
+      commas) into a {history, current} mapping; resolve_partition_block(block, write_mode)
+      returning (history, current-or-None) and raising on a missing history, or a missing current
+      when write_mode == scd2 (the S1 seam that keeps ducklake_scd2_schema.py flat); and
+      validate_projection_partitions(doc) running validate_partition_spec over EVERY partition a
+      field_semantics-shaped doc emits (partition_transforms, tables.*.partition, every
+      ops_tables[*].partition value). Imports no other ducklake_* module (Decision 80 acyclic
+      discipline)
   - file: src/common/ducklake_scd2_schema.py
     action: Modify
     purpose: >-
-      MODULE-SCOPE import of validate_partition_spec (so scripts.lambda_manifest --check-bundles
+      MODULE-SCOPE import from ducklake_partition_spec (so scripts.lambda_manifest --check-bundles
       catches a missing manifest include). resolve_table_spec drops the silent
-      day(created_timestamp) / bucket(8, ...) defaults: partition_transforms (smoke) and
-      partition.history are required, partition.current is required iff write_mode == scd2
-      (append_only tables such as ops_smoke_events resolve without one) -- a missing required key
-      is a loud SchemaGateError (Decision 55). Every resolved partition string passes through
-      validate_partition_spec, re-raised as SchemaGateError (runtime defense in depth before any
-      ALTER). If the edit pushes the file past 500 SLOC (474 today), decompose (Decision 128)
+      day(created_timestamp) / bucket(8, ...) defaults and delegates to resolve_partition_block:
+      partition_transforms (smoke) and partition.history are required, partition.current is
+      required iff write_mode == scd2 (append_only tables such as ops_smoke_events resolve without
+      one; ScdTableSpec.partition_current becomes str | None to type that, mypy-ratchet clean) -- a
+      missing required key or a non-calendar-prefix spec is re-raised as a loud SchemaGateError
+      (Decision 55; runtime defense in depth before any ALTER). SLOC stays near 474 because the
+      logic lives in ducklake_partition_spec.py; if it still crosses 500, decompose (Decision 128)
   - file: src/common/ducklake_tables.py
     action: Modify
     purpose: >-
@@ -43,41 +53,37 @@ scope:
   - file: src/common/ducklake_runtime.py
     action: Modify
     purpose: >-
-      open_connection issues SET TimeZone='UTC' so TIMESTAMPTZ partition values are UTC calendar
+      open_connection issues SET TimeZone='UTC' BEFORE the catalog ATTACH so TIMESTAMPTZ partition values are UTC calendar
       components by construction, not by the Lambda environment default (Decision 96 UTC intent;
       ICU is statically linked in duckdb 1.5.4, so it works with autoload disabled)
-  - file: scripts/field_semantics_partition.py
-    action: Create
-    purpose: >-
-      decomposition home for the generator's new partition logic (Decision 128; the generator's
-      mirror test is at 479 SLOC and telemetry slice 1 also grows it): parse a contract's
-      governance.partition_by 'history=<spec>; current=<spec>' (';' separates roles because the
-      calendar triple contains commas) into the ops_tables partition mapping, raising on an SCD2
-      contract with no parseable partition_by; and validate_emitted_partitions(doc) running
-      validate_partition_spec over EVERY emitted partition (ops_tables incl. sidecar-spliced
-      dormant/smoke tables, smoke tables.*.partition, partition_transforms)
   - file: scripts/schema_to_field_semantics.py
     action: Modify
     purpose: >-
-      replace the hardcoded day(created_timestamp) partition literal with the parsed
-      governance.partition_by (T2.33 single-source projection) and call
-      validate_emitted_partitions before emitting, so the existing --pre
+      replace the hardcoded day(created_timestamp) partition literal with
+      parse_partition_by(governance.partition_by) (T2.33 single-source projection) and call
+      validate_projection_partitions on the assembled doc before emitting -- straight-line calls
+      only (no new branch in this file, whose mirror test is 479 SLOC), so the existing --pre
       validate_field_semantics_drift gate ('generator raised') fails pre-merge on a
       non-calendar-prefix spec
   - file: docs/contracts/ops_recommendations.yaml
     action: Modify
     purpose: >-
       governance.partition_by -> 'history=year(created_timestamp), month(created_timestamp),
-      day(created_timestamp); current=bucket(8, id)'; the created_timestamp semantics sentence that
-      says 'Partitions the history table via day(created_timestamp)' names the triple, with a
-      FIELD-level created_timestamp amendment_log entry (change_class prose_improvement,
-      semantic_break false -- the field's meaning is unchanged; validate_contract_drift category 6);
-      plus a contract-level amendment_log entry recording the governance.partition_by change
+      day(created_timestamp); current=bucket(8, id)' (same single line); the created_timestamp
+      semantics sentence 'Partitions the history table via day(created_timestamp)' names the
+      triple, with a FIELD-level created_timestamp amendment_log entry (change_class
+      prose_improvement, semantic_break false, date + summary only -- 5 effective lines; its
+      summary also records the governance.partition_by change, so no contract-level entry).
+      SIZE (R3, Decision 166): the file is 552/556 effective lines. Relief valve 'compact': reflow
+      the edited created_timestamp semantics folded scalar onto one physical line (-2 lines; the
+      parsed string differs only by the corrected sentence) -> 555/556. No budget raise; VP step
+      12 asserts the amendment and the budget
   - file: docs/contracts/ops_decisions.yaml
     action: Modify
     purpose: >-
-      governance.partition_by correction plus a contract-level amendment_log entry (its
-      created_timestamp semantics do not name day(), so no field-level entry is needed)
+      governance.partition_by correction plus a contract-level amendment_log entry (change_class
+      governance_note_add, semantic_break false; 444/500 effective lines). Its created_timestamp
+      semantics do not name day(), so no field-level entry is needed
   - file: config/lambda/ducklake/field_semantics.static.yaml
     action: Modify
     purpose: >-
@@ -132,7 +138,29 @@ scope:
     purpose: >-
       add src/common/ducklake_partition_spec.py to excludes, beside the existing ducklake_* excludes,
       so the wildcard src/ include does not drag DuckLake runtime code into data-pipeline.zip or mark
-      data-pipeline affected
+      data-pipeline affected. DEPLOY DISPOSITION (R4): no data-pipeline deploy -- an excludes-only
+      edit for a module that never existed in the zip leaves data-pipeline.zip byte-identical, and
+      deploy-prod-lambdas.yml's paths filter does not match src/lambdas/data-pipeline/manifest.yaml
+  - file: scripts/checks/contracts/_manifest.py
+    action: Modify
+    purpose: >-
+      validate_maintenance_policy_matrix pre_globs += src/common/ducklake_partition_spec.py -- the
+      module joins its import closure via ducklake_scd2_schema.py (R2; validate_pre_glob_closure
+      reported exactly this path uncovered in a scratch-worktree simulation, 2026-09-25)
+  - file: scripts/checks/ops_governance/_manifest.py
+    action: Modify
+    purpose: >-
+      validate_reconcile_pending_gate pre_globs += src/common/ducklake_partition_spec.py -- it joins
+      the closure via scripts/schema_to_field_semantics.py (R2; same simulation)
+  - file: tests/checks/contracts/test__manifest.py
+    action: Modify
+    purpose: >-
+      _CLOSURE_INPUTS gains a validate_maintenance_policy_matrix row pinning
+      src/common/ducklake_partition_spec.py
+  - file: tests/checks/ops_governance/test__manifest.py
+    action: Modify
+    purpose: >-
+      _CLOSURE_INPUTS['validate_reconcile_pending_gate'] gains src/common/ducklake_partition_spec.py
   - file: docs/contracts/data-modeling-standard.yaml
     action: Modify
     purpose: >-
@@ -148,7 +176,7 @@ scope:
       dated trailing-bracket amendments (amendment_forms, Decision 177 dialect; no new number,
       source = operator direction confirming this plan, Decision 151 provenance), EACH carrying the
       literal 'year(created_timestamp), month(created_timestamp), day(created_timestamp)' that VP
-      step 13 asserts: on Decision 137 -- CD.9's day() was an Iceberg-v2 days-since-epoch
+      step 15 asserts: on Decision 137 -- CD.9's day() was an Iceberg-v2 days-since-epoch
       transform, on DuckLake the same token is day-of-month, the DuckLake realization is that
       literal (created_timestamp, the column Decision 81 cl.7 and the live catalog use, reconciling
       the body's last_updated_timestamp), enforced by src/common/ducklake_partition_spec.py, live
@@ -162,14 +190,14 @@ scope:
       predicate cases -- green: the calendar triple, year only, year+month, the full quad,
       bucket(8, id), identity counter_name, a bucket mixed with a calendar prefix; red: day() alone,
       month() alone, hour() alone, month+day without year, day before month, a prefix split across
-      two columns, empty spec, unknown transform
-  - file: tests/test_field_semantics_partition.py
-    action: Create
-    purpose: >-
-      mirror test for scripts/field_semantics_partition.py -- test_partition_derived_from_contract_governance
-      (a changed partition_by flows into the generated ops_tables partition),
-      test_generate_rejects_day_of_month_partition (a day(created_timestamp) spec makes generate()
-      raise), parse edge cases (missing role, missing partition_by on an SCD2 contract)
+      two columns, empty spec, unknown transform. Plus parse_partition_by / resolve_partition_block
+      edge cases (missing role, append_only without current) and (R5)
+      test_generate_rejects_day_of_month_at_every_emission_site, parametrized over all six
+      sources -- contract partition_by, smoke tables.history.partition,
+      partition_transforms.history, dormant ops_priority_queue, dormant ops_execution_plans,
+      smoke_ops_tables ops_smoke_events -- each patched to day(created_timestamp) in the generator's
+      loaded inputs and asserting generate() raises. Lives here, not in the generator's
+      479-SLOC mirror test
   - file: tests/common/test_ducklake_partition_conformance.py
     action: Create
     purpose: >-
@@ -180,7 +208,9 @@ scope:
       ducklake_merge_adjacent_files, and assert every live file holds exactly one UTC calendar day;
       test_create_control_table_repeated_call_is_idempotent (rec-3808 acceptance name) and the
       scd2 twin assert a repeated non-force create raises nothing and leaves one active
-      partition_info row
+      partition_info row; the layout assertion reads partition values through the SAME
+      smoke_actions partition-value helper EC6 uses (S4), so its metadata SQL runs on a real
+      engine pre-merge, not first at post-deploy step 21
   - file: tests/common/test_ducklake_tables.py
     action: Modify
     purpose: >-
@@ -204,13 +234,13 @@ scope:
     purpose: _APPEND_ONLY_RT_SEMANTICS fixture (line ~508) moves from day(created_timestamp) to the triple
   - file: tests/common/test_ducklake_runtime.py
     action: Modify
-    purpose: add test_open_connection_pins_utc_timezone
+    purpose: add test_open_connection_pins_utc_timezone (asserts the SET is issued and precedes the ATTACH)
   - file: tests/test_schema_to_field_semantics.py
     action: Modify
     purpose: >-
       test_partition_synthesized's 'day(created_timestamp)' expectation moves to the triple -- an
-      in-place edit only; new generator tests live in tests/test_field_semantics_partition.py
-      (this file is 479 SLOC)
+      in-place edit only; the generator-rejection tests live in
+      tests/common/test_ducklake_partition_spec.py (this file is 479 SLOC)
   - file: tests/lambdas/ducklake_writer/handler/test_envelope_dispatch.py
     action: Modify
     purpose: >-
@@ -247,8 +277,9 @@ acceptance_criteria:
   - resolve_table_spec raises SchemaGateError on a missing or non-calendar-prefix partition instead of defaulting
   - every DuckLake session opened by open_connection runs with TimeZone UTC
   - >-
-    the new predicate module ships in all five DuckLake bundles and data-pipeline is not affected by
-    it; the retired EC6 helpers leave no reference in src, scripts or tests
+    the new predicate module ships in all five DuckLake bundles and is excluded from data-pipeline
+    (whose zip is unchanged, so it needs no deploy); the retired EC6 helpers leave no reference in
+    src, scripts or tests
   - >-
     on a real DuckLake engine, rows sharing a day-of-month across month and year boundaries stay in
     distinct partitions through ducklake_merge_adjacent_files for every declared table, and a
@@ -290,13 +321,15 @@ verification_plan:
   - step: 3
     phase: pre-deploy
     action: prove the generator derives partitions from the contract and refuses a day-of-month spec
-    command: bin/venv-python -m pytest tests/test_field_semantics_partition.py -q
-    expected: >-
-      all pass, including test_partition_derived_from_contract_governance and
-      test_generate_rejects_day_of_month_partition
+    command: >-
+      bin/venv-python -m pytest
+      tests/common/test_ducklake_partition_spec.py::test_generate_rejects_day_of_month_at_every_emission_site
+      tests/common/test_ducklake_partition_spec.py::test_partition_derived_from_contract_governance
+      -q
+    expected: all six parametrized emission sites raise, and a changed contract partition_by flows into the projection
     fix_if: >-
-      the derivation test fails -- the generator still carries its own literal; the rejection
-      test fails -- validate_emitted_partitions is not run over every emitted partition
+      a site passes -- validate_projection_partitions misses that doc path; the derivation test
+      fails -- the generator still carries its own literal
     hermetic: false
     graduation: graduate
     graduation_check_id: field-semantics-generator-partition-from-contract
@@ -367,7 +400,10 @@ verification_plan:
       lambda_ec_gates.py and four test files still carry the helper/constant, and
       ducklake_scd2_schema.py / schema_to_field_semantics.py carry the quoted default literal.
       Tests are excluded from the second grep because refusal tests legitimately quote the bad spec
-    fix_if: a hit names the surface still carrying a retired name -- delete it rather than aliasing it
+    fix_if: >-
+      a hit names the surface still carrying a retired name -- delete it rather than aliasing it;
+      tests must not name the retired identifiers even in a negative assertion (assert on the new
+      field set instead), and src/scripts must not quote the bad spec in docstrings or messages
     hermetic: true
     graduation: graduate
     graduation_check_id: ducklake-ec6-tautology-helpers-retired
@@ -402,6 +438,44 @@ verification_plan:
     expected_literals: []
   - step: 11
     phase: pre-deploy
+    action: prove both glob-gated --pre checks whose import closure gains the new module now match it (pre-glob closure, R2)
+    command: &step11_preglob >-
+      bin/venv-python -m pytest tests/checks/ops_governance/test__manifest.py
+      tests/checks/contracts/test__manifest.py -q -k ducklake_partition_spec
+    expected: >-
+      the parametrized closure-pin cases for src/common/ducklake_partition_spec.py pass under both
+      validate_reconcile_pending_gate and validate_maintenance_policy_matrix. Red before: no case
+      selects, pytest exits 5. The validate_pre_glob_closure auditor itself runs in step 18
+    fix_if: >-
+      a pin fails -- the Entry's pre_globs lack the path; never add a _PRUNED_EDGES row to dodge it
+      (that is marker-gated and for hub artefacts only)
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: ducklake-partition-spec-preglob-closure
+  - step: 12
+    phase: pre-deploy
+    action: prove the ops_recommendations created_timestamp amendment landed within the contract's size budget (R3)
+    command: &step12_opsrecs >-
+      bin/venv-python -c "import yaml; from scripts.checks.structural._classify import effective_lines;
+      t=open('docs/contracts/ops_recommendations.yaml', encoding='utf-8').read(); n=effective_lines(t);
+      assert n <= 556, n; f=yaml.safe_load(t)['fields']['created_timestamp'];
+      assert 'via day(created_timestamp)' not in f['semantics'] and 'year(created_timestamp), month(created_timestamp), day(created_timestamp)' in f['semantics'], f['semantics'];
+      log=f.get('amendment_log') or [];
+      assert any(e['change_class']=='prose_improvement' and not e['semantic_break'] for e in log), log;
+      print('OPS_RECS_PARTITION_AMENDED', n)"
+    expected: >-
+      prints the marker with an effective-line count of at most 556 (planned 555: 552 + 5-line
+      field entry - 2 lines from the reflowed semantics). Red before: the semantics still ends
+      'via day(created_timestamp).' and the field carries no amendment_log
+    fix_if: >-
+      over 556 -- compact further (reflow another edited folded scalar) or stop and ask for a
+      Decision-cited raise; never trim content to fit
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: ops-recommendations-partition-amendment-in-budget
+    expected_literals: []
+  - step: 13
+    phase: pre-deploy
     action: prove the declared specs behave as calendar days on the pinned real engine
     command: bin/venv-python -m pytest tests/common/test_ducklake_partition_conformance.py -m integration -q -rs
     expected: >-
@@ -416,7 +490,7 @@ verification_plan:
     graduation_waiver_reason: >-
       Integration-marked: CI deselects integration tests and blocks sockets until rec-4071
       provisions the pinned extension, so a registry row today would be a permanently skipped guard.
-  - step: 12
+  - step: 14
     phase: pre-deploy
     action: confirm rec-3808's own acceptance oracle holds
     command: grep -rl 'def test_create_control_table_repeated_call_is_idempotent' tests/ --include='*.py' | grep -q .
@@ -428,7 +502,7 @@ verification_plan:
       This is rec-3808's own stored acceptance command, which the Decision 201 closure-time gate
       already evaluates on the Resolves trailer; graduating it would duplicate that evaluation.
     expected_literals: []
-  - step: 13
+  - step: 15
     phase: pre-deploy
     action: prove the contracts, the modeling standard and Decisions 137/81 state the calendar-day rule
     command: &step13_docs_check >-
@@ -449,7 +523,7 @@ verification_plan:
     graduation: graduate
     graduation_check_id: ducklake-partition-docs-calendar-day
     expected_literals: []
-  - step: 14
+  - step: 16
     phase: pre-deploy
     action: prove the telemetry contracts and the roadmap are untouched by this branch (T2.36:c1 stays with telemetry slice 1 / rec-4065)
     command: >-
@@ -462,13 +536,13 @@ verification_plan:
     graduation_waiver_reason: >-
       Asserts this branch's transient diff against its merge-base, which is meaningless as a
       standing regression guard once the branch merges.
-  - step: 15
+  - step: 17
     phase: pre-deploy
     action: run every touched module's mirror-home suite
     command: >-
       bin/venv-python -m pytest tests/common tests/test_ducklake_scd2_schema.py
       tests/test_ducklake_control_tables.py tests/test_schema_to_field_semantics.py
-      tests/test_field_semantics_partition.py tests/lambdas tests/ducklake_neon_smoke_test
+      tests/lambdas tests/ducklake_neon_smoke_test
       tests/checks/ops_governance tests/checks/contracts tests/lambda_manifest
       tests/test_ducklake_facade.py -q
     expected: >-
@@ -484,7 +558,7 @@ verification_plan:
     graduation_waiver_reason: >-
       Duplicates scripts.validate's affected-set pytest selection, which already runs these suites
       in both tiers.
-  - step: 16
+  - step: 18
     phase: pre-deploy
     action: run the authoritative fast presubmit tier
     command: bin/venv-python -m scripts.validate --pre
@@ -492,7 +566,7 @@ verification_plan:
     fix_if: read the named check's own failure text; never weaken a check to obtain green (Decision 181)
     hermetic: false
     graduation: not-applicable
-  - step: 17
+  - step: 19
     phase: pre-deploy
     action: run the full presubmit tier before handoff, as handoff_policy declares
     command: bin/venv-python -m scripts.validate
@@ -500,7 +574,7 @@ verification_plan:
     fix_if: on timeout the disposition is blocked -- resume later and rerun the full tier from the start, never commit on a partial run
     hermetic: false
     graduation: not-applicable
-  - step: 18
+  - step: 20
     phase: post-deploy
     action: confirm the governed DuckLake code-deploy channel built, deployed and smoked all five Lambdas on the merge commit (Decision 79)
     command: >-
@@ -515,7 +589,7 @@ verification_plan:
       ImportError means a manifest include is missing (step 9/10); a partition error means a
       deployed resolver refused a spec -- RCA it
     hermetic: false
-  - step: 19
+  - step: 21
     phase: post-deploy
     action: prove the deployed EC6 probe measures one partition tuple per calendar day in the real Lambda runtime
     command: >-
@@ -527,12 +601,12 @@ verification_plan:
       the probed-day / probed-bucket file counts below their totals. The writer URL resolves under
       agent_platform (measured 2026-09-25)
     fix_if: >-
-      tuples < days means the deployed package still carries the day() spec -- re-check step 18's
+      tuples < days means the deployed package still carries the day() spec -- re-check step 20's
       deploy-serving job rather than deploying locally; a metadata-schema error means the
       alias-qualified partition-value read needs the META_SCHEMA-qualified form ducklake_maintenance
       uses
     hermetic: false
-  - step: 20
+  - step: 22
     phase: post-deploy
     action: confirm both bundled recommendations closed on merge
     command: >-
@@ -559,7 +633,7 @@ test_obligations:
     red_green_expectation: red before (the resolver silently defaults to day(created_timestamp)), green after
   - source: src/common/ducklake_tables.py
     behavior: comment-only correction of two stale day(created_timestamp) mentions
-    verification_step: 15
+    verification_step: 17
     command: bin/venv-python -m pytest tests/common tests/test_ducklake_scd2_schema.py
     waiver_reason: >-
       Comment-only edit with no behavior change; the create path it documents is guarded by step
@@ -569,25 +643,20 @@ test_obligations:
     verification_step: 6
     test_selector: tests/common/test_ducklake_runtime.py::test_open_connection_pins_utc_timezone
     red_green_expectation: red before (no TimeZone SET is issued), green after
-  - source: scripts/field_semantics_partition.py
-    behavior: partition_by parses into the projection mapping and every emitted partition is validated
-    verification_step: 3
-    test_selector: tests/test_field_semantics_partition.py
-    red_green_expectation: red before (module and test file absent), green after
   - source: scripts/schema_to_field_semantics.py
     behavior: the generator emits the contract's partition_by and raises on a day-of-month spec
     verification_step: 3
-    test_selector: tests/test_field_semantics_partition.py
+    test_selector: tests/common/test_ducklake_partition_spec.py::test_generate_rejects_day_of_month_at_every_emission_site
     red_green_expectation: red before (the generator emits its own day(created_timestamp) literal and validates nothing), green after
   - source: docs/contracts/ops_recommendations.yaml
     behavior: its governance.partition_by is the single source of the generated partition
     verification_step: 3
-    test_selector: tests/test_field_semantics_partition.py
+    test_selector: tests/common/test_ducklake_partition_spec.py::test_partition_derived_from_contract_governance
     red_green_expectation: red before (the generator ignores partition_by), green after
   - source: docs/contracts/ops_decisions.yaml
     behavior: its governance.partition_by is the single source of the generated partition
     verification_step: 3
-    test_selector: tests/test_field_semantics_partition.py
+    test_selector: tests/common/test_ducklake_partition_spec.py::test_partition_derived_from_contract_governance
     red_green_expectation: red before (the generator ignores partition_by), green after
   - source: config/lambda/ducklake/field_semantics.static.yaml
     behavior: the smoke, dormant and smoke-ops history partitions resolve to the calendar triple
@@ -644,11 +713,21 @@ test_obligations:
     verification_step: 9
     command: *step9_bundles
     red_green_expectation: red before (the wildcard src/ include marks data-pipeline affected), green after
+  - source: scripts/checks/contracts/_manifest.py
+    behavior: validate_maintenance_policy_matrix's pre_globs cover its new closure member
+    verification_step: 11
+    command: *step11_preglob
+    red_green_expectation: red before (no closure pin for the module selects; pytest exits 5), green after
+  - source: scripts/checks/ops_governance/_manifest.py
+    behavior: validate_reconcile_pending_gate's pre_globs cover its new closure member
+    verification_step: 11
+    command: *step11_preglob
+    red_green_expectation: red before (no closure pin for the module selects; pytest exits 5), green after
   - source: docs/contracts/data-modeling-standard.yaml
     behavior: >-
       rule partition-every-table states the UTC calendar-day grain, the DuckLake calendar-prefix
       spelling and the day-of-month false-friend lesson
-    verification_step: 13
+    verification_step: 15
     command: *step13_docs_check
     red_green_expectation: red before (the rule names no grain, spelling or false-friend), green after
 constraints:
@@ -669,11 +748,11 @@ constraints:
 context:
   - "Decision-scout verdict: FLAGS_FOUND. Decisions triaged: 154 of 154. Roadmap items intersected: 16; CONFLICT: 1; RELATED: 15."
   - "CITE: Decision 137, 177, 118, 79, 125, 126, 143, 128, 201; RELATED 78, 96, 99, 88, 191, 82, 55, 151, 86, 150, 141"
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PENDING"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PENDING (r1 REVISE, r2 REVISE -- all required findings applied)"
   - >-
     Scout dispositions: WARN Decision 81 -> cl.7 annotated with 137; SPIRIT 151 -> annotations cite
     operator direction (this plan); NOTE 84 I-3 -> no query_ops in VP; NOTE 199/96 + CONFLICT
-    T2.36:c1 -> telemetry slice 1 / rec-4065 (operator answer; VP step 14).
+    T2.36:c1 -> telemetry slice 1 / rec-4065 (operator answer; VP step 16).
   - >-
     Evidence 2026-09-25: live history tables all single-key day(created_timestamp); 43/111
     (ops_recommendations) and 28/80 (ops_decisions) live files span >1 month. Local duckdb 1.5.4:
@@ -692,7 +771,8 @@ context:
   - >-
     Sequencing: telemetry slice 1 (PLAN-telemetry-kernel-identity-append, on main c89b1a19) also
     edits the generator, its test, the data-pipeline manifest and DECISIONS.md -- whichever lands
-    second merges the other's hunks; the new generator tests live in their own module for that reason.
+    second merges the other's hunks; the generator gains only straight-line calls and its new tests
+    live in tests/common/test_ducklake_partition_spec.py for that reason.
   - >-
     Gotchas: default removal fails 22 fixture-only tests (scratch worktree) in the three in-scope
     fixture homes; EC6 recreates ducklake_smoke_*; rec-4068 test stays hermetic; rec-3808 greps its
@@ -716,13 +796,16 @@ execution_steps:
     tests/common/test_ducklake_partition_spec.py; add the module to the five DuckLake manifests'
     includes and to data-pipeline's excludes. Post: steps 1, 9, 10 green.
   - >-
-    Edit docs/contracts/ops_recommendations.yaml and ops_decisions.yaml governance.partition_by
-    (';'-separated roles) + the amendment_log entries; edit field_semantics.static.yaml history
-    partitions to the triple.
+    Edit docs/contracts/ops_recommendations.yaml (partition_by, one-line reflowed created_timestamp
+    semantics, 5-line field amendment) and ops_decisions.yaml (partition_by + contract-level entry);
+    edit field_semantics.static.yaml history partitions to the triple. Post: step 12 green (<= 556).
   - >-
-    Create scripts/field_semantics_partition.py + tests/test_field_semantics_partition.py and wire
-    them into scripts/schema_to_field_semantics.py; move test_partition_synthesized's expectation;
-    regenerate config/lambda/ducklake/field_semantics.yaml. Post: steps 3, 4, 5 green.
+    Add parse_partition_by / resolve_partition_block / validate_projection_partitions to
+    src/common/ducklake_partition_spec.py (+ their tests incl. the six-site rejection test) and
+    wire them into scripts/schema_to_field_semantics.py as straight-line calls; move
+    test_partition_synthesized's expectation; regenerate config/lambda/ducklake/field_semantics.yaml;
+    add the module to validate_maintenance_policy_matrix / validate_reconcile_pending_gate
+    pre_globs and both _CLOSURE_INPUTS pins. Post: steps 3, 4, 5, 11 green.
   - >-
     Edit src/common/ducklake_scd2_schema.py (module-scope import, no defaults, current iff scd2,
     validate) and the two comments in src/common/ducklake_tables.py; repair the three fixture homes;
@@ -734,29 +817,29 @@ execution_steps:
     test_ducklake_facade.py and test_lambda_ec_gates.py. Post: steps 7 and 8 green.
   - >-
     Create tests/common/test_ducklake_partition_conformance.py (integration) incl.
-    test_create_control_table_repeated_call_is_idempotent. Post: steps 11 and 12 green, zero skips.
+    test_create_control_table_repeated_call_is_idempotent. Post: steps 13 and 14 green, zero skips.
   - >-
     Edit docs/contracts/data-modeling-standard.yaml (rule + walk step 6 + amendment_log) and add
     the dated annotations to Decisions 137 and 81; regenerate docs/decisions-index.json with the
-    sanctioned companion tooling. Post: step 13 green.
+    sanctioned companion tooling. Post: step 15 green.
   - >-
-    Run pre-deploy steps 14-16; create the graduated registry shards for steps 1-4, 6-9 and 13; set
-    implementation_declared: true in this plan; then run step 17 (full tier) so its evidence covers
+    Run pre-deploy steps 16-18; create the graduated registry shards for steps 1-4, 6-9, 11, 12
+    and 15; set implementation_declared: true in this plan; then run step 19 (full tier) so its evidence covers
     validate_vp_replay's implement leg on the final tree. Loop until pass; never weaken an assertion;
     on an unrecoverable failure stop and RCA (Decision 55).
   - >-
     Closure evidence, recorded as four SEPARATE facts (implement skill Commit Flows): (1) GitHub
     readiness -- bin/venv-python -m scripts.session.github_readiness, each state as reported,
-    unknown never PASS; (2) parent validator evidence -- step 17's completed full-tier exit 0,
+    unknown never PASS; (2) parent validator evidence -- step 19's completed full-tier exit 0,
     Validation Summary (scope: all) PASS and the matching logs/debug/validation-result.json;
     (3) structured postflight evidence -- bin/venv-python -m scripts.session.postflight --evidence
     with the scripts.session.postflight_evidence.CATEGORIES keys; (4) the real outcome -- commit,
     push, PR (RCA narrative in the body), CI green on the head (event-driven wake, never polled),
-    squash-merge with 'Resolves: rec-4068, rec-3808', then post-deploy steps 18-20.
+    squash-merge with 'Resolves: rec-4068, rec-3808', then post-deploy steps 20-22.
   - >-
     Report, naming separately: what was implemented; the red-before outputs; the real-DuckLake
-    integration output (step 11, zero skips); the full-tier output; each of the four closure facts;
-    the live EC6 result (step 19); and follow-ons rec-4070 (live ALTER + rewrite), rec-4071, rec-4072,
+    integration output (step 13, zero skips); the full-tier output; each of the four closure facts;
+    the live EC6 result (step 21); and follow-ons rec-4070 (live ALTER + rewrite), rec-4071, rec-4072,
     rec-4073.
 rollback: >-
   Revert the squash commit; deploy-ducklake-lambdas.yml redeploys the prior packages on the revert
