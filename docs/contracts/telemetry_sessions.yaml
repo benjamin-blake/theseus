@@ -23,7 +23,8 @@ contract:
     95): every telemetry row traces back to a session via session_id; a spawned sub-agent gets its
     OWN session linked to the spawner via parent_session_id. Session state, duration and friction
     are DERIVED AT READ from a session's own event rows (Decision 199) -- never stored as a mutable
-    column. Partitioned by day(session_started_at) (Decision 96 cl.1, re-grounded).
+    column. Partitioned by the calendar-day triple year(session_started_at), month(session_started_at),
+    day(session_started_at) (Decision 96 cl.1, re-grounded; rec-4065: DuckLake's day() alone is day-of-month).
   projects_to:
     note: >-
       No generated artifact yet. Unlike the ops Class A contracts (which project_to
@@ -195,7 +196,7 @@ fields:
       from telemetry_observations rows with observation_type=process_event sharing this session_id
       -- replaces the contract_version 1 stored tally process_event_count.
     semantics: A read-time aggregate; no physical column (data-modeling-standard.yaml derived-state rule).
-    populated_by: a named reader verb (rec-4024), bounded to this session's day(session_started_at) partition.
+    populated_by: a named reader verb (rec-4024), bounded to this session's calendar-day partition.
     dq_intent: {not_null: {enforced: false}}
     derivation: {timing: read, derived_by: reader_verb:session_process_event_rollup, formula: "count of telemetry_observations rows WHERE session_id = this.session_id AND observation_type = 'process_event'", inputs: [telemetry_observations.session_id, telemetry_observations.observation_type], realized: false}
   rework_total:
@@ -208,7 +209,7 @@ fields:
       friction-classification labels table, rec-4032) -- replaces the stored `tier` column
       (contract_version 1), which is retired.
     semantics: A key self-improvement-loop friction signal; no physical column.
-    populated_by: a named reader verb (rec-4024), bounded to this session's day(session_started_at) partition.
+    populated_by: a named reader verb (rec-4024), bounded to this session's calendar-day partition.
     dq_intent: {not_null: {enforced: false}}
     derivation: {timing: read, derived_by: reader_verb:session_friction_rollup, formula: "count of telemetry_observations process_event rows whose name matches a rework signature (rec-4032 labels table)", inputs: [telemetry_observations.name, telemetry_observations.observation_type], realized: false}
   exception_total:
@@ -219,7 +220,7 @@ fields:
       Count of exception-tier process events in the session. DERIVED at read, same mechanism as
       rework_total -- replaces the stored `tier` column.
     semantics: A key self-improvement-loop friction signal; no physical column.
-    populated_by: a named reader verb (rec-4024), bounded to this session's day(session_started_at) partition.
+    populated_by: a named reader verb (rec-4024), bounded to this session's calendar-day partition.
     dq_intent: {not_null: {enforced: false}}
     derivation: {timing: read, derived_by: reader_verb:session_friction_rollup, formula: "count of telemetry_observations process_event rows whose name matches an exception signature (rec-4032 labels table)", inputs: [telemetry_observations.name, telemetry_observations.observation_type], realized: false}
   duration_seconds:
@@ -348,7 +349,7 @@ fields:
       telemetry_observations step-kind close rows sharing this session_id -- replaces the
       contract_version 1 stored tally steps_completed.
     semantics: steps_completed_total/steps_total is the session completion ratio; no physical column.
-    populated_by: a named reader verb (rec-4024), bounded to this session's day(session_started_at) partition.
+    populated_by: a named reader verb (rec-4024), bounded to this session's calendar-day partition.
     dq_intent: {not_null: {enforced: false}}
     derivation: {timing: read, derived_by: reader_verb:session_process_event_rollup, formula: "count of telemetry_observations rows WHERE session_id = this.session_id AND observation_type = 'step' AND event_kind = 'close'", inputs: [telemetry_observations.session_id, telemetry_observations.observation_type, telemetry_observations.event_kind], realized: false}
   scope_drift_files:
@@ -415,7 +416,7 @@ fields:
       - {date: "2026-09-24", semantic_break: false, change_class: prose_improvement, summary: "PLAN-telemetry-event-journal-contracts (Decision 199): re-grounded to the annotate event_kind (a post-close fact) and added dq_intent.required_when; field meaning unchanged."}
 governance:
   table_class: event
-  partition_by: "day(session_started_at)"
+  partition_by: "year(session_started_at), month(session_started_at), day(session_started_at)"
   write_path: >-
     NOT PROVISIONED: no telemetry writer exists today. TARGET (Phase 4, post-T2.26): the DuckLake
     telemetry writer boundary (rec-4024's append_events verb). Append-only event journal; no SCD2
@@ -425,7 +426,7 @@ governance_notes: >-
   Decision 97 clauses 1-4): telemetry_sessions is the trace ROOT, now shaped as an append-only
   journal of lifecycle events rather than one row mutated in place. SESSION STATE (running vs a
   terminal outcome) and DURATION are DERIVED AT READ by a named reader verb reading this session's
-  own rows, bounded to its single day(session_started_at) partition (answers Decision 81 clause 8 --
+  own rows, bounded to its single calendar-day partition (answers Decision 81 clause 8 --
   never an unprunable full scan). Identity (session_id, parent_session_id) is derived at the write
   boundary per telemetry-event-envelope.yaml's normative hash spec, not minted-once-and-propagated.
   ROLL-UP RECONCILIATION: process_event_total / rework_total / exception_total / steps_completed_total
@@ -441,6 +442,18 @@ governance_notes: >-
   live legacy UUID4 session_id minter's migration to this contract's derivation model), rec-4032
   (the friction-classification labels table rework_total/exception_total read from).
 amendment_log:
+  - date: "2026-09-25"
+    semantic_break: false
+    change_class: prose_improvement
+    summary: >-
+      PLAN-telemetry-kernel-identity-append (rec-4065): governance.partition_by respelled from the
+      bare day(session_started_at) to the calendar-day triple year(session_started_at),
+      month(session_started_at), day(session_started_at) -- DuckLake evaluates a bare day() as
+      DAY-OF-MONTH, not calendar day, so the triple is required to keep a session's rows in one
+      partition. contract.description and governance_notes reworded to match; the four
+      populated_by read-verb bounds reworded from "day(session_started_at) partition" to
+      "calendar-day partition". Decision 199 always meant a calendar day; no table exists yet.
+    migration_story: No live telemetry writer exists (TARGET-STATE only); no runtime migration is required.
   - date: "2026-09-24"
     semantic_break: false
     change_class: prose_improvement

@@ -90,13 +90,17 @@ fields:
       The ROOT session's start time: source-derived from the FIRST timestamped record in the root
       transcript, UTC, truncated to ms -- never a warehouse lookup, never re-derived downstream.
       Every row of a root session AND all its sub-agent sessions carries this SAME value, so a
-      whole trace tree lands in one day() partition regardless of how deep the sub-agent nesting
-      goes or how much wall-clock time a long-running root session spans.
+      whole trace tree lands in one calendar-day partition regardless of how deep the sub-agent
+      nesting goes or how much wall-clock time a long-running root session spans.
     semantics: >-
-      The partition basis for all four telemetry tables (governance.partition_by
-      "day(session_started_at)"), and the 48-bit time prefix of every entity/FK ULID this contract's
-      identity spec derives (see below) -- so a session's whole trace tree, and every row's FK back
-      to it, cluster in the same partition and sort together. A producer that cannot read the root
+      The partition basis for all four telemetry tables (governance.partition_by "year(session_started_at),
+      month(session_started_at), day(session_started_at)" -- rec-4065: DuckLake's day() alone is
+      DAY-OF-MONTH, not calendar day, so the triple is required), and the 48-bit time prefix of
+      every entity/FK ULID this contract's identity spec derives (see below) -- so a session's
+      whole trace tree, and every row's FK back to it, cluster in the same partition and sort
+      together. DuckLake evaluates the partition functions in the session's own TimeZone setting,
+      so the write boundary (append_events, rec-4024) requires an explicit UTC connection TimeZone
+      before it writes -- never a caller-set or default zone. A producer that cannot read the root
       transcript DEFERS emission rather than guessing this value (e.g. from a locally-observed
       timestamp); a producer with no transcript at all (LiteLLM, CI annotate) receives it via
       producer metadata alongside session_ref, or decodes it from a held session_id's ULID prefix.
@@ -104,6 +108,17 @@ fields:
     dq_intent:
       not_null:
         enforced: false
+    amendment_log:
+      - date: "2026-09-25"
+        semantic_break: false
+        change_class: prose_improvement
+        summary: >-
+          PLAN-telemetry-kernel-identity-append (rec-4065): description/semantics reworded from
+          "day(session_started_at) partition" to "calendar-day partition", quoting
+          governance.partition_by as the calendar-day triple and noting DuckLake's day() alone is
+          day-of-month; added that DuckLake evaluates partition functions in the session TimeZone,
+          so the write boundary requires an explicit UTC connection. Decision 199 always meant a
+          calendar day; no table exists yet.
   source_ordinal:
     type: int
     iceberg_type: bigint
@@ -237,7 +252,28 @@ governance_notes: >-
   event_id above, with the writer's own anti-join best-effort only.
   This spec ANSWERS Decision 81 clause 8's current-write-through-projection concern for telemetry,
   it does not amend Decision 81: state/friction/cost are derived at read (data-modeling-standard.yaml's
-  derived-state rule), but every derivation is bounded to a session's single day(session_started_at)
+  derived-state rule), but every derivation is bounded to a session's single calendar-day
   partition, so it is never the unprunable full scan clause 8 exists to avoid.
-amendment_log: []
+  CONFORMANCE VECTORS: tests/telemetry/fixtures/identity_vectors.yaml is the committed golden-vector
+  file for this identity spec. Its POSITIVE vectors are the normative inputs -> exact-ids pins of
+  the identity spec above; its NEGATIVE vectors pin the slice-1 kernel's own input policy (ref
+  length/control-character rules, the closed domain-tag registry), which is implementation policy
+  of src/telemetry/identity.py, not part of the ratified spec itself.
+amendment_log:
+  - date: "2026-09-25"
+    semantic_break: false
+    change_class: governance_note_add
+    summary: >-
+      PLAN-telemetry-kernel-identity-append: named the committed golden-vector file
+      (tests/telemetry/fixtures/identity_vectors.yaml) as this spec's CONFORMANCE VECTORS, scoping
+      "normative" to the positive vectors and labelling the negative vectors as kernel input policy.
+      No field, contract.description or contract_version change.
+  - date: "2026-09-25"
+    semantic_break: false
+    change_class: prose_improvement
+    summary: >-
+      PLAN-telemetry-kernel-identity-append (rec-4065): the governance_notes derivation-bound
+      sentence reworded from "day(session_started_at) partition" to "calendar-day partition";
+      accompanies the field-level amendment_log entry on session_started_at (CD.25 category-6
+      gate). Decision 199 always meant a calendar day; no table exists yet.
 previous_versions: []

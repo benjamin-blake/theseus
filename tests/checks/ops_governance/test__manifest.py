@@ -75,6 +75,8 @@ _CLOSURE_INPUTS: dict[str, tuple[str, ...]] = {
         "config/lambda/ducklake/field_semantics.static.yaml",
         "docs/contracts/ops_recommendations.yaml",
         "scripts/schema_to_field_semantics.py",
+        "scripts/field_semantics_event_projection.py",
+        "src/telemetry/identity.py",
         "scripts/contracts.py",
         "scripts/contracts_schema.py",
         "src/common/ducklake_partition_spec.py",

@@ -49,26 +49,22 @@ main = _mod.main
 # Iceberg -> sql_type mapping
 # ---------------------------------------------------------------------------
 class TestIcebergToSqlMapping:
-    def test_string_maps_to_varchar(self) -> None:
-        assert _map_iceberg_type("string", "f") == "VARCHAR"
-
-    def test_boolean_maps(self) -> None:
-        assert _map_iceberg_type("boolean", "f") == "BOOLEAN"
-
-    def test_long_maps_to_bigint(self) -> None:
-        assert _map_iceberg_type("long", "f") == "BIGINT"
-
-    def test_int_maps_to_integer(self) -> None:
-        assert _map_iceberg_type("int", "f") == "INTEGER"
-
-    def test_timestamptz_maps(self) -> None:
-        assert _map_iceberg_type("timestamptz", "f") == "TIMESTAMP WITH TIME ZONE"
-
-    def test_array_string_maps(self) -> None:
-        assert _map_iceberg_type("array<string>", "f") == "VARCHAR[]"
-
-    def test_array_long_maps(self) -> None:
-        assert _map_iceberg_type("array<long>", "f") == "BIGINT[]"
+    @pytest.mark.parametrize(
+        ("iceberg_type", "sql_type"),
+        [
+            ("string", "VARCHAR"),
+            ("boolean", "BOOLEAN"),
+            ("long", "BIGINT"),
+            ("int", "INTEGER"),
+            ("bigint", "BIGINT"),
+            ("double", "DOUBLE"),
+            ("timestamptz", "TIMESTAMP WITH TIME ZONE"),
+            ("array<string>", "VARCHAR[]"),
+            ("array<long>", "BIGINT[]"),
+        ],
+    )
+    def test_mapped_types(self, iceberg_type: str, sql_type: str) -> None:
+        assert _map_iceberg_type(iceberg_type, "f") == sql_type
 
     def test_unmapped_raises(self) -> None:
         with pytest.raises(ValueError, match="no sql_type mapping"):
@@ -628,3 +624,31 @@ class TestGenerateMissingMergeKey:
         with patch("scripts.contracts.load_contract", return_value=mock_doc):
             with pytest.raises(ValueError, match="governance.merge_key is missing"):
                 generate()
+
+
+# ---------------------------------------------------------------------------
+# table_class: event dispatch (Decision 199, telemetry kernel). Module-level (not inside a
+# Test* class): the graduated VP step 8 node_id cites this exact bare form.
+# ---------------------------------------------------------------------------
+def test_event_class_dispatches_to_event_projection(monkeypatch: pytest.MonkeyPatch) -> None:
+    # tests/fixtures/event_contracts/ is the shared minimal event fixture (also used by
+    # tests/test_field_semantics_event_projection.py's own mapped-file tests).
+    import scripts.field_semantics_event_projection as proj_mod
+    from scripts.contracts import load_contract, resolve_refs
+    from src.telemetry.identity import KEY_PLANS, KeyPlan
+
+    fixtures_dir = _ROOT / "tests" / "fixtures" / "event_contracts"
+    doc = load_contract(fixtures_dir / "fixture_events.yaml")
+    resolved = resolve_refs(doc, fixtures_dir)
+    assert doc.governance.merge_key is None
+
+    fixture_plan = {"entity_id": KeyPlan("fixture_events:entity_id", "entity_ref", True)}
+    monkeypatch.setattr(proj_mod, "KEY_PLANS", {**KEY_PLANS, "fixture_events": fixture_plan})
+
+    entry = _project_contract_table(
+        "fixture_events", resolved, None, {}, table_class="event", partition_by=doc.governance.partition_by
+    )
+    assert entry["write_mode"] == "append_only"
+    assert entry["history_table"] == "fixture_events"
+    assert "merge_key" not in entry
+    assert entry["columns"]["retry_count"]["sql_type"] == "BIGINT"
