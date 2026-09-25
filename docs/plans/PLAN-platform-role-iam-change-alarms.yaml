@@ -1,0 +1,820 @@
+schema_version: 5
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "platform-role-iam-change-alarms"
+intent: >-
+  Resolve rec-4044: land a state-free detective control that emails the operator whenever anyone
+  changes -- or is denied changing -- IAM on PlatformDev or PlatformAdmin, proven by a live fire
+  before the rec closes, so rec-3838's Plan A (PLAN-platform-iam-bootstrap-adopt) can move the two
+  most privileged identities out of hourly terraform-drift coverage without leaving them unwatched.
+  Everything lives in Terraform and in the single project region variable (var.aws_region), with no
+  second-region provider and no console step, because the repository is meant to ship as a tool
+  whose users set exactly one AWS region.
+plan_type: IMPLEMENTATION
+verification_tier: V3
+plan_path: docs/plans/PLAN-platform-role-iam-change-alarms.yaml
+phase: >-
+  ad_hoc_rec (soft-warn exception category) -- rec-4044, the human-adjudicated HARD PREREQUISITE of
+  PLAN-platform-iam-bootstrap-adopt (its step 10 gate). No tier_item criterion claimed. Adjacent:
+  T2.48 (allow-list inversion; unaffected, bootstrap is outside CI) and T2.47 (terraform-drift.yml;
+  no open criteria).
+closes_criteria: []
+scope:
+  - file: terraform/bootstrap/platform_security_admin_policy.tf
+    action: Create
+    purpose: >-
+      PlatformAdmin's detector-management grants as a NEW customer-managed policy
+      (aws_iam_policy.platform_security_admin, name platform-security-detector-admin) attached to
+      PlatformAdmin by aws_iam_role_policy_attachment.platform_security_admin (role = "PlatformAdmin"
+      literal: this root does not declare the role until Plan A). The document is hoisted into
+      local.platform_security_admin_policy_json with a <= 6144 B whitespace-stripped size
+      precondition (validate_iam_policy_size; Decision 156 managed-policy remedy -- PlatformAdmin's
+      inline aggregate has only ~2.2 KB of its 10,240 B per-role headroom left). Five Sids, every ARN
+      built from var.aws_region / var.account_id: PlatformSecurityTrailManage = exactly
+      cloudtrail:CreateTrail, UpdateTrail, PutEventSelectors, StartLogging, AddTags, RemoveTags on the
+      ONE trail ARN (trail/platform-security-trail); PlatformSecurityTrailRead = enumerated cloudtrail
+      read verbs (GetTrail, GetTrailStatus, DescribeTrails, GetEventSelectors, GetInsightSelectors,
+      ListTags) on "*"; PlatformSecurityTrailBucketManage = the enumerated S3 set, mirroring
+      terraform/personal/platform_admin_data_policies.tf's CatalogDrBucketManage verb for verb
+      (CreateBucket, ListBucket, GetBucketLocation, GetBucketAcl, Get/PutBucketVersioning,
+      Get/PutEncryptionConfiguration, Get/PutBucketPublicAccessBlock, Get/PutBucketPolicy,
+      Get/PutBucketTagging, Get/PutLifecycleConfiguration, GetBucketOwnershipControls,
+      GetAccelerateConfiguration, GetBucketRequestPayment, GetBucketLogging,
+      GetReplicationConfiguration, GetBucketObjectLockConfiguration, GetBucketCORS,
+      GetBucketWebsite) plus PutBucketOwnershipControls, on the trail bucket only (no s3:DeleteBucket,
+      no s3:DeleteBucketPolicy); PlatformSecurityLogGroupManage = logs CreateLogGroup,
+      PutRetentionPolicy, TagResource, TagLogGroup, ListTagsForResource, ListTagsLogGroup,
+      PutMetricFilter, DeleteMetricFilter, and the READ verbs DescribeLogStreams, GetLogEvents,
+      FilterLogEvents and StartQuery, on log-group:platform-security-* only (no logs:DeleteLogGroup)
+      -- so the Logs Insights query named in every alarm email is runnable by PlatformAdmin;
+      PlatformSecurityLogsRead = logs:DescribeMetricFilters, TestMetricFilter, GetQueryResults and
+      StopQuery on "*" (none supports resource scoping). CloudWatch alarm verbs are NOT
+      re-granted (AdminOps' CloudWatchAlarmManagement already covers alarm:*). No cloudtrail
+      StopLogging, DeleteTrail, Delete*/Stop* wildcard or cloudtrail:* anywhere.
+  - file: terraform/bootstrap/platform_security_trail.tf
+    action: Create
+    purpose: >-
+      The event source, all keyed to var.aws_region / var.account_id (no region or account literal,
+      no provider alias): aws_s3_bucket.platform_security_trail
+      (platform-security-trail-<account_id>-<aws_region>, force_destroy false, prevent_destroy) with
+      versioning Enabled, all four public-access-block flags, SSE-S3 default encryption,
+      BucketOwnerEnforced ownership, a lifecycle rule expiring current objects after 400 days and
+      noncurrent versions after 30, and a bucket policy allowing only cloudtrail.amazonaws.com
+      (GetBucketAcl; PutObject under AWSLogs/<account_id>/ with bucket-owner-full-control), both
+      conditioned on aws:SourceArn = the trail ARN, plus a DenyInsecureTransport statement;
+      aws_cloudwatch_log_group.platform_security_trail (platform-security-cloudtrail, 30-day
+      retention, prevent_destroy -- S3 is the 400-day authoritative copy);
+      aws_iam_role.platform_security_trail_logs (platform-security-cloudtrail-logs, trusted by
+      cloudtrail.amazonaws.com with an aws:SourceArn condition) and its inline policy
+      (logs:CreateLogStream + logs:PutLogEvents on that log group's streams only), hoisted into a local
+      with the <= 10240 B size precondition; aws_cloudtrail.platform_security (platform-security-trail,
+      is_multi_region_trail true, include_global_service_events true, enable_log_file_validation true,
+      enable_logging true, one event_selector read_write_type All with management events,
+      cloud_watch_logs_group_arn "<log group arn>:*", depends_on the bucket policy, prevent_destroy).
+  - file: terraform/bootstrap/platform_security_alarms.tf
+    action: Create
+    purpose: >-
+      Five aws_cloudwatch_log_metric_filter + aws_cloudwatch_metric_alarm pairs on the trail's log
+      group, metric namespace PlatformSecurity, every alarm's alarm_actions = the EXISTING
+      agent-platform-alerts topic ARN built as arn:aws:sns:${var.aws_region}:${var.account_id}:agent-platform-alerts
+      (Decision 39; the topic stays in terraform/personal). Patterns live in one
+      local.platform_security_filter_patterns map keyed by alarm name, so the ADMIN TestMetricFilter
+      step can read them through terraform console. Every pattern is a plain string literal with NO
+      interpolation (no var.account_id, no var.aws_region): ARN clauses match by suffix wildcard
+      (e.g. "*:policy/agent-platform-github-ci-apply-boundary", "*:agent-platform-alerts"), so the
+      committed fixture evaluates identically against the live service, and each pattern stays
+      within CloudWatch Logs' 1024-character limit:
+      (1) platform-security-platform-role-iam-change -- iam.amazonaws.com, readOnly false, and either
+      requestParameters.roleName matching PlatformDev or PlatformAdmin CASE-INSENSITIVELY (IAM role
+      names are case-insensitive in API calls, so an exact match is evadable) -- written in the
+      CloudWatch Logs regex subset: character classes ([Pp][Ll]...) with TOP-LEVEL alternation
+      between the two anchored role forms, no parentheses and no inline flags inside %...%, or a policy-version /
+      policy-delete verb whose policyArn is the agent-platform-github-ci-apply-boundary or the
+      platform-security-detector-admin policy (content edits to policies attached to the roles carry
+      no roleName); denied attempts included;
+      (2) platform-security-denied-iam-write -- iam.amazonaws.com, readOnly false, errorCode
+      AccessDenied*, any role;
+      (3) platform-security-detector-tamper -- any mutating cloudtrail.amazonaws.com call; a
+      mutating iam, logs or s3 call naming a platform-security-* role, log group or the trail bucket,
+      EXCEPT logs CreateLogStream (the delivery role's own routine stream creation, which would
+      otherwise self-fire);
+      a monitoring.amazonaws.com PutMetricAlarm naming a platform-security-* alarm; or ANY
+      DeleteAlarms or DisableAlarmActions call (their alarmNames is an array a filter pattern cannot
+      quantify over, so these two verbs match regardless of name -- rare, and a deletion of any alarm
+      is worth an email);
+      (4) platform-security-alerts-topic-change -- a mutating sns.amazonaws.com call whose topicArn or
+      subscriptionArn is the agent-platform-alerts topic;
+      (5) platform-security-iam-event-heartbeat -- ANY iam.amazonaws.com event (reads included; the
+      hourly terraform-drift refresh reads both roles), alarm LessThanThreshold 1 over three 3600 s
+      periods with treat_missing_data = breaching and ok_actions to the same topic. Because IAM events
+      reach this London-homed trail only through its multi-region/global-events path, this proves the
+      exact input the other alarms depend on is alive, and fires on StopLogging, DeleteTrail, a
+      multi-region or global-events flip, an event-selector change or a broken Logs delivery.
+      Event alarms (1)-(4): Sum >= 1 over one 300 s period, treat_missing_data notBreaching. Every
+      alarm_description names the log group and a CloudWatch Logs Insights query (fields eventTime,
+      userIdentity.arn, eventName, requestParameters.roleName, errorCode, eventID) plus a console link
+      built from var.aws_region, so the email says where to read who changed what.
+  - file: tests/fixtures/platform_security_filter_events.yaml
+    action: Create
+    purpose: >-
+      Sanitised sample CloudTrail events (account id rendered as the literal ACCOUNT -- never twelve
+      digits, the never-commit hook) with, per event, the exact set of filter names it must match: a
+      lowercase platformadmin UpdateRole, a PlatformDev TagRole denied with AccessDenied, a
+      CreatePolicyVersion on the boundary policy, a StopLogging, a PutMetricFilter on the
+      platform-security-cloudtrail log group, an Unsubscribe on an agent-platform-alerts subscription,
+      an iam GetRole read (heartbeat only), and an UpdateRole on an unrelated agent-platform-* role
+      (heartbeat only -- must NOT match filter 1), and a DisableAlarmActions whose alarmNames lists an
+      unrelated alarm first (filter 3), and a CreateLogStream on platform-security-cloudtrail by the
+      delivery role (heartbeat-free, must match NO filter). No twelve-digit number appears anywhere in the file. Read by
+      the unit test (fixture shape, no twelve-digit id, coverage of all five filters) and by the ADMIN
+      TestMetricFilter step (live evaluation, events used as committed).
+  - file: tests/checks/iam_tf/test_platform_role_iam_change_alarms.py
+    action: Create
+    purpose: >-
+      rec-4044's own acceptance path. TestPlatformRoleIamChangeDetector (graduated): the trail is
+      multi-region, includes global service events, validates log files, logs All management
+      events, delivers to the log group and carries prevent_destroy; the bucket has versioning,
+      all four public-access-block flags, SSE, the 400-day expiry, prevent_destroy and a bucket policy
+      whose only Allow principal is cloudtrail.amazonaws.com with aws:SourceArn; exactly the five
+      named alarms exist, each alarm_actions is the alerts-topic ARN template and the heartbeat alarm
+      is LessThanThreshold with treat_missing_data breaching and three evaluation periods; every
+      filter pattern carries its required clauses (case-insensitive two-role roleName match, the two
+      policyArn names, errorCode AccessDenied, cloudtrail mutation, platform-security names, alerts
+      topic, bare iam eventSource), every %...% regex span uses only CloudWatch Logs' documented regex subset (no "(", ")" or "(?",
+      only alphanumerics, the symbols : _ # = @ / ; , - and the operators ^ $ ? [ ] { } | \ * + .),
+      no pattern has more than two regex spans and at most five patterns carry one, the roleName
+      regex is character classes with top-level alternation (red cases for each of these limits),
+      no pattern contains an interpolation or template sequence ("${" or "%{", which terraform console
+      would escape and step 13 would mis-decode) and every pattern is
+      at most 1024 characters, and the fixture names every filter at least once and carries no
+      twelve-digit number; every detector
+      resource name starts platform-security- and every resource and data address declared in the
+      three new files starts platform_security (the two apply gates in steps 9 and 14 key on that
+      prefix); the three new .tf files contain no region literal
+      (e.g. eu-west-2, us-east-1), no provider block and no provider alias; and no CI identity
+      statement (terraform/bootstrap github_ci_apply inline and reads documents, terraform/personal
+      oidc*.tf CI roles) grants a mutating logs, cloudwatch, cloudtrail, s3 or iam verb on a resource
+      pattern that matches a platform-security-* name or the trail bucket, reusing the brace-depth
+      helpers in scripts/checks/iam_tf/_read_coverage.py (not edited). Red cases for each assertion.
+  - file: tests/checks/iam_tf/test_cloudtrail_write_grant_scoped.py
+    action: Create
+    purpose: >-
+      TestCloudTrailWriteGrantScoped (graduated; REPLACES the retired
+      cloudtrail-read-only-no-write-verbs claim, path-independent so it survives Plan A): across
+      every *.tf under terraform/, (a) quoted "cloudtrail:LookupEvents" is still granted somewhere
+      (the retired check's positive half, now root-agnostic); (b) the only quoted cloudtrail verbs
+      that are not Get*/Describe*/List*/LookupEvents sit in exactly one statement, Sid
+      PlatformSecurityTrailManage, whose Action set EQUALS {CreateTrail, UpdateTrail,
+      PutEventSelectors, StartLogging, AddTags, RemoveTags} and whose Resource is the single
+      trail/platform-security-trail ARN template; (c) that statement's policy is attached only to
+      PlatformAdmin; (d) cloudtrail:StopLogging, cloudtrail:DeleteTrail, cloudtrail:* and any
+      cloudtrail Delete*/Stop*/Put*/Update*/Create* wildcard appear nowhere. Red cases: an extra verb
+      in the Sid, a second statement granting CreateTrail, StopLogging anywhere, cloudtrail:* on
+      PlatformAdmin, the Sid attached to PlatformDev, a Resource of "*", and LookupEvents removed.
+  - file: config/agent/verification_registry/entries/cloudtrail-read-only-no-write-verbs.yaml
+    action: Delete
+    purpose: >-
+      Retired by git mv (Decision 176 point 5; check_id is immutable and its claim -- no CloudTrail
+      write verb anywhere under terraform/ -- is deliberately narrowed by the new Decision, so an
+      in-place edit is forbidden and would pass at origin/main, i.e. tautological).
+  - file: config/agent/verification_registry/entries/deprecated/cloudtrail-read-only-no-write-verbs.yaml
+    action: Create
+    purpose: the git mv destination of the retired shard, byte-identical content (no status key)
+  - file: config/agent/verification_registry/entries/cloudtrail-write-grant-scoped-to-platform-trail.yaml
+    action: Create
+    purpose: graduate TestCloudTrailWriteGrantScoped (test_selector, class-level node id) under this plan's slug
+  - file: config/agent/verification_registry/entries/platform-role-iam-change-detector-declared.yaml
+    action: Create
+    purpose: graduate TestPlatformRoleIamChangeDetector (test_selector, class-level node id) under this plan's slug
+  - file: scripts/ci/security_detector_probe.py
+    action: Create
+    purpose: >-
+      Read-only second channel (not SNS), a pure-Python module under 500 SLOC (Decision 128) with a
+      thin CLI. check() reads, via boto3 (region from AWS_DEFAULT_REGION, never a literal): the five
+      platform-security-* alarms by name (cloudwatch:DescribeAlarms) and the alerts topic's
+      subscriptions (sns:ListSubscriptionsByTopic, topic ARN built from the caller's account and
+      region); it returns a failure list when any expected alarm is missing, has ActionsEnabled
+      false, lacks the alerts topic in AlarmActions, when the heartbeat alarm's StateValue is not OK,
+      or when no email subscription is confirmed (SubscriptionArn PendingConfirmation); and -- so
+      that tampering with the CI-writable alerts topic cannot silence every alarm while the probe
+      stays green -- when any platform-security-* alarm's history (cloudwatch:DescribeAlarmHistory,
+      HistoryItemType Action) records a failed action in the last 25 hours, or the topic's
+      attributes (sns:GetTopicAttributes) carry a KmsMasterKeyId or a Policy with any Deny statement.
+      Its output,
+      failure strings and filed rec text carry ONLY alarm names, failure classes and AWS error codes
+      -- never an Endpoint, an ARN (AlarmArn, AlarmActions, SubscriptionArn, TopicArn) or an account
+      id -- and every botocore ClientError is caught and rendered as its error code only (Actions
+      logs are public, Decision 101).
+      --file-on-transition files ONE High rec through scripts.ops_data_portal file_rec (source
+      security_detector_stale) only when the previous completed scheduled run of
+      security-detector-liveness.yml concluded success or no previous run exists, read from the
+      GitHub REST API with GITHUB_TOKEN; if that lookup fails it files anyway (noise over silence).
+      --bootstrap-window (set by the workflow while the operator variable is not yet true) reports
+      failures as warnings, files nothing and exits 0 -- the scoped deploy-paths.yaml precedent
+      (DEPLOY_ROLE_PROVISIONED), never a blanket skip. Otherwise exit 1 whenever check() fails,
+      whether or not a rec was filed. --profile selects a local AWS profile (ADMIN runs);
+      --subscription-only runs just the subscription leg (the pre-apply check, before the alarms
+      exist). The expected alarm names are a module constant pinned to the HCL by the test.
+  - file: tests/test_security_detector_probe.py
+    action: Create
+    purpose: >-
+      TestSecurityDetectorProbe (graduated): stubbed boto3 clients -- healthy fixture returns no
+      failures; each failure class (alarm missing, actions disabled, wrong topic, heartbeat ALARM,
+      heartbeat INSUFFICIENT_DATA, subscription pending, no subscription, a failed alarm action in
+      the history window, a topic KmsMasterKeyId, a topic-policy Deny) is reported; no rendered
+      output, failure string or filed rec text ever contains the stub subscription Endpoint, the
+      substring "arn:" or a twelve-digit sequence, including on a stubbed ClientError (AccessDenied
+      whose message embeds an ARN) path; the transition rule files on
+      previous-success, on no previous run and on API error, and does not file on previous-failure;
+      --bootstrap-window exits 0 and files nothing on failure; main() otherwise exits 1 on any
+      failure; security_detector_stale is a registered canonical_id in
+      config/agent/data_quality/source_registry.yaml; and the module's expected alarm-name constant
+      equals the set of aws_cloudwatch_metric_alarm names parsed from
+      terraform/bootstrap/platform_security_alarms.tf.
+  - file: config/agent/verification_registry/entries/security-detector-probe-fails-closed.yaml
+    action: Create
+    purpose: graduate TestSecurityDetectorProbe (test_selector, class-level node id) under this plan's slug
+  - file: .github/workflows/security-detector-liveness.yml
+    action: Create
+    purpose: >-
+      A SEPARATE hourly workflow (cron offset from terraform-drift's :17, plus workflow_dispatch;
+      workflow-level concurrency group, cancel-in-progress false), so the probe's run conclusion
+      never colours terraform-drift and loop_liveness_stale judges it as its own peer (the backstop if
+      the probe's own filing fails). One job, permissions id-token write, contents read, actions read:
+      assume agent-platform-github-ci-branch (main-trusted, already the identity of the hourly
+      convergence-health sensor, explicitly DENIED convergence-record writes, no tfplan or package
+      write, already holds DuckLake writer invoke for file_rec; no role-session-name) -- NOT the
+      planner, whose reserved session reaches convergence-record and saved-plan writes (Decision 143
+      clause 1, worst-reachable-verb scoping) -- with continue-on-error plus the Decision 172
+      fail-loud outcome guard (validate_oidc_failopen_guards); the venv install step
+      (validate_workflow_dependency_install); then one thin run line calling bin/venv-python -m
+      scripts.ci.security_detector_probe --file-on-transition, adding --bootstrap-window while
+      vars.SECURITY_DETECTOR_PROVISIONED is not 'true' (Decision 162). No terraform, no tfvars, no
+      convergence-record read or write, no S3 access at all.
+  - file: tests/test_security_detector_liveness_workflow.py
+    action: Create
+    purpose: >-
+      TestSecurityDetectorLivenessWorkflow (graduated): the workflow is scheduled hourly and
+      dispatchable; its one job assumes agent-platform-github-ci-branch, never the planner and never
+      the reserved tf-drift-convergence-writer session name, carries the outcome guard,
+      installs the venv, runs scripts.ci.security_detector_probe --file-on-transition, passes
+      --bootstrap-window only under the SECURITY_DETECTOR_PROVISIONED condition, declares actions
+      read, and never mentions terraform, CONVERGENCE_KEY, s3 cp, materialise-tfvars or a
+      terraform apply; and terraform/personal/oidc_ci_roles.tf's github_ci_branch policy document
+      grants exactly the four probe reads (Sid SecurityDetectorLivenessRead).
+  - file: config/agent/verification_registry/entries/security-detector-liveness-workflow-read-only.yaml
+    action: Create
+    purpose: graduate TestSecurityDetectorLivenessWorkflow (test_selector, class-level node id) under this plan's slug
+  - file: config/ci_rca_taxonomy.yaml
+    action: Modify
+    purpose: >-
+      Register workflow security-detector-liveness with tier not_a_gate, ci_rca excluded, owner
+      platform, rationale: it files its own security_detector_stale rec per transition and
+      loop_liveness_stale backstops a persistent red, so ci-rca watching it would double-record one
+      event (the terraform-drift entry's precedent; validate_ci_rca_taxonomy is keyed on the
+      workflow name).
+  - file: terraform/personal/oidc_ci_roles.tf
+    action: Modify
+    purpose: >-
+      Add one read statement to data.aws_iam_policy_document.github_ci_branch, Sid
+      SecurityDetectorLivenessRead: cloudwatch:DescribeAlarms on "*" (no resource scoping),
+      cloudwatch:DescribeAlarmHistory on alarm:platform-security-* and sns:ListSubscriptionsByTopic +
+      sns:GetTopicAttributes on aws_sns_topic.alerts.arn. All are inside the boundary's
+      DataPlaneAllow (cloudwatch:*, sns:*); an inline-policy update on a boundary-carrying
+      agent-platform-* role is in-budget and auto-applies through the governed CD path at merge
+      (classification per environment-taxonomy.yaml, not restated here). This CI policy carries no
+      size precondition (validate_iam_policy_size is bootstrap-only); the four-action Sid is well
+      inside the inline limit.
+  - file: config/composite_action_body_baseline.yaml
+    action: Modify
+    purpose: r3_workflows ceilings for the new workflow's inline run bodies, equal to their measured counts (Decision 162 R3)
+  - file: config/agent/data_quality/source_registry.yaml
+    action: Modify
+    purpose: >-
+      Register canonical_id security_detector_stale (description, signal_interpretation: one rec per
+      healthy-to-unhealthy transition of the detector liveness probe). Distinct from tf_drift so
+      Decision 190 clause 5's convergence gap check can never be satisfied by it.
+  - file: terraform/personal/platform_admin_policies.tf
+    action: Modify
+    purpose: >-
+      Comment-only: the ObservabilityMetricAndTrailRead comment's "grants no cloudtrail mutating verb
+      anywhere" becomes false; restate it as "no cloudtrail mutating verb outside the Decision 202
+      PlatformSecurityTrailManage grant". No statement changes, so it adds nothing to the PR's
+      speculative plan (whose only change is the in-place update of
+      aws_iam_role_policy.github_ci_branch) and Plan A's AdminOps copy is unaffected.
+  - file: terraform/bootstrap/CLAUDE.md
+    action: Modify
+    purpose: >-
+      One pointer line only (104 B of headroom under its 5151 B prose budget): this root also owns
+      the platform-security-* IAM-change detector (Decision 202). Trim elsewhere if needed; never
+      raise the budget.
+  - file: docs/DECISIONS.md
+    action: Modify
+    purpose: >-
+      Add Decision 202 (header "## Decision 202: Terraform-owned CloudTrail trail and IAM-change
+      detector in the admin-only bootstrap root -- a narrow PlatformAdmin trail-write grant, the
+      platform-security-* name family, and a single-region rule (amends Decision 101 point (b), 144
+      clause 2) (Decided)"), within the 6,144 B per-entry norm (Decision 167), with the fenced yaml
+      envelope (number 202, status Decided, decided_date 2026-09-25, amends [101, 144], significance
+      numbered_decision; justification names verification-registry.yaml's governance notes and
+      environment-taxonomy.yaml as the rejected contract homes -- they record check lifecycle and
+      apply classification, not a new authority grant to a principal with reversal conditions -- and
+      rejects an amendment_forms annotation on Decision 101 because the grant and region rule clear
+      the bar independently). Clauses: (1) Terraform owns one multi-region trail homed in the project
+      region, in terraform/bootstrap, applied only by PlatformAdmin under the human-gated admin tier
+      (Decision 126), because the detector must sit outside the reach of the principals it watches;
+      (2) PlatformAdmin -- and only PlatformAdmin -- holds exactly six trail-management verbs on that
+      one trail ARN; StopLogging, DeleteTrail and cloudtrail:* stay banned everywhere, and
+      destroying the trail is break-glass only; (3) platform-security-* is authorised as a second
+      resource name family for detector resources only (the separate explicit decision Decision 101
+      point (b), re-affirmed by Decision 171, requires), and Decision 144 clause 2's re-narrow
+      trigger does NOT fire for it: the non-prefix name is a deliberate exclusion from CI reach, not
+      a coverage gap; (4) single-region rule, SCOPED: every Terraform-declared regional resource,
+      ARN and provider follows the one aws_region project variable -- no region literal in a
+      resource or ARN, no second-region provider -- so IAM events are detected via the multi-region
+      trail's CloudWatch Logs delivery in that region, never an EventBridge rule in us-east-1;
+      declared residuals (Decision 181 clause 2), owner rec-4067: Terraform backend blocks (which
+      cannot interpolate) and workflow AWS_DEFAULT_REGION / aws-region literals; (5) residuals
+      stated, not implied: UpdateTrail and PutEventSelectors can still blind the trail -- the tamper
+      alarm, the IAM-event heartbeat alarm and the hourly security-detector-liveness probe are its
+      compensating controls; the probe runs as the existing CI branch identity, which is explicitly
+      denied convergence-record writes and holds no saved-plan write (Decision 143 clause 1); and the
+      alerts topic itself stays CI-writable (github_ci_apply's SNS topic grant), so
+      alarm (4) emails through the topic it guards; the probe's independent checks are the confirmed
+      subscription, a topic KmsMasterKeyId or policy Deny, and any failed alarm action in the last 25
+      hours (the direct symptom of a publish the topic refused); (6) rejected: AWS Config (its findings return through the same SNS path the
+      probe must be independent of, misses denied attempts, adds recorder cost), a console-created
+      trail (Decision 24), an EventBridge rule in us-east-1 (clause 4), and AdminOps inline
+      statements (Decision 156 headroom). It attaches a policy to PlatformAdmin only and does not
+      re-decide Decision 180 clause 6; sanctioned CI metadata writes on PlatformDev (Decision 180
+      clause 2) will email until rec-4049 lands, by design -- alerts are never filtered by actor.
+      Reversal conditions: (a) Decision 144 clause 6's Phase-4 organisation CloudTrail at live_full
+      lands -- re-point the detector at the org trail's log delivery and retire this trail, never run
+      both; (b) CloudWatch Logs delivery or regex filtering is withdrawn or the alarm path proves
+      lossy -- re-open the detection primitive, keeping clause 4; (c) the email volume from
+      sanctioned changes crowds out real signal after rec-4049 -- narrow by event class, never by
+      actor. Related: 24, 39, 101, 113, 126, 143, 144, 156, 162, 171, 172, 176, 180, 181, 190, 201.
+  - file: docs/contracts/verification-registry.yaml
+    action: Modify
+    purpose: >-
+      Governance note plus amendment_log entry: cloudtrail-read-only-no-write-verbs RETIRED by git mv
+      and its claim NARROWED under Decision 202 (Decision 181 -- a Decision-authorised re-decision,
+      not a weakening to obtain green), replaced by cloudtrail-write-grant-scoped-to-platform-trail,
+      which keys on the Sid rather than a path so Plan A's move needs no repoint.
+  - file: docs/plans/PLAN-platform-iam-bootstrap-adopt.yaml
+    action: Modify
+    purpose: >-
+      Scope amendment of the approved, unimplemented Plan A (its pre_implementation_checklist
+      anticipates this: "rec-4044 must adjudicate that shard and may have edited or retired it"):
+      remove the retired shard's scope row, its step-3 command leg, its step-5 file-list entry, its
+      test_obligations row and its re-read checklist item, and update EVERY count-bearing site:
+      acceptance_criteria ("five registry shards", "the five modified shards" -> four); step 3's
+      marker "FIVE SHARDS GREEN ON BOOTSTRAP" -> FOUR, its expected "all five modified shards" and
+      "the cloudtrail shard" clause, and its waiver "the five shards" -> four; step 6's action "the
+      five modified shards" -> four; the verification-registry.yaml scope purpose and its
+      test_obligations behavior "four claim-preserving repoints" -> three; pre_implementation_checklist
+      "Before editing the five shards ... four exit 0" -> four shards, three exit 0; execution_steps
+      "four registry shards" -> three; rollback "the five modified shards" -> four; the
+      verification-registry.yaml scope purpose's "all five admitted by run_differential" -> four;
+      step 3's expected "red before for all five" and its waiver "re-proves all five here" -> four.
+      Add one context line: the replacement check is path-independent and needs no repoint. Nothing
+      else in Plan A changes; bin/venv-python -m scripts.roadmap.plan_document validates it.
+bundled_recommendations: ["rec-4044"]
+followon_recs: ["rec-4067"]
+infrastructure_dependencies:
+  - "terraform/bootstrap is NEVER auto-applied (terraform/bootstrap/CLAUDE.md, T2.23): every live step below runs in an ADMIN container under agent_platform_admin, from merged main, only after a human has reviewed the presented plan and explicitly directed the apply (Decisions 120 and 126). terraform/bootstrap is hashicorp-only, so init needs no provider mirror."
+  - "No pre-merge apply and no split-apply: PlatformAdmin's new grant is a bootstrap-declared managed policy. terraform/personal's speculative plan on the PR shows exactly one in-place update, aws_iam_role_policy.github_ci_branch (the probe's read Sid), which CD auto-applies at merge; the two comment edits render nothing, and aws_iam_role_policy.platform_admin_ops must show no change."
+  - "Two-phase post-merge bootstrap apply: phase 1 targets aws_iam_policy.platform_security_admin + aws_iam_role_policy_attachment.platform_security_admin (the grant must be live before the resources that need it; Decision 183 clause 4 targeted-apply precedent); phase 2 applies the detector. Phase 1 also grants the cloudtrail reads and logs:TestMetricFilter the pre-apply checks need."
+  - "The alerts topic and its email subscription stay in terraform/personal; the detector references the topic ARN by template only (no cross-root reference). The subscription must already be confirmed (step 11)."
+  - "Freeze from merge until step 15: no other terraform/bootstrap apply, or the unapplied detector would ride along unreviewed."
+  - "The probe identity is the existing agent-platform-github-ci-branch role (main-trusted, convergence-write denied); it gains one in-budget read Sid (cloudwatch:DescribeAlarms, sns:ListSubscriptionsByTopic on the alerts topic) that CD auto-applies at merge. The CI permissions boundary has no cloudtrail entry, which is why the probe reads alarm state, not trail status."
+  - "Merge-to-apply window: from merge until step 16, the detector does not exist yet, so security-detector-liveness.yml runs with --bootstrap-window (warnings, green, no rec) because repo variable SECURITY_DETECTOR_PROVISIONED is unset; Benjamin sets it to true at step 16, after which a failure is red and files a rec. Never set it before step 16 passes locally."
+acceptance_criteria:
+  - terraform/bootstrap declares a multi-region, global-events, log-file-validated CloudTrail trail homed in var.aws_region, its protected S3 bucket, a CloudWatch Logs group and delivery role, and five platform-security-* metric filters with alarms targeting the existing alerts topic, with no region literal and no provider alias
+  - PlatformAdmin's only CloudTrail write authority is Sid PlatformSecurityTrailManage in a bootstrap managed policy -- exactly six verbs on one trail ARN -- and StopLogging, DeleteTrail and cloudtrail:* appear nowhere under terraform/
+  - cloudtrail-read-only-no-write-verbs is retired to entries/deprecated/ and cloudtrail-write-grant-scoped-to-platform-trail, platform-role-iam-change-detector-declared, security-detector-probe-fails-closed and security-detector-liveness-workflow-read-only are admitted by run_differential
+  - Decision 202 records the grant, the platform-security-* family, the single-region rule and the blinding residual with its compensating controls
+  - A separate hourly security-detector-liveness workflow runs a read-only probe that fails on a missing, disabled or mis-targeted alarm, a non-OK heartbeat or an unconfirmed subscription, and files one security_detector_stale rec per transition once SECURITY_DETECTOR_PROVISIONED is true
+  - PLAN-platform-iam-bootstrap-adopt no longer repoints the retired shard and still validates
+  - Every filter pattern, evaluated live by logs:TestMetricFilter, matches exactly the fixture's expected events, including the lowercase role name
+  - After the two-phase admin apply, the trail is logging with fresh Logs delivery, all five alarms exist and are enabled, the heartbeat is OK and the probe exits 0 locally and in a dispatched security-detector-liveness run
+  - A denied lowercase TagRole from PlatformDev raises the role-change and denied-write alarms, and, after both return to OK, an unchanged-value UpdateRole on PlatformAdmin raises the role-change alarm again -- two distinct transitions attributable to the two calls, evidenced by eventIDs read from the trail's log group, alarm transition times, and Benjamin's confirmation that the emails arrived
+  - rec-4044 is closed through update_rec with a holds acceptance verdict keyed to the merge sha, with the live evidence in its resolution
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: the detector is declared as specified -- trail, bucket, log delivery, five alarms, names, region-variable only, and out of every CI grant
+    command: bin/venv-python -m pytest "tests/checks/iam_tf/test_platform_role_iam_change_alarms.py::TestPlatformRoleIamChangeDetector" -q
+    expected: >-
+      all tests pass, including a red case per assertion (single-region trail, global events off,
+      missing prevent_destroy, a sixth or missing alarm, an alarm targeting another topic, heartbeat
+      notBreaching, a filter missing its case-insensitive roleName or policyArn clause, a region
+      literal, a provider alias, a CI statement writing log-group:platform-security-*); red before
+      (the module does not exist), green after
+    fix_if: a declaration diverges from the spec -- fix the HCL, never loosen an assertion (Decision 181)
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: platform-role-iam-change-detector-declared
+  - step: 2
+    phase: pre-deploy
+    action: the replacement CloudTrail-grant check holds and discriminates
+    command: bin/venv-python -m pytest "tests/checks/iam_tf/test_cloudtrail_write_grant_scoped.py::TestCloudTrailWriteGrantScoped" -q
+    expected: >-
+      all tests pass, including red cases for an extra verb in PlatformSecurityTrailManage, a second
+      statement granting CreateTrail, StopLogging anywhere, cloudtrail:* on PlatformAdmin, the policy
+      attached to PlatformDev, a Resource of "*", and LookupEvents removed; red before (module absent),
+      green after
+    fix_if: the grant is wider than the six verbs on one ARN, or a write verb appears elsewhere
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: cloudtrail-write-grant-scoped-to-platform-trail
+  - step: 3
+    phase: pre-deploy
+    action: the liveness probe fails closed, never leaks the subscription endpoint, and files once per transition
+    command: bin/venv-python -m pytest "tests/test_security_detector_probe.py::TestSecurityDetectorProbe" -q
+    expected: >-
+      all tests pass -- every failure class reported, no Endpoint in any output, the transition rule
+      (file on previous success, no previous run or API error; not on previous failure), exit 1 on
+      failure, and the alarm-name constant equal to the HCL's alarm names; red before, green after
+    fix_if: a failure class is silently healthy, the endpoint leaks, or the constant drifts from the HCL
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: security-detector-probe-fails-closed
+  - step: 4
+    phase: pre-deploy
+    action: the liveness workflow is a read-only probe under the CI branch identity, gated only during the bootstrap window
+    command: bin/venv-python -m pytest "tests/test_security_detector_liveness_workflow.py::TestSecurityDetectorLivenessWorkflow" -q
+    expected: >-
+      all tests pass, including red cases for a terraform step, a convergence-record or S3 access, a
+      missing outcome guard, the planner role or the reserved session name, a missing
+      SecurityDetectorLivenessRead grant, and an unconditional
+      --bootstrap-window; red before (the workflow and module do not exist), green after
+    fix_if: the job touches terraform, S3 or the convergence record, lacks the outcome guard, or the bootstrap gate is unconditional
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: security-detector-liveness-workflow-read-only
+  - step: 5
+    phase: pre-deploy
+    action: the old shard is retired by move, not edited, and no live surface still names it
+    command: |-
+      test -f config/agent/verification_registry/entries/deprecated/cloudtrail-read-only-no-write-verbs.yaml && test ! -e config/agent/verification_registry/entries/cloudtrail-read-only-no-write-verbs.yaml && git diff -M --name-status origin/main -- config/agent/verification_registry/entries | grep -qxF "$(printf 'R100\tconfig/agent/verification_registry/entries/cloudtrail-read-only-no-write-verbs.yaml\tconfig/agent/verification_registry/entries/deprecated/cloudtrail-read-only-no-write-verbs.yaml')" && ! grep -rn 'cloudtrail-read-only-no-write-verbs' --include=*.py --include=*.yml --include=*.yaml --include=*.tf scripts tests config .github terraform docs/contracts docs/plans/PLAN-platform-iam-bootstrap-adopt.yaml | grep -v '^config/agent/verification_registry/entries/deprecated/' | grep -v '^docs/contracts/verification-registry.yaml' && echo "SHARD RETIRED BY 100% RENAME"
+    expected: exit 0 and the marker line -- a 100% rename into entries/deprecated/ and no live reference outside the retired file and the governance note
+    fix_if: >-
+      the rename is not R100 (content edited) or a live surface (including Plan A) still names the
+      retired check_id -- the new test modules, fixture and shards must not quote it (describe it as
+      "the retired no-CloudTrail-write check" instead)
+    hermetic: true
+    expected_literals: ["SHARD RETIRED BY 100% RENAME"]
+    graduation: waive
+    graduation_waiver_reason: >-
+      A one-time retirement sweep over this diff; once merged, the deprecated subtree is
+      loader-excluded and step 2's graduated check carries the durable claim.
+  - step: 6
+    phase: pre-deploy
+    action: both edited plans still validate
+    command: bin/venv-python -m scripts.roadmap.plan_document docs/plans/PLAN-platform-role-iam-change-alarms.yaml docs/plans/PLAN-platform-iam-bootstrap-adopt.yaml && ! grep -nE 'five (modified |registry )?shards|FIVE SHARDS|four claim-preserving|four registry shards to the bootstrap|four exit 0|the cloudtrail shard|all five admitted|for all five|re-proves all five' docs/plans/PLAN-platform-iam-bootstrap-adopt.yaml && echo "PLANS VALID, NO STALE COUNTS"
+    expected: exit 0 for both plans and the marker line -- no stale shard count remains in Plan A
+    fix_if: the Plan A amendment left a dangling step reference or a stale count
+    hermetic: true
+    expected_literals: ["PLANS VALID, NO STALE COUNTS"]
+    graduation: waive
+    graduation_waiver_reason: >-
+      The schema half duplicates validate --pre (which runs plan_document over every plan); the
+      stale-count grep is a one-time check of this plan's own amendment to Plan A, with no standing
+      claim to guard once merged.
+  - step: 7
+    phase: pre-deploy
+    action: fast-tier presubmit, including run_differential admission of the three new shards, the Decision entry conformance, the R3 baseline and the bootstrap prose budget
+    command: bin/venv-python -m scripts.validate --pre
+    expected: exit 0
+    fix_if: >-
+      any fast-tier check fails -- in particular a bootstrap-scanning check (validate_iam_policy_size,
+      validate_ci_refresh_read_coverage, validate_authority_budget, _write_companions) reacting to the
+      new bootstrap resources: fix the HCL to satisfy it, or STOP for a human-directed scope amendment
+      -- never edit an out-of-scope validator and never filter the new resources out
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: docs/contracts/vp-red-before.yaml#recursion_refusal refuses a graduate step whose argv head is -m scripts.validate.
+  - step: 8
+    phase: pre-deploy
+    action: full-tier validation before commit, as handoff_policy declares
+    command: bin/venv-python -m scripts.validate
+    expected: exit 0 on a COMPLETED full run -- a timeout is blocked, not a pass
+    fix_if: any full-tier check fails -- do not commit or open the PR until it is green
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: Same recursion_refusal as step 7.
+  - step: 9
+    phase: post-deploy
+    action: ADMIN -- merged main checked out, bootstrap initialised, tfvars present, baseline converged except for the new platform-security addresses
+    command: |-
+      test -n "$MERGE_SHA" && git fetch origin main && git checkout --detach origin/main && git merge-base --is-ancestor "$MERGE_SHA" HEAD && test -f terraform/bootstrap/terraform.bootstrap.tfvars && git check-ignore -q terraform/bootstrap/terraform.bootstrap.tfvars && terraform -chdir=terraform/bootstrap init -input=false && M="${TMPDIR:-/tmp}/platform-security" && mkdir -p "$M" && terraform -chdir=terraform/bootstrap plan -input=false -lock=false -var-file=terraform.bootstrap.tfvars -out="$M/base.tfplan" > "$M/base.txt" && terraform -chdir=terraform/bootstrap show -json "$M/base.tfplan" | bin/venv-python -c "import json,sys; rc=json.load(sys.stdin).get('resource_changes',[]); bad=[(r['address'],r['change']['actions']) for r in rc if r['change']['actions'] not in (['no-op'],['read']) and not (r['change']['actions']==['create'] and '.platform_security' in r['address'])]; sys.exit(f'STOP {bad}') if bad else print('BASELINE OK -- only platform_security creates pending')"; rc=$?; rm -f "$M/base.tfplan"; test $rc -eq 0
+    expected: >-
+      BASELINE OK -- every pending change is a create of a platform_security address; nothing else in
+      bootstrap is drifted or unapplied. Also confirm the merge's terraform/personal CD apply (the
+      github_ci_branch read Sid) converged: via mcp__github__actions_list the terraform-apply-sandbox
+      run for MERGE_SHA concluded success, and reading
+      s3://agent-platform-data-lake/convergence/personal/sandbox.json with --profile
+      agent_platform_admin shows status green with no pending_gated, pending_codification or
+      infra_error marker (the PLAN-platform-iam-bootstrap-adopt step 11 check) -- the probe's
+      bootstrap window would otherwise hide a failed or gated apply until step 16
+    fix_if: another bootstrap change is pending -- resolve it through its own human-gated loop first; never let it ride along
+  - step: 10
+    phase: post-deploy
+    action: ADMIN phase 1 -- PRESENT the targeted grant plan, apply only on explicit human direction
+    command: |-
+      M="${TMPDIR:-/tmp}/platform-security" && terraform -chdir=terraform/bootstrap plan -input=false -var-file=terraform.bootstrap.tfvars -target=aws_iam_policy.platform_security_admin -target=aws_iam_role_policy_attachment.platform_security_admin -out="$M/phase1.tfplan" && terraform -chdir=terraform/bootstrap show "$M/phase1.tfplan"
+    expected: >-
+      exactly 2 to add, 0 to change, 0 to destroy, PRESENTED in the ADMIN session only (it renders
+      account-bearing ARNs, Decision 101). After explicit human acceptance: terraform apply
+      "$M/phase1.tfplan", then run step 11 before anything else
+    fix_if: any other address in the plan -- STOP; never apply without the human's direction (Decision 126)
+  - step: 11
+    phase: post-deploy
+    action: ADMIN -- after phase 1, PlatformAdmin is allowed every action phase 2 needs (waits out IAM propagation and catches an omitted provider verb before any prevent_destroy resource is half-created)
+    command: |-
+      R=$(echo 'var.aws_region' | terraform -chdir=terraform/bootstrap console -var-file=terraform.bootstrap.tfvars | tr -d '"') && R="$R" bin/venv-python -c "import json,os,subprocess,sys; run=lambda *a: (lambda q: q if q.returncode==0 else sys.exit('aws call failed rc='+str(q.returncode)+' (stderr suppressed: it embeds account-bearing ARNs)'))(subprocess.run(['aws',*a,'--profile','agent_platform_admin','--output','json'],capture_output=True,text=True)); r=os.environ['R']; a=json.loads(run('sts','get-caller-identity').stdout)['Account']; P='arn'+':aws:'; admin=P+'iam::'+a+':role/PlatformAdmin'; trail=P+'cloudtrail:'+r+':'+a+':trail/platform-security-trail'; bkt=P+'s3:::platform-security-trail-'+a+'-'+r; lg=P+'logs:'+r+':'+a+':log-group:platform-security-cloudtrail'; al=P+'cloudwatch:'+r+':'+a+':alarm:platform-security-iam-event-heartbeat'; role=P+'iam::'+a+':role/platform-security-cloudtrail-logs'; pairs=[(trail,['cloudtrail:CreateTrail','cloudtrail:UpdateTrail','cloudtrail:PutEventSelectors','cloudtrail:StartLogging','cloudtrail:AddTags','cloudtrail:RemoveTags','cloudtrail:GetTrail','cloudtrail:GetTrailStatus','cloudtrail:GetEventSelectors','cloudtrail:GetInsightSelectors','cloudtrail:ListTags']),('*',['cloudtrail:DescribeTrails','logs:DescribeLogGroups','logs:DescribeMetricFilters','logs:TestMetricFilter','logs:GetQueryResults','cloudwatch:DescribeAlarms']),(bkt,['s3:CreateBucket','s3:ListBucket','s3:GetBucketLocation','s3:GetBucketAcl','s3:GetBucketVersioning','s3:PutBucketVersioning','s3:GetEncryptionConfiguration','s3:PutEncryptionConfiguration','s3:GetBucketPublicAccessBlock','s3:PutBucketPublicAccessBlock','s3:GetBucketPolicy','s3:PutBucketPolicy','s3:GetBucketTagging','s3:PutBucketTagging','s3:GetLifecycleConfiguration','s3:PutLifecycleConfiguration','s3:GetBucketOwnershipControls','s3:PutBucketOwnershipControls','s3:GetAccelerateConfiguration','s3:GetBucketRequestPayment','s3:GetBucketLogging','s3:GetReplicationConfiguration','s3:GetBucketObjectLockConfiguration','s3:GetBucketCORS','s3:GetBucketWebsite']),(lg,['logs:CreateLogGroup','logs:PutRetentionPolicy','logs:TagResource','logs:TagLogGroup','logs:ListTagsForResource','logs:ListTagsLogGroup','logs:PutMetricFilter','logs:DeleteMetricFilter','logs:DescribeLogStreams','logs:GetLogEvents','logs:FilterLogEvents','logs:StartQuery']),(al,['cloudwatch:PutMetricAlarm','cloudwatch:TagResource','cloudwatch:ListTagsForResource']),(role,['iam:CreateRole','iam:GetRole','iam:TagRole','iam:PutRolePolicy','iam:GetRolePolicy','iam:PassRole'])]; bad=[]; [bad.append((act,e['EvalDecision'])) for res,acts in pairs for e in json.loads(run('iam','simulate-principal-policy','--policy-source-arn',admin,'--action-names',*acts,'--resource-arns',res).stdout)['EvaluationResults'] for act in [e['EvalActionName']] if e['EvalDecision']!='allowed']; n=sum(len(x) for _,x in pairs); sys.exit('DENIED (action names only; no ARNs printed) '+repr(bad)) if bad else print('SIMULATE OK -- '+str(n)+' phase-2 actions allowed')"
+    expected: >-
+      SIMULATE OK with every enumerated action allowed; only action names and decisions are ever
+      printed (the ARNs carry the account id and stay in memory). Re-run after a minute if the
+      first run shows implicitDeny on the new grant (IAM propagation); a persistent deny is real
+    fix_if: >-
+      a persistent deny -- the phase-1 policy omits a verb phase 2 needs: fix it through a new PR and
+      re-run phase 1; never proceed to phase 2 on any deny (prevent_destroy resources would be left
+      half-created)
+  - step: 12
+    phase: post-deploy
+    action: ADMIN pre-apply checks -- no pre-existing trail, the platform roles carry no unexpected managed policy, the alert subscription is confirmed
+    command: |-
+      bin/venv-python -c "import json,subprocess,sys; run=lambda *a: json.loads(subprocess.run(['aws',*a,'--profile','agent_platform_admin','--output','json'],check=True,capture_output=True,text=True).stdout); t=run('cloudtrail','describe-trails','--include-shadow-trails')['trailList']; att={r:[p['PolicyName'] for p in run('iam','list-attached-role-policies','--role-name',r)['AttachedPolicies']] for r in ('PlatformDev','PlatformAdmin')}; bad=[]; bad+=['EXISTING TRAILS: '+str([x['Name'] for x in t])] if t else []; bad+=['UNEXPECTED ATTACHED '+str(att)] if att!={'PlatformDev':[],'PlatformAdmin':['platform-security-detector-admin']} else []; sys.exit('STOP '+'; '.join(bad)) if bad else print('PRE-APPLY OK -- no trail exists; only the detector policy is attached')" && bin/venv-python -m scripts.ci.security_detector_probe --profile agent_platform_admin --subscription-only
+    expected: >-
+      PRE-APPLY OK and the probe's subscription-only mode reports a confirmed email subscription
+      (endpoint never printed). If any trail already exists (a console trail), STOP and ask Benjamin:
+      a second trail would double-bill and a console trail violates Decision 24
+    fix_if: an existing trail or an unexpected attached policy -- STOP and ask; a managed policy attached to either role must be added to filter 1's policyArn clause before phase 2
+  - step: 13
+    phase: post-deploy
+    action: ADMIN -- every filter pattern evaluated LIVE against the fixture events matches exactly the expected set
+    command: |-
+      echo 'jsonencode(local.platform_security_filter_patterns)' | terraform -chdir=terraform/bootstrap console -var-file=terraform.bootstrap.tfvars | bin/venv-python -c "import json,subprocess,sys,yaml; pats=json.loads(json.loads(sys.stdin.read())); ev=yaml.safe_load(open('tests/fixtures/platform_security_filter_events.yaml'))['events']; bad=[]; [bad.append((name,e['name'],hit)) for e in ev for name,p in pats.items() for hit in [bool(json.loads(subprocess.run(['aws','logs','test-metric-filter','--filter-pattern',p,'--log-event-messages',json.dumps(e['event']),'--profile','agent_platform_admin','--output','json'],check=True,capture_output=True,text=True).stdout)['matches'])] if hit != (name in e['must_match'])]; sys.exit('MISMATCH '+repr(bad)) if bad else print('FILTERS OK -- '+str(len(pats))+' patterns x '+str(len(ev))+' events')"
+    expected: FILTERS OK -- 5 patterns x every fixture event; the lowercase platformadmin event matches filter 1 and the unrelated agent-platform-* UpdateRole does not
+    fix_if: >-
+      a pattern is refused or mismatches -- fix the pattern in HCL (CloudWatch Logs regex limits
+      bite first: if the two-role case-insensitive regex is refused, split filter 1 into one filter
+      per role, keeping five alarms by name), re-run steps 1 and 13 through a new PR (step 1 already encodes the documented syntax limits, so
+      a refusal here is a limit the docs did not state), then return
+      to step 9; never drop case-insensitivity or a clause silently -- STOP and ask if no accepted form exists
+  - step: 14
+    phase: post-deploy
+    action: ADMIN phase 2 -- PRESENT the detector plan, apply only on explicit human direction
+    command: |-
+      M="${TMPDIR:-/tmp}/platform-security" && terraform -chdir=terraform/bootstrap plan -input=false -var-file=terraform.bootstrap.tfvars -out="$M/phase2.tfplan" && terraform -chdir=terraform/bootstrap show -json "$M/phase2.tfplan" | bin/venv-python -c "import json,sys; rc=json.load(sys.stdin).get('resource_changes',[]); bad=[(r['address'],r['change']['actions']) for r in rc if r['change']['actions'] not in (['no-op'],['read'],['create']) or (r['change']['actions']==['create'] and '.platform_security' not in r['address'])]; sys.exit(f'STOP {bad}') if bad else print('PHASE 2 OK -- detector creates only')" && terraform -chdir=terraform/bootstrap show "$M/phase2.tfplan"
+    expected: >-
+      PHASE 2 OK and the plan PRESENTED in the ADMIN session only; after explicit human acceptance,
+      terraform apply "$M/phase2.tfplan" (the apply itself fires the tamper alarm -- CreateTrail,
+      PutMetricFilter -- which is the first expected email)
+    fix_if: a non-create or a non-platform_security address -- STOP; on apply error stop and RCA (Decision 55)
+  - step: 15
+    phase: post-deploy
+    action: ADMIN -- bootstrap converged and the trail is live with fresh Logs delivery
+    command: |-
+      terraform -chdir=terraform/bootstrap plan -input=false -lock=false -var-file=terraform.bootstrap.tfvars -detailed-exitcode > /dev/null && bin/venv-python -c "import json,subprocess,sys,datetime as d; run=lambda *a: json.loads(subprocess.run(['aws',*a,'--profile','agent_platform_admin','--output','json'],check=True,capture_output=True,text=True).stdout); t=run('cloudtrail','describe-trails','--trail-name-list','platform-security-trail')['trailList'][0]; s=run('cloudtrail','get-trail-status','--name','platform-security-trail'); last=d.datetime.fromisoformat(str(s.get('LatestCloudWatchLogsDeliveryTime','1970-01-01T00:00:00+00:00'))); age=(d.datetime.now(d.timezone.utc)-last).total_seconds(); ok=s['IsLogging'] and t['IsMultiRegionTrail'] and t['IncludeGlobalServiceEvents'] and t['LogFileValidationEnabled'] and age<1800; sys.exit('TRAIL NOT HEALTHY') if not ok else print('TRAIL LIVE -- logging, multi-region, global events, Logs delivery age '+str(int(age))+'s')"
+    expected: the follow-up plan exits 0 and TRAIL LIVE with a Logs delivery age under 30 minutes (allow one CloudTrail delivery cycle after step 14 before running this)
+    fix_if: exit 2 or an unhealthy trail -- stop and RCA before the live proof
+  - step: 16
+    phase: post-deploy
+    action: the probe is green locally, then Benjamin arms the workflow and a dispatched run is green
+    command: bin/venv-python -m scripts.ci.security_detector_probe --profile agent_platform_admin
+    expected: >-
+      exit 0 (five alarms present, enabled, targeting the alerts topic; heartbeat OK; subscription
+      confirmed). Then Benjamin sets the repository variable SECURITY_DETECTOR_PROVISIONED=true
+      (GitHub settings; his hands), the agent dispatches security-detector-liveness on main
+      (mcp__github__actions_run_trigger) and confirms the run concluded success without the
+      bootstrap-window flag
+    fix_if: >-
+      in the first three hours after step 14 the heartbeat alarm may read INSUFFICIENT_DATA or even
+      ALARM (missing data is breaching by design, and one heartbeat email is expected) -- re-run after
+      the third hourly period has data; any failure after that is real, RCA it and do not arm the
+      variable
+  - step: 17
+    phase: post-deploy
+    action: LIVE PROOF call 1 (Benjamin runs it; the agent only reads) -- a denied lowercase TagRole from PlatformDev
+    command: |-
+      echo "PROOF_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)" && aws iam tag-role --role-name platformadmin --tags Key=rec-4044-probe,Value=1 --profile agent_platform 2>/dev/null; test $? -ne 0 && echo "CALL 1 DENIED AS EXPECTED"
+    expected: >-
+      the TagRole fails with AccessDenied (DailyOps grants no iam write); within about 15 minutes
+      both platform-security-denied-iam-write and platform-security-platform-role-iam-change reach
+      ALARM (the lowercase role name proves the case-insensitive match live) and Benjamin receives
+      both emails
+    fix_if: >-
+      run in the same ADMIN container as the later steps and export the printed PROOF_AT=... line before step 19.
+      If the TagRole unexpectedly SUCCEEDS, immediately run aws iam untag-role --role-name
+      PlatformAdmin --tag-keys rec-4044-probe --profile agent_platform_admin (a stray tag would drift
+      terraform/personal and flip convergence red) and STOP -- PlatformDev holding an iam write is a
+      finding. An alarm that does not fire within 20 minutes -- read the log group for the eventID
+      (step 19) to split a filter miss (step 13) from a trail or delivery miss (step 15), fix through
+      a new PR, repeat
+  - step: 18
+    phase: post-deploy
+    action: LIVE PROOF call 2 (Benjamin runs it) -- only once both alarms read OK again, an unchanged-value UpdateRole on PlatformAdmin
+    command: |-
+      test "$(aws cloudwatch describe-alarms --alarm-names platform-security-platform-role-iam-change platform-security-denied-iam-write --state-value OK --query 'length(MetricAlarms)' --output text --profile agent_platform_admin)" = "2" && aws iam update-role --role-name PlatformAdmin --max-session-duration 3600 --profile agent_platform_admin && echo "CALL 2 MADE"
+    expected: >-
+      the state precheck passes (both alarms back to OK, so the next transition is attributable to
+      this call alone), the UpdateRole succeeds writing the value terraform/personal already
+      declares (3600, so no drift), and platform-security-platform-role-iam-change reaches ALARM a
+      second time with a second email
+    fix_if: the precheck fails -- an alarm is still in ALARM from call 1; run this step again after the next 300 s period, never before
+  - step: 19
+    phase: post-deploy
+    action: ADMIN -- record the evidence from the trail's own log group (IAM events are global, so region-local lookup-events does not show them) without printing the email address
+    command: |-
+      bin/venv-python -c "import json,subprocess,sys,os,datetime as d; run=lambda *a: json.loads(subprocess.run(['aws',*a,'--profile','agent_platform_admin','--output','json'],check=True,capture_output=True,text=True).stdout); since=os.environ['PROOF_AT']; ms=str(int(d.datetime.fromisoformat(since.replace('Z','+00:00')).timestamp()*1000)); ev=[json.loads(e['message']) for e in run('logs','filter-log-events','--log-group-name','platform-security-cloudtrail','--start-time',ms,'--filter-pattern','{ (\$.eventSource = \"iam.amazonaws.com\") && (\$.eventName = \"TagRole\" || \$.eventName = \"UpdateRole\") }')['events']]; ids={n:[e['eventID'] for e in ev if e['eventName']==n] for n in ('TagRole','UpdateRole')}; hist=lambda n: sorted(a['Timestamp'] for a in run('cloudwatch','describe-alarm-history','--alarm-name',n,'--history-item-type','StateUpdate','--start-date',since)['AlarmHistoryItems'] if 'to ALARM' in a['HistorySummary']); fired={'platform-security-platform-role-iam-change':hist('platform-security-platform-role-iam-change'),'platform-security-denied-iam-write':hist('platform-security-denied-iam-write')}; ok=all(ids.values()) and len(fired['platform-security-platform-role-iam-change'])>=2 and len(fired['platform-security-denied-iam-write'])>=1; print(json.dumps({'event_ids':ids,'alarm_fired':fired})); sys.exit(0 if ok else 'EVIDENCE INCOMPLETE')"
+    expected: >-
+      a JSON line with at least one eventID per call, two to-ALARM timestamps for the role-change
+      alarm and one for the denied-write alarm (eventIDs and alarm names carry no account id, so this
+      line may be quoted in the rec's resolution as $EVIDENCE), plus Benjamin's confirmation that the
+      emails arrived
+    fix_if: no eventIDs in the log group means the trail or its Logs delivery missed the call (step 15); eventIDs without alarm transitions mean a filter miss (step 13)
+  - step: 20
+    phase: post-deploy
+    action: close rec-4044 through update_rec with a holds acceptance verdict keyed to the merge sha, and verify it is closed
+    command: |-
+      test -n "$MERGE_SHA" && test -n "$EVIDENCE" && git checkout --detach "$MERGE_SHA" && bin/venv-python -m pytest tests/checks/iam_tf/test_platform_role_iam_change_alarms.py -q && bin/venv-python -c "import hashlib,os,json; from scripts.ops_data_portal import update_rec, sync; sync(['ops_recommendations']); rows=[json.loads(l) for l in open('logs/.recommendations-log.jsonl') if l.strip()]; acc=max((x for x in rows if x.get('id')=='rec-4044'), key=lambda x: x.get('last_updated_timestamp') or '')['acceptance']; sha=os.environ['MERGE_SHA']; rec={'rec_id':'rec-4044','sha':sha,'acceptance_sha256':hashlib.sha256(acc.encode()).hexdigest(),'verdict':'holds','source':'manual','arm':'post-live-proof'}; update_rec('rec-4044',{'status':'closed','file':'terraform/bootstrap/platform_security_alarms.tf','execution_result':'success','resolution':'Detector live in terraform/bootstrap (Decision 202). Live proof: '+os.environ['EVIDENCE']},acceptance_verdict=rec,closing_sha=sha); print('rec-4044 close written')" && bin/venv-python -c "import json; from scripts.ops_data_portal import sync; sync(['ops_recommendations']); rows=[json.loads(l) for l in open('logs/.recommendations-log.jsonl') if l.strip()]; r=max((x for x in rows if x.get('id')=='rec-4044'), key=lambda x: x.get('last_updated_timestamp') or ''); assert r['status']=='closed' and 'Live proof' in (r.get('resolution') or ''), r['status']; print('rec-4044 closed (read back)')"
+    expected: >-
+      the acceptance oracle passes at the merge sha, update_rec accepts the holds record (the
+      acceptance text is unchanged, so its sha256 matches), and the read-back after a fresh sync
+      prints rec-4044 closed (read back) with the live-proof evidence in its resolution
+    fix_if: AcceptanceVerdictRefused -- the acceptance text or sha differ; recompute from the rec's current acceptance, never close without a record (git-ops.yaml trailer_acceptance_gate)
+  - step: 21
+    phase: post-deploy
+    action: CLEANUP (ADMIN) -- remove scratch plans and renders; also run after any STOP
+    command: rm -rf "${TMPDIR:-/tmp}/platform-security" && test ! -e "${TMPDIR:-/tmp}/platform-security" && echo "SCRATCH CLEARED"
+    expected: SCRATCH CLEARED
+    fix_if: a path survives -- remove it by hand before ending the ADMIN session
+test_obligations:
+  - source: terraform/bootstrap/platform_security_admin_policy.tf
+    behavior: PlatformAdmin's only CloudTrail write authority is six verbs on one trail ARN, in a size-checked managed policy attached only to PlatformAdmin.
+    verification_step: 2
+    test_selector: "tests/checks/iam_tf/test_cloudtrail_write_grant_scoped.py::TestCloudTrailWriteGrantScoped"
+    red_green_expectation: red before (module absent), green after
+  - source: terraform/bootstrap/platform_security_trail.tf
+    behavior: The trail is multi-region, global-events, log-file-validated, all-management-events, delivered to the log group, region-variable only, with a protected CloudTrail-only bucket and prevent_destroy.
+    verification_step: 1
+    test_selector: "tests/checks/iam_tf/test_platform_role_iam_change_alarms.py::TestPlatformRoleIamChangeDetector"
+    red_green_expectation: red before (module absent), green after
+  - source: terraform/bootstrap/platform_security_alarms.tf
+    behavior: Exactly five platform-security-* alarms with the required filter clauses target the alerts topic, and the heartbeat treats missing data as breaching.
+    verification_step: 1
+    test_selector: "tests/checks/iam_tf/test_platform_role_iam_change_alarms.py::TestPlatformRoleIamChangeDetector"
+    red_green_expectation: red before (module absent), green after
+  - source: tests/fixtures/platform_security_filter_events.yaml
+    behavior: Every filter is named by at least one fixture event, and the fixture carries no twelve-digit account id.
+    verification_step: 1
+    test_selector: "tests/checks/iam_tf/test_platform_role_iam_change_alarms.py::TestPlatformRoleIamChangeDetector"
+    red_green_expectation: red before (fixture absent), green after
+  - source: scripts/ci/security_detector_probe.py
+    behavior: The probe fails on every liveness failure class, never emits the subscription endpoint, an ARN or an account id (ClientError included), and files one rec per healthy-to-unhealthy transition.
+    verification_step: 3
+    test_selector: "tests/test_security_detector_probe.py::TestSecurityDetectorProbe"
+    red_green_expectation: red before (module absent), green after
+  - source: .github/workflows/security-detector-liveness.yml
+    behavior: A separate hourly workflow runs the probe read-only as the CI branch identity with the fail-loud outcome guard, gated only by the bootstrap-window variable, and never touches terraform, S3 or the convergence record.
+    verification_step: 4
+    test_selector: "tests/test_security_detector_liveness_workflow.py::TestSecurityDetectorLivenessWorkflow"
+    red_green_expectation: red before (workflow absent), green after
+  - source: config/agent/verification_registry/entries/security-detector-liveness-workflow-read-only.yaml
+    behavior: The workflow read-only check is admitted by run_differential under this plan's slug.
+    verification_step: 7
+    command: bin/venv-python -m scripts.validate --pre
+    red_green_expectation: red before, green after
+  - source: config/ci_rca_taxonomy.yaml
+    behavior: The new workflow is classified (not_a_gate, ci_rca excluded) so validate_ci_rca_taxonomy accepts it.
+    verification_step: 7
+    command: bin/venv-python -m scripts.validate --pre
+    red_green_expectation: red before (an unclassified workflow name fails validate_ci_rca_taxonomy), green after
+  - source: terraform/personal/oidc_ci_roles.tf
+    behavior: The CI branch role grants exactly the probe's four reads (DescribeAlarms on *, DescribeAlarmHistory on platform-security-* alarms, ListSubscriptionsByTopic and GetTopicAttributes on the alerts topic).
+    verification_step: 4
+    test_selector: "tests/test_security_detector_liveness_workflow.py::TestSecurityDetectorLivenessWorkflow"
+    red_green_expectation: red before (no SecurityDetectorLivenessRead Sid), green after
+  - source: config/composite_action_body_baseline.yaml
+    behavior: The new workflow's inline bodies are registered at their exact measured ceilings.
+    verification_step: 7
+    command: bin/venv-python -m scripts.validate --pre
+    red_green_expectation: red before (unregistered bodies fail validate_composite_action_shell_bodies), green after
+  - source: config/agent/data_quality/source_registry.yaml
+    behavior: security_detector_stale is a registered rec source, so the probe's file_rec is not rejected at write time.
+    verification_step: 3
+    test_selector: "tests/test_security_detector_probe.py::TestSecurityDetectorProbe"
+    red_green_expectation: red before (the test asserts the source is registered), green after
+  - source: config/agent/verification_registry/entries/cloudtrail-write-grant-scoped-to-platform-trail.yaml
+    behavior: The replacement check is admitted by run_differential (its test does not exist at origin/main) under this plan's slug.
+    verification_step: 7
+    command: bin/venv-python -m scripts.validate --pre
+    red_green_expectation: red before, green after
+  - source: config/agent/verification_registry/entries/platform-role-iam-change-detector-declared.yaml
+    behavior: The detector-declaration check is admitted by run_differential under this plan's slug.
+    verification_step: 7
+    command: bin/venv-python -m scripts.validate --pre
+    red_green_expectation: red before, green after
+  - source: config/agent/verification_registry/entries/security-detector-probe-fails-closed.yaml
+    behavior: The probe check is admitted by run_differential under this plan's slug.
+    verification_step: 7
+    command: bin/venv-python -m scripts.validate --pre
+    red_green_expectation: red before, green after
+  - source: config/agent/verification_registry/entries/cloudtrail-read-only-no-write-verbs.yaml
+    behavior: The retired shard leaves the live registry by a 100% rename and nothing live names it.
+    verification_step: 7
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: >-
+      Retirement is a git mv with no content; step 5's hermetic sweep proves the rename and the
+      absence of live references, and the loader excludes entries/deprecated/ by construction.
+  - source: config/agent/verification_registry/entries/deprecated/cloudtrail-read-only-no-write-verbs.yaml
+    behavior: Byte-identical retired record in the loader-excluded subtree.
+    verification_step: 7
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: A moved, unchanged record carries no behaviour; step 5 asserts the 100% rename.
+  - source: terraform/personal/platform_admin_policies.tf
+    behavior: Comment-only edit; no statement changes.
+    verification_step: 7
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: >-
+      A comment carries no behaviour; the CI speculative plan on the PR is the authoritative proof
+      that the rendered policy is unchanged (no change to aws_iam_role_policy.platform_admin_ops),
+      and step 2 covers the grant claim itself.
+  - source: docs/DECISIONS.md
+    behavior: Decision 202 carries a conformant envelope and markers.
+    verification_step: 7
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: >-
+      Decision prose carries no executable behaviour; validate_decision_entry_conformance (run by
+      step 7) checks the envelope, markers, separator and number.
+  - source: docs/contracts/verification-registry.yaml
+    behavior: Governance note records the retirement, the narrowed claim and its replacement.
+    verification_step: 7
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: A governance note carries no executable behaviour; its schema is checked by step 7 and the claims it records by steps 2 and 5.
+  - source: terraform/bootstrap/CLAUDE.md
+    behavior: One pointer line within the prose budget.
+    verification_step: 7
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: Prose pointer; the prose-budget check in step 7 is the only enforceable property.
+  - source: docs/plans/PLAN-platform-iam-bootstrap-adopt.yaml
+    behavior: Plan A no longer repoints the retired shard and still validates.
+    verification_step: 6
+    command: bin/venv-python -m scripts.roadmap.plan_document docs/plans/PLAN-platform-role-iam-change-alarms.yaml docs/plans/PLAN-platform-iam-bootstrap-adopt.yaml && ! grep -nE 'five (modified |registry )?shards|FIVE SHARDS|four claim-preserving|four registry shards to the bootstrap|four exit 0|the cloudtrail shard|all five admitted|for all five|re-proves all five' docs/plans/PLAN-platform-iam-bootstrap-adopt.yaml && echo "PLANS VALID, NO STALE COUNTS"
+    waiver_reason: A plan document carries no runtime behaviour; step 6 validates its schema and step 5 proves it no longer names the retired check_id.
+constraints:
+  - No rescue agents or workaround loops (Decision 55)
+  - "Single region (Decision 202 clause 4, Benjamin 2026-09-25): every regional ARN and resource is keyed to var.aws_region; no region literal, no provider alias, no us-east-1 resource -- step 1 enforces it"
+  - "No console or out-of-band infrastructure (Decision 24): the trail, bucket, log group, role, filters, alarms and PlatformAdmin's grant are all Terraform-managed in terraform/bootstrap"
+  - Never grant cloudtrail:StopLogging, cloudtrail:DeleteTrail or cloudtrail:* to anyone, and never grant any CloudTrail write to a CI role or PlatformDev; never widen the CI permissions boundary for this plan
+  - The bootstrap apply runs from merged main in an ADMIN container, in two targeted phases, each only after a human has reviewed the presented plan and explicitly directed it (Decision 126); no terraform/personal apply is performed by hand
+  - "Public-repo boundary (Decision 101): plan renders, ARNs, account ids and the subscription email never reach chat, a PR, a commit or an Actions log; the probe never prints an Endpoint; the fixture uses the literal ACCOUNT"
+  - "This PR's squash body carries NO `Resolves: rec-4044` trailer: the rec's own context requires a live fire proof, which exists only after the post-merge apply; closure is step 20's update_rec with a holds verdict record (Decision 201 point 2 manual route with a supplied record), never the unrecorded fallback"
+  - Alerts are never filtered by actor -- CI's sanctioned PlatformDev metadata reconciles (Decision 180 clause 2) will email until rec-4049 lands, by design
+  - The probe files under source security_detector_stale, never tf_drift (Decision 190 clause 5), and never reads or writes the convergence record
+  - Retire the old shard by git mv only (100% rename) -- never edit it in place (Decision 176)
+context:
+  - "Decision-scout verdict + CITE list: FLAGS_FOUND. CITE: Decision 101, 113, 126, 156, 129, 162, 166, 167, 176, 132, 201. Decisions triaged: 154 of 154. Roadmap items intersected: 6; CONFLICT: 0; RELATED: 6."
+  - "Scout flags, decided with notice (2026-09-25): 144 WARN -- Decision 202 clause 3 names the re-narrow trigger and says it does not fire; 100 WARN -- clause 6 rejects AWS Config; 190 NOTE -- distinct source security_detector_stale; 181 NOTE -- retirement recorded as a Decision-authorised claim narrowing; 180 NOTE -- policy attachment only, clause 6 not re-decided, CI-caused emails accepted."
+  - "gates: decision-scout=FLAGS_FOUND (re-run on the refined design, 2026-09-25); plan-critique=REVISE after 5 round(s) (13, 7, 4, 5, 3 findings -- all fixed, none disputed, none recurring); round 5 was the confirming round, so escalated to Benjamin 2026-09-25 with merge recommended (Decision card in the rec-4044 thread)"
+  - "Critique round 1 dispositions (all fixed, none disputed): F1 evidence from the trail's log group, not region-local lookup-events; F2 log-group read verbs granted; F3 account-agnostic patterns; F4 separate workflow plus bootstrap-window gate; F5 graduated workflow test and Decision 202 residual; F6 clause 4 scoped, residuals owned by rec-4067; F7 reversal conditions drafted, Decision 171 related; F8 closure read-back; F9 pattern length and DeleteAlarms/DisableAlarmActions; F10 enumerated S3 verbs plus a pre-phase-2 simulate; F11 calls spaced by an OK reset; F12 obligations restated in scope; F13 heartbeat start-up window. Round 2 (all fixed): R100 --name-status rename check; a standalone pre-phase-2 simulate step; every Plan A count site enumerated and grepped; escaped filter-pattern quotes; explicit PROOF_AT and untag cleanup; CreateLogStream excluded from filter 3; the percent-brace template sequence asserted absent; CI-writable alerts topic named as a residual; acceptance derived from the live rec. Round 3 (all fixed): probe identity moved from the planner's reserved session to agent-platform-github-ci-branch (Decision 143 clause 1), superseding rec-4069; the stale-count grep no longer collides with the corrected text and covers three more sites; step 6 waiver covers both halves. Round 4 (all fixed): stale oidc.tf execution step removed; the CI branch policy has no size precondition; probe output and rec text carry no ARN or account id (ClientError rendered as code only); step 17 stderr suppressed; platform_security address prefix asserted in step 1. Round 5 (all fixed): the PR speculative plan is one in-place github_ci_branch update, and step 9 confirms that CD apply converged; the probe now catches topic-attribute tampering (KMS key, policy Deny, failed alarm actions); step 1 encodes the CloudWatch Logs regex subset, which forbids the parenthesised group the roleName regex first used."
+  - "Design provenance (2026-09-25, rec-4044 thread): Benjamin rejected a us-east-1 EventBridge + console-trail draft; a blind Fable consult independently chose a Terraform-owned London-homed trail in bootstrap with a narrow PlatformAdmin grant (/mnt/project-files/rec-4044/fable-consult.md); Benjamin chose the London-only CloudWatch Logs path and approved the outline (/mnt/project-files/rec-4044/plan-outline.md)."
+  - "Refinements over the outline, decided with notice: PlatformAdmin's grant is a bootstrap managed policy, not AdminOps inline (PlatformAdmin's inline aggregate had ~2.2 KB headroom in the 10,240 B role limit, measured baseline 7575 B on 2026-09-13 plus T2.48; Decision 156's remedy), which also removes the pre-merge split-apply and its 2-hour window; the liveness probe reads an IAM-event heartbeat alarm instead of cloudtrail:GetTrailStatus, because the CI boundary's DataPlaneAllow has no cloudtrail entry (terraform/personal/platform_dev_policies.tf:101 notes the same) and the heartbeat observes the exact global-event path the alarms need."
+  - "ci-rca deferral (Related-Work): rec-4057 (validate_test_coverage on rec_trailer_acceptance.py) is open and unrelated -- different file, decision and failure category; this plan is the human-adjudicated security prerequisite of Plan A and proceeds with this logged deferral."
+  - "Cost (inferred, not measured): CloudTrail's first management-event copy is free; CloudWatch Logs ingestion of read+write management events from hourly terraform plans is on the order of a few GB a month (about 1-3 USD); 30-day retention; S3 400-day expiry."
+  - "Why bootstrap: the detector must be out of reach of the principals it watches -- CI grants stop at agent-platform-*/ducklake-* names, and PlatformDev holds no logs/cloudwatch/cloudtrail/s3 write on these resources (step 1 asserts the CI half)."
+  - "Probe transition rule mirrors drift's one-red-one-signal; a persistently red security-detector-liveness run is also caught by the loop_liveness_stale success leg (source_registry.yaml), which dedups per episode -- the backstop if the probe's own filing fails."
+  - "IAM events are delivered only to trails that cover us-east-1; a multi-region trail homed in var.aws_region receives them and forwards all regions' events to its one Logs group, which is why no second-region resource exists."
+  - "The PlatformDev out-of-band AgentPlatformRuntime inline policy (terraform/CLAUDE.md) is outside every root; filter 1 matches any change naming the role, so edits to it alert too."
+  - "Plan A (PLAN-platform-iam-bootstrap-adopt) step 10 gates on rec-4044 closed; its bootstrap baseline plan (its step 9) needs this plan's apply to have landed first."
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - only the plan-cited decision sections
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+  - terraform/bootstrap/CLAUDE.md, terraform/bootstrap/github_ci_apply_reads.tf (managed-policy precedent) and docs/contracts/deploy-paths.yaml admin_out_of_band.procedure read in full
+  - Before retiring, run the old shard's check_spec at the branch base (exit 0 expected) so the retirement is of a green claim
+  - "DEV session ends at: PR open, CI green (terraform/personal speculative plan = exactly one in-place update of aws_iam_role_policy.github_ci_branch), merged -- the ADMIN session owns steps 9-21"
+execution_steps:
+  - Create terraform/bootstrap/platform_security_admin_policy.tf, platform_security_trail.tf and platform_security_alarms.tf per scope, terraform fmt -check clean (provider-free)
+  - Create tests/fixtures/platform_security_filter_events.yaml, then the two iam_tf test modules and their registry shards
+  - Create scripts/ci/security_detector_probe.py and its test and shard; register security_detector_stale; create .github/workflows/security-detector-liveness.yml, its test, shard, ci_rca_taxonomy entry, R3 baseline entries and the oidc_ci_roles.tf SecurityDetectorLivenessRead grant
+  - git mv the old shard into entries/deprecated/; add the verification-registry.yaml governance note; amend Plan A's plan file
+  - Add Decision 202 to docs/DECISIONS.md; update the AdminOps comment and the bootstrap CLAUDE.md pointer
+  - "DEV session: run pre-deploy steps 1-8, commit, open the PR (no Resolves trailer; ADMIN hand-off in the description, Decision 115), drive CI green, merge"
+  - "ADMIN session: steps 9-16 (baseline, phase 1 grant, simulate, pre-apply checks, live filter test, phase 2 detector, trail health, probe green; Benjamin arms SECURITY_DETECTOR_PROVISIONED); Benjamin runs steps 17 and 18's two calls; steps 19-21 evidence, closure, cleanup"
+  - Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)
+  - "Report: what was implemented, verification results, rec-4044 closure evidence, and hand off to PLAN-platform-iam-bootstrap-adopt"
+work_areas: []
+rollback: >-
+  Before step 14, rollback is code-only: revert the PR (phase 1's policy is removed by an admin
+  apply of the reverted root, a detach then delete). After step 14, the trail, bucket and log group
+  carry prevent_destroy by design (Decision 202 clause 2: destroying the trail is break-glass
+  only): disabling the alarms is an HCL change through a new PR and the same human-gated apply;
+  removing the trail requires a human-directed break-glass change that first lifts prevent_destroy.
+  The retired shard is never restored in place -- a restoration is a new check_id.
