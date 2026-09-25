@@ -1,0 +1,1038 @@
+schema_version: 5
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: telemetry-kernel-identity-append
+intent: >-
+  Friction-telemetry slice 1 (the kernel half of rec-4024): land the plane-neutral, hermetic, deploy-inert
+  telemetry kernel -- the Decision 199 identity derivation with committed golden vectors, the append_events
+  MERGE-insert primitive, the generator's table_class event projection branch (unregistered) and an ISO-8601
+  tz-aware decode helper -- so slice 2 (writer verb, registration, provisioning) builds on proven, vector-pinned
+  code; and correct the telemetry partition spec from day(session_started_at), which DuckLake reads as
+  day-of-month, to the calendar-day triple year(), month(), day() (rec-4065, bundled). Friction telemetry is the foundation of automated RCA and recursive self-improvement (PROJECT_CONTEXT).
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-telemetry-kernel-identity-append.yaml
+phase: >-
+  T2.36 (telemetry re-lands on DuckLake) -- kernel groundwork only; closes NO exit criterion (c1 needs the
+  tables registered/provisioned and field_semantics.yaml regenerated, which is slice 2 / rec-4024).
+scope:
+- file: src/telemetry/__init__.py
+  action: Create
+  purpose: >-
+    Package marker for the plane-neutral telemetry kernel (Decision 184 cl.2 port rule: runs in the Lambda and
+    against a local DuckLake file catalog). Docstring only; names telemetry-event-envelope.yaml as the normative spec.
+- file: src/telemetry/timestamps.py
+  action: Create
+  purpose: >-
+    parse_iso8601_utc (tz-aware decode for the future verb edge against a PINNED RFC 3339 grammar regex, not
+    datetime.fromisoformat's version-dependent superset: offset required (Z/z or +/-HH:MM); fraction 1-9 digits
+    truncated to ms; rejects naive, date-only, basic format, week dates, +HH/+HHMM offsets, 24:00, :60 and non-str;
+    normalises to UTC), require_aware_utc, truncate_to_ms (floor, never round) and epoch_ms (exact integer ms,
+    rejects pre-epoch and > 2**48-1). One TimestampError(ValueError) type.
+- file: src/telemetry/identity.py
+  action: Create
+  purpose: >-
+    The envelope identity spec, exactly: canonical_ulid, canonical_ref (NFC; non-empty; no Unicode Cc/Cs; <= 4096
+    UTF-8 bytes; never trimmed or case-folded), a CLOSED DOMAIN_TAGS registry (the four entity tags + four
+    '<table>:event' tags; an unknown tag raises), identity_hash (sha256 over 4-byte big-endian length-prefixed NFC
+    UTF-8 [tag, tenant_id, project_id, ref]), derive_entity_key (ULID(root session_started_at ms + H[0:10])),
+    derive_event_id (ULID(event_timestamp ms + H[0:10]) over external_ref, tag '<table>:event'), decode_time_prefix
+    (a held session_id -> its session_started_at; the envelope's sanctioned route for transcript-less producers,
+    contract risk R7) and a closed per-table KEY_PLANS registry (column, parent domain tag, caller ref field,
+    required) that is the single source of which ref feeds which key column. ULID assembly and canonical ULID
+    parsing are STDLIB ONLY (a 26-char Crockford base32 encoder/decoder over the 16 raw bytes; first char <= '7';
+    I/L/O/U rejected), because pr-validate installs neither python-ulid nor duckdb (requirements-fast.txt) and the
+    graduated VP rows must pass there. One IdentityError(ValueError) type.
+- file: src/telemetry/append.py
+  action: Create
+  purpose: >-
+    EventTableSpec (+ from_projection over a generator event entry) and append_events(con, table_spec, rows, *,
+    tenant_id, project_id, catalog, now=None) -> AppendResult(submitted, collapsed, inserted). The primitive IS the
+    write boundary the contracts name ("populated_by: the write boundary (rec-4024's append_events verb), derived
+    from ..."): it derives every KEY_PLANS key and event_id from the caller's refs and REJECTS any caller-supplied
+    derived column; stamps tenant_id/project_id (already resolved, canonical) and one created_timestamp; runs a
+    strict Python type gate before any SQL; collapses byte-identical intra-batch duplicates and rejects conflicting
+    ones; then one transaction, one insert-only MERGE over a typed multi-row VALUES source ON (event_id,
+    parser_version) AND session_started_at within the batch's UTC calendar-day range; replay is a no-op. Before
+    BEGIN it raises unless current_setting('TimeZone') is 'UTC' (DuckLake evaluates year()/month()/day() in the
+    session TimeZone, so a non-UTC writer files a UTC date under the wrong day); it never SETs the caller's zone,
+    and its error names the remedy (SET TimeZone='UTC'). The check is exact: DuckDB's default reads 'Etc/UTC',
+    'GMT' or 'Etc/Unknown' depending on TZ, all rejected, so callers set it explicitly.
+- file: src/telemetry/gate.py
+  action: Create
+  purpose: >-
+    The append primitive's pre-SQL row gate, split out so append.py stays well under 500 SLOC: unknown/derived
+    column rejection, strict per-sql_type Python type checks (bool is never int; finite doubles; int64 range;
+    tz-aware datetimes converted to UTC and ms-truncated; list[str]), NOT NULL checks, and intra-batch duplicate
+    handling (collapse byte-identical, reject conflicting). Pure; stdlib only.
+- file: scripts/field_semantics_event_projection.py
+  action: Create
+  purpose: >-
+    The table_class event projection (history-only append_only, no merge_key/current_table, history_table =
+    contract id, partition from governance.partition_by plus partition_column, dedupe_key [event_id,
+    parser_version] and entity_key emitted as config, columns in contract declaration order with read-derived
+    fields dropped, role derived for event_id/created_timestamp/tenant_id/project_id and every KEY_PLANS column
+    (imported from src.telemetry.identity so the key plan exists once), event nullability rule with required_when
+    carried on the column). Separate module because the generator's mapped test file is at 479/500 SLOC and
+    per-file coverage runs only that mapped file (Decision 128: decompose, never raise).
+- file: scripts/schema_to_field_semantics.py
+  action: Modify
+  purpose: >-
+    Add bigint->BIGINT and double->DOUBLE to _ICEBERG_TO_SQL; _project_contract_table dispatches table_class event
+    to the new projection module, imported INSIDE the event branch only (function scope, noqa PLC0415, the
+    ducklake_writes ulid-import precedent) so validate_field_semantics_drift's import of the generator gains no
+    module-scope edge (passing _map_iceberg_type and governance.partition_by); generate() requires merge_key only
+    for non-event classes, with no line that only an event contract reaches unless the mapped test file covers it.
+    _CONTRACT_TABLE_IDS and _GENERATED_HEADER unchanged (no output drift).
+- file: src/lambdas/data-pipeline/manifest.yaml
+  action: Modify
+  purpose: >-
+    Add `src/telemetry` to excludes (with a one-line comment) so the wildcard `src/` include never packages the
+    kernel into data-pipeline.zip. The only zip delta is this packaged manifest.yaml itself, which no data-pipeline
+    runtime code reads; neither deploy workflow path-triggers on it and the drift detector's PROD_SOURCE_PATHSPECS
+    excludes it (scripts/convergence_health/code_drift.py), so no deploy is owed (Decision 79 runtime-import intent).
+- file: docs/contracts/telemetry-event-envelope.yaml
+  action: Modify
+  purpose: >-
+    Append a CONFORMANCE VECTORS sentence to top-level governance_notes naming tests/telemetry/fixtures/identity_vectors.yaml:
+    its POSITIVE vectors are the normative inputs->exact-ids pins of the identity spec; its NEGATIVE vectors pin the
+    slice-1 kernel's input policy (ref length/control-character rules, closed tag registry), which is not part of
+    the ratified spec. One contract-level amendment_log entry for it (change_class governance_note_add,
+    semantic_break false). Partition respelling (rec-4065): session_started_at's
+    description and semantics and the governance_notes derivation-bound sentence say "calendar-day partition"
+    and quote governance.partition_by as the triple, with a note that DuckLake's day() alone is day-of-month;
+    session_started_at's semantics also states that DuckLake evaluates the partition functions in the session
+    TimeZone, so the write boundary requires UTC; the day-of-month note writes "day() alone", never the
+    column-qualified form. One field-level amendment_log entry on session_started_at and one more contract-level entry (both
+    prose_improvement, semantic_break false: Decision 199 always meant a calendar day, and no table exists).
+    No contract_version change.
+- file: docs/contracts/telemetry_sessions.yaml
+  action: Modify
+  purpose: >-
+    rec-4065: governance.partition_by "year(session_started_at), month(session_started_at), day(session_started_at)";
+    contract.description, governance_notes and the four populated_by read-verb bounds reworded from
+    "day(session_started_at) partition" to "calendar-day partition"; one contract-level amendment_log entry
+    (prose_improvement, semantic_break false, naming rec-4065 and the DuckLake day-of-month finding).
+    amendment_log and previous_versions text is history and stays as written.
+- file: docs/contracts/telemetry_observations.yaml
+  action: Modify
+  purpose: >-
+    rec-4065: governance.partition_by "year(session_started_at), month(session_started_at), day(session_started_at)";
+    one contract-level amendment_log entry (prose_improvement, semantic_break false).
+- file: docs/contracts/telemetry_transcripts.yaml
+  action: Modify
+  purpose: >-
+    rec-4065: governance.partition_by "year(session_started_at), month(session_started_at), day(session_started_at)";
+    one contract-level amendment_log entry (prose_improvement, semantic_break false).
+- file: docs/contracts/telemetry_agents.yaml
+  action: Modify
+  purpose: >-
+    rec-4065: governance.partition_by "year(session_started_at), month(session_started_at), day(session_started_at)";
+    the two populated_by read-verb bounds reworded to "calendar-day partition"; one contract-level
+    amendment_log entry (prose_improvement, semantic_break false).
+- file: docs/contracts/session-id.yaml
+  action: Modify
+  purpose: >-
+    rec-4065: session_id.semantics "one day() partition" reworded to "one calendar-day partition"; one
+    field-level amendment_log entry and one contract-level amendment_log entry (both prose_improvement,
+    semantic_break false, naming rec-4065).
+- file: docs/contracts/observation-id.yaml
+  action: Modify
+  purpose: >-
+    rec-4065: contract.description "day()-partition pruning" reworded to "calendar-day partition pruning"; one
+    contract-level amendment_log entry (prose_improvement, semantic_break false).
+- file: docs/contracts/telemetry-lexicon.yaml
+  action: Modify
+  purpose: >-
+    rec-4065 (Class D): temporal.partition's four values become the triple and the terms[] definition that
+    names the partition says calendar day; one new top-level amendment_log entry.
+- file: docs/contracts/storage-substrate.yaml
+  action: Modify
+  purpose: >-
+    rec-4065 (Class D): tables.telemetry_tables.disposition reads "calendar-day partition
+    year(session_started_at), month(session_started_at), day(session_started_at) for all four tables"; one new top-level amendment_log entry.
+- file: docs/DECISIONS.md
+  action: Modify
+  purpose: >-
+    One blockquote_update line ("> **Update (2026-09-25):** ...", decision-entry.yaml's pinned spelling) at the
+    end of Decision 199: its day(session_started_at) means the UTC calendar day, which DuckLake spells
+    year(), month(), day() together because its day() alone is day-of-month (rec-4065). Field-semantics routing
+    (decision-entry.yaml significance.routing.field_semantics): the normative spelling lives in the contracts;
+    no new numbered Decision. Keep it to one short line: Decision 199 is 6,133 of 6,144 bytes, so the
+    amendment-delta WARN (not a failure; the hard cap binds new entries only) is expected and reported.
+- file: docs/ROADMAP-PLATFORM.yaml
+  action: Modify
+  purpose: >-
+    T2.36 exit_criteria[c1].text: "partition day(session_started_at) for all four per Decision 199" reworded in
+    place to "calendar-day partition on session_started_at (year/month/day) for all four per Decision 199". The
+    file is 9,407 of Decision 114's 10,000-line ceiling; keep the line count unchanged.
+- file: tests/checks/contracts/test_telemetry_event_journal_contracts.py
+  action: Modify
+  purpose: >-
+    The three existing day(session_started_at) assertions (sessions partition_by, lexicon temporal.partition,
+    storage-substrate text) move to the full triple literal; new test_partition_by_is_calendar_day_triple
+    (rec-4065's acceptance node; a MODULE-LEVEL function, not inside a Test* class, so the Decision 201 trailer
+    census finds it) asserts all four governance.partition_by and lexicon values equal the triple AND that no
+    string in any docs/contracts/*.yaml -- skipping amendment_log and previous_versions keys at every nesting
+    depth, with whitespace collapsed before matching -- contains a bare day(session_started_at) (not preceded by
+    "month(session_started_at), "), "day() partition" or "day()-partition". Stays <= 500 SLOC (317 today).
+- file: config/agent/verification_registry/entries/telemetry-partition-calendar-day.yaml
+  action: Create
+  purpose: Registry row for graduated VP step 18.
+- file: docs/contracts/file-router.yaml
+  action: Modify
+  purpose: >-
+    New route topic telemetry-kernel (targets src/telemetry/); scripts_root_allowlist.allowed_files +=
+    field_semantics_event_projection.py; one top-level amendment_log entry (Class D, field_add). The file is at
+    489/500 effective lines under the contracts-class size cap (config/structural_size_budgets.yaml), so all three
+    additions fit in 11 effective lines or older amendment entries are compacted, per precedent.
+- file: tests/telemetry/__init__.py
+  action: Create
+  purpose: Mirror test package marker (prepend import mode).
+- file: tests/telemetry/test_timestamps.py
+  action: Create
+  purpose: Mirror test for src/telemetry/timestamps.py (100% line coverage).
+- file: tests/telemetry/test_identity.py
+  action: Create
+  purpose: >-
+    Mirror test for src/telemetry/identity.py: golden vectors (module output AND an in-test independent
+    hashlib/struct recomputation both equal each vector; a separate python-ulid cross-check test guarded by a
+    function-scope pytest.importorskip("ulid")), negative vectors (each raises IdentityError),
+    DOMAIN_TAGS closure, KEY_PLANS FK-equals-parent-key for every pair, and the envelope-contract pointer test.
+- file: tests/telemetry/fixtures/identity_vectors.yaml
+  action: Create
+  purpose: >-
+    Normative golden vectors (inputs -> time_ms -> full H hex -> 16 raw bytes hex -> exact id, so a foreign
+    implementation can bisect a mismatch) plus negative vectors (input -> error); ASCII-only (non-ASCII refs as
+    YAML \u escapes); layout per rec-4025 (tests/telemetry/fixtures/). Every hex-valued line carries a trailing
+    `# pragma: allowlist secret` comment so the detect-secrets HexHighEntropyString plugin does not block the commit
+    (no .secrets.baseline regeneration).
+- file: tests/telemetry/test_gate.py
+  action: Create
+  purpose: >-
+    Mirror test for src/telemetry/gate.py: every strict-type rejection (incl. bool-as-int, NaN/inf, naive datetime,
+    out-of-int64), NOT NULL, derived-column rejection, identical-duplicate collapse and conflicting-duplicate rejection.
+- file: tests/telemetry/test_append.py
+  action: Create
+  purpose: >-
+    Mirror test for src/telemetry/append.py on in-memory DuckDB (core MERGE, no extension, no network), with a
+    module-level `duckdb = pytest.importorskip("duckdb")` because the fast tier installs no duckdb; its connection
+    fixture runs SET TimeZone='UTC' (only the non-UTC rejection test overrides it);
+    includes test_append_events_replay_is_noop (the name rec-4024's acceptance cites).
+- file: tests/telemetry/test_append_ducklake_integration.py
+  action: Create
+  purpose: >-
+    pytest.mark.integration module: append_events against a real local DuckLake file catalog on the pinned
+    duckdb/ducklake (SET TimeZone='UTC' explicitly, DATA_INLINING_ROW_LIMIT 0, partitioned by the spec's own partition string -- the contract
+    triple year(), month(), day() of session_started_at -- before the first write): one new data file per
+    single-session batch; zero new files and rows on replay; the partition-bounded MERGE scans only the touched
+    day's file -- seed files for the touched day, the adjacent day and the SAME day-of-month in another month,
+    EACH spanning a wide event_id range so the key join filter cannot prune any of them, then append a batch
+    whose event_ids fall inside that range and assert the MERGE's DUCKLAKE_SCAN "Total Files Read" is exactly 1
+    from its JSON profile, captured through a recording connection proxy right after the MERGE statement (any
+    later statement overwrites profiling_output) with the profile's query_name asserted to be the MERGE; and
+    the calendar-day guarantee rec-4065 exists for -- seed at least two files per date (Sept 24, Sept 25 and
+    Oct 24), run ducklake_merge_adjacent_files plus ducklake_cleanup_old_files(cleanup_all => true), then assert
+    the file count dropped, equals the number of distinct dates, and every remaining data file (from
+    ducklake_list_files) holds rows of exactly one UTC calendar date of session_started_at (with bare day() the
+    probe fused Sept 24 and Oct 24 into one file). Four test functions, one per assertion. Its skip fixture
+    requests _allow_network_for_integration and skips only when the extension cannot load (existing
+    _has_ducklake_extension pattern), which keeps unit tiers clean; VP step 6 treats any skip as a FAIL.
+- file: tests/fixtures/event_contracts/fixture-event-envelope.yaml
+  action: Create
+  purpose: Minimal Class C fixture envelope (event_id, parser_version, session_started_at, event_timestamp, created_timestamp).
+- file: tests/fixtures/event_contracts/fixture_events.yaml
+  action: Create
+  purpose: >-
+    Minimal Class A table_class event fixture: $ref envelope fields tightened via dq_intent_local, a derivation.timing
+    read field, bigint, double, list[str], a nullable:false+required_when field and a plain nullable:false field.
+- file: tests/test_field_semantics_event_projection.py
+  action: Create
+  purpose: >-
+    Mapped test for the projection module: fixture-contract projection shape, fail-closed cases, generate()
+    accepting an event contract without merge_key, and all four real telemetry contracts projecting (unregistered).
+- file: tests/test_schema_to_field_semantics.py
+  action: Modify
+  purpose: >-
+    Fold TestIcebergToSqlMapping's seven single-type methods into one parametrized test that also covers bigint
+    and double (net +2 SLOC after ruff format, not a saving); add test_event_class_dispatches_to_event_projection
+    within the remaining ~19 SLOC of headroom (479/500 today). Stays <= 500 SLOC.
+- file: tests/lambda_manifest/test_bundle_checks.py
+  action: Modify
+  purpose: >-
+    Add test_telemetry_kernel_excluded_from_data_pipeline (precedent: test_maintenance_scope_module_bundled_and_excluded):
+    src/telemetry in data-pipeline excludes, compute_affected_artifacts over the kernel files returns no artifact,
+    and a hermetic stage_bundle(skip_pip=True) into tmp_path stages no path under src/telemetry/ (Decision 79 note).
+- file: .importlinter
+  action: Modify
+  purpose: >-
+    New forbidden contract src-telemetry-is-plane-neutral (source src.telemetry; forbidden scripts, src.common,
+    src.data, src.lambdas) -- the src-schemas-is-pure-data-layer precedent; plus a second forbidden contract
+    scripts-never-import-telemetry-append (source scripts; forbidden src.telemetry.append) so no scripts/ producer
+    can bypass the future writer verb (Decision 81 closed write boundary); both enforced by validate_import_contracts
+    in both tiers (Decision 184 cl.2).
+- file: tests/telemetry/test_package_boundary.py
+  action: Create
+  purpose: >-
+    AST scan of src/telemetry/*.py: runtime imports limited to the stdlib (duckdb only under TYPE_CHECKING);
+    __init__.py re-exports nothing; .importlinter carries BOTH the src-telemetry-is-plane-neutral purity contract
+    and the scripts-never-import-telemetry-append contract (source scripts, forbidden src.telemetry.append).
+- file: config/agent/verification_registry/entries/telemetry-identity-golden-vectors.yaml
+  action: Create
+  purpose: Registry row for graduated VP step 1.
+- file: config/agent/verification_registry/entries/telemetry-iso8601-decode.yaml
+  action: Create
+  purpose: Registry row for graduated VP step 2.
+- file: config/agent/verification_registry/entries/telemetry-append-gate.yaml
+  action: Create
+  purpose: Registry row for graduated VP step 3.
+- file: config/agent/verification_registry/entries/telemetry-append-events-replay-noop.yaml
+  action: Create
+  purpose: Registry row for graduated VP step 4 (hermetic false; duckdb importorskip -- PLAN-reader-projection-substrate precedent).
+- file: config/agent/verification_registry/entries/field-semantics-event-projection.yaml
+  action: Create
+  purpose: Registry row for graduated VP step 7.
+- file: config/agent/verification_registry/entries/field-semantics-event-dispatch.yaml
+  action: Create
+  purpose: Registry row for graduated VP step 8.
+- file: config/agent/verification_registry/entries/telemetry-kernel-excluded-from-data-pipeline.yaml
+  action: Create
+  purpose: Registry row for graduated VP step 10.
+- file: config/agent/verification_registry/entries/telemetry-kernel-plane-neutral.yaml
+  action: Create
+  purpose: Registry row for graduated VP step 11.
+- file: scripts/checks/ops_governance/_manifest.py
+  action: Modify
+  purpose: >-
+    validate_reconcile_pending_gate pre_globs += scripts/field_semantics_event_projection.py and src/telemetry/**:
+    the generator's (function-scope) import of the projection module, and its import of src.telemetry.identity /
+    timestamps, extend that check's first-party import closure, which validate_pre_glob_closure (blocking in --pre)
+    requires the pre_globs to cover.
+- file: tests/checks/ops_governance/test__manifest.py
+  action: Modify
+  purpose: >-
+    Extend the validate_reconcile_pending_gate row of _CLOSURE_INPUTS with the two new closure paths so the
+    closure test pins the manifest change.
+bundled_recommendations:
+- rec-4065
+followon_recs:
+- rec-4024
+- rec-4068
+infrastructure_dependencies:
+- >-
+  src/lambdas/data-pipeline/manifest.yaml (active artifact data-pipeline) is edited (one excludes line), so
+  compute_affected_artifacts() flags data-pipeline via its manifest rule. NO deploy is performed or needed: the
+  only zip delta is the packaged manifest.yaml, which no data-pipeline runtime code reads (the kernel files are
+  excluded and never enter the zip); neither deploy-prod-lambdas.yml nor deploy-ducklake-lambdas.yml path-triggers
+  on any changed file (VP step 13); PROD_SOURCE_PATHSPECS drift detection excludes the manifest. No .tf file and no
+  DuckLake-Lambda-packaged file is in scope.
+acceptance_criteria:
+- >-
+  src/telemetry/identity.py reproduces every vector in tests/telemetry/fixtures/identity_vectors.yaml byte-exactly
+  (H hex and id), and the test ALSO recomputes each vector independently (hashlib + struct + unicodedata + an
+  in-test stdlib Crockford encoder, never importing src.telemetry); python-ulid appears only in a separate
+  cross-check test behind a function-scope pytest.importorskip("ulid"). Vectors cover at least: one per domain tag (telemetry_sessions:session_id,
+  telemetry_observations:observation_id, telemetry_transcripts:transcript_id, telemetry_agents:agent_run_id, and a
+  '<table>:event' event_id); an FK-equality pair (child FK over the parent's tag and ref == parent key); a sub-agent
+  session ref '<sessionId>:<agentId>' carrying the ROOT session_started_at prefix; an NFC-equivalence pair
+  (composed vs decomposed ref -> same id); a lowercase-tenant canonicalisation pair; a sub-millisecond truncation
+  case (.999999 -> ms .999, never rounded up); a non-UTC offset normalised to the same ms; a multi-byte UTF-8 ref
+  (length prefix counts bytes); a whitespace-bearing ref (never trimmed); an epoch (1970-01-01T00:00:00Z) and a far-future
+  (9999-12-31T23:59:59.999Z) time basis; a decode_time_prefix round trip; and one vector carrying its full preimage
+  hex. Negative vectors: empty ref, ref with NUL / LF, ref of 4097 UTF-8 bytes, non-str ref, a 25-char tenant, a
+  tenant containing I, a tenant whose first char is 8 (overflow), a naive or pre-epoch time basis, an unknown
+  domain tag.
+- >-
+  identity.py rejects (IdentityError): a naive, pre-epoch or > 2**48-1 ms timestamp; a tenant/project that is not
+  a 26-char Crockford ULID (I/L/O/U, overflow, wrong length); an empty, non-str, control-character (Unicode Cc/Cs)
+  or > 4096-UTF-8-byte ref; any domain tag not in the closed DOMAIN_TAGS registry. canonical_ulid upper-cases then
+  validates with the stdlib Crockford strict parse (26 chars, no I/L/O/U, first char <= '7');
+  canonical_ref NFC-normalises and never trims or case-folds.
+  KEY_PLANS covers the four tables with each row's own key from entity_ref (transcripts: entity_ref must equal
+  external_ref; sessions: entity_ref is the session_ref) and each FK computed with the PARENT's tag over the named
+  caller ref (session_ref, parent_session_ref, observation_ref, parent_observation_ref); a required ref that is
+  absent raises, an optional one yields NULL. decode_time_prefix(derive_entity_key(...)) returns the ms-truncated
+  time basis.
+- >-
+  docs/contracts/telemetry-event-envelope.yaml governance_notes names tests/telemetry/fixtures/identity_vectors.yaml,
+  the file exists and parses, the note scopes "normative" to the positive vectors and labels the negative vectors
+  kernel input policy, and the contract carries one new top-level amendment_log entry (governance_note_add,
+  semantic_break false); no field, contract.description or contract_version changes.
+- >-
+  timestamps.py: parse_iso8601_utc accepts exactly the pinned RFC 3339 profile ('Z'/'z' or +/-HH:MM offset, 'T'/'t'/
+  space separator, 1-9 fraction digits truncated to ms, comma or dot decimal) and returns a UTC tz-aware datetime;
+  rejects (TimestampError) naive ('2026-09-25T10:00:00'), date-only ('2026-09-25'), basic format
+  ('20260925T100000Z'), week dates, '+02' and '+0200' offsets, '24:00:00', ':60', non-str and malformed input -- the
+  forms datetime.fromisoformat would otherwise accept are tested explicitly; truncate_to_ms floors; epoch_ms is
+  exact integer arithmetic (no float).
+- >-
+  append_events: a connection whose TimeZone is not 'UTC' is rejected before any SQL (a test sets
+  TimeZone='America/New_York' on in-memory DuckDB and asserts the rejection and that no transaction opened); an
+  empty batch returns inserted 0 without opening a transaction; a non-empty batch runs BEGIN, exactly
+  ONE MERGE statement and COMMIT; the MERGE is insert-only (WHEN NOT MATCHED THEN INSERT; no UPDATE/DELETE clause),
+  matches ON t.event_id = s.event_id AND t.parser_version = s.parser_version AND t.session_started_at >= <day floor
+  of the batch's min session_started_at> AND t.session_started_at < <day floor of its max + 1 day> (bound
+  parameters; a test captures the SQL and asserts the bounds), sources a multi-row VALUES list of bound parameters
+  CAST to each column's sql_type, and never interpolates a value; catalog/table/column identifiers are validated.
+  Ids: every KEY_PLANS column and event_id on every stored row equals an independent identity recomputation from
+  the row's refs, tenant_id and project_id; a caller-supplied event_id, key column, tenant_id, project_id or
+  created_timestamp is rejected. Replaying a batch returns inserted 0 and leaves the row count unchanged; the same
+  event under a higher parser_version inserts one new row. created_timestamp is minted once per call (now() UTC, or
+  the injected tz-aware now) and is identical on every row of the batch. Strict type gate before any SQL: VARCHAR
+  takes str only; BIGINT takes int (never bool) within int64; DOUBLE takes int or float (never bool), finite only;
+  BOOLEAN takes bool only; VARCHAR[] takes list[str]; TIMESTAMP WITH TIME ZONE takes a tz-aware datetime only
+  (converted to UTC, truncated to ms) -- each rejection is tested because DuckDB's own casts coerce silently (1.5 to
+  2, True to 1, naive to UTC). An unknown column, a missing/None NOT NULL column (parser_version included: a NULL
+  key never matches, so replays would duplicate) is rejected before any SQL. Intra-batch rows sharing (event_id,
+  parser_version): byte-identical ones collapse to one (AppendResult.collapsed counts them); differing ones reject
+  the whole batch naming the event_id, never first-wins. A SQL failure mid-batch rolls back (zero rows written),
+  re-raises, and leaves the connection usable. Error messages name the column and event_id, never payload values.
+  The primitive mints nothing but created_timestamp and never retries (OCC retry stays the writer verb's,
+  rec-4024).
+- >-
+  EventTableSpec.from_projection rejects an entry that carries merge_key or current_table, whose write_mode is not
+  append_only, whose dedupe_key is not [event_id, parser_version], whose partition_column is not session_started_at,
+  whose history partition is not the calendar-day triple over session_started_at,
+  that lacks event_id/parser_version/session_started_at/created_timestamp, or whose derived-role set differs from
+  {event_id, created_timestamp, tenant_id, project_id} plus the table's KEY_PLANS columns.
+- >-
+  Integration (local DuckLake file catalog on the venv's pinned duckdb/ducklake, Decision 99; table partitioned
+  by the triple year(), month(), day() of session_started_at before the first write; DATA_INLINING_ROW_LIMIT 0, which IS the production setting --
+  Decision 107 / CD.34 disabled inlining for all tables including telemetry, set on every connection by
+  src/common/ducklake_runtime.py): one
+  single-session batch adds exactly one data file; replaying it adds zero data files and zero rows; and the
+  day-bounded MERGE reads exactly one data file when the touched-day, adjacent-day and same-day-of-month
+  files all span the batch's event_id range; and, with TimeZone set to 'UTC' and at least two seed files per date,
+  compaction reduces the file count to exactly the number of distinct dates with no file mixing two calendar
+  dates. VP step 6 runs it on real DuckLake and fails on any skip; an
+  extension-load failure is an environment defect to fix, never a skip or a deferral.
+- >-
+  Generator: _map_iceberg_type maps bigint->BIGINT and double->DOUBLE; a table_class event contract projects to
+  {status, write_mode: append_only, history_table: <contract id>, partition: {history: <governance.partition_by>},
+  partition_column: session_started_at, dedupe_key: [event_id, parser_version], entity_key: <the table's own key
+  column>, columns} with no merge_key/current_table/entity_id_prefix/id_keyspace; columns in contract declaration
+  order; derivation.timing read fields have no column (a timing read field with realized true raises); role derived
+  for event_id, created_timestamp, tenant_id, project_id and every KEY_PLANS column, all other columns role input; a
+  column is NOT NULL iff (nullable false OR resolved dq_intent(_local).not_null.enforced true) AND it declares no
+  dq_intent.required_when, and a required_when column carries that condition as column metadata; fail-closed ValueError
+  on a missing envelope column, a partition_by that is not exactly "year(C), month(C), day(C)" over one projected
+  TIMESTAMP WITH TIME ZONE column C (a bare day(C) is rejected, with a message naming DuckLake's day-of-month
+  semantics), or a migration_columns entry; generate() accepts an event contract with no merge_key. All four real telemetry
+  contracts project without error (e.g. telemetry_sessions has no duration_seconds column and workflow projects
+  nullable).
+- >-
+  Partition spec (rec-4065): all four telemetry contracts' governance.partition_by and telemetry-lexicon's
+  temporal.partition values are "year(session_started_at), month(session_started_at), day(session_started_at)"; no
+  docs/contracts/*.yaml string outside amendment_log/previous_versions names a bare day(session_started_at),
+  "day() partition" or "day()-partition"; every touched contract carries its amendment_log entries (category 6
+  and Class D rituals pass); Decision 199 carries the 2026-09-25 Update line; T2.36's roadmap note names the
+  calendar-day partition (exit_criteria c1). The live ops tables' identical day(created_timestamp) defect is rec-4068, not this slice.
+- >-
+  Nothing ships: _CONTRACT_TABLE_IDS gains no telemetry id; `bin/venv-python -m scripts.schema_to_field_semantics
+  --check` reports no drift; nothing under config/lambda/ducklake/, src/common/ducklake_*.py or src/lambdas/ducklake_*/
+  changes; no changed file matches either deploy workflow's push path globs; data-pipeline excludes src/telemetry
+  and compute_affected_artifacts over the kernel files returns no artifact.
+- >-
+  Plane-neutral (Decision 184 cl.2): src/telemetry runtime imports are the stdlib only (duckdb only under
+  TYPE_CHECKING; no python-ulid); src/telemetry/__init__.py re-exports nothing (append_events is reachable only as
+  src.telemetry.append, for the future write-boundary verb); .importlinter's src-telemetry-is-plane-neutral contract
+  forbids scripts, src.common, src.data and src.lambdas, its scripts-never-import-telemetry-append contract forbids
+  scripts from importing src.telemetry.append, and lint-imports passes.
+- >-
+  SLOC: every created/modified Python file is <= 500 SLOC (tests/test_schema_to_field_semantics.py included) and
+  config/sloc_budgets.yaml is unchanged (Decision 128).
+- >-
+  file-router.yaml carries the telemetry-kernel route and the scripts-root allowlist entry with a Class D
+  amendment_log entry; validate_placement passes.
+- >-
+  rec-4024's context records what slice 1 delivered and the slice-2 obligations, and its acceptance is re-pointed
+  from tests/common/test_ducklake_append.py to tests/telemetry/test_append.py::test_append_events_replay_is_noop
+  (keeping its field_semantics grep); rec-4025's context records the delivered vector path. rec-4065 closes through
+  the squash-merge's Resolves trailer.
+- >-
+  bin/venv-python -m scripts.validate --pre and the full tier bin/venv-python -m scripts.validate both exit 0.
+verification_plan:
+- step: 1
+  phase: pre-deploy
+  action: Run the identity golden-vector, independent-recomputation, rejection and envelope-pointer tests.
+  command: bin/venv-python -m pytest tests/telemetry/test_identity.py -q
+  expected: Exit 0, all tests pass. Red before - the test module and the identity module do not exist.
+  fix_if: >-
+    A vector mismatch where the in-test independent recomputation agrees with the vector is a module bug - fix the
+    module. If the two disagree with each other, the vector file is wrong - regenerate it from the independent
+    derivation, never from src.telemetry.
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: telemetry-identity-golden-vectors
+  expected_literals: []
+- step: 2
+  phase: pre-deploy
+  action: Run the ISO-8601 decode / truncation / epoch-ms tests.
+  command: bin/venv-python -m pytest tests/telemetry/test_timestamps.py -q
+  expected: Exit 0, all tests pass. Red before - modules absent.
+  fix_if: Fix the helper; a naive input must raise, never be assumed UTC.
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: telemetry-iso8601-decode
+  expected_literals: []
+- step: 3
+  phase: pre-deploy
+  action: Run the pure row-gate tests (strict type gate, NOT NULL, derived-column rejection, intra-batch collapse/conflict).
+  command: bin/venv-python -m pytest tests/telemetry/test_gate.py -q
+  expected: Exit 0, all tests pass. Red before - module and tests absent.
+  fix_if: Fix the gate; never loosen a type rule to make a caller pass (DuckDB casts coerce silently).
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: telemetry-append-gate
+  expected_literals: []
+- step: 4
+  phase: pre-deploy
+  action: >-
+    Run the append_events DuckDB tests (id derivation, replay no-op, parser_version re-parse, partition-bounded
+    MERGE, rollback); the graduated node is the replay no-op keystone rec-4024's acceptance cites.
+  command: bin/venv-python -m pytest tests/telemetry/test_append.py::test_append_events_replay_is_noop -q
+  expected: Exit 0, the node passes. Red before - the node does not exist (pytest exit 4).
+  fix_if: >-
+    Fix the primitive, then run the whole module (bin/venv-python -m pytest tests/telemetry/test_append.py -q) green.
+    Never weaken the one-MERGE / insert-only / bound-parameter / partition-bound assertions; a DuckDB typing failure
+    on an all-NULL VALUES column means the source CAST is missing.
+  hermetic: false
+  graduation: graduate
+  graduation_check_id: telemetry-append-events-replay-noop
+  expected_literals: []
+- step: 5
+  phase: pre-deploy
+  action: >-
+    Run the whole append_events DuckDB module (kernel id derivation and caller-id rejection, replay no-op,
+    parser_version re-parse, partition-bounded MERGE bounds, rollback, spec validation).
+  command: bin/venv-python -m pytest tests/telemetry/test_append.py -q
+  expected: Exit 0, all tests pass. Red before - module and tests absent.
+  fix_if: Fix the primitive; never weaken the one-MERGE / insert-only / bound-parameter / partition-bound assertions.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: >-
+    File-level selector over a module that importorskips duckdb: pr-validate has no duckdb, where a file-level row
+    exits 5 without the "found no collectors" phrase and is not admitted; the keystone node is graduated by step 4
+    and the whole module runs in the full tier.
+- step: 6
+  phase: pre-deploy
+  action: >-
+    Run the real-DuckLake integration module on the pinned duckdb/ducklake (local file catalog, inlining 0,
+    calendar-day triple partition): one file per single-session batch, zero new files and rows on replay, the
+    day-bounded MERGE scans exactly one file, and no file mixes two calendar dates after compaction. A skip is a FAIL.
+  command: >-
+    bin/venv-python -m pytest tests/telemetry/test_append_ducklake_integration.py -m integration -q -rs
+    --junitxml=/tmp/telemetry-ducklake-it.xml && bin/venv-python -c "import xml.etree.ElementTree as
+    E;r=E.parse('/tmp/telemetry-ducklake-it.xml').getroot();s=r if r.tag=='testsuite' else
+    r.find('testsuite');n,k=int(s.get('tests')),int(s.get('skipped'));assert n>=4 and k==0,(n,k);print('DUCKLAKE_REAL_OK',n)"
+  expected: >-
+    Exit 0; at least 4 tests pass with zero skipped and the marker prints. Red before - the module and
+    src/telemetry/append.py do not exist.
+  fix_if: >-
+    A skip or load error means the pinned extension did not load - fix the environment (Decision 99 pin) and
+    re-run; never skip, defer or drop the step. A files-read of 0 means a seed file did not span the batch's
+    event_id range (the key join pruned it) - fix the fixture. Any other file-count or files-read mismatch is a
+    primitive bug (missing day bound, per-row statements, or a non-insert-only MERGE) - fix append.py, never
+    loosen the assertion. A file mixing two dates after compaction means the table was not partitioned by the
+    triple - fix the fixture or the contract spelling, never the assertion.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: >-
+    A registry row (TestSelectorCheck, scripts/verification_checks.py) runs one node and counts pytest exit 0 as
+    PASS, but where duckdb or the extension is absent (the fast tier installs no duckdb) the skip fixture exits 0,
+    so the row would be green exactly when it proves nothing, and the zero-skip junit assertion has no canonical
+    slot. The evidence is this step's run in the implement session, recorded in the Report; the CI-side guards on
+    the same primitive are graduated steps 3 and 4.
+- step: 7
+  phase: pre-deploy
+  action: Run the event projection tests (fixture contracts, fail-closed cases, generate() without merge_key, four real contracts).
+  command: bin/venv-python -m pytest tests/test_field_semantics_event_projection.py -q
+  expected: Exit 0, all tests pass. Red before - module and tests absent.
+  fix_if: >-
+    Fix the projection module. If a real telemetry contract fails to project, report it - the only ratified-contract
+    edits in this slice are the vector pointer and the rec-4065 partition respelling.
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: field-semantics-event-projection
+  expected_literals: []
+- step: 8
+  phase: pre-deploy
+  action: Run the generator's event-dispatch test node.
+  command: bin/venv-python -m pytest "tests/test_schema_to_field_semantics.py::test_event_class_dispatches_to_event_projection" -q
+  expected: Exit 0, the node passes. Red before - the node does not exist (pytest exit 4).
+  fix_if: Fix the dispatch in _project_contract_table / generate().
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: field-semantics-event-dispatch
+  expected_literals: []
+- step: 9
+  phase: pre-deploy
+  action: Run the whole generator suite (parametrized type mapping incl. bigint/double, SCD2/control regressions).
+  command: bin/venv-python -m pytest tests/test_schema_to_field_semantics.py -q
+  expected: Exit 0, all tests pass.
+  fix_if: A regression in an existing SCD2/control test means the dispatch leaked into a non-event class - fix it.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: >-
+    Existing registered module, green on the un-implemented tree by construction; its new behaviour is graduated
+    by steps 7 and 8.
+  expected_literals: []
+- step: 10
+  phase: pre-deploy
+  action: Assert the kernel is excluded from data-pipeline and marks no artifact affected.
+  command: bin/venv-python -m pytest "tests/lambda_manifest/test_bundle_checks.py::test_telemetry_kernel_excluded_from_data_pipeline" -q
+  expected: Exit 0. Red before - the node does not exist, and without the excludes line data-pipeline would be affected.
+  fix_if: Add the excludes entry; never exclude by listing individual files.
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: telemetry-kernel-excluded-from-data-pipeline
+  expected_literals: []
+- step: 11
+  phase: pre-deploy
+  action: Assert the kernel is plane-neutral (AST import allowlist, no re-export facade, both import-linter contracts present).
+  command: bin/venv-python -m pytest tests/telemetry/test_package_boundary.py -q
+  expected: Exit 0, all tests pass. Red before - the package, the test and the .importlinter contract are absent.
+  fix_if: Remove the offending import (move it behind the writer verb in slice 2); never widen the allowlist to pass.
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: telemetry-kernel-plane-neutral
+  expected_literals: []
+- step: 12
+  phase: pre-deploy
+  action: Assert nothing ships - no field_semantics drift, no telemetry registration, no DuckLake-channel file touched.
+  command: >-
+    bin/venv-python -m scripts.schema_to_field_semantics --check && git diff --quiet $(git merge-base HEAD origin/main) -- config/lambda/ducklake/
+    src/common/ducklake_scd2_schema.py config/sloc_budgets.yaml && bin/venv-python -c "import scripts.schema_to_field_semantics
+    as g;bad=[t for t in g._CONTRACT_TABLE_IDS if t.startswith('telemetry')];assert not bad,bad;print('UNREGISTERED_OK')"
+  expected: Exit 0; the drift gate reports up-to-date and the marker prints.
+  fix_if: Revert any registration or generated-output change - that is slice 2.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: >-
+    Diff-relative to the merge-base with origin/main and green on the un-implemented tree by design; the standing guard is the generator
+    --check drift gate in scripts.validate.
+- step: 13
+  phase: pre-deploy
+  action: Assert no changed file matches either deploy workflow's push path globs and data-pipeline is flagged only via its own manifest (the V2 ground, Decision 79 note).
+  command: >-
+    bin/venv-python -c "import fnmatch,subprocess,yaml;run=lambda a:subprocess.run(a,capture_output=True,text=True,check=True).stdout.split();mb=subprocess.run(['git','merge-base','HEAD','origin/main'],capture_output=True,text=True,check=True).stdout.strip();ch=sorted(set(run(['git','diff','--name-only',mb]))|set(run(['git','ls-files','--others','--exclude-standard'])));hits={wf:[f
+    for f in ch if any(fnmatch.fnmatch(f,g) for g in ((w.get('on') or w.get(True))['push']['paths']))] for wf in ('deploy-ducklake-lambdas','deploy-prod-lambdas')
+    for w in [yaml.safe_load(open('.github/workflows/%s.yml'%wf,encoding='utf-8'))]};hits={k:v for k,v in hits.items() if v};from scripts.lambda_manifest import compute_affected_artifacts as ca;aff=ca(ch);print('changed',len(ch),'hits',hits,'affected',aff);assert
+    ch and not hits and aff in ({},{'data-pipeline':['src/lambdas/data-pipeline/manifest.yaml']});print('NO_DEPLOY_TRIGGER_OK')"
+  expected: >-
+    Exit 0, the changed-file count (tracked diff against the merge-base with origin/main plus untracked files, so it holds before the
+    commit) is non-zero, the hits map is empty and affected is empty or data-pipeline via its manifest only.
+  fix_if: >-
+    A hit means a DuckLake-channel or prod-channel file changed - move the code out of that path; if it cannot move,
+    the slice is V3 and must go through the governed deploy workflow, never a local build_lambda --deploy.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: >-
+    Reads the transient working-tree diff against the merge-base with origin/main, which is empty on main after merge, so a registry
+    row could never discriminate; the standing guards are the deploy workflows' own path filters and
+    validate_deploy_channel_conformance.
+- step: 14
+  phase: pre-deploy
+  action: >-
+    Confirm the contract rituals - every touched Class A/C contract has no category-6 error and a new top-level
+    amendment entry; every touched Class D contract (file-router, telemetry-lexicon, storage-substrate) has a new
+    amendment entry.
+  command: >-
+    bin/venv-python -c "import subprocess,yaml;from scripts.contracts_schema import ContractDocument;from scripts.contracts_enforcement
+    import check_amendment_for_diff;from scripts.checks.contracts._population import check_amendment_log_for_class_d;base=lambda f:yaml.safe_load(subprocess.run(['git','show','origin/main:docs/contracts/%s.yaml'%f],capture_output=True,text=True,check=True).stdout);head=lambda
+    f:yaml.safe_load(open('docs/contracts/%s.yaml'%f,encoding='utf-8'));errs=[];AC=['telemetry-event-envelope','telemetry_sessions','telemetry_observations','telemetry_transcripts','telemetry_agents','session-id','observation-id'];D=['file-router','telemetry-lexicon','storage-substrate']
+    ;[errs.extend(['%s: %s'%(f,e) for e in check_amendment_for_diff(ContractDocument.model_validate(base(f)),ContractDocument.model_validate(head(f)))]+(['%s: no new amendment_log entry'%f] if len(head(f).get('amendment_log') or [])<=len(base(f).get('amendment_log') or []) else [])) for f in AC]
+    ;[errs.append('%s: %s'%(f,check_amendment_log_for_class_d(base(f),head(f)) or 'no new amendment_log entry')) for f in D if check_amendment_log_for_class_d(base(f),head(f)) or len(head(f).get('amendment_log') or [])<=len(base(f).get('amendment_log') or [])];print(errs or 'RITUALS_OK');assert not errs"
+  expected: Exit 0 and the success marker printed.
+  fix_if: Add the missing amendment_log entry or allowlist line; never drop a file from the check.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: >-
+    Diff-relative to origin/main; validate_contract_drift and validate_placement are the standing guards in both tiers.
+- step: 15
+  phase: pre-deploy
+  action: Confirm the placement gate accepts the new scripts-root module and the telemetry-kernel route resolves.
+  command: >-
+    git add --intent-to-add src/telemetry scripts/field_semantics_event_projection.py && bin/venv-python -c "from
+    scripts.checks.hygiene.validate_placement import validate_placement;f=[];validate_placement(f);assert not
+    f,f;print('PLACEMENT_OK')"
+  expected: Exit 0 and the success marker printed (validate_placement reads git ls-files, hence the intent-to-add).
+  fix_if: Add the allowlist entry / fix the route target; never remove the new module to pass.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: >-
+    Green on the un-implemented tree (the new module does not exist yet), so graduating would redden the plan PR
+    under RED-BEFORE replay; validate_placement is already the standing guard in both tiers.
+  expected_literals: []
+- step: 16
+  phase: pre-deploy
+  action: Confirm the rec-4024 / rec-4025 portal updates landed (reader verb rec_by_id).
+  command: >-
+    bin/venv-python -c "from src.common.ducklake_reader_client import make_reader;r=make_reader(profile='agent_platform');a=r.named('rec_by_id',id='rec-4024')[0];b=r.named('rec_by_id',id='rec-4025')[0];assert
+    'tests/telemetry/test_append.py::test_append_events_replay_is_noop' in a['acceptance'] and 'PLAN-telemetry-kernel-identity-append'
+    in a['context'] and 'tests/telemetry/fixtures/identity_vectors.yaml' in b['context'];print('RECS_OK')"
+  expected: Exit 0 and the success marker printed.
+  fix_if: Re-run update_rec through scripts.ops_data_portal (get_rec_write_guidance first); never edit a log cache.
+  hermetic: false
+  graduation: not-applicable
+- step: 17
+  phase: pre-deploy
+  action: Run the fast tier (lint, format, SLOC/CC, import contracts, plan and contract checks; the mypy ratchet runs in the full tier).
+  command: bin/venv-python -m scripts.validate --pre
+  expected: Exit 0.
+  fix_if: Fix at the root (Decision 55); a SLOC failure means decompose further, never raise a budget.
+  hermetic: false
+  graduation: not-applicable
+- step: 18
+  phase: pre-deploy
+  action: Run the calendar-day partition guard (four contracts and the lexicon use the triple; no bare day() partition spelling).
+  command: bin/venv-python -m pytest tests/checks/contracts/test_telemetry_event_journal_contracts.py::test_partition_by_is_calendar_day_triple -q
+  expected: Exit 0, the node passes. Red before - the node does not exist (pytest exit 4).
+  fix_if: >-
+    Respell the offending contract string to the triple or "calendar-day partition"; never exclude a file from the
+    scan or edit amendment_log history to pass.
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: telemetry-partition-calendar-day
+  expected_literals: []
+- step: 19
+  phase: pre-deploy
+  action: Run the full validation tier per the handoff policy (includes per-file 100% coverage of every changed source).
+  command: bin/venv-python -m scripts.validate
+  expected: Exit 0.
+  fix_if: Fix the root cause (Decision 55); never skip a check.
+  hermetic: false
+  graduation: not-applicable
+test_obligations:
+- source: src/telemetry/identity.py
+  behavior: >-
+    Exact envelope identity derivation (length-prefixed NFC hash, canonical ULIDs, ms-truncated time prefix, 80 hash
+    bits) reproducing every golden vector; FK equality; rejection cases.
+  verification_step: 1
+  test_selector: tests/telemetry/test_identity.py
+  red_green_expectation: red before (module absent), green after
+- source: tests/telemetry/fixtures/identity_vectors.yaml
+  behavior: Normative inputs -> exact H and ids, independently recomputed by the test.
+  verification_step: 1
+  test_selector: tests/telemetry/test_identity.py
+  red_green_expectation: red before (file absent), green after
+- source: docs/contracts/telemetry-event-envelope.yaml
+  behavior: governance_notes names the committed vector file, which exists and parses.
+  verification_step: 1
+  test_selector: tests/telemetry/test_identity.py::test_envelope_contract_references_golden_vectors
+  red_green_expectation: red before (node absent / pointer absent), green after
+- source: src/telemetry/timestamps.py
+  behavior: tz-aware ISO-8601 decode rejecting naive input; UTC normalisation; ms floor truncation; exact epoch ms.
+  verification_step: 2
+  test_selector: tests/telemetry/test_timestamps.py
+  red_green_expectation: red before (module absent), green after
+- source: src/telemetry/append.py
+  behavior: >-
+    Rejects a non-UTC connection TimeZone before any SQL; kernel-derived keys/event_id (caller ids rejected); one
+    transaction, one insert-only MERGE on (event_id, parser_version) bounded to the batch's UTC calendar-day range
+    over bound multi-row VALUES; replay
+    no-op; re-parse appends; writer-minted created_timestamp; strict pre-SQL type gate; intra-batch collapse and
+    conflict rejection; rollback on failure; spec validation.
+  verification_step: 5
+  test_selector: tests/telemetry/test_append.py
+  red_green_expectation: red before (module absent), green after
+- source: src/telemetry/__init__.py
+  behavior: Package marker with a docstring only.
+  verification_step: 17
+  command: bin/venv-python -m scripts.validate --pre
+  waiver_reason: Docstring-only package marker with no executable behaviour; import and lint are covered by the fast tier.
+- source: src/telemetry/gate.py
+  behavior: >-
+    Strict per-sql_type type gate, NOT NULL, derived-column rejection, intra-batch collapse/conflict rejection.
+  verification_step: 3
+  test_selector: tests/telemetry/test_gate.py
+  red_green_expectation: red before (module absent), green after
+- source: scripts/field_semantics_event_projection.py
+  behavior: >-
+    Event projection shape, read-derived exclusion, created_timestamp derived, required_when-aware nullability,
+    fail-closed validation, real-contract projectability.
+  verification_step: 7
+  test_selector: tests/test_field_semantics_event_projection.py
+  red_green_expectation: red before (module absent), green after
+- source: scripts/schema_to_field_semantics.py
+  behavior: bigint/double mapping; table_class event dispatch; merge_key required only for non-event classes.
+  verification_step: 8
+  test_selector: tests/test_schema_to_field_semantics.py::test_event_class_dispatches_to_event_projection
+  red_green_expectation: red before (node absent; event class would fall into the SCD2 branch), green after
+- source: src/lambdas/data-pipeline/manifest.yaml
+  behavior: data-pipeline excludes src/telemetry; the kernel marks no artifact affected.
+  verification_step: 10
+  test_selector: tests/lambda_manifest/test_bundle_checks.py::test_telemetry_kernel_excluded_from_data_pipeline
+  red_green_expectation: red before (not excluded -> data-pipeline affected), green after
+- source: .importlinter
+  behavior: >-
+    src.telemetry may not import scripts, src.common, src.data or src.lambdas; scripts may not import
+    src.telemetry.append.
+  verification_step: 11
+  test_selector: tests/telemetry/test_package_boundary.py
+  red_green_expectation: red before (contract and package absent), green after
+- source: docs/contracts/telemetry_sessions.yaml
+  behavior: governance.partition_by is the calendar-day triple; no bare day() partition spelling.
+  verification_step: 18
+  test_selector: tests/checks/contracts/test_telemetry_event_journal_contracts.py::test_partition_by_is_calendar_day_triple
+  red_green_expectation: red before (node absent; partition_by is bare day()), green after
+- source: docs/contracts/telemetry_observations.yaml
+  behavior: governance.partition_by is the calendar-day triple.
+  verification_step: 18
+  test_selector: tests/checks/contracts/test_telemetry_event_journal_contracts.py::test_partition_by_is_calendar_day_triple
+  red_green_expectation: red before (node absent; partition_by is bare day()), green after
+- source: docs/contracts/telemetry_transcripts.yaml
+  behavior: governance.partition_by is the calendar-day triple.
+  verification_step: 18
+  test_selector: tests/checks/contracts/test_telemetry_event_journal_contracts.py::test_partition_by_is_calendar_day_triple
+  red_green_expectation: red before (node absent; partition_by is bare day()), green after
+- source: docs/contracts/telemetry_agents.yaml
+  behavior: governance.partition_by is the calendar-day triple; populated_by bounds say calendar-day partition.
+  verification_step: 18
+  test_selector: tests/checks/contracts/test_telemetry_event_journal_contracts.py::test_partition_by_is_calendar_day_triple
+  red_green_expectation: red before (node absent; partition_by is bare day()), green after
+- source: docs/contracts/telemetry-lexicon.yaml
+  behavior: temporal.partition values are the calendar-day triple.
+  verification_step: 18
+  test_selector: tests/checks/contracts/test_telemetry_event_journal_contracts.py::test_partition_by_is_calendar_day_triple
+  red_green_expectation: red before (node absent; values are bare day()), green after
+- source: docs/contracts/storage-substrate.yaml
+  behavior: telemetry_tables.disposition names the calendar-day triple.
+  verification_step: 18
+  test_selector: tests/checks/contracts/test_telemetry_event_journal_contracts.py::test_partition_by_is_calendar_day_triple
+  red_green_expectation: red before (node absent; disposition names bare day()), green after
+- source: docs/contracts/session-id.yaml
+  behavior: session_id.semantics says calendar-day partition.
+  verification_step: 18
+  test_selector: tests/checks/contracts/test_telemetry_event_journal_contracts.py::test_partition_by_is_calendar_day_triple
+  red_green_expectation: red before (node absent; "day() partition" present), green after
+- source: docs/contracts/observation-id.yaml
+  behavior: contract.description says calendar-day partition pruning.
+  verification_step: 18
+  test_selector: tests/checks/contracts/test_telemetry_event_journal_contracts.py::test_partition_by_is_calendar_day_triple
+  red_green_expectation: red before (node absent; "day()-partition" present), green after
+- source: docs/DECISIONS.md
+  behavior: Decision 199 carries the 2026-09-25 Update line naming the triple; decision-entry grammar holds.
+  verification_step: 17
+  command: bin/venv-python -m scripts.validate --pre
+  waiver_reason: A dated prose annotation with no executable behaviour; its grammar is enforced by the decision-entry checks in the fast tier.
+- source: docs/ROADMAP-PLATFORM.yaml
+  behavior: T2.36's note names the calendar-day partition; roadmap schema and byte ceilings hold.
+  verification_step: 17
+  command: bin/venv-python -m scripts.validate --pre
+  waiver_reason: A status-note wording change with no executable behaviour; roadmap schema and ceilings are enforced in the fast tier.
+- source: config/agent/verification_registry/entries/telemetry-partition-calendar-day.yaml
+  behavior: VP step 18's graduate disposition has its matching registry row, with plan_slug pinned.
+  verification_step: 17
+  command: bin/venv-python -m scripts.validate --pre
+  red_green_expectation: >-
+    validate_graduation_completeness is red while the row is missing or its plan_slug mismatches, and green once
+    it lands
+- source: docs/contracts/file-router.yaml
+  behavior: New depth-1 scripts file allowlisted and the telemetry-kernel route resolves.
+  verification_step: 15
+  command: >-
+    bin/venv-python -c "from scripts.checks.hygiene.validate_placement import validate_placement;f=[];validate_placement(f);assert
+    not f,f;print('PLACEMENT_OK')"
+  red_green_expectation: red with the new scripts-root module present and no allowlist entry; green after
+- source: scripts/checks/ops_governance/_manifest.py
+  behavior: validate_reconcile_pending_gate pre_globs cover the generator's new closure (projection module, src/telemetry).
+  verification_step: 17
+  command: bin/venv-python -m scripts.validate --pre
+  red_green_expectation: >-
+    red before (validate_pre_glob_closure, blocking in --pre, fails because the generator's closure now reaches
+    scripts/field_semantics_event_projection.py and src/telemetry/ outside the pre_globs; the extended
+    tests/checks/ops_governance/test__manifest.py _CLOSURE_INPUTS row fails the same way), green after
+- source: config/agent/verification_registry/entries/telemetry-identity-golden-vectors.yaml
+  behavior: VP step 1's graduate disposition has its matching registry row, with plan_slug pinned.
+  verification_step: 17
+  command: bin/venv-python -m scripts.validate --pre
+  red_green_expectation: >-
+    validate_graduation_completeness is red while the row is missing or its plan_slug mismatches, and green once
+    it lands
+- source: config/agent/verification_registry/entries/telemetry-iso8601-decode.yaml
+  behavior: VP step 2's graduate disposition has its matching registry row, with plan_slug pinned.
+  verification_step: 17
+  command: bin/venv-python -m scripts.validate --pre
+  red_green_expectation: >-
+    validate_graduation_completeness is red while the row is missing or its plan_slug mismatches, and green once
+    it lands
+- source: config/agent/verification_registry/entries/telemetry-append-gate.yaml
+  behavior: VP step 3's graduate disposition has its matching registry row, with plan_slug pinned.
+  verification_step: 17
+  command: bin/venv-python -m scripts.validate --pre
+  red_green_expectation: >-
+    validate_graduation_completeness is red while the row is missing or its plan_slug mismatches, and green once
+    it lands
+- source: config/agent/verification_registry/entries/telemetry-append-events-replay-noop.yaml
+  behavior: VP step 4's graduate disposition has its matching registry row, with plan_slug pinned.
+  verification_step: 17
+  command: bin/venv-python -m scripts.validate --pre
+  red_green_expectation: >-
+    validate_graduation_completeness is red while the row is missing or its plan_slug mismatches, and green once
+    it lands
+- source: config/agent/verification_registry/entries/field-semantics-event-projection.yaml
+  behavior: VP step 7's graduate disposition has its matching registry row, with plan_slug pinned.
+  verification_step: 17
+  command: bin/venv-python -m scripts.validate --pre
+  red_green_expectation: >-
+    validate_graduation_completeness is red while the row is missing or its plan_slug mismatches, and green once
+    it lands
+- source: config/agent/verification_registry/entries/field-semantics-event-dispatch.yaml
+  behavior: VP step 8's graduate disposition has its matching registry row, with plan_slug pinned.
+  verification_step: 17
+  command: bin/venv-python -m scripts.validate --pre
+  red_green_expectation: >-
+    validate_graduation_completeness is red while the row is missing or its plan_slug mismatches, and green once
+    it lands
+- source: config/agent/verification_registry/entries/telemetry-kernel-excluded-from-data-pipeline.yaml
+  behavior: VP step 10's graduate disposition has its matching registry row, with plan_slug pinned.
+  verification_step: 17
+  command: bin/venv-python -m scripts.validate --pre
+  red_green_expectation: >-
+    validate_graduation_completeness is red while the row is missing or its plan_slug mismatches, and green once
+    it lands
+- source: config/agent/verification_registry/entries/telemetry-kernel-plane-neutral.yaml
+  behavior: VP step 11's graduate disposition has its matching registry row, with plan_slug pinned.
+  verification_step: 17
+  command: bin/venv-python -m scripts.validate --pre
+  red_green_expectation: >-
+    validate_graduation_completeness is red while the row is missing or its plan_slug mismatches, and green once
+    it lands
+constraints:
+- >-
+  Deploy inertness (the V2 ground): no change to src/common/ducklake_*.py, src/lambdas/ducklake_*/**, config/lambda/ducklake/**
+  (field_semantics.yaml and field_semantics.static.yaml included) or the deploy workflows; do not add telemetry
+  ids to _CONTRACT_TABLE_IDS; do not regenerate field_semantics.yaml. If any of these becomes necessary, STOP and
+  report -- the slice would become V3.
+- >-
+  Decision 128: config/sloc_budgets.yaml is untouched; any file nearing 500 SLOC is decomposed (facade pattern for
+  source; parametrize/split for tests), never raised. src/common/ducklake_scd2_schema.py (474/500) is not touched.
+- >-
+  Plane-neutral (Decision 184 cl.2): src/telemetry imports only the stdlib at runtime (python-ulid only inside a
+  test's importorskip cross-check); duckdb only under TYPE_CHECKING; no boto3/botocore, src.common.ducklake_*, src.lambdas.* or scripts.* imports. No exception
+  at import time (AGENTS.md).
+- >-
+  Do not re-litigate Decisions 199/200. Ratified telemetry contract edits are limited to the envelope's vector
+  pointer and the rec-4065 partition respelling (calendar day was always the intent). If a real contract cannot be
+  projected, STOP and report. The ops tables' day(created_timestamp) defect (rec-4068) is out of scope: no change to
+  ops contracts, config/lambda/ducklake/** or src/common/ducklake_*.py.
+- >-
+  SQL safety: every value is a bound parameter; only validated identifiers are interpolated; no eval/exec.
+- >-
+  The primitive is the id-deriving write boundary (keys and event_id from refs, never caller-supplied) but mints
+  nothing except created_timestamp and never retries (OCC retry, row caps, the implausible-event_timestamp skew
+  check, project_ref/tenant resolution and registration belong to the writer verb, rec-4024). parent_observation_id
+  existence is NOT checked at append (contract risk R3, filed as a slice-2 blocker). Read-side dedupe is not this
+  slice.
+- >-
+  Golden vectors are generated from an independent derivation (never by calling src.telemetry) and committed
+  ASCII-only; no emojis anywhere; plain ASCII hyphens.
+- Every behaviour change lands with a test that fails without it (AGENTS.md); no rescue agents or workaround loops (Decision 55).
+context:
+- >-
+  Decision-scout: FLAGS_FOUND -- D79 NOTE (data-pipeline manifest edit vs "V3 + per-Lambda deploy steps"): kept V2,
+  the stage_bundle test (step 10) proves no src/telemetry file is packaged and step 13 asserts the affected set;
+  D184 SPIRIT NOTE (raw primitive reachable by producers): no re-export facade + src-telemetry-is-plane-neutral
+  import contracts + AST boundary test (step 11), verb-only use deferred to rec-4024. CITE: 199, 200, 97, 96, 81, 84,
+  184, 128, 118, 132, 176, 189, 79; related 95, 125, 131, 191, 88, 181, 66, 168, 99. Decisions triaged: 153 of 153.
+  Roadmap items intersected: 4; CONFLICT: 0; RELATED: 3.
+- "gates: decision-scout=FLAGS_FOUND (2 NOTE); plan-critique=PROCEED (round 6; rounds 1-2 and 5 REVISE resolved)"
+- >-
+  Independent review (Fable, facts-only brief; no plan/recs) converged on the replay key, table naming, nullability
+  rule and identity construction. Adopted (Benjamin 2026-09-25): kernel-derived ids, partition-bounded MERGE,
+  strict type gate, intra-batch collapse/conflict, closed tag registry + ref rules + pinned RFC 3339, projection
+  dedupe_key/entity_key. Kept: src/telemetry/, verb-owned OCC retry. JSON batch source deferred to slice 2.
+- >-
+  Sources: telemetry-event-envelope.yaml, telemetry_*.yaml, the five *-id.yaml, Decisions 199/200; plan of record
+  PLAN-telemetry-event-journal-contracts (#1264); parent rec-4024 (kernel half); vectors from rec-4025.
+- >-
+  Blast radius: kernel in new src/telemetry/, excluded from data-pipeline; no deploy-workflow path touched (step 13).
+  rec-4024's old acceptance path tests/common/test_ducklake_append.py is a deploy-channel path, hence the re-point.
+- >-
+  SLOC (gotcha b): ducklake_scd2_schema.py untouched. tests/test_schema_to_field_semantics.py is 479/500 and
+  coverage_baseline runs ONLY a source's mapped test file per source, so the event logic lives in its own module
+  with its own test home.
+- >-
+  Gotchas: pr-validate has no python-ulid/duckdb and runs -m "not integration"; core DuckDB MERGE needs no
+  extension; an all-NULL VALUES column needs the explicit CAST; nested BEGIN raises (the primitive owns its
+  transaction); PyYAML parses a workflow's `on:` key as True; vector ULIDs must be valid Crockford (no I/L/O/U).
+- >-
+  DuckLake probes (1.5.4): bounded MERGE read 1 of 4 files; day() alone is DAY-OF-MONTH (compaction fused Sept 24
+  + Oct 24); date()/CAST/date_trunc rejected as keys; the triple kept dates apart. Benjamin: bundle rec-4065.
+- >-
+  Slice-2 obligations (recorded on rec-4024): add src/telemetry/** to deploy-ducklake-lambdas push paths and the
+  writer manifest includes together; sidecar contract_table_ops entries + _CONTRACT_TABLE_IDS + regenerate;
+  teach resolve_table_spec/ops_table_names consumers about event entries (decomposing ducklake_scd2_schema.py
+  first); the contract nit that workflow/execution_attempt say nullable:false while required_when [open]; mint
+  `now` once OUTSIDE the OCC retry loop (D81 cl.3); re-measure pruning and Neon egress on the production Neon/S3
+  catalog (D88; local pruning proven by VP step 6); writer Lambda pins TimeZone UTC before append_events; decide the JSON batch source; keep the excludes line through T4.12 cF. BLOCKING contract recs (rec-4024
+  dependencies): rec-4058 R3 parent existence -> DQ, rec-4059 R6 pin project_ref resolution, rec-4060 R7 exact-ms
+  session_started_at handoff, rec-4061 R8 parser_version bump policy, rec-4065 (closed by this slice). Non-blocking: rec-4062-4064.
+pre_implementation_checklist:
+- Branch confirmed not on main
+- docs/PROJECT_CONTEXT.md read
+- Only the plan-cited decision sections read (81, 84, 97, 128, 184, 199, 200)
+- All files in scope located and readable
+- Acceptance criteria understood and verifiable
+- >-
+  Pinned ducklake extension loads (bin/venv-python -c "import duckdb;duckdb.connect().execute('INSTALL
+  ducklake;LOAD ducklake')"): if it does not, STOP and report the load error -- VP step 6 must run on real
+  DuckLake and may not be skipped or deferred
+- >-
+  Portal reachable with the agent_platform profile (aws sts get-caller-identity --profile agent_platform): if not,
+  stop before the portal-bookkeeping execution step and report -- portal writes fail loudly (Decision 84 I-4)
+execution_steps:
+- >-
+  RED FIRST: create tests/telemetry/__init__.py, tests/telemetry/test_timestamps.py, tests/telemetry/test_identity.py,
+  tests/telemetry/test_gate.py, tests/telemetry/test_append.py, tests/telemetry/test_append_ducklake_integration.py, the two fixture contracts,
+  tests/telemetry/test_package_boundary.py, tests/test_field_semantics_event_projection.py, the dispatch +
+  parametrized-mapping changes in
+  tests/test_schema_to_field_semantics.py, the exclusion test in tests/lambda_manifest/test_bundle_checks.py and the
+  partition assertions + test_partition_by_is_calendar_day_triple in tests/checks/contracts/test_telemetry_event_journal_contracts.py.
+  Generate tests/telemetry/fixtures/identity_vectors.yaml with a throwaway scratchpad script that implements the
+  spec independently (hashlib/struct/unicodedata + a stdlib Crockford encoder, cross-checked once against
+  python-ulid; never imports src.telemetry; not committed). Run
+  steps 1-8, 10, 11 and 18 and confirm each FAILS.
+- >-
+  Create src/telemetry/timestamps.py, then src/telemetry/identity.py (importing epoch_ms from timestamps), then
+  src/telemetry/gate.py, src/telemetry/append.py and src/telemetry/__init__.py.
+- >-
+  Create scripts/field_semantics_event_projection.py; modify scripts/schema_to_field_semantics.py (type map,
+  dispatch, generate() merge_key rule) without touching _CONTRACT_TABLE_IDS or _GENERATED_HEADER.
+- >-
+  Add `src/telemetry` to data-pipeline excludes; add the src-telemetry-is-plane-neutral .importlinter contract; add
+  the envelope vector pointer + amendment_log entry; add the file-router route, allowlist entry and amendment_log entry;
+  apply the rec-4065 partition respelling to the eight contracts, the Decision 199 Update line and the T2.36 note.
+- >-
+  Create the nine verification-registry rows (check_spec node_id = each graduated step's single test selector;
+  field shape per an existing entries/ row), then add the two validate_reconcile_pending_gate pre_globs and the
+  matching _CLOSURE_INPUTS row, and the second .importlinter contract.
+- >-
+  Portal bookkeeping (get_rec_write_guidance first, Decision 66): update_rec rec-4024 (context: slice-1 delivery +
+  slice-2 obligations; acceptance re-pointed as in acceptance_criteria) and rec-4025 (context: vector path).
+- >-
+  Execute Verification Plan steps 1-18 in order (stage new files first: git add --intent-to-add on every Create row);
+  then set implementation_declared: true in this plan (the registry shards now exist); then run VP step 19 so the
+  full-tier evidence covers validate_vp_replay's implement leg on the final tree. Loop until pass; never weaken a
+  bound or an assertion; on an unrecoverable failure stop and RCA (Decision 55).
+- >-
+  Closure evidence, recorded as four SEPARATE facts (implement skill Commit Flows): (1) GitHub readiness --
+  bin/venv-python -m scripts.session.github_readiness, each state recorded as reported, where unknown is unproven
+  and never PASS; (2) parent validator evidence -- VP step 19's completed full-tier exit 0, Validation Summary
+  (scope: all) PASS and the matching logs/debug/validation-result.json, taken after the implementation_declared
+  flip; (3) structured postflight evidence -- bin/venv-python -m scripts.session.postflight --evidence
+  /tmp/implementation-retrospective.json with the scripts.session.postflight_evidence.CATEGORIES keys; (4) the real
+  outcome -- commit, push, PR, CI green on the head (event-driven wake, never polled), and the squash-merge with
+  "Resolves: rec-4065" (rec-4024 is NOT named: it stays open as the slice-2 carrier), then after the ci.yml closure
+  job a reader check (rec_by_id rec-4065) that its status is closed; if the trailer's acceptance run refuses it,
+  fix the cause and never close it by hand (git-ops.yaml resolves_trailer). A readiness PASS never stands in for a push or PR
+  outcome.
+- >-
+  Report, naming separately: what was implemented; the red-before outputs; the real-DuckLake integration output (VP
+  step 6: tests run, zero skipped, including the post-compaction one-date-per-file result); the local full-tier (VP step 19) output that admitted the step-4 registry row
+  (main-validate sees no added rows after merge); each of the four closure facts above; and the slice-2 obligations
+  and blocking contract recs in context.
+rollback: >-
+  Revert the PR: every artefact is new or additive and deploy-inert; revert the two rec updates via update_rec and reopen rec-4065.
