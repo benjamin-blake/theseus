@@ -229,9 +229,9 @@ verification_plan:
     hermetic: false
     graduation: waive
     graduation_waiver_reason: >-
-      Kernel-expressible as two test_selector runs, but each calls main() (~5-10s apiece), past the replay's cheap
-      bound for a standing guard; the files' unchanged assertions already run in every tier that selects them, and
-      this step exists to pin the isolated-collection condition once at implement time.
+      Green at base (dry-run: 1 passed, then 95 passed), so the graduation differential cannot admit it -- a
+      registry row must fail at origin/main. Beyond that, each file calls main() (~5-10s apiece), past the replay's
+      cheap bound for a standing guard; the step pins the isolated-collection condition once at implement time.
   - step: 7
     phase: pre-deploy
     action: Prove the new guard line is covered (Decision 48 V2 row; scripts/platform_roadmap_state.py has no coverage baseline entry).
@@ -304,7 +304,9 @@ verification_plan:
       Zero failed checks in the printed summary, including validate_plan_documents, validate_graduation_completeness
       (all three shards present and matched), validate_verification_registry (all three admitted by the differential),
       validate_sloc_limits, validate_scope_boundary and validate_no_cross_test_imports. The affected-set manifest
-      reports full_suite_forced false.
+      reports full_suite_forced false, and the fast-tier budget assertion passes (no "Fast tier exceeded budget"
+      line) -- Decision 153 point 2 hard-fails a non-forced breach, and the bundled guard widens the selection to
+      ~148 modules against the Decision 182 breadth-derived allowance.
     fix_if: >-
       A shard "not admitted" means its node id passes at origin/main (it must be absent there). A full_suite_forced
       true means the root tests/conftest.py was touched -- revert it.
@@ -318,12 +320,19 @@ verification_plan:
     action: Full presubmit tier before handoff (handoff_policy; Decision 163).
     command: bin/venv-python -m scripts.validate
     expected: >-
-      Zero failed checks in the printed summary; the Test coverage check reports 100% for
-      scripts/platform_roadmap_state.py.
-    fix_if: Per handoff_policy.timeout_disposition a timeout is BLOCKED -- resume later and rerun the full tier from the start.
+      Exit 0 on a COMPLETED full run; the final Validation Summary (scope: all) reads PASS;
+      logs/debug/validation-result.json records scope all, exit 0, no failures, and the current pre-commit HEAD; the
+      Test coverage check reports 100% for scripts/platform_roadmap_state.py. This exit code is load-bearing for
+      handoff (Decision 163 point 3) -- unlike step 10, it is never advisory.
+    fix_if: >-
+      A timeout, a non-zero exit, or an incomplete or mismatched validation-result.json is BLOCKED
+      (handoff_policy.timeout_disposition): fix the cause and rerun the full tier from the start. Child output, mypy,
+      CI or stale evidence never substitute.
     hermetic: false
     graduation: waive
-    graduation_waiver_reason: Same recursion refusal and Decision 73 caveat as step 10, at the full tier.
+    graduation_waiver_reason: >-
+      Invokes scripts.validate, which docs/contracts/vp-red-before.yaml's recursion_refusal refuses statically for a
+      graduate disposition; its constituent checks are each registered in their own right.
   - step: 12
     phase: post-deploy
     action: >-
@@ -519,8 +528,19 @@ execution_steps:
     graduated_at the implementation date).
   - Execute the Verification Plan steps 6-11 in order -- loop until pass; never weaken a bound or an assertion to pass (Decision 55).
   - >-
-    Report: what was implemented, the before/after figures from VP step 8, the red-before outputs, and the
-    residuals named in context. After merge, run VP steps 12 and 13 and post the step-13 figures on the PR.
+    Closure evidence, recorded as four SEPARATE facts (implement skill Commit Flows): (1) GitHub readiness --
+    bin/venv-python -m scripts.session.github_readiness, each state recorded as reported, where unknown is unproven
+    and never PASS; (2) parent validator evidence -- VP step 11's completed full-tier exit 0, Validation Summary
+    (scope: all) PASS and the matching logs/debug/validation-result.json (after setting implementation_declared:
+    true in this plan and running VP step 10); (3) structured postflight evidence --
+    bin/venv-python -m scripts.session.postflight --evidence /tmp/implementation-retrospective.json with the ten
+    scripts.session.postflight_evidence.CATEGORIES keys, confirming its gitignored output; (4) the real outcome --
+    commit, push, PR, CI green on the head (event-driven wake, never polled), and the squash-merge whose body
+    carries "Resolves: rec-4006, rec-4007". A readiness PASS never stands in for a push or PR outcome.
+  - >-
+    Report, naming separately: what was implemented; the before/after figures from VP step 8 and the red-before
+    outputs; each of the four closure facts above; and the residuals named in context. After merge, run VP steps
+    12 and 13 and post the step-13 figures on the PR.
 work_areas: []
 rollback: >-
   Revert the squash commit. The memo, both seams and the guard are independent of every production path except the
