@@ -13,8 +13,8 @@ verification_tier: V2
 plan_path: docs/plans/PLAN-roadmap-state-test-cache.yaml
 phase: >-
   Soft-warn exception category ad_hoc_rec: rec-4006 and rec-4007 name no tier_item, so the Tier Item Freshness
-  Gate is skipped and no exit criterion advances. T4.5 (plans in warehouse, deferred_post_mvp behind T4.2) and
-  T4.23 are deliberately untouched: the memo sits at the compute_state_dict(path) OUTPUT boundary, the interim
+  Gate is skipped and no exit criterion advances. T4.5 (plans in warehouse, deferred_post_mvp) and T4.23 are
+  deliberately untouched: the memo sits at the compute_state_dict(path) OUTPUT boundary, the interim
   shape audits/criterion-shape-forks-9d25d918.yaml CSF-08 proposes, so it degrades to belt-and-braces once T4.5
   turns the plan scan into a named read.
 scope:
@@ -33,7 +33,8 @@ scope:
   - file: tests/test_session_preflight_platform_roadmap.py
     action: Modify
     purpose: >-
-      Seam A: replace all 25 compute_state_dict(_LIVE_YAML) call sites with live_state_dict(); remove the now-unused
+      Seam A: replace all 10 compute_state_dict(_LIVE_YAML) call sites (reached by 25 tests: 7 direct plus the three
+      _full_state helpers) with live_state_dict(); remove the now-unused
       compute_state_dict imports (module-level and the two in-method imports); keep _LIVE_YAML, the load import,
       every skipif guard and its ROADMAP-PLATFORM.yaml reason string, and every assertion body byte-identical.
   - file: tests/platform_roadmap_state/test_state_dict_and_feeds.py
@@ -62,8 +63,11 @@ scope:
   - file: tests/test_session_preflight_cache_serving.py
     action: Modify
     purpose: >-
-      Root caller: add patch("session_preflight.platform_roadmap.compute_state_dict", new=live_state_dict) to
-      TestPhaseBAbsenceOfReaderCalls' existing with-block.
+      Root caller: add patch.object(platform_roadmap, "compute_state_dict", new=live_state_dict) to
+      TestPhaseBAbsenceOfReaderCalls' existing with-block, importing platform_roadmap from scripts.roadmap. NEVER a
+      "session_preflight.*" string target: this file loads a PRIVATE handle (session_preflight_cache_serving_mod) and
+      deliberately never registers sys.modules["session_preflight"], so a string target raises ModuleNotFoundError
+      whenever the file runs without tests/session/preflight/ collected (critique round 1, F1).
   - file: scripts/platform_roadmap_state.py
     action: Modify
     purpose: >-
@@ -92,9 +96,9 @@ acceptance_criteria:
   - rec-4006's own acceptance passes verbatim (zero compute_state_dict(_LIVE_YAML) call sites in the roadmap test file; TestLiveRoadmapState green).
   - rec-4007's own acceptance passes verbatim (the guard text and the plans_dir glob both present in scripts/platform_roadmap_state.py).
   - live_state_dict computes the live roadmap at most once per (process, latest_decision_ts), returns an independent deep copy on every call, delegates every non-live path uncached, never memoizes an error result, and is bound to the defining module's function.
-  - Every main() call under tests/session/preflight/, and in the two root-level preflight test files, reaches live_state_dict instead of recomputing.
+  - The package autouse fixture and both root-level harnesses install live_state_dict on the facade attribute main() reads (scripts.roadmap.platform_roadmap.compute_state_dict), and each root-level file passes when run in a process that collects nothing else (VP 3, 6).
   - A zero-in_progress roadmap never globs plans_dir; a roadmap with an in_progress item still does.
-  - The before/after selection (VP step 7) runs in at most 40% of its base-SHA wall time on the same machine and flags.
+  - The before/after selection (VP step 8) runs in at most 40% of its base-SHA wall time on the same machine and flags.
   - Root tests/conftest.py is untouched, so --pre never sets full_suite_forced.
   - The full presubmit tier passes before handoff; both recs read closed after merge.
 verification_plan:
@@ -125,7 +129,7 @@ verification_plan:
       - "34 passed"
     fix_if: >-
       A non-zero grep count means a call site was missed (the class helper methods _full_state count too). An
-      F401 at step 8 means an unused compute_state_dict import was left behind.
+      F401 at step 9 means an unused compute_state_dict import was left behind.
     hermetic: true
     graduation: waive
     graduation_waiver_reason: >-
@@ -178,8 +182,8 @@ verification_plan:
       A grep miss means the guard was written in a different form than rec-4007's acceptance pins. A RecursionError
       means live_state_dict calls the facade attribute instead of _real_compute_state_dict. A TestReportSchemaFreeze or
       TestMockInterceptionThroughFacade failure means the decomposition stub went in as return_value= (missing from
-      _DIRECT_VALUE_ATTRS) or collides with an override key. A TestResidualPatchSiteClosure failure means a patch
-      idiom other than the "session_preflight.platform_roadmap.compute_state_dict" string target was used.
+      _DIRECT_VALUE_ATTRS) or collides with an override key. (TestResidualPatchSiteClosure flags only
+      _MOVED_SYMBOLS; platform_roadmap is not one, so it does not constrain the patch idiom.)
     hermetic: false
     graduation: waive
     graduation_waiver_reason: >-
@@ -187,6 +191,23 @@ verification_plan:
       behaviour it reaches is graduated by the step 1 and step 4 shards. Deliberately non-hermetic: the 26 main()
       calls alone exceed validate_vp_replay's 30s per-step bound (PER_STEP_TIMEOUT_SECONDS).
   - step: 6
+    phase: pre-deploy
+    action: >-
+      Root callers in isolation -- each root-level preflight file in its OWN pytest process that collects nothing
+      else, so a harness patch that only resolves when tests/session/preflight/ is co-collected (the
+      "session_preflight" sys.modules entry) cannot hide behind step 5's shared session (critique round 1, F1).
+    command: bin/venv-python -m pytest tests/test_session_preflight_cache_serving.py::TestPhaseBAbsenceOfReaderCalls -q -p no:randomly && bin/venv-python -m pytest tests/test_session_preflight_decomposition.py -q -p no:randomly
+    expected: Both processes exit 0 with every collected test passing.
+    fix_if: >-
+      ModuleNotFoundError: No module named 'session_preflight' means a "session_preflight.*" string target was used
+      in a root file -- switch to patch.object(platform_roadmap, "compute_state_dict", new=live_state_dict).
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      Kernel-expressible as two test_selector runs, but each calls main() (~5-10s apiece), past the replay's cheap
+      bound for a standing guard; the files' unchanged assertions already run in every tier that selects them, and
+      this step exists to pin the isolated-collection condition once at implement time.
+  - step: 7
     phase: pre-deploy
     action: Prove the new guard line is covered (Decision 48 V2 row; scripts/platform_roadmap_state.py has no coverage baseline entry).
     command: bin/venv-python -m pytest tests/platform_roadmap_state -q -p no:randomly --cov=scripts.platform_roadmap_state --cov-report=term-missing
@@ -199,7 +220,7 @@ verification_plan:
     graduation_waiver_reason: >-
       The pass condition is a judgement over the Missing column for two specific line numbers, which are only
       known after implementation; the standing guard is step 4's shard plus the full tier's validate_test_coverage.
-  - step: 7
+  - step: 8
     phase: pre-deploy
     action: >-
       Before/after timing on the SAME selection, same machine, same flags: base SHA in a detached git worktree
@@ -210,8 +231,8 @@ verification_plan:
       SEL="tests/test_session_preflight_platform_roadmap.py tests/platform_roadmap_state/test_state_dict_and_feeds.py::TestLiveGateEvaluations tests/session/preflight/test_main_report.py tests/test_session_preflight_decomposition.py tests/test_session_preflight_cache_serving.py tests/platform_roadmap_state/test_graph.py::TestStrategicPending tests/platform_roadmap_state/test_realization_candidates.py::TestRealizationCandidatesPreflightDict tests/platform_roadmap_state/test_state_dict_and_feeds.py::TestRatifiableCds tests/platform_roadmap_state/test_state_dict_and_feeds.py::TestRealizedButPendingCds tests/platform_roadmap_models/test_graph_validation.py::TestDeferredPostMvp tests/platform_roadmap_models/test_schema.py::TestUserActionRequired" &&
       FLAGS="-q -p no:xdist -p no:cacheprovider --randomly-seed=20260710" &&
       T0=$(date +%s) && (cd "$WT/base" && "$PY" -m pytest $SEL $FLAGS > /dev/null) && T1=$(date +%s) &&
-      "$PY" -m pytest $SEL $FLAGS > /dev/null && T2=$(date +%s) &&
-      git worktree remove --force "$WT/base" && B=$((T1-T0)) && A=$((T2-T1)) &&
+      "$PY" -m pytest $SEL $FLAGS > /dev/null && T2=$(date +%s); RC=$?;
+      git worktree remove --force "$WT/base" 2> /dev/null; test "$RC" -eq 0 && B=$((T1-T0)) && A=$((T2-T1)) &&
       echo "before=${B}s after=${A}s" && test $((A*10)) -le $((B*4))
     expected: >-
       Both runs exit 0; prints before=/after= seconds and exits 0 only when after <= 40% of before. Measured at
@@ -220,10 +241,11 @@ verification_plan:
     fix_if: >-
       A ratio above 40% means a seam is not reached: re-run steps 2, 3 and 5 and read --durations for any test
       still near 5s (seam A/root callers) or 10s (seam B). A failing base run is environmental (the worktree lacks
-      gitignored files); report it rather than weakening the selection. Always remove the worktree.
+      gitignored files); report it rather than weakening the selection. The worktree is removed on every path
+      (the removal is ;-sequenced after the timed runs); if the step is interrupted, run git worktree prune.
     hermetic: false
     graduation: not-applicable
-  - step: 8
+  - step: 9
     phase: pre-deploy
     action: Lint and format every changed Python file.
     command: >-
@@ -241,7 +263,7 @@ verification_plan:
     hermetic: true
     graduation: waive
     graduation_waiver_reason: Duplicates the ruff check and ruff format checks scripts.validate already runs in both tiers.
-  - step: 9
+  - step: 10
     phase: pre-deploy
     action: Fast presubmit tier (advisory outside CI per Decision 73; read the summary, not the exit code).
     command: bin/venv-python -m scripts.validate --pre
@@ -258,7 +280,7 @@ verification_plan:
     graduation_waiver_reason: >-
       Invokes scripts.validate, which vp-red-before.yaml's recursion_refusal refuses for graduate, and Decision 73
       makes its exit code meaningless outside CI.
-  - step: 10
+  - step: 11
     phase: pre-deploy
     action: Full presubmit tier before handoff (handoff_policy; Decision 163).
     command: bin/venv-python -m scripts.validate
@@ -268,8 +290,8 @@ verification_plan:
     fix_if: Per handoff_policy.timeout_disposition a timeout is BLOCKED -- resume later and rerun the full tier from the start.
     hermetic: false
     graduation: waive
-    graduation_waiver_reason: Same recursion refusal and Decision 73 caveat as step 9, at the full tier.
-  - step: 11
+    graduation_waiver_reason: Same recursion refusal and Decision 73 caveat as step 10, at the full tier.
+  - step: 12
     phase: post-deploy
     action: >-
       After the squash-merge (body carries "Resolves: rec-4006, rec-4007") and the rec-autoclose run, rebuild the
@@ -281,7 +303,7 @@ verification_plan:
       Still open means rec-autoclose did not fire or refused (read its run summary for a [REC-AUTOCLOSE] marker);
       close via bin/venv-python -m scripts.ops_data_portal --update-rec with a resolution naming the merge SHA.
     hermetic: false
-  - step: 12
+  - step: 13
     phase: post-deploy
     action: >-
       CI recovery measurement (the brief's measurement obligation). Download the pytest-junit artifact of the
@@ -309,7 +331,10 @@ test_obligations:
     test_selector: tests/platform_roadmap_state/test_live_state_cache.py::TestLiveStateMemo
     red_green_expectation: red before (target_absent -- file missing), green after
   - source: tests/session/preflight/conftest.py
-    behavior: Every main() call in tests/session/preflight/ reaches live_state_dict through the package autouse fixture.
+    behavior: >-
+      The package autouse fixture installs live_state_dict on the facade attribute main() reads
+      (scripts.roadmap.platform_roadmap.compute_state_dict); that main() still reads it at call time is evidenced
+      in aggregate by step 8's ratio, not by this identity test.
     verification_step: 3
     test_selector: tests/session/preflight/test_main_report.py::TestLiveRoadmapStateWiring
     red_green_expectation: >-
@@ -329,7 +354,7 @@ test_obligations:
     waiver_reason: >-
       A test-harness wiring edit inside an existing test module, with no production behaviour of its own and no
       new assertion to turn red: its correctness is the file's unchanged assertions staying green at step 5, and
-      its effect (no per-test recompute) is evidenced by step 7's before/after ratio over a selection that
+      its effect (no per-test recompute) is evidenced by step 8's before/after ratio over a selection that
       includes this file.
   - source: tests/test_session_preflight_cache_serving.py
     behavior: TestPhaseBAbsenceOfReaderCalls' main() run swaps compute_state_dict for live_state_dict instead of recomputing.
@@ -337,11 +362,11 @@ test_obligations:
     test_selector: tests/test_session_preflight_cache_serving.py
     waiver_reason: >-
       Same shape as the decomposition row: a one-line harness patch in an existing test module, proven correct by
-      its unchanged assertion staying green at step 5 and effective by step 7's ratio over a selection that
+      its unchanged assertion staying green at step 5 and effective by step 8's ratio over a selection that
       includes this file.
   - source: config/agent/verification_registry/entries/roadmap-live-state-memo.yaml
     behavior: Its check_id equals VP step 1's graduation_check_id and its node_id is admitted by the differential gate.
-    verification_step: 9
+    verification_step: 10
     command: bin/venv-python -m scripts.validate --pre
     waiver_reason: >-
       Owned by registered checks: validate_graduation_completeness fails an orphaned shard or unmatched graduate step,
@@ -349,7 +374,7 @@ test_obligations:
       duplicate those verifiers (Decision 86). Mirrors PLAN-rec-autoclose-trailer-gate-oserror-coverage.
   - source: config/agent/verification_registry/entries/followon-zero-in-progress-guard.yaml
     behavior: Its check_id equals VP step 4's graduation_check_id and its node_id is admitted by the differential gate.
-    verification_step: 9
+    verification_step: 10
     command: bin/venv-python -m scripts.validate --pre
     waiver_reason: Same registered-check ownership as the roadmap-live-state-memo row.
 constraints:
@@ -365,7 +390,7 @@ context:
   - "Recs: rec-4006 (the memo; its CORRECTIONS block is inherited) and rec-4007 (guard; dependencies [rec-4006]). Both bundled; squash body carries 'Resolves: rec-4006, rec-4007'."
   - "Re-measured at base c53f2e46 (median of 3): compute_state_dict 4.91s = compute_followon_state 4.30s (88%) + load 0.55s; 460 plans, 153 parsed, 4 in_progress; deepcopy of the result 0.5ms. Full tables in the plan commit body."
   - "CI gap PINNED, not grouping: junit is per-testcase (TestLiveRoadmapState = 7 cases at 28.83-29.78s). Local: -n 4 alone ~1.0x (4.84-4.99s/test); --cov=src alone ~3.3x (~16.1s/test); residual ~1.8x inferred runner CPU (not reproducible here). A COVERAGE_CORE=sysmon probe errored at configure -- unresolved, input to the later consult."
-  - "Headline re-derived from junit run 35666014041 (@17dfcb1b): addressable ~1,870s (~44%) of 4,260.2s serial = seam A 996.2s (34 tests) + main() callers ~754s of 1,494.3s (26 tests x ~29s; the rest of each main() test is other work) + rec-4007 ~241s (10 tests), less at most four per-worker computes (~116s). rec-4006's 2,854.8s family figure overstated the cacheable share. Wall clock is measured post-merge (VP 12), not claimed."
+  - "Headline re-derived from junit run 35666014041 (@17dfcb1b): addressable ~1,870s (~44%) of 4,260.2s serial = seam A 996.2s (34 tests) + main() callers ~754s of 1,494.3s (26 tests x ~29s; the rest of each main() test is other work) + rec-4007 ~241s (10 tests), less at most four per-worker computes (~116s). rec-4006's 2,854.8s family figure overstated the cacheable share. Wall clock is measured post-merge (VP 13), not claimed."
   - "fork: one memo vs two mechanisms for the two hotspots | chosen: one memo (live_state_dict), two seams -- direct call (seam A) and a patch in the package autouse (seam B); memo over a {} stub so main() tests keep real roadmap data | class: asked | precedent: delegated by the operator brief ('Decide ... and say why'), confirmed at Step 6b | precedent_kind: answered-fork | reversible: yes | persisted: scope rows 1, 5"
   - "fork: where the cache lives | chosen: tests/fixtures/platform_roadmap_state.py (rec-4006 file field); root conftest untouched | class: consistency-only | precedent: Decision 131 cl.2 (tests/fixtures exempt from the cross-test-import guard) and cl.3 (package autouse in the sub-conftest) | precedent_kind: decision | reversible: yes | persisted: scope row 1"
   - "fork: deepcopy per consumer vs frozen structure | chosen: deepcopy (0.5ms); frozen rejected -- lists to tuples breaks existing isinstance(..., list) assertions and diverges from production's shape | class: asked | precedent: delegated by the operator brief, confirmed at Step 6b | precedent_kind: answered-fork | reversible: yes | persisted: execution_steps[1]"
@@ -374,10 +399,10 @@ context:
   - "fork: cover the 4 root-level main() callers | chosen: include (scope rows 7-8) | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: scope"
   - "Gotcha: rec-4007's test must patch Path.glob -- Path.read_text sits inside compute_followon_state's per-file 'except Exception', which would swallow the refusal and make the test tautological (Decision 189)."
   - "Gotcha: helper tests MUST wrap patch.dict(_LIVE_STATE_MEMO, clear=True) so a spied result never leaks into the process memo (Decision 181). Bind _real_compute_state_dict from scripts.platform_roadmap_state; binding the facade attribute recurses under seam B."
-  - "Gotcha: use the string target 'session_preflight.platform_roadmap.compute_state_dict' -- 'platform_roadmap' is not in _MOVED_SYMBOLS, so tests/test_session_preflight_decomposition.py's TestResidualPatchSiteClosure passes (test_main_branches uses it today)."
+  - "Gotcha: the string target 'session_preflight.platform_roadmap.compute_state_dict' is for package-local files ONLY (the conftest; test_main_branches uses it today). Root files patch.object(platform_roadmap, ...): test_session_preflight_cache_serving.py loads a private handle and never registers sys.modules['session_preflight'] (critique F1)."
   - "Gotcha: keep a ROADMAP-PLATFORM.yaml mention (the skipif reason strings) in every rewired file so the data-edge selection channel still picks them on a roadmap-only diff (Decision 135)."
   - "Residual, not addressed: TestComputeFollowonState::test_plans_dir_default_is_absolute_repo_anchored (55.2s CI; two live to_preflight_dict scans that exercise default-path semantics, outside the output cache's reach), and the ~5.5s/test of non-roadmap main() work -- both inputs to the test-execution consult."
-  - "Tier V2, not the brief's V1: Python source is in scope and Decision 48's V2 row demands coverage of the guard line (VP 6, 10). Lambda: no manifest packages any scope file (Decision 79)."
+  - "Tier V2, not the brief's V1: Python source is in scope and Decision 48's V2 row demands coverage of the guard line (VP 7, 11). Lambda: no manifest packages any scope file (Decision 79)."
   - "Decision-scout verdict: NO_FLAGS. CITE: 128, 130, 131, 132, 176, 189, 48. RELATED: 135, 153, 182, 87, 197, 181, 163, 79, 59, 73."
   - "Decisions triaged: 153 of 153"
   - "Roadmap items intersected: 1; CONFLICT: 0; RELATED: 1 (T4.23, deferred_post_mvp, tests/ prefix only; nothing foreclosed)."
@@ -401,11 +426,15 @@ execution_steps:
     (uncached: tmp roadmaps are rewritten mid-session). Otherwise, on a memo miss, compute; if the result has an
     "error" key return it unmemoized; else store it. Return copy.deepcopy(_LIVE_STATE_MEMO[latest_decision_ts]).
     The function body must look up _real_compute_state_dict as a module global at call time (so tests can
-    patch.object it).
+    patch.object it). Its docstring carries one warning line: never patch anything beneath compute_state_dict
+    (load, Path.glob, yaml.safe_load, compute_followon_state) around a live-path call while the memo may be cold --
+    whichever test fills it first under pytest-randomly would memoize the patched result for the whole process.
   - >-
-    tests/platform_roadmap_state/test_live_state_cache.py: class TestLiveStateMemo with a module fixture that
-    enters patch.dict(fixtures._LIVE_STATE_MEMO, clear=True) and patch.object(fixtures, "_real_compute_state_dict",
-    side_effect=<returns a fresh nested dict echoing latest_decision_ts>). Exactly six tests:
+    tests/platform_roadmap_state/test_live_state_cache.py: class TestLiveStateMemo with a FUNCTION-scoped fixture
+    defined in this module (never scope="module": spy counts and memo contents must not cross tests under
+    pytest-randomly) that enters patch.dict(fixtures._LIVE_STATE_MEMO, clear=True) and patch.object(fixtures,
+    "_real_compute_state_dict", side_effect=<returns a fresh nested dict echoing latest_decision_ts>). The first five
+    tests request it; the sixth (binding identity) must NOT, or it would see the spy. Exactly six tests:
     live path computed once (call_count == 1 across live_state_dict() and live_state_dict(_LIVE_ROADMAP));
     each call returns an independent copy (mutate a nested list and dict of result 1; result 2 equals the canned
     value and is not the same object); non-live path passes through uncached (tmp_path roadmap twice -> 2 calls);
@@ -441,10 +470,10 @@ execution_steps:
     Create both verification-registry shards (field shape per config/agent/verification_registry/entries/
     rec-autoclose-trailer-gate-read-oserror.yaml; plan_slug roadmap-state-test-cache; graduated_by implement-agent;
     graduated_at the implementation date).
-  - Execute the Verification Plan steps 6-10 in order -- loop until pass; never weaken a bound or an assertion to pass (Decision 55).
+  - Execute the Verification Plan steps 6-11 in order -- loop until pass; never weaken a bound or an assertion to pass (Decision 55).
   - >-
-    Report: what was implemented, the before/after figures from VP step 7, the red-before outputs, and the
-    residuals named in context. After merge, run VP steps 11 and 12 and post the step-12 figures on the PR.
+    Report: what was implemented, the before/after figures from VP step 8, the red-before outputs, and the
+    residuals named in context. After merge, run VP steps 12 and 13 and post the step-13 figures on the PR.
 work_areas: []
 rollback: >-
   Revert the squash commit. The memo, both seams and the guard are independent of every production path except the
