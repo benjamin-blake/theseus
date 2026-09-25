@@ -49,7 +49,10 @@ scope:
     purpose: >-
       AdminOps (aws_iam_role_policy.platform_admin_ops) copied with its hoisted local and byte-size
       precondition, plus lifecycle prevent_destroy and a precondition asserting the IAMFull
-      statement is still present. Import block PlatformAdmin:AdminOps.
+      statement is still present -- that precondition must not use the
+      length(jsonencode(jsondecode(local. measure, because the
+      personal-policies-carry-byte-preconditions shard requires exactly one such measure per file.
+      Import block PlatformAdmin:AdminOps.
   - file: terraform/bootstrap/platform_admin_data_policies.tf
     action: Create
     purpose: >-
@@ -88,7 +91,8 @@ scope:
   - file: docs/contracts/deploy-paths.yaml
     action: Modify
     purpose: >-
-      Add one admin_out_of_band.procedure step, placed before the POST-APPLY step: a
+      Add one admin_out_of_band.procedure step, placed between the PRE-APPLY and POST-APPLY steps
+      (the sibling's ordering test asserts PRE-APPLY < isolation < POST-APPLY): a
       terraform/bootstrap apply that changes BootstrapStateProvisioning or AdminOps' IAMFull
       statement carries no other change, and its plan must show no trust-document diff on either
       role (bare-action wording, no restated guard classification -- Decision 126 point 2).
@@ -111,7 +115,9 @@ scope:
       BootstrapStateProvisioning the precondition naming the agent-platform-bootstrap-tfstate bucket
       ARN and object ARN; platform_dev_external_id and platform_admin_external_id are sensitive with
       no default; the three secret ARNs come from data "aws_secretsmanager_secret" lookups by name,
-      never a `-*` suffix; each role's trust statement carries a StringEquals sts:ExternalId condition
+      never a `-*` suffix; PlatformDev's permissions_boundary is exactly
+      aws_iam_policy.github_ci_apply_boundary.arn within the block's first three lines, and
+      PlatformAdmin declares no permissions_boundary; each role's trust statement carries a StringEquals sts:ExternalId condition
       on its own sensitive variable (the Decision 113 confused-deputy defence, which outlives the
       transitional parity module); and every bootstrap copy of a personal-root name equals its source,
       compared as templates (never rendered ARNs, Decision 101). It reads ONLY sources that survive
@@ -123,7 +129,9 @@ scope:
       -- never platform_roles.tf or the three policy files. Red cases for a dropped import, a missing
       prevent_destroy, a missing IAMFull or self-access precondition, an ExternalId variable without
       sensitive = true or with a default, a trust statement without its sts:ExternalId condition, a
-      `-*` secret ARN, and a drifted constant. Stays under the
+      literal `arn:aws:iam::${var.account_id}:policy/agent-platform-github-ci-apply-boundary` boundary
+      in place of the resource reference, a boundary on PlatformAdmin, a `-*` secret ARN, and a
+      drifted constant. Stays under the
       500-SLOC limit (Decision 128) because the transitional parity class lives in its own module.
   - file: tests/checks/iam_tf/test_platform_iam_dual_copy_parity.py
     action: Create
@@ -138,9 +146,11 @@ scope:
       roles' resource-level tags. Condition extraction is implemented locally in this module, reusing
       scripts/checks/iam_tf/_read_coverage.py's _locate_policy_statement_array and the brace-depth
       _extract_block helper it already uses -- _read_coverage.py itself is NOT edited (it is outside
-      this plan's scope; validate_scope_boundary). The module names every personal and bootstrap
-      source file it reads by path, so a one-sided .tf edit selects it in --pre (the affected-test
-      channels key on those mentions). Red cases for a one-sided Resource edit, Condition edit, role
+      this plan's scope; validate_scope_boundary). The module builds every source path by joining
+      segments (for example _REPO_ROOT / "terraform" / "personal" / "platform_dev_policies.tf", as the
+      fence test already does), so each basename is still mentioned for --pre affected-test selection
+      while no contiguous terraform/personal/platform_*_policies.tf literal appears (the no-old-path
+      constraint). Red cases for a one-sided Resource edit, Condition edit, role
       description edit and default_tags edit.
   - file: config/agent/verification_registry/entries/platform-iam-bootstrap-owns-roles-and-policies.yaml
     action: Create
@@ -224,7 +234,8 @@ verification_plan:
     expected: >-
       all tests pass, including the red cases (a dropped import block, a missing prevent_destroy, a
       missing IAMFull or self-access precondition, an ExternalId variable that is not sensitive or has
-      a default, a `-*` secret ARN, a drifted bucket/table/function/prefix/secret/user-name constant)
+      a default, a literal-ARN boundary in place of the resource reference, a boundary on
+      PlatformAdmin, a `-*` secret ARN, a drifted bucket/table/function/prefix/secret/user-name constant)
       proving each assertion can fail; red before this plan is implemented (the module does not
       exist), green after
     fix_if: an address is missing, an import id is malformed, a protection is absent, or a constant diverges from its terraform/personal source
@@ -275,22 +286,28 @@ verification_plan:
     graduation_check_id: deploy-paths-admin-self-access-isolation-step
   - step: 5
     phase: pre-deploy
-    action: exactly seven import blocks are declared across the new bootstrap files
-    command: test "$(cat terraform/bootstrap/platform_roles.tf terraform/bootstrap/platform_dev_policies.tf terraform/bootstrap/platform_admin_policies.tf terraform/bootstrap/platform_admin_data_policies.tf | grep -c '^import {')" -eq 7 && echo SEVEN_IMPORTS_DECLARED
-    expected: exit 0 and the marker line is printed
-    fix_if: the count is not 7 -- an address is missing its import block or one is duplicated
+    action: exactly seven import blocks are declared, and no file this plan touches carries a terraform/personal/platform_*_policies.tf literal
+    command: |-
+      test "$(cat terraform/bootstrap/platform_roles.tf terraform/bootstrap/platform_dev_policies.tf terraform/bootstrap/platform_admin_policies.tf terraform/bootstrap/platform_admin_data_policies.tf | grep -c '^import {')" -eq 7 && ! grep -nE 'terraform/personal/platform_(dev|admin|admin_data)_policies\.tf' terraform/bootstrap/platform_roles.tf terraform/bootstrap/platform_dev_policies.tf terraform/bootstrap/platform_admin_policies.tf terraform/bootstrap/platform_admin_data_policies.tf terraform/bootstrap/variables.tf terraform/bootstrap/CLAUDE.md tests/test_deploy_paths_admin_procedure.py tests/checks/iam_tf/test_platform_iam_bootstrap_adoption.py tests/checks/iam_tf/test_platform_iam_dual_copy_parity.py scripts/checks/iam_tf/validate_agent_observability_read_coverage.py tests/checks/iam_tf/test_validate_agent_observability_read_coverage.py tests/checks/iam_tf/test_platform_dev_data_lake_read_fence.py config/agent/verification_registry/entries/deploy-paths-admin-self-access-isolation-step.yaml config/agent/verification_registry/entries/platform-iam-bootstrap-owns-roles-and-policies.yaml config/agent/verification_registry/entries/platformadmin-metric-read-verbs-present.yaml config/agent/verification_registry/entries/platformdev-state-convergence-denies-intact.yaml config/agent/verification_registry/entries/personal-policies-carry-byte-preconditions.yaml config/agent/verification_registry/entries/cloudtrail-read-only-no-write-verbs.yaml config/agent/verification_registry/entries/platformdev-bounded-platformadmin-excluded.yaml && echo "SEVEN IMPORTS, NO OLD-PATH LITERALS"
+    expected: >-
+      exit 0 and the marker line -- the path literal the sibling plan's step 2 sweep forbids is
+      absent from every file this plan creates or modifies inside the sibling's swept trees
+      (guard_target fields, docstrings and provenance comments included); the declared rec-4047
+      residual shard is deliberately not listed
+    fix_if: the import count is not 7, or a file carries the literal -- remove it here (the sibling could only fix it with an out-of-scope edit)
     hermetic: true
     expected_literals: []
     graduation: waive
     graduation_waiver_reason: >-
-      A cheap tripwire for the implementer; the durable per-address import assertion (including id
-      shape) is graduated by step 1, so a second row would duplicate it.
+      The import half is a cheap tripwire duplicating step 1's graduated per-address assertion; the
+      no-old-path half is enforced standing by the sibling plan's step 2 sweep once it merges, so a
+      registry row here would duplicate that one merge later.
   - step: 6
     phase: pre-deploy
     action: fast-tier presubmit is clean, including run_differential admission of the two new shards and the five repointed shards, and the bootstrap CLAUDE.md prose budget
     command: bin/venv-python -m scripts.validate --pre
     expected: exit 0
-    fix_if: any fast-tier check fails -- in particular a bootstrap-scanning check (validate_iam_policy_size, validate_ci_refresh_read_coverage, validate_authority_budget, _write_companions) reacting to the new bootstrap resources; extend the check deliberately rather than filtering the new resources out. A prose-budget overrun is fixed by trimming, never by a raise
+    fix_if: any fast-tier check fails -- in particular a bootstrap-scanning check (validate_iam_policy_size, validate_ci_refresh_read_coverage, validate_authority_budget, _write_companions) reacting to the new bootstrap resources; STOP and either obtain a human-directed plan scope amendment or file a rec -- never edit an out-of-scope validator (validate_scope_boundary), and never filter the new resources out. A prose-budget overrun is fixed by trimming, never by a raise
     hermetic: false
     graduation: waive
     graduation_waiver_reason: >-
@@ -321,7 +338,7 @@ verification_plan:
     command: |-
       git fetch origin main && git worktree add --detach "${TMPDIR:-/tmp}/bootstrap-baseline" origin/main && cp terraform/bootstrap/terraform.bootstrap.tfvars "${TMPDIR:-/tmp}/bootstrap-baseline/terraform/bootstrap/" && terraform -chdir="${TMPDIR:-/tmp}/bootstrap-baseline/terraform/bootstrap" init -input=false && terraform -chdir="${TMPDIR:-/tmp}/bootstrap-baseline/terraform/bootstrap" plan -input=false -lock=false -var-file=terraform.bootstrap.tfvars -detailed-exitcode; rc=$?; git worktree remove --force "${TMPDIR:-/tmp}/bootstrap-baseline"; test "$rc" -eq 0 && echo "BOOTSTRAP BASELINE CONVERGED at origin/main"
     expected: exit 0 -- no pending bootstrap change exists before this plan; the undeclared-variable warnings for the three new tfvars keys are expected at the pre-merge commit
-    fix_if: STOP -- exit 2 means a merged bootstrap change is unapplied or live drifted; resolve it through its own human-gated admin loop first, never fold it into the adoption
+    fix_if: STOP -- if the diff is only Owner/tags_all on existing bootstrap resources, step 8's owner_email differs from the value bootstrap was last applied with; reconcile the tfvars value and never apply a tag change here. Any other exit 2 means a merged bootstrap change is unapplied or live drifted -- resolve it through its own human-gated admin loop first, never fold it into the adoption
     hermetic: false
     graduation: not-applicable
   - step: 10
@@ -504,9 +521,9 @@ constraints:
   - The adoption must be zero-diff -- never change a permission, a trust document or a tag during adoption; any change is a separate, later plan
   - Never widen the CI apply role to write these identities (Decision 180 clauses 2-3 are permanent)
   - "Public-repo boundary (Decision 101): snapshots, plan files, plan JSON, the presented plan and the bootstrap tfvars stay in the ADMIN session, scratch or gitignored paths and are never pasted into chat, a PR or a commit -- every IAM document and ARN carries the account id, and adopt.json and the snapshots carry both ExternalIds in plaintext; step 20 removes the scratch artifacts, including after any STOP; the parity tests compare templates, never rendered ARNs"
-  - "Freeze, from merge until the sibling plan's gated forget converges: no other terraform/bootstrap apply (the merged import blocks would ride along and skip steps 13-17); no terraform/personal PR touching the seven addresses, their referents, or terraform/personal/main.tf's provider default_tags; TestDualCopyParity catches a one-sided edit at PR time, and step 11 checks for open conflicting PRs"
+  - "Freeze: (a) from merge until step 16 converges, no other terraform/bootstrap apply -- the merged import blocks would ride along and skip steps 13-17; after step 16 and until the sibling's forget converges, any bootstrap apply must show a no-op on the seven addresses; (b) from merge until the sibling's forget converges, no terraform/personal PR touching the seven addresses, their referents, or terraform/personal/main.tf's provider default_tags -- TestDualCopyParity catches a one-sided edit at PR time, and step 11 checks for open conflicting PRs"
   - "This PR's squash body must NOT carry `Resolves: rec-3838` -- the sibling plan resolves it"
-  - "No file this plan creates or modifies may carry a terraform/personal/platform_(dev|admin|admin_data)_policies.tf path string (not even a provenance comment such as 'copied from ...') -- the sibling's step 2 stale-reference sweep scans these files and could only be fixed there by an out-of-scope edit; the declared rec-4047 shard is the sole exception"
+  - "No file this plan creates or modifies may carry a contiguous terraform/personal/platform_(dev|admin|admin_data)_policies.tf literal (not even a provenance comment such as 'copied from ...'; the parity module joins path segments instead) -- step 5 enforces this, because the sibling's step 2 sweep could otherwise only be fixed by an out-of-scope edit; the declared rec-4047 shard is the sole exception"
   - Do not edit docs/ROADMAP-PLATFORM.yaml (T2.48 / T2.44 files_in_scope pointers go stale; the sibling plan's single T4.2 edit is the only roadmap change in this pair)
 context:
   - "Decision-scout verdict + CITE list: FLAGS_FOUND. CITE: Decision 180, 183, 190, 144, 92, 126, 113, 101, 181, 177, 67. Decisions triaged: 153 of 153. Roadmap items intersected: 8; CONFLICT: 0; RELATED: 8."
@@ -533,6 +550,7 @@ pre_implementation_checklist:
   - terraform/bootstrap/CLAUDE.md and docs/contracts/deploy-paths.yaml admin_out_of_band.procedure read in full
   - "Pre-merge gates and post-deploy steps run in an ADMIN container (INSTALL_TERRAFORM=1, non-empty provider-mirror sync) with agent_platform_admin credentials"
   - rec-4044 is closed (step 10) before the PR merges
+  - After rec-4044 merges, re-read config/agent/verification_registry/entries/cloudtrail-read-only-no-write-verbs.yaml before repointing it -- rec-4044 must adjudicate that shard and may have edited or retired it
 execution_steps:
   - "Create terraform/bootstrap/platform_roles.tf: both roles copied argument-for-argument, PlatformDev's boundary referenced from aws_iam_policy.github_ci_apply_boundary within the block's first three lines, resource-level tags preserving Account/ManagedBy, prevent_destroy, two import blocks"
   - "Create terraform/bootstrap/platform_dev_policies.tf, platform_admin_policies.tf and platform_admin_data_policies.tf: the five policies copied with personal-root references replaced by bootstrap locals and by-name secret data sources, size preconditions on all five, prevent_destroy and self-access preconditions on AdminOps and BootstrapStateProvisioning, five import blocks"
@@ -540,7 +558,8 @@ execution_steps:
   - Create the adoption test module (TestBootstrapOwnsPlatformIam, durable and graduated) and its registry shard, and the separate transitional dual-copy parity module
   - Repoint validate_agent_observability_read_coverage and its test, the fence test and the five registry shards to the bootstrap copy; record the repoints and the fence-shard residual in docs/contracts/verification-registry.yaml's governance notes
   - Update terraform/bootstrap/CLAUDE.md (scope and pointer lines, funded by retiring the stale state-rm section); add the self-access isolation step to docs/contracts/deploy-paths.yaml with its graduated test
-  - Run pre-deploy steps 1-7, commit, open the PR with the freeze, the pre-merge gates and the ADMIN hand-off in its description (Decision 115) and no Resolves trailer
+  - "DEV session: run pre-deploy steps 1-7, commit, open the PR with the freeze, the pre-merge gates and the ADMIN hand-off in its description (Decision 115) and no Resolves trailer; the DEV session ends at 'PR open, CI green, NOT merge-ready until ADMIN gates 8-11 pass and rec-4044 is closed'"
+  - "ADMIN session owns steps 8-20: pre-merge gates, merge, then the post-deploy adoption"
   - "ADMIN: run pre-merge gates 8-11; merge on green CI; then post-deploy steps 12-20 -- snapshot, PRESENT the adoption plan, apply only on explicit human direction, prove zero change"
   - Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)
   - "Report: what was implemented, verification results, and hand off to PLAN-platform-iam-personal-release"
