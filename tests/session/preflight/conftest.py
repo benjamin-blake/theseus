@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tests.fixtures.platform_roadmap_state import live_state_dict
 from tests.fixtures.session_preflight_module import preflight as _preflight  # noqa: F401
 
 
@@ -62,6 +63,7 @@ def _disable_reader_and_git_fetch(request: pytest.FixtureRequest):
         stack.enter_context(patch("scripts.sync.ops.sync", return_value={"drained": {}, "pulled": {}}))
         stack.enter_context(patch("scripts.sync.ops.warm_sync", return_value=warm_sync_stub))
         stack.enter_context(patch("session_preflight._sync_ops_pull", return_value={}))
+        stack.enter_context(patch("session_preflight.platform_roadmap.compute_state_dict", new=live_state_dict))
         if class_name != "TestCheckMainFreshness":
             stack.enter_context(patch("scripts.preflight.env_git.check_main_freshness", return_value=freshness_stub))
         # dependabot.check_stranded_prs shells out to `gh pr list` on every main() run and,

@@ -50,6 +50,8 @@ from scripts.preflight import (
     priority_queue,
     recs_cache,
 )
+from scripts.roadmap import platform_roadmap
+from tests.fixtures.platform_roadmap_state import live_state_dict
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -322,6 +324,7 @@ def _base_stub_specs(report_path: Path) -> list[tuple[object, str, object]]:
             {"stale": False, "synthesized_hash": None, "current_hash": None, "new_ids": []},
         ),
         (context_docs, "_scan_provisional_contracts", []),
+        (platform_roadmap, "compute_state_dict", live_state_dict),
         (_preflight, "PREFLIGHT_REPORT", report_path),
     ]
 
@@ -329,7 +332,7 @@ def _base_stub_specs(report_path: Path) -> list[tuple[object, str, object]]:
 # Attributes that main()/its callees read as plain VALUES rather than call as functions --
 # these are patched via direct replacement (new=value); everything else in _base_stub_specs is a
 # function attribute and is patched via return_value=value so calling it yields that value.
-_DIRECT_VALUE_ATTRS = {(_preflight, "PREFLIGHT_REPORT")}
+_DIRECT_VALUE_ATTRS = {(_preflight, "PREFLIGHT_REPORT"), (platform_roadmap, "compute_state_dict")}
 
 
 @contextlib.contextmanager

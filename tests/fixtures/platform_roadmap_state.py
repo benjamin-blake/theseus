@@ -22,6 +22,7 @@ from pathlib import Path
 
 import yaml
 
+from scripts.platform_roadmap_state import compute_state_dict as _real_compute_state_dict
 from scripts.roadmap.platform_roadmap import PlatformRoadmapState, RoadmapDocument
 
 _BASE_DOC: dict = {
@@ -45,6 +46,37 @@ _BASE_DOC: dict = {
 # Repo-root-anchored (NOT a recomputed `Path(__file__).parent.parent`, which depth-2 test
 # locations resolve incorrectly -- see module docstring). tests/fixtures/ -> tests/ -> repo root.
 _LIVE_ROADMAP = Path(__file__).resolve().parents[2] / "docs" / "ROADMAP-PLATFORM.yaml"
+
+# Process-scoped memo (rec-4006): compute_state_dict(_LIVE_ROADMAP) is expensive (~5s) and every
+# test that exercises the live roadmap was recomputing it independently. Keyed on
+# latest_decision_ts so distinct decision-timestamp calls never collide.
+_LIVE_STATE_MEMO: dict[str | None, dict] = {}
+
+
+def live_state_dict(yaml_path: str | Path = _LIVE_ROADMAP, *, latest_decision_ts: str | None = None) -> dict:
+    """Memoized stand-in for scripts.platform_roadmap_state.compute_state_dict, live-roadmap-only.
+
+    Only calls resolving to _LIVE_ROADMAP are cached (at most once per (process,
+    latest_decision_ts)); every other path -- e.g. a tmp_path fixture roadmap -- delegates
+    uncached on every call, since such a roadmap may be rewritten mid-session. An error result is
+    never memoized. Each call returns an independent deep copy so no consumer can mutate the
+    shared cached value.
+
+    WARNING: never patch anything beneath compute_state_dict (load, Path.glob, yaml.safe_load,
+    compute_followon_state) around a live-path call while the memo may still be cold -- whichever
+    test fills it first under pytest-randomly would memoize the patched result for the whole
+    process.
+    """
+    if Path(yaml_path).resolve() != _LIVE_ROADMAP:
+        return _real_compute_state_dict(Path(yaml_path), latest_decision_ts=latest_decision_ts)
+
+    if latest_decision_ts not in _LIVE_STATE_MEMO:
+        result = _real_compute_state_dict(_LIVE_ROADMAP, latest_decision_ts=latest_decision_ts)
+        if "error" in result:
+            return result
+        _LIVE_STATE_MEMO[latest_decision_ts] = result
+
+    return copy.deepcopy(_LIVE_STATE_MEMO[latest_decision_ts])
 
 
 def _doc(**overrides) -> dict:
