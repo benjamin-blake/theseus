@@ -67,7 +67,24 @@ scope:
       TestPhaseBAbsenceOfReaderCalls' existing with-block, importing platform_roadmap from scripts.roadmap. NEVER a
       "session_preflight.*" string target: this file loads a PRIVATE handle (session_preflight_cache_serving_mod) and
       deliberately never registers sys.modules["session_preflight"], so a string target raises ModuleNotFoundError
-      whenever the file runs without tests/session/preflight/ collected (critique round 1, F1).
+      whenever the file runs without tests/session/preflight/ collected (critique round 1, F1). Honest yield: this
+      main() run carries an ops_decisions row, so latest_decision_ts is '2026-06-12T00:00:00+00:00' -- a memo key
+      shared only with test_priority_queue's counting-reader helper, so the call is usually a cold compute. Kept for
+      real-data consistency across every main() harness; its speed saving is near zero (critique round 3, note 1).
+  - file: tests/test_platform_roadmap.py
+    action: Modify
+    purpose: >-
+      Comment-only: the TestComputeStateDictPatchInterception banner (:61-65) calls the string target "the sole
+      external patch site"; after this plan four sites patch that facade attribute (the package conftest,
+      test_main_branches, and the two root-level harnesses). Reword to "every external patch site of this
+      attribute". No code or assertion change (critique round 3, note 3).
+  - file: tests/session/preflight/test_main_branches.py
+    action: Modify
+    purpose: >-
+      Comment-only: the six identical blocks above its return_value={} stubs say sibling main() tests leave
+      compute_state_dict "unmocked" at a cost "filed as a recommendation" -- false once seam B lands and rec-4006
+      closes. Reword to: the stub overrides the package autouse's live_state_dict memo so this test skips even the
+      one-per-process live compute for behaviour it does not exercise. No code or assertion change.
   - file: scripts/platform_roadmap_state.py
     action: Modify
     purpose: >-
@@ -248,7 +265,8 @@ verification_plan:
     expected: >-
       Both runs exit 0; prints before=/after= seconds and exits 0 only when after <= 40% of before. Measured at
       c53f2e46 in the authoring container: the base run of this exact selection took 329.86s (172 passed, 1 skipped); the
-      predicted after is ~75s -- one real compute (~5s) plus ~5.5s for each of the 12 main() calls in the selection (ratio ~0.23).
+      predicted after is ~80s -- two real computes (the ts=None key, plus cache_serving's own decision-ts key) plus
+      ~5.5s for each of the 12 main() calls in the selection (ratio ~0.24).
     fix_if: >-
       A ratio above 40% means a seam is not reached: re-run steps 2, 3 and 5 and read --durations for any test
       still near 5s (seam A/root callers) or 10s (seam B). A failing base run is environmental (the worktree lacks
@@ -266,11 +284,13 @@ verification_plan:
       tests/test_session_preflight_platform_roadmap.py tests/platform_roadmap_state/test_state_dict_and_feeds.py
       tests/session/preflight/conftest.py tests/session/preflight/test_main_report.py
       tests/test_session_preflight_decomposition.py tests/test_session_preflight_cache_serving.py
+      tests/test_platform_roadmap.py tests/session/preflight/test_main_branches.py
       scripts/platform_roadmap_state.py && bin/venv-python -m ruff format --check tests/fixtures/platform_roadmap_state.py
       tests/platform_roadmap_state/test_live_state_cache.py tests/test_session_preflight_platform_roadmap.py
       tests/platform_roadmap_state/test_state_dict_and_feeds.py tests/session/preflight/conftest.py
       tests/session/preflight/test_main_report.py tests/test_session_preflight_decomposition.py
-      tests/test_session_preflight_cache_serving.py scripts/platform_roadmap_state.py
+      tests/test_session_preflight_cache_serving.py tests/test_platform_roadmap.py
+      tests/session/preflight/test_main_branches.py scripts/platform_roadmap_state.py
     expected: Exit 0 from both commands.
     fix_if: An F401 on compute_state_dict means a seam-A import was left behind; an E402 means the new import in test_main_report.py lacks the file's existing noqa pattern.
     hermetic: true
@@ -366,17 +386,20 @@ test_obligations:
     test_selector: tests/test_session_preflight_decomposition.py
     waiver_reason: >-
       A test-harness wiring edit inside an existing test module, with no production behaviour of its own and no
-      new assertion to turn red: its correctness is the file's unchanged assertions staying green at step 5, and
-      its effect (no per-test recompute) is evidenced by step 8's before/after ratio over a selection that
-      includes this file.
+      new assertion to turn red. Its correctness is the file's unchanged assertions staying green at steps 5 and 6;
+      a mis-wired swap (return_value= instead of new=) hands main() a function object and turns
+      TestReportSchemaFreeze red, and a dropped swap leaves live_state_dict imported but unused (ruff F401, step 9).
+      Step 8's ratio is NOT discriminating for this row -- omitting both root swaps costs only ~15-20s.
   - source: tests/test_session_preflight_cache_serving.py
-    behavior: TestPhaseBAbsenceOfReaderCalls' main() run swaps compute_state_dict for live_state_dict instead of recomputing.
+    behavior: >-
+      TestPhaseBAbsenceOfReaderCalls' main() run routes compute_state_dict through live_state_dict (real, memoized
+      data); its latest_decision_ts key is rarely warm, so this is consistency, not a speed claim.
     verification_step: 5
     test_selector: tests/test_session_preflight_cache_serving.py
     waiver_reason: >-
       Same shape as the decomposition row: a one-line harness patch in an existing test module, proven correct by
-      its unchanged assertion staying green at step 5 and effective by step 8's ratio over a selection that
-      includes this file.
+      its unchanged assertion staying green at steps 5 and 6 (step 6 in isolation); a dropped patch leaves
+      live_state_dict imported but unused (ruff F401, step 9). No speed claim is made for this row.
   - source: config/agent/verification_registry/entries/roadmap-live-state-memo.yaml
     behavior: Its check_id equals VP step 1's graduation_check_id and its node_id is admitted by the differential gate.
     verification_step: 10
@@ -487,7 +510,9 @@ execution_steps:
   - >-
     Root callers: tests/test_session_preflight_decomposition.py -- import platform_roadmap (scripts.roadmap) and
     live_state_dict; add the spec row and the _DIRECT_VALUE_ATTRS entry. tests/test_session_preflight_cache_serving.py
-    -- add the patch to TestPhaseBAbsenceOfReaderCalls' with-block. Run VP step 5 green.
+    -- add the patch to TestPhaseBAbsenceOfReaderCalls' with-block. Reword the stale comments in
+    tests/test_platform_roadmap.py and tests/session/preflight/test_main_branches.py (comment-only; scope rows).
+    Run VP steps 5 and 6 green.
   - >-
     Create all three verification-registry shards (field shape per config/agent/verification_registry/entries/
     rec-autoclose-trailer-gate-read-oserror.yaml; plan_slug roadmap-state-test-cache; graduated_by implement-agent;
