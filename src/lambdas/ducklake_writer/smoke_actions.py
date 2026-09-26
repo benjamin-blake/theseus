@@ -127,33 +127,56 @@ def action_idempotency_probe(event: dict[str, Any], con: Any) -> dict[str, Any]:
 
 
 def action_partition_probe(event: dict[str, Any], con: Any) -> dict[str, Any]:
-    """Write across >=2 day-partitions + bucket-partitions; demonstrate pruning (EC6)."""
-    from datetime import datetime, timedelta, timezone  # noqa: PLC0415
+    """Write rows sharing a day-of-month across a month AND a year boundary; measure the LIVE
+    calendar-day partition layout from DuckLake's own file-partition metadata (EC6, rec-4068).
+
+    Prior to rec-4068 this probe asserted a hardcoded current-bucket-scan constant and inferred
+    history pruning via ducklake_list_files' WHERE-predicate form, which always raised and fell
+    back to comparing a ROW count to a FILE count -- never proving anything about partitions. It
+    now reads the metadata DuckLake itself tracks per live data file
+    (__ducklake_metadata_<alias>.ducklake_data_file / ducklake_file_partition_value), so a
+    regression to the day-of-month spelling -- which would COLLAPSE these three rows into one
+    partition -- is directly observable in the measured tuple/day counts. These are metadata-
+    derived LAYOUT facts, not engine-pruning evidence, and are named as such.
+    """
+    from datetime import datetime, timezone  # noqa: PLC0415
 
     rt.create_scd2_tables(con, force_recreate=True)
-    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    # Two day-partitions in history, several rec_ids spread across current buckets.
+
+    # Three rows sharing day-of-month 24, spanning a month boundary AND a year boundary: the exact
+    # shape day(created_timestamp) alone collapsed into one day=24 partition (Decision 137 finding).
+    probe_days = (
+        datetime(2026, 1, 24, tzinfo=timezone.utc),
+        datetime(2026, 2, 24, tzinfo=timezone.utc),
+        datetime(2027, 1, 24, tzinfo=timezone.utc),
+    )
     for i in range(6):
         rec_id = f"rec-part-{i}"
-        identity = rt.WriteIdentity(ulid=str(rt.mint_write_identity().ulid), timestamp=base + timedelta(days=i % 3))
+        identity = rt.WriteIdentity(ulid=str(rt.mint_write_identity().ulid), timestamp=probe_days[i % 3])
         rt.write_scd2(con, {"rec_id": rec_id, "payload": "p"}, identity=identity)
 
-    history_total = _count_files(con, rt.SMOKE_HISTORY_TABLE)
-    current_total = _count_files(con, rt.SMOKE_CURRENT_TABLE)
-    # Date-filtered history query: only the first day's partition should be scanned.
-    cutoff = base + timedelta(days=1)
-    history_scanned = _count_files_for_predicate(
-        con, rt.SMOKE_HISTORY_TABLE, f"created_timestamp < TIMESTAMP '{cutoff.isoformat()}'"
-    )
-    current_scanned = _count_files_for_predicate(con, rt.SMOKE_CURRENT_TABLE, "rec_id = 'rec-part-0'")
+    # Compaction pass: proves the calendar-day boundary survives merge, not just initial write.
+    con.execute(f"CALL ducklake_merge_adjacent_files('{rt.CATALOG_ALIAS}')")
+
+    history = _partition_layout(con, rt.CATALOG_ALIAS, rt.SMOKE_HISTORY_TABLE)
+    current = _partition_layout(con, rt.CATALOG_ALIAS, rt.SMOKE_CURRENT_TABLE)
+
+    history_tuples = list(history["value_tuples"].values())
+    probed_day_tuple = min(history_tuples) if history_tuples else None
+    history_files_in_probed_day = sum(1 for t in history_tuples if t == probed_day_tuple)
+
+    current_tuples = list(current["value_tuples"].values())
+    probed_bucket_tuple = min(current_tuples) if current_tuples else None
+    current_files_in_probed_bucket = sum(1 for t in current_tuples if t == probed_bucket_tuple)
+
     return {
         "ok": True,
-        "history_pruned": history_scanned < history_total,
-        "history_files_scanned": history_scanned,
-        "history_total": history_total,
-        "current_partitions_scanned": 1,
-        "current_files_scanned": current_scanned,
-        "current_total": current_total,
+        "history_calendar_days": len(set(history_tuples)),
+        "history_partition_tuples": len(set(history["partition_ids"])),
+        "history_files_in_probed_day": history_files_in_probed_day,
+        "history_total": history["total"],
+        "current_files_in_probed_bucket": current_files_in_probed_bucket,
+        "current_total": current["total"],
     }
 
 
@@ -439,17 +462,39 @@ def _count_files(con: Any, table: str) -> int:
         return 0
 
 
-def _count_files_for_predicate(con: Any, table: str, predicate: str) -> int:
-    """Approximate the file count a predicate scans via the partition-pruned file listing."""
-    try:
+def _partition_layout(con: Any, catalog_alias: str, table: str) -> dict[str, Any]:
+    """LIVE (end_snapshot IS NULL) data-file partition layout for *table*, read from DuckLake's own
+    file-partition metadata catalog. Loud-fail (Decision 55): a metadata-schema read error raises,
+    it never falls back or silently reports 0 -- an EC6 measurement must be real or absent.
+
+    Returns {"total": int, "partition_ids": [int, ...], "value_tuples": {data_file_id: (str, ...)}}
+    -- value_tuples orders each file's partition_value entries by partition_key_index, so for a
+    calendar-day history table a tuple is (year, month, day) as DuckLake stringifies them.
+    """
+    meta_schema = f"__ducklake_metadata_{catalog_alias}"
+    files = con.execute(
+        f"SELECT df.data_file_id, df.partition_id FROM {meta_schema}.ducklake_data_file df "
+        f"JOIN {meta_schema}.ducklake_table t ON df.table_id = t.table_id "
+        f"WHERE t.table_name = ? AND df.end_snapshot IS NULL",
+        [table],
+    ).fetchall()
+    file_ids = [int(r[0]) for r in files]
+    partition_ids = [int(r[1]) for r in files]
+
+    value_tuples: dict[int, tuple[str, ...]] = {}
+    if file_ids:
+        placeholders = ", ".join("?" for _ in file_ids)
         rows = con.execute(
-            f"SELECT count(*) FROM ducklake_list_files('{rt.CATALOG_ALIAS}', '{table}') WHERE {predicate}"
-        ).fetchone()
-        return int(rows[0]) if rows else 0
-    except Exception:  # noqa: BLE001
-        # Fall back to a row-level count of the filtered query (functional prune evidence).
-        rows = con.execute(f"SELECT count(*) FROM {rt.CATALOG_ALIAS}.{table} WHERE {predicate}").fetchone()
-        return int(rows[0]) if rows else 0
+            f"SELECT data_file_id, partition_key_index, partition_value FROM {meta_schema}.ducklake_file_partition_value "
+            f"WHERE data_file_id IN ({placeholders}) ORDER BY data_file_id, partition_key_index",
+            file_ids,
+        ).fetchall()
+        grouped: dict[int, list[str]] = {}
+        for file_id, _idx, value in rows:
+            grouped.setdefault(int(file_id), []).append(value)
+        value_tuples = {fid: tuple(vals) for fid, vals in grouped.items()}
+
+    return {"total": len(file_ids), "partition_ids": partition_ids, "value_tuples": value_tuples}
 
 
 def _count_inlined_rows(con: Any, table: str) -> int:

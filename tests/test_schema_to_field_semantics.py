@@ -353,10 +353,24 @@ class TestGenerateIntegration:
         assert doc["ops_tables"]["ops_recommendations"]["merge_key"] == "id"
         assert doc["ops_tables"]["ops_decisions"]["merge_key"] == "id"
 
+    def test_project_contract_table_raises_on_missing_partition_by(self) -> None:
+        resolved_fields = {
+            "id": {"derivation": None, "iceberg_type": "string", "nullable": False},
+        }
+        with pytest.raises(ValueError, match="governance.partition_by is missing"):
+            _project_contract_table(
+                "ops_widgets",
+                resolved_fields,
+                "id",
+                {"status": "live"},
+                table_class="scd2",
+                partition_by=None,
+            )
+
     def test_partition_synthesized(self) -> None:
         doc = generate()
         rec_part = doc["ops_tables"]["ops_recommendations"]["partition"]
-        assert rec_part["history"] == "day(created_timestamp)"
+        assert rec_part["history"] == "year(created_timestamp), month(created_timestamp), day(created_timestamp)"
         assert rec_part["current"] == "bucket(8, id)"
 
     def test_table_names_synthesized(self) -> None:

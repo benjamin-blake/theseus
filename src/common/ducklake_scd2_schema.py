@@ -19,6 +19,8 @@ from typing import Any
 
 import yaml
 
+from src.common.ducklake_partition_spec import PartitionSpecError, resolve_partition_block
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -161,7 +163,7 @@ class ScdTableSpec:
     fields: dict[str, Any]  # column name -> {role, sql_type, nullable}; the schema-gate contract
     ordered_columns: tuple[tuple[str, str], ...]  # (name, sql_type) in physical (DDL/INSERT) order
     partition_history: str
-    partition_current: str
+    partition_current: str | None  # None for append_only tables (no current projection to partition)
     entity_id_prefix: str | None = None  # canonical id shape <prefix>NNN (None = no canonical keyspace)
     id_keyspace: str = "caller"  # "writer" => file_ops allocates + write_ops advances the counter (Decision 84 I-2)
     write_mode: str = "scd2"  # "scd2" | "append_only"; append_only skips the current write-through projection
@@ -183,7 +185,7 @@ def resolve_table_spec(table: str | None = None, semantics: dict[str, Any] | Non
     """Resolve the SCD2 spec for *table* (None = smoke). Loud-fail on an unknown ops table name."""
     semantics = semantics if semantics is not None else load_field_semantics()
     if table is None:
-        partitions = semantics.get("partition_transforms", {})
+        partition_history, partition_current = resolve_partition_block(semantics.get("partition_transforms", {}), "scd2")
         return ScdTableSpec(
             table=None,
             history_table=SMOKE_HISTORY_TABLE,
@@ -191,8 +193,8 @@ def resolve_table_spec(table: str | None = None, semantics: dict[str, Any] | Non
             merge_key="rec_id",
             fields=semantics["fields"],
             ordered_columns=_order_columns(semantics["fields"], "rec_id"),
-            partition_history=partitions.get("history", "day(created_timestamp)"),
-            partition_current=partitions.get("current", "bucket(8, rec_id)"),
+            partition_history=partition_history,
+            partition_current=partition_current,
         )
     ops_tables = semantics.get("ops_tables", {})
     spec = ops_tables.get(table)
@@ -213,6 +215,10 @@ def resolve_table_spec(table: str | None = None, semantics: dict[str, Any] | Non
     merge_key = spec["merge_key"]
     fields = spec["columns"]
     part = spec.get("partition", {})
+    try:
+        partition_history, partition_current = resolve_partition_block(part, write_mode)
+    except PartitionSpecError as exc:  # re-raised as SchemaGateError (Decision 55: runtime defense in depth)
+        raise SchemaGateError(f"{table!r}: {exc}") from exc
     return ScdTableSpec(
         table=table,
         history_table=spec["history_table"],
@@ -220,8 +226,8 @@ def resolve_table_spec(table: str | None = None, semantics: dict[str, Any] | Non
         merge_key=merge_key,
         fields=fields,
         ordered_columns=_order_columns(fields, merge_key),
-        partition_history=part.get("history", "day(created_timestamp)"),
-        partition_current=part.get("current", f"bucket(8, {merge_key})"),
+        partition_history=partition_history,
+        partition_current=partition_current,
         entity_id_prefix=spec.get("entity_id_prefix"),
         id_keyspace=spec.get("id_keyspace", "caller"),
         write_mode=write_mode,

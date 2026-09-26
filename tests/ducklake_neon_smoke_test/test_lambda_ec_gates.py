@@ -69,27 +69,46 @@ def test_lambda_partition_ok(monkeypatch, capsys):
     _patch_gate(
         monkeypatch,
         {
-            "history_pruned": True,
-            "history_files_scanned": 1,
+            "history_calendar_days": 3,
+            "history_partition_tuples": 3,
+            "history_files_in_probed_day": 1,
             "history_total": 3,
-            "current_partitions_scanned": 1,
-            "current_files_scanned": 1,
+            "current_files_in_probed_bucket": 1,
             "current_total": 4,
         },
     )
     smoke.lambda_partition()
-    assert "PARTITION OK history_pruned=true" in capsys.readouterr().out
+    assert "PARTITION OK history_partition_tuples=3" in capsys.readouterr().out
 
 
 def test_lambda_partition_fails(monkeypatch):
     _patch_gate(
         monkeypatch,
         {
-            "history_pruned": False,
-            "history_files_scanned": 3,
+            "history_calendar_days": 3,
+            "history_partition_tuples": 3,
+            "history_files_in_probed_day": 3,
             "history_total": 3,
-            "current_partitions_scanned": 2,
-            "current_files_scanned": 4,
+            "current_files_in_probed_bucket": 4,
+            "current_total": 4,
+        },
+    )
+    with pytest.raises(smoke.SmokeTestFailure, match="PARTITION FAIL"):
+        smoke.lambda_partition()
+
+
+def test_lambda_partition_fails_on_collapsed_calendar_days(monkeypatch):
+    """Discriminating case: a deployed day-of-month spelling would collapse the three probed days
+    into one partition tuple (history_partition_tuples < history_calendar_days would-be-3), which
+    the gate must reject rather than pass on a merely-nonempty history."""
+    _patch_gate(
+        monkeypatch,
+        {
+            "history_calendar_days": 1,
+            "history_partition_tuples": 1,
+            "history_files_in_probed_day": 1,
+            "history_total": 1,
+            "current_files_in_probed_bucket": 1,
             "current_total": 4,
         },
     )

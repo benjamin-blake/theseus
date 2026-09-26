@@ -52,22 +52,26 @@ def lambda_idempotency(*, profile: str | None = None, region: str = "eu-west-2")
 
 
 def lambda_partition(*, profile: str | None = None, region: str = "eu-west-2") -> None:
-    """EC6: a date-filtered history query prunes partitions; the single-key current lookup is bounded."""
+    """EC6 (rec-4068): every calendar day gets its own history partition tuple, and the current
+    table's bucket partitions are not collapsed into one. Discriminates directly on the measured
+    partition-tuple/calendar-day counts DuckLake's own metadata reports -- a regression to the
+    day-of-month spelling would collapse the three probed days into one tuple."""
     body = core._ok_json(
         core._sigv4_invoke(core._function_url("writer"), {"action": "partition_probe"}, profile=profile, region=region)
     )
     ok = (
-        body.get("history_pruned")
-        and body.get("history_files_scanned", 1) < body.get("history_total", 0)
-        and body.get("current_partitions_scanned", 99) <= 1
-        and body.get("current_files_scanned", 1) < body.get("current_total", 0)
+        body.get("history_partition_tuples") == body.get("history_calendar_days")
+        and body.get("history_calendar_days", 0) >= 3
+        and body.get("history_files_in_probed_day", 1) < body.get("history_total", 0)
+        and body.get("current_files_in_probed_bucket", 1) < body.get("current_total", 0)
     )
     if not ok:
         raise core.SmokeTestFailure(f"PARTITION FAIL: {body}")
     print(
-        f"PARTITION OK history_pruned=true history_files_scanned={body['history_files_scanned']}"
-        f"<{body['history_total']} current_partitions_scanned<=1 "
-        f"current_files_scanned={body['current_files_scanned']}<{body['current_total']}"
+        f"PARTITION OK history_partition_tuples={body['history_partition_tuples']}"
+        f"==history_calendar_days={body['history_calendar_days']}>=3 "
+        f"history_files_in_probed_day={body['history_files_in_probed_day']}<{body['history_total']} "
+        f"current_files_in_probed_bucket={body['current_files_in_probed_bucket']}<{body['current_total']}"
     )
 
 

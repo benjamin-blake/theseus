@@ -46,6 +46,12 @@ from typing import Any
 
 import yaml
 
+from src.common.ducklake_partition_spec import (
+    parse_partition_by,
+    resolve_partition_block,
+    validate_projection_partitions,
+)
+
 ROOT = Path(__file__).parent.parent
 _CONTRACTS_DIR = ROOT / "docs" / "contracts"
 _SIDECAR_PATH = ROOT / "config" / "lambda" / "ducklake" / "field_semantics.static.yaml"
@@ -175,6 +181,7 @@ def _project_contract_table(
     *,
     table_class: str = "scd2",
     include_prose: bool = False,
+    partition_by: str | None = None,
 ) -> dict[str, Any]:
     """Project a Class A contract's resolved fields into an ops_tables entry.
 
@@ -225,10 +232,10 @@ def _project_contract_table(
 
     history_table = f"{table_id}_history"
     current_table = f"{table_id}_current"
-    partition = {
-        "history": "day(created_timestamp)",
-        "current": f"bucket(8, {merge_key})",
-    }
+    if not partition_by:
+        raise ValueError(f"{table_id}: governance.partition_by is missing -- required for {table_class} tables")
+    history, current = resolve_partition_block(parse_partition_by(partition_by), "scd2")
+    partition = {"history": history, "current": current}
     entry = {
         "status": ops_config["status"],
         "merge_key": merge_key,
@@ -284,8 +291,15 @@ def generate(*, include_prose: bool = False) -> dict[str, Any]:
 
         resolved = resolve_refs(contract_doc, _CONTRACTS_DIR)
         ops_config = contract_table_ops.get(table_id, {})
+        partition_by = contract_doc.governance.partition_by if contract_doc.governance else None
         ops_tables[table_id] = _project_contract_table(
-            table_id, resolved, merge_key, ops_config, table_class=table_class, include_prose=include_prose
+            table_id,
+            resolved,
+            merge_key,
+            ops_config,
+            table_class=table_class,
+            include_prose=include_prose,
+            partition_by=partition_by,
         )
 
     dormant = sidecar.get("dormant_ops_tables", {})
@@ -306,6 +320,7 @@ def generate(*, include_prose: bool = False) -> dict[str, Any]:
         _enforce_reconcile_pending_subset(table_id, ops_entry, declared_columns, write_mode)
 
     doc["ops_tables"] = ops_tables
+    validate_projection_partitions(doc)
     return doc
 
 

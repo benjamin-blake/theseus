@@ -139,6 +139,19 @@ def test_open_connection_dev_mode_installs(monkeypatch):
     assert any(s == "SET threads=1" for s in sqls)
 
 
+def test_open_connection_pins_utc_timezone(monkeypatch):
+    """rec-4068: every DuckLake session is pinned to UTC, issued BEFORE the ATTACH (partition
+    transforms evaluate in the connection's TimeZone, Decision 96)."""
+    con = FakeCon()
+    _patch_duckdb(monkeypatch, con)
+    rt.open_connection(dsn=_DSN, data_path="s3://x/y/")
+    sqls = [s for s, _ in con.executed]
+    assert "SET TimeZone='UTC'" in sqls
+    tz_index = sqls.index("SET TimeZone='UTC'")
+    attach_index = next(i for i, s in enumerate(sqls) if s.startswith("ATTACH 'ducklake:postgres:"))
+    assert tz_index < attach_index
+
+
 def test_open_connection_meta_schema_param_relocates_smoke(monkeypatch):
     """Smoke attaches its OWN meta-schema (rec-2099): passing meta_schema overrides the ducklake_ops default."""
     con = FakeCon()

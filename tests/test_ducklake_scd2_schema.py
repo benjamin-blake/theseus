@@ -25,7 +25,11 @@ _SEMANTICS = {
         "created_timestamp": {"role": "derived", "sql_type": "TIMESTAMP WITH TIME ZONE", "nullable": False},
         "last_updated_timestamp": {"role": "derived", "sql_type": "TIMESTAMP WITH TIME ZONE", "nullable": False},
         "payload": {"role": "input", "sql_type": "VARCHAR", "nullable": True},
-    }
+    },
+    "partition_transforms": {
+        "history": "year(created_timestamp), month(created_timestamp), day(created_timestamp)",
+        "current": "bucket(8, rec_id)",
+    },
 }
 
 
@@ -431,7 +435,7 @@ _APPEND_ONLY_SEMANTICS: dict = {
             "status": "smoke",
             "merge_key": "event_id",
             "history_table": "ops_smoke_events_history",
-            "partition": {"history": "day(created_timestamp)"},
+            "partition": {"history": "year(created_timestamp), month(created_timestamp), day(created_timestamp)"},
             "columns": {
                 "ulid": {"role": "derived", "sql_type": "VARCHAR", "nullable": False},
                 "event_id": {"role": "input", "sql_type": "VARCHAR", "nullable": False},
@@ -477,6 +481,52 @@ def test_ops_smoke_events_in_real_ops_table_names():
     """ops_smoke_events appears in ops_table_names() once added to field_semantics.yaml."""
     names = schema.ops_table_names()
     assert "ops_smoke_events" in names
+
+
+_SCD2_MISSING_CURRENT_SEMANTICS: dict = {
+    "ops_tables": {
+        "ops_widgets": {
+            "merge_key": "id",
+            "history_table": "ops_widgets_history",
+            "current_table": "ops_widgets_current",
+            "partition": {"history": "year(created_timestamp), month(created_timestamp), day(created_timestamp)"},
+            "columns": {
+                "ulid": {"role": "derived", "sql_type": "VARCHAR", "nullable": False},
+                "id": {"role": "input", "sql_type": "VARCHAR", "nullable": False},
+                "created_timestamp": {"role": "derived", "sql_type": "TIMESTAMP WITH TIME ZONE", "nullable": False},
+                "last_updated_timestamp": {"role": "derived", "sql_type": "TIMESTAMP WITH TIME ZONE", "nullable": False},
+            },
+        }
+    },
+}
+
+_SCD2_DAY_OF_MONTH_SEMANTICS: dict = {
+    "ops_tables": {
+        "ops_widgets": {
+            "merge_key": "id",
+            "history_table": "ops_widgets_history",
+            "current_table": "ops_widgets_current",
+            "partition": {"history": "day(created_timestamp)", "current": "bucket(8, id)"},
+            "columns": {
+                "ulid": {"role": "derived", "sql_type": "VARCHAR", "nullable": False},
+                "id": {"role": "input", "sql_type": "VARCHAR", "nullable": False},
+                "created_timestamp": {"role": "derived", "sql_type": "TIMESTAMP WITH TIME ZONE", "nullable": False},
+                "last_updated_timestamp": {"role": "derived", "sql_type": "TIMESTAMP WITH TIME ZONE", "nullable": False},
+            },
+        }
+    },
+}
+
+
+def test_resolve_table_spec_refuses_missing_or_non_calendar_partition():
+    """resolve_table_spec raises SchemaGateError on a missing 'current' (scd2) or a day-of-month spec."""
+    with pytest.raises(schema.SchemaGateError):
+        schema.resolve_table_spec("ops_widgets", _SCD2_MISSING_CURRENT_SEMANTICS)
+    with pytest.raises(schema.SchemaGateError):
+        schema.resolve_table_spec("ops_widgets", _SCD2_DAY_OF_MONTH_SEMANTICS)
+    # append_only resolves fine with no 'current' partition entry at all.
+    spec = schema.resolve_table_spec("ops_smoke_events", _APPEND_ONLY_SEMANTICS)
+    assert spec.partition_current is None
 
 
 # ---------------------------------------------------------------------------

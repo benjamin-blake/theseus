@@ -300,6 +300,13 @@ def open_connection(
     # Inlining off for ALL tables (CD.34 / EC11): write S3 Parquet immediately, never inline rows.
     con.execute("SET ducklake_default_data_inlining_row_limit=0")
 
+    # Pin UTC BEFORE the ATTACH (Decision 96 intent, rec-4068): DuckLake evaluates year()/month()/
+    # day()/hour() partition transforms in the connection's TimeZone, so an un-pinned Lambda
+    # environment default would make the calendar-day partition boundary follow the container's
+    # local TZ instead of UTC. ICU is statically linked in the pinned duckdb version, so this works
+    # with autoload disabled.
+    con.execute("SET TimeZone='UTC'")
+
     conninfo = libpq_conninfo(dsn)
     con.execute(
         f"ATTACH 'ducklake:postgres:{conninfo}' AS {CATALOG_ALIAS} (DATA_PATH '{data_path}', META_SCHEMA '{meta_schema}')"

@@ -139,6 +139,7 @@ ENTRIES: tuple[Entry, ...] = (
             "scripts/schema_to_field_semantics.py",
             "scripts/contracts.py",
             "scripts/contracts_schema.py",
+            "src/common/ducklake_partition_spec.py",
             "scripts/checks/ops_governance/**",
             "scripts/checks/_common.py",
             "scripts/checks/registry.py",

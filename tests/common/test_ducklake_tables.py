@@ -10,18 +10,36 @@ from __future__ import annotations
 import pytest
 
 from src.common import ducklake_runtime as rt
+from src.common import ducklake_scd2_schema as schema
 from tests.fixtures.ducklake_fakes import FakeCon
 
 pytestmark = pytest.mark.unit
+
+_CALENDAR_TRIPLE = "year(created_timestamp), month(created_timestamp), day(created_timestamp)"
 
 
 def test_create_scd2_tables_applies_partitions():
     con = FakeCon()
     rt.create_scd2_tables(con)
     sqls = [s for s, _ in con.executed]
-    assert any("SET PARTITIONED BY (day(created_timestamp))" in s for s in sqls)
+    assert any(f"SET PARTITIONED BY ({_CALENDAR_TRIPLE})" in s for s in sqls)
     assert any("SET PARTITIONED BY (bucket(8, rec_id))" in s for s in sqls)
     assert not any(s.startswith("DROP TABLE") for s in sqls)
+
+
+def test_history_partition_is_calendar_day_triple():
+    """rec-4068 acceptance: every resolved history partition is the calendar-day triple (hermetic:
+    FakeCon + the committed projection, no integration marker, no extension -- Decision 201
+    closure-time evaluator)."""
+    smoke_spec = schema.resolve_table_spec(None)
+    assert smoke_spec.partition_history == _CALENDAR_TRIPLE
+
+    semantics = schema.load_field_semantics()
+    for table in schema.ops_table_names():
+        if semantics["ops_tables"][table].get("write_mode") == "control":
+            continue  # control-class tables (e.g. ops_entity_counters) have no history/current pair
+        spec = schema.resolve_table_spec(table)
+        assert spec.partition_history == _CALENDAR_TRIPLE, f"{table}: {spec.partition_history}"
 
 
 def test_create_scd2_tables_force_recreate_drops_first():

@@ -21,7 +21,11 @@ _SEMANTICS = {
         "created_timestamp": {"role": "derived", "sql_type": "TIMESTAMP WITH TIME ZONE", "nullable": False},
         "last_updated_timestamp": {"role": "derived", "sql_type": "TIMESTAMP WITH TIME ZONE", "nullable": False},
         "payload": {"role": "input", "sql_type": "VARCHAR", "nullable": True},
-    }
+    },
+    "partition_transforms": {
+        "history": "year(created_timestamp), month(created_timestamp), day(created_timestamp)",
+        "current": "bucket(8, rec_id)",
+    },
 }
 
 

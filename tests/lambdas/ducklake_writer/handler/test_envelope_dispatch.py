@@ -129,24 +129,36 @@ def test_handler_idempotency_probe(monkeypatch):
     assert body["current_rows"] == 1
 
 
-def test_handler_partition_probe(monkeypatch):
-    con = FakeCon(
-        fetchone_map={
-            "ducklake_list_files('ops_catalog', 'ducklake_smoke_history')": (4,),
-            "ducklake_list_files('ops_catalog', 'ducklake_smoke_current')": (8,),
-        }
-    )
+def test_handler_partition_probe_measures_calendar_day_tuples(monkeypatch):
+    """rec-4068: the probe response carries MEASURED calendar-day tuple/layout fields, no constants."""
+    con = FakeCon()
     monkeypatch.setattr(h, "_open_writer_connection", lambda: con)
     monkeypatch.setattr(rt, "create_scd2_tables", lambda c, force_recreate=False: None)
     monkeypatch.setattr(rt, "write_scd2", lambda c, rec, **kw: _result())
-    # _count_files returns 4/8 total; _count_files_for_predicate returns smaller via the WHERE-listing
-    monkeypatch.setattr(smoke_actions, "_count_files", lambda c, t: 4 if "history" in t else 8)
-    monkeypatch.setattr(smoke_actions, "_count_files_for_predicate", lambda c, t, p: 1)
+
+    def _fake_layout(con, catalog_alias, table):
+        if "history" in table:
+            return {
+                "total": 4,
+                "partition_ids": [10, 11, 12],
+                "value_tuples": {
+                    1: ("2026", "1", "24"),
+                    2: ("2026", "2", "24"),
+                    3: ("2027", "1", "24"),
+                    4: ("2026", "1", "24"),
+                },
+            }
+        return {"total": 8, "partition_ids": [20, 21], "value_tuples": {5: ("0",), 6: ("1",), 7: ("0",), 8: ("0",)}}
+
+    monkeypatch.setattr(smoke_actions, "_partition_layout", _fake_layout)
     r = h.handler({"action": "partition_probe"})
     body = json.loads(r["body"])
-    assert body["history_pruned"] is True
-    assert body["history_files_scanned"] == 1
-    assert body["current_partitions_scanned"] == 1
+    assert body["history_calendar_days"] == 3
+    assert body["history_partition_tuples"] == 3
+    assert body["history_total"] == 4
+    assert body["current_total"] == 8
+    assert body["history_files_in_probed_day"] < body["history_total"]
+    assert body["current_files_in_probed_bucket"] < body["current_total"]
 
 
 def test_handler_inlining_probe(monkeypatch):
