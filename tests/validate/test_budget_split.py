@@ -188,19 +188,25 @@ class TestNonTestHalfBudget:
     def test_green_replay_at_its_ratified_maximum_does_not_breach(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture, pre_sequence_stub
     ) -> None:
-        """Domination, not exemption: validate_vp_replay's own sanctioned green maximum (its
-        MAX_AGGREGATE_SECONDS plus one PER_STEP_TIMEOUT_SECONDS) sits INSIDE the unwaivable half and
-        must still fit under it beside the worst measured static half -- while a replay phase its
-        own guard has already hard-failed does breach, because nothing clamps replay time out."""
+        """Domination, not exemption: validate_vp_replay's own sanctioned green maximum
+        (MAX_AGGREGATE_SECONDS alone, under the shared-aggregate deadline model -- the flat
+        PER_STEP_TIMEOUT_SECONDS term this used to add on top is retired) sits INSIDE the
+        unwaivable half and must still fit under it beside the worst measured static half -- while
+        a replay phase its own guard has already hard-failed does breach, because nothing clamps
+        replay time out."""
+        green_replay_seconds = sb.REPLAY_ALLOWANCE_SECONDS - 1.0
         green = _drive_pre(
             monkeypatch,
             pre_sequence_stub,
-            phases={"validate_vp_replay": 149.0, "lint": 71.8, "pytest_diff": 20.0},
+            phases={"validate_vp_replay": green_replay_seconds, "lint": 71.8, "pytest_diff": 20.0},
             n_selected=8,
             checks=("validate_vp_replay",),
         )
-        assert green[0] == 0, "a 220.8s non-test half must fit under a budget that dominates the replay allowance"
-        assert _budget_block()["replay_s"] == 149.0
+        non_test_half = green_replay_seconds + 71.8
+        assert green[0] == 0, (
+            f"a {non_test_half:.1f}s non-test half must fit under a budget that dominates the replay allowance"
+        )
+        assert _budget_block()["replay_s"] == green_replay_seconds
         capsys.readouterr()
 
         red = _drive_pre(

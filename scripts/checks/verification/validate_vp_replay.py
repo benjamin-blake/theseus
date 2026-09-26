@@ -10,7 +10,7 @@ self-reported by the implementing agent. Two legs, run every dispatch:
   Implement leg: for every plan resolved by ``_common.resolve_declared_plans`` (content-keyed
     False->True ``implementation_declared`` flip), replay its hermetic pre-deploy steps
     GREEN-AFTER (exit 0 required; opt-in backtick-literal substring match against stdout+stderr;
-    a TimeoutExpired always diverges) -- EXCEPT a PR-relative step whose base ref has collapsed
+    a deadline kill always diverges) -- EXCEPT a PR-relative step whose base ref has collapsed
     (measured, never keyed on ``graduation``; see ``_partition_steps``), excluded with a reason.
 
   Plan-only leg (new, Decision 189): a diff-present plan not resolved by the implement leg still
@@ -39,13 +39,15 @@ when at least one plan IS eligible, ``examined(len(resolved | acted_on),
 unit="plans_acted_on")`` -- an eligible plan with zero graduate steps contributes nothing, so the
 dispatch can still declare vacuous rather than misdescribing it as "declared".
 
-Bounded cost: PER_STEP_TIMEOUT_SECONDS plus an aggregate wall-clock/step-count cap
-(MAX_AGGREGATE_SECONDS / MAX_REPLAYED_STEPS), SHARED across both legs in one dispatch (Decision
-73, Decision 182 pt 2) -- hitting the cap appends one budget-guard failure and stops replay for
-BOTH legs, never a silent truncation. The classifier self-test adds its own small, unconditional,
-measured ~0.06s floor (four near-instant fixtures plus one deliberate 0.05s timeout fixture) on
-top of the existing 150s green maximum (Decision 182 pt 2), never folded into either budget
-constant.
+Bounded cost (docs/contracts/vp-red-before.yaml's ``replay_bound``): a replayed step's deadline is
+the remaining share of one aggregate wall-clock/step-count cap (MAX_AGGREGATE_SECONDS /
+MAX_REPLAYED_STEPS), SHARED across both legs in one dispatch (Decision 73, Decision 182 pt 2 as
+re-derived below) -- never a flat per-step cap. A step that reaches its deadline is killed
+(``_vp_replay_budget.run_bounded`` SIGKILLs its process group) and the exhaustion is reported
+EXACTLY ONCE per dispatch (rec-3833): whichever leg first observes it appends the one failure, and
+every later check across both legs sees ``budget.hit`` already set and stops silently. The
+classifier self-test adds its own small, unconditional, measured ~0.06s floor on top of the
+aggregate, never folded into either budget constant.
 
 No network and no AWS calls are made BY THIS CHECK. The implement leg trusts the plan author's
 ``hermetic: true`` marker that a replayed command is creds-free and side-effect-free; the
@@ -61,26 +63,30 @@ from __future__ import annotations
 
 import re
 import shlex
-import subprocess
-import time
 from pathlib import Path
 
 import yaml
 
 from scripts.checks import _common, registry
+from scripts.checks.verification import _vp_replay_budget
 from scripts.checks.verification._vp_replay_classify import (  # noqa: F401  (re-exported: external callers and tests import these from here)
     _CREDENTIAL_UNAVAILABLE_MESSAGE_RE,
     _PYTEST_COLLECTION_ERROR_EXIT_CODES,
+    _PYTHON_INTERPRETER_BASENAMES,
     _RG_GREP_ERROR_EXIT_CODE,
     _RG_GREP_INVOCATION_RE,
+    _SCRIPTS_VALIDATE_MODULE,
+    _SCRIPTS_VALIDATE_SCRIPT_PATH,
     _SELF_TEST_FIXTURES,
     _SELF_TEST_TIMEOUT_SECONDS,
+    _SHELL_SEGMENT_SPLIT_RE,
     _UNMEASURABLE_EXIT_CODES,
     OUTCOME_CLASSES,
-    PER_STEP_TIMEOUT_SECONDS,
     _classify_outcome,
+    _command_invokes_scripts_validate,
     _run_classifier_self_test,
     _run_self_test_fixture,
+    _segment_invokes_scripts_validate,
 )
 from scripts.roadmap.vp_literals import format_literal_print, select_literals
 
@@ -96,8 +102,10 @@ MAX_AGGREGATE_SECONDS = 120
 # worst-measured-live-cost) = floor(120 / 4.6) = 26 that a genuinely pathological all-worst-case
 # run (30 x 4.6s = 138s) still trips MAX_AGGREGATE_SECONDS, the true backstop, only a handful of
 # steps later than the strict floor would -- never silently exceeding the fast-tier budget by a
-# wide margin. MAX_AGGREGATE_SECONDS itself is unchanged (Decision 182 pt 2's 150s green maximum);
-# this constant only stops the COUNT from being the artificial bottleneck it was before.
+# wide margin. MAX_AGGREGATE_SECONDS itself is unchanged (deadline model, vp-replay-deadline-from
+# -shared-budget plan; was Decision 182 pt 2's 150s green maximum before the flat per-step term it
+# used to add on top retired); this constant only stops the COUNT from being the artificial
+# bottleneck it was before.
 MAX_REPLAYED_STEPS = 30
 
 # Genuinely used below (in the classifier self-test's fixture cwd resolution is NOT this -- see
@@ -114,32 +122,38 @@ _NEGATED_RG_GREP_RE = re.compile(r"!\s*(?:rg|grep)\b(?P<tail>[^&|;\n]*)")
 _QUOTED_TOKEN_RE = re.compile(r"""^(?:"[^"]*"|'[^']*')$""")
 _SAFE_PATH_TOKEN_RE = re.compile(r"^[A-Za-z0-9_./-]+$")
 
-# scripts.validate recursion refusal (docs/contracts/vp-red-before.yaml's recursion_refusal):
-# keyed on invocation SHAPE, never a bare substring -- see the module docstring and the contract
-# for the 11 merged false-positive shapes this must not catch.
-_SHELL_SEGMENT_SPLIT_RE = re.compile(r"&&|\|\||[;|]")
-_PYTHON_INTERPRETER_BASENAMES = frozenset({"python", "python3", "venv-python"})
-_SCRIPTS_VALIDATE_SCRIPT_PATH = "scripts/validate.py"
-_SCRIPTS_VALIDATE_MODULE = "scripts.validate"
-
 
 class _ReplayBudget:
     """Cross-leg step-count/wall-clock accumulator shared by the implement leg and the
     red-before leg within ONE dispatch -- MAX_REPLAYED_STEPS/MAX_AGGREGATE_SECONDS govern the
     union of both legs' replayed steps, never each leg independently (docs/contracts/
-    vp-red-before.yaml's shared-counter requirement)."""
+    vp-red-before.yaml's shared-counter requirement).
+
+    ``remaining()`` is a step's actual deadline -- it SHRINKS as prior steps in the same dispatch
+    spend it, never a flat per-step cap. ``hit`` means "this dispatch's one exhaustion event has
+    already been reported" (by a deadline kill or the top-of-loop guard) and is deliberately NOT
+    folded into ``exhausted()``: a caller checks ``hit`` FIRST and stops silently once it is set,
+    so the same exhaustion is never reported twice (rec-3833) across plans or across legs.
+    """
 
     def __init__(self) -> None:
         self.elapsed = 0.0
         self.count = 0
         self.hit = False
+        self.peak: tuple[str, int, float] | None = None
+
+    def remaining(self) -> float:
+        return MAX_AGGREGATE_SECONDS - self.elapsed
 
     def exhausted(self) -> bool:
-        return self.hit or self.count >= MAX_REPLAYED_STEPS or self.elapsed >= MAX_AGGREGATE_SECONDS
+        return self.count >= MAX_REPLAYED_STEPS or self.elapsed >= MAX_AGGREGATE_SECONDS
 
-    def spend(self, elapsed: float) -> None:
+    def spend(self, elapsed: float, location: tuple[str, int] | None = None) -> None:
         self.elapsed += elapsed
         self.count += 1
+        if location is not None and (self.peak is None or elapsed > self.peak[2]):
+            plan_rel, step_number = location
+            self.peak = (plan_rel, step_number, elapsed)
 
 
 # PR-relative authoring predicate (docs/contracts/vp-red-before.yaml's implement_leg_partition) --
@@ -260,70 +274,50 @@ def _negated_sweep_findings(plan_rel: str, pre_deploy_steps: list, root: Path) -
     return findings
 
 
-def _segment_invokes_scripts_validate(tokens: list[str]) -> bool:
-    for i in range(len(tokens) - 1):
-        if tokens[i] == "-m" and tokens[i + 1] == _SCRIPTS_VALIDATE_MODULE:
-            return True
-    if not tokens:
-        return False
-    head = tokens[0]
-    if head == _SCRIPTS_VALIDATE_SCRIPT_PATH or head.endswith("/" + _SCRIPTS_VALIDATE_SCRIPT_PATH):
-        return True
-    head_base = head.rsplit("/", 1)[-1]
-    if head_base in _PYTHON_INTERPRETER_BASENAMES and len(tokens) > 1:
-        second = tokens[1]
-        if second == _SCRIPTS_VALIDATE_SCRIPT_PATH or second.endswith("/" + _SCRIPTS_VALIDATE_SCRIPT_PATH):
-            return True
-    return False
-
-
-def _command_invokes_scripts_validate(command: str) -> bool:
-    """True iff ``command``'s argv head, in any shell segment, dispatches ``scripts.validate`` --
-    an ``-m scripts.validate`` module-flag pair, or ``scripts/validate.py`` used as the executed
-    program (never a bare substring match -- docs/contracts/vp-red-before.yaml's
-    recursion_refusal names the 11 merged false-positive shapes this must not catch)."""
-    return any(_segment_invokes_scripts_validate(segment.split()) for segment in _SHELL_SEGMENT_SPLIT_RE.split(command))
-
-
 def _replay_step(
-    plan_rel: str, step, root: Path, failed: list[str], *, expected_polarity: str = "green", schema_version: int = 4
+    plan_rel: str,
+    step,
+    root: Path,
+    failed: list[str],
+    budget: _ReplayBudget,
+    *,
+    expected_polarity: str = "green",
+    schema_version: int = 4,
 ) -> tuple[float, str | None]:
-    """Execute one VP step; append a divergence to failed[] if any.
+    """Execute one VP step against its remaining share of the shared aggregate (``budget.remaining()``,
+    via ``_vp_replay_budget.run_bounded`` -- called through the module attribute so tests can patch
+    it); append a divergence to failed[] if any, and spend the run into ``budget`` (the sole call
+    site that spends). A step killed at its deadline sets ``budget.hit`` here -- the one place a
+    deadline kill is detected -- so the caller's next top-of-loop check sees the exhaustion already
+    reported and stops silently (rec-3833: exactly one budget-exhaustion failure per dispatch).
 
     ``expected_polarity == "green"``: exit 0 required, opt-in literal-substring match against
     stdout+stderr (carrier SELECTED by ``schema_version`` via ``select_literals``). ``"red"``
     (docs/contracts/vp-red-before.yaml): must classify ``target_absent``/``assertion_failed``;
     ``tautological``/``unmeasurable`` diverge. Returns (elapsed seconds, outcome -- None for green).
     """
-    start = time.monotonic()
-    try:
-        result = subprocess.run(
-            step.command,
-            shell=True,
-            cwd=root,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=PER_STEP_TIMEOUT_SECONDS,
-        )
-    except subprocess.TimeoutExpired:
-        elapsed = time.monotonic() - start
+    prior_elapsed, prior_count = budget.elapsed, budget.count
+    result = _vp_replay_budget.run_bounded(step.command, cwd=root, timeout=budget.remaining())
+    budget.spend(result.elapsed, (plan_rel, step.step))
+
+    if result.timed_out:
+        budget.hit = True
         if expected_polarity == "green":
             failed.append(
-                f"vp-replay {plan_rel}:{step.step}: actual=TIMEOUT after {PER_STEP_TIMEOUT_SECONDS}s "
-                f"!= expected={step.expected!r}"
+                _vp_replay_budget.format_deadline_kill_green(
+                    plan_rel, step.step, result.elapsed, prior_elapsed, prior_count, MAX_AGGREGATE_SECONDS
+                )
             )
-            return elapsed, None
-        outcome = _classify_outcome(step.command, None, "", timed_out=True)
+            return result.elapsed, None
+        outcome = _classify_outcome(step.command, None, result.output, timed_out=True)
         failed.append(
-            f"vp-red-before {plan_rel}:{step.step}: actual={outcome} (TIMEOUT after {PER_STEP_TIMEOUT_SECONDS}s) "
-            "-- unmeasurable is a hard failure, never counted as red"
+            _vp_replay_budget.format_deadline_kill_red_before(
+                plan_rel, step.step, result.elapsed, prior_elapsed, prior_count, MAX_AGGREGATE_SECONDS
+            )
         )
-        return elapsed, outcome
+        return result.elapsed, outcome
 
-    elapsed = time.monotonic() - start
-    combined_output = result.stdout + result.stderr
+    combined_output = result.output
 
     if expected_polarity == "green":
         if result.returncode != 0:
@@ -331,7 +325,7 @@ def _replay_step(
                 f"vp-replay {plan_rel}:{step.step}: actual=exit {result.returncode} "
                 f"!= expected=exit 0 (expected={step.expected!r}; output tail={combined_output[-500:]!r})"
             )
-            return elapsed, None
+            return result.elapsed, None
         missing = [lit for lit in select_literals(step, schema_version) if lit not in combined_output]
         if missing:
             failed.append(
@@ -339,8 +333,9 @@ def _replay_step(
                 f"!= expected={step.expected!r} (output tail={combined_output[-500:]!r})"
             )
         else:
-            print(f"  PASS: {plan_rel}:{step.step} replayed ({step.command[:80]})")
-        return elapsed, None
+            suffix = _vp_replay_budget.duration_suffix(result.elapsed, MAX_AGGREGATE_SECONDS)
+            print(f"  PASS: {plan_rel}:{step.step} replayed ({step.command[:80]}) {suffix}")
+        return result.elapsed, None
 
     # Inverted (red) polarity from here.
     outcome = _classify_outcome(step.command, result.returncode, combined_output, timed_out=False)
@@ -350,8 +345,9 @@ def _replay_step(
             f"step must be genuinely red on the un-implemented tree (output tail={combined_output[-500:]!r})"
         )
     else:
-        print(f"  PASS: {plan_rel}:{step.step} red-before ({outcome}, exit {result.returncode})")
-    return elapsed, outcome
+        suffix = _vp_replay_budget.duration_suffix(result.elapsed, MAX_AGGREGATE_SECONDS)
+        print(f"  PASS: {plan_rel}:{step.step} red-before ({outcome}, exit {result.returncode}) {suffix}")
+    return result.elapsed, outcome
 
 
 def _implement_pr_leg(root: Path, resolved: list[str], failed: list[str], budget: _ReplayBudget) -> None:
@@ -390,11 +386,12 @@ def _implement_pr_leg(root: Path, resolved: list[str], failed: list[str], budget
                 )
                 budget.hit = True
                 break
-            elapsed, _outcome = _replay_step(
-                plan_rel, step, root, failed, expected_polarity="green", schema_version=doc.schema_version
+            _elapsed, _outcome = _replay_step(
+                plan_rel, step, root, failed, budget, expected_polarity="green", schema_version=doc.schema_version
             )
-            budget.spend(elapsed)
             replayed_count += 1
+            if budget.hit:
+                break
 
         if budget.hit:
             break
@@ -530,6 +527,8 @@ def _red_before_leg(
         # plan. Makes the carrier's obligation legible in the plan PR before the implementation
         # that must satisfy it exists.
         for step in graduate_steps:
+            if budget.hit:
+                break
             literals = select_literals(step, doc.schema_version)
             if literals:
                 print(format_literal_print(plan_rel, step.step, literals, doc.schema_version))
@@ -548,13 +547,14 @@ def _red_before_leg(
                 budget.hit = True
                 break
 
-            elapsed, outcome = _replay_step(
-                plan_rel, step, root, failed, expected_polarity="red", schema_version=doc.schema_version
+            _elapsed, outcome = _replay_step(
+                plan_rel, step, root, failed, budget, expected_polarity="red", schema_version=doc.schema_version
             )
-            budget.spend(elapsed)
             acted_on.add(plan_rel)
             if outcome == "tautological":
                 lint_findings.pop(step.step, None)
+            if budget.hit:
+                break
 
         for step_number in sorted(lint_findings):
             failed.append(lint_findings[step_number])
@@ -607,6 +607,13 @@ def validate_vp_replay(failed: list[str], changed_files: list[str] | None = None
     budget = _ReplayBudget()
     _implement_pr_leg(root, resolved, failed, budget)
     acted_on = _red_before_leg(plan_files, root, resolved_set, eligible, failed, budget)
+
+    if budget.count:
+        print(f"  {_vp_replay_budget.summary_line(budget.elapsed, MAX_AGGREGATE_SECONDS, budget.count, budget.peak)}")
+        peak_elapsed = budget.peak[2] if budget.peak else 0.0
+        warn = _vp_replay_budget.warn_band(peak_elapsed, budget.elapsed, MAX_AGGREGATE_SECONDS)
+        if warn:
+            print(f"  {warn}")
 
     if not eligible:
         registry.examined(len(resolved), unit="declared_plans")

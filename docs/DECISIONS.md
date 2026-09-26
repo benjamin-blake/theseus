@@ -1621,6 +1621,8 @@ governed floor, installs a second measured cause.
 
 **Related:** 153 (amended), 73 (cited, narrowed, not amended), 135, 128, 165, 167, 177, 181, 84.
 
+> **Update (2026-09-26):** Reversal condition (b) fires: PLAN-vp-replay-deadline-from-shared-budget re-derives validate_vp_replay's replay term to MAX_AGGREGATE_SECONDS (120) alone -- a replayed step's deadline is now the remaining share of that aggregate, never a flat per-step cap, so the 30s term this point's 150s figure used to add on top is retired. Re-derived, not reversed: NON_TEST_BUDGET_SECONDS stays 240 against the calibrated 71.766s static worst (120 + 71.766 = 191.766 < 240, headroom rises from 18.2s to 48.2s); CEILING_SECONDS - NON_TEST_BUDGET_SECONDS is unchanged at 1260. The check's own worst-case green maximum TIGHTENS from 150s to 120s. Reversal condition (a)'s measured-series re-check remains open, owned by rec-4093.
+
 ---
 
 
