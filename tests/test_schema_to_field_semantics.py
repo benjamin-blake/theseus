@@ -19,7 +19,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
@@ -602,10 +602,18 @@ class TestSlices:
         assert "ops_tables" in data
 
 
-# generate()'s missing-merge_key error path moved to tests/test_field_semantics_event_projection.py
-# (TestGenerateMissingMergeKey, Decision 128 decompose-by-default -- this file was over its 500-SLOC
-# budget; that test carries no VP-step node_id reference, unlike test_event_class_dispatches_to_event_projection
-# below, whose bare module-level form the plan's graduated VP step 8 cites and which must stay put).
+# The non-event-class merge_key-missing branch stays covered here (per-file coverage runs only this
+# file's own mapped tests, Decision 131); TestGenerateMissingMergeKey (the mocked-generic-doc version,
+# no table_class set) moved to tests/test_field_semantics_event_projection.py (Decision 128
+# decompose-by-default -- this file was over its 500-SLOC budget).
+def test_non_event_class_missing_merge_key_raises() -> None:
+    mock_doc = MagicMock()
+    mock_doc.governance = MagicMock()
+    mock_doc.governance.merge_key = None
+    mock_doc.governance.table_class = "scd2"
+    with patch("scripts.contracts.load_contract", return_value=mock_doc):
+        with pytest.raises(ValueError, match="governance.merge_key is missing"):
+            generate()
 
 
 # ---------------------------------------------------------------------------

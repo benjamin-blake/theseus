@@ -129,6 +129,18 @@ class TestFailClosedCases:
                 ),
             )
 
+    def test_missing_history_role_partition_by_rejected(self, fixture_resolved) -> None:
+        # A parseable role-prefixed spec that declares neither 'history=' nor 'current=' -- distinct
+        # from the malformed-grammar and the current-role-present cases above; the "must declare a
+        # 'history=' role" branch is its own guard, reached only once the current= check clears.
+        doc, resolved = fixture_resolved
+        with pytest.raises(ValueError, match="must declare a 'history=' role"):
+            _project(
+                "fixture_events",
+                resolved,
+                partition_by="bogus=year(session_started_at), month(session_started_at), day(session_started_at)",
+            )
+
     def test_partition_check_delegates_to_validate_partition_spec(self, fixture_resolved) -> None:
         """rec-4073 acceptance node: a spec the SHARED validate_partition_spec predicate accepts
         (year-only is a valid calendar prefix on its own) but that this module's own stricter
