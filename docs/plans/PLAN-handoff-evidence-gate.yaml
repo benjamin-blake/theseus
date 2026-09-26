@@ -28,7 +28,11 @@ scope:
       beyond one level, persistent git aliases/config, the accepted `echo git push` false positive).
       (1) PRE-PASS: strip heredoc bodies (`<<`, `<<-`, `<<~` with a bare or quoted delimiter, through the delimiter line)
       -- they are data -- EXCEPT when the command receiving the heredoc is a shell (bash, sh, zsh, dash), whose body is
-      classified as commands; also recurse into a shell's here-string (`<<<`). A heredoc operator is recognised ONLY in
+      classified as commands -- as is a body whose heredoc feeds a pipeline containing a shell that reads stdin (`cat
+      <<'EOF' | bash` executes its body; critique round 3 R3-2); also recurse into a shell's here-string (`<<<`). Before
+      tokenising, remove backslash-newline line continuations outside single quotes, as bash does (otherwise `git \
+      NEWLINE push` splits into two commands and fails open, and a wrapped canonical push reads as two segments --
+      R3-3). A heredoc operator is recognised ONLY in
       command context: never inside single- or double-quoted literal text (`grep -n "<<EOF" f` starts no heredoc, so a
       following `git push` line stays visible), but inside `$(...)` and backticks at any nesting, including within
       double quotes (critique round 2 N2).
@@ -53,7 +57,10 @@ scope:
       `$(...)` and backtick span -- found at any nesting, including inside double quotes -- is heredoc-stripped and
       classified RECURSIVELY with these same token rules; a push-shaped body makes the whole command push-shaped, before
       the git exception applies (token-based, never raw text: `git commit -m "$(printf 'explain git push')"` is NOT
-      push-shaped because the body's first word is printf). `grep "git push" f` (one quoted token) is NOT push-shaped;
+      push-shaped because the body's first word is printf). FAIL-CLOSED for code-producing substitution (R3-4): an `sh
+      -c` string or `eval` argument that contains a `$(` or backtick AND whose raw text pairs git and push is
+      push-shaped (`bash -c "$(printf 'git push ...')"`), which leaves the commit-message cases untouched.
+      `grep "git push" f` (one quoted token) is NOT push-shaped;
       `echo git push` IS (accepted false positive, named in the deny message).
       (4) CANONICAL FORMS (an allowlist; the whole command must match, optionally prefixed by one `cd <path> &&`):
       git [-C <path>] push {OPTS} <remote> <src>[:<dst>]; bare git [-C <path>] push {OPTS}; git [-C <path>] push
@@ -86,7 +93,10 @@ scope:
       = branching_topology.agent_branch_prefixes PLUS the gate-local handoff_evidence_gate.extra_destination_prefixes
       ["audit/"], both read from the base ref (critique round 2 N4: audit-prompt SKILL.md mandates
       `audit/{slug}-<sha>` audit-execution branches, e.g. PR #1234; agent_branch_prefixes itself is NOT widened because
-      it drives the wake signals). An unreadable prefix set denies. The deny message names `git push -u origin
+      it drives the wake signals). BOOTSTRAP (critique round 3 R3-1): a base ref with NO handoff_evidence_gate clause
+      -- origin/main until this plan merges, i.e. the implementing session's own dogfooded push -- means
+      extra_destination_prefixes = [] and no exemptions; ONLY an unreadable branching_topology.agent_branch_prefixes
+      denies. The deny message names `git push -u origin
       HEAD:claude/<slug>` for worktree branches that are not agent-prefixed (EnterWorktree, subagent isolation).
       decide_push(worktree, pushed_sha): (1) EXEMPT when every path in `git diff --no-renames --name-only -z
       <merge-base(origin/main, pushed_sha)> <pushed_sha>` (so a rename lists BOTH source and destination -- critique F2:
@@ -119,7 +129,8 @@ scope:
       and route mcp__github__ / mcp__github-full__ create_pull_request, push_files, create_or_update_file and delete_file
       to the checker. OUTPUT: pass -> exit 0, no stdout; deny -> exit 2 with "handoff-evidence-gate: <rule>: <message>"
       on stderr (fed to Claude; a NonCanonical reason says "run `git push -u origin HEAD` (or `git -C <worktree> push -u
-      origin HEAD`) as its own tool call; to write text that contains a push command use the Write tool"); warn -> exit 0
+      origin HEAD`) as its own tool call; to write text that contains a push command use the Write tool; a comment or echo
+      that merely mentions git and push is a known false positive -- drop it"); warn -> exit 0
       printing {"systemMessage": <warning>, "hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext":
       <warning>}} with NO permissionDecision (additionalContext reaches Claude, systemMessage the user -- hooks
       reference, PreToolUse decision control; critique M1). It NEVER emits permissionDecision allow (that skips the
@@ -216,13 +227,16 @@ scope:
       $(git push ...), a backtick form, git commit -m "$(git push ...)"), combined-flag shells (bash -lc '...'), a
       shell-fed heredoc, a here-string, a multi-line command (git status NEWLINE git push), a comment-newline form (git
       status # check NEWLINE git push -- round 2 N1), a push after a QUOTED heredoc marker (grep -n "<<EOF" f NEWLINE
-      git push -- N2), `timeout 60 bash -c '...'`, `env sh -c '...'`, `eval 'git push ...'` (N3), send-pack, http-push,
+      git push -- N2), `timeout 60 bash -c '...'`, `env sh -c '...'`, `eval 'git push ...'` (N3), `cat <<'EOF' | bash`
+      with a push body (R3-2), `git \ NEWLINE push -u origin HEAD` (R3-3), `bash -c "$(printf 'git push ...')"` (R3-4),
+      send-pack, http-push,
       subtree push, lfs push, `git -c alias.p=push p`, an unknown global option; and the NOT-push-shaped set (git log
       --grep push, git --no-pager log --grep push, git commit -m "push fix", a git commit whose -m is a $(cat <<'EOF'
       ... git push ... EOF) heredoc, git commit -m "$(printf 'explain git push')" (N2), git status # push later, grep
       "git push" f, cat > f <<'EOF' with a git push body line). TestCanonical: every
       instruction-surface literal (the scope-row list) is canonical; option order is irrelevant; bare git push; --delete
-      and :branch; --dry-run; -C resolved relative to a cd prefix (M4); each NonCanonical reason (+src, two refspecs,
+      and :branch; --dry-run; -C resolved relative to a cd prefix (M4); a canonical push wrapped with a backslash-newline
+      (`git push \ NEWLINE -u origin HEAD`, R3-3) stays canonical; each NonCanonical reason (+src, two refspecs,
       env prefix, -c, --force, -f, --no-verify, --all, --mirror, --tags, a pipe, a redirection, a second segment, a
       trailing # comment).
       test_push_shaped_classifier_catches_wrapper_and_newline_forms is the graduated node.
@@ -241,8 +255,9 @@ scope:
       test_never_exempt_defeats_widened_glob (injected clause, M4 of round 1); no origin/main, unreadable clause and a
       failed merge-base each yield no exemptions. Every tmp repo SEEDS a git-ops.yaml (clause + agent_branch_prefixes)
       on its origin/main so the positive controls can pass. TestDestination: test_main_and_non_agent_destinations_denied
-      (dst main, master and a non-agent branch denied; an unreadable prefix set denies); agent-prefixed and audit/ dsts
-      and the refs/heads/ spelling admitted. TestBareAndDelete: push.default matching denied; remote.<r>.push set and
+      (dst main, master and a non-agent branch denied; an unreadable agent_branch_prefixes denies); agent-prefixed and
+      audit/ dsts and the refs/heads/ spelling admitted; test_base_ref_without_gate_clause_admits_agent_prefix (clause
+      absent on the tmp origin/main, prefixes present: an attested agent-branch push passes -- R3-1). TestBareAndDelete: push.default matching denied; remote.<r>.push set and
       remote.<r>.mirror=true each denied (N6); unresolved @{push} denied; a single agent-branch delete passes, a main delete is denied. TestPrResolution: a REAL `git
       worktree add` with the payload cwd at the main checkout resolves the branch's worktree; missing tracking ref,
       owner:branch and non-agent heads denied. TestRemoteWrites (branch main denied; exempt paths on an agent branch
@@ -312,7 +327,8 @@ acceptance_criteria:
   - >-
     Push recognition is co-occurrence based: every simple command pairing a git token with a later push token -- wrapped,
     grouped, substituted, multi-line (comment-terminated lines included), shell-fed, `sh -c` at any position or eval'd --
-    is push-shaped unless its first word is git with a non-push subcommand or the pair sits inside one quoted argument; only the canonical forms (every documented instruction
+    is push-shaped unless its first word is git with a non-push subcommand, or the pair sits inside one quoted argument of
+    a non-shell, non-eval command outside any `$(...)`/backtick span; only the canonical forms (every documented instruction
     literal, option-order-insensitive, bare push, single agent-branch delete, dry run) are evaluated, and every other
     push-shaped command is refused.
   - >-
@@ -636,6 +652,7 @@ context:
   - "Origin: the combined handoff plan's critique round 1 led the operator to split 2a (order + evidence, merges first) from 2b (this gate). 2b's own round 1 (REVISE, F1-F8 + M1-M7) led the operator to choose the identity-only redesign (2026-09-26): one harness hook, canonical-form allowlist, fail-closed shim, red passes with a warning; the pre-push layer and the ask-a-human valve were dropped."
   - "Redesign round 1 (REVISE, F1-F9 + M1-M6) folded in: F1 co-occurrence classifier (wrappers, grouping, substitution, newline and shell-fed heredoc forms; known no-arg git globals); F2 --no-renames; F3 shim self-timeout, explicit hook timeout, trap, whole-payload pre-filter, absolute paths; F4 bare and option-order-insensitive push, single agent-branch delete, update_pull_request_branch ungated (Dependabot) and declared; F5 2a's list extended in place with the rec-4083 row flipped, Monitor routed, check-level timeouts under rec-4087, executor folded into rec-4085; F6 destination restricted to agent branches, never main; F7 classifier moved under scripts/session/ (100% floor); F8 rule-code assertions + positive control; F9 real-writer evidence, realpath toplevel, load-status branching; M1 additionalContext; M2 register last, live via file watcher; M3 VP split; M4 -C relative to cd; M6 WIP pushes named."
   - "Redesign round 2 (REVISE, light) folded in: N1 shlex commenters '' (a comment swallowed the newline separator); N2 heredocs only in command context, recursive token-based $(...) body rule; N3 sh -c at any position and eval recurse; N4 gate-local extra_destination_prefixes [audit/] (audit-execution branches) and a HEAD:claude/<slug> hint; N5 enforced_by names pytest nodes as 2a does; N6 bare push also needs remote.<r>.push/mirror unset; N7 git-ops budget pre-decided (clause <= 30, diff <= 50, residuals cited from rec-4085 and the parser docstring); N8 non-agent deletes human-only, seeded tmp git-ops.yaml, Monitor ws passes; timeout -k."
+  - "Redesign round 3 (REVISE, minimal) folded in: R3-1 an absent gate clause on the base ref means no extra prefixes and no exemptions (bootstrap), only unreadable agent_branch_prefixes denies; R3-2 a heredoc piped into a shell is classified; R3-3 backslash-newline continuations removed before tokenising; R3-4 fail-closed rule for code-producing substitution in sh -c/eval; R3-5 false-positive wording; R3-6 rec-4085 context appended at plan time; AC2 reworded."
   - "Round-1 (original design) dispositions still standing: F1 fail-closed exit map; F2 allowlist; F3 carve-out harness-only; F4 worktree-list mapping; F5/F7/M6 moot (no pre-push, no valve); F6 explicit test env + GITHUB_ACTIONS=true rerun; F8 residual rows; M1 Decision 203; M2 anchored matcher; M3 pre-filter; M4 injected clause; M5 exact-literal re-pin; M7 merge-base fail closed."
   - "Why identity, not verdict: the defect the operator named is validation of an uncommitted tree; identity gating closes exactly that with no wedge. Blocking red needs a deterministic inherited-red release first (Decision 83 non-wedging posture) -- rec-4087."
   - "Hooks reference (code.claude.com/docs/en/hooks.md, fetched 2026-09-26): exit 2 blocks and feeds stderr to Claude; any other exit code does not block; a timed-out command hook does not block (default timeout 600s); stderr on exit 0 reaches only the debug log; allow skips the permission prompt; exit 0 with no output means no decision; PreToolUse additionalContext reaches Claude and systemMessage the user; regex matchers are unanchored unless ^...$; the hook cwd follows Claude's cwd; settings edits are picked up by the file watcher."
@@ -644,7 +661,7 @@ context:
   - "Decision-scout verdict FLAGS_FOUND. CITE list (verbatim): 177, 167, 187, 138, 168, 132. CONTRADICT: 181 [WARN] (every residual row owned: rec-4085, rec-4086, rec-4087; mechanical rows name graduated check_ids), 163 [NOTE] (no amends field). SPIRIT: 83 [WARN] (resolved by the redesign: nothing wedges on red; rec-4087 owns verdict gating). RELATED: 76, 189, 135, 73, 72, 67, 184, 162, 150, 115. ROADMAP: T2.54 [CITE], T1.17, T1.5, T2.48, T4.23."
   - "Decisions triaged: 154 of 154"
   - "Roadmap items intersected: 5; CONFLICT: 0; RELATED: 4"
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PENDING (redesign rounds 1-2 REVISE addressed; confirming round 3 next)"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PENDING (redesign rounds 1-3 REVISE addressed; diff-confirm next)"
 pre_implementation_checklist:
   - Branch confirmed not on main; slice 2a confirmed merged on origin/main
   - docs/PROJECT_CONTEXT.md read
