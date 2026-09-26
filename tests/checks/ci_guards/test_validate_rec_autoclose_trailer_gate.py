@@ -299,3 +299,8 @@ class TestJunitJobAssertions:
 
         job = {"steps": [{"uses": "actions/download-artifact@v8", "with": "not-a-dict"}]}
         assert _download_step_for_artifact(job, "pytest-junit") is None
+
+    def test_verdict_consuming_jobs_returns_none_when_jobs_key_is_not_a_dict(self) -> None:
+        from scripts.checks.ci_guards.validate_rec_autoclose_trailer_gate import _verdict_consuming_jobs
+
+        assert _verdict_consuming_jobs("jobs: not-a-dict\n") is None

@@ -68,6 +68,9 @@ class TestJunitVerdict:
     def test_node_key_module_level(self) -> None:
         assert node_key("tests/x.py::test_y") == "tests.x.test_y"
 
+    def test_node_key_bare_path_with_no_node_id(self) -> None:
+        assert node_key("tests/x.py") == "tests.x"
+
     def test_node_key_class_based(self) -> None:
         assert node_key("tests/x.py::TestKlass::test_y") == "tests.x.TestKlass.test_y"
 
@@ -121,6 +124,31 @@ class TestJunitVerdict:
         report = _write_report(tmp_path, '<testcase classname="tests.x" name="test_other"/>')
         index = index_report(report)
         assert outcome_for(index, "tests/x.py::test_a") == "absent"
+
+    def test_outcome_for_defensive_fallback_when_priority_tuple_is_broken(self, tmp_path: Path) -> None:
+        """_ARM_PRIORITY covers every value index_report can emit, so the trailing `return PASSED`
+        is unreachable under normal operation. Force the invariant to break (an empty priority
+        tuple) to prove the defensive fallback itself behaves sanely rather than raising."""
+        import scripts.rec_trailer_acceptance_junit as junit_mod
+
+        report = _write_report(tmp_path, '<testcase classname="tests.x" name="test_a"/>')
+        index = index_report(report)
+        original = junit_mod._ARM_PRIORITY
+        junit_mod._ARM_PRIORITY = ()
+        try:
+            assert outcome_for(index, "tests/x.py::test_a") == "passed"
+        finally:
+            junit_mod._ARM_PRIORITY = original
+
+    def test_combine_defensive_fallback_when_priority_tuple_is_broken(self) -> None:
+        import scripts.rec_trailer_acceptance_junit as junit_mod
+
+        original = junit_mod._ARM_PRIORITY
+        junit_mod._ARM_PRIORITY = ()
+        try:
+            assert junit_mod._combine(["passed"]) == "report_unavailable"
+        finally:
+            junit_mod._ARM_PRIORITY = original
 
     def test_absent_report_resolves_every_entry_to_unmeasurable(self, tmp_path: Path) -> None:
         census_doc = {
