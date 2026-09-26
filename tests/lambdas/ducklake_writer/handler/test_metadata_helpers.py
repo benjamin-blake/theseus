@@ -98,24 +98,24 @@ class _PartitionLayoutCon:
 
 
 def test_partition_layout_success():
-    files = [(1, 10), (2, 11)]
+    files = [(1, "year=2026/month=1/day=24/f1.parquet"), (2, "year=2026/month=2/day=24/f2.parquet")]
     values = [(1, 0, "2026"), (1, 1, "1"), (1, 2, "24"), (2, 0, "2026"), (2, 1, "2"), (2, 2, "24")]
     con = _PartitionLayoutCon(files, values)
     out = h._partition_layout(con, rt.CATALOG_ALIAS, rt.SMOKE_HISTORY_TABLE)
     assert out["total"] == 2
-    assert out["partition_ids"] == [10, 11]
+    assert out["path_prefixes"] == {1: "year=2026/month=1/day=24", 2: "year=2026/month=2/day=24"}
     assert out["value_tuples"] == {1: ("2026", "1", "24"), 2: ("2026", "2", "24")}
 
 
 def test_partition_layout_empty_files_returns_no_tuples():
     con = _PartitionLayoutCon([], [])
     out = h._partition_layout(con, rt.CATALOG_ALIAS, rt.SMOKE_HISTORY_TABLE)
-    assert out == {"total": 0, "partition_ids": [], "value_tuples": {}}
+    assert out == {"total": 0, "path_prefixes": {}, "value_tuples": {}}
 
 
 def test_partition_layout_raises_loud_never_zero():
     """A metadata-schema read failure raises (Decision 55) -- it never falls back to 0."""
-    con = _PartitionLayoutCon([(1, 10)], [], raise_on_value_query=True)
+    con = _PartitionLayoutCon([(1, "year=2026/month=1/day=24/f1.parquet")], [], raise_on_value_query=True)
     with pytest.raises(RuntimeError):
         h._partition_layout(con, rt.CATALOG_ALIAS, rt.SMOKE_HISTORY_TABLE)
 

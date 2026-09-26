@@ -141,7 +141,12 @@ def test_handler_partition_probe_measures_calendar_day_tuples(monkeypatch):
         if "history" in table:
             return {
                 "total": 4,
-                "partition_ids": [10, 11, 12],
+                "path_prefixes": {
+                    1: "year=2026/month=1/day=24",
+                    2: "year=2026/month=2/day=24",
+                    3: "year=2027/month=1/day=24",
+                    4: "year=2026/month=1/day=24",
+                },
                 "value_tuples": {
                     1: ("2026", "1", "24"),
                     2: ("2026", "2", "24"),
@@ -149,7 +154,11 @@ def test_handler_partition_probe_measures_calendar_day_tuples(monkeypatch):
                     4: ("2026", "1", "24"),
                 },
             }
-        return {"total": 8, "partition_ids": [20, 21], "value_tuples": {5: ("0",), 6: ("1",), 7: ("0",), 8: ("0",)}}
+        return {
+            "total": 8,
+            "path_prefixes": {5: "bucket=0", 6: "bucket=1", 7: "bucket=0", 8: "bucket=0"},
+            "value_tuples": {5: ("0",), 6: ("1",), 7: ("0",), 8: ("0",)},
+        }
 
     monkeypatch.setattr(smoke_actions, "_partition_layout", _fake_layout)
     r = h.handler({"action": "partition_probe"})
