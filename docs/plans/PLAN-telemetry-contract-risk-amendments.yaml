@@ -25,7 +25,8 @@ scope:
     parent); ULID format and value stay generator-guaranteed. Referential integrity moves to a DQ relationships
     check (non-null parent_observation_id with no matching observation_id in the same session) run as a
     non-gating scheduled monitor (Decision 62 as amended) over QUIESCENT trees only, so an in-flight child is not
-    a violation; readers tolerate a transiently dangling parent. That monitor does not exist yet (relationships
+    a violation; readers tolerate a dangling parent whether transient or permanent (a parent that is never emitted,
+    e.g. after a producer crash or an R7 deferral, is a DQ finding, never a read error). That monitor does not exist yet (relationships
     checks SKIP on the DuckLake backend, scripts/data_quality_execute.py:73-79, and carry no session or quiescence
     scoping), so the text names its owner, follow-on rec-4101, which also owns the quiescence window. Update the field governance_notes to match;
     add a field-level amendment_log entry (governance_note_add, semantic_break true, migration_story: no populator
@@ -41,7 +42,11 @@ scope:
     one trace tree supplies the ROOT session's project_ref (a transcript-less producer receives it alongside
     session_ref), so project_id -- a hash input to every key -- is constant across a tree; stated outright: a
     telemetry row's project_id is its trace tree's ROOT project, so a sub-agent acting in another repository is
-    attributed to the root's project. Field-level amendment_log entry (governance_note_add, semantic_break true)
+    attributed to the root's project. The tree's project_ref is PINNED once, at the ROOT session's first record (the
+    same pin point as session_started_at): every row of the tree, the root's own later turns included, carries that
+    pinned value, never a per-turn or per-producer re-read of repository configuration; a producer that has not
+    received the root's project_ref DEFERS emission (mirroring R7) and never substitutes its own. Field-level
+    amendment_log entry (governance_note_add, semantic_break true)
     whose summary cites Decision 199's identity hash (FK equality needs identical project_id inputs) as the reason,
     so the root-project attribution reads as field semantics, not a re-decision of Decision 200 clause 1.
     contract_version stays 2.
@@ -71,8 +76,10 @@ scope:
     scripts.contracts load_contract; phrase checks case-insensitive over whitespace-normalised text; each also
     asserts the field-level amendment_log entry exists with governance_note_add + semantic_break true. The R7
     test additionally asserts decode_time_prefix recovers session_started_at exactly from a derived session_id
-    (derive_entity_key round trip), and that the contract text excludes event_id as a handoff key; the R3 test
-    asserts the text names rec-4101 as the monitor's owner and that the _joins.yaml header no longer calls
+    (derive_entity_key round trip), and that the contract text excludes event_id as a handoff key; the R6 test
+    asserts the root-first-record pin and the deferral; the R3 test asserts the old write-time parent-existence
+    requirement is ABSENT from the live write_time_validation text, that the text names rec-4101 as the monitor's
+    owner, and that the _joins.yaml header no longer calls
     telemetry referential integrity a write-time concern (raw file text, since it is a comment).
 - file: config/agent/verification_registry/entries/telemetry-contract-risk-amendments.yaml
   action: Create
@@ -97,7 +104,8 @@ acceptance_criteria:
 - >-
   project-id.yaml project_id semantics states a (tenant_id, project_ref) is never re-bound to a different project_id, the
   canonical_project_id remap is read-side only, and every producer of a trace tree supplies the root session's
-  project_ref.
+  project_ref, pinned once at the root session's first record (never re-read per turn), deferring emission when it
+  does not hold it.
 - >-
   telemetry-event-envelope.yaml session_started_at semantics names integer epoch-milliseconds and a held entity/FK
   key (never an event_id) decoded via decode_time_prefix as the only handoff forms, with deferral on an unusable
@@ -217,7 +225,9 @@ test_obligations:
   test_selector: tests/telemetry/test_contract_amendments.py::test_parent_observation_existence_is_dq_not_write_time
   red_green_expectation: red before (module absent, old write-time sentence present), green after
 - source: docs/contracts/project-id.yaml
-  behavior: project_ref -> project_id resolution immutable; remap read-side only; root project_ref pinned per trace tree.
+  behavior: >-
+    project_ref -> project_id resolution immutable; remap read-side only; root project_ref pinned once at the root
+    session's first record for the whole tree (no per-turn re-read); a producer without it defers.
   verification_step: 1
   test_selector: tests/telemetry/test_contract_amendments.py::test_project_ref_resolution_is_pinned
   red_green_expectation: red before, green after
@@ -270,7 +280,8 @@ context:
 - >-
   gates: decision-scout=FLAGS_FOUND (1 NOTE, resolved); plan-critique series 1 (four recs): REVISE r1-r3 (all
   fixed), REVISE r4 (only R8 read-model findings open) -> escalated; Benjamin chose SPLIT (2026-09-26); series 2
-  (R3/R6/R7 only) follows.
+  (R3/R6/R7 only): r1 REVISE (F1 project_ref pin, F2 test assertion, F3 checklist, F4/F5 wording applied; F7
+  pre-existing envelope amendment_log pairing filed as rec-4104), confirming round follows.
 - >-
   Source: contract-risk review of slice 1 (PLAN-telemetry-kernel-identity-append, PR #1286); recs 4058-4061 are
   warehouse dependencies of rec-4024 (slice 2 carrier). Non-blocking siblings stay open: rec-4062, rec-4063, rec-4064.
@@ -299,7 +310,7 @@ context:
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
-- 'Only the plan-cited decision sections read: 199, 200, 96 (clause 4), 62'
+- 'Only the plan-cited decision sections read: 199, 200, 118, 150, 96 (clause 4), 62'
 - All files in scope located and readable
 - Acceptance criteria understood and verifiable
 execution_steps:
@@ -313,7 +324,9 @@ execution_steps:
 - >-
   Portal bookkeeping (get_rec_write_guidance first, Decision 66): update_rec rec-4024 (context: slice 2 must NOT
   check parent existence at write time -- rec-4101 owns integrity; project_ref resolution immutable, remap
-  read-side only; the reader's parser_version rule is pending rec-4061's plan) and rec-4026 (context: the first
+  read-side only; writer-bound session_started_at must carry millisecond precision, since the pinned RFC 3339
+  profile accepts a fraction-less value and would silently decode it to .000; the reader's parser_version rule is
+  pending rec-4061's plan) and rec-4026 (context: the first
   producer owes the exact-ms session_started_at and root project_ref handoff rules).
 - >-
   Execute Verification Plan steps 1-6 (stage new files first: git add --intent-to-add on every Create row) -- loop
