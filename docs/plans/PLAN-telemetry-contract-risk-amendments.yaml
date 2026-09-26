@@ -4,9 +4,9 @@ handoff_policy:
   timeout_disposition: blocked
 slug: telemetry-contract-risk-amendments
 intent: >-
-  Settle the four write-side telemetry contract risks that block slice 2 (rec-4024's writer verb and project
-  registration) -- R3 parent existence, R6 project_id stability, R7 exact-ms session_started_at handoff, R8
-  parser_version bump policy -- as amendments to the ratified contracts, so no telemetry row is rejected or stored
+  Settle three of the four write-side telemetry contract risks that block slice 2 (rec-4024's writer verb and
+  project registration) -- R3 parent existence, R6 project_id stability, R7 exact-ms session_started_at handoff --
+  as amendments to the ratified contracts (R8, the parser_version policy, is split to its own plan, rec-4061), so no telemetry row is rejected or stored
   under a wrong id once real data flows. Friction telemetry is the learning signal for recursive self-improvement
   (PROJECT_CONTEXT); ids and rejected rows are the unrecoverable half of it.
 plan_type: IMPLEMENTATION
@@ -14,7 +14,8 @@ verification_tier: V2
 plan_path: docs/plans/PLAN-telemetry-contract-risk-amendments.yaml
 phase: >-
   T2.36 (telemetry re-lands on DuckLake) -- contract groundwork for slice 2; closes NO exit criterion (c1 needs
-  the tables provisioned by rec-4024). Clears the four blocking dependencies rec-4024 carries in the warehouse.
+  the tables provisioned by rec-4024). Clears three of the four blocking dependencies rec-4024 carries in the
+  warehouse; rec-4061 (R8) remains, planned separately.
 scope:
 - file: docs/contracts/parent-observation-id.yaml
   action: Modify
@@ -40,8 +41,10 @@ scope:
     one trace tree supplies the ROOT session's project_ref (a transcript-less producer receives it alongside
     session_ref), so project_id -- a hash input to every key -- is constant across a tree; stated outright: a
     telemetry row's project_id is its trace tree's ROOT project, so a sub-agent acting in another repository is
-    attributed to the root's project. Field-level
-    amendment_log entry (governance_note_add, semantic_break true). contract_version stays 2.
+    attributed to the root's project. Field-level amendment_log entry (governance_note_add, semantic_break true)
+    whose summary cites Decision 199's identity hash (FK equality needs identical project_id inputs) as the reason,
+    so the root-project attribution reads as field semantics, not a re-decision of Decision 200 clause 1.
+    contract_version stays 2.
 - file: docs/contracts/telemetry-event-envelope.yaml
   action: Modify
   purpose: >-
@@ -51,24 +54,7 @@ scope:
     src/telemetry/identity.py decode_time_prefix -- never seconds, floats or a
     re-serialised string; an unusable handoff DEFERS emission, never coerces. Scoped to the producer-to-producer
     handoff only: both forms decode to a tz-aware UTC value and the stored column is unchanged (Decision 96 clause
-    4). R8 (rec-4061) on parser_version semantics: bump when, and only when, the rows a producer emits for the
-    same source input change in content or shape; a build emitting identical rows never bumps; monotonic per
-    producer, so reverting parsing logic is a NEW higher version. ONE ordered read model, REWRITING (not appending
-    to) every live statement of the old order -- event_id.semantics' 'preferring the highest parser_version then the
-    earliest created_timestamp' clause, parser_version.description's 'primary read-side dedupe key ... highest
-    parser_version wins' sentence, and parser_version.semantics' 'stops emitting a row kind' re-emission sentence:
-    (1) per (session_id, producer), computed over that session's rows across ALL FOUR telemetry tables (never per
-    table), keep only the rows of the HIGHEST parser_version that producer wrote for that session; (2) then one row
-    per event_id, earliest created_timestamp; (3) then the model_call entity-key collapse. So a producer's
-    parser_version is PINNED per session at its first emission there; a bump reaches an already-started session only
-    by re-emitting that whole session (all tables) under the new version. A producer that cannot replay its source
-    (e.g. litellm) keeps each in-flight session's pinned version AND that version's logic (version-gated code path)
-    until the session ends; if it ships without that, stamping the new version on an in-flight session hides its
-    pre-bump rows for that session -- stated in the contract as the accepted, documented limitation of a
-    non-replayable producer, never silent. Each producer's own test suite pins its emitted rows for a fixture input
-    alongside parser_version, so output drift without a bump fails CI (owner for the first producer: rec-4026).
-    Field-level amendment_log entries on event_id and parser_version; the model_call earliest-created_timestamp vs
-    last-record tension stays with rec-4062 (R4), out of scope. One field-level amendment_log entry per field (governance_note_add, semantic_break true, R7's
+    4). One field-level amendment_log entry on session_started_at (governance_note_add, semantic_break true,
     summary citing Decision 96 clause 4). contract_version stays 1.
 - file: docs/contracts/_joins.yaml
   action: Modify
@@ -78,9 +64,10 @@ scope:
 - file: tests/telemetry/test_contract_amendments.py
   action: Create
   purpose: >-
-    Four MODULE-LEVEL tests whose names are fixed by the recs' acceptance commands:
+    Three MODULE-LEVEL tests whose names are fixed by the recs' acceptance commands:
     test_parent_observation_existence_is_dq_not_write_time, test_project_ref_resolution_is_pinned,
-    test_session_started_at_handoff_is_exact_ms, test_parser_version_bump_policy_declared. Load contracts via
+    test_session_started_at_handoff_is_exact_ms (rec-4061's test_parser_version_bump_policy_declared is added to
+    this module by the separate R8 plan). Load contracts via
     scripts.contracts load_contract; phrase checks case-insensitive over whitespace-normalised text; each also
     asserts the field-level amendment_log entry exists with governance_note_add + semantic_break true. The R7
     test additionally asserts decode_time_prefix recovers session_started_at exactly from a derived session_id
@@ -91,15 +78,16 @@ scope:
   action: Create
   purpose: >-
     Verification-registry row for graduated VP step 1 (graduation_check_id telemetry-contract-risk-amendments),
-    per validate_graduation_completeness; guard_target is a single scalar path
-    (docs/contracts/telemetry-event-envelope.yaml), matching every existing registry row.
+    per validate_graduation_completeness; guard_target is the comma-separated list of the four touched contracts
+    (parent-observation-id, project-id, telemetry-event-envelope, _joins), following the
+    telemetry-event-journal-contract-shape.yaml precedent.
 bundled_recommendations:
 - rec-4058
 - rec-4059
 - rec-4060
-- rec-4061
 followon_recs:
 - rec-4101
+- rec-4061
 infrastructure_dependencies: []
 acceptance_criteria:
 - >-
@@ -113,24 +101,19 @@ acceptance_criteria:
 - >-
   telemetry-event-envelope.yaml session_started_at semantics names integer epoch-milliseconds and a held entity/FK
   key (never an event_id) decoded via decode_time_prefix as the only handoff forms, with deferral on an unusable
-  handoff; parser_version semantics states the bump-when-and-only-when rule, per-producer monotonicity (rollback =
-  new version), the single ordered read model (per-(session_id, producer) highest-parser_version filter computed
-  across all four tables, then per-event_id earliest created_timestamp, then the model_call collapse), version
-  pinned per session unless the whole session is re-emitted, the non-replayable-producer rule and its documented
-  limitation, and the producer fixture row-pin obligation; no live text in event_id or parser_version still states
-  the old per-event_id 'highest parser_version' order.
+  handoff; parser_version, event_id and created_timestamp are untouched (R8 is planned separately).
 - Each amended field carries a new amendment_log entry (governance_note_add, semantic_break true); contract_version unchanged on all three contracts.
 - >-
-  All four rec acceptance commands pass; the existing contract suites
+  The three bundled rec acceptance commands pass; the existing contract suites
   (tests/checks/contracts/test_telemetry_event_journal_contracts.py, tests/test_contracts.py,
   tests/test_contracts_schema.py) stay green; the category-6 amendment check is clean against origin/main.
-- rec-4058, rec-4059, rec-4060 and rec-4061 close via the Resolves trailer on the implementation squash merge.
+- rec-4058, rec-4059 and rec-4060 close via the Resolves trailer on the implementation squash merge; rec-4061 stays open.
 verification_plan:
 - step: 1
   phase: pre-deploy
-  action: Run the new contract-amendment test module (all four rec acceptance tests).
+  action: Run the new contract-amendment test module (the three bundled rec acceptance tests).
   command: bin/venv-python -m pytest tests/telemetry/test_contract_amendments.py -q
-  expected: 'Exit 0, 4 passed. Red before: the module does not exist on the pre-change tree.'
+  expected: 'Exit 0, 3 passed. Red before: the module does not exist on the pre-change tree.'
   fix_if: >-
     A failing assertion names the contract field and missing rule -- fix the contract text, not the test, unless
     the test asserts something the acceptance criteria do not require.
@@ -145,8 +128,8 @@ verification_plan:
     ! grep -q 'must reference an existing telemetry_observations.observation_id' docs/contracts/parent-observation-id.yaml
     && bin/venv-python -m pytest tests/telemetry/test_contract_amendments.py::test_parent_observation_existence_is_dq_not_write_time
     tests/telemetry/test_contract_amendments.py::test_project_ref_resolution_is_pinned tests/telemetry/test_contract_amendments.py::test_session_started_at_handoff_is_exact_ms
-    tests/telemetry/test_contract_amendments.py::test_parser_version_bump_policy_declared -q && echo ACCEPTANCE_OK
-  expected: Exit 0, 4 passed and the success marker printed.
+    -q && echo ACCEPTANCE_OK
+  expected: Exit 0, 3 passed and the success marker printed.
   fix_if: The grep leg fails -> the old write-time sentence survives somewhere in parent-observation-id.yaml; remove it.
   hermetic: true
   graduation: waive
@@ -215,12 +198,12 @@ verification_plan:
 - step: 7
   phase: post-deploy
   action: >-
-    Closure: after the squash merge carrying 'Resolves: rec-4058, rec-4059, rec-4060, rec-4061', confirm all four
-    recs read closed in the warehouse.
+    Closure: after the squash merge carrying 'Resolves: rec-4058, rec-4059, rec-4060', confirm all three recs read
+    closed in the warehouse.
   command: >-
     bin/venv-python -m scripts.sync.ops sync && bin/venv-python -c "import json,pathlib; r={json.loads(l)['id']:json.loads(l)['status']
     for l in pathlib.Path('logs/.recommendations-log.jsonl').read_text().splitlines() if l.strip()}; bad=[k for k in
-    ('rec-4058','rec-4059','rec-4060','rec-4061') if r.get(k)!='closed']; print('open:', bad); raise SystemExit(1 if bad else 0)"
+    ('rec-4058','rec-4059','rec-4060') if r.get(k)!='closed']; print('open:', bad); raise SystemExit(1 if bad else 0)"
   expected: Exit 0, empty open list.
   fix_if: >-
     The sync's recs pull is unreachable -> read each rec directly via the reader's named verb (ducklake-reads
@@ -245,16 +228,6 @@ test_obligations:
   verification_step: 1
   test_selector: tests/telemetry/test_contract_amendments.py::test_session_started_at_handoff_is_exact_ms
   red_green_expectation: red before, green after
-- source: docs/contracts/telemetry-event-envelope.yaml
-  behavior: >-
-    R8: parser_version bump-when-and-only-when, per-producer monotonic (rollback = new version), per-(session_id,
-    producer) highest-version read filter before per-event_id dedupe, version pinned per session unless fully
-    re-emitted, filter computed across all four tables, non-replayable-producer rule, producer fixture row-pin
-    obligation (first owner rec-4026); old per-event_id 'highest parser_version' order phrase absent from live
-    event_id/parser_version text; event_id and parser_version amendment_log entries present.
-  verification_step: 1
-  test_selector: tests/telemetry/test_contract_amendments.py::test_parser_version_bump_policy_declared
-  red_green_expectation: red before, green after
 - source: docs/contracts/_joins.yaml
   behavior: Header comment no longer calls telemetry referential integrity a write-time concern.
   verification_step: 5
@@ -275,7 +248,7 @@ constraints:
   drift), no Decision edit, no roadmap edit.
 - >-
   Amend within the ratified Decision 199/200 model: no field added or removed, no identity-spec, partition or
-  write-time dedupe_key change (the R8 filter is read-side only), no contract_version bump (precedent: PLAN-telemetry-kernel-identity-append amended the same
+  dedupe or parser_version change (R8 is split out), no contract_version bump (precedent: PLAN-telemetry-kernel-identity-append amended the same
   envelope without one; tests pin contract_version == 2 on the Class C contracts).
 - >-
   Category 6: every description/semantics diff carries a NEW field-level amendment_log entry; governance_note_add
@@ -294,7 +267,10 @@ context:
   Decision-scout verdict FLAGS_FOUND; CITE: 199, 200, 118, 150; NOTE 96 cl.4 (R7 handoff ban must not reach the
   stored/boundary value) -- resolved by the R7 scoping constraint; RELATED 97, 95, 62, 81, 86, 127, 167, 168, 197.
   Decisions triaged: 155 of 155. Roadmap items intersected: 2; CONFLICT: 0; RELATED: 2 (T2.54, T4.23).
-- "gates: decision-scout=FLAGS_FOUND (1 NOTE, resolved); plan-critique=REVISE r1 (F1-F8 fixed); REVISE r2 (read model -> asked fork, rest fixed); REVISE r3 (F1-F7 fixed, F8 -> rec-4101 widened)"
+- >-
+  gates: decision-scout=FLAGS_FOUND (1 NOTE, resolved); plan-critique series 1 (four recs): REVISE r1-r3 (all
+  fixed), REVISE r4 (only R8 read-model findings open) -> escalated; Benjamin chose SPLIT (2026-09-26); series 2
+  (R3/R6/R7 only) follows.
 - >-
   Source: contract-risk review of slice 1 (PLAN-telemetry-kernel-identity-append, PR #1286); recs 4058-4061 are
   warehouse dependencies of rec-4024 (slice 2 carrier). Non-blocking siblings stay open: rec-4062, rec-4063, rec-4064.
@@ -304,18 +280,11 @@ context:
   ('write the plan' on the recommended option) | precedent_kind: answered-fork | reversible: yes | persisted:
   docs/contracts/project-id.yaml
 - >-
-  fork: R8 -- add a producer fixture row-pin obligation to the parser_version policy, vs policy text only | chosen:
-  add the obligation | class: asked | precedent: Benjamin 2026-09-26 Step 6b | precedent_kind: answered-fork |
-  reversible: yes | persisted: docs/contracts/telemetry-event-envelope.yaml
-- >-
-  fork: R8 read model -- per-(session_id, producer) highest-parser_version filter with version pinned per session
-  (A) vs per-event_id only with a known limitation for event_id-set changes (B) | chosen: A (recommended; drafted
-  pending Benjamin's answer, merge waits on it) | class: asked | precedent: none | precedent_kind: none |
-  reversible: yes | persisted: docs/contracts/telemetry-event-envelope.yaml
-- >-
-  fork: one plan for all four recs vs split | chosen: one plan | class: consistency-only | precedent: coordinator
-  brief default + PLAN-telemetry-event-journal-contracts (multi-contract amendment in one plan) | precedent_kind:
-  contract | reversible: yes | persisted: this plan
+  fork: one plan for all four recs vs split R8 out | chosen: split -- R3/R6/R7 here, R8 (rec-4061, with rec-4062 on
+  the same dedupe surface) in its own plan built on the independent Fable derivation
+  (/mnt/project-files/telemetry-slice2-blockers/r8-fable-independent-derivation.md) | class: asked | precedent:
+  Benjamin 2026-09-26 ('yes, split') after critique r4 escalation | precedent_kind: answered-fork | reversible: yes
+  | persisted: this plan + rec-4061 context
 - >-
   Decided with notice: the R3 DQ monitor and its quiescence window are owned by follow-on rec-4101 (filed at planning
   time, depends on rec-4024; relationships checks SKIP on DuckLake today; widened after critique r3 to the
@@ -335,27 +304,20 @@ pre_implementation_checklist:
 - Acceptance criteria understood and verifiable
 execution_steps:
 - >-
-  Create tests/telemetry/test_contract_amendments.py with the four module-level tests (see scope). Run it and
+  Create tests/telemetry/test_contract_amendments.py with the three module-level tests (see scope). Run it and
   confirm it FAILS on the unchanged contracts.
 - Amend parent-observation-id.yaml (R3) and the _joins.yaml header comment per scope.
 - Amend project-id.yaml (R6) per scope.
-- Amend telemetry-event-envelope.yaml session_started_at (R7) and parser_version (R8) per scope.
+- Amend telemetry-event-envelope.yaml session_started_at (R7) per scope.
 - Write the registry row for graduated step 1.
 - >-
   Portal bookkeeping (get_rec_write_guidance first, Decision 66): update_rec rec-4024 (context: slice 2 must NOT
   check parent existence at write time -- rec-4101 owns integrity; project_ref resolution immutable, remap
-  read-side only; its per-(session_id, producer) max-parser_version reader wording is now normative in the envelope,
-  computed across all four tables, followed by per-event_id earliest created_timestamp and the model_call collapse)
-  and rec-4026 (context: the first producer owes the parser_version fixture row-pin CI test and the exact-ms
-  / root project_ref handoff rules).
+  read-side only; the reader's parser_version rule is pending rec-4061's plan) and rec-4026 (context: the first
+  producer owes the exact-ms session_started_at and root project_ref handoff rules).
 - >-
   Execute Verification Plan steps 1-6 (stage new files first: git add --intent-to-add on every Create row) -- loop
   until pass; never weaken an assertion; on an unrecoverable failure stop and RCA (Decision 55).
-- >-
-  Fork gate before the squash merge: confirm the R8 read-model fork answer is recorded in the thread (Benjamin's
-  decision card). On A, proceed. On B, rewrite the R8 text and test to per-event_id-only dedupe with a documented
-  known limitation for bumps that change a source input's event_id set, re-run VP steps 1-6, then proceed. Never
-  merge with the answer unrecorded.
 - >-
   Closure evidence, recorded as four SEPARATE facts (implement skill Commit Flows): (1) GitHub readiness --
   bin/venv-python -m scripts.session.github_readiness, each state recorded as reported, where unknown is unproven
@@ -364,6 +326,6 @@ execution_steps:
   bin/venv-python -m scripts.session.postflight --evidence /tmp/implementation-retrospective.json with the
   scripts.session.postflight_evidence.CATEGORIES keys; (4) the real outcome -- commit, push, PR, CI green on the head
   (event-driven wake, never polled), and the squash merge with commit_message carrying 'Resolves: rec-4058,
-  rec-4059, rec-4060, rec-4061' in its own trailer block (rec-4024 and rec-4101 are NOT named), then VP step 7. A
+  rec-4059, rec-4060' in its own trailer block (rec-4024, rec-4061 and rec-4101 are NOT named), then VP step 7. A
   readiness PASS never stands in for a push or PR outcome.
 - 'Report: what was amended, verification results, rec closure state'
