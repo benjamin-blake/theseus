@@ -37,13 +37,17 @@ scope:
       compare_to_declared(layouts, *, semantics=None) -> list[PartitionDrift] resolving declared
       specs via resolve_table_spec / resolve_control_spec + normalize_partition_spec. A
       DuckLakeMaintenanceScopeError from the registry, and any raw duckdb.Error from the metadata
-      reads, is re-raised as PartitionLayoutError, so every failure is a DuckLakeRuntimeError. Imports scd2_schema / control_tables /
+      reads, is re-raised as PartitionLayoutError, so every failure is a DuckLakeRuntimeError. PINNED:
+      the wrap PRESERVES the original message and chains it (raise PartitionLayoutError(f"...: {exc}")
+      from exc) -- the reader's warm-connection reopen matches dead-session text in str(exc), so a
+      text-dropping wrap would turn a Neon scale-to-zero into a typed 500. Imports scd2_schema / control_tables /
       maintenance_scope / partition_spec only. < 500 SLOC
   - file: src/common/ducklake_partition_rewrite.py
     action: Create
     purpose: >-
       MUTATE HALF, maintenance bundle only. class PartitionRewriteError(DuckLakeRuntimeError); a
-      non-OCC duckdb error is wrapped in it (structured 500, never a raw FunctionError).
+      non-OCC duckdb error is wrapped in it, message preserved and chained (structured 500, never a
+      raw FunctionError).
       alter_to_declared(con, drifts) issues ALTER ... SET PARTITIONED BY <PartitionDrift.declared_spec>
       only where the live spec differs (no-op-free, data-modeling-standard write invariants), one
       table per transaction under the same OCC retry policy as the rewrite (a conflict retries,
@@ -262,7 +266,8 @@ scope:
       mirror test: FakeCon-driven read / classify / compare branches -- IS DISTINCT FROM legacy
       counting incl. NULL partition_id, table_class carried per table, PartitionDrift field shapes
       (declared_spec text; declared/live pairs), unclassified tables collected then ONE
-      PartitionLayoutError, a registry scope error re-raised as PartitionLayoutError
+      PartitionLayoutError, a registry scope error re-raised as PartitionLayoutError, and a wrapped
+      duckdb.Error whose str() still carries the original message with __cause__ set
   - file: tests/test_ducklake_partition_rewrite.py
     action: Create
     purpose: >-

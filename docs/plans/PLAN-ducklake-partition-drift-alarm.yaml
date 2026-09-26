@@ -21,9 +21,16 @@ scope:
       (Decision 88 cl.1(i)); returns {ok, tables: {physical: TableLayout fields incl. table_class},
       drifts: [PartitionDrift fields]} from PLAN-ducklake-partition-layout-remediation's pinned READ
       half (read_partition_layout + compare_to_declared) -- never a second layout implementation.
-      Added to _ACTIONS (not connectionless). PartitionLayoutError (an unclassified registered
-      table) subclasses DuckLakeRuntimeError, so the dispatcher's existing mapping returns a typed
-      500 -- never an unhandled 5xx that the client retries as a Neon cold-resume. The module
+      Added to _ACTIONS (not connectionless). PartitionLayoutError (a catalog table absent from the
+      registry) subclasses DuckLakeRuntimeError, so the dispatcher's existing mapping returns a
+      typed 500 -- never an unhandled 5xx that the client retries as a Neon cold-resume. The
+      warm-connection dead-session reopen still fires through the wrap: the READ half PRESERVES the
+      original duckdb message in PartitionLayoutError (remediation plan pin), and the handler's
+      reopen predicate also tests exc.__cause__ (rt.is_dead_connection_error on either) -- the
+      :47 tick lands past Neon's suspend window, so a dead session on the first metadata query is
+      the expected steady state, not an edge case. action_query_ops's docstring claim that 'the
+      read role is S3-read-only so the boundary holds even for an arbitrary SELECT' is restated as
+      the assert_read_only_sql guard. The module
       docstring's two 'a write attempt is denied at the IAM/S3 layer' / 'denied at IAM/S3'
       statements are replaced with the TRUE boundary, carrying the pinned phrase 'S3 GetObject-only
       IAM denies data writes but does not deny catalog DDL': no-DDL is a DISPATCH property -- no
@@ -101,7 +108,8 @@ scope:
       -- about 120 catalog-metadata reads a month; the control_health precedent is a native
       cron(15 */6) binding too) plus workflow_dispatch; permissions contents read; concurrency
       group ducklake-partition-drift, cancel-in-progress false; one job `detect` (id-token write,
-      contents read; timeout-minutes 15, above the reader client's 3 x 180s retry budget) with
+      contents read; timeout-minutes 25, above two reader calls' worst case -- partition_layout
+      then run_episode's open-rec read, each up to 3 x 180s plus backoff) with
       checkout (persist-credentials false, fetch-depth 1), configure-aws-credentials assuming
       agent-platform-github-ci-branch WITHOUT continue-on-error (a failed assume fails the run), set
       up Python 3.12, 'Install Python dependencies (venv)' and 'Detect DuckLake partition drift
@@ -158,8 +166,11 @@ scope:
   - file: tests/test_ducklake_reader_handler.py
     action: Modify
     purpose: >-
-      test_partition_layout_action_returns_layouts_and_drifts and
-      test_partition_layout_action_maps_unclassified_table_to_typed_500, on the existing
+      test_partition_layout_action_returns_layouts_and_drifts,
+      test_partition_layout_action_maps_unclassified_table_to_typed_500 and
+      test_partition_layout_action_reopens_on_wrapped_dead_connection (the patched layout read raises,
+      once, a PartitionLayoutError chained from a 'server closed the connection unexpectedly' error;
+      exactly one force-reopen follows; the response is 200), on the existing
       _open_reader_connection monkeypatch seam and FakeCon (layout functions patched)
   - file: tests/common/ducklake_reader_client/test_partition_layout.py
     action: Create
@@ -228,9 +239,13 @@ verification_plan:
       bin/venv-python -m pytest
       tests/test_ducklake_reader_handler.py::test_partition_layout_action_returns_layouts_and_drifts
       tests/test_ducklake_reader_handler.py::test_partition_layout_action_maps_unclassified_table_to_typed_500
+      tests/test_ducklake_reader_handler.py::test_partition_layout_action_reopens_on_wrapped_dead_connection
       tests/common/ducklake_reader_client/test_partition_layout.py -q
     expected: all pass
-    fix_if: an unclassified table surfaces as an unhandled exception -- PartitionLayoutError must map to the typed 500
+    fix_if: >-
+      an unclassified table surfaces as an unhandled exception -- PartitionLayoutError must map to
+      the typed 500; a wrapped dead session returns 500 instead of reopening -- the wrap dropped the
+      message or the predicate ignores __cause__
     hermetic: false
     graduation: graduate
     graduation_check_id: ducklake-partition-layout-reader-verb
@@ -410,7 +425,7 @@ verification_plan:
     command: >-
       mcp__github__actions_list for workflow ducklake-partition-drift.yml on main (its first
       scheduled run after the deploy), mcp__github__get_job_logs for its 'Detect DuckLake partition
-      drift' step, then mcp__ducklake-reads__recs_by_title_prefix prefix="DuckLake partition drift
+      drift' step, then mcp__ducklake-reads__recs_by_title_prefix title_prefix="DuckLake partition drift
       -- live partition layout differs from declared"
     expected: >-
       the run succeeds. If step 12 showed drift or rewrite-eligible legacy, exactly one open
@@ -438,6 +453,11 @@ test_obligations:
     behavior: the reader exposes a read-only partition_layout verb backed by the READ half, with a typed 500 on an unclassified table
     verification_step: 2
     test_selector: tests/test_ducklake_reader_handler.py::test_partition_layout_action_maps_unclassified_table_to_typed_500
+    red_green_expectation: red before (no such action), green after
+  - source: src/lambdas/ducklake_reader/handler.py
+    behavior: a dead session wrapped in PartitionLayoutError still triggers exactly one warm-connection reopen
+    verification_step: 2
+    test_selector: tests/test_ducklake_reader_handler.py::test_partition_layout_action_reopens_on_wrapped_dead_connection
     red_green_expectation: red before (no such action), green after
   - source: src/lambdas/ducklake_reader/manifest.yaml
     behavior: the reader bundle carries the READ half and the classifier, never the MUTATE half
@@ -517,7 +537,7 @@ constraints:
 context:
   - "Decision-scout verdict: FLAGS_FOUND. Decisions triaged: 154 of 154. Roadmap items intersected: 14; CONFLICT: 1; RELATED: 12."
   - "CITE: Decision 55, 62, 79, 83, 84, 88, 125, 126, 131, 143, 162, 184, 191, 201; RELATED 190"
-  - "gates: decision-scout=FLAGS_FOUND (shared with the remediation plan); plan-critique r1=REVISE (9 applied); r2=REVISE (4 + 6 applied); r3=REVISE (R1-R3 + S2-S6 applied)"
+  - "gates: decision-scout=FLAGS_FOUND (shared with the remediation plan); plan-critique r1=REVISE (9); r2=REVISE (4 + 6); r3=REVISE (3 + 5); r4=REVISE (R1 wrapped-reopen, R2 two-PR retirement + S1-S5, S7 applied; S6 read-engine listing not taken -- unenforced)"
   - >-
     Split from the rec-4070 plan by human direction 2026-09-26 ('include drift detection now', then
     'split into two plans, each with its own review gates'). Scout flags for this half: warm
@@ -549,7 +569,7 @@ context:
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
-  - only the plan-cited decision sections (55, 62, 79, 84, 88, 125, 126, 143, 162, 191, 201)
+  - only the plan-cited decision sections (55, 62, 79, 83, 84, 88, 125, 126, 131, 143, 162, 184, 191, 201)
   - PLAN-ducklake-partition-layout-remediation's code PR is merged and src/common/ducklake_partition_layout.py exposes the pinned READ-half API
   - All files in scope located and readable
   - Acceptance criteria understood and verifiable
@@ -574,7 +594,13 @@ execution_steps:
     'Resolves: rec-4094'; then post-deploy steps 11-14.
   - "Report: what was implemented, verification results, and whether the first scheduled sensor run found drift."
 rollback: >-
-  Revert the squash commit: the governed channel redeploys the prior reader and the workflow file
-  disappears (its ci-rca row and body-baseline entries revert with it). The sensor only files,
-  updates and closes its own rec; close any open ducklake_partition_drift rec with a resolution
-  naming the revert.
+  NOT a single revert: validate_schedule_removal_markers (--pre) refuses deleting a schedule-bearing
+  workflow in one PR, with no marker escape. Retirement is mark-then-drop across two PRs -- (1)
+  remove the schedule under a '# schedule-removal-approved: dec-NNN <reason>' marker whose Decision
+  names ducklake-partition-drift.yml, together with the code revert (the governed channel then
+  redeploys the prior reader); (2) delete the workflow file with its ci_rca_taxonomy row and both
+  r3_workflows entries. FORBIDDEN: a code-only revert that leaves the scheduled --partition-drift
+  step -- __main__._dispatch falls through to main() on an unknown flag, so the step would run the
+  tf-convergence escalation every 6h and go silently green, and sensor_liveness would read it as
+  healthy. The sensor only files, updates and closes its own rec; close any open
+  ducklake_partition_drift rec with a resolution naming the retirement.
