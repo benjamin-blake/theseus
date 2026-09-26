@@ -78,8 +78,9 @@ scope:
     test additionally asserts decode_time_prefix recovers session_started_at exactly from a derived session_id
     (derive_entity_key round trip), and that the contract text excludes event_id as a handoff key; the R6 test
     asserts the root-first-record pin and the deferral; the R3 test asserts the old write-time parent-existence
-    requirement is ABSENT from the live write_time_validation text, that the text names rec-4101 as the monitor's
-    owner, and that the _joins.yaml header no longer calls
+    requirement is ABSENT from the live write_time_validation text, that it states POSITIVELY that the write
+    boundary does not check parent existence, that the monitor runs over quiescent trees, that readers tolerate a
+    dangling parent (transient or permanent), that the text names rec-4101 as the monitor's owner, and that the _joins.yaml header no longer calls
     telemetry referential integrity a write-time concern (raw file text, since it is a comment).
 - file: config/agent/verification_registry/entries/telemetry-contract-risk-amendments.yaml
   action: Create
@@ -157,24 +158,31 @@ verification_plan:
   expected: Exit 0; no failures.
   fix_if: >-
     A contract_version assertion fails -> the version was bumped; revert to unchanged. A stale-pattern failure ->
-    reword the new text (never 'minted once' / 'never re-mints').
+    reword the new text (never 'minted once' / 'never re-mints'; never a bare 'day(session_started_at)'; project-id
+    live text never 'git remote', 'git-remote' or 'theseus').
   hermetic: true
   graduation: waive
-  graduation_waiver_reason: Existing registered test modules; graduating them again duplicates standing coverage.
+  graduation_waiver_reason: Existing standing suites that run in every validation tier; graduating them again duplicates standing coverage.
   expected_literals: []
 - step: 4
   phase: pre-deploy
-  action: Confirm the category-6 amendment ritual for the three amended contracts against origin/main.
+  action: >-
+    Confirm the category-6 amendment ritual for the three amended contracts against origin/main, that
+    contract_version is unchanged on all three, and that the envelope's parser_version, event_id and
+    created_timestamp field specs are identical to origin/main (the R8 split boundary).
   command: >-
     bin/venv-python -c "import subprocess,yaml;from scripts.contracts_schema import ContractDocument;from
     scripts.contracts_enforcement import check_amendment_for_diff;base=lambda f:yaml.safe_load(subprocess.run(['git','show','origin/main:docs/contracts/%s.yaml'%f],capture_output=True,text=True,check=True).stdout);head=lambda
     f:yaml.safe_load(open('docs/contracts/%s.yaml'%f,encoding='utf-8'));errs=[];[errs.extend(check_amendment_for_diff(ContractDocument.model_validate(base(f)),ContractDocument.model_validate(head(f))))
-    for f in ('parent-observation-id','project-id','telemetry-event-envelope')];print(chr(10).join(errs) or 'AMENDMENTS_OK');assert
-    not errs"
+    for f in ('parent-observation-id','project-id','telemetry-event-envelope')];[errs.append(f+': contract_version changed')
+    for f in ('parent-observation-id','project-id','telemetry-event-envelope') if base(f)['contract']['contract_version']!=head(f)['contract']['contract_version']];[errs.append('envelope field changed: '+k)
+    for k in ('parser_version','event_id','created_timestamp') if base('telemetry-event-envelope')['fields'][k]!=head('telemetry-event-envelope')['fields'][k]];print(chr(10).join(errs)
+    or 'AMENDMENTS_OK');assert not errs"
   expected: Exit 0 and the success marker printed.
   fix_if: >-
     A category-6 error names a field -- add its field-level amendment_log entry with governance_note_add +
-    semantic_break true.
+    semantic_break true. A contract_version change -> revert it. An envelope parser_version/event_id/created_timestamp
+    change -> revert it; that surface belongs to rec-4061's plan.
   hermetic: false
   graduation: waive
   graduation_waiver_reason: >-
@@ -209,12 +217,12 @@ verification_plan:
     Closure: after the squash merge carrying 'Resolves: rec-4058, rec-4059, rec-4060', confirm all three recs read
     closed in the warehouse.
   command: >-
-    bin/venv-python -m scripts.sync.ops sync && bin/venv-python -c "import json,pathlib; r={json.loads(l)['id']:json.loads(l)['status']
+    bin/venv-python -m scripts.ops_data_portal --sync && bin/venv-python -c "import json,pathlib; r={json.loads(l)['id']:json.loads(l)['status']
     for l in pathlib.Path('logs/.recommendations-log.jsonl').read_text().splitlines() if l.strip()}; bad=[k for k in
     ('rec-4058','rec-4059','rec-4060') if r.get(k)!='closed']; print('open:', bad); raise SystemExit(1 if bad else 0)"
   expected: Exit 0, empty open list.
   fix_if: >-
-    The sync's recs pull is unreachable -> read each rec directly via the reader's named verb (ducklake-reads
+    The portal sync's recs pull is unreachable -> read each rec directly via the reader's named verb (ducklake-reads
     rec_by_id per rec) instead of the cache. trailer-closure no-op'd (squash body lacked the trailer) -> Decision
     201 manual update_rec fallback citing the transport failure; an acceptance refusal -> fix the failing
     acceptance, never force-close.
@@ -258,8 +266,9 @@ constraints:
   drift), no Decision edit, no roadmap edit.
 - >-
   Amend within the ratified Decision 199/200 model: no field added or removed, no identity-spec, partition or
-  dedupe or parser_version change (R8 is split out), no contract_version bump (precedent: PLAN-telemetry-kernel-identity-append amended the same
-  envelope without one; tests pin contract_version == 2 on the Class C contracts).
+  dedupe or parser_version change (R8 is split out), no contract_version bump (precedent: semantic_break true
+  entries without a bump on ops_recommendations.yaml and ducklake_maintenance.yaml v1; tests pin
+  contract_version == 2 on the Class C contracts).
 - >-
   Category 6: every description/semantics diff carries a NEW field-level amendment_log entry; governance_note_add
   pairs with semantic_break true (scripts/contracts_enforcement.py:115-124). New live text never says 'minted
@@ -299,14 +308,17 @@ context:
 - >-
   Decided with notice: the R3 DQ monitor and its quiescence window are owned by follow-on rec-4101 (filed at planning
   time, depends on rec-4024; relationships checks SKIP on DuckLake today; widened after critique r3 to the
-  parent_session_id and session_id FK orphan windows too); telemetry-lexicon.yaml root unification left unamended (rows always root via session_id; the tree
-  reconnects once quiescent); tenant-id.yaml unchanged (already 'immutable ... never re-derived').
+  parent_session_id and session_id FK orphan windows too); telemetry-lexicon.yaml root unification left unamended (every row
+  still roots to its session via session_id; 'one connected trace tree' becomes a DQ-monitored invariant, since a
+  never-emitted parent leaves a permanent orphan); tenant-id.yaml unchanged (already 'immutable ... never re-derived').
 - >-
   Gotchas: rec acceptance names MODULE-LEVEL test functions (no classes); src/telemetry/append.py docstring still
   lists parent-existence as out of scope for the primitive -- accurate, left alone (src/ is Lambda-packaged);
   squash merge must pass commit_message with the Resolves trailer in its own Key: value block; step 4's
   check_amendment_for_diff covers description/semantics only, so R3's write_time_validation/governance_notes
-  amendment_log entry is asserted by step 1's test, not step 4.
+  amendment_log entry is asserted by step 1's test, not step 4; existing tests ban, in live contract text, a bare
+  'day(session_started_at)' (test_partition_by_is_calendar_day_triple) and, in project-id, 'git remote',
+  'git-remote' and 'theseus'.
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
