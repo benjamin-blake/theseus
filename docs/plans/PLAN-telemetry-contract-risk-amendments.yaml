@@ -24,8 +24,9 @@ scope:
     parent); ULID format and value stay generator-guaranteed. Referential integrity moves to a DQ relationships
     check (non-null parent_observation_id with no matching observation_id in the same session) run as a
     non-gating scheduled monitor (Decision 62 as amended) over QUIESCENT trees only, so an in-flight child is not
-    a violation; readers tolerate a transiently dangling parent. The quiescence window is the DQ check's own
-    config, authored with the telemetry DQ checks (T2.36 / slice 4). Update the field governance_notes to match;
+    a violation; readers tolerate a transiently dangling parent. That monitor does not exist yet (relationships
+    checks SKIP on the DuckLake backend, scripts/data_quality_execute.py:73-79, and carry no session or quiescence
+    scoping), so the text names its owner, follow-on rec-4101, which also owns the quiescence window. Update the field governance_notes to match;
     add a field-level amendment_log entry (governance_note_add, semantic_break true, migration_story: no populator
     or table exists). contract_version stays 2.
 - file: docs/contracts/project-id.yaml
@@ -42,15 +43,18 @@ scope:
   action: Modify
   purpose: >-
     R7 (rec-4060) on session_started_at semantics: a producer without the root transcript receives
-    session_started_at ONLY as an integer epoch-millisecond value or as a held entity key of the tree (e.g. the
-    root session_id) decoded with src/telemetry/identity.py decode_time_prefix -- never seconds, floats or a
+    session_started_at ONLY as an integer epoch-millisecond value or as a held entity/FK key of the tree (e.g. the
+    root session_id; NEVER an event_id, whose prefix is its own event_timestamp) decoded with
+    src/telemetry/identity.py decode_time_prefix -- never seconds, floats or a
     re-serialised string; an unusable handoff DEFERS emission, never coerces. Scoped to the producer-to-producer
     handoff only: both forms decode to a tz-aware UTC value and the stored column is unchanged (Decision 96 clause
     4). R8 (rec-4061) on parser_version semantics: bump when, and only when, the rows a producer emits for the
     same source input change in content or shape; a build emitting identical rows never bumps; monotonic per
-    producer, so reverting parsing logic is a NEW higher version; a bump re-emits the whole root tree (existing
-    rule); each producer pins its emitted rows for a fixture input alongside parser_version so output drift without
-    a bump fails CI. One field-level amendment_log entry per field (governance_note_add, semantic_break true, R7's
+    producer, so reverting parsing logic is a NEW higher version. A bump alone does NOT oblige whole-tree
+    re-emission: read-side dedupe is per event_id (highest parser_version wins), so rows not re-emitted keep their
+    prior version; the existing whole-tree rule for a parser that STOPS emitting a row kind stands unchanged. Each
+    producer's own test suite pins its emitted rows for a fixture input alongside parser_version, so output drift
+    without a bump fails CI (owner for the first producer: rec-4026). One field-level amendment_log entry per field (governance_note_add, semantic_break true, R7's
     summary citing Decision 96 clause 4). contract_version stays 1.
 - file: docs/contracts/_joins.yaml
   action: Modify
@@ -66,7 +70,8 @@ scope:
     scripts.contracts load_contract; phrase checks case-insensitive over whitespace-normalised text; each also
     asserts the field-level amendment_log entry exists with governance_note_add + semantic_break true. The R7
     test additionally asserts decode_time_prefix recovers session_started_at exactly from a derived session_id
-    (derive_entity_key round trip), so the sanctioned handoff route is exercised, not just named.
+    (derive_entity_key round trip), and that the contract text excludes event_id as a handoff key; the R3 test
+    asserts the text names rec-4101 as the monitor's owner.
 - file: config/agent/verification_registry/entries/telemetry-contract-risk-amendments.yaml
   action: Create
   purpose: >-
@@ -77,22 +82,24 @@ bundled_recommendations:
 - rec-4059
 - rec-4060
 - rec-4061
-followon_recs: []
+followon_recs:
+- rec-4101
 infrastructure_dependencies: []
 acceptance_criteria:
 - >-
   parent-observation-id.yaml no longer contains 'must reference an existing telemetry_observations.observation_id';
   its write_time_validation states the write boundary does not check parent existence and names the DQ
-  relationships monitor over quiescent trees.
+  monitor over quiescent trees with its owner rec-4101.
 - >-
   project-id.yaml project_id semantics states project_ref -> project_id resolution is immutable, the
   canonical_project_id remap is read-side only, and every producer of a trace tree supplies the root session's
   project_ref.
 - >-
-  telemetry-event-envelope.yaml session_started_at semantics names integer epoch-milliseconds and a held entity key
-  decoded via decode_time_prefix as the only handoff forms, with deferral on an unusable handoff; parser_version
-  semantics states the bump-when-and-only-when rule, per-producer monotonicity (rollback = new version) and the
-  fixture row-pin obligation.
+  telemetry-event-envelope.yaml session_started_at semantics names integer epoch-milliseconds and a held entity/FK
+  key (never an event_id) decoded via decode_time_prefix as the only handoff forms, with deferral on an unusable
+  handoff; parser_version semantics states the bump-when-and-only-when rule, per-producer monotonicity (rollback =
+  new version), that a bump alone does not require whole-tree re-emission, and the producer fixture row-pin
+  obligation.
 - Each amended field carries a new amendment_log entry (governance_note_add, semantic_break true); contract_version unchanged on all three contracts.
 - >-
   All four rec acceptance commands pass; the existing contract suites
@@ -197,11 +204,13 @@ verification_plan:
     ('rec-4058','rec-4059','rec-4060','rec-4061') if r.get(k)!='closed']; print('open:', bad); raise SystemExit(1 if bad else 0)"
   expected: Exit 0, empty open list.
   fix_if: >-
-    trailer-closure no-op'd (squash body lacked the trailer) -> Decision 201 manual update_rec fallback citing the
-    transport failure; an acceptance refusal -> fix the failing acceptance, never force-close.
+    The sync's recs pull is unreachable -> read each rec directly via the reader's named verb (ducklake-reads
+    rec_by_id per rec) instead of the cache. trailer-closure no-op'd (squash body lacked the trailer) -> Decision
+    201 manual update_rec fallback citing the transport failure; an acceptance refusal -> fix the failing
+    acceptance, never force-close.
 test_obligations:
 - source: docs/contracts/parent-observation-id.yaml
-  behavior: Write boundary never checks parent existence; integrity is a DQ relationships monitor over quiescent trees; amendment_log entry present.
+  behavior: Write boundary never checks parent existence; integrity is a DQ monitor over quiescent trees owned by rec-4101; amendment_log entry present.
   verification_step: 1
   test_selector: tests/telemetry/test_contract_amendments.py::test_parent_observation_existence_is_dq_not_write_time
   red_green_expectation: red before (module absent, old write-time sentence present), green after
@@ -212,10 +221,17 @@ test_obligations:
   red_green_expectation: red before, green after
 - source: docs/contracts/telemetry-event-envelope.yaml
   behavior: >-
-    session_started_at handoff is integer epoch-ms or a decoded entity key (decode_time_prefix round trip exact);
-    parser_version bump-when-and-only-when, per-producer monotonic, fixture row-pin obligation.
+    R7: session_started_at handoff is integer epoch-ms or a decoded entity/FK key, never an event_id
+    (decode_time_prefix round trip exact).
   verification_step: 1
   test_selector: tests/telemetry/test_contract_amendments.py::test_session_started_at_handoff_is_exact_ms
+  red_green_expectation: red before, green after
+- source: docs/contracts/telemetry-event-envelope.yaml
+  behavior: >-
+    R8: parser_version bump-when-and-only-when, per-producer monotonic (rollback = new version), bump alone does
+    not require whole-tree re-emission, producer fixture row-pin obligation (first owner rec-4026).
+  verification_step: 1
+  test_selector: tests/telemetry/test_contract_amendments.py::test_parser_version_bump_policy_declared
   red_green_expectation: red before, green after
 - source: docs/contracts/_joins.yaml
   behavior: Header comment no longer calls telemetry referential integrity a write-time concern.
@@ -253,7 +269,7 @@ context:
   Decision-scout verdict FLAGS_FOUND; CITE: 199, 200, 118, 150; NOTE 96 cl.4 (R7 handoff ban must not reach the
   stored/boundary value) -- resolved by the R7 scoping constraint; RELATED 97, 95, 62, 81, 86, 127, 167, 168, 197.
   Decisions triaged: 155 of 155. Roadmap items intersected: 2; CONFLICT: 0; RELATED: 2 (T2.54, T4.23).
-- "gates: decision-scout=FLAGS_FOUND (1 NOTE, resolved); plan-critique=PENDING"
+- "gates: decision-scout=FLAGS_FOUND (1 NOTE, resolved); plan-critique=REVISE r1 (F1-F8 fixed), confirming round pending"
 - >-
   Source: contract-risk review of slice 1 (PLAN-telemetry-kernel-identity-append, PR #1286); recs 4058-4061 are
   warehouse dependencies of rec-4024 (slice 2 carrier). Non-blocking siblings stay open: rec-4062, rec-4063, rec-4064.
@@ -271,13 +287,17 @@ context:
   brief default + PLAN-telemetry-event-journal-contracts (multi-contract amendment in one plan) | precedent_kind:
   contract | reversible: yes | persisted: this plan
 - >-
-  Decided with notice: the quiescence window for the R3 DQ monitor is left to the telemetry DQ check author (T2.36
-  slice 4); telemetry-lexicon.yaml root unification left unamended (rows always root via session_id; the tree
+  Decided with notice: the R3 DQ monitor and its quiescence window are owned by follow-on rec-4101 (filed at planning
+  time, depends on rec-4024; relationships checks SKIP on DuckLake today); telemetry-lexicon.yaml root unification left unamended (rows always root via session_id; the tree
   reconnects once quiescent); tenant-id.yaml unchanged (already 'immutable ... never re-derived').
 - >-
   Gotchas: rec acceptance names MODULE-LEVEL test functions (no classes); src/telemetry/append.py docstring still
   lists parent-existence as out of scope for the primitive -- accurate, left alone (src/ is Lambda-packaged);
-  squash merge must pass commit_message with the Resolves trailer in its own Key: value block.
+  squash merge must pass commit_message with the Resolves trailer in its own Key: value block; rec-4024's context
+  says readers keep max parser_version per (session_id, producer) while the envelope's event_id semantics (normative)
+  say per event_id -- the rec-4024 bookkeeping step below records the envelope as governing; step 4's
+  check_amendment_for_diff covers description/semantics only, so R3's write_time_validation/governance_notes
+  amendment_log entry is asserted by step 1's test, not step 4.
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
@@ -292,8 +312,23 @@ execution_steps:
 - Amend project-id.yaml (R6) per scope.
 - Amend telemetry-event-envelope.yaml session_started_at (R7) and parser_version (R8) per scope.
 - Write the registry row for graduated step 1.
-- Execute Verification Plan steps 1-6 -- loop until pass (Decision 55).
 - >-
-  Commit, PR, and squash merge with commit_message carrying 'Resolves: rec-4058, rec-4059, rec-4060, rec-4061' in
-  its own trailer block; then run step 7.
+  Portal bookkeeping (get_rec_write_guidance first, Decision 66): update_rec rec-4024 (context: slice 2 must NOT
+  check parent existence at write time -- rec-4101 owns integrity; project_ref resolution immutable, remap
+  read-side only; read-side dedupe is per event_id per the envelope, superseding its per-(session_id, producer)
+  wording) and rec-4026 (context: the first producer owes the parser_version fixture row-pin CI test and the exact-ms
+  / root project_ref handoff rules).
+- >-
+  Execute Verification Plan steps 1-6 (stage new files first: git add --intent-to-add on every Create row) -- loop
+  until pass; never weaken an assertion; on an unrecoverable failure stop and RCA (Decision 55).
+- >-
+  Closure evidence, recorded as four SEPARATE facts (implement skill Commit Flows): (1) GitHub readiness --
+  bin/venv-python -m scripts.session.github_readiness, each state recorded as reported, where unknown is unproven
+  and never PASS; (2) parent validator evidence -- VP step 6's completed full-tier exit 0, Validation Summary
+  (scope: all) PASS and the matching logs/debug/validation-result.json; (3) structured postflight evidence --
+  bin/venv-python -m scripts.session.postflight --evidence /tmp/implementation-retrospective.json with the
+  scripts.session.postflight_evidence.CATEGORIES keys; (4) the real outcome -- commit, push, PR, CI green on the head
+  (event-driven wake, never polled), and the squash merge with commit_message carrying 'Resolves: rec-4058,
+  rec-4059, rec-4060, rec-4061' in its own trailer block (rec-4024 and rec-4101 are NOT named), then VP step 7. A
+  readiness PASS never stands in for a push or PR outcome.
 - 'Report: what was amended, verification results, rec closure state'
