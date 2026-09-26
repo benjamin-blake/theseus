@@ -16,41 +16,60 @@ check_per_file_coverage = checker.check_per_file_coverage
 
 
 class TestGetChangedSourceFilesPushContextBase:
-    """get_changed_source_files() consuming scripts.checks._common.push_context_base()."""
+    """get_changed_source_files() delegates its whole git-diff branch to
+    scripts.checks._common.get_status_aware_diff(root=base_root) (Decision 159 pairing
+    invariant). Push-context-base selection itself is owned by
+    tests/checks/_common/test_push_context_base.py (TestPushContextBase) and the merge-base ->
+    HEAD fallback by tests/validate/test_changed_files.py::TestGetStatusAwareDiff::
+    test_falls_back_to_head_when_merge_base_fails (Decision 181) -- this class guards only the
+    delegation and root-forwarding contract at the checker's own call site."""
 
-    def test_uses_push_context_base_when_non_none(self, tmp_path: Path) -> None:
+    def test_forwards_resolved_root(self, tmp_path: Path) -> None:
+        """get_changed_source_files forwards the resolved root (the explicit `root` argument,
+        else the patched test_coverage_checker.ROOT) to get_status_aware_diff, and maps the
+        helper's (status, path) tuples through its own filters."""
         (tmp_path / "scripts").mkdir()
         (tmp_path / "scripts" / "foo.py").write_text("x = 1\n", encoding="utf-8")
-        mock_diff = MagicMock(returncode=0, stdout="scripts/foo.py\n")
 
         with (
-            patch("scripts.checks._common.push_context_base", return_value="deadbeef"),
             patch("test_coverage_checker.ROOT", tmp_path),
-            patch("test_coverage_checker.subprocess.run", return_value=mock_diff) as mock_run,
+            patch("scripts.checks._common.get_status_aware_diff", return_value=[("A", "scripts/foo.py")]) as mock_diff,
         ):
             result = get_changed_source_files()
 
         assert any("foo.py" in str(p) for p in result)
-        called = mock_run.call_args.args[0]
-        assert called == ["git", "diff", "--name-only", "deadbeef"]
+        mock_diff.assert_called_once_with(root=tmp_path)
 
-    def test_falls_back_to_merge_base_when_none(self, tmp_path: Path) -> None:
-        """push_context_base() returning None keeps today's merge-base-or-HEAD block verbatim."""
+    def test_diffs_against_merge_base(self, tmp_path: Path) -> None:
+        """push_context_base() returning None keeps the merge-base-or-HEAD base selection --
+        pinned here via scripts.checks._common.run (NOT get_status_aware_diff itself), the
+        ~12-line replacement for the deleted line-53 subprocess assertion."""
         (tmp_path / "src").mkdir()
         (tmp_path / "src" / "bar.py").write_text("x = 1\n", encoding="utf-8")
+
         mock_merge_base = MagicMock(returncode=0, stdout="abc123\n")
-        mock_diff = MagicMock(returncode=0, stdout="src/bar.py\n")
+        mock_diff = MagicMock(returncode=0, stdout="A\tsrc/bar.py\n")
+        mock_ls_files = MagicMock(returncode=0, stdout="")
+
+        def fake_run(cmd, **kwargs):
+            if cmd[:2] == ["git", "merge-base"]:
+                return mock_merge_base
+            if cmd[:2] == ["git", "diff"]:
+                return mock_diff
+            if cmd[:2] == ["git", "ls-files"]:
+                return mock_ls_files
+            raise AssertionError(f"unexpected git invocation: {cmd}")
 
         with (
-            patch("scripts.checks._common.push_context_base", return_value=None),
             patch("test_coverage_checker.ROOT", tmp_path),
-            patch("test_coverage_checker.subprocess.run", side_effect=[mock_merge_base, mock_diff]) as mock_run,
+            patch("scripts.checks._common.push_context_base", return_value=None),
+            patch("scripts.checks._common.run", side_effect=fake_run) as mock_run,
         ):
             result = get_changed_source_files()
 
         assert any("bar.py" in str(p) for p in result)
-        # second call is the merge-base-diff, unaffected by the push-context branch
-        assert mock_run.call_args_list[1].args[0] == ["git", "diff", "--name-only", "abc123"]
+        diff_call = next(c for c in mock_run.call_args_list if c.args[0][:2] == ["git", "diff"])
+        assert diff_call.args[0][-1] == "abc123"
 
 
 class TestMeasurePerFileCoverageEntryPoint:
