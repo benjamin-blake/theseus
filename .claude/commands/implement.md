@@ -93,15 +93,15 @@ in Step 5 already passed, this step is a no-op -- proceed.
 
 **One-full-tier rule (do not reintroduce a second full run).** The full `scripts.validate` tier
 runs exactly ONCE per implementation session: Step 7's closure item 4, after
-`implementation_declared: true` and after every Step 5 write. That run is the only one whose scope
-is the whole tree rather than this diff, and it is the last one before the commit, so an earlier
-full-tier pass is superseded by it, never additive. (The declaration-armed checks --
-`validate_vp_replay`, `validate_graduation_completeness` -- ride the `--pre` half of that same
-closure step, not the full half.) Any tracked write landing after that PASS voids it -- rerun the
-full tier from the start, which is exactly what `logs/debug/validation-result.json`'s
-current-pre-commit-HEAD requirement encodes. Accepted trade-off: a full-tier-only regression now
-first surfaces at Step 7 item 4, with the declaration already written -- no commit has happened at
-that point, so the cost is bounded to fixing and rerunning the closure.
+`implementation_declared: true` and after every Step 5 write, on the COMMITTED, rebased, clean
+tree, followed by `--verify-head`. That run is the only one whose scope is the whole tree rather
+than this diff, and it is the last one before the push, so an earlier full-tier pass is superseded
+by it, never additive. (The declaration-armed checks -- `validate_vp_replay`,
+`validate_graduation_completeness` -- ride the `--pre` half of that same closure step, not the full
+half.) Any tracked write landing after that PASS voids it -- commit it and rerun the full tier from
+the start, which is exactly what `--verify-head`'s committed-tree attestation checks. Accepted
+trade-off: cost basis is now per push (every rebase or fix commit needs a fresh full-tier run), not
+merely once per session.
 
 ## Step 7: Commit, PR, and Merge
 **You MUST execute the commit flow autonomously once Step 6 passes. Do not stop to ask for permission.**
@@ -131,10 +131,8 @@ Record friction (parsing errors, ambiguous areas, bugs found) by filing a recomm
 **RCA-First Protocol (Decision 55):**
 If the friction was a recurring gap or unrecoverable failure, you MUST invoke the `executor-rca` skill via the `Skill` tool to diagnose the root cause and file a permanent fix. Do NOT silently workaround structural issues.
 
-Friction logs will be committed to the current branch and pushed automatically via the `session_postflight.py` flow during Step 7, or you can flush them manually:
-```bash
-bin/venv-python -m scripts.session.postflight --log-housekeeping
-```
+Friction is filed to the warehouse through `scripts.ops_data_portal` (Decision 84) -- nothing
+under `logs/` is committed.
 
 ## Step 9: Report and Close Session
 Output the final report:

@@ -53,6 +53,39 @@ def test_full_tier_runs_once_and_only_in_the_step7_closure() -> None:
     assert f"`{_FULL_TIER}`" in closure
 
 
+def test_handoff_full_tier_runs_after_commit_and_rebase() -> None:
+    """PLAN-handoff-validates-committed-tree: within the implement skill's IMPLEMENTATION Commit
+    Flow, the full tier runs on the COMMITTED, rebased tree -- git commit < git rebase < the full
+    tier < --verify-head < git push. Also asserts the retired pre-commit-HEAD / no-commit-happened
+    / --log-housekeeping language is gone from both surfaces, and that the skill's single
+    backticked full-tier mention (pinned by test_full_tier_runs_once_and_only_in_the_step7_closure
+    above) sits in the Commit Flow's own closure item, not detached from it."""
+    skill = _IMPLEMENT_SKILL.read_text(encoding="utf-8")
+    command = _IMPLEMENT_CMD.read_text(encoding="utf-8")
+
+    commit_flow = skill[skill.index("### IMPLEMENTATION Commit Flow") : skill.index("### STRATEGIC Commit Flow")]
+    verify_head_line = "bin/venv-python -m scripts.checks.validation_result --verify-head"
+    assert (
+        commit_flow.index("git commit")
+        < commit_flow.index("git rebase origin/main")
+        < commit_flow.index(f"\n{_FULL_TIER}\n")
+        < commit_flow.index(verify_head_line)
+        < commit_flow.index("git push")
+    )
+
+    for text in (skill, command):
+        assert "pre-commit HEAD" not in text
+        assert "pre-commit-HEAD" not in text
+
+    assert "no commit has happened" not in command
+    assert "--log-housekeeping" not in command
+
+    assert ", then `bin/venv-python -m scripts.validate`" not in skill
+    for line in skill.splitlines():
+        if f"`{_FULL_TIER}`" in line:
+            assert "Commit Flow" in line
+
+
 def test_critique_verifies_rather_than_rederives() -> None:
     """12b/12k cross-check the plan's stated answer instead of recomputing it from raw sources."""
     critique = _CRITIQUE_SKILL.read_text(encoding="utf-8")

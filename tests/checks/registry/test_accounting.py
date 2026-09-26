@@ -8,15 +8,26 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from scripts.checks import registry, validation_result
+
+
+@pytest.fixture(autouse=True)
+def _isolate_result_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test in this module drives a real dispatch_recording()/clear() pass. The default
+    RESULT_PATH is the REAL logs/debug/validation-result.json -- once that file is the handoff
+    credential (PLAN-handoff-validates-committed-tree), a clear() against the default path would
+    silently delete it. Redirect RESULT_PATH to a throwaway path FIRST, then call clear() -- which
+    inherits the redirect because clear()'s default now resolves RESULT_PATH at call time, not at
+    def time."""
+    monkeypatch.setattr(validation_result, "RESULT_PATH", tmp_path / "validation-result.json")
+    validation_result.clear()
 
 
 class TestStatusDerivationThroughRealDispatch:
     """VP step 1: five outcome states, proven distinguishable after a real dispatch_recording()
     pass -- not four collapsed into "not failed"."""
-
-    def setup_method(self) -> None:
-        validation_result.clear()
 
     def _dispatch(self, name: str, fn) -> list[str]:
         failed: list[str] = []
@@ -78,9 +89,6 @@ class TestStatusDerivationThroughRealDispatch:
 class TestDeclarationSlotAndRowAccumulatorLifecycle:
     """The per-dispatch DECLARATION SLOT resets on each outcome_scope entry; the ROW ACCUMULATOR
     resets per RUN via validation_result.clear() -- mirroring _ATTRIBUTIONS' contract."""
-
-    def setup_method(self) -> None:
-        validation_result.clear()
 
     def test_declaration_slot_does_not_leak_between_dispatches(self) -> None:
         validation_result.dispatch_recording("first", [], lambda f: registry.examined(7))
@@ -148,9 +156,6 @@ class TestScaffoldOutcomeHarvest:
     """record_scaffold_outcome() is the scaffold-side harvesting counterpart to
     dispatch_recording() -- used by non-check scaffolds like ensure_fresh_dq_results."""
 
-    def setup_method(self) -> None:
-        validation_result.clear()
-
     def test_scaffold_outcome_is_recorded_with_kind_scaffold(self) -> None:
         failed: list[str] = []
         before = len(failed)
@@ -174,9 +179,6 @@ class TestScaffoldOutcomeHarvest:
 
 
 class TestWriteCompletedEmitsCheckOutcomesAndRollups:
-    def setup_method(self) -> None:
-        validation_result.clear()
-
     def test_write_completed_records_one_row_per_dispatched_check_and_rollups(self, tmp_path: Path) -> None:
         validation_result.dispatch_recording("vacuous_check", [], lambda f: registry.examined(0))
         validation_result.dispatch_recording("enforced_check", [], lambda f: registry.examined(2))
@@ -192,8 +194,8 @@ class TestWriteCompletedEmitsCheckOutcomesAndRollups:
             path=tmp_path / "validation-result.json",
         )
 
-        by_check = {row["check"]: row for row in record["check_outcomes"]}
-        assert len(record["check_outcomes"]) == 5
+        by_check = {row["check"]: row for row in record["check_outcomes"]}  # type: ignore[attr-defined]
+        assert len(record["check_outcomes"]) == 5  # type: ignore[arg-type]
         assert by_check["vacuous_check"]["status"] == "vacuous"
         assert by_check["enforced_check"]["status"] == "enforced"
         assert by_check["skipped_check"]["status"] == "skipped"

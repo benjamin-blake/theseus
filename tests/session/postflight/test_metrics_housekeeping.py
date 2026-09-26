@@ -186,12 +186,13 @@ class TestStageDocumentDerivedTables:
             return 0
 
         with (
-            patch("session_postflight.run_validate", return_value=0),
             patch("session_postflight.run_close", side_effect=fake_close),
             patch("scripts.postflight.housekeeping.run_metrics", return_value=0),
             patch("session_postflight.run_commit", return_value=0),
+            patch("session_postflight.run_rebase", return_value="ok"),
+            patch("session_postflight.run_validate", return_value=0),
+            patch("session_postflight.run_verify_head", return_value=0),
             patch("scripts.postflight.remote.run_push", side_effect=fake_push),
-            patch("scripts.postflight.housekeeping.run_log_housekeeping", return_value=0),
             patch("scripts.ops_data_portal.sync", return_value={"pulled": {}}),
             patch("scripts.postflight.housekeeping._stage_document_derived_tables") as mock_stage,
             patch("scripts.session.postflight_evidence.EVIDENCE_PATH") as evidence_path,
