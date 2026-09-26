@@ -43,10 +43,12 @@ from scripts.backlog_health import census as census_mod
 from scripts.backlog_health import probe as probe_mod
 from scripts.executor.acceptance_lint import lint_acceptance_command
 from scripts.ops_portal.closure_gate import ACCEPTANCE_VERDICTS, FAILS, HOLDS, OUT_OF_GRAMMAR, UNMEASURABLE
+from scripts.rec_trailer_acceptance_junit import ROUTE_JUNIT, ROUTE_REFUSE, ROUTE_STATIC, classify_grammar
 
 ROOT = Path(__file__).resolve().parents[1]
 
 SOURCE_STATIC = "static"
+SOURCE_JUNIT = "junit"
 
 _CENSUS_ARTIFACT = "trailer_census.json"
 _VERDICT_ARTIFACT = "acceptance_verdict.json"
@@ -101,9 +103,20 @@ def census(
     `rec_by_id` reader read) and classify each into a census bucket, EXECUTING the
     require_decidable grammar ratchet: a `probeable` entry whose acceptance carries no decidable
     assertion is rerouted to `unprobeable_shape` -- verdict_for always resolves that bucket to
-    out_of_grammar. An id absent from the reader is silently omitted (the later closure loop's
+    out_of_grammar. A lint refusal here WINS over the junit routing partition below regardless of
+    the command's grammar shape (precedence: docs/contracts/git-ops.yaml#trailer_acceptance_gate).
+    An id absent from the reader is silently omitted (the later closure loop's
     require_acceptance_verdict=True leaves it OPEN with no verdict, the same loud-not-red posture
-    as a refusal)."""
+    as a refusal).
+
+    Each entry also carries a `route` -- a STATIC three-arm partition computed from the
+    acceptance TEXT ALONE (scripts.rec_trailer_acceptance_junit.classify_grammar), gated on
+    is_pytest_command so it only narrows WITHIN slice A's existing probeable set: "junit" (a
+    pure single-segment ::node_id command, removed from evaluate's probe payload and claimed by
+    the junit source instead), "refuse" (an unparseable pytest-carrying command, rerouted to
+    unprobeable_shape so verdict_for resolves out_of_grammar and it is never probed), or
+    "static" (every other bucket, and every non-junit-routed probeable entry -- slice A's probe
+    path, entirely unchanged)."""
     live_rows = rows
     if live_rows is None:
         live_reader = reader if reader is not None else _make_reader(profile)
@@ -121,12 +134,23 @@ def census(
             ok, _reason = lint_acceptance_command(acceptance, require_decidable=True)
             if not ok:
                 bucket = census_mod.UNPROBEABLE_SHAPE
+
+        route = ROUTE_STATIC
+        if bucket == census_mod.PROBEABLE and probe_mod.is_pytest_command(acceptance):
+            grammar = classify_grammar(acceptance)
+            if grammar.route == ROUTE_REFUSE:
+                bucket = census_mod.UNPROBEABLE_SHAPE
+                route = ROUTE_REFUSE
+            else:
+                route = grammar.route
+
         entries.append(
             {
                 "rec_id": row["id"],
                 "acceptance": acceptance,
                 "acceptance_sha256": hashlib.sha256(acceptance.encode("utf-8")).hexdigest(),
                 "bucket": bucket,
+                "route": route,
             }
         )
     return entries
@@ -134,17 +158,24 @@ def census(
 
 def evaluate(entries: list[dict[str, Any]], repo_root: Path, sha: str) -> dict[str, Any]:
     """Execute only `probeable` entries through scripts.backlog_health.probe.run_all; every other
-    entry's verdict is resolved from its bucket alone, with no execution. Returns the verdict
-    document {sha, isolation_available, source, records: [{rec_id, sha, acceptance_sha256,
-    verdict, source, arm}]}. `source` is "static" throughout -- the extension point slice B
-    (junit ::node_id) adds records at."""
+    entry's verdict is resolved from its bucket alone, with no execution. An entry routed to
+    "junit" is REMOVED from the probe payload AND from this document's own records -- it is
+    claimed exclusively by the junit source (scripts.rec_trailer_acceptance_junit.junit_verdict),
+    which is what makes rejoin's cross-document disjointness check a genuine defect detector
+    rather than something that would fire on every junit-routed rec. Returns the verdict document
+    {sha, isolation_available, source, records: [{rec_id, sha, acceptance_sha256, verdict,
+    source, arm}]}. `source` is "static" throughout."""
     probe_payload = [
-        {"id": e["rec_id"], "acceptance": e["acceptance"]} for e in entries if e["bucket"] == census_mod.PROBEABLE
+        {"id": e["rec_id"], "acceptance": e["acceptance"]}
+        for e in entries
+        if e["bucket"] == census_mod.PROBEABLE and e.get("route") != ROUTE_JUNIT
     ]
     probe_result = probe_mod.run_all(probe_payload, repo_root=repo_root, main_sha=sha)
 
     records: list[dict[str, Any]] = []
     for entry in entries:
+        if entry.get("route") == ROUTE_JUNIT:
+            continue
         probed = entry["bucket"] == census_mod.PROBEABLE
         probe_verdict = probe_result["verdicts"].get(entry["rec_id"]) if probed else None
         records.append(
@@ -165,16 +196,9 @@ def evaluate(entries: list[dict[str, Any]], repo_root: Path, sha: str) -> dict[s
     }
 
 
-def rejoin(census_doc: dict[str, Any], verdict_doc: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Rejoin the (untrusted) verdict document against census_doc's own entries on rec_id +
-    acceptance_sha256 -- mirrors scripts.backlog_health.escalate.rejoin_probe_verdicts. A record
-    for a rec_id census never sent to evaluate, whose verdict is outside ACCEPTANCE_VERDICTS, or
-    whose acceptance_sha256 no longer matches (a stale/tampered artifact) is dropped rather than
-    trusted. Returns {rec_id: record} -- the exact shape update_rec's acceptance_verdict kwarg
-    expects for that rec."""
-    census_entries = {e["rec_id"]: e for e in census_doc.get("entries") or [] if isinstance(e, dict) and e.get("rec_id")}
+def _clean_records(doc: dict[str, Any], census_entries: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
     clean: dict[str, dict[str, Any]] = {}
-    for record in verdict_doc.get("records") or []:
+    for record in doc.get("records") or []:
         if not isinstance(record, dict):
             continue
         rec_id = record.get("rec_id")
@@ -184,6 +208,56 @@ def rejoin(census_doc: dict[str, Any], verdict_doc: dict[str, Any]) -> dict[str,
         if census_entry is None or record.get("acceptance_sha256") != census_entry.get("acceptance_sha256"):
             continue
         clean[rec_id] = record
+    return clean
+
+
+def rejoin(
+    census_doc: dict[str, Any],
+    verdict_doc: dict[str, Any],
+    junit_doc: Optional[dict[str, Any]] = None,
+) -> dict[str, dict[str, Any]]:
+    """Rejoin the (untrusted) static verdict_doc, and optionally the (also untrusted) junit_doc,
+    against census_doc's own entries on rec_id + acceptance_sha256 -- mirrors
+    scripts.backlog_health.escalate.rejoin_probe_verdicts. A record for a rec_id census never
+    sent to evaluate, whose verdict is outside ACCEPTANCE_VERDICTS, or whose acceptance_sha256 no
+    longer matches (a stale/tampered artifact) is dropped rather than trusted.
+
+    RAISES if a rec_id carries a clean record in BOTH documents -- two sources for one rec is the
+    TAP hazard at the transport layer, and a routing defect must fail the closure rather than
+    silently electing a winner.
+
+    junit_doc=None is DISTINCT from a present-but-empty document ({"records": []}): it means the
+    junit-verdict job's artifact was never produced at all (e.g. trailer-census itself failed, so
+    the CLI adapter refused to write one). In that case every census entry routed to "junit" is
+    resolved here to a synthetic report_unavailable/unmeasurable record rather than silently
+    carrying no verdict at all -- an absent document and an empty one must not be
+    indistinguishable. Returns {rec_id: record} -- the exact shape update_rec's
+    acceptance_verdict kwarg expects for that rec."""
+    census_entries = {e["rec_id"]: e for e in census_doc.get("entries") or [] if isinstance(e, dict) and e.get("rec_id")}
+
+    clean = _clean_records(verdict_doc, census_entries)
+    junit_clean = _clean_records(junit_doc, census_entries) if junit_doc is not None else {}
+
+    overlap = set(clean) & set(junit_clean)
+    if overlap:
+        raise RuntimeError(
+            f"rec_trailer_acceptance rejoin: rec_id(s) {sorted(overlap)} carry a clean record in "
+            "BOTH the static and junit verdict documents -- two sources for one rec is a routing "
+            "defect, never a winner to elect"
+        )
+    clean.update(junit_clean)
+
+    if junit_doc is None:
+        for rec_id, entry in census_entries.items():
+            if entry.get("route") == ROUTE_JUNIT and rec_id not in clean:
+                clean[rec_id] = {
+                    "rec_id": rec_id,
+                    "sha": census_doc.get("sha", "unknown"),
+                    "acceptance_sha256": entry.get("acceptance_sha256"),
+                    "verdict": UNMEASURABLE,
+                    "source": SOURCE_JUNIT,
+                    "arm": "report_unavailable",
+                }
     return clean
 
 
@@ -258,6 +332,20 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_junit_verdict(args: argparse.Namespace) -> int:
+    """Thin adapter delegating to scripts.rec_trailer_acceptance_junit's own CLI, kept here for
+    interface consistency with census/evaluate/close. CI's trailer-junit-verdict job does NOT
+    invoke this verb -- it runs `python -m scripts.rec_trailer_acceptance_junit` directly, since
+    importing THIS module (which imports scripts.backlog_health.probe at module scope) would arm
+    validate_sandbox_runner_test_deps's M2 marker on a job that executes nothing."""
+    from scripts import rec_trailer_acceptance_junit  # noqa: PLC0415
+
+    junit_argv = ["--artifact-dir", str(args.artifact_dir)]
+    if args.junit_report is not None:
+        junit_argv += ["--junit-report", str(args.junit_report)]
+    return rec_trailer_acceptance_junit.main(junit_argv)
+
+
 def cmd_close(args: argparse.Namespace) -> int:
     import os  # noqa: PLC0415
 
@@ -271,7 +359,10 @@ def cmd_close(args: argparse.Namespace) -> int:
         return 0
 
     verdict_doc = _read_json(args.artifact_dir / _VERDICT_ARTIFACT)
-    acceptance_verdicts = rejoin(census_doc, verdict_doc)
+    junit_doc = None
+    if args.junit_verdict is not None and args.junit_verdict.is_file():
+        junit_doc = _read_json(args.junit_verdict)
+    acceptance_verdicts = rejoin(census_doc, verdict_doc, junit_doc)
 
     commit_sha = os.environ.get("GITHUB_SHA", "unknown")
     repo = os.environ.get("GITHUB_REPOSITORY", "unknown")
@@ -318,7 +409,12 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_parser.add_argument("--payload", type=Path, default=None)
     evaluate_parser.set_defaults(handler=cmd_evaluate)
 
+    junit_verdict_parser = subparsers.add_parser("junit-verdict", parents=[common])
+    junit_verdict_parser.add_argument("--junit-report", type=Path, default=None)
+    junit_verdict_parser.set_defaults(handler=cmd_junit_verdict)
+
     close_parser = subparsers.add_parser("close", parents=[common])
+    close_parser.add_argument("--junit-verdict", type=Path, default=None)
     close_parser.set_defaults(handler=cmd_close)
 
     return parser

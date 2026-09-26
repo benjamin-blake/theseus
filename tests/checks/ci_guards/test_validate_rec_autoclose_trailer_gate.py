@@ -57,14 +57,14 @@ class TestPassPath:
         names = {step.name for step in registry.pre_sequence()}
         assert "validate_rec_autoclose_trailer_gate" in names
 
-    def test_examined_count_is_nine_delegation_assertions(self) -> None:
+    def test_examined_count_is_twelve_delegation_assertions(self) -> None:
         with registry.outcome_scope("validate_rec_autoclose_trailer_gate"):
             failed: list[str] = []
             validate_rec_autoclose_trailer_gate(failed)
         declaration = registry.pop_declaration()
         assert declaration is not None
         assert declaration.kind == "examined"
-        assert declaration.count == 9
+        assert declaration.count == 12
         assert declaration.unit == "delegation_assertions"
 
 
@@ -196,3 +196,111 @@ class TestAcceptanceGateAssertions:
         globs = entry.pre_globs or ()
         for path in _ALL_SOURCES:
             assert any(fnmatch(path, glob) for glob in globs), path
+
+
+_UPLOAD_STEP = """\
+      - name: Upload pytest junit report
+        uses: actions/upload-artifact@v7
+        with:
+          name: pytest-junit
+          path: logs/debug/pytest-junit.xml
+"""
+
+
+def _minimal_workflow(*extra_jobs: str) -> str:
+    return (
+        "jobs:\n"
+        "  main-validate:\n"
+        "    permissions:\n"
+        "      id-token: write\n"
+        "      contents: read\n"
+        "    steps:\n" + _UPLOAD_STEP + "".join(extra_jobs)
+    )
+
+
+def _download_job(name: str, *, id_token: bool = False, run_id: bool = False) -> str:
+    permissions = "      id-token: write\n      contents: read\n" if id_token else "      contents: read\n"
+    run_id_line = "          run-id: ${{ github.event.workflow_run.id }}\n" if run_id else ""
+    return (
+        f"  {name}:\n"
+        f"    permissions:\n{permissions}"
+        "    steps:\n"
+        "      - name: Download pytest-junit report\n"
+        "        uses: actions/download-artifact@v8\n"
+        "        with:\n"
+        "          name: pytest-junit\n" + run_id_line
+    )
+
+
+class TestJunitJobAssertions:
+    """Decision 201 slice B's three new derived assertions (10-12), each with a passing (via
+    TestPassPath's real-repo fixture) and a failing limb here."""
+
+    def test_passes_against_the_real_committed_repository(self) -> None:
+        failed: list[str] = []
+        validate_rec_autoclose_trailer_gate(failed)
+        assert failed == []
+
+    def test_fails_when_a_verdict_consuming_job_declares_id_token(self) -> None:
+        """The assertion is DERIVED, not a job-name literal (Decision 187 point 1): a SECOND,
+        differently-named verdict-consuming job declaring id-token is caught, whatever it's
+        named -- a name-literal assertion pinned to trailer-junit-verdict would miss it."""
+        sources = _real_sources()
+        workflow = _minimal_workflow(
+            _download_job("trailer-junit-verdict"),
+            _download_job("some-other-verdict-job", id_token=True),
+        )
+        sources[_CI_WORKFLOW_PATH] = workflow
+        failed = _run(sources)
+        assert any("some-other-verdict-job" in item and "declare id-token or a secret" in item for item in failed), failed
+
+    def test_run_id_assertion_fails_when_a_cross_run_download_is_introduced(self) -> None:
+        sources = _real_sources()
+        workflow = _minimal_workflow(_download_job("trailer-junit-verdict", run_id=True))
+        sources[_CI_WORKFLOW_PATH] = workflow
+        failed = _run(sources)
+        assert any("download by run-id" in item for item in failed), failed
+
+    def test_derived_set_empty_fails_never_passes_vacuously(self) -> None:
+        sources = _real_sources()
+        sources[_CI_WORKFLOW_PATH] = "jobs:\n  some-job:\n    runs-on: ubuntu-latest\n"
+        failed = _run(sources)
+        assert any("derived verdict-consuming-job set is empty" in item for item in failed), failed
+
+    def test_source_admission_clause_fails_when_removed(self) -> None:
+        sources = _real_sources()
+        sources[_GIT_OPS_CONTRACT] = sources[_GIT_OPS_CONTRACT].replace("source_admission", "source-admission")
+        failed = _run(sources)
+        assert any("does not declare the source_admission clause" in item for item in failed), failed
+
+    def test_examined_and_skipped_declared_on_derived_set_failure_path(self) -> None:
+        with registry.outcome_scope("validate_rec_autoclose_trailer_gate"):
+            failed: list[str] = []
+            sources = _real_sources()
+            sources[_CI_WORKFLOW_PATH] = "jobs:\n  some-job:\n    runs-on: ubuntu-latest\n"
+
+            def fake_read(root, rel):  # noqa: ANN001, ARG001
+                return sources.get(rel)
+
+            with patch(f"{_MODULE}._read", side_effect=fake_read):
+                validate_rec_autoclose_trailer_gate(failed)
+        declaration = registry.pop_declaration()
+        assert declaration is not None
+        assert declaration.kind == "examined"
+
+    def test_derive_artifact_name_skips_a_non_dict_job_value(self) -> None:
+        from scripts.checks.ci_guards.validate_rec_autoclose_trailer_gate import _derive_pytest_junit_artifact_name
+
+        jobs = {"bad-job": "not-a-dict", "main-validate": {"steps": [{"uses": "actions/upload-artifact@v7"}]}}
+        assert _derive_pytest_junit_artifact_name(jobs) is None
+
+    def test_download_step_for_artifact_skips_a_non_dict_with_block(self) -> None:
+        from scripts.checks.ci_guards.validate_rec_autoclose_trailer_gate import _download_step_for_artifact
+
+        job = {"steps": [{"uses": "actions/download-artifact@v8", "with": "not-a-dict"}]}
+        assert _download_step_for_artifact(job, "pytest-junit") is None
+
+    def test_verdict_consuming_jobs_returns_none_when_jobs_key_is_not_a_dict(self) -> None:
+        from scripts.checks.ci_guards.validate_rec_autoclose_trailer_gate import _verdict_consuming_jobs
+
+        assert _verdict_consuming_jobs("jobs: not-a-dict\n") is None
