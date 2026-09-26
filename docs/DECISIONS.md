@@ -4231,6 +4231,18 @@ before first write, same as every other table; only the partition COLUMN differs
 explicitly here per the Reversal-conditions clause rather than expressed as a loosened uniform
 rule.]
 
+[Amendment 2026-09-25: rec-4068 (operator direction confirming PLAN-ducklake-calendar-day-partition)
+corrects this Decision's own day(last_updated_timestamp) spelling for the live DuckLake ops
+tables. On duckdb 1.5.4 + ducklake, day() alone is DAY-OF-MONTH, not the Iceberg-v2
+days-since-epoch semantics CD.9's original prose carried over (see Decision 81 cl.7's amendment
+below): a 2026-09-25 probe put 2026-09-24 and 2026-10-24 rows in the same day=24 partition. The
+DuckLake realization of "partition by day" is the calendar-prefix triple
+year(created_timestamp), month(created_timestamp), day(created_timestamp), enforced at generation
+and resolution by src/common/ducklake_partition_spec.py. The "no unpartitioned-table path"
+absolute and every-table-is-partitioned rule are UNCHANGED; only the DuckLake spelling of "by
+day" is corrected. Live remediation (the physical ALTER + legacy day-of-month file rewrite) is
+rec-4070.]
+
 ---
 
 ## Decision 136: Ratify CD.39 -- exit-criteria ledger (per-criterion status) is the realized in_progress-resolution mechanism; follow-on planning is the in_progress default (Decided)
@@ -7397,6 +7409,17 @@ CD.24 (per-Lambda manifests), OQ.7 / OQ.10 / OQ.11 (resolved), OQ.12 (left to T2
 > `src/common/ducklake_maintenance_ops.py`). Clause 6's other content -- the two scheduled cadences,
 > `GC_TABLE_SCOPE`, the retention floor and cleanup grace period as concepts -- is unchanged, and
 > `MaintenanceBreakerTrip` is retained as the metric both alarms fire on.
+
+> **Amended by rec-4068 (2026-09-25):** clause 7's "History partitions by day(created_timestamp)"
+> and the Capability-basis paragraph's "day() ... transforms and pruning" were verified only on
+> single-month data. On duckdb 1.5.4 + ducklake, day() alone is DAY-OF-MONTH, not the Iceberg-v2
+> days-since-epoch semantics the spelling was carried over from (Decision 137's own CD.9 prose
+> shares this origin) -- a 2026-09-25 probe put 2026-09-24 and 2026-10-24 rows in the same day=24
+> partition. The DuckLake realization is the calendar-prefix triple
+> year(created_timestamp), month(created_timestamp), day(created_timestamp), enforced at
+> generation and resolution by src/common/ducklake_partition_spec.py. Clause 7's other content
+> (closed read/write boundary, current by bucket(N, id), break-glass, catalog DR) is unchanged.
+> Live remediation (the physical ALTER + legacy day-of-month file rewrite) is rec-4070.
 
 ---
 

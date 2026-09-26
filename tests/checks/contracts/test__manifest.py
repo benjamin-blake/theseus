@@ -88,6 +88,17 @@ _CLOSURE_INPUTS: dict[str, tuple[str, ...]] = {
         "scripts/checks/_common.py",
         "scripts/checks/registry.py",
     ),
+    # rec-4068 (R2): the module joins this check's closure via ducklake_scd2_schema.py's
+    # module-scope import of ducklake_partition_spec.
+    "validate_maintenance_policy_matrix": (
+        "config/lambda/ducklake/field_semantics.static.yaml",
+        "src/common/ducklake_maintenance_scope.py",
+        "src/common/ducklake_scd2_schema.py",
+        "src/common/ducklake_partition_spec.py",
+        "scripts/checks/contracts/validate_maintenance_policy_matrix.py",
+        "scripts/checks/_common.py",
+        "scripts/checks/registry.py",
+    ),
 }
 
 

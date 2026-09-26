@@ -74,27 +74,50 @@ def test_count_files_swallows_error():
     assert h._count_files(Boom(), "t") == 0
 
 
-def test_count_files_for_predicate_success():
-    con = FakeCon(fetchone_map={"WHERE": (1,)})
-    assert h._count_files_for_predicate(con, rt.SMOKE_HISTORY_TABLE, "x = 1") == 1
+class _PartitionLayoutCon:
+    """Connection double returning distinct fetchall() results for the two _partition_layout queries."""
+
+    def __init__(self, files_rows, value_rows, raise_on_value_query=False):
+        self._files_rows = files_rows
+        self._value_rows = value_rows
+        self._raise_on_value_query = raise_on_value_query
+        self.executed: list[tuple[str, object]] = []
+        self._last = ""
+
+    def execute(self, sql, params=None):
+        self._last = sql
+        self.executed.append((sql, params))
+        if "ducklake_file_partition_value" in sql and self._raise_on_value_query:
+            raise RuntimeError("metadata schema read failed")
+        return self
+
+    def fetchall(self):
+        if "ducklake_file_partition_value" in self._last:
+            return self._value_rows
+        return self._files_rows
 
 
-def test_count_files_for_predicate_fallback():
-    class PartialBoom:
-        def __init__(self):
-            self.calls = 0
-            self._last = ""
+def test_partition_layout_success():
+    files = [(1, 10), (2, 11)]
+    values = [(1, 0, "2026"), (1, 1, "1"), (1, 2, "24"), (2, 0, "2026"), (2, 1, "2"), (2, 2, "24")]
+    con = _PartitionLayoutCon(files, values)
+    out = h._partition_layout(con, rt.CATALOG_ALIAS, rt.SMOKE_HISTORY_TABLE)
+    assert out["total"] == 2
+    assert out["partition_ids"] == [10, 11]
+    assert out["value_tuples"] == {1: ("2026", "1", "24"), 2: ("2026", "2", "24")}
 
-        def execute(self, sql, params=None):
-            self._last = sql
-            if "ducklake_list_files" in sql:
-                raise RuntimeError("no function")
-            return self
 
-        def fetchone(self):
-            return (2,)
+def test_partition_layout_empty_files_returns_no_tuples():
+    con = _PartitionLayoutCon([], [])
+    out = h._partition_layout(con, rt.CATALOG_ALIAS, rt.SMOKE_HISTORY_TABLE)
+    assert out == {"total": 0, "partition_ids": [], "value_tuples": {}}
 
-    assert h._count_files_for_predicate(PartialBoom(), "t", "x = 1") == 2
+
+def test_partition_layout_raises_loud_never_zero():
+    """A metadata-schema read failure raises (Decision 55) -- it never falls back to 0."""
+    con = _PartitionLayoutCon([(1, 10)], [], raise_on_value_query=True)
+    with pytest.raises(RuntimeError):
+        h._partition_layout(con, rt.CATALOG_ALIAS, rt.SMOKE_HISTORY_TABLE)
 
 
 def test_count_inlined_rows_success():

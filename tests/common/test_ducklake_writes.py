@@ -505,7 +505,7 @@ _APPEND_ONLY_RT_SEMANTICS: dict = {
             "status": "smoke",
             "merge_key": "event_id",
             "history_table": "ops_smoke_events_history",
-            "partition": {"history": "day(created_timestamp)"},
+            "partition": {"history": "year(created_timestamp), month(created_timestamp), day(created_timestamp)"},
             "columns": {
                 "ulid": {"role": "derived", "sql_type": "VARCHAR", "nullable": False},
                 "event_id": {"role": "input", "sql_type": "VARCHAR", "nullable": False},

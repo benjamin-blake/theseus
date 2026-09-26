@@ -133,7 +133,7 @@ _HANDLER_FACADE_REQUIRED = [
     "_frozen_creds",
     "_concurrency_probe",
     "_count_files",
-    "_count_files_for_predicate",
+    "_partition_layout",
     "_count_inlined_rows",
     "_AlwaysCollidingConnection",
     "_p95",
@@ -273,17 +273,26 @@ def test_concurrency_probe_patch_on_smoke_actions_intercepts_action_inlining_pro
     assert out["occ_conflicts_handled"] == "SENTINEL"
 
 
-def test_count_files_patch_on_smoke_actions_intercepts_action_partition_probe(monkeypatch) -> None:
-    """patch smoke_actions._count_files and _count_files_for_predicate fire through action_partition_probe."""
+def test_partition_layout_patch_on_smoke_actions_intercepts_action_partition_probe(monkeypatch) -> None:
+    """patch smoke_actions._partition_layout fires through action_partition_probe."""
     monkeypatch.setattr(rt, "create_scd2_tables", lambda c, force_recreate=False: None)
     monkeypatch.setattr(rt, "write_scd2", lambda c, rec, **kw: None)
-    monkeypatch.setattr(smoke_actions, "_count_files", lambda c, t: 42 if "history" in t else 99)
-    monkeypatch.setattr(smoke_actions, "_count_files_for_predicate", lambda c, t, p: 7)
+
+    def _fake_layout(con, catalog_alias, table):
+        if "history" in table:
+            return {
+                "total": 42,
+                "partition_ids": [1, 2, 3],
+                "value_tuples": {1: ("2026", "1", "24"), 2: ("2026", "2", "24"), 3: ("2027", "1", "24")},
+            }
+        return {"total": 99, "partition_ids": [1, 2], "value_tuples": {1: ("0",), 2: ("1",)}}
+
+    monkeypatch.setattr(smoke_actions, "_partition_layout", _fake_layout)
     out = smoke_actions.action_partition_probe({}, _RecordingCon())
     assert out["history_total"] == 42
     assert out["current_total"] == 99
-    assert out["history_files_scanned"] == 7
-    assert out["current_files_scanned"] == 7
+    assert out["history_calendar_days"] == 3
+    assert out["history_partition_tuples"] == 3
 
 
 def test_count_inlined_rows_patch_on_smoke_actions_intercepts_action_inlining_probe(monkeypatch) -> None:

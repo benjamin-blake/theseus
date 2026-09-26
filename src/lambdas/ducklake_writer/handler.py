@@ -28,10 +28,10 @@ from src.lambdas.ducklake_writer.smoke_actions import (
     _churn_one_writer,  # noqa: F401 -- re-exported for direct test access (h._churn_one_writer)
     _concurrency_probe,  # noqa: F401 -- re-exported for direct test access (h._concurrency_probe)
     _count_files,  # noqa: F401 -- re-exported for direct test access (h._count_files)
-    _count_files_for_predicate,  # noqa: F401 -- re-exported for direct test access (h._count_files_for_predicate)
     _count_inlined_rows,  # noqa: F401 -- re-exported for direct test access (h._count_inlined_rows)
     _frozen_creds,  # noqa: F401 -- re-exported for direct test access (h._frozen_creds)
     _p95,  # noqa: F401 -- re-exported for direct test access (h._p95)
+    _partition_layout,  # noqa: F401 -- re-exported for direct test access (h._partition_layout)
     action_attach_check,
     action_churn,
     action_churn_single,

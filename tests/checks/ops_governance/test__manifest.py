@@ -77,6 +77,7 @@ _CLOSURE_INPUTS: dict[str, tuple[str, ...]] = {
         "scripts/schema_to_field_semantics.py",
         "scripts/contracts.py",
         "scripts/contracts_schema.py",
+        "src/common/ducklake_partition_spec.py",
         "scripts/checks/_common.py",
         "scripts/checks/registry.py",
     ),

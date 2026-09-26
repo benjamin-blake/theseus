@@ -28,8 +28,8 @@ def create_scd2_tables(con: Any, *, table: str | None = None, force_recreate: bo
     """Create the history + current tables for *table* and partition them BEFORE first write.
 
     `table=None` is the smoke pair (T2.17); a name selects an ops_tables entry (T2.19). The column
-    list, the merge-key bucket, and the day(created_timestamp) history partition all come from the
-    resolved spec, so the DDL never drifts from the gate.
+    list, the merge-key bucket, and the calendar-day (year/month/day(created_timestamp)) history
+    partition all come from the resolved spec, so the DDL never drifts from the gate.
 
     Partition transforms are post-ALTER-only (CD.33 M-5): they MUST be applied before any row lands.
     `force_recreate=True` drops both tables first -- the backfill's resurrection-loop guard: a
@@ -55,8 +55,9 @@ def create_scd2_tables(con: Any, *, table: str | None = None, force_recreate: bo
     con.execute(f"CREATE TABLE IF NOT EXISTS {history} ({columns})")
     con.execute(f"CREATE TABLE IF NOT EXISTS {current} ({columns})")
 
-    # Partition transforms BEFORE first write: history by day(created_timestamp) for date-range
-    # pruning; current by bucket(N, merge_key) to bound the single-key lookup/MERGE scan footprint.
+    # Partition transforms BEFORE first write: history by the calendar-day triple
+    # (year/month/day(created_timestamp)) for date-range pruning; current by bucket(N, merge_key)
+    # to bound the single-key lookup/MERGE scan footprint.
     con.execute(f"ALTER TABLE {history} SET PARTITIONED BY ({spec.partition_history})")
     con.execute(f"ALTER TABLE {current} SET PARTITIONED BY ({spec.partition_current})")
 
