@@ -24,7 +24,10 @@ from src.common.ducklake_scd2_schema import load_field_semantics
 # -- scripts/checks/contracts/validate_maintenance_policy_matrix.py imports this constant (never
 # derives the verb universe from the matrix itself) so the exhaustiveness gate cannot become a
 # blind oracle that is trivially exhaustive against its own matrix.
-VERB_UNIVERSE: tuple[str, ...] = ("merge_ops",)
+# reconcile_partitions / rewrite_partition_layout join as PER-TABLE verbs (Decision 204, amends
+# Decision 192 cl.2's literal ("merge_ops",) pin while keeping its rule: catalog-wide verbs such
+# as gc_ops stay out -- see the matrix's own "CATALOG-WIDE VERBS TAKE NO CELL" header).
+VERB_UNIVERSE: tuple[str, ...] = ("merge_ops", "reconcile_partitions", "rewrite_partition_layout")
 
 
 class DuckLakeMaintenanceScopeError(RuntimeError):

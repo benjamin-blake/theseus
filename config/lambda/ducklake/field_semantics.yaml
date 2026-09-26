@@ -116,11 +116,28 @@ maintenance_policy:
       apply: true
       reason: Standard SCD2 history/current pair; the target of the every-6h non-destructive production compaction cadence
         (Decision 88 cl.1(iii)).
+    reconcile_partitions:
+      apply: true
+      reason: 'Decision 204: the history/current pair''s live partition spec is compared to its declared calendar-day spec
+        and ALTERed on mismatch (no-op-free).'
+    rewrite_partition_layout:
+      apply: true
+      reason: 'Decision 204: a history table with legacy-scheme (day-of-month) files is re-laid onto the declared calendar-day
+        scheme under a row-preserving, digest-proven transaction; the verb itself refuses a non-history table (current projections
+        rebuild from history, Decision 81 cl.8).'
   append_only:
     merge_ops:
       apply: true
       reason: History-only append table (no current projection); its live file count still grows with write volume and benefits
         from the same non-destructive small-file compaction.
+    reconcile_partitions:
+      apply: true
+      reason: 'Decision 204: same live-vs-declared partition comparison and ALTER as scd2 -- an append-only table has no current
+        projection to compare, only its one history table.'
+    rewrite_partition_layout:
+      apply: true
+      reason: 'Decision 204: the append-only table''s history-class rows are re-laid onto the declared calendar-day scheme
+        by the same row-preserving, digest-proven transaction as scd2 history.'
   control:
     merge_ops:
       apply: true
@@ -129,6 +146,15 @@ maintenance_policy:
         this plan retires could not match it (measured 2026-09-12: 26.5 percent of the catalog''s live file set). Included
         by declared policy cell, not a naming accident. OCC contention with concurrent allocation is verified empirically
         by this plan''s VP12 (a real merge window vs. a probe file_rec allocation), not assumed away by exclusion.'
+    reconcile_partitions:
+      apply: true
+      reason: 'Decision 204: a control table''s declared spec is its own identity partition -- comparing it against the live
+        spec still detects drift, even though the identity spec never changes in practice.'
+    rewrite_partition_layout:
+      apply: false
+      reason: 'Decision 204: ops_entity_counters is the writer-internal entity-id allocation counter (Decision 84 I-2); its
+        identity partition spec never drifts, and a delete-all rewrite transaction would contend with the same-table allocation
+        serialization the counter exists to provide.'
 ops_tables:
   ops_recommendations:
     status: live

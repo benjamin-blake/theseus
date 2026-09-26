@@ -22,6 +22,7 @@ from typing import Any
 _TEMPORAL_ORDER = ("year", "month", "day", "hour")
 _TEMPORAL_RE = re.compile(r"^(year|month|day|hour)\((\w+)\)$")
 _BUCKET_RE = re.compile(r"^bucket\(\d+,\s*\w+\)$")
+_BUCKET_CAPTURE_RE = re.compile(r"^bucket\((\d+),\s*(\w+)\)$")
 _IDENTITY_RE = re.compile(r"^\w+$")
 
 
@@ -87,6 +88,29 @@ def validate_partition_spec(spec: str) -> None:
                 "bare day() or month() alone collapses rows across month/year boundaries "
                 "(Decision 137)"
             )
+
+
+def normalize_partition_spec(spec: str) -> tuple[tuple[str, str], ...]:
+    """Map a declared partition spec to DuckLake's own ducklake_partition_column shape.
+
+    Per top-level entry: year/month/day/hour(col) -> (unit, col); bucket(N, col) ->
+    ('bucket(N)', col); a bare identity column -> ('identity', col) -- the three live transform
+    spellings measured 2026-09-25 ('day', 'bucket(8)', 'identity'). Raises PartitionSpecError via
+    validate_partition_spec on a malformed spec before normalizing.
+    """
+    validate_partition_spec(spec)
+    out: list[tuple[str, str]] = []
+    for entry in _split_top_level_entries(spec):
+        m = _TEMPORAL_RE.match(entry)
+        if m:
+            out.append((m.group(1), m.group(2)))
+            continue
+        m = _BUCKET_CAPTURE_RE.match(entry)
+        if m:
+            out.append((f"bucket({m.group(1)})", m.group(2)))
+            continue
+        out.append(("identity", entry))
+    return tuple(out)
 
 
 def parse_partition_by(value: str) -> dict[str, str]:

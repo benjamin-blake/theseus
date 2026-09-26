@@ -12,6 +12,8 @@ includes:
   - src/common/ducklake_metrics.py
   - src/common/ducklake_scd2_schema.py
   - src/common/ducklake_partition_spec.py
+  - src/common/ducklake_partition_layout.py  # Decision 204: read half of reconcile_partitions/rewrite_partition_layout
+  - src/common/ducklake_partition_rewrite.py  # Decision 204: mutate half -- maintenance bundle ONLY, never reader/writer/smoke
   - src/common/ducklake_control_tables.py
   - src/common/ducklake_maintenance.py
   - src/common/ducklake_maintenance_ops.py  # T2.18 fail-closed guard set; run_gc imports it
@@ -24,6 +26,8 @@ includes:
   - src/common/catalog_dr.py  # T2.19: restore_drill uses build_pg_dump_cmd / run_pg_restore
   - src/common/__init__.py
   - src/lambdas/ducklake_maintenance/__init__.py
+  - src/lambdas/ducklake_maintenance/_shared.py  # Decision 204: EXTENSION_DIRECTORY/_require_identifier, shared with partition_actions
+  - src/lambdas/ducklake_maintenance/partition_actions.py  # Decision 204: reconcile_partitions / rewrite_partition_layout
   - src/lambdas/__init__.py
   - scripts/__init__.py
   - scripts/aws_profile.py
@@ -38,8 +42,10 @@ notes: >-
   T2.18 DuckLake maintenance singleton Lambda (CD.33 / Decision 81), now the ADMIN-GATED half of
   the T2.18 c9 split (bundled Decision amending Decision 81 clause 1, runtime artifacts 3 -> 4).
   Retains the production-destructive and operational verbs: catalog_reinit, restore_drill,
-  reconcile_columns, catalog_stats, clone_catalog (invoked via `aws lambda invoke`, not agent
-  surfaces), plus the scheduled merge_ops cadence (every 6h, non-destructive, production ops_*
+  reconcile_columns, catalog_stats, clone_catalog, reconcile_partitions, rewrite_partition_layout
+  (invoked via `aws lambda invoke`, not agent surfaces -- the sole carve-out being that an
+  ADMIN-container agent may invoke the two partition verbs under explicit human direction,
+  Decision 204), plus the scheduled merge_ops cadence (every 6h, non-destructive, production ops_*
   catalog). The non-destructive smoke cadences (action=merge / action=gc / action=hot_merge /
   action=breaker_probe) moved to the CI-invokable src/lambdas/ducklake_maintenance_smoke sibling,
   which shares src/common/ducklake_maintenance.py. reserved_concurrent_executions=1 (singleton per

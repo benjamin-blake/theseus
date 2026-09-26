@@ -92,6 +92,8 @@ def test_handler_lists_known_actions():
     assert "catalog_stats" in body["actions"]
     assert "reconcile_columns" in body["actions"]
     assert "clone_catalog" in body["actions"]
+    assert "reconcile_partitions" in body["actions"]
+    assert "rewrite_partition_layout" in body["actions"]
     # The 4 smoke actions moved to ducklake_maintenance_smoke (T2.18 c9 split) -- must NOT be
     # reachable on the admin function (blast-radius invariant).
     assert "merge" not in body["actions"]

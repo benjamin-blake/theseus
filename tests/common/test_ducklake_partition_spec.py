@@ -17,6 +17,7 @@ import pytest
 
 from src.common.ducklake_partition_spec import (
     PartitionSpecError,
+    normalize_partition_spec,
     parse_partition_by,
     resolve_partition_block,
     validate_partition_spec,
@@ -276,3 +277,32 @@ def test_generate_rejects_day_of_month_at_every_emission_site(site: str, monkeyp
 
     with pytest.raises(PartitionSpecError):
         mod.generate()
+
+
+# ---------------------------------------------------------------------------
+# normalize_partition_spec -- DuckLake's own ducklake_partition_column representation
+# (Decision 204, PLAN-ducklake-partition-layout-remediation)
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_partition_spec_matches_ducklake_representation() -> None:
+    assert normalize_partition_spec("year(created_timestamp), month(created_timestamp), day(created_timestamp)") == (
+        ("year", "created_timestamp"),
+        ("month", "created_timestamp"),
+        ("day", "created_timestamp"),
+    )
+    assert normalize_partition_spec("bucket(8, rec_id)") == (("bucket(8)", "rec_id"),)
+    assert normalize_partition_spec("counter_name") == (("identity", "counter_name"),)
+    assert normalize_partition_spec(
+        "year(created_timestamp), month(created_timestamp), day(created_timestamp), bucket(4, id)"
+    ) == (
+        ("year", "created_timestamp"),
+        ("month", "created_timestamp"),
+        ("day", "created_timestamp"),
+        ("bucket(4)", "id"),
+    )
+
+
+def test_normalize_partition_spec_rejects_invalid_spec() -> None:
+    with pytest.raises(PartitionSpecError):
+        normalize_partition_spec("day(created_timestamp)")

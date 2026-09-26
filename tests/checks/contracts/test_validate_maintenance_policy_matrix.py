@@ -19,13 +19,18 @@ def _write_sidecar(tmp_path: Path, matrix: dict) -> Path:
     return path
 
 
+_ALL_VERBS_APPLY_TRUE = {
+    "merge_ops": {"apply": True, "reason": "standard"},
+    "reconcile_partitions": {"apply": True, "reason": "standard"},
+    "rewrite_partition_layout": {"apply": True, "reason": "standard"},
+}
 _EXHAUSTIVE_MATRIX = {
-    "scd2": {"merge_ops": {"apply": True, "reason": "standard"}},
-    "append_only": {"merge_ops": {"apply": True, "reason": "standard"}},
-    "control": {"merge_ops": {"apply": True, "reason": "standard"}},
+    "scd2": dict(_ALL_VERBS_APPLY_TRUE),
+    "append_only": dict(_ALL_VERBS_APPLY_TRUE),
+    "control": dict(_ALL_VERBS_APPLY_TRUE),
 }
 _UNIVERSE = {"scd2", "append_only", "control"}
-_VERBS = ("merge_ops",)
+_VERBS = ("merge_ops", "reconcile_partitions", "rewrite_partition_layout")
 
 
 def test_exhaustive_matrix_passes(tmp_path: Path) -> None:
@@ -63,7 +68,10 @@ def test_apply_false_missing_reason_fails(tmp_path: Path) -> None:
 
 def test_apply_false_with_reason_passes(tmp_path: Path) -> None:
     matrix = dict(_EXHAUSTIVE_MATRIX)
-    matrix["control"] = {"merge_ops": {"apply": False, "reason": "deliberately excluded"}}
+    matrix["control"] = {
+        **dict(_ALL_VERBS_APPLY_TRUE),
+        "merge_ops": {"apply": False, "reason": "deliberately excluded"},
+    }
     path = _write_sidecar(tmp_path, matrix)
     failed: list[str] = []
     check.validate_maintenance_policy_matrix(failed, sidecar_path=path, class_universe=_UNIVERSE, verb_universe=_VERBS)

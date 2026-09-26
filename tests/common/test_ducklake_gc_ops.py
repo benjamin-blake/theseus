@@ -472,7 +472,7 @@ class TestMetricEmission:
 
 class TestMatrixCarriesNoCatalogWideVerb:
     def test_verb_universe_holds_only_per_table_scoped_verbs(self) -> None:
-        assert scope.VERB_UNIVERSE == ("merge_ops",)
+        assert scope.VERB_UNIVERSE == ("merge_ops", "reconcile_partitions", "rewrite_partition_layout")
         assert "gc_ops" not in scope.VERB_UNIVERSE
 
     def test_matrix_carries_no_gc_ops_cell(self) -> None:
