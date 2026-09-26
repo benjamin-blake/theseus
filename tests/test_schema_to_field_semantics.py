@@ -450,18 +450,10 @@ def test_maintenance_policy_passthrough() -> None:
         assert "merge_ops" in doc["maintenance_policy"][cls]
 
 
-def test_maintenance_policy_absent_from_sidecar_raises(tmp_path: Path) -> None:
-    """REQUIRED, not conditional: a sidecar missing maintenance_policy must raise (KeyError), never
-    silently emit a projection without it."""
-    sidecar_path = _ROOT / "config" / "lambda" / "ducklake" / "field_semantics.static.yaml"
-    sidecar = yaml.safe_load(sidecar_path.read_text(encoding="utf-8"))
-    del sidecar["maintenance_policy"]
-    tmp_sidecar = tmp_path / "field_semantics.static.yaml"
-    tmp_sidecar.write_text(yaml.dump(sidecar), encoding="utf-8")
-
-    with patch.object(_mod, "_SIDECAR_PATH", tmp_sidecar):
-        with pytest.raises(KeyError, match="maintenance_policy"):
-            generate()
+# test_maintenance_policy_absent_from_sidecar_raises moved to
+# tests/test_field_semantics_event_projection.py (Decision 128 decompose-by-default, alongside
+# TestGenerateMissingMergeKey -- this file was over its 500-SLOC budget; neither test carries a
+# VP-step node_id reference).
 
 
 # ---------------------------------------------------------------------------
@@ -610,20 +602,10 @@ class TestSlices:
         assert "ops_tables" in data
 
 
-# ---------------------------------------------------------------------------
-# generate() error path: missing merge_key
-# ---------------------------------------------------------------------------
-class TestGenerateMissingMergeKey:
-    def test_missing_merge_key_raises(self) -> None:
-        from unittest.mock import MagicMock, patch
-
-        mock_doc = MagicMock()
-        mock_doc.governance = MagicMock()
-        mock_doc.governance.merge_key = None
-
-        with patch("scripts.contracts.load_contract", return_value=mock_doc):
-            with pytest.raises(ValueError, match="governance.merge_key is missing"):
-                generate()
+# generate()'s missing-merge_key error path moved to tests/test_field_semantics_event_projection.py
+# (TestGenerateMissingMergeKey, Decision 128 decompose-by-default -- this file was over its 500-SLOC
+# budget; that test carries no VP-step node_id reference, unlike test_event_class_dispatches_to_event_projection
+# below, whose bare module-level form the plan's graduated VP step 8 cites and which must stay put).
 
 
 # ---------------------------------------------------------------------------

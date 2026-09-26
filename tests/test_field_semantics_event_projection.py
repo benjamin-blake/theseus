@@ -6,13 +6,18 @@ real telemetry contracts projecting (unregistered).
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 
 import scripts.field_semantics_event_projection as proj_mod
+import scripts.schema_to_field_semantics as schema_mod
 from scripts.contracts import load_contract, resolve_refs
-from scripts.schema_to_field_semantics import _map_iceberg_type
+from scripts.schema_to_field_semantics import _map_iceberg_type, generate
 from src.telemetry.identity import KeyPlan
+
+_ROOT = Path(__file__).parent.parent
 
 _FIXTURES_DIR = Path(__file__).parent / "fixtures" / "event_contracts"
 _CONTRACTS_DIR = Path(__file__).parent.parent / "docs" / "contracts"
@@ -213,6 +218,38 @@ class TestGenerateAcceptsEventContractWithoutMergeKey:
         )
         assert entry["write_mode"] == "append_only"
         assert "merge_key" not in entry
+
+
+class TestGenerateMissingMergeKey:
+    """Moved from tests/test_schema_to_field_semantics.py (Decision 128 decompose-by-default: that
+    file was over its 500-SLOC budget). Not event-specific -- covers generate()'s existing
+    non-event merge_key-required error path -- but carries no VP-step node_id reference, unlike
+    that file's test_event_class_dispatches_to_event_projection, so it was the one free to move.
+    """
+
+    def test_missing_merge_key_raises(self) -> None:
+        mock_doc = MagicMock()
+        mock_doc.governance = MagicMock()
+        mock_doc.governance.merge_key = None
+
+        with patch("scripts.contracts.load_contract", return_value=mock_doc):
+            with pytest.raises(ValueError, match="governance.merge_key is missing"):
+                generate()
+
+
+def test_maintenance_policy_absent_from_sidecar_raises(tmp_path: Path) -> None:
+    """Moved from tests/test_schema_to_field_semantics.py (Decision 128 decompose-by-default, same
+    reason as TestGenerateMissingMergeKey above). REQUIRED, not conditional: a sidecar missing
+    maintenance_policy must raise (KeyError), never silently emit a projection without it."""
+    sidecar_path = _ROOT / "config" / "lambda" / "ducklake" / "field_semantics.static.yaml"
+    sidecar = yaml.safe_load(sidecar_path.read_text(encoding="utf-8"))
+    del sidecar["maintenance_policy"]
+    tmp_sidecar = tmp_path / "field_semantics.static.yaml"
+    tmp_sidecar.write_text(yaml.dump(sidecar), encoding="utf-8")
+
+    with patch.object(schema_mod, "_SIDECAR_PATH", tmp_sidecar):
+        with pytest.raises(KeyError, match="maintenance_policy"):
+            generate()
 
 
 class TestRealTelemetryContractsProject:
