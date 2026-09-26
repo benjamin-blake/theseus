@@ -65,9 +65,12 @@ scope:
       locally 2026-09-26 on duckdb 1.5.4 / DuckLake v1.0); re-prove count + digest at AT (VERSION =>
       commit) against AT (VERSION => pre) and
       zero legacy-scheme files; a post-commit proof failure RAISES with both snapshot ids and never
-      auto-restores. Returns {physical, pre_snapshot_id, commit_snapshot_id, rows, content_digest,
-      files_before, files_after, attempts}. Imports ducklake_partition_layout + ducklake_writes +
-      scd2_schema only. < 500 SLOC
+      auto-restores. Returns BOTH proof sides so the evidence oracle's equality is never a
+      self-comparison: {physical, pre_snapshot_id, commit_snapshot_id, rows_pre, rows_commit,
+      digest_pre, digest_commit, files_before, files_after, attempts}. Imports
+      ducklake_partition_layout + ducklake_writes + scd2_schema + ducklake_maintenance_scope (the
+      registry side for the history-only refusal -- the pinned TableLayout stays unwidened; the
+      scope module is already a maintenance include). < 500 SLOC
   - file: src/common/ducklake_partition_spec.py
     action: Modify
     purpose: >-
@@ -96,15 +99,18 @@ scope:
   - file: src/lambdas/ducklake_maintenance/_shared.py
     action: Create
     purpose: >-
-      EXTENSION_DIRECTORY, _require_identifier (+ its regex) and the explicit s3:// data_path guard
-      move here out of handler.py so partition_actions.py can use them without an import cycle;
-      handler.py re-binds the same names so existing tests and callers are unaffected
+      EXTENSION_DIRECTORY and _require_identifier (+ its regex) move here out of handler.py so
+      partition_actions.py can use them without an import cycle, plus a NEW s3:// data_path guard
+      helper used only by partition_actions (handler.py's per-action inline data_path guards are
+      unchanged); handler.py re-binds the moved names so existing tests and callers are unaffected
   - file: src/lambdas/ducklake_maintenance/partition_actions.py
     action: Create
     purpose: >-
       action_reconcile_partitions {data_path (s3://), meta_schema, dry_run (default true)}: no-arg
       invokes refused (Decision 84/81 guard); scope via scope.resolve_scope(verb=
-      'reconcile_partitions'); returns layouts + drifts, and on dry_run=false the altered tables.
+      'reconcile_partitions'); returns {layouts, drifts}; on dry_run=false it ALTERs, then RE-READS
+      and returns {altered, layouts, drifts} as of AFTER the ALTER (step 19 expects zero spec drift
+      and legacy counts equal to the prior live_files -- a pre-ALTER readout would STOP the run).
       action_rewrite_partition_layout {data_path, meta_schema, table (physical), confirm}: refuses
       unless confirm == table (catalog_reinit's guard shape) and the table's class cell for
       rewrite_partition_layout applies; returns rewrite_legacy_layout's result verbatim. Both raise
@@ -199,8 +205,8 @@ scope:
     purpose: >-
       a route whose topic equals the new contract's subject (topic-equals-subject):
       topic ducklake-partition-remediation, targets [docs/contracts/ducklake-partition-remediation.yaml];
-      amendment_log entry (Class D). Stay within the file's effective-line budget -- compact the
-      oldest amendment_log entries if needed, as #1239 did
+      amendment_log entry (Class D). The file is at 498/500 effective lines on main (2026-09-26), so
+      the route + entry REQUIRE compacting the oldest amendment_log entries, as #1239 did
   - file: docs/contracts/terraform-cc-web-operations.yaml
     action: Modify
     purpose: >-
@@ -282,8 +288,8 @@ scope:
     purpose: >-
       mirror test: no-arg refusal, dry_run default, confirm mismatch refused, control-class rewrite
       refused by its policy cell, a resolve_scope DuckLakeMaintenanceScopeError wrapped in
-      PartitionLayoutError, DuckLakeRuntimeError subclasses surface as structured 500s, responses
-      pass through
+      PartitionLayoutError, dry_run=false returning the post-ALTER re-read (not the pre-ALTER
+      readout), DuckLakeRuntimeError subclasses surface as structured 500s, responses pass through
   - file: tests/lambdas/ducklake_maintenance/handler/test_dispatch.py
     action: Modify
     purpose: dispatch exposes reconcile_partitions and rewrite_partition_layout
@@ -604,14 +610,17 @@ verification_plan:
       --payload '{"action":"rewrite_partition_layout","data_path":"<data_path>","meta_schema":"<meta_schema>","table":"<physical>","confirm":"<physical>"}'
       /tmp/rewrite_<physical>.json
     expected: >-
-      each response carries pre_snapshot_id < commit_snapshot_id, equal rows and content_digest
-      before and after, and files_after all on the calendar-day scheme; ops_priority_queue_history is
+      each response carries pre_snapshot_id < commit_snapshot_id, rows_pre == rows_commit and digest_pre == digest_commit,
+      and files_after all on the calendar-day scheme; ops_priority_queue_history is
       skipped (no legacy files -- the verb refuses)
     fix_if: >-
-      a raise at the retry ceiling -- a writer burst; retry that one table later. A post-commit proof
-      failure -- STOP: no further tables, file a Critical rec with both snapshot ids; restoration is
-      a separately planned operation using ducklake-partition-remediation.yaml's non-lossy formula
-      (history tables only), never improvised
+      a raise at the retry ceiling -- a writer burst; retry that one table later. A Lambda timeout or
+      unknown outcome -- STOP, run step 21's dry_run to learn the table's state, and recover the
+      commit snapshot from snapshots() by author 'rewrite_partition_layout' for the fixture (a blind
+      re-invoke is safe -- the verb refuses at zero legacy files -- but loses the proof body). A
+      post-commit proof failure -- STOP: no further tables, file a Critical rec with both snapshot
+      ids; restoration is a separately planned operation using ducklake-partition-remediation.yaml's
+      non-lossy formula (history tables only), never improvised
     hermetic: false
   - step: 21
     phase: post-deploy
@@ -660,8 +669,9 @@ verification_plan:
       write tests/fixtures/partition_rewrite_evidence.json from the /tmp responses of steps 17-21 and
       tests/lambdas/ducklake_maintenance/test_partition_rewrite_evidence.py (every ops history table
       in the generated projection has zero drift and zero legacy files after; each rewrite proves
-      equal rows + content_digest with pre < commit snapshot; before/after catalog_stats present),
-      append the measured figures to Decision 204 as a dated measurement annotation, then run
+      rows_pre == rows_commit and digest_pre == digest_commit with pre < commit snapshot; before/after catalog_stats present),
+      append the measured figures to Decision 204 as a dated measurement annotation and regenerate
+      docs/decisions-index.json (validate_decisions_index_freshness), then run
       bin/venv-python -m pytest tests/lambdas/ducklake_maintenance/test_partition_rewrite_evidence.py::test_live_rewrite_evidence_complete -q
       and, because handoff_policy binds every commit this plan makes, the same four SEPARATE facts
       as the code PR -- (1) scripts.session.github_readiness as reported; (2) a completed
@@ -798,7 +808,7 @@ constraints:
 context:
   - "Decision-scout verdict: FLAGS_FOUND. Decisions triaged: 154 of 154. Roadmap items intersected: 14; CONFLICT: 1; RELATED: 12."
   - "CITE: Decision 137, 88, 84, 143, 70, 177, 167, 201, 79, 125, 127, 128, 62, 115; RELATED 192, 193, 188, 190, 100, 99, 131, 120, 113, 181, 184, 141, 91"
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique r1=REVISE (7 + split applied); r2=REVISE (4 + 10 applied); r3=REVISE-light (R1-R3 + S1-S8 applied)"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique r1=REVISE (7 + split); r2=REVISE (4 + 10); r3=REVISE-light (3 + 8); r4=PROCEED (S1-S7 folded in)"
   - >-
     Scout dispositions: WARN 81 -> Decision 204 amends 81, full-row digest; NOTE 191 -> verbs join
     VERB_UNIVERSE + matrix; SPIRIT WARN 126 -> amends 126 + deploy-paths row; NOTE 151 -> ALTER is
@@ -823,7 +833,7 @@ context:
     triple; local real-engine: txn rewrite exact, time travel to pre-snapshot works, concurrent
     INSERT or compaction aborts cleanly; native merge/rewrite never repartition; no change-feed consumers.
   - "Closure: Decision 201's evaluate stage is offline (unshare -rmn, no credential) -- live probes can never hold; rec-4070 acceptance repointed to the evidence node"
-  - "GC timing: the rewrite adds ~175 files to rec-3870's T2.18:c2 GcDebtRatio window; step 23 notes it on rec-3870. Merge order: git-ops.yaml (~496/500 effective lines with PLAN-handoff-evidence-gate) and file-router.yaml (489/500) are near their ceilings -- rebase, then compact the oldest amendment_log entries (#1239 precedent)"
+  - "GC timing: the rewrite adds ~175 files to rec-3870's T2.18:c2 GcDebtRatio window; step 23 notes it on rec-3870. Merge order: git-ops.yaml (~496/500 effective lines with PLAN-handoff-evidence-gate) and file-router.yaml (498/500, compaction required) are at their ceilings -- rebase, then compact the oldest amendment_log entries (#1239 precedent)"
   - "fork: grain | chosen: keep calendar day | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: constraints"
   - "fork: rewrite governance | chosen: new numbered Decision | class: asked | precedent: none | precedent_kind: none | reversible: no | persisted: scope docs/DECISIONS.md"
   - "fork: closure | chosen: evidence-fixture acceptance after the live run | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: rec-4070 acceptance"
