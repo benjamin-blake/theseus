@@ -115,7 +115,8 @@ scope:
       invokes refused (Decision 84/81 guard); scope via scope.resolve_scope(verb=
       'reconcile_partitions'); returns {layouts, drifts}; on dry_run=false it ALTERs, then RE-READS
       and returns {altered, layouts, drifts} as of AFTER the ALTER (step 19 expects zero spec drift
-      and legacy counts equal to the prior live_files -- a pre-ALTER readout would STOP the run).
+      and legacy counts equal to live_files within that same post-ALTER readout, less post-ALTER
+      writer files -- a pre-ALTER readout would STOP the run).
       action_rewrite_partition_layout {data_path, meta_schema, table (physical), confirm}: refuses
       unless confirm == table (catalog_reinit's guard shape) and the table's class cell for
       rewrite_partition_layout applies; returns rewrite_legacy_layout's result verbatim. Both raise
@@ -136,7 +137,10 @@ scope:
     action: Modify
     purpose: >-
       includes += src/lambdas/ducklake_maintenance/_shared.py, partition_actions.py,
-      src/common/ducklake_partition_layout.py, src/common/ducklake_partition_rewrite.py
+      src/common/ducklake_partition_layout.py, src/common/ducklake_partition_rewrite.py; the notes'
+      verb list gains reconcile_partitions / rewrite_partition_layout and its '(invoked via `aws
+      lambda invoke`, not agent surfaces)' clause is restated for the Decision 204 carve-out (an
+      ADMIN-container agent may invoke the two partition verbs under explicit human direction)
   - file: src/lambdas/data-pipeline/manifest.yaml
     action: Modify
     purpose: >-
@@ -677,9 +681,16 @@ verification_plan:
     action: ADMIN agent commits the evidence and opens the evidence PR
     command: >-
       write tests/fixtures/partition_rewrite_evidence.json from the /tmp responses of steps 17-21 and
-      tests/lambdas/ducklake_maintenance/test_partition_rewrite_evidence.py (every ops history table
-      in the generated projection has zero drift and zero legacy files after; each rewrite proves
-      rows_pre == rows_commit and digest_pre == digest_commit with pre < commit snapshot; before/after catalog_stats present),
+      tests/lambdas/ducklake_maintenance/test_partition_rewrite_evidence.py, which reads ONLY the
+      committed fixture, never the live projection (a later plan registering a new history table,
+      e.g. rec-4024 slice 2, must not redden it): every table in the fixture's recorded post-rewrite
+      reconcile readout (step 21's catalog enumeration) has zero drift and zero legacy-scheme files,
+      and that readout includes the five named ops history tables; each rewrite entry carries EITHER
+      the full proof body (rows_pre == rows_commit, digest_pre == digest_commit, pre < commit
+      snapshot) OR an explicit human-adjudicated gap record (table, the commit snapshot recovered via
+      the '<uuid>:pre=<id>' token if re-proved, reason, confirming human -- a committed rewrite has
+      already passed its pre-commit proof, so a gap loses only the post-commit re-proof), and the
+      test FAILS on an entry with neither; before/after catalog_stats present),
       append the measured figures to Decision 204 as a dated measurement annotation and regenerate
       docs/decisions-index.json (validate_decisions_index_freshness), then run
       bin/venv-python -m pytest tests/lambdas/ducklake_maintenance/test_partition_rewrite_evidence.py::test_live_rewrite_evidence_complete -q
@@ -818,7 +829,7 @@ constraints:
 context:
   - "Decision-scout verdict: FLAGS_FOUND. Decisions triaged: 154 of 154. Roadmap items intersected: 14; CONFLICT: 1; RELATED: 12."
   - "CITE: Decision 137, 88, 84, 143, 70, 177, 167, 201, 79, 125, 127, 128, 62, 115; RELATED 192, 193, 188, 190, 100, 99, 131, 120, 113, 181, 184, 141, 91"
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique r1=REVISE (7 + split); r2=REVISE (4 + 10); r3=REVISE-light (3 + 8); r4=PROCEED (S1-S7 folded in); r5=PROCEED (N1, N2 folded in)"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique r1=REVISE (7 + split); r2=REVISE (4 + 10); r3=REVISE-light (3 + 8); r4=PROCEED (S1-S7 folded in); r5=PROCEED (N1, N2 folded in); r6=REVISE text-only (R1 evidence-test anchor + gap shape, O1, O2 applied; targeted confirmation)"
   - >-
     Scout dispositions: WARN 81 -> Decision 204 amends 81, full-row digest; NOTE 191 -> verbs join
     VERB_UNIVERSE + matrix; SPIRIT WARN 126 -> amends 126 + deploy-paths row; NOTE 151 -> ALTER is
