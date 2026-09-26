@@ -26,10 +26,15 @@ scope:
       (combined stdout+stderr), elapsed (float) and timed_out (bool): shell=True, text/utf-8/errors=replace, start_new_session=True, and on
       TimeoutExpired os.killpg(the child's pgid, SIGKILL) then reap -- so an orphaned pytest
       grandchild cannot keep consuming CI CPU inside the non-test half; and (2) the telemetry
-      helpers: a PASS-line duration suffix "in X.Xs (N% of <aggregate>s)", one terminal summary line
-      "vp-replay budget: X.Xs of <aggregate>s across N step(s); peak <plan>:<step> Y.Ys", and the
-      ADVISORY warn band (never appends to failed): WARN when one step > 0.5 x aggregate or
-      cumulative spend > 0.8 x aggregate (the 0.8 band mirrors Decision 182 reversal condition (a)).
+      helpers AND the deadline-kill message builders: a PASS-line duration suffix "in X.Xs (N% of
+      <aggregate>s)", one terminal summary line "vp-replay budget: X.Xs of <aggregate>s across N
+      step(s); peak <plan>:<step> Y.Ys", the green-leg and red-before-leg deadline-kill failure texts
+      (so validate_vp_replay.py only calls them), and the ADVISORY warn band (never appends to
+      failed): WARN when one step > PER_STEP_WARN_FRACTION (0.5) x aggregate or cumulative spend >
+      CUMULATIVE_WARN_FRACTION (0.8) x aggregate (the 0.8 band mirrors Decision 182 reversal
+      condition (a)). The two fraction constants and AUTHORING_MAX_FRACTION (0.25) are module
+      constants whose values docs/contracts/vp-red-before.yaml's replay_bound declares and the mirror
+      test derive-and-asserts.
       The aggregate is passed in by the caller, never read from this module, so the existing
       validate_vp_replay.MAX_AGGREGATE_SECONDS patch seam keeps binding. Stdlib only; well under 500
       SLOC. A private sibling rather than Decision 128 clause 1's facade package, deliberately: 18+
@@ -56,15 +61,23 @@ scope:
       dispatch when at least one step was replayed. The MAX_REPLAYED_STEPS comment (which cites
       "Decision 182 pt 2's 150s green maximum") and the module docstring's "Bounded cost" paragraph
       are restated for the deadline model. MUST end at <= 500 SLOC with no
-      config/sloc_budgets.yaml registration (Decision 128): if the edits overshoot, move a further
-      cohesive helper group into a private sibling -- never a raise.
+      config/sloc_budgets.yaml registration (Decision 128). The subprocess/time imports and the
+      subprocess.run block leave with the runner, and the message builders live in
+      _vp_replay_budget.py from the start. If the file STILL overshoots, the ONLY sanctioned overflow
+      move is the scripts.validate recursion-refusal helpers (_SHELL_SEGMENT_SPLIT_RE,
+      _PYTHON_INTERPRETER_BASENAMES, _SCRIPTS_VALIDATE_* constants, _segment_invokes_scripts_validate,
+      _command_invokes_scripts_validate) into _vp_replay_classify.py -- a command-classification
+      concern already in scope -- re-imported here so every existing import from this module keeps
+      resolving. Never a new file, never a raise.
   - file: scripts/checks/verification/_vp_replay_classify.py
     action: Modify
     purpose: >-
       Delete PER_STEP_TIMEOUT_SECONDS. The four completing self-test fixtures take a new local
       _SELF_TEST_COMPLETING_BOUND_SECONDS = 5.0; the 0.05s sleep fixture and _classify_outcome are
       unchanged. Docstring's import-cycle note about PER_STEP_TIMEOUT_SECONDS is removed (it no
-      longer applies).
+      longer applies). Contingent destination ONLY if validate_vp_replay.py would otherwise exceed
+      500 SLOC: receives the recursion-refusal helpers named in that row, relocated verbatim (the
+      docstring's relocation note extended to name them); stays well under 500 SLOC either way.
   - file: scripts/checks/deps/selection_budget.py
     action: Modify
     purpose: >-
@@ -77,9 +90,16 @@ scope:
     purpose: >-
       Decision 131 mirror for the new sibling: run_bounded returns completed output and elapsed for
       a fast command; on timeout returns timed_out with no returncode AND the background grandchild
-      (command shape "sleep 30 & echo $! > pid; wait") is dead within a 2s grace (os.kill(pid, 0)
-      raises ProcessLookupError); the telemetry helpers format the suffix/summary exactly, and the
-      warn band fires at > 0.5 x per step and > 0.8 x cumulative and not at or below either.
+      (command shape "sleep 30 & echo $! > pid; wait") is DEAD, polled for up to 5s where dead means
+      /proc/<pid>/stat reports state Z OR the pid is gone -- never ProcessLookupError alone, which
+      measures reaping (plan-critique measured 1.46-1.72s of zombie reap latency in this container);
+      the telemetry helpers and both deadline-kill message builders format exactly; the warn band
+      fires at > 0.5 x per step and > 0.8 x cumulative and not at or below either; and
+      TestContractPins::test_replay_bound_matches_the_contract loads docs/contracts/vp-red-before.yaml
+      and asserts replay_bound's per_step_warn_fraction, cumulative_warn_fraction and
+      authoring_max_fraction equal the module constants. Every defensive branch in run_bounded (e.g.
+      killpg raising ProcessLookupError on an already-exited group) has a test here -- the full-tier
+      100% per-file coverage floor measures this file against this mirror alone.
   - file: tests/checks/verification/test__vp_replay_classify.py
     action: Modify
     purpose: >-
@@ -91,14 +111,17 @@ scope:
     action: Modify
     purpose: >-
       TestSharedBudget gains three tests. test_step_deadline_is_the_remaining_aggregate_not_a_flat_cap:
-      a resolved plan with hermetic steps "sleep 0.6" then "sleep 5", MAX_AGGREGATE_SECONDS patched to
-      1.0; asserts a failure naming the aggregate deadline for step 2 and total dispatch wall clock
-      < 3s (red before: step 2 completes under the 30s cap and passes, ~5.6s).
+      a resolved plan with hermetic steps "sleep 1.2", "sleep 5", then "true", MAX_AGGREGATE_SECONDS
+      patched to 2.0; asserts EXACTLY ONE entry in failed, that it names the aggregate deadline for
+      step 2 (so the deadline kill and the next step's top-of-loop exhaustion check never both
+      report), and total dispatch wall clock < 4s (red before: step 2 completes under the 30s cap and
+      passes, ~6.2s, and step 3 runs).
       test_budget_exhaustion_reports_exactly_one_failure (rec-3833's acceptance node, name verbatim):
       a resolved plan plus a red-before-eligible plan in one diff with MAX_AGGREGATE_SECONDS patched
       to 0; asserts exactly one failed entry containing "budget exceeded" (red before: two, one per
-      leg). test_step_over_half_the_aggregate_warns_without_failing: one "sleep 0.6" step at
-      aggregate 1.0; asserts stdout carries the WARN and the duration suffix and failed is empty.
+      leg). test_step_over_half_the_aggregate_warns_without_failing: one "sleep 1.2" step at
+      aggregate 2.0; asserts stdout carries the WARN and the duration suffix, the summary line appears
+      exactly once (out.count("vp-replay budget:") == 1), and failed is empty.
       The existing test_aggregate_seconds_guard_still_binds stays. File stays under 500 SLOC.
   - file: tests/checks/verification/validate_vp_replay/test_implement_leg.py
     action: Modify
@@ -113,7 +136,10 @@ scope:
       (graduate step "sleep 5", aggregate 0.3): asserts actual=unmeasurable AND "aggregate deadline"
       (red before: the step completes under the 30s cap, exits 0, and classifies tautological). The
       two tests that patch validate_vp_replay.subprocess.run (lines 86, 127) move their seam to
-      _vp_replay_budget.run_bounded (or its subprocess binding) so they still intercept the step.
+      _vp_replay_budget.run_bounded so they still intercept the step; the line-86 test
+      (test_non_graduate_dispositions_not_executed) gains a POSITIVE control -- the graduate step's
+      command IS observed at the moved seam -- so a mis-sited seam cannot let its absence assertions
+      pass vacuously.
   - file: tests/checks/deps/test_selection_budget.py
     action: Modify
     purpose: >-
@@ -132,15 +158,21 @@ scope:
   - file: docs/contracts/vp-red-before.yaml
     action: Modify
     purpose: >-
-      Add a replay_bound key (field_add): a step's deadline is the remaining shared aggregate, a
-      deadline kill's message contract (TIMEOUT + "aggregate deadline"; unmeasurable on the
-      red-before leg via the existing subprocess_timeout arm), the process-group kill, the advisory
-      warn band thresholds, and one authoring line -- author any hermetic pre-deploy step to <= 25% of
-      the aggregate and record its printed replay duration in the plan. The line lives in
-      replay_bound and names no command kind: hermetic_authoring (and its "Steps needing
-      pytest/deploys stay hermetic: false" sentence, the rec-3334 / rec-2809 contradiction) is NOT
-      edited by this plan. contract_version 4 -> 5 with an amendment_log entry (Decision 168 clause
-      4; checked by validate_contract_drift). outcome_classes and unmeasurable_arms untouched.
+      Add a replay_bound MAPPING (field_add) with numeric per_step_warn_fraction: 0.5,
+      cumulative_warn_fraction: 0.8 and authoring_max_fraction: 0.25 (derive-asserted against
+      _vp_replay_budget.py by the mirror's TestContractPins), plus prose keys: deadline (a step's
+      deadline is the remaining shared aggregate), kill (process-group kill; failure text carries
+      TIMEOUT and "aggregate deadline"; unmeasurable on the red-before leg via the existing
+      subprocess_timeout arm), and authoring (author a hermetic pre-deploy step to <= 25% of the
+      aggregate and record its measured replay duration in the plan; a step that cannot be narrowed
+      below that target records its measured duration and why, and stays hermetic -- the target is
+      advisory, the deadline and the warn band are what bind). Names no command kind:
+      hermetic_authoring (and its "Steps needing pytest/deploys stay hermetic: false" sentence, the
+      rec-3334 / rec-2809 contradiction) is NOT edited by this plan. amendment_log entry required by
+      docs/contracts/contract-population.yaml change_detection.amendment_log (validate_contract_drift);
+      contract_version 4 -> 5 per this file's own convention (NOT Decision 168 clause 4, which this
+      log's 2026-09-18 entry already records as a mis-citation). outcome_classes and
+      unmeasurable_arms untouched.
   - file: docs/DECISIONS.md
     action: Modify
     purpose: >-
@@ -235,7 +267,7 @@ verification_plan:
     phase: pre-deploy
     action: Stale-reference sweep -- no Python under scripts/ still names the retired constant.
     command: '! grep -rn "PER_STEP_TIMEOUT_SECONDS" scripts/ --include=*.py'
-    expected: Exit 0 with no output. Red before (five references across three files).
+    expected: Exit 0 with no output. Red before (13 matching lines across three files -- _vp_replay_classify.py 6, validate_vp_replay.py 5, selection_budget.py 2).
     fix_if: A hit -- a docstring, comment or import still names the retired constant; restate it for the deadline model.
     hermetic: true
     graduation: waive
@@ -248,7 +280,7 @@ verification_plan:
     action: Whole-surface regression -- every touched test file passes and all touched Python is lint- and format-clean.
     command: >-
       bin/venv-python -m pytest tests/checks/verification/validate_vp_replay tests/checks/verification/test__vp_replay_classify.py tests/checks/verification/test__vp_replay_budget.py tests/checks/deps/test_selection_budget.py tests/validate/test_budget_split.py -q && bin/venv-python -m ruff check scripts/checks/verification/ scripts/checks/deps/selection_budget.py tests/checks/verification/ tests/checks/deps/test_selection_budget.py tests/validate/test_budget_split.py && bin/venv-python -m ruff format --check scripts/checks/verification/ scripts/checks/deps/selection_budget.py tests/checks/verification/ tests/checks/deps/test_selection_budget.py tests/validate/test_budget_split.py
-    expected: All tests pass, ruff reports no findings, and format --check reports every file already formatted. Measured ~33s for the pytest half at planning -- itself over the retired 30s cap, so its replay on this plan's implement PR is the dogfood proof.
+    expected: All tests pass, ruff reports no findings, and format --check reports every file already formatted. The pytest half measured 20.8s at planning (125 tests, before the new mirror and tests) -- under the 30s authoring target.
     fix_if: A pre-existing test fails -- a seam still patches the deleted constant or validate_vp_replay.subprocess.run.
     hermetic: true
     graduation: not-applicable
@@ -261,13 +293,16 @@ verification_plan:
       bin/venv-python -c "import sys, pathlib; from scripts.checks.verification import _vp_replay_budget as b; from scripts.checks.verification import validate_vp_replay as vp; r = b.run_bounded('sleep 31 && echo LONG_STEP_DONE', cwd=pathlib.Path.cwd(), timeout=vp.MAX_AGGREGATE_SECONDS); ok = (not r.timed_out) and r.returncode == 0 and 'LONG_STEP_DONE' in r.output; print('LONG_STEP_PASSES' if ok else 'LONG_STEP_KILLED'); sys.exit(0 if ok else 1)"
     expected: Exit 0 printing LONG_STEP_PASSES after ~31s.
     fix_if: LONG_STEP_KILLED -- a flat cap below the aggregate survives somewhere on the path.
-    hermetic: false
+    hermetic: true
     graduation: waive
     graduation_waiver_reason: >-
       Costs 31s of wall clock by design (it must exceed the retired cap), so as a standing registry
-      row or a replayed step it would spend a quarter of the aggregate on every run; step 1 graduates
-      the same property at sub-second cost. The attribute names r.timed_out / r.returncode / r.output
-      are the run_bounded result record's fields and must match the implementation.
+      row it would spend a quarter of the aggregate on every future run; step 1 graduates the same
+      property at sub-second cost. It stays hermetic on purpose: validate_vp_replay's implement leg
+      replays it on THIS plan's implementation PR, which is the end-to-end dogfood proof that a
+      step longer than the retired cap replays green (it would TIMEOUT under the old code) -- the
+      one deliberate exception to the 25% authoring target, recorded per replay_bound.authoring.
+      The attribute names r.timed_out / r.returncode / r.output are BoundedResult's fields.
   - step: 10
     phase: pre-deploy
     action: validate_vp_replay.py stays within the unregistered-file SLOC limit.
@@ -311,7 +346,7 @@ test_obligations:
     behavior: A replayed step's deadline is the remaining shared aggregate; a deadline kill hard-fails naming the aggregate deadline.
     verification_step: 1
     test_selector: tests/checks/verification/validate_vp_replay/test_lint_and_budget.py::TestSharedBudget::test_step_deadline_is_the_remaining_aggregate_not_a_flat_cap
-    red_green_expectation: Red before -- step 2 completes under the 30s flat cap and passes (no deadline failure, ~5.6s). Green after -- step 2 is killed at the 1.0s aggregate deadline in under 3s.
+    red_green_expectation: Red before -- step 2 completes under the 30s flat cap and passes and step 3 runs (no deadline failure, ~6.2s). Green after -- step 2 is killed at the 2.0s aggregate deadline, exactly one failure is reported, and the dispatch ends in under 4s.
   - source: scripts/checks/verification/validate_vp_replay.py
     behavior: One budget-exhaustion event produces exactly one failure line per dispatch (rec-3833).
     verification_step: 2
@@ -322,6 +357,11 @@ test_obligations:
     verification_step: 4
     test_selector: tests/checks/verification/test__vp_replay_budget.py
     red_green_expectation: Red before -- the module and its mirror do not exist (collection error). Green after -- all mirror tests pass, including the dead-grandchild case.
+  - source: docs/contracts/vp-red-before.yaml
+    behavior: replay_bound's declared warn-band and authoring fractions are the values the code enforces.
+    verification_step: 4
+    test_selector: tests/checks/verification/test__vp_replay_budget.py::TestContractPins::test_replay_bound_matches_the_contract
+    red_green_expectation: Red before -- neither the replay_bound key nor the mirror exists (collection error). Green after -- the three fractions match the module constants.
   - source: scripts/checks/verification/_vp_replay_classify.py
     behavior: The classifier self-test's completing fixtures run under their own local bound; the module defines no per-step replay constant.
     verification_step: 8
@@ -338,18 +378,19 @@ constraints:
   - The four frozen outcome classes and the unmeasurable_arms list in docs/contracts/vp-red-before.yaml are unchanged (Decision 189); a deadline kill maps to the existing subprocess_timeout arm.
   - The warn band never appends to failed -- it is advisory only; every hard-fail path that exists today still hard-fails.
   - _ReplayBudget stays defined in validate_vp_replay.py (registry row vp-red-before-step-cap-derived-from-cost guard_symbol); validate_vp_replay.py stays a module, not a package (18+ registry rows guard its path; Decision 104 private-sibling precedent).
-  - validate_vp_replay.py ends <= 500 SLOC with no config/sloc_budgets.yaml entry (Decision 128) -- decompose, never raise.
+  - validate_vp_replay.py ends <= 500 SLOC with no config/sloc_budgets.yaml entry (Decision 128) -- decompose into the two in-scope siblings only (see its scope row), never a new file, never a raise.
   - Do not edit historical plans that quote "PER_STEP_TIMEOUT_SECONDS=30" in prose -- they are records; the sweep in VP step 7 covers scripts/ only.
   - Never weaken an assertion to obtain green (Decision 181); the domination inequality in TestSubtractionSetPins is kept verbatim, and the two timeout tests are retargeted at a patched aggregate deadline, never deleted.
   - Do not edit docs/contracts/vp-red-before.yaml's hermetic_authoring field (rec-3334 / rec-2809 own that contradiction).
   - No rescue agents or workaround loops (Decision 55).
 context:
   - "Decision-scout verdict: FLAGS_FOUND (one NOTE, Decision 181; no BLOCK, no SPIRIT). CITE: 182, 177, 167, 189, 168, 128, 201, 131. Decisions triaged: 154 of 154. Roadmap items intersected: 5; CONFLICT: 0; RELATED: 5"
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PENDING"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=REVISE (round 1: F1-F5 fixed, F6-F9 advisories applied, F10 answered in context)"
   - "Decision 181 NOTE (standing no-weakening prohibition) -- why this is not a weakened budget: the change routes through a reviewed plan, Decision 182 reversal condition (b) pre-authorizes re-deriving the replay term, MAX_AGGREGATE_SECONDS (120) and MAX_REPLAYED_STEPS (30) are unchanged, and the check's worst-case green maximum TIGHTENS 150s -> 120s. One step's individual allowance does rise (30s -> up to the remaining 120s); that is the stated hang-isolation trade-off below, not a hidden loosening. Unenforced residual for in-file numeric tolerances: rec-3357."
   - "Problem evidence (2026-09-26): PLAN-trailer-acceptance-junit-verdict step 13 (152 tests over three test directories, max single test 0.53s) measured 32.8s locally, 19.5s CPU -- git-subprocess-bound, so CI is not faster. Implementers may not edit verification_plan[].command/expected (implement-scope-boundary.yaml implementing_plan_bookkeeping) and hermetic is not a permitted field edit, so such a step strands its agent until a human-directed amendment. PER_STEP_TIMEOUT_SECONDS entered in #453 with no measured derivation; Decision 182 point 2 later quoted it."
   - "CI evidence: the four latest red pr-validate runs (36220656502, 36131196236, 36076407848, 35773676058) show no replay TIMEOUT -- three failed the test half, one the registry differential. The cliff is latent-per-plan, not yet a CI-wide red."
   - "Design source: Fable advice consult (2026-09-26) -- settled consensus that hang detection and cost budgeting are separate controls, a per-unit timeout near 1x expected runtime is a cost budget in a hang detector's clothes, and drift is surfaced by measurement plus a warn band, never a bigger constant. Adopted: deadline-from-aggregate + process-group kill + duration telemetry + 0.5x/0.8x advisory band. Rejected: plan-declared timeout classes (implementers cannot edit VP steps, so a mis-declared class strands the same way) and raising the flat constant (breaks the Decision 182 pin; still a cliff)."
+  - "Why no separate hang cap (plan-critique F10/Q2): min(remaining, H) differs from the deadline model only when H < the remaining aggregate, which re-creates the per-step cliff; H >= 120 is identical to it. Adjacent bounded-subprocess surfaces (scripts/llm/utils.py kill_process_tree; scripts/backlog_health/probe.py run_one's flat 10s/30s caps) are convergence candidates, deliberately not touched here."
   - "Accepted trade-off: per-step hang isolation -- a hung step now consumes up to 120s (was 30s) before red; no hang is recorded anywhere in the plan corpus, and the process-group kill bounds the collateral."
   - "Overlap: PLAN-selection-budget-census-hermetic-test (merged #1280, implementation pending) edits OTHER tests in tests/checks/deps/test_selection_budget.py and tests/validate/test_budget_split.py; rebase onto whichever lands first -- disjoint test functions."
   - "Downstream: once merged, the stranded trailer-junit implement branch needs only a main merge for its step 13 to replay green -- no plan amendment."
