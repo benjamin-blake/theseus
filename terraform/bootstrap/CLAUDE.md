@@ -6,6 +6,7 @@ repo-root `CLAUDE.md` and `terraform/CLAUDE.md` still apply.
 This module owns the `github_ci_apply` IAM role and its permissions boundary (authority budget),
 isolating the apply role's own IAM from `terraform/personal/` (CD.35 Wave 4 / T2.23). This breaks
 the self-grant cycle: the CD pipeline can no longer write the policy that governs the pipeline.
+It also owns the platform-security-* IAM-change detector (Decision 202).
 
 ## NEVER auto-apply this module
 

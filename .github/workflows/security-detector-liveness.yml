@@ -1,0 +1,79 @@
+name: security-detector-liveness
+
+# Hourly read-only liveness probe of the platform-security-* IAM-change detector (rec-4044,
+# Decision 202). The detector (trail, log group, filters, alarms) lives in the admin-applied
+# terraform/bootstrap root; this workflow only READS its alarms and the alerts topic through
+# scripts.ci.security_detector_probe, a second channel independent of SNS delivery.
+#
+# A SEPARATE workflow (not a terraform-drift job) so its run conclusion never colours drift and
+# loop_liveness_stale judges it as its own peer -- the backstop if the probe's own filing fails.
+#
+# Identity: agent-platform-github-ci-branch (main-trusted, explicitly denied convergence-record
+# writes, no saved-plan write, already holds DuckLake writer invoke for file_rec) -- never the
+# planner, whose reserved session reaches convergence-record and saved-plan writes (Decision 143
+# clause 1). Its SecurityDetectorLivenessRead Sid grants exactly the probe's four reads.
+#
+# Invariants: no terraform, no tfvars, no convergence-record read or write, no S3 access at all.
+#
+# Bootstrap window (Decision 162): until the operator sets the repository variable
+# SECURITY_DETECTOR_PROVISIONED to 'true' (after the detector's admin apply is proven), the probe
+# runs with --bootstrap-window: failures are warnings, nothing is filed, the run is green.
+
+on:
+  schedule:
+    - cron: '47 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-detector-liveness
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      id-token: write   # OIDC token minting for assume-role
+      contents: read    # checkout
+      actions: read     # previous-run lookup for the one-rec-per-transition rule
+
+    env:
+      AWS_DEFAULT_REGION: eu-west-2
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Configure AWS credentials (OIDC -- github_ci_branch role)
+        id: oidc_probe
+        continue-on-error: true
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/agent-platform-github-ci-branch
+          aws-region: eu-west-2
+
+      - name: Fail loudly on a failed assume (an ERROR, not a healthy detector)
+        if: steps.oidc_probe.outcome != 'success'
+        run: |
+          echo "::error::OIDC_ASSUME_FAILED could not assume agent-platform-github-ci-branch; the detector was not probed this cycle."
+          exit 1
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies (venv)
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --quiet --upgrade pip
+          .venv/bin/pip install -r requirements.txt
+
+      - name: Probe the security detector
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          BOOTSTRAP_FLAG: ${{ vars.SECURITY_DETECTOR_PROVISIONED != 'true' && '--bootstrap-window' || '' }}
+        run: |
+          bin/venv-python -m scripts.ci.security_detector_probe --file-on-transition $BOOTSTRAP_FLAG
