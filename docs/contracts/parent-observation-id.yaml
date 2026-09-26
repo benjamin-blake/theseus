@@ -42,19 +42,45 @@ fields:
       the write boundary (rec-4024's append_events verb), derived from the caller-supplied
       parent_observation_ref. No current populator.
     write_time_validation: >-
-      Structural: when non-null, must reference an existing telemetry_observations.observation_id in the
-      same session (referential, enforced by the trace-tree writer, rec-4024). ULID format and value are
-      generator-guaranteed. No not-null validator (null is a valid, meaningful value).
+      Structural only: ULID format and value are generator-guaranteed. The write boundary NEVER checks
+      that a non-null parent_observation_id references an existing telemetry_observations.observation_id
+      in the same session -- Decision 199 tolerates concurrent and out-of-order producers by
+      construction, so a child may land before its parent. Referential integrity is instead a DQ
+      relationships check (a non-null parent_observation_id with no matching observation_id in the same
+      session) run as a non-gating scheduled monitor over QUIESCENT trees only, so an in-flight child is
+      never flagged as a violation; the monitor and its quiescence window are owned by follow-on
+      rec-4101. Readers tolerate a dangling parent whether transient (still in-flight) or permanent (e.g.
+      a producer crash, or an R7 deferral that never lands) -- never a read error.
     dq_intent:
       not_null:
         enforced: false
     governance_notes: >-
       not_null is unenforced by DESIGN, not as a loosest-baseline placeholder: a root observation
-      legitimately has no parent, so enforcing not-null would be incorrect in every consuming table. A
-      relationships/self-FK DQ check (parent_observation_id present -> exists as an observation_id) is the
-      appropriate future enforcement, NOT not_null. Population is future-state (rec-4024); ratified now
-      (NOT provisional_v0) per the Class C foundational-invariant rule.
+      legitimately has no parent, so enforcing not-null would be incorrect in every consuming table.
+      Referential integrity for a non-null parent is likewise never a write-time check (Decision 199
+      tolerates out-of-order producers by construction); the appropriate future enforcement is a
+      relationships/self-FK DQ check (parent_observation_id present -> exists as an observation_id) run
+      as a non-gating scheduled monitor over quiescent trees, NOT not_null. That monitor does not exist
+      yet -- relationships checks SKIP on the DuckLake backend today (scripts/data_quality_execute.py)
+      and carry no session or quiescence scoping -- so this text names its owner, follow-on rec-4101,
+      which also owns the quiescence window. Population is future-state (rec-4024); ratified now (NOT
+      provisional_v0) per the Class C foundational-invariant rule.
     amendment_log:
+      - date: "2026-09-26"
+        semantic_break: true
+        change_class: governance_note_add
+        summary: >-
+          rec-4058 (contract-risk review of slice 1, PLAN-telemetry-contract-risk-amendments): removed
+          the write-time parent-existence check. Decision 199 tolerates concurrent and out-of-order
+          producers by construction, so a child may land before its parent; write_time_validation now
+          states positively that the write boundary never checks parent existence. Referential integrity
+          moves to a DQ relationships check over QUIESCENT trees only (an in-flight child is not a
+          violation), owned by follow-on rec-4101 (also owner of the quiescence window). Readers tolerate
+          a dangling parent, transient or permanent. semantic_break=true: the ENFORCEMENT mechanism
+          changed, not merely the prose.
+        migration_story: >-
+          No populator or table exists yet (population is future-state, rec-4024), so no runtime
+          migration is required.
       - date: "2026-09-24"
         semantic_break: true
         change_class: governance_note_add
