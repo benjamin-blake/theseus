@@ -173,7 +173,7 @@ fields:
     nullable: true
     description: Total input tokens consumed across the agent run. DERIVED at read via the child session's own model_call observations -- replaces the contract_version 1 stored tokens_input.
     semantics: A read-time aggregate over telemetry_observations rows sharing this run's session_id; no physical column.
-    populated_by: a named reader verb (rec-4024), bounded to this run's day(session_started_at) partition.
+    populated_by: a named reader verb (rec-4024), bounded to this run's calendar-day partition.
     dq_intent: {not_null: {enforced: false}}
     derivation: {timing: read, derived_by: "reader_verb:agent_run_token_rollup", formula: "sum(tokens_input) over telemetry_observations WHERE session_id = this.session_id AND observation_type = 'model_call'", inputs: [telemetry_observations.session_id, telemetry_observations.observation_type, telemetry_observations.tokens_input], realized: false}
     amendment_log:
@@ -191,7 +191,7 @@ fields:
     nullable: true
     description: Total output tokens produced across the agent run. DERIVED at read, same mechanism as tokens_input_total -- replaces the contract_version 1 stored tokens_output.
     semantics: A read-time aggregate over telemetry_observations rows sharing this run's session_id; no physical column.
-    populated_by: a named reader verb (rec-4024), bounded to this run's day(session_started_at) partition.
+    populated_by: a named reader verb (rec-4024), bounded to this run's calendar-day partition.
     dq_intent: {not_null: {enforced: false}}
     derivation: {timing: read, derived_by: "reader_verb:agent_run_token_rollup", formula: "sum(tokens_output) over telemetry_observations WHERE session_id = this.session_id AND observation_type = 'model_call'", inputs: [telemetry_observations.session_id, telemetry_observations.observation_type, telemetry_observations.tokens_output], realized: false}
     amendment_log:
@@ -272,7 +272,7 @@ fields:
     dq_intent: {not_null: {enforced: false}}
 governance:
   table_class: event
-  partition_by: "day(session_started_at)"
+  partition_by: "history=year(session_started_at), month(session_started_at), day(session_started_at)"
   write_path: >-
     NOT PROVISIONED: no telemetry writer exists today. TARGET (Phase 4, post-T2.26): the rooted
     agent writer (carrying session_id) on the append_events boundary (rec-4024). Append-only; no
@@ -292,6 +292,31 @@ governance_notes: >-
   REPORT-ONLY: target-state, not implemented. KNOWN GAP: rec-2173 (preflight telemetry health) and
   the broader Phase 4 re-provisioning (rec-4024) are CODE follow-ons, not this contract.
 amendment_log:
+  - date: "2026-09-26"
+    semantic_break: false
+    change_class: prose_improvement
+    summary: >-
+      PLAN-telemetry-kernel-identity-append implement-time deviation (rec-4073): governance.partition_by
+      respelled from the bare calendar-day triple to the role-prefixed
+      "history=year(session_started_at), month(session_started_at), day(session_started_at)" -- main's
+      src/common/ducklake_partition_spec.parse_partition_by (the shared ops grammar,
+      PLAN-ducklake-calendar-day-partition) requires a role= prefix per segment
+      ('history=...; current=...'); an append-only event table declares only the history role, no
+      current=. scripts/field_semantics_event_projection.py now delegates to parse_partition_by +
+      validate_partition_spec for this field instead of its own regex, closing rec-4073. The resolved
+      (unprefixed) spec is still what the generator's ops_tables.<table>.partition.history projection
+      carries -- only this raw contract field gained the role prefix.
+    migration_story: No live telemetry writer exists (TARGET-STATE only); no runtime migration is required.
+  - date: "2026-09-25"
+    semantic_break: false
+    change_class: prose_improvement
+    summary: >-
+      PLAN-telemetry-kernel-identity-append (rec-4065): governance.partition_by respelled from the
+      bare day(session_started_at) to the calendar-day triple year(session_started_at),
+      month(session_started_at), day(session_started_at) -- DuckLake evaluates a bare day() as
+      DAY-OF-MONTH, not calendar day; the two populated_by read-verb bounds reworded to
+      "calendar-day partition". Decision 199 always meant a calendar day; no table exists yet.
+    migration_story: No live telemetry writer exists (TARGET-STATE only); no runtime migration is required.
   - date: "2026-09-24"
     semantic_break: false
     change_class: prose_improvement

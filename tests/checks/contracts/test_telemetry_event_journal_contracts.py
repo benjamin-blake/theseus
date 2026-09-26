@@ -40,7 +40,9 @@ class TestSessionsEventJournalShape:
         resolved = _resolved("telemetry_sessions")
 
         assert doc.contract.contract_version == 2
-        assert doc.governance.partition_by == "day(session_started_at)"
+        assert doc.governance.partition_by == (
+            "history=year(session_started_at), month(session_started_at), day(session_started_at)"
+        )
 
         event_kind = resolved["event_kind"]
         assert set(event_kind.dq_intent["accepted_values"]["values"]) == {
@@ -280,7 +282,9 @@ class TestLexiconTemporalAndIdentity:
         temporal = lexicon["lexicon"]["temporal"]
         assert temporal["event_time_column"] == "event_timestamp"
         for table in ("telemetry_sessions", "telemetry_observations", "telemetry_transcripts", "telemetry_agents"):
-            assert temporal["partition"][table] == "day(session_started_at)"
+            assert temporal["partition"][table] == (
+                "history=year(session_started_at), month(session_started_at), day(session_started_at)"
+            )
 
         identity = lexicon["lexicon"]["identity"]
         assert identity["normative_spec"] == "docs/contracts/telemetry-event-envelope.yaml"
@@ -296,7 +300,7 @@ class TestStorageSubstrateDisposition:
         substrate = yaml.safe_load(open(_CONTRACTS_DIR / "storage-substrate.yaml", encoding="utf-8"))
         telemetry_tables = substrate["tables"]["telemetry_tables"]
         text = _norm(yaml.safe_dump(telemetry_tables))
-        assert "day(session_started_at)" in text
+        assert "year(session_started_at), month(session_started_at), day(session_started_at)" in text
         assert any(ref.endswith("telemetry-event-envelope.yaml") for ref in telemetry_tables["contract_ref"])
         assert "blob port" in text or "blob-port" in text
 
@@ -315,3 +319,46 @@ class TestDataModelingStandardNotes:
         derived_rule = rules_by_id["derived-state"]
         assert "derivation.timing: read" in derived_rule["statement"]
         assert "T2.52" in derived_rule["statement"]
+
+
+_CALENDAR_DAY_TRIPLE = "history=year(session_started_at), month(session_started_at), day(session_started_at)"
+_BARE_DAY_RE = re.compile(r"(?<!month\(session_started_at\), )day\(session_started_at\)")
+_SKIP_KEYS = ("amendment_log", "previous_versions")
+
+
+def _collect_live_strings(node: object) -> list[str]:
+    """Recursively collect every string leaf, skipping amendment_log/previous_versions at any depth."""
+    if isinstance(node, dict):
+        strings: list[str] = []
+        for key, value in node.items():
+            if key in _SKIP_KEYS:
+                continue
+            strings.extend(_collect_live_strings(value))
+        return strings
+    if isinstance(node, list):
+        return [s for item in node for s in _collect_live_strings(item)]
+    if isinstance(node, str):
+        return [node]
+    return []
+
+
+def test_partition_by_is_calendar_day_triple() -> None:
+    """rec-4065 acceptance node (module-level per the Decision 201 trailer census)."""
+    for table in ("telemetry_sessions", "telemetry_observations", "telemetry_transcripts", "telemetry_agents"):
+        doc = _load(table)
+        assert doc.governance.partition_by == _CALENDAR_DAY_TRIPLE, table
+
+    lexicon = yaml.safe_load(open(_CONTRACTS_DIR / "telemetry-lexicon.yaml", encoding="utf-8"))
+    temporal = lexicon["lexicon"]["temporal"]
+    for table in ("telemetry_sessions", "telemetry_observations", "telemetry_transcripts", "telemetry_agents"):
+        assert temporal["partition"][table] == _CALENDAR_DAY_TRIPLE, table
+
+    for path in sorted(_CONTRACTS_DIR.glob("*.yaml")):
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            continue
+        for raw in _collect_live_strings(data):
+            text = _norm(raw)
+            assert not _BARE_DAY_RE.search(text), f"{path.name}: bare day(session_started_at) in {raw!r}"
+            assert "day() partition" not in text, f"{path.name}: 'day() partition' in {raw!r}"
+            assert "day()-partition" not in text, f"{path.name}: 'day()-partition' in {raw!r}"

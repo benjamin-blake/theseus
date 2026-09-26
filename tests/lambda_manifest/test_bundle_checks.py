@@ -17,6 +17,7 @@ from scripts.lambda_manifest import (
     compute_affected_artifacts,
     derive_lambda_file_patterns,
     load_all,
+    stage_bundle,
 )
 
 pytestmark = pytest.mark.unit
@@ -304,3 +305,31 @@ def test_maintenance_scope_module_bundled_and_excluded():
     data_pipeline = manifests["data-pipeline"]
     assert scope_module in set(maintenance.includes), "ducklake_maintenance manifest must bundle the scope module"
     assert scope_module in set(data_pipeline.excludes), "data-pipeline manifest must exclude the scope module"
+
+
+# ---------------------------------------------------------------------------
+# PLAN-telemetry-kernel-identity-append: src/telemetry stays out of data-pipeline (Decision 79
+# runtime-import intent, V2 ground) -- the kernel has no writer/reader Lambda yet.
+# ---------------------------------------------------------------------------
+
+
+def test_telemetry_kernel_excluded_from_data_pipeline(tmp_path):
+    manifests = load_all()
+    data_pipeline = manifests["data-pipeline"]
+    assert "src/telemetry" in set(data_pipeline.excludes), "data-pipeline manifest must exclude src/telemetry"
+
+    changed = [
+        "src/telemetry/__init__.py",
+        "src/telemetry/identity.py",
+        "src/telemetry/timestamps.py",
+        "src/telemetry/gate.py",
+        "src/telemetry/append.py",
+    ]
+    affected = compute_affected_artifacts(changed)
+    assert "data-pipeline" not in affected, affected
+
+    stage_dir = tmp_path / "stage"
+    stage_dir.mkdir()
+    stage_bundle(data_pipeline, stage_dir, skip_pip=True)
+    staged_telemetry_paths = [p for p in stage_dir.rglob("*") if "telemetry" in p.parts]
+    assert staged_telemetry_paths == [], f"src/telemetry leaked into data-pipeline.zip: {staged_telemetry_paths}"

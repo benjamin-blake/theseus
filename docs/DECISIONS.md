@@ -216,6 +216,8 @@ conditions:
 
 **Related:** Decision 95 (the model this amends), Decision 96 (temporal standard amended), Decision 97 (identity standard amended), Decision 81 clause 8 (answered, not amended), Decision 84 (DuckLake substrate), Decision 184 clause 2 (blob port rule), Decision 200 (tenant/project identity, decided alongside), T2.36 (Phase 4 rebuild), T3.20 (turn capture), rec-4024/rec-4025/rec-4026/rec-4030/rec-4031/rec-4032.
 
+> **Update (2026-09-25):** clause 2's day(session_started_at) always meant the UTC calendar day, which DuckLake spells year(session_started_at), month(session_started_at), day(session_started_at) together, because its day() alone is day-of-month (rec-4065).
+
 ---
 
 ## Decision 200: Tenant and project identity for telemetry -- tenant_id and project_id are opaque writer-minted ids, always present, tenancy enforcement stays a cloud-adapter property (amends Decision 197 clause 2) (Decided)

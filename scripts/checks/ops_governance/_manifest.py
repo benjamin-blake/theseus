@@ -137,6 +137,8 @@ ENTRIES: tuple[Entry, ...] = (
             "config/lambda/ducklake/field_semantics.static.yaml",
             "src/schemas/**",
             "scripts/schema_to_field_semantics.py",
+            "scripts/field_semantics_event_projection.py",
+            "src/telemetry/**",
             "scripts/contracts.py",
             "scripts/contracts_schema.py",
             "src/common/ducklake_partition_spec.py",

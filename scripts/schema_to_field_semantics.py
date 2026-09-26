@@ -76,6 +76,8 @@ _ICEBERG_TO_SQL: dict[str, str] = {
     "boolean": "BOOLEAN",
     "long": "BIGINT",
     "int": "INTEGER",
+    "bigint": "BIGINT",
+    "double": "DOUBLE",
     "timestamptz": "TIMESTAMP WITH TIME ZONE",
     "array<string>": "VARCHAR[]",
     "array<long>": "BIGINT[]",
@@ -176,7 +178,7 @@ def _enforce_reconcile_pending_subset(
 def _project_contract_table(
     table_id: str,
     resolved_fields: dict[str, Any],
-    merge_key: str,
+    merge_key: str | None,
     ops_config: dict[str, Any],
     *,
     table_class: str = "scd2",
@@ -190,7 +192,25 @@ def _project_contract_table(
     control explicit (the SCD2 projection emits no write_mode key at all, so consumers default to
     scd2 -- the control class must be unambiguous), and entity_id_prefix/id_keyspace OMITTED
     entirely rather than defaulted (a control table has no writer-owned entity keyspace).
+
+    table_class="event" (Decision 199, telemetry kernel) dispatches to the history-only
+    append_only event projection (scripts/field_semantics_event_projection.py), imported INSIDE
+    this branch only (function scope, noqa: PLC0415 -- the src/common/ducklake_writes.py
+    mint_write_identity ulid-import precedent) so validate_field_semantics_drift's module-scope
+    import of this generator gains no edge into src.telemetry.
     """
+    if table_class == "event":
+        from scripts.field_semantics_event_projection import project_event_table  # noqa: PLC0415
+
+        return project_event_table(
+            table_id,
+            resolved_fields,
+            ops_config,
+            partition_by,
+            map_iceberg_type=_map_iceberg_type,
+            include_prose=include_prose,
+        )
+
     columns: dict[str, Any] = {}
     for fname, fspec in resolved_fields.items():
         derivation = fspec.derivation if hasattr(fspec, "derivation") else fspec.get("derivation")
@@ -279,15 +299,15 @@ def generate(*, include_prose: bool = False) -> dict[str, Any]:
         contract_path = _CONTRACTS_DIR / f"{table_id}.yaml"
         contract_doc = load_contract(contract_path)
 
-        merge_key = contract_doc.governance and contract_doc.governance.merge_key
-        if not merge_key:
+        raw_table_class = (contract_doc.governance and contract_doc.governance.table_class) or "scd2"
+        table_class = raw_table_class.lower()
+
+        merge_key = contract_doc.governance.merge_key if contract_doc.governance else None
+        if table_class != "event" and not merge_key:
             raise ValueError(
                 f"{table_id}: governance.merge_key is missing. "
                 "Add merge_key to the top-level governance block in the contract before running the generator."
             )
-
-        raw_table_class = (contract_doc.governance and contract_doc.governance.table_class) or "scd2"
-        table_class = raw_table_class.lower()
 
         resolved = resolve_refs(contract_doc, _CONTRACTS_DIR)
         ops_config = contract_table_ops.get(table_id, {})
