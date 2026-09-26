@@ -287,3 +287,15 @@ class TestJunitJobAssertions:
         declaration = registry.pop_declaration()
         assert declaration is not None
         assert declaration.kind == "examined"
+
+    def test_derive_artifact_name_skips_a_non_dict_job_value(self) -> None:
+        from scripts.checks.ci_guards.validate_rec_autoclose_trailer_gate import _derive_pytest_junit_artifact_name
+
+        jobs = {"bad-job": "not-a-dict", "main-validate": {"steps": [{"uses": "actions/upload-artifact@v7"}]}}
+        assert _derive_pytest_junit_artifact_name(jobs) is None
+
+    def test_download_step_for_artifact_skips_a_non_dict_with_block(self) -> None:
+        from scripts.checks.ci_guards.validate_rec_autoclose_trailer_gate import _download_step_for_artifact
+
+        job = {"steps": [{"uses": "actions/download-artifact@v8", "with": "not-a-dict"}]}
+        assert _download_step_for_artifact(job, "pytest-junit") is None

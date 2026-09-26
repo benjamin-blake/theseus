@@ -278,3 +278,29 @@ class TestJunitRouting:
         static_doc = {"records": []}
         merged = rejoin(census_doc, static_doc, {"records": []})
         assert merged == {}
+
+
+class TestCmdJunitVerdict:
+    """cmd_junit_verdict is a thin adapter -- delegates to rec_trailer_acceptance_junit.main with
+    the artifact-dir and junit-report args forwarded verbatim."""
+
+    def test_forwards_artifact_dir_only_when_junit_report_is_none(self, tmp_path: Path) -> None:
+        from argparse import Namespace
+
+        from scripts.rec_trailer_acceptance import cmd_junit_verdict
+
+        with patch("scripts.rec_trailer_acceptance_junit.main", return_value=0) as mock_main:
+            rc = cmd_junit_verdict(Namespace(artifact_dir=tmp_path, junit_report=None))
+        assert rc == 0
+        mock_main.assert_called_once_with(["--artifact-dir", str(tmp_path)])
+
+    def test_forwards_junit_report_when_given(self, tmp_path: Path) -> None:
+        from argparse import Namespace
+
+        from scripts.rec_trailer_acceptance import cmd_junit_verdict
+
+        report = tmp_path / "pytest-junit.xml"
+        with patch("scripts.rec_trailer_acceptance_junit.main", return_value=1) as mock_main:
+            rc = cmd_junit_verdict(Namespace(artifact_dir=tmp_path, junit_report=report))
+        assert rc == 1
+        mock_main.assert_called_once_with(["--artifact-dir", str(tmp_path), "--junit-report", str(report)])
