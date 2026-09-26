@@ -411,6 +411,8 @@ conditions:
 > both columns are always present on a telemetry row -- tenancy ENFORCEMENT remains the
 > cloud-adapter property this clause already named.
 
+[Amendment 2026-09-26, audit criterion-shape-forks-9d25d918: clause 8's walk inputs are recorded here, not settled -- the walk starts from them (T4.23:c14; partition input read per rec-4068), re-verifies each against the tree, and a departure from the merge key or identity re-opens design_time_walk step 8. Verdicts: Q1 b-admitted-once, Q2 drop-the-field, Q3 pin-at-migration-time, Q4 two-tables-evidence-journal. The step-8 advice-consult question is closed for this routing run (Fable consult plus operator direction, 2026-09-26); the keys stay clause 8's. Tenancy per Decision 200, by analogy for clause 8 to confirm. Reversal readings: two-shapes-after-all not tripped, conditional on the typed method union (T4.23:c10); merge-authored-edges-lossy not tripped, conditional on the merge consuming the exact merged plan rather than trailers alone and on T4.5's ETL projecting closes_criteria as plan-row content (T4.5:c8) -- a trailer cannot carry an edge's target, criterion-version ULID or clause.]
+
 ---
 
 ## Decision 196: Three-tier decision model for the open-core product -- north stars and product decisions share one shape, platform decisions ship as a read-only per-release snapshot that user decisions supersede (amends Decision 134) (Decided)
@@ -8320,6 +8322,8 @@ The rec-curator pipeline (rec-448 through rec-451) shipped with passing acceptan
 **Related:** Decision 43 (Directed Growth Governance), Decision 44 (Executor Boundary), Decision 47 (Lambda Deployment Assessment -- V3 subset)
 
 **Limitation:** Verification tier classification is documentation-enforced only. No automated detection currently exists. A future rec should add a deterministic tier classifier to validate.py based on scope file paths, closing the enforcement gap that motivated this decision.
+
+[Amendment 2026-09-26, audit criterion-shape-forks-9d25d918 Q2: automated detection exists since T3.17 -- validate_tier_floor (--pre, scripts/checks/roadmap/validate_tier_floor.py) computes this entry's highest-tier-wins floor over a plan's scope paths -- but it evaluates schema_version-2 plans only (7 of 474 at 74cecbf7); schema_version 3-5 plans are unmeasured and every new plan must be schema_version 5, so this Limitation remains live for current authoring. Widening the check is rec-3285. No criterion-grain tier exists or is claimed (Decision 197 clause-8 walk input Q2: drop-the-field).]
 
 **Decision status:** Decided -- April 2026
 
