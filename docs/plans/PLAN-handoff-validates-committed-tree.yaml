@@ -22,76 +22,148 @@ scope:
     action: Modify
     purpose: >-
       (1) Anchor RESULT_PATH at scripts.checks._common.ROOT (the invoking worktree), never the process cwd, and run every
-      git probe with cwd=_common.ROOT -- the two halves of rec-3033's foreign-evidence shape. (2) clear() -- already
-      called exactly once at full-tier start by scripts/validate.py -- also snapshots head_tree_at_start
-      (`git rev-parse HEAD^{tree}`) and tree_clean_at_start (`git status --porcelain` empty; .gitignore respected), held
-      IN MEMORY (module state, like _ATTRIBUTIONS) and never on disk -- the full tier's own validate_vp_replay may touch
-      the evidence path mid-run.
+      git probe with cwd=_common.ROOT -- the two halves of rec-3033's foreign-evidence shape. Every git probe KEEPS the
+      `validation_result.subprocess.run` transport (six existing tests intercept it there; moving to _common.run would
+      break test_write_completed_is_bounded_atomic_and_secret_free's git_head assertion).
+      (2) clear(path: Path | None = None) resolves None to the module-level RESULT_PATH AT CALL TIME (today the default is
+      bound at def time, so monkeypatching RESULT_PATH never redirects it). clear() -- already called exactly once at
+      full-tier start by scripts/validate.py -- also snapshots head_tree_at_start (`git rev-parse HEAD^{tree}`) and
+      tree_clean_at_start (`git status --porcelain` empty; .gitignore respected), held IN MEMORY (module state, like
+      _ATTRIBUTIONS) and never on disk -- the full tier's own validate_vp_replay may touch the evidence path mid-run.
       (3) write_completed() adds head_tree_at_start, head_tree_at_end, tree_clean_at_start, tree_clean_at_end and
       worktree_toplevel, bumping schema_version 3 -> 4 ADDITIVELY: failed_checks and failed_check_attributions stay
-      byte-identical in shape for the CI-RCA Priority-0 consumer (Decision 170 clause 1, T1.13); git_head is kept.
-      (4) A pure predicate attests_head(record, *, head_tree, toplevel) -> (bool, rule) -- true only for scope "all",
-      exit_code 0, empty failed_checks, both clean flags true, head_tree_at_start == head_tree_at_end == head_tree, and
-      worktree_toplevel == toplevel. `rule` is a STABLE code from a module-level ATTEST_RULES tuple (missing, unreadable,
-      schema, scope, worktree, dirty_start, dirty_end, head_moved, tree_mismatch, failed_run, ok), evaluated in that order
-      so failed_run is returned ONLY when every identity rule holds -- slice 2b branches on it (failed_run is the
-      "validated this exact tree but it was red" case its human release valve handles). Plus a thin CLI `bin/venv-python -m scripts.checks.validation_result --verify-head`
-      that evaluates it against the current HEAD and toplevel, printing the failed rule and exiting 1 on any mismatch or
-      on a missing/unreadable/pre-v4 record. This is the single attestation predicate slice 2b's gate imports; it lives
-      with the record it interprets. scripts/validate.py needs no change. 96 SLOC today.
+      byte-identical in shape for the CI-RCA Priority-0 consumer (Decision 170 clause 1, T1.13; scripts/ci_rca/taxonomy.py
+      keys on field names, never on schema_version); git_head is kept.
+      (4) The 2b-facing interface, exported and documented as such: evidence_path_for(toplevel: Path) -> Path (the
+      evidence file of an ARBITRARY worktree -- RESULT_PATH only names the importing one); load_record(path) ->
+      tuple[dict | None, str] returning (record, "ok") or (None, "missing" | "unreadable"); and a pure predicate
+      attests_head(record, *, head_tree, toplevel) -> (bool, rule) -- true only for scope "all", exit_code 0, empty
+      failed_checks, both clean flags true, head_tree_at_start == head_tree_at_end == head_tree, and worktree_toplevel ==
+      toplevel. `rule` is a STABLE code from a module-level ATTEST_RULES tuple (missing, unreadable, schema, scope,
+      worktree, dirty_start, dirty_end, head_moved, tree_mismatch, failed_run, ok), evaluated in that order so failed_run
+      is returned ONLY when every identity rule holds (slice 2b may branch on it). Plus a thin CLI `bin/venv-python -m
+      scripts.checks.validation_result --verify-head` that composes load_record + attests_head against the current HEAD's
+      tree and toplevel, printing the rule and exiting 0 only on "ok". scripts/validate.py needs no change. 96 SLOC today.
   - file: tests/checks/test_validation_result.py
     action: Modify
     purpose: >-
       test_write_completed_records_head_tree_and_clean_flags (schema_version 4, all five fields, v3 fields unchanged);
-      test_git_head_resolves_from_invoking_worktree -- rec-3033's acceptance node, VERBATIM name -- using a real
-      `git worktree add` under tmp_path with _common.ROOT pointed at it (setup commits via `git -c commit.gpgsign=false
-      -c user.name=t -c user.email=t@example.invalid`); test_result_path_is_anchored_at_root; and TestAttestsHead covering
-      every predicate rule, including test_rejects_evidence_for_a_different_tree (graduated, VP step 1) built from two
-      real distinct trees, never a mocked hash, plus the --verify-head CLI's exit codes.
+      test_git_head_resolves_from_invoking_worktree -- rec-3033's acceptance node, VERBATIM name, MODULE-LEVEL (never
+      inside a class: the Decision 201 trailer evaluator runs exactly that node id) -- which `git init`s a TMP repository
+      under tmp_path and runs `git worktree add` against THAT repository only (never the real checkout: that would write
+      its .git/worktrees), with _common.ROOT pointed at the added worktree (setup commits via `git -c
+      commit.gpgsign=false -c user.name=t -c user.email=t@example.invalid`); test_result_path_is_anchored_at_root;
+      test_clear_default_resolves_at_call_time; load_record's three outcomes; and TestAttestsHead covering every
+      predicate rule, including test_rejects_evidence_for_a_different_tree (graduated, VP step 1) built from two real
+      distinct trees, never a mocked hash, plus the --verify-head CLI's exit codes. RE-SEAT
+      test_write_completed_emits_schema_v3_with_failed_check_attributions (L121-139): its two `schema_version == 3`
+      asserts become 4 and its failed_check_attributions asserts stay VERBATIM (the Priority-0 pin); keep its name
+      (renaming churns a node id for no behaviour). The same MagicMock(stdout="abc123\n") now also answers the new
+      status/toplevel probes, which is harmless to the existing asserts.
   - file: tests/checks/registry/test_accounting.py
     action: Modify
     purpose: >-
       Its five validation_result.clear() calls (lines 19, 83, 100, 152, 178) use the default RESULT_PATH, so any pytest
       run from the repo root DELETES the real logs/debug/validation-result.json -- once that file is the handoff
-      credential, a post-full-tier test run would silently revoke it. Pass tmp_path-based paths (or monkeypatch
-      validation_result.RESULT_PATH to tmp_path) in every call; assert nothing else changes.
+      credential, a post-full-tier test run would silently revoke it. Replace the four setup_method bodies (L18-19, L82-83,
+      L151-152, L177-178) with ONE module-level function-scoped autouse fixture that FIRST monkeypatches
+      validation_result.RESULT_PATH to tmp_path / "validation-result.json" and THEN calls clear() (setup_method cannot take
+      tmp_path, and folding both into one fixture makes the ordering explicit); the in-body clear() at L100 inherits the
+      redirect because clear()'s default now resolves at call time (scope row 1 (2)). Assert nothing else changes.
   - file: scripts/session/postflight.py
     action: Modify
     purpose: >-
-      run_auto reorders to: close/sanity -> evidence -> metrics -> commit -> rebase (NEW named seam run_rebase(): `git
-      fetch origin main` then `git rebase origin/main`, returning a distinct rebase_failed status on conflict and never
-      auto-resolving) -> full tier (run_validate) -> verify-head (NEW named seam run_verify_head(), delegating to
-      scripts.checks.validation_result's --verify-head predicate) -> push -> portal sync. A failed full tier returns
-      validate_failed and a failed verify-head returns evidence_mismatch, both WITHOUT pushing. RETIRE the post-push
-      log-housekeeping leg from run_auto: nothing under logs/ is tracked (Decision 84 made the JSONL files read caches),
-      so it is a no-op today and, if it ever fired, a commit-and-push of an unvalidated tree; the standalone
-      --log-housekeeping CLI is left untouched. Update the module docstring (line 16), run_auto's docstring (line 277) and
-      the --auto help text (line 421) to the new order. Keep the config/coverage_baseline.yaml 84.4% floor (never lower
-      it); stay under 500 SLOC (388 today).
+      run_auto reorders to: close/sanity -> evidence -> metrics -> commit -> rebase -> full tier (run_validate) ->
+      verify-head -> push -> portal sync, with these POST-COMMIT FAILURE SEMANTICS (each stops WITHOUT pushing and leaves
+      --auto re-runnable): (a) run_commit treats a clean tree as a NO-OP SUCCESS -- after `git add .`, a `git status
+      --porcelain` probe (returncode 0, empty stdout) prints a nothing-to-commit line and returns 0 -- so re-running
+      --auto after a red full tier or an evidence mismatch with no new edits no longer burns three attempts into
+      commit_failed (this also makes the standalone --commit idempotent). (b) NEW named seam run_rebase() -> str returns
+      "ok", "fetch_failed" (`git fetch origin main` non-zero; no rebase attempted) or "rebase_failed" (`git rebase
+      origin/main` non-zero, after which it ALWAYS runs `git rebase --abort`, so a re-run never commits mid-rebase
+      conflict markers); run_auto copies the non-ok literal into results["status"]. Never auto-resolves. (c)
+      run_validate non-zero -> validate_failed. (d) NEW named seam run_verify_head() runs `[_common.PYTHON, "-m",
+      "scripts.checks.validation_result", "--verify-head"]` through _common._run (same transport as run_validate), prints
+      its output and returns its exit code; non-zero -> evidence_mismatch. RETIRE the post-push log-housekeeping leg
+      from run_auto: nothing under logs/ is tracked (Decision 84 made the JSONL files read caches), so it is a no-op today
+      and, if it ever fired, a commit-and-push of an unvalidated tree; the standalone --log-housekeeping CLI and
+      housekeeping.run_log_housekeeping stay (tests/test_session_postflight_decomposition.py FROZEN_EXPORTS pins the
+      name). Update the module docstring (line 16), run_auto's docstring and status enum (L277-296: add rebase_failed,
+      fetch_failed, evidence_mismatch) and the --auto help text to the new order. DECLARED RESIDUAL (critique F6): a
+      rebase that rewrites already-published commits makes remote.run_push's plain `git push --set-upstream` fail
+      non-fast-forward (push_failed after a green full tier); remote.py stays out of scope because the --auto remote leg
+      is gh-CLI-based and dormant on CC-web -- owned by rec-4092. Keep the config/coverage_baseline.yaml 84.4% floor
+      (never lower it; ~0.06pp headroom today, so every new arm needs a direct test -- test_auto.py row); stay under 500
+      SLOC (388 today).
   - file: tests/session/postflight/test_auto.py
     action: Modify
     purpose: >-
       Add TestAutoMode::test_auto_commits_before_full_tier_and_pushes_only_after_pass (graduated, VP step 2): one shared call recorder
       proves commit < rebase < validate < verify-head < push, and that push is never called when validate or
-      verify-head fails; add test_rebase_conflict_returns_rebase_failed_without_validating. RE-SEAT every existing test
-      that reaches the commit leg -- patch session_postflight.run_rebase and session_postflight.run_verify_head alongside
-      the existing run_validate/run_commit/run_push patches -- so no test runs a real `git fetch`, `git rebase`,
-      `git add` or `git commit` against the checkout; test_validate_failure_stops_early now patches run_commit,
-      run_rebase and housekeeping.run_metrics and asserts push is not called (validate now runs AFTER commit);
-      delete test_auto_log_housekeeping_failure_ignored (the leg is retired) and drop the run_log_housekeeping patches.
+      verify-head fails; add test_rebase_conflict_returns_rebase_failed_without_validating and
+      test_fetch_failure_returns_fetch_failed_without_validating. DIRECT SEAM TESTS (critique F8 -- every run_auto test
+      stubs the seams, so their bodies are covered only here; without them postflight.py drops ~5pp under its floor):
+      class TestRebaseSeam -- test_fetch_failure_returns_fetch_failed_and_skips_rebase,
+      test_conflict_aborts_and_returns_rebase_failed (asserts `git rebase --abort` was issued),
+      test_clean_rebase_returns_ok; class TestVerifyHeadSeam -- test_passes_through_zero,
+      test_passes_through_nonzero; each patches scripts.postflight._common._run with a recorder and calls the ORIGINAL
+      seam via the conftest fixture (next row). RE-SEAT every existing test that reaches the commit leg -- patch
+      session_postflight.run_rebase (return "ok") and session_postflight.run_verify_head (return 0) alongside the
+      existing run_validate/run_commit/run_push patches -- so no test runs a real `git fetch`, `git rebase`, `git add`
+      or `git commit` against the checkout; test_validate_failure_stops_early now patches run_commit, run_rebase and
+      housekeeping.run_metrics and asserts push is not called (validate now runs AFTER commit); delete
+      test_auto_log_housekeeping_failure_ignored (the leg is retired) and drop the run_log_housekeeping patches.
+  - file: tests/session/postflight/conftest.py
+    action: Modify
+    purpose: >-
+      Add a FAIL-CLOSED autouse fixture beside the existing _mock_sync_ops_postflight: it patches
+      session_postflight.run_rebase and session_postflight.run_verify_head with stubs that RAISE AssertionError("unstubbed
+      real-git seam: patch it in this test"), so no current or future run_auto test anywhere in the package can reach a
+      real `git fetch` / `git rebase` or a nested full-tier verify (inside the full tier's own pytest run that could move
+      HEAD mid-run); a test that drives run_auto overrides them with its own patch. Capture the ORIGINAL functions at
+      conftest import time and expose them through a `postflight_seams` fixture for the direct seam tests.
+  - file: tests/session/postflight/test_metrics_housekeeping.py
+    action: Modify
+    purpose: >-
+      RE-SEAT TestStageDocumentDerivedTables::test_auto_mode_does_not_call_stage_documents (L168-205): it drives run_auto
+      through the commit leg, so add patches for session_postflight.run_rebase (return "ok") and
+      session_postflight.run_verify_head (return 0) and drop its run_log_housekeeping patch (leg retired); its assertions
+      (rc == 0, stage not called) stay verbatim.
+  - file: tests/session/postflight/test_validate_commit.py
+    action: Modify
+    purpose: >-
+      Add TestCommitRetry::test_clean_tree_is_noop_success (status probe returns empty stdout -> rc 0 and no `git commit`
+      issued). RE-SEAT test_retries_on_pre_commit_failure_then_succeeds: its mock answers every non-commit call with
+      empty stdout, which the new clean-tree probe would read as "nothing to commit" -- answer the `git status
+      --porcelain` call with a non-empty line (e.g. " M scripts/foo.py") so the retry path is still exercised and
+      call_count == 3 still holds. The other two TestCommitRetry tests need no change (non-empty stdout / non-zero rc).
   - file: .claude/skills/implement/SKILL.md
     action: Modify
     purpose: >-
-      Reorder "Run the full gate locally first" and the IMPLEMENTATION Commit Flow so the sequence is `git add -A; git
-      commit; git fetch origin main; git rebase origin/main; bin/venv-python -m scripts.validate; bin/venv-python -m
-      scripts.checks.validation_result --verify-head; git push`, with `git push` as ITS OWN tool call; the red-CI fix loop
-      becomes fix -> commit -> full tier -> verify-head -> push; replace "current pre-commit HEAD" with a pointer to
-      docs/contracts/git-ops.yaml::handoff_sequence. KEEP the heading "Run the full gate locally first" and exactly one
-      backticked full-tier invocation (both pinned by
-      tests/test_workflow_skill_antidrift.py::test_full_tier_runs_once_and_only_in_the_step7_closure). PROSE BUDGET:
-      35,400 of 35,402 bytes (config/prose_budgets.yaml, ratchet-down only) -- the edit must be byte-neutral or shrink;
-      relocate procedure detail into git-ops.yaml (Decision 86), never raise the budget. Leave the VF-08
-      stop-and-surface (nondeterminism) note intact (T3.19).
+      Make the IMPLEMENTATION Commit Flow code fence read `git add -A`, `git commit ...`, `git fetch origin main`, `git
+      rebase origin/main   # STOP on conflict`, `bin/venv-python -m scripts.validate`, `bin/venv-python -m
+      scripts.checks.validation_result --verify-head`, `git push -u origin HEAD   # its own tool call`; the Wait-for-CI
+      "Any red" bullet becomes fix -> commit -> re-run the handoff sequence. PLACEMENT RULE (two standing pins, both must
+      pass unchanged): (i) tests/test_workflow_skill_antidrift.py::test_full_tier_runs_once_and_only_in_the_step7_closure
+      -- the heading "### Run the full gate locally first" stays and the file keeps EXACTLY ONE backticked
+      `bin/venv-python -m scripts.validate`, so the fence line carries it UNBACKTICKED (fence lines are not inline code);
+      (ii) tests/test_implementation_retrospective_skill_contract.py::test_implement_skill_documents_executable_ordered_closure
+      -- TEXTUAL order after that heading: readiness < coverage checker < `--pre` < backticked full tier < `postflight
+      --evidence`, plus the literal "Validation Summary (scope: all)" -- so the single backticked full-tier mention STAYS
+      in closure item 4 as a forward pointer, BEFORE item 5's --evidence (e.g. "Run `...validate --pre`. The full tier
+      `...validate` runs in the Commit Flow on the committed, rebased, clean tree: exit 0, final `Validation Summary
+      (scope: all)` PASS, then `--verify-head` exit 0 (git-ops.yaml `handoff_sequence`)."). RELOCATION SOURCE (named, for
+      byte-neutrality): item 4's evidence-field sentence ("`logs/debug/validation-result.json` with scope `all`, exit 0, no
+      failures, and current pre-commit HEAD" -> git-ops.yaml handoff_sequence) and the "### Pre-Push Rebase" BODY, which
+      shrinks to a pointer at git-ops.yaml `rebase_phase_distinction.commit_flow_time` that still states "rebase after the
+      commit, before the full tier" and keeps the `--force-with-lease` (never `--force`) rule. The HEADING "### Pre-Push
+      Rebase" MUST survive (graduated shard scope-boundary-relocations-not-reinlined; the planning skill cross-references
+      it) and the phrase "STOP on conflict; do not auto-resolve" must NOT be introduced (same shard). PROSE BUDGET: 35,400
+      of 35,402 bytes (config/prose_budgets.yaml, ratchet-down only) -- a plan-time simulation of exactly these four edits
+      measured 35,399 bytes with both pins green; relocate to git-ops.yaml (Decision 86), never raise the budget. Leave
+      the VF-08 stop-and-surface (nondeterminism) note intact (T3.19). Known and left as-is: the pre-existing shard
+      prose-budgets-s4-entries-equal-measured-and-marker-free already reads false (35,402 vs 35,400; never replayed) --
+      stale-shard repair is rec-3286's refresh path, not an inline edit.
   - file: .claude/commands/implement.md
     action: Modify
     purpose: >-
@@ -103,35 +175,49 @@ scope:
   - file: tests/test_workflow_skill_antidrift.py
     action: Modify
     purpose: >-
-      Add test_handoff_full_tier_runs_after_commit_and_rebase: in the implement skill the IMPLEMENTATION Commit Flow
-      orders `git commit` < `git rebase origin/main` < the full-tier invocation < `--verify-head` < `git push`; "pre-commit
-      HEAD" appears in neither the skill nor the command; the command no longer says "no commit has happened" or
-      "--log-housekeeping". The existing test_full_tier_runs_once_and_only_in_the_step7_closure must pass unchanged.
+      Add test_handoff_full_tier_runs_after_commit_and_rebase: within the implement skill's "### IMPLEMENTATION Commit
+      Flow" section (sliced to the next "### " heading) the order is `git commit` < `git rebase origin/main` < the line
+      "bin/venv-python -m scripts.validate" (the fence line, matched as a whole line so it cannot be satisfied by the
+      `--pre` form) < `--verify-head` < `git push`; "pre-commit HEAD" appears in neither the skill nor the command; the
+      command no longer says "no commit has happened" or "--log-housekeeping". The existing
+      test_full_tier_runs_once_and_only_in_the_step7_closure and
+      tests/test_implementation_retrospective_skill_contract.py must pass unchanged (placement rule, SKILL.md row).
   - file: docs/contracts/git-ops.yaml
     action: Modify
     purpose: >-
-      Class D contract (Decision 168). Add `handoff_sequence:` -- the ordered steps (commit -> fetch + rebase -> full tier
+      Class D contract (Decision 168). Add `handoff_sequence:` -- the ordered steps (commit, a no-op when the tree is
+      already clean -> fetch + rebase PER `rebase_phase_distinction.commit_flow_time`, which it points at rather than
+      restates (Decision 86; amend commit_flow_time's text only to say the rebase now precedes the full tier) -> full tier
       on a clean tree -> --verify-head -> push as its own tool call), the schema-4 evidence fields and attests_head's
-      rules, the per-push cost basis, and an `enforcement_coverage` list reusing implement-scope-boundary.yaml's row shape
-      (surface / status / enforced_by | residual_owner / note -- T2.54:c1's existing vocabulary, cited not claimed; never a
-      new `enforcing_checks` key). Rows (Decision 181 point 2, honest): postflight --auto push [status mechanical,
-      enforced_by run_verify_head -- code invokes attests_head before its push]; interactive /implement push [status
-      residual_agent_obligation, residual_owner rec-4083 -- --verify-head runs only when the agent follows the skill until
-      PLAN-handoff-evidence-gate lands]; server-side merge on red [residual_agent_obligation, residual_owner rec-4080];
-      per-file coverage floor in PR CI [residual_agent_obligation, residual_owner rec-3221]. Update push_pr_ci_merge_flow.steps
-      (validate + verify-head before push; the red-fix loop re-validates). Add an amendment_log entry, bump
-      contract_version to the LIVE value + 1 at implement time (PLAN-trailer-acceptance-junit-verdict also bumps it --
-      read the live value, never assume 3), and add scripts/checks/validation_result.py to referenced_repo_paths. SIZE:
-      353 of 500 effective lines today (graduated shard new-contracts-within-structural-size-class), shared with slice B
-      and 2b -- budget this clause at <= 45 effective lines. Never add a bare `claude/` outside agent_branch_prefixes
-      (graduated shard git-ops-carries-no-stale-prefix-premise).
+      rules (relocated from SKILL.md item 4), the per-push cost basis, the "clean = `git status --porcelain` with
+      .gitignore respected, so it attests ordering and drift, not gitignored-input identity" caveat, and an
+      `enforcement_coverage` list reusing implement-scope-boundary.yaml's row shape (surface / status / enforced_by |
+      residual_owner / note -- T2.54:c1's existing vocabulary, cited not claimed; never a new `enforcing_checks` key).
+      Rows (Decision 181 point 2, honest): postflight --auto push [status mechanical, enforced_by
+      postflight-auto-commits-before-full-tier (the graduated shard pinning run_auto's verify-head-before-push call
+      order); note: the --auto remote leg is gh-CLI-based and dormant on CC-web, and its non-fast-forward push after a
+      rewriting rebase is owned by rec-4092]; interactive /implement push [status residual_agent_obligation,
+      residual_owner rec-4083 -- --verify-head runs only when the agent follows the skill until PLAN-handoff-evidence-gate
+      lands]; server-side merge on red [residual_agent_obligation, residual_owner rec-4080]; per-file coverage floor in PR
+      CI [residual_agent_obligation, residual_owner rec-3221]. Update push_pr_ci_merge_flow.steps (validate + verify-head
+      before push; the red-fix loop re-validates). Add an amendment_log entry, bump contract_version to the LIVE value + 1
+      at implement time (PLAN-trailer-acceptance-junit-verdict and PLAN-handoff-evidence-gate also bump it -- read the
+      live value, never assume 3), and add scripts/checks/validation_result.py AND scripts/session/postflight.py to
+      referenced_repo_paths. SIZE: 353 of 500 effective lines today (graduated shard
+      new-contracts-within-structural-size-class), shared with junit-verdict and 2b -- budget this clause at <= 40
+      effective lines; if the live count plus this clause would exceed 500, STOP and surface (never raise; Decision 128).
+      Never add a bare `claude/` outside agent_branch_prefixes (graduated shard git-ops-carries-no-stale-prefix-premise).
   - file: config/agent/verification_registry/entries/git-ops-trailer-carrier-and-placement-rules.yaml
     action: Modify
     purpose: >-
       Its check_spec greps `contract_version:[[:space:]]*3`; validate_verification_registry only replays added or
-      modified shards, so a bump without re-pointing leaves a silently false shard. Replace that one grep with a
-      version-agnostic `contract_version:[[:space:]]*[0-9]+` assertion (the version literal is not what this shard
-      guards), keeping its other three greps byte-identical.
+      modified shards, so a bump without re-pointing leaves a silently false shard. RE-POINT that one grep to the EXACT
+      literal this change leaves behind (live value + 1), keeping its other three greps byte-identical. NEVER a
+      version-agnostic pattern: a modified shard re-enters verification_graduation.run_differential, which admits it only
+      if it FAILS on an origin/main worktree -- `[0-9]+` passes there and is rejected "not admitted -- tautological"
+      (critique F1, verified against origin/main). The exact literal fails on main (which carries the previous value) and
+      passes on HEAD. COORDINATION: PLAN-trailer-acceptance-junit-verdict and PLAN-handoff-evidence-gate re-point this same
+      grep under the same rule, so whichever lands later simply re-reads the live value -- no ordering dependency.
   - file: docs/contracts/check-accounting.yaml
     action: Modify
     purpose: >-
@@ -175,6 +261,7 @@ bundled_recommendations:
 followon_recs:
   - rec-4083
   - rec-4084
+  - rec-4092
 infrastructure_dependencies: []
 acceptance_criteria:
   - >-
@@ -190,19 +277,25 @@ acceptance_criteria:
     HEAD's tree from this worktree, clean at start and end, scope all, exit 0 and no failures -- and exits 1 naming the
     failed rule otherwise (including for evidence of a different tree).
   - >-
-    No test run from the repo root deletes or rewrites the real logs/debug/validation-result.json.
+    No test in tests/checks/test_validation_result.py or tests/checks/registry/test_accounting.py deletes or rewrites the
+    real logs/debug/validation-result.json (VP step 4's sentinel), and a grep finds no other test calling clear() or
+    write_completed() on the default path (verified at plan time: every other in-process validate.main() caller sets
+    argv to --pre, which skips both, and the one full-tier caller, tests/validate/test_tiers.py, patches both).
   - >-
-    postflight --auto never pushes after a failed full tier, a failed verify-head or a rebase conflict, and no longer runs
-    a post-push log-housekeeping commit.
+    postflight --auto never pushes after a fetch failure, a rebase conflict (which it aborts), a failed full tier or a
+    failed verify-head; each returns its own status (fetch_failed, rebase_failed, validate_failed, evidence_mismatch);
+    a re-run with no new edits reaches the full tier again instead of failing at commit; and it no longer runs a
+    post-push log-housekeeping commit.
   - >-
     rec-3033's acceptance node exists under its exact name and passes.
   - >-
     SKILL.md stays within its 35,402-byte prose budget with no raise; every touched Python file stays within its SLOC and
     coverage floors (postflight.py's 84.4% baseline not lowered).
   - >-
-    git-ops.yaml carries handoff_sequence with enforcing_checks and the per-surface note, contract_version = live + 1, an
-    amendment_log entry, the new referenced_repo_path, and stays <= 500 effective lines; the trailer-carrier shard is
-    version-agnostic; Decisions 163 and 38 each carry one new dated Update annotation and unchanged bodies.
+    git-ops.yaml carries handoff_sequence with its enforcement_coverage rows (one mechanical, three residual with owners),
+    contract_version = live + 1, an amendment_log entry, both new referenced_repo_paths, and stays <= 500 effective
+    lines; the trailer-carrier shard pins the exact new contract_version literal and is ADMITTED by the differential
+    gate; Decisions 163 and 38 each carry one new dated Update annotation and unchanged bodies.
 verification_plan:
   - step: 1
     phase: pre-deploy
@@ -264,15 +357,23 @@ verification_plan:
       unit test in step 3 is the standing guard.
   - step: 5
     phase: pre-deploy
-    action: Run the postflight suite and the skill anti-drift suite.
-    command: bin/venv-python -m pytest tests/session/postflight tests/test_workflow_skill_antidrift.py -q
+    action: >-
+      Run the postflight suite, the facade-surface pin, and both skill-text pins (the new ordering test and the two
+      unchanged placement pins).
+    command: >-
+      bin/venv-python -m pytest tests/session/postflight tests/test_session_postflight_decomposition.py
+      tests/test_workflow_skill_antidrift.py tests/test_implementation_retrospective_skill_contract.py -q
     expected: >-
       Exit 0, including test_rebase_conflict_returns_rebase_failed_without_validating,
-      test_handoff_full_tier_runs_after_commit_and_rebase and the unchanged
-      test_full_tier_runs_once_and_only_in_the_step7_closure; no test ran a real git fetch/rebase/commit.
+      test_fetch_failure_returns_fetch_failed_without_validating, TestRebaseSeam, TestVerifyHeadSeam,
+      test_clean_tree_is_noop_success, the re-seated test_auto_mode_does_not_call_stage_documents,
+      test_handoff_full_tier_runs_after_commit_and_rebase, and the UNCHANGED
+      test_full_tier_runs_once_and_only_in_the_step7_closure and
+      test_implement_skill_documents_executable_ordered_closure; no test ran a real git fetch/rebase/commit.
     fix_if: >-
-      A real git side effect in a test means a commit-leg test is missing the run_rebase/run_verify_head seams. A failing
-      pre-existing anti-drift test means the reorder dropped a pinned invariant -- restore it.
+      An AssertionError "unstubbed real-git seam" names a run_auto test missing its run_rebase/run_verify_head patch --
+      add the patch, never loosen the conftest stub. A failing placement pin means the SKILL edit broke the placement rule
+      (scope row) -- restore the single backticked full-tier mention in closure item 4, before --evidence.
     hermetic: true
     graduation: waive
     graduation_waiver_reason: >-
@@ -300,11 +401,14 @@ verification_plan:
       Decision-entry conformance, shard admission, graduation completeness) on the COMMITTED tree.
     command: test -z "$(git status --porcelain)" && bin/venv-python -m scripts.validate --pre
     expected: >-
-      The clean-tree assertion passes, then zero failed checks; SKILL.md at or under 35,402 bytes; both new shards
-      ADMITTED; the modified git-ops-trailer-carrier-and-placement-rules shard re-verified green.
+      The clean-tree assertion passes (the work is committed on the session branch before this step -- steps 1-6 may run
+      on the uncommitted tree, this one may not), then zero failed checks; SKILL.md at or under 35,402 bytes; both new
+      shards ADMITTED; the modified git-ops-trailer-carrier-and-placement-rules shard ADMITTED (its exact new
+      contract_version literal FAILS on origin/main and PASSES on HEAD).
     fix_if: >-
       Read the summary, never the exit code (Decision 73). A prose-budget failure means relocate text to git-ops.yaml --
-      never add a raise marker.
+      never add a raise marker. "not admitted -- tautological" on the trailer-carrier shard means its grep matches
+      origin/main's contract_version -- pin the exact value this change leaves behind, never a pattern.
     hermetic: false
     graduation: waive
     graduation_waiver_reason: >-
@@ -321,8 +425,9 @@ verification_plan:
       The clean-tree assertion passes, Validation Summary (scope: all) PASS, then --verify-head exits 0 naming the attested
       tree.
     fix_if: >-
-      A dirty-tree refusal means something was edited after the commit -- commit it and rerun from the start. A timeout is
-      BLOCKED per handoff_policy.
+      A dirty-tree refusal BEFORE the run means something was edited after the commit -- commit it and rerun from the
+      start. A dirty_end that RECURS on a re-run with no edits means the full tier itself writes an unignored file -- a
+      defect: STOP and RCA (Decision 55), never commit-and-rerun (that loops). A timeout is BLOCKED per handoff_policy.
     hermetic: false
     graduation: waive
     graduation_waiver_reason: >-
@@ -423,6 +528,9 @@ context:
   - "Live demonstration while authoring the sibling plan: --pre on an uncommitted new PLAN reported graduation-completeness and VP-replay as 'no PLAN in the diff -- no-op'; after committing, both engaged."
   - "Human-chosen forks: commit-first binding; split into 2a (this: order + evidence) and 2b (fail-closed gate with an ask-a-human valve for validated-but-red, behind a live probe); per-push full-tier cost accepted."
   - "Carried from combined-plan critique round 1: F9 (contract_version collision + trailer shard), F10 (size ceiling), F11 (RESULT_PATH + test_accounting deletes real evidence), F13 (SKILL/command obligations), F14 (postflight seams, rebase status, retired housekeeping leg). Gate findings F1-F8, F12, F15-F17 move to 2b."
+  - "2a critique round 1 (REVISE) folded in: F1 exact-literal shard re-pin (version-agnostic grep is rejected as tautological by the differential gate); F2 fail-closed conftest stub + test_metrics_housekeeping re-seat; F3 schema-v3 test re-seat, git probes stay on validation_result.subprocess.run; F4 SKILL placement rule vs two standing pins, simulated at 35,399 bytes; F5 clean-tree commit no-op, rebase --abort, fetch_failed; F6 declared residual -> rec-4092; F7 AC wording; F8 direct seam tests; F9-F11, F13, F14 advisories; F12 commit sequence. F15 (stale prose-budget shard) and the stale validation-result-schema-v2-attributions shard are rec-3286's refresh path, not inline edits."
+  - "Frame challenge Q3 considered and rejected: validating HEAD inside scripts.verification_graduation.git_worktree would make dirty_start/dirty_end impossible by construction, but drops the gitignored local inputs the full tier reads (dq-latest.json, the recs cache) and adds a worktree + venv-symlink per run; the in-place clean-tree snapshot is kept."
+  - "Decision routing (critique note, not blocking): annotations on 163 and 38 rather than a new Decision -- the rule (full tier before handoff) is unchanged and now applied to the tree that ships; the separately reversible MECHANISM (the push gate) is 2b's Decision."
   - "Gotchas: SKILL.md has 2 bytes of prose headroom and the anti-drift test anchors on the heading 'Run the full gate locally first' and one backticked full-tier mention; CC-web sets commit.gpgsign=true globally (tmp-repo commits pass -c commit.gpgsign=false); tests/conftest.py already clears GITHUB_EVENT_*."
   - "Known wording residual left as-is: scripts/validate.py prints 'Fix all failures before committing.' after what is now a post-commit run (wording only)."
   - "Sequencing: lands after PLAN-ci-rca-rec-trailer-acceptance-coverage; before or alongside PLAN-trailer-acceptance-junit-verdict (both bump git-ops.yaml -- live + 1); 2b lands after this slice."
@@ -430,7 +538,7 @@ context:
   - "Decisions triaged: 154 of 154"
   - "Roadmap items intersected: 6; CONFLICT: 0; RELATED: 5"
   - "Scout gotcha: under commit-first the local full tier's validate_vp_replay implement leg replays this plan's hermetic steps, hence VP step 4 is non-hermetic and clear()'s start snapshot is held in memory, never on disk."
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PENDING"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PENDING (round 1 REVISE addressed; confirming round next)"
 pre_implementation_checklist:
   - Branch confirmed not on main (harness-assigned session branch)
   - docs/PROJECT_CONTEXT.md read
@@ -445,8 +553,10 @@ execution_steps:
   - >-
     tests/checks/registry/test_accounting.py: isolate every clear() from the real evidence path.
   - >-
-    scripts/session/postflight.py + tests/session/postflight/test_auto.py: run_rebase and run_verify_head seams, the new
-    order, retired housekeeping leg, docstrings and help text; re-seat every commit-leg test.
+    scripts/session/postflight.py + tests/session/postflight/{conftest,test_auto,test_metrics_housekeeping,
+    test_validate_commit}.py: clean-tree commit no-op, run_rebase (fetch_failed / abort + rebase_failed / ok) and
+    run_verify_head seams, the new order, retired housekeeping leg, docstrings, status enum and help text; the fail-closed
+    conftest stub first, then re-seat every commit-leg test and add the direct seam tests.
   - >-
     .claude/skills/implement/SKILL.md (byte-neutral), .claude/commands/implement.md (One-full-tier rule, Step 8) and
     tests/test_workflow_skill_antidrift.py.
@@ -457,8 +567,10 @@ execution_steps:
   - >-
     Graduation walk: both new shards (filename == check_id == graduation_check_id), then implementation_declared true.
   - >-
-    Execute VP steps 1-7 (loop until pass; STOP and RCA on a third consecutive failed fix, Decision 55). Then follow the
-    NEW order for this plan's own handoff: commit, fetch + rebase, VP step 8, push as its own tool call.
+    Execute VP steps 1-6 (loop until pass; STOP and RCA on a third consecutive failed fix, Decision 55). COMMIT the work
+    (VP step 7 refuses a dirty tree), then run VP step 7; commit any fix it forces. Then follow the NEW order for this
+    plan's own handoff: `git commit` ONLY if `git status --porcelain` is non-empty (an empty commit exits 1), fetch +
+    rebase, VP step 8, push as its own tool call.
   - >-
     Record the four closure facts separately: readiness states (github_readiness; unknown is never PASS); parent validator
     evidence (VP step 8 full-tier PASS and --verify-head exit 0 on the schema-4 record); structured postflight evidence
