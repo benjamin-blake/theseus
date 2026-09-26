@@ -258,10 +258,15 @@ class TestSubtractionSetPins:
     def test_non_test_budget_dominates_the_mirrored_allowance_and_phase_names_are_real(self) -> None:
         from scripts.checks.verification import validate_vp_replay as vp  # noqa: PLC0415
 
-        assert sb.REPLAY_ALLOWANCE_SECONDS == vp.MAX_AGGREGATE_SECONDS + vp.PER_STEP_TIMEOUT_SECONDS, (
-            "REPLAY_ALLOWANCE_SECONDS mirrors validate_vp_replay's ratified in-tier allowance; if that "
-            "moved, re-derive NON_TEST_BUDGET_SECONDS upward in the same edit (and the cap as "
+        assert sb.REPLAY_ALLOWANCE_SECONDS == vp.MAX_AGGREGATE_SECONDS, (
+            "REPLAY_ALLOWANCE_SECONDS mirrors validate_vp_replay's ratified in-tier allowance (the "
+            "aggregate ALONE under the shared-aggregate deadline model); if that moved, re-derive "
+            "NON_TEST_BUDGET_SECONDS upward in the same edit (and the cap as "
             "CEILING_SECONDS - NON_TEST_BUDGET_SECONDS), never exempt the phase instead."
+        )
+        assert not hasattr(vp, "PER_STEP_TIMEOUT_SECONDS"), (
+            "the flat per-step replay cap is retired under the deadline model -- its return would mean "
+            "the mirrored allowance above needs a second term again"
         )
         assert sb.NON_TEST_BUDGET_SECONDS > sb.REPLAY_ALLOWANCE_SECONDS + _WORST_MEASURED_NON_TEST_HALF, (
             "the non-test budget must DOMINATE the largest ratified in-tier allowance measured inside it "

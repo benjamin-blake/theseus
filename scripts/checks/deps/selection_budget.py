@@ -15,8 +15,10 @@ The tier asserts TWO quantities rather than one aggregate wall clock:
   across both governed terms is exactly the existing derived ceiling -- no second ceiling constant.
 
 REPLAY_ALLOWANCE_SECONDS is neither a budget asserted here nor a term in the cap: it MIRRORS
-validate_vp_replay's own ratified MAX_AGGREGATE_SECONDS + one PER_STEP_TIMEOUT_SECONDS of
-final-step overshoot (that guard trips only at the top of its loop). It is recorded because
+validate_vp_replay's own ratified MAX_AGGREGATE_SECONDS ALONE -- the check's green maximum under
+its shared-aggregate deadline model (PLAN-vp-replay-deadline-from-shared-budget retired the flat
+per-step cap a replayed step's deadline used to add on top of the aggregate; a step now never
+exceeds the aggregate itself, so nothing is added here either). It is recorded because
 NON_TEST_BUDGET_SECONDS was derived to DOMINATE it -- a check sanctioned to consume the whole outer
 budget would make the two jointly unsatisfiable -- and because the breach diagnostic prints
 replay_s beside it, so a replay-dominated non-test breach is self-identifying. It is pinned equal
@@ -60,9 +62,9 @@ CEILING_SECONDS = 1500.0
 # 420.0 -- written as the partition it IS, so the two halves and their sum can never drift apart.
 FLOOR_TOTAL_SECONDS = NON_TEST_BUDGET_SECONDS + TEST_BASE_SECONDS
 
-# Mirror of validate_vp_replay's ratified in-tier allowance (MAX_AGGREGATE_SECONDS +
-# PER_STEP_TIMEOUT_SECONDS). Pinned to its source by test; see the module docstring.
-REPLAY_ALLOWANCE_SECONDS = 150.0
+# Mirror of validate_vp_replay's ratified in-tier allowance (MAX_AGGREGATE_SECONDS alone, under
+# the shared-aggregate deadline model). Pinned to its source by test; see the module docstring.
+REPLAY_ALLOWANCE_SECONDS = 120.0
 
 # The two phase names this module reports on. Their single home: validate.py spells neither.
 TEST_PHASE_NAME = "pytest_diff"

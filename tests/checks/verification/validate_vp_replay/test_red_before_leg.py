@@ -5,10 +5,10 @@ non-graduate non-execution, and the eligibility predicate's two exempt shapes.
 
 from __future__ import annotations
 
-import subprocess as _subprocess
 from pathlib import Path
 from unittest.mock import patch
 
+from scripts.checks.verification import _vp_replay_budget as _vpb
 from scripts.checks.verification.validate_vp_replay import _classify_outcome, _is_red_before_eligible
 
 from .conftest import (
@@ -53,8 +53,10 @@ class TestRedBeforeLeg:
         assert failed == []
 
     def test_non_graduate_dispositions_not_executed(self, tmp_path: Path) -> None:
-        """waive and not-applicable steps are never dynamically replayed -- assert no subprocess
-        is spawned for either, not merely that the check exits 0."""
+        """waive and not-applicable steps are never dynamically replayed -- assert no bounded
+        subprocess is spawned for either, not merely that the check exits 0. A positive control
+        (a genuinely red graduate step) proves the moved seam actually intercepts a real replay,
+        so the absence assertions below cannot pass vacuously on a mis-sited patch."""
         repo, rel = _RedBeforeFixture().build(
             tmp_path,
             "vpr-non-graduate",
@@ -80,14 +82,17 @@ class TestRedBeforeLeg:
                     "fix_if": "n/a",
                     "graduation": "not-applicable",
                 },
+                _graduate_step(3, "exit 1"),
             ],
         )
         failed: list[str] = []
-        with patch("scripts.checks.verification.validate_vp_replay.subprocess.run", wraps=_subprocess.run) as mock_run:
+        target = "scripts.checks.verification.validate_vp_replay._vp_replay_budget.run_bounded"
+        with patch(target, wraps=_vpb.run_bounded) as mock_run:
             validate_vp_replay(failed, changed_files=[rel], root=repo)
         executed = [call.args[0] for call in mock_run.call_args_list if call.args]
         assert "echo SHOULD-NOT-RUN-WAIVE" not in executed
         assert "echo SHOULD-NOT-RUN-NOTAPPLICABLE" not in executed
+        assert "exit 1" in executed, "the moved seam must actually intercept the graduate step's real replay"
         assert failed == []
 
 
@@ -108,23 +113,24 @@ class TestUnmeasurable:
         assert any("actual=unmeasurable" in f for f in failed)
 
     def test_rg_grep_error_exit_2(self, tmp_path: Path) -> None:
-        """Decoupled from a real ripgrep binary: stubs the replayed subprocess to return exit 2
-        directly (rec-3844's own runner condition -- ripgrep absent on ubuntu-latest makes a real
-        invocation exit 127, aliasing this arm with the exit-127 arm instead of exercising it).
-        The stub dispatches on command text (never a blanket return_value) and falls through to a
-        real subprocess.run for everything else, since _run_classifier_self_test shares this same
-        patch target and runs unconditionally before any early return."""
+        """Decoupled from a real ripgrep binary: stubs the bounded runner to return exit 2 directly
+        (rec-3844's own runner condition -- ripgrep absent on ubuntu-latest makes a real invocation
+        exit 127, aliasing this arm with the exit-127 arm instead of exercising it). The stub
+        dispatches on command text (never a blanket return_value) and falls through to the real
+        run_bounded for everything else, since _run_classifier_self_test's own subprocess.run calls
+        (in _vp_replay_classify.py) are a different function entirely and are never intercepted
+        here."""
         command = "rg SOMEPATTERN missing/nonexistent/path.py"
         repo, rel = _RedBeforeFixture().build(tmp_path, "vpr-unm-rg", [_graduate_step(1, command)])
-        _real_run = _subprocess.run  # captured BEFORE patching -- the patch target IS this module object
+        _real_run_bounded = _vpb.run_bounded  # captured BEFORE patching -- the patch target IS this module object
 
-        def _side_effect(*args, **kwargs):
-            if args and args[0] == command:
-                return _subprocess.CompletedProcess(args[0], returncode=2, stdout="", stderr="rg: fixture stub exit 2\n")
-            return _real_run(*args, **kwargs)
+        def _side_effect(cmd, cwd, timeout):
+            if cmd == command:
+                return _vpb.BoundedResult(returncode=2, output="rg: fixture stub exit 2\n", elapsed=0.01, timed_out=False)
+            return _real_run_bounded(cmd, cwd=cwd, timeout=timeout)
 
         failed: list[str] = []
-        with patch("scripts.checks.verification.validate_vp_replay.subprocess.run", side_effect=_side_effect):
+        with patch("scripts.checks.verification.validate_vp_replay._vp_replay_budget.run_bounded", side_effect=_side_effect):
             validate_vp_replay(failed, changed_files=[rel], root=repo)
         assert any("actual=unmeasurable" in f for f in failed)
 
@@ -141,9 +147,26 @@ class TestUnmeasurable:
     def test_subprocess_timeout(self, tmp_path: Path) -> None:
         repo, rel = _RedBeforeFixture().build(tmp_path, "vpr-unm-timeout", [_graduate_step(1, "sleep 5")])
         failed: list[str] = []
-        with patch("scripts.checks.verification.validate_vp_replay.PER_STEP_TIMEOUT_SECONDS", 0.1):
+        with patch("scripts.checks.verification.validate_vp_replay.MAX_AGGREGATE_SECONDS", 0.1):
             validate_vp_replay(failed, changed_files=[rel], root=repo)
-        assert any("actual=unmeasurable" in f and "TIMEOUT" in f for f in failed)
+        assert any("actual=unmeasurable" in f for f in failed)
+
+    def test_red_before_deadline_kill_names_the_aggregate_deadline(self, tmp_path: Path) -> None:
+        """A red-before deadline kill stays unmeasurable (never tautological -- a flat 30s cap
+        would have let "sleep 5" complete, classifying it green-by-construction) and names the
+        aggregate deadline; the top-of-loop "budget exceeded" guard never ALSO fires for step 2,
+        since the kill itself already set budget.hit."""
+        repo, rel = _RedBeforeFixture().build(
+            tmp_path, "vpr-red-before-deadline", [_graduate_step(1, "sleep 5"), _graduate_step(2, "exit 1")]
+        )
+        failed: list[str] = []
+        with patch("scripts.checks.verification.validate_vp_replay.MAX_AGGREGATE_SECONDS", 0.3):
+            validate_vp_replay(failed, changed_files=[rel], root=repo)
+        assert len(failed) == 1, failed
+        assert failed[0].startswith("vp-red-before ")
+        assert "actual=unmeasurable" in failed[0]
+        assert "aggregate deadline" in failed[0]
+        assert not any("budget exceeded" in f for f in failed)
 
 
 class TestClassifierArmsDoNotAlias:

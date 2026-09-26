@@ -134,7 +134,7 @@ class TestImplementLeg:
                     "step": 1,
                     "phase": "pre-deploy",
                     "hermetic": True,
-                    "action": "Run a command that hangs past the per-step timeout.",
+                    "action": "Run a command that hangs past the aggregate deadline.",
                     "command": "sleep 5",
                     "expected": "Exit 0.",
                     "fix_if": "n/a",
@@ -142,9 +142,10 @@ class TestImplementLeg:
             ],
         )
         failed: list[str] = []
-        with patch("scripts.checks.verification.validate_vp_replay.PER_STEP_TIMEOUT_SECONDS", 0.1):
+        with patch("scripts.checks.verification.validate_vp_replay.MAX_AGGREGATE_SECONDS", 0.1):
             validate_vp_replay(failed, changed_files=[rel], root=repo)
         assert any("TIMEOUT" in f for f in failed)
+        assert any("aggregate deadline" in f for f in failed)
 
     def test_load_error_path_is_skipped_with_note(self, tmp_path: Path, capsys) -> None:
         repo = tmp_path / "repo"

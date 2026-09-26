@@ -4,6 +4,7 @@ recursion refusal) and the shared cross-leg replay budget (docs/contracts/vp-red
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -243,6 +244,116 @@ class TestSharedBudget:
         with patch("scripts.checks.verification.validate_vp_replay.MAX_AGGREGATE_SECONDS", 0):
             validate_vp_replay(failed, changed_files=[rel], root=repo)
         assert any("budget exceeded" in f for f in failed)
+
+    def test_step_deadline_is_the_remaining_aggregate_not_a_flat_cap(self, tmp_path: Path) -> None:
+        """A step's subprocess deadline is the REMAINING share of the shared aggregate, never a
+        flat per-step cap: with a 2.0s aggregate, "sleep 1.2" completes inside its own share,
+        "sleep 5" is then killed at the ~0.8s remaining (never at the retired 30s flat cap), and
+        "true" never runs -- exactly one failure, and the whole dispatch stays well under 5s."""
+        repo, rel = _ResolvedFixture().build(
+            tmp_path,
+            "vpr-deadline-remaining",
+            [
+                {
+                    "step": 1,
+                    "phase": "pre-deploy",
+                    "hermetic": True,
+                    "action": "completes inside its own share of the aggregate",
+                    "command": "sleep 1.2",
+                    "expected": "n/a",
+                    "fix_if": "n/a",
+                },
+                {
+                    "step": 2,
+                    "phase": "pre-deploy",
+                    "hermetic": True,
+                    "action": "killed at the remaining aggregate deadline",
+                    "command": "sleep 5",
+                    "expected": "n/a",
+                    "fix_if": "n/a",
+                },
+                {
+                    "step": 3,
+                    "phase": "pre-deploy",
+                    "hermetic": True,
+                    "action": "never runs -- the budget is already exhausted",
+                    "command": "true",
+                    "expected": "n/a",
+                    "fix_if": "n/a",
+                },
+            ],
+        )
+        failed: list[str] = []
+        start = time.monotonic()
+        with patch("scripts.checks.verification.validate_vp_replay.MAX_AGGREGATE_SECONDS", 2.0):
+            validate_vp_replay(failed, changed_files=[rel], root=repo)
+        elapsed = time.monotonic() - start
+        assert len(failed) == 1, failed
+        assert f"{rel}:2" in failed[0]
+        assert "aggregate deadline" in failed[0]
+        assert elapsed < 5.0
+
+    def test_budget_exhaustion_reports_exactly_one_failure(self, tmp_path: Path) -> None:
+        """rec-3833's acceptance node: a resolved plan plus a red-before-eligible plan in one diff,
+        with the aggregate patched to 0 so it is exhausted before either leg's first step can even
+        start -- the implement leg's top-of-loop guard reports the ONE exhaustion, and the
+        red-before leg sees ``budget.hit`` already set and stops silently (never a second entry)."""
+        resolved_repo, resolved_rel = _ResolvedFixture().build(
+            tmp_path,
+            "vpr-exhaustion-resolved",
+            [
+                {
+                    "step": 1,
+                    "phase": "pre-deploy",
+                    "hermetic": True,
+                    "action": "x",
+                    "command": "true",
+                    "expected": "n/a",
+                    "fix_if": "n/a",
+                }
+            ],
+        )
+        red_before_rel = _write_vp_replay_plan(
+            resolved_repo,
+            "vpr-exhaustion-redbefore",
+            [_step(1, "true", graduation="graduate", graduation_check_id="vpr-exhaustion-1")],
+            declared=False,
+        )
+        _commit_all(resolved_repo, "add second plan")
+
+        failed: list[str] = []
+        with patch("scripts.checks.verification.validate_vp_replay.MAX_AGGREGATE_SECONDS", 0):
+            validate_vp_replay(failed, changed_files=[resolved_rel, red_before_rel], root=resolved_repo)
+        assert len(failed) == 1, failed
+        assert "budget exceeded" in failed[0]
+
+    def test_step_over_half_the_aggregate_warns_without_failing(self, tmp_path: Path, capsys) -> None:
+        """The warn band is advisory only: a step over PER_STEP_WARN_FRACTION of the aggregate
+        prints a WARN and every replayed PASS line carries a duration suffix, but nothing fails
+        and the summary line prints exactly once."""
+        repo, rel = _ResolvedFixture().build(
+            tmp_path,
+            "vpr-warn-band",
+            [
+                {
+                    "step": 1,
+                    "phase": "pre-deploy",
+                    "hermetic": True,
+                    "action": "over half the aggregate",
+                    "command": "sleep 1.2",
+                    "expected": "n/a",
+                    "fix_if": "n/a",
+                }
+            ],
+        )
+        failed: list[str] = []
+        with patch("scripts.checks.verification.validate_vp_replay.MAX_AGGREGATE_SECONDS", 2.0):
+            validate_vp_replay(failed, changed_files=[rel], root=repo)
+        out = capsys.readouterr().out
+        assert failed == []
+        assert "WARN" in out
+        assert "% of 2s)" in out
+        assert out.count("vp-replay budget:") == 1
 
 
 class TestNegatedSweepExtractorUnit:

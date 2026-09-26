@@ -17,7 +17,7 @@
 contract:
   id: vp-red-before
   class: D
-  contract_version: 4
+  contract_version: 5
   status: provisional_v0
   description: >-
     validate_vp_replay's two legs. Inverted-polarity plan-only leg: a graduate-disposition
@@ -88,6 +88,19 @@ amendment_log:
       rec-3900/rec-3555 recorded after PLAN-g4-byte-source-and-post-expiry-bound's VP1 stranded an
       /implement session with an unemittable literal. contract_version bumped 3 -> 4 alongside this
       entry, per this file's own convention.
+  - date: "2026-09-26"
+    semantic_break: false
+    change_class: field_add
+    summary: >-
+      PLAN-vp-replay-deadline-from-shared-budget: added replay_bound -- a replayed step's
+      subprocess deadline is re-derived from a flat PER_STEP_TIMEOUT_SECONDS (30) cap to the
+      remaining share of the shared MAX_AGGREGATE_SECONDS aggregate (Decision 182 reversal
+      condition (b)), killing the step's whole process group on timeout, with per-step/summary
+      duration telemetry and an advisory 0.5x/0.8x warn band. Also folds in rec-3833: one
+      budget-exhaustion event now yields exactly one failure per dispatch, never one per leg. The
+      check's own worst-case green maximum TIGHTENS from 150s (MAX_AGGREGATE_SECONDS + one
+      PER_STEP_TIMEOUT_SECONDS) to 120s (MAX_AGGREGATE_SECONDS alone). contract_version bumped
+      4 -> 5 alongside this entry, per this file's own convention.
 
 # The FOUR frozen outcome classes a dynamically-replayed graduate step's result is classified
 # into (scripts.checks.verification.validate_vp_replay.OUTCOME_CLASSES derive-and-asserts equal
@@ -307,3 +320,35 @@ unsat_guard_suppressor_flags:
   - "-c"
   - "-l"
   - "-q"
+
+# PLAN-vp-replay-deadline-from-shared-budget: the shared-aggregate deadline model a replayed VP
+# step's subprocess runs under (scripts.checks.verification._vp_replay_budget). The three
+# fractions are derive-and-asserted equal to that module's own constants by
+# TestContractPins::test_replay_bound_matches_the_contract -- the contract and the code cannot
+# drift on the numbers this file exists to freeze.
+replay_bound:
+  per_step_warn_fraction: 0.5
+  cumulative_warn_fraction: 0.8
+  authoring_max_fraction: 0.25
+  deadline: >-
+    A replayed step's subprocess deadline is the REMAINING share of the shared
+    MAX_AGGREGATE_SECONDS aggregate (validate_vp_replay._ReplayBudget.remaining()), never a flat
+    per-step cap -- the deadline shrinks as prior steps in the same dispatch spend it. Replaces
+    the retired flat PER_STEP_TIMEOUT_SECONDS (30s), which bound wherever replay ran regardless of
+    how much of the aggregate remained (Decision 182 reversal condition (b)).
+  kill: >-
+    A step that reaches its deadline is killed by SIGKILL to its WHOLE process group
+    (_vp_replay_budget.run_bounded -- never a bare process kill, which would orphan a descendant);
+    its failure text carries TIMEOUT and "aggregate deadline". On the red-before leg the same kill
+    classifies unmeasurable, via the existing subprocess_timeout arm -- the four frozen outcome
+    classes above are unchanged. One budget-exhaustion event yields EXACTLY ONE failure per
+    dispatch (rec-3833): whichever leg first observes the exhausted budget reports it, and every
+    later check across both legs sees it already reported and stops silently.
+  authoring: >-
+    Author a hermetic pre-deploy step to stay under authoring_max_fraction (25%) of the aggregate,
+    measured before merge. A step that cannot be narrowed below that target states its measured
+    duration and why in its own fix_if or the plan context, and stays hermetic -- the target is
+    ADVISORY and surfaces after the fact through the terminal per-dispatch summary line; the
+    deadline above and the per_step_warn_fraction/cumulative_warn_fraction band are what actually
+    bind. The warn band never appends to a check's failed[] list -- it is drift visibility, never a
+    gate.

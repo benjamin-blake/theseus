@@ -61,10 +61,64 @@ class TestSelfTestFixtureRunner:
     """_run_self_test_fixture, both paths."""
 
     def test_completing_command_is_classified(self) -> None:
-        assert classify._run_self_test_fixture("exit 1", classify.PER_STEP_TIMEOUT_SECONDS) == "assertion_failed"
+        assert classify._run_self_test_fixture("exit 1", classify._SELF_TEST_COMPLETING_BOUND_SECONDS) == "assertion_failed"
 
     def test_timeout_path_is_classified_unmeasurable(self) -> None:
         assert classify._run_self_test_fixture("sleep 5", classify._SELF_TEST_TIMEOUT_SECONDS) == "unmeasurable"
+
+
+class TestPerStepTimeoutSecondsRetired:
+    """The flat per-step replay cap is gone -- the four completing fixtures carry their own local
+    bound instead, and the sleep fixture keeps its own dedicated timeout."""
+
+    def test_module_no_longer_defines_the_retired_constant(self) -> None:
+        assert not hasattr(classify, "PER_STEP_TIMEOUT_SECONDS")
+
+    def test_completing_fixtures_carry_the_local_bound_and_the_sleep_fixture_keeps_its_own(self) -> None:
+        completing = [f for f in classify._SELF_TEST_FIXTURES if f[0] != "sleep 5"]
+        assert completing
+        assert all(timeout == classify._SELF_TEST_COMPLETING_BOUND_SECONDS for _cmd, _expected, timeout in completing)
+        sleep_fixture = next(f for f in classify._SELF_TEST_FIXTURES if f[0] == "sleep 5")
+        assert sleep_fixture[2] == classify._SELF_TEST_TIMEOUT_SECONDS
+
+
+class TestScriptsValidateRecursionRefusalUnit:
+    """Direct unit coverage of the relocated recursion-refusal helpers (Decision 128 overflow
+    destination fired by this plan's deadline-model rewrite -- see the module docstring). The
+    full-tier per-file coverage floor measures this file against _vp_replay_classify.py ALONE;
+    tests/checks/verification/validate_vp_replay/test_lint_and_budget.py's end-to-end fixtures
+    exercise these same functions via validate_vp_replay's re-export but do not count toward that
+    isolated measurement."""
+
+    def test_module_flag_pair_is_true(self) -> None:
+        assert classify._segment_invokes_scripts_validate(["bin/venv-python", "-m", "scripts.validate", "--pre"]) is True
+
+    def test_empty_tokens_is_false(self) -> None:
+        assert classify._segment_invokes_scripts_validate([]) is False
+
+    def test_bare_script_path_as_argv_head_is_true(self) -> None:
+        assert classify._segment_invokes_scripts_validate(["scripts/validate.py", "--pre"]) is True
+
+    def test_script_path_suffix_match_as_argv_head_is_true(self) -> None:
+        assert classify._segment_invokes_scripts_validate(["/abs/path/scripts/validate.py"]) is True
+
+    def test_interpreter_prefixed_script_path_is_true(self) -> None:
+        assert classify._segment_invokes_scripts_validate(["python3", "scripts/validate.py"]) is True
+
+    def test_interpreter_prefixed_script_path_suffix_match_is_true(self) -> None:
+        assert classify._segment_invokes_scripts_validate(["python", "/abs/scripts/validate.py"]) is True
+
+    def test_interpreter_alone_with_no_second_token_is_false(self) -> None:
+        assert classify._segment_invokes_scripts_validate(["python3"]) is False
+
+    def test_unrelated_command_is_false(self) -> None:
+        assert classify._segment_invokes_scripts_validate(["ls", "-la"]) is False
+
+    def test_command_invokes_scripts_validate_splits_shell_segments(self) -> None:
+        assert classify._command_invokes_scripts_validate("echo hi && bin/venv-python -m scripts.validate --pre") is True
+
+    def test_command_with_no_scripts_validate_segment_is_false(self) -> None:
+        assert classify._command_invokes_scripts_validate("echo hi; ls -la") is False
 
 
 class TestClassifierSelfTest:
