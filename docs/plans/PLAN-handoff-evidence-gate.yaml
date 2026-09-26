@@ -168,9 +168,18 @@ scope:
     purpose: >-
       Class D (Decision 168). SIZE, pre-decided (critique round 2 N7): the clause <= 30 effective lines and the whole git-ops
       diff (clause, list rows, amendment_log entry, paths) <= 50; the long residual enumeration lives in rec-4085's
-      warehouse context and handoff_push_parse's module docstring and is CITED by one row, never restated; measure the
-      LIVE count at implement time (after slice 2a and PLAN-trailer-acceptance-junit-verdict) and STOP and surface if it
-      would still exceed 500, never raise. Add `handoff_evidence_gate:`: exempt_path_globs [docs/plans/*,
+      warehouse context and handoff_push_parse's module docstring and is CITED by one row, never restated. HEADROOM
+      FIRST (plan amendment 2026-09-26: slices 2a and junit-verdict landed git-ops.yaml at 496 of 500 effective lines,
+      so this diff cannot fit as-is): in the SAME diff, apply the contracts-class relief_valve "compact amendment
+      history" (config/structural_size_budgets.yaml; precedent Decision 175, which trimmed decision-entry.yaml's log) --
+      rewrite every amendment_log entry EXCEPT the two newest (slice 2a's and junit-verdict's) as a single-line flow
+      mapping, `- {date: ..., semantic_break: ..., change_class: ..., summary: "..."}`, keys and text preserved exactly
+      so the parsed amendment_log list is unchanged. Plan-time simulation on origin/main 74cecbf7: 6 of 8 entries
+      compacted -> 496 to 425 effective lines, longest line 1,121 chars (cap 2,000), parsed entries identical, all 8
+      shards that read git-ops.yaml exit 0, validate_git_ops_contract and tests/checks/contracts/test_validate_git_ops_contract.py
+      green, and check_amendment_log_for_class_d returns None for the compaction alone. This diff then lands at <= 475.
+      Re-measure the LIVE count at implement time; STOP and surface only if it would still exceed 500 after the
+      compaction -- never raise. Add `handoff_evidence_gate:`: exempt_path_globs [docs/plans/*,
       docs/audit-prompts/*, audits/*, docs/ROADMAP-PLATFORM.yaml] (`*` crosses `/`; .secrets.baseline deliberately NOT
       exempt); never_exempt_paths [docs/contracts/git-ops.yaml, .claude/settings.json, .claude/settings.local.json,
       .claude/hooks/handoff_evidence_gate.*, scripts/session/handoff_evidence.py, scripts/session/handoff_push_parse.py,
@@ -457,13 +466,23 @@ verification_plan:
     action: >-
       Run the fast tier on the COMMITTED tree (prose, SLOC, git-ops contract binding and size shard, Decision-entry
       conformance, shard admission, graduation completeness).
-    command: test -z "$(git status --porcelain)" && bin/venv-python -m scripts.validate --pre
+    command: >-
+      test -z "$(git status --porcelain)"
+      && bin/venv-python -c "import subprocess, yaml; b = yaml.safe_load(subprocess.run(['git', 'show',
+      'origin/main:docs/contracts/git-ops.yaml'], capture_output=True, text=True, check=True).stdout)['amendment_log'];
+      h = yaml.safe_load(open('docs/contracts/git-ops.yaml', encoding='utf-8'))['amendment_log'];
+      assert len(h) == len(b) + 1 and h[1:] == b, 'amendment_log history changed'; print('history preserved')"
+      && bin/venv-python -m scripts.validate --pre
     expected: >-
-      The clean-tree assertion passes (commit before this step), then zero failed checks; all six new shards ADMITTED;
-      the re-pinned trailer-carrier shard ADMITTED; git-ops.yaml within 500 effective lines.
+      The clean-tree assertion passes (commit before this step); "history preserved" prints (exactly one new
+      amendment_log entry, prepended, and every pre-existing entry parses identically after the compaction); then zero
+      failed checks; all six new shards ADMITTED; the re-pinned trailer-carrier shard ADMITTED; git-ops.yaml within 500
+      effective lines.
     fix_if: >-
       Read the summary, never the exit code (Decision 73). "not admitted -- tautological" on the trailer-carrier shard
-      means it pins a value origin/main also carries -- pin the exact value this change leaves behind.
+      means it pins a value origin/main also carries -- pin the exact value this change leaves behind. "history changed"
+      means the compaction altered an entry's text or keys -- restore it verbatim (a newest-first log takes the new entry
+      at index 0).
     hermetic: false
     graduation: waive
     graduation_waiver_reason: Invokes scripts.validate (recursion refusal); its exit code is not a kernel assertion outside CI.
@@ -642,8 +661,10 @@ constraints:
     Leave never_on_main.py, fresh_branch_base.py, edit_scope_guard.py and scheduled_agent_log_only.py and their settings
     entry untouched (Decision 138). Register the new settings entry LAST (the file watcher makes it live immediately).
   - >-
-    git-ops.yaml: contract_version = live value + 1; clause <= 30 effective lines, whole diff <= 50; file <= 500
-    effective lines (STOP and surface, never raise); no bare `claude/` outside agent_branch_prefixes.
+    git-ops.yaml: contract_version = live value + 1; clause <= 30 effective lines, whole diff <= 50 on top of the
+    amendment_log compaction (relief valve, never a raise); every pre-existing amendment_log entry's parsed content
+    unchanged (VP step 9); file <= 500 effective lines (STOP and surface, never raise); no bare `claude/` outside
+    agent_branch_prefixes.
   - >-
     Post-deploy probes run in a throwaway worktree with fixed /tmp paths and agent-prefixed destination branches; every
     push under test is its own tool call; the session's own checkout is never switched.
@@ -656,6 +677,7 @@ context:
   - "Redesign round 1 (REVISE, F1-F9 + M1-M6) folded in: F1 co-occurrence classifier (wrappers, grouping, substitution, newline and shell-fed heredoc forms; known no-arg git globals); F2 --no-renames; F3 shim self-timeout, explicit hook timeout, trap, whole-payload pre-filter, absolute paths; F4 bare and option-order-insensitive push, single agent-branch delete, update_pull_request_branch ungated (Dependabot) and declared; F5 2a's list extended in place with the rec-4083 row flipped, Monitor routed, check-level timeouts under rec-4087, executor folded into rec-4085; F6 destination restricted to agent branches, never main; F7 classifier moved under scripts/session/ (100% floor); F8 rule-code assertions + positive control; F9 real-writer evidence, realpath toplevel, load-status branching; M1 additionalContext; M2 register last, live via file watcher; M3 VP split; M4 -C relative to cd; M6 WIP pushes named."
   - "Redesign round 2 (REVISE, light) folded in: N1 shlex commenters '' (a comment swallowed the newline separator); N2 heredocs only in command context, recursive token-based $(...) body rule; N3 sh -c at any position and eval recurse; N4 gate-local extra_destination_prefixes [audit/] (audit-execution branches) and a HEAD:claude/<slug> hint; N5 enforced_by names pytest nodes as 2a does; N6 bare push also needs remote.<r>.push/mirror unset; N7 git-ops budget pre-decided (clause <= 30, diff <= 50, residuals cited from rec-4085 and the parser docstring); N8 non-agent deletes human-only, seeded tmp git-ops.yaml, Monitor ws passes; timeout -k."
   - "Redesign round 3 (REVISE, minimal) folded in: R3-1 an absent gate clause on the base ref means no extra prefixes and no exemptions (bootstrap), only unreadable agent_branch_prefixes denies; R3-2 a heredoc piped into a shell is classified; R3-3 backslash-newline continuations removed before tokenising; R3-4 fail-closed rule for code-producing substitution in sh -c/eval; R3-5 false-positive wording; R3-6 rec-4085 context appended at plan time; AC2 reworded. Diff-confirm D1 (continuations removed only after heredoc stripping) folded in."
+  - "Plan amendment 2026-09-26 (post-approval, pre-implementation; operator-directed after reviewing what landed): slices 2a (#1289) and junit-verdict (#1284) left git-ops.yaml at 496 of 500 effective lines, so this plan's <= 50-line diff would have hit its own STOP rule. The git-ops row now applies the contracts-class relief valve (compact the six oldest amendment_log entries to single-line flow mappings; simulated 496 -> 425 with every git-ops shard green) in the same diff, and VP step 9 asserts the history is preserved. Nothing else changed; 2a's interface (evidence_path_for, load_record, attests_head, ATTEST_RULES) verified present on main; Decision 202 has since landed and 203 is still unclaimed."
   - "Round-1 (original design) dispositions still standing: F1 fail-closed exit map; F2 allowlist; F3 carve-out harness-only; F4 worktree-list mapping; F5/F7/M6 moot (no pre-push, no valve); F6 explicit test env + GITHUB_ACTIONS=true rerun; F8 residual rows; M1 Decision 203; M2 anchored matcher; M3 pre-filter; M4 injected clause; M5 exact-literal re-pin; M7 merge-base fail closed."
   - "Why identity, not verdict: the defect the operator named is validation of an uncommitted tree; identity gating closes exactly that with no wedge. Blocking red needs a deterministic inherited-red release first (Decision 83 non-wedging posture) -- rec-4087."
   - "Hooks reference (code.claude.com/docs/en/hooks.md, fetched 2026-09-26): exit 2 blocks and feeds stderr to Claude; any other exit code does not block; a timed-out command hook does not block (default timeout 600s); stderr on exit 0 reaches only the debug log; allow skips the permission prompt; exit 0 with no output means no decision; PreToolUse additionalContext reaches Claude and systemMessage the user; regex matchers are unanchored unless ^...$; the hook cwd follows Claude's cwd; settings edits are picked up by the file watcher."
@@ -664,7 +686,7 @@ context:
   - "Decision-scout verdict FLAGS_FOUND. CITE list (verbatim): 177, 167, 187, 138, 168, 132. CONTRADICT: 181 [WARN] (every residual row owned: rec-4085, rec-4086, rec-4087; mechanical rows name graduated check_ids), 163 [NOTE] (no amends field). SPIRIT: 83 [WARN] (resolved by the redesign: nothing wedges on red; rec-4087 owns verdict gating). RELATED: 76, 189, 135, 73, 72, 67, 184, 162, 150, 115. ROADMAP: T2.54 [CITE], T1.17, T1.5, T2.48, T4.23."
   - "Decisions triaged: 154 of 154"
   - "Roadmap items intersected: 5; CONFLICT: 0; RELATED: 4"
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PROCEED after 4 round(s) of the redesign (original-design round 1 REVISE superseded by the operator-chosen redesign; round 4 diff-confirm advisory D1 folded in before merge)"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PROCEED after 4 round(s) of the redesign (2026-09-26 headroom amendment diff-confirmed separately) (original-design round 1 REVISE superseded by the operator-chosen redesign; round 4 diff-confirm advisory D1 folded in before merge)"
 pre_implementation_checklist:
   - Branch confirmed not on main; slice 2a confirmed merged on origin/main
   - docs/PROJECT_CONTEXT.md read
