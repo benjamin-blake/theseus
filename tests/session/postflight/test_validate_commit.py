@@ -97,6 +97,19 @@ class TestCommitRetry:
             rc = _postflight.run_commit("feat: test commit")
         assert rc == 0
 
+    def test_clean_tree_is_noop_success(self) -> None:
+        def mock_run(cmd: list, **kwargs: object) -> MagicMock:
+            cmd_str = " ".join(str(c) for c in cmd)
+            if "status" in cmd_str:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("scripts.postflight._common._run", side_effect=mock_run) as mock_common_run:
+            rc = _postflight.run_commit("feat: nothing to commit")
+        assert rc == 0
+        commit_calls = [c for c in mock_common_run.call_args_list if "commit" in " ".join(str(a) for a in c.args[0])]
+        assert commit_calls == []
+
     def test_retries_on_pre_commit_failure_then_succeeds(self) -> None:
         call_count = 0
 
@@ -105,7 +118,11 @@ class TestCommitRetry:
             result = MagicMock()
             result.stderr = ""
             cmd_str = " ".join(str(c) for c in cmd)
-            if "commit" in cmd_str:
+            if "status" in cmd_str:
+                # Non-empty so the clean-tree no-op probe does not short-circuit this retry path.
+                result.returncode = 0
+                result.stdout = " M scripts/foo.py"
+            elif "commit" in cmd_str:
                 call_count += 1
                 if call_count <= 2:
                     result.returncode = 1

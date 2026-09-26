@@ -13,7 +13,10 @@ Modes:
     --close              Intent verification + SESSION_LOG entry + pre-commit sanity; output JSON
     --log-housekeeping   Commit and push uncommitted JSONL log files
     --close-session      Finalise the active telemetry session opened by --open-session
-    --auto "message"     Full session close in one command: validate -> close -> metrics -> commit -> push -> log-housekeeping
+    --auto "message"     Full session close in one command: close -> evidence -> metrics ->
+                          commit -> rebase -> validate -> verify-head -> push -> portal sync
+                          (PLAN-handoff-validates-committed-tree: the full tier now runs on the
+                          committed, rebased, clean tree, so its evidence attests HEAD)
 
 Usage:
     python scripts/session/postflight.py --validate
@@ -178,12 +181,23 @@ def run_pre_commit_sanity() -> int:
 
 
 def run_commit(message: str) -> int:
-    """Run git add + commit with pre-commit retry up to MAX_COMMIT_RETRIES."""
+    """Run git add + commit with pre-commit retry up to MAX_COMMIT_RETRIES.
+
+    A clean tree after `git add .` is a NO-OP SUCCESS (rc 0), not a failure: re-running --auto
+    after a red full tier or an evidence mismatch with no new edits must reach the full tier
+    again, not burn a commit_failed attempt on nothing to commit. This also makes the standalone
+    --commit idempotent.
+    """
     for attempt in range(1, _common.MAX_COMMIT_RETRIES + 1):
         add_result = _common._run(["git", "add", "."])
         if add_result.returncode != 0:
             print(f"git add failed: {add_result.stderr}", file=sys.stderr)
             return 1
+
+        status_result = _common._run(["git", "status", "--porcelain"])
+        if status_result.returncode == 0 and not status_result.stdout.strip():
+            print("Nothing to commit -- tree is clean.")
+            return 0
 
         commit_result = _common._run(["git", "commit", "-m", message])
         if commit_result.returncode == 0:
@@ -273,24 +287,63 @@ def run_close() -> int:
     return 0
 
 
-def run_auto(commit_message: str, steps_total: int = 0, steps_friction: int = 0) -> int:
-    """Full session close: validate -> close -> metrics -> commit -> push -> log-housekeeping.
+def run_rebase() -> str:
+    """Fetch origin/main and rebase HEAD onto it.
 
-    Returns combined JSON status printed to stdout. Stops at first non-zero exit
-    code except for log-housekeeping (best-effort, failure does not affect rc).
+    Returns "ok", "fetch_failed" (`git fetch origin main` was non-zero; no rebase attempted), or
+    "rebase_failed" (`git rebase origin/main` was non-zero) -- after a rebase_failed outcome this
+    ALWAYS runs `git rebase --abort` first, so a re-run never commits mid-rebase conflict markers.
+    Never auto-resolves a conflict.
+    """
+    fetch_result = _common._run(["git", "fetch", "origin", "main"])
+    if fetch_result.returncode != 0:
+        print(f"git fetch origin main failed: {fetch_result.stderr}", file=sys.stderr)
+        return "fetch_failed"
+
+    rebase_result = _common._run(["git", "rebase", "origin/main"])
+    if rebase_result.returncode != 0:
+        print(f"git rebase origin/main failed:\n{rebase_result.stdout}", file=sys.stderr)
+        _common._run(["git", "rebase", "--abort"])
+        return "rebase_failed"
+    return "ok"
+
+
+def run_verify_head() -> int:
+    """Run `scripts.checks.validation_result --verify-head` through the same transport as
+    run_validate() (_common._run), print its output, and return its exit code -- 0 only when the
+    just-written full-tier evidence attests the current (committed, rebased) HEAD's tree."""
+    result = _common._run([_common.PYTHON, "-m", "scripts.checks.validation_result", "--verify-head"])
+    print(result.stdout)
+    if result.stderr:
+        print(result.stderr, file=sys.stderr)
+    return result.returncode
+
+
+def run_auto(commit_message: str, steps_total: int = 0, steps_friction: int = 0) -> int:
+    """Full session close: close -> evidence -> metrics -> commit -> rebase -> validate (full
+    tier) -> verify-head -> push -> portal sync (PLAN-handoff-validates-committed-tree).
+
+    The full tier now runs on the COMMITTED, rebased, clean tree rather than before commit, so its
+    evidence can attest HEAD's tree (verify-head). Returns combined JSON status printed to stdout.
+    Stops at the first non-zero/non-"ok" outcome -- run_commit treats a clean tree as a no-op
+    success, so a re-run after a red full tier or an evidence mismatch with no new edits reaches
+    the full tier again instead of failing at commit.
 
     Output JSON fields::
 
         {
-          "validate": "PASS" | "FAIL",
           "close_exit": int,
           "sanity_status": "PASS" | "FAIL" | "UNKNOWN",
           "intent_achieved": bool | null,
           "session_log_entry": str,
+          "evidence": "PASS",
           "commit": "PASS" | "FAIL",
-          "status": "merged" | "validate_failed" | "sanity_failed"
-                    | "commit_failed" | "ci_failed" | "ci_timeout"
-                    | "push_failed" | "unknown",
+          "rebase": "ok" | "fetch_failed" | "rebase_failed",
+          "validate": "PASS" | "FAIL",
+          "verify_head": "PASS" | "FAIL",
+          "status": "merged" | "sanity_failed" | "evidence_failed" | "commit_failed"
+                    | "fetch_failed" | "rebase_failed" | "validate_failed" | "evidence_mismatch"
+                    | "ci_failed" | "ci_timeout" | "push_failed" | "unknown",
           "pr_url": str,
           "error_summary": str
         }
@@ -304,16 +357,7 @@ def run_auto(commit_message: str, steps_total: int = 0, steps_friction: int = 0)
 
     results: dict = {}
 
-    # 1. Validate
-    print("[auto] Running --validate...", flush=True)
-    rc = run_validate()
-    results["validate"] = "PASS" if rc == 0 else "FAIL"
-    if rc != 0:
-        results["status"] = "validate_failed"
-        print(json.dumps(results, indent=2))
-        return rc
-
-    # 2. Close (capture output so we can surface key fields)
+    # 1. Close (capture output so we can surface key fields)
     print("[auto] Running --close...", flush=True)
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
@@ -333,6 +377,7 @@ def run_auto(commit_message: str, steps_total: int = 0, steps_friction: int = 0)
         print(json.dumps(results, indent=2))
         return 1
 
+    # 2. Evidence
     try:
         evidence = json.loads(postflight_evidence.EVIDENCE_PATH.read_text(encoding="utf-8"))
         postflight_evidence.validate(evidence)
@@ -350,7 +395,7 @@ def run_auto(commit_message: str, steps_total: int = 0, steps_friction: int = 0)
         housekeeping.run_metrics(steps_total, steps_friction)
     print(buf2.getvalue().strip())
 
-    # 4. Commit
+    # 4. Commit (a clean tree is a no-op success -- see run_commit)
     print(f"[auto] Running --commit '{commit_message}'...", flush=True)
     rc = run_commit(commit_message)
     results["commit"] = "PASS" if rc == 0 else "FAIL"
@@ -359,7 +404,34 @@ def run_auto(commit_message: str, steps_total: int = 0, steps_friction: int = 0)
         print(json.dumps(results, indent=2))
         return rc
 
-    # 5. Push
+    # 5. Rebase onto origin/main (never auto-resolves a conflict)
+    print("[auto] Running rebase...", flush=True)
+    rebase_status = run_rebase()
+    results["rebase"] = rebase_status
+    if rebase_status != "ok":
+        results["status"] = rebase_status
+        print(json.dumps(results, indent=2))
+        return 1
+
+    # 6. Validate -- the full tier, now on the committed, rebased, clean tree
+    print("[auto] Running --validate...", flush=True)
+    rc = run_validate()
+    results["validate"] = "PASS" if rc == 0 else "FAIL"
+    if rc != 0:
+        results["status"] = "validate_failed"
+        print(json.dumps(results, indent=2))
+        return rc
+
+    # 7. Verify-head -- the full tier's own evidence must attest this exact HEAD's tree
+    print("[auto] Running verify-head...", flush=True)
+    rc = run_verify_head()
+    results["verify_head"] = "PASS" if rc == 0 else "FAIL"
+    if rc != 0:
+        results["status"] = "evidence_mismatch"
+        print(json.dumps(results, indent=2))
+        return rc
+
+    # 8. Push
     print("[auto] Running --push...", flush=True)
     buf3 = io.StringIO()
     with contextlib.redirect_stdout(buf3):
@@ -374,14 +446,15 @@ def run_auto(commit_message: str, steps_total: int = 0, steps_friction: int = 0)
     except (json.JSONDecodeError, ValueError):
         results["status"] = "push_failed" if rc != 0 else "unknown"
 
-    # 6. Log housekeeping (best-effort, don't fail auto on this)
-    print("[auto] Running --log-housekeeping (best-effort)...", flush=True)
-    housekeeping.run_log_housekeeping()
+    # (retired) The post-push log-housekeeping leg is gone (Decision 84 I-4): nothing under logs/
+    # is tracked, so it was already a no-op, and pushing it here would have committed a tree the
+    # full tier above never validated. housekeeping.run_log_housekeeping() and the standalone
+    # --log-housekeeping CLI stay for a caller that wants them directly.
 
     # 7b. (retired) The pending-outbox drain was removed with the outbox itself (Decision 84 I-4):
     # file_rec/file_decision now fail loudly at the call site instead of queueing.
 
-    # 8. Refresh the local read-cache from the DuckLake reader
+    # 9. Refresh the local read-cache from the DuckLake reader
     try:
         from scripts.ops_data_portal import sync as _portal_sync  # noqa: PLC0415
 
@@ -418,7 +491,7 @@ def main() -> int:
     group.add_argument(
         "--auto",
         metavar="MESSAGE",
-        help="Full session close: validate->close->metrics->commit->push->log-housekeeping",
+        help="Full session close: close->evidence->metrics->commit->rebase->validate->verify-head->push->portal sync",
     )
     parser.add_argument(
         "--steps-total",

@@ -350,7 +350,7 @@ This workflow runs on Claude Code on the web: the harness assigns this session i
 1. Run `bin/venv-python -m scripts.session.github_readiness`. States are independent: `unknown` is unproven, never PASS; fetch/API PASS never authorizes push/PR.
 2. Run `bin/venv-python -m scripts.test_coverage_checker --check-tests --check-coverage`. Repair failures; this is a diagnostic, not an overall gate.
 3. Set `implementation_declared: true` in the plan file, now that the graduation walk above wrote its registry rows.
-4. Run `bin/venv-python -m scripts.validate --pre`, then `bin/venv-python -m scripts.validate`. Handoff requires full exit 0, final `Validation Summary (scope: all)` PASS, and `logs/debug/validation-result.json` with scope `all`, exit 0, no failures, and current pre-commit HEAD. Child output, mypy, CI, and stale evidence cannot substitute. Any incomplete/mismatched result is BLOCKED; fix and rerun full from the start.
+4. Run `bin/venv-python -m scripts.validate --pre`. The full tier `bin/venv-python -m scripts.validate` runs once per push in the Commit Flow, on the committed, rebased, clean tree: exit 0, final `Validation Summary (scope: all)` PASS, then `--verify-head` exit 0 (git-ops.yaml `handoff_sequence`). Child output, mypy, CI, and stale evidence cannot substitute. Any incomplete/mismatched result is BLOCKED; fix, commit, rerun.
 5. Create `/tmp/implementation-retrospective.json` with the ten `scripts.session.postflight_evidence.CATEGORIES` keys. Values are bounded fact-string lists (`[]` if none); exclude credentials/raw output. Run `bin/venv-python -m scripts.session.postflight --evidence /tmp/implementation-retrospective.json` and confirm its gitignored output. `--auto` stops with `evidence_failed` before commit when invalid.
 
 Report readiness, validator verdicts, evidence, review, and real push/PR outcome separately.
@@ -360,7 +360,7 @@ Wait for the PR-tier CI (fast `--pre` tier; Decision 73) via subscription, never
 
 **On wake**, always confirm check runs via `mcp__github__pull_request_read` (`get_status` / `get_check_runs`) BEFORE merging, then branch on status:
    - **All green** -> `mcp__github__merge_pull_request(owner, repo, pullNumber, merge_method="squash")`, then `mcp__github__unsubscribe_pr_activity(...)`. Report the merge. **Carve-out:** for a PR touching `terraform/personal/**`, do NOT unsubscribe here -- defer to the "Hold subscription through apply" section below (the real outcome is the post-merge apply, not the merge).
-   - **Any red** -> diagnose, fix on this branch, commit, push (re-triggers PR CI). Stay subscribed and end the turn. Per `docs/contracts/ci-rca-lifecycle.yaml` trigger_scope, this failure is uncovered by ci-rca by construction -- no rec is filed, nothing gates; the existing 3-fix-attempt STOP and VF-08 rules above govern the loop (Decision 55). Never weaken a check to obtain green -- `docs/contracts/implement-scope-boundary.yaml`'s CONTENT invariant is canonical; cited here, not restated. `executor-rca` is out of scope here -- Step 8's RCA-First Protocol is separate, session-end friction capture.
+   - **Any red** -> diagnose, fix, re-run the Commit Flow (re-triggers PR CI). Stay subscribed and end the turn. Per `docs/contracts/ci-rca-lifecycle.yaml` trigger_scope, this failure is uncovered by ci-rca by construction -- no rec is filed, nothing gates; the existing 3-fix-attempt STOP and VF-08 rules above govern the loop (Decision 55). Never weaken a check to obtain green -- `docs/contracts/implement-scope-boundary.yaml`'s CONTENT invariant is canonical; cited here, not restated. `executor-rca` is out of scope here -- Step 8's RCA-First Protocol is separate, session-end friction capture.
    - **Still running** -> end the turn; a later event wakes you.
 
 ### Hold subscription through apply (terraform/personal PRs -- CD.35 / T2.20)
@@ -388,10 +388,8 @@ record. The authoritative baseline is still the next planning session's converge
 wake). The gated apply gates the JOB, never from a laptop.
 
 ### Pre-Push Rebase (applies to both flows)
-See `docs/contracts/git-ops.yaml` for the full rule. Commit-flow time applies here:
-after the local commit, before pushing, `git fetch origin main && git rebase origin/main` (STOP
-on conflict, surface to the human); a branch already pushed this session uses
-`--force-with-lease` (never `--force`).
+See `docs/contracts/git-ops.yaml` `rebase_phase_distinction.commit_flow_time`: rebase after the
+commit, before the full tier; once pushed, use `--force-with-lease` (never `--force`).
 
 ### IMPLEMENTATION Commit Flow
 ```bash
@@ -399,7 +397,9 @@ git add -A
 git commit -m "feat({slug}): implement {brief-description}"
 git fetch origin main
 git rebase origin/main   # STOP on conflict
-git push -u origin HEAD   # this session's harness branch
+bin/venv-python -m scripts.validate
+bin/venv-python -m scripts.checks.validation_result --verify-head
+git push -u origin HEAD   # its own tool call
 ```
 Then via GitHub MCP (owner/repo from `git remote get-url origin`):
 1. Build the PR body. If the plan `bundled_recommendations` list is non-empty, add the `Resolves: rec-NNNN[, rec-MMMM]` trailer in the PR body, which the squash-merge commit body inherits -- per `docs/contracts/git-ops.yaml` (`ci.yml`'s trailer-closure job closes each named rec after merge). If empty, omit it. Under a clear heading (e.g. `## VP Compliance`), append the VP compliance table to the PR body -- the same bounded table produced by the VP Compliance Gate, including the Attempts column and any NONDETERMINISTIC markers -- so the executed proof lands in the PR/merge record instead of vanishing chat (Decision 115: this PR-body table is PR-scoped ephemeral evidence, not the durable record -- the durable record is the tier_item criterion closure in the roadmap, staged by the bookkeeping walk below).

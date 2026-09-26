@@ -15,7 +15,7 @@
 contract:
   id: git-ops
   class: D
-  contract_version: 4
+  contract_version: 5
   status: ratified
   ratified_via: "PLAN-ambient-prose-contract-relocation"
   description: >-
@@ -30,6 +30,18 @@ contract:
     check: validate_git_ops_contract
 
 amendment_log:
+  - date: "2026-09-26"
+    semantic_break: true
+    change_class: field_add
+    summary: >-
+      PLAN-handoff-validates-committed-tree (Decision 163 point 3, dated Update): added
+      handoff_sequence -- the pre-handoff full tier now runs on the committed, rebased, clean
+      tree (rebase moves before the full tier, not after) and its evidence
+      (validation_result.py schema_version 4) must attest HEAD's tree via the new
+      `--verify-head` CLI before push. Updated push_pr_ci_merge_flow.steps to name the full
+      tier + --verify-head before push, and the red-fix loop to re-run both. Added
+      scripts/checks/validation_result.py and scripts/session/postflight.py to
+      referenced_repo_paths. Bumped contract_version 4 -> 5 per this file's own convention.
   - date: "2026-09-26"
     semantic_break: true
     change_class: field_add
@@ -132,6 +144,8 @@ referenced_repo_paths:
   - .github/workflows/rec-autoclose.yml
   - docs/contracts/ci-rca-lifecycle.yaml
   - docs/contracts/decision-entry.yaml
+  - scripts/checks/validation_result.py
+  - scripts/session/postflight.py
   - scripts/validate.py
   - scripts/verify_ci_workflow/_ci_yaml.py
 
@@ -230,6 +244,44 @@ commit_signing_note: >-
   harness-held key, why local `git log --format=%G?` reads N/B, `session_start_commit_signing.py`'s
   role, and why reset-author / amend -S must never be used to chase the signature flag.
 
+handoff_sequence:
+  description: >-
+    PLAN-handoff-validates-committed-tree (a dated Update on Decision 163 point 3): the
+    pre-handoff full tier now validates the COMMITTED tree that ships, never an uncommitted
+    working tree. Per-push order: commit (a no-op when `git status --porcelain` is already
+    empty) -> fetch + rebase onto origin/main per rebase_phase_distinction.commit_flow_time (now
+    BEFORE the full tier, not after) -> the full tier on the resulting clean tree ->
+    `bin/venv-python -m scripts.checks.validation_result --verify-head` -> push, as its own tool
+    call. Cost basis is now per push (every rebase or fix commit needs a fresh full-tier run),
+    NOT extended to the automated executor (Decision 163 point 3).
+  evidence_schema_v4: >-
+    logs/debug/validation-result.json schema_version 4 adds head_tree_at_start/end,
+    tree_clean_at_start/end and worktree_toplevel (scripts/checks/validation_result.py), anchored
+    at the invoking worktree. "Clean" is `git status --porcelain` empty (.gitignore respected) --
+    this attests ORDERING and DRIFT, never gitignored-input identity.
+  attests_head: >-
+    scripts.checks.validation_result.attests_head (rule vocabulary: its module-level
+    ATTEST_RULES) is the sole predicate: true only for scope "all", exit_code 0, empty
+    failed_checks, both clean flags true, head_tree_at_start == head_tree_at_end == the checked
+    HEAD's tree, and worktree_toplevel == the checking worktree.
+  enforcement_coverage:
+    - surface: "postflight --auto push"
+      status: mechanical
+      enforced_by: "tests/session/postflight/test_auto.py::TestAutoMode::test_auto_commits_before_full_tier_and_pushes_only_after_pass"
+      note: >-
+        The --auto remote leg is gh-CLI-based and dormant on CC-web; its non-fast-forward push
+        after a rewriting rebase is owned by rec-4092.
+    - surface: "interactive /implement push"
+      status: residual_agent_obligation
+      residual_owner: rec-4083
+      note: "--verify-head runs only while the agent follows the skill, until PLAN-handoff-evidence-gate lands."
+    - surface: "server-side merge on red"
+      status: residual_agent_obligation
+      residual_owner: rec-4080
+    - surface: "per-file coverage floor in PR CI"
+      status: residual_agent_obligation
+      residual_owner: rec-3221
+
 rebase_phase_distinction:
   assessment_time: >-
     (planning) do NOT auto-rebase. When main has diverged and scope files overlap, surface to
@@ -253,8 +305,10 @@ rebase_phase_distinction:
     plan's Context section and continue.
   commit_flow_time: >-
     (implementing) DO auto-rebase before pushing. After the local commit: `git fetch origin main
-    && git rebase origin/main` -- STOP on conflict, surface to the human. If the branch was
-    already pushed, use `--force-with-lease` (never `--force`).
+    && git rebase origin/main` -- STOP on conflict, surface to the human. The rebase now precedes
+    the full tier (handoff_sequence above), not the push directly -- the full tier and
+    --verify-head run on the resulting clean tree before push. If the branch was already pushed,
+    use `--force-with-lease` (never `--force`).
 
 local_main_sync: >-
   `session_start_sync_main.sh` syncs local main -> origin/main. `fresh_branch_base.py`
@@ -263,7 +317,10 @@ local_main_sync: >-
 
 push_pr_ci_merge_flow:
   steps:
-    - "git push -u origin HEAD (harness-assigned branch; see branching_topology.agent_branch_prefixes)."
+    - >-
+      The full tier + `--verify-head` (handoff_sequence above) on the committed, rebased tree,
+      then `git push -u origin HEAD` (harness-assigned branch; see
+      branching_topology.agent_branch_prefixes).
     - >-
       mcp__github__create_pull_request(owner, repo, head=<branch>, base="main", title=<per the
       commit-message-conventions table above>, body=...).
@@ -273,7 +330,9 @@ push_pr_ci_merge_flow:
     - >-
       On green confirmation: mcp__github__merge_pull_request(..., merge_method="squash") then
       mcp__github__unsubscribe_pr_activity(...).
-    - "On red: diagnose, fix on branch, commit, push (re-triggers CI). Stay subscribed. End your turn."
+    - >-
+      On red: diagnose, fix, re-run the full tier + --verify-head, then push again (re-triggers
+      CI). Stay subscribed. End your turn.
   wake_signals:
     coverage_note: >-
       Two comment-based signals cover what subscribe_pr_activity cannot deliver natively -- CI

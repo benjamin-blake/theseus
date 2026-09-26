@@ -2822,6 +2822,15 @@ re-keyed condition re-arms it and owes a further dated annotation here.]
 > `scripts.checks.registry.resolve()` (Decision 169 retires Decision 104's check-facade
 > mechanism). This body is otherwise unedited; see Decision 169 for the full derivation.
 
+> **Update (2026-09-26):** PLAN-handoff-validates-committed-tree (operator direction -- the human
+> chose commit-first and accepted the per-push cost, 2026-09-25/26 planning session): the
+> pre-handoff full tier now runs on the committed, rebased, clean tree and its evidence must
+> attest HEAD's tree (`bin/venv-python -m scripts.checks.validation_result --verify-head`) before
+> push; point 3's cost basis becomes per push (every rebase or fix commit needs a fresh full-tier
+> run), still NOT extended to the automated executor.
+> `handoff_policy.full_validation_required_before_commit` is a legacy name that now means "before
+> push", not "before commit" -- the rename itself is owned by rec-4084.
+
 **Problem:**
 rec-2965: main went red on the next push touching `scripts/checks/roadmap/validate_candidate_decision_ratification.py`, because PR #836's carrying plan declared `handoff_policy.full_validation_required_before_commit: true` -- mandatory, required metadata on every schema_version-3 IMPLEMENTATION plan (`plan_document.py`, `Literal[True]`, no opt-out) -- while its `verification_plan` executed only the fast (`--pre`) tier. The fast tier's diff-scoped coverage check cannot catch a gap on a file that was already below 100% before the PR touched it (measured: the file was 87% covered pre-#836, identical four arms uncovered; PR #836's extraction of `_load_roadmap` merely moved them and raised the ratio to 92.1%, still short of the file's own 100% requirement once touched). The declared obligation -- run the full tier before handoff -- was pure prose plus a metadata flag; nothing executable checked that the plan's own steps actually invoked it, so the obligation was silently skippable by construction, not merely skipped by oversight this one time.
 
@@ -8498,6 +8507,12 @@ single-command session close.
 **Decision status:** Decided — April 2026
 
 > **Update (2026-07-21):** `copilot-instructions.md` and `implement.prompt.md` were deleted at T-1.13 (superseded by the `.claude/skills/` + `.claude/commands/` architecture, Decision 76/90); the ghost-file guard survives as the current enforcement mechanism.
+
+> **Update (2026-09-26):** PLAN-handoff-validates-committed-tree (operator direction, 2026-09-25/26
+> planning session): `session_postflight.py --auto`'s ratified validate -> close -> metrics ->
+> commit -> push order is now close -> evidence -> metrics -> commit -> rebase -> validate ->
+> verify-head -> push -> portal sync, and the post-push log-housekeeping leg is retired (Decision
+> 84: nothing under logs/ is tracked).
 
 ---
 
