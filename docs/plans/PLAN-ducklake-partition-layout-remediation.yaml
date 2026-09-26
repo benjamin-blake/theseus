@@ -30,27 +30,38 @@ scope:
       191 -- registry, never name patterns; unclassified tables collected, ONE PartitionLayoutError
       after the loop); legacy_scheme_files counts live files whose partition_id IS DISTINCT FROM the
       active scheme id (partition_id names the SCHEME, never a value, per #1278; NULL = pre-partition
-      = legacy); frozen dataclass PartitionDrift(physical, table_class, declared, live,
-      legacy_scheme_files); compare_to_declared(layouts, *, semantics=None) -> list[PartitionDrift]
-      resolving declared specs via resolve_table_spec / resolve_control_spec +
-      normalize_partition_spec. Imports scd2_schema / control_tables / maintenance_scope /
-      partition_spec only. < 500 SLOC
+      = legacy); frozen dataclass PartitionDrift(physical, table_class, declared_spec: str,
+      declared: tuple[tuple[str, str], ...], live: tuple[tuple[str, str], ...], legacy_scheme_files)
+      -- declared_spec is the resolved spec text alter_to_declared issues verbatim, declared/live
+      are normalize_partition_spec's (unit, column) pairs, the same shape as live_transforms;
+      compare_to_declared(layouts, *, semantics=None) -> list[PartitionDrift] resolving declared
+      specs via resolve_table_spec / resolve_control_spec + normalize_partition_spec. A
+      DuckLakeMaintenanceScopeError from the registry is re-raised as PartitionLayoutError, so
+      every failure is a DuckLakeRuntimeError. Imports scd2_schema / control_tables /
+      maintenance_scope / partition_spec only. < 500 SLOC
   - file: src/common/ducklake_partition_rewrite.py
     action: Create
     purpose: >-
-      MUTATE HALF, maintenance bundle only. class PartitionRewriteError(DuckLakeRuntimeError).
-      alter_to_declared(con, drifts) issues ALTER ... SET PARTITIONED BY only where the live spec
-      differs (no-op-free, data-modeling-standard write invariants). rewrite_legacy_layout(con,
-      physical, ...): refuses when legacy_scheme_files == 0 or the live spec still differs from
-      declared (ALTER first). Per attempt, INSIDE one transaction: capture pre_snapshot_id as the
-      snapshot this transaction reads (re-captured on every retry -- snapshot ids are catalog-global),
-      CREATE TEMP TABLE snap AS SELECT *, DELETE, INSERT FROM snap, then BEFORE COMMIT compare row
+      MUTATE HALF, maintenance bundle only. class PartitionRewriteError(DuckLakeRuntimeError); a
+      non-OCC duckdb error is wrapped in it (structured 500, never a raw FunctionError).
+      alter_to_declared(con, drifts) issues ALTER ... SET PARTITIONED BY <PartitionDrift.declared_spec>
+      only where the live spec differs (no-op-free, data-modeling-standard write invariants).
+      rewrite_legacy_layout(con, physical, ...): refuses when the registry side is not 'history'
+      (current projections are rebuilt from history per Decision 81 cl.8, never re-laid; control is
+      refused by its matrix cell), when legacy_scheme_files == 0, or when the live spec still
+      differs from declared (ALTER first). Per attempt, INSIDE one transaction: capture
+      pre_snapshot_id from <alias>.current_snapshot() (re-captured on every retry -- snapshot ids
+      are catalog-global) and CALL <alias>.set_commit_message('rewrite_partition_layout', <a unique
+      per-attempt token>), CREATE TEMP TABLE snap AS SELECT *, DELETE, INSERT FROM snap, then BEFORE COMMIT compare row
       count + a FULL-ROW, NULL-explicit content digest (each row cast as a whole to VARCHAR, e.g. a
       row/struct cast, so NULLs render and a column shift cannot collapse; ordered; hashed) of the
       table against snap, ROLLBACK + raise on any mismatch. A DuckLake transaction conflict retries
       with the writer's own policy -- import is_occ_collision, OCC_MAX_ATTEMPTS and _occ_backoff from
       ducklake_writes (Decision 81 cl.3; never a second retry policy) -- and raises at the ceiling.
-      After commit, re-prove count + digest at AT (VERSION => commit) against AT (VERSION => pre) and
+      After commit, commit_snapshot_id is the snapshot whose commit_message equals that token --
+      never 'the latest snapshot', which a concurrent writer commit could be (binding measured
+      locally 2026-09-26 on duckdb 1.5.4 / DuckLake v1.0); re-prove count + digest at AT (VERSION =>
+      commit) against AT (VERSION => pre) and
       zero legacy-scheme files; a post-commit proof failure RAISES with both snapshot ids and never
       auto-restores. Returns {physical, pre_snapshot_id, commit_snapshot_id, rows, content_digest,
       files_before, files_after, attempts}. Imports ducklake_partition_layout + ducklake_writes +
@@ -74,7 +85,8 @@ scope:
       true for scd2 and append_only, apply false for control with a reason (a writer-internal
       entity-id counter whose identity spec never changes; a delete-all rewrite would contend with
       allocation, Decision 84 I-2). The matrix header comment's 'single production consumer ...
-      merge_ops' sentence names all three consumers
+      merge_ops' sentence names all three consumers, and its 'handler.py:396' line reference
+      becomes a symbol reference (the _shared extraction shifts line numbers)
   - file: config/lambda/ducklake/field_semantics.yaml
     action: Modify
     purpose: regenerated projection only -- run scripts.schema_to_field_semantics, never hand-edit (T2.29:c8)
@@ -93,7 +105,9 @@ scope:
       action_rewrite_partition_layout {data_path, meta_schema, table (physical), confirm}: refuses
       unless confirm == table (catalog_reinit's guard shape) and the table's class cell for
       rewrite_partition_layout applies; returns rewrite_legacy_layout's result verbatim. Both raise
-      only DuckLakeRuntimeError subclasses, so handler.py's existing mapping yields structured 500s
+      only DuckLakeRuntimeError subclasses -- scope.resolve_scope's DuckLakeMaintenanceScopeError (a
+      bare RuntimeError) is wrapped in PartitionLayoutError -- so handler.py's existing mapping
+      yields structured 500s
   - file: src/lambdas/ducklake_maintenance/handler.py
     action: Modify
     purpose: >-
@@ -110,10 +124,14 @@ scope:
     action: Modify
     purpose: >-
       excludes += src/common/ducklake_partition_layout.py and src/common/ducklake_partition_rewrite.py
-      beside the ducklake_* excludes. DECISION 79 NO-DEPLOY DISPOSITION: data-pipeline IS an affected
-      artifact (its manifest changes), but its staged bundle is unchanged -- VP step 7 stages it and
-      proves neither module is present -- and deploy-prod-lambdas.yml's paths filter does not match
-      the manifest, so no deploy is required or triggered
+      beside the ducklake_* excludes. DECISION 79 NO-DEPLOY DISPOSITION: data-pipeline IS affected
+      twice -- this manifest edit, and docs/ROADMAP-PLATFORM.yaml, one of its `assets:`, whose
+      T2.19:c8 text this plan edits -- so its staged bundle DOES change, by that asset's text only.
+      No deploy: the roadmap asset is inert data for the scheduled-agent dispatcher, whose schedule
+      stays disabled (Decision 61/37/116); VP step 7 stages the bundle and proves neither partition
+      module is present; and neither deploy-prod-lambdas.yml's paths filter nor
+      PROD_SOURCE_PATHSPECS (prod_code_drift) matches docs/ or this manifest, so no deploy fires and
+      no drift rec is filed. The next governed data-pipeline deploy carries the new text inertly
   - file: docs/contracts/ducklake_maintenance.yaml
     action: Modify
     purpose: >-
@@ -121,29 +139,54 @@ scope:
       auth_type, principal_classes, admin_only_features and human_initiated_value; audit_invariants
       [1] ('No LLM / agent invocation anywhere in this path') and [2] restated for the
       human-directed ADMIN-agent path, and the 'single production consumer is merge_ops' invariant
-      naming all three consumers; plus an agent-led `procedure:` block (docs/CLAUDE.md; Decision 127)
-      holding VP steps 16-24: every invoke carries --region eu-west-2 --cli-read-timeout 900 and
-      AWS_MAX_ATTEMPTS=1 (a re-sent destructive invoke would lose its proof body), is timed clear of
-      the singleton's :15/:30 cadences (reserved concurrency 1 throttles with a 429); the ALTER and
-      each rewrite wait for explicit human confirmation after the agent presents the readout; a
-      post-commit proof failure means STOP -- no further tables, file a Critical rec with both
-      snapshot ids -- and restoration is a separately planned operation using the NON-LOSSY formula
-      rows(AT pre) UNION (rows(live) EXCEPT rows(AT commit)) under the same digest proof, never
-      improvised in-session. States that the confirmations are instruction-enforced while the IAM
-      boundary (agent_platform_admin exists only in a human-booted ADMIN session) is the enforced
-      one (Decision 181). amendment_log entry. Stays <= 500 effective lines (351 today)
+      naming all three consumers; an invariant pointing at
+      docs/contracts/ducklake-partition-remediation.yaml for the agent-led run. NO `procedure:` key
+      here -- this is a Class B ritual contract validated by ContractDocument(extra='forbid'), which
+      rejects it (critique r2, confirmed by simulation). amendment_log entry. Stays <= 500 effective
+      lines (351 today)
+  - file: docs/contracts/ducklake-partition-remediation.yaml
+    action: Create
+    purpose: >-
+      NEW Class D mechanism contract (precedent: package-registry-reservation.yaml, #1239; Decision
+      127 operator procedures live as procedure: blocks in a contract). Header: contract.id and
+      subject 'ducklake-partition-remediation', class D, status ratified, ratified_via
+      PLAN-ducklake-partition-layout-remediation, evaluator agent_surface
+      docs/contracts/deploy-paths.yaml (whose admin_out_of_band row names this file). procedure:
+      holds VP steps 16-24: every invoke carries --region eu-west-2 --cli-read-timeout 960 (above the
+      function's 900s timeout) and AWS_MAX_ATTEMPTS=1 (a re-sent destructive invoke would lose its
+      proof body), timed clear of the singleton's scheduled cadences -- merge_ops cron(15 */6),
+      control_health cron(30 */6) and the weekly gc_ops cron(45 3 ? * SUN) (reserved concurrency 1
+      throttles with a 429); the ALTER and each rewrite wait for explicit human confirmation after
+      the agent presents the readout; a post-commit proof failure means STOP -- no further tables,
+      file a Critical rec with both snapshot ids -- and restoration of a HISTORY table is a
+      separately planned operation using the NON-LOSSY formula rows(AT pre) UNION (rows(live) EXCEPT
+      rows(AT commit)) under the same digest proof, never improvised in-session; current
+      projections are never re-laid (the verb refuses them) and restore by rebuild-from-history
+      (Decision 81 cl.8). Declared coverage (Decision 181 cl.2): the IAM boundary is enforced
+      (agent_platform_admin exists only in a human-booted ADMIN session); the per-mutation
+      confirmation is an unenforced residual owned by rec-4098. amendment_log seed entry
   - file: docs/contracts/deploy-paths.yaml
     action: Modify
     purpose: >-
       admin_out_of_band indexes the new carve-out (Decision 126 as amended by Decision 204): an
       ADMIN-container agent may invoke reconcile_partitions / rewrite_partition_layout only under
-      explicit human direction, pointing at ducklake_maintenance.yaml's procedure (navigation only,
-      never a second source of truth); amendment_log entry
+      explicit human direction, pointing at docs/contracts/ducklake-partition-remediation.yaml's
+      procedure (navigation only, never a second source of truth) -- the literal file name also
+      makes this file that contract's agent_surface evaluator; amendment_log entry
   - file: docs/contracts/git-ops.yaml
     action: Modify
     purpose: >-
       branching_topology ADMIN `use` adds human-directed operator maintenance actions (Decision 204),
-      beside advanced terraform IAM; amendment entry if validate_git_ops_contract needs one
+      beside advanced terraform IAM; a new amendment_log entry (UNCONDITIONAL -- git-ops.yaml is a
+      Class D contract and validate_contract_drift's check_amendment_log_for_class_d fails any
+      parsed-content change without one)
+  - file: docs/contracts/file-router.yaml
+    action: Modify
+    purpose: >-
+      a route whose topic equals the new contract's subject (topic-equals-subject):
+      topic ducklake-partition-remediation, targets [docs/contracts/ducklake-partition-remediation.yaml];
+      amendment_log entry (Class D). Stay within the file's effective-line budget -- compact the
+      oldest amendment_log entries if needed, as #1239 did
   - file: docs/contracts/terraform-cc-web-operations.yaml
     action: Modify
     purpose: >-
@@ -169,7 +212,7 @@ scope:
       NEW Decision 204 -- number PINNED by human direction 2026-09-26 (202 is
       PLAN-platform-role-iam-change-alarms', 203 is claimed by a concurrent plan; if 204 is already
       taken on main at implement time, STOP and ask -- never renumber silently); title contains
-      'partition-layout rewrite'; Decision 167 typed envelope with amends: [81, 126] and significance
+      'partition-layout rewrite'; Decision 167 typed envelope with amends: [81, 126, 192] and significance
       numbered_decision (three-question routing rule; why not a contract: a verb contract cannot
       negate ratified Decision 81 cl.5/cl.7/cl.8). Clauses: (1) a row-preserving partition-layout
       rewrite is sanctioned admin-tier maintenance under stated conditions (whole-table re-lay only
@@ -179,26 +222,35 @@ scope:
       legacy files exist), unlike Decision 70's one-off; (2) an ADMIN-container agent may run it only
       under explicit human direction with a confirmation before each mutation -- this PRESERVES
       Decision 151 cl.2 and Decision 143 cl.2 (never autonomous, admin identity only); IAM-enforced
-      boundary, instruction-enforced confirmations (Decision 181); (3) restoration only by the
-      non-lossy formula, never in-session; (4) closure through a committed evidence fixture, because
-      Decision 201's evaluator is offline; (5) Decision 88 measurement before, after and post-GC
+      boundary, instruction-enforced confirmations owned by rec-4098 (Decision 181 cl.2); (3)
+      restoration of a history table only by the non-lossy formula in
+      docs/contracts/ducklake-partition-remediation.yaml's procedure, never in-session; (4) the two
+      verbs join VERB_UNIVERSE as PER-TABLE verbs, superseding Decision 192 cl.2's literal
+      '("merge_ops",)' pin while keeping its rule (catalog-wide verbs such as gc_ops stay out); (5)
+      closure through a committed evidence fixture, because
+      Decision 201's evaluator is offline; (6) Decision 88 measurement before, after and post-GC
       (rec-4095). Reversal conditions: any ops history table above 365 live files, or
       file_column_stats rows at 2x or more of the pre-rewrite baseline, re-opens Decision 137's
-      per-table grain reversal. Plus dated trailing-bracket annotations (Decision 177) on Decision 81
-      and Decision 126 citing it. <= 6,144 bytes (Decision 167 cl.3). docs/decisions-index.json
+      per-table grain reversal. Plus dated trailing-bracket annotations (Decision 177) on Decisions
+      81, 126 and 192 citing it. <= 6,144 bytes (Decision 167 cl.3). docs/decisions-index.json
       regenerates as the sanctioned companion
   - file: tests/test_ducklake_partition_layout.py
     action: Create
     purpose: >-
       mirror test: FakeCon-driven read / classify / compare branches -- IS DISTINCT FROM legacy
-      counting incl. NULL partition_id, table_class carried per table, unclassified tables collected
-      then ONE PartitionLayoutError
+      counting incl. NULL partition_id, table_class carried per table, PartitionDrift field shapes
+      (declared_spec text; declared/live pairs), unclassified tables collected then ONE
+      PartitionLayoutError, a registry scope error re-raised as PartitionLayoutError
   - file: tests/test_ducklake_partition_rewrite.py
     action: Create
     purpose: >-
-      mirror test: no-op-free ALTER, both rewrite refusals, pre_snapshot re-captured per attempt,
-      retry-then-succeed, retry-exhaustion raise, pre-commit digest mismatch -> ROLLBACK + raise, a
-      NULL-bearing row shift changing the digest, post-commit proof failure raising with both ids
+      mirror test: no-op-free ALTER issuing declared_spec verbatim, all three rewrite refusals
+      (non-history side, no legacy files, live spec still drifted), pre_snapshot re-captured per
+      attempt, the commit-message token set per attempt and commit_snapshot_id resolved by it (a
+      concurrent commit is never mistaken for the rewrite's own), retry-then-succeed,
+      retry-exhaustion raise, a non-OCC error wrapped in PartitionRewriteError, pre-commit digest
+      mismatch -> ROLLBACK + raise, a NULL-bearing row shift changing the digest, post-commit proof
+      failure raising with both ids
   - file: tests/common/test_ducklake_partition_conformance.py
     action: Modify
     purpose: >-
@@ -213,8 +265,9 @@ scope:
     action: Create
     purpose: >-
       mirror test: no-arg refusal, dry_run default, confirm mismatch refused, control-class rewrite
-      refused by its policy cell, DuckLakeRuntimeError subclasses surface as structured 500s,
-      responses pass through
+      refused by its policy cell, a resolve_scope DuckLakeMaintenanceScopeError wrapped in
+      PartitionLayoutError, DuckLakeRuntimeError subclasses surface as structured 500s, responses
+      pass through
   - file: tests/lambdas/ducklake_maintenance/handler/test_dispatch.py
     action: Modify
     purpose: dispatch exposes reconcile_partitions and rewrite_partition_layout
@@ -229,8 +282,16 @@ scope:
   - file: tests/checks/contracts/test_validate_maintenance_policy_matrix.py
     action: Modify
     purpose: synthetic matrices and _VERBS gain the two verbs (the check reads VERB_UNIVERSE)
+  - file: tests/common/test_ducklake_gc_ops.py
+    action: Modify
+    purpose: >-
+      TestMatrixCarriesNoCatalogWideVerb::test_verb_universe_holds_only_per_table_scoped_verbs
+      restates its exact-tuple pin to ("merge_ops", "reconcile_partitions",
+      "rewrite_partition_layout") and KEEPS 'gc_ops' not in VERB_UNIVERSE -- still an exact
+      equality, so it strengthens rather than weakens the never-weaken guard (Decision 192 cl.2 as
+      amended by Decision 204)
 bundled_recommendations: ["rec-4070"]
-followon_recs: ["rec-4094", "rec-4095"]
+followon_recs: ["rec-4094", "rec-4095", "rec-4098"]
 infrastructure_dependencies: []
 acceptance_criteria:
   - >-
@@ -243,9 +304,10 @@ acceptance_criteria:
     class (control refuses the rewrite), absent from the smoke dispatch, and the mutating code ships
     only in the maintenance bundle
   - >-
-    Decision 204 (amends 81, 126) sanctions the rewrite and the ADMIN-agent execution path;
+    Decision 204 (amends 81, 126, 192) sanctions the rewrite and the ADMIN-agent execution path;
     deploy-paths, git-ops, terraform-cc-web-operations, data-modeling-standard, the maintenance
-    contract and T2.19:c8 are consistent with it
+    contract, the new ducklake-partition-remediation procedure contract and T2.19:c8 are consistent
+    with it
   - >-
     after deploy, the ADMIN-container agent -- confirming each mutation with the human -- leaves all
     five ops history tables on year/month/day with zero legacy-scheme files, and catalog_stats is
@@ -277,8 +339,9 @@ verification_plan:
       bin/venv-python -m pytest
       tests/common/test_ducklake_partition_spec.py::test_normalize_partition_spec_matches_ducklake_representation
       tests/common/test_ducklake_maintenance_scope.py::test_partition_verbs_in_universe_with_control_rewrite_excluded
+      tests/common/test_ducklake_gc_ops.py::TestMatrixCarriesNoCatalogWideVerb::test_verb_universe_holds_only_per_table_scoped_verbs
       -q
-    expected: both pass
+    expected: all three pass
     fix_if: normalize output does not match the live transform strings (day, bucket(8), identity)
     hermetic: false
     graduation: graduate
@@ -339,7 +402,8 @@ verification_plan:
     expected: >-
       prints the marker. Red on the planning tree: data-pipeline is the only affected artifact (its
       wildcard src/ include). Membership, not an exact set, so rec-4094's reader include of the READ
-      half does not break it. The staged-bundle half is the Decision 79 no-deploy proof
+      half does not break it. The staged-bundle half backs the Decision 79 no-deploy disposition
+      (the bundle changes only by the roadmap asset's text)
     fix_if: data-pipeline listed or staged -- excludes entry missing; maintenance missing -- includes entry missing
     hermetic: true
     graduation: graduate
@@ -368,11 +432,18 @@ verification_plan:
       hdr=[h for h in re.findall(r'^## Decision (\d+):(.*)$', dec, re.M) if 'partition-layout rewrite' in h[1].lower()];
       assert len(hdr)==1 and hdr[0][0]=='204', hdr; n=hdr[0][0];
       body=lambda k: dec.split('## Decision '+k+':',1)[1].split(chr(10)+'## Decision ',1)[0];
-      assert 'amends: [81, 126]' in body(n), 'envelope amends';
-      assert all('Decision '+n in body(k) for k in ('81','126')), 'annotations on 81/126';
+      assert 'amends: [81, 126, 192]' in body(n), 'envelope amends';
+      assert all('Decision '+n in body(k) for k in ('81','126','192')), 'annotations on 81/126/192';
+      from scripts.contracts import load_contract; load_contract('docs/contracts/ducklake_maintenance.yaml');
       m=yaml.safe_load(open('docs/contracts/ducklake_maintenance.yaml', encoding='utf-8'));
-      assert 'reconcile_partitions' in m['verbs'] and 'rewrite_partition_layout' in m['verbs'] and m.get('procedure'), 'maintenance contract';
-      assert 'rewrite_partition_layout' in str(yaml.safe_load(open('docs/contracts/deploy-paths.yaml', encoding='utf-8'))['admin_out_of_band']), 'deploy-paths';
+      assert 'reconcile_partitions' in m['verbs'] and 'rewrite_partition_layout' in m['verbs'] and 'procedure' not in m, 'maintenance contract';
+      pc=yaml.safe_load(open('docs/contracts/ducklake-partition-remediation.yaml', encoding='utf-8'));
+      assert pc['contract']['class']=='D' and pc['contract']['subject']=='ducklake-partition-remediation', 'procedure contract header';
+      assert 'EXCEPT' in str(pc['procedure']) and 'rec-4098' in str(pc), 'procedure formula and residual owner';
+      fr=yaml.safe_load(open('docs/contracts/file-router.yaml', encoding='utf-8'))['routes'];
+      assert any(r['topic']=='ducklake-partition-remediation' for r in fr), 'file-router route';
+      dp=open('docs/contracts/deploy-paths.yaml', encoding='utf-8').read();
+      assert 'ducklake-partition-remediation.yaml' in dp and 'rewrite_partition_layout' in dp, 'deploy-paths';
       assert 'used only for IAM changes and IAM planning' not in open('docs/contracts/terraform-cc-web-operations.yaml', encoding='utf-8').read(), 'tf-ops stale sentence';
       g=yaml.safe_load(open('docs/contracts/git-ops.yaml', encoding='utf-8'))['branching_topology']['containers'];
       assert 'Decision '+n in [c for c in g if c['name']=='ADMIN'][0]['use'], 'git-ops ADMIN use';
@@ -448,7 +519,8 @@ verification_plan:
     action: DEV agent hands off -- write the ADMIN HANDOFF block into the merged PR's description
     command: >-
       mcp__github__update_pull_request on the merged PR, appending the ADMIN HANDOFF block: run
-      ducklake_maintenance.yaml's procedure from merged main in an ADMIN container, the merge SHA,
+      docs/contracts/ducklake-partition-remediation.yaml's procedure from merged main in an ADMIN
+      container, the merge SHA,
       and the expected dry_run readout (five ops history tables drifted: live day vs declared
       year,month,day)
     expected: the PR body carries the handoff (Decision 115); the DEV agent runs no admin step itself
@@ -465,10 +537,10 @@ verification_plan:
     hermetic: false
   - step: 17
     phase: post-deploy
-    action: ADMIN agent records the pre-rewrite catalog footprint (Decision 88 cl.2), clear of the :15/:30 cadences
+    action: ADMIN agent records the pre-rewrite catalog footprint (Decision 88 cl.2), clear of the :15/:30 6-hourly and Sunday 03:45 UTC gc_ops cadences
     command: >-
       AWS_MAX_ATTEMPTS=1 aws lambda invoke --function-name agent-platform-ducklake-maintenance
-      --profile agent_platform_admin --region eu-west-2 --cli-read-timeout 900
+      --profile agent_platform_admin --region eu-west-2 --cli-read-timeout 960
       --cli-binary-format raw-in-base64-out
       --payload '{"action":"catalog_stats","meta_schema":"<meta_schema from step 16>"}' /tmp/stats_before.json
     expected: catalog_metadata_bytes, file_column_stats_rows_est and per_ops_table recorded (planning-time reading 2026-09-26 -- 532 live files, 201,571 file_column_stats rows)
@@ -479,7 +551,7 @@ verification_plan:
     action: ADMIN agent runs the reconcile dry_run and PRESENTS it to the human
     command: >-
       AWS_MAX_ATTEMPTS=1 aws lambda invoke --function-name agent-platform-ducklake-maintenance
-      --profile agent_platform_admin --region eu-west-2 --cli-read-timeout 900
+      --profile agent_platform_admin --region eu-west-2 --cli-read-timeout 960
       --cli-binary-format raw-in-base64-out
       --payload '{"action":"reconcile_partitions","data_path":"<data_path>","meta_schema":"<meta_schema>","dry_run":true}'
       /tmp/reconcile_dry_run_before.json
@@ -496,7 +568,7 @@ verification_plan:
     action: after the human explicitly confirms the ALTER, the ADMIN agent applies it and re-reads
     command: >-
       AWS_MAX_ATTEMPTS=1 aws lambda invoke --function-name agent-platform-ducklake-maintenance
-      --profile agent_platform_admin --region eu-west-2 --cli-read-timeout 900
+      --profile agent_platform_admin --region eu-west-2 --cli-read-timeout 960
       --cli-binary-format raw-in-base64-out
       --payload '{"action":"reconcile_partitions","data_path":"<data_path>","meta_schema":"<meta_schema>","dry_run":false}'
       /tmp/reconcile_apply.json
@@ -511,7 +583,7 @@ verification_plan:
     action: after the human explicitly confirms the rewrite, the ADMIN agent rewrites each table with legacy files, one at a time
     command: >-
       AWS_MAX_ATTEMPTS=1 aws lambda invoke --function-name agent-platform-ducklake-maintenance
-      --profile agent_platform_admin --region eu-west-2 --cli-read-timeout 900
+      --profile agent_platform_admin --region eu-west-2 --cli-read-timeout 960
       --cli-binary-format raw-in-base64-out
       --payload '{"action":"rewrite_partition_layout","data_path":"<data_path>","meta_schema":"<meta_schema>","table":"<physical>","confirm":"<physical>"}'
       /tmp/rewrite_<physical>.json
@@ -522,19 +594,20 @@ verification_plan:
     fix_if: >-
       a raise at the retry ceiling -- a writer burst; retry that one table later. A post-commit proof
       failure -- STOP: no further tables, file a Critical rec with both snapshot ids; restoration is
-      a separately planned operation using the procedure's non-lossy formula, never improvised
+      a separately planned operation using ducklake-partition-remediation.yaml's non-lossy formula
+      (history tables only), never improvised
     hermetic: false
   - step: 21
     phase: post-deploy
     action: ADMIN agent proves the end state and records the post-rewrite footprint
     command: >-
       AWS_MAX_ATTEMPTS=1 aws lambda invoke --function-name agent-platform-ducklake-maintenance
-      --profile agent_platform_admin --region eu-west-2 --cli-read-timeout 900
+      --profile agent_platform_admin --region eu-west-2 --cli-read-timeout 960
       --cli-binary-format raw-in-base64-out
       --payload '{"action":"reconcile_partitions","data_path":"<data_path>","meta_schema":"<meta_schema>","dry_run":true}'
       /tmp/reconcile_dry_run_after.json && AWS_MAX_ATTEMPTS=1 aws lambda invoke --function-name
       agent-platform-ducklake-maintenance --profile agent_platform_admin --region eu-west-2
-      --cli-read-timeout 900 --cli-binary-format raw-in-base64-out
+      --cli-read-timeout 960 --cli-binary-format raw-in-base64-out
       --payload '{"action":"catalog_stats","meta_schema":"<meta_schema>"}' /tmp/stats_after.json
     expected: >-
       zero drift and zero legacy-scheme files on every table; catalog_stats higher than before is
@@ -649,10 +722,20 @@ test_obligations:
     command: *step7_bundle
     red_green_expectation: red before (data-pipeline is affected), green after
   - source: docs/contracts/ducklake_maintenance.yaml
-    behavior: the contract declares both verbs and the agent-led procedure
+    behavior: the contract declares both verbs, still validates as a ritual contract, and carries no procedure key
     verification_step: 9
     command: *step9_governance
-    red_green_expectation: red before (no Decision, verbs or procedure), green after
+    red_green_expectation: red before (no Decision or verbs), green after
+  - source: docs/contracts/ducklake-partition-remediation.yaml
+    behavior: the Class D procedure contract carries the agent-led run, the non-lossy formula and the residual owner
+    verification_step: 9
+    command: *step9_governance
+    red_green_expectation: red before (file absent), green after
+  - source: docs/contracts/file-router.yaml
+    behavior: the procedure contract is routed by its subject
+    verification_step: 9
+    command: *step9_governance
+    red_green_expectation: red before (no route), green after
   - source: docs/contracts/deploy-paths.yaml
     behavior: admin_out_of_band indexes the new carve-out
     verification_step: 9
@@ -695,14 +778,24 @@ constraints:
 context:
   - "Decision-scout verdict: FLAGS_FOUND. Decisions triaged: 154 of 154. Roadmap items intersected: 14; CONFLICT: 1; RELATED: 12."
   - "CITE: Decision 137, 88, 84, 143, 70, 177, 167, 201, 79, 125, 127, 128, 62, 115; RELATED 192, 193, 188, 190, 100, 99, 131, 120, 113, 181, 184, 141, 91"
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PENDING (r1 REVISE -- all 7 required items + the read/mutate split applied)"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique r1=REVISE (7 items + read/mutate split applied); r2=REVISE (4 items + 10 suggestions applied)"
   - >-
     Scout dispositions: WARN 81 -> Decision 204 amends 81, full-row digest; NOTE 191 -> verbs join
     VERB_UNIVERSE + matrix; SPIRIT WARN 126 -> amends 126 + deploy-paths row; NOTE 151 -> ALTER is
     confirmation-gated too; NOTE 88 -> reversal trigger + rec-4095; CONFLICT T2.19:c8 -> dated clause.
   - >-
-    Correction (critique r1): data-pipeline IS an affected artifact via its own manifest edit; its
-    disposition is a proven no-deploy (step 7 stages it). The earlier 'refuted' note was wrong.
+    Correction (critiques r1, r2): data-pipeline IS affected, via its manifest edit and its
+    docs/ROADMAP-PLATFORM.yaml asset; its disposition is a justified no-deploy (scope row; step 7).
+  - >-
+    Critique r2: the procedure moved to a new Class D contract because the Class B maintenance
+    contract's schema forbids a procedure key; Decision 192 cl.2's literal VERB_UNIVERSE pin is
+    amended openly; every new or changed src module meets the 100% per-file coverage standard
+    (none has a coverage_baseline entry).
+  - >-
+    Reuse considered: gc_verification's AT (VERSION => n) count/sum(hash) shape is the model for
+    the post-commit proof, but a sum of hashes is not NULL-explicit or order-stable enough for an
+    equality proof over a re-lay; smoke_actions._partition_layout reads per-file partition VALUES
+    (EC6) in the writer bundle, while this needs scheme ids from a maintenance-and-reader module.
   - >-
     Split from one plan by human direction 2026-09-26; PLAN-ducklake-partition-drift-alarm (rec-4094)
     consumes the pinned READ-half API and ships only that half in the reader. Order: this plan first.
@@ -727,7 +820,7 @@ context:
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
-  - only the plan-cited decision sections (81, 126, 137, 88, 70, 143, 151, 167, 177, 191, 201)
+  - only the plan-cited decision sections (81, 126, 137, 88, 70, 143, 151, 167, 177, 181, 191, 192, 201)
   - All files in scope located and readable
   - Acceptance criteria understood and verifiable
   - Rebased onto origin/main; Decision 204 still free on main (202 and 203 are claimed by other plans)
@@ -746,9 +839,10 @@ execution_steps:
     handler <= 500 SLOC.
   - >-
     Draft Decision 204 (envelope, clauses, reversal conditions, <= 6,144 bytes) and the dated
-    annotations on 81 and 126; update ducklake_maintenance.yaml (verbs, lists, invariants,
-    procedure), deploy-paths, git-ops, terraform-cc-web-operations, data-modeling-standard and
-    T2.19:c8; regenerate docs/decisions-index.json. Post -- step 9 green.
+    annotations on 81, 126 and 192; update ducklake_maintenance.yaml (verbs, lists, invariants),
+    create ducklake-partition-remediation.yaml (procedure) and its file-router route, update
+    deploy-paths, git-ops, terraform-cc-web-operations, data-modeling-standard, test_ducklake_gc_ops
+    and T2.19:c8; regenerate docs/decisions-index.json. Post -- steps 3 and 9 green.
   - >-
     Run steps 10-12; create the graduated registry shards for steps 1-4, 7 and 9; set
     implementation_declared: true; run step 13 (full tier).
@@ -758,12 +852,14 @@ execution_steps:
     --evidence; (4) commit, push, PR (squash body WITHOUT a Resolves trailer), CI green via
     event-driven wake, squash-merge. Then post-deploy steps 14-15 (DEV agent).
   - >-
-    Steps 16-25 run in a human-booted ADMIN container per ducklake_maintenance.yaml's procedure,
+    Steps 16-25 run in a human-booted ADMIN container per
+    docs/contracts/ducklake-partition-remediation.yaml's procedure,
     ending with the evidence PR that closes rec-4070.
-  - "Report: what was implemented, verification results, the ADMIN handoff, follow-ons rec-4094 and rec-4095."
+  - "Report: what was implemented, verification results, the ADMIN handoff, follow-ons rec-4094, rec-4095 and rec-4098."
 rollback: >-
   Code: revert the squash commit; the governed channel redeploys the prior packages. Data: never
-  improvised. Until snapshot expiry (30d + 7d grace) a rewritten table is restorable by a separately
+  improvised. Until snapshot expiry (30d + 7d grace) a rewritten HISTORY table (the only kind the
+  verb re-lays) is restorable by a separately
   planned operation re-laying rows(AT pre_snapshot_id) UNION (rows(live) EXCEPT rows(AT
   commit_snapshot_id)) -- preserving every row the writer committed after the rewrite -- under the
   same full-row digest proof; the snapshot ids are in the step-20 responses and the evidence fixture.

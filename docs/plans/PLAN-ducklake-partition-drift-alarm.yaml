@@ -26,7 +26,10 @@ scope:
       500 -- never an unhandled 5xx that the client retries as a Neon cold-resume. No-DDL is
       STRUCTURAL, not IAM: the reader holds the same owner-privileged ducklake_ops catalog
       credential as the writer and a catalog-only ALTER is not S3-denied, so the guarantee is that
-      the reader bundle ships no mutating module and no reader verb issues DDL
+      the reader bundle ships no mutating module and no reader verb issues DDL. The module
+      docstring's two 'a write attempt is denied at the IAM/S3 layer' statements are qualified to
+      the pinned phrase 'S3 GetObject-only IAM denies data writes but does not deny catalog DDL'
+      (credential-level fix: rec-4097)
   - file: src/lambdas/ducklake_reader/manifest.yaml
     action: Modify
     purpose: >-
@@ -34,7 +37,8 @@ scope:
       src/common/ducklake_maintenance_scope.py (its registry classifier). NEVER
       src/common/ducklake_partition_rewrite.py (the maintenance-only MUTATE half).
       ducklake_partition_spec.py, ducklake_control_tables.py, ducklake_scd2_schema.py and
-      ducklake_writes.py are already included
+      ducklake_writes.py are already included. The notes' 'Read-only ... no write path' sentence is
+      qualified the same way (no data write path; catalog DDL excluded structurally, rec-4097)
   - file: src/common/ducklake_reader_client.py
     action: Modify
     purpose: >-
@@ -49,45 +53,53 @@ scope:
     purpose: >-
       detect_partition_drift(profile=None, *, reader=None, portal_caller=None, open_recs=None,
       now=None, force=False, check_only=False) modelled on code_drift.py's DuckLake sensor.
-      CADENCE GATE (Decision 88): returns {action: skipped} without a reader call unless
-      now.hour % 6 == 0 (UTC) or force -- about 120 catalog-metadata reads a month, not 720;
-      partition drift only moves on a declared-spec change. One reader call. POLICY-AWARE THRESHOLD
-      (Decision 191): over_threshold iff any drift, or any table whose
+      CADENCE GATE (Decision 88): returns {action: skipped} without any reader call unless the
+      SCHEDULED tick hour -- (now - _CRON_MINUTE minutes).hour in UTC, _CRON_MINUTE = 37 matching
+      the workflow cron -- is a multiple of 6, or force; this tolerates up to ~59 minutes of GitHub
+      schedule delay and yields about 120 catalog-metadata reads a month instead of 720 (partition
+      drift only moves on a declared-spec change). One partition_layout call; the same reader
+      object is passed to run_episode(reader=...) for its open-rec lookup (the second reader call).
+      POLICY-AWARE THRESHOLD (Decision 191): over_threshold iff any drift, or any table whose
       load_policy()[table_class]['rewrite_partition_layout']['apply'] is true has
       legacy_scheme_files > 0; control-class legacy files are reported in context and never hold the
-      alarm open (there is no sanctioned rewrite for them). check_only (forces the gate) returns the
-      verdict without any portal call. Otherwise run_episode(source="ducklake_partition_drift", ...)
-      files ONE deduped rec (never source=ci_rca) with PINNED fields -- title "DuckLake partition
-      drift -- live partition layout differs from declared", file
-      docs/contracts/ducklake_maintenance.yaml, priority High, effort S, risk medium,
+      alarm open (there is no sanctioned rewrite for them). check_only forces the gate and returns
+      the verdict without any portal call. Otherwise run_episode(source="ducklake_partition_drift",
+      ...) files ONE deduped rec (never source=ci_rca) with PINNED fields -- title "DuckLake
+      partition drift -- live partition layout differs from declared", file
+      docs/contracts/ducklake-partition-remediation.yaml (the procedure contract), priority High,
+      effort S, risk medium,
       verification_tier V2, acceptance "bin/venv-python -m scripts.convergence_health
-      --partition-drift --check-only"; context names each over-threshold table's declared vs live
-      transforms and legacy count, lists control-class legacy separately, and names the remediation
-      owner (the ducklake_maintenance.yaml partition procedure; first episode rec-4070).
-      build_update returns None when the rebuilt context equals the existing one (no SCD2 row per
-      unchanged tick); build_close closes when clear (alarm-not-gate, Decision 55 / Decision 62's
-      2026-06-16 monitor precedent). Does NOT copy code_drift.py's Decision 103 citation (a mis-cite
-      -- Decision 103 is rec relevance)
+      --partition-drift --assert-clear" (the ratified --assert-<name> idiom of
+      scripts/ci_rca/probe_health.py; passes lint_acceptance_command(require_decidable=True));
+      context names each over-threshold table's declared vs live transforms and legacy count, lists
+      control-class legacy separately, and names the remediation owner (the ducklake-partition-remediation.yaml
+      procedure; first episode rec-4070). build_update returns None when the rebuilt
+      context equals the existing one (no SCD2 row per unchanged tick); build_close closes when
+      clear (alarm-not-gate, Decision 55 / Decision 62's 2026-06-16 monitor precedent). Does NOT
+      copy code_drift.py's Decision 103 citation (a mis-cite -- Decision 103 is rec relevance)
   - file: scripts/convergence_health/__main__.py
     action: Modify
     purpose: >-
-      main_partition_drift(check_only=False) + the --partition-drift flag (with optional
-      --check-only: exit 0 iff no over-threshold drift, never writes), mirroring
-      main_ducklake_drift; usage docstring updated
+      main_partition_drift(profile=None, *, assert_clear=False, force=False) and the flags
+      --partition-drift [--assert-clear] [--force], mirroring main_ducklake_drift's try/except. Exit
+      contract: normal mode returns 0 after any file/update/close/skip (the step stays green while
+      the alarm is open -- the rec is the signal); --assert-clear calls the sensor with
+      check_only=True and returns 0 iff clear, 1 when over threshold; any sensor exception returns
+      1 (loud, never an all-clear). Usage docstring updated
   - file: scripts/convergence_health/__init__.py
     action: Modify
     purpose: export detect_partition_drift and main_partition_drift; the docstring's submodule list gains partition_drift.py
   - file: .github/workflows/convergence-health.yml
     action: Modify
     purpose: >-
-      a 'Detect DuckLake partition drift (rec-4094)' step running
-      `.venv/bin/python -m scripts.convergence_health --partition-drift` as the job's LAST step,
-      after 'Assert scheduled loop liveness (LSA-02)', so a failure of the new verb (a deploy-window
-      400, an unclassified-table 500) never skips the silent-cron backstop the Decision 62
-      2026-09-25 correction names; plus a header comment line like the other sensors'. Same cron and
-      agent-platform-github-ci-branch identity (the role trailer-census already reads the reader
-      with -- no IAM change). Liveness needs no registration: sensor_liveness derives it from the
-      workflow schedule
+      a 'Detect DuckLake partition drift (rec-4094)' step running `.venv/bin/python -m
+      scripts.convergence_health --partition-drift ${{ github.event_name == 'workflow_dispatch' &&
+      '--force' || '' }}` as the job's LAST step, after 'Assert scheduled loop liveness (LSA-02)',
+      so a failure of the new verb (a deploy-window 400, an unclassified-table 500) never skips the
+      silent-cron backstop the Decision 62 2026-09-25 correction names; plus a header comment line
+      like the other sensors'. Same cron and agent-platform-github-ci-branch identity (the role
+      trailer-census already reads the reader with -- no IAM change). Liveness needs no
+      registration: sensor_liveness derives it from the workflow schedule
   - file: config/agent/data_quality/source_registry.yaml
     action: Modify
     purpose: >-
@@ -98,13 +110,17 @@ scope:
     action: Modify
     purpose: >-
       verbs.partition_layout (payload, response, typed_errors.runtime naming PartitionLayoutError
-      -> 500; read-only; live-file metadata only). Amend two audit_invariants: 'Closed boundary'
-      states that S3 GetObject-only IAM denies Parquet writes but NOT catalog DDL (the reader holds
-      the owner-privileged catalog credential), so no-DDL is structural -- no mutating module
-      (ducklake_partition_rewrite.py) in the bundle and no DDL-issuing verb; 'T2.26' states that
-      partition_layout exposes a control-class table's catalog METADATA only (transforms, scheme
-      id, live/legacy file counts) and never row content, which is not application read access.
-      amendment_log entry per validate_contract_drift
+      -> 500; read-only; live-file metadata only). Correct the boundary premise EVERYWHERE it is
+      stated: contract.description and contract.governance.auth_type carry the pinned phrase 'S3
+      GetObject-only IAM denies data writes but does not deny catalog DDL'; the 'Closed boundary'
+      audit invariant adds that no-DDL is structural -- no mutating module
+      (ducklake_partition_rewrite.py) in the bundle and no DDL-issuing verb -- until rec-4097's
+      read-only catalog role lands; the 'T2.26' invariant states that partition_layout exposes a
+      control-class table's catalog METADATA only (transforms, scheme id, live/legacy file counts)
+      and never row content, which is not application read access. ONE new amendment_log entry,
+      change_class prose_improvement with semantic_break false (a factual correction of a
+      misattributed guarantee plus an additive verb -- no existing verb's behaviour changes), the
+      pairing check_amendment_for_diff accepts
   - file: docs/contracts/ops_entity_counters.yaml
     action: Modify
     purpose: >-
@@ -124,42 +140,52 @@ scope:
   - file: tests/convergence_health/test_partition_drift.py
     action: Create
     purpose: >-
-      rec-4094's acceptance file, NETWORK- AND CREDENTIAL-FREE (Decision 201's offline evaluator
-      runs it under unshare -rmn): injected fake reader, portal_caller, open_recs and now. Cases --
-      drift files one rec with the pinned fields; persistence with an unchanged context is a no-op
-      update (build_update None) and a changed one updates; clear closes; a legacy-only
-      control-class table does not trip the alarm while a legacy scd2 table does; the cadence gate
-      skips at a non-multiple-of-6 hour without calling the reader and runs when forced;
-      check_only returns the verdict with zero portal calls; a reader failure raises, never a silent
-      all-clear; source is ducklake_partition_drift, never ci_rca
+      NETWORK- AND CREDENTIAL-FREE (injected fake reader, portal_caller, open_recs and now).
+      PINNED NODE test_partition_drift_episode_lifecycle is rec-4094's acceptance (repointed
+      2026-09-26; Decision 201's offline evaluator runs it under unshare -rmn): drift files one rec
+      with the pinned fields, an unchanged persistence is a no-op update (build_update None), a
+      changed one updates, clear closes. Further cases: a legacy-only control-class table does not
+      trip the alarm while a legacy scd2 table does; the cadence gate runs for a tick hour that is a
+      multiple of 6 (including a start delayed past the hour, e.g. 07:10 for the 06:37 tick), skips
+      otherwise without calling the reader, and runs when forced; _CRON_MINUTE equals the minute of
+      .github/workflows/convergence-health.yml's cron (read from the checkout, offline); check_only
+      returns the verdict with zero portal calls; a reader failure raises, never a silent all-clear;
+      source is ducklake_partition_drift, never ci_rca
   - file: tests/convergence_health/test___main__.py
     action: Modify
-    purpose: --partition-drift and --partition-drift --check-only dispatch to main_partition_drift (patch-at-import, mirroring the TestDispatch cases)
+    purpose: >-
+      TestDispatch: --partition-drift, --assert-clear and --force route to main_partition_drift
+      (patch-at-import). TestMainPartitionDrift (sensor patched): clear -> 0; over threshold under
+      --assert-clear -> 1 and the sensor received check_only=True; normal mode with drift filed ->
+      0; a sensor exception -> 1
 bundled_recommendations: ["rec-4094"]
-followon_recs: []
+followon_recs: ["rec-4097"]
 infrastructure_dependencies: []
 acceptance_criteria:
   - >-
-    the deployed reader's partition_layout verb returns, for every registered ops table, its class,
-    live transforms, active scheme id, live and legacy-scheme file counts, plus the declared-vs-live
-    drift list -- computed by the shared READ half, with no caller SQL; an unclassified table is a
-    typed 500
+    the deployed reader's partition_layout verb returns, for every live registered ops table, its
+    class, live transforms, active scheme id, live and legacy-scheme file counts, plus the
+    declared-vs-live drift list -- computed by the shared READ half, with no caller SQL; an
+    unclassified table is a typed 500
   - >-
     python -m scripts.convergence_health --partition-drift files exactly one deduped High rec
     (source ducklake_partition_drift) while any table drifts or a rewrite-eligible table keeps
     legacy-scheme files, writes no history row while nothing changes, and closes it when clear;
-    --check-only exits 0 iff there is no such drift and never writes
-  - the reader bundle ships the READ half and never ducklake_partition_rewrite.py
+    --partition-drift --assert-clear exits 0 iff there is no such drift and never writes
+  - the reader bundle ships the READ half and never ducklake_partition_rewrite.py, and no reader surface still claims IAM denies catalog DDL
   - the convergence-health workflow runs the sensor as its last step, on its existing cron and identity, with no IAM change
-  - rec-4094 closes on merge
+  - rec-4094 closes on merge through its decidable ::node_id acceptance
 verification_plan:
   - step: 1
     phase: pre-deploy
-    action: prove the sensor's episode behaviour, offline
-    command: bin/venv-python -m pytest tests/convergence_health/test_partition_drift.py -q
+    action: prove the sensor's episode behaviour and its CLI exit contract, offline
+    command: >-
+      bin/venv-python -m pytest tests/convergence_health/test_partition_drift.py
+      tests/convergence_health/test___main__.py::TestMainPartitionDrift -q
     expected: >-
       all pass -- file on drift, no-op on unchanged persistence, close on clear, control-class
-      legacy ignored, cadence gate, check_only writes nothing, loud on reader failure
+      legacy ignored, delay-tolerant cadence gate, check_only writes nothing, loud on reader
+      failure; --assert-clear exits 1 over threshold and 0 when clear
     fix_if: >-
       a test reaches a real reader, portal or AWS credential -- it must inject every collaborator or
       rec-4094 cannot close under Decision 201's offline evaluator
@@ -181,7 +207,7 @@ verification_plan:
     graduation_check_id: ducklake-partition-layout-reader-verb
   - step: 3
     phase: pre-deploy
-    action: prove the workflow runs the sensor last and the contracts and registry are wired
+    action: prove the workflow runs the sensor last and the contracts, docstring and registry are wired
     command: &step3_wiring >-
       bin/venv-python -c "import yaml;
       wf=yaml.safe_load(open('.github/workflows/convergence-health.yml', encoding='utf-8'));
@@ -193,6 +219,9 @@ verification_plan:
       assert 'ducklake_partition_drift' in [e['canonical_id'] for e in reg['entries']], 'source registry';
       rc=yaml.safe_load(open('docs/contracts/ducklake_reader.yaml', encoding='utf-8'));
       assert 'PartitionLayoutError' in str(rc['verbs']['partition_layout']['typed_errors']), 'typed error';
+      p='does not deny catalog DDL';
+      assert p in rc['contract']['description'] and p in rc['contract']['governance']['auth_type'], 'contract premise';
+      assert p in open('src/lambdas/ducklake_reader/handler.py', encoding='utf-8').read(), 'handler docstring premise';
       inv=rc['audit_invariants'];
       assert any(i.startswith('Closed boundary') and 'ducklake_partition_rewrite' in i for i in inv), 'boundary invariant';
       assert any(i.startswith('T2.26') and 'partition_layout' in i for i in inv), 'T2.26 invariant';
@@ -250,6 +279,25 @@ verification_plan:
     expected_literals: []
   - step: 6
     phase: pre-deploy
+    action: prove rec-4094's live acceptance is the pinned, decidable ::node_id before the PR merges
+    command: >-
+      bin/venv-python -c "import sys; sys.path.insert(0,'.');
+      from src.common.ducklake_reader_client import DuckLakeReader;
+      from scripts.executor.acceptance_lint import lint_acceptance_command as lint;
+      a=DuckLakeReader(profile='agent_platform').named('rec_by_id', id='rec-4094')[0]['acceptance'];
+      assert a.endswith('test_partition_drift.py::test_partition_drift_episode_lifecycle -q'), a;
+      assert lint(a, require_decidable=True)[0], a; print('REC_4094_ACCEPTANCE_DECIDABLE')"
+    expected: prints the marker (the repoint was applied 2026-09-26 at plan time)
+    fix_if: >-
+      the acceptance was changed -- restore it through ops_data_portal --update-rec; a bare file
+      path is out of Decision 201's grammar and the trailer closure would refuse rec-4094
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      Asserts one rec's live warehouse field -- a plan-time state, not a code property a standing
+      registry check could hold (it needs the reader and credentials).
+  - step: 7
+    phase: pre-deploy
     action: stage every bundle and resolve each handler's imports
     command: bin/venv-python -m scripts.lambda_manifest --check-bundles
     expected: every artifact OK -- the reader resolves ducklake_partition_layout and ducklake_maintenance_scope
@@ -260,7 +308,7 @@ verification_plan:
       Green on the un-implemented tree and already enforced as validate_lambda_bundle_completeness
       in the full tier, so a registry row would duplicate it.
     expected_literals: []
-  - step: 7
+  - step: 8
     phase: pre-deploy
     action: run every touched module's mirror-home suite
     command: >-
@@ -272,7 +320,7 @@ verification_plan:
     hermetic: false
     graduation: waive
     graduation_waiver_reason: Duplicates scripts.validate's affected-set pytest selection in both tiers.
-  - step: 8
+  - step: 9
     phase: pre-deploy
     action: run the authoritative fast presubmit tier
     command: bin/venv-python -m scripts.validate --pre
@@ -280,7 +328,7 @@ verification_plan:
     fix_if: read the named check's own failure text; never weaken a check to obtain green (Decision 181)
     hermetic: false
     graduation: not-applicable
-  - step: 9
+  - step: 10
     phase: pre-deploy
     action: run the full presubmit tier before handoff, as handoff_policy declares
     command: bin/venv-python -m scripts.validate
@@ -288,7 +336,7 @@ verification_plan:
     fix_if: on timeout the disposition is blocked -- rerun from the start, never commit on a partial run
     hermetic: false
     graduation: not-applicable
-  - step: 10
+  - step: 11
     phase: post-deploy
     action: confirm the governed channel deployed the reader on the merge commit
     command: >-
@@ -297,45 +345,47 @@ verification_plan:
     expected: all five jobs succeed, including deploy-serving (reader) and smoke
     fix_if: never fall back to build_lambda --ducklake-only --deploy (Decision 125/126)
     hermetic: false
-  - step: 11
+  - step: 12
     phase: post-deploy
     action: exercise the deployed reader verb with the DEV identity and record its response size (Decision 88)
     command: >-
       bin/venv-python -c "import json, sys; sys.path.insert(0,'.'); from src.common.ducklake_reader_client import DuckLakeReader;
-      b=DuckLakeReader(profile='agent_platform').partition_layout();
-      t=b['tables']; assert 'ops_recommendations_history' in t and 'ops_entity_counters' in t, sorted(t);
+      from src.common.ducklake_maintenance_scope import build_registry;
+      b=DuckLakeReader(profile='agent_platform').partition_layout(); t=b['tables']; reg=set(build_registry());
+      assert set(t) <= reg, sorted(set(t) - reg);
+      assert {'ops_recommendations_history', 'ops_decisions_history', 'ops_entity_counters'} <= set(t), sorted(t);
       assert all(v.get('table_class') for v in t.values()), 'table_class missing';
-      print('LAYOUT', len(t), 'tables', len(b['drifts']), 'drifts', sum(v['legacy_scheme_files'] for v in t.values()), 'legacy', len(json.dumps(b)), 'bytes')"
+      print('LAYOUT', len(t), 'tables', len(b['drifts']), 'drifts', sum(v['legacy_scheme_files'] for v in t.values()), 'legacy', len(json.dumps(b)), 'bytes; registered-not-live:', sorted(reg - set(t)))"
     expected: >-
-      prints the table, drift and legacy counts and the response size. Before the remediation
-      plan's ADMIN run: five drifts (the ops history tables, live day vs declared year,month,day).
-      After its ALTER: zero drifts; after its rewrites: zero legacy. Every state is correct; record
-      which, and the byte count
-    fix_if: an error body means the reader bundle lacks a module (step 6) or the verb is unregistered
+      prints the table, drift and legacy counts, the response size and any registered table not yet
+      live. Before the remediation plan's ADMIN run: five drifts (the ops history tables, live day
+      vs declared year,month,day). After its ALTER: zero drifts; after its rewrites: zero legacy.
+      Every state is correct; record which, and the byte count
+    fix_if: an error body means the reader bundle lacks a module (step 7) or the verb is unregistered
     hermetic: false
-  - step: 12
+  - step: 13
     phase: post-deploy
     action: confirm the first gated scheduled sensor run behaved as the live state requires
     command: >-
       mcp__github__actions_list for workflow convergence-health.yml on main (the first scheduled run
-      starting at a UTC hour divisible by 6 after the deploy), mcp__github__get_job_logs for its
-      'Detect DuckLake partition drift' step, then mcp__ducklake-reads__recs_by_title_prefix
+      for a :37 tick whose UTC hour is divisible by 6 after the deploy), mcp__github__get_job_logs
+      for its 'Detect DuckLake partition drift' step, then mcp__ducklake-reads__recs_by_title_prefix
       prefix="DuckLake partition drift -- live partition layout differs from declared"
     expected: >-
-      the step succeeds; ungated ticks log a cadence skip. If step 11 showed drift or rewrite-eligible
-      legacy, exactly one open ducklake_partition_drift rec exists whose context names rec-4070; if
-      not, none. When the remediation's ADMIN run lands later, the next gated run closes the rec --
-      an end-to-end proof of the alarm
+      the step succeeds; ungated ticks log a cadence skip. If step 12 showed drift or rewrite-eligible
+      legacy, exactly one open ducklake_partition_drift rec exists whose context names rec-4070 and
+      whose acceptance is the --assert-clear command; if not, none. When the remediation's ADMIN run
+      lands later, the next gated run closes the rec -- an end-to-end proof of the alarm
     fix_if: >-
       two recs for one episode means the dedup key is wrong; a red step on a reader error is correct
       loud failure -- diagnose, never silence; a red tick between merge and the reader deploy (400
       unknown action) is the known deploy-window transient and needs no fix
     hermetic: false
-  - step: 13
+  - step: 14
     phase: post-deploy
     action: confirm rec-4094 closed on merge
     command: mcp__ducklake-reads__rec_by_id id=rec-4094
-    expected: "status closed via the 'Resolves: rec-4094' trailer"
+    expected: "status closed via the 'Resolves: rec-4094' trailer (the census judged its ::node_id acceptance decidable and green)"
     fix_if: >-
       an ACCEPTANCE-VERDICT refusal: fix the cause, then use the close_proposed command printed in the
       trailer-closure job log -- the manual portal close is FORBIDDEN there (git-ops.yaml resolves_trailer)
@@ -362,13 +412,13 @@ test_obligations:
     test_selector: tests/convergence_health/test_partition_drift.py
     red_green_expectation: red before (module and test absent), green after
   - source: scripts/convergence_health/__main__.py
-    behavior: --partition-drift and --check-only dispatch to the sensor
-    verification_step: 7
-    test_selector: tests/convergence_health/test___main__.py
-    red_green_expectation: red before (the new dispatch assertion fails), green after
+    behavior: the --partition-drift / --assert-clear exit contract -- 0 when clear, 1 over threshold under --assert-clear, 1 on a sensor exception
+    verification_step: 1
+    test_selector: tests/convergence_health/test___main__.py::TestMainPartitionDrift
+    red_green_expectation: red before (TestMainPartitionDrift absent), green after
   - source: scripts/convergence_health/__init__.py
     behavior: the package exports the sensor entry points
-    verification_step: 7
+    verification_step: 8
     test_selector: tests/convergence_health/test___main__.py
     red_green_expectation: red before (import of main_partition_drift fails), green after
   - source: .github/workflows/convergence-health.yml
@@ -382,7 +432,7 @@ test_obligations:
     command: *step3_wiring
     red_green_expectation: red before, green after
   - source: docs/contracts/ducklake_reader.yaml
-    behavior: the reader contract declares partition_layout, its typed error and the amended boundary and T2.26 invariants
+    behavior: the reader contract declares partition_layout, its typed error, and the corrected boundary premise in description, auth_type and both invariants
     verification_step: 3
     command: *step3_wiring
     red_green_expectation: red before, green after
@@ -398,16 +448,20 @@ constraints:
     PartitionDrift, compare_to_declared) from src/common/ducklake_partition_layout.py and must not
     re-implement layout reading; implement only after that plan's code PR merges (its ADMIN run need
     not have happened)
-  - "Read-only by structure -- the reader bundle never ships ducklake_partition_rewrite.py and no reader verb issues DDL; the reader's catalog credential is owner-privileged, so IAM is not the guard"
+  - "Read-only by structure -- the reader bundle never ships ducklake_partition_rewrite.py and no reader verb issues DDL; the reader's catalog credential is owner-privileged, so IAM is not the guard (rec-4097 tracks the credential-level fix)"
   - No IAM change -- the workflow keeps its existing identity; a permission error is a stop-and-report, not a grant
   - Governed deploy only via deploy-ducklake-lambdas.yml (Decision 125/126); data-pipeline is a justified no-deploy (Decision 79, step 5)
   - No caller SQL (Decision 84 I-3); live-file metadata only, the warm connection, and a 6h cadence gate (Decision 88)
-  - tests/convergence_health/test_partition_drift.py is network- and credential-free -- rec-4094 closes only through Decision 201's offline evaluator
+  - >-
+    rec-4094's acceptance is test_partition_drift.py::test_partition_drift_episode_lifecycle (a
+    decidable ::node_id under Decision 201's require_decidable grammar); Decision 201's offline
+    evaluator runs it under unshare -rmn, so test_partition_drift.py is network- and
+    credential-free. Never change that acceptance without re-running step 6
   - No rescue agents or workaround loops (Decision 55)
 context:
   - "Decision-scout verdict: FLAGS_FOUND. Decisions triaged: 154 of 154. Roadmap items intersected: 14; CONFLICT: 1; RELATED: 12."
-  - "CITE: Decision 84, 88, 62, 55, 79, 125, 126, 131, 184, 191, 201; RELATED 190, 143"
-  - "gates: decision-scout=FLAGS_FOUND (shared with the remediation plan; dispositions there); plan-critique r1=REVISE -- all 9 items applied"
+  - "CITE: Decision 84, 88, 62, 55, 79, 125, 126, 131, 143, 184, 191, 201; RELATED 190"
+  - "gates: decision-scout=FLAGS_FOUND (shared with the remediation plan; dispositions there); plan-critique r1=REVISE (9 items applied); r2=REVISE (F1-F4 + 6 suggestions applied, incl. follow-on rec-4097)"
   - >-
     Split from the rec-4070 plan by human direction 2026-09-26 ('include drift detection now', then
     'split into two plans, each with its own review gates'). Scout flags for this half: warm
@@ -419,39 +473,46 @@ context:
     on day-of-month until the remediation plan's ADMIN run -- nothing compared declared to live.
   - >-
     Critique r1 corrected a false premise: the reader and writer share the owner-privileged
-    ducklake_ops catalog credential, so S3-only IAM does not deny catalog DDL. Resolved by the
-    remediation plan's read/mutate module split; the reader includes only the READ half (step 4).
+    ducklake_ops catalog credential, so S3-only IAM does not deny catalog DDL. Resolved in-plan by
+    the read/mutate module split and by correcting every surface that states the premise; the
+    credential-level boundary (a read-only catalog role, Decision 143 cl.1) is follow-on rec-4097.
+  - >-
+    Critique r2 (Decision 201 point 5): rec-4094's original bare-file acceptance was out of the
+    require_decidable grammar and would have been refused by the trailer census. Repointed
+    2026-09-26 via ops_data_portal --update-rec to the pinned node (step 6 re-proves it).
   - "Owning remediation: rec-4070 (PLAN-ducklake-partition-layout-remediation's ADMIN procedure) -- the sensor rec points at it, so /orient does not rank two items for one fix"
+  - "rec-4094 dependencies [rec-4070] is conservative -- the true prerequisite is the remediation's CODE merge (pre_implementation_checklist), not rec-4070's post-ADMIN closure"
   - "Identity: convergence-health.yml already assumes agent-platform-github-ci-branch; trailer-census reads the reader under the same role"
-  - "Deploy-window transient accepted: one gated tick between merge and the reader deploy can 400; the step is last, so liveness still runs"
+  - "Accepted transients: one gated tick between merge and the reader deploy can 400; a Neon cold-resume beyond the 10-minute job budget ends the run red -- both loud, and liveness has already run"
   - "ci-rca deferral: rec-4066, rec-4057 (rec_trailer_acceptance.py coverage) are unrelated; PLAN-ci-rca-rec-trailer-acceptance-coverage (#1279) owns them"
   - "fork: include drift detection now | chosen: include (as its own plan) | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: this plan"
   - "fork: sensor shape | chosen: code_drift-style run_episode alarm-not-gate | class: consistency-only | precedent: code_drift.py + source_registry ducklake_code_drift | precedent_kind: contract | reversible: yes | persisted: scope"
-  - "fork: cadence | chosen: 6h gate inside the sensor | class: consistency-only | precedent: control_health 6h binding | precedent_kind: contract | reversible: yes | persisted: scope"
+  - "fork: cadence | chosen: delay-tolerant 6h gate inside the sensor | class: consistency-only | precedent: control_health 6h binding | precedent_kind: contract | reversible: yes | persisted: scope"
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
-  - only the plan-cited decision sections (84, 88, 62, 55, 79, 125, 126, 191, 201)
+  - only the plan-cited decision sections (84, 88, 62, 55, 79, 125, 126, 143, 191, 201)
   - PLAN-ducklake-partition-layout-remediation's code PR is merged and src/common/ducklake_partition_layout.py exposes the pinned READ-half API
   - All files in scope located and readable
   - Acceptance criteria understood and verifiable
 execution_steps:
   - "Rebase onto origin/main (the remediation plan's code must be present); stage every Create row with git add --intent-to-add."
   - >-
-    Add action_partition_layout to the reader handler + the READ-half manifest includes, and
-    DuckLakeReader.partition_layout(); tests. Post -- steps 2, 4, 5, 6 green.
+    Add action_partition_layout to the reader handler + the READ-half manifest includes, correct the
+    boundary premise in the handler docstring and manifest notes, and add
+    DuckLakeReader.partition_layout(); tests. Post -- steps 2, 4, 5, 7 green.
   - >-
-    Create scripts/convergence_health/partition_drift.py (+ __init__ export, __main__ flags),
-    register the source, add the workflow step last, amend both contracts; tests. Post -- steps 1
-    and 3 green.
+    Create scripts/convergence_health/partition_drift.py (+ __init__ export, __main__ flags and exit
+    contract), register the source, add the workflow step last, amend both contracts; tests. Post --
+    steps 1, 3 and 6 green.
   - >-
-    Run steps 7-8; create the graduated registry shards for steps 1-4; set
-    implementation_declared: true; run step 9 (full tier).
+    Run steps 8-9; create the graduated registry shards for steps 1-4; set
+    implementation_declared: true; run step 10 (full tier).
   - >-
     Closure evidence as four SEPARATE facts: (1) scripts.session.github_readiness as reported; (2)
-    step 9's full-tier exit 0 + logs/debug/validation-result.json; (3) scripts.session.postflight
+    step 10's full-tier exit 0 + logs/debug/validation-result.json; (3) scripts.session.postflight
     --evidence; (4) commit, push, PR, CI green via event-driven wake, squash-merge with
-    'Resolves: rec-4094'; then post-deploy steps 10-13.
+    'Resolves: rec-4094'; then post-deploy steps 11-14.
   - "Report: what was implemented, verification results, and whether the first gated sensor run found drift."
 rollback: >-
   Revert the squash commit: the governed channel redeploys the prior reader and the workflow step
