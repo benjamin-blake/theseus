@@ -102,13 +102,40 @@ fields:
       so the write boundary (append_events, rec-4024) requires an explicit UTC connection TimeZone
       before it writes -- never a caller-set or default zone. A producer that cannot read the root
       transcript DEFERS emission rather than guessing this value (e.g. from a locally-observed
-      timestamp); a producer with no transcript at all (LiteLLM, CI annotate) receives it via
-      producer metadata alongside session_ref, or decodes it from a held session_id's ULID prefix.
+      timestamp). A producer with no transcript at all (LiteLLM, CI annotate) receives
+      session_started_at from another producer of the same tree ONLY as an integer epoch-millisecond
+      value, or as a held entity/FK key of the tree (e.g. the root session_id) decoded with
+      src/telemetry/identity.py decode_time_prefix -- never an event_id, whose 48-bit prefix is its
+      OWN event_timestamp, not the root's session_started_at; never seconds, a float, or a
+      re-serialised string. An unusable handoff (neither form, or a decode failure) DEFERS emission,
+      never coerces. This ban is scoped to the producer-to-producer handoff only: both sanctioned
+      forms decode to the same tz-aware UTC value and the stored column is unchanged (Decision 96
+      clause 4). Separately, one obligation spans EVERY hop, producer-to-writer included:
+      session_started_at always carries its full millisecond value (e.g. an RFC 3339 string with a
+      3-digit fraction at the writer edge) -- the pinned RFC 3339 profile accepts a fraction-less
+      value and would silently pad it to .000, losing precision the identity hash depends on; any
+      writer-side rejection of a fraction-less value is rec-4024's to build (the event_timestamp
+      "rule declared here, validator is rec-4024's" pattern).
     populated_by: the emitting producer, pinned once per session at the root transcript's first record.
     dq_intent:
       not_null:
         enforced: false
     amendment_log:
+      - date: "2026-09-26"
+        semantic_break: true
+        change_class: governance_note_add
+        summary: >-
+          rec-4060 (contract-risk review of slice 1, PLAN-telemetry-contract-risk-amendments):
+          named the two sanctioned producer-to-producer handoff forms for a transcript-less producer
+          (integer epoch-ms, or a held entity/FK key decoded via decode_time_prefix), banned an
+          event_id or a lossy seconds/float/re-serialised-string handoff, and required deferral on an
+          unusable handoff. Added the every-hop millisecond-precision obligation (Decision 96 clause
+          4: the stored column and its RFC 3339 profile are unchanged -- this is a precision
+          requirement on the value supplied at each hop, not a new format). semantic_break=true: a
+          producer that previously coerced or guessed this value must now defer.
+        migration_story: >-
+          No live populator exists yet (population is future-state, rec-4024), so no runtime
+          migration is required.
       - date: "2026-09-25"
         semantic_break: false
         change_class: prose_improvement

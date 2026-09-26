@@ -35,6 +35,20 @@ fields:
       tighten it to not_null.enforced: true via dq_intent_local (Invariant 5) -- project_id is
       always present on a telemetry row. Non-telemetry (ops) consumers may keep the looser baseline
       until their own re-ratification.
+      A registered (tenant_id, project_ref) -> project_id resolution is IMMUTABLE: a (tenant_id,
+      project_ref) is never re-bound to a different project_id, 'unregistered' auto-registrations
+      included (Decision 200 clause 1's 'permanent id'). Remapping to a canonical project via
+      canonical_project_id on the SCD2 ops_projects dimension is read-side only and never changes
+      what the write boundary resolves for that (tenant_id, project_ref) (Decision 200 clause 3:
+      never by rewriting facts). Every producer of one trace tree supplies the ROOT session's
+      project_ref (a transcript-less producer receives it alongside session_ref), so project_id --
+      a hash input to every entity/FK key -- is constant across a tree: stated outright, a telemetry
+      row's project_id is its trace tree's ROOT project, so a sub-agent acting in another repository
+      is attributed to the root's project. The tree's project_ref is PINNED once, at the ROOT
+      session's first record (the same pin point as session_started_at): every row of the tree, the
+      root's own later turns included, carries that pinned value, never a per-turn or per-producer
+      re-read of repository configuration. A producer that has not received the root's project_ref
+      DEFERS emission (mirroring R7's session_started_at handoff) and never substitutes its own.
     populated_by: >-
       the write boundary's project-registration verb (rec-4024), resolving project_ref to
       project_id (auto-registering 'unregistered' on first sight). No current populator.
@@ -54,6 +68,21 @@ fields:
       opaque id -- an unregistered project is remapped to its canonical row via canonical_project_id
       on that dimension, never by rewriting facts on rows already written with the unregistered id.
     amendment_log:
+      - date: "2026-09-26"
+        semantic_break: true
+        change_class: governance_note_add
+        summary: >-
+          rec-4059 (contract-risk review of slice 1, PLAN-telemetry-contract-risk-amendments):
+          added the immutable-resolution and root-project-pin rules. Decision 199's identity hash
+          derives every entity/FK key from project_id as one of its inputs, so two producers of the
+          same trace tree must agree on project_id byte-for-byte or their FK derivations diverge --
+          this reads as field semantics of that identity requirement, not a re-decision of Decision
+          200 clause 1 (which already made 'unregistered' registration permanent). semantic_break=
+          true: a producer that previously re-read its own repository configuration per turn must
+          now defer emission instead when it lacks the root's pinned project_ref.
+        migration_story: >-
+          No live populator or registration verb exists yet (population is future-state, rec-4024),
+          so no runtime migration is required; rec-4024 builds directly to this pinning rule.
       - date: "2026-09-24"
         semantic_break: true
         change_class: governance_note_add
