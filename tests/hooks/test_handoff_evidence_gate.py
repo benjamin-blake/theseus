@@ -245,10 +245,11 @@ def _run_shim(payload: dict, env_overrides: dict[str, str] | None = None) -> sub
 
 
 def test_shim_fails_closed_when_adapter_crashes(tmp_path: Path) -> None:
-    """Graduated node (module-level): an adapter forced to raise, an unstartable interpreter, an unset
-    CLAUDE_PROJECT_DIR, an unrelated hook cwd, a pretty-printed MCP payload and an adapter
-    that sleeps past the shim's bound each give exit 2 for a push-shaped payload; a non-push
-    payload still exits 0."""
+    """Graduated node (module-level, kept fast for the VP replay budget -- Decision 55: the
+    real-timeout scenario is split into test_shim_kills_adapter_that_sleeps_past_bound below,
+    which exercises the same shim unmodified): an adapter forced to raise, an unstartable
+    interpreter, an unset CLAUDE_PROJECT_DIR, an unrelated hook cwd and a pretty-printed MCP
+    payload each give exit 2 for a push-shaped payload; a non-push payload still exits 0."""
     push_payload = {"tool_name": "Bash", "tool_input": {"command": "git push -u origin HEAD"}}
     non_push_payload = {"tool_name": "Bash", "tool_input": {"command": "ls -la"}}
 
@@ -335,7 +336,17 @@ def test_shim_fails_closed_when_adapter_crashes(tmp_path: Path) -> None:
     assert result.returncode in (0, 2)  # denies unless head happens to resolve; never "unavailable"
     assert "handoff gate unavailable" not in result.stderr
 
-    # An adapter that sleeps past the shim's bound.
+    # A non-push payload still exits 0 through the real shim.
+    result = _run_shim(non_push_payload)
+    assert result.returncode == 0
+
+
+def test_shim_kills_adapter_that_sleeps_past_bound(tmp_path: Path) -> None:
+    """Not graduated (real-timeout scenario, ~50s wall clock -- kept out of the VP replay
+    budget per Decision 55; see test_shim_fails_closed_when_adapter_crashes above for the
+    fast scenarios covering the same property). An adapter that sleeps past the shim's own
+    45s bound is killed and the shim exits 2 for a push-shaped payload."""
+    push_payload = {"tool_name": "Bash", "tool_input": {"command": "git push -u origin HEAD"}}
     slow_root = tmp_path / "slow_root"
     (slow_root / ".claude" / "hooks").mkdir(parents=True)
     (slow_root / ".claude" / "hooks" / "handoff_evidence_gate.sh").write_text(
@@ -359,10 +370,6 @@ def test_shim_fails_closed_when_adapter_crashes(tmp_path: Path) -> None:
         timeout=60,
     )
     assert result.returncode == 2
-
-    # A non-push payload still exits 0 through the real shim.
-    result = _run_shim(non_push_payload)
-    assert result.returncode == 0
 
 
 class TestShimFailClosed:
