@@ -1,0 +1,689 @@
+schema_version: 5
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: handoff-evidence-gate
+intent: >-
+  Enforce the commit-first handoff (slice 2a, PLAN-handoff-validates-committed-tree) mechanically at the agent's push/PR
+  boundary: one fail-closed PreToolUse harness hook refuses any non-exempt agent push or GitHub remote write unless the
+  schema-4 validation evidence proves that exact committed tree was validated from that worktree. It is an IDENTITY gate
+  (was the pushed tree validated?), not a verdict gate: a validated-but-red tree passes with a warning, so there is nothing
+  to wedge and no release valve.
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-handoff-evidence-gate.yaml
+phase: >-
+  Soft-warn exception category ci_rca (hardening follow-on from the rec-4057/rec-4066 root cause); names NO tier_item, so
+  the Tier Item Freshness Gate is skipped. T2.54 (clause-to-check traceability) is cited, not claimed. Slice 2b of 2;
+  DEPENDS ON slice 2a being merged (it imports scripts.checks.validation_result's evidence_path_for, load_record,
+  attests_head and ATTEST_RULES, and extends 2a's handoff_sequence.enforcement_coverage list in place).
+scope:
+  - file: scripts/session/handoff_push_parse.py
+    action: Create
+    purpose: >-
+      Pure Bash-command classification and canonical-form parsing, moved OUT of the hook so it inherits the 100% per-file
+      coverage floor (critique F7: map_source_to_test returns None for .claude/hooks/*.py, so logic left there is
+      ungoverned). No git, no I/O. Target < 250 SLOC. Its module docstring carries the enumerated residual surfaces the
+      git-ops row cites (subprocess and wrapper-interpreter pushes, heredocs fed to a non-shell interpreter, nested shells
+      beyond one level, persistent git aliases/config, the accepted `echo git push` false positive).
+      (1) PRE-PASS: strip heredoc bodies (`<<`, `<<-`, `<<~` with a bare or quoted delimiter, through the delimiter line)
+      -- they are data -- EXCEPT when the command receiving the heredoc is a shell (bash, sh, zsh, dash), whose body is
+      classified as commands; also recurse into a shell's here-string (`<<<`). A heredoc operator is recognised ONLY in
+      command context: never inside single- or double-quoted literal text (`grep -n "<<EOF" f` starts no heredoc, so a
+      following `git push` line stays visible), but inside `$(...)` and backticks at any nesting, including within
+      double quotes (critique round 2 N2).
+      (2) TOKENISE with shlex.shlex(text, posix=True, punctuation_chars='();<>|&\n'), whitespace ' \t\r' and
+      commenters '' (EMPTY -- shlex's default '#' reads a comment with readline() and swallows the newline, so `git
+      status # check\ngit push ...` would merge into one git-status command and fail open; critique round 2 N1), so
+      NEWLINE, ;, &&, ||, |, &, ( ), { } all separate simple commands and quoted newlines stay inside their token. `#`
+      tokens are kept as ordinary words: a trailing comment on a push makes it non-canonical (denied with the own-tool-call
+      message). A tokenise failure on text containing the words git and push -> PUSH-SHAPED (fail closed).
+      (3) PUSH-SHAPED (co-occurrence, critique F1): a simple command is push-shaped when it contains a token whose
+      basename is `git` followed later by a token `push`, OR its git subcommand is send-pack or http-push, OR it is
+      `git subtree|lfs ... push`, OR a git command carries `-c`/`--config-env` and its text contains "push" (aliases). The
+      ONE exception: the first word (after NAME=value assignments) is `git` and its parsed subcommand is something else
+      (git log --grep push, git commit -m "push fix"). Subcommand parsing knows the arg-taking globals (-C, -c,
+      --git-dir, --work-tree, --namespace, --config-env, --exec-path, --super-prefix, `=` forms) and the no-arg globals
+      (--no-pager, -P, --paginate, --bare, --literal-pathspecs, --glob-pathspecs, --noglob-pathspecs,
+      --icase-pathspecs, --no-replace-objects, --no-optional-locks, --no-lazy-fetch, --no-advice); any other `-` token
+      before the subcommand makes a git command with a later push token push-shaped. A shell token (basename bash, sh,
+      zsh or dash) with an option cluster containing `c` AT ANY POSITION in the simple command (so `timeout 60 bash -c
+      '...'` and `env sh -c '...'` recurse too) has its string argument classified recursively; `eval`'s joined arguments
+      are classified as a command string (critique round 2 N3). COMMAND SUBSTITUTION: the paren-matched body of every
+      `$(...)` and backtick span -- found at any nesting, including inside double quotes -- is heredoc-stripped and
+      classified RECURSIVELY with these same token rules; a push-shaped body makes the whole command push-shaped, before
+      the git exception applies (token-based, never raw text: `git commit -m "$(printf 'explain git push')"` is NOT
+      push-shaped because the body's first word is printf). `grep "git push" f` (one quoted token) is NOT push-shaped;
+      `echo git push` IS (accepted false positive, named in the deny message).
+      (4) CANONICAL FORMS (an allowlist; the whole command must match, optionally prefixed by one `cd <path> &&`):
+      git [-C <path>] push {OPTS} <remote> <src>[:<dst>]; bare git [-C <path>] push {OPTS}; git [-C <path>] push
+      <remote> (--delete <branch> | :<branch>); where {OPTS} is an ORDER-INSENSITIVE set drawn from -u,
+      --set-upstream, --force-with-lease[=<v>], --dry-run, -n (critique F4b: plan.md uses `--force-with-lease -u`). Exactly
+      one refspec; src is HEAD or a bare branch name (resolved against the worktree by the checker); no `+` force prefix;
+      no env assignment, -c, other global option, second segment, pipe or redirection. Returns a ParsedPush(kind in
+      {push, bare_push, delete, dry_run}, worktree_hint (-C resolved relative to the cd path, M4), remote, src, dst) or
+      a NonCanonical(reason). Every instruction-surface literal is a canonical test case: plan.md L100 and L126,
+      audit.md L134, implement SKILL.md's Commit Flow push, audit-prompt SKILL.md L217, git-ops
+      push_pr_ci_merge_flow.steps[0], plus plan.md's "plain `git push`" (L114).
+  - file: scripts/session/handoff_evidence.py
+    action: Create
+    purpose: >-
+      The checker: git/evidence decisions returning Verdict(kind in {pass, warn, deny}, rule, message) plus a CLI. Every
+      git probe runs with cwd = the resolved worktree; toplevel is `git rev-parse --show-toplevel` run THERE, compared
+      after os.path.realpath on both sides (critique F9). Base-ref reads come from `git show
+      origin/main:docs/contracts/git-ops.yaml`: exempt_path_globs, never_exempt_paths and
+      branching_topology.agent_branch_prefixes (Decision 187: a push that widens them must not exempt itself).
+      decide_bash(parsed, payload_cwd): kind dry_run -> pass; kind delete -> pass only for ONE branch matching
+      agent_branch_prefixes and never main/master (it pushes no tree; PLAN-stale-prs-branches-cleanup's sanctioned
+      deletions; any other delete is human-only, declared in the coverage row); kind bare_push -> admitted only when
+      `git config push.default` is unset, simple, current or upstream, `remote.<r>.push` and `remote.<r>.mirror` are
+      both unset for the resolved remote (either makes a bare push multi-ref or mirroring whatever push.default says --
+      critique round 2 N6), AND `git rev-parse --symbolic-full-name @{push}` resolves (pushed sha = HEAD, dst = that
+      branch), else deny;
+      kind push -> resolve src in the worktree, then decide_push. DESTINATION RULE (critique F6): dst (explicit, or the
+      src branch name when omitted, `refs/heads/` stripped) must match a DESTINATION PREFIX and never be main/master --
+      a validated or red tree must never land on main through the admin-bypass ruleset (rec-4080). Destination prefixes
+      = branching_topology.agent_branch_prefixes PLUS the gate-local handoff_evidence_gate.extra_destination_prefixes
+      ["audit/"], both read from the base ref (critique round 2 N4: audit-prompt SKILL.md mandates
+      `audit/{slug}-<sha>` audit-execution branches, e.g. PR #1234; agent_branch_prefixes itself is NOT widened because
+      it drives the wake signals). An unreadable prefix set denies. The deny message names `git push -u origin
+      HEAD:claude/<slug>` for worktree branches that are not agent-prefixed (EnterWorktree, subagent isolation).
+      decide_push(worktree, pushed_sha): (1) EXEMPT when every path in `git diff --no-renames --name-only -z
+      <merge-base(origin/main, pushed_sha)> <pushed_sha>` (so a rename lists BOTH source and destination -- critique F2:
+      without --no-renames, `git mv scripts/x.py docs/plans/x.py` lists only the exempt destination) matches
+      exempt_path_globs and none matches never_exempt_paths (fnmatch.fnmatchcase, `*` crosses `/`). Fail closed on
+      every unknown: no origin/main ref, an unreadable or malformed clause, or a failed merge-base (shallow clone,
+      unrelated history) means NO exemptions; the deny message says "rebase onto origin/main" for a branch carrying
+      already-squash-merged paths. (2) Otherwise BRANCH ON load_record's status first (missing / unreadable -> deny
+      naming it), then attests_head(record, head_tree=`git rev-parse <pushed_sha>^{tree}`, toplevel): ok -> pass;
+      failed_run -> warn; every other rule -> deny naming the rule code and the handoff sequence (commit -> fetch +
+      rebase -> full tier -> --verify-head -> push).
+      decide_pr(payload_cwd, head): deny a cross-repo head ("owner:branch") or a head outside the destination prefixes;
+      resolve the worktree whose `git worktree list --porcelain` entry is `branch refs/heads/<head>`, else the payload
+      cwd's toplevel (overseer waves); resolve refs/remotes/origin/<head> there (missing -> deny "push the branch
+      first"); return decide_push(worktree, that sha).
+      decide_remote_write(branch, paths) (push_files / create_or_update_file / delete_file): deny when branch is
+      main/master or outside the destination prefixes; else pass only if every path is exempt and none never-exempt.
+      update_pull_request_branch is NOT gated (its payload names a PR number, not a head, so it cannot be scoped to agent
+      branches without a network call, and denying it outright wedges the Dependabot sweep) -- a declared residual.
+      CLI: --check-push [--sha SHA] [--worktree PATH] (default HEAD and cwd; exit 0 on pass/warn, 1 on deny, printing
+      the rule). Target < 250 SLOC.
+  - file: .claude/hooks/handoff_evidence_gate.py
+    action: Create
+    purpose: >-
+      PLUMBING ONLY (Decision 162; critique F7): insert its own repo root (Path(__file__).resolve().parents[2]) at
+      sys.path[0]; read the JSON payload from stdin; route Bash and Monitor (both carry tool_input.command; a Monitor
+      command runs in the Bash shell environment -- critique F5e) through handoff_push_parse then the checker -- a
+      push-shaped Monitor command is always denied (a push inside a monitor script is never the canonical handoff); a
+      Monitor `ws` payload with no command passes --
+      and route mcp__github__ / mcp__github-full__ create_pull_request, push_files, create_or_update_file and delete_file
+      to the checker. OUTPUT: pass -> exit 0, no stdout; deny -> exit 2 with "handoff-evidence-gate: <rule>: <message>"
+      on stderr (fed to Claude; a NonCanonical reason says "run `git push -u origin HEAD` (or `git -C <worktree> push -u
+      origin HEAD`) as its own tool call; to write text that contains a push command use the Write tool"); warn -> exit 0
+      printing {"systemMessage": <warning>, "hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext":
+      <warning>}} with NO permissionDecision (additionalContext reaches Claude, systemMessage the user -- hooks
+      reference, PreToolUse decision control; critique M1). It NEVER emits permissionDecision allow (that skips the
+      user's permission flow) or ask. main() wraps everything: any exception -> exit 2 "handoff gate error: <type>".
+  - file: .claude/hooks/handoff_evidence_gate.sh
+    action: Create
+    purpose: >-
+      Fail-closed shim (critique F1/F3: a non-0/2 PreToolUse exit, and a timed-out hook, are NON-blocking). No `set -e`
+      and no `set -u`. (1) Read stdin once into a variable. (2) PRE-FILTER without Python (M3): continue only when the
+      raw payload contains the substring `mcp__github` (whole-payload substring, robust to key spacing and
+      pretty-printing -- F3c) or contains both `git` and `push`; otherwise exit 0. (3) From here a `trap` on ERR and EXIT
+      maps any non-0/2 status to exit 2 with "handoff gate unavailable (<code>)". (4) CARVE-OUT: GITHUB_ACTIONS=true in
+      the shim's OWN environment (GitHub Actions-hosted Claude sessions, .github/workflows/claude.yml: venv-less,
+      fetch-depth 1) -> exit 0 with a stderr notice; a tool call's env never reaches the hook process, but a settings
+      `env` block can -- declared under rec-4085's settings-edit row; the carve-out itself is rec-4086. (5) ROOT =
+      $CLAUDE_PROJECT_DIR, else the shim's own `$(cd "$(dirname "$0")/../.." && pwd)`; run `timeout -k 5 45
+      "$ROOT/bin/venv-python" "$ROOT/.claude/hooks/handoff_evidence_gate.py"` (-k so an adapter ignoring SIGTERM is
+      killed inside the settings timeout) with the payload on stdin -- ABSOLUTE
+      paths, because the hook's cwd follows Claude's cwd (F3d). (6) Exit map: 0 -> 0 (stdout passed through); 2 -> 2;
+      124/137 (the shim's own timeout) and ANY other status -> 2. Every payload reaching step 5 passed the push-shaped
+      pre-filter, so a broken interpreter blocks push-shaped calls only and never ordinary Bash.
+  - file: .claude/settings.json
+    action: Modify
+    purpose: >-
+      Register the gate as a NEW PreToolUse entry with an ANCHORED matcher (M2):
+      "^(Bash|Monitor|mcp__github(-full)?__(create_pull_request|push_files|create_or_update_file|delete_file))$", command
+      `bash "$CLAUDE_PROJECT_DIR/.claude/hooks/handoff_evidence_gate.sh"`, and an explicit "timeout": 60 (above the
+      shim's own 45-second bound -- a harness-level timeout would let the call through, F3a). Leave the existing entry
+      byte-identical (Decision 138: augment, never replace). Register LAST in execution order: settings edits go live
+      through the file watcher, so the shim and adapter must exist first (critique M2).
+  - file: docs/contracts/git-ops.yaml
+    action: Modify
+    purpose: >-
+      Class D (Decision 168). SIZE, pre-decided (critique round 2 N7): the clause <= 30 effective lines and the whole git-ops
+      diff (clause, list rows, amendment_log entry, paths) <= 50; the long residual enumeration lives in rec-4085's
+      warehouse context and handoff_push_parse's module docstring and is CITED by one row, never restated; measure the
+      LIVE count at implement time (after slice 2a and PLAN-trailer-acceptance-junit-verdict) and STOP and surface if it
+      would still exceed 500, never raise. Add `handoff_evidence_gate:`: exempt_path_globs [docs/plans/*,
+      docs/audit-prompts/*, audits/*, docs/ROADMAP-PLATFORM.yaml] (`*` crosses `/`; .secrets.baseline deliberately NOT
+      exempt); never_exempt_paths [docs/contracts/git-ops.yaml, .claude/settings.json, .claude/settings.local.json,
+      .claude/hooks/handoff_evidence_gate.*, scripts/session/handoff_evidence.py, scripts/session/handoff_push_parse.py,
+      scripts/checks/validation_result.py]; extra_destination_prefixes ["audit/"]; one line each for the base-ref read
+      rule (unknowns fail closed), the canonical forms and destination rule (pointing at handoff_push_parse), the outcome
+      map (ok -> pass; failed_run -> pass with a warning; else deny) and "no agent override". EXTEND 2a's
+      handoff_sequence.enforcement_coverage list IN PLACE (never a second list), naming PYTEST NODES in enforced_by as
+      2a's rows do (shards are inert after admission, rec-3286 -- critique round 2 N5): FLIP the interactive /implement
+      push row from residual (rec-4083, closed by this plan) to mechanical, enforced_by
+      tests/hooks/test_handoff_evidence_gate.py::test_git_push_denied_without_matching_evidence and
+      tests/test_session_handoff_evidence.py::TestPushDecision::test_denies_evidence_for_a_different_tree; add MCP
+      create_pull_request / push_files / create_or_update_file / delete_file [mechanical, the TestPrResolution and
+      TestRemoteWrites nodes]; non-canonical push-shaped Bash and Monitor commands [mechanical,
+      tests/test_session_handoff_push_parse.py::TestPushShaped::test_push_shaped_classifier_catches_wrapper_and_newline_forms];
+      a push or remote write to main or outside the destination prefixes [mechanical,
+      tests/test_session_handoff_evidence.py::TestDestination::test_main_and_non_agent_destinations_denied]; a
+      validated-but-red tree, INCLUDING a check-level timeout (recorded as a failed check, so failed_run) [residual,
+      rec-4087]; everything the harness cannot see or the evidence cannot prove -- one row, "see rec-4085 and
+      handoff_push_parse's docstring" [residual, rec-4085]; deletes of non-agent branches [residual, human-only, rec-4085];
+      GitHub Actions-hosted sessions [residual, rec-4086]. A full tier that cannot complete at the PROCESS level (crash,
+      kill) leaves no evidence and blocks non-exempt pushes, WIP-preservation pushes included -- consistent with
+      handoff_policy timeout_disposition blocked; the human escape is a GitHub-UI revert or a push from their own clone
+      (one line). amendment_log entry; contract_version = LIVE value + 1; add the checker, parser, adapter and shim to
+      referenced_repo_paths. No bare `claude/` outside agent_branch_prefixes.
+  - file: config/agent/verification_registry/entries/git-ops-trailer-carrier-and-placement-rules.yaml
+    action: Modify
+    purpose: >-
+      RE-POINT its `contract_version:[[:space:]]*N` grep to the EXACT literal this change leaves behind (live value + 1),
+      keeping its other three greps byte-identical -- never a version pattern (a modified shard re-enters
+      run_differential, which rejects a grep that also passes on origin/main as tautological). Slice 2a and
+      PLAN-trailer-acceptance-junit-verdict re-point it under the same rule, so whichever lands later re-reads the live
+      value (M5).
+  - file: docs/DECISIONS.md
+    action: Modify
+    purpose: >-
+      Mint Decision 203 (the file ends at 201; Decision 202 is claimed by PLAN-platform-role-iam-change-alarms and 204 by
+      another in-flight plan per operator coordination 2026-09-26); re-check at implement time and use the next free
+      number everywhere this plan says 203. Typed envelope: significance numbered_decision, with a justification naming
+      git-ops.yaml as the rejected contract-only home and an amendment_forms annotation on Decision 163 as the rejected
+      route, per Decision 181's routing precedent for a separately reversible instance of 163's principle. NO `amends`
+      field (cite 163 under Related). Within the 6,144-byte per-entry cap (Decision 167) -- the per-surface table, exempt
+      set and grammar live in git-ops.yaml and the parser. Content: agent pushes and GitHub remote writes of non-exempt
+      content are refused unless validation evidence proves the pushed tree was validated from that worktree (identity,
+      not verdict: a validated-but-red tree passes with a warning); only canonical push forms to agent branches are
+      evaluated; no agent override; the gate guards ordering and drift, not trust. Reversal conditions: (a) a false block
+      of a correct handoff -> fix the checker, never add an override; (b) a full tier that cannot complete wedges
+      non-exempt pushes more than twice in a quarter -> revisit; (c) a full-tier PR-CI verdict lands (rec-3221) -> narrow
+      the local gate to it; (d) rec-4087's inherited-red release lands -> revisit gating on verdict; (e) the executor
+      goes live (Decision 67 reversal) -> re-derive the per-push cost basis.
+  - file: tests/test_session_handoff_push_parse.py
+    action: Create
+    purpose: >-
+      Mirror home of scripts/session/handoff_push_parse.py (100% floor). TestPushShaped, parametrized one case per shape
+      (critique F1): wrappers (timeout 120 git push, env GIT_TRACE=1 git push, command git push, nohup, time, `!`),
+      grouping and control flow ((git push), { git push; }, if ...; then git push; fi), command substitution (echo
+      $(git push ...), a backtick form, git commit -m "$(git push ...)"), combined-flag shells (bash -lc '...'), a
+      shell-fed heredoc, a here-string, a multi-line command (git status NEWLINE git push), a comment-newline form (git
+      status # check NEWLINE git push -- round 2 N1), a push after a QUOTED heredoc marker (grep -n "<<EOF" f NEWLINE
+      git push -- N2), `timeout 60 bash -c '...'`, `env sh -c '...'`, `eval 'git push ...'` (N3), send-pack, http-push,
+      subtree push, lfs push, `git -c alias.p=push p`, an unknown global option; and the NOT-push-shaped set (git log
+      --grep push, git --no-pager log --grep push, git commit -m "push fix", a git commit whose -m is a $(cat <<'EOF'
+      ... git push ... EOF) heredoc, git commit -m "$(printf 'explain git push')" (N2), git status # push later, grep
+      "git push" f, cat > f <<'EOF' with a git push body line). TestCanonical: every
+      instruction-surface literal (the scope-row list) is canonical; option order is irrelevant; bare git push; --delete
+      and :branch; --dry-run; -C resolved relative to a cd prefix (M4); each NonCanonical reason (+src, two refspecs,
+      env prefix, -c, --force, -f, --no-verify, --all, --mirror, --tags, a pipe, a redirection, a second segment, a
+      trailing # comment).
+      test_push_shaped_classifier_catches_wrapper_and_newline_forms is the graduated node.
+  - file: tests/test_session_handoff_evidence.py
+    action: Create
+    purpose: >-
+      Mirror home of scripts/session/handoff_evidence.py (100% floor). Real tmp repositories with a bare origin (setup
+      commits via `git -c commit.gpgsign=false -c user.name=t -c user.email=t@example.invalid`); PASS-CASE evidence is
+      written by 2a's REAL clear() / write_completed() in the tmp repo, never a hand-built dict (critique F9 -- a Path
+      vs str or toplevel canonicalisation mismatch must fail a test, not deny every real push). TestPushDecision:
+      test_denies_evidence_for_a_different_tree (graduated; two real distinct trees); pass on ok; warn on failed_run;
+      deny on missing, unreadable and every other identity rule, each asserting its rule code. TestExemptSet:
+      test_exempt_set_is_read_from_base_ref_not_worktree (graduated); test_real_contract_exempt_clause_parses (graduated:
+      the loader parses the REAL working-tree clause; docs/plans/x exempt, git-ops.yaml never-exempt);
+      test_rename_out_of_non_exempt_path_is_not_exempt and a never-exempt-SOURCE rename variant (F2);
+      test_never_exempt_defeats_widened_glob (injected clause, M4 of round 1); no origin/main, unreadable clause and a
+      failed merge-base each yield no exemptions. Every tmp repo SEEDS a git-ops.yaml (clause + agent_branch_prefixes)
+      on its origin/main so the positive controls can pass. TestDestination: test_main_and_non_agent_destinations_denied
+      (dst main, master and a non-agent branch denied; an unreadable prefix set denies); agent-prefixed and audit/ dsts
+      and the refs/heads/ spelling admitted. TestBareAndDelete: push.default matching denied; remote.<r>.push set and
+      remote.<r>.mirror=true each denied (N6); unresolved @{push} denied; a single agent-branch delete passes, a main delete is denied. TestPrResolution: a REAL `git
+      worktree add` with the payload cwd at the main checkout resolves the branch's worktree; missing tracking ref,
+      owner:branch and non-agent heads denied. TestRemoteWrites (branch main denied; exempt paths on an agent branch
+      pass); TestCli (--check-push exit codes).
+  - file: tests/hooks/test_handoff_evidence_gate.py
+    action: Create
+    purpose: >-
+      Adapter and shim tests, each driving the hook as a subprocess with JSON stdin and an EXPLICITLY BUILT env (no
+      inherited GITHUB_ACTIONS; explicit CLAUDE_PROJECT_DIR). ANTI-VACUITY (critique F8): every deny assertion checks the
+      expected rule code in stderr AND the absence of "handoff gate unavailable" and "handoff gate error", so a broken
+      interpreter cannot satisfy it. test_git_push_denied_without_matching_evidence (module-level -- rec-4083's
+      acceptance node, VERBATIM) asserts the missing-evidence rule code AND carries a positive control: the same push
+      with attested evidence exits 0. Also: Bash and Monitor routing; every MCP tool name on both servers; warn emits
+      additionalContext + systemMessage and never a permissionDecision; a non-push command exits 0 without starting
+      Python; a Monitor `ws` payload with no command exits 0. test_shim_fails_closed_when_adapter_crashes (graduated; module-level): an adapter forced to raise, an
+      unstartable interpreter, CLAUDE_PROJECT_DIR unset, a hook cwd in an unrelated directory, a pretty-printed MCP
+      payload and an adapter that sleeps past the shim's bound each give exit 2 for a push-shaped payload, and a non-push
+      payload still exits 0 (critique F3). GITHUB_ACTIONS=true in the shim's own env exits 0 (carve-out).
+      test_settings_registers_gate_on_push_and_remote_write_tools (graduated; module-level): the new entry, its anchored
+      matcher accepting all eleven names (Bash, Monitor and the four tools on both servers) and rejecting a superstring
+      ("XBash"), the explicit timeout, the shim command, and the pre-existing entry unchanged.
+  - file: config/agent/verification_registry/entries/handoff-gate-denies-unattested-push.yaml
+    action: Create
+    purpose: >-
+      Graduated test_selector shard for VP step 1 (node
+      tests/test_session_handoff_evidence.py::TestPushDecision::test_denies_evidence_for_a_different_tree).
+  - file: config/agent/verification_registry/entries/handoff-exempt-set-from-base-ref.yaml
+    action: Create
+    purpose: >-
+      Graduated test_selector shard for VP step 2 (node
+      tests/test_session_handoff_evidence.py::TestExemptSet::test_exempt_set_is_read_from_base_ref_not_worktree).
+  - file: config/agent/verification_registry/entries/handoff-gate-registered.yaml
+    action: Create
+    purpose: >-
+      Graduated test_selector shard for VP step 3 (node
+      tests/hooks/test_handoff_evidence_gate.py::test_settings_registers_gate_on_push_and_remote_write_tools) -- the
+      gate's only guard against its own de-registration (validate_git_ops_contract checks path existence, not
+      registration).
+  - file: config/agent/verification_registry/entries/handoff-real-contract-exempt-clause.yaml
+    action: Create
+    purpose: >-
+      Graduated test_selector shard for VP step 4 (node
+      tests/test_session_handoff_evidence.py::TestExemptSet::test_real_contract_exempt_clause_parses).
+  - file: config/agent/verification_registry/entries/handoff-gate-shim-fails-closed.yaml
+    action: Create
+    purpose: >-
+      Graduated test_selector shard for VP step 5 (node
+      tests/hooks/test_handoff_evidence_gate.py::test_shim_fails_closed_when_adapter_crashes).
+  - file: config/agent/verification_registry/entries/handoff-gate-push-shape-classifier.yaml
+    action: Create
+    purpose: >-
+      Graduated test_selector shard for VP step 6 (node
+      tests/test_session_handoff_push_parse.py::TestPushShaped::test_push_shaped_classifier_catches_wrapper_and_newline_forms).
+bundled_recommendations:
+  - rec-4083
+followon_recs:
+  - rec-4085
+  - rec-4086
+  - rec-4087
+infrastructure_dependencies: []
+acceptance_criteria:
+  - >-
+    An agent push or GitHub remote write of non-exempt content is refused (exit 2, stderr naming the rule code and the
+    handoff sequence) unless schema-4 evidence proves the pushed tree was validated from that worktree; a validated-but-red
+    tree passes with a warning visible to both Claude (additionalContext) and the user (systemMessage); the hook never
+    emits permissionDecision allow or ask.
+  - >-
+    Push recognition is co-occurrence based: every simple command pairing a git token with a later push token -- wrapped,
+    grouped, substituted, multi-line (comment-terminated lines included), shell-fed, `sh -c` at any position or eval'd --
+    is push-shaped unless its first word is git with a non-push subcommand or the pair sits inside one quoted argument; only the canonical forms (every documented instruction
+    literal, option-order-insensitive, bare push, single agent-branch delete, dry run) are evaluated, and every other
+    push-shaped command is refused.
+  - >-
+    No push or remote write targets main, master or a branch outside the destination prefixes (agent_branch_prefixes plus
+    the gate-local audit/ prefix for audit-execution branches).
+  - >-
+    Plan-only, audit-prompt-only and audit-output-only pushes pass without evidence; the exempt set is read from
+    origin/main and every unknown (no origin/main, unreadable clause, failed merge-base) means no exemptions; renames are
+    evaluated on both source and destination; a push touching the gate's own files or registrations is never exempt; the
+    REAL contract clause parses.
+  - >-
+    MCP create_pull_request resolves the head branch's own worktree (overseer waves) and denies a cross-repo, non-agent
+    or unpushed head.
+  - >-
+    The shim fails closed: an adapter crash, any non-0/2 exit, an unstartable interpreter, an unset CLAUDE_PROJECT_DIR,
+    an unrelated hook cwd or an adapter overrunning the shim's bound blocks push-shaped calls, and a hook timeout cannot
+    pass one (explicit settings timeout above the shim bound); ordinary Bash calls are never blocked; GitHub
+    Actions-hosted sessions are carved out deterministically and declared (rec-4086).
+  - >-
+    git-ops.yaml carries the gate clause and extends 2a's enforcement_coverage list in place (the rec-4083 row flipped to
+    mechanical; every residual owned), contract_version = live + 1 with the trailer-carrier shard re-pinned to that exact
+    literal, the new referenced_repo_paths, and stays <= 500 effective lines; Decision 203 (or next free) is conformant.
+  - >-
+    After merge, in a session whose harness has loaded the new settings: an agent push of an unvalidated non-exempt
+    commit is refused, and an exempt plan-only push passes.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: Run the graduated core invariant -- evidence for a different tree never authorizes a push.
+    command: bin/venv-python -m pytest tests/test_session_handoff_evidence.py::TestPushDecision::test_denies_evidence_for_a_different_tree -q
+    expected: Exit 0 with a one-test pass summary. On the un-implemented tree the node does not exist (target_absent).
+    expected_literals:
+      - "1 passed"
+    fix_if: A pass without two real distinct trees in a tmp repository proves nothing -- reject a mocked tree hash.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: handoff-gate-denies-unattested-push
+  - step: 2
+    phase: pre-deploy
+    action: Run the graduated self-protection invariant -- the exempt set comes from origin/main, not the working tree.
+    command: bin/venv-python -m pytest tests/test_session_handoff_evidence.py::TestExemptSet::test_exempt_set_is_read_from_base_ref_not_worktree -q
+    expected: Exit 0 with a one-test pass summary. On the un-implemented tree the node does not exist (target_absent).
+    expected_literals:
+      - "1 passed"
+    fix_if: A failure means the checker read git-ops.yaml from disk rather than `git show origin/main:...`.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: handoff-exempt-set-from-base-ref
+  - step: 3
+    phase: pre-deploy
+    action: Run the graduated registration invariant -- the gate stays registered, anchored and time-bounded.
+    command: bin/venv-python -m pytest tests/hooks/test_handoff_evidence_gate.py::test_settings_registers_gate_on_push_and_remote_write_tools -q
+    expected: Exit 0 with a one-test pass summary. On the un-implemented tree the node does not exist (target_absent).
+    expected_literals:
+      - "1 passed"
+    fix_if: Never loosen the matcher or drop a tool name to make it pass.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: handoff-gate-registered
+  - step: 4
+    phase: pre-deploy
+    action: Run the graduated real-contract invariant -- the checker's own loader parses the real exempt clause.
+    command: bin/venv-python -m pytest tests/test_session_handoff_evidence.py::TestExemptSet::test_real_contract_exempt_clause_parses -q
+    expected: Exit 0 with a one-test pass summary. On the un-implemented tree the node does not exist (target_absent).
+    expected_literals:
+      - "1 passed"
+    fix_if: A key-path mismatch between the clause and the loader -- fix the loader or the clause, never widen the globs.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: handoff-real-contract-exempt-clause
+  - step: 5
+    phase: pre-deploy
+    action: Run the graduated fail-closed invariant -- no shim or adapter failure mode lets a push-shaped call through.
+    command: bin/venv-python -m pytest tests/hooks/test_handoff_evidence_gate.py::test_shim_fails_closed_when_adapter_crashes -q
+    expected: Exit 0 with a one-test pass summary. On the un-implemented tree the node does not exist (target_absent).
+    expected_literals:
+      - "1 passed"
+    fix_if: A push-shaped payload exiting 0 or 1 in any arm is the fail-open the shim exists to prevent -- fix the exit map.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: handoff-gate-shim-fails-closed
+  - step: 6
+    phase: pre-deploy
+    action: Run the graduated classifier invariant -- wrapper, grouping, substitution and newline push forms are recognised.
+    command: bin/venv-python -m pytest tests/test_session_handoff_push_parse.py::TestPushShaped::test_push_shaped_classifier_catches_wrapper_and_newline_forms -q
+    expected: Exit 0 with a pass summary. On the un-implemented tree the node does not exist (target_absent).
+    fix_if: Any form reported not push-shaped is a fail-open path -- fix the classifier, never drop the case.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: handoff-gate-push-shape-classifier
+  - step: 7
+    phase: pre-deploy
+    action: >-
+      Run the parser, checker and hook suites twice -- once as-is and once with GITHUB_ACTIONS=true exported, proving the
+      tests build their own env and the carve-out cannot make a deny test pass vacuously in CI.
+    command: >-
+      bin/venv-python -m pytest tests/test_session_handoff_push_parse.py tests/test_session_handoff_evidence.py
+      tests/hooks/test_handoff_evidence_gate.py -q
+      && GITHUB_ACTIONS=true bin/venv-python -m pytest tests/test_session_handoff_push_parse.py
+      tests/test_session_handoff_evidence.py tests/hooks/test_handoff_evidence_gate.py -q
+    expected: Both runs exit 0 with identical pass counts.
+    fix_if: A deny test that fails only under GITHUB_ACTIONS=true inherits the runner env -- build the subprocess env explicitly.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Steps 1-6 graduate the load-bearing invariants; a shard over whole suites would duplicate them and pin incidental
+      cases (Decision 86).
+  - step: 8
+    phase: pre-deploy
+    action: Measure both new modules' per-file coverage with the checker validate_test_coverage delegates to (diagnostic).
+    command: >-
+      bin/venv-python -m scripts.test_coverage_checker --check-tests --check-coverage --files
+      scripts/session/handoff_evidence.py scripts/session/handoff_push_parse.py
+    expected: Exit 0 with the PASS diagnostic verdict.
+    expected_literals:
+      - "DIAGNOSTIC VERDICT: PASS"
+    fix_if: A missing-test error means a mirror test is not at tests/test_session_<stem>.py.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: Duplicates validate_test_coverage, which enforces the floor whenever either file changes.
+  - step: 9
+    phase: pre-deploy
+    action: >-
+      Run the fast tier on the COMMITTED tree (prose, SLOC, git-ops contract binding and size shard, Decision-entry
+      conformance, shard admission, graduation completeness).
+    command: test -z "$(git status --porcelain)" && bin/venv-python -m scripts.validate --pre
+    expected: >-
+      The clean-tree assertion passes (commit before this step), then zero failed checks; all six new shards ADMITTED;
+      the re-pinned trailer-carrier shard ADMITTED; git-ops.yaml within 500 effective lines.
+    fix_if: >-
+      Read the summary, never the exit code (Decision 73). "not admitted -- tautological" on the trailer-carrier shard
+      means it pins a value origin/main also carries -- pin the exact value this change leaves behind.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: Invokes scripts.validate (recursion refusal); its exit code is not a kernel assertion outside CI.
+  - step: 10
+    phase: pre-deploy
+    action: Follow slice 2a's handoff order for this plan's own push and prove the new checker attests it before pushing.
+    command: >-
+      test -z "$(git status --porcelain)" && bin/venv-python -m scripts.validate
+      && bin/venv-python -m scripts.checks.validation_result --verify-head
+      && bin/venv-python -m scripts.session.handoff_evidence --check-push
+    expected: The clean-tree assertion, the full tier, --verify-head and --check-push all pass on the committed, rebased tree.
+    fix_if: >-
+      A dirty-tree refusal means an edit after the commit -- commit it and rerun from the start; a recurring dirty_end
+      with no edits is a defect (STOP and RCA, Decision 55). A timeout is BLOCKED. Once settings.json is registered the
+      gate is LIVE in this session (file watcher), so this plan's own push is gated too -- that is the dogfood.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: Depends on transient commit/evidence state and invokes scripts.validate (recursion refusal).
+  - step: 11
+    phase: post-deploy
+    action: >-
+      In a session whose harness has loaded the merged settings.json (the file watcher usually picks it up live; a fresh
+      session is certain), create a throwaway worktree and a local bare remote at FIXED paths with one unvalidated
+      non-exempt commit.
+    command: >-
+      rm -rf /tmp/handoff-gate-probe.git /tmp/handoff-gate-probe-wt && git init -q --bare /tmp/handoff-gate-probe.git
+      && git worktree add -q --detach /tmp/handoff-gate-probe-wt origin/main
+      && printf 'probe\n' > /tmp/handoff-gate-probe-wt/scripts/_handoff_gate_probe.txt
+      && git -C /tmp/handoff-gate-probe-wt add scripts/_handoff_gate_probe.txt
+      && git -C /tmp/handoff-gate-probe-wt -c commit.gpgsign=false commit -q -m probe && echo ready
+    expected: Prints ready; the session's own checkout is untouched.
+    fix_if: A failure here is setup-only -- fix the paths; do not proceed to steps 12-14 without it.
+    hermetic: false
+  - step: 12
+    phase: post-deploy
+    action: >-
+      Prove the harness gate -- as ITS OWN tool call, attempt an agent push of the unvalidated probe commit to an
+      agent-prefixed branch of the local bare remote (a filesystem-path remote is canonical).
+    command: git -C /tmp/handoff-gate-probe-wt push /tmp/handoff-gate-probe.git HEAD:refs/heads/claude/handoff-gate-probe
+    expected: >-
+      The tool call is refused before it runs; stderr names handoff-evidence-gate and the missing-evidence rule code, not
+      "unavailable" or "error".
+    fix_if: >-
+      If the call RUNS, the harness has not loaded the new entry (start a fresh session) or the matcher/worktree
+      resolution is wrong -- record it on the PR and fix before relying on the gate.
+    hermetic: false
+  - step: 13
+    phase: post-deploy
+    action: Prove exempt pushes are not wedged -- replace the probe commit with a plan-only commit and push it as ITS OWN tool call.
+    command: >-
+      git -C /tmp/handoff-gate-probe-wt reset -q --hard origin/main
+      && printf 'probe\n' > /tmp/handoff-gate-probe-wt/docs/plans/PLAN-handoff-gate-probe.yaml
+      && git -C /tmp/handoff-gate-probe-wt add docs/plans/PLAN-handoff-gate-probe.yaml
+      && git -C /tmp/handoff-gate-probe-wt -c commit.gpgsign=false commit -q -m probe && echo committed
+    expected: >-
+      Prints committed; then, as the next tool call, `git -C /tmp/handoff-gate-probe-wt push /tmp/handoff-gate-probe.git
+      HEAD:refs/heads/claude/handoff-gate-plan-probe` runs WITHOUT a gate refusal.
+    fix_if: >-
+      A refusal names the exemption rule that failed -- most likely the base clause key path; fix the loader, never widen
+      the globs.
+    hermetic: false
+  - step: 14
+    phase: post-deploy
+    action: Confirm the exempt push landed, then remove both probe paths (critique M3).
+    command: >-
+      git --git-dir=/tmp/handoff-gate-probe.git rev-parse --verify -q refs/heads/claude/handoff-gate-plan-probe; rc=$?;
+      git worktree remove --force /tmp/handoff-gate-probe-wt; rm -rf /tmp/handoff-gate-probe.git; exit $rc
+    expected: Prints the plan-probe commit sha and exits 0; both probe paths are gone.
+    fix_if: A missing ref means step 13's push did not run or was refused -- re-read its output.
+    hermetic: false
+  - step: 15
+    phase: post-deploy
+    action: >-
+      Confirm rec-4083 (the interactive-path residual slice 2a declared) closed through the Resolves trailer once
+      trailer-closure concludes on the merge sha.
+    command: >-
+      bin/venv-python -c "from src.common.ducklake_reader_client import make_reader;
+      row = make_reader(profile='agent_platform').named('rec_by_id', id='rec-4083')[0]; print(row['status']);
+      assert row['status'] == 'closed'"
+    expected: rec-4083 reads back closed.
+    fix_if: >-
+      Still open after trailer-closure concludes: read the job log for a refusal marker and follow
+      git-ops.yaml::resolves_trailer's conditional fallback -- never force-close around a refusal.
+    hermetic: false
+test_obligations:
+  - source: scripts/session/handoff_push_parse.py
+    behavior: Every push-shaped command form is recognised; only canonical forms parse.
+    verification_step: 6
+    test_selector: tests/test_session_handoff_push_parse.py::TestPushShaped::test_push_shaped_classifier_catches_wrapper_and_newline_forms
+    red_green_expectation: Red before (module and node absent), green after.
+  - source: scripts/session/handoff_evidence.py
+    behavior: A push is authorized only by clean, same-worktree evidence whose tree equals the pushed tree (red warns).
+    verification_step: 1
+    test_selector: tests/test_session_handoff_evidence.py::TestPushDecision::test_denies_evidence_for_a_different_tree
+    red_green_expectation: Red before (module and node absent), green after.
+  - source: .claude/hooks/handoff_evidence_gate.py
+    behavior: Unattested canonical pushes are denied with their rule code; attested ones pass (positive control).
+    verification_step: 7
+    test_selector: tests/hooks/test_handoff_evidence_gate.py::test_git_push_denied_without_matching_evidence
+    red_green_expectation: Red before (hook and test absent), green after.
+  - source: .claude/hooks/handoff_evidence_gate.sh
+    behavior: Every shim failure mode blocks push-shaped calls only; the pre-filter skips Python for non-push calls.
+    verification_step: 5
+    test_selector: tests/hooks/test_handoff_evidence_gate.py::test_shim_fails_closed_when_adapter_crashes
+    red_green_expectation: Red before (shim absent), green after.
+  - source: .claude/settings.json
+    behavior: The gate is registered with an anchored matcher and explicit timeout for all eleven tool names.
+    verification_step: 3
+    test_selector: tests/hooks/test_handoff_evidence_gate.py::test_settings_registers_gate_on_push_and_remote_write_tools
+    red_green_expectation: Red before (no gate entry), green after.
+  - source: docs/contracts/git-ops.yaml
+    behavior: The checker reads a parseable exempt clause from this contract.
+    verification_step: 4
+    test_selector: tests/test_session_handoff_evidence.py::TestExemptSet::test_real_contract_exempt_clause_parses
+    red_green_expectation: Red before (no clause, no loader), green after.
+  - source: config/agent/verification_registry/entries/git-ops-trailer-carrier-and-placement-rules.yaml
+    behavior: The shard's contract_version literal tracks this plan's bump.
+    verification_step: 9
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: >-
+      validate_verification_registry replays every MODIFIED shard through the differential gate, which is exactly this
+      property; a dedicated test would duplicate it.
+  - source: config/agent/verification_registry/entries/handoff-gate-denies-unattested-push.yaml
+    behavior: check_id equals VP step 1's graduation_check_id and the check_spec is admitted.
+    verification_step: 9
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: Owned by validate_graduation_completeness and validate_verification_registry (Decision 86).
+  - source: config/agent/verification_registry/entries/handoff-exempt-set-from-base-ref.yaml
+    behavior: check_id equals VP step 2's graduation_check_id and the check_spec is admitted.
+    verification_step: 9
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: Owned by validate_graduation_completeness and validate_verification_registry (Decision 86).
+  - source: config/agent/verification_registry/entries/handoff-gate-registered.yaml
+    behavior: check_id equals VP step 3's graduation_check_id and the check_spec is admitted.
+    verification_step: 9
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: Owned by validate_graduation_completeness and validate_verification_registry (Decision 86).
+  - source: config/agent/verification_registry/entries/handoff-real-contract-exempt-clause.yaml
+    behavior: check_id equals VP step 4's graduation_check_id and the check_spec is admitted.
+    verification_step: 9
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: Owned by validate_graduation_completeness and validate_verification_registry (Decision 86).
+  - source: config/agent/verification_registry/entries/handoff-gate-shim-fails-closed.yaml
+    behavior: check_id equals VP step 5's graduation_check_id and the check_spec is admitted.
+    verification_step: 9
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: Owned by validate_graduation_completeness and validate_verification_registry (Decision 86).
+  - source: config/agent/verification_registry/entries/handoff-gate-push-shape-classifier.yaml
+    behavior: check_id equals VP step 6's graduation_check_id and the check_spec is admitted.
+    verification_step: 9
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: Owned by validate_graduation_completeness and validate_verification_registry (Decision 86).
+constraints:
+  - >-
+    Depends on slice 2a merged first: import evidence_path_for, load_record, attests_head and ATTEST_RULES from
+    scripts.checks.validation_result; never re-implement the attestation predicate; extend 2a's enforcement_coverage
+    list, never add a second one.
+  - >-
+    No agent override of any kind (no env var, flag or marker lets an agent skip the gate) -- Decision 163 point 1. No
+    release valve: red passes with a warning, so none is needed. The hook never emits permissionDecision allow (that would
+    skip the user's permission flow) or ask.
+  - >-
+    Fail closed: evidence unknowns deny; exemption unknowns mean no exemptions; tokenise failures on git+push text are
+    push-shaped; any shim or adapter failure blocks push-shaped calls only (never ordinary Bash calls).
+  - >-
+    Classification and grammar live in scripts/session/handoff_push_parse.py and decisions in
+    scripts/session/handoff_evidence.py, both under the 100% coverage floor; the hook stays plumbing (Decision 162).
+  - >-
+    No git pre-push hook and no .pre-commit-config.yaml change (operator direction 2026-09-26, after round-1 critique:
+    agent-settable SKIP= and env, the SessionStart readiness `git push --dry-run` collision and pre-commit's stash
+    semantics outweighed its subprocess coverage; that surface is rec-4085's).
+  - >-
+    The exempt set and agent_branch_prefixes are read from origin/main; the gate's own files and registrations are never
+    exempt (Decision 187).
+  - >-
+    Leave never_on_main.py, fresh_branch_base.py, edit_scope_guard.py and scheduled_agent_log_only.py and their settings
+    entry untouched (Decision 138). Register the new settings entry LAST (the file watcher makes it live immediately).
+  - >-
+    git-ops.yaml: contract_version = live value + 1; clause <= 30 effective lines, whole diff <= 50; file <= 500
+    effective lines (STOP and surface, never raise); no bare `claude/` outside agent_branch_prefixes.
+  - >-
+    Post-deploy probes run in a throwaway worktree with fixed /tmp paths and agent-prefixed destination branches; every
+    push under test is its own tool call; the session's own checkout is never switched.
+  - >-
+    Out-of-scope defects become recs via scripts.ops_data_portal (Decision 59); forward-fix only (Decision 55/72).
+  - >-
+    bin/venv-python never bare python; Linux/bash only; line length 127; type hints required; no emojis; no em dashes.
+context:
+  - "Origin: the combined handoff plan's critique round 1 led the operator to split 2a (order + evidence, merges first) from 2b (this gate). 2b's own round 1 (REVISE, F1-F8 + M1-M7) led the operator to choose the identity-only redesign (2026-09-26): one harness hook, canonical-form allowlist, fail-closed shim, red passes with a warning; the pre-push layer and the ask-a-human valve were dropped."
+  - "Redesign round 1 (REVISE, F1-F9 + M1-M6) folded in: F1 co-occurrence classifier (wrappers, grouping, substitution, newline and shell-fed heredoc forms; known no-arg git globals); F2 --no-renames; F3 shim self-timeout, explicit hook timeout, trap, whole-payload pre-filter, absolute paths; F4 bare and option-order-insensitive push, single agent-branch delete, update_pull_request_branch ungated (Dependabot) and declared; F5 2a's list extended in place with the rec-4083 row flipped, Monitor routed, check-level timeouts under rec-4087, executor folded into rec-4085; F6 destination restricted to agent branches, never main; F7 classifier moved under scripts/session/ (100% floor); F8 rule-code assertions + positive control; F9 real-writer evidence, realpath toplevel, load-status branching; M1 additionalContext; M2 register last, live via file watcher; M3 VP split; M4 -C relative to cd; M6 WIP pushes named."
+  - "Redesign round 2 (REVISE, light) folded in: N1 shlex commenters '' (a comment swallowed the newline separator); N2 heredocs only in command context, recursive token-based $(...) body rule; N3 sh -c at any position and eval recurse; N4 gate-local extra_destination_prefixes [audit/] (audit-execution branches) and a HEAD:claude/<slug> hint; N5 enforced_by names pytest nodes as 2a does; N6 bare push also needs remote.<r>.push/mirror unset; N7 git-ops budget pre-decided (clause <= 30, diff <= 50, residuals cited from rec-4085 and the parser docstring); N8 non-agent deletes human-only, seeded tmp git-ops.yaml, Monitor ws passes; timeout -k."
+  - "Round-1 (original design) dispositions still standing: F1 fail-closed exit map; F2 allowlist; F3 carve-out harness-only; F4 worktree-list mapping; F5/F7/M6 moot (no pre-push, no valve); F6 explicit test env + GITHUB_ACTIONS=true rerun; F8 residual rows; M1 Decision 203; M2 anchored matcher; M3 pre-filter; M4 injected clause; M5 exact-literal re-pin; M7 merge-base fail closed."
+  - "Why identity, not verdict: the defect the operator named is validation of an uncommitted tree; identity gating closes exactly that with no wedge. Blocking red needs a deterministic inherited-red release first (Decision 83 non-wedging posture) -- rec-4087."
+  - "Hooks reference (code.claude.com/docs/en/hooks.md, fetched 2026-09-26): exit 2 blocks and feeds stderr to Claude; any other exit code does not block; a timed-out command hook does not block (default timeout 600s); stderr on exit 0 reaches only the debug log; allow skips the permission prompt; exit 0 with no output means no decision; PreToolUse additionalContext reaches Claude and systemMessage the user; regex matchers are unanchored unless ^...$; the hook cwd follows Claude's cwd; settings edits are picked up by the file watcher."
+  - "Considered, not taken (frame challenge Q1): a PATH-first git wrapper installed at SessionStart would judge pushes at argv level (after expansion, including subprocess pushes and commit-then-push compounds) but is spoofable via /usr/bin/git and outside the operator-chosen single-hook design; recorded as a rec-4085 candidate."
+  - "Not a trust boundary: the evidence file is agent-writable; server-side owners are rec-4085 (attestation), rec-3221 (full tier in PR CI) and rec-4080 / rec-2827 (merge identity)."
+  - "Decision-scout verdict FLAGS_FOUND. CITE list (verbatim): 177, 167, 187, 138, 168, 132. CONTRADICT: 181 [WARN] (every residual row owned: rec-4085, rec-4086, rec-4087; mechanical rows name graduated check_ids), 163 [NOTE] (no amends field). SPIRIT: 83 [WARN] (resolved by the redesign: nothing wedges on red; rec-4087 owns verdict gating). RELATED: 76, 189, 135, 73, 72, 67, 184, 162, 150, 115. ROADMAP: T2.54 [CITE], T1.17, T1.5, T2.48, T4.23."
+  - "Decisions triaged: 154 of 154"
+  - "Roadmap items intersected: 5; CONFLICT: 0; RELATED: 4"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PENDING (redesign rounds 1-2 REVISE addressed; confirming round 3 next)"
+pre_implementation_checklist:
+  - Branch confirmed not on main; slice 2a confirmed merged on origin/main
+  - docs/PROJECT_CONTEXT.md read
+  - Only the plan-cited decision sections read (163, 138, 181, 177, 187, 162, 168, 83, 25, 67)
+  - docs/contracts/git-ops.yaml, .claude/hooks/never_on_main.py and the Claude Code hooks reference (PreToolUse decision control, timeouts) read
+  - All scope files located and readable
+  - Acceptance criteria understood and verifiable
+execution_steps:
+  - >-
+    scripts/session/handoff_push_parse.py + tests/test_session_handoff_push_parse.py (pure; one parametrized case per
+    form).
+  - >-
+    scripts/session/handoff_evidence.py + tests/test_session_handoff_evidence.py (real tmp repos with a bare origin;
+    real-writer evidence).
+  - >-
+    .claude/hooks/handoff_evidence_gate.py and .claude/hooks/handoff_evidence_gate.sh + tests/hooks/test_handoff_evidence_gate.py.
+  - >-
+    docs/contracts/git-ops.yaml handoff_evidence_gate clause, 2a's enforcement_coverage list extended in place, governance
+    fields; re-pin the trailer-carrier shard; docs/DECISIONS.md Decision 203 (or next free).
+  - >-
+    Register the gate in .claude/settings.json LAST (a NEW entry; live immediately via the file watcher).
+  - >-
+    Graduation walk: six shards (filename == check_id == graduation_check_id), then implementation_declared true.
+  - >-
+    Execute VP steps 1-8 (loop until pass; STOP and RCA on a third consecutive failed fix, Decision 55); commit; VP step 9;
+    then, in slice 2a's order, fetch + rebase, VP step 10, and push as its own tool call (now itself gated).
+  - >-
+    Record the four closure facts separately: readiness states (unknown is never PASS); parent validator evidence (VP step
+    10's full tier, --verify-head and --check-push); structured postflight evidence (postflight --evidence); the real push /
+    PR / CI / merge outcome.
+  - >-
+    PR body carries "Resolves: rec-4083" (its acceptance node is created by this plan and is not escape-classified, so the
+    trailer route closes it). Squash-merge only once pr-validate is green on the head sha. After merge: VP step 15; then
+    VP steps 11-14, posting the evidence to the PR (Decision 103).
+  - "Report: what was implemented; the VP compliance table; the four closure facts; the live gate evidence."
+work_areas: []
+rollback: >-
+  Revert the squash commit (the settings entry, shim, adapter, parser, checker and clause all go with it). If the gate
+  wedges agent work before a revert lands -- including a missing or broken main-checkout .venv, which blocks every
+  push-shaped call by design, or a WIP-preservation push that cannot complete a full tier -- a human reverts through the
+  GitHub UI or pushes from their own clone (no harness hook there). Record the event against Decision 203's reversal
+  condition (a) or (b).
