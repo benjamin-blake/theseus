@@ -57,8 +57,9 @@ scope:
       refused by its matrix cell), when legacy_scheme_files == 0, or when the live spec still
       differs from declared (ALTER first). Per attempt, INSIDE one transaction: capture
       pre_snapshot_id from <alias>.current_snapshot() (re-captured on every retry -- snapshot ids
-      are catalog-global) and CALL <alias>.set_commit_message('rewrite_partition_layout', <a unique
-      per-attempt token>), CREATE TEMP TABLE snap AS SELECT *, DELETE, INSERT FROM snap, then BEFORE COMMIT compare row
+      are catalog-global) and CALL <alias>.set_commit_message('rewrite_partition_layout',
+      '<uuid>:pre=<pre_snapshot_id>') -- a unique per-attempt token, so one recovered snapshot row
+      yields both ids -- then CREATE TEMP TABLE snap AS SELECT *, DELETE, INSERT FROM snap, then BEFORE COMMIT compare row
       count + a FULL-ROW, NULL-explicit content digest (each row cast as a whole to VARCHAR, e.g. a
       row/struct cast, so NULLs render and a column shift cannot collapse; ordered; hashed) of the
       table against snap, ROLLBACK + raise on any mismatch. A DuckLake transaction conflict retries
@@ -601,8 +602,10 @@ verification_plan:
       /tmp/reconcile_apply.json
     expected: >-
       altered lists exactly the five drifted history tables; the response's post-ALTER layouts show
-      zero spec drift and legacy_scheme_files equal to each table's prior live_files (the
-      day-of-month files are now the non-active scheme)
+      zero spec drift and, WITHIN that same readout, each altered table's legacy_scheme_files equal
+      to its live_files less any file the writer committed after the ALTER (the day-of-month files
+      are now the non-active scheme; comparing with step 18's separate readout would misread a
+      benign writer commit as a discrepancy)
     fix_if: an altered table outside the presented set -- STOP and report
     hermetic: false
   - step: 20
@@ -620,9 +623,11 @@ verification_plan:
       skipped (no legacy files -- the verb refuses)
     fix_if: >-
       a raise at the retry ceiling -- a writer burst; retry that one table later. A Lambda timeout or
-      unknown outcome -- STOP, run step 21's dry_run to learn the table's state, and recover the
-      commit snapshot from snapshots() by author 'rewrite_partition_layout' for the fixture (a blind
-      re-invoke is safe -- the verb refuses at zero legacy files -- but loses the proof body). A
+      unknown outcome -- STOP and run step 21's dry_run to learn the table's state (a blind re-invoke
+      is safe -- the verb refuses at zero legacy files -- but the proof body is lost). No in-scope
+      verb returns snapshots: the lost body is either re-proved by a separately planned read-only
+      step (the commit-message token '<uuid>:pre=<id>' lets one snapshot row yield both ids) or
+      recorded in the fixture as a human-adjudicated gap -- never improvised in-session. A
       post-commit proof failure -- STOP: no further tables, file a Critical rec with both snapshot
       ids; restoration is a separately planned operation using ducklake-partition-remediation.yaml's
       non-lossy formula (history tables only), never improvised
@@ -813,7 +818,7 @@ constraints:
 context:
   - "Decision-scout verdict: FLAGS_FOUND. Decisions triaged: 154 of 154. Roadmap items intersected: 14; CONFLICT: 1; RELATED: 12."
   - "CITE: Decision 137, 88, 84, 143, 70, 177, 167, 201, 79, 125, 127, 128, 62, 115; RELATED 192, 193, 188, 190, 100, 99, 131, 120, 113, 181, 184, 141, 91"
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique r1=REVISE (7 + split); r2=REVISE (4 + 10); r3=REVISE-light (3 + 8); r4=PROCEED (S1-S7 folded in)"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique r1=REVISE (7 + split); r2=REVISE (4 + 10); r3=REVISE-light (3 + 8); r4=PROCEED (S1-S7 folded in); r5=PROCEED (N1, N2 folded in)"
   - >-
     Scout dispositions: WARN 81 -> Decision 204 amends 81, full-row digest; NOTE 191 -> verbs join
     VERB_UNIVERSE + matrix; SPIRIT WARN 126 -> amends 126 + deploy-paths row; NOTE 151 -> ALTER is

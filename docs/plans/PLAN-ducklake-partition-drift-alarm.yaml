@@ -139,6 +139,16 @@ scope:
       register canonical_id ducklake_partition_drift (description, alarm-not-gate
       signal_interpretation naming the native 6-hourly workflow and the rewrite-eligible threshold,
       added_date) beside ducklake_code_drift
+  - file: scripts/checks/ops_governance/check_source_registry.py
+    action: Modify
+    purpose: >-
+      SCANNED_PATHS += "scripts/convergence_health/partition_drift.py" beside its sibling producer
+      modules (code_drift, escalate, sensor_liveness, backlog_health/escalate, probe_health), so the
+      --pre source-registry guard actually scans the new source literal (shift-left of the runtime
+      validate_source refusal)
+  - file: tests/checks/ops_governance/test_check_source_registry.py
+    action: Modify
+    purpose: TestScannedPaths's pinned `required` set gains scripts/convergence_health/partition_drift.py
   - file: docs/contracts/ducklake_reader.yaml
     action: Modify
     purpose: >-
@@ -152,9 +162,11 @@ scope:
       unreached; rec-4097 for the credential-level boundary); the 'T2.26' invariant states that
       partition_layout exposes a control-class table's catalog METADATA only (transforms, scheme
       id, live/legacy file counts) and never row content, which is not application read access.
-      ONE new amendment_log entry, change_class prose_improvement with semantic_break false (a
-      factual correction of a misattributed guarantee plus an additive verb -- no existing verb's
-      behaviour changes), the pairing check_amendment_for_diff accepts (simulated in critique r3)
+      TWO new amendment_log entries: prose_improvement / semantic_break false for the boundary
+      correction (a factual correction of a misattributed guarantee -- no existing verb's behaviour
+      changes; the pairing check_amendment_for_diff accepts, simulated in critique r3), and
+      field_add / semantic_break true for the partition_layout verb (precedent: ducklake_maintenance
+      .yaml's gc_ops entry, 2026-09-15)
   - file: docs/contracts/ops_entity_counters.yaml
     action: Modify
     purpose: >-
@@ -169,8 +181,10 @@ scope:
       test_partition_layout_action_returns_layouts_and_drifts,
       test_partition_layout_action_maps_unclassified_table_to_typed_500 and
       test_partition_layout_action_reopens_on_wrapped_dead_connection (the patched layout read raises,
-      once, a PartitionLayoutError chained from a 'server closed the connection unexpectedly' error;
-      exactly one force-reopen follows; the response is 200), on the existing
+      once, a PartitionLayoutError whose OWN message omits the dead-session phrase, chained from a
+      'server closed the connection unexpectedly' error -- so the test exercises the __cause__ leg,
+      the message-preservation leg being pinned by the remediation's own layout test; exactly one
+      force-reopen follows; the response is 200), on the existing
       _open_reader_connection monkeypatch seam and FakeCon (layout functions patched)
   - file: tests/common/ducklake_reader_client/test_partition_layout.py
     action: Create
@@ -221,7 +235,9 @@ verification_plan:
     action: prove the sensor's episode behaviour and its CLI exit contract, offline
     command: >-
       bin/venv-python -m pytest tests/convergence_health/test_partition_drift.py
-      tests/convergence_health/test___main__.py::TestMainPartitionDrift -q
+      tests/convergence_health/test___main__.py::TestMainPartitionDrift
+      tests/checks/ops_governance/test_check_source_registry.py::TestScannedPaths::test_scanned_paths_includes_portal_and_producer_modules
+      -q
     expected: >-
       all pass -- file on drift, no-op on unchanged persistence, close on clear, control and current
       legacy ignored while history legacy trips, check_only writes nothing, loud on reader failure;
@@ -484,6 +500,11 @@ test_obligations:
     verification_step: 8
     test_selector: tests/convergence_health/test___main__.py
     red_green_expectation: red before (import of main_partition_drift fails), green after
+  - source: scripts/checks/ops_governance/check_source_registry.py
+    behavior: the source-registry guard scans the new producer module
+    verification_step: 1
+    test_selector: tests/checks/ops_governance/test_check_source_registry.py::TestScannedPaths::test_scanned_paths_includes_portal_and_producer_modules
+    red_green_expectation: red before (the pinned required set names a path SCANNED_PATHS lacks), green after
   - source: .github/workflows/ducklake-partition-drift.yml
     behavior: a native 6-hourly scheduled workflow runs the sensor
     verification_step: 3
@@ -537,7 +558,7 @@ constraints:
 context:
   - "Decision-scout verdict: FLAGS_FOUND. Decisions triaged: 154 of 154. Roadmap items intersected: 14; CONFLICT: 1; RELATED: 12."
   - "CITE: Decision 55, 62, 79, 83, 84, 88, 125, 126, 131, 143, 162, 184, 191, 201; RELATED 190"
-  - "gates: decision-scout=FLAGS_FOUND (shared with the remediation plan); plan-critique r1=REVISE (9); r2=REVISE (4 + 6); r3=REVISE (3 + 5); r4=REVISE (R1 wrapped-reopen, R2 two-PR retirement + S1-S5, S7 applied; S6 read-engine listing not taken -- unenforced)"
+  - "gates: decision-scout=FLAGS_FOUND (shared with the remediation plan); plan-critique r1=REVISE (9); r2=REVISE (4 + 6); r3=REVISE (3 + 5); r4=REVISE (2 + 6; S6 read-engine listing not taken -- unenforced); r5=PROCEED (S1-S4 folded in; S5, S6 via recs)"
   - >-
     Split from the rec-4070 plan by human direction 2026-09-26 ('include drift detection now', then
     'split into two plans, each with its own review gates'). Scout flags for this half: warm
@@ -597,10 +618,14 @@ rollback: >-
   NOT a single revert: validate_schedule_removal_markers (--pre) refuses deleting a schedule-bearing
   workflow in one PR, with no marker escape. Retirement is mark-then-drop across two PRs -- (1)
   remove the schedule under a '# schedule-removal-approved: dec-NNN <reason>' marker whose Decision
-  names ducklake-partition-drift.yml, together with the code revert (the governed channel then
-  redeploys the prior reader); (2) delete the workflow file with its ci_rca_taxonomy row and both
-  r3_workflows entries. FORBIDDEN: a code-only revert that leaves the scheduled --partition-drift
+  names ducklake-partition-drift.yml, also dropping workflow_dispatch so a manual run cannot fall
+  through, together with the code revert (the governed channel then redeploys the prior reader);
+  (2) delete the workflow file with its ci_rca_taxonomy row and both r3_workflows entries. Never
+  revert the boundary-premise corrections (handler docstring, manifest notes, both contracts):
+  they are factual, and reverting ducklake_reader.yaml's description without a new amendment
+  entry fails --pre. Keep the source_registry entry -- historical rec rows reference it. FORBIDDEN: a code-only revert that leaves the scheduled --partition-drift
   step -- __main__._dispatch falls through to main() on an unknown flag, so the step would run the
   tf-convergence escalation every 6h and go silently green, and sensor_liveness would read it as
-  healthy. The sensor only files, updates and closes its own rec; close any open
+  healthy (structural fix: rec-4100, unknown flags exit 2). The sensor only files, updates and
+  closes its own rec; close any open
   ducklake_partition_drift rec with a resolution naming the retirement.
