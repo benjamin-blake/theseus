@@ -116,8 +116,9 @@ scope:
       session_postflight.run_rebase (return "ok") and session_postflight.run_verify_head (return 0) alongside the
       existing run_validate/run_commit/run_push patches -- so no test runs a real `git fetch`, `git rebase`, `git add`
       or `git commit` against the checkout; test_validate_failure_stops_early now patches run_commit, run_rebase and
-      housekeeping.run_metrics, asserts push is not called, and DROPS its mock_close.assert_not_called() (close now
-      precedes validate); delete test_auto_log_housekeeping_failure_ignored (the leg is retired) and drop the
+      housekeeping.run_metrics, asserts push is not called, DROPS its mock_close.assert_not_called() (close now
+      precedes validate) and gives its run_close patch return_value=0 (a bare MagicMock return lands in
+      results["close_exit"] and makes the validate_failed json.dumps raise TypeError); delete test_auto_log_housekeeping_failure_ignored (the leg is retired) and drop the
       run_log_housekeeping patches. When renumbering run_auto's step comments keep the literal "7b" retirement comment
       (TestRetiredDrainBlocks::test_run_auto_source_has_no_drain_blocks asserts "retired" and "7b").
   - file: tests/session/postflight/conftest.py
@@ -132,7 +133,9 @@ scope:
       scripts.postflight._common._run in a guard that RAISES on a mutating git verb (argv starting `git` then add,
       commit, fetch, rebase or push) and delegates everything else -- so a future run_auto test that forgets its
       run_commit patch cannot run a real `git add . && git commit` now that commit precedes validate (critique round 2
-      A5); a test that patches _common._run itself replaces the guard.
+      A5); a test that patches _common._run itself replaces the guard. Add a guard self-test (in test_auto.py): under the
+      fixture `_common._run(["git", "commit", "-m", "x"])` raises and `_common._run(["git", "status", "--porcelain"])`
+      delegates -- so a mis-targeted patch cannot leave the guard silently inert.
   - file: tests/session/postflight/test_metrics_housekeeping.py
     action: Modify
     purpose: >-
@@ -163,8 +166,11 @@ scope:
       "bin/venv-python -m scripts.validate", "bin/venv-python -m scripts.checks.validation_result --verify-head", "git
       push -u origin HEAD   # its own tool call" (after the unchanged "git rebase origin/main   # STOP on conflict").
       (R4) the Wait-for-CI bullet's opening "- **Any red** -> diagnose, fix on this branch, commit, push (re-triggers PR
-      CI)." becomes "- **Any red** -> diagnose, fix, commit, re-run the Commit Flow (re-triggers PR CI)." -- the rest of
-      that bullet is untouched. A plan-time simulation of exactly R1-R4 measured 35,382 bytes with all pins below and
+      CI)." becomes "- **Any red** -> diagnose, fix, re-run the Commit Flow (re-triggers PR CI)." (the fence itself
+      commits the fix; a separate commit first would make the fence's own `git commit` exit 1 on a clean tree) -- the
+      rest of that bullet is untouched. Closure item 4 stays ONE line, as every closure item is today (the new
+      antidrift test's "Commit Flow" same-line assertion depends on it). A plan-time simulation of exactly R1-R4
+      measured 35,374 bytes with all pins below and
       the shard green; if the implementer's wording drifts, the named second relocation source is item 4's "Child
       output ... BLOCKED" sentences (into git-ops.yaml handoff_sequence). PLACEMENT RULE (three standing pins, all must
       pass unchanged): (i) tests/test_workflow_skill_antidrift.py::test_full_tier_runs_once_and_only_in_the_step7_closure
@@ -183,7 +189,7 @@ scope:
       commit, before the full tier" and keeps the `--force-with-lease` (never `--force`) rule. The HEADING "### Pre-Push
       Rebase" MUST survive (graduated shard scope-boundary-relocations-not-reinlined; the planning skill cross-references
       it) and the phrase "STOP on conflict; do not auto-resolve" must NOT be introduced (same shard). PROSE BUDGET: 35,400
-      of 35,402 bytes (config/prose_budgets.yaml, ratchet-down only) -- R1-R4 measured 35,382; relocate to git-ops.yaml
+      of 35,402 bytes (config/prose_budgets.yaml, ratchet-down only) -- R1-R4 measured 35,374; relocate to git-ops.yaml
       (Decision 86), never raise the budget. Leave
       the VF-08 stop-and-surface (nondeterminism) note intact (T3.19). Known and left as-is: the pre-existing shard
       prose-budgets-s4-entries-equal-measured-and-marker-free already reads false (35,402 vs 35,400; never replayed) --
@@ -227,7 +233,7 @@ scope:
       residual_owner / note -- T2.54:c1's existing vocabulary, cited not claimed; never a new `enforcing_checks` key).
       Rows (Decision 181 point 2, honest): postflight --auto push [status mechanical, enforced_by
       tests/session/postflight/test_auto.py::TestAutoMode::test_auto_commits_before_full_tier_and_pushes_only_after_pass
-      (the pytest node run in both tiers; admitted via shard postflight-auto-commits-before-full-tier, which is inert
+      (the pytest node: full tier always, --pre when the diff touches it; admitted via shard postflight-auto-commits-before-full-tier, which is inert
       after admission per rec-3286); note: the --auto remote leg is gh-CLI-based and dormant on CC-web, and its non-fast-forward push after a
       rewriting rebase is owned by rec-4092]; interactive /implement push [status residual_agent_obligation,
       residual_owner rec-4083 -- --verify-head runs only when the agent follows the skill until PLAN-handoff-evidence-gate
@@ -595,8 +601,8 @@ context:
   - "Decisions triaged: 154 of 154"
   - "Roadmap items intersected: 6; CONFLICT: 0; RELATED: 5"
   - "Scout gotcha: under commit-first the local full tier's validate_vp_replay implement leg replays this plan's hermetic steps, hence VP step 4 is non-hermetic and clear()'s start snapshot is held in memory, never on disk."
-  - "2a critique round 2 (REVISE, light) folded in: N1 file-router.yaml amendment_log entry (Class D); N2 hyphenated pre-commit-HEAD sentence named and asserted absent; A1 exact SKILL replacements R1-R4 (35,382 bytes); A2 third pin (test_pr_ci_red_protocol_contract); A3 enforced_by names the pytest node; A4 whole-diff git-ops budget + ATTEST_RULES by reference; A5 mutating-git guard on _common._run; A6 re-seat details; A7 no-optional-locks + snapshot default; A8 one-run-per-push pin; A9 pure-append VP step 9; A10 retired leg asserted never called."
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PENDING (rounds 1-2 REVISE addressed; confirming round 3 next)"
+  - "2a critique round 2 (REVISE, light) folded in: N1 file-router.yaml amendment_log entry (Class D); N2 hyphenated pre-commit-HEAD sentence named and asserted absent; A1 exact SKILL replacements R1-R4 (35,382 bytes; 35,374 after round-3 C2); A2 third pin (test_pr_ci_red_protocol_contract); A3 enforced_by names the pytest node; A4 whole-diff git-ops budget + ATTEST_RULES by reference; A5 mutating-git guard on _common._run; A6 re-seat details; A7 no-optional-locks + snapshot default; A8 one-run-per-push pin; A9 pure-append VP step 9; A10 retired leg asserted never called."
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PROCEED after 3 round(s) (round 3 advisories C1-C5 folded in before merge)"
 pre_implementation_checklist:
   - Branch confirmed not on main (harness-assigned session branch)
   - docs/PROJECT_CONTEXT.md read
