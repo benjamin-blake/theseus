@@ -5,8 +5,8 @@ handoff_policy:
 slug: selection-budget-census-hermetic-test
 intent: >-
   Keep the fast-tier budget gate (Decision 182) trustworthy as the test suite grows: decouple the
-  census-clamp guards in tests/checks/deps/test_selection_budget.py from the live on-disk test-module
-  count, so organic growth past the designed 630-module cap-binding point no longer reddens --pre for
+  census-clamp guards in tests/checks/deps/test_selection_budget.py and
+  tests/validate/test_budget_split.py from the live on-disk test-module count, so organic growth past the designed 630-module cap-binding point no longer reddens --pre for
   unrelated PRs, and the clamp guarantee stays genuinely guarded (today it goes vacuous at >= 630)
   -- with no budget constant or formula changed.
 plan_type: IMPLEMENTATION
@@ -48,15 +48,29 @@ scope:
       clamp-removal mutant survives it at a simulated 633).
       Stay stdlib + pytest; import nothing from another test_* module (Decision 131). File is 320
       lines; the additions keep it far under 500 (Decision 128).
+  - file: tests/validate/test_budget_split.py
+    action: Modify
+    purpose: >-
+      ONE edit (d), same flaw as (c): TestBreadthDerivedTestBudget::test_inflated_selection_cannot_raise_its_own_allowance
+      (name kept) is the ONLY test that scripts/validate.py:420 actually wires
+      census=selection_budget.count_test_modules(_common.ROOT) into classify, and it reads the LIVE
+      census, so at >= 630 a clamp-removal mutant passes it (measured rc 0 at a simulated 633).
+      Replace the live read with monkeypatch.setattr(sb, "count_test_modules", lambda root=None: 263)
+      -- validate.py reads that attribute at call time off the same module object as sb -- and
+      assert _budget_block()["limit_s"] == sb.PER_MODULE_SECONDS * 263 and <
+      sb.CEILING_SECONDS - sb.NON_TEST_BUDGET_SECONDS. The sibling at :328
+      (test_breadth_run_over_the_ceiling_still_hard_fails) and test_budget_manifest.py:130 compare
+      against the live census by equality/<= only, stay green at any census, and guard the cap rather
+      than the clamp -- untouched. File is 385 lines; stays under 500.
 bundled_recommendations:
   - rec-4076
 followon_recs: []
 infrastructure_dependencies: []
 acceptance_criteria:
-  - rec-4076's acceptance command (the kept node id) passes, and the whole test file passes, at the live census AND with count_test_modules' default root patched to 633 and to 10000 (VP step 2).
-  - A clamp-removal mutant of test_execution_allowance (census ignored) fails every one of the three census guards at a simulated 633 census (VP step 3).
+  - rec-4076's acceptance command (the kept node id) passes, and TestAllowance, TestClassifyBranchOrder and test_budget_split.py::TestBreadthDerivedTestBudget pass at the live census AND with the repo-root census patched to 633 and to 10000 (VP steps 2, 4).
+  - A clamp-removal mutant of test_execution_allowance (census ignored) fails every one of the four census guards, including the validate.py:420 wiring guard, at a simulated 633 census (VP step 3).
   - The new real-tree test proves the allowance saturates at exactly CEILING_SECONDS - NON_TEST_BUDGET_SECONDS at and above binds_at and is PER_MODULE_SECONDS * n below it (VP step 1).
-  - scripts/checks/deps/selection_budget.py is unchanged; every budget constant keeps its Decision 182 value (VP step 6).
+  - scripts/checks/deps/selection_budget.py is byte-identical (out of scope, enforced by validate_scope_boundary in VP step 7); every budget constant keeps its Decision 182 value (VP step 6).
   - bin/venv-python -m scripts.validate --pre and the full tier exit 0; rec-4076 closes via the Resolves trailer (VP steps 7, 8, 9).
 verification_plan:
   - step: 1
@@ -76,11 +90,12 @@ verification_plan:
   - step: 2
     phase: pre-deploy
     action: >-
-      The census guards are repo-size independent -- TestAllowance and TestClassifyBranchOrder pass
-      with count_test_modules' DEFAULT root patched to 633 (the telemetry slice 1 census) and to 10000,
-      while explicit-root calls (the tmp_path tree) still read the real filesystem.
+      The census guards are repo-size independent -- TestAllowance, TestClassifyBranchOrder and
+      test_budget_split.py::TestBreadthDerivedTestBudget pass with count_test_modules patched, for the
+      default root AND the repo root validate.py:420 passes, to 633 (the telemetry slice 1 census) and
+      to 10000, while any other root (the tmp_path tree) still reads the real filesystem.
     command: >-
-      bin/venv-python -c "import sys, pytest; from scripts.checks.deps import selection_budget as sb; real = sb.count_test_modules; f = 'tests/checks/deps/test_selection_budget.py'; sel = [f + '::TestAllowance', f + '::TestClassifyBranchOrder']; run = lambda c: (setattr(sb, 'count_test_modules', lambda root=None: real(root) if root is not None else c), int(pytest.main(['-q', *sel])))[1]; rcs = [run(c) for c in (633, 10000)]; ok = rcs == [0, 0]; print('CENSUS_INDEPENDENT' if ok else 'CENSUS_COUPLED', rcs); sys.exit(0 if ok else 1)"
+      bin/venv-python -c "import sys, pathlib, pytest; from scripts.checks.deps import selection_budget as sb; real = sb.count_test_modules; repo = pathlib.Path.cwd().resolve(); sel = ['tests/checks/deps/test_selection_budget.py::TestAllowance', 'tests/checks/deps/test_selection_budget.py::TestClassifyBranchOrder', 'tests/validate/test_budget_split.py::TestBreadthDerivedTestBudget']; run = lambda c: (setattr(sb, 'count_test_modules', lambda root=None: c if root is None or pathlib.Path(root).resolve() == repo else real(root)), int(pytest.main(['-q', *sel])))[1]; rcs = [run(c) for c in (633, 10000)]; ok = rcs == [0, 0]; print('CENSUS_INDEPENDENT' if ok else 'CENSUS_COUPLED', rcs); sys.exit(0 if ok else 1)"
     expected: Exit 0 printing CENSUS_INDEPENDENT with both return codes 0. Red before the change (the kept acceptance node asserts a strict < cap on the live census and fails at 633).
     fix_if: CENSUS_COUPLED -- some census guard still reads the live repo size in a size-dependent way; find it and make it synthetic or size-independent, never loosen the clamp assertion.
     hermetic: true
@@ -90,10 +105,10 @@ verification_plan:
     phase: pre-deploy
     action: >-
       Mutation witness -- with the census clamp deleted from test_execution_allowance and the default
-      census patched to 633, each of the three census guards fails.
+      repo-root census patched to 633, each of the four census guards fails.
     command: >-
-      bin/venv-python -c "import sys, pytest; from scripts.checks.deps import selection_budget as sb; real_count = sb.count_test_modules; sb.count_test_modules = lambda root=None: real_count(root) if root is not None else 633; real = sb.test_execution_allowance; sb.test_execution_allowance = lambda n, census=None: real(n); f = 'tests/checks/deps/test_selection_budget.py'; sel = [f + '::TestAllowance::test_census_floor_stops_an_over_selecting_selector_inflating_its_allowance', f + '::TestAllowance::test_census_clamp_saturates_at_the_derived_cap_on_a_real_tree', f + '::TestClassifyBranchOrder::test_an_inflated_selection_cannot_raise_its_own_allowance']; rcs = [int(pytest.main(['-q', s])) for s in sel]; ok = rcs == [1, 1, 1]; print('MUTANT_CAUGHT' if ok else 'MUTANT_SURVIVED', rcs); sys.exit(0 if ok else 1)"
-    expected: Exit 0 printing MUTANT_CAUGHT with return codes [1, 1, 1]. Red before the change (the new node is absent, rc 4, and the inflated-selection guard passes under the mutant at 633, rc 0).
+      bin/venv-python -c "import sys, pathlib, pytest; from scripts.checks.deps import selection_budget as sb; real_count = sb.count_test_modules; repo = pathlib.Path.cwd().resolve(); sb.count_test_modules = lambda root=None: 633 if root is None or pathlib.Path(root).resolve() == repo else real_count(root); real = sb.test_execution_allowance; sb.test_execution_allowance = lambda n, census=None: real(n); f = 'tests/checks/deps/test_selection_budget.py'; sel = [f + '::TestAllowance::test_census_floor_stops_an_over_selecting_selector_inflating_its_allowance', f + '::TestAllowance::test_census_clamp_saturates_at_the_derived_cap_on_a_real_tree', f + '::TestClassifyBranchOrder::test_an_inflated_selection_cannot_raise_its_own_allowance', 'tests/validate/test_budget_split.py::TestBreadthDerivedTestBudget::test_inflated_selection_cannot_raise_its_own_allowance']; rcs = [int(pytest.main(['-q', s])) for s in sel]; ok = rcs == [1, 1, 1, 1]; print('MUTANT_CAUGHT' if ok else 'MUTANT_SURVIVED', rcs); sys.exit(0 if ok else 1)"
+    expected: Exit 0 printing MUTANT_CAUGHT with return codes [1, 1, 1, 1]. Red before the change (measured MUTANT_SURVIVED [1, 4, 0, 0] -- the new node is absent and both inflated-selection guards pass under the mutant at 633).
     fix_if: MUTANT_SURVIVED -- a census guard is satisfied without the clamp, so it guards nothing; re-anchor it on a synthetic census below binds_at.
     hermetic: true
     graduation: graduate
@@ -107,17 +122,17 @@ verification_plan:
     hermetic: true
     graduation: waive
     graduation_waiver_reason: >-
-      Green on the un-implemented tree at today's live census of 626 (the failure needs >= 630), so a
+      Green on the un-implemented tree at today's live census of 628 (the failure needs >= 630), so a
       red-before replay would be tautological; the census-633 behaviour of this exact node is what
       step 2 graduates, and the closure gate re-runs this command independently.
     expected_literals:
       - passed
   - step: 5
     phase: pre-deploy
-    action: The whole mirror test file passes and the edit is lint- and format-clean.
-    command: bin/venv-python -m pytest tests/checks/deps/test_selection_budget.py -q && bin/venv-python -m ruff check tests/checks/deps/test_selection_budget.py && bin/venv-python -m ruff format --check tests/checks/deps/test_selection_budget.py
-    expected: All tests pass (the file keeps every pre-existing test), ruff reports no findings, and format --check reports the file already formatted.
-    fix_if: A pre-existing test fails -- the edit touched more than the three named tests. Or ruff flags the new test.
+    action: Both edited test files pass whole and are lint- and format-clean.
+    command: bin/venv-python -m pytest tests/checks/deps/test_selection_budget.py tests/validate/test_budget_split.py -q && bin/venv-python -m ruff check tests/checks/deps/test_selection_budget.py tests/validate/test_budget_split.py && bin/venv-python -m ruff format --check tests/checks/deps/test_selection_budget.py tests/validate/test_budget_split.py
+    expected: All tests pass (both files keep every pre-existing test), ruff reports no findings, and format --check reports both files already formatted.
+    fix_if: A pre-existing test fails -- the edit touched more than the four named tests. Or ruff flags an edited line (line length 127).
     hermetic: true
     graduation: not-applicable
     expected_literals:
@@ -161,7 +176,7 @@ verification_plan:
   - step: 9
     phase: post-deploy
     action: Confirm rec-4076 closed through the squash-merge Resolves trailer.
-    command: bin/venv-python -m scripts.sync.ops sync && grep -F rec-4076 logs/.recommendations-log.jsonl | grep -c closed
+    command: bin/venv-python -m scripts.ops_data_portal --sync && grep -F rec-4076 logs/.recommendations-log.jsonl | grep -c closed
     expected: A non-zero count -- rec-4076 closed, reachable only through its acceptance node reading holds at the closing commit.
     fix_if: >-
       Zero -- check the squash commit body carries the Resolves trailer for rec-4076 and the closure
@@ -170,14 +185,34 @@ verification_plan:
 test_obligations:
   - source: tests/checks/deps/test_selection_budget.py
     behavior: >-
-      The census clamp (an over-selecting selector cannot inflate its own allowance) is asserted at
-      synthetic censuses below the cap-binding point, and no census guard depends on the live
-      repository size.
+      No census guard depends on the live repository size: the kept acceptance node, the new
+      real-tree test and the classify inflated-selection test pass at any repo-root census.
     verification_step: 2
-    command: "sel = [f + '::TestAllowance', f + '::TestClassifyBranchOrder']"
+    command: >-
+      bin/venv-python -c "import sys, pathlib, pytest; from scripts.checks.deps import selection_budget as sb; real = sb.count_test_modules; repo = pathlib.Path.cwd().resolve(); sel = ['tests/checks/deps/test_selection_budget.py::TestAllowance', 'tests/checks/deps/test_selection_budget.py::TestClassifyBranchOrder', 'tests/validate/test_budget_split.py::TestBreadthDerivedTestBudget']; run = lambda c: (setattr(sb, 'count_test_modules', lambda root=None: c if root is None or pathlib.Path(root).resolve() == repo else real(root)), int(pytest.main(['-q', *sel])))[1]; rcs = [run(c) for c in (633, 10000)]; ok = rcs == [0, 0]; print('CENSUS_INDEPENDENT' if ok else 'CENSUS_COUPLED', rcs); sys.exit(0 if ok else 1)"
     red_green_expectation: >-
       Red before -- at a simulated 633 census the kept acceptance node fails its strict < cap
-      assertion (CENSUS_COUPLED). Green after -- CENSUS_INDEPENDENT at 633 and 10000.
+      assertion (CENSUS_COUPLED [1, 1]). Green after -- CENSUS_INDEPENDENT [0, 0] at 633 and 10000.
+  - source: tests/checks/deps/test_selection_budget.py
+    behavior: >-
+      The census clamp is actually asserted: a clamp-removal mutant of test_execution_allowance fails
+      every census guard in this file at a simulated 633 census.
+    verification_step: 3
+    command: >-
+      bin/venv-python -c "import sys, pathlib, pytest; from scripts.checks.deps import selection_budget as sb; real_count = sb.count_test_modules; repo = pathlib.Path.cwd().resolve(); sb.count_test_modules = lambda root=None: 633 if root is None or pathlib.Path(root).resolve() == repo else real_count(root); real = sb.test_execution_allowance; sb.test_execution_allowance = lambda n, census=None: real(n); f = 'tests/checks/deps/test_selection_budget.py'; sel = [f + '::TestAllowance::test_census_floor_stops_an_over_selecting_selector_inflating_its_allowance', f + '::TestAllowance::test_census_clamp_saturates_at_the_derived_cap_on_a_real_tree', f + '::TestClassifyBranchOrder::test_an_inflated_selection_cannot_raise_its_own_allowance', 'tests/validate/test_budget_split.py::TestBreadthDerivedTestBudget::test_inflated_selection_cannot_raise_its_own_allowance']; rcs = [int(pytest.main(['-q', s])) for s in sel]; ok = rcs == [1, 1, 1, 1]; print('MUTANT_CAUGHT' if ok else 'MUTANT_SURVIVED', rcs); sys.exit(0 if ok else 1)"
+    red_green_expectation: >-
+      Red before -- MUTANT_SURVIVED [1, 4, 0, 0] (new node absent; the classify guard passes under the
+      mutant). Green after -- MUTANT_CAUGHT [1, 1, 1, 1].
+  - source: tests/validate/test_budget_split.py
+    behavior: >-
+      The validate.py:420 census wiring stays guarded at any repo size: with the clamp removed, the
+      inflated-selection test driving the real validate main() fails even at a simulated 633 census.
+    verification_step: 3
+    command: >-
+      bin/venv-python -c "import sys, pathlib, pytest; from scripts.checks.deps import selection_budget as sb; real_count = sb.count_test_modules; repo = pathlib.Path.cwd().resolve(); sb.count_test_modules = lambda root=None: 633 if root is None or pathlib.Path(root).resolve() == repo else real_count(root); real = sb.test_execution_allowance; sb.test_execution_allowance = lambda n, census=None: real(n); f = 'tests/checks/deps/test_selection_budget.py'; sel = [f + '::TestAllowance::test_census_floor_stops_an_over_selecting_selector_inflating_its_allowance', f + '::TestAllowance::test_census_clamp_saturates_at_the_derived_cap_on_a_real_tree', f + '::TestClassifyBranchOrder::test_an_inflated_selection_cannot_raise_its_own_allowance', 'tests/validate/test_budget_split.py::TestBreadthDerivedTestBudget::test_inflated_selection_cannot_raise_its_own_allowance']; rcs = [int(pytest.main(['-q', s])) for s in sel]; ok = rcs == [1, 1, 1, 1]; print('MUTANT_CAUGHT' if ok else 'MUTANT_SURVIVED', rcs); sys.exit(0 if ok else 1)"
+    red_green_expectation: >-
+      Red before -- its slot in the step 3 vector is 0 (passes under the mutant at 633). Green after --
+      its slot is 1 and the step prints MUTANT_CAUGHT [1, 1, 1, 1].
 constraints:
   - Test-only. scripts/checks/deps/selection_budget.py stays byte-identical; no constant, coefficient or formula changes (Decision 182; re-derivation only by amendment against recorded CI series).
   - Keep the node id test_census_floor_stops_an_over_selecting_selector_inflating_its_allowance verbatim (rec-4076 acceptance; Decision 201 closure verdict).
@@ -186,29 +221,30 @@ constraints:
   - No rescue agents or workaround loops (Decision 55).
 context:
   - "Decision-scout verdict: NO_FLAGS (round 1, gate_run_id selection-budget-census-hermetic-test-decision-scout-r1-192956af). CITE: 182, 181, 189, 132, 201, 163. Decisions triaged: 154 of 154. Roadmap items intersected: 1; CONFLICT: 0; RELATED: 1"
-  - "gates: decision-scout=NO_FLAGS; plan-critique=<pending>"
+  - "gates: decision-scout=NO_FLAGS; plan-critique=REVISE after 1 round (F1 sibling guard added as edit (d); F2/F3 obligations rewritten; F4 portal sync; F5 AC4 re-mapped; R1 census refreshed) -- round 2 pending"
   - "rec-4076 framing declined (Decision 103 note): it proposed re-deriving CEILING_SECONDS/binds_at; census growth trips none of Decision 182's reversal conditions (a)-(e), and the originating PLAN-fast-tier-budget-breadth-split context already recorded 'the cap starts to bind at 630'. Defect is the test binding a size-independent property to live repo size."
-  - "Measured at planning (main c89b1a19, census 626): simulated census 633 -> acceptance node rc 1 (the rec symptom); clamp-removal mutant SURVIVES test_an_inflated_selection_cannot_raise_its_own_allowance (rc 0). predict_test_half(633) = 710.0-937.6s vs 1260s cap."
+  - "Measured at planning (main c89b1a19, census 626; origin/main 7c49f3b5 is at 628, so two more test modules on main redden its full tier -- land promptly): simulated census 633 -> acceptance node rc 1 (the rec symptom); clamp-removal mutant SURVIVES test_an_inflated_selection_cannot_raise_its_own_allowance (rc 0). predict_test_half(633) = 710.0-937.6s vs 1260s cap."
   - "Out of scope, owned elsewhere: a non-forced full selection's predicted high test half reaches the cap near 823 modules -- coefficient re-derivation is Decision 182 reversal (c); validate_test_count_coupling (Decision 104) does not see count_test_modules() comparisons."
   - "Registry row selection-budget-cli-reports-breadth runs the WHOLE test file, so it also reddens at census >= 630; fixed by this plan with its check_spec unchanged."
   - "ci-rca deferral: rec-4057 and rec-4066 (Critical, scripts/rec_trailer_acceptance.py coverage) are open on main and unrelated (no shared file, Decision, or failure category). Benjamin said on 2026-09-25 he will handle them separately and to proceed."
-  - "Branch was 2 commits behind main at planning time (two unrelated plan files); no scope overlap."
+  - "Branch rebased onto origin/main 7c49f3b5 after critique round 1; no scope overlap with the intervening commits."
   - "rec-4070..4073 reviewed for interaction at Benjamin's request (2026-09-26): none. rec-4071 (real-DuckLake engine tests in both validate tiers) grows the test census and selection but changes no selection_budget constant -- this plan is what keeps that growth from reddening the census guards."
   - "fork: fix rec-4076 as a hermetic test-only change vs re-derive constants vs loosen to <= cap | chosen: hermetic test-only | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: plan scope + context"
   - "fork: include edit (c) de-vacuating the inflated-selection classify test | chosen: include | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: plan scope row (c)"
+  - "fork: extend scope to tests/validate/test_budget_split.py edit (d), the sibling inflated-selection guard with edit (c)'s flaw (plan-critique round 1 F1) | chosen: include | class: consistency-only | precedent: Benjamin's 2026-09-26 Step 6b answer F2 (include the same-flaw sibling guard) | precedent_kind: answered-fork | reversible: yes | persisted: plan scope row 2"
   - "fork: keep the rec-4076 acceptance node id verbatim | chosen: keep | class: consistency-only | precedent: Decision 201 | precedent_kind: decision | reversible: yes | persisted: plan scope row (a) + constraints"
   - "Follow-on recs for the ~823-module prediction crossover and validate_test_count_coupling widening: declined by Benjamin (2026-09-26) -- file neither."
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
   - Decision 182 and Decision 181 sections read (only the plan-cited sections)
-  - tests/checks/deps/test_selection_budget.py and scripts/checks/deps/selection_budget.py read
+  - tests/checks/deps/test_selection_budget.py, tests/validate/test_budget_split.py, scripts/checks/deps/selection_budget.py and scripts/validate.py:405-430 read
   - Acceptance criteria understood and verifiable
 execution_steps:
-  - "tests/checks/deps/test_selection_budget.py -- apply scope edits (a), (b), (c); pre: VP steps 2 and 3 fail on the untouched file; post: they pass."
+  - "tests/checks/deps/test_selection_budget.py -- apply scope edits (a), (b), (c); tests/validate/test_budget_split.py -- apply edit (d); pre: VP steps 2 and 3 fail on the untouched files; post: they pass."
   - Execute the Verification Plan -- run each step; loop until pass; on an unrecoverable failure stop and RCA (Decision 55).
   - Graduate VP steps 2 and 3 as registry rows with their graduation_check_id values verbatim (Decision 132).
   - "Squash-merge body carries: Resolves: rec-4076"
   - 'Report: what was implemented, verification results'
 work_areas: []
-rollback: Revert the single test-file commit; no runtime, data or infrastructure state is touched.
+rollback: Revert the single two-test-file commit; no runtime, data or infrastructure state is touched.
