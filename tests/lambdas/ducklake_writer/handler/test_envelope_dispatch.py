@@ -134,6 +134,7 @@ def test_handler_partition_probe_measures_calendar_day_tuples(monkeypatch):
     con = FakeCon()
     monkeypatch.setattr(h, "_open_writer_connection", lambda: con)
     monkeypatch.setattr(rt, "create_scd2_tables", lambda c, force_recreate=False: None)
+    monkeypatch.setattr(rt, "mint_write_identity", lambda: rt.WriteIdentity("01ID", datetime(2026, 1, 1, tzinfo=timezone.utc)))
     monkeypatch.setattr(rt, "write_scd2", lambda c, rec, **kw: _result())
 
     def _fake_layout(con, catalog_alias, table):
