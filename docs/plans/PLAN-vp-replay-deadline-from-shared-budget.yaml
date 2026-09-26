@@ -15,8 +15,11 @@ verification_tier: V2
 plan_path: docs/plans/PLAN-vp-replay-deadline-from-shared-budget.yaml
 phase: >-
   ad_hoc_rec (soft-warn category; no tier_item claimed, so the Tier Item Freshness Gate is
-  skipped). Unblocks implement agents stranded by PER_STEP_TIMEOUT_SECONDS (live case:
-  PLAN-trailer-acceptance-junit-verdict VP step 13, 32.8s measured 2026-09-26) and bundles rec-3833.
+  skipped). Removes a hardware-dependent cliff: PER_STEP_TIMEOUT_SECONDS=30 binds wherever replay
+  runs, and the implementer's own local --pre / full tier are blocking under handoff_policy. Near-miss
+  2026-09-26: PLAN-trailer-acceptance-junit-verdict VP step 13 measured 32.8s in the CC-web
+  container (over the cap) yet replayed PASS under it on the CI runner (PR #1284, pr-validate job
+  108438121195). Bundles rec-3833.
 scope:
   - file: scripts/checks/verification/_vp_replay_budget.py
     action: Create
@@ -62,14 +65,17 @@ scope:
       contains both TIMEOUT and "aggregate deadline", the step's own run time, and the prior spend
       and prior step count ("step alone exceeds the <N>s aggregate budget" when no prior step ran);
       sets budget.hit. Red-before leg: a deadline kill stays classified unmeasurable (contract's
-      subprocess_timeout arm; the four frozen classes unchanged), hard-fails, and its text also
-      names the aggregate deadline. (d) rec-3833: one dispatch appends EXACTLY ONE budget-exhaustion
+      subprocess_timeout arm; the four frozen classes unchanged), hard-fails, its text also names
+      the aggregate deadline, and it ALSO sets budget.hit so no later graduate step (either leg)
+      appends a second exhaustion line. (d) rec-3833: one dispatch appends EXACTLY ONE budget-exhaustion
       failure however many legs observe the exhausted budget (the top-of-loop "not started" message
       and a deadline kill never both appear for the same exhaustion event). (e) Every replayed PASS
       line carries the duration suffix; the terminal summary line and any WARN print once per
       dispatch when at least one step was replayed. The MAX_REPLAYED_STEPS comment (which cites
-      "Decision 182 pt 2's 150s green maximum") and the module docstring's "Bounded cost" paragraph
-      are restated for the deadline model. MUST end at <= 500 SLOC with no
+      "Decision 182 pt 2's 150s green maximum"), the module docstring's "Bounded cost" paragraph, and
+      the implement-leg docstring clause "a TimeoutExpired always diverges" (run_bounded now absorbs
+      the exception; restate as "a deadline kill always diverges") are restated for the deadline
+      model. MUST end at <= 500 SLOC with no
       config/sloc_budgets.yaml registration (Decision 128). The subprocess/time imports and the
       subprocess.run block leave with the runner, and the message builders live in
       _vp_replay_budget.py from the start. If the file STILL overshoots, the ONLY sanctioned overflow
@@ -143,8 +149,10 @@ scope:
     purpose: >-
       TestUnmeasurable::test_subprocess_timeout patches MAX_AGGREGATE_SECONDS instead of the deleted
       constant. New TestUnmeasurable::test_red_before_deadline_kill_names_the_aggregate_deadline
-      (graduate step "sleep 5", aggregate 0.3): asserts actual=unmeasurable AND "aggregate deadline"
-      (red before: the step completes under the 30s cap, exits 0, and classifies tautological). The
+      (graduate steps "sleep 5" then "exit 1", aggregate 0.3): asserts len(failed) == 1, that the one
+      entry carries actual=unmeasurable AND "aggregate deadline", and that no entry contains "budget
+      exceeded" (red before: two entries -- step 1 completes under the 30s cap and classifies
+      tautological, then the top-of-loop check refuses step 2 with "budget exceeded"). The
       two tests that patch validate_vp_replay.subprocess.run (lines 86, 127) move their seam to
       _vp_replay_budget.run_bounded so they still intercept the step. The line-86 test
       (test_non_graduate_dispositions_not_executed) gains a POSITIVE control: its fixture adds one
@@ -164,10 +172,11 @@ scope:
     action: Modify
     purpose: >-
       test_green_replay_at_its_ratified_maximum_does_not_breach: docstring states the new 120s green
-      maximum (MAX_AGGREGATE_SECONDS alone); the green fixture's validate_vp_replay phase becomes
-      119.0, and with it the paired assertion replay_s == 119.0 and the assertion message's
-      "220.8s" non-test figure (becomes 190.8s). The red 260.0 fixture and the printed-allowance
-      assertion stay. Touch nothing else
+      maximum (MAX_AGGREGATE_SECONDS alone); the green fixture's validate_vp_replay phase, its paired
+      replay_s assertion and the assertion message's non-test figure are DERIVED from
+      sb.REPLAY_ALLOWANCE_SECONDS - 1.0 (119.0 today) rather than restated as literals, so they cannot
+      go stale on the next re-derivation. The red 260.0 fixture and the printed-allowance assertion
+      stay. Touch nothing else
       (PLAN-selection-budget-census-hermetic-test owns TestBreadthDerivedTestBudget there).
   - file: docs/contracts/vp-red-before.yaml
     action: Modify
@@ -194,9 +203,12 @@ scope:
       Decision 182 (no new number, and never a mid-line splice of point 2 -- Decision 177): under
       reversal condition (b), validate_vp_replay's replay term is re-derived to MAX_AGGREGATE_SECONDS
       alone (green maximum 120s, was 150s = 120 + one PER_STEP_TIMEOUT_SECONDS 30, now retired);
-      working shown -- 120 + 71.766 = 191.766 < 240, headroom 48.2s (was 18.2s); NON_TEST_BUDGET_SECONDS
-      is NOT re-checked against current measurements here -- reversal condition (a) is armed
-      separately and owned by rec-4093 (a 214.9s green non-test half against the 192s band). Cites
+      working shown -- 120 + 71.766 = 191.766 < 240, headroom 48.2s (was 18.2s) AGAINST THE
+      CALIBRATED 71.766s static worst only; on this week's measured static_s (103-125s typical) a
+      green replay at 120s would land at 223-245s against 240, so domination does not hold on
+      current measurements -- reversal condition (a) is armed separately and owned by rec-4093 (a
+      214.9s green non-test half against the 192s band), and NON_TEST_BUDGET_SECONDS is not
+      re-checked here. Cites
       this plan's slug. docs/decisions-index.json regenerates under the decisions_index_regeneration
       sanction row.
 bundled_recommendations:
@@ -206,10 +218,10 @@ infrastructure_dependencies: []
 acceptance_criteria:
   - A replayed step's subprocess deadline is the remaining MAX_AGGREGATE_SECONDS budget; no flat per-step cap remains in scripts/ (VP steps 1, 7).
   - A step killed at the deadline hard-fails with a message naming the aggregate deadline on both legs (unmeasurable on red-before), and its process group is dead (VP steps 1, 4, 5).
-  - One budget-exhaustion event yields exactly one failure line per dispatch (rec-3833; VP step 2).
+  - One budget-exhaustion event yields exactly one failure line per dispatch, on either leg (rec-3833; VP steps 2 and 5).
   - Replayed PASS lines carry durations, one summary line prints per dispatch, and the 0.5x/0.8x warn band is advisory only (VP steps 3, 4).
-  - selection_budget.REPLAY_ALLOWANCE_SECONDS == validate_vp_replay.MAX_AGGREGATE_SECONDS == 120 and the non-test budget still dominates it (VP step 6); NON_TEST_BUDGET_SECONDS is unedited by this diff (the existing constants pin in test_selection_budget.py still asserts 240.0).
-  - A step that runs longer than the retired 30s cap passes when the aggregate allows it -- proven in CI at sub-second cost by the remaining-aggregate deadline (VP step 1) and end-to-end once locally with a 31s step (VP step 9, output recorded).
+  - selection_budget.REPLAY_ALLOWANCE_SECONDS == validate_vp_replay.MAX_AGGREGATE_SECONDS (120 today) and the non-test budget still dominates it (VP step 6); NON_TEST_BUDGET_SECONDS is unedited by this diff (the existing constants pin in test_selection_budget.py still asserts 240.0).
+  - A step that runs longer than the retired 30s cap passes when the aggregate allows it -- proven in CI at sub-second cost by the remaining-aggregate deadline (VP step 1) and once locally by running a 31s command through run_bounded with the full aggregate remaining (VP step 9, output recorded).
   - validate_vp_replay.py stays <= 500 SLOC with no budget registration; --pre and full tiers exit 0; rec-3833 closes via the Resolves trailer (VP steps 10-13).
 verification_plan:
   - step: 1
@@ -271,7 +283,7 @@ verification_plan:
     phase: pre-deploy
     action: Decision 182's mirror is re-derived to the aggregate alone and the non-test budget is unchanged.
     command: >-
-      bin/venv-python -c "import sys; from scripts.checks.deps import selection_budget as sb; from scripts.checks.verification import validate_vp_replay as vp; ok = sb.REPLAY_ALLOWANCE_SECONDS == vp.MAX_AGGREGATE_SECONDS == 120 and not hasattr(vp, 'PER_STEP_TIMEOUT_SECONDS') and sb.NON_TEST_BUDGET_SECONDS > sb.REPLAY_ALLOWANCE_SECONDS + 71.766; print('ALLOWANCE_IS_AGGREGATE' if ok else 'ALLOWANCE_STALE'); sys.exit(0 if ok else 1)"
+      bin/venv-python -c "import sys; from scripts.checks.deps import selection_budget as sb; from scripts.checks.verification import validate_vp_replay as vp; ok = sb.REPLAY_ALLOWANCE_SECONDS == vp.MAX_AGGREGATE_SECONDS and not hasattr(vp, 'PER_STEP_TIMEOUT_SECONDS') and sb.NON_TEST_BUDGET_SECONDS > sb.REPLAY_ALLOWANCE_SECONDS + 71.766; print('ALLOWANCE_IS_AGGREGATE' if ok else 'ALLOWANCE_STALE'); sys.exit(0 if ok else 1)"
     expected: Exit 0 printing ALLOWANCE_IS_AGGREGATE. Red before (150 != 120 and the constant still exists).
     fix_if: >-
       ALLOWANCE_STALE -- the mirror still adds a per-step term, or the domination inequality no longer
@@ -361,6 +373,11 @@ verification_plan:
     hermetic: false
 test_obligations:
   - source: scripts/checks/verification/validate_vp_replay.py
+    behavior: A red-before deadline kill classifies unmeasurable, names the aggregate deadline, and sets budget.hit so no later graduate step adds a second exhaustion line.
+    verification_step: 5
+    test_selector: tests/checks/verification/validate_vp_replay/test_red_before_leg.py::TestUnmeasurable::test_red_before_deadline_kill_names_the_aggregate_deadline
+    red_green_expectation: Red before -- two entries (step 1 tautological under the 30s cap, then a top-of-loop budget exceeded for step 2). Green after -- exactly one entry, unmeasurable at the aggregate deadline.
+  - source: scripts/checks/verification/validate_vp_replay.py
     behavior: A replayed step's deadline is the remaining shared aggregate; a deadline kill hard-fails naming the aggregate deadline.
     verification_step: 1
     test_selector: tests/checks/verification/validate_vp_replay/test_lint_and_budget.py::TestSharedBudget::test_step_deadline_is_the_remaining_aggregate_not_a_flat_cap
@@ -389,7 +406,7 @@ test_obligations:
     behavior: REPLAY_ALLOWANCE_SECONDS mirrors the check's deadline-model green maximum (MAX_AGGREGATE_SECONDS alone) and the non-test budget still dominates it.
     verification_step: 6
     command: >-
-      bin/venv-python -c "import sys; from scripts.checks.deps import selection_budget as sb; from scripts.checks.verification import validate_vp_replay as vp; ok = sb.REPLAY_ALLOWANCE_SECONDS == vp.MAX_AGGREGATE_SECONDS == 120 and not hasattr(vp, 'PER_STEP_TIMEOUT_SECONDS') and sb.NON_TEST_BUDGET_SECONDS > sb.REPLAY_ALLOWANCE_SECONDS + 71.766; print('ALLOWANCE_IS_AGGREGATE' if ok else 'ALLOWANCE_STALE'); sys.exit(0 if ok else 1)"
+      bin/venv-python -c "import sys; from scripts.checks.deps import selection_budget as sb; from scripts.checks.verification import validate_vp_replay as vp; ok = sb.REPLAY_ALLOWANCE_SECONDS == vp.MAX_AGGREGATE_SECONDS and not hasattr(vp, 'PER_STEP_TIMEOUT_SECONDS') and sb.NON_TEST_BUDGET_SECONDS > sb.REPLAY_ALLOWANCE_SECONDS + 71.766; print('ALLOWANCE_IS_AGGREGATE' if ok else 'ALLOWANCE_STALE'); sys.exit(0 if ok else 1)"
     red_green_expectation: Red before -- ALLOWANCE_STALE (150.0 != 120). Green after -- ALLOWANCE_IS_AGGREGATE.
 constraints:
   - MAX_AGGREGATE_SECONDS (120) and MAX_REPLAYED_STEPS (30) are unchanged; NON_TEST_BUDGET_SECONDS, TEST_BASE_SECONDS, PER_MODULE_SECONDS and CEILING_SECONDS are unchanged (Decision 182; rec-4093 owns reversal condition (a)).
@@ -403,9 +420,9 @@ constraints:
   - No rescue agents or workaround loops (Decision 55).
 context:
   - "Decision-scout verdict: FLAGS_FOUND (one NOTE, Decision 181; no BLOCK, no SPIRIT). CITE: 182, 177, 167, 189, 168, 128, 201, 131. Decisions triaged: 154 of 154. Roadmap items intersected: 5; CONFLICT: 0; RELATED: 5"
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=REVISE round 1 (F1-F5 fixed, F6-F9 applied, F10 answered), REVISE round 2 (R1 per Benjamin's answer, R2 fixed, A1-A7 and A9 applied, A8 declined in context)"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=REVISE round 1 (F1-F5 fixed, F6-F9 applied, F10 answered), REVISE round 2 (R1 per Benjamin's answer, R2 fixed, A1-A7 and A9 applied, A8 declined in context), REVISE round 3 (R1 evidence corrected and re-confirmed by Benjamin, R2 fixed, A1-A5 applied, A6 and the Q5 per-step-duration manifest idea not taken -- steps 4 and 5 already guard the runner's kill classification)"
   - "Decision 181 NOTE (standing no-weakening prohibition) -- why this is not a weakened budget: the change routes through a reviewed plan, Decision 182 reversal condition (b) pre-authorizes re-deriving the replay term, MAX_AGGREGATE_SECONDS (120) and MAX_REPLAYED_STEPS (30) are unchanged, and the check's worst-case green maximum TIGHTENS 150s -> 120s. One step's individual allowance does rise (30s -> up to the remaining 120s); that is the stated hang-isolation trade-off below, not a hidden loosening. Unenforced residual for in-file numeric tolerances: rec-3357."
-  - "Problem evidence (2026-09-26): PLAN-trailer-acceptance-junit-verdict step 13 (152 tests over three test directories, max single test 0.53s) measured 32.8s locally, 19.5s CPU -- git-subprocess-bound, so CI is not faster. Implementers may not edit verification_plan[].command/expected (implement-scope-boundary.yaml implementing_plan_bookkeeping) and hermetic is not a permitted field edit, so such a step strands its agent until a human-directed amendment. PER_STEP_TIMEOUT_SECONDS entered in #453 with no measured derivation; Decision 182 point 2 later quoted it."
+  - "Problem evidence (2026-09-26): PLAN-trailer-acceptance-junit-verdict step 13 (152 tests over three test directories, max single test 0.53s) measured 32.8s in the CC-web container (19.5s CPU, git-subprocess-bound) but replayed PASS under 30s on the CI runner (#1284 merged with no VP amendment) -- so the cliff is hardware-dependent and today bites the implementer's LOCAL blocking tiers first. The RISK (not an observed CI case): implementers may not edit verification_plan[].command/expected (implement-scope-boundary.yaml implementing_plan_bookkeeping) and hermetic is not a permitted field edit, so a step that crosses the cap wherever replay runs strands its agent until a human-directed amendment; organic test growth under whole-directory selectors moves every such step toward it. PER_STEP_TIMEOUT_SECONDS entered in #453 with no measured derivation; Decision 182 point 2 later quoted it."
   - "CI evidence: the four latest red pr-validate runs (36220656502, 36131196236, 36076407848, 35773676058) show no replay TIMEOUT -- three failed the test half, one the registry differential. The cliff is latent-per-plan, not yet a CI-wide red."
   - "Design source: Fable advice consult (2026-09-26) -- settled consensus that hang detection and cost budgeting are separate controls, a per-unit timeout near 1x expected runtime is a cost budget in a hang detector's clothes, and drift is surfaced by measurement plus a warn band, never a bigger constant. Adopted: deadline-from-aggregate + process-group kill + duration telemetry + 0.5x/0.8x advisory band. Rejected: plan-declared timeout classes (implementers cannot edit VP steps, so a mis-declared class strands the same way) and raising the flat constant (breaks the Decision 182 pin; still a cliff)."
   - "Bounded-runner convergence (plan-critique round 2 A8) not filed as a rec: scripts/llm/utils.py kill_process_tree is a cross-platform tree kill for LLM subprocesses and scripts/backlog_health/probe.py run_one sandboxes rec commands under unshare with its own Decision 201-pinned contract -- three runners with three different isolation contracts are not a defect to converge."
@@ -413,7 +430,7 @@ context:
   - "Accepted trade-off: per-step hang isolation -- a hung step now consumes up to 120s (was 30s) before red; no hang is recorded anywhere in the plan corpus, and the process-group kill bounds the collateral."
   - "Overlap: PLAN-selection-budget-census-hermetic-test is implemented on main (#1281, da5a52f1) and touched OTHER tests in tests/checks/deps/test_selection_budget.py and tests/validate/test_budget_split.py (disjoint functions, verified); this branch is rebased onto it -- merge origin/main again before implementing."
   - "Projected non-test half of this plan's implementation PR (plan-critique round 2 R1): replayed hermetic steps 1-7 and 10 ~15-20s (steps 8 and 9 excluded as not-hermetic) + validate_verification_registry admitting 6 new rows ~25-40s + static_s 103-125s typical this week (runs 36252053326, 36221253534) = ~145-185s, under the 192s band. The 205.9s static_s outlier (35773676058) would breach regardless of this plan; that growth is rec-4093's."
-  - "Downstream: once merged, the stranded trailer-junit implement branch needs only a main merge for its step 13 to replay green -- no plan amendment."
+  - "Re-confirmed by Benjamin (2026-09-26) on the corrected evidence (plan-critique round 3 R1): proceed as designed, including the context hang-isolation trade-off. #1284 merged independently; nothing downstream waits on this plan."
   - "rec-3835 (timeout-arm call-site clarity) not bundled: its acceptance command cannot match current code, so the Decision 201 trailer gate would refuse closure. rec-3793 (whole fast-tier warn band) not bundled: separate scripts/validate.py surface, L effort."
   - "fork: bound a replayed step by the remaining shared aggregate vs a plan-declared per-step timeout class vs raising the flat constant | chosen: remaining shared aggregate, plus process-group kill, duration telemetry and an advisory 0.5x/0.8x warn band | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: plan scope + context (Benjamin 2026-09-26 delegated the pick to a Fable best-practice consult, then confirmed)"
   - "fork: record the Decision 182 re-derivation as a dated amendment_forms Update line vs a new numbered Decision | chosen: dated Update line | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: scope row docs/DECISIONS.md"
