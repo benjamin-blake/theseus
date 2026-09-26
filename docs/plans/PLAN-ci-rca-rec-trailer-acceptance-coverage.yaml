@@ -66,7 +66,8 @@ scope:
       widens its glob to this file -- using the same base_root for path joining, the exists() filter and the
       src/scripts relative_to(base_root.resolve()) filter, so git probes and path filters share one root (Decision 159
       2026-08-18 amendment pairing invariant; forwarding None would recreate rec-3166's split-root shape under any test
-      that patches test_coverage_checker.ROOT). The explicit `files` argument path is unchanged. Keep the __init__.py / conftest.py /
+      that patches test_coverage_checker.ROOT). The explicit `files` argument branch joins relative paths against the SAME
+      base_root (one root for every path in the function). Keep the __init__.py / conftest.py /
       src-or-scripts / exists() filters exactly as today. Measured 490 SLOC against the 500 limit, unregistered: the
       change MUST be net non-increasing (VP step 7) -- a crossing would force a Decision 128 decomposition this plan does
       not scope.
@@ -74,11 +75,12 @@ scope:
     action: Modify
     purpose: >-
       (a) Add test_untracked_new_source_file_is_returned to the EXISTING TestGetChangedSourceFiles class: a REAL tmp_path
-      git repository (git init; one committed tracked scripts/*.py then modified; one untracked new scripts/*.py; one
+      git repository (git init; one committed tracked scripts/*.py then modified; one committed scripts/*.py then deleted;
+      one untracked new scripts/*.py; one
       untracked src/*.py; one untracked docs/*.py outside src/scripts; one untracked scripts/*.py matched by a .gitignore
       entry; one untracked scripts/__init__.py; one untracked scripts/conftest.py), calling
       get_changed_source_files(root=tmp_path) and asserting the modified tracked file AND both untracked src/scripts
-      modules are returned while the docs, gitignored, __init__ and conftest paths are not (get_status_aware_diff does
+      modules are returned while the deleted, docs, gitignored, __init__ and conftest paths are not (get_status_aware_diff does
       return scripts/conftest.py as "??", so the name filter is what drops it). Decorate it @pytest.mark.real_subprocess
       -- the package conftest patches the process-global subprocess.Popen to raise, so an unmarked real-git test fails
       for the wrong reason. GITHUB_EVENT_NAME/GITHUB_EVENT_BEFORE are already cleared by tests/conftest.py's autouse
@@ -91,22 +93,29 @@ scope:
       carries no tab, so get_status_aware_diff's --name-status parser would drop every line. Add one mocked case
       asserting a "D" entry is dropped, using a path that EXISTS on disk (e.g. ("D", "scripts/validate.py")) so the
       status filter -- not the exists() filter -- is what drops it. DELETE test_fallback_when_merge_base_fails: the
-      merge-base -> HEAD fallback it asserts moves into _common with the deleted code, and its owner there is
-      tests/checks/_common/test_primitives.py::TestCommonPrimitives::test_get_status_aware_diff_merge_base_failure_fallback
-      (relocated with the behaviour, not weakened -- Decision 181).
+      merge-base -> HEAD fallback it asserts moves into _common with the deleted code, and its DIRECT owner there is
+      tests/validate/test_changed_files.py::TestGetStatusAwareDiff::test_falls_back_to_head_when_merge_base_fails (it
+      asserts the diff runs against HEAD and returns the fallback entry); the new real-git test in (a) also exercises that
+      fallback end-to-end, since its tmp repository has no origin/main (relocated, not weakened -- Decision 181).
+      Plan-critique round 4 verified by mutation that tests/checks/_common/test_primitives.py's
+      test_get_status_aware_diff_merge_base_failure_fallback does NOT assert this -- never cite it as the owner.
   - file: tests/test_coverage_checker/test_test_coverage_checker.py
     action: Modify
     purpose: >-
       TestGetChangedSourceFilesPushContextBase (two tests) pins exactly the git branches this plan deletes -- it asserts
       the last subprocess call is `git diff --name-only <base>` and patches test_coverage_checker.ROOT; plan-critique
       round 2 simulated the delegation and both fail (StopIteration on the ls-files probe; the name-only stdout does not
-      parse). Re-seat the class onto a patch of scripts.checks._common.get_status_aware_diff and assert what
-      get_changed_source_files now OWNS: it forwards the resolved root (the explicit `root` argument, else the patched
-      test_coverage_checker.ROOT) to the helper, and it maps the helper's (status, path) tuples through its filters. Base
-      selection itself (push_context_base -> merge-base -> HEAD) is owned by tests/checks/_common/test_push_context_base.py
-      (TestPushContextBase) and test_primitives.py::TestCommonPrimitives::test_get_status_aware_diff_merge_base_failure_fallback
-      -- cite both in the class docstring (relocated, not weakened; Decision 181). Leave the file's other classes
-      untouched.
+      parse). Re-seat the class so it keeps a DIRECT guard on the merge-base diff in the checker's own mirror: (i)
+      test_forwards_resolved_root patches scripts.checks._common.get_status_aware_diff and asserts get_changed_source_files
+      forwards the resolved root (the explicit `root` argument, else the patched test_coverage_checker.ROOT) and maps the
+      helper's (status, path) tuples through its filters; (ii) test_diffs_against_merge_base patches
+      scripts.checks._common.run (NOT get_status_aware_diff) with push_context_base -> None: merge-base returns "abc123",
+      and the test asserts the `git diff --name-status --no-renames` call's base argument is "abc123" and that the file
+      the diff reports flows through get_changed_source_files -- the replacement for the deleted line-53 assertion
+      (~12 lines, no Popen). Push-context base selection stays owned by tests/checks/_common/test_push_context_base.py
+      (TestPushContextBase) and the HEAD fallback by
+      tests/validate/test_changed_files.py::TestGetStatusAwareDiff::test_falls_back_to_head_when_merge_base_fails -- cite
+      both in the class docstring (Decision 181). Leave the file's other classes untouched.
   - file: config/agent/verification_registry/entries/coverage-checker-untracked-new-source.yaml
     action: Create
     purpose: >-
@@ -124,6 +133,7 @@ followon_recs:
   - rec-4079
   - rec-4080
   - rec-4082
+  - rec-4088
 infrastructure_dependencies: []
 acceptance_criteria:
   - >-
@@ -538,10 +548,12 @@ execution_steps:
     tests/test_coverage_checker/test_coverage_checker_checks.py: add the real-git
     TestGetChangedSourceFiles::test_untracked_new_source_file_is_returned (real_subprocess marker, conftest.py and
     __init__.py fixtures, unsigned setup commit), re-seat the existing mocks on _common.get_status_aware_diff, add the
-    on-disk "D"-drop case, and delete test_fallback_when_merge_base_fails citing its _common owner.
+    on-disk "D"-drop case, and delete test_fallback_when_merge_base_fails citing
+    tests/validate/test_changed_files.py::TestGetStatusAwareDiff::test_falls_back_to_head_when_merge_base_fails.
   - >-
-    tests/test_coverage_checker/test_test_coverage_checker.py: re-seat TestGetChangedSourceFilesPushContextBase onto
-    _common.get_status_aware_diff (root-forwarding + filter mapping), citing the _common owners of base selection.
+    tests/test_coverage_checker/test_test_coverage_checker.py: re-seat TestGetChangedSourceFilesPushContextBase as
+    test_forwards_resolved_root (patches get_status_aware_diff) and test_diffs_against_merge_base (patches
+    _common.run; asserts the diff base is the merge-base sha), citing the owners named in the scope row.
   - >-
     Graduation walk: create both shard files (filename == check_id == graduation_check_id), then set
     implementation_declared true in this plan.
