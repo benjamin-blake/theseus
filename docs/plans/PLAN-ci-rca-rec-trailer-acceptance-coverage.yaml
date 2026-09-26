@@ -62,7 +62,8 @@ scope:
       --exclude-standard` untracked leg (rec-2638 precedent, Decision 135 point 3), so base semantics are preserved
       (Decision 159 clause 1). Add a keyword-only `root: Path | None = None` parameter; resolve it ONCE
       (`base_root = root if root is not None else ROOT`) and forward base_root -- never None -- to
-      get_status_aware_diff(base_root), using the same base_root for path joining, the exists() filter and the
+      get_status_aware_diff(root=base_root) -- by KEYWORD, so validate_root_scoped_diff_base stays satisfied if rec-4082
+      widens its glob to this file -- using the same base_root for path joining, the exists() filter and the
       src/scripts relative_to(base_root.resolve()) filter, so git probes and path filters share one root (Decision 159
       2026-08-18 amendment pairing invariant; forwarding None would recreate rec-3166's split-root shape under any test
       that patches test_coverage_checker.ROOT). The explicit `files` argument path is unchanged. Keep the __init__.py / conftest.py /
@@ -126,9 +127,12 @@ followon_recs:
 infrastructure_dependencies: []
 acceptance_criteria:
   - >-
-    scripts/rec_trailer_acceptance.py reports 100% line coverage under its Decision 131 mirror test file, measured by the
-    same machinery validate_test_coverage uses (scripts.test_coverage_checker --check-coverage). Measured at authoring
-    time: 44.0%, 89 statements missed.
+    scripts/rec_trailer_acceptance.py reaches 100% line coverage under its Decision 131 mirror test file. VP step 2 is the
+    pre-merge DIAGNOSTIC measurement (scripts.test_coverage_checker prints that it is not an authoritative gate; measured
+    at authoring time: 44.0%, 89 statements missed); the AUTHORITATIVE confirmation is VP step 11's holds verdict at the
+    merge sha, whose repaired acceptance carries --cov-fail-under=100. Declared residual (Decision 181 point 2): this diff
+    does not modify the module, so neither the local full tier nor the post-merge main/canary full tier re-measures it
+    -- the pre-merge per-file floor that would is owned by rec-3221.
   - >-
     scripts/rec_trailer_acceptance.py itself is NOT modified, and config/coverage_baseline.yaml gains no entry for it
     (Decision 159 clause 2 -- the floor is met, not grandfathered).
@@ -138,9 +142,11 @@ acceptance_criteria:
     read caches.
   - >-
     TestCliStages::test_close_requires_acceptance_verdict asserts that cmd_close hands close_recs_from_trailer
-    require_acceptance_verdict=True and the rejoined verdict mapping. NOT DISCRIMINATED BY ANY VP STEP beyond presence and
-    pass: an assertion-free test passes VP step 1 and raises coverage identically, so the reviewer confirms both assertions
-    at code-review.
+    require_acceptance_verdict=True and the rejoined verdict mapping. The kwarg's PRESENCE in the source is already guarded
+    statically by the registered check validate_rec_autoclose_trailer_gate (it fails if scripts/rec_trailer_acceptance.py
+    stops passing acceptance_verdicts=/require_acceptance_verdict=True). The residual NOT discriminated by any VP step is
+    the verdict-MAPPING assertion: an assertion-free test passes VP step 1 and raises coverage identically, so the
+    reviewer confirms that assertion at code-review.
   - >-
     get_changed_source_files returns a brand-new untracked src/ or scripts/ .py file (proved in a real tmp git
     repository), still returns tracked added/modified files, and still excludes deleted paths, __init__.py, conftest.py,
@@ -320,7 +326,9 @@ verification_plan:
     expected: >-
       Final Validation Summary (scope: all) PASS with zero failed checks. The Test coverage check section now measures
       scripts/test_coverage_checker.py (modified in this diff) at 100%; it does NOT re-measure
-      scripts/rec_trailer_acceptance.py (unmodified here) -- VP step 2 is that module's authoritative measurement.
+      scripts/rec_trailer_acceptance.py (unmodified here). VP step 2 is only a diagnostic for that module; its
+      authoritative confirmation is VP step 11's holds verdict at the merge sha (residual owned by rec-3221, see
+      acceptance criterion 1).
     fix_if: >-
       Any "line coverage (expected 100%)" line is a real regression. A timeout is BLOCKED per handoff_policy -- rerun the
       full tier from the start; never commit on a partial run.
@@ -365,27 +373,47 @@ verification_plan:
       + closing_sha re-arm assert_acceptance_verdict, Decision 201 point 2) together with the class-shard closure_artifact
       and closure_fix_sha in the SAME call (Decision 186 point 4). The manual route is used because
       close_recs_from_trailer threads no closure_artifact (Decision 186 point 7).
-    command: >-
-      git fetch origin main --quiet && SHARD=config/agent/verification_registry/entries/coverage-checker-untracked-new-source.yaml
-      && MERGE_SHA=$(git rev-list -1 origin/main -- "$SHARD") && test -n "$MERGE_SHA"
-      && git diff-tree --no-commit-id --name-only -r "$MERGE_SHA" | grep -x "$SHARD"
-      && W="$(mktemp -d)/w" && git worktree add --detach -q "$W" "$MERGE_SHA" && ln -s "$PWD/.venv" "$W/.venv"
-      && bin/venv-python -c "import sys; from pathlib import Path; from scripts.rec_trailer_acceptance import census, evaluate;
-      from scripts.ops_data_portal import update_rec; w, sha = Path(sys.argv[1]), sys.argv[2]; ids = ['rec-4057', 'rec-4066'];
-      doc = evaluate(census(ids, repo_root=w, profile='agent_platform'), w, sha); recs = {r['rec_id']: r for r in doc['records']};
-      print('isolation', doc['isolation_available'], {k: v['verdict'] for k, v in recs.items()});
-      assert doc['isolation_available'] and all(recs.get(i, {}).get('verdict') == 'holds' for i in ids), 'BLOCKED: no holds verdict';
-      res = 'Resolved by PLAN-ci-rca-rec-trailer-acceptance-coverage: tests restore scripts/rec_trailer_acceptance.py to 100% line coverage; shard coverage-checker-untracked-new-source makes the pre-handoff full tier measure brand-new modules. Presubmit preventive: rec-3221/rec-3232 (unblocked by rec-4077); commit-first handoff: PLAN-handoff-validates-committed-tree; duplicate filing: rec-4078.';
-      [update_rec(i, {'status': 'closed', 'resolution': res}, profile='agent_platform', closure_artifact='shard:coverage-checker-untracked-new-source',
-      closure_fix_sha=sha, acceptance_verdict=recs[i], closing_sha=sha) for i in ids]" "$W" "$MERGE_SHA";
-      rc=$?; git worktree remove --force "$W"; test $rc -eq 0
-      && bin/venv-python -c "import json; from src.common.ducklake_reader_client import make_reader;
-      r = make_reader(profile='agent_platform'); rows = [r.named('rec_by_id', id=i)[0] for i in ('rec-4057', 'rec-4066')];
-      c = [json.loads(x['context_v2_json']) for x in rows]; print([(x['id'], x['status'], y.get('closure_artifact')) for x, y in zip(rows, c)]);
-      assert all(x['status'] == 'closed' for x in rows) and all(y.get('closure_artifact') == 'shard:coverage-checker-untracked-new-source' and y.get('fixed_by_sha') for y in c)"
+    command: |-
+      git fetch origin main --quiet
+      SHARD=config/agent/verification_registry/entries/coverage-checker-untracked-new-source.yaml
+      MERGE_SHA=$(git rev-list -1 origin/main -- "$SHARD") && test -n "$MERGE_SHA" || exit 1
+      git diff-tree --no-commit-id --name-only -r "$MERGE_SHA" | grep -x "$SHARD" || exit 1
+      bin/venv-python - "$MERGE_SHA" <<'EOF' || exit 1
+      import sys
+      from scripts.verification_graduation import git_worktree
+      from scripts.rec_trailer_acceptance import census, evaluate
+      from scripts.ops_data_portal import update_rec
+      sha, ids = sys.argv[1], ["rec-4057", "rec-4066"]
+      with git_worktree(sha) as w:
+          doc = evaluate(census(ids, repo_root=w, profile="agent_platform"), w, sha)
+      recs = {r["rec_id"]: r for r in doc["records"]}
+      print("isolation", doc["isolation_available"], {k: v["verdict"] for k, v in recs.items()})
+      if not (doc["isolation_available"] and all(recs.get(i, {}).get("verdict") == "holds" for i in ids)):
+          raise SystemExit("BLOCKED: no holds verdict -- nothing written")
+      res = ("Resolved by PLAN-ci-rca-rec-trailer-acceptance-coverage: tests restore scripts/rec_trailer_acceptance.py to "
+             "100% line coverage; shard coverage-checker-untracked-new-source makes the pre-handoff full tier measure "
+             "brand-new modules. Presubmit preventive: rec-3221/rec-3232 (unblocked by rec-4077); commit-first handoff: "
+             "PLAN-handoff-validates-committed-tree; duplicate filing: rec-4078.")
+      for i in ids:
+          update_rec(i, {"status": "closed", "resolution": res}, profile="agent_platform",
+                     closure_artifact="shard:coverage-checker-untracked-new-source", closure_fix_sha=sha,
+                     acceptance_verdict=recs[i], closing_sha=sha)
+      EOF
+      bin/venv-python - <<'EOF'
+      import json
+      from src.common.ducklake_reader_client import make_reader
+      r = make_reader(profile="agent_platform")
+      rows = [r.named("rec_by_id", id=i)[0] for i in ("rec-4057", "rec-4066")]
+      ctx = [json.loads(x["context_v2_json"]) for x in rows]
+      print([(x["id"], x["status"], c.get("closure_artifact")) for x, c in zip(rows, ctx)])
+      assert all(x["status"] == "closed" for x in rows)
+      assert all(c.get("closure_artifact") == "shard:coverage-checker-untracked-new-source" and c.get("fixed_by_sha") for c in ctx)
+      EOF
     expected: >-
       The diff-tree guard echoes the shard path; the verdict line prints isolation True and both recs holds; both
-      update_rec writes succeed; the worktree is removed; and the named-read read-back (Decision 88 invariant ii -- no
+      update_rec writes succeed; the throwaway worktree (scripts.verification_graduation.git_worktree -- the repo's own
+      helper, which provisions the .venv symlink and unlinks it and the temp parent on exit) is gone before any write;
+      and the named-read read-back (Decision 88 invariant ii -- no
       full-table sync) shows both closed with the class shard token and a fixed_by_sha.
     fix_if: >-
       "BLOCKED: no holds verdict" writes nothing, by construction: fails means coverage or a test regressed at the merge
@@ -461,6 +489,10 @@ constraints:
     scripts/test_coverage_checker.py stays at or below 490 SLOC and unregistered; do not touch config/sloc_budgets.yaml
     (Decision 128/165).
   - >-
+    Do not rename, move or weaken tests/test_coverage_checker/test_coverage_checker_checks.py::test_coverage_reports_owning_target_and_module
+    -- it is the graduated selector of the mapped-coverage-diagnostic-contract and coverage-checker-move-no-stale-refs
+    shards; only TestGetChangedSourceFiles in that file is in play.
+  - >-
     Never import the real scripts.ops_data_portal from tests/test_rec_trailer_acceptance.py (its sync() would reach the
     warehouse and rewrite local read caches); stub it through sys.modules.
   - >-
@@ -500,7 +532,7 @@ execution_steps:
     TestCliStages::test_close_requires_acceptance_verdict; stub scripts.ops_data_portal via patch.dict(sys.modules, ...).
   - >-
     scripts/test_coverage_checker.py: replace get_changed_source_files' git branches with a delegation to
-    _common.get_status_aware_diff(base_root) dropping "D", where base_root = root if root is not None else ROOT is
+    _common.get_status_aware_diff(root=base_root) dropping "D", where base_root = root if root is not None else ROOT is
     resolved once and shared with the path filters; add the keyword-only root parameter; keep the filters.
   - >-
     tests/test_coverage_checker/test_coverage_checker_checks.py: add the real-git
