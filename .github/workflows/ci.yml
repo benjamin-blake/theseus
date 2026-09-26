@@ -259,10 +259,72 @@ jobs:
           path: /tmp/trailer_acceptance/acceptance_verdict.json
           retention-days: 1
 
+  trailer-junit-verdict:
+    # Decision 201 slice B: the SECOND verdict source, reading a junit verdict from the SAME
+    # push run's own authoritative pytest-junit report rather than re-running the node under
+    # probe's sandbox. needs main-validate (the report's producer) as well as trailer-census (the
+    # routing partition's producer); always() so this still runs -- and refuses loud-not-red --
+    # if either upstream job failed, mirroring trailer-closure's own always() posture. Bare
+    # always() with no pull_request admission would be read as PR-gating by
+    # scripts/verify_ci_workflow/_ci_yaml.py::_admits_pull_request; the github.event_name == 'push'
+    # conjunct keeps it out of signal-green.needs.
+    #
+    # Decision 143 credential split: {contents: read} only, no id-token, no secret -- this job
+    # never touches the warehouse. Invokes scripts.rec_trailer_acceptance_junit DIRECTLY (never
+    # via scripts.rec_trailer_acceptance's own subparser, which imports scripts.backlog_health.probe
+    # at module scope) so validate_sandbox_runner_test_deps's M2 marker never arms on a job that
+    # executes nothing.
+    needs: [trailer-census, main-validate]
+    if: always() && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --quiet --upgrade pip
+          .venv/bin/pip install -r requirements.txt -r requirements-fast.txt
+
+      - name: Download census artifact
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: trailer-census-${{ github.run_id }}
+          path: /tmp/trailer_acceptance
+
+      - name: Download pytest-junit report (same-run only -- no run-id input)
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: pytest-junit
+          path: /tmp/trailer_acceptance
+
+      - name: Run trailer junit verdict (probe-free thin adapter -- reads the same run's junit report)
+        run: .venv/bin/python -m scripts.rec_trailer_acceptance_junit --artifact-dir /tmp/trailer_acceptance --junit-report /tmp/trailer_acceptance/pytest-junit.xml
+
+      - name: Upload junit verdict artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: trailer-junit-verdict-${{ github.run_id }}
+          path: /tmp/trailer_acceptance/junit_verdict.json
+          if-no-files-found: ignore
+          retention-days: 1
+
   trailer-closure:
-    # Rejoins the (untrusted) verdict artifact against census's own entries and closes with
+    # Rejoins the (untrusted) verdict artifacts against census's own entries and closes with
     # require_acceptance_verdict=True (Decision 163: structurally cannot fail open). always()
-    # so this still runs -- and refuses loud-not-red -- even if the evaluate job above failed.
+    # so this still runs -- and refuses loud-not-red -- even if an upstream job failed.
     #
     # Merge-leg gate (rec-3775 / rec-3901, unchanged by the Decision 201 relocation): a trailer
     # whose merge diff is confined to docs/plans/ (a plan-only merge) -- or whose diff is
@@ -270,7 +332,12 @@ jobs:
     # scripts/ops_portal/trailer_closure_gate.py::merge_leg_refuses, called from
     # close_recs_from_trailer before any acceptance verdict is even consulted: every named rec is
     # left OPEN rather than closed, loud-not-red.
-    needs: [trailer-census, trailer-acceptance-evaluate]
+    #
+    # DECLARED COST (slice B): this job now waits behind main-validate (via trailer-junit-verdict),
+    # so trailer closure completes roughly 16 to 20 minutes after the merge rather than within a
+    # couple of minutes -- unavoidable, since consuming the authoritative verdict means waiting
+    # for the run that produces it.
+    needs: [trailer-census, trailer-acceptance-evaluate, trailer-junit-verdict]
     if: always() && github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -311,13 +378,20 @@ jobs:
           name: trailer-acceptance-verdict-${{ github.run_id }}
           path: /tmp/trailer_acceptance
 
+      - name: Download junit verdict artifact
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: trailer-junit-verdict-${{ github.run_id }}
+          path: /tmp/trailer_acceptance
+
       - name: Close resolved recs from Resolves trailer (Decision 201 acceptance-gated)
         env:
           DUCKLAKE_WRITER_URL: ${{ secrets.DUCKLAKE_WRITER_URL }}
           GITHUB_SHA: ${{ github.sha }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_RUN_ID: ${{ github.run_id }}
-        run: .venv/bin/python -m scripts.rec_trailer_acceptance close --artifact-dir /tmp/trailer_acceptance
+        run: .venv/bin/python -m scripts.rec_trailer_acceptance close --artifact-dir /tmp/trailer_acceptance --junit-verdict /tmp/trailer_acceptance/junit_verdict.json
 
   terraform-validate:
     # GitHub-hosted runner (CD.21 -- self-hosted runner retired). Delegates to

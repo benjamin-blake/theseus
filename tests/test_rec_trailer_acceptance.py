@@ -9,13 +9,20 @@ acceptance_sha256 rejoin's drop paths.
 from __future__ import annotations
 
 import itertools
+from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from scripts.backlog_health import census as census_mod
 from scripts.backlog_health import probe as probe_mod
 from scripts.checks.verification._vp_replay_classify import OUTCOME_CLASSES
+from scripts.executor.acceptance_lint import lint_acceptance_command
 from scripts.ops_portal.closure_gate import ACCEPTANCE_VERDICTS, FAILS, HOLDS, OUT_OF_GRAMMAR, UNMEASURABLE
 from scripts.rec_trailer_acceptance import census, evaluate, rejoin, verdict_for
+from scripts.rec_trailer_acceptance_junit import ROUTE_JUNIT, ROUTE_REFUSE, ROUTE_STATIC
+
+_REAL_NODE = "tests/test_rec_trailer_acceptance.py::TestRejoin::test_matching_record_survives"
 
 
 class TestVerdictMapping:
@@ -147,3 +154,127 @@ class TestRejoin:
 
     def test_absent_records_key_yields_empty(self) -> None:
         assert rejoin(self._CENSUS_DOC, {}) == {}
+
+
+class TestJunitRouting:
+    def test_partition_is_static_with_report_absent(self) -> None:
+        """The route is computed from the acceptance TEXT ALONE -- census() never reads a junit
+        report, resolves anything on disk, or executes anything, so the routing is provably
+        static (it is identical whether or not a junit report exists anywhere)."""
+        rows = [{"id": "rec-1", "acceptance": "pytest " + _REAL_NODE}]
+        entries = census(["rec-1"], rows=rows)
+        assert entries[0]["route"] == ROUTE_JUNIT
+
+    def test_pure_single_segment_node_id_routes_to_junit_and_leaves_probe_payload(self) -> None:
+        rows = [{"id": "rec-1", "acceptance": "pytest " + _REAL_NODE}]
+        entries = census(["rec-1"], rows=rows)
+        assert entries[0]["bucket"] == census_mod.PROBEABLE
+        assert entries[0]["route"] == ROUTE_JUNIT
+
+        empty_probe_result = {"main_sha": "deadbeef", "isolation_available": True, "verdicts": {}}
+        with patch("scripts.rec_trailer_acceptance.probe_mod.run_all", return_value=empty_probe_result) as mock_run_all:
+            doc = evaluate(entries, Path("."), "deadbeef")
+        mock_run_all.assert_called_once_with([], repo_root=Path("."), main_sha="deadbeef")
+        assert doc["records"] == []
+
+    def test_mixed_and_chain_stays_on_probe_path_unchanged(self) -> None:
+        rows = [{"id": "rec-1", "acceptance": "grep -q X tests/f.py && pytest " + _REAL_NODE}]
+        entries = census(["rec-1"], rows=rows)
+        assert entries[0]["bucket"] == census_mod.PROBEABLE
+        assert entries[0]["route"] == ROUTE_STATIC
+
+        probe_result = {"main_sha": "deadbeef", "isolation_available": True, "verdicts": {"rec-1": probe_mod.PASS}}
+        with patch("scripts.rec_trailer_acceptance.probe_mod.run_all", return_value=probe_result):
+            doc = evaluate(entries, Path("."), "deadbeef")
+        assert [r["rec_id"] for r in doc["records"]] == ["rec-1"]
+        assert doc["records"][0]["verdict"] == HOLDS
+
+    def test_negated_chain_stays_static(self) -> None:
+        rows = [{"id": "rec-1", "acceptance": "! pytest " + _REAL_NODE}]
+        entries = census(["rec-1"], rows=rows)
+        assert entries[0]["route"] == ROUTE_STATIC
+
+    def test_piped_chain_stays_static(self) -> None:
+        rows = [{"id": "rec-1", "acceptance": "pytest " + _REAL_NODE + " | tee out.log"}]
+        entries = census(["rec-1"], rows=rows)
+        assert entries[0]["route"] == ROUTE_STATIC
+
+    def test_bare_pytest_path_stays_static(self) -> None:
+        rows = [{"id": "rec-1", "acceptance": "pytest tests/x.py"}]
+        entries = census(["rec-1"], rows=rows)
+        assert entries[0]["route"] == ROUTE_STATIC
+
+    def test_unparseable_pytest_command_is_refused_and_reaches_neither_route(self) -> None:
+        """In this tree, slice A's own require_decidable lint already fails-closed on a
+        shlex-unparseable command (its own segmentation raises, so no segment can be decidable),
+        rerouting it to unprobeable_shape before this plan's grammar routing would ever run --
+        the lint-wins precedence in action. This test isolates the ROUTING partition's OWN
+        fail-closed behaviour independent of that coupling (defense in depth: the routing must
+        never admit an unparseable command to junit even if lint's own gate ever changed), by
+        forcing the lint check to pass so census() reaches the grammar classifier directly."""
+        cmd = "pytest " + _REAL_NODE + " " + chr(92)
+        with patch("scripts.rec_trailer_acceptance.lint_acceptance_command", return_value=(True, None)):
+            rows = [{"id": "rec-1", "acceptance": cmd}]
+            entries = census(["rec-1"], rows=rows)
+        assert entries[0]["bucket"] == census_mod.UNPROBEABLE_SHAPE
+        assert entries[0]["route"] == ROUTE_REFUSE
+        assert verdict_for(entries[0]["bucket"], None) == OUT_OF_GRAMMAR
+
+        with patch("scripts.rec_trailer_acceptance.probe_mod.run_all") as mock_run_all:
+            mock_run_all.return_value = {"main_sha": "deadbeef", "isolation_available": True, "verdicts": {}}
+            evaluate(entries, Path("."), "deadbeef")
+        mock_run_all.assert_called_once_with([], repo_root=Path("."), main_sha="deadbeef")
+
+        # Confirmed independently: the real (unpatched) lint also refuses this shape on its own
+        # decidable check, via a different bucket path -- the two fail-closed mechanisms agree.
+        real_lint_ok, _ = lint_acceptance_command(cmd, require_decidable=True)
+        assert real_lint_ok is False
+
+    def test_lint_refusal_wins_over_junit_routing(self) -> None:
+        """A require_decidable lint refusal reroutes bucket to unprobeable_shape BEFORE grammar
+        routing ever runs, so a command that would otherwise be junit-eligible is instead
+        out_of_grammar via slice A's own refusal path -- precedence stated in
+        docs/contracts/git-ops.yaml#trailer_acceptance_gate."""
+        with patch("scripts.rec_trailer_acceptance.lint_acceptance_command", return_value=(False, "refused")):
+            rows = [{"id": "rec-1", "acceptance": "pytest " + _REAL_NODE}]
+            entries = census(["rec-1"], rows=rows)
+        assert entries[0]["bucket"] == census_mod.UNPROBEABLE_SHAPE
+        assert entries[0]["route"] == ROUTE_STATIC
+
+    def test_rejoin_refuses_a_rec_id_present_in_both_verdict_documents(self) -> None:
+        census_doc = {"entries": [{"rec_id": "rec-1", "acceptance_sha256": "abc123", "route": ROUTE_JUNIT}]}
+        static_doc = {"records": [{"rec_id": "rec-1", "acceptance_sha256": "abc123", "verdict": HOLDS}]}
+        junit_doc = {"records": [{"rec_id": "rec-1", "acceptance_sha256": "abc123", "verdict": HOLDS}]}
+        with pytest.raises(RuntimeError):
+            rejoin(census_doc, static_doc, junit_doc)
+
+    def test_rejoin_merges_disjoint_sources(self) -> None:
+        census_doc = {
+            "entries": [
+                {"rec_id": "rec-1", "acceptance_sha256": "abc123", "route": ROUTE_STATIC},
+                {"rec_id": "rec-2", "acceptance_sha256": "def456", "route": ROUTE_JUNIT},
+            ]
+        }
+        static_doc = {"records": [{"rec_id": "rec-1", "acceptance_sha256": "abc123", "verdict": HOLDS}]}
+        junit_doc = {"records": [{"rec_id": "rec-2", "acceptance_sha256": "def456", "verdict": FAILS}]}
+        merged = rejoin(census_doc, static_doc, junit_doc)
+        assert merged["rec-1"]["verdict"] == HOLDS
+        assert merged["rec-2"]["verdict"] == FAILS
+
+    def test_rejoin_synthesizes_report_unavailable_when_junit_doc_is_none(self) -> None:
+        """A junit_doc of None (the artifact was never produced) is distinct from a present but
+        empty document -- every junit-routed census entry gets an explicit unmeasurable record,
+        never silence."""
+        census_doc = {"entries": [{"rec_id": "rec-1", "acceptance_sha256": "abc123", "route": ROUTE_JUNIT}]}
+        static_doc = {"records": []}
+        merged = rejoin(census_doc, static_doc, None)
+        assert merged["rec-1"]["verdict"] == UNMEASURABLE
+        assert merged["rec-1"]["arm"] == "report_unavailable"
+
+    def test_rejoin_empty_but_present_junit_doc_synthesizes_nothing(self) -> None:
+        """A present-but-empty junit document is a legitimate result (the junit-verdict stage ran
+        and genuinely found no records) -- it must not trigger the None-only synthetic fallback."""
+        census_doc = {"entries": [{"rec_id": "rec-1", "acceptance_sha256": "abc123", "route": ROUTE_JUNIT}]}
+        static_doc = {"records": []}
+        merged = rejoin(census_doc, static_doc, {"records": []})
+        assert merged == {}
