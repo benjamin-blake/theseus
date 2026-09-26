@@ -59,7 +59,11 @@ scope:
     src/telemetry/identity.py decode_time_prefix -- never seconds, floats or a
     re-serialised string; an unusable handoff DEFERS emission, never coerces. Scoped to the producer-to-producer
     handoff only: both forms decode to a tz-aware UTC value and the stored column is unchanged (Decision 96 clause
-    4). One field-level amendment_log entry on session_started_at (governance_note_add, semantic_break true,
+    4). Plus one producer obligation spanning EVERY hop, producer-to-writer included: session_started_at always
+    carries its full millisecond value (e.g. an RFC 3339 string with a 3-digit fraction at the writer edge), because
+    the pinned RFC 3339 profile accepts a fraction-less value and would silently pad it to .000; any writer-side
+    rejection is rec-4024's to build (the event_timestamp 'rule declared here, validator is rec-4024's' pattern).
+    One field-level amendment_log entry on session_started_at (governance_note_add, semantic_break true,
     summary citing Decision 96 clause 4). contract_version stays 1.
 - file: docs/contracts/_joins.yaml
   action: Modify
@@ -110,7 +114,7 @@ acceptance_criteria:
 - >-
   telemetry-event-envelope.yaml session_started_at semantics names integer epoch-milliseconds and a held entity/FK
   key (never an event_id) decoded via decode_time_prefix as the only handoff forms, with deferral on an unusable
-  handoff; parser_version, event_id and created_timestamp are untouched (R8 is planned separately).
+  handoff, and states that every hop, producer-to-writer included, carries the full millisecond value; parser_version, event_id and created_timestamp are untouched (R8 is planned separately).
 - Each amended field carries a new amendment_log entry (governance_note_add, semantic_break true); contract_version unchanged on all three contracts.
 - >-
   The three bundled rec acceptance commands pass; the existing contract suites
@@ -242,7 +246,7 @@ test_obligations:
 - source: docs/contracts/telemetry-event-envelope.yaml
   behavior: >-
     R7: session_started_at handoff is integer epoch-ms or a decoded entity/FK key, never an event_id
-    (decode_time_prefix round trip exact).
+    (decode_time_prefix round trip exact); every hop, producer-to-writer included, carries the full ms value.
   verification_step: 1
   test_selector: tests/telemetry/test_contract_amendments.py::test_session_started_at_handoff_is_exact_ms
   red_green_expectation: red before, green after
@@ -260,9 +264,8 @@ test_obligations:
     is its standing check.
 constraints:
 - >-
-  Contracts, one test module and its registry row ONLY. No code under src/ or scripts/ (src/telemetry is
-  Lambda-manifest-packaged; src/common/ducklake_*.py and config/lambda/ducklake/** trigger the governed deploy
-  channel), no field_semantics.yaml change (telemetry tables are not in _CONTRACT_TABLE_IDS, so no generated
+  Contracts, one test module and its registry row ONLY. No code under src/ or scripts/ (a contract-only plan;
+  src/common/ducklake_*.py and config/lambda/ducklake/** would trigger the governed deploy channel), no field_semantics.yaml change (telemetry tables are not in _CONTRACT_TABLE_IDS, so no generated
   drift), no Decision edit, no roadmap edit.
 - >-
   Amend within the ratified Decision 199/200 model: no field added or removed, no identity-spec, partition or
@@ -274,7 +277,8 @@ constraints:
   pairs with semantic_break true (scripts/contracts_enforcement.py:115-124). New live text never says 'minted
   once' or 'never re-mints' (existing stale-pattern test).
 - >-
-  R7 wording is scoped to the producer-to-producer handoff; the stored session_started_at stays a tz-aware UTC
+  R7's handoff FORMAT ban (no seconds, floats or re-serialised strings) is scoped to the producer-to-producer
+  handoff; the millisecond-PRECISION obligation spans every hop; the stored session_started_at stays a tz-aware UTC
   timestamptz (Decision 96 clause 4, unamended).
 - Every contract stays within the contracts structural size cap; no budget raise.
 - >-
@@ -312,8 +316,9 @@ context:
   still roots to its session via session_id; 'one connected trace tree' becomes a DQ-monitored invariant, since a
   never-emitted parent leaves a permanent orphan); tenant-id.yaml unchanged (already 'immutable ... never re-derived').
 - >-
-  Gotchas: rec acceptance names MODULE-LEVEL test functions (no classes); src/telemetry/append.py docstring still
-  lists parent-existence as out of scope for the primitive -- accurate, left alone (src/ is Lambda-packaged);
+  Gotchas: rec acceptance names MODULE-LEVEL test functions (no classes); src/telemetry/append.py's docstring
+  still assigns R3 parent-existence checking to the writer verb -- left for rec-4024 (routed in the bookkeeping step),
+  since this plan is contract-only; do not bump _joins.yaml last_updated for a comment edit;
   squash merge must pass commit_message with the Resolves trailer in its own Key: value block; step 4's
   check_amendment_for_diff covers description/semantics only, so R3's write_time_validation/governance_notes
   amendment_log entry is asserted by step 1's test, not step 4; existing tests ban, in live contract text, a bare
@@ -334,12 +339,16 @@ execution_steps:
 - Amend telemetry-event-envelope.yaml session_started_at (R7) per scope.
 - Write the registry row for graduated step 1.
 - >-
-  Portal bookkeeping (get_rec_write_guidance first, Decision 66): update_rec rec-4024 (context: slice 2 must NOT
-  check parent existence at write time -- rec-4101 owns integrity; project_ref resolution immutable, remap
-  read-side only; writer-bound session_started_at must carry millisecond precision, since the pinned RFC 3339
-  profile accepts a fraction-less value and would silently decode it to .000; the reader's parser_version rule is
-  pending rec-4061's plan) and rec-4026 (context: the first
-  producer owes the exact-ms session_started_at and root project_ref handoff rules).
+  Portal bookkeeping (get_rec_write_guidance first, Decision 66). For each update_rec, fetch the current row first
+  (rec_by_id) and PREPEND a dated block to the existing context, writing the full text back (update_rec replaces the
+  field whole). rec-4024: slice 2 must NOT check parent existence at write time (rec-4101 owns integrity) and must
+  correct src/telemetry/append.py's module docstring, which still assigns R3 parent-existence checking to the
+  writer verb; project_ref resolution immutable, remap read-side only; the writer may reject a fraction-less
+  session_started_at (envelope R7 precision rule); under the cloud adapter every principal producing one tree must
+  resolve to one tenant_id (the tenant analog of R6); the reader's parser_version rule is pending rec-4061's plan.
+  rec-4026: the first producer owes the exact-ms session_started_at and root project_ref handoff rules, persists
+  the pinned project_ref with its per-session cursor so catch-up and re-parse reuse it (never a re-read of
+  repository config), and should not write production rows before rec-4101's monitor exists.
 - >-
   Execute Verification Plan steps 1-6 (stage new files first: git add --intent-to-add on every Create row) -- loop
   until pass; never weaken an assertion; on an unrecoverable failure stop and RCA (Decision 55).
