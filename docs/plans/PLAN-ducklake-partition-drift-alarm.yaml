@@ -74,7 +74,10 @@ scope:
       Legacy files on a control-class table or a *_current projection are reported in context --
       remedy 'rebuild from history, Decision 81 cl.8' for current -- and never hold the alarm open.
       check_only returns the verdict without any portal call. Otherwise
-      run_episode(source="ducklake_partition_drift", ...) files ONE deduped rec (never
+      run_episode(source="ducklake_partition_drift", ...) files ONE deduped rec whose rec-fields dict
+      spells "source": "ducklake_partition_drift" INLINE as a literal (as code_drift.py does -- the
+      source-registry guard's regex matches only that dict-literal and 'source == "..."' shapes,
+      never a keyword argument or a named constant) (never
       source=ci_rca) with PINNED fields -- title "DuckLake partition drift -- live partition layout
       differs from declared", file docs/contracts/ducklake-partition-remediation.yaml (the procedure
       contract), priority High, effort S, risk medium, verification_tier V2, acceptance
@@ -260,8 +263,9 @@ verification_plan:
     expected: all pass
     fix_if: >-
       an unclassified table surfaces as an unhandled exception -- PartitionLayoutError must map to
-      the typed 500; a wrapped dead session returns 500 instead of reopening -- the wrap dropped the
-      message or the predicate ignores __cause__
+      the typed 500; a wrapped dead session returns 500 instead of reopening -- the predicate ignores
+      __cause__ (this test's wrapper message deliberately omits the dead-session phrase; message
+      preservation is the remediation plan's layout test)
     hermetic: false
     graduation: graduate
     graduation_check_id: ducklake-partition-layout-reader-verb
@@ -558,7 +562,7 @@ constraints:
 context:
   - "Decision-scout verdict: FLAGS_FOUND. Decisions triaged: 154 of 154. Roadmap items intersected: 14; CONFLICT: 1; RELATED: 12."
   - "CITE: Decision 55, 62, 79, 83, 84, 88, 125, 126, 131, 143, 162, 184, 191, 201; RELATED 190"
-  - "gates: decision-scout=FLAGS_FOUND (shared with the remediation plan); plan-critique r1=REVISE (9); r2=REVISE (4 + 6); r3=REVISE (3 + 5); r4=REVISE (2 + 6; S6 read-engine listing not taken -- unenforced); r5=PROCEED (S1-S4 folded in; S5, S6 via recs)"
+  - "gates: decision-scout=FLAGS_FOUND (shared with the remediation plan); plan-critique r1=REVISE (9); r2=REVISE (4 + 6); r3=REVISE (3 + 5); r4=REVISE (2 + 6; S6 read-engine listing not taken -- unenforced); r5=PROCEED (S1-S4 folded in; S5, S6 via recs); r6=PROCEED (N1-N3 applied as specified)"
   - >-
     Split from the rec-4070 plan by human direction 2026-09-26 ('include drift detection now', then
     'split into two plans, each with its own review gates'). Scout flags for this half: warm
@@ -616,16 +620,20 @@ execution_steps:
   - "Report: what was implemented, verification results, and whether the first scheduled sensor run found drift."
 rollback: >-
   NOT a single revert: validate_schedule_removal_markers (--pre) refuses deleting a schedule-bearing
-  workflow in one PR, with no marker escape. Retirement is mark-then-drop across two PRs -- (1)
-  remove the schedule under a '# schedule-removal-approved: dec-NNN <reason>' marker whose Decision
-  names ducklake-partition-drift.yml, also dropping workflow_dispatch so a manual run cannot fall
-  through, together with the code revert (the governed channel then redeploys the prior reader);
-  (2) delete the workflow file with its ci_rca_taxonomy row and both r3_workflows entries. Never
-  revert the boundary-premise corrections (handler docstring, manifest notes, both contracts):
-  they are factual, and reverting ducklake_reader.yaml's description without a new amendment
-  entry fails --pre. Keep the source_registry entry -- historical rec rows reference it. FORBIDDEN: a code-only revert that leaves the scheduled --partition-drift
-  step -- __main__._dispatch falls through to main() on an unknown flag, so the step would run the
-  tf-convergence escalation every 6h and go silently green, and sensor_liveness would read it as
-  healthy (structural fix: rec-4100, unknown flags exit 2). The sensor only files, updates and
-  closes its own rec; close any open
+  workflow in one PR, with no marker escape. Retirement is mark-then-drop across two PRs, ordered so
+  there is neither a fall-through window nor a triggerless workflow file (GitHub rejects an `on:`
+  with no events): (1) remove ONLY the schedule, under a '# schedule-removal-approved: dec-NNN
+  <reason>' marker whose Decision names ducklake-partition-drift.yml, keeping workflow_dispatch AND
+  the sensor code so any manual run still executes the real sensor; (2) delete the workflow file,
+  its ci_rca_taxonomy row and both r3_workflows entries TOGETHER WITH the code revert (the governed
+  channel then redeploys the prior reader). With the verb reverted, remove verbs.partition_layout
+  and the partition_layout lines of the T2.26 and counters invariants under a new amendment entry,
+  so no contract documents a dead verb -- but never revert the boundary-premise corrections
+  (handler docstring, manifest notes, contract description/auth_type/Closed-boundary): they are
+  factual, and reverting ducklake_reader.yaml's description without a new amendment entry fails
+  --pre. Keep the source_registry entry -- historical rec rows reference it. FORBIDDEN: any state
+  where a scheduled --partition-drift step runs without the sensor code -- __main__._dispatch falls
+  through to main() on an unknown flag, so the step would run the tf-convergence escalation and go
+  silently green, and sensor_liveness would read it as healthy (structural fix: rec-4100, unknown
+  flags exit 2). The sensor only files, updates and closes its own rec; close any open
   ducklake_partition_drift rec with a resolution naming the retirement.
