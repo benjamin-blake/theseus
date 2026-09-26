@@ -31,7 +31,8 @@ scope:
       that the clamp BITES, independent of repo size. Then a size-independent live check that keeps
       count_test_modules()'s default-root branch exercised: live = count_test_modules(); live > 0;
       test_execution_allowance(10**6, census=live) == test_execution_allowance(live, census=live) ==
-      min(max(TEST_BASE_SECONDS, PER_MODULE_SECONDS * live), CEILING_SECONDS - NON_TEST_BUDGET_SECONDS).
+      min(max(TEST_BASE_SECONDS, PER_MODULE_SECONDS * live), CEILING_SECONDS - NON_TEST_BUDGET_SECONDS)
+      -- split that equality chain across two asserts (a one-line form measured 131 chars, E501 at 127).
       The removed assertion (strict < cap on the LIVE census) encoded "the repo has fewer than 630 test
       modules", not a selection_budget property.
       (b) NEW TestAllowance::test_census_clamp_saturates_at_the_derived_cap_on_a_real_tree: build ONE
@@ -67,7 +68,7 @@ bundled_recommendations:
 followon_recs: []
 infrastructure_dependencies: []
 acceptance_criteria:
-  - rec-4076's acceptance command (the kept node id) passes, and TestAllowance, TestClassifyBranchOrder and test_budget_split.py::TestBreadthDerivedTestBudget pass at the live census AND with the repo-root census patched to 633 and to 10000 (VP steps 2, 4).
+  - rec-4076's acceptance command (the kept node id) passes (VP step 4); both edited files pass whole at the live census (VP step 5); and TestAllowance, TestClassifyBranchOrder and test_budget_split.py::TestBreadthDerivedTestBudget pass with the repo-root census patched to 633 and to 10000 (VP step 2).
   - A clamp-removal mutant of test_execution_allowance (census ignored) fails every one of the four census guards, including the validate.py:420 wiring guard, at a simulated 633 census (VP step 3).
   - The new real-tree test proves the allowance saturates at exactly CEILING_SECONDS - NON_TEST_BUDGET_SECONDS at and above binds_at and is PER_MODULE_SECONDS * n below it (VP step 1).
   - scripts/checks/deps/selection_budget.py is byte-identical (out of scope, enforced by validate_scope_boundary in VP step 7); every budget constant keeps its Decision 182 value (VP step 6).
@@ -176,8 +177,9 @@ verification_plan:
   - step: 9
     phase: post-deploy
     action: Confirm rec-4076 closed through the squash-merge Resolves trailer.
-    command: bin/venv-python -m scripts.ops_data_portal --sync && grep -F rec-4076 logs/.recommendations-log.jsonl | grep -c closed
-    expected: A non-zero count -- rec-4076 closed, reachable only through its acceptance node reading holds at the closing commit.
+    command: >-
+      bin/venv-python -m scripts.ops_data_portal --sync && bin/venv-python -c "import json, pathlib; rows = [json.loads(line) for line in pathlib.Path('logs/.recommendations-log.jsonl').read_text(encoding='utf-8').splitlines() if line.strip()]; print([row.get('status') for row in rows if row.get('id') == 'rec-4076'])"
+    expected: Prints a list whose only element is closed -- rec-4076 closed, reachable only through its acceptance node reading holds at the closing commit.
     fix_if: >-
       Zero -- check the squash commit body carries the Resolves trailer for rec-4076 and the closure
       job acceptance verdict for the kept node id.
@@ -221,7 +223,7 @@ constraints:
   - No rescue agents or workaround loops (Decision 55).
 context:
   - "Decision-scout verdict: NO_FLAGS (round 1, gate_run_id selection-budget-census-hermetic-test-decision-scout-r1-192956af). CITE: 182, 181, 189, 132, 201, 163. Decisions triaged: 154 of 154. Roadmap items intersected: 1; CONFLICT: 0; RELATED: 1"
-  - "gates: decision-scout=NO_FLAGS; plan-critique=REVISE after 1 round (F1 sibling guard added as edit (d); F2/F3 obligations rewritten; F4 portal sync; F5 AC4 re-mapped; R1 census refreshed) -- round 2 pending"
+  - "gates: decision-scout=NO_FLAGS; plan-critique=REVISE after 2 rounds (r1: F1 sibling guard edit (d), F2/F3 obligations, F4 portal sync, F5 AC4 re-map, R1 census; r2: F1 four-fact closure-evidence step, F2 VP 7/8 after shards + implementation_declared flip, plus step-9 JSON oracle and AC1 re-map) -- round 3 confirming pending"
   - "rec-4076 framing declined (Decision 103 note): it proposed re-deriving CEILING_SECONDS/binds_at; census growth trips none of Decision 182's reversal conditions (a)-(e), and the originating PLAN-fast-tier-budget-breadth-split context already recorded 'the cap starts to bind at 630'. Defect is the test binding a size-independent property to live repo size."
   - "Measured at planning (main c89b1a19, census 626; origin/main 7c49f3b5 is at 628, so two more test modules on main redden its full tier -- land promptly): simulated census 633 -> acceptance node rc 1 (the rec symptom); clamp-removal mutant SURVIVES test_an_inflated_selection_cannot_raise_its_own_allowance (rc 0). predict_test_half(633) = 710.0-937.6s vs 1260s cap."
   - "Out of scope, owned elsewhere: a non-forced full selection's predicted high test half reaches the cap near 823 modules -- coefficient re-derivation is Decision 182 reversal (c); validate_test_count_coupling (Decision 104) does not see count_test_modules() comparisons."
@@ -241,10 +243,12 @@ pre_implementation_checklist:
   - tests/checks/deps/test_selection_budget.py, tests/validate/test_budget_split.py, scripts/checks/deps/selection_budget.py and scripts/validate.py:405-430 read
   - Acceptance criteria understood and verifiable
 execution_steps:
-  - "tests/checks/deps/test_selection_budget.py -- apply scope edits (a), (b), (c); tests/validate/test_budget_split.py -- apply edit (d); pre: VP steps 2 and 3 fail on the untouched files; post: they pass."
-  - Execute the Verification Plan -- run each step; loop until pass; on an unrecoverable failure stop and RCA (Decision 55).
-  - Graduate VP steps 2 and 3 as registry rows with their graduation_check_id values verbatim (Decision 132).
-  - "Squash-merge body carries: Resolves: rec-4076"
-  - 'Report: what was implemented, verification results'
+  - "Apply scope edits (a), (b), (c) to tests/checks/deps/test_selection_budget.py and edit (d) to tests/validate/test_budget_split.py. Pre: VP steps 2 and 3 FAIL on the untouched files (CENSUS_COUPLED [1, 1]; MUTANT_SURVIVED [1, 4, 0, 0]) -- record both outputs. Post: they pass."
+  - Run VP steps 1-6 in order; loop until pass; never weaken an assertion; on an unrecoverable failure stop and RCA (Decision 55).
+  - Create the two graduated registry shards for VP steps 2 and 3 under config/agent/verification_registry/entries/ (graduation_check_id verbatim as check_id, primitive_slot command_exit_zero, check_spec.command carrying the step's command as an argv list; field shape per an existing command_exit_zero entries/ row such as ontheloop-placeholder-sources-inert.yaml) (Decision 132).
+  - Set implementation_declared true in this plan (the registry shards now exist), so validate_scope_boundary enforces AC4's byte-identity claim and validate_vp_replay's implement leg binds; then run VP step 7, then VP step 8, so the full-tier evidence covers the final tree at the pre-commit HEAD.
+  - "Portal bookkeeping (get_rec_write_guidance first, Decision 66): update_rec rec-4076 context to record that its re-derive-constants framing was declined (test-only hermetic fix; no Decision 182 reversal condition tripped), so the closed rec does not read as a re-derivation."
+  - "Closure evidence, recorded as four SEPARATE facts (implement skill Commit Flows): (1) GitHub readiness -- bin/venv-python -m scripts.session.github_readiness, each state recorded as reported, where unknown is unproven and never PASS; (2) parent validator evidence -- VP step 8's completed full-tier exit 0, Validation Summary (scope: all) PASS and the matching logs/debug/validation-result.json (scope all, exit 0, the current pre-commit HEAD), taken after the implementation_declared flip; (3) structured postflight evidence -- bin/venv-python -m scripts.session.postflight --evidence /tmp/implementation-retrospective.json with the scripts.session.postflight_evidence.CATEGORIES keys; (4) the real outcome -- commit, push, PR, CI green on the head (event-driven wake, never polled), and the squash-merge with 'Resolves: rec-4076', then post-deploy VP step 9. A readiness PASS never stands in for a push or PR outcome; if the trailer's acceptance run refuses closure, fix the cause and never close the rec by hand."
+  - "Report, naming separately: what was implemented; the red-before outputs of VP steps 2 and 3; the green-after outputs of VP steps 2 and 3; the full-tier (VP step 8) output that admitted the two registry rows; and each of the four closure facts above."
 work_areas: []
 rollback: Revert the single two-test-file commit; no runtime, data or infrastructure state is touched.
