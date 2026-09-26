@@ -15,11 +15,15 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import yaml
 
 from scripts.checks import _common
 from scripts.checks.validation_result import ATTEST_RULES, attests_head, evidence_path_for, load_record
+
+if TYPE_CHECKING:
+    from scripts.session.handoff_push_parse import ParsedPush
 
 GIT_OPS_PATH = "docs/contracts/git-ops.yaml"
 
@@ -99,7 +103,7 @@ def destination_prefixes(cwd: Path) -> list[str] | None:
     if prefixes is None:
         return None
     clause = _base_ref_clause(cwd)
-    extra = []
+    extra: list[str] = []
     if clause is not None:
         extra = clause.get("extra_destination_prefixes") or []
         if not isinstance(extra, list) or not all(isinstance(p, str) for p in extra):
@@ -175,7 +179,7 @@ def decide_push(worktree: Path, pushed_sha: str) -> Verdict:
     return Verdict("deny", rule, f"evidence does not attest this tree ({rule}); handoff sequence: {sequence}")
 
 
-def _decide_delete(parsed: object, prefixes: list[str]) -> Verdict:
+def _decide_delete(parsed: ParsedPush, prefixes: list[str]) -> Verdict:
     branch = (parsed.dst or "").removeprefix("refs/heads/")
     if branch in ("main", "master"):
         return Verdict("deny", "delete_main", "deleting main or master is human-only")
@@ -184,7 +188,7 @@ def _decide_delete(parsed: object, prefixes: list[str]) -> Verdict:
     return Verdict("pass", "delete", "a single agent-branch delete pushes no tree")
 
 
-def _decide_bare_push(parsed: object, prefixes: list[str], resolved_worktree: Path) -> Verdict:
+def _decide_bare_push(parsed: ParsedPush, prefixes: list[str], resolved_worktree: Path) -> Verdict:
     ok, push_default = _run(["config", "push.default"], resolved_worktree)
     push_default = push_default if ok else ""
     if push_default not in ("", "simple", "current", "upstream"):
@@ -208,7 +212,7 @@ def _decide_bare_push(parsed: object, prefixes: list[str], resolved_worktree: Pa
     return decide_push(resolved_worktree, head_sha)
 
 
-def _resolve_explicit_dst(parsed: object, resolved_worktree: Path) -> tuple[str | None, Verdict | None]:
+def _resolve_explicit_dst(parsed: ParsedPush, resolved_worktree: Path) -> tuple[str | None, Verdict | None]:
     dst = parsed.dst
     if dst is not None:
         return dst, None
@@ -221,10 +225,11 @@ def _resolve_explicit_dst(parsed: object, resolved_worktree: Path) -> tuple[str 
     return dst, None
 
 
-def _decide_explicit_push(parsed: object, prefixes: list[str], resolved_worktree: Path) -> Verdict:
+def _decide_explicit_push(parsed: ParsedPush, prefixes: list[str], resolved_worktree: Path) -> Verdict:
     dst, error = _resolve_explicit_dst(parsed, resolved_worktree)
     if error is not None:
         return error
+    assert dst is not None
     if not _dst_allowed(dst, prefixes):
         return Verdict("deny", "destination", f"{dst} is not an agent-prefixed destination")
 
