@@ -5,8 +5,11 @@ per Decision 128, not a mirror-roster retirement). See tests/fixtures/coverage_c
 for the shared module-under-test singleton.
 """
 
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from tests.fixtures.coverage_checker_module import ROOT, checker
 
@@ -119,22 +122,23 @@ class TestCheckTestFileExists:
 
 
 class TestGetChangedSourceFiles:
-    """Tests for get_changed_source_files()."""
+    """Tests for get_changed_source_files(). The git-diff branch delegates entirely to
+    scripts.checks._common.get_status_aware_diff(root=base_root) (Decision 159 pairing
+    invariant); its own push-context-base -> merge-base -> HEAD fallback is owned by
+    tests/checks/_common/test_push_context_base.py and
+    tests/validate/test_changed_files.py::TestGetStatusAwareDiff (Decision 181) -- the mocked
+    cases here re-seat onto that one delegation point instead of pinning the deleted git
+    branches."""
 
     def test_filters_to_src_and_scripts(self) -> None:
-        """Only files under src/ or scripts/ are returned."""
-        mock_merge_base = MagicMock()
-        mock_merge_base.returncode = 0
-        mock_merge_base.stdout = "abc123\n"
-
-        mock_diff = MagicMock()
-        mock_diff.returncode = 0
-        mock_diff.stdout = "src/common/ducklake_runtime.py\nscripts/validate.py\ndocs/README.md\nterraform/main.tf\n"
-
-        with (
-            patch("scripts.checks._common.push_context_base", return_value=None),
-            patch("test_coverage_checker.subprocess.run", side_effect=[mock_merge_base, mock_diff]),
-        ):
+        """Only .py files under src/ or scripts/ are returned."""
+        entries = [
+            ("M", "src/common/ducklake_runtime.py"),
+            ("A", "scripts/validate.py"),
+            ("M", "docs/README.md"),
+            ("M", "terraform/main.tf"),
+        ]
+        with patch("scripts.checks._common.get_status_aware_diff", return_value=entries):
             result = get_changed_source_files()
 
         rel_parts = [str(p.relative_to(ROOT)).replace("\\", "/") for p in result]
@@ -145,67 +149,112 @@ class TestGetChangedSourceFiles:
 
     def test_excludes_init_and_conftest(self) -> None:
         """__init__.py and conftest.py are excluded from results."""
-        mock_merge_base = MagicMock()
-        mock_merge_base.returncode = 0
-        mock_merge_base.stdout = "abc123\n"
-
-        mock_diff = MagicMock()
-        mock_diff.returncode = 0
-        mock_diff.stdout = "src/common/__init__.py\nsrc/common/ducklake_runtime.py\n"
-
-        with (
-            patch("scripts.checks._common.push_context_base", return_value=None),
-            patch("test_coverage_checker.subprocess.run", side_effect=[mock_merge_base, mock_diff]),
-        ):
+        entries = [("A", "src/common/__init__.py"), ("M", "src/common/ducklake_runtime.py")]
+        with patch("scripts.checks._common.get_status_aware_diff", return_value=entries):
             result = get_changed_source_files()
 
         names = [p.name for p in result]
         assert "__init__.py" not in names
 
     def test_excludes_test_files(self) -> None:
-        """Files starting with test_ are excluded."""
-        mock_merge_base = MagicMock()
-        mock_merge_base.returncode = 0
-        mock_merge_base.stdout = "abc123\n"
-
-        mock_diff = MagicMock()
-        mock_diff.returncode = 0
-        mock_diff.stdout = "tests/test_ducklake_runtime.py\nsrc/common/ducklake_runtime.py\n"
-
-        with (
-            patch("scripts.checks._common.push_context_base", return_value=None),
-            patch("test_coverage_checker.subprocess.run", side_effect=[mock_merge_base, mock_diff]),
-        ):
+        """Paths outside src/ or scripts/ (e.g. tests/) are excluded."""
+        entries = [("A", "tests/test_ducklake_runtime.py"), ("M", "src/common/ducklake_runtime.py")]
+        with patch("scripts.checks._common.get_status_aware_diff", return_value=entries):
             result = get_changed_source_files()
 
         names = [p.name for p in result]
         assert "test_ducklake_runtime.py" not in names
 
+    def test_deleted_status_entry_is_dropped(self) -> None:
+        """A "D" entry is dropped by the status filter -- not the exists() filter, so the path
+        used here (scripts/validate.py) deliberately EXISTS on disk."""
+        entries = [("D", "scripts/validate.py"), ("M", "src/common/ducklake_runtime.py")]
+        with patch("scripts.checks._common.get_status_aware_diff", return_value=entries):
+            result = get_changed_source_files()
+
+        rel_parts = [str(p.relative_to(ROOT)).replace("\\", "/") for p in result]
+        assert "scripts/validate.py" not in rel_parts
+        assert any("ducklake_runtime.py" in r for r in rel_parts)
+
     def test_uses_explicit_files_list(self) -> None:
         """When --files is provided, git diff is not called."""
         explicit = [str(ROOT / "scripts" / "validate.py")]
-        with patch("test_coverage_checker.subprocess.run") as mock_run:
+        with patch("scripts.checks._common.get_status_aware_diff") as mock_diff:
             result = get_changed_source_files(files=explicit)
-            mock_run.assert_not_called()
+            mock_diff.assert_not_called()
 
         assert any("validate.py" in str(p) for p in result)
 
-    def test_fallback_when_merge_base_fails(self) -> None:
-        """Falls back to HEAD diff when merge-base against origin/main fails."""
-        mock_fail = MagicMock()
-        mock_fail.returncode = 128
+    @pytest.mark.real_subprocess
+    def test_untracked_new_source_file_is_returned(self, tmp_path: Path) -> None:
+        """rec-4057/rec-4066 escape-chain regression: a brand-new UNTRACKED src/ or scripts/
+        module is returned (the local pre-handoff full tier ran `git add` after measuring, so
+        `git diff` alone never saw it -- see get_status_aware_diff's "??" leg, rec-2638), while
+        tracked added/modified files are still returned and deleted, __init__.py, conftest.py,
+        gitignored, and non-src/scripts paths are still excluded."""
 
-        mock_head_diff = MagicMock()
-        mock_head_diff.returncode = 0
-        mock_head_diff.stdout = "src/common/ducklake_runtime.py\n"
+        def git(*args: str) -> None:
+            result = subprocess.run(["git", *args], cwd=tmp_path, capture_output=True, text=True, encoding="utf-8")
+            assert result.returncode == 0, result.stderr
 
-        with (
-            patch("scripts.checks._common.push_context_base", return_value=None),
-            patch("test_coverage_checker.subprocess.run", side_effect=[mock_fail, mock_head_diff]),
-        ):
-            result = get_changed_source_files()
+        git("init", "-q")
+        git("symbolic-ref", "HEAD", "refs/heads/not-main")
 
-        assert any("ducklake_runtime.py" in str(p) for p in result)
+        scripts_dir = tmp_path / "scripts"
+        scripts_dir.mkdir()
+        src_dir = tmp_path / "src"
+        src_dir.mkdir()
+        docs_dir = tmp_path / "docs"
+        docs_dir.mkdir()
+
+        tracked_modified = scripts_dir / "tracked_modified.py"
+        tracked_modified.write_text("x = 1\n", encoding="utf-8")
+        tracked_deleted = scripts_dir / "tracked_deleted.py"
+        tracked_deleted.write_text("x = 1\n", encoding="utf-8")
+        (tmp_path / ".gitignore").write_text("scripts/ignored_file.py\n", encoding="utf-8")
+
+        git("add", "-A")
+        git(
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.invalid",
+            "commit",
+            "-q",
+            "-m",
+            "initial",
+        )
+
+        # Uncommitted tracked changes: "M" and "D".
+        tracked_modified.write_text("x = 2\n", encoding="utf-8")
+        tracked_deleted.unlink()
+
+        # Brand-new untracked source files under src/ and scripts/: "??".
+        new_scripts_module = scripts_dir / "new_scripts_module.py"
+        new_scripts_module.write_text("y = 1\n", encoding="utf-8")
+        new_src_module = src_dir / "new_src_module.py"
+        new_src_module.write_text("y = 1\n", encoding="utf-8")
+
+        # Untracked but out of scope: outside src/scripts, gitignored, __init__.py, conftest.py.
+        (docs_dir / "outside.py").write_text("z = 1\n", encoding="utf-8")
+        (scripts_dir / "ignored_file.py").write_text("z = 1\n", encoding="utf-8")
+        (scripts_dir / "__init__.py").write_text("", encoding="utf-8")
+        (scripts_dir / "conftest.py").write_text("", encoding="utf-8")
+
+        result = get_changed_source_files(root=tmp_path)
+        rel_names = {str(p.relative_to(tmp_path)).replace("\\", "/") for p in result}
+
+        assert "scripts/tracked_modified.py" in rel_names
+        assert "scripts/new_scripts_module.py" in rel_names
+        assert "src/new_src_module.py" in rel_names
+
+        assert "scripts/tracked_deleted.py" not in rel_names
+        assert "docs/outside.py" not in rel_names
+        assert "scripts/ignored_file.py" not in rel_names
+        assert "scripts/__init__.py" not in rel_names
+        assert "scripts/conftest.py" not in rel_names
 
 
 def test_unmapped_sources_do_not_grow() -> None:

@@ -474,69 +474,34 @@ def check_per_file_coverage(source_files: list[Path]) -> list[str]:
     return errors
 
 
-def get_changed_source_files(files: list[str] | None = None) -> list[Path]:
+def get_changed_source_files(files: list[str] | None = None, *, root: Path | None = None) -> list[Path]:
     """Return changed Python source files under src/ or scripts/.
 
-    Uses merge-base against origin/main for accurate feature-branch diffs.
-    Excludes __init__.py, conftest.py, and test files.
+    Delegates to scripts.checks._common.get_status_aware_diff(root=base_root) for the git
+    diff (push-context-base -> merge-base -> HEAD fallback, plus untracked "??" files), keeping
+    every status except "D" so a brand-new untracked module is measured. Excludes __init__.py,
+    conftest.py, and test files.
 
     If files is provided, uses that list instead of git diff.
+
+    `root` scopes every git probe and both path filters (existence and the src/scripts
+    relative_to check) to one shared base -- defaulting to ROOT when None, so existing callers
+    are byte-identical.
     """
+    base_root = root if root is not None else ROOT
+
     if files is not None:
         paths: list[Path] = []
         for f in files:
             p = Path(f)
             if not p.is_absolute():
-                p = ROOT / p
+                p = base_root / f
             paths.append(p.resolve())
     else:
         from scripts.checks import _common  # noqa: PLC0415
 
-        push_base = _common.push_context_base()
-        if push_base is not None:
-            diff_result = subprocess.run(
-                ["git", "diff", "--name-only", push_base],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                cwd=ROOT,
-            )
-            raw = diff_result.stdout.strip().splitlines()
-        else:
-            # Get merge-base for accurate feature-branch diff
-            merge_base_result = subprocess.run(
-                ["git", "merge-base", "origin/main", "HEAD"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                cwd=ROOT,
-            )
-            if merge_base_result.returncode != 0:
-                # Fallback: diff against HEAD
-                diff_result = subprocess.run(
-                    ["git", "diff", "--name-only", "HEAD"],
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    cwd=ROOT,
-                )
-                raw = diff_result.stdout.strip().splitlines()
-            else:
-                merge_base = merge_base_result.stdout.strip()
-                diff_result = subprocess.run(
-                    ["git", "diff", "--name-only", merge_base],
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    cwd=ROOT,
-                )
-                raw = diff_result.stdout.strip().splitlines()
-
-        paths = [ROOT / f for f in raw if f.endswith(".py")]
+        entries = _common.get_status_aware_diff(root=base_root)
+        paths = [base_root / path for status, path in entries if status != "D" and path.endswith(".py")]
 
     result: list[Path] = []
     excluded_names = {"__init__.py", "conftest.py"}
@@ -546,7 +511,7 @@ def get_changed_source_files(files: list[str] | None = None) -> list[Path]:
         if p.name in excluded_names:
             continue
         try:
-            rel = p.resolve().relative_to(ROOT)
+            rel = p.resolve().relative_to(base_root.resolve())
         except ValueError:
             continue
         parts = rel.parts

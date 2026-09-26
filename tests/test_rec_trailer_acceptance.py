@@ -1,16 +1,18 @@
-"""Mirror home for scripts/rec_trailer_acceptance.py (Decision 201, slice A).
+"""Mirror home for scripts/rec_trailer_acceptance.py (Decision 201, slices A and B).
 
-Covers the total bucket x probe-verdict map, the shared-arm parity assertions against
-scripts.backlog_health.probe.VERDICTS / census.BUCKETS and docs/contracts/vp-red-before.yaml's
-OUTCOME_CLASSES, the census stage's execution of the require_decidable grammar ratchet, and the
-acceptance_sha256 rejoin's drop paths.
+Covers the bucket x probe-verdict map, the census/rejoin/junit-routing grammar, and every CLI
+stage (census/evaluate/junit-verdict/close), git/artifact seams, build_parser, and main.
 """
 
 from __future__ import annotations
 
+import argparse
 import itertools
+import json
+import sys
+import types
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -19,10 +21,64 @@ from scripts.backlog_health import probe as probe_mod
 from scripts.checks.verification._vp_replay_classify import OUTCOME_CLASSES
 from scripts.executor.acceptance_lint import lint_acceptance_command
 from scripts.ops_portal.closure_gate import ACCEPTANCE_VERDICTS, FAILS, HOLDS, OUT_OF_GRAMMAR, UNMEASURABLE
-from scripts.rec_trailer_acceptance import census, evaluate, rejoin, verdict_for
+from scripts.rec_trailer_acceptance import (
+    _CENSUS_ARTIFACT,
+    _VERDICT_ARTIFACT,
+    _current_commit_message,
+    _current_sha,
+    _default_artifact_dir,
+    _make_reader,
+    _read_json,
+    _write_json,
+    build_parser,
+    census,
+    cmd_census,
+    cmd_close,
+    cmd_evaluate,
+    cmd_junit_verdict,
+    evaluate,
+    main,
+    rejoin,
+    verdict_for,
+)
+from scripts.rec_trailer_acceptance import (
+    ROOT as RTA_ROOT,
+)
 from scripts.rec_trailer_acceptance_junit import ROUTE_JUNIT, ROUTE_REFUSE, ROUTE_STATIC
 
 _REAL_NODE = "tests/test_rec_trailer_acceptance.py::TestRejoin::test_matching_record_survives"
+
+
+def _stub_ops_data_portal() -> types.ModuleType:
+    """Stub for scripts.ops_data_portal so cmd_close's lazy sync import never reaches the real portal module."""
+    stub = types.ModuleType("scripts.ops_data_portal")
+    stub.sync = MagicMock()
+    return stub
+
+
+def _run_cmd_close(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    junit_verdict: Path | None = None,
+    sync_side_effect: BaseException | None = None,
+    close_return: int = 0,
+) -> tuple[int, MagicMock]:
+    """Shared cmd_close invocation: redirects ROOT, sets env vars, stubs the portal, patches close_recs_from_trailer."""
+    args = argparse.Namespace(artifact_dir=tmp_path, junit_verdict=junit_verdict)
+    monkeypatch.setattr("scripts.rec_trailer_acceptance.ROOT", tmp_path)
+    monkeypatch.setenv("GITHUB_SHA", "deadbeef")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "org/repo")
+    monkeypatch.setenv("GITHUB_RUN_ID", "123")
+    stub = _stub_ops_data_portal()
+    if sync_side_effect is not None:
+        stub.sync.side_effect = sync_side_effect
+    with (
+        patch.dict(sys.modules, {"scripts.ops_data_portal": stub}),
+        patch("scripts.ops_portal.ci_rca_lifecycle.close_recs_from_trailer", return_value=close_return) as mock_close,
+    ):
+        rc = cmd_close(args)
+    return rc, mock_close
 
 
 class TestVerdictMapping:
@@ -285,22 +341,243 @@ class TestCmdJunitVerdict:
     the artifact-dir and junit-report args forwarded verbatim."""
 
     def test_forwards_artifact_dir_only_when_junit_report_is_none(self, tmp_path: Path) -> None:
-        from argparse import Namespace
-
-        from scripts.rec_trailer_acceptance import cmd_junit_verdict
-
         with patch("scripts.rec_trailer_acceptance_junit.main", return_value=0) as mock_main:
-            rc = cmd_junit_verdict(Namespace(artifact_dir=tmp_path, junit_report=None))
+            rc = cmd_junit_verdict(argparse.Namespace(artifact_dir=tmp_path, junit_report=None))
         assert rc == 0
         mock_main.assert_called_once_with(["--artifact-dir", str(tmp_path)])
 
     def test_forwards_junit_report_when_given(self, tmp_path: Path) -> None:
-        from argparse import Namespace
-
-        from scripts.rec_trailer_acceptance import cmd_junit_verdict
-
         report = tmp_path / "pytest-junit.xml"
         with patch("scripts.rec_trailer_acceptance_junit.main", return_value=1) as mock_main:
-            rc = cmd_junit_verdict(Namespace(artifact_dir=tmp_path, junit_report=report))
+            rc = cmd_junit_verdict(argparse.Namespace(artifact_dir=tmp_path, junit_report=report))
         assert rc == 1
         mock_main.assert_called_once_with(["--artifact-dir", str(tmp_path), "--junit-report", str(report)])
+
+
+class TestSeamsAndArtifacts:
+    """_make_reader, census()'s live-reader path, git subprocess helpers, and artifact I/O -- what TestCliStages builds on."""
+
+    def test_make_reader_forwards_profile(self) -> None:
+        sentinel = object()
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=sentinel) as mock_make:
+            result = _make_reader(profile="agent_platform")
+        mock_make.assert_called_once_with(profile="agent_platform")
+        assert result is sentinel
+
+    def test_census_live_reader_classifies_found_row_and_omits_missing_id(self) -> None:
+        class FakeReader:
+            def named(self, name: str, **kwargs: object) -> list[dict[str, object]]:
+                assert name == "rec_by_id"
+                if kwargs["id"] == "rec-1":
+                    return [{"id": "rec-1", "acceptance": "grep -q foo bar.py"}]
+                return []
+
+        entries = census(["rec-1", "rec-missing"], reader=FakeReader())
+        assert len(entries) == 1
+        assert entries[0]["rec_id"] == "rec-1"
+        assert entries[0]["bucket"] == census_mod.PROBEABLE
+
+    def test_current_sha_success(self, tmp_path: Path) -> None:
+        with patch("scripts.rec_trailer_acceptance.subprocess.run", return_value=MagicMock(returncode=0, stdout="abc123\n")):
+            assert _current_sha(tmp_path) == "abc123"
+
+    def test_current_sha_nonzero_exit_raises_naming_the_command(self, tmp_path: Path) -> None:
+        result = MagicMock(returncode=128, stderr="fatal: not a git repository")
+        with (
+            patch("scripts.rec_trailer_acceptance.subprocess.run", return_value=result),
+            pytest.raises(RuntimeError, match="git rev-parse HEAD"),
+        ):
+            _current_sha(tmp_path)
+
+    def test_current_commit_message_success(self, tmp_path: Path) -> None:
+        result = MagicMock(returncode=0, stdout="feat: x\n\nResolves: rec-1\n")
+        with patch("scripts.rec_trailer_acceptance.subprocess.run", return_value=result):
+            assert _current_commit_message(tmp_path) == "feat: x\n\nResolves: rec-1\n"
+
+    def test_current_commit_message_nonzero_exit_raises_naming_the_command(self, tmp_path: Path) -> None:
+        result = MagicMock(returncode=128, stderr="fatal: bad revision 'HEAD'")
+        with (
+            patch("scripts.rec_trailer_acceptance.subprocess.run", return_value=result),
+            pytest.raises(RuntimeError, match="git log -1"),
+        ):
+            _current_commit_message(tmp_path)
+
+    def test_default_artifact_dir(self) -> None:
+        with patch("scripts.rec_trailer_acceptance.tempfile.gettempdir", return_value="/tmp/fake"):
+            assert _default_artifact_dir() == Path("/tmp/fake") / "trailer_acceptance"
+
+    def test_write_read_json_round_trip(self, tmp_path: Path) -> None:
+        path = tmp_path / "sub" / "artifact.json"
+        _write_json(path, {"a": 1})
+        assert _read_json(path) == {"a": 1}
+
+    def test_read_json_missing_artifact_raises(self, tmp_path: Path) -> None:
+        with pytest.raises(RuntimeError, match="expected artifact not found"):
+            _read_json(tmp_path / "missing.json")
+
+
+class TestCliStages:
+    """cmd_census/cmd_evaluate/cmd_close/build_parser/main -- all portal egress stubbed (see _stub_ops_data_portal)."""
+
+    def test_cmd_census_no_trailer_is_noop(self, tmp_path: Path) -> None:
+        args = argparse.Namespace(artifact_dir=tmp_path)
+        with patch("scripts.rec_trailer_acceptance._current_commit_message", return_value="feat: nothing here"):
+            rc = cmd_census(args)
+        assert rc == 0
+        assert json.loads((tmp_path / _CENSUS_ARTIFACT).read_text(encoding="utf-8")) == {"ids": [], "entries": []}
+
+    def test_cmd_census_with_trailer_writes_entries(self, tmp_path: Path) -> None:
+        args = argparse.Namespace(artifact_dir=tmp_path)
+        fake_entries = [
+            {"rec_id": "rec-1", "acceptance": "grep -q x y", "acceptance_sha256": "abc", "bucket": census_mod.PROBEABLE}
+        ]
+        with (
+            patch("scripts.rec_trailer_acceptance._current_commit_message", return_value="feat: x\n\nResolves: rec-1"),
+            patch("scripts.rec_trailer_acceptance.census", return_value=fake_entries) as mock_census,
+        ):
+            rc = cmd_census(args)
+        assert rc == 0
+        mock_census.assert_called_once_with(["rec-1"], repo_root=RTA_ROOT)
+        assert json.loads((tmp_path / _CENSUS_ARTIFACT).read_text(encoding="utf-8")) == {
+            "ids": ["rec-1"],
+            "entries": fake_entries,
+        }
+
+    @pytest.mark.parametrize("use_payload", [True, False])
+    def test_cmd_evaluate_reads_from_payload_or_artifact_dir(self, tmp_path: Path, use_payload: bool) -> None:
+        if use_payload:
+            payload_path = tmp_path / "payload.json"
+            _write_json(payload_path, {"entries": [{"rec_id": "rec-1"}]})
+            args = argparse.Namespace(artifact_dir=tmp_path, payload=payload_path)
+        else:
+            _write_json(tmp_path / _CENSUS_ARTIFACT, {"ids": ["rec-1"], "entries": [{"rec_id": "rec-1"}]})
+            args = argparse.Namespace(artifact_dir=tmp_path, payload=None)
+        fake_result = {"sha": "deadbeef", "isolation_available": True, "source": "static", "records": []}
+        with (
+            patch("scripts.rec_trailer_acceptance._current_sha", return_value="deadbeef"),
+            patch("scripts.rec_trailer_acceptance.evaluate", return_value=fake_result) as mock_eval,
+        ):
+            rc = cmd_evaluate(args)
+        assert rc == 0
+        mock_eval.assert_called_once_with([{"rec_id": "rec-1"}], RTA_ROOT, "deadbeef")
+        assert json.loads((tmp_path / _VERDICT_ARTIFACT).read_text(encoding="utf-8")) == fake_result
+
+    def test_cmd_close_no_trailer_is_noop(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _write_json(tmp_path / _CENSUS_ARTIFACT, {"ids": [], "entries": []})
+        rc, mock_close = _run_cmd_close(tmp_path, monkeypatch)
+        assert rc == 0
+        mock_close.assert_not_called()
+
+    def test_cmd_close_sync_exception_is_tolerated(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _write_json(
+            tmp_path / _CENSUS_ARTIFACT, {"ids": ["rec-1"], "entries": [{"rec_id": "rec-1", "acceptance_sha256": "abc"}]}
+        )
+        _write_json(
+            tmp_path / _VERDICT_ARTIFACT,
+            {"records": [{"rec_id": "rec-1", "acceptance_sha256": "abc", "verdict": HOLDS}]},
+        )
+        rc, mock_close = _run_cmd_close(tmp_path, monkeypatch, sync_side_effect=RuntimeError("warehouse unreachable"))
+        assert rc == 0
+        mock_close.assert_called_once()
+
+    def test_cmd_close_cache_skips_blank_and_malformed_lines(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _write_json(
+            tmp_path / _CENSUS_ARTIFACT, {"ids": ["rec-1"], "entries": [{"rec_id": "rec-1", "acceptance_sha256": "abc"}]}
+        )
+        _write_json(
+            tmp_path / _VERDICT_ARTIFACT,
+            {"records": [{"rec_id": "rec-1", "acceptance_sha256": "abc", "verdict": HOLDS}]},
+        )
+        logs_dir = tmp_path / "logs"
+        logs_dir.mkdir()
+        cache_path = logs_dir / ".recommendations-log.jsonl"
+        cache_path.write_text(
+            '{"id": "rec-1", "status": "open"}\n\nnot-json\n{"no_id_field": true}\n',
+            encoding="utf-8",
+        )
+        rc, mock_close = _run_cmd_close(tmp_path, monkeypatch)
+        assert rc == 0
+        recs_cache_arg = mock_close.call_args.args[3]
+        assert recs_cache_arg == {"rec-1": {"id": "rec-1", "status": "open"}}
+
+    def test_cmd_close_reads_junit_verdict_file_when_present(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """--junit-verdict names a file that exists: cmd_close reads it and threads it into rejoin() as junit_doc."""
+        _write_json(
+            tmp_path / _CENSUS_ARTIFACT,
+            {"ids": ["rec-1"], "entries": [{"rec_id": "rec-1", "acceptance_sha256": "abc", "route": ROUTE_JUNIT}]},
+        )
+        _write_json(tmp_path / _VERDICT_ARTIFACT, {"records": []})
+        junit_verdict_path = tmp_path / "junit_verdict.json"
+        _write_json(
+            junit_verdict_path,
+            {"records": [{"rec_id": "rec-1", "acceptance_sha256": "abc", "verdict": HOLDS}]},
+        )
+        rc, mock_close = _run_cmd_close(tmp_path, monkeypatch, junit_verdict=junit_verdict_path)
+        assert rc == 0
+        _, kwargs = mock_close.call_args
+        assert kwargs["acceptance_verdicts"] == {"rec-1": {"rec_id": "rec-1", "acceptance_sha256": "abc", "verdict": HOLDS}}
+
+    def test_close_requires_acceptance_verdict(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Graduated (VP step 1): cmd_close hands close_recs_from_trailer require_acceptance_verdict=True and the
+        REJOINED verdict mapping (a stale acceptance_sha256 is dropped by rejoin(), never trusted)."""
+        _write_json(
+            tmp_path / _CENSUS_ARTIFACT,
+            {
+                "ids": ["rec-1", "rec-2"],
+                "entries": [
+                    {"rec_id": "rec-1", "acceptance_sha256": "abc"},
+                    {"rec_id": "rec-2", "acceptance_sha256": "def"},
+                ],
+            },
+        )
+        _write_json(
+            tmp_path / _VERDICT_ARTIFACT,
+            {
+                "records": [
+                    {"rec_id": "rec-1", "acceptance_sha256": "abc", "verdict": HOLDS},
+                    {"rec_id": "rec-2", "acceptance_sha256": "stale-mismatch", "verdict": HOLDS},
+                ]
+            },
+        )
+        rc, mock_close = _run_cmd_close(tmp_path, monkeypatch)
+        assert rc == 0
+        _, kwargs = mock_close.call_args
+        assert kwargs["require_acceptance_verdict"] is True
+        assert kwargs["acceptance_verdicts"] == {"rec-1": {"rec_id": "rec-1", "acceptance_sha256": "abc", "verdict": HOLDS}}
+
+    @pytest.mark.parametrize(
+        ("argv", "command", "handler"),
+        [
+            (["census", "--artifact-dir", "/tmp/x"], "census", cmd_census),
+            (["evaluate", "--payload", "/tmp/p.json"], "evaluate", cmd_evaluate),
+            (["close"], "close", cmd_close),
+        ],
+    )
+    def test_build_parser_defines_three_subcommands(self, argv: list[str], command: str, handler: object) -> None:
+        args = build_parser().parse_args(argv)
+        assert args.command == command
+        assert args.handler is handler
+
+    def test_main_applies_default_artifact_dir_when_omitted(self, tmp_path: Path) -> None:
+        handler = MagicMock(return_value=0)
+        ns = argparse.Namespace(artifact_dir=None, handler=handler)
+        mock_parser = MagicMock()
+        mock_parser.parse_args.return_value = ns
+        with (
+            patch("scripts.rec_trailer_acceptance.build_parser", return_value=mock_parser),
+            patch("scripts.rec_trailer_acceptance._default_artifact_dir", return_value=tmp_path),
+        ):
+            rc = main(["census"])
+        assert rc == 0
+        assert ns.artifact_dir == tmp_path
+        handler.assert_called_once_with(ns)
+
+    def test_main_runtimeerror_returns_1_and_prints_fail_to_stderr(self, capsys: pytest.CaptureFixture) -> None:
+        handler = MagicMock(side_effect=RuntimeError("boom"))
+        ns = argparse.Namespace(artifact_dir=Path("/tmp/already-set"), handler=handler)
+        mock_parser = MagicMock()
+        mock_parser.parse_args.return_value = ns
+        with patch("scripts.rec_trailer_acceptance.build_parser", return_value=mock_parser):
+            rc = main(["close"])
+        assert rc == 1
+        assert "FAIL: boom" in capsys.readouterr().err
