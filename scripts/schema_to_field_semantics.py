@@ -302,7 +302,7 @@ def generate(*, include_prose: bool = False) -> dict[str, Any]:
         raw_table_class = (contract_doc.governance and contract_doc.governance.table_class) or "scd2"
         table_class = raw_table_class.lower()
 
-        merge_key = contract_doc.governance and contract_doc.governance.merge_key
+        merge_key = contract_doc.governance.merge_key if contract_doc.governance else None
         if table_class != "event" and not merge_key:
             raise ValueError(
                 f"{table_id}: governance.merge_key is missing. "

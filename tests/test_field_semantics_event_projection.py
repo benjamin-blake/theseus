@@ -52,7 +52,9 @@ class TestFixtureContractProjectionShape:
         assert "id_keyspace" not in entry
         assert entry["dedupe_key"] == ["event_id", "parser_version"]
         assert entry["entity_key"] == "entity_id"
-        assert entry["partition"]["history"] == doc.governance.partition_by
+        # The stored partition is the RESOLVED history spec, role-prefix stripped -- the raw
+        # contract field carries "history=..." (parse_partition_by's role grammar).
+        assert doc.governance.partition_by == f"history={entry['partition']['history']}"
         assert entry["partition_column"] == "session_started_at"
 
     def test_read_derived_field_has_no_column(self, fixture_resolved) -> None:
@@ -101,10 +103,45 @@ class TestFailClosedCases:
         with pytest.raises(ValueError, match="missing required envelope column"):
             _project("fixture_events", truncated, partition_by=doc.governance.partition_by)
 
-    def test_bare_day_partition_by_rejected(self, fixture_resolved) -> None:
+    def test_missing_role_prefix_partition_by_rejected(self, fixture_resolved) -> None:
+        # No 'history=' role label -- rejected by the shared parse_partition_by grammar itself,
+        # before this module's own day-grain check ever runs.
+        doc, resolved = fixture_resolved
+        with pytest.raises(ValueError, match="malformed"):
+            _project("fixture_events", resolved, partition_by="day(session_started_at)")
+
+    def test_current_role_partition_by_rejected(self, fixture_resolved) -> None:
+        # An append_only event table declares only the history role -- a current= role (valid SCD2
+        # grammar) is fail-closed here, not silently ignored.
+        doc, resolved = fixture_resolved
+        with pytest.raises(ValueError, match="current="):
+            _project(
+                "fixture_events",
+                resolved,
+                partition_by=(
+                    "history=year(session_started_at), month(session_started_at), day(session_started_at); "
+                    "current=bucket(8, entity_id)"
+                ),
+            )
+
+    def test_partition_check_delegates_to_validate_partition_spec(self, fixture_resolved) -> None:
+        """rec-4073 acceptance node: a spec the SHARED validate_partition_spec predicate accepts
+        (year-only is a valid calendar prefix on its own) but that this module's own stricter
+        day-grain-triple check must still reject -- proves the shared validator actually runs
+        (a locally-reimplemented regex would never see this spec as anything but 'not a triple'
+        for a different reason), and that this module still tightens beyond it for event tables.
+        """
         doc, resolved = fixture_resolved
         with pytest.raises(ValueError, match="calendar-day triple"):
-            _project("fixture_events", resolved, partition_by="day(session_started_at)")
+            _project("fixture_events", resolved, partition_by="history=year(session_started_at)")
+
+    def test_shared_validator_rejection_surfaces(self, fixture_resolved) -> None:
+        # A spec the shared validate_partition_spec predicate itself rejects (day() without its
+        # coarser year()/month() prefix) -- surfaces as this module's own ValueError, not a raw
+        # PartitionSpecError leaking past the projection boundary.
+        doc, resolved = fixture_resolved
+        with pytest.raises(ValueError, match="history spec is invalid"):
+            _project("fixture_events", resolved, partition_by="history=day(session_started_at)")
 
     def test_missing_partition_by_rejected(self, fixture_resolved) -> None:
         doc, resolved = fixture_resolved
@@ -117,7 +154,7 @@ class TestFailClosedCases:
             _project(
                 "fixture_events",
                 resolved,
-                partition_by="year(event_id), month(event_id), day(event_id)",
+                partition_by="history=year(event_id), month(event_id), day(event_id)",
             )
 
     def test_migration_columns_in_ops_config_rejected(self, fixture_resolved) -> None:

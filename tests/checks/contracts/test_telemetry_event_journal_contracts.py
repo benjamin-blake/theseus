@@ -40,7 +40,9 @@ class TestSessionsEventJournalShape:
         resolved = _resolved("telemetry_sessions")
 
         assert doc.contract.contract_version == 2
-        assert doc.governance.partition_by == ("year(session_started_at), month(session_started_at), day(session_started_at)")
+        assert doc.governance.partition_by == (
+            "history=year(session_started_at), month(session_started_at), day(session_started_at)"
+        )
 
         event_kind = resolved["event_kind"]
         assert set(event_kind.dq_intent["accepted_values"]["values"]) == {
@@ -281,7 +283,7 @@ class TestLexiconTemporalAndIdentity:
         assert temporal["event_time_column"] == "event_timestamp"
         for table in ("telemetry_sessions", "telemetry_observations", "telemetry_transcripts", "telemetry_agents"):
             assert temporal["partition"][table] == (
-                "year(session_started_at), month(session_started_at), day(session_started_at)"
+                "history=year(session_started_at), month(session_started_at), day(session_started_at)"
             )
 
         identity = lexicon["lexicon"]["identity"]
@@ -319,7 +321,7 @@ class TestDataModelingStandardNotes:
         assert "T2.52" in derived_rule["statement"]
 
 
-_CALENDAR_DAY_TRIPLE = "year(session_started_at), month(session_started_at), day(session_started_at)"
+_CALENDAR_DAY_TRIPLE = "history=year(session_started_at), month(session_started_at), day(session_started_at)"
 _BARE_DAY_RE = re.compile(r"(?<!month\(session_started_at\), )day\(session_started_at\)")
 _SKIP_KEYS = ("amendment_log", "previous_versions")
 

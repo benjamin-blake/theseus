@@ -120,7 +120,9 @@ def _validate_identifier(name: str, kind: str) -> str:
 
 
 def _require_utc_connection(con: duckdb.DuckDBPyConnection) -> None:
-    (tz,) = con.execute("SELECT current_setting('TimeZone')").fetchone()
+    row = con.execute("SELECT current_setting('TimeZone')").fetchone()
+    assert row is not None
+    (tz,) = row
     if tz != "UTC":
         raise AppendError(
             f"connection TimeZone is {tz!r}, not 'UTC' -- DuckLake evaluates year()/month()/day() in the "
@@ -244,7 +246,9 @@ def append_events(
     con.execute("BEGIN")
     try:
         result = con.execute(sql, params)
-        (inserted,) = result.fetchone()
+        result_row = result.fetchone()
+        assert result_row is not None
+        (inserted,) = result_row
         con.execute("COMMIT")
     except Exception:
         con.execute("ROLLBACK")

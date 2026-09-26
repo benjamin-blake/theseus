@@ -9,10 +9,11 @@ import (src.telemetry.identity) never appears at that module's top level.
 
 Projects a table_class: event Class A contract to the history-only append_only shape: no
 merge_key/current_table/entity_id_prefix/id_keyspace, history_table = the contract id, partition
-from governance.partition_by (the calendar-day triple), dedupe_key [event_id, parser_version], and
-entity_key = the table's own KEY_PLANS entity column. Fail-closed on a missing envelope column, a
-non-triple partition_by, or a migration_columns entry (an SCD2-only concept never valid for an
-append-only event table).
+from governance.partition_by (a "history=..." role-prefixed calendar-day triple, per the shared
+ops grammar), dedupe_key [event_id, parser_version], and entity_key = the table's own KEY_PLANS
+entity column. Fail-closed on a missing envelope column, a partition_by that does not parse or
+does not resolve to exactly the day-grain calendar triple, or a migration_columns entry (an
+SCD2-only concept never valid for an append-only event table).
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from __future__ import annotations
 import re
 from typing import Any, Callable
 
+from src.common.ducklake_partition_spec import PartitionSpecError, parse_partition_by, validate_partition_spec
 from src.telemetry.identity import KEY_PLANS
 
 _ENVELOPE_REQUIRED_FIELDS = (
@@ -34,7 +36,7 @@ _ENVELOPE_REQUIRED_FIELDS = (
     "project_id",
 )
 
-_PARTITION_TRIPLE_RE = re.compile(r"^year\((?P<col>\w+)\), month\((?P=col)\), day\((?P=col)\)$")
+_DAY_GRAIN_TRIPLE_RE = re.compile(r"^year\((?P<col>\w+)\), month\((?P=col)\), day\((?P=col)\)$")
 
 
 def _entity_key_column(table_id: str) -> str:
@@ -44,19 +46,42 @@ def _entity_key_column(table_id: str) -> str:
     raise ValueError(f"{table_id}: KEY_PLANS has no entity-key column (no plan with ref_field='entity_ref')")
 
 
-def _validate_partition_by(table_id: str, partition_by: str | None, columns: dict[str, Any]) -> None:
+def _validate_partition_by(table_id: str, partition_by: str | None, columns: dict[str, Any]) -> str:
+    """Delegate parsing/role-grammar validation to the shared ducklake ops grammar (rec-4073),
+    then enforce the telemetry-specific tightening: the history role must resolve to EXACTLY the
+    day-grain calendar triple over one column (the shared validate_partition_spec predicate alone
+    also accepts year-only / year+month / +hour, which is too loose for an event table). Returns
+    the resolved (role-prefix-stripped) history spec, which is what the projection stores.
+    """
     if not partition_by:
         raise ValueError(f"{table_id}: governance.partition_by is required for a table_class: event contract")
-    match = _PARTITION_TRIPLE_RE.match(partition_by)
+    try:
+        roles = parse_partition_by(partition_by)
+    except PartitionSpecError as exc:
+        raise ValueError(f"{table_id}: governance.partition_by is malformed: {exc}") from exc
+    if "current" in roles:
+        raise ValueError(
+            f"{table_id}: governance.partition_by must carry no 'current=' role -- an append_only "
+            "event table has no current projection to reconcile"
+        )
+    history_spec = roles.get("history")
+    if not history_spec:
+        raise ValueError(f"{table_id}: governance.partition_by must declare a 'history=' role")
+    try:
+        validate_partition_spec(history_spec)
+    except PartitionSpecError as exc:
+        raise ValueError(f"{table_id}: governance.partition_by history spec is invalid: {exc}") from exc
+    match = _DAY_GRAIN_TRIPLE_RE.match(history_spec)
     if match is None:
         raise ValueError(
-            f"{table_id}: governance.partition_by must be the calendar-day triple "
+            f"{table_id}: governance.partition_by's history spec must be the calendar-day triple "
             "'year(C), month(C), day(C)' over one column -- a bare day(C) alone is DuckLake "
-            f"DAY-OF-MONTH, not a calendar-day partition. Got: {partition_by!r}"
+            f"DAY-OF-MONTH, not a calendar-day partition. Got: {history_spec!r}"
         )
     col = match.group("col")
     if columns.get(col, {}).get("sql_type") != "TIMESTAMP WITH TIME ZONE":
         raise ValueError(f"{table_id}: partition column {col!r} must project to TIMESTAMP WITH TIME ZONE")
+    return history_spec
 
 
 def _event_role(name: str, derived_columns: frozenset[str]) -> str:
@@ -121,13 +146,13 @@ def project_event_table(
                 col["semantics"] = sem
         columns[fname] = col
 
-    _validate_partition_by(table_id, partition_by, columns)
+    history_spec = _validate_partition_by(table_id, partition_by, columns)
 
     return {
         "status": ops_config.get("status", "target"),
         "write_mode": "append_only",
         "history_table": table_id,
-        "partition": {"history": partition_by},
+        "partition": {"history": history_spec},
         "partition_column": "session_started_at",
         "dedupe_key": ["event_id", "parser_version"],
         "entity_key": entity_key,

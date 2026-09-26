@@ -1,9 +1,10 @@
 """Real-DuckLake integration for src/telemetry/append.py (Decision 199, rec-4024 slice 1).
 
 pytest.mark.integration: runs append_events against a genuine local DuckLake file catalog on the
-pinned duckdb/ducklake (Decision 99). A skip here is a FAIL for VP step 6 -- the skip fixture
-exists only so unit tiers (which install no duckdb/ducklake) stay clean; it is never a silent
-substitute for running this module for real.
+pinned duckdb/ducklake (Decision 99). This tier runs only under -m integration, so a skip here
+would be silently invisible to the unit CI tier and never surface as red -- the fixture below FAILS
+instead (rec-4071): the extension-unavailable case is a real environment defect this VP step must
+catch, never a quiet no-op.
 """
 
 from __future__ import annotations
@@ -58,18 +59,27 @@ def _has_ducklake_extension() -> bool:
 @pytest.fixture
 def _skip_if_no_extension(_allow_network_for_integration: None) -> None:
     if not _has_ducklake_extension():
-        pytest.skip("ducklake extension could not load -- see VP step 6 fix_if (environment defect)")
+        pytest.fail(
+            "ducklake extension could not load -- a skip here is a FAIL for VP step 6 (rec-4071); "
+            "see the fix_if guidance for this VP step (environment defect, not a green path)"
+        )
 
 
 def _local_catalog(tmp_path: Path) -> Any:
-    """ATTACH a fresh local-file DuckLake catalog, UTC, inlining disabled."""
+    """ATTACH a fresh local-file DuckLake catalog, UTC, inlining disabled.
+
+    TimeZone is pinned BEFORE the ATTACH (mirrors src.common.ducklake_runtime.open_connection,
+    rec-4068): DuckLake evaluates year()/month()/day() partition transforms in the connection's
+    TimeZone, so an un-pinned environment default would make the calendar-day partition boundary
+    follow the local TZ instead of UTC.
+    """
     con = duckdb.connect()
     con.execute("INSTALL ducklake; LOAD ducklake")
     con.execute("SET ducklake_default_data_inlining_row_limit=0")
+    con.execute("SET TimeZone='UTC'")
     meta = tmp_path / "catalog.ducklake"
     data = tmp_path / "data"
     con.execute(f"ATTACH 'ducklake:{meta}' AS lake (DATA_PATH '{data}')")
-    con.execute("SET TimeZone='UTC'")
     return con
 
 
@@ -196,7 +206,10 @@ class TestCalendarDayCompactionGuarantee:
         con = _local_catalog(tmp_path)
         _create_table(con)
 
-        dates = ("2026-09-24", "2026-09-25", "2026-10-24")
+        # Same day-of-month across a month AND a year boundary (mirrors _PROBE_DAYS in
+        # tests/common/test_ducklake_partition_conformance.py) -- a bare day() partition would
+        # collapse these into one partition; the calendar-day triple must not.
+        dates = ("2026-01-24", "2026-02-24", "2027-01-24")
         for date in dates:
             for i in range(2):  # >=2 seed files per date
                 con.execute(
