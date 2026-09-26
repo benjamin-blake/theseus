@@ -2,6 +2,77 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 204: Sanctioned admin-tier partition-layout rewrite for the ops history tables' day-of-month legacy files, human-directed ADMIN-agent execution (amends Decision 81, 126, 192) (Decided)
+
+```yaml
+number: 204
+status: Decided
+decided_date: "2026-09-26"
+amends: [81, 126, 192]
+significance:
+  value: numbered_decision
+  justification: >-
+    Licenses a row-preserving physical rewrite of an append-only source-of-truth table for the
+    first time, and opens a narrow ADMIN-container agent execution path Decision 81 clause 6 and
+    Decision 126 previously closed -- a durable, reversal-relevant commitment, not an operational
+    fact or a contract-prose edit.
+```
+
+**Status:** Decided
+**Date:** 2026-09-26
+**Warehouse ID:** dec-204 (synced via `ops_data_portal --backfill-decisions-md` post-merge, Decision 84)
+
+**Problem:**
+rec-4070 (deferred half of rec-4068/Decision 137): the five live ops history tables still carry
+the day-of-month `day()` transform after their declared spec corrected to the calendar-day triple.
+`SET PARTITIONED BY` only affects new files, so the day-of-month files stay legacy until
+physically re-laid -- and no admin verb, and no Decision, sanctions that rewrite or names who may
+run it.
+
+**Decision:**
+1. A row-preserving partition-layout rewrite (whole-table re-lay only when legacy-scheme files
+   exist, policy-matrix cell per table class, full-row NULL-explicit digest equality proved before
+   AND after commit, bounded OCC retry, a pre-rewrite snapshot captured in-transaction) is
+   sanctioned admin-tier maintenance, precedent Decision 70. The verb is STANDING (kept for a
+   future Decision 137 grain reversal, inert while no legacy files exist), unlike Decision 70's
+   one-off.
+2. An ADMIN-container agent may run it only under explicit human direction, confirming the ALTER
+   and each rewrite before it executes -- this PRESERVES Decision 151 cl.2 and Decision 143 cl.2
+   (never autonomous, admin identity only). This is the clause overriding Decision 81 cl.6's "no
+   LLM / agent invocation anywhere in this path" for these two verbs only, and the narrow carve-out
+   Decision 126's operator-only admin tier admits beside its own local-apply escape hatch.
+   IAM-enforced boundary; instruction-enforced per-mutation confirmation is owned by rec-4098
+   (residual, Decision 181 cl.2). A concurrent writer absorbs at most one OCC retry per rewrite
+   commit (measured).
+3. Restoration of a rewritten history table is only by the non-lossy formula in
+   docs/contracts/ducklake-partition-remediation.yaml's procedure -- rows(AT pre) UNION (rows(live)
+   EXCEPT rows(AT commit)) -- never improvised in-session. A current projection is never re-laid;
+   it rebuilds from history per Decision 81 cl.8.
+4. `reconcile_partitions` and `rewrite_partition_layout` join `VERB_UNIVERSE` as PER-TABLE verbs,
+   superseding Decision 192 cl.2's literal `("merge_ops",)` pin while keeping its rule (catalog-wide
+   verbs such as `gc_ops` stay out).
+5. rec-4070 closes through a committed evidence fixture + test, because Decision 201's evaluator
+   is offline for a live probe.
+6. Decision 88 cl.2 catalog-metadata measurement runs before the rewrite, after it, and again
+   post-GC (rec-4095) -- the calendar-day grain raises the post-compaction file floor, so the
+   reversal trigger below is evaluated on real numbers, not assumed away.
+
+**Rationale:**
+The declared spec already corrected (Decision 137/rec-4068); the only open question was whether an
+in-place rewrite of an append-only table is ever sanctioned, and who is trusted to run it. Row
+preservation under a proven digest, a captured rollback snapshot, and human-confirmed ADMIN-only
+execution make this the same shape as Decision 70's precedent, generalized to a standing verb
+because the day-of-month defect is not a one-off.
+
+**Reversal conditions:** any ops history table's live file count exceeds 365, or
+`file_column_stats` rows reach 2x or more of the pre-rewrite baseline -- reopens Decision 137's
+per-table grain reversal (year or year+month prefix, already accepted by `validate_partition_spec`).
+
+**Related:** 70, 79, 81, 84, 88, 125, 126, 127, 137, 143, 151, 167, 177, 181, 191, 192, 193, 201.
+Roadmap refs: rec-4070, rec-4094, rec-4095, rec-4098.
+
+---
+
 ## Decision 202: Terraform-owned CloudTrail trail and IAM-change detector in the admin-only bootstrap root -- a narrow PlatformAdmin trail-write grant, the platform-security-* name family, and a single-region rule (amends Decision 101 point (b), 144 clause 2) (Decided)
 
 ```yaml
@@ -787,6 +858,11 @@ T2.18 c2 required "S3 storage confirmed stable after N maintenance cycles". That
 A storage-size trend cannot license a destructive verb against production data: blind to over-reclaim by construction, and unmeasurable on a shared bucket. Reachability -- verified independently of the delete-set's own live-file computation -- is what can actually adjudicate safety. GC DEBT stays meaningful on an ingesting lakehouse where absolute bytes legitimately trend up. The matrix restriction closes a hole the plan's critique found: an inert `gc_ops` cell would be a CI-enforced field nothing reads, and "excluding" a class would remove its files from what the guards see without narrowing what gets deleted.
 
 **Related:** Decision 88 (cl.4 cleared; cl.2 annotated), Decision 188 (G1-G4 reused unmodified; G4 byte-half degradation recorded, not fixed), Decision 191 (cl.2 universes unchanged), Decision 143 (cl.1/cl.2 unchanged), Decision 81 (cl.6 unchanged), Decision 84, Decision 125/126 (rule + handler deploy via separate channels -- rule ships DISABLED), Decision 129, Decision 119, Decision 100 (managed primitives), Decision 55, Decision 167, Decision 177. Roadmap refs: T2.18 c2 (rewritten here), rec-3870, rec-3871 (amended).
+
+[Amendment 2026-09-26: Decision 204 supersedes clause 2's literal `VERB_UNIVERSE` pin -- it now
+reads `("merge_ops", "reconcile_partitions", "rewrite_partition_layout")` -- while keeping the
+clause's rule that a catalog-wide verb (`gc_ops`) takes no maintenance_policy cell; the two new
+verbs are PER-TABLE-SCOPED, same as `merge_ops`.]
 
 ---
 
@@ -5146,6 +5222,12 @@ class -- this Decision is that vehicle for rec-2658).
 > (a guard-routed fresh plan now reaches `tf-gated-apply`, widening this Decision's `deploy-paths.yaml`
 > pointer target by exactly the same reach Decision 158 point 4 had narrowed).
 
+[Amendment 2026-09-26: Decision 204 adds a narrow carve-out beside this Decision's operator-only
+admin tier: an ADMIN-container agent may invoke two named partition-layout maintenance verbs
+(reconcile_partitions, rewrite_partition_layout) on the ducklake_maintenance function only under
+explicit human direction, rather than only filing a rec. `deploy-paths.yaml`'s admin_out_of_band
+index now names this carve-out beside bootstrap-root and IAM/trust/destroy admin-only work.]
+
 ---
 
 ## Decision 125: Ratify decoupling DuckLake Lambda code deploys from terraform/personal infra apply (environment-taxonomy.md section 5 conformance) (Decided)
@@ -7519,6 +7601,12 @@ CD.24 (per-Lambda manifests), OQ.7 / OQ.10 / OQ.11 (resolved), OQ.12 (left to T2
 > generation and resolution by src/common/ducklake_partition_spec.py. Clause 7's other content
 > (closed read/write boundary, current by bucket(N, id), break-glass, catalog DR) is unchanged.
 > Live remediation (the physical ALTER + legacy day-of-month file rewrite) is rec-4070.
+
+[Amendment 2026-09-26: Decision 204 opens a narrow carve-out in clause 6's "no LLM / agent
+invocation anywhere in this path": an ADMIN-container agent may invoke the two partition-layout
+verbs (reconcile_partitions, rewrite_partition_layout) under explicit human direction. Clause 8's
+"current is rebuildable from history for DR" is the basis for Decision 204 cl.3's rule that a
+current projection is never re-laid, only rebuilt.]
 
 ---
 

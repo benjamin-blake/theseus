@@ -224,3 +224,43 @@ class TestReconcileCatalog:
         absent_ids = {e["table_id"] for e in result.registered_absent}
         assert "ops_priority_queue" in absent_ids  # registered (dormant), absent from this catalog
         assert "ops_entity_counters" in absent_ids  # registered (live control), absent from this catalog
+
+
+# ---------------------------------------------------------------------------
+# VERB_UNIVERSE -- Decision 204's two new per-table verbs
+# ---------------------------------------------------------------------------
+
+
+def test_partition_verbs_in_universe_with_control_rewrite_excluded():
+    assert scope.VERB_UNIVERSE == ("merge_ops", "reconcile_partitions", "rewrite_partition_layout")
+
+    policy = {
+        "scd2": {
+            "merge_ops": {"apply": True, "reason": "standard"},
+            "reconcile_partitions": {"apply": True, "reason": "standard"},
+            "rewrite_partition_layout": {"apply": True, "reason": "standard"},
+        },
+        "append_only": {
+            "merge_ops": {"apply": True, "reason": "standard"},
+            "reconcile_partitions": {"apply": True, "reason": "standard"},
+            "rewrite_partition_layout": {"apply": True, "reason": "standard"},
+        },
+        "control": {
+            "merge_ops": {"apply": True, "reason": "standard"},
+            "reconcile_partitions": {"apply": True, "reason": "standard"},
+            "rewrite_partition_layout": {"apply": False, "reason": "entity-id counter, never re-laid"},
+        },
+    }
+    registry = scope.build_registry(_semantics())
+
+    for verb in ("reconcile_partitions", "merge_ops"):
+        result = scope.resolve_scope(["ops_recommendations_history"], verb=verb, policy=policy, registry=registry)
+        assert result.to_merge == ("ops_recommendations_history",)
+
+    rewrite_result = scope.resolve_scope(
+        ["ops_entity_counters"], verb="rewrite_partition_layout", policy=policy, registry=registry
+    )
+    assert rewrite_result.to_merge == ()
+    assert rewrite_result.skipped == (
+        {"table": "ops_entity_counters", "table_class": "control", "reason": "entity-id counter, never re-laid"},
+    )

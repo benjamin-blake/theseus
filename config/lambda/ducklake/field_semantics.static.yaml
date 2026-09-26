@@ -32,9 +32,12 @@
 # EDIT HERE, never the generated file.
 #
 # CATALOG-WIDE VERBS TAKE NO CELL (production-gc-and-storage-stability, T2.18 c2). This matrix
-# governs PER-TABLE-SCOPED verbs only -- its single production consumer is
-# scope.resolve_scope at src/lambdas/ducklake_maintenance/handler.py:396, called with
-# verb="merge_ops". gc_ops (the production destructive-GC pass, src/common/ducklake_gc_ops.py) is
+# governs PER-TABLE-SCOPED verbs only -- its production consumers are
+# scope.resolve_scope, called from src/lambdas/ducklake_maintenance/handler.py's merge_ops
+# dispatch (verb="merge_ops") and src/lambdas/ducklake_maintenance/partition_actions.py's
+# action_reconcile_partitions / action_rewrite_partition_layout (verb="reconcile_partitions" /
+# verb="rewrite_partition_layout", Decision 204). gc_ops (the production destructive-GC pass,
+# src/common/ducklake_gc_ops.py) is
 # CATALOG-WIDE: its live-set collection enumerates every table unconditionally and its destructive
 # primitives (expire_snapshots/cleanup_old_files/delete_orphaned_files) take a catalog, not a table
 # list, so no maintenance_policy cell could ever scope it -- excluding a class from a per-table
@@ -49,12 +52,34 @@ maintenance_policy:
       reason: >-
         Standard SCD2 history/current pair; the target of the every-6h non-destructive production
         compaction cadence (Decision 88 cl.1(iii)).
+    reconcile_partitions:
+      apply: true
+      reason: >-
+        Decision 204: the history/current pair's live partition spec is compared to its declared
+        calendar-day spec and ALTERed on mismatch (no-op-free).
+    rewrite_partition_layout:
+      apply: true
+      reason: >-
+        Decision 204: a history table with legacy-scheme (day-of-month) files is re-laid onto the
+        declared calendar-day scheme under a row-preserving, digest-proven transaction; the verb
+        itself refuses a non-history table (current projections rebuild from history, Decision 81
+        cl.8).
   append_only:
     merge_ops:
       apply: true
       reason: >-
         History-only append table (no current projection); its live file count still grows with
         write volume and benefits from the same non-destructive small-file compaction.
+    reconcile_partitions:
+      apply: true
+      reason: >-
+        Decision 204: same live-vs-declared partition comparison and ALTER as scd2 -- an
+        append-only table has no current projection to compare, only its one history table.
+    rewrite_partition_layout:
+      apply: true
+      reason: >-
+        Decision 204: the append-only table's history-class rows are re-laid onto the declared
+        calendar-day scheme by the same row-preserving, digest-proven transaction as scd2 history.
   control:
     merge_ops:
       apply: true
@@ -66,6 +91,19 @@ maintenance_policy:
         cell, not a naming accident. OCC contention with concurrent allocation is verified
         empirically by this plan's VP12 (a real merge window vs. a probe file_rec allocation), not
         assumed away by exclusion.
+    reconcile_partitions:
+      apply: true
+      reason: >-
+        Decision 204: a control table's declared spec is its own identity partition -- comparing it
+        against the live spec still detects drift, even though the identity spec never changes in
+        practice.
+    rewrite_partition_layout:
+      apply: false
+      reason: >-
+        Decision 204: ops_entity_counters is the writer-internal entity-id allocation counter
+        (Decision 84 I-2); its identity partition spec never drifts, and a delete-all rewrite
+        transaction would contend with the same-table allocation serialization the counter exists
+        to provide.
 
 # ---------------------------------------------------------------------------
 # Smoke table definitions (smoke schema drives the test harness)

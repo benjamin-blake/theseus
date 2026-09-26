@@ -24,6 +24,8 @@ from typing import Any
 import pytest
 
 from src.common import ducklake_control_tables as ctl
+from src.common import ducklake_partition_layout as layout_mod
+from src.common import ducklake_partition_rewrite as rewrite_mod
 from src.common import ducklake_scd2_schema as schema
 from src.common import ducklake_tables as tables
 from src.common.ducklake_scd2_schema import CATALOG_ALIAS
@@ -160,3 +162,108 @@ def test_create_control_table_repeated_call_is_idempotent(con: Any) -> None:
         [spec.table],
     ).fetchone()
     assert int(rows[0]) == 1
+
+
+# ---------------------------------------------------------------------------
+# Decision 204 (PLAN-ducklake-partition-layout-remediation): alter_to_declared +
+# rewrite_legacy_layout proven on the real engine -- a day-of-month table with cross-month rows,
+# re-laid onto the calendar-day scheme with a full-row digest proof and time-travel recovery.
+# ---------------------------------------------------------------------------
+
+
+def _legacy_day_of_month_history_table(con: Any, table: str) -> schema.ScdTableSpec:
+    """Create *table*'s history table under the day-of-month LEGACY scheme (rec-4068's original
+    defect) and insert one row per _PROBE_DAYS entry, so its live files span a month AND a year
+    boundary under a bare day() transform."""
+    spec = schema.resolve_table_spec(table)
+    tables.create_scd2_tables(con, table=table, force_recreate=True)
+    con.execute(f"ALTER TABLE {CATALOG_ALIAS}.{spec.history_table} SET PARTITIONED BY (day(created_timestamp))")
+    for i, ts in enumerate(_PROBE_DAYS):
+        _insert_history_row(con, spec, ulid=f"01LEGACY{i}", merge_key_value=f"legacy-{i}", created_ts=ts)
+    return spec
+
+
+def test_alter_to_declared_and_rewrite_legacy_layout_real_engine(con: Any) -> None:
+    """rec-4070: a day-of-month history table is ALTERed to the declared calendar-day spec, then
+    its legacy-scheme files are re-laid -- every live file lands on a distinct calendar day, the
+    full-row digest is equal before and after, and time travel to pre_snapshot_id returns every
+    original row."""
+    spec = _legacy_day_of_month_history_table(con, "ops_recommendations")
+    semantics = schema.load_field_semantics()
+
+    layouts = layout_mod.read_partition_layout(con, catalog_alias=CATALOG_ALIAS, semantics=semantics)
+    drifts = layout_mod.compare_to_declared(layouts, semantics=semantics)
+    history_drift = [d for d in drifts if d.physical == spec.history_table]
+    assert history_drift, "day() vs the declared calendar-day triple must be reported as drift"
+
+    altered = rewrite_mod.alter_to_declared(con, history_drift, catalog_alias=CATALOG_ALIAS)
+    assert altered == [spec.history_table]
+
+    post_alter = layout_mod.read_partition_layout(con, catalog_alias=CATALOG_ALIAS, semantics=semantics)[spec.history_table]
+    assert post_alter.legacy_scheme_files == len(_PROBE_DAYS)  # every day-of-month file is now legacy
+
+    result = rewrite_mod.rewrite_legacy_layout(con, spec.history_table, catalog_alias=CATALOG_ALIAS, semantics=semantics)
+
+    assert result["rows_pre"] == result["rows_commit"] == len(_PROBE_DAYS)
+    assert result["digest_pre"] == result["digest_commit"]
+    assert result["pre_snapshot_id"] < result["commit_snapshot_id"]
+    assert result["attempts"] == 1
+
+    post_rewrite = layout_mod.read_partition_layout(con, catalog_alias=CATALOG_ALIAS, semantics=semantics)[spec.history_table]
+    assert post_rewrite.legacy_scheme_files == 0
+
+    layout = _partition_layout(con, CATALOG_ALIAS, spec.history_table)
+    distinct_dates = set(layout["value_tuples"].values())
+    assert len(distinct_dates) == len(_PROBE_DAYS)  # one calendar day per file, cross-month/year preserved
+    assert len(layout["value_tuples"]) == layout["total"]
+
+    pre_rows = con.execute(
+        f"SELECT {spec.merge_key} FROM {CATALOG_ALIAS}.{spec.history_table} AT (VERSION => {result['pre_snapshot_id']})"
+    ).fetchall()
+    assert {r[0] for r in pre_rows} == {f"legacy-{i}" for i in range(len(_PROBE_DAYS))}
+
+
+def test_rewrite_legacy_layout_retries_past_a_concurrent_insert(con: Any) -> None:
+    """A concurrent INSERT that commits while the rewrite's own transaction is open aborts that
+    attempt with a real DuckLake transaction-conflict error; the retry re-snapshots the
+    now-current table and succeeds, preserving the concurrently-inserted row."""
+    spec = _legacy_day_of_month_history_table(con, "ops_recommendations")
+    semantics = schema.load_field_semantics()
+
+    layouts = layout_mod.read_partition_layout(con, catalog_alias=CATALOG_ALIAS, semantics=semantics)
+    drifts = layout_mod.compare_to_declared(layouts, semantics=semantics)
+    rewrite_mod.alter_to_declared(con, [d for d in drifts if d.physical == spec.history_table], catalog_alias=CATALOG_ALIAS)
+
+    calls = {"n": 0}
+
+    def _uuid_factory() -> str:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # A second cursor on the SAME connection shares its attached catalog file handle,
+            # giving a genuine concurrent DuckLake transaction (a separate ATTACH to the same
+            # local catalog file conflicts on the file handle itself, unlike production's shared
+            # Neon/Postgres metadata backend).
+            concurrent = con.cursor()
+            _insert_history_row(
+                concurrent, spec, ulid="01CONCURRENT", merge_key_value="concurrent-row", created_ts=_PROBE_DAYS[0]
+            )
+            concurrent.close()
+        return f"attempt-{calls['n']}"
+
+    result = rewrite_mod.rewrite_legacy_layout(
+        con,
+        spec.history_table,
+        catalog_alias=CATALOG_ALIAS,
+        semantics=semantics,
+        uuid_factory=_uuid_factory,
+        sleep=lambda _s: None,
+    )
+
+    assert result["attempts"] == 2  # attempt 1 aborted by the concurrent commit; attempt 2 succeeded
+    assert result["rows_pre"] == result["rows_commit"] == len(_PROBE_DAYS) + 1  # the concurrent row survived the retry
+
+    post_rewrite = layout_mod.read_partition_layout(con, catalog_alias=CATALOG_ALIAS, semantics=semantics)[spec.history_table]
+    assert post_rewrite.legacy_scheme_files == 0
+
+    rows_after = {r[0] for r in con.execute(f"SELECT {spec.merge_key} FROM {CATALOG_ALIAS}.{spec.history_table}").fetchall()}
+    assert rows_after == {f"legacy-{i}" for i in range(len(_PROBE_DAYS))} | {"concurrent-row"}

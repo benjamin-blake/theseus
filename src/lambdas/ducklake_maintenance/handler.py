@@ -18,7 +18,8 @@ seed_ops_recommendations bootstrap action was removed at the 2026-06-09 recs sig
 boundary now admits recs writes only via the portal `file_rec`/`update_rec` -> writer path,
 Decision 81 cl.7.)
 
-No LLM / agent invocation anywhere in this path (CD.33 clause 5 / Decision 81 clause 6).
+The scheduled path is agent-free; an ADMIN-container agent may invoke the partition-layout verbs
+only under explicit human direction, Decision 204 (amending CD.33 clause 5 / Decision 81 clause 6).
 Singleton enforced by reserved_concurrent_executions=1 (Decision 81 clause 6; see Terraform).
 
 See src/common/ducklake_maintenance.py::MAINTENANCE_SCOPE_NOTE.
@@ -28,7 +29,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import time
 from typing import Any
 
@@ -37,16 +37,14 @@ from src.common import ducklake_gc_ops as gc_ops_body
 from src.common import ducklake_maintenance as maint
 from src.common import ducklake_maintenance_scope as scope
 from src.common import ducklake_runtime as rt
+from src.lambdas.ducklake_maintenance import partition_actions
+from src.lambdas.ducklake_maintenance._shared import EXTENSION_DIRECTORY, _require_identifier
 
-EXTENSION_DIRECTORY = os.environ.get("DUCKLAKE_EXTENSION_DIRECTORY", rt.LAMBDA_EXTENSION_DIRECTORY)
 # T2.26: control_health is read-mostly (asserts invariants, never mutates), so -- unlike the
 # production-destructive/operational actions below, which all REQUIRE an explicit event data_path
 # (no-arg invokes refused, Decision 84/81) -- it may fall back to an env-pinned production default
 # so a scheduled EventBridge target's static input (or a manual smoke invoke) need not repeat it.
 DATA_PATH = os.environ.get("DUCKLAKE_DATA_PATH")
-
-# A SQL identifier (meta-schema name) -- guards the few f-string-interpolated DDL sites below.
-_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _emit_maintenance_metric(name: str, value: float, *, profile: str | None = None) -> None:
@@ -61,13 +59,6 @@ def _emit_maintenance_metric(name: str, value: float, *, profile: str | None = N
 # 2026-06-09 recs sign-off (closed boundary -- recs writes now transit only the portal -> writer
 # path, Decision 81 cl.7).
 # ---------------------------------------------------------------------------
-
-
-def _require_identifier(name: Any) -> str:
-    """Validate *name* is a bare SQL identifier (guards the f-string-interpolated meta-schema DDL)."""
-    if not isinstance(name, str) or not _IDENTIFIER_RE.match(name):
-        raise rt.DuckLakeRuntimeError(f"invalid SQL identifier {name!r} (expected [A-Za-z_][A-Za-z0-9_]*)")
-    return name
 
 
 def _drop_meta_schema(meta_schema: str, *, recreate: bool = False) -> bool:
@@ -579,6 +570,8 @@ _ACTIONS: dict[str, Any] = {
     "reconcile_columns": action_reconcile_columns,
     "clone_catalog": action_clone_catalog,
     "control_health": action_control_health,
+    "reconcile_partitions": partition_actions.action_reconcile_partitions,
+    "rewrite_partition_layout": partition_actions.action_rewrite_partition_layout,
 }
 
 

@@ -24,10 +24,13 @@ contract:
     merge (daily) / gc (weekly) / hot_merge (every 6h) run against the SMOKE catalog (ducklake_smoke),
     and merge_ops (every 6h) / gc_ops (weekly, ENABLED per gc-ops-baseline-gate-and-schedule-enable) run against the PRODUCTION catalog
     (ducklake_ops, data_path + meta_schema supplied by the EventBridge target). OPERATIONAL actions
-    (catalog_reinit, restore_drill, catalog_stats, reconcile_columns) are human-invoked over 443 via
-    `aws lambda invoke` against the PRODUCTION catalog with explicit data_path + meta_schema event
-    params (no-arg invokes refused). No LLM / agent invocation anywhere in this path (CD.33 cl.5 /
-    Decision 81 cl.6). Singleton via reserved_concurrent_executions=1. This contract documents the
+    (catalog_reinit, restore_drill, catalog_stats, reconcile_columns, reconcile_partitions,
+    rewrite_partition_layout) are human-invoked over 443 via `aws lambda invoke` against the
+    PRODUCTION catalog with explicit data_path + meta_schema event params (no-arg invokes
+    refused). The scheduled path is agent-free (CD.33 cl.5 / Decision 81 cl.6); an ADMIN-container
+    agent may invoke reconcile_partitions / rewrite_partition_layout only under explicit human
+    direction (Decision 204), per docs/contracts/ducklake-partition-remediation.yaml's procedure.
+    Singleton via reserved_concurrent_executions=1. This contract documents the
     SCHEDULED + OPERATIONAL verb surface only; the forced-trip guard-set test action breaker_probe
     is VP instrumentation (analogous to the writer/reader probes), NOT an operational verb, and is
     out of contract scope.
@@ -38,23 +41,31 @@ contract:
       EventBridge-triggered (merge daily 04:00 UTC -> smoke; gc weekly 05:00 UTC Sun -> smoke;
       hot_merge cron(0 */6 * * ? *) -> smoke; merge_ops cron(30 */6 * * ? *) -> PRODUCTION
       ducklake_ops). OPERATIONAL actions (catalog_reinit, restore_drill, catalog_stats,
-      reconcile_columns) are human-invoked over 443 via `aws lambda invoke` (AWS_IAM). Singleton:
+      reconcile_columns, reconcile_partitions, rewrite_partition_layout) are human-invoked over 443
+      via `aws lambda invoke` (AWS_IAM); the two partition verbs are additionally invokable by an
+      ADMIN-container agent only under explicit human direction (Decision 204). Singleton:
       reserved_concurrent_executions=1 (Decision 81 cl.6).
     principal_classes:
       - "events.amazonaws.com (EventBridge service principal; scheduled merge / gc / hot_merge -> smoke, merge_ops -> production)"
-      - "PlatformAdmin (human-invoked operational actions: catalog_reinit / restore_drill / catalog_stats / reconcile_columns)"
+      - "PlatformAdmin (human-invoked operational actions: catalog_reinit / restore_drill / catalog_stats / reconcile_columns / reconcile_partitions / rewrite_partition_layout)"
+      - "ADMIN-container agent, human-directed only (reconcile_partitions / rewrite_partition_layout, Decision 204)"
     admin_only_features:
       - "Human-invoked operational actions are PlatformAdmin-only by invocation path (aws lambda invoke), not by an in-handler ARN check; the boundary is IAM-role scoping."
       - "catalog_reinit: the only CATALOG-STRUCTURE destructive action (meta-schema drop + reinit, IRREVERSIBLE); requires confirm=<meta_schema> and an explicit s3:// data_path (no production default). NB: gc is separately DATA-FILE destructive (see audit_invariants)."
       - "restore_drill: DR gate on an isolated scratch meta-schema (production-safe; non-destructive to live catalogs)."
       - "reconcile_columns: ALTER TABLE ADD COLUMN only (never DROP); non-destructive; requires explicit data_path + meta_schema."
       - "catalog_stats: read-only catalog-metadata footprint (psycopg2 metadata read; ATTACH-free; requires explicit meta_schema)."
+      - "reconcile_partitions (Decision 204): no-op-free ALTER TABLE SET PARTITIONED BY on live-vs-declared partition drift; dry_run=true by default; requires explicit data_path + meta_schema."
+      - "rewrite_partition_layout (Decision 204): row-preserving re-lay of a HISTORY table's legacy-scheme files, digest-proven before and after commit; requires confirm=<table> plus the table's own rewrite_partition_layout policy cell to apply (control refuses)."
     human_initiated_value: >-
-      catalog_reinit / restore_drill / catalog_stats / reconcile_columns are human-invoked (aws lambda
-      invoke) with explicit catalog params; no-arg invokes are refused so they can never hit the smoke
-      catalog by accident (Decision 84/81 guard). merge / gc / hot_merge / merge_ops are EventBridge-
-      scheduled, NOT human-initiated (merge_ops hits PRODUCTION on the schedule with params supplied by
-      the EventBridge target).
+      catalog_reinit / restore_drill / catalog_stats / reconcile_columns / reconcile_partitions /
+      rewrite_partition_layout are human-invoked (aws lambda invoke) with explicit catalog params;
+      no-arg invokes are refused so they can never hit the smoke catalog by accident (Decision
+      84/81 guard). The two partition verbs are additionally never autonomous when an ADMIN-agent
+      invokes them -- each mutation (the ALTER, and each table's rewrite) is confirmed by the human
+      first (Decision 204). merge / gc / hot_merge / merge_ops are EventBridge-scheduled, NOT
+      human-initiated (merge_ops hits PRODUCTION on the schedule with params supplied by the
+      EventBridge target).
   provisional_v0:
     authored_at: "2026-06-22"
     authored_via: >-
@@ -282,13 +293,48 @@ verbs:
     typed_errors:
       runtime: "missing s3:// data_path / meta_schema / table (no-arg invokes refused) (500)"
       version_mismatch: "DuckDB/extension version mismatch (500)"
+  reconcile_partitions:
+    payload_schema_ref: >-
+      event envelope {action: "reconcile_partitions", data_path (s3://), meta_schema, dry_run?
+      (default true)}. OPERATIONAL (human-invoked, or an ADMIN-container agent under explicit
+      human direction, Decision 204): reads every reconcile_partitions-scoped table's live vs
+      declared partition spec (compaction-scope-policy-matrix, Decision 191/204) and, on
+      dry_run=false, ALTERs only the mismatched physical tables (no-op-free), then RE-READS --
+      the response's post-ALTER layout, never a stale pre-ALTER one. Requires explicit data_path +
+      meta_schema (no-arg refused).
+    response_codes:
+      200: "dry_run=true: {layouts, drifts}; dry_run=false: {altered, layouts, drifts} (post-ALTER readout)"
+      500: "DuckLakeRuntimeError / PartitionLayoutError: missing/non-s3 data_path, missing meta_schema, or a maintenance-scope registry error / VersionMismatchError"
+    typed_errors:
+      runtime: "missing s3:// data_path / meta_schema (no-arg invokes refused), or a wrapped maintenance-scope registry error (500)"
+      version_mismatch: "DuckDB/extension version mismatch (500)"
+  rewrite_partition_layout:
+    payload_schema_ref: >-
+      event envelope {action: "rewrite_partition_layout", data_path (s3://), meta_schema, table,
+      confirm}. OPERATIONAL (human-invoked, or an ADMIN-container agent under explicit human
+      direction, Decision 204): re-lays `table`'s legacy-scheme files onto its already-declared
+      calendar-day scheme in one row-preserving, digest-proven transaction. Refuses unless
+      confirm == table (catalog_reinit's guard shape) and the table's class carries an
+      apply=true rewrite_partition_layout policy cell (control refuses -- ops_entity_counters is
+      the writer-internal entity-id counter, Decision 84 I-2); a non-history table, a table with
+      zero legacy-scheme files, or a table whose live spec still drifts from declared is also
+      refused (ALTER via reconcile_partitions first).
+    response_codes:
+      200: >-
+        rewrite_legacy_layout's proof body verbatim: {physical, pre_snapshot_id,
+        commit_snapshot_id, rows_pre, rows_commit, digest_pre, digest_commit, files_before,
+        files_after, attempts}
+      500: "DuckLakeRuntimeError / PartitionRewriteError / PartitionLayoutError: confirm mismatch, a refused precondition, OCC retry exhaustion, a pre-commit digest mismatch, or a post-commit proof failure (never auto-restores) / VersionMismatchError"
+    typed_errors:
+      runtime: "confirm mismatch, a refused precondition (non-history / zero legacy files / still drifted / not classified), OCC retry exhaustion, a digest mismatch, or a post-commit proof failure (500)"
+      version_mismatch: "DuckDB/extension version mismatch (500)"
 audit_invariants:
   - "Singleton: reserved_concurrent_executions=1 enforces a single concurrent maintenance run (Decision 81 cl.6)."
-  - "No LLM / agent invocation anywhere in this path (CD.33 cl.5 / Decision 81 cl.6)."
-  - "Scheduled merge/gc/hot_merge operate on the SMOKE catalog (ducklake_smoke); merge_ops and gc_ops are ALSO EventBridge-scheduled (every 6h / weekly respectively) but target the PRODUCTION catalog (ducklake_ops) with data_path+meta_schema supplied by the EventBridge target -- gc_ops's rule is ENABLED (gc-ops-baseline-gate-and-schedule-enable). The human-invoked operational actions (catalog_reinit/restore_drill/catalog_stats/reconcile_columns) target production via explicit params and refuse no-arg invokes."
+  - "The scheduled path is agent-free (CD.33 cl.5 / Decision 81 cl.6); an ADMIN-container agent may invoke reconcile_partitions / rewrite_partition_layout only under explicit human direction, confirming each mutation (Decision 204 -- see docs/contracts/ducklake-partition-remediation.yaml's procedure for the agent-led run)."
+  - "Scheduled merge/gc/hot_merge operate on the SMOKE catalog (ducklake_smoke); merge_ops and gc_ops are ALSO EventBridge-scheduled (every 6h / weekly respectively) but target the PRODUCTION catalog (ducklake_ops) with data_path+meta_schema supplied by the EventBridge target -- gc_ops's rule is ENABLED (gc-ops-baseline-gate-and-schedule-enable). The human-invoked operational actions (catalog_reinit/restore_drill/catalog_stats/reconcile_columns/reconcile_partitions/rewrite_partition_layout) target production via explicit params and refuse no-arg invokes."
   - "GC (both gc and gc_ops) is guarded by the fail-closed G1-G4 guard set (reachability, retention floor, catalog sanity, an absolute per-pass deletion bound); a G1/G2/G3 trip raises DuckLakeMaintenanceError, emits MaintenanceBreakerTrip=1, and deletes nothing, while a G4 over-budget pass defers the whole destructive step instead. The forced-trip breaker_probe action (out of contract scope) exists to prove G1. gc_ops additionally runs an INDEPENDENT post-pass safety check (referenced_missing against a real storage listing, plus a value-scanning read-path re-read) that G1-G4 do not perform, because gc_ops's live set is UNIVERSAL (every table, no policy input) rather than scoped by maintenance_policy."
-  - "Two destructive paths exist: catalog_reinit is CATALOG-STRUCTURE destructive (meta-schema drop + reinit; confirm=<meta_schema>-guarded; IRREVERSIBLE), and gc / gc_ops are DATA-FILE destructive (snapshot expiry + orphan-file deletion on the happy path), guarded by the G1-G4 guard set, not a confirm token. gc_ops additionally supports dry_run=true, a read-only measurement mode with no destructive call."
-  - "gc_ops NEVER reads maintenance_policy or calls scope.resolve_scope -- that matrix governs PER-TABLE-SCOPED verbs only (its single production consumer is merge_ops); a catalog-wide destructive verb takes no policy cell, because filtering its live set would narrow what the guards can SEE, never what gets deleted."
+  - "Three destructive paths exist: catalog_reinit is CATALOG-STRUCTURE destructive (meta-schema drop + reinit; confirm=<meta_schema>-guarded; IRREVERSIBLE); gc / gc_ops are DATA-FILE destructive (snapshot expiry + orphan-file deletion on the happy path), guarded by the G1-G4 guard set, not a confirm token (gc_ops additionally supports dry_run=true); and rewrite_partition_layout is ROW-PRESERVING but DATA-FILE destructive until snapshot expiry (the legacy-scheme files are superseded, not deleted), confirm=<table>-guarded, history tables only (Decision 204)."
+  - "maintenance_policy governs PER-TABLE-SCOPED verbs only -- its production consumers are merge_ops, reconcile_partitions and rewrite_partition_layout (Decision 204); gc_ops NEVER reads it or calls scope.resolve_scope, because a catalog-wide destructive verb takes no policy cell (filtering its live set would narrow what the guards can SEE, never what gets deleted)."
   - "An unknown `action` returns 400 with the sorted action allow-list (dispatcher-level; not a per-verb outcome)."
 amendment_log:
   - date: "2026-09-13"
@@ -363,4 +409,16 @@ amendment_log:
       fires. Repoints the contract's present-tense "created DISABLED" claims (description, this
       verb's payload_schema_ref, audit_invariants) to record the cleared gate, and retains a
       present-tense re-enabling clause so any future rollback to DISABLED stays gated the same way.
+  - date: "2026-09-26"
+    semantic_break: true
+    change_class: field_add
+    summary: >-
+      PLAN-ducklake-partition-layout-remediation (rec-4070, Decision 204): added two OPERATIONAL
+      verbs -- reconcile_partitions (no-op-free live-vs-declared partition ALTER, dry_run default
+      true) and rewrite_partition_layout (row-preserving, digest-proven re-lay of a HISTORY
+      table's legacy-scheme files, confirm=<table>-guarded). Real behaviour, not prose-only: both
+      verbs are additionally invokable by an ADMIN-container agent under explicit human direction
+      (the sole carve-out in Decision 81 cl.6's "no LLM / agent invocation" claim, restated in the
+      description and audit_invariants). The "Two destructive paths" invariant becomes three, and
+      the maintenance_policy invariant now names all three per-table-scoped consumers.
 previous_versions: []

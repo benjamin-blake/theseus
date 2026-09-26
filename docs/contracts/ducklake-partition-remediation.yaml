@@ -1,0 +1,138 @@
+# ducklake-partition-remediation operator procedure (rec-4070, Decision 204). A Class D
+# mechanism contract carrying the human-directed ADMIN-container walkthrough for the two
+# partition-layout maintenance verbs (reconcile_partitions, rewrite_partition_layout) on
+# agent-platform-ducklake-maintenance, plus the non-lossy history-table restoration formula and
+# the Decision 181 clause 2 declared-coverage split. Precedent:
+# docs/contracts/package-registry-reservation.yaml (the operator-procedure-lives-as-a-Class-D-
+# contract pattern). AGENTS.md sends an agent whose production action has no obvious deploy path
+# to docs/contracts/deploy-paths.yaml first; this contract's evaluator IS that navigation index --
+# deploy-paths.yaml's admin_out_of_band row names this file, so the ADMIN agent always finds the
+# procedure from the one place AGENTS.md already points it.
+contract:
+  id: ducklake-partition-remediation
+  class: D
+  contract_version: 1
+  status: ratified
+  ratified_via: PLAN-ducklake-partition-layout-remediation
+  description: >-
+    Operator procedure for the Decision 204 partition-layout rewrite: an ADMIN-container agent,
+    under explicit human direction, ALTERs each drifted ops history table to the declared
+    calendar-day scheme (reconcile_partitions) and re-lays each table's legacy-scheme files
+    (rewrite_partition_layout), confirming every mutation with the human first. Claims no
+    production action itself -- execution is confirmation-gated at each step below.
+  subject: ducklake-partition-remediation
+  evaluator:
+    agent_surface: docs/contracts/deploy-paths.yaml
+
+amendment_log:
+  - date: "2026-09-26"
+    semantic_break: false
+    change_class: field_add
+    summary: >-
+      PLAN-ducklake-partition-layout-remediation (rec-4070): initial authoring. Records the
+      ADMIN-container procedure (steps 16-24), the measured concurrent-writer OCC-retry effect,
+      the non-lossy history-table restoration formula, and the Decision 181 cl.2 declared
+      coverage split (IAM-enforced boundary vs. instruction-enforced per-mutation confirmation,
+      the latter owned by rec-4098).
+
+measured_effects:
+  concurrent_writer_during_rewrite: >-
+    A writer transaction in flight on the same table when a rewrite commits fails its COMMIT with
+    an OCC conflict (DuckLake's own "Transaction conflict" text) and absorbs one retry under the
+    rewrite's own bounded policy (ducklake_writes.OCC_MAX_ATTEMPTS, Decision 81 cl.3) -- measured
+    locally 2026-09-26 on duckdb 1.5.4 / DuckLake v1.0 via two cursors sharing one connection's
+    attached catalog.
+
+declared_coverage:
+  # Decision 181 clause 2: state which residuals are enforced by IAM vs. by instruction.
+  iam_enforced: >-
+    Both partition verbs live only on agent-platform-ducklake-maintenance; agent_platform_admin
+    (the only profile with invoke rights) exists only in a human-booted ADMIN session -- a DEV
+    session's agent_platform profile cannot reach either verb.
+  instruction_enforced_residual: >-
+    The per-mutation human confirmation before the ALTER and before each table's rewrite is an
+    UNENFORCED residual (no IAM primitive gates a single `aws lambda invoke` call on a prior human
+    reply) -- owned by rec-4098, which tracks a machine-checkable confirmation gate.
+
+restoration_formula:
+  scope: History tables only (the verb refuses a non-history side); never improvised in-session.
+  applies_within: Snapshot expiry (30d history retention + 7d cleanup grace, Decision 81 cl.6).
+  formula: >-
+    rows(AT pre_snapshot_id) UNION (rows(live) EXCEPT rows(AT commit_snapshot_id)) -- re-lays the
+    pre-rewrite rows while preserving every row a concurrent writer committed AFTER the rewrite,
+    proved under the same full-row digest equality the rewrite itself uses. The commit_message
+    token '<uuid>:pre=<pre_snapshot_id>' recovers both snapshot ids from one
+    `ducklake_snapshots(catalog)` row if either was lost (e.g. an unknown-outcome Lambda timeout).
+  planning: A separately planned operation -- this contract records the formula, never executes it.
+
+procedure:
+  preamble: >-
+    Every step below is confirmation-gated (steps 18-20) and STOPS the run on any unexpected
+    readout or proof failure -- never improvise a fix in-session. A post-commit proof failure at
+    step 20 means restoration only by restoration_formula above (rows(AT pre) UNION (rows(live)
+    EXCEPT rows(AT commit))), planned separately, never attempted here.
+  steps:
+    - step: 16
+      tag: ADMIN
+      action: >-
+        Resolve the production data_path + meta_schema from the merge_ops EventBridge rule's target
+        input: `aws events list-targets-by-rule --rule agent-platform-ducklake-maintenance-merge-ops
+        --profile agent_platform_admin --region eu-west-2 --query 'Targets[0].Input' --output text`.
+        Never guess a path.
+    - step: 17
+      tag: ADMIN
+      action: >-
+        Record the pre-rewrite catalog footprint (`action: catalog_stats`), clear of the merge_ops
+        (:30 6-hourly), control_health (:15 6-hourly) and gc_ops (Sunday 03:45 UTC) scheduled
+        cadences -- the singleton's reserved_concurrent_executions=1 throttles an overlap with a 429.
+    - step: 18
+      tag: ADMIN
+      action: >-
+        Invoke `reconcile_partitions` with dry_run=true and PRESENT the readout to the human --
+        every drifted table's declared-vs-live spec, and confirm legacy_scheme_files is 0 everywhere
+        (the day-of-month files are still the active scheme pre-ALTER). Any unexpected drift or an
+        unclassified-table error STOPS the run; never apply on an unexpected readout.
+    - step: 19
+      tag: ADMIN
+      action: >-
+        After the human explicitly confirms the ALTER, invoke `reconcile_partitions` with
+        dry_run=false. The response's post-ALTER readout (never a separate pre-ALTER one) is the
+        proof: zero spec drift, and each altered table's legacy_scheme_files equal to its live_files
+        less any file a concurrent writer committed after the ALTER.
+    - step: 20
+      tag: ADMIN
+      action: >-
+        After the human explicitly confirms each rewrite, invoke `rewrite_partition_layout` for one
+        table at a time (confirm=<table>). Every AWS CLI invoke carries --region eu-west-2
+        --cli-read-timeout 960 (above the function's 900s timeout) and AWS_MAX_ATTEMPTS=1 -- a
+        re-sent destructive invoke would lose its proof body, never gain a retry.
+    - step: 21
+      tag: ADMIN
+      action: >-
+        Invoke `reconcile_partitions` (dry_run=true) and `catalog_stats` again to prove the end
+        state (zero drift, zero legacy-scheme files everywhere) and record the post-rewrite
+        footprint. A GC-debt spike is EXPECTED here until gc_ops reclaims the rewritten-out files.
+    - step: 22
+      tag: ADMIN
+      action: >-
+        Confirm the reader still serves a rewritten HISTORY table (a named reader verb reads a
+        multi-version rec) and the data_quality_runner reports no FAIL/HARD_GATE.
+    - step: 23
+      tag: ADMIN
+      action: >-
+        Note the expected GC-debt spike on rec-3870 (T2.18:c2) via `scripts.ops_data_portal
+        --update-rec`, dated, appending to the existing context rather than replacing it.
+    - step: 24
+      tag: ADMIN
+      action: >-
+        Commit tests/fixtures/partition_rewrite_evidence.json (steps 17-21's responses) and
+        tests/lambdas/ducklake_maintenance/test_partition_rewrite_evidence.py, append the measured
+        figures to Decision 204 as a dated measurement annotation, regenerate
+        docs/decisions-index.json, then open the evidence PR carrying 'Resolves: rec-4070' in the
+        squash body (never on the code PR) -- rec-4070 closes only through this PR's merge,
+        Decision 201's evaluator being offline for a live probe.
+
+constraints:
+  - Never invoked from a DEV session -- agent_platform_admin exists only in a human-booted ADMIN container (Decision 126/151 cl.2/143 cl.2).
+  - No in-session data restoration -- a proof failure (pre-commit digest mismatch or post-commit re-proof failure) STOPS the run; restoration is separately planned (restoration_formula above).
+  - Never re-send a destructive invoke to "retry" a lost proof body -- recover both snapshot ids from the commit_message token instead, or record a human-adjudicated gap.
