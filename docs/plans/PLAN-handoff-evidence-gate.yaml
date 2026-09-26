@@ -29,10 +29,12 @@ scope:
       (1) PRE-PASS: strip heredoc bodies (`<<`, `<<-`, `<<~` with a bare or quoted delimiter, through the delimiter line)
       -- they are data -- EXCEPT when the command receiving the heredoc is a shell (bash, sh, zsh, dash), whose body is
       classified as commands -- as is a body whose heredoc feeds a pipeline containing a shell that reads stdin (`cat
-      <<'EOF' | bash` executes its body; critique round 3 R3-2); also recurse into a shell's here-string (`<<<`). Before
-      tokenising, remove backslash-newline line continuations outside single quotes, as bash does (otherwise `git \
-      NEWLINE push` splits into two commands and fails open, and a wrapped canonical push reads as two segments --
-      R3-3). A heredoc operator is recognised ONLY in
+      <<'EOF' | bash` executes its body; critique round 3 R3-2); also recurse into a shell's here-string (`<<<`). THEN,
+      from command text only, AFTER heredoc bodies are stripped, remove backslash-newline line continuations outside
+      single quotes, as bash does (otherwise `git \ NEWLINE push` splits into two commands and fails open, and a wrapped
+      canonical push reads as two segments -- R3-3). The order matters: a heredoc body line ending in `\` is data, so
+      removing continuations first would join it to the delimiter line, hide the delimiter and strip a following push
+      (diff-confirm D1). A heredoc operator is recognised ONLY in
       command context: never inside single- or double-quoted literal text (`grep -n "<<EOF" f` starts no heredoc, so a
       following `git push` line stays visible), but inside `$(...)` and backticks at any nesting, including within
       double quotes (critique round 2 N2).
@@ -228,7 +230,8 @@ scope:
       shell-fed heredoc, a here-string, a multi-line command (git status NEWLINE git push), a comment-newline form (git
       status # check NEWLINE git push -- round 2 N1), a push after a QUOTED heredoc marker (grep -n "<<EOF" f NEWLINE
       git push -- N2), `timeout 60 bash -c '...'`, `env sh -c '...'`, `eval 'git push ...'` (N3), `cat <<'EOF' | bash`
-      with a push body (R3-2), `git \ NEWLINE push -u origin HEAD` (R3-3), `bash -c "$(printf 'git push ...')"` (R3-4),
+      with a push body (R3-2), `git \ NEWLINE push -u origin HEAD` (R3-3), a quoted heredoc whose last body line ends in
+      `\` followed by a git push after the delimiter (D1), `bash -c "$(printf 'git push ...')"` (R3-4),
       send-pack, http-push,
       subtree push, lfs push, `git -c alias.p=push p`, an unknown global option; and the NOT-push-shaped set (git log
       --grep push, git --no-pager log --grep push, git commit -m "push fix", a git commit whose -m is a $(cat <<'EOF'
@@ -652,7 +655,7 @@ context:
   - "Origin: the combined handoff plan's critique round 1 led the operator to split 2a (order + evidence, merges first) from 2b (this gate). 2b's own round 1 (REVISE, F1-F8 + M1-M7) led the operator to choose the identity-only redesign (2026-09-26): one harness hook, canonical-form allowlist, fail-closed shim, red passes with a warning; the pre-push layer and the ask-a-human valve were dropped."
   - "Redesign round 1 (REVISE, F1-F9 + M1-M6) folded in: F1 co-occurrence classifier (wrappers, grouping, substitution, newline and shell-fed heredoc forms; known no-arg git globals); F2 --no-renames; F3 shim self-timeout, explicit hook timeout, trap, whole-payload pre-filter, absolute paths; F4 bare and option-order-insensitive push, single agent-branch delete, update_pull_request_branch ungated (Dependabot) and declared; F5 2a's list extended in place with the rec-4083 row flipped, Monitor routed, check-level timeouts under rec-4087, executor folded into rec-4085; F6 destination restricted to agent branches, never main; F7 classifier moved under scripts/session/ (100% floor); F8 rule-code assertions + positive control; F9 real-writer evidence, realpath toplevel, load-status branching; M1 additionalContext; M2 register last, live via file watcher; M3 VP split; M4 -C relative to cd; M6 WIP pushes named."
   - "Redesign round 2 (REVISE, light) folded in: N1 shlex commenters '' (a comment swallowed the newline separator); N2 heredocs only in command context, recursive token-based $(...) body rule; N3 sh -c at any position and eval recurse; N4 gate-local extra_destination_prefixes [audit/] (audit-execution branches) and a HEAD:claude/<slug> hint; N5 enforced_by names pytest nodes as 2a does; N6 bare push also needs remote.<r>.push/mirror unset; N7 git-ops budget pre-decided (clause <= 30, diff <= 50, residuals cited from rec-4085 and the parser docstring); N8 non-agent deletes human-only, seeded tmp git-ops.yaml, Monitor ws passes; timeout -k."
-  - "Redesign round 3 (REVISE, minimal) folded in: R3-1 an absent gate clause on the base ref means no extra prefixes and no exemptions (bootstrap), only unreadable agent_branch_prefixes denies; R3-2 a heredoc piped into a shell is classified; R3-3 backslash-newline continuations removed before tokenising; R3-4 fail-closed rule for code-producing substitution in sh -c/eval; R3-5 false-positive wording; R3-6 rec-4085 context appended at plan time; AC2 reworded."
+  - "Redesign round 3 (REVISE, minimal) folded in: R3-1 an absent gate clause on the base ref means no extra prefixes and no exemptions (bootstrap), only unreadable agent_branch_prefixes denies; R3-2 a heredoc piped into a shell is classified; R3-3 backslash-newline continuations removed before tokenising; R3-4 fail-closed rule for code-producing substitution in sh -c/eval; R3-5 false-positive wording; R3-6 rec-4085 context appended at plan time; AC2 reworded. Diff-confirm D1 (continuations removed only after heredoc stripping) folded in."
   - "Round-1 (original design) dispositions still standing: F1 fail-closed exit map; F2 allowlist; F3 carve-out harness-only; F4 worktree-list mapping; F5/F7/M6 moot (no pre-push, no valve); F6 explicit test env + GITHUB_ACTIONS=true rerun; F8 residual rows; M1 Decision 203; M2 anchored matcher; M3 pre-filter; M4 injected clause; M5 exact-literal re-pin; M7 merge-base fail closed."
   - "Why identity, not verdict: the defect the operator named is validation of an uncommitted tree; identity gating closes exactly that with no wedge. Blocking red needs a deterministic inherited-red release first (Decision 83 non-wedging posture) -- rec-4087."
   - "Hooks reference (code.claude.com/docs/en/hooks.md, fetched 2026-09-26): exit 2 blocks and feeds stderr to Claude; any other exit code does not block; a timed-out command hook does not block (default timeout 600s); stderr on exit 0 reaches only the debug log; allow skips the permission prompt; exit 0 with no output means no decision; PreToolUse additionalContext reaches Claude and systemMessage the user; regex matchers are unanchored unless ^...$; the hook cwd follows Claude's cwd; settings edits are picked up by the file watcher."
@@ -661,7 +664,7 @@ context:
   - "Decision-scout verdict FLAGS_FOUND. CITE list (verbatim): 177, 167, 187, 138, 168, 132. CONTRADICT: 181 [WARN] (every residual row owned: rec-4085, rec-4086, rec-4087; mechanical rows name graduated check_ids), 163 [NOTE] (no amends field). SPIRIT: 83 [WARN] (resolved by the redesign: nothing wedges on red; rec-4087 owns verdict gating). RELATED: 76, 189, 135, 73, 72, 67, 184, 162, 150, 115. ROADMAP: T2.54 [CITE], T1.17, T1.5, T2.48, T4.23."
   - "Decisions triaged: 154 of 154"
   - "Roadmap items intersected: 5; CONFLICT: 0; RELATED: 4"
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PENDING (redesign rounds 1-3 REVISE addressed; diff-confirm next)"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PROCEED after 4 round(s) of the redesign (original-design round 1 REVISE superseded by the operator-chosen redesign; round 4 diff-confirm advisory D1 folded in before merge)"
 pre_implementation_checklist:
   - Branch confirmed not on main; slice 2a confirmed merged on origin/main
   - docs/PROJECT_CONTEXT.md read
