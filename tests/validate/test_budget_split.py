@@ -354,7 +354,7 @@ class TestBreadthDerivedTestBudget:
     def test_inflated_selection_cannot_raise_its_own_allowance(
         self, monkeypatch: pytest.MonkeyPatch, pre_sequence_stub
     ) -> None:
-        census = sb.count_test_modules()
+        monkeypatch.setattr(sb, "count_test_modules", lambda root=None: 263)
         code, _breach, _bypass = _drive_pre(
             monkeypatch,
             pre_sequence_stub,
@@ -363,7 +363,9 @@ class TestBreadthDerivedTestBudget:
         )
 
         assert code == 0
-        assert _budget_block()["limit_s"] == sb.test_execution_allowance(census, census=census)
+        limit_s = _budget_block()["limit_s"]
+        assert limit_s == sb.PER_MODULE_SECONDS * 263
+        assert limit_s < sb.CEILING_SECONDS - sb.NON_TEST_BUDGET_SECONDS
 
 
 class TestLocalPrediction:

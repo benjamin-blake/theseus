@@ -46,10 +46,38 @@ class TestAllowance:
         assert sb.test_execution_allowance(10**6, census=10**6) == cap
 
     def test_census_floor_stops_an_over_selecting_selector_inflating_its_allowance(self) -> None:
-        census = sb.count_test_modules()
-        assert census > 0
-        assert sb.test_execution_allowance(10**6, census=census) == sb.test_execution_allowance(census, census=census)
-        assert sb.test_execution_allowance(10**6, census=census) < sb.CEILING_SECONDS - sb.NON_TEST_BUDGET_SECONDS
+        binds_at = int((sb.CEILING_SECONDS - sb.NON_TEST_BUDGET_SECONDS) / sb.PER_MODULE_SECONDS)
+        for c in (100, 263, binds_at - 1):
+            clamped = sb.test_execution_allowance(10**6, census=c)
+            assert clamped == sb.test_execution_allowance(c, census=c)
+            assert clamped == max(sb.TEST_BASE_SECONDS, sb.PER_MODULE_SECONDS * c)
+            assert clamped < sb.test_execution_allowance(10**6)
+
+        live = sb.count_test_modules()
+        assert live > 0
+        cap = sb.CEILING_SECONDS - sb.NON_TEST_BUDGET_SECONDS
+        expected = min(max(sb.TEST_BASE_SECONDS, sb.PER_MODULE_SECONDS * live), cap)
+        assert sb.test_execution_allowance(10**6, census=live) == sb.test_execution_allowance(live, census=live)
+        assert sb.test_execution_allowance(10**6, census=live) == expected
+
+    def test_census_clamp_saturates_at_the_derived_cap_on_a_real_tree(self, tmp_path) -> None:
+        binds_at = int((sb.CEILING_SECONDS - sb.NON_TEST_BUDGET_SECONDS) / sb.PER_MODULE_SECONDS)
+        cap = sb.CEILING_SECONDS - sb.NON_TEST_BUDGET_SECONDS
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir()
+
+        written = 0
+        for size in (binds_at - 1, binds_at, binds_at + 3):
+            for i in range(written, size):
+                (tests_dir / f"test_{i}.py").write_text("", encoding="utf-8")
+            written = size
+
+            assert sb.count_test_modules(root=tmp_path) == size
+            allowance = sb.test_execution_allowance(10**6, census=size)
+            if size < binds_at:
+                assert allowance == sb.PER_MODULE_SECONDS * size
+            else:
+                assert allowance == cap
 
     def test_coefficient_and_partition_constants_are_pinned(self) -> None:
         assert sb.PER_MODULE_SECONDS == 2.0
@@ -218,9 +246,10 @@ class TestClassifyBranchOrder:
         assert healthy.outcome == "breadth_waived"
 
     def test_an_inflated_selection_cannot_raise_its_own_allowance(self) -> None:
-        census = sb.count_test_modules()
+        census = 263
         inflated = self._classify(n_selected=10**6, census=census, test_s=10.0)
-        assert inflated.allowance_s == sb.test_execution_allowance(census, census=census)
+        assert inflated.allowance_s == sb.PER_MODULE_SECONDS * census
+        assert inflated.allowance_s < sb.test_execution_allowance(10**6)
 
 
 class TestSubtractionSetPins:
