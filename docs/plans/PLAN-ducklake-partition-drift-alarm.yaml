@@ -1,0 +1,346 @@
+schema_version: 5
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "ducklake-partition-drift-alarm"
+intent: >-
+  Detect declared-vs-live DuckLake partition drift continuously (rec-4094): a read-only reader verb
+  exposes each registered table's live partition layout and its comparison with the declared spec,
+  and a convergence-health sensor files one deduped High rec while any table drifts or keeps
+  legacy-scheme files -- closing the gap that let a declared-spec change (#1277) sit unapplied on
+  every live history table with nothing noticing.
+plan_type: IMPLEMENTATION
+verification_tier: V3
+plan_path: docs/plans/PLAN-ducklake-partition-drift-alarm.yaml
+phase: ad_hoc_rec (soft-warn category; no tier_item claimed, so the Tier Item Freshness Gate is skipped).
+scope:
+  - file: src/lambdas/ducklake_reader/handler.py
+    action: Modify
+    purpose: >-
+      action_partition_layout(event, con): read-only, no caller SQL (Decision 84 I-3), on the warm
+      connection (Decision 88 cl.1(i)); returns {ok, tables: {physical: TableLayout fields},
+      drifts: [PartitionDrift fields]} from PLAN-ducklake-partition-layout-remediation's pinned
+      read_partition_layout + compare_to_declared -- never a second layout implementation. Added to
+      _ACTIONS (not connectionless). The reader never ALTERs or rewrites (the read role is
+      S3-read-only; the verb only reads catalog metadata)
+  - file: src/lambdas/ducklake_reader/manifest.yaml
+    action: Modify
+    purpose: >-
+      includes += src/common/ducklake_partition_layout.py and src/common/ducklake_maintenance_scope.py
+      (the layout module's registry classifier); ducklake_partition_spec.py and
+      ducklake_control_tables.py are already included
+  - file: src/common/ducklake_reader_client.py
+    action: Modify
+    purpose: >-
+      DuckLakeReader.partition_layout() -> dict invoking {action: partition_layout}; loud-fail on an
+      error body or unreachable reader (Decision 55), mirroring describe()
+  - file: scripts/convergence_health/partition_drift.py
+    action: Create
+    purpose: >-
+      detect_partition_drift(profile=None, *, reader=None, portal_caller=None, open_recs=None)
+      modelled on code_drift.py's DuckLake sensor: one reader call; over_threshold when any drift or
+      any legacy_scheme_files > 0; run_episode(source="ducklake_partition_drift", ...) files ONE
+      deduped High rec (never source=ci_rca), updates it while drift persists, closes it when clear
+      (alarm-not-gate, Decision 55 / Decision 62's 2026-06-16 monitor precedent). The rec context
+      names each drifted table's declared vs live transforms and legacy count, and points at
+      docs/contracts/ducklake_maintenance.yaml's procedure as the remediation. Does NOT copy
+      code_drift.py's Decision 103 citation (a mis-cite -- Decision 103 is rec relevance)
+  - file: scripts/convergence_health/__main__.py
+    action: Modify
+    purpose: main_partition_drift + the --partition-drift flag, mirroring main_ducklake_drift; usage docstring updated
+  - file: scripts/convergence_health/__init__.py
+    action: Modify
+    purpose: export detect_partition_drift and main_partition_drift in the package's public surface
+  - file: .github/workflows/convergence-health.yml
+    action: Modify
+    purpose: >-
+      a 'Detect DuckLake partition drift (rec-4094)' step running
+      `.venv/bin/python -m scripts.convergence_health --partition-drift` after the DuckLake
+      code-drift step, under the job's existing agent-platform-github-ci-branch identity (the role
+      trailer-census already reads the reader with -- no IAM change). Scheduled-loop liveness needs
+      no registration: sensor_liveness derives it from the workflow schedule
+  - file: config/agent/data_quality/source_registry.yaml
+    action: Modify
+    purpose: register canonical_id ducklake_partition_drift (description, alarm-not-gate signal_interpretation, added_date) beside ducklake_code_drift
+  - file: docs/contracts/ducklake_reader.yaml
+    action: Modify
+    purpose: >-
+      verbs.partition_layout (payload, response, typed errors; read-only; live-file metadata only);
+      amendment_log entry per validate_contract_drift
+  - file: tests/test_ducklake_reader_handler.py
+    action: Modify
+    purpose: test_partition_layout_action_returns_layouts_and_drifts (layout functions patched; no ALTER/rewrite reachable)
+  - file: tests/common/ducklake_reader_client/test_partition_layout.py
+    action: Create
+    purpose: mirror-home test for DuckLakeReader.partition_layout (invoke shape, loud-fail on an error body)
+  - file: tests/convergence_health/test_partition_drift.py
+    action: Create
+    purpose: >-
+      rec-4094's acceptance file: drift -> one rec filed; persistence -> update not refile; clear ->
+      close; reader failure -> exit non-zero, never a silent all-clear; source is
+      ducklake_partition_drift, priority High, never ci_rca
+  - file: tests/convergence_health/test___main__.py
+    action: Modify
+    purpose: --partition-drift dispatches to main_partition_drift
+bundled_recommendations: ["rec-4094"]
+followon_recs: []
+infrastructure_dependencies: []
+acceptance_criteria:
+  - >-
+    the deployed reader's partition_layout verb returns, for every registered ops table, its live
+    transforms, active scheme id, live and legacy-scheme file counts, plus the declared-vs-live
+    drift list -- computed by the shared layout module, with no caller SQL
+  - >-
+    python -m scripts.convergence_health --partition-drift files exactly one deduped High rec
+    (source ducklake_partition_drift) while any table drifts or keeps legacy-scheme files, updates it
+    on persistence, and closes it when clear
+  - the convergence-health workflow runs the sensor on its existing cron and identity with no IAM change
+  - rec-4094 closes on merge
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: prove the sensor's episode behaviour
+    command: bin/venv-python -m pytest tests/convergence_health/test_partition_drift.py -q
+    expected: all pass -- file on drift, update on persistence, close on clear, loud on reader failure
+    fix_if: a reader failure reads as all-clear -- the sensor must fail loud (Decision 55)
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: ducklake-partition-drift-sensor-episodes
+  - step: 2
+    phase: pre-deploy
+    action: prove the reader verb and the client method
+    command: >-
+      bin/venv-python -m pytest
+      tests/test_ducklake_reader_handler.py::test_partition_layout_action_returns_layouts_and_drifts
+      tests/common/ducklake_reader_client/test_partition_layout.py -q
+    expected: both pass
+    fix_if: the action reaches an ALTER/rewrite path or accepts caller SQL -- it must be read-only
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: ducklake-partition-layout-reader-verb
+  - step: 3
+    phase: pre-deploy
+    action: prove the flag is wired and the workflow runs it
+    command: &step3_wiring >-
+      bin/venv-python -c "import yaml;
+      wf=yaml.safe_load(open('.github/workflows/convergence-health.yml', encoding='utf-8'));
+      runs=[s.get('run','') for j in wf['jobs'].values() for s in j.get('steps',[])];
+      assert any('scripts.convergence_health --partition-drift' in r for r in runs), 'workflow step';
+      reg=yaml.safe_load(open('config/agent/data_quality/source_registry.yaml', encoding='utf-8'));
+      ids=[e['canonical_id'] for e in (reg['entries'] if isinstance(reg, dict) else reg)];
+      assert 'ducklake_partition_drift' in ids, 'source registry';
+      rc=yaml.safe_load(open('docs/contracts/ducklake_reader.yaml', encoding='utf-8'));
+      assert 'partition_layout' in rc['verbs'], 'reader contract';
+      print('PARTITION_DRIFT_WIRED')"
+    expected: prints the marker. Red on the planning tree -- no workflow step runs --partition-drift
+    fix_if: the named assertion identifies the missing wiring
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: ducklake-partition-drift-wired
+    expected_literals: []
+  - step: 4
+    phase: pre-deploy
+    action: prove the reader bundle carries the layout module
+    command: &step4_bundle >-
+      bin/venv-python -c "from scripts.lambda_manifest import compute_affected_artifacts as c;
+      a=c(['src/common/ducklake_partition_layout.py']);
+      assert 'ducklake_reader' in a and 'data-pipeline' not in a, a;
+      print('PARTITION_LAYOUT_IN_READER')"
+    expected: >-
+      prints the marker. Red on the planning tree: the module does not exist yet and only
+      data-pipeline's wildcard matches it; after PLAN-ducklake-partition-layout-remediation lands,
+      still red until this plan adds the reader include
+    fix_if: ducklake_reader missing -- add the manifest include
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: ducklake-partition-layout-in-reader
+    expected_literals: []
+  - step: 5
+    phase: pre-deploy
+    action: stage every bundle and resolve each handler's imports
+    command: bin/venv-python -m scripts.lambda_manifest --check-bundles
+    expected: every artifact OK -- the reader resolves ducklake_partition_layout and ducklake_maintenance_scope
+    fix_if: an ImportError in the reader bundle names a module missing from its includes
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Green on the un-implemented tree and already enforced as validate_lambda_bundle_completeness
+      in the full tier, so a registry row would duplicate it.
+    expected_literals: []
+  - step: 6
+    phase: pre-deploy
+    action: run every touched module's mirror-home suite
+    command: >-
+      bin/venv-python -m pytest tests/convergence_health tests/test_ducklake_reader_handler.py
+      tests/common/ducklake_reader_client tests/checks/ops_governance tests/checks/contracts
+      tests/test_ducklake_facade.py -q
+    expected: all pass
+    fix_if: a source-registry check failure means the new source literal was not registered
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: Duplicates scripts.validate's affected-set pytest selection in both tiers.
+  - step: 7
+    phase: pre-deploy
+    action: run the authoritative fast presubmit tier
+    command: bin/venv-python -m scripts.validate --pre
+    expected: exit 0
+    fix_if: read the named check's own failure text; never weaken a check to obtain green (Decision 181)
+    hermetic: false
+    graduation: not-applicable
+  - step: 8
+    phase: pre-deploy
+    action: run the full presubmit tier before handoff, as handoff_policy declares
+    command: bin/venv-python -m scripts.validate
+    expected: exit 0 on a completed full-tier run
+    fix_if: on timeout the disposition is blocked -- rerun from the start, never commit on a partial run
+    hermetic: false
+    graduation: not-applicable
+  - step: 9
+    phase: post-deploy
+    action: confirm the governed channel deployed the reader on the merge commit
+    command: >-
+      mcp__github__actions_list for workflow deploy-ducklake-lambdas.yml on main, then
+      mcp__github__get_job_logs for the run whose head_sha equals the squash-merge SHA
+    expected: all five jobs succeed, including deploy-serving (reader) and smoke
+    fix_if: never fall back to build_lambda --ducklake-only --deploy (Decision 125/126)
+    hermetic: false
+  - step: 10
+    phase: post-deploy
+    action: exercise the deployed reader verb with the DEV identity
+    command: >-
+      bin/venv-python -c "import sys; sys.path.insert(0,'.'); from src.common.ducklake_reader_client import DuckLakeReader;
+      b=DuckLakeReader(profile='agent_platform').partition_layout();
+      t=b['tables']; assert 'ops_recommendations_history' in t and 'ops_entity_counters' in t, sorted(t);
+      print('LAYOUT', len(t), 'tables', len(b['drifts']), 'drifts')"
+    expected: >-
+      prints the table and drift counts. Before the remediation plan's ADMIN run: five drifts (the
+      ops history tables, live day vs declared year,month,day). After it: zero drifts and zero
+      legacy-scheme files. Either state is correct; record which
+    fix_if: an error body means the reader bundle lacks a module (step 5) or the verb is unregistered
+    hermetic: false
+  - step: 11
+    phase: post-deploy
+    action: confirm the scheduled sensor ran green and behaved as the live state requires
+    command: >-
+      mcp__github__actions_list for workflow convergence-health.yml on main (first scheduled run after
+      the merge), mcp__github__get_job_logs for its 'Detect DuckLake partition drift' step, then
+      mcp__ducklake-reads__recs_by_title_prefix for the sensor's rec title prefix
+    expected: >-
+      the step succeeds; if step 10 showed drift, exactly one open ducklake_partition_drift rec
+      exists; if step 10 showed none, no open rec. When the remediation's ADMIN run lands later, the
+      next run closes the rec -- an end-to-end proof of the alarm
+    fix_if: two recs for one episode means the dedup key is wrong; a red step on a reader error is correct loud failure -- diagnose, never silence
+    hermetic: false
+  - step: 12
+    phase: post-deploy
+    action: confirm rec-4094 closed on merge
+    command: mcp__ducklake-reads__rec_by_id id=rec-4094
+    expected: "status closed via the 'Resolves: rec-4094' trailer"
+    fix_if: >-
+      an ACCEPTANCE-VERDICT refusal: fix the cause, then use the close_proposed command printed in the
+      trailer-closure job log -- the manual portal close is FORBIDDEN there (git-ops.yaml resolves_trailer)
+    hermetic: false
+test_obligations:
+  - source: src/lambdas/ducklake_reader/handler.py
+    behavior: the reader exposes a read-only partition_layout verb backed by the shared module
+    verification_step: 2
+    test_selector: tests/test_ducklake_reader_handler.py::test_partition_layout_action_returns_layouts_and_drifts
+    red_green_expectation: red before (no such action), green after
+  - source: src/lambdas/ducklake_reader/manifest.yaml
+    behavior: the reader bundle carries the layout and scope modules
+    verification_step: 4
+    command: *step4_bundle
+    red_green_expectation: red before (the reader does not list the module), green after
+  - source: src/common/ducklake_reader_client.py
+    behavior: the client invokes partition_layout and fails loud on an error body
+    verification_step: 2
+    test_selector: tests/common/ducklake_reader_client/test_partition_layout.py
+    red_green_expectation: red before (method and test absent), green after
+  - source: scripts/convergence_health/partition_drift.py
+    behavior: one deduped High rec per drift episode, closed when clear, loud on reader failure
+    verification_step: 1
+    test_selector: tests/convergence_health/test_partition_drift.py
+    red_green_expectation: red before (module and test absent), green after
+  - source: scripts/convergence_health/__main__.py
+    behavior: --partition-drift dispatches to the sensor
+    verification_step: 6
+    test_selector: tests/convergence_health/test___main__.py
+    red_green_expectation: red before (the new dispatch assertion fails), green after
+  - source: scripts/convergence_health/__init__.py
+    behavior: the package exports the sensor entry points
+    verification_step: 6
+    test_selector: tests/convergence_health/test___main__.py
+    red_green_expectation: red before (import of main_partition_drift fails), green after
+  - source: .github/workflows/convergence-health.yml
+    behavior: the cron job runs the sensor
+    verification_step: 3
+    command: *step3_wiring
+    red_green_expectation: red before (no --partition-drift step), green after
+  - source: config/agent/data_quality/source_registry.yaml
+    behavior: the sensor's source is registered
+    verification_step: 3
+    command: *step3_wiring
+    red_green_expectation: red before, green after
+  - source: docs/contracts/ducklake_reader.yaml
+    behavior: the reader contract declares partition_layout
+    verification_step: 3
+    command: *step3_wiring
+    red_green_expectation: red before, green after
+constraints:
+  - >-
+    DEPENDS ON PLAN-ducklake-partition-layout-remediation being merged: this plan consumes its pinned
+    read_partition_layout / compare_to_declared API from src/common/ducklake_partition_layout.py and
+    must not re-implement layout reading; implement only after that plan's code PR merges (its
+    ADMIN run need not have happened)
+  - "Read-only -- the reader verb and the sensor never ALTER or rewrite; remediation stays with the admin procedure"
+  - No IAM change -- the workflow keeps its existing identity; a permission error is a stop-and-report, not a grant
+  - Governed deploy only via deploy-ducklake-lambdas.yml (Decision 125/126)
+  - No caller SQL (Decision 84 I-3); live-file metadata only and the warm connection (Decision 88)
+  - No rescue agents or workaround loops (Decision 55)
+context:
+  - "Decision-scout verdict: FLAGS_FOUND. Decisions triaged: 154 of 154. Roadmap items intersected: 14; CONFLICT: 1; RELATED: 12."
+  - "CITE: Decision 84, 88, 62, 55, 79, 125, 126, 131, 184; RELATED 190, 191, 143"
+  - "gates: decision-scout=FLAGS_FOUND (shared with the remediation plan; dispositions there); plan-critique=PENDING"
+  - >-
+    Split from the rec-4070 plan by human direction 2026-09-26 ('include drift detection now', then
+    'split into two plans, each with its own review gates'). The shared scout run covered this half;
+    its flags for this half: warm connection + live-file metadata only (Decision 88), a structural
+    no-caller-SQL verb (Decision 84 I-3), do not copy the Decision 103 mis-cite, mirror paths per
+    map_source_to_test (Decision 131), keep the layout module adapter-ready (Decision 184).
+  - >-
+    The gap: #1277 changed the declared spec on 2026-09-25; all five live ops history tables stayed
+    on day-of-month until the remediation plan's ADMIN run -- nothing compared declared to live.
+  - "Identity: convergence-health.yml already assumes agent-platform-github-ci-branch; trailer-census reads the reader under the same role"
+  - "ci-rca deferral: rec-4066, rec-4057 (rec_trailer_acceptance.py coverage) are unrelated; PLAN-ci-rca-rec-trailer-acceptance-coverage (#1279) owns them"
+  - "fork: include drift detection now | chosen: include (as its own plan) | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: this plan"
+  - "fork: sensor shape | chosen: code_drift-style run_episode alarm-not-gate | class: consistency-only | precedent: code_drift.py + source_registry ducklake_code_drift | precedent_kind: contract | reversible: yes | persisted: scope"
+  - "Expected first run: drift present if the remediation's ADMIN run has not happened -- one rec files, then closes after that run (end-to-end proof)"
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - only the plan-cited decision sections (84, 88, 62, 55, 125, 126)
+  - PLAN-ducklake-partition-layout-remediation's code PR is merged and src/common/ducklake_partition_layout.py exposes the pinned API
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+execution_steps:
+  - "Rebase onto origin/main (the remediation plan's code must be present); stage every Create row with git add --intent-to-add."
+  - >-
+    Add action_partition_layout to the reader handler + manifest includes, and
+    DuckLakeReader.partition_layout(); tests. Post -- steps 2, 4, 5 green.
+  - >-
+    Create scripts/convergence_health/partition_drift.py (+ __init__ export, __main__ flag),
+    register the source, add the workflow step, add the reader contract verb; tests. Post -- steps 1
+    and 3 green.
+  - >-
+    Run steps 6-7; create the graduated registry shards for steps 1-4; set
+    implementation_declared: true; run step 8 (full tier).
+  - >-
+    Closure evidence as four SEPARATE facts: (1) scripts.session.github_readiness as reported; (2)
+    step 8's full-tier exit 0 + logs/debug/validation-result.json; (3) scripts.session.postflight
+    --evidence; (4) commit, push, PR, CI green via event-driven wake, squash-merge with
+    'Resolves: rec-4094'; then post-deploy steps 9-12.
+  - "Report: what was implemented, verification results, and whether the first sensor run found drift."
+rollback: >-
+  Revert the squash commit: the governed channel redeploys the prior reader and the workflow step
+  disappears. The sensor only files, updates and closes its own rec; close any open
+  ducklake_partition_drift rec with a resolution naming the revert.
