@@ -144,6 +144,30 @@ data "aws_iam_policy_document" "github_ci_branch" {
       aws_lambda_function.findings_processor.arn,
     ]
   }
+
+  statement {
+    # rec-4044 / Decision 202: the three SecurityDetectorLiveness* Sids together grant exactly the
+    # four reads of security-detector-liveness.yml's probe (scripts/ci/security_detector_probe.py).
+    # DescribeAlarms is on "*" (no resource scoping). Read-only: no write on the detector or topic.
+    sid       = "SecurityDetectorLivenessRead"
+    effect    = "Allow"
+    actions   = ["cloudwatch:DescribeAlarms"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid       = "SecurityDetectorLivenessAlarmHistoryRead"
+    effect    = "Allow"
+    actions   = ["cloudwatch:DescribeAlarmHistory"]
+    resources = ["arn:aws:cloudwatch:${var.aws_region}:${var.account_id}:alarm:platform-security-*"]
+  }
+
+  statement {
+    sid       = "SecurityDetectorLivenessTopicRead"
+    effect    = "Allow"
+    actions   = ["sns:ListSubscriptionsByTopic", "sns:GetTopicAttributes"]
+    resources = [aws_sns_topic.alerts.arn]
+  }
 }
 
 resource "aws_iam_role_policy" "github_ci_branch" {

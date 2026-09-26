@@ -2,6 +2,81 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 202: Terraform-owned CloudTrail trail and IAM-change detector in the admin-only bootstrap root -- a narrow PlatformAdmin trail-write grant, the platform-security-* name family, and a single-region rule (amends Decision 101 point (b), 144 clause 2) (Decided)
+
+```yaml
+number: 202
+status: Decided
+decided_date: "2026-09-25"
+amends: [101, 144]
+significance:
+  value: numbered_decision
+  justification: >-
+    A new authority grant to a principal, a second resource name family and a standing region
+    rule, each with reversal conditions. Rejected homes: verification-registry.yaml's governance
+    notes and environment-taxonomy.yaml record check lifecycle and apply classification, not a
+    grant; an amendment_forms annotation on Decision 101 is rejected because the grant and the
+    region rule clear the bar independently.
+```
+
+**Status:** Decided
+**Date:** 2026-09-25
+**Warehouse ID:** dec-202 (synced via `ops_data_portal --backfill-decisions-md` post-merge, Decision 84)
+
+**Problem:**
+rec-4044: PLAN-platform-iam-bootstrap-adopt moves PlatformDev and PlatformAdmin out of hourly
+terraform-drift coverage, so a change to either needs its own detector, proven live. IAM events
+reach EventBridge only in us-east-1, and the retired no-CloudTrail-write check forbade the trail.
+
+**Decision:**
+1. Terraform owns ONE multi-region trail (global events, log-file validation) homed in the project
+   region, in `terraform/bootstrap`, applied only by PlatformAdmin under the human-gated admin
+   tier (Decision 126): the detector sits outside the reach of the principals it watches.
+2. PlatformAdmin -- and only PlatformAdmin -- holds exactly six trail verbs (CreateTrail,
+   UpdateTrail, PutEventSelectors, StartLogging, AddTags, RemoveTags) on that one trail ARN, as Sid
+   PlatformSecurityTrailManage in the bootstrap managed policy platform-security-detector-admin
+   (Decision 156 headroom). StopLogging, DeleteTrail and cloudtrail:* stay banned everywhere;
+   destroying the trail is break-glass only. Guarded by cloudtrail-write-grant-scoped-to-platform-trail.
+3. `platform-security-*` is authorised as a second resource name family for detector resources
+   only (the explicit decision Decision 101 point (b), re-affirmed by 171, requires). Decision 144
+   clause 2's re-narrow trigger does NOT fire: the non-prefix name is a deliberate exclusion from
+   CI reach, not a coverage gap.
+4. Single-region rule, scoped: every Terraform-declared regional resource, ARN and provider follows
+   the one `aws_region` variable -- no region literal in a resource or ARN, no second-region
+   provider -- so IAM events are detected through the multi-region trail's CloudWatch Logs
+   delivery in that region, never an EventBridge rule in us-east-1. Declared residuals (Decision
+   181 clause 2), owner rec-4067: backend blocks (cannot interpolate) and workflow
+   AWS_DEFAULT_REGION / aws-region literals.
+5. Residuals stated: UpdateTrail and PutEventSelectors can still blind the trail -- the tamper
+   alarm, the IAM-event heartbeat alarm and the hourly security-detector-liveness probe
+   compensate. The probe runs as agent-platform-github-ci-branch (convergence-write denied, no
+   saved-plan write; Decision 143 clause 1). The alerts topic stays CI-writable, so the
+   topic-change alarm emails through the topic it guards; the probe independently checks the
+   confirmed subscription, a topic KmsMasterKeyId or policy Deny, and failed alarm actions in the
+   last 25 hours.
+6. Rejected: AWS Config (findings return through the same SNS path, misses denied attempts, adds
+   recorder cost), a console-created trail (Decision 24), an EventBridge rule in us-east-1
+   (clause 4), and AdminOps inline statements (Decision 156). Only a policy is attached to
+   PlatformAdmin; Decision 180 clause 6 is not re-decided. Sanctioned CI metadata writes on
+   PlatformDev (Decision 180 clause 2) email until rec-4049 lands: alerts are never filtered by actor.
+
+**Rationale:**
+A London-homed multi-region trail receives global IAM events, so one region, one Logs group and
+metric-filter alarms on the existing alerts topic (Decision 39) detect changes -- denied attempts
+included -- without a second region or a console step, keeping the repository shippable as a tool
+whose users set exactly one region.
+
+**Reversal conditions:** (a) Decision 144 clause 6's Phase-4 organisation trail lands at
+live_full -- re-point the detector at its log delivery and retire this trail, never run both; (b)
+CloudWatch Logs delivery or regex filtering is withdrawn or the alarm path proves lossy -- reopen
+the detection primitive, keeping clause 4; (c) email volume from sanctioned changes crowds out
+real signal after rec-4049 -- narrow by event class, never by actor.
+
+**Related:** 24, 39, 101, 113, 126, 143, 144, 156, 162, 171, 172, 176, 180, 181, 190, 201.
+Roadmap refs: rec-4044, rec-4049, rec-4067.
+
+---
+
 ## Decision 201: Closure-time acceptance-verdict precondition -- a verdict LAYER asserted at update_rec, with a static evaluator wired in (amends Decision 103, 186) (Decided)
 
 ```yaml
@@ -3931,6 +4006,10 @@ Decision 83 (non-wedging branch protection; DEP-05/T2.50 retains the admin-bypas
 fed its own recurring change-stream), Decision 84 (authored here, backfilled to `ops_decisions`
 post-merge, never written directly).
 
+> **Amended by Decision 202 (2026-09-25):** clause 2's re-narrow trigger does NOT fire for the
+> `platform-security-*` detector resources: their non-prefix name is a deliberate exclusion from CI
+> reach, not a coverage gap. See Decision 202 clause 3.
+
 ---
 
 ## Decision 143: Privileged-verb Lambda decomposition -- scope identities by worst reachable verb; enforce the boundary in a primitive outside the agent merge loop (amends Decision 81 cl.1) (Decided)
@@ -6222,6 +6301,11 @@ to this numbered Decision).
 >
 > Clauses (b), (c) and the remainder of clause (d) (the AWS-specifics bullet and the
 > public-content boundary itself) are UNAFFECTED.
+
+> **Amended by Decision 202 (2026-09-25):** point (b) gains a second resource name family,
+> `platform-security-*`, for the IAM-change detector's resources in `terraform/bootstrap` only (the
+> separate explicit decision point (b) requires). The `agent-platform-*` prefixes stay frozen for
+> everything else. See Decision 202 clause 3.
 
 **Problem:**
 The platform and its trading product were operating under purely internal identifiers (repo

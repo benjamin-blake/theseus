@@ -226,7 +226,8 @@ locals {
         # actions supports resource-level scoping (they are all account-wide list/query APIs), so
         # each sits on "*", mirroring the CloudWatchAlarmDescribe / LambdaLogGroupDescribe /
         # SSMDescribeParameters idiom above. Read-only: this repo's terraform grants no cloudtrail
-        # mutating verb anywhere (rec-2906 is explicitly read-only scope).
+        # mutating verb outside the Decision 202 PlatformSecurityTrailManage grant (rec-2906 is
+        # explicitly read-only scope).
         Sid    = "ObservabilityMetricAndTrailRead"
         Effect = "Allow"
         Action = [
