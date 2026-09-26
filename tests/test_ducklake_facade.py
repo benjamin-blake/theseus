@@ -282,10 +282,18 @@ def test_partition_layout_patch_on_smoke_actions_intercepts_action_partition_pro
         if "history" in table:
             return {
                 "total": 42,
-                "partition_ids": [1, 2, 3],
+                "path_prefixes": {
+                    1: "year=2026/month=1/day=24",
+                    2: "year=2026/month=2/day=24",
+                    3: "year=2027/month=1/day=24",
+                },
                 "value_tuples": {1: ("2026", "1", "24"), 2: ("2026", "2", "24"), 3: ("2027", "1", "24")},
             }
-        return {"total": 99, "partition_ids": [1, 2], "value_tuples": {1: ("0",), 2: ("1",)}}
+        return {
+            "total": 99,
+            "path_prefixes": {1: "bucket=0", 2: "bucket=1"},
+            "value_tuples": {1: ("0",), 2: ("1",)},
+        }
 
     monkeypatch.setattr(smoke_actions, "_partition_layout", _fake_layout)
     out = smoke_actions.action_partition_probe({}, _RecordingCon())

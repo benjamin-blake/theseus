@@ -172,7 +172,7 @@ def action_partition_probe(event: dict[str, Any], con: Any) -> dict[str, Any]:
     return {
         "ok": True,
         "history_calendar_days": len(set(history_tuples)),
-        "history_partition_tuples": len(set(history["partition_ids"])),
+        "history_partition_tuples": len(set(history["path_prefixes"].values())),
         "history_files_in_probed_day": history_files_in_probed_day,
         "history_total": history["total"],
         "current_files_in_probed_bucket": current_files_in_probed_bucket,
@@ -462,24 +462,40 @@ def _count_files(con: Any, table: str) -> int:
         return 0
 
 
+def _path_partition_prefix(path: str) -> str:
+    """The 'k1=v1/k2=v2/...' Hive-style directory-prefix segment of a DuckLake file *path*.
+
+    DuckLake writes each partitioned file under a directory prefix encoding its partition key
+    values (e.g. 'year=2026/month=1/day=24/<uuid>.parquet'). This is derived independently of
+    ducklake_file_partition_value (a different metadata source: the physical path DuckLake wrote,
+    not a catalog row) -- the two measurements crosscheck each other.
+    """
+    return "/".join(part for part in path.split("/")[:-1] if "=" in part)
+
+
 def _partition_layout(con: Any, catalog_alias: str, table: str) -> dict[str, Any]:
     """LIVE (end_snapshot IS NULL) data-file partition layout for *table*, read from DuckLake's own
     file-partition metadata catalog. Loud-fail (Decision 55): a metadata-schema read error raises,
     it never falls back or silently reports 0 -- an EC6 measurement must be real or absent.
 
-    Returns {"total": int, "partition_ids": [int, ...], "value_tuples": {data_file_id: (str, ...)}}
-    -- value_tuples orders each file's partition_value entries by partition_key_index, so for a
-    calendar-day history table a tuple is (year, month, day) as DuckLake stringifies them.
+    Returns {"total": int, "path_prefixes": {data_file_id: str}, "value_tuples": {data_file_id: (str, ...)}}.
+    path_prefixes is the Hive-style partition directory prefix parsed from each file's physical
+    path (ducklake_data_file.path); value_tuples orders each file's partition_value entries by
+    partition_key_index (a calendar-day history table's tuple is (year, month, day)). These are
+    two INDEPENDENTLY derived measurements of the same partition membership -- ducklake_data_file
+    itself does NOT distinguish files by partition value: its own partition_id column names the
+    declared partition SCHEME (which ALTER ... SET PARTITIONED BY generation), not a per-value
+    bucket, so it is never used here as a partition-membership signal.
     """
     meta_schema = f"__ducklake_metadata_{catalog_alias}"
     files = con.execute(
-        f"SELECT df.data_file_id, df.partition_id FROM {meta_schema}.ducklake_data_file df "
+        f"SELECT df.data_file_id, df.path FROM {meta_schema}.ducklake_data_file df "
         f"JOIN {meta_schema}.ducklake_table t ON df.table_id = t.table_id "
         f"WHERE t.table_name = ? AND df.end_snapshot IS NULL",
         [table],
     ).fetchall()
     file_ids = [int(r[0]) for r in files]
-    partition_ids = [int(r[1]) for r in files]
+    path_prefixes = {int(r[0]): _path_partition_prefix(r[1]) for r in files}
 
     value_tuples: dict[int, tuple[str, ...]] = {}
     if file_ids:
@@ -494,7 +510,7 @@ def _partition_layout(con: Any, catalog_alias: str, table: str) -> dict[str, Any
             grouped.setdefault(int(file_id), []).append(value)
         value_tuples = {fid: tuple(vals) for fid, vals in grouped.items()}
 
-    return {"total": len(file_ids), "partition_ids": partition_ids, "value_tuples": value_tuples}
+    return {"total": len(file_ids), "path_prefixes": path_prefixes, "value_tuples": value_tuples}
 
 
 def _count_inlined_rows(con: Any, table: str) -> int:
