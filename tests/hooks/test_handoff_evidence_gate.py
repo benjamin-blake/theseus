@@ -341,19 +341,26 @@ def test_shim_fails_closed_when_adapter_crashes(tmp_path: Path) -> None:
     assert result.returncode == 0
 
 
+def test_shim_pins_the_production_timeout_bound() -> None:
+    """Static pin (fast, no subprocess wait): the shim's real bound stays 45s with a 5s kill
+    grace, below the registered settings.json timeout of 60s."""
+    text = _SHIM_PATH.read_text(encoding="utf-8")
+    assert "timeout -k 5 45" in text
+
+
 def test_shim_kills_adapter_that_sleeps_past_bound(tmp_path: Path) -> None:
-    """Not graduated (real-timeout scenario, ~50s wall clock -- kept out of the VP replay
-    budget per Decision 55; see test_shim_fails_closed_when_adapter_crashes above for the
-    fast scenarios covering the same property). An adapter that sleeps past the shim's own
-    45s bound is killed and the shim exits 2 for a push-shaped payload."""
+    """Dynamic proof of the SAME kill mechanism the production 45s bound uses, scaled down to
+    keep this fast-tier-selected test cheap: a copy of the real shim with its timeout/kill-grace
+    substituted to 2s/1s (never the production file) kills an adapter that outlives it, and the
+    shim still exits 2 for a push-shaped payload."""
     push_payload = {"tool_name": "Bash", "tool_input": {"command": "git push -u origin HEAD"}}
     slow_root = tmp_path / "slow_root"
     (slow_root / ".claude" / "hooks").mkdir(parents=True)
-    (slow_root / ".claude" / "hooks" / "handoff_evidence_gate.sh").write_text(
-        _SHIM_PATH.read_text(encoding="utf-8"), encoding="utf-8"
-    )
+    scaled_down_shim = _SHIM_PATH.read_text(encoding="utf-8").replace("timeout -k 5 45", "timeout -k 1 2")
+    assert "timeout -k 1 2" in scaled_down_shim
+    (slow_root / ".claude" / "hooks" / "handoff_evidence_gate.sh").write_text(scaled_down_shim, encoding="utf-8")
     (slow_root / ".claude" / "hooks" / "handoff_evidence_gate.py").write_text(
-        "import time\ntime.sleep(120)\n", encoding="utf-8"
+        "import time\ntime.sleep(30)\n", encoding="utf-8"
     )
     (slow_root / "bin").mkdir()
     (slow_root / "bin" / "venv-python").write_text(
@@ -367,7 +374,7 @@ def test_shim_kills_adapter_that_sleeps_past_bound(tmp_path: Path) -> None:
         capture_output=True,
         text=True,
         env={"PATH": "/usr/bin:/bin:/usr/local/bin", "CLAUDE_PROJECT_DIR": str(slow_root)},
-        timeout=60,
+        timeout=15,
     )
     assert result.returncode == 2
 
