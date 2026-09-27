@@ -73,6 +73,73 @@ Roadmap refs: rec-4070, rec-4094, rec-4095, rec-4098.
 
 ---
 
+## Decision 203: Fail-closed PreToolUse handoff-evidence gate at the agent push / GitHub remote-write boundary -- an IDENTITY gate, not a verdict gate; no agent override (Related: 163, 181) (Decided)
+
+```yaml
+number: 203
+status: Decided
+decided_date: "2026-09-26"
+significance:
+  value: numbered_decision
+  justification: >-
+    A new mechanical refusal authority at the push / remote-write boundary, with no agent
+    override and a fail-closed default on every unknown. Rejected homes: docs/contracts/git-ops.yaml
+    alone (a contract records the mechanism's shape, not the authority to refuse a tool call);
+    an amendment_forms annotation on Decision 163 is rejected because this is a separately
+    reversible instance of that Decision's no-override principle, not a restatement of it.
+```
+
+**Status:** Decided
+**Date:** 2026-09-26
+**Warehouse ID:** dec-203 (synced via `ops_data_portal --backfill-decisions-md` post-merge, Decision 84)
+
+**Problem:**
+PLAN-handoff-validates-committed-tree (slice 2a) proved that a validated tree can be attested, but
+enforcement of that attestation before push was left to the agent following the `/implement`
+skill -- a residual (rec-4083), not a mechanical guarantee. An agent push or GitHub remote write of
+non-exempt content could still land without the committed tree ever being validated.
+
+**Decision:**
+1. One fail-closed PreToolUse harness hook (`.claude/hooks/handoff_evidence_gate.py` /
+   `.sh`) refuses any non-exempt agent push or GitHub remote write unless schema-4 validation
+   evidence (`scripts.checks.validation_result`) proves the exact committed tree was validated
+   from that worktree. This is an IDENTITY gate (was the pushed tree validated?), not a verdict
+   gate: a validated-but-red tree passes with a warning, so there is no wedge and no release valve
+   needed.
+2. Only the canonical push forms `scripts/session/handoff_push_parse.py` admits are evaluated
+   (bare push, single agent-branch delete, dry run, the documented option-order-insensitive
+   literals); every other push-shaped Bash or Monitor command is refused with guidance. GitHub MCP
+   `create_pull_request`, `push_files`, `create_or_update_file` and `delete_file` are gated the
+   same way; `update_pull_request_branch` is a declared residual (rec-4085).
+3. No agent override of any kind (Decision 163 point 1, re-affirmed for this separately reversible
+   surface): no env var, flag or marker lets an agent skip the gate. The hook never emits
+   `permissionDecision: allow` or `ask`.
+4. The exempt path set, never-exempt paths and destination prefixes are read from
+   `origin/main:docs/contracts/git-ops.yaml`, never the working tree -- every unknown (no
+   origin/main, unreadable clause, failed merge-base) means no exemptions, fail closed. No push or
+   remote write may target `main`, `master`, or a branch outside `agent_branch_prefixes` plus the
+   gate-local `audit/` prefix.
+5. Declared residuals, each owned: a validated-but-red release valve (rec-4087), everything the
+   harness cannot see or the evidence cannot prove (rec-4085), deletes of non-agent branches
+   (human-only, rec-4085), and GitHub Actions-hosted sessions (rec-4086).
+
+**Rationale:**
+Identity gating closes exactly the defect named above with no wedge risk: it never blocks a
+correct handoff for being red, only for being unvalidated or unproven. Blocking on a red verdict
+needs a deterministic inherited-red release first (Decision 83's non-wedging posture) --
+deferred to rec-4087.
+
+**Reversal conditions:** (a) a false block of a correct handoff -- fix the checker, never add an
+override; (b) a full tier that cannot complete wedges non-exempt pushes more than twice in a
+quarter -- revisit; (c) a full-tier PR-CI verdict lands (rec-3221) -- narrow the local gate to it;
+(d) rec-4087's inherited-red release lands -- revisit gating on verdict; (e) the executor goes
+live (Decision 67 reversal) -- re-derive the per-push cost basis.
+
+**Related:** 25, 67, 72, 73, 76, 83, 115, 132, 135, 138, 150, 162, 163, 167, 168, 177, 181, 184,
+187, 189. Roadmap refs: rec-4083, rec-4085, rec-4086, rec-4087, T2.54.
+
+---
+
 ## Decision 202: Terraform-owned CloudTrail trail and IAM-change detector in the admin-only bootstrap root -- a narrow PlatformAdmin trail-write grant, the platform-security-* name family, and a single-region rule (amends Decision 101 point (b), 144 clause 2) (Decided)
 
 ```yaml
