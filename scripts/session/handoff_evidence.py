@@ -131,7 +131,7 @@ def _merge_base(cwd: Path, pushed_sha: str) -> str | None:
 
 
 def _is_exempt(paths: list[str], clause: dict | None) -> bool:
-    if clause is None:
+    if clause is None or not paths:
         return False
     exempt_globs = clause.get("exempt_path_globs") or []
     never_exempt = clause.get("never_exempt_paths") or []
@@ -239,7 +239,12 @@ def _decide_explicit_push(parsed: ParsedPush, prefixes: list[str], resolved_work
     return decide_push(resolved_worktree, sha)
 
 
-def decide_bash(worktree: Path, parsed: object, payload_cwd: Path) -> Verdict:
+def decide_bash(parsed: object, payload_cwd: Path) -> Verdict:
+    """`payload_cwd` is the worktree the Bash tool call actually runs in (Claude's cwd follows
+    the hook's own cwd) -- the sole source of truth for WHICH worktree's evidence to check,
+    overridden only by an explicit `-C <path>` / `cd <path> &&` hint in the command itself.
+    Never defaults to the harness's own checkout: a subagent operating in a different worktree
+    (EnterWorktree isolation) must be checked against ITS worktree, not the caller's."""
     from scripts.session.handoff_push_parse import NonCanonical, ParsedPush
 
     if isinstance(parsed, NonCanonical):
@@ -256,7 +261,7 @@ def decide_bash(worktree: Path, parsed: object, payload_cwd: Path) -> Verdict:
     if parsed.kind == "dry_run":
         return Verdict("pass", "dry_run", "dry run pushes no tree")
 
-    resolved_worktree = worktree
+    resolved_worktree = payload_cwd
     if parsed.worktree_hint is not None:
         resolved_worktree = (payload_cwd / parsed.worktree_hint).resolve()
 

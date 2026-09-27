@@ -1,8 +1,5 @@
-"""Mirror tests for scripts/session/handoff_evidence.py (100% coverage floor).
-
-Real tmp repositories with a bare origin -- PASS-CASE evidence is written by
-scripts.checks.validation_result's real clear()/write_completed(), never a hand-built dict.
-"""
+"""Mirror tests for scripts/session/handoff_evidence.py. Real tmp repos with a bare origin;
+evidence is written by validation_result's real clear()/write_completed()."""
 
 from __future__ import annotations
 
@@ -13,23 +10,15 @@ import pytest
 
 from scripts.checks import validation_result
 from scripts.session import handoff_evidence
-from scripts.session.handoff_push_parse import ParsedPush
+from scripts.session.handoff_push_parse import ParsedPush, parse_canonical
 
 _GIT_ENV = ["-c", "commit.gpgsign=false", "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
 
-_GIT_OPS_YAML = """
-branching_topology:
-  agent_branch_prefixes:
-    - "claude/"
-    - "agent/"
-handoff_evidence_gate:
-  exempt_path_globs:
-    - "docs/plans/*"
-  never_exempt_paths:
-    - "docs/contracts/git-ops.yaml"
-  extra_destination_prefixes:
-    - "audit/"
-"""
+_GIT_OPS_YAML = (
+    'branching_topology:\n  agent_branch_prefixes: ["claude/", "agent/"]\n'
+    'handoff_evidence_gate:\n  exempt_path_globs: ["docs/plans/*"]\n'
+    '  never_exempt_paths: ["docs/contracts/git-ops.yaml"]\n  extra_destination_prefixes: ["audit/"]\n'
+)
 
 
 def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
@@ -41,9 +30,7 @@ def _git_ok(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
 
 
 def _make_repo(tmp_path: Path, *, seed_gate_clause: bool = True) -> Path:
-    """Bare origin + one clone ('work') with an initial commit on main, seeded with a
-    docs/contracts/git-ops.yaml carrying agent_branch_prefixes (and, unless disabled, the gate
-    clause) -- pushed so origin/main carries it."""
+    """Bare origin + a clone with an initial, pushed commit seeding git-ops.yaml."""
     origin = tmp_path / "origin.git"
     origin.mkdir()
     _git(["init", "--bare", "-b", "main"], cwd=origin)
@@ -188,18 +175,13 @@ class TestBaseRefReadUnknowns:
         _git(["push", "origin", "main"], cwd=work)
         assert handoff_evidence._base_ref_clause(work) is None
 
-    def test_topology_not_a_dict(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        "yaml_text",
+        ["branching_topology: not-a-dict\n", "branching_topology:\n  agent_branch_prefixes: [1, 2]\n"],
+    )
+    def test_malformed_agent_branch_prefixes(self, tmp_path: Path, yaml_text: str) -> None:
         work = _make_repo(tmp_path, seed_gate_clause=False)
-        (work / "docs" / "contracts" / "git-ops.yaml").write_text("branching_topology: not-a-dict\n", encoding="utf-8")
-        _git([*_GIT_ENV, "commit", "-am", "break it"], cwd=work)
-        _git(["push", "origin", "main"], cwd=work)
-        assert handoff_evidence._base_ref_agent_branch_prefixes(work) is None
-
-    def test_agent_branch_prefixes_not_a_list_of_strings(self, tmp_path: Path) -> None:
-        work = _make_repo(tmp_path, seed_gate_clause=False)
-        (work / "docs" / "contracts" / "git-ops.yaml").write_text(
-            "branching_topology:\n  agent_branch_prefixes: [1, 2]\n", encoding="utf-8"
-        )
+        (work / "docs" / "contracts" / "git-ops.yaml").write_text(yaml_text, encoding="utf-8")
         _git([*_GIT_ENV, "commit", "-am", "break it"], cwd=work)
         _git(["push", "origin", "main"], cwd=work)
         assert handoff_evidence._base_ref_agent_branch_prefixes(work) is None
@@ -223,6 +205,11 @@ class TestBaseRefReadUnknowns:
         clause = {"exempt_path_globs": "not-a-list", "never_exempt_paths": []}
         assert handoff_evidence._is_exempt(["docs/plans/x.yaml"], clause) is False
 
+    def test_is_exempt_false_on_empty_paths(self) -> None:
+        """A zero-diff push must never be vacuously exempt -- fail closed to the evidence check."""
+        clause = {"exempt_path_globs": ["*"], "never_exempt_paths": []}
+        assert handoff_evidence._is_exempt([], clause) is False
+
     def test_decide_push_exempt_pass_on_real_diff(self, tmp_path: Path) -> None:
         work = _make_repo(tmp_path)
         wt = _new_branch_worktree(work, "claude/feature")
@@ -236,9 +223,8 @@ class TestBaseRefReadUnknowns:
         (work / "docs" / "contracts" / "git-ops.yaml").write_text("not: {valid", encoding="utf-8")
         _git([*_GIT_ENV, "commit", "-am", "break it"], cwd=work)
         _git(["push", "origin", "main"], cwd=work)
-        from scripts.session.handoff_push_parse import parse_canonical
 
-        verdict = handoff_evidence.decide_bash(work, parse_canonical("git push -u origin HEAD"), work)
+        verdict = handoff_evidence.decide_bash(parse_canonical("git push -u origin HEAD"), work)
         assert verdict.kind == "deny"
         assert verdict.rule == "unreadable_agent_branch_prefixes"
 
@@ -256,7 +242,7 @@ class TestBaseRefReadUnknowns:
         wt = _new_branch_worktree(work, "not-an-agent-branch")
         _git(["push", "-u", "origin", "not-an-agent-branch"], cwd=wt)
         parsed = ParsedPush(kind="bare_push", worktree_hint=None, remote="origin", src=None, dst=None)
-        verdict = handoff_evidence.decide_bash(wt, parsed, wt)
+        verdict = handoff_evidence.decide_bash(parsed, wt)
         assert verdict.kind == "deny"
         assert verdict.rule == "destination"
 
@@ -274,7 +260,7 @@ class TestBaseRefReadUnknowns:
 
         monkeypatch.setattr(handoff_evidence, "_run", _fake_run)
         parsed = ParsedPush(kind="bare_push", worktree_hint=None, remote="origin", src=None, dst=None)
-        verdict = handoff_evidence.decide_bash(wt, parsed, wt)
+        verdict = handoff_evidence.decide_bash(parsed, wt)
         assert verdict.kind == "deny"
         assert verdict.rule == "unresolvable_sha"
 
@@ -283,10 +269,9 @@ class TestBaseRefReadUnknowns:
         wt = _new_branch_worktree(work, "claude/feature")
         _commit_file(wt, "src/thing.py", "print(1)\n")
         _write_real_evidence(wt, ok=True)
-        from scripts.session.handoff_push_parse import parse_canonical
 
         parsed = parse_canonical("git push origin claude/feature")
-        verdict = handoff_evidence.decide_bash(wt, parsed, wt)
+        verdict = handoff_evidence.decide_bash(parsed, wt)
         assert verdict.kind == "pass"
 
     def test_push_head_detached_denies_unresolvable_branch(self, tmp_path: Path) -> None:
@@ -294,20 +279,18 @@ class TestBaseRefReadUnknowns:
         wt = _new_branch_worktree(work, "claude/feature")
         _commit_file(wt, "src/thing.py", "print(1)\n")
         _git(["checkout", "--detach"], cwd=wt)
-        from scripts.session.handoff_push_parse import parse_canonical
 
         parsed = parse_canonical("git push -u origin HEAD")
-        verdict = handoff_evidence.decide_bash(wt, parsed, wt)
+        verdict = handoff_evidence.decide_bash(parsed, wt)
         assert verdict.kind == "deny"
         assert verdict.rule == "unresolvable_branch"
 
     def test_push_unresolvable_src_sha(self, tmp_path: Path) -> None:
         work = _make_repo(tmp_path)
         wt = _new_branch_worktree(work, "claude/feature")
-        from scripts.session.handoff_push_parse import parse_canonical
 
         parsed = parse_canonical("git push origin claude/no-such-branch-anywhere")
-        verdict = handoff_evidence.decide_bash(wt, parsed, wt)
+        verdict = handoff_evidence.decide_bash(parsed, wt)
         assert verdict.kind == "deny"
         assert verdict.rule == "unresolvable_sha"
 
@@ -331,8 +314,7 @@ class TestExemptSet:
         assert verdict.rule == "missing"
 
     def test_real_contract_exempt_clause_parses(self) -> None:
-        """The checker's own loader parses the REAL working-tree docs/contracts/git-ops.yaml
-        clause: docs/plans/x is exempt, git-ops.yaml itself is never-exempt."""
+        """The real working-tree git-ops.yaml clause: docs/plans/x exempt, git-ops.yaml never-exempt."""
         import scripts.checks._common as _common
 
         text = (_common.ROOT / "docs" / "contracts" / "git-ops.yaml").read_text(encoding="utf-8")
@@ -385,10 +367,9 @@ class TestDestination:
         wt = _new_branch_worktree(work, "claude/feature")
         _commit_file(wt, "src/thing.py", "print(1)\n")
         _write_real_evidence(wt, ok=True)
-        from scripts.session.handoff_push_parse import parse_canonical
 
         parsed = parse_canonical("git push -u origin HEAD")
-        verdict = handoff_evidence.decide_bash(wt, parsed, wt)
+        verdict = handoff_evidence.decide_bash(parsed, wt)
         assert verdict.kind == "pass"
 
 
@@ -397,14 +378,14 @@ class TestBareAndDelete:
         work = _make_repo(tmp_path)
         wt = _new_branch_worktree(work, "claude/feature")
         parsed = ParsedPush(kind="delete", worktree_hint=None, remote="origin", src=None, dst="claude/feature")
-        verdict = handoff_evidence.decide_bash(wt, parsed, wt)
+        verdict = handoff_evidence.decide_bash(parsed, wt)
         assert verdict.kind == "pass"
 
     def test_delete_main_denied(self, tmp_path: Path) -> None:
         work = _make_repo(tmp_path)
         wt = _new_branch_worktree(work, "claude/feature")
         parsed = ParsedPush(kind="delete", worktree_hint=None, remote="origin", src=None, dst="main")
-        verdict = handoff_evidence.decide_bash(wt, parsed, wt)
+        verdict = handoff_evidence.decide_bash(parsed, wt)
         assert verdict.kind == "deny"
         assert verdict.rule == "delete_main"
 
@@ -412,7 +393,7 @@ class TestBareAndDelete:
         work = _make_repo(tmp_path)
         wt = _new_branch_worktree(work, "claude/feature")
         parsed = ParsedPush(kind="delete", worktree_hint=None, remote="origin", src=None, dst="some-random-branch")
-        verdict = handoff_evidence.decide_bash(wt, parsed, wt)
+        verdict = handoff_evidence.decide_bash(parsed, wt)
         assert verdict.kind == "deny"
         assert verdict.rule == "delete_non_agent_branch"
 
@@ -421,7 +402,7 @@ class TestBareAndDelete:
         wt = _new_branch_worktree(work, "claude/feature")
         _git(["config", "push.default", "matching"], cwd=wt)
         parsed = ParsedPush(kind="bare_push", worktree_hint=None, remote="origin", src=None, dst=None)
-        verdict = handoff_evidence.decide_bash(wt, parsed, wt)
+        verdict = handoff_evidence.decide_bash(parsed, wt)
         assert verdict.kind == "deny"
         assert verdict.rule == "bare_push_default"
 
@@ -430,7 +411,7 @@ class TestBareAndDelete:
         wt = _new_branch_worktree(work, "claude/feature")
         _git(["config", "remote.origin.push", "+refs/heads/*:refs/heads/*"], cwd=wt)
         parsed = ParsedPush(kind="bare_push", worktree_hint=None, remote="origin", src=None, dst=None)
-        verdict = handoff_evidence.decide_bash(wt, parsed, wt)
+        verdict = handoff_evidence.decide_bash(parsed, wt)
         assert verdict.kind == "deny"
         assert verdict.rule == "bare_push_remote_push_set"
 
@@ -439,7 +420,7 @@ class TestBareAndDelete:
         wt = _new_branch_worktree(work, "claude/feature")
         _git(["config", "remote.origin.mirror", "true"], cwd=wt)
         parsed = ParsedPush(kind="bare_push", worktree_hint=None, remote="origin", src=None, dst=None)
-        verdict = handoff_evidence.decide_bash(wt, parsed, wt)
+        verdict = handoff_evidence.decide_bash(parsed, wt)
         assert verdict.kind == "deny"
         assert verdict.rule == "bare_push_remote_mirror"
 
@@ -448,7 +429,7 @@ class TestBareAndDelete:
         wt = _new_branch_worktree(work, "claude/feature")
         # A freshly created local branch (never pushed with -u) has no @{push} upstream yet.
         parsed = ParsedPush(kind="bare_push", worktree_hint=None, remote="origin", src=None, dst=None)
-        verdict = handoff_evidence.decide_bash(wt, parsed, wt)
+        verdict = handoff_evidence.decide_bash(parsed, wt)
         assert verdict.kind == "deny"
         assert verdict.rule == "bare_push_no_upstream"
 
@@ -459,7 +440,7 @@ class TestBareAndDelete:
         _commit_file(wt, "src/thing.py", "print(1)\n")
         _write_real_evidence(wt, ok=True)
         parsed = ParsedPush(kind="bare_push", worktree_hint=None, remote="origin", src=None, dst=None)
-        verdict = handoff_evidence.decide_bash(wt, parsed, wt)
+        verdict = handoff_evidence.decide_bash(parsed, wt)
         assert verdict.kind == "pass"
         assert verdict.rule == "ok"
 
@@ -532,19 +513,17 @@ class TestRemoteWrites:
 class TestBashNonCanonical:
     def test_non_canonical_denies_with_reason(self, tmp_path: Path) -> None:
         work = _make_repo(tmp_path)
-        from scripts.session.handoff_push_parse import parse_canonical
 
         parsed = parse_canonical("git push --force origin main")
-        verdict = handoff_evidence.decide_bash(work, parsed, work)
+        verdict = handoff_evidence.decide_bash(parsed, work)
         assert verdict.kind == "deny"
         assert verdict.rule == "non_canonical"
 
     def test_dry_run_passes(self, tmp_path: Path) -> None:
         work = _make_repo(tmp_path)
-        from scripts.session.handoff_push_parse import parse_canonical
 
         parsed = parse_canonical("git push --dry-run origin main")
-        verdict = handoff_evidence.decide_bash(work, parsed, work)
+        verdict = handoff_evidence.decide_bash(parsed, work)
         assert verdict.kind == "pass"
         assert verdict.rule == "dry_run"
 
@@ -553,10 +532,9 @@ class TestBashNonCanonical:
         wt = _new_branch_worktree(work, "claude/feature")
         _commit_file(wt, "src/thing.py", "print(1)\n")
         _write_real_evidence(wt, ok=True)
-        from scripts.session.handoff_push_parse import parse_canonical
 
         parsed = parse_canonical(f"git -C {wt} push -u origin HEAD")
-        verdict = handoff_evidence.decide_bash(work, parsed, tmp_path)
+        verdict = handoff_evidence.decide_bash(parsed, tmp_path)
         assert verdict.kind == "pass"
 
     def test_explicit_src_and_dst_refspec_uses_dst_directly(self, tmp_path: Path) -> None:
@@ -564,19 +542,33 @@ class TestBashNonCanonical:
         wt = _new_branch_worktree(work, "claude/feature")
         _commit_file(wt, "src/thing.py", "print(1)\n")
         _write_real_evidence(wt, ok=True)
-        from scripts.session.handoff_push_parse import parse_canonical
 
         parsed = parse_canonical("git push origin claude/feature:claude/feature")
-        verdict = handoff_evidence.decide_bash(wt, parsed, wt)
+        verdict = handoff_evidence.decide_bash(parsed, wt)
         assert verdict.kind == "pass"
+
+    def test_no_hint_push_checks_payload_cwd_not_some_other_worktree(self, tmp_path: Path) -> None:
+        """A no-hint push checks payload_cwd, never a fixed default (EnterWorktree isolation)."""
+        work = _make_repo(tmp_path)
+        wt_a = _new_branch_worktree(work, "claude/feature-a")
+        _commit_file(wt_a, "src/a.py", "print('a')\n")
+        _write_real_evidence(wt_a, ok=True)
+        wt_b = _new_branch_worktree(work, "claude/feature-b")
+        _commit_file(wt_b, "src/b.py", "print('b')\n")
+        # wt_b has no evidence at all.
+
+        parsed = parse_canonical("git push -u origin HEAD")
+        assert handoff_evidence.decide_bash(parsed, wt_a).kind == "pass"
+        verdict_b = handoff_evidence.decide_bash(parsed, wt_b)
+        assert verdict_b.kind == "deny"
+        assert verdict_b.rule == "missing"
 
     def test_destination_outside_prefixes_denied(self, tmp_path: Path) -> None:
         work = _make_repo(tmp_path)
         wt = _new_branch_worktree(work, "not-an-agent-branch")
-        from scripts.session.handoff_push_parse import parse_canonical
 
         parsed = parse_canonical("git push -u origin HEAD")
-        verdict = handoff_evidence.decide_bash(wt, parsed, wt)
+        verdict = handoff_evidence.decide_bash(parsed, wt)
         assert verdict.kind == "deny"
         assert verdict.rule == "destination"
 

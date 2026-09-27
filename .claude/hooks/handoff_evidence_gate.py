@@ -44,7 +44,6 @@ def _print_warn(message: str) -> None:
 
 
 def _handle_bash(tool_input: dict) -> int:
-    from scripts.checks import _common
     from scripts.session.handoff_evidence import decide_bash
     from scripts.session.handoff_push_parse import is_push_shaped, parse_canonical
 
@@ -55,7 +54,7 @@ def _handle_bash(tool_input: dict) -> int:
         return 0
 
     parsed = parse_canonical(command)
-    verdict = decide_bash(_common.ROOT, parsed, Path.cwd())
+    verdict = decide_bash(parsed, Path.cwd())
     if verdict.kind == "deny":
         sys.stderr.write(f"handoff-evidence-gate: {verdict.rule}: {verdict.message}\n")
         return 2
