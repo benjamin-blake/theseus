@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import os
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -227,11 +228,19 @@ class TestAdapterRouting:
         assert "handoff gate error" in stderr.getvalue()
 
 
+def _real_env(**overrides: str) -> dict[str, str]:
+    """Inherit the REAL environment (so bin/venv-python's venv-less PATH fallback keeps
+    working on a venv-less CI runner) rather than a hardcoded PATH that only happens to work
+    locally where .venv exists."""
+    env = dict(os.environ)
+    env.pop("GITHUB_ACTIONS", None)
+    env["CLAUDE_PROJECT_DIR"] = str(_REPO_ROOT)
+    env.update(overrides)
+    return env
+
+
 def _run_shim(payload: dict, env_overrides: dict[str, str] | None = None) -> subprocess.CompletedProcess:
-    env = {
-        "PATH": "/usr/bin:/bin:/usr/local/bin",
-        "CLAUDE_PROJECT_DIR": str(_REPO_ROOT),
-    }
+    env = _real_env()
     if env_overrides:
         env.update(env_overrides)
     return subprocess.run(
@@ -304,7 +313,7 @@ def test_shim_fails_closed_when_adapter_crashes(tmp_path: Path) -> None:
         input=json.dumps(non_push_payload),
         capture_output=True,
         text=True,
-        env={"PATH": "/usr/bin:/bin:/usr/local/bin"},
+        env={k: v for k, v in _real_env().items() if k != "CLAUDE_PROJECT_DIR"},
         timeout=60,
     )
     assert result.returncode == 0
@@ -318,7 +327,7 @@ def test_shim_fails_closed_when_adapter_crashes(tmp_path: Path) -> None:
         capture_output=True,
         text=True,
         cwd=unrelated,
-        env={"PATH": "/usr/bin:/bin:/usr/local/bin", "CLAUDE_PROJECT_DIR": str(_REPO_ROOT)},
+        env=_real_env(),
         timeout=60,
     )
     assert result.returncode == 0
@@ -330,7 +339,7 @@ def test_shim_fails_closed_when_adapter_crashes(tmp_path: Path) -> None:
         input=pretty_payload,
         capture_output=True,
         text=True,
-        env={"PATH": "/usr/bin:/bin:/usr/local/bin", "CLAUDE_PROJECT_DIR": str(_REPO_ROOT)},
+        env=_real_env(),
         timeout=60,
     )
     assert result.returncode in (0, 2)  # denies unless head happens to resolve; never "unavailable"
