@@ -92,7 +92,7 @@ scope:
   purpose: >-
     Add src/turn_capture to excludes beside src/telemetry (Decision 79 V2 ground; the wildcard src/ include would otherwise
     package it). The edit marks data-pipeline affected through its own manifest only; no deploy is owed -- neither
-    deploy-prod-lambdas nor deploy-ducklake-lambdas push paths match the manifest or src/turn_capture (step 9).
+    deploy-prod-lambdas nor deploy-ducklake-lambdas push paths match the manifest or src/turn_capture (step 11).
 - file: .importlinter
   action: Modify
   purpose: >-
@@ -273,7 +273,7 @@ followon_recs:
 infrastructure_dependencies:
 - >-
   None owed. data-pipeline is marked affected only through its own manifest's excludes line (Decision 79 V2 ground,
-  slice-1 precedent); neither deploy-prod-lambdas nor deploy-ducklake-lambdas push paths match any changed file (step 9).
+  slice-1 precedent); neither deploy-prod-lambdas nor deploy-ducklake-lambdas push paths match any changed file (step 11).
 acceptance_criteria:
 - Every src/turn_capture/ module is under 500 SLOC and at 100% per-file coverage from its own mirror test, importing only stdlib and src.telemetry.timestamps at runtime; the importlinter contract passes.
 - Every golden case parses to exactly the expected_rows array embedded in its case file, and no emitted value contains a secret-shaped string.
@@ -378,24 +378,42 @@ verification_plan:
   - ACCEPTANCE_OK
 - step: 6
   phase: pre-deploy
-  action: Plane-neutral boundary, import contracts and data-pipeline exclusion.
+  action: Plane-neutral package boundary (AST scan, empty facade, importlinter contract declared).
   command: >-
     bin/venv-python -m pytest tests/turn_capture/test_package_boundary.py::test_runtime_imports_are_stdlib_or_timestamps
     tests/turn_capture/test_package_boundary.py::test_importlinter_contract_declared
-    tests/turn_capture/test_package_boundary.py::test_init_defines_nothing
-    tests/lambda_manifest/test_bundle_checks.py::test_turn_capture_excluded_from_data_pipeline -q &&
+    tests/turn_capture/test_package_boundary.py::test_init_defines_nothing -q
+  expected: 'Exit 0, 3 passed. Red before: the module and nodes do not exist.'
+  fix_if: A forbidden import -> take the value as an argument or move the logic; never widen the contract.
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: turn-capture-plane-neutral
+  expected_literals: []
+- step: 7
+  phase: pre-deploy
+  action: src/turn_capture stays out of data-pipeline.zip.
+  command: bin/venv-python -m pytest tests/lambda_manifest/test_bundle_checks.py::test_turn_capture_excluded_from_data_pipeline -q
+  expected: 'Exit 0, 1 passed. Red before: the node does not exist.'
+  fix_if: The staged bundle carries a turn_capture path or the artifact is affected -> restore the excludes entry; never deploy.
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: turn-capture-excluded-from-data-pipeline
+  expected_literals: []
+- step: 8
+  phase: pre-deploy
+  action: Every .importlinter contract holds, including the new turn-capture fence.
+  command: >-
     bin/venv-python -c "from scripts.import_governance import run_import_contracts as r; ok,out=r(); print(out[-400:]); assert ok; print('IMPORTS_OK')"
-  expected: Exit 0, 4 passed and the import success marker printed.
-  fix_if: A forbidden import -> take the value as an argument or move the logic; never widen the contract or drop the exclude.
+  expected: Exit 0 and the import success marker printed.
+  fix_if: A broken contract names the importing module -- remove the import; never widen the contract.
   hermetic: true
   graduation: waive
   graduation_waiver_reason: >-
-    Multiple commands; the two pytest modules are graduated at module level by the implementing session's registry rows
-    turn-capture-plane-neutral and turn-capture-excluded-from-data-pipeline (slice-1 precedent), and lint-imports already
-    runs in every scripts.validate tier.
+    lint-imports already runs in every scripts.validate tier (scripts.import_governance), so a registry row would
+    duplicate standing coverage; step 6's graduated row guards that the new contract stays declared.
   expected_literals:
   - IMPORTS_OK
-- step: 7
+- step: 9
   phase: pre-deploy
   action: End to end on a real local DuckLake catalog built from the ratified contracts (Decision 99 pinned engine).
   command: bin/venv-python -m pytest tests/turn_capture/test_capture_ducklake_integration.py -m integration -q
@@ -408,7 +426,7 @@ verification_plan:
   graduation_waiver_reason: >-
     Integration tier by construction (network-installed extension, importorskip duckdb). Steps 3 and 4 guard the emitted
     shape and R7 standing in the fast tier.
-- step: 8
+- step: 10
   phase: pre-deploy
   action: >-
     Real-transcript conformance (operator choice 2026-09-28): the producer over REAL Claude Code transcripts on the
@@ -430,7 +448,7 @@ verification_plan:
     Needs machine-local real Claude Code transcripts that CI runners do not have and the public repository must never
     hold; a registry row could never run. Steps 3 and 4 are the standing fast-tier guards of the same rules on the
     synthetic corpus, and every shape it discovers is fed back as a synthetic golden case.
-- step: 9
+- step: 11
   phase: pre-deploy
   action: >-
     Assert no changed file matches either deploy workflow's push path globs and data-pipeline is flagged only via its own
@@ -450,9 +468,9 @@ verification_plan:
   graduation: waive
   graduation_waiver_reason: >-
     Reads the transient diff against the merge-base with origin/main, empty on main after merge, so a registry row could
-    never discriminate; the standing guards are step 6's bundle test, the deploy workflows' own path filters and
+    never discriminate; the standing guards are step 7's bundle test, the deploy workflows' own path filters and
     validate_deploy_channel_conformance.
-- step: 10
+- step: 12
   phase: pre-deploy
   action: Full validation tier before handoff (SLOC, size, per-file coverage, graduation completeness, import contracts).
   command: bin/venv-python -m scripts.validate
@@ -460,7 +478,7 @@ verification_plan:
   fix_if: Fix the named check; decompose rather than raise a budget; never skip a check.
   hermetic: false
   graduation: not-applicable
-- step: 11
+- step: 13
   phase: post-deploy
   action: >-
     Closure -- after the squash merge carrying 'Resolves: rec-4122', confirm it reads closed and rec-4026 stays open.
@@ -541,7 +559,7 @@ test_obligations:
   red_green_expectation: red before (entry and node absent), green after
 - source: src/lambdas/data-pipeline/manifest.yaml
   behavior: src/turn_capture is excluded from data-pipeline.zip.
-  verification_step: 6
+  verification_step: 7
   test_selector: tests/lambda_manifest/test_bundle_checks.py::test_turn_capture_excluded_from_data_pipeline
   red_green_expectation: red before (node absent; the src/ wildcard packages the new files), green after
 - source: .importlinter
@@ -551,7 +569,7 @@ test_obligations:
   red_green_expectation: red before (contract absent), green after
 - source: docs/contracts/file-router.yaml
   behavior: Route entry only (discovery index); no runtime behavior.
-  verification_step: 10
+  verification_step: 12
   command: bin/venv-python -m scripts.validate
   waiver_reason: Documentation routing entry; its schema and allowlist shape are checked by the existing file-router validation in the full tier.
 constraints:
@@ -580,11 +598,11 @@ context:
   by making billing_shape a pinned capture input (default fixed_non_rollover_allowance) plus rec-4147. RELATED 97, 84,
   81, 126, 125, 128, 130, 131, 148, 189, 201, 208, 168, 66, 67, 101, 205.
   Decisions triaged: 161 of 161. Roadmap items intersected: 4; CONFLICT: 0; RELATED: 4.
-- "gates: decision-scout=FLAGS_FOUND (resolved, 2 runs); independent-review=reconciled; plan-critique=<pending> (round 1 REVISE 7 fixes, round 2 REVISE 4+6 fixes)"
+- "gates: decision-scout=FLAGS_FOUND (resolved, 2 runs); independent-review=reconciled; plan-critique=<pending> (round 1 REVISE 7 fixes, round 2 REVISE 4+6, round 3 REVISE 1+4)"
 - >-
   Operator choices (2026-09-28 thread): split slice 3 -- this core now, hooks/writes/project_ref as slice 3b on rec-4026
   after rec-4024 (coordinator told); bundle rec-4122; emit per CLOSED turn; add the real-transcript conformance step
-  (step 8) and a facts-only independent design review; additive plan changes pre-approved.
+  (step 10) and a facts-only independent design review; additive plan changes pre-approved.
 - >-
   Independent review (Fable, facts-only brief): /mnt/project-files/telemetry-slice3/fable-independent-review.md.
   Adopted: session-open ref, pin/line/companion rules, stream membership by fields, turn close at the last assistant
@@ -626,13 +644,13 @@ execution_steps:
   tests/telemetry/test_parser_version_registry.py and the new bundle-check node. Confirm the VP nodes FAIL on the
   unchanged tree.
 - >-
-  Run the step-8 conformance walk (independent raw reader only) over the implementing session's own transcripts FIRST,
+  Run the step-10 conformance walk (independent raw reader only) over the implementing session's own transcripts FIRST,
   after spawning at least one sub-agent, to pin the literal values the facts left open before PARSER_VERSION 1 is frozen:
   the background-agent completion record predicate, the harness denial and interrupt sentinels, whether Claude Code
   writes a native compaction or resume marker record (else which hook attachments mark one), whether any record lacks a
   parseable timestamp, how a slash-command invocation is recorded in the user record (plain leading slash or harness
   markup such as a command-name tag -- the workflow rule parses whichever is observed), and whether any record uuid
-  recurs across root files (fork/copied history; a hit is a STOP per step 8's fix_if). Reproduce each pinned literal
+  recurs across root files (fork/copied history; a hit is a STOP per step 10's fix_if). Reproduce each pinned literal
   synthetically in golden/observed_real_shapes.json.
 - >-
   Create src/turn_capture/{__init__,scrub,transcript,streams,refs,observations,transcripts,sessions,cursor,record_turn,render}.py
@@ -660,7 +678,11 @@ execution_steps:
   name, parent turn, sequence 1-based in the turn) and close at its tool_result block ('.../tool_call_close'); outcome
   precedence blocked (is_error and a pinned denial prefix, or a hook_* attachment for that toolUseID with exitCode 2),
   then interrupted (toolUseResult.interrupted or a pinned interrupt sentinel, or the turn closed with no result), then
-  error (is_error), else success. process_event point per hook_* attachment ('<uuid>#0/process_event', entity_ref =
+  error (is_error), else success. A tool_use with no tool_result inside its turn span gets ONE synthetic interrupted
+  close when the turn closes: external_ref '<tool_use record uuid>#<block>/tool_call_close', event_timestamp and
+  source_ordinal of the span's last record. A tool_result located after its tool_use's turn span ended is late: no
+  close row, counted in diagnostics.late_tool_results (the same rule in incremental and full parses, so R7 holds). At
+  most one close row per tool_call entity_ref. process_event point per hook_* attachment ('<uuid>#0/process_event', entity_ref =
   external_ref, name 'hook:<stem of the .py/.sh script in command>' else 'hook:<hookName with : as .>', severity info
   for exit 0, error for 2, warning otherwise, parent = the tool_call for its toolUseID else the turn). Tool errors are
   NOT process_events.
@@ -678,11 +700,14 @@ execution_steps:
   else claude_code,
   execution_attempt 1, branch = first non-empty gitBranch, model_primary = first assistant model; emitted once its turn
   is closed. Exactly ONE compact row per compaction and one resume row per resume (execution_attempt 2+): sourced from
-  the native marker record when step 2 finds one, else from the first of the SessionStart:resume, SessionStart:compact,
-  PreCompact and PostCompact hook attachments belonging to that one event. Sub-agent session '<sessionId>:<agentId>#0/open', entity_ref
+  the native marker record when step 2 finds one; else a compaction is the group of PreCompact, SessionStart:compact and
+  PostCompact hook attachments (and a resume the SessionStart:resume attachments) lying between the same two
+  consecutive prompt-or-assistant records, and the row comes from the group's first attachment
+  (hooks_resume_and_compact asserts exactly one row each). Sub-agent session '<sessionId>:<agentId>#0/open', entity_ref
   '<sessionId>:<agentId>', parent_session_ref = the spawning stream's session, workflow subagent, event_timestamp and
   session_started_at = the ROOT's (contract letter; risk filed). A child's rows are emitted only once the parent holds its
-  completion (sync: the spawning tool_result; background: the pinned completion record) or session_final.
+  completion (sync: the spawning tool_result; background: the pinned completion record) or session_final; that
+  completion evidence acts as a virtual EOF prompt for the child stream, closing its last turn.
   telemetry_agents open/close keyed on the spawning toolUseId, session_ref = child, observation_ref = the spawning
   tool_call, agent_type claude-code-subagent, version = the CLI version field, outcome failed on is_error/interrupted
   else success, error scrubbed. R7 purity: every agents column comes from TRANSCRIPT RECORDS only -- agentId from the
@@ -693,8 +718,14 @@ execution_steps:
 - >-
   Pinned cursor and emission rules: one cursor per root tree -- {cursor_format, producer, parser_version,
   root_session_ref, project_ref, billing_shape, session_started_at_ms (integer epoch ms), per-file lines_consumed,
-  sidecar dispositions (present+sha256 | absent)} -- positions and pins only, never pending rows (Decision 84 I-4). Each pass re-parses the whole tree and emits exactly the rows of closed turns (and complete
-  sub-agents) not emitted before. A different project_ref, billing_shape or root session raises; a sidecar contradicting a present pin
+  sidecar dispositions (present+sha256 | absent), finalized flag} -- positions and pins only, never pending rows
+  (Decision 84 I-4). Selection predicate: a row is emitted in this pass iff its emission condition holds over the tree at
+  the current positions with this call's session_final AND did not hold over the tree truncated to the cursor's
+  per-file lines_consumed with the cursor's finalized flag -- both evaluated by the same pure rules and the cursor's pins.
+  So a finalized tree that later grows (a resumed session) re-emits nothing already emitted.
+  test_incremental_equals_full_at_every_line_cut enumerates multi-file cuts in which child-file lines advance
+  independently of the parent's, including a cut where the child file is complete before the parent's completion
+  record. A different project_ref, billing_shape or root session raises; a sidecar contradicting a present pin
   raises; an absent pin is honoured. parser_version mismatch -> reset everything except the four pins and re-emit the
   whole tree (data first, sessions last).
 - >-
@@ -707,7 +738,8 @@ execution_steps:
 - >-
   Pinned conformance invariants (independent raw walk, never src.turn_capture.transcript): root transcripts under
   TURN_CAPTURE_REAL_TRANSCRIPTS else ~/.claude/projects/*/*.jsonl, FAIL when none; per stream, model_call rows ==
-  distinct message.id; tool_call opens == tool_use blocks and closes == tool_result blocks plus interrupted closes;
+  distinct message.id; tool_call opens == tool_use blocks; at most one close row per tool_call entity_ref and closes ==
+  in-span tool_result blocks plus synthetic interrupted closes (late results counted, never closed twice);
   turn opens == distinct prompt promptIds; one agents open and one child session per meta.json whose toolUseId is in the
   tree; the four token sums equal the raw final-usage sums; no duplicate (table, external_ref); every ref passes
   canonical_ref; one session_started_at per tree; incremental == full at every prompt and every 50 lines; no scrub
@@ -721,9 +753,9 @@ execution_steps:
   Generate each case file's expected_rows from the implementation, review each row against the pinned rules (never accept
   generated output unread), then write config/telemetry/parser_versions.yaml with the digest.
 - Modify src/lambdas/data-pipeline/manifest.yaml, .importlinter, docs/contracts/file-router.yaml and config/agent/data_quality/source_registry.yaml per scope.
-- Write the registry rows for graduated steps 1, 3, 4 and 5, plus module-level rows turn-capture-plane-neutral and turn-capture-excluded-from-data-pipeline.
+- Write the registry rows for graduated steps 1, 3, 4, 5, 6 and 7 (check ids as declared on each step).
 - Keep each golden case small (the every-line-cut incremental test is O(lines squared) per case and is priced by Decision 208's measured-cost budget).
-- Execute Verification Plan steps 1-10 -- loop until pass (Decision 55).
+- Execute Verification Plan steps 1-12 -- loop until pass (Decision 55).
 - >-
   Portal bookkeeping (get_rec_write_guidance first, Decision 66; fetch-before-update via rec_by_id, prepend a dated note,
   never overwrite): rec-4026 context gains a note headed '[SLICE 3A DELIVERED <date> via PLAN-telemetry-turn-capture-core]' with the delivery, the handed-on list and the tool-error deviation from
@@ -733,10 +765,10 @@ execution_steps:
   CLOSURE -- separate facts, in order (a)-(e) (implement skill Commit Flows; docs/contracts/git-ops.yaml handoff_sequence),
   each reported on its own. (a) READINESS: bin/venv-python -m scripts.session.github_readiness, record each state as
   reported. (b) Set implementation_declared true on this plan, then re-run bin/venv-python -m scripts.validate --pre.
-  (c) Commit, git fetch origin main and git rebase origin/main (STOP on conflict), then VP step 10 on the committed,
+  (c) Commit, git fetch origin main and git rebase origin/main (STOP on conflict), then VP step 12 on the committed,
   rebased, clean tree and bin/venv-python -m scripts.checks.validation_result --verify-head; on timeout the disposition is
   blocked. (d) Structured postflight evidence via scripts.session.postflight --evidence. (e) Push, open the PR, subscribe,
-  on green CI squash-merge with commit_message carrying 'Resolves: rec-4122' in its own trailer block; then run step 11.
+  on green CI squash-merge with commit_message carrying 'Resolves: rec-4122' in its own trailer block; then run step 13.
 rollback: >-
   Revert the squash commit. Nothing is deployed, provisioned or registered; the excludes line and importlinter contract
   revert with it. rec-4122 re-opens via update_rec if the revert lands after closure.
