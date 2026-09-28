@@ -2,6 +2,59 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 209: Open-core paywall on organisational scale, never capability -- a multi-tenant, metadata-only control plane over a customer-owned data plane, and three monorepos placed by platform-vs-product and visibility (amends Decision 184 clause 1, Decision 178 and Decision 101 point (f)) (Decided)
+
+```yaml
+number: 209
+status: Decided
+decided_date: "2026-09-28"
+amends: [184, 178, 101]
+significance:
+  value: numbered_decision
+  justification: >-
+    Durable, reversal-relevant product-boundary commitment (paywall, plane and tenancy model,
+    repository topology) resolving 184 clause 1's adapter residency, relocating 178's
+    products and discharging 101 point (f) in part. Not a contract note: no docs/contracts file
+    owns the commercial boundary. Not an amendment_forms annotation: no prior entry owns it.
+```
+
+**Status:** Decided
+**Date:** 2026-09-28
+**Warehouse ID:** dec-209 (per Decision 84 backfill)
+
+**Problem:** Decision 184 makes this repository the free tier and the paid plane a separate repository, but not where the paywall falls, how tenant data is held, where products live, or whether cloud adapters stay public (its `adapter-residency` condition), so an agent could paywall capability.
+
+**Intent:** One team runs the whole governed loop on one repository for free; On The Loop charges for organisational scale.
+
+**Decision:**
+1. **Paywall.** The line is organisational scale, never capability (here: single-team governed-loop function). Everything one team needs to run the full governed loop on one repository is free. Paid: multi-repository operation; the multi-tenant control plane (tenancy-enforcement code stays in the public cloud adapter, Decision 200 clause 2); SSO/RBAC; audit, and retention policy set in the control plane over data that stays in the data plane; org-wide distribution of north stars and Tier C overrides (Decision 196; per-repository tiers and the Tier B snapshot stay free); fleet telemetry dashboards over allow-listed Decision 199 metadata; the cross-product DAG layer (multi-repository aggregation, not Decision 197's edge model); hosted compute. These are the capability absent from the core that Decision 194 condition (b) requires. Pattern: dbt Core/Cloud, Dagster/Dagster+, Databricks, HashiCorp Cloud. Decision 101 point (f) is discharged for boundary and architecture only; no commercial surface, pricing or terms is built here.
+2. **Planes and tenancy.** A managed control plane runs over a customer-owned data plane; the open core is the data plane. Deployment terms, not Decision 57's governed-harness sense; it is Decision 184's paid management plane and Decision 205's paid plane. (a) The control plane is multi-tenant and holds metadata only; tenant data and agent transcripts never leave the data plane. (b) What crosses is an explicit allow-list of metadata fields, never a deny-list: free-text telemetry (titles, paths, error messages) can leak tenant data. (c) The data plane is customer-owned by default; an optional fully-hosted variant, where On The Loop hosts a customer's data, is single-tenant (dedicated per customer), never multi-tenant for customer data. (d) Access follows least-privilege, customer-revocable IAM principles.
+3. **Repositories, placed by platform-vs-product and visibility.** (1) This public repository (BUSL-1.1; Apache-2.0 on Decision 194's flip) stays platform-only (Decision 178), a curated projection (Decision 111): CLI, governed loop, ports and all adapters, a docs site rendering agent-consumed sources that runs locally for the user (`docs serve`; any public site stays bound by Decision 101 point (d)), single-project dashboard templates, `examples/` (small platform reference builds, never a product) and `marketing/` (blog and design-rationale posts, Decision 101(c)); no new Decision 127 prose class. (2) One public products monorepo (Decision 101 point (d) binds it, imported as Tier B via `otl init`, Decision 196): open-code products, including showcase products that may also be hosted for revenue. (3) One private monorepo: the paid control plane and closed-code products (the trading product, Decision 198 clause 1), in one repository because they share one access boundary today. Products and the control plane import released platform versions (Decision 184 clause 1; T4.24 c3); nothing about (3) beyond this is published. No other repository is created speculatively.
+4. **Adapter residency.** The AWS and other cloud adapters stay public: running on your own cloud is capability. Only hosted compute is paid. This discharges Decision 184's `adapter-residency` condition for clause 1 only; its grant leg rests with Decision 194 clause 4 and T4.24 c6, whose non-binding hosted-or-managed-service carve-out this line matches.
+5. **Open.** (i) The concrete metadata allow-list, and the transport (the control plane pulls through a customer-granted role, or the data plane pushes): rec-4141. (ii) A paid smart-model-routing add-on over the LiteLLM lane (rec-3624) is a candidate only.
+
+**Options considered:** One private monorepo with a Copybara/ShipIt public export -- rejected for now: an import-back per external contribution, and machinery disproportionate for a solo founder. Open products inside this repository -- rejected: it reverses Decision 178's platform-only cleanse.
+
+```yaml reversal-conditions
+decision: 209
+review_by: 2027-03-31
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: split-friction
+    kind: manual
+    description: "The repository split causes real friction: revisit one private monorepo with a public export."
+  - id: access-boundary
+    kind: manual
+    description: "A new access boundary appears (e.g. product access without company-ops access): split the private monorepo."
+  - id: allow-list-transport
+    kind: manual
+    description: "rec-4141 decides the metadata allow-list and transport: amend clause 5(i)."
+```
+
+**Related:** Decisions 57, 84, 101, 111, 127, 171, 178, 184, 194, 196, 197, 198, 199, 200, 205 (101, 178 and 184 clause 1 amended); T4.24; rec-3923 (superseded by this entry), rec-3624, rec-4141.
+
+---
+
 ## Decision 208: Fast-tier budget re-derived from the recorded CI population -- measured per-module cost gates and predicts alike (amends Decision 182) (Decided)
 
 ```yaml
@@ -1864,6 +1917,8 @@ conditions:
 
 > **Update (2026-09-28):** Clause 4's user-owned CLI backend, as amended by Decision 205, is specified by Decision 206 -- purpose, credential by substrate, the LiteLLM clarification, outcome parity, leash and usage window; the adapter is post-MVP (T4.27).
 
+> **Amended by Decision 209 (2026-09-28):** Clause 1's adapter residency is decided: the AWS and other cloud adapters stay public in this repository and only hosted compute is paid (Decision 209 clause 4). The `adapter-residency` condition is discharged for clause 1 only; its Decision 171 grant leg rests with Decision 194 clause 4 and T4.24 c6. The paid management plane is Decision 209 clause 2's managed control plane (multi-tenant, metadata only), held in the private monorepo of clause 3, importing released versions of the core.
+
 ---
 
 ## Decision 183: Two heal verbs for a red sandbox record, one routing rule -- the acknowledge-and-retry dispatch becomes total (a guard-routed fresh plan at HEAD reaches tf-gated-apply); Reconcile heals at the red commit (amends Decision 126 point 1's reconcile intent; extends Decision 158's Environment-reach accounting) (Decided)
@@ -2326,6 +2381,8 @@ significance:
 
 **Intent:**
 Theseus is the platform only; hosted products live in their own repositories and import it.
+
+> **Amended by Decision 209 (2026-09-28):** The Intent's "hosted products live in their own repositories" now reads: products live in the products monorepo matching their visibility -- open-code products in one public products monorepo, closed-code products (the trading product, Decision 198 clause 1) in the one private monorepo that also holds the paid control plane (Decision 209 clause 3). This repository stays platform-only; its examples/ tree holds small platform reference builds, never a product.
 
 **Problem:**
 The repository carried three estates past their end of life: the first hosted product's code
@@ -6766,6 +6823,8 @@ to this numbered Decision).
 > `platform-security-*`, for the IAM-change detector's resources in `terraform/bootstrap` only (the
 > separate explicit decision point (b) requires). The `agent-platform-*` prefixes stay frozen for
 > everything else. See Decision 202 clause 3.
+
+> **Amended by Decision 209 (2026-09-28):** Point (f)'s deferred paid service offering is further discharged for boundary and architecture only: Decision 209 draws the paywall on organisational scale, a metadata-only managed control plane over a customer-owned data plane, and the repository topology. No commercial surface, pricing or terms is built, so the rest of that deferral stands; point (d) binds any public docs site.
 
 **Problem:**
 The platform and its trading product were operating under purely internal identifiers (repo
