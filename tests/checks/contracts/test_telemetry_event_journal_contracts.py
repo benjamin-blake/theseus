@@ -362,3 +362,37 @@ def test_partition_by_is_calendar_day_triple() -> None:
             assert not _BARE_DAY_RE.search(text), f"{path.name}: bare day(session_started_at) in {raw!r}"
             assert "day() partition" not in text, f"{path.name}: 'day() partition' in {raw!r}"
             assert "day()-partition" not in text, f"{path.name}: 'day()-partition' in {raw!r}"
+
+
+class TestObservationsPersonaBackend:
+    def test_backend_and_billing_shape_dimensions(self) -> None:
+        doc = _load("telemetry_observations")
+        ip = yaml.safe_load((_CONTRACTS_DIR / "inference-provider.yaml").read_text(encoding="utf-8"))
+
+        expected = {
+            "persona_backend": set(ip["vocabulary"]["axes"]["persona_backend"]["values"]),
+            "billing_shape": set(ip["tier_model"]["billing_shape_vocabulary"]),
+        }
+        assert expected == {
+            "persona_backend": {"litellm", "claude_cli"},
+            "billing_shape": {"metered_marginal", "fixed_non_rollover_allowance"},
+        }
+
+        for name, values in expected.items():
+            spec = doc.fields[name]
+            assert spec.ref is None
+            assert set(spec.dq_intent["accepted_values"]["values"]) == values
+
+        assert doc.fields["billing_shape"].dq_intent["required_when"] == {
+            "event_kind": ["point"],
+            "observation_type": ["model_call"],
+        }
+        assert "required_when" not in doc.fields["persona_backend"].dq_intent
+
+        assert "codex_cli" not in doc.fields["persona_backend"].dq_intent["accepted_values"]["values"]
+        assert "cost_usd_reported" in doc.fields["billing_shape"].semantics
+
+        cost_usd = doc.fields["cost_usd"]
+        assert "billing_shape" in cost_usd.derivation["inputs"]
+        assert "fixed_non_rollover_allowance" in cost_usd.derivation["formula"]
+        assert "cost_usd_reported" in cost_usd.derivation["formula"]

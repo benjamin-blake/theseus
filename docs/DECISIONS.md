@@ -140,6 +140,64 @@ OUT OF SCOPE: Type-1 current projections (derived, rebuildable from history, Dec
 
 ---
 
+## Decision 206: User-owned CLI persona backend -- one end user's own Claude subscription drives personas through the unmodified Claude Code CLI behind run_persona on user-owned substrate, at outcome parity under one persona contract; post-MVP (amends Decision 164) (Decided)
+
+```yaml
+number: 206
+status: Decided
+decided_date: "2026-09-28"
+amends: [164]
+significance:
+  value: numbered_decision
+  justification: "Durable credential, parity, leash and vocabulary rule for a second persona backend with reversal conditions; inference-provider.yaml gets the vocabulary but governs no credential or parity rule; amendment_forms cannot carry a new position"
+```
+
+**Status:** Decided
+**Date:** 2026-09-28
+**Warehouse ID:** dec-206 (per Decision 84 backfill)
+
+**Problem:** Decision 205 clause 4 permits an end user's own subscription as a user-owned CLI backend and defers its design here (T4.27). Its purpose, credential rule, parity bar and leash are unset while the persona contract, run_persona port and Decision 199 telemetry are designed for litellm alone; "Claude" and "api" each name three different things; Decision 164 requires a routing reopen to price the substrate collapse.
+
+**Evidence** (code.claude.com/docs/en/legal-and-compliance, retrieved 2026-09-27): the binary runs unmodified; "each end user must authenticate with their own ... Claude subscription plan credentials"; "Nor does it prevent an end user from signing in to the unmodified Claude Code binary with their own Claude subscription, including where a platform hosts Claude Code"; "developers may not collect, store, or intermediate Claude.ai credentials or session tokens"; "Advertised usage limits for Pro and Max plans assume ordinary, individual usage". The Agent SDK overview bars third parties from offering claude.ai login, so the backend is the CLI as a subprocess, never the Agent SDK with OAuth.
+
+**Decision:**
+1. Purpose. Free-tier users run personas on a subscription they already pay for; nothing is added. The persona contract's capability set is the ceiling on both backends: CLI extras (web search, plugins, skills, memory) are denied unless a capability names them. One subscription serves one individual, never shared or pooled.
+2. Credential, names never values. On The Loop code handles credential names only and never reads, logs, stores or forwards a value. Laptop: the CLI's own saved login. Local container: a token the user minted with claude setup-token, injected by env file. The user's own GitHub repository: that token as the user's Actions secret, for Decision 205 clause 1's verdict personas only. The user's own AWS account: Fargate's native secret injection, never Lambda. The hosted paid plane never.
+3. Clarified, not amended: every AI API call On The Loop code makes goes through LiteLLM (CD.28, Decisions 122 and 173; realized at T4.2 and T4.12); a Claude Code run under the end user's subscription is not one. So claude_cli is subscription-only: preflight refuses when an API key or higher-precedence credential is present, and an API key, BYOK included, runs on the litellm backend. Decision 173's role pair binds deployments On The Loop operates; a user-owned deployment may run one BYOK key as primary only. The vocabulary lives in inference-provider.yaml.
+4. Parity. Defined once in the persona contract (T4.10a), rendered for both backends. Outcome parity -- verification gates and cost-per-verified-merge per (persona, backend) -- never trajectory parity.
+5. Leash unchanged. An OS sandbox and Decision 185's leash sit outside the persona; the CLI runs in bypass-permissions mode inside the sandbox and can loosen nothing.
+6. Usage window. Concurrency 1 by default; a plan-limit signal pauses the queue, never a retry storm. Unattended queue use is not "ordinary, individual usage" and is the end user's account risk, documented as such.
+7. Timing. The adapter is post-MVP (T4.27). Before MVP only: capability-named tools, a hashed rendered system prompt, turn and wall-clock budgets (no dollars) and a per-persona output schema (T4.10a); run_persona(contract, workspace, backend) -> (result, events) with backend in {litellm, claude_cli} and codex_cli reserved behind an OpenAI-terms start gate; persona_backend and billing_shape on the model_call event (Decision 199); one On The Loop MCP server both backends consume; a T4.15 CLI-viability row.
+8. Collapse priced. litellm stays the default backend on every CD.27 arm and the only run_persona backend of a deployment On The Loop operates (first-party use, Decision 184 clause 4, and ci-rca's claude -p until T4.26 are not run_persona backends), so Decision 164's routing stands there and no arm leaves the set; claude_cli is additive where a user-owned deployment of an arm hosts the CLI (T4.15 c11).
+
+**Options considered:** Agent SDK with claude.ai OAuth -- rejected: barred for third parties. claude_cli on an API key -- rejected: an AI API call outside LiteLLM.
+
+```yaml reversal-conditions
+decision: 206
+review_by: 2027-03-31
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: terms-tightened
+    kind: manual
+    description: "Anthropic tightens hosted-CLI or subscription terms: re-derive clauses 2 and 6 or withdraw claude_cli."
+  - id: openai-terms-fail
+    kind: manual
+    description: "OpenAI terms fail equivalency at the codex_cli start gate: drop codex_cli."
+  - id: parity-unheld
+    kind: manual
+    description: "After T4.27 lands, outcome parity misses T4.27's stated tolerance: withdraw claude_cli."
+  - id: litellm-default-lost
+    kind: manual
+    description: "litellm stops being the default on a CD.27 arm, or an operated deployment admits claude_cli behind run_persona: re-price clause 8."
+  - id: sanctioned-lane
+    kind: manual
+    description: "Anthropic ships a sanctioned programmatic subscription lane: re-evaluate the subprocess shape."
+```
+
+**Related:** Decisions 116, 122, 164, 173, 184, 185, 199, 205; CD.27, CD.28; T4.10a, T4.15, T4.27; PLAN-persona-event-origin-plans-in-git.
+
+---
+
 ## Decision 205: GitHub-hosted persona compute keys on GitHub event origin; plans live in git; unattended agents use the API-key lane (amends Decision 184, Decision 87, Decision 116 and Decision 73) (Decided)
 
 ```yaml
@@ -555,6 +613,8 @@ conditions:
 **Related:** Decision 95 (the model this amends), Decision 96 (temporal standard amended), Decision 97 (identity standard amended), Decision 81 clause 8 (answered, not amended), Decision 84 (DuckLake substrate), Decision 184 clause 2 (blob port rule), Decision 200 (tenant/project identity, decided alongside), T2.36 (Phase 4 rebuild), T3.20 (turn capture), rec-4024/rec-4025/rec-4026/rec-4030/rec-4031/rec-4032.
 
 > **Update (2026-09-25):** clause 2's day(session_started_at) always meant the UTC calendar day, which DuckLake spells year(session_started_at), month(session_started_at), day(session_started_at) together, because its day() alone is day-of-month (rec-4065).
+
+> **Update (2026-09-28):** Decision 206 adds persona_backend (litellm | claude_cli) and billing_shape (metered_marginal | fixed_non_rollover_allowance) to telemetry_observations' model_call rows; cost_usd derives only for metered_marginal, and cost-per-verified-merge derives at read per (persona, backend). The field semantics live in the contract.
 
 ---
 
@@ -1802,6 +1862,8 @@ conditions:
 
 > **Amended by Decision 205 (2026-09-28):** Clause 3's "never persona compute" mis-encoded rec-3386; Decision 205 clause 1 replaces it with an event-origin rule -- a verdict-shaped LLM persona triggered by a GitHub-originated repository event may run on GitHub-hosted runners, planning and implementation persona compute never does, and the verdict-plane role and reselling note stand. Clause 4 now reads: "A consumer subscription is never a credential On The Loop holds or intermediates in any tier; it is permitted as a user-owned CLI backend (the unmodified vendor CLI, signed in by the user, on user-owned substrate) and never on the paid plane On The Loop hosts. API keys via LiteLLM remain the sole inference lane On The Loop holds." Operator use of CC-web and setup-token CI stays first-party and out of product scope; moving the unattended ci-rca and subagent-plan-review to API keys (T4.26) is this deployment's own choice, not a product-credential ruling. This entry's actions-policy condition (the explicit-allowance direction) stays live; Decision 205's stanza adds the restriction direction.
 
+> **Update (2026-09-28):** Clause 4's user-owned CLI backend, as amended by Decision 205, is specified by Decision 206 -- purpose, credential by substrate, the LiteLLM clarification, outcome parity, leash and usage window; the adapter is post-MVP (T4.27).
+
 ---
 
 ## Decision 183: Two heal verbs for a red sandbox record, one routing rule -- the acknowledge-and-retry dispatch becomes total (a guard-routed fresh plan at HEAD reaches tf-gated-apply); Reconcile heals at the red commit (amends Decision 126 point 1's reconcile intent; extends Decision 158's Environment-reach accounting) (Decided)
@@ -2743,6 +2805,8 @@ T4.2 and T4.17.
 
 > **Update (2026-09-28):** Decision 205 clause 4 moves unattended scheduled agents to the API-key lane; their draw on a fixed allowance ends only where they resolve to the metered primary role (T4.12), and ci-rca and subagent-plan-review keep a claude -p draw until T4.26, so fixed-allowance-saturation stays armed.
 
+> **Update (2026-09-28):** Decision 206 clause 3 clarifies clause 1's LiteLLM rule as governing every AI API call On The Loop code makes. The role pair binds deployments On The Loop operates; a user-owned deployment may run one BYOK key filling the primary role alone, with no fallback. A claude_cli run fills no role, so clause 4's cold-start assertion binds tier roles only -- claude_cli's allowance is guarded by Decision 206 clause 6's pause.
+
 ---
 
 ## Decision 172: GitHub's immutable OIDC subject-claim format governs post-rename repositories; trust additively, contract only with live proof (Decided)
@@ -3177,6 +3241,8 @@ reopen-pricing obligation are unchanged. A swap changing the vendor or billing s
 re-keyed condition re-arms it and owes a further dated annotation here.]
 
 > **Update (2026-09-28):** Decision 205 clause 4 admits a user's own subscription through the unmodified vendor CLI as a user-owned persona backend; that reopening of persona routing is deferred to PLAN-cli-persona-backend (T4.27), which owes this entry's collapse pricing, and reversal (b) stays live against Decision 205 clause 6's presumptive long_running_container arm.
+
+> **Amended by Decision 206 (2026-09-28):** Decision 206 reopens persona routing only for a user-owned claude_cli backend and prices the collapse: litellm stays the default backend on every CD.27 arm and the only backend of a deployment On The Loop operates, so no arm leaves the set and this entry's routing stands there; claude_cli is additive where a user-owned deployment of an arm hosts the CLI, desk-scored per arm by T4.15 c11, and on a checkpointed arm its checkpoint collapses to the whole CLI run. Reversal (b) stays live against Decision 205 clause 6's presumptive long_running_container arm.
 
 ---
 
@@ -5775,6 +5841,8 @@ Decision-121 layer reconciliation stand.]
 
 > **Update (2026-09-28):** Decision 205 clause 4 routes every unattended agent in a deployment On The Loop operates to the API-key lane, so this entry's restatement of Decision 116's judgment-to-claude -p split is historical there; T4.2 still owns the executor_path cutover.
 
+> **Update (2026-09-28):** Decision 206 clause 3 records the clarified reading of this entry's LiteLLM rule, not an amendment: every AI API call On The Loop code makes goes through LiteLLM, and a Claude Code run under an end user's own subscription is not such a call, so the claude_cli backend is subscription-only and every API key, BYOK included, runs on the litellm backend. This is the commitment, realized at T4.2 for the executor and at T4.12 for the github-models scheduled-agent and findings-processor path (Decision 173 clause 5). Tiers, roles and reversal conditions are unchanged.
+
 ---
 
 ## Decision 121: Retire docs/contracts/cli-json-output.md rather than convert it -- T-1.17 exempted from the CD.25 conversion wave (Decided)
@@ -6084,6 +6152,8 @@ them. A swap changing the vendor or billing shape under the coupling above re-ar
 and owes a further dated annotation here.]
 
 > **Amended by Decision 205 (2026-09-28):** Every unattended agent in a deployment On The Loop operates routes to the LiteLLM API-key lane, so the judgment agents (rec-curator, transcript-review, prompt-quality) no longer route to claude -p there; realization stays with T4.12. The claude -p lane survives as the user-owned CLI backend class (Decision 205 clause 4); ci-rca and subagent-plan-review keep it until T4.26. copilot-sdk and gemini stay retired.
+
+> **Update (2026-09-28):** Decision 206 specifies the user-owned CLI backend class that Decision 205 clause 4 keeps this entry's claude -p lane as -- one end user's own subscription on user-owned substrate, never the hosted paid plane; moving ci-rca and subagent-plan-review off claude -p stays T4.26's.
 
 ---
 
