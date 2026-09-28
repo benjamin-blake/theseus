@@ -38,9 +38,12 @@ scope:
       exactly boto3, duckdb, psycopg2-binary, pytz, radon, requests. Reasons are grounded in each
       line's own requirements.in comment/section (e.g. duckdb and psycopg2-binary: native
       DuckLake/Neon drivers whose tests the collect-only partition defers to the full tier; pytz:
-      duckdb's soft-import companion; boto3: pr-validate is credential-free, the manifest S3 leg
-      lazy-imports and degrades loudly; radon: ops_data_portal risk scoring; requests: production
-      HTTP paths) -- state what is true, verified by grep, not these example phrasings verbatim.
+      duckdb's soft-import companion; radon: ops_data_portal risk scoring) -- state what is true,
+      verified by grep, not these example phrasings verbatim. boto3 and requests are NOT absent in
+      CI: pr-validate also installs requirements-dev.txt, which pins boto3==1.43.102 (via litellm)
+      and requests==2.34.2 (via tiktoken); their reasons must say they are not fast-tier FLOORS and
+      arrive transitively through requirements-dev.txt, never imply absence -- otherwise this plan
+      plants new stale prose in the file it cleans up.
       Comment lines only: scripts.checks._pytest_diff._parse_requirement_dist_names already strips
       '#' content, so _excluded_heavy_import_names() changes ONLY by losing 'ulid'. The file stays
       a hand-maintained plain floor list that dependabot edits directly.
@@ -56,10 +59,13 @@ scope:
       test_import_governance.py mcp precedent). TestFastTierDependencyParity: a module-private pure
       helper computing parity violations from three requirements files (requirements.in,
       requirements-dev.in, requirements-fast.txt) and the declared `# heavy-exclusion:` lines, whose
-      dist NAMES come from scripts.checks._pytest_diff._parse_requirement_dist_names -- the same
+      OMISSION set comes from scripts.checks._pytest_diff._parse_requirement_dist_names -- the same
       parser _excluded_heavy_import_names() consumes, so the guard checks exactly the set the
-      reactive path acts on; no third requirements-name parser (specifiers alone via
-      packaging.requirements); synthetic discrimination inputs are written to tmp_path;
+      reactive path acts on -- and whose SPECIFIERS come from
+      scripts.import_governance.parse_declared_requirements (tested; skips requirements-dev.in's
+      `-c requirements.txt` option line, which _parse_requirement_dist_names would misread as a dist
+      name); names are normalized identically on both sides (packaging.utils.canonicalize_name); no
+      third requirements parser; synthetic discrimination inputs are written to tmp_path;
       test_every_omission_is_declared_with_a_reason (live tree: dists(requirements.in) minus
       dists(requirements-fast.txt) == the declared set, every reason non-empty, no declared dist
       also present as a requirement line); test_shared_floors_match_their_source (every
@@ -84,8 +90,8 @@ scope:
     purpose: >-
       Module docstring only (lines 3-6): the stdlib-only ULID implementation stays, but its stated
       reason "pr-validate's fast tier installs neither python-ulid nor duckdb" becomes false for
-      python-ulid; restate it truthfully (the plane-neutral stdlib rule, AGENTS.md / Decision 184
-      cl.2, plus the fast tier's lack of duckdb). No code change; not Lambda-packaged
+      python-ulid; restate it truthfully, citing only Decision 184 cl.2 / Decision 199's
+      plane-neutral kernel (AGENTS.md carries no such rule) plus the fast tier's lack of duckdb. No code change; not Lambda-packaged
       (compute_affected_artifacts returns {}).
   - file: scripts/checks/_budget_recs.py
     action: Modify
@@ -246,13 +252,14 @@ constraints:
   - No rescue agents or workaround loops (Decision 55).
 context:
   - "Decision-scout verdict: FLAGS_FOUND (two WARN -- Decision 201 acceptance decidability, Decision 181 undeclared inversion of tests/validate/test_pytest_diff.py:69; one SPIRIT NOTE -- Decision 163 prose-only floor rule; all resolved in scope/steps). CITE: 73, 182, 135, 55. Decisions triaged: 157 of 157. Roadmap items intersected: 1; CONFLICT: 0; RELATED: 1"
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PENDING (round 1 REVISE: F1 handoff order fixed per git-ops.yaml handoff_sequence; F2 four stale no-python-ulid prose surfaces added as comment/docstring-only rows; F3 requirements-dev.in selection proven; F4 pr-validate install wording; F5 red count; F6 production parser; F7 residual owner named)"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PROCEED after 2 round(s); round 2 autonomous (round 1 REVISE: F1-F7 fixed; round 2 PROCEED: advisories F1 boto3/requests present via requirements-dev.txt, F2 parse_declared_requirements for specifiers, F3 AGENTS.md mis-cite dropped, F5 acceptance read-back applied as text-only edits; F4 filed as rec-4132)"
   - "Evidence: 193 pr-validate runs (2026-09-14..28, selection-manifest artifacts + job logs). 51/106 runs with a pytest phase took the reactive two-invocation path, every one with only ModuleNotFoundError 'ulid' in the primary run (37-53 failures); primary ~= re-run duration, so the test half doubled. All 19 in-window breaches and 20 of 22 attributable auto-filed breach recs carry this signature. Full series and per-run attribution are cited by PLAN-fast-tier-budget-recalibration."
   - "Runtime ulid importers (rec-4077): tests/common/test_ducklake_writes.py, tests/lambdas/ducklake_writer/handler/test_ops_actions.py, tests/test_ops_data_portal_validators.py, tests/test_ops_portal_facade.py, tests/test_ops_portal_incremental_cache.py. This plan's own PR (76 modules) is not relied on to show the fix in CI; the recalibration plan's PR selects two and records that evidence."
   - "Breadth (selection_budget --plan on this plan file after critique round 1, 2026-09-28): n_selected 76, allowance 180s, predicted within_budget -- plan as one unit."
   - "rec-4077's recorded acceptance (`pytest tests/validate/test_pytest_diff_runtime_dep_artifact.py -q`, no ::node) is out_of_grammar under lint_acceptance_command(require_decidable=True), so the Resolves trailer would leave it open; execution step 1 rewrites it (verified decidable at planning)."
+  - "rec-4132 (filed 2026-09-28, out of scope): the trailer gate's classify_grammar reads the interpreter's -m in 'bin/venv-python -m pytest' as pytest's marker flag, so rec-4077's rewritten acceptance routes to the static probe rather than junit. Closure still works -- the tests only read files, and the evaluate job's python-ulid pin satisfies the new floor."
   - "Option chosen from rec-4077's three: (a) install the dist. (b) catching runtime heavy imports at collect time and (c) salvaging the first run's coverage artifact treat the symptom; python-ulid is pure Python with no dependencies, so its exclusion was drift, not design (Fable consult 2026-09-28)."
-  - "Named residual (Decision 181 point 2): a fast-selected test that imports one of the six DECLARED exclusions at run time still takes the reactive two-invocation path and still discards the diff-coverage artifact (STATE_TWO_INVOCATION_FAILURE). No such run exists in the measured window (all 51 reactive runs were ulid); the owners are rec-3221 (shape 3, lazy/function-scope imports) and rec-3232."
+  - "Named residual (Decision 181 point 2): a fast-selected test that imports a DECLARED exclusion that is actually absent in CI at run time -- effectively four, duckdb, psycopg2-binary, pytz and radon, since _excluded_and_absent requires find_spec(...) is None and boto3/requests arrive via requirements-dev.txt -- still takes the reactive two-invocation path and still discards the diff-coverage artifact (STATE_TWO_INVOCATION_FAILURE). No such run exists in the measured window (all 51 reactive runs were ulid); the owners are rec-3221 (shape 3, lazy/function-scope imports) and rec-3232."
   - "fork: land rec-4077 as a separate keystone first vs bundle into the recalibration | chosen: separate, first | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: phase + context (Benjamin 2026-09-28, after an independent Fable consult)"
   - "fork: declared-exclusion comments in requirements-fast.txt vs a new exclusion registry file | chosen: comment lines in the governed file | class: consistency-only | precedent: Decision 127 | precedent_kind: decision | reversible: yes | persisted: scope row requirements-fast.txt"
   - "fork: extend the guard to both halves of the header floor rule (requirements.in and requirements-dev.in) | chosen: both | class: consistency-only | precedent: Decision 163 | precedent_kind: decision | reversible: yes | persisted: scope row tests/validate/test_pytest_diff_runtime_dep_artifact.py"
@@ -263,7 +270,7 @@ pre_implementation_checklist:
   - All files in scope located and readable, plus requirements.in, requirements-dev.in and scripts/checks/_pytest_diff.py (_parse_requirement_dist_names, _excluded_heavy_import_names)
   - Acceptance criteria understood and verifiable
 execution_steps:
-  - "Rewrite rec-4077's acceptance BEFORE any closing commit: call get_rec_write_guidance() first, then update_rec('rec-4077', {'acceptance': 'bin/venv-python -m pytest tests/validate/test_pytest_diff_runtime_dep_artifact.py::TestUlidInFastTier tests/validate/test_pytest_diff_runtime_dep_artifact.py::TestFastTierDependencyParity -q'}) through scripts.ops_data_portal (Decision 201: the closing verdict is keyed to the acceptance current at the closing commit)."
+  - "Rewrite rec-4077's acceptance BEFORE any closing commit: call get_rec_write_guidance() first, then update_rec('rec-4077', {'acceptance': 'bin/venv-python -m pytest tests/validate/test_pytest_diff_runtime_dep_artifact.py::TestUlidInFastTier tests/validate/test_pytest_diff_runtime_dep_artifact.py::TestFastTierDependencyParity -q'}) through scripts.ops_data_portal (Decision 201: the closing verdict is keyed to the acceptance current at the closing commit). Then read rec-4077 back through the reader (mcp ducklake-reads rec_by_id or ops_data_portal) and record that its acceptance equals that string and scripts.executor.acceptance_lint.lint_acceptance_command(it, require_decidable=True) returns (True, None) -- the pre-push proof the rewrite landed."
   - "Record red-before evidence on the untouched tree: VP steps 1, 2 and 4 (target_absent / not selected) and step 5 (ModuleNotFoundError)."
   - Create tests/validate/test_pytest_diff_runtime_dep_artifact.py per its scope row; run it against the untouched requirements file and record the named failures (test_obligations red halves).
   - Edit requirements-fast.txt per its scope row (floor, header, six heavy-exclusion lines with grep-verified reasons), then invert the ulid member in tests/validate/test_pytest_diff.py.
