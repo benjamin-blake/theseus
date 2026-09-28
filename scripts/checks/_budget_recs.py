@@ -152,9 +152,9 @@ def _file_budget_breach_rec(elapsed_s: float, diff_manifest: list[str], dominant
     )
 
     if os.environ.get("CI") == "true":
-        # CI-guard (Decision 84 I-4): the pr-validate CI job installs requirements-fast.txt (no
-        # python-ulid) and has no AWS credentials, so file_rec's portal write can never complete
-        # there -- it previously raised a swallowed ModuleNotFoundError inside the bare except
+        # CI-guard (Decision 84 I-4): the pr-validate CI job has no AWS credentials, so
+        # file_rec's portal write can never complete there -- it previously raised a swallowed
+        # ModuleNotFoundError inside the bare except
         # below. Skip the write (and the VTS-20 dedupe reader lookup, which needs the same
         # credentials) and print the full diagnostic LOUDLY instead: this is a no-op-plus
         # -loud-log, never a silent `if CI: return` (Decision 55) and never a buffered/replayed

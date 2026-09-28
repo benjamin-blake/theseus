@@ -18,9 +18,8 @@ importorskip-guarded module collects as a single skip node, and selecting a spec
 
 The two success-path tests below also patch src.common.ducklake_runtime.mint_write_identity
 (file_rec's deferred-import identity minter, which itself deferred-imports `ulid`) rather than
-relying on the real python-ulid package -- that package is likewise absent from
-requirements-fast.txt, and mocking it keeps this module hermetic under the same constraint that
-motivated dropping the duckdb guard.
+relying on the real python-ulid package -- mocking it keeps this module hermetic and avoids a
+real DuckLake write, under the same constraint that motivated dropping the duckdb guard.
 """
 
 from __future__ import annotations

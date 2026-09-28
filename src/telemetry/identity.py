@@ -1,9 +1,9 @@
 """Telemetry envelope identity spec (Decision 199), normative: docs/contracts/telemetry-event-envelope.yaml.
 
-Stdlib only (AGENTS.md plane-neutral rule; Decision 184 cl.2): ULID assembly and canonical ULID
-parsing are implemented here as a 26-char Crockford base32 encoder/decoder over 16 raw bytes,
-because pr-validate's fast tier installs neither python-ulid nor duckdb (requirements-fast.txt)
-and the graduated VP rows (steps 1-3) must pass there.
+Stdlib only (Decision 184 cl.2 / Decision 199's plane-neutral kernel): ULID assembly and canonical
+ULID parsing are implemented here as a 26-char Crockford base32 encoder/decoder over 16 raw bytes,
+because pr-validate's fast tier still lacks duckdb (requirements-fast.txt) and the graduated VP
+rows (steps 1-3) must pass there.
 
 H = sha256 over 4-byte big-endian length-prefixed NFC UTF-8 encodings of [domain tag, tenant_id,
 project_id, ref]. An entity/FK key = ULID(48-bit ROOT session_started_at ms + the first 80 bits
