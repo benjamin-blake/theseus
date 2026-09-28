@@ -28,8 +28,11 @@ scope:
     row whose content differs under an existing grain key -- never silently dropped, never first-wins or last-wins. Where the
     engine offers it, the reject is the native single-statement primitive (Decision 100 spirit, Decision 88 cl.1 one scan).
     Readers keep the first write only among content-identical duplicates; a differing pair (only reachable through the
-    concurrent-append race Decision 81 cl.3's no-serialization model allows) is returned first-write AND reported by the
-    reader, and flagged by DQ on the existing DQ path (Decision 62) -- never silently picked. A stored or computed whole-row
+    concurrent-append race Decision 81 cl.3's no-serialization model allows) is returned AND reported as conflicted by the
+    reader, and flagged by DQ on the existing DQ path (Decision 62) -- never silently picked. Enforcement boundary: the
+    write-time lookup is bounded to the batch's partitions (Decision 88), so the enforced physical grain includes the
+    partition column; a cross-partition collision is a producer defect the table's own identity rules must make impossible
+    (for telemetry, R7's pinned session_started_at). A stored or computed whole-row
     content hash as tiebreak was considered and rejected: it hides the defect. OUT OF SCOPE: Type-1 current projections
     (derived, rebuildable from history, Decision 81 cl.8 upserts by design), control-class tables (the Decision 84 I-2
     counter), and replacement-shaped derived materializations (T2.52 c1). Builds on Decision 81 cl.3 and 199 cl.1-2 without
@@ -37,7 +40,7 @@ scope:
     lifecycle event. Decision 181 cl.2 coverage: writer side -- telemetry kernel (this plan), ops writer idempotency replay
     and history MERGE on the write ULID (named non-compliant residual, rec-4121); DQ side -- telemetry grain-conflict,
     pending-generation and null-producer monitors (rec-4063), ops-history duplicate-ULID-with-differing-content check
-    (rec-4121); reader side -- telemetry reader verbs (rec-4024) and the derived-layer harness (rec-4025). Future consumers:
+    (rec-4121, noted on it by this plan's bookkeeping step); reader side -- telemetry reader verbs (rec-4024) and the derived-layer harness (rec-4025). Future consumers:
     T4.23 c9, T3.20 c2. Envelope significance numbered_decision; contract-first justification names
     data-modeling-standard.yaml (the rule lands there too) and why it cannot be the only home (changes writer failure
     semantics across write_mode classes, binds present and future writers, needs reversal conditions) and why an
@@ -54,8 +57,10 @@ scope:
   purpose: >-
     New rule `grain-enforced-at-write` beside `grain-first`, citing the new Decision and carrying its write_mode scope and
     carve-outs: the declared grain key is enforced by the write boundary (identical re-send = no-op; conflicting row = loud
-    rejection); readers never tiebreak conflicting grain-key rows; DQ owns the race window. Contract-level amendment_log
-    entry; bump decisions_cited, version and updated_* as the file's own header convention requires.
+    rejection); readers never tiebreak conflicting grain-key rows; DQ owns the race window; enforcement is bounded to the
+    batch's partitions, so the partition column is part of the enforced physical grain. design_time_walk step 1 (grain) gains
+    one sentence: declare the grain key and enforce it at the write boundary per rule grain-enforced-at-write. Contract-level
+    amendment_log entry; bump decisions_cited, version and updated_* as the file's own header convention requires.
 - file: src/telemetry/gate.py
   action: Modify
   purpose: >-
@@ -74,8 +79,11 @@ scope:
     parser_version and the batch's day bounds; WHEN MATCHED AND (t.<c1>, ..., t.<cn>) IS DISTINCT FROM (s.<c1>, ..., s.<cn>)
     -- every stored column except created_timestamp and producer_version -- THEN ERROR naming the event_id; WHEN NOT MATCHED
     THEN INSERT. One statement, one scan, same transaction (Decision 88 cl.1); a conflict raises, the transaction rolls back
-    and nothing in the batch is inserted; the raised engine error is re-raised as AppendError. Identical and
-    producer_version-only re-sends stay a no-op. Module docstring updated.
+    and nothing in the batch is inserted. The ERROR arm's message carries a fixed token (TELEMETRY_GRAIN_CONFLICT) plus the
+    event_id; after ROLLBACK, only an exception whose text carries that token is re-raised as AppendError -- every other
+    engine error (binder, DuckLake OCC/transaction) propagates unchanged, preserving rec-4024's retry distinction (the module
+    stays duckdb-free at runtime, test_package_boundary.py, so the match is on the token, never the exception class).
+    Identical and producer_version-only re-sends stay a no-op. Module docstring updated.
 - file: scripts/field_semantics_event_projection.py
   action: Modify
   purpose: >-
@@ -95,15 +103,20 @@ scope:
 - file: tests/telemetry/test_append.py
   action: Modify
   purpose: >-
-    Add producer to _COLUMNS and _row(); update the ON-string assertion (line 207) to the new MERGE shape. New module-level
-    tests: test_cross_batch_grain_conflict_rejected (nothing inserted, AppendError names the event_id),
+    Add producer to _COLUMNS and _row(). TestMergeShapeAndBounds: line 206's `"WHEN MATCHED" not in sql` (the insert-only
+    guard) is REPLACED, not deleted, by positive assertions that the only MATCHED arm ends THEN ERROR (no THEN UPDATE, no
+    THEN DELETE) and that WHEN NOT MATCHED THEN INSERT remains; line 207's ON-string assertion gains producer.
+    TestEventTableSpecFromProjection._base_entry gains the producer column and the 3-column dedupe_key.
+    test_sql_failure_rolls_back_and_connection_stays_usable additionally asserts the binder error is NOT an AppendError.
+    New module-level tests: test_cross_batch_grain_conflict_rejected (nothing inserted, AppendError names the event_id),
     test_producer_version_only_resend_is_noop, test_cross_producer_same_event_id_both_insert,
     test_null_producer_rejected_without_spec_not_null (spec whose not_null omits producer), and
     test_from_projection_rejects_two_column_dedupe_key. test_append_events_replay_is_noop stays green.
 - file: tests/telemetry/test_append_ducklake_integration.py
   action: Modify
   purpose: >-
-    Add producer to the fixture columns. Real local DuckLake (pytest -m integration): cross-batch conflict rejected and the
+    Add producer to the fixture columns and to the positional seed INSERTs (lines 177-181, 216-219). Real local DuckLake
+    (pytest -m integration): cross-batch conflict rejected and the
     table unchanged; cross-producer same event_id both stored; identical replay inserts 0; the existing one-file-per-write
     assertion (lines 166-200) still holds with the new MERGE.
 - file: tests/test_field_semantics_event_projection.py
@@ -118,7 +131,8 @@ scope:
     row the producer emits in all four tables; increments iff the producer's normalised output (event_ids, entity keys, every
     stored column except created_timestamp and producer_version) for any golden input differs from the previous version;
     never for identical output or a build change alone; never decrements, never reused (a revert ships as a NEW higher
-    number); an identity-spec or root session_ref grammar change bumps EVERY producer and requires a Decision (R10); the
+    number); an identity-spec change or a change to ANY session entity_ref grammar (root or sub-agent -- the generation
+    unit is the session, so a re-keyed session escapes R5a retirement) bumps EVERY producer and requires a Decision (R10); the
     registry and golden-corpus check that enforce it are rec-4122. Replaces "from its own build/version identity" and the
     unconsumed whole-root-tree sentence. (2) producer semantics: part of the grain key; parser_version is comparable only
     between rows sharing a producer (R2). (3) event_id.semantics and created_timestamp.description: the grain is (producer,
@@ -133,7 +147,8 @@ scope:
     retired, above pending); (b) event collapse per (producer, event_id): keep the highest parser_version remaining after (a)
     (so V* when defined, the highest version when not -- a non-replayable producer); among rows at that version keep the
     earliest created_timestamp, which the write-time rule makes content-identical except in the concurrent race, where the
-    reader returns the first write and reports the grain key as conflicted; (c) model_call entity collapse per
+    reader returns one of the conflicting rows (which one is unspecified when created_timestamp ties) and the conflict
+    report on the grain key is the normative output; (c) model_call entity collapse per
     observation_id: producer precedence claude_code, litellm, then others, then event_timestamp DESC (final usage wins,
     rec-4062), then created_timestamp asc, then producer asc (a total order).
     R6: a telemetry_agents row belongs to its own (child) session_id's generation.
@@ -177,8 +192,9 @@ scope:
     coexist); child-keyed agents rows committed by the child marker; cross-producer model_call incl. a shared event_id;
     same-build replay) plus a partial-then-final model_call (rec-4062), a crashed re-emission (data at v+1, no marker), a
     non-replayable producer with rows at two versions (R5b without V*), two "others"-rank producers tied on model_call
-    (R5c total order), and a concurrent-race pair differing under one grain key (expected: first write returned AND the key
-    listed as conflicted). Each vector lists input rows per table, the expected surviving event_ids per table and the
+    (R5c total order), a concurrent-race pair differing under one grain key (expected: the key listed as conflicted; which
+    of the tied rows is returned is not asserted), and a re-keyed sub-agent session under an ordinary bump (pins that the old
+    child stays authoritative -- the reason R10 forbids session-ref grammar changes outside a Decision). Each vector lists input rows per table, the expected surviving event_ids per table and the
     expected conflicted grain keys.
 - file: tests/fixtures/telemetry_dedupe_reference.py
   action: Create
@@ -203,7 +219,9 @@ scope:
     test_model_call_tiebreak_prefers_final_usage (governance_notes order model_call by event_timestamp desc after producer
     precedence; no live text keeps earliest created_timestamp as the model_call tiebreak; the partial-then-final vector's
     final-usage row survives tests/fixtures/telemetry_dedupe_reference.py), and test_grain_enforced_at_write_rule_declared
-    (data-modeling-standard.yaml carries rule grain-enforced-at-write citing the new Decision). Update the module
+    (data-modeling-standard.yaml carries rule grain-enforced-at-write citing the new Decision and the design_time_walk
+    mention; DECISIONS.md's new Decision section names rec-4121, rec-4063, rec-4024 and rec-4025 as coverage owners; the
+    Decision 81 and Decision 84 sections each carry a dated annotation naming rec-4121 and the new Decision). Update the module
     docstring's R8 sentence.
 - file: config/agent/verification_registry/entries/telemetry-dedupe-vectors.yaml
   action: Create
@@ -325,7 +343,10 @@ verification_plan:
     bin/venv-python -m pytest tests/checks/contracts/test_telemetry_event_journal_contracts.py tests/test_contracts.py
     tests/test_contracts_schema.py tests/test_field_semantics_event_projection.py tests/telemetry -q
   expected: Exit 0; no failures.
-  fix_if: A contract_version assertion fails -> revert the bump; any other failure names the contract or kernel file to fix.
+  fix_if: >-
+    A contract_version assertion fails -> revert the bump. A pre-existing test asserting the OLD two-column key or
+    insert-only shape fails -> update that test to the new shape as scoped (replace a guard, never delete it); a failure in a
+    new behaviour test -> fix the kernel or contract.
   hermetic: true
   graduation: waive
   graduation_waiver_reason: Existing registered test modules; graduating them again duplicates standing coverage.
@@ -454,12 +475,10 @@ test_obligations:
   test_selector: tests/telemetry/test_contract_amendments.py::test_grain_enforced_at_write_rule_declared
   red_green_expectation: red before (rule absent), green after
 - source: docs/DECISIONS.md
-  behavior: New Decision present, within the per-entry byte cap, envelope valid; annotations on 81 cl.3 and 84 I-2.
-  verification_step: 9
-  command: bin/venv-python -m scripts.validate
-  waiver_reason: >-
-    Decision-log shape, size and index freshness are guarded standing by the decisions validators in the full tier; a
-    bespoke test would duplicate them.
+  behavior: New Decision present with coverage owners; annotations on 81 cl.3 and 84 I-2; size/envelope via the decisions validators.
+  verification_step: 5
+  test_selector: tests/telemetry/test_contract_amendments.py::test_grain_enforced_at_write_rule_declared
+  red_green_expectation: red before (test absent, Decision and annotations absent), green after
 - source: docs/decisions-index.json
   behavior: Regenerated index matches DECISIONS.md.
   verification_step: 9
@@ -512,7 +531,9 @@ context:
   numbered Decision plus a data-modeling-standard rule; the ops-writer residual is follow-on rec-4121.
 - >-
   Design source: Fable's facts-only derivation /mnt/project-files/telemetry-slice2-blockers/r8-fable-independent-derivation.md
-  (brief r8-facts-brief.md); its content_hash tiebreak and report-not-reject conflict metric are deliberately NOT adopted.
+  (brief r8-facts-brief.md); NOT adopted: its content_hash tiebreak, its report-not-reject conflict metric, and its
+  cross-producer span-kind collapse per (observation_id, event_kind) -- only claude_code emits span kinds today; add it
+  when a second span-emitting producer is planned.
   The native MERGE ... WHEN MATCHED AND <row IS DISTINCT FROM> THEN ERROR was verified on duckdb 1.5.4 + ducklake at
   planning time (NULL-safe, list columns, nothing inserted on conflict).
 - >-
@@ -547,8 +568,25 @@ execution_steps:
   (producer, event_id, parser_version) with native reject; readers use the GENERATIONS rule and must pass dedupe_vectors.yaml
   on DuckLake and report conflicted keys -- replacing its "row uniqueness (event_id, parser_version)" and "max per
   (session_id, producer)" wording); rec-4063 (owns the three DQ monitors named in the envelope); rec-4025 (consume the
-  vectors); rec-4064 (its R10 is settled by R5a, its R5 by the external_ref rescope).
+  vectors); rec-4064 (its R10 is settled by R5a, its R5 by the external_ref rescope); rec-4121 (also owns the ops-history
+  DQ check for more than one distinct history row per write ULID, as the Decision's coverage declares).
 - >-
-  Commit, PR, and squash merge with commit_message carrying 'Resolves: rec-4061, rec-4062' in its own trailer block; then
-  run step 10.
-- 'Report: what was changed, verification results, rec closure state'
+  CLOSURE -- separate facts, in order (a)-(e) (implement skill Commit Flows; docs/contracts/git-ops.yaml handoff_sequence),
+  each reported on its own and never merged into one PASS. (a) READINESS: run bin/venv-python -m
+  scripts.session.github_readiness and record each state exactly as reported -- unknown is unproven, and readiness never
+  authorizes a push.
+- (b) Set implementation_declared true on this plan (sanctioned bookkeeping edit), then re-run step 9's --pre sibling (bin/venv-python -m scripts.validate --pre).
+- >-
+  (c) Commit, then git fetch origin main and git rebase origin/main (STOP on conflict; re-check the Decision number), then
+  PARENT VALIDATOR EVIDENCE: VP step 9 -- the full tier on the committed, rebased, clean tree -- followed by
+  bin/venv-python -m scripts.checks.validation_result --verify-head so logs/debug/validation-result.json attests HEAD's tree. On timeout
+  the disposition is blocked: rerun from the start, never push on a partial run. Any fix commit repeats (c).
+- >-
+  (d) STRUCTURED POSTFLIGHT EVIDENCE: write a scratch JSON file (session scratchpad) holding exactly the
+  scripts.session.postflight_evidence.CATEGORIES keys, then run bin/venv-python -m scripts.session.postflight --evidence
+  <that file>.
+- >-
+  (e) REAL OUTCOMES, reported separately from (a)-(d): push and open the PR ready for review; subscribe to PR activity; on
+  green CI squash-merge via mcp__github__merge_pull_request with commit_message carrying 'Resolves: rec-4061, rec-4062' in
+  its own trailer block; event-driven, never poll; then run step 10. Report the minted Decision number, the graduated check
+  ids and the rec closure state.
