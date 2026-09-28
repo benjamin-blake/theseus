@@ -64,7 +64,7 @@ scope:
       already fails init loudly. Constraints drift therefore never dirties the tree and never
       escapes detection; gating on it would add a finding whose remediation needs provider
       egress while guarding no hazard (Decision 55/203 reversal (a) wedge shape). Module
-      docstring names both residuals: hash-only drift and constraints-string drift.
+      docstring names three residuals: hash-only drift, constraints-string drift, and an implicitly required provider (a resource type used but never declared and absent from the lock) -- the latter two are caught natively by readonly init in terraform-validate. It also states the policy the orphan arm enforces, stricter than Terraform: every locked provider must be declared explicitly in required_providers.
       (b) The registered function: for each tracked lock, reads every `*.tf` directly in that root
       directory (non-recursive -- a root module is one directory; no child modules exist today),
       prints findings, appends one failure label. Decision 170 accounting on every exit path:
@@ -166,7 +166,7 @@ scope:
       Class TestTrackedLockDiscovery -- tmp git repo, files STAGED only (`git add`; ls-files reads
       the index), never committed, so no tmp commit reaches the harness SSH signer (critique A9):
       a tracked lock is listed, a gitignored lock is excluded, a non-repo directory (git failure)
-      returns None; plus one UNPATCHED assertion that `tracked_lock_files(_common.ROOT)` returns
+      returns None, and `subprocess.run` raising FileNotFoundError (git absent) returns None (round 3 M1); plus one UNPATCHED assertion that `tracked_lock_files(_common.ROOT)` returns
       exactly terraform/github/.terraform.lock.hcl and terraform/personal/.terraform.lock.hcl
       (bootstrap excluded) -- this catches a discovery defect the patched gate cases cannot, and
       stops TestRepoLocksCoherent passing vacuously as examined(0) if tracking state changes
@@ -180,7 +180,7 @@ scope:
       `lockfile:` stanza correction: the committed lock pins the TWO providers the root declares
       (hashicorp/aws, kislerdm/neon); name both guard layers (validate_terraform_lock_coherence,
       hermetic, --pre + full; `-lockfile=readonly` on tracked-lock roots in the validator's init,
-      authoritative wherever terraform runs). Keep the words "committed" and ".terraform.lock.hcl"
+      authoritative wherever terraform runs), and state the explicit-declaration policy (every provider in a committed lock is declared in that root's required_providers; implicit providers are not accepted). Keep the words "committed" and ".terraform.lock.hcl"
       (graduated shard env-taxonomy-section6-lockfile-committed asserts both; Decision 181). Add
       an amendment_log entry at the top: date = implementation date, semantic_break false,
       change_class governance_note_add (closed ChangeClass enum, scripts/contracts_schema.py; the
@@ -407,9 +407,9 @@ verification_plan:
       personal/github); the speculative-plan log shows "No changes." and
       "terraform_apply_guard: OK", with no null_resource and no hashicorp/null in the output
     fix_if: >-
-      terraform-validate red on "Provider dependency changes detected" means the CI init path
-      (provider mirror) needs a lock entry the committed file lacks -- regenerate on an
-      egress-capable container, never drop the flag; a non-empty plan is classified from its
+      terraform-validate red on "Provider dependency changes detected" means the configuration's
+      and the committed lock's provider address sets differ in CI (a mirror cannot cause this) --
+      regenerate the lock, never drop the flag; a non-empty plan is classified from its
       content before anything else (Decision 190) -- stop, do not merge
     hermetic: false
   - step: 11
@@ -514,7 +514,7 @@ constraints:
   - No rescue agents or workaround loops; an unrecoverable failure stops for RCA (Decision 55). IMPLEMENTATION plan only (Decision 67).
 context:
   - "Decision-scout verdict FLAGS_FOUND: WARN Decision 119 (standalone local init VP step) -- human chose fold-into-full-tier; NOTE Decision 100 (hand-rolled parser vs native check) -- human chose guard + -lockfile=readonly. CITE: 203, 163, 126, 77, 120, 169, 170, 132, 189, 55, 128, 59, 119, 100, 83. Decisions triaged: 157 of 157. Roadmap items intersected: 4; CONFLICT: 0; RELATED: 4"
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PENDING (round 1 REVISE, round 2 PROCEED, round 3 confirming)"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PROCEED after 3 round(s); round 3 autonomous (round 1 REVISE R1-R4 fixed; round 2 PROCEED, A1-A9 folded; round 3 confirming PROCEED, M1/J1/J3 folded, J2 in execution steps, J4/J5 informational)"
   - "fork: validator also runs init -lockfile=readonly on tracked-lock roots | chosen: guard + readonly | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: this plan's scope (scripts/checks/_terraform.py)"
   - "fork: close the five duplicate recs | chosen: bundle all five, re-point rec-4110/3369/3919 acceptance before merge | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: bundled_recommendations + squash trailer"
   - "fork: brief's local init + git status verification vs Decision 119 | chosen: fold into full tier + --verify-head | class: asked | precedent: Decision 119 | precedent_kind: decision | reversible: yes | persisted: verification_plan step 9"
@@ -542,6 +542,7 @@ execution_steps:
   - "Execute the Verification Plan pre-deploy steps 1-8 until they pass; then commit, fetch + rebase onto origin/main, run step 9 (full tier + --verify-head) on that committed tree, and push only after --verify-head prints ok (Decision 163/203 order: commit -> rebase -> full tier -> --verify-head -> push)."
   - "Re-point acceptance via scripts.ops_data_portal update_rec for rec-4110, rec-3369 and rec-3919 as the context line specifies (one call each; the reason, including rec-3919's narrowing, goes in the rec's context); confirm each new command passes lint_acceptance_command(require_decidable=True) and holds locally. Writer unreachable: leave the three open, say so in the PR body, and do not block the merge on it."
   - "Open the PR (body: root-cause commit 7b67e21d and why the guard would have caught it; github/bootstrap init results; Decision 83 consequence). Squash-merge body carries `Resolves: rec-4110, rec-3400, rec-3318, rec-3369, rec-3919`. Run step 10, then step 11 (convergence green) immediately before the squash-merge, then steps 12-13; on an unrecoverable V3 failure stop and RCA (Decision 55)."
+  - "Via update_rec, append to rec-4130's context that tracking terraform/bootstrap's lock must also extend TestTrackedLockDiscovery's unpatched exact-set assertion (round 3 J2)."
   - "Report: what was implemented, verification results, the speculative-plan and apply run ids, and the rec closure outcomes."
 work_areas: []
 rollback: >-
