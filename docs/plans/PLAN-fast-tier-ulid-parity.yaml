@@ -1,0 +1,229 @@
+schema_version: 5
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: fast-tier-ulid-parity
+intent: >-
+  Stop the fast tier running pytest twice on every PR whose selection reaches a runtime `ulid`
+  import: python-ulid is declared in requirements.in but omitted from requirements-fast.txt, so CI
+  (which installs only the fast list) fails ~37-53 tests with ModuleNotFoundError, takes
+  run_pytest_diff's reactive heavy-dep path and re-runs every survivor -- 51 of 106 recorded runs
+  with a pytest phase, all 19 in-window budget breaches, and a discarded diff-coverage artifact on
+  each. Install the floor, and turn the file's prose parity rule into an executable guard so the
+  next undeclared omission fails pre-merge instead of silently doubling the test half. Keystone for
+  PLAN-fast-tier-budget-recalibration, which re-derives Decision 182's budgets on the cleaned
+  population.
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-fast-tier-ulid-parity.yaml
+phase: >-
+  ad_hoc_rec (soft-warn category; no tier_item claimed, so the Tier Item Freshness Gate is skipped
+  and no closes_criteria is declared). Bundles rec-4077. Keystone slice 1 of 2: slice 2 is
+  docs/plans/PLAN-fast-tier-budget-recalibration.yaml, which must not be implemented before this
+  plan's implementation PR merges.
+scope:
+  - file: requirements-fast.txt
+    action: Modify
+    purpose: >-
+      (a) Add the runtime floor line `python-ulid>=3.1.0`, byte-identical in specifier to
+      requirements.in line 10 (the file header's own rule: runtime-tool floors must match
+      requirements.in), placed with the other runtime floors (after pydantic/networkx/import-linter/mcp
+      is fine; order is not load-bearing). (b) Extend the header comment's runtime-floor list to
+      name python-ulid, and add one header sentence stating the declaration rule below and naming
+      tests/validate/test_pytest_diff_runtime_dep_artifact.py as its enforcing test. (c) Declare
+      every requirements.in distribution this file deliberately omits, one comment line each, in the
+      exact grammar `# heavy-exclusion: <dist> -- <reason>` (dist spelled as in requirements.in;
+      reason non-empty and stating why the fast tier does not need it). After (a) the omitted set is
+      exactly boto3, duckdb, psycopg2-binary, pytz, radon, requests. Reasons are grounded in each
+      line's own requirements.in comment/section (e.g. duckdb and psycopg2-binary: native
+      DuckLake/Neon drivers whose tests the collect-only partition defers to the full tier; pytz:
+      duckdb's soft-import companion; boto3: pr-validate is credential-free, the manifest S3 leg
+      lazy-imports and degrades loudly; radon: ops_data_portal risk scoring; requests: production
+      HTTP paths) -- state what is true, verified by grep, not these example phrasings verbatim.
+      Comment lines only: scripts.checks._pytest_diff._parse_requirement_dist_names already strips
+      '#' content, so _excluded_heavy_import_names() changes ONLY by losing 'ulid'. The file stays
+      a hand-maintained plain floor list that dependabot edits directly.
+  - file: tests/validate/test_pytest_diff_runtime_dep_artifact.py
+    action: Create
+    purpose: >-
+      rec-4077's recorded acceptance module. Two classes. TestUlidInFastTier:
+      test_python_ulid_floor_declared (requirements-fast.txt carries python-ulid with a specifier
+      equal to requirements.in's), test_ulid_not_in_excluded_heavy_imports ('ulid' not in
+      scripts.checks._pytest_diff._excluded_heavy_import_names()), and
+      test_fast_floor_admits_the_compiled_pin (the python-ulid== pin in requirements.txt satisfies
+      the fast specifier, via packaging.requirements -- an independent oracle, the
+      test_import_governance.py mcp precedent). TestFastTierDependencyParity: a module-private pure
+      helper computing parity violations from three requirements texts (requirements.in,
+      requirements-dev.in, requirements-fast.txt) and the declared `# heavy-exclusion:` lines;
+      test_every_omission_is_declared_with_a_reason (live tree: dists(requirements.in) minus
+      dists(requirements-fast.txt) == the declared set, every reason non-empty, no declared dist
+      also present as a requirement line); test_shared_floors_match_their_source (every
+      requirement line in requirements-fast.txt appears in requirements.in or requirements-dev.in
+      with an IDENTICAL specifier -- both halves of the header rule, Decision 163: executable, not
+      prose); and two discrimination tests on synthetic texts proving the helper is not vacuous --
+      an undeclared omission is reported by dist name, and a drifted floor is reported with both
+      specifiers. The file MUST spell the literal strings "requirements.in", "requirements-dev.in"
+      and "requirements-fast.txt" (never built from parts) so Decision 135's data-edge channel
+      selects it on any diff touching those files (VP step 4). No imports from other test modules
+      (Decision 131). Reads files relative to the repo root (Path(__file__).resolve().parents[2]).
+  - file: tests/validate/test_pytest_diff.py
+    action: Modify
+    purpose: >-
+      Declared INVERSION, not a removal (Decision 181): in TestExcludedHeavyDeps, move "ulid" out of
+      test_heavy_deps_in_excluded_set's tuple and into test_fast_tier_deps_not_in_excluded_set's
+      tuple, and add one sentence to the class docstring naming rec-4077 as the reason ulid is now a
+      fast-tier dependency. Every other member of both tuples, and every other test in the file, is
+      unchanged.
+bundled_recommendations:
+  - rec-4077
+followon_recs: []
+infrastructure_dependencies: []
+acceptance_criteria:
+  - requirements-fast.txt declares `python-ulid>=3.1.0` with the same specifier as requirements.in, and a fresh venv built from requirements-fast.txt alone imports ulid (VP steps 1, 5).
+  - 'Every requirements.in distribution requirements-fast.txt omits is declared on a `# heavy-exclusion: <dist> -- <reason>` line with a non-empty reason, and every requirement line in requirements-fast.txt matches its requirements.in / requirements-dev.in specifier exactly; the guard reports a synthetic undeclared omission and a synthetic drifted floor (VP step 2).'
+  - '''ulid'' is no longer in _excluded_heavy_import_names(); TestExcludedHeavyDeps asserts its non-membership rather than dropping the member (VP step 3).'
+  - A diff touching requirements.in or requirements-fast.txt selects tests/validate/test_pytest_diff_runtime_dep_artifact.py in --pre (VP step 4).
+  - rec-4077's acceptance is rewritten to a decidable node-id form before the closing commit and the rec closes through the squash-merge Resolves trailer (VP step 9); --pre and full tiers exit 0 (VP steps 7, 8).
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: python-ulid is a declared fast-tier floor matching requirements.in and is no longer an excluded heavy import.
+    command: bin/venv-python -m pytest "tests/validate/test_pytest_diff_runtime_dep_artifact.py::TestUlidInFastTier" -q
+    expected: All three tests pass. Red before -- the module does not exist (collection error, target_absent).
+    fix_if: The floor is missing or its specifier differs from requirements.in, or ulid is still in the excluded set.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: fast-tier-installs-python-ulid
+    expected_literals:
+      - passed
+  - step: 2
+    phase: pre-deploy
+    action: Parity guard -- every omission from the fast list is declared with a reason, every fast floor matches its source, and the helper catches both violation shapes.
+    command: bin/venv-python -m pytest "tests/validate/test_pytest_diff_runtime_dep_artifact.py::TestFastTierDependencyParity" -q
+    expected: All tests pass, including both synthetic-violation discrimination tests. Red before -- the module does not exist (target_absent).
+    fix_if: >-
+      A live-tree failure names the undeclared dist or the drifted floor -- add the heavy-exclusion
+      line or align the specifier, never loosen the helper. A discrimination test failing means the
+      helper is vacuous.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: fast-tier-dependency-parity-declared
+    expected_literals:
+      - passed
+  - step: 3
+    phase: pre-deploy
+    action: The pre-existing exclusion test is inverted, not weakened -- ulid is asserted NOT excluded; the other members are unchanged.
+    command: bin/venv-python -m pytest "tests/validate/test_pytest_diff.py::TestExcludedHeavyDeps" -q
+    expected: All tests in the class pass.
+    fix_if: test_heavy_deps_in_excluded_set still lists ulid (it goes red once the floor lands), or a member other than ulid moved.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      The class exists and passes in its pre-edit form on the un-implemented tree, so a graduate
+      red-before replay would classify it tautological; the ulid property it now asserts is
+      graduated by step 1, and the class stays in the standing suite as an ordinary unit test.
+  - step: 4
+    phase: pre-deploy
+    action: Selection proof -- a diff touching either requirements file selects the parity guard through Decision 135's data-edge channel.
+    command: >-
+      bin/venv-python -c "import sys; from pathlib import Path; from scripts.checks.deps.affected_tests import derive_affected_tests as d; t = 'tests/validate/test_pytest_diff_runtime_dep_artifact.py'; hits = [p for p in ('requirements.in', 'requirements-fast.txt') if t in d([('M', p)], repo_root=Path.cwd().resolve())['selected']]; ok = hits == ['requirements.in', 'requirements-fast.txt']; print('PARITY_GUARD_SELECTED' if ok else 'PARITY_GUARD_NOT_SELECTED', hits); sys.exit(0 if ok else 1)"
+    expected: Exit 0 printing PARITY_GUARD_SELECTED for both files. Red before -- the test file does not exist, so neither diff selects it (exit 1).
+    fix_if: A requirements file does not select the guard -- the test module builds that filename from parts instead of spelling it as a literal string.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: fast-tier-parity-guard-selected-by-requirements-diff
+  - step: 5
+    phase: pre-deploy
+    action: CI-condition proof -- a fresh venv built from requirements-fast.txt ALONE (what pr-validate installs) imports ulid.
+    command: >-
+      T=$(mktemp -d) && uv venv "$T/v" -q && uv pip install -q -p "$T/v" -r requirements-fast.txt && "$T/v/bin/python" -c "import ulid; print('ULID_IMPORTABLE')"; rc=$?; rm -rf "$T"; exit $rc
+    expected: Exit 0 printing ULID_IMPORTABLE (~3s with a warm uv cache). Red before -- ModuleNotFoundError No module named 'ulid' (measured at planning, 2026-09-28).
+    fix_if: ModuleNotFoundError -- the floor line is missing, misspelled, or commented out.
+    hermetic: false
+    graduation: not-applicable
+  - step: 6
+    phase: pre-deploy
+    action: Whole-surface regression -- every touched and adjacent requirements test passes and the new/edited test files are lint- and format-clean.
+    command: >-
+      bin/venv-python -m pytest tests/validate/test_pytest_diff_runtime_dep_artifact.py tests/validate/test_pytest_diff.py tests/validate/test_pytest_diff_reactive.py tests/test_import_governance.py -q && bin/venv-python -m ruff check tests/validate/test_pytest_diff_runtime_dep_artifact.py tests/validate/test_pytest_diff.py && bin/venv-python -m ruff format --check tests/validate/test_pytest_diff_runtime_dep_artifact.py tests/validate/test_pytest_diff.py
+    expected: All tests pass; ruff reports no findings; both files already formatted.
+    fix_if: A pre-existing test pins the old exclusion set elsewhere -- invert that member the same way (declare it in the report), never delete it.
+    hermetic: false
+    graduation: not-applicable
+  - step: 7
+    phase: pre-deploy
+    action: Run the fast presubmit tier.
+    command: bin/venv-python -m scripts.validate --pre
+    expected: Zero failed checks, including validate_scope_boundary, validate_graduation_completeness and validate_vp_replay (which replays this plan's hermetic steps).
+    fix_if: Any failure -- diagnose and fix on the branch; never weaken a check to obtain green (Decision 181).
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: Invokes scripts.validate, which the vp-red-before recursion refusal forbids graduating; its constituent checks are each registered in their own right.
+  - step: 8
+    phase: pre-deploy
+    action: Run the full presubmit tier locally before handoff, as handoff_policy declares.
+    command: bin/venv-python -m scripts.validate
+    expected: The printed summary reports zero failed checks.
+    fix_if: Per handoff_policy.timeout_disposition, a timeout is BLOCKED -- resume later and rerun the full tier from the start; never commit on a partial run.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: Same recursion refusal as step 7 at the full tier; its constituent checks are each already registered in their own right.
+  - step: 9
+    phase: post-deploy
+    action: Confirm rec-4077 closed through the squash-merge Resolves trailer.
+    command: >-
+      bin/venv-python -m scripts.ops_data_portal --sync && bin/venv-python -c "import json, pathlib; rows = [json.loads(line) for line in pathlib.Path('logs/.recommendations-log.jsonl').read_text(encoding='utf-8').splitlines() if line.strip()]; statuses = [row.get('status') for row in rows if row.get('id') == 'rec-4077']; print(statuses); raise SystemExit(0 if statuses == ['closed'] else 1)"
+    expected: Prints a list whose only element is closed.
+    fix_if: >-
+      Check that the acceptance rewrite (execution step 1) landed BEFORE the closing commit -- the
+      Decision 201 verdict is keyed to the sha256 of the acceptance current at that commit -- and
+      that the squash body carries 'Resolves: rec-4077'; never close the rec by hand.
+    hermetic: false
+test_obligations:
+  - source: requirements-fast.txt
+    behavior: The fast tier installs python-ulid at the requirements.in floor, so no selected test fails on a runtime ulid import and the reactive re-run never fires for it.
+    verification_step: 1
+    test_selector: tests/validate/test_pytest_diff_runtime_dep_artifact.py::TestUlidInFastTier
+    red_green_expectation: Red before -- collection error (module absent); run against the edited tests on the untouched requirements file, test_python_ulid_floor_declared and test_ulid_not_in_excluded_heavy_imports fail. Green after -- all pass.
+  - source: requirements-fast.txt
+    behavior: Every requirements.in omission is declared with a reason and every fast floor matches its source specifier; an undeclared omission or a drifted floor fails pre-merge.
+    verification_step: 2
+    test_selector: tests/validate/test_pytest_diff_runtime_dep_artifact.py::TestFastTierDependencyParity
+    red_green_expectation: Red before -- collection error; against the untouched requirements file the live-tree omission test fails naming seven undeclared dists (python-ulid among them). Green after -- all pass, and both synthetic discrimination tests report their planted violation.
+constraints:
+  - No budget constant, budget formula, check module or Decision text changes in this plan -- PLAN-fast-tier-budget-recalibration owns Decision 182's re-derivation (rec-4093, rec-3929, rec-3677) and the breach-rec sweep.
+  - Do not edit scripts/checks/_pytest_diff.py -- the exclusion derivation (requirements.in minus requirements-fast.txt, comments stripped) is unchanged; only its input changes.
+  - Never weaken an assertion to obtain green (Decision 181) -- ulid moves from an is-excluded tuple to an is-not-excluded tuple; no other member of TestExcludedHeavyDeps moves.
+  - 'The heavy-exclusion grammar is exactly `# heavy-exclusion: <dist> -- <reason>`, one dist per line, in requirements-fast.txt only; no new registry file (the declaration is collocated with the file it governs).'
+  - requirements-fast.txt stays a hand-maintained plain floor list dependabot edits directly -- no .in input, no recompilation. Dependabot already bumps a shared floor in both files in one PR (evidence, #1299 moved networkx in lockstep), so the equality guard matches its behaviour.
+  - Out of bounds (a parallel plan owns them) -- scripts/checks/verification/*, docs/contracts/vp-red-before.yaml, .claude/skills/planning/SKILL.md.
+  - No rescue agents or workaround loops (Decision 55).
+context:
+  - "Decision-scout verdict: FLAGS_FOUND (two WARN -- Decision 201 acceptance decidability, Decision 181 undeclared inversion of tests/validate/test_pytest_diff.py:69; one SPIRIT NOTE -- Decision 163 prose-only floor rule; all resolved in scope/steps). CITE: 73, 182, 135, 55. Decisions triaged: 157 of 157. Roadmap items intersected: 1; CONFLICT: 0; RELATED: 1"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PENDING"
+  - "Evidence: 193 pr-validate runs (2026-09-14..28, selection-manifest artifacts + job logs). 51/106 runs with a pytest phase took the reactive two-invocation path, every one with only ModuleNotFoundError 'ulid' in the primary run (37-53 failures); primary ~= re-run duration, so the test half doubled. All 19 in-window breaches and 20 of 22 attributable auto-filed breach recs carry this signature. Full series and per-run attribution are cited by PLAN-fast-tier-budget-recalibration."
+  - "Runtime ulid importers (rec-4077): tests/common/test_ducklake_writes.py, tests/lambdas/ducklake_writer/handler/test_ops_actions.py, tests/test_ops_data_portal_validators.py, tests/test_ops_portal_facade.py, tests/test_ops_portal_incremental_cache.py. This plan's own PR selects none of them (30 modules), so its CI run cannot show the fix; the recalibration plan's PR selects two and records that evidence."
+  - "Breadth (selection_budget --paths on this scope, 2026-09-28): n_selected 31, allowance 180s, predicted within_budget -- plan as one unit."
+  - "rec-4077's recorded acceptance (`pytest tests/validate/test_pytest_diff_runtime_dep_artifact.py -q`, no ::node) is out_of_grammar under lint_acceptance_command(require_decidable=True), so the Resolves trailer would leave it open; execution step 1 rewrites it (verified decidable at planning)."
+  - "Option chosen from rec-4077's three: (a) install the dist. (b) catching runtime heavy imports at collect time and (c) salvaging the first run's coverage artifact treat the symptom; python-ulid is pure Python with no dependencies, so its exclusion was drift, not design (Fable consult 2026-09-28)."
+  - "fork: land rec-4077 as a separate keystone first vs bundle into the recalibration | chosen: separate, first | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: phase + context (Benjamin 2026-09-28, after an independent Fable consult)"
+  - "fork: declared-exclusion comments in requirements-fast.txt vs a new exclusion registry file | chosen: comment lines in the governed file | class: consistency-only | precedent: Decision 127 | precedent_kind: decision | reversible: yes | persisted: scope row requirements-fast.txt"
+  - "fork: extend the guard to both halves of the header floor rule (requirements.in and requirements-dev.in) | chosen: both | class: consistency-only | precedent: Decision 163 | precedent_kind: decision | reversible: yes | persisted: scope row tests/validate/test_pytest_diff_runtime_dep_artifact.py"
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - Decision 182 and Decision 201 sections read (only the plan-cited sections)
+  - All files in scope located and readable, plus requirements.in, requirements-dev.in and scripts/checks/_pytest_diff.py (_parse_requirement_dist_names, _excluded_heavy_import_names)
+  - Acceptance criteria understood and verifiable
+execution_steps:
+  - "Rewrite rec-4077's acceptance BEFORE any closing commit: call get_rec_write_guidance() first, then update_rec('rec-4077', {'acceptance': 'bin/venv-python -m pytest tests/validate/test_pytest_diff_runtime_dep_artifact.py::TestUlidInFastTier tests/validate/test_pytest_diff_runtime_dep_artifact.py::TestFastTierDependencyParity -q'}) through scripts.ops_data_portal (Decision 201: the closing verdict is keyed to the acceptance current at the closing commit)."
+  - "Record red-before evidence on the untouched tree: VP steps 1, 2 and 4 (target_absent / not selected) and step 5 (ModuleNotFoundError)."
+  - Create tests/validate/test_pytest_diff_runtime_dep_artifact.py per its scope row; run it against the untouched requirements file and record the named failures (test_obligations red halves).
+  - Edit requirements-fast.txt per its scope row (floor, header, six heavy-exclusion lines with grep-verified reasons), then invert the ulid member in tests/validate/test_pytest_diff.py.
+  - Run VP steps 1-6 in order; loop until pass; never weaken an assertion; on an unrecoverable failure stop and RCA (Decision 55).
+  - Create the three graduated registry shards for VP steps 1, 2 and 4 under config/agent/verification_registry/entries/ (graduation_check_id verbatim as check_id; test_selector slot for steps 1-2, command_exit_zero for step 4; field shape per an existing row of each slot) (Decision 132).
+  - Set implementation_declared true in this plan, then run VP step 7, then VP step 8, so the full-tier evidence covers the final tree at the pre-commit HEAD.
+  - "Closure evidence, recorded as four SEPARATE facts (implement skill Commit Flows): GitHub readiness; parent validator evidence (VP step 8 full-tier exit 0 and the matching logs/debug/validation-result.json); structured postflight evidence; the real outcome -- commit, push, PR, CI green on the head (event-driven wake, never polled), squash-merge with 'Resolves: rec-4077', then post-deploy VP step 9."
+  - "Report, naming separately: what was implemented; red-before and green-after outputs of VP steps 1, 2, 4 and 5; the six heavy-exclusion reasons as written; and each closure fact."
+work_areas: []
+rollback: Revert the single implementation commit; the fast tier returns to excluding python-ulid (and to the reactive double run on ulid-selecting PRs). No runtime, data or infrastructure state is touched.
