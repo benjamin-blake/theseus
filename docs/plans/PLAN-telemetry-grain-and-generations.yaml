@@ -25,7 +25,9 @@ scope:
     "Grain enforced at the write boundary", scoped by write_mode class (Decision 191 cl.1), never by table name: it binds
     INSERT-GRAIN tables -- append_only journals and SCD2 history tables. The enforced grain key is, for an SCD2 history
     table, its write ULID (one row per write), and for an append_only table, its declared merge/dedupe key (telemetry:
-    producer, event_id, parser_version). Each declares its grain key; its write boundary
+    producer, event_id, parser_version). "Content" is every stored column except the write-time stamp and declared
+    provenance-only columns (telemetry: created_timestamp and producer_version -- R1 and the kernel's MERGE compare set).
+    Each declares its grain key; its write boundary
     treats a re-send identical under an existing grain key as a no-op and REJECTS LOUDLY (fails the write, names the key) a
     row whose content differs under an existing grain key -- never silently dropped, never first-wins or last-wins. Where the
     engine offers it, the reject is the native single-statement primitive (Decision 100 spirit; no second catalog read,
@@ -46,8 +48,10 @@ scope:
     owned by rec-4121: the ops writer's idempotency replay and history MERGE on the write ULID, and ops_smoke_events
     (append_only, grain event_id, but write_ops MERGEs on a per-call write ULID, so a re-write inserts a duplicate); DQ side -- telemetry grain-conflict,
     pending-generation and null-producer monitors (rec-4063), ops-history duplicate-ULID-with-differing-content check
-    (rec-4121; its context was widened at planning time to own it and the ops_smoke_events residual); reader side -- telemetry reader verbs (rec-4024) and the derived-layer harness (rec-4025); SCD2 history readers exempt,
-    DQ-covered (rec-4121 item 4). Future consumers:
+    (rec-4121; its context was widened at planning time to own it and the ops_smoke_events residual); reader side -- telemetry reader verbs (rec-4024) and the derived-layer harness (rec-4025); the ops_smoke_events
+    history reader is the smoke gate that already asserts one row per event_id (scripts/ducklake_smoke/lambda_ops_gates.py);
+    SCD2 history readers exempt, DQ-covered (rec-4121 item 4). Keep coverage and carve-out detail terse in the Decision
+    and put the detail in the data-modeling rule so the entry stays under the byte cap. Future consumers:
     T4.23 c9, T3.20 c2. Envelope significance numbered_decision; contract-first justification names
     data-modeling-standard.yaml (the rule lands there too) and why it cannot be the only home (changes writer failure
     semantics across write_mode classes, binds present and future writers, needs reversal conditions) and why an
@@ -63,8 +67,9 @@ scope:
   action: Modify
   purpose: >-
     New rule `grain-enforced-at-write` beside `grain-first`, citing the new Decision and carrying its write_mode scope and
-    carve-outs: the declared grain key is enforced by the write boundary (identical re-send = no-op; conflicting row = loud
-    rejection); an append_only reader returns one row per grain key and reports a differing pair as conflicted, never
+    carve-outs and its compared-content definition (every stored column except the write-time stamp and declared
+    provenance-only columns): the declared grain key is enforced by the write boundary (identical re-send = no-op;
+    conflicting row = loud rejection); an append_only reader returns one row per grain key and reports a differing pair as conflicted, never
     resolving it silently (SCD2 history readers exempt, DQ-covered); DQ owns the race window; enforcement is bounded to the
     batch's partitions, so the partition column is part of the enforced physical grain. design_time_walk step 1 (grain) gains
     one sentence: declare the grain key and enforce it at the write boundary per rule grain-enforced-at-write. Contract-level
@@ -112,22 +117,24 @@ scope:
 - file: tests/telemetry/test_append.py
   action: Modify
   purpose: >-
-    Add producer to _COLUMNS and _row(). TestMergeShapeAndBounds: line 206's `"WHEN MATCHED" not in sql` (the insert-only
+    Add producer and producer_version to _COLUMNS and _row(). TestMergeShapeAndBounds: line 206's `"WHEN MATCHED" not in sql` (the insert-only
     guard) is REPLACED, not deleted, by positive assertions that the only MATCHED arm ends THEN ERROR (no THEN UPDATE, no
     THEN DELETE) and that WHEN NOT MATCHED THEN INSERT remains; line 207's ON-string assertion gains producer.
     TestEventTableSpecFromProjection._base_entry gains the producer column and the 3-column dedupe_key.
     test_sql_failure_rolls_back_and_connection_stays_usable additionally asserts the binder error is NOT an AppendError.
     New module-level tests: test_cross_batch_grain_conflict_rejected (nothing inserted, AppendError names the event_id),
     test_producer_version_only_resend_is_noop, test_cross_producer_same_event_id_both_insert,
-    test_null_producer_rejected_without_spec_not_null (spec whose not_null omits producer), and
+    test_null_producer_rejected_without_spec_not_null (spec whose not_null omits producer, and the row OMITS the producer
+    key -- an explicit producer=None is already refused by the VARCHAR type gate, so it would pass on the unchanged
+    kernel), and
     test_from_projection_rejects_two_column_dedupe_key. test_append_events_replay_is_noop stays green.
 - file: tests/telemetry/test_append_ducklake_integration.py
   action: Modify
   purpose: >-
-    Add producer to the fixture columns, to _row() (lines 96-107) and to the positional seed INSERTs (lines 177-181,
-    216-219). Real local DuckLake
+    Add producer and producer_version to the fixture columns, to _row() (lines 96-107) and to the positional seed INSERTs
+    (lines 177-181, 216-219). Real local DuckLake
     (pytest -m integration): cross-batch conflict rejected and the table unchanged; cross-producer same event_id both
-    stored; identical and producer_version-only replays insert 0; a NULL producer rejected; the one-file-per-write
+    stored; identical and producer_version-only replays insert 0; a row omitting producer rejected; the one-file-per-write
     assertion (TestSingleSessionBatchOneFile, from line 135) and the day-bounded single-file read assertion
     (TestDayBoundedMergeReadsExactlyOneFile, lines 166-200) still hold with the new MERGE.
 - file: tests/test_field_semantics_event_projection.py
@@ -520,8 +527,10 @@ constraints:
 - >-
   Sequencing: PLAN-cli-persona-backend (in implementation) edits telemetry_observations.yaml and
   tests/checks/contracts/test_telemetry_event_journal_contracts.py; if it merges first, rebase onto it (it takes
-  telemetry_observations.yaml to about 480/500 -- this plan adds about two lines there). Take the next free Decision number
-  at implementation time; other in-flight plans also add Decisions.
+  telemetry_observations.yaml to about 480/500 -- this plan adds about two lines there). PLAN-ducklake-smoke-harness-classification
+  (approved, unimplemented) also edits data-modeling-standard.yaml (vocabulary block, amendment_log, version, updated_*);
+  rebase onto it if it lands first. Take the next free Decision number at implementation time; other in-flight plans also
+  add Decisions.
 - >-
   Code limited to src/telemetry/{append,gate}.py and scripts/field_semantics_event_projection.py -- deploy-inert
   (compute_affected_artifacts returns {} for every scope file; src/telemetry is excluded from data-pipeline.zip). No change
@@ -541,7 +550,7 @@ context:
   189; WARN 81 and 84 resolved by write_mode scoping, carve-outs, the named ops-writer residual (rec-4121) and dated
   annotations; T2.52 CONFLICT resolved by scoping derived materializations out; RELATED 55, 96, 97, 95, 200, 204, 137,
   100, 177, 62, 179. Decisions triaged: 157 of 157. Roadmap items intersected: 7; CONFLICT: 1; RELATED: 5.
-- "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=PENDING (rounds 1-4 REVISE: 14, 10, 8 and 6 findings addressed)"
+- "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=PROCEED after 5 rounds (rounds 1-4 REVISE: 14, 10, 8, 6 findings fixed; round 5 PROCEED, non-blocking F1-F3, F5, F6, F8, F9 folded in; F4 amends-81 wording and F7 lexicon line left as is); operator directed round 5 then merge"
 - >-
   Operator choices (2026-09-28 thread): R8 generation rule is contract-only (no Decision); a stored row_hash was proposed and
   withdrawn -- grain-key enforcement at write replaces it; the kernel change lands in this plan; grain-at-write gets its own
@@ -561,7 +570,8 @@ context:
 - >-
   Risk accepted: grain-at-write turns any producer nondeterminism (an unbumped output change, environment-sourced
   columns, incremental-vs-full divergence) into a whole-batch write failure that wedges that session's cursor until a
-  fix; rec-4122's golden-corpus and incremental-vs-full equivalence checks are the pre-live guard.
+  fix; rec-4122's golden-corpus and incremental-vs-full equivalence checks are the pre-live guard. After a concurrent race
+  stores a conflicting pair, every later re-send of that key errors until DQ (rec-4063) or an operator intervenes.
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
