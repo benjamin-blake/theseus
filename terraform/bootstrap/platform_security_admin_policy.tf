@@ -10,6 +10,11 @@
 # No s3:DeleteBucket / s3:DeleteBucketPolicy / logs:DeleteLogGroup: destroying the detector is
 # break-glass only. CloudWatch alarm verbs are not re-granted (AdminOps' CloudWatchAlarmManagement
 # already covers alarm:*).
+#
+# The four PlatformSecurityHeartbeat* Sids below are the canary's (platform_security_heartbeat_canary.tf)
+# management grant: enumerated states/scheduler verbs, no Delete* verb, no service wildcard,
+# platform-security-* resources only. Removing the canary is break-glass only, matching the
+# trail/bucket/log-group convention above.
 locals {
   platform_security_admin_policy_json = jsonencode({
     Version = "2012-10-17"
@@ -109,6 +114,61 @@ locals {
           "logs:StopQuery",
         ]
         Resource = "*"
+      },
+      {
+        # aws_sfn_state_machine: CreateStateMachine (create), UpdateStateMachine (update),
+        # DescribeStateMachine (refresh read on every plan), ListStateMachineVersions
+        # (provider's version/publish handling), TagResource/UntagResource (the `tags` argument)
+        # and ListTagsForResource (tags refresh read). ListExecutions lets PlatformAdmin read the
+        # canary's execution history during triage (plan step 12/16/18) without a Describe on each one.
+        Sid    = "PlatformSecurityHeartbeatStatesManage"
+        Effect = "Allow"
+        Action = [
+          "states:CreateStateMachine",
+          "states:UpdateStateMachine",
+          "states:DescribeStateMachine",
+          "states:ListStateMachineVersions",
+          "states:TagResource",
+          "states:UntagResource",
+          "states:ListTagsForResource",
+          "states:ListExecutions",
+        ]
+        Resource = "arn:aws:states:${var.aws_region}:${var.account_id}:stateMachine:platform-security-*"
+      },
+      {
+        # states:DescribeExecution has no ARN overlap with the stateMachine: resource type above --
+        # it needs its own Sid on the execution: resource type (plan steps 12/16/18 triage).
+        Sid      = "PlatformSecurityHeartbeatExecutionRead"
+        Effect   = "Allow"
+        Action   = "states:DescribeExecution"
+        Resource = "arn:aws:states:${var.aws_region}:${var.account_id}:execution:platform-security-*:*"
+      },
+      {
+        # aws_scheduler_schedule: CreateSchedule (create), UpdateSchedule (update -- also used by the
+        # starvation proof's disable/re-enable), GetSchedule (refresh read on every plan).
+        Sid    = "PlatformSecurityHeartbeatScheduleManage"
+        Effect = "Allow"
+        Action = [
+          "scheduler:CreateSchedule",
+          "scheduler:UpdateSchedule",
+          "scheduler:GetSchedule",
+        ]
+        Resource = "arn:aws:scheduler:${var.aws_region}:${var.account_id}:schedule/platform-security-*/platform-security-*"
+      },
+      {
+        # aws_scheduler_schedule_group: CreateScheduleGroup (create), GetScheduleGroup (refresh
+        # read), TagResource/UntagResource (the `tags` argument) and ListTagsForResource (tags
+        # refresh read).
+        Sid    = "PlatformSecurityHeartbeatScheduleGroupManage"
+        Effect = "Allow"
+        Action = [
+          "scheduler:CreateScheduleGroup",
+          "scheduler:GetScheduleGroup",
+          "scheduler:TagResource",
+          "scheduler:UntagResource",
+          "scheduler:ListTagsForResource",
+        ]
+        Resource = "arn:aws:scheduler:${var.aws_region}:${var.account_id}:schedule-group/platform-security-*"
       },
     ]
   })

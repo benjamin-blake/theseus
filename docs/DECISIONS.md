@@ -296,6 +296,18 @@ real signal after rec-4049 -- narrow by event class, never by actor.
 **Related:** 24, 39, 101, 113, 126, 143, 144, 156, 162, 171, 172, 176, 180, 181, 190, 201.
 Roadmap refs: rec-4044, rec-4049, rec-4067.
 
+> **Update (2026-09-28):** clause 5's IAM-event heartbeat no longer relies on terraform-drift
+> traffic (GitHub starts that cron every 3-6 hours, so the 3 x 1 h window false-alarmed).
+> platform-security-heartbeat-canary feeds it: an EventBridge Scheduler schedule (every 5 minutes,
+> own schedule group) starts a Step Functions state machine whose one task is iam:GetRole on its
+> own role, all in terraform/bootstrap in aws_region (clause 4 holds; the read travels the
+> global-event path). The heartbeat is now Sum < 1 over four consecutive 900 s periods: blinding
+> alarms 60-105 minutes after the last delivered IAM event. Canary tampering fails closed (it can
+> only starve the heartbeat), and any Scheduler write also fires the tamper alarm.
+> platform-security-detector-admin gains states/scheduler verbs on platform-security-* only (no
+> Delete); clause 2's six trail verbs are unchanged. Residual unchanged: a ReadOnly-only selector
+> change keeps reads flowing; the tamper alarm covers it. PLAN-platform-security-heartbeat-canary.
+
 ---
 
 ## Decision 201: Closure-time acceptance-verdict precondition -- a verdict LAYER asserted at update_rec, with a static evaluator wired in (amends Decision 103, 186) (Decided)

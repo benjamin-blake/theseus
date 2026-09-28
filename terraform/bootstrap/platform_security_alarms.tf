@@ -26,14 +26,21 @@ locals {
 
     # Tampering with the detector itself. CreateLogStream is excluded (the delivery role's own
     # routine stream creation would otherwise self-fire). DeleteAlarms/DisableAlarmActions match
-    # regardless of name: their alarmNames is an array a filter pattern cannot quantify over.
-    "platform-security-detector-tamper" = "{ (($.eventSource = \"cloudtrail.amazonaws.com\") && ($.readOnly IS FALSE)) || (($.eventSource = \"iam.amazonaws.com\") && ($.readOnly IS FALSE) && ($.requestParameters.roleName = \"platform-security-*\")) || (($.eventSource = \"logs.amazonaws.com\") && ($.readOnly IS FALSE) && ($.eventName != \"CreateLogStream\") && ($.requestParameters.logGroupName = \"platform-security-*\")) || (($.eventSource = \"s3.amazonaws.com\") && ($.readOnly IS FALSE) && ($.requestParameters.bucketName = \"platform-security-trail-*\")) || (($.eventSource = \"monitoring.amazonaws.com\") && ($.eventName = \"PutMetricAlarm\") && ($.requestParameters.alarmName = \"platform-security-*\")) || (($.eventSource = \"monitoring.amazonaws.com\") && (($.eventName = \"DeleteAlarms\") || ($.eventName = \"DisableAlarmActions\"))) }"
+    # regardless of name: their alarmNames is an array a filter pattern cannot quantify over. The
+    # scheduler clause matches any EventBridge Scheduler write -- in practice the heartbeat canary's
+    # own schedule only (CI's boundary excludes scheduler, PlatformDev holds no scheduler verb, and
+    # PlatformAdmin's only scheduler verbs are on platform-security-* schedules): a disable, update
+    # or delete of the canary's schedule emails within about 5 minutes instead of surfacing only as
+    # an unattributed heartbeat ALARM roughly an hour later.
+    "platform-security-detector-tamper" = "{ (($.eventSource = \"cloudtrail.amazonaws.com\") && ($.readOnly IS FALSE)) || (($.eventSource = \"iam.amazonaws.com\") && ($.readOnly IS FALSE) && ($.requestParameters.roleName = \"platform-security-*\")) || (($.eventSource = \"logs.amazonaws.com\") && ($.readOnly IS FALSE) && ($.eventName != \"CreateLogStream\") && ($.requestParameters.logGroupName = \"platform-security-*\")) || (($.eventSource = \"s3.amazonaws.com\") && ($.readOnly IS FALSE) && ($.requestParameters.bucketName = \"platform-security-trail-*\")) || (($.eventSource = \"monitoring.amazonaws.com\") && ($.eventName = \"PutMetricAlarm\") && ($.requestParameters.alarmName = \"platform-security-*\")) || (($.eventSource = \"monitoring.amazonaws.com\") && (($.eventName = \"DeleteAlarms\") || ($.eventName = \"DisableAlarmActions\"))) || (($.eventSource = \"scheduler.amazonaws.com\") && ($.readOnly IS FALSE)) }"
 
     # A mutating call on the alerts topic or one of its subscriptions.
     "platform-security-alerts-topic-change" = "{ ($.eventSource = \"sns.amazonaws.com\") && ($.readOnly IS FALSE) && (($.requestParameters.topicArn = \"*:agent-platform-alerts\") || ($.requestParameters.subscriptionArn = \"*:agent-platform-alerts:*\")) }"
 
-    # ANY IAM event, reads included (the hourly terraform-drift refresh reads both roles): proves
-    # the global-event path every other alarm depends on is alive.
+    # ANY IAM event, reads included: the platform-security-heartbeat-canary schedule (rec-4044,
+    # Decision 202) makes an iam:GetRole call every 5 minutes, so this metric proves the
+    # global-event path every other alarm depends on is alive without depending on unrelated CI or
+    # organic IAM traffic.
     "platform-security-iam-event-heartbeat" = "{ $.eventSource = \"iam.amazonaws.com\" }"
   }
 
@@ -119,15 +126,18 @@ resource "aws_cloudwatch_metric_alarm" "platform_security_alerts_topic_change" {
 }
 
 # Missing data is breaching by design: StopLogging, DeleteTrail, a multi-region or global-events
-# flip, an event-selector change or a broken Logs delivery all starve this metric.
+# flip, an event-selector change or a broken Logs delivery all starve this metric -- as does a dead
+# platform-security-heartbeat-canary schedule. Stated blinding latency: ALARM fires 60-105 minutes
+# after the last delivered IAM event (four 15-minute periods plus CloudWatch evaluation-range slack).
 resource "aws_cloudwatch_metric_alarm" "platform_security_iam_event_heartbeat" {
   alarm_name          = "platform-security-iam-event-heartbeat"
-  alarm_description   = "No IAM event reached the platform-security trail's log group for three hours: the detector is blind. ${local.platform_security_alarm_triage}"
+  alarm_description   = "No IAM event reached the platform-security trail's log group in four consecutive 15-minute periods, so the detector may be blind. First check the platform-security-heartbeat-canary schedule and its Step Functions executions (a dead canary), then AWS/Logs IncomingLogEvents on platform-security-cloudtrail (zero means Logs delivery is broken, non-zero means the global IAM-event path is broken). ${local.platform_security_alarm_triage}"
   namespace           = "PlatformSecurity"
   metric_name         = aws_cloudwatch_log_metric_filter.platform_security["platform-security-iam-event-heartbeat"].metric_transformation[0].name
   statistic           = "Sum"
-  period              = 3600
-  evaluation_periods  = 3
+  period              = 900
+  evaluation_periods  = 4
+  datapoints_to_alarm = 4
   threshold           = 1
   comparison_operator = "LessThanThreshold"
   treat_missing_data  = "breaching"
