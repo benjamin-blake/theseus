@@ -1,0 +1,448 @@
+schema_version: 5
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "heartbeat-canary-plan-time-grant"
+intent: >-
+  Make the merged-but-undeployed platform-security heartbeat canary (#1316) deployable, and so
+  unblock rec-4044: grant PlatformAdmin the one plan-time call the AWS provider makes
+  (states:ValidateStateMachineDefinition), re-order the canary's ADMIN walk so the grant is live
+  before any full bootstrap plan, and make this fix prove itself against the live account before
+  merge -- the step whose absence let #1316 ship an unplannable root.
+plan_type: IMPLEMENTATION
+verification_tier: V3
+plan_path: docs/plans/PLAN-heartbeat-canary-plan-time-grant.yaml
+phase: >-
+  ad_hoc_rec (soft-warn exception category) -- follow-up to PLAN-platform-security-heartbeat-canary
+  (#1316), which unblocks rec-4044 (open; PLAN-platform-role-iam-change-alarms step 16). No
+  tier_item criterion claimed.
+closes_criteria: []
+scope:
+  - file: terraform/bootstrap/platform_security_admin_policy.tf
+    action: Modify
+    purpose: >-
+      ONE new statement after PlatformSecurityHeartbeatStatesManage: Sid
+      PlatformSecurityHeartbeatDefinitionValidate, Effect Allow, Action exactly the scalar
+      "states:ValidateStateMachineDefinition", Resource "*". Comment (why, not what): the AWS
+      provider's aws_sfn_state_machine CustomizeDiff (stateMachineDefinitionValidate, v5.100.0)
+      calls it at PLAN time whenever the definition changes (create included); the service
+      authorization reference lists no resource type for it (read-only, validates a document,
+      changes nothing), and the live denial names the request resource as the literal
+      stateMachine:*, which no platform-security-* pattern can match -- so it needs "*", like the
+      PlatformSecurityTrailRead / PlatformSecurityLogsRead precedent in this file. Re-narrow
+      trigger in the same comment: drop or re-scope this Sid when the service authorization
+      reference lists a resource type for the action, or the provider stops calling it at plan. Header comment (L14-16):
+      "The four PlatformSecurityHeartbeat* Sids" becomes "five", and "platform-security-* resources
+      only" gains "except this one plan-time validator". No other
+      Sid, verb or resource changes. The rendered document stays inside the existing 6,144 B
+      precondition (about +130 B).
+  - file: tests/checks/iam_tf/test_platform_security_heartbeat_canary.py
+    action: Modify
+    purpose: >-
+      admin_grant_problems gains one scoped exception and two tightenings (Decision 181: the only
+      relaxation is the exception itself, red-cased). EXCEPTION: the Sid
+      PlatformSecurityHeartbeatDefinitionValidate must exist in exactly one statement (a new
+      positive pin), with Effect Allow, actions exactly ["states:ValidateStateMachineDefinition"]
+      and resources exactly ["*"]; that Sid alone is exempt from the platform-security-* resource
+      rule. TIGHTENINGS: (1) any
+      states:/scheduler: action in a Sid NOT named PlatformSecurityHeartbeat* is a problem (the
+      #1316 spec said so, but the shipped predicate only inspected heartbeat Sids, so a states verb
+      in PlatformSecurityLogsRead's Resource "*" would have passed); (2)
+      states:ValidateStateMachineDefinition in any other Sid is a problem (at a platform-security-*
+      resource it is inert -- the rec-2913 defect shape). New constants: the exception Sid name,
+      action and resource. Red cases (each drives the real predicate; existing ones kept):
+      "validate Sid dropped"; "validate Sid duplicated"; "validate Sid gains a second action" (states:CreateStateMachine
+      added); "validate Sid narrowed to the family" (Resource ->
+      stateMachine:platform-security-*, inert); "validate action in StatesManage instead";
+      "states verb smuggled into PlatformSecurityLogsRead". Module docstring names the exception.
+      Stays under 500 SLOC (433 today, about +45-70); if it would cross 500, move the _HEREDOC_*
+      fixtures or the admin predicate into tests/checks/iam_tf/_platform_security_hcl.py (Decision
+      128 decompose, absolute import, Decision 131). The commit body states this edit is Decision
+      181's residual arm (owner rec-3357) and a net tightening.
+  - file: docs/plans/PLAN-platform-security-heartbeat-canary.yaml
+    action: Modify
+    purpose: >-
+      Re-order the ADMIN post-deploy walk; step ids 11-22 and every field of steps 1-7 and 11-22
+      except the two fix_if texts below are untouched (the plan is already implementation_declared,
+      so validate_scope_boundary DEFERs it; the edit is sanctioned by this row). NEW step 0
+      (placed before step 8): materialise terraform/bootstrap/terraform.bootstrap.tfvars from the
+      sanctioned source -- the agent-platform-terraform-personal-tfvars Secrets Manager entry
+      (docs/contracts/terraform-cc-web-operations.yaml tfvars_and_remote_state_recovery; precedent
+      PLAN-platform-iam-bootstrap-adopt step 8) -- keeping only the account_id and owner_email
+      lines, under umask 077, gitignored, values never printed. Step 8 BECOMES phase 1: on main at
+      or after CANARY_MERGE_SHA (ancestor check, tfvars present and ignored, init), the targeted plan
+      of aws_iam_policy.platform_security_admin must be exactly one update, PRESENTED, applied only
+      on explicit human direction; its expected text says FIVE PlatformSecurityHeartbeat* Sids are
+      added (the four from #1316 plus the validator), nothing removed. Step 9 BECOMES the simulate gate (old step 10) extended to five
+      Sids: the validate Sid's Resource "*" is simulated against the literal request resource
+      arn:aws:states:REGION:ACCOUNT:stateMachine:* (built in memory, never printed), and Action is
+      normalised to a list (the old one-liner splatted the scalar DescribeExecution Action into
+      characters). Step 10 BECOMES the full baseline plan (old step 8's -lock=false exact-address
+      check) with the admin policy gone from the update set: exactly the seven canary creates plus
+      the tamper filter and heartbeat alarm updates. Step 11 fix_if: "re-run from step 9" becomes
+      "re-run from step 8", plus the provider's create-time retry on AccessDeniedException (a
+      missing create verb reads as a hang, not an error). Step 21 fix_if: CANARY_MERGE_SHA is this
+      fix's squash sha. infrastructure_dependencies bullet 2: phase 1 must precede ANY full plan,
+      not only phase 2, and "Step 10's simulate gates phase 2" becomes "Step 9's simulate gates step
+      10's full plan and phase 2".
+  - file: docs/plans/PLAN-platform-role-iam-change-alarms.yaml
+    action: Modify
+    purpose: >-
+      Step 20 fix_if text ONLY (command/expected untouched; implementation_declared, so
+      validate_scope_boundary DEFERs): MERGE_SHA is the squash-merge sha of
+      PLAN-heartbeat-canary-plan-time-grant's implementation PR (it descends from #1316's dd7f1ee2
+      and carries the live detector code, the re-pinned heartbeat test and the plan-time grant),
+      not #1283's or #1316's.
+  - file: docs/DECISIONS.md
+    action: Modify
+    purpose: >-
+      A second dated blockquote Update line (the pinned "> **Update (YYYY-MM-DD):**" prefix of
+      decision-entry.yaml amendment_forms; decision-scout confirmed this home and form, no new
+      number) appended inside Decision 202's section after the 2026-09-28 line and before the
+      closing "---" -- never a splice of the first line's "on platform-security-* only" (Decision
+      177). It names: the Sid PlatformSecurityHeartbeatDefinitionValidate; its single action
+      states:ValidateStateMachineDefinition (the AWS provider calls it at plan time); Resource "*";
+      why no platform-security-* pattern can match (the action has no resource type and the request
+      carries no state-machine name); that it is the sole exception, with no Delete verb and no
+      action wildcard; the guard (admin_grant_problems); and the re-narrow trigger (AWS adds a
+      resource type for the action, or the provider stops calling it at plan time).
+      PLAN-heartbeat-canary-plan-time-grant. <= 110 words (202 is 5,939 B; a baseline entry's
+      amendment only WARNs past 6,144 B). Regenerate docs/decisions-index.json if validate flags it
+      stale (sanctioned by decisions_index_regeneration).
+bundled_recommendations: []
+followon_recs:
+  - rec-4140
+infrastructure_dependencies:
+  - >-
+    terraform/bootstrap is admin-only and never auto-applied (Decision 126;
+    terraform/bootstrap/CLAUDE.md). This PR merges code only; nothing is applied before merge.
+  - >-
+    Pre-merge (steps 9-12, ADMIN container under agent_platform_admin): read-only, -lock=false,
+    from the CI-green PR head the merge is bound to, in a throwaway worktree. Authority: Decision
+    126 plus the PLAN-platform-iam-bootstrap-adopt PRE-MERGE GATE (ADMIN) precedent (bootstrap
+    requires only hashicorp/aws, so Decision 119's egress block and 120's mirror do not apply). Any
+    new PR head re-runs steps 10-11.
+  - >-
+    Post-merge: the waiting ADMIN session resumes PLAN-platform-security-heartbeat-canary at step 0,
+    then step 8 (phase 1, the grant apply), 9 (simulate), 10 (the first full plan that exercises the
+    live validator), then phase 2 onward unchanged.
+  - >-
+    Expected email: phase 1 fires platform-security-platform-role-iam-change (CreatePolicyVersion on
+    platform-security-detector-admin), as in #1316's plan.
+acceptance_criteria:
+  - >-
+    platform-security-detector-admin carries PlatformSecurityHeartbeatDefinitionValidate holding
+    exactly states:ValidateStateMachineDefinition on Resource "*", with a comment naming the
+    provider call and why no narrower Resource can match; every other statement is unchanged.
+  - >-
+    admin_grant_problems accepts exactly that exception and nothing wider: the Sid is required, a
+    second action, a narrowed (inert) resource, the action in another Sid, and any states:/scheduler:
+    verb outside a PlatformSecurityHeartbeat* Sid are each detected by a red case.
+    TestPlatformSecurityHeartbeatCanary, TestPlatformRoleIamChangeDetector and
+    TestCloudTrailWriteGrantScoped pass.
+  - >-
+    PLAN-platform-security-heartbeat-canary's walk runs 0 (tfvars) -> 8 (phase 1 grant) -> 9
+    (simulate, five Sids) -> 10 (full baseline plan: 7 creates, 2 updates) -> 11 onward, and no
+    step before 10 runs an untargeted bootstrap plan.
+  - >-
+    PLAN-platform-role-iam-change-alarms step 20's fix_if names this fix's squash sha as MERGE_SHA;
+    no Resolves rec-4044 trailer anywhere.
+  - >-
+    Before merge, the ADMIN gate shows on the PR head: the full plan fails with exactly one error,
+    the ValidateStateMachineDefinition denial; every walk address except the state machine and the
+    schedule that depends on it plans (5 add, 3 change, 0 destroy) with the admin policy update carrying the new Sid; and IAM's simulator allows
+    PlatformAdmin the validator on the literal request resource only with the PR's policy, while
+    denying other states verbs off-family. The counts-only evidence is in the PR description for
+    that head (Decision 115), never in a committed file.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: the admin grant exception and the canary pins hold, and every red case (old and new) is detected
+    command: bin/venv-python -m pytest "tests/checks/iam_tf/test_platform_security_heartbeat_canary.py::TestPlatformSecurityHeartbeatCanary" -q
+    expected: all tests pass, including the six new exception red cases
+    fix_if: a new red case not detected means admin_grant_problems is too weak -- strengthen it, never drop the red case
+    hermetic: true
+    expected_literals: []
+    graduation: waive
+    graduation_waiver_reason: >-
+      The class is already graduated as platform-security-heartbeat-canary-declared (node_id
+      TestPlatformSecurityHeartbeatCanary); that row runs the new predicate and red cases, so a
+      second row would duplicate it.
+  - step: 2
+    phase: pre-deploy
+    action: red before -- the new predicate fails on origin/main's admin policy because the validator Sid is absent
+    command: >-
+      git fetch origin main --quiet && T="${TMPDIR:-/tmp}/admin-policy-at-main.tf" && git show
+      origin/main:terraform/bootstrap/platform_security_admin_policy.tf > "$T" && bin/venv-python -c
+      "import sys; from tests.checks.iam_tf.test_platform_security_heartbeat_canary import
+      admin_grant_problems; p=admin_grant_problems(open(sys.argv[1]).read()); print(p);
+      sys.exit(0 if any('PlatformSecurityHeartbeatDefinitionValidate' in x for x in p) else 1)" "$T" &&
+      rm -f "$T" && echo "RED BEFORE AT ORIGIN MAIN"
+    expected: the problem list names the missing PlatformSecurityHeartbeatDefinitionValidate Sid, then the marker (run before merge only)
+    fix_if: no such problem -- the positive pin is missing from admin_grant_problems; add it
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      Depends on origin/main predating this merge; after merge it cannot go red, and the
+      "validate Sid dropped" red case in step 1 is the standing form of the same proof.
+  - step: 3
+    phase: pre-deploy
+    action: sibling detector checks that read the admin policy stay green
+    command: >-
+      bin/venv-python -m pytest
+      "tests/checks/iam_tf/test_platform_role_iam_change_alarms.py::TestPlatformRoleIamChangeDetector"
+      "tests/checks/iam_tf/test_cloudtrail_write_grant_scoped.py::TestCloudTrailWriteGrantScoped" -q
+    expected: all pass (naming, region and trail-verb pins untouched by the new Sid)
+    fix_if: a naming/region failure on the admin file -- the new Sid broke a family rule; fix the HCL, never the pin
+    hermetic: true
+    expected_literals: []
+    graduation: waive
+    graduation_waiver_reason: >-
+      Both classes are already graduated (platform-role-iam-change-detector-declared,
+      cloudtrail-write-grant-scoped-to-platform-trail); their rows keep running them.
+  - step: 4
+    phase: pre-deploy
+    action: the canary walk is re-ordered, the rec-4044 MERGE_SHA note moved, and Decision 202 carries the correction
+    command: |-
+      bin/venv-python - <<'EOF' && echo "PHASE ORDER CURRENT"
+      import re, sys, yaml
+      p = yaml.safe_load(open("docs/plans/PLAN-platform-security-heartbeat-canary.yaml"))
+      s = {v["step"]: v for v in p["verification_plan"]}
+      plan_cmd = lambda n: [c for c in re.findall(r"terraform -chdir=terraform/bootstrap plan[^|&]*", s[n]["command"])]
+      checks = {
+          "step 0 materialises tfvars from the sanctioned secret": 0 in s and "agent-platform-terraform-personal-tfvars" in s[0]["command"] and "umask 077" in s[0]["command"],
+          "step 8 is the targeted phase-1 grant plan": plan_cmd(8) and all("-target=aws_iam_policy.platform_security_admin" in c for c in plan_cmd(8)),
+          "step 9 simulates five Sids": "simulate-principal-policy" in s[9]["command"] and re.search(r"len\(st\)\s*==\s*5", s[9]["command"]),
+          "step 10 is the untargeted exact-address baseline": plan_cmd(10) and not any("-target" in c for c in plan_cmd(10)) and "aws_iam_policy.platform_security_admin" not in s[10]["command"],
+          "no step before 10 runs an untargeted plan": all("-target" in c for n in (0, 8, 9) for c in plan_cmd(n)),
+          "step 21 fix_if names this fix": "PLAN-heartbeat-canary-plan-time-grant" in s[21]["fix_if"],
+      }
+      a = {v["step"]: v for v in yaml.safe_load(open("docs/plans/PLAN-platform-role-iam-change-alarms.yaml"))["verification_plan"]}
+      checks["rec-4044 step 20 MERGE_SHA names this fix"] = "PLAN-heartbeat-canary-plan-time-grant" in a[20]["fix_if"]
+      d = open("docs/DECISIONS.md").read().split("## Decision 202:")[1].split("\n## Decision ")[0]
+      ups = re.findall(r"^> \*\*Update \(", d, re.M)
+      checks["Decision 202 has a second Update naming the validator"] = len(ups) == 2 and "ValidateStateMachineDefinition" in d.split("> **Update (")[-1]
+      bad = [k for k, ok in checks.items() if not ok]
+      sys.exit(f"STALE: {bad}") if bad else None
+      EOF
+    expected: prints the marker (every ordering, cross-plan and Decision assertion holds)
+    fix_if: STALE names the failing assertion -- fix that text; never relax an assertion here
+    hermetic: true
+    expected_literals: []
+    graduation: waive
+    graduation_waiver_reason: >-
+      A one-time sweep over this diff's plan and Decision text; plan wording is not a standing
+      regression target, and step 6 keeps both plans schema-valid.
+  - step: 5
+    phase: pre-deploy
+    action: provider-free formatting of the bootstrap root (validate/plan are CI-delegated in DEV, Decision 119)
+    command: terraform fmt -check -recursive terraform/bootstrap && echo "BOOTSTRAP FMT OK"
+    expected: exit 0 with the marker; CI's required terraform-validate job validates the root
+    fix_if: run terraform fmt on the named file
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      Duplicates CI's required terraform-validate job and needs the terraform binary, which the
+      replay environment does not guarantee.
+  - step: 6
+    phase: pre-deploy
+    action: the three plan documents validate after the edits
+    command: >-
+      bin/venv-python -m scripts.roadmap.plan_document docs/plans/PLAN-heartbeat-canary-plan-time-grant.yaml
+      docs/plans/PLAN-platform-security-heartbeat-canary.yaml docs/plans/PLAN-platform-role-iam-change-alarms.yaml
+      && echo "PLANS VALID"
+    expected: exit 0 with the marker
+    fix_if: a schema error names the field -- fix the edited text
+    hermetic: true
+    expected_literals: []
+    graduation: waive
+    graduation_waiver_reason: validate --pre already runs plan_document over every plan (step 7); this is the local fast loop only.
+  - step: 7
+    phase: pre-deploy
+    action: fast tier -- iam-policy-size precondition, SLOC, red-case floor, decision conformance and size, plan schema
+    command: bin/venv-python -m scripts.validate --pre
+    expected: exit 0 (a Decision 202 size WARN is advisory only)
+    fix_if: validate_sloc_limits -- decompose, never raise; a stale decisions index -- regenerate it with the repo tooling
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: docs/contracts/vp-red-before.yaml#recursion_refusal refuses a graduate step whose command invokes scripts.validate.
+  - step: 8
+    phase: pre-deploy
+    action: full tier before handoff (handoff_policy)
+    command: bin/venv-python -m scripts.validate
+    expected: exit 0
+    fix_if: RCA per Decision 55; a timeout is blocked, rerun from the start
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: Same recursion_refusal as step 7.
+  - step: 9
+    phase: pre-deploy
+    action: PRE-MERGE GATE (ADMIN) -- materialise terraform.bootstrap.tfvars from the sanctioned source, values never printed
+    command: |-
+      (umask 077 && aws secretsmanager get-secret-value --secret-id agent-platform-terraform-personal-tfvars --profile agent_platform_admin --query SecretString --output text | grep -E '^[[:space:]]*(account_id|owner_email)[[:space:]]*=' > terraform/bootstrap/terraform.bootstrap.tfvars) && git check-ignore -q terraform/bootstrap/terraform.bootstrap.tfvars && test "$(grep -c -E '^[[:space:]]*(account_id|owner_email)[[:space:]]*=' terraform/bootstrap/terraform.bootstrap.tfvars)" -eq 2 && echo "BOOTSTRAP TFVARS MATERIALISED (values not printed)"
+    expected: the two no-default bootstrap keys are present, the file is mode 600 and gitignored, and no value reaches the terminal
+    fix_if: a key missing from the secret -- recover it per docs/contracts/terraform-cc-web-operations.yaml tfvars_and_remote_state_recovery; never paste a value anywhere (Decision 101)
+    hermetic: false
+    graduation: not-applicable
+  - step: 10
+    phase: pre-deploy
+    action: PRE-MERGE GATE (ADMIN) -- at the PR head, the full bootstrap plan fails ONLY on the validator denial, and every other walk address plans with the new Sid in the admin policy update
+    command: |-
+      test -n "$PR_HEAD_SHA" && W="${TMPDIR:-/tmp}/canary-grant-worktree" && M="${TMPDIR:-/tmp}/canary-grant-evidence" && mkdir -p "$M" && git fetch origin "$PR_HEAD_SHA" && git worktree add --detach "$W" "$PR_HEAD_SHA" && cp terraform/bootstrap/terraform.bootstrap.tfvars "$W/terraform/bootstrap/" && terraform -chdir="$W/terraform/bootstrap" init -input=false > /dev/null && { terraform -chdir="$W/terraform/bootstrap" plan -input=false -lock=false -var-file=terraform.bootstrap.tfvars -json > "$M/full.jsonl"; true; } && terraform -chdir="$W/terraform/bootstrap" plan -input=false -lock=false -var-file=terraform.bootstrap.tfvars -target=aws_iam_role.platform_security_heartbeat_canary -target=aws_iam_role_policy.platform_security_heartbeat_canary -target=aws_iam_role.platform_security_heartbeat_scheduler -target=aws_iam_role_policy.platform_security_heartbeat_scheduler -target=aws_scheduler_schedule_group.platform_security_heartbeat -target=aws_iam_policy.platform_security_admin -target='aws_cloudwatch_log_metric_filter.platform_security["platform-security-detector-tamper"]' -target=aws_cloudwatch_metric_alarm.platform_security_iam_event_heartbeat -out="$M/targeted.tfplan" > /dev/null && terraform -chdir="$W/terraform/bootstrap" show -json "$M/targeted.tfplan" > "$M/targeted.json" && echo 'var.aws_region' | terraform -chdir="$W/terraform/bootstrap" console -var-file=terraform.bootstrap.tfvars | tr -d '"' > "$M/region"; rc=$?; git worktree remove --force "$W"; rm -f "$M/targeted.tfplan"; test $rc -eq 0 && M="$M" bin/venv-python - <<'EOF'
+      import json, os, sys
+      m = os.environ["M"]
+      errs = [d["diagnostic"] for d in map(json.loads, open(f"{m}/full.jsonl")) if d.get("type") == "diagnostic" and d["diagnostic"].get("severity") == "error"]
+      text = lambda d: d.get("summary", "") + " " + d.get("detail", "")
+      only_validator = len(errs) == 1 and "states:ValidateStateMachineDefinition" in text(errs[0]) and "AccessDenied" in text(errs[0])
+      rc = json.load(open(f"{m}/targeted.json")).get("resource_changes", [])
+      moving = sorted((r["address"], tuple(r["change"]["actions"])) for r in rc if r["change"]["actions"] not in (["no-op"], ["read"]))
+      creates = sum(a == ("create",) for _, a in moving); updates = sum(a == ("update",) for _, a in moving); other = len(moving) - creates - updates
+      pol = next((r["change"]["after"]["policy"] for r in rc if r["address"] == "aws_iam_policy.platform_security_admin"), None)
+      sids = sorted(s["Sid"] for s in json.loads(pol)["Statement"] if s["Sid"].startswith("PlatformSecurityHeartbeat")) if pol else []
+      open(f"{m}/candidate-policy.json", "w").write(pol or "")
+      print(json.dumps({"full_plan_errors": len(errs), "only_error_is_validator_denial": only_validator, "targeted_creates": creates, "targeted_updates": updates, "targeted_other": other, "heartbeat_sids": sids}))
+      good = only_validator and (creates, updates, other) == (5, 3, 0) and "PlatformSecurityHeartbeatDefinitionValidate" in sids and len(sids) == 5
+      os.remove(f"{m}/full.jsonl"); os.remove(f"{m}/targeted.json")
+      print("PRE-MERGE PLAN OK -- one plan-time denial, the one the new Sid grants; everything else plans") if good else sys.exit("PRE-MERGE PLAN STOP")
+      EOF
+    expected: >-
+      one JSON line of counts and Sid names only (full_plan_errors 1, only_error_is_validator_denial
+      true, 5 creates, 3 updates, 0 other, five PlatformSecurityHeartbeat Sids), then PRE-MERGE PLAN
+      OK. Nothing is applied; -lock=false keeps both reads off the state lock; plan files and JSON
+      (they embed ARNs) are deleted in this step. Put the JSON line and PR_HEAD_SHA in the PR
+      description (Decision 115).
+    fix_if: >-
+      full_plan_errors 0 -- the grant is already live (someone applied it): stop and establish who,
+      then run the canary walk's step 10 instead; more than one error, or one naming another verb --
+      the provider needs more than this Sid: add it through this PR and re-run; targeted counts off
+      -- live drifted from the ADMIN evidence of 7572f3b0: STOP and resolve with the human. Any new
+      PR head re-runs this step.
+    hermetic: false
+    graduation: not-applicable
+  - step: 11
+    phase: pre-deploy
+    action: PRE-MERGE GATE (ADMIN) -- IAM's own evaluator proves the new Sid is exactly the missing piece for PlatformAdmin, and grants nothing else
+    command: |-
+      M="${TMPDIR:-/tmp}/canary-grant-evidence" && test -s "$M/candidate-policy.json" && test -s "$M/region" && R=$(cat "$M/region") && M="$M" R="$R" bin/venv-python - <<'EOF'
+      import json, os, subprocess, sys
+      def run(*a):
+          q = subprocess.run(["aws", *a, "--profile", "agent_platform_admin", "--output", "json"], capture_output=True, text=True)
+          if q.returncode:
+              sys.exit(f"aws {a[0]} {a[1]} failed rc={q.returncode} (stderr suppressed: it embeds ARNs)")
+          return json.loads(q.stdout)
+      acct, r = run("sts", "get-caller-identity")["Account"], os.environ["R"]
+      admin = "arn" + ":aws:iam::" + acct + ":role/PlatformAdmin"
+      cand = open(os.path.join(os.environ["M"], "candidate-policy.json")).read()
+      req = f"arn:aws:states:{r}:{acct}:stateMachine:*"
+      off = f"arn:aws:states:{r}:{acct}:stateMachine:not-platform-security"
+      sim = lambda extra, acts, res: {e["EvalActionName"]: e["EvalDecision"] for e in run("iam", "simulate-principal-policy", "--policy-source-arn", admin, *extra, "--action-names", *acts, "--resource-arns", res)["EvaluationResults"]}
+      before = sim([], ["states:ValidateStateMachineDefinition"], req)
+      after = sim(["--policy-input-list", cand], ["states:ValidateStateMachineDefinition"], req)
+      offacts = ["states:CreateStateMachine", "states:StartExecution", "states:DeleteStateMachine"]
+      others_today = sim([], offacts, off)
+      others = sim(["--policy-input-list", cand], offacts, off)
+      widened = sorted(a for a in offacts if others[a] == "allowed" and others_today[a] != "allowed")
+      print(json.dumps({"validator_live_today": before, "validator_with_pr_policy": after, "off_family_today": others_today, "off_family_with_pr_policy": others, "widened_by_pr_policy": widened}))
+      good = before["states:ValidateStateMachineDefinition"] != "allowed" and after["states:ValidateStateMachineDefinition"] == "allowed" and not widened
+      print("SIMULATE OK -- the PR policy grants exactly the missing validator call") if good else sys.exit("SIMULATE STOP")
+      EOF
+    expected: >-
+      one JSON line of action names and decisions only (validator implicitDeny today, allowed with
+      the PR's policy; widened_by_pr_policy empty -- the PR policy allows no off-family states verb
+      that PlatformAdmin lacked today), then SIMULATE OK. Post the
+      JSON line in the PR description with step 10's.
+    fix_if: >-
+      validator allowed today -- the grant is already live: stop and establish who; still denied
+      with the PR policy -- the Sid's Resource or Action is wrong: fix it in this PR and re-run steps
+      10-11; widened_by_pr_policy non-empty -- the exception is too wide (step 1 should also be
+      red); an off-family verb already allowed today (off_family_today) is a pre-existing
+      PlatformAdmin grant, not this PR -- record it and raise it with the human, it does not fail
+      this step; "Backend initialization required" or a missing region file -- re-run step 10 first
+    hermetic: false
+    graduation: not-applicable
+  - step: 12
+    phase: pre-deploy
+    action: CLEANUP (ADMIN) -- remove the scratch evidence and any leftover worktree; also run after any STOP
+    command: rm -rf "${TMPDIR:-/tmp}/canary-grant-evidence" && git worktree prune && test ! -e "${TMPDIR:-/tmp}/canary-grant-evidence" && test ! -e "${TMPDIR:-/tmp}/canary-grant-worktree" && echo "SCRATCH CLEARED"
+    expected: SCRATCH CLEARED
+    fix_if: a path survives -- remove it by hand before ending the ADMIN session
+    hermetic: false
+    graduation: not-applicable
+  - step: 13
+    phase: post-deploy
+    action: HAND-BACK -- the waiting ADMIN session resumes the canary walk at step 0 with this fix's squash sha
+    command: |-
+      test -n "$FIX_MERGE_SHA" && git fetch origin main && git merge-base --is-ancestor "$FIX_MERGE_SHA" origin/main && git merge-base --is-ancestor dd7f1ee2 "$FIX_MERGE_SHA" && echo "HAND-BACK: resume docs/plans/PLAN-platform-security-heartbeat-canary.yaml at step 0, then 8 (phase 1), 9, 10, 11 onward, with CANARY_MERGE_SHA=$FIX_MERGE_SHA. rec-4044's PLAN-platform-role-iam-change-alarms step 20 uses MERGE_SHA=$FIX_MERGE_SHA."
+    expected: the hand-back line, relayed to the human; this plan applies nothing itself
+    fix_if: FIX_MERGE_SHA unset or not on main -- export this plan's implementation squash-merge sha after the merge lands
+test_obligations:
+  - source: terraform/bootstrap/platform_security_admin_policy.tf
+    behavior: PlatformAdmin holds the provider's plan-time validator in one dedicated Resource-"*" Sid and nothing else outside the platform-security-* family.
+    verification_step: 1
+    test_selector: tests/checks/iam_tf/test_platform_security_heartbeat_canary.py::TestPlatformSecurityHeartbeatCanary
+    red_green_expectation: red before (test_admin_grant fails at origin/main -- the Sid is absent; step 2 shows it), green after
+  - source: tests/checks/iam_tf/test_platform_security_heartbeat_canary.py
+    behavior: admin_grant_problems admits exactly the one exception and flags every wider form.
+    verification_step: 1
+    test_selector: tests/checks/iam_tf/test_platform_security_heartbeat_canary.py::TestPlatformSecurityHeartbeatCanary
+    waiver_reason: The module is the verifier; its red cases drive the real predicate against mutated HCL (Decision 187), so a weakened predicate reddens a red case in step 1.
+  - source: docs/plans/PLAN-platform-security-heartbeat-canary.yaml
+    behavior: The ADMIN walk applies the grant before any full bootstrap plan.
+    verification_step: 4
+    command: bin/venv-python - <<'EOF' && echo "PHASE ORDER CURRENT"
+    waiver_reason: A plan document carries no runtime behaviour; step 4 asserts the order and step 6 the schema.
+  - source: docs/plans/PLAN-platform-role-iam-change-alarms.yaml
+    behavior: Step 20 names this fix's squash sha as MERGE_SHA.
+    verification_step: 4
+    command: bin/venv-python - <<'EOF' && echo "PHASE ORDER CURRENT"
+    waiver_reason: A plan document carries no runtime behaviour; step 4 asserts the text and step 6 the schema.
+  - source: docs/DECISIONS.md
+    behavior: Decision 202 carries a second conformant dated Update line.
+    verification_step: 7
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: Decision prose carries no executable behaviour; validate_decision_entry_conformance (step 7) checks the entry and step 4 its content.
+constraints:
+  - terraform/bootstrap is admin-only and never auto-applied (Decision 126). Nothing is applied before merge; every apply in the canary walk is presented and human-directed.
+  - No Delete* verb, no action wildcard, no console or CLI grant -- the grant lands only through this PR.
+  - Never loosen an assertion (Decision 181) except the one red-cased exception; the two tightenings in admin_grant_problems ship with it.
+  - Public repo (Decision 101) -- no account id, ARN, email or tfvars value in any committed file, commit, PR body, PR comment or rec. ADMIN steps print counts, Sid and action names only, with stderr suppressed where it embeds ARNs; plan files and plan JSON are deleted in the step that makes them.
+  - No Resolves rec-4044 trailer in the PR body or squash body; rec-4044 closes only in PLAN-platform-role-iam-change-alarms step 20.
+  - Do not merge until steps 10-11 have posted their evidence for the CURRENT PR head; a new head re-runs them.
+  - Edits to PLAN-platform-security-heartbeat-canary.yaml are limited to post-deploy steps 0 and 8-10, step 11 and 21 fix_if, and infrastructure_dependencies bullet 2.
+  - Decompose, never raise, an SLOC budget (Decision 128). IMPLEMENTATION only (Decision 67). No rescue loops; unrecoverable live failure stops for RCA (Decision 55).
+context:
+  - "Decision-scout verdict FLAGS_FOUND (one NOTE, Decision 181: the Sid-keyed admin_grant_problems exception is a deliberate relaxation of a graduated guard -- disposition below). CITE: 202, 177, 126, 101, 48, 189, 128. Decisions triaged: 159 of 159. Roadmap items intersected: 4; CONFLICT: 0; RELATED: 4"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PROCEED after 2 round(s); round 2 autonomous (round 1 REVISE: F1 step-11 init dependency, F2 stale Sid-count/step-number texts, F3 off-family misattribution, F4 spacing literal -- all fixed; round 2 touch-ups folded in)"
+  - "Step 6b (Benjamin, confirmed; Access Analyzer follow-on rec not requested): Resource \"*\" (documented form for a no-resource-type action; in-file precedent); read-only pre-merge gate (bootstrap-adopt precedent) over a pre-merge apply; rec-4140 filed for the standing admin-root pre-merge-plan rule."
+  - "Decision 48 tension, stated: V3 wants deploy+verify evidence before merge, but this admin-only root merges code first (Decision 126). The pre-merge ADMIN gate (steps 10-11) is the merge precondition; the canary walk's steps 8-10 are the behavioural acceptance. Residual: the live validator's verdict on the canary definition first runs at canary step 10 (no canary resource exists then; a rejection is a new PR). rec-4140 generalises the rule."
+  - "Decision 181 NOTE disposition (Fable consult, adopted): the exception is Sid-keyed and a positive pin (exactly one Allow statement, one action, Resource \"*\"), every existing red case is kept, two tightenings land in the same diff, and the re-narrow trigger is recorded in the HCL comment and the Decision 202 Update. Industry parallel: Checkov/tfsec/Kyverno exceptions keyed on a specific identity with a mandatory justification; a new rec against rec-3357 was judged unnecessary (it already owns the residual)."
+  - "Canary plan AC4 ('platform-security-* resources only') is superseded by Decision 202's second Update for the one validator Sid; acceptance_criteria is a prohibited field there, so it is left as written, not drift."
+  - "Re-order trade-off: whole-root drift is first observed at the new canary step 10, after the targeted phase-1 apply (bounded: step 8 asserts exactly one update). Implementer: rebase onto origin/main before VP steps 7-8 (fast-tier budget changed in #1318)."
+  - "Decision 189: steps 1 and 3 are waived, not graduated -- their class selectors are already graduated rows and would be green on the plan-only tree."
+  - "Defect evidence: ADMIN session at origin/main 7572f3b0 -- full plan AccessDenied on states:ValidateStateMachineDefinition (request resource stateMachine:*); targeted plan of every other walk address: 5 add, 3 change, 0 destroy."
+  - "Provider (hashicorp/aws v5.100.0): sfn/state_machine.go CustomizeDiff = stateMachineDefinitionValidate (API call when definition changes) + stateMachineUpdateComputedAttributesOnPublish (local); scheduler schedule.go and schedule_group.go have none. Read path: DescribeStateMachine, ListStateMachineVersions, ListTagsForResource -- granted."
+  - "AWS service reference (servicereference states.json): ValidateStateMachineDefinition has no Resources entry (IsWrite false). A DEV-profile probe on 2026-09-28 reproduced the same request resource shape."
+  - "Gotcha: CreateStateMachine is retried by the provider on AccessDeniedException (IAM consistency) until the create timeout -- a missing create-time verb reads as a hang in phase 2."
+  - "Gotcha: #1316's step 10 splatted a scalar Action (PlatformSecurityHeartbeatExecutionRead) into characters; the rewritten step 9 normalises it. It never ran, so it was never observed."
+  - "Related, not bundled: rec-2913 (standing lint for grants at a resource axis the verb cannot authorise on -- this is that class), rec-4130 (commit the bootstrap provider lock so the plan-time call set is pinned), rec-3174 (bootstrap CLAUDE.md -var-file path)."
+  - "Hand-back: the ADMIN session resumes PLAN-platform-security-heartbeat-canary at step 0 with CANARY_MERGE_SHA = this fix's squash sha; rec-4044 step 20 MERGE_SHA is the same sha."
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - Decision 202 section only (docs/DECISIONS.md), plus the Decision 177 amendment dialect
+  - All files in scope located and readable; canary test SLOC measured (433 before)
+  - Acceptance criteria understood and verifiable
+execution_steps:
+  - "Modify terraform/bootstrap/platform_security_admin_policy.tf -- the PlatformSecurityHeartbeatDefinitionValidate Sid and header comment."
+  - "Modify tests/checks/iam_tf/test_platform_security_heartbeat_canary.py -- the exception, both tightenings, six red cases; confirm <= 500 SLOC."
+  - "Modify docs/plans/PLAN-platform-security-heartbeat-canary.yaml -- steps 0/8/9/10, step 11 and 21 fix_if, infrastructure_dependencies bullet 2."
+  - "Modify docs/plans/PLAN-platform-role-iam-change-alarms.yaml step 20 fix_if; append the second dated Update line to Decision 202."
+  - Run pre-deploy steps 1-8; commit only after step 8 (full) exits 0; open the PR; wait for CI green and code-review PASS.
+  - Hand steps 9-12 to the ADMIN session at the CI-green PR head; merge only after both evidence lines are on the PR for that head.
+  - After merge, run step 13 and relay the hand-back. On an unrecoverable V3 failure, stop and RCA (Decision 55).
+  - "Report: what was implemented, the step 10/11 evidence lines, and the squash sha handed back."
+work_areas: []
+rollback: >-
+  Code: revert the PR. Live: nothing is applied by this plan; the grant goes live only in the canary
+  walk's human-directed step 8 and is additive and side-effect-free. Removing it again is a
+  revert PR plus a human-directed targeted apply.
