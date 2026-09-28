@@ -1,8 +1,9 @@
-"""Bounded subprocess runner and budget telemetry for validate_vp_replay's shared-aggregate
-deadline model (docs/contracts/vp-red-before.yaml's ``replay_bound``). Private sibling of
-validate_vp_replay.py (Decision 104 precedent: _vp_replay_classify.py) -- 18+ graduated registry
-rows name validate_vp_replay.py as ``guard_target``, so a facade-package conversion (Decision 128's
-default) would retire a live path out from under them.
+"""Bounded execution and replay outcome reporting for validate_vp_replay's shared-aggregate
+deadline model (docs/contracts/vp-red-before.yaml's ``replay_bound``) and its GREEN-AFTER/
+red-before divergence text (docs/contracts/vp-red-before.yaml's ``green_leg_labels``). Private
+sibling of validate_vp_replay.py (Decision 104 precedent: _vp_replay_classify.py) -- 18+
+graduated registry rows name validate_vp_replay.py as ``guard_target``, so a facade-package
+conversion (Decision 128's default) would retire a live path out from under them.
 
 ``run_bounded`` executes a replayed VP step's command against a wall-clock deadline, in its own
 process group (``start_new_session=True``): on ``TimeoutExpired`` -- or any ``BaseException``
@@ -30,6 +31,8 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+from scripts.checks.verification import _vp_replay_classify as _classify
 
 # docs/contracts/vp-red-before.yaml's replay_bound -- TestContractPins derive-asserts these three
 # fractions equal to the contract's own values.
@@ -67,11 +70,24 @@ def _kill_and_reap(popen: subprocess.Popen) -> tuple[str, str]:
     unbounded ``communicate()`` hang forever waiting for EOF -- the bounded reap trades a
     guaranteed return for a possibly-incomplete capture of that descendant's own output, which
     is a fine trade since the step is already being reported as a deadline kill.
+
+    When the bounded reap itself times out, ``communicate()``'s own pipes are closed and the
+    already-SIGKILLed SHELL (never the escaped descendant) is reaped with a plain, unbounded
+    ``popen.wait()`` -- no try/except: the kernel reaps a SIGKILLed process promptly, and the
+    escaped descendant holding the pipe open cannot block a wait on the shell, which is a
+    different process. This leaves no zombie and no open file descriptor after the call. Residual:
+    an unbounded wait on a SIGKILLed shell can only hang on an uninterruptible kernel sleep, never
+    on the escaped descendant's own I/O.
     """
     _killpg_quiet(popen.pid)
     try:
         return popen.communicate(timeout=_REAP_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
+        if popen.stdout is not None:
+            popen.stdout.close()
+        if popen.stderr is not None:
+            popen.stderr.close()
+        popen.wait()
         return "", ""
 
 
@@ -175,4 +191,71 @@ def format_deadline_kill_red_before(
         f"vp-red-before {plan_rel}:{step_number}: actual=unmeasurable (killed at the aggregate deadline) after "
         f"{elapsed:.1f}s -- {_prior_clause(prior_elapsed, prior_count, aggregate)}, {aggregate:.0f}s aggregate "
         "deadline -- unmeasurable is a hard failure, never counted as red"
+    )
+
+
+def _green_leg_label(command: str, returncode: int | None, combined_output: str) -> str:
+    """Compose the GREEN-AFTER "raw outcome:" descriptor (docs/contracts/vp-red-before.yaml's
+    green_leg_labels) for one non-zero exit: unmeasurable naming the arm (exit 127 also names the
+    missing command; exit 126 reads "not executable", never "missing"), target_absent with an
+    output-keyed pytest collection hint, or assertion_failed. tautological is unreachable here --
+    this is called only on a non-zero exit."""
+    token = _classify.GREEN_LEG_LABEL_TOKEN
+    arm = _classify.unmeasurable_arm(command, returncode, combined_output)
+    if arm is not None:
+        detail = arm
+        if arm == "exit_127_command_not_found":
+            missing = _classify.missing_executable(combined_output)
+            if missing:
+                detail = f"{arm}: {missing}"
+        return f"{token} unmeasurable ({detail})"
+    if returncode in _classify._PYTEST_COLLECTION_ERROR_EXIT_CODES:
+        hint = _classify.collection_hint(command, returncode, combined_output)
+        return f"{token} target_absent" if not hint else f"{token} target_absent ({hint})"
+    return f"{token} assertion_failed"
+
+
+def format_green_exit_code_divergence(
+    plan_rel: str,
+    step_number: int,
+    command: str,
+    returncode: int | None,
+    combined_output: str,
+    expected: str,
+    elapsed: float,
+) -> str:
+    """GREEN-AFTER implement-leg exit-code divergence: every pinned substring stays byte-identical
+    ("vp-replay <plan>:<step>:", "actual=exit <N>", "!= expected=exit 0", "output tail="),
+    with the new "raw outcome:" label (docs/contracts/vp-red-before.yaml's green_leg_labels) and
+    the step's own duration appended -- the green verdict's authority (a non-zero exit still
+    hard-fails) is unchanged (Decision 148 point 1; rec-3920)."""
+    label = _green_leg_label(command, returncode, combined_output)
+    return (
+        f"vp-replay {plan_rel}:{step_number}: actual=exit {returncode} != expected=exit 0 ({label}) "
+        f"(expected={expected!r}; output tail={combined_output[-500:]!r}) after {elapsed:.1f}s"
+    )
+
+
+def format_green_missing_literal_divergence(
+    plan_rel: str, step_number: int, missing: list[str], expected: str, combined_output: str, elapsed: float
+) -> str:
+    """GREEN-AFTER implement-leg missing-literal divergence: pinned substrings stay byte-identical
+    ("vp-replay <plan>:<step>:", "actual=missing literal(s)", "output tail="), with the step's own
+    duration appended."""
+    return (
+        f"vp-replay {plan_rel}:{step_number}: actual=missing literal(s) {missing} "
+        f"!= expected={expected!r} (output tail={combined_output[-500:]!r}) after {elapsed:.1f}s"
+    )
+
+
+def format_red_before_divergence(
+    plan_rel: str, step_number: int, outcome: str, returncode: int | None, combined_output: str, elapsed: float
+) -> str:
+    """Red-before-leg tautological/unmeasurable divergence: pinned substrings stay byte-identical
+    ("vp-red-before", "actual=<outcome> (exit <N>)", "must be genuinely red", "output tail="),
+    with the step's own duration appended."""
+    return (
+        f"vp-red-before {plan_rel}:{step_number}: actual={outcome} (exit {returncode}) -- a graduate "
+        f"step must be genuinely red on the un-implemented tree (output tail={combined_output[-500:]!r}) "
+        f"after {elapsed:.1f}s"
     )

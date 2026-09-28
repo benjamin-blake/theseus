@@ -17,7 +17,7 @@
 contract:
   id: vp-red-before
   class: D
-  contract_version: 5
+  contract_version: 6
   status: provisional_v0
   description: >-
     validate_vp_replay's two legs. Inverted-polarity plan-only leg: a graduate-disposition
@@ -101,6 +101,24 @@ amendment_log:
       check's own worst-case green maximum TIGHTENS from 150s (MAX_AGGREGATE_SECONDS + one
       PER_STEP_TIMEOUT_SECONDS) to 120s (MAX_AGGREGATE_SECONDS alone). contract_version bumped
       4 -> 5 alongside this entry, per this file's own convention.
+  - date: "2026-09-28"
+    semantic_break: false
+    change_class: field_add
+    summary: >-
+      PLAN-vp-replay-authoring-and-diagnostics: hermetic_authoring rewritten to state ONE rule --
+      a pytest pre-deploy step is hermetic: true by default, false only under five named
+      carve-outs, with the fast-tier dependency carve-out (iii) naming rec-2809 as owner of its
+      enforcement gap and root-cause fix (Decision 181 point 2 / Decision 148 "fix at root
+      cause") and the rule pointing replay cost at replay_bound (rec-3334). Added top-level
+      green_leg_labels: a "raw outcome:" descriptor for a GREEN-AFTER implement-leg divergence
+      (unmeasurable naming the arm, target_absent with an output-keyed pytest collection hint, or
+      assertion_failed), deliberately never reusing the red-before leg's "actual=<outcome>" form
+      (Decision 201 point 1's axis discipline) -- a LABEL-ONLY reuse of the classifier on the
+      second polarity (Decision 189: the check holds no second copy); outcome_classes and
+      unmeasurable_arms are untouched (rec-3920). replay_bound.kill's red-before deadline-kill
+      sentence is updated: it now sets TIMEOUT_OUTCOME directly rather than classifying via the
+      subprocess_timeout arm (rec-3835). contract_version bumped 5 -> 6 alongside this entry, per
+      this file's own convention.
 
 # The FOUR frozen outcome classes a dynamically-replayed graduate step's result is classified
 # into (scripts.checks.verification.validate_vp_replay.OUTCOME_CLASSES derive-and-asserts equal
@@ -222,9 +240,22 @@ hermetic_authoring: >-
   this population). A MODIFIED (not added) plan-only PR still defers with a printed reason,
   whatever it declares. Advisory-SKIPs on unreachable origin/main. bin/venv-python is safe here --
   it falls back to a sentinel-dep-importing interpreter when .venv is absent, resolving in
-  venv-less CI too. Never mark a step hermetic if it invokes scripts.validate (recursion --
-  the graduate partition is refused statically at plan-PR time, see recursion_refusal above).
-  Steps needing pytest/deploys stay hermetic: false, excluded with a printed reason.
+  venv-less CI too. A pytest pre-deploy step is `hermetic: true` by default, and stays
+  `hermetic: false` only when it (i) needs credentials, network or live infrastructure; (ii)
+  invokes scripts.validate (recursion -- the graduate partition is refused statically at
+  plan-PR time, see recursion_refusal above); (iii) targets tests that depend on a package
+  absent from requirements-fast.txt (a module-level pytest.importorskip, today mostly duckdb) --
+  venv-less pr-validate collects no tests there (pytest exit 4 "found no collectors" for a node
+  or class selector, exit 5 for a whole-file selector) and the implementer cannot flip the flag
+  later (implement-scope-boundary.yaml implementing_plan_bookkeeping) -- an interim workaround
+  for an environment mismatch, owned by rec-2809 for its enforcement gap and root-cause fix
+  (Decision 181 point 2 / Decision 148 "fix at root cause"); (iv) is side-effectful or runs
+  out-of-tree; or (v) is a whole-file or whole-directory pytest re-run of test files the plan's
+  own scope creates or modifies (always inside the --pre pytest_diff affected set, so the author
+  can check it at plan time), or a ruff check/format phase, so replay would spend the non-test
+  half for no added independence. A pytest NODE or CLASS selector is never covered by (v) and
+  stays `hermetic: true` -- it additionally proves the named node exists (a missing node exits
+  4), which no tier phase checks. The rule points replay cost at replay_bound.
 
 graduation_disposition_authoring: >-
   Relocated from .claude/skills/planning/SKILL.md's "Graduation disposition authoring" section
@@ -340,10 +371,10 @@ replay_bound:
     A step that reaches its deadline is killed by SIGKILL to its WHOLE process group
     (_vp_replay_budget.run_bounded -- never a bare process kill, which would orphan a descendant);
     its failure text carries TIMEOUT and "aggregate deadline". On the red-before leg the same kill
-    classifies unmeasurable, via the existing subprocess_timeout arm -- the four frozen outcome
-    classes above are unchanged. One budget-exhaustion event yields EXACTLY ONE failure per
-    dispatch (rec-3833): whichever leg first observes the exhausted budget reports it, and every
-    later check across both legs sees it already reported and stops silently.
+    sets the named TIMEOUT_OUTCOME directly (rec-3835), never consulting the classifier -- the
+    four frozen outcome classes above are unchanged. One budget-exhaustion event yields EXACTLY
+    ONE failure per dispatch (rec-3833): whichever leg first observes the exhausted budget reports
+    it, and every later check across both legs sees it already reported and stops silently.
   authoring: >-
     Author a hermetic pre-deploy step to stay under authoring_max_fraction (25%) of the aggregate,
     measured before merge. A step that cannot be narrowed below that target states its measured
@@ -352,3 +383,48 @@ replay_bound:
     deadline above and the per_step_warn_fraction/cumulative_warn_fraction band are what actually
     bind. The warn band never appends to a check's failed[] list -- it is drift visibility, never a
     gate.
+
+# PLAN-vp-replay-authoring-and-diagnostics (rec-3920): GREEN-AFTER implement-leg divergence
+# labels. A green-leg divergence keeps hard-failing exactly as before (the green verdict's
+# authority is Decision 148 point 1) -- this key only adds a descriptor under the token below,
+# deliberately NEVER the red-before leg's pinned "actual=<outcome>" form, so no grep-able
+# substring is shared across polarities and no vocabulary is reused as the green axis's verdict
+# (Decision 201 point 1's axis discipline). This is a LABEL-ONLY reuse of the red-before
+# classifier on the second polarity (Decision 189: the check holds no second copy). The
+# outcome_classes and unmeasurable_arms above are untouched, and tautological is unreachable on a
+# green failure.
+#
+# The descriptor is the classifier's class for the exit: "raw outcome: unmeasurable (<arm
+# name>[: <command>])" -- exit 127 also names the missing command, exit 126 reads "not
+# executable", never "missing"; "raw outcome: target_absent" for any exit 4/5, with a hint only
+# for a pytest invocation whose output matches one of the ordered hints below; or "raw outcome:
+# assertion_failed" otherwise -- plus the step's own duration.
+#
+# token and hints are STRUCTURED data the detector consumes, not prose. hints is an ORDERED list
+# -- the first entry whose `requires` all match and `forbids` none match wins; the whole list is
+# gated once on a pytest invocation exiting 4/5. _vp_replay_classify.py's collection_hint()
+# iterates a module-level copy of this exact ordered structure (collection_error, then
+# module_level_skip, then missing_node); TestGreenLegLabelContractPins derive-asserts the two
+# equal, so the contract and the check hold one copy.
+green_leg_labels:
+  token: "raw outcome:"
+  hints:
+    - name: collection_error
+      requires:
+        - "found no collectors"
+        - "\\d+ errors?\\b"
+      forbids: []
+      text: "collection error -- see output tail"
+    - name: module_level_skip
+      requires:
+        - "\\d+ skipped"
+      forbids:
+        - "\\d+ errors?\\b"
+        - "\\d+ passed"
+        - "\\d+ failed"
+      text: "module-level skip -- e.g. a dependency absent from requirements-fast.txt (rec-2809)"
+    - name: missing_node
+      requires:
+        - "not found:"
+      forbids: []
+      text: "named node or file missing or renamed"

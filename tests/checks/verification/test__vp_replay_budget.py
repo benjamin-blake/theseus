@@ -11,6 +11,7 @@ kill message builders.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -69,7 +70,59 @@ class TestRunBoundedTimeoutKillsTheProcessGroup:
         assert dead, f"grandchild pid {pid} survived the process-group kill"
 
 
+def _pid_state(pid: int) -> str:
+    stat_path = Path(f"/proc/{pid}/stat")
+    try:
+        text = stat_path.read_text(encoding="utf-8")
+    except (FileNotFoundError, ProcessLookupError):
+        return "gone"
+    close_paren = text.rfind(")")
+    return text[close_paren + 2] if close_paren != -1 else ""
+
+
 class TestKillAndReapBoundedWait:
+    def test_reap_timeout_closes_pipes_and_reaps_the_shell(self, tmp_path: Path) -> None:
+        """When the bounded reap itself times out, both pipes are closed and the already-
+        SIGKILLed SHELL (never the escaped descendant, which this test kills in teardown) is
+        reaped with a plain wait -- no zombie, no open file descriptor survives the call."""
+        pidfile = tmp_path / "grandchild.pid"
+        command = f"sleep 30 & echo $! > {pidfile}; wait"
+        popen = subprocess.Popen(
+            command,
+            shell=True,
+            cwd=tmp_path,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        shell_pid = popen.pid
+        deadline = time.monotonic() + 5.0
+        while not pidfile.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        grandchild_pid = int(pidfile.read_text(encoding="utf-8").strip())
+
+        try:
+            with patch.object(b, "_REAP_TIMEOUT_SECONDS", 0.05):
+                stdout, stderr = b._kill_and_reap(popen)
+            assert stdout == ""
+            assert stderr == ""
+            assert popen.stdout is None or popen.stdout.closed
+            assert popen.stderr is None or popen.stderr.closed
+
+            deadline = time.monotonic() + 5.0
+            state = _pid_state(shell_pid)
+            while state not in ("gone", "Z") and time.monotonic() < deadline:
+                time.sleep(0.05)
+                state = _pid_state(shell_pid)
+            assert state in ("gone", "Z"), f"shell pid {shell_pid} was neither reaped nor a zombie (state={state!r})"
+        finally:
+            b._killpg_quiet(grandchild_pid)
+            try:
+                os.waitpid(grandchild_pid, os.WNOHANG)
+            except ChildProcessError:
+                pass
+
     def test_reap_success_returns_the_captured_output(self, tmp_path: Path) -> None:
         popen = subprocess.Popen(
             "echo reaped",
@@ -197,6 +250,96 @@ class TestDeadlineKillMessageBuilders:
         assert "actual=unmeasurable" in msg
         assert "aggregate deadline" in msg
         assert "never counted as red" in msg
+
+
+class TestDivergenceTextBuilders:
+    """Every pinned substring survives the move into this module, "after <N>s" is present, and
+    the green exit-code builder's label is correct for every exit/output shape measured at
+    planning: exit 127 names the command, exit 126 reads not executable, an unmeasurable arm with
+    no parsed command name, a pytest exit 4 with each collection hint (including the exit-4
+    import-error shape getting collection_error, never the skip hint), a pytest exit 5 whole-file
+    skip with the module-level-skip hint, a non-pytest exit 4 as target_absent with no hint, and a
+    plain exit 1 as assertion_failed. No green label contains "actual=<outcome>"; the
+    missing-literal and red-before builders carry the duration."""
+
+    def test_green_exit_code_pinned_substrings_and_duration(self) -> None:
+        msg = b.format_green_exit_code_divergence("docs/plans/PLAN-x.yaml", 1, "exit 1", 1, "some output", "Exit 0.", 1.5)
+        assert "vp-replay docs/plans/PLAN-x.yaml:1:" in msg
+        assert "actual=exit 1" in msg
+        assert "!= expected=exit 0" in msg
+        assert "output tail=" in msg
+        assert "after 1.5s" in msg
+        assert "actual=<outcome>" not in msg
+
+    def test_green_exit_127_names_the_command(self) -> None:
+        msg = b.format_green_exit_code_divergence(
+            "docs/plans/PLAN-x.yaml", 1, "nonexistent-tool", 127, "/bin/sh: 1: nonexistent-tool: not found\n", "Exit 0.", 0.1
+        )
+        assert "raw outcome: unmeasurable (exit_127_command_not_found: nonexistent-tool)" in msg
+
+    def test_green_exit_126_reads_not_executable_never_missing(self) -> None:
+        msg = b.format_green_exit_code_divergence("docs/plans/PLAN-x.yaml", 1, "./x", 126, "", "Exit 0.", 0.1)
+        assert "raw outcome: unmeasurable (exit_126_not_executable)" in msg
+        assert "missing" not in msg
+
+    def test_green_unmeasurable_arm_with_no_parsed_command_name(self) -> None:
+        msg = b.format_green_exit_code_divergence(
+            "docs/plans/PLAN-x.yaml", 1, "grep p missing.py", 2, "grep: missing.py: No such file", "Exit 0.", 0.1
+        )
+        assert "raw outcome: unmeasurable (rg_or_grep_error_exit_2)" in msg
+
+    def test_green_credential_absence_arm(self) -> None:
+        msg = b.format_green_exit_code_divergence(
+            "docs/plans/PLAN-x.yaml", 1, "aws s3 ls", 1, "Unable to locate credentials", "Exit 0.", 0.1
+        )
+        assert "raw outcome: unmeasurable (credential_absence)" in msg
+
+    def test_green_pytest_exit_4_collection_error_never_the_skip_hint(self) -> None:
+        out = "1 error in 0.02s\nERROR: found no collectors for x::test_thing\n"
+        msg = b.format_green_exit_code_divergence(
+            "docs/plans/PLAN-x.yaml", 1, "pytest x::test_thing -q", 4, out, "Exit 0.", 0.1
+        )
+        assert "raw outcome: target_absent (collection error -- see output tail)" in msg
+
+    def test_green_pytest_exit_4_module_level_skip_hint(self) -> None:
+        out = "ERROR: found no collectors for x::test_thing\n\n1 skipped in 0.00s\n"
+        msg = b.format_green_exit_code_divergence(
+            "docs/plans/PLAN-x.yaml", 1, "pytest x::test_thing -q", 4, out, "Exit 0.", 0.1
+        )
+        assert "module-level skip -- e.g. a dependency absent from requirements-fast.txt (rec-2809)" in msg
+
+    def test_green_pytest_exit_5_whole_file_skip_hint(self) -> None:
+        out = "1 skipped in 0.01s\n"
+        msg = b.format_green_exit_code_divergence("docs/plans/PLAN-x.yaml", 1, "pytest x.py -q", 5, out, "Exit 0.", 0.1)
+        assert "module-level skip -- e.g. a dependency absent from requirements-fast.txt (rec-2809)" in msg
+
+    def test_green_non_pytest_exit_4_is_target_absent_with_no_hint(self) -> None:
+        msg = b.format_green_exit_code_divergence(
+            "docs/plans/PLAN-x.yaml", 1, "some-other-tool", 4, "found no collectors\n1 error in 0.0s", "Exit 0.", 0.1
+        )
+        assert "raw outcome: target_absent" in msg
+        assert "raw outcome: target_absent (" not in msg
+
+    def test_green_plain_exit_1_is_assertion_failed(self) -> None:
+        msg = b.format_green_exit_code_divergence("docs/plans/PLAN-x.yaml", 1, "exit 1", 1, "", "Exit 0.", 0.1)
+        assert "raw outcome: assertion_failed" in msg
+
+    def test_green_missing_literal_pinned_substrings_and_duration(self) -> None:
+        msg = b.format_green_missing_literal_divergence(
+            "docs/plans/PLAN-x.yaml", 1, ["expected-literal"], "stdout contains `expected-literal`.", "output", 2.3
+        )
+        assert "vp-replay docs/plans/PLAN-x.yaml:1:" in msg
+        assert "actual=missing literal(s)" in msg
+        assert "output tail=" in msg
+        assert "after 2.3s" in msg
+
+    def test_red_before_pinned_substrings_and_duration(self) -> None:
+        msg = b.format_red_before_divergence("docs/plans/PLAN-x.yaml", 1, "tautological", 0, "output", 0.4)
+        assert "vp-red-before" in msg
+        assert "actual=tautological (exit 0)" in msg
+        assert "must be genuinely red" in msg
+        assert "output tail=" in msg
+        assert "after 0.4s" in msg
 
 
 class TestContractPins:

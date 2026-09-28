@@ -204,7 +204,8 @@ implement agent will substitute a weaker check).
 See `docs/contracts/vp-red-before.yaml#hermetic_authoring` for the full walk (MANDATORY
 read-trigger -- read this before setting `hermetic:` on any pre-deploy step): the two replay
 polarities a pre-deploy step is now subject to, `bin/venv-python`'s venv-less-CI safety, and the
-scripts.validate recursion hazard.
+scripts.validate recursion hazard. Also see `docs/contracts/vp-red-before.yaml#replay_bound` for
+where the step's replay cost is bound.
 
 ## Graduation disposition authoring (T3.21, enforced VF-05)
 
