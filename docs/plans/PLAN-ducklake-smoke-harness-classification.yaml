@@ -80,7 +80,12 @@ scope:
     purpose: rewrite_legacy_layout on an ops history table proceeds when the declared smoke pair is also resident (both whole-catalog reads).
   - file: tests/common/test_ducklake_maintenance_scope.py
     action: Modify
-    purpose: build_registry classifies the declared pair; collision raises; class_universe gains smoke_harness only when `tables:` is declared; the `tables:` names equal SMOKE_HISTORY_TABLE / SMOKE_CURRENT_TABLE.
+    purpose: >-
+      build_registry classifies the declared pair; collision raises; class_universe gains smoke_harness
+      only when `tables:` is declared; test_tables_block_agrees_with_smoke_spec pins the `tables:` names
+      to SMOKE_HISTORY_TABLE / SMOKE_CURRENT_TABLE and each tables.<side>.partition (normalized) to
+      resolve_table_spec(None)'s spec -- `tables:` is the MEMBERSHIP source, partition_transforms (via
+      resolve_table_spec(None)) the declared-SPEC source, and the test keeps the two from diverging.
   - file: tests/common/test_ducklake_partition_conformance.py
     action: Modify
     purpose: >-
@@ -89,7 +94,12 @@ scope:
       smoke_harness; adding an undeclared raw table raises one aggregated PartitionLayoutError.
   - file: tests/lambdas/ducklake_maintenance/test_partition_actions.py
     action: Modify
-    purpose: reconcile_partitions returns `skipped` with read-only layout/drift in both modes (update the exact-key pin at :83); rewrite_partition_layout on ducklake_smoke_history refuses with the smoke_harness policy reason.
+    purpose: >-
+      reconcile_partitions returns `skipped` with read-only layout/drift in both modes (update the
+      exact-key pin at :83), and with dry_run=false alter_to_declared's drifts argument excludes every
+      skipped table; test_rewrite_refuses_smoke_harness_table_via_policy_cell loads the REAL generated
+      field_semantics.yaml (not a mocked resolve_scope), so it binds the shipped smoke_harness rewrite cell
+      to the action.
   - file: tests/lambdas/ducklake_maintenance/handler/test_merge_ops_discovery.py
     action: Modify
     purpose: >-
@@ -172,7 +182,11 @@ scope:
       (reconcile_partitions apply=false) table is reported in context and neither trips the alarm nor
       fails --assert-clear"; (4) verification_plan step 1 `expected` names that smoke_harness case; (5)
       the partition_drift.py test_obligation behavior reads "over reconcile-scoped drift and
-      rewrite-eligible legacy files only"; (6) a dated context line pointing at this plan. A report-only
+      rewrite-eligible legacy files only"; (6) a dated context line pointing at this plan; (7) its
+      pre_implementation_checklist gains "PLAN-ducklake-smoke-harness-classification merged and deployed
+      (deploy-ducklake-lambdas.yml green on its merge SHA)" -- until then its live partition_layout verb
+      fails closed on production exactly as the remediation step 18 did; (8) its live-verb step's
+      expected allows the pair in the readout with table_class smoke_harness. A report-only
       class's drift never holds the alarm open, mirroring action_reconcile_partitions' to_merge scoping.
       rec-4094's context was updated 2026-09-28.
 bundled_recommendations:
@@ -189,7 +203,7 @@ acceptance_criteria:
   - src/lambdas/ducklake_maintenance/handler.py stays at or under 492 SLOC (Decision 128; no budget entry added).
   - data-modeling-standard.yaml carries the vocabulary block; storage-substrate.yaml registers the pair; every edited Class D contract carries a new amendment_log entry; Decision 191 carries the dated amendment and decisions-index.json is regenerated.
   - Both step-18/19/21 surfaces name the exact expected layouts and skipped sets (skipped drift expected null, recorded never STOPped); the remediation plan's step 24 reads "every table" as layouts; PLAN-ducklake-partition-drift-alarm's drift predicate counts only reconcile-scoped tables.
-  - deploy-ducklake-lambdas.yml is green on the squash-merge SHA; the first scheduled merge_ops after deploy is invoked (AWS/Lambda Invocations in the :30 window) and records MergeOpsUnclassifiedTables 0, MergeOpsPassFailed 0 and MergeOpsTablesCount two higher than the last pre-deploy run -- read by a DEV agent, no manual invoke.
+  - deploy-ducklake-lambdas.yml is green on the squash-merge SHA; the first scheduled merge_ops after deploy (or, after a confirmed EC-probe overlap, the following pass) is invoked (AWS/Lambda Invocations in the :30 window) and records MergeOpsUnclassifiedTables 0, MergeOpsPassFailed 0 and MergeOpsTablesCount two higher than the last pre-deploy run -- read by a DEV agent, no manual invoke.
 verification_plan:
   - step: 1
     phase: pre-deploy
@@ -215,9 +229,13 @@ verification_plan:
       tests/common/test_ducklake_maintenance_scope.py::test_build_registry_classifies_declared_smoke_harness_pair
       tests/common/test_ducklake_maintenance_scope.py::test_build_registry_raises_on_smoke_harness_name_collision
       tests/common/test_ducklake_maintenance_scope.py::test_class_universe_includes_smoke_harness_only_when_tables_declared
-      tests/common/test_ducklake_maintenance_scope.py::test_tables_block_names_equal_smoke_constants
+      tests/common/test_ducklake_maintenance_scope.py::test_tables_block_agrees_with_smoke_spec
       -q
-    expected: all four pass (build_registry sides, collision raise, class_universe gating, constant equality); red on the planning tree (the nodes do not exist)
+    expected: >-
+      all four pass (build_registry sides, collision raise, class_universe gating; the `tables:` names
+      equal SMOKE_HISTORY_TABLE / SMOKE_CURRENT_TABLE AND normalize_partition_spec of each
+      tables.<side>.partition equals resolve_table_spec(None)'s spec for that side); red on the planning
+      tree (the nodes do not exist)
     fix_if: the pair is matched by a name prefix instead of the `tables:` block
     hermetic: false
     graduation: graduate
@@ -358,6 +376,7 @@ verification_plan:
       assert all(ph in x and 'any table drifts' not in x for x in (p['intent'], p['acceptance_criteria'][1])), 'drift plan intent/AC not narrowed';
       assert ph in row('convergence_health/partition_drift.py') and 'smoke_harness' in row('test_partition_drift.py'), 'drift plan scope rows not narrowed';
       assert 'smoke_harness' in next(v['expected'] for v in p['verification_plan'] if v['step'] == 1), 'drift plan VP1 lacks the smoke_harness case';
+      assert any('PLAN-ducklake-smoke-harness-classification' in c for c in p['pre_implementation_checklist']), 'drift plan lacks the ordering prerequisite';
       subprocess.run([sys.executable, '-m', 'scripts.decisions_index', '--check'], check=True);
       print('DEC191_AND_SURFACES_OK')"
     expected: prints the marker; red on the planning tree (Decision 191 never names smoke_harness)
@@ -431,7 +450,9 @@ verification_plan:
       scope error such as the new collision raise) -- STOP and RCA (Decision 55); MergeOpsDurationMs
       without MergeOpsPassFailed means emission failed (emit_metric is best-effort) -- RCA, never infer
       success from absence; PassFailed 1 -- STOP and RCA, the only accepted transient being a confirmed
-      overlapping operator EC probe run, then re-read the following pass
+      overlapping operator EC probe run, then re-read the following pass; MergeOpsTablesCount other than
+      pre-deploy + 2 -- check for a concurrently merged table registration or the pair mid-recreate at
+      :30, re-read the following pass, and STOP and RCA if it persists
     hermetic: false
   - step: 17
     phase: post-deploy
@@ -537,7 +558,7 @@ constraints:
 context:
   - "Decision-scout verdict: FLAGS_FOUND (r1: WARN 191, WARN 81, NOTE 181/88/192, SPIRIT 143; r2 on the revised approach: NOTE 191, NOTE 181, no WARN). Decisions triaged: 157 of 157. Roadmap items intersected: 14; CONFLICT: 0; RELATED: 14."
   - "CITE: Decision 191, 204, 88, 192, 81, 143, 188, 128, 125, 126, 79, 177, 118, 181, 201, 59; RELATED 86, 127, 168, 166, 137, 84, 82, 193, 150, 167, 151, 115, 55, 66, 189, 186, 190"
-  - "gates: decision-scout=FLAGS_FOUND x2; plan-critique r1=REVISE (fixed; 191 annotation CONFIRMED); r2=REVISE (fixed; F6 disputed, :19-20 verified; human: one more round) -> PENDING"
+  - "gates: decision-scout=FLAGS_FOUND x2; plan-critique r1=REVISE (fixed; 191 annotation CONFIRMED); r2=REVISE (fixed; F6 disputed, :19-20 verified); r3=REVISE (F1, F2, S1-S3 applied; S4 not; no r4 by human choice)"
   - >-
     Scout dispositions: WARN 81 -> no manual/ADMIN/CI merge_ops invoke, DEV reads outcome metrics;
     NOTE 88 -> merge_ops apply=true; NOTE 192 -> no gc_ops cell, per-table reason text; SPIRIT 143 ->
@@ -575,9 +596,17 @@ execution_steps:
   - "src/lambdas/ducklake_maintenance/handler.py -- the two pass-outcome metrics, <= 2 lines (post: steps 4 and 10 green)"
   - "Tests per scope rows, including rec-3864's acceptance node and the real-engine conformance cases (post: steps 1-5, 8 green)"
   - "Contracts: data-modeling-standard.yaml vocabulary; storage-substrate.yaml row; ducklake_maintenance.yaml prose; ducklake-partition-remediation.yaml steps 18/19/21 -- each contract edit (Class B and D) with an amendment_log entry (post: step 9 green)"
-  - "Decision 191 dated [Amendment ...] trailer (widen cl.1's class list and cl.2's universe explicitly; the `tables:` names are reversal (a)'s declared per-table list; rec-4116 owns retirement); regenerate docs/decisions-index.json via scripts.decisions_index --write; the remediation plan's steps 18/19/21/24; PLAN-ducklake-partition-drift-alarm's THRESHOLD sentence + dated context line (post: step 11 green)"
+  - "Decision 191 dated [Amendment ...] trailer (widen cl.1's class list and cl.2's universe explicitly; the `tables:` names are reversal (a)'s declared per-table list; rec-4116 owns retirement); regenerate docs/decisions-index.json via scripts.decisions_index --write; the remediation plan's steps 18/19/21/24; PLAN-ducklake-partition-drift-alarm's edits (1)-(8) per its scope row (post: step 11 green)"
   - Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)
-  - "Handoff: PR squash body carries 'Resolves: rec-3864'; after merge, steps 14-17 (DEV; step 16 wakes by send_later, never polls), then step 18 in the resuming ADMIN session"
+  - >-
+    Run step 12 (--pre); create the graduated registry shards for steps 1-6 under their
+    graduation_check_ids; set implementation_declared: true; run step 13 (full tier).
+  - >-
+    Closure evidence as four SEPARATE facts: (1) scripts.session.github_readiness as reported; (2)
+    step 13's full-tier exit 0 + logs/debug/validation-result.json (a timeout is blocked, never a
+    partial run); (3) scripts.session.postflight --evidence; (4) commit, push, PR (squash body carries
+    'Resolves: rec-3864'), CI green via event-driven wake, squash-merge. Then post-deploy steps 14-17
+    (DEV agent; step 16 wakes by send_later, never polls); step 18 runs in the resuming ADMIN session.
   - 'Report: what was implemented, verification results'
 rollback: >-
   Revert the squash commit; the governed channel redeploys the prior code. The only data effect is
