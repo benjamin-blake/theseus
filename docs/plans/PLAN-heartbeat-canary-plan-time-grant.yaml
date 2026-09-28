@@ -55,7 +55,9 @@ scope:
       added); "validate Sid narrowed to the family" (Resource ->
       stateMachine:platform-security-*, inert); "validate action in StatesManage instead";
       "states verb smuggled into PlatformSecurityLogsRead". Module docstring names the exception.
-      Stays under 500 SLOC (433 today, about +45). The commit body states this edit is Decision
+      Stays under 500 SLOC (433 today, about +45-70); if it would cross 500, move the _HEREDOC_*
+      fixtures or the admin predicate into tests/checks/iam_tf/_platform_security_hcl.py (Decision
+      128 decompose, absolute import, Decision 131). The commit body states this edit is Decision
       181's residual arm (owner rec-3357) and a net tightening.
   - file: docs/plans/PLAN-platform-security-heartbeat-canary.yaml
     action: Modify
@@ -108,7 +110,8 @@ scope:
       amendment only WARNs past 6,144 B). Regenerate docs/decisions-index.json if validate flags it
       stale (sanctioned by decisions_index_regeneration).
 bundled_recommendations: []
-followon_recs: []
+followon_recs:
+  - rec-4140
 infrastructure_dependencies:
   - >-
     terraform/bootstrap is admin-only and never auto-applied (Decision 126;
@@ -146,8 +149,8 @@ acceptance_criteria:
     no Resolves rec-4044 trailer anywhere.
   - >-
     Before merge, the ADMIN gate shows on the PR head: the full plan fails with exactly one error,
-    the ValidateStateMachineDefinition denial; every other walk address plans (5 add, 3 change, 0
-    destroy) with the admin policy update carrying the new Sid; and IAM's simulator allows
+    the ValidateStateMachineDefinition denial; every walk address except the state machine and the
+    schedule that depends on it plans (5 add, 3 change, 0 destroy) with the admin policy update carrying the new Sid; and IAM's simulator allows
     PlatformAdmin the validator on the literal request resource only with the PR's policy, while
     denying other states verbs off-family. The counts-only evidence is in the PR description for
     that head (Decision 115), never in a committed file.
@@ -409,10 +412,12 @@ constraints:
   - Decompose, never raise, an SLOC budget (Decision 128). IMPLEMENTATION only (Decision 67). No rescue loops; unrecoverable live failure stops for RCA (Decision 55).
 context:
   - "Decision-scout verdict FLAGS_FOUND (one NOTE, Decision 181: the Sid-keyed admin_grant_problems exception is a deliberate relaxation of a graduated guard -- disposition below). CITE: 202, 177, 126, 101, 48, 189, 128. Decisions triaged: 159 of 159. Roadmap items intersected: 4; CONFLICT: 0; RELATED: 4"
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=REVISE round 1 (F1 step-11 init dependency, F2 stale Sid-count/step-number texts, F3 off-family misattribution, F4 spacing literal -- all fixed)"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PROCEED after 2 round(s); round 2 autonomous (round 1 REVISE: F1 step-11 init dependency, F2 stale Sid-count/step-number texts, F3 off-family misattribution, F4 spacing literal -- all fixed; round 2 touch-ups folded in)"
   - "Step 6b (Benjamin, confirmed; Access Analyzer follow-on rec not requested): Resource \"*\" (documented form for a no-resource-type action; in-file precedent); read-only pre-merge gate (bootstrap-adopt precedent) over a pre-merge apply; rec-4140 filed for the standing admin-root pre-merge-plan rule."
   - "Decision 48 tension, stated: V3 wants deploy+verify evidence before merge, but this admin-only root merges code first (Decision 126). The pre-merge ADMIN gate (steps 10-11) is the merge precondition; the canary walk's steps 8-10 are the behavioural acceptance. Residual: the live validator's verdict on the canary definition first runs at canary step 10 (no canary resource exists then; a rejection is a new PR). rec-4140 generalises the rule."
   - "Decision 181 NOTE disposition (Fable consult, adopted): the exception is Sid-keyed and a positive pin (exactly one Allow statement, one action, Resource \"*\"), every existing red case is kept, two tightenings land in the same diff, and the re-narrow trigger is recorded in the HCL comment and the Decision 202 Update. Industry parallel: Checkov/tfsec/Kyverno exceptions keyed on a specific identity with a mandatory justification; a new rec against rec-3357 was judged unnecessary (it already owns the residual)."
+  - "Canary plan AC4 ('platform-security-* resources only') is superseded by Decision 202's second Update for the one validator Sid; acceptance_criteria is a prohibited field there, so it is left as written, not drift."
+  - "Re-order trade-off: whole-root drift is first observed at the new canary step 10, after the targeted phase-1 apply (bounded: step 8 asserts exactly one update). Implementer: rebase onto origin/main before VP steps 7-8 (fast-tier budget changed in #1318)."
   - "Decision 189: steps 1 and 3 are waived, not graduated -- their class selectors are already graduated rows and would be green on the plan-only tree."
   - "Defect evidence: ADMIN session at origin/main 7572f3b0 -- full plan AccessDenied on states:ValidateStateMachineDefinition (request resource stateMachine:*); targeted plan of every other walk address: 5 add, 3 change, 0 destroy."
   - "Provider (hashicorp/aws v5.100.0): sfn/state_machine.go CustomizeDiff = stateMachineDefinitionValidate (API call when definition changes) + stateMachineUpdateComputedAttributesOnPublish (local); scheduler schedule.go and schedule_group.go have none. Read path: DescribeStateMachine, ListStateMachineVersions, ListTagsForResource -- granted."
