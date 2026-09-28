@@ -89,9 +89,9 @@ scope:
     purpose: >-
       (a) Constants: NON_TEST_BUDGET_SECONDS 240.0 -> 270.0; new PRECOMMIT_ESCALATION_ALLOWANCE_SECONDS
       = 120.0 and PRECOMMIT_PHASE_NAME = "precommit_changed"; new NOISE_MARGIN = the maximum
-      same-commit primary-session spread (max/min) over fixture groups keyed (branch, selection,
-      date) with >= 2 attempts and a minimum primary session >= 60s -- the CI-runner noise property,
-      invariant to the table's scale, hence its own named constant (1.449 at planning, 12 groups);
+      same-commit primary-session spread (max/min) over fixture groups keyed by run_id (re-run
+      attempts, which share a commit) with >= 2 attempts and a minimum primary session >= 60s -- the CI-runner noise property,
+      invariant to the table's scale, hence its own named constant (1.449 at planning, 8 groups; the binding group is run 35773676058's two attempts);
       new RECORDED_K_MIN = the zero-false-positive fit k_min (1.043 at planning, non-test paths
       costing 0); new COST_COEFFICIENT = ceil10(RECORDED_K_MIN x NOISE_MARGIN) (1.6 at planning;
       Benjamin 2026-09-28 after a second Fable consult -- a hard duration gate on shared runners is
@@ -155,7 +155,9 @@ scope:
       twelve; TestSubtractionSetPins' live step-name pin adds PRECOMMIT_PHASE_NAME;
       _WORST_MEASURED_NON_TEST_HALF re-derives from the fixture; and TestCli
       (test_cli_reports_breadth_and_predicted_outcome and its siblings) pins the
-      module_cost_table.read_at_base_ref seam explicitly -- after this plan merges, main's merge-base
+      module_cost_table.read_at_base_ref seam AND scripts.checks._scaffolding.precommit_escalates
+      explicitly (the latter so _report's pre-commit line never runs a real git show from a unit
+      test, and so both branches are covered) -- after this plan merges, main's merge-base
       carries the table, so an unpinned _report() would price TestCli's mocked selection at zero and
       break main (plan-critique R1). New
       TestNonTestReDerivation (rec-4093's acceptance node, name verbatim): from the fixture, the
@@ -194,8 +196,8 @@ scope:
       constants' declared enforcing check (Decision 181 point 2); PREDICT_COST_RATIO_LOW equals the median of the same per-run ratio
       over the same population, rounded to 2dp (0.37 at planning), and
       _PREDICT_NON_TEST_LOW/HIGH the green governed non-test median/max. TestCompositionAwarePrediction
-      (rec-3677's rewritten acceptance node): the fixture's rec-3677 pair -- 121 modules (684
-      worker-s at planning) vs 174 modules (299) -- predicts a HIGHER test half for the smaller
+      (rec-3677's rewritten acceptance node): the fixture's rec-3677 pair -- 121 modules (670.6
+      worker-s at planning, non-test paths at 0) vs 174 modules (296.0) -- predicts a HIGHER test half for the smaller
       selection, the slow one's predicted outcome is not within_budget, and the legacy linear
       predictor ranks them the other way (the discrimination the rec asked for).
       TestRecordedIncidents: PR #1157's (rec-3796) and PR #1264's (rec-4035, run 36076407848)
@@ -256,13 +258,17 @@ scope:
       unreadable collapses the allowance to TEST_BASE_SECONDS. The escalation fact is stubbed
       through run_precommit_checks' return value. Also re-pin the two stale derived-cap sites
       (line 320 `cap = CEILING - NON_TEST` and line 374 `limit_s < CEILING - NON_TEST`) to CEILING -
-      NON_TEST - ESCALATION. Every registry-named class
+      NON_TEST - ESCALATION, and re-pin the green-replay domination case (lines 193-201, lint at the
+      retired 71.8s worst) to the new governed static worst plus unattributed (131.8 + 10.0, replay
+      at REPLAY_ALLOWANCE - 1 = 119 -> 260.8 < 270), so it exercises the re-derived domination.
+      Every registry-named class
       (TestNonTestHalfBudget, TestBreadthDerivedTestBudget, TestLocalPrediction) keeps its node ids.
   - file: tests/validate/test_budget_manifest.py
     action: Modify
     purpose: >-
-      Same autouse table-seam fixture; TestBudgetBlockCarriesTheSplit additionally asserts the four
-      new budget keys. Registry-named classes (TestBudgetBlockCarriesTheSplit,
+      Same autouse table-seam fixture; TestBudgetBlockCarriesTheSplit additionally asserts the five
+      new budget keys (precommit_escalated, escalation_s, cost_s, cost_table_status, cost_ratio), and
+      _NEW_KEYS (line 235) is extended so no key goes unasserted. Registry-named classes (TestBudgetBlockCarriesTheSplit,
       TestNewOutcomesFileNoRec) keep their node ids.
   - file: tests/validate/test_budget.py
     action: Modify
@@ -281,7 +287,9 @@ scope:
       as status ok (the state main sees once this plan merges); `unreadable` returns status
       unreadable. Module-level pins in the four budget test files still win (closer scope), so the
       plugin exercises exactly the modules that do NOT pin -- proving on the installing PR that
-      they pass in the post-merge state.
+      they pass in the post-merge state. Kept after merge on purpose: every rec-4125 table-refresh
+      PR (and any later change to module_cost_table.py) re-runs VP step 9's forced-state proof
+      with it; delete it only together with the cost-table seam.
   - file: docs/DECISIONS.md
     action: Modify
     purpose: >-
@@ -314,8 +322,9 @@ scope:
       generated base-ref table), the legacy arm and its census-clamp probe unreachable in CI once
       installed, the replay-allowance record's 71.766 literal still true but weaker than 261.8,
       content-scaled drift (rec-4127), verification-registry cost (rec-3374), per-module test drift
-      undetected at PR time (rec-4125), and the binding k_min run (PR governance-work-item-boundary,
-      ratio 0.87-0.96 across three attempts -- plausibly PR-local slowness, fitted in, never
+      undetected at PR time and a renamed or split heavy test module priced at the p90 default
+      until the table is regenerated (both rec-4125), and the binding k_min run (PR governance-work-item-boundary,
+      ratio 0.95-1.04 across three attempts -- plausibly PR-local slowness, fitted in, never
       dropped); reversal conditions as a
       fenced `yaml reversal-conditions` stanza (the Decision 187 precedent, parsed by
       scripts/preflight/decision_conditions.py) with a review_by date six months out and each
@@ -332,7 +341,7 @@ scope:
       176 non-escalated static_s values, whose max-of-3 expectation is 86.5s (median 93.0s), so most
       of 71.8 -> 131.8 is tail under-sampling, while the content-scaled checks grew 40.9 -> 48.0s);
       the verdict flips, on the single-invocation basis (5 test-green runs from 2 PRs stop
-      breaching, none starts; median n>=120 allowance 330 -> ~380s against 562s for a linear rule
+      breaching, none starts; median n>=120 allowance 330 -> ~593s against 562s for a linear rule
       with the same zero-false-positive guarantee; a non-escalated non-test half in (240, 270] stops
       failing); narrowing what Decision 73 point 1 enforces (cite, never amend). Decision 182's body
       is NOT edited (amend-only; the edge is discharged by the waiver row). The set of numbers
@@ -554,7 +563,7 @@ test_obligations:
     test_selector: tests/checks/deps/test_selection_budget_calibration.py::TestCostModelCalibration
     red_green_expectation: Red before -- target_absent (no table, no coefficient). Green after -- passes; regenerating the table without re-deriving the coefficient turns it red.
   - source: scripts/validate.py
-    behavior: The budget scaffold carves the escalated pre-commit phase up to its allowance, uses the cost path when the base table is readable and fails closed when it is not, and records the four new manifest keys.
+    behavior: The budget scaffold carves the escalated pre-commit phase up to its allowance, uses the cost path when the base table is readable and fails closed when it is not, and records the five new manifest keys.
     verification_step: 5
     test_selector: tests/validate/test_budget_split.py::TestEscalationCarveOut
     red_green_expectation: Red before -- target_absent. Green after -- the escalated run passes, the identical non-escalated run breaches, excess breaches, unreadable collapses to 180s.
@@ -598,14 +607,14 @@ constraints:
   - 'Every test whose assertions depend on an allowance or prediction value pins module_cost_table.read_at_base_ref explicitly -- the four budget test files (module-level autouse) and TestCli in test_selection_budget.py (every caller, including selection_budget._report). The other modules that reach the budget scaffold (tests/validate/test_selection_fallback.py, test_pre_glob_gating.py, test_manifest_isolation.py, test_tiers.py, test_scaffold_coverage.py, test_scaffold_gates.py, tests/checks/registry/test_resolution.py) are exempt and unedited: both arms give their empty or tiny selections TEST_BASE_SECONDS, which VP step 9 proves under the forced ok and unreadable states before merge. Never make tests/validate/conftest.py autouse (Decision 131 clause 3).'
   - The fixture carries run ids only -- never commit SHAs (hex strings trip detect-secrets, which rewrites .secrets.baseline and triggers the very --all-files escalation this plan budgets) or 12-digit job ids (the never-commit hook's AWS-account shape).
   - Out of bounds (a parallel plan owns them) -- scripts/checks/verification/*, docs/contracts/vp-red-before.yaml, .claude/skills/planning/SKILL.md; also scripts/convergence_health/budget_ingest.py and scripts/checks/_budget_recs.py (no new outcome reaches them).
-  - 'Decision entry compression ladder if over 6,144 bytes -- (a) Related to bare numbers, (b) the attribution to one sentence with the three figures, (c) the verdict flips to one line, (d) the coverage declaration to a two-column table, (e) the reversal-conditions stanza to one-line condition descriptions and the residuals to `owner: rec-NNNN` tokens; NEVER drop the point 1/2 negations, the numbers, the escalation-contract cite, the teeth restatement or the re-armed (d)/(e).'
+  - 'Decision entry compression ladder if over 6,144 bytes -- (a) Related to bare numbers, (b) the attribution to one sentence with the three figures, (c) the verdict flips to one line, (d) the coverage declaration to a two-column table, (e) the reversal-conditions stanza to one-line condition descriptions and the residuals to `owner: rec-NNNN` tokens; NEVER drop the point 1/2 negations, the numbers, the escalation-contract cite, the teeth restatement or the re-armed (d)/(e). If the ladder is exhausted, the terminal fallback moves the teeth arithmetic and the residual-owner list into selection_budget.py''s module docstring (the field-semantics home) and the entry cites it -- never a raised cap, never a second entry.'
   - Symptom recs are closed only through close_proposed commands a human confirms (Decision 103), never through the Resolves trailer; only rec-4093, rec-3929 and rec-3677 ride the trailer (Decision 201).
   - No rescue agents or workaround loops (Decision 55).
 context:
   - "Decision-scout verdict (revised approach, 2026-09-28): FLAGS_FOUND -- SPIRIT WARN Decision 182 (270 widens rather than narrows; answered in the entry by the tail-sampling decomposition, per-check rec rec-4127 and the restated 1.683s teeth); NOTE Decision 135 (snapshot vs cross-run query -> rec-4126); NOTE Decision 103 (verdicts restricted to the closed set; local records dispositioned superseded through the portal -- they are warehouse rows). CITE: 182, 153, 73, 187, 181, 166, 168, 132, 128, 131, 177, 167, 201. Decisions triaged: 157 of 157. Roadmap items intersected: 23; CONFLICT: 0; RELATED: 23"
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PENDING (round 1 REVISE: R1 post-merge ok arm made testable pre-merge -- TestCli seam pin, exemption with proof, VP 9 plugin runs; verdict-flip basis named; both teeth arms and reversal (f) tied to rec-4124; predictor ratio population defined (0.34); 72.7th percentile / 86.5s population named; propose_or_close_rec; old-path test; step-4 single node; 120 derivation rule; residuals named; handoff order per git-ops.yaml handoff_sequence); round 2 REVISE: R1a discriminating excess case, R1b non-vacuous cost path, R2 test-half teeth and the cap-only SPLIT row declared, R3 literal paths + selection probe; I1 budget reads run_precommit_checks' applied decision, I2 predictor population, I3 rec rationale, I4 draft entry first, I5 reversal-conditions stanza, I6 PR's own band reading); round 3 REVISE: R1 coefficient noise margin escalated to Benjamin -> Fable consult -> K rule chosen; A1-A8 applied)"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PROCEED after 4 round(s); round 4 autonomous (round 1 REVISE: R1 post-merge ok arm made testable pre-merge -- TestCli seam pin, exemption with proof, VP 9 plugin runs; verdict-flip basis named; both teeth arms and reversal (f) tied to rec-4124; predictor ratio population defined (0.34); 72.7th percentile / 86.5s population named; propose_or_close_rec; old-path test; step-4 single node; 120 derivation rule; residuals named; handoff order per git-ops.yaml handoff_sequence); round 2 REVISE: R1a discriminating excess case, R1b non-vacuous cost path, R2 test-half teeth and the cap-only SPLIT row declared, R3 literal paths + selection probe; I1 budget reads run_precommit_checks' applied decision, I2 predictor population, I3 rec rationale, I4 draft entry first, I5 reversal-conditions stanza, I6 PR's own band reading); round 3 REVISE: R1 coefficient noise margin escalated to Benjamin -> Fable consult -> K rule chosen; A1-A8 applied); round 4 PROCEED: A1-A10 applied as text-only edits)"
   - "Evidence: docs/plans/reports/fast-tier-calibration-series-2026-09-28.json (moves to tests/fixtures/ in the implement PR). Attribution -- test half: 51/106 runs double-invoked, all on ModuleNotFoundError ulid (rec-4077, fixed by the keystone plan); non-test tail: pre-commit --all-files escalation on .secrets.baseline, 17/193 runs, detect-secrets 80.6s locally; 12 of 13 escalated PR heads changed only line numbers in the baseline."
-  - "Model evidence (planning table, p90 default for unknown test_*.py only, prepass term): linear-in-n R2 0.51 vs cost-sum R2 0.75 (max under-prediction 202s vs 120s); zero-false-positive k_min 1.043; same-commit noise max 1.449 (12 groups; median 1.12) -> COST_COEFFICIENT 1.6 with 52% headroom on the binding run (K=1.0 would already false-fail it); predictor ratio 0.37; median n>=120 allowance 593s vs today's 330s and 562s for a linear zero-false-positive rule. Verdict flips on the single-invocation basis: 5 test-green runs from 2 PRs stop breaching (governance-work-item-boundary x3, tender-clarke x2), none starts."
+  - "Model evidence (planning table, p90 default for unknown test_*.py only, prepass term): linear-in-n R2 0.51 vs cost-sum R2 0.75 (max under-prediction 202s vs 120s); zero-false-positive k_min 1.043; same-commit noise max 1.449 (8 run_id groups; median 1.08) -> COST_COEFFICIENT 1.6 with 52% headroom on the binding run (K=1.0 would already false-fail it); predictor ratio 0.37; median n>=120 allowance 593s vs today's 330s and 562s for a linear zero-false-positive rule. Verdict flips on the single-invocation basis: 5 test-green runs from 2 PRs stop breaching (governance-work-item-boundary x3, tender-clarke x2), none starts."
   - "Breadth (selection_budget --plan on this plan file, 2026-09-28): n_selected 179, allowance 358s, predicted CI test half 131.5-166.0s, predicted within_budget -- plan as one unit, no split. The PR selects two runtime-ulid modules, so it must follow the keystone (single invocation); cost-model estimate 115-227s."
   - "Fable advice consult 2026-09-28 (facts-only brief, independent landing): Q1 per-module cost for gate AND predictor (the hybrid is wrong-shaped: estimator and gate must be one function); Q2 a separate escalation allowance plus 270; Q3 keystone first; Q4 three verdict classes plus individual hand-filed dispositions. Adopted, with one evidence-driven refinement: rec-3796 and rec-4035 are rec-4077 duplicates (their incidents' primary sessions fit the old allowance run once), not acceptance rewrites."
   - "fork: test-half model -- linear re-fit vs per-module measured cost vs hybrid | chosen: per-module measured cost for gate and predictor | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: scope rows selection_budget.py / module_cost_table.py (Benjamin 2026-09-28, after the Fable consult)"
