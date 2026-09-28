@@ -158,13 +158,12 @@ DuckLake queue
   -> pick_rec admission guard
   -> loop definition (SFN host)
   -> prepare_workspace
-  -> plan_agent
-  -> plan_critic + decision_scout
-  -> critique_gate
-  -> implement_agent
-  -> code_reviewer
-  -> file_pr
-  -> GitHub Actions verdict callback
+  -> plan_agent -> draft plan PR
+  -> scout + critique verdicts (Actions)
+  -> critique_gate -> plan merge
+  -> implement_agent -> draft PR
+  -> code-review verdict (Actions)
+  -> CI verdict callback
   -> merge
   -> deploy_dispatch
   -> emit_telemetry
@@ -172,7 +171,7 @@ DuckLake queue
   -> autonomy gate ratchet
 ```
 
-T4.19 owns the loop definition; T4.1 its SFN host and glue. T4.2 owns Lambda Durable Function personas and LiteLLM transport. T4.9a owns the MVP GitHub Actions callback handshake. T4.10a owns persona contracts. T4.13/T4.14 add prompt-injection threat modeling and offline prompt/model regression tests.
+T4.19 owns the loop definition; T4.1 its SFN host and glue. T4.2 owns the personas (verdict personas on Actions) and LiteLLM transport. T4.9a owns the MVP GitHub Actions callback handshake. T4.10a owns persona contracts. T4.13/T4.14 add prompt-injection threat modeling and offline prompt/model regression tests.
 
 Authority increases only when evidence supports it. The end-state minimises routine oversight while preserving human policy control, auditability, escape hatches, and explicit boundaries for high-consequence actions.
 
