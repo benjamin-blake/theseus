@@ -101,7 +101,9 @@ scope:
     never ids, and never calls the write boundary; src.telemetry.timestamps is its only first-party import).
 - file: docs/contracts/file-router.yaml
   action: Modify
-  purpose: Add a turn-capture route targeting src/turn_capture/ plus a dated field_add amendment_log entry (slice-1 telemetry-kernel precedent).
+  purpose: >-
+    Add a turn-capture route targeting src/turn_capture/ plus a one-line dated field_add amendment_log entry
+    (slice-1 telemetry-kernel precedent; 470 of 500 effective lines, so keep both short).
 - file: tests/turn_capture/__init__.py
   action: Create
   purpose: Test package marker (Decision 130/131 mirror layout).
@@ -260,7 +262,9 @@ scope:
     test_expected_edit_without_bump_fails, test_registry_history_is_append_only_against_main (reads the merge-base
     copy distinguishing three states per Decision 208 cl.1: path absent at the base -> pass (this installing PR);
     origin/main unreadable -> advisory skip locally, fail in CI; present -> append-only comparison), the live guard test_registry_matches_producer (PARSER_VERSION == current == last history version;
-    recomputed golden digest == history digest == committed expected_rows digest), and test_cases_match_index, whose
+    recomputed golden digest == history digest == committed expected_rows digest; and, over the COMMITTED registry,
+    every history entry's golden_digest differs from its predecessor's -- the live bump-without-drift guard, not only a
+    synthetic fixture), and test_cases_match_index, whose
     CASES tuple names every case file basename literally (e.g. sidecar_present.json) and must equal index.json's list --
     the literal names are what make --pre's data-edge channel select this module when only a golden case file changes.
 - file: tests/lambda_manifest/test_bundle_checks.py
@@ -272,6 +276,7 @@ followon_recs:
 - rec-4026
 - rec-4146
 - rec-4147
+- rec-4149
 infrastructure_dependencies:
 - >-
   None owed. data-pipeline is marked affected only through its own manifest's excludes line (Decision 79 V2 ground,
@@ -428,7 +433,7 @@ verification_plan:
   hermetic: false
   graduation: waive
   graduation_waiver_reason: >-
-    Integration tier by construction (network-installed extension, importorskip duckdb). Steps 3 and 4 guard the emitted
+    Integration tier by construction (network-installed DuckLake extension; the helper fails, never skips). Steps 3 and 4 guard the emitted
     shape and R7 standing in the fast tier.
 - step: 10
   phase: pre-deploy
@@ -530,7 +535,9 @@ test_obligations:
   test_selector: tests/turn_capture/test_transcripts.py::test_scrubbed_before_hash_empty_and_binary_blocks
   red_green_expectation: red before (module absent), green after
 - source: src/turn_capture/observations.py
-  behavior: Observation rows follow the pinned rules.
+  behavior: >-
+    Observation rows follow the pinned rules -- outcome precedence (blocked only by a pre-result PreToolUse exit 2),
+    one synthetic close anchored on the tool_use, late results never closed, every hook run one process_event.
   verification_step: 3
   test_selector: tests/turn_capture/test_observations.py::test_tool_call_outcome_precedence
   red_green_expectation: red before (module absent), green after
@@ -605,7 +612,7 @@ context:
   by making billing_shape a pinned capture input (default fixed_non_rollover_allowance) plus rec-4147. RELATED 97, 84,
   81, 126, 125, 128, 130, 131, 148, 189, 201, 208, 168, 66, 67, 101, 205.
   Decisions triaged: 161 of 161. Roadmap items intersected: 4; CONFLICT: 0; RELATED: 4.
-- "gates: decision-scout=FLAGS_FOUND (resolved, 2 runs); independent-review=reconciled; plan-critique=<pending> (rounds 1-3 REVISE, all fixed; round 4 confirming REVISE 3+5, escalated, fixed)"
+- "gates: decision-scout=FLAGS_FOUND (resolved, 2 runs); independent-review=reconciled; plan-critique=<pending> (rounds 1-4 REVISE, all fixed; round 5 REVISE 5 narrow edits, applied)"
 - >-
   Operator choices (2026-09-28): split slice 3 (3b on rec-4026 after rec-4024; coordinator told); bundle rec-4122; emit
   per CLOSED turn; real-transcript conformance (step 10); facts-only independent review; additive changes pre-approved.
@@ -636,7 +643,7 @@ context:
 - >-
   Contract risks from the independent review, filed at planning time (not designed around): rec-4146 (sub-agent open
   timestamp equals the root start; synthetic session-open source id) and rec-4147 (no auth-mode signal for billing_shape
-  on API-key Claude Code sessions). Its lost-cursor and pending-generation risks route to rec-4026 and rec-4063 notes.
+  on API-key Claude Code sessions); critique round 5 added rec-4149 (fork/copied history vs external_ref uniqueness). Its lost-cursor and pending-generation risks route to rec-4026 and rec-4063 notes.
   Decision 209 (landed after the scout): consistent -- transcripts stay in the data plane.
 pre_implementation_checklist:
 - Branch confirmed not on main
@@ -657,7 +664,9 @@ execution_steps:
   writes a native compaction or resume marker record (else which hook attachments mark one), whether any record lacks a
   parseable timestamp, how a slash-command invocation is recorded in the user record (plain leading slash or harness
   markup such as a command-name tag -- the workflow rule parses whichever is observed), and whether any record uuid
-  recurs across root files (fork/copied history; a hit is a STOP per step 10's fix_if). Reproduce each pinned literal
+  recurs across root files (fork/copied history; a hit is a STOP per step 10's fix_if), whether a child file's last
+  record ever follows the parent's completion record, and whether a child file grows after completion (agent
+  continuation) and under which promptId. Reproduce each pinned literal
   synthetically in golden/observed_real_shapes.json. A literal never observed stays UNPINNED (empty tuple, rule
   inactive) and is listed on rec-4026's note for 3b -- never guessed.
 - >-
@@ -686,7 +695,8 @@ execution_steps:
   cl.3/cl.7: the credential's shape; rec-4147 owns its 3b source), persona_backend NULL, provider
   NULL, parent = the turn. tool_call open at each tool_use block ('<uuid>#<block>/tool_call_open', entity_ref toolUseId,
   name, parent turn, sequence 1-based in the turn) and close at its tool_result block ('.../tool_call_close'); outcome
-  precedence blocked (is_error and a pinned denial prefix, or a hook_* attachment for that toolUseID with exitCode 2),
+  precedence blocked (is_error and a pinned denial prefix, or a PreToolUse hook_* attachment for that toolUseID with
+  exitCode 2 preceding the tool_result -- a PostToolUse exit 2 is not a block),
   then interrupted (toolUseResult.interrupted or a pinned interrupt sentinel, or the turn closed with no result), then
   error (is_error), else success. A tool_use with no tool_result inside its turn span gets ONE synthetic interrupted
   close when the turn closes: external_ref '<tool_use record uuid>#<block>/tool_call_close', event_timestamp and
@@ -708,7 +718,9 @@ execution_steps:
   uuid; stable across versions for R3), event_timestamp = session_started_at, entity_ref sessionId, workflow = the first
   prompt's slash command (in the encoding step 2 pins) when one of orient|plan|implement|develop-executor|audit|overseer
   else claude_code,
-  execution_attempt 1, branch = first non-empty gitBranch, model_primary = first assistant model; emitted only once a
+  execution_attempt 1, branch = the first non-empty gitBranch among records up to the open row's own emission closure
+  (the end of the first closed turn containing an assistant record; same bound for a sub-agent open) else NULL,
+  model_primary = first assistant model; emitted only once a
   closed turn containing an assistant record exists, or at finalize (so a response-less first turn never emits a NULL a
   re-parse later fills). Exactly ONE compact row per compaction and one resume row per resume (execution_attempt 2+): sourced from
   the native marker record when step 2 finds one; else a compaction is the group of PreCompact, SessionStart:compact and
@@ -718,7 +730,11 @@ execution_steps:
   '<sessionId>:<agentId>', parent_session_ref = the spawning stream's session, workflow subagent, event_timestamp and
   session_started_at = the ROOT's (contract letter; risk filed). A child's rows are emitted only once the parent holds its
   completion (sync: the spawning tool_result; background: the pinned completion record) or session_final; that
-  completion evidence acts as a virtual EOF prompt for the child stream, closing its last turn.
+  completion evidence acts as a virtual EOF prompt for the child stream, closing its last turn. ASSUMED (checked in
+  step 2): the child file is fully written before the parent's completion record. A continuation of the same agent
+  (SendMessage or Agent resume) appending to the child file starts a new child turn at its first record (a child-stream
+  turn boundary), so an already-closed child turn never grows; if step 2 does not observe a continuation the rule
+  stays as pinned and the gap is listed UNPINNED on rec-4026's note.
   telemetry_agents open/close keyed on the spawning toolUseId, session_ref = child, observation_ref = the spawning
   tool_call, agent_type claude-code-subagent, version = the CLI version field, outcome failed on is_error/interrupted
   else success, error scrubbed. R7 purity: every agents column comes from TRANSCRIPT RECORDS only -- agentId from the
@@ -735,8 +751,8 @@ execution_steps:
   per-file lines_consumed with the cursor's finalized flag -- both evaluated by the same pure rules and the cursor's pins.
   So a finalized tree that later grows (a resumed session) re-emits nothing already emitted.
   test_incremental_equals_full_at_every_line_cut enumerates multi-file cuts in which child-file lines advance
-  independently of the parent's, including a cut where the child file is complete before the parent's completion
-  record. A different project_ref, billing_shape or root session raises; a sidecar contradicting a present pin
+  independently of the parent's, restricted to orderings the harness can produce (the child file complete before
+  the parent's completion record), including the cut exactly at that boundary. A different project_ref, billing_shape or root session raises; a sidecar contradicting a present pin
   raises; an absent pin is honoured. parser_version mismatch -> reset everything except the four pins and re-emit the
   whole tree (data first, sessions last).
 - >-
@@ -758,7 +774,8 @@ execution_steps:
   canonical_ref; one session_started_at per tree; incremental == full at every prompt and every 50 lines; no scrub
   pattern matches any stored value (plus counts-only reporting of generic high-entropy tokens, never a failure);
   resolvable sidecars stored untruncated; malformed lines reported as counts (the producer counts and consumes them);
-  no (table, external_ref) duplicated ACROSS different root trees (vacuous with one tree; reported); at every TRUE
+  no (table, external_ref) duplicated ACROSS different root trees (with fewer than 2 root trees, report 'cross-tree
+  uniqueness unverified (N root trees)' and add it to rec-4026's note; rec-4149 owns the contract risk); at every TRUE
   session end -- the tree's real end and the last record before each observed resume boundary -- every row of the
   finalized parse of that prefix appears identically in the full finalized parse (row-level subset; mid-turn cuts are
   never finalize points); then
