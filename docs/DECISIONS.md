@@ -2,6 +2,39 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 207: Grain enforced at the write boundary -- a platform data-modeling standard for insert-grain tables (Decided)
+
+```yaml
+number: 207
+amends: []
+significance:
+  value: numbered_decision
+  justification: "Contract-first: lands in data-modeling-standard.yaml, but changes writer failure semantics across write_mode classes, binds present and future writers, and needs reversal conditions -- a contract amendment_forms annotation on Decision 199 is not enough, since this is platform-wide, not telemetry-only."
+```
+
+**Status:** Decided
+**Date:** 2026-09-28
+
+**Problem:** No platform rule says what a writer does when a re-send under an existing grain key differs from the stored row. The telemetry kernel's own MERGE (Decision 199) was insert-only anti-join: a changed row at an existing dedupe key was silently dropped, with no signal. A stored whole-row content hash as a tiebreak was proposed and rejected -- it hides the defect rather than surfacing it.
+
+**Decision:** Every INSERT-GRAIN table (an append_only journal or an SCD2 history table) declares a grain key and enforces it AT THE WRITE BOUNDARY, scoped by write_mode class (Decision 191 cl.1), never by table name. The grain key is, for an SCD2 history table, its write ULID (one row per write); for an append_only table, its declared merge/dedupe key (telemetry: producer, event_id, parser_version). "Content" is every stored column except the write-time stamp and declared provenance-only columns (telemetry: created_timestamp and producer_version). A re-send identical under an existing grain key is a no-op; a row whose content differs under an existing grain key is REJECTED LOUDLY (the write fails, naming the key) -- never silently dropped, never first-wins or last-wins. Where the engine offers it, the reject is the native single-statement primitive (Decision 100 spirit; no second catalog read, Decision 88 cl.1 egress budget).
+
+Reader rule (append_only journals): a reader returns one row per grain key; for a differing pair (only reachable through the concurrent-append race Decision 81 cl.3's no-serialization model allows), which row is returned is unspecified, the key is reported as conflicted, and DQ flags it -- a conflict is never resolved silently. SCD2 history readers (e.g. the rec_history named verb) are exempt: a duplicate write ULID there is detected by DQ (rec-4121 item 4), not by readers.
+
+Enforcement boundary: the write-time lookup is bounded to the batch's partitions (Decision 88), so the enforced physical grain includes the partition column; a cross-partition collision is a producer defect the table's own identity rules must make impossible (for telemetry, R7's pinned session_started_at).
+
+OUT OF SCOPE: Type-1 current projections (derived, rebuildable from history, Decision 81 cl.8 upserts by design), control-class tables (the Decision 84 I-2 counter), and replacement-shaped derived materializations (T2.52 c1). This decision builds on Decision 81 cl.3 and Decision 199 cl.1-2 without amending them; the telemetry physical grain (producer, event_id, parser_version) refines Decision 199 cl.1's logical one-row-per-lifecycle-event rule.
+
+**Coverage (Decision 181 cl.2):** writer side -- the telemetry kernel (src/telemetry/append.py, this plan); named non-compliant residuals owned by rec-4121: the ops writer's idempotency replay and history MERGE on the write ULID (Decision 81 cl.3, Decision 84 I-2, both dated-annotated), and ops_smoke_events (append_only, grain event_id, but write_ops MERGEs on a per-call write ULID, so a re-write inserts a duplicate). DQ side -- telemetry grain-conflict, pending-generation and null-producer monitors (rec-4063), ops-history duplicate-ULID-with-differing-content check (rec-4121). Reader side -- telemetry reader verbs (rec-4024) and the derived-layer harness (rec-4025); the ops_smoke_events history reader is the smoke gate that already asserts one row per event_id (scripts/ducklake_smoke/lambda_ops_gates.py). SCD2 history readers are exempt, DQ-covered (rec-4121 item 4).
+
+**Rationale:** A content hash tiebreak was considered and rejected: it silently picks a winner and hides the producer defect that caused the collision. Rejecting loudly surfaces the defect at the write boundary, where it is cheapest to diagnose, instead of downstream in a reader. The rule lives in data-modeling-standard.yaml (not only in Decision 199) because it binds every present and future insert-grain writer on the platform, not only telemetry.
+
+**Reversal conditions:** if DuckLake ships engine-enforced unique keys (Decision 100), adopt them and retire the application-level MERGE ... THEN ERROR primitive in favor of the engine constraint; the loud-reject semantics and reader conflict-reporting rule survive unchanged.
+
+**Related:** Decision 81 cl.3 and cl.8 (dated annotation added), Decision 84 I-2 (dated annotation added), Decision 88 cl.1 (egress budget), Decision 100 (native-primitive spirit; reversal trigger), Decision 191 cl.1 (write_mode scoping), Decision 199 cl.1-2 (telemetry physical grain refines this), T2.52 c1 (derived materializations out of scope); rec-4061, rec-4062 (bundled), rec-4121, rec-4122, rec-4063, rec-4024, rec-4025 (coverage owners).
+
+---
+
 ## Decision 205: GitHub-hosted persona compute keys on GitHub event origin; plans live in git; unattended agents use the API-key lane (amends Decision 184, Decision 87, Decision 116 and Decision 73) (Decided)
 
 ```yaml
@@ -7508,6 +7541,11 @@ queue current-state semantics referenced here are this decision's own `priority_
 > still-Iceberg tables; the never-re-stage-from-a-read-cache rule applies to DuckLake tables (I-4)
 > regardless.
 
+> **[Amendment 2026-09-28, Decision 207 (grain enforced at the write boundary)]:** I-2's `file_ops`
+> id-allocation replay path is a named residual under Decision 207: it is not yet the
+> reject-on-conflict grain enforcement Decision 207 requires of insert-grain tables. Fixed by
+> rec-4121 (ops-writer idempotency replay and history MERGE on the write ULID).
+
 ---
 
 ## Decision 83: Branch Protection Now Active -- Amends Decision 89 Premise (Decided)
@@ -7752,6 +7790,13 @@ invocation anywhere in this path": an ADMIN-container agent may invoke the two p
 verbs (reconcile_partitions, rewrite_partition_layout) under explicit human direction. Clause 8's
 "current is rebuildable from history for DR" is the basis for Decision 204 cl.3's rule that a
 current projection is never re-laid, only rebuilt.]
+
+[Amendment 2026-09-28, Decision 207 (grain enforced at the write boundary): clause 3's
+"the append is `MERGE ... WHEN NOT MATCHED THEN INSERT`" on the write ULID is a named residual
+under Decision 207 -- it is insert-only anti-join, not the reject-on-conflict grain enforcement
+Decision 207 requires of insert-grain tables, so a re-write under the same write ULID with
+differing content is not rejected loudly. Fixed by rec-4121 (ops-writer idempotency replay and
+history MERGE on the write ULID).]
 
 ---
 

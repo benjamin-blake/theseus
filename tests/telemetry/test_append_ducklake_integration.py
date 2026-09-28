@@ -31,13 +31,15 @@ _COLUMNS = {
     "session_started_at": "TIMESTAMP WITH TIME ZONE",
     "external_ref": "VARCHAR",
     "entity_ref": "VARCHAR",
+    "producer": "VARCHAR",
+    "producer_version": "VARCHAR",
     "parser_version": "BIGINT",
     "created_timestamp": "TIMESTAMP WITH TIME ZONE",
     "tenant_id": "VARCHAR",
     "project_id": "VARCHAR",
     "session_id": "VARCHAR",
 }
-_NOT_NULL = frozenset({"event_id", "parser_version", "session_started_at", "created_timestamp", "session_id"})
+_NOT_NULL = frozenset({"event_id", "parser_version", "session_started_at", "created_timestamp", "session_id", "producer"})
 _PARTITION_SQL = "year(session_started_at), month(session_started_at), day(session_started_at)"
 
 
@@ -101,6 +103,8 @@ def _row(**overrides: Any) -> dict[str, Any]:
         "session_started_at": t,
         "external_ref": "src#0/open",
         "entity_ref": "sess-ref-1",
+        "producer": "claude_code",
+        "producer_version": "1.0",
         "parser_version": 1,
     }
     base.update(overrides)
@@ -176,9 +180,11 @@ class TestDayBoundedMergeReadsExactlyOneFile:
             con.execute(
                 "INSERT INTO lake.telemetry_sessions VALUES "
                 f"('{low}', 'point', TIMESTAMP '{date} 09:00:00+00', TIMESTAMP '{date} 09:00:00+00', "
-                f"'seed-lo', 'seed-lo', 1, TIMESTAMP '{date} 09:00:00+00', '{TENANT}', '{PROJECT}', 'seed-session'), "
+                f"'seed-lo', 'seed-lo', 'claude_code', '1.0', 1, TIMESTAMP '{date} 09:00:00+00', "
+                f"'{TENANT}', '{PROJECT}', 'seed-session'), "
                 f"('{high}', 'point', TIMESTAMP '{date} 09:00:00+00', TIMESTAMP '{date} 09:00:00+00', "
-                f"'seed-hi', 'seed-hi', 1, TIMESTAMP '{date} 09:00:00+00', '{TENANT}', '{PROJECT}', 'seed-session')"
+                f"'seed-hi', 'seed-hi', 'claude_code', '1.0', 1, TIMESTAMP '{date} 09:00:00+00', "
+                f"'{TENANT}', '{PROJECT}', 'seed-session')"
             )
         assert _file_count(con) == 3
 
@@ -201,6 +207,52 @@ class TestDayBoundedMergeReadsExactlyOneFile:
 
 
 @pytest.mark.integration
+class TestGrainEnforcedAtWriteOnRealDuckLake:
+    def test_cross_batch_conflict_rejected_table_unchanged(self, tmp_path: Path, _skip_if_no_extension: None) -> None:
+        con = _local_catalog(tmp_path)
+        _create_table(con)
+        from src.telemetry.gate import AppendError
+
+        append_events(con, _spec(), [_row()], tenant_id=TENANT, project_id=PROJECT, catalog="lake")
+        with pytest.raises(AppendError, match="TELEMETRY_GRAIN_CONFLICT"):
+            append_events(con, _spec(), [_row(event_kind="close")], tenant_id=TENANT, project_id=PROJECT, catalog="lake")
+        assert con.execute("SELECT count(*) FROM lake.telemetry_sessions").fetchone()[0] == 1
+
+    def test_cross_producer_same_event_id_both_stored(self, tmp_path: Path, _skip_if_no_extension: None) -> None:
+        con = _local_catalog(tmp_path)
+        _create_table(con)
+        append_events(con, _spec(), [_row(producer="claude_code")], tenant_id=TENANT, project_id=PROJECT, catalog="lake")
+        result = append_events(con, _spec(), [_row(producer="litellm")], tenant_id=TENANT, project_id=PROJECT, catalog="lake")
+        assert result.inserted == 1
+        assert con.execute("SELECT count(*) FROM lake.telemetry_sessions").fetchone()[0] == 2
+
+    def test_identical_and_producer_version_only_replays_insert_zero(
+        self, tmp_path: Path, _skip_if_no_extension: None
+    ) -> None:
+        con = _local_catalog(tmp_path)
+        _create_table(con)
+        append_events(con, _spec(), [_row()], tenant_id=TENANT, project_id=PROJECT, catalog="lake")
+        result = append_events(con, _spec(), [_row()], tenant_id=TENANT, project_id=PROJECT, catalog="lake")
+        assert result.inserted == 0
+        result2 = append_events(
+            con, _spec(), [_row(producer_version="2.0")], tenant_id=TENANT, project_id=PROJECT, catalog="lake"
+        )
+        assert result2.inserted == 0
+        assert con.execute("SELECT count(*) FROM lake.telemetry_sessions").fetchone()[0] == 1
+
+    def test_row_omitting_producer_rejected(self, tmp_path: Path, _skip_if_no_extension: None) -> None:
+        con = _local_catalog(tmp_path)
+        _create_table(con)
+        from src.telemetry.gate import AppendError
+
+        row = _row()
+        del row["producer"]
+        with pytest.raises(AppendError):
+            append_events(con, _spec(), [row], tenant_id=TENANT, project_id=PROJECT, catalog="lake")
+        assert con.execute("SELECT count(*) FROM lake.telemetry_sessions").fetchone()[0] == 0
+
+
+@pytest.mark.integration
 class TestCalendarDayCompactionGuarantee:
     def test_compaction_yields_one_file_per_calendar_date_no_mixing(self, tmp_path: Path, _skip_if_no_extension: None) -> None:
         con = _local_catalog(tmp_path)
@@ -215,7 +267,8 @@ class TestCalendarDayCompactionGuarantee:
                 con.execute(
                     "INSERT INTO lake.telemetry_sessions VALUES "
                     f"('id-{date}-{i}', 'point', TIMESTAMP '{date} 0{i}:00:00+00', "
-                    f"TIMESTAMP '{date} 0{i}:00:00+00', 'ref-{date}-{i}', 'ref-{date}-{i}', 1, "
+                    f"TIMESTAMP '{date} 0{i}:00:00+00', 'ref-{date}-{i}', 'ref-{date}-{i}', "
+                    f"'claude_code', '1.0', 1, "
                     f"TIMESTAMP '{date} 0{i}:00:00+00', '{TENANT}', '{PROJECT}', 'seed-session')"
                 )
         assert _file_count(con) == 2 * len(dates)

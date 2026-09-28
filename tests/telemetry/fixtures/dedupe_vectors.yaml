@@ -1,0 +1,205 @@
+# Normative conformance vectors for the telemetry envelope's GENERATIONS AND READ-SIDE DEDUPE rule
+# (Decision 207, R3-R8; docs/contracts/telemetry-event-envelope.yaml governance_notes). Each vector
+# supplies per-table input rows and the expected surviving event_ids and conflicted grain keys.
+# tests/telemetry/test_dedupe_vectors.py runs every vector through
+# tests/fixtures/telemetry_dedupe_reference.py (the stdlib oracle); rec-4024's reader verbs must
+# independently pass the same vectors on DuckLake.
+#
+# Row fields: producer, event_id, parser_version, session_id, event_kind (telemetry_sessions open
+# rows only), created_timestamp, content (an opaque per-row marker -- two rows at one grain key
+# with differing content are the concurrent-write race), and observation_id/event_timestamp
+# (model_call rows only, for the R5c entity collapse).
+#
+# `situation` tags 1-10 map to the R8 facts-brief situation numbering; extra vectors are untagged.
+
+vectors:
+  - name: situation_1_identical_rebuild_no_bump
+    situation: 1
+    rows:
+      telemetry_sessions:
+        - {producer: claude_code, event_id: sess-open, parser_version: 1, session_id: s1, event_kind: open, created_timestamp: "2026-09-25T10:00:00+00:00", content: v1}
+      telemetry_observations:
+        - {producer: claude_code, event_id: step-1, parser_version: 1, session_id: s1, created_timestamp: "2026-09-25T10:01:00+00:00", content: A}
+    expected:
+      telemetry_observations: {surviving_event_ids: [step-1], conflicted_grain_keys: []}
+
+  - name: situation_2_bump_content_change_unchanged_event_ids
+    situation: 2
+    rows:
+      telemetry_sessions:
+        - {producer: claude_code, event_id: sess-open, parser_version: 1, session_id: s1, event_kind: open, created_timestamp: "2026-09-25T10:00:00+00:00", content: v1}
+        - {producer: claude_code, event_id: sess-open, parser_version: 2, session_id: s1, event_kind: open, created_timestamp: "2026-09-25T11:00:00+00:00", content: v2}
+      telemetry_observations:
+        - {producer: claude_code, event_id: step-1, parser_version: 1, session_id: s1, created_timestamp: "2026-09-25T10:01:00+00:00", content: A}
+        - {producer: claude_code, event_id: step-1, parser_version: 2, session_id: s1, created_timestamp: "2026-09-25T11:01:00+00:00", content: B}
+    expected:
+      telemetry_observations: {surviving_event_ids: [step-1], conflicted_grain_keys: []}
+
+  - name: situation_3_bump_dropped_rows_retired
+    situation: 3
+    rows:
+      telemetry_sessions:
+        - {producer: claude_code, event_id: sess-open, parser_version: 1, session_id: s1, event_kind: open, created_timestamp: "2026-09-25T10:00:00+00:00", content: v1}
+        - {producer: claude_code, event_id: sess-open, parser_version: 2, session_id: s1, event_kind: open, created_timestamp: "2026-09-25T11:00:00+00:00", content: v2}
+      telemetry_observations:
+        - {producer: claude_code, event_id: step-1, parser_version: 1, session_id: s1, created_timestamp: "2026-09-25T10:01:00+00:00", content: A}
+        - {producer: claude_code, event_id: step-2, parser_version: 1, session_id: s1, created_timestamp: "2026-09-25T10:02:00+00:00", content: A2}
+        - {producer: claude_code, event_id: step-1, parser_version: 2, session_id: s1, created_timestamp: "2026-09-25T11:01:00+00:00", content: A-updated}
+    expected:
+      telemetry_observations: {surviving_event_ids: [step-1], conflicted_grain_keys: []}
+
+  - name: situation_4_bump_new_rows_committed
+    situation: 4
+    rows:
+      telemetry_sessions:
+        - {producer: claude_code, event_id: sess-open, parser_version: 1, session_id: s1, event_kind: open, created_timestamp: "2026-09-25T10:00:00+00:00", content: v1}
+        - {producer: claude_code, event_id: sess-open, parser_version: 2, session_id: s1, event_kind: open, created_timestamp: "2026-09-25T11:00:00+00:00", content: v2}
+      telemetry_observations:
+        - {producer: claude_code, event_id: step-1, parser_version: 1, session_id: s1, created_timestamp: "2026-09-25T10:01:00+00:00", content: A}
+        - {producer: claude_code, event_id: step-1, parser_version: 2, session_id: s1, created_timestamp: "2026-09-25T11:01:00+00:00", content: A}
+        - {producer: claude_code, event_id: step-3, parser_version: 2, session_id: s1, created_timestamp: "2026-09-25T11:02:00+00:00", content: new}
+    expected:
+      telemetry_observations: {surviving_event_ids: [step-1, step-3], conflicted_grain_keys: []}
+
+  - name: situation_5_bump_rekeyed_event_ids
+    situation: 5
+    rows:
+      telemetry_sessions:
+        - {producer: claude_code, event_id: sess-open, parser_version: 1, session_id: s1, event_kind: open, created_timestamp: "2026-09-25T10:00:00+00:00", content: v1}
+        - {producer: claude_code, event_id: sess-open, parser_version: 2, session_id: s1, event_kind: open, created_timestamp: "2026-09-25T11:00:00+00:00", content: v2}
+      telemetry_observations:
+        - {producer: claude_code, event_id: step-1-old, parser_version: 1, session_id: s1, created_timestamp: "2026-09-25T10:01:00+00:00", content: A}
+        - {producer: claude_code, event_id: step-1-new, parser_version: 2, session_id: s1, created_timestamp: "2026-09-25T11:01:00+00:00", content: A}
+    expected:
+      telemetry_observations: {surviving_event_ids: [step-1-new], conflicted_grain_keys: []}
+
+  - name: situation_6_revert_ships_as_v_plus_2
+    situation: 6
+    rows:
+      telemetry_sessions:
+        - {producer: claude_code, event_id: sess-open, parser_version: 1, session_id: s1, event_kind: open, created_timestamp: "2026-09-25T10:00:00+00:00", content: v1}
+        - {producer: claude_code, event_id: sess-open, parser_version: 2, session_id: s1, event_kind: open, created_timestamp: "2026-09-25T11:00:00+00:00", content: v2}
+        - {producer: claude_code, event_id: sess-open, parser_version: 3, session_id: s1, event_kind: open, created_timestamp: "2026-09-25T12:00:00+00:00", content: v3}
+      telemetry_observations:
+        - {producer: claude_code, event_id: step-1, parser_version: 1, session_id: s1, created_timestamp: "2026-09-25T10:01:00+00:00", content: A}
+        - {producer: claude_code, event_id: step-1, parser_version: 2, session_id: s1, created_timestamp: "2026-09-25T11:01:00+00:00", content: B}
+        - {producer: claude_code, event_id: step-1, parser_version: 3, session_id: s1, created_timestamp: "2026-09-25T12:01:00+00:00", content: A}
+    expected:
+      telemetry_observations: {surviving_event_ids: [step-1], conflicted_grain_keys: []}
+
+  - name: situation_7a_deploy_mid_session_claude_code_pending_hidden
+    situation: 7
+    rows:
+      telemetry_sessions:
+        - {producer: claude_code, event_id: sess-open, parser_version: 1, session_id: s1, event_kind: open, created_timestamp: "2026-09-25T10:00:00+00:00", content: v1}
+      telemetry_observations:
+        - {producer: claude_code, event_id: step-1, parser_version: 1, session_id: s1, created_timestamp: "2026-09-25T10:01:00+00:00", content: A}
+        - {producer: claude_code, event_id: step-1, parser_version: 2, session_id: s1, created_timestamp: "2026-09-25T10:05:00+00:00", content: pending}
+    expected:
+      telemetry_observations: {surviving_event_ids: [step-1], conflicted_grain_keys: []}
+
+  - name: situation_7b_deploy_mid_session_litellm_versions_coexist
+    situation: 7
+    rows:
+      telemetry_sessions: []
+      telemetry_observations:
+        - {producer: litellm, event_id: step-1, parser_version: 1, session_id: s1, created_timestamp: "2026-09-25T10:01:00+00:00", content: A}
+        - {producer: litellm, event_id: step-2, parser_version: 2, session_id: s1, created_timestamp: "2026-09-25T10:05:00+00:00", content: B}
+    expected:
+      telemetry_observations: {surviving_event_ids: [step-1, step-2], conflicted_grain_keys: []}
+
+  - name: situation_8_child_keyed_agents_row_committed_by_child_marker
+    situation: 8
+    rows:
+      telemetry_sessions:
+        - {producer: claude_code, event_id: parent-open, parser_version: 1, session_id: s1, event_kind: open, created_timestamp: "2026-09-25T10:00:00+00:00", content: v1}
+        - {producer: claude_code, event_id: child-open, parser_version: 1, session_id: s2, event_kind: open, created_timestamp: "2026-09-25T10:01:00+00:00", content: v1}
+      telemetry_agents:
+        - {producer: claude_code, event_id: agent-1, parser_version: 1, session_id: s2, created_timestamp: "2026-09-25T10:02:00+00:00", content: agent-A}
+    expected:
+      telemetry_agents: {surviving_event_ids: [agent-1], conflicted_grain_keys: []}
+
+  - name: situation_9_cross_producer_model_call_shared_response
+    situation: 9
+    rows:
+      telemetry_sessions:
+        - {producer: claude_code, event_id: sess-open, parser_version: 1, session_id: s1, event_kind: open, created_timestamp: "2026-09-25T10:00:00+00:00", content: v1}
+      telemetry_observations:
+        - {producer: claude_code, event_id: mc-cc, parser_version: 1, session_id: s1, created_timestamp: "2026-09-25T10:01:00+00:00", content: A, observation_id: obs-1, event_timestamp: "2026-09-25T10:01:00+00:00"}
+        - {producer: litellm, event_id: mc-ll, parser_version: 1, session_id: s1, created_timestamp: "2026-09-25T10:01:05+00:00", content: B, observation_id: obs-1, event_timestamp: "2026-09-25T10:01:05+00:00"}
+    expected:
+      telemetry_observations: {surviving_event_ids: [mc-cc], conflicted_grain_keys: []}
+
+  - name: situation_10_same_build_replay_collapses
+    situation: 10
+    rows:
+      telemetry_sessions:
+        - {producer: claude_code, event_id: sess-open, parser_version: 1, session_id: s1, event_kind: open, created_timestamp: "2026-09-25T10:00:00+00:00", content: v1}
+      telemetry_observations:
+        - {producer: claude_code, event_id: step-1, parser_version: 1, session_id: s1, created_timestamp: "2026-09-25T10:01:00+00:00", content: A}
+        - {producer: claude_code, event_id: step-1, parser_version: 1, session_id: s1, created_timestamp: "2026-09-25T10:01:00+00:00", content: A}
+    expected:
+      telemetry_observations: {surviving_event_ids: [step-1], conflicted_grain_keys: []}
+
+  - name: partial_then_final_model_call_rec_4062
+    rows:
+      telemetry_sessions:
+        - {producer: claude_code, event_id: sess-open, parser_version: 1, session_id: s1, event_kind: open, created_timestamp: "2026-09-25T10:00:00+00:00", content: v1}
+      telemetry_observations:
+        - {producer: claude_code, event_id: mc-partial, parser_version: 1, session_id: s1, created_timestamp: "2026-09-25T10:01:00+00:00", content: partial, observation_id: obs-2, event_timestamp: "2026-09-25T10:01:00+00:00"}
+        - {producer: claude_code, event_id: mc-final, parser_version: 1, session_id: s1, created_timestamp: "2026-09-25T10:02:00+00:00", content: final, observation_id: obs-2, event_timestamp: "2026-09-25T10:02:00+00:00"}
+    expected:
+      telemetry_observations: {surviving_event_ids: [mc-final], conflicted_grain_keys: []}
+
+  - name: crashed_reemission_data_at_v_plus_1_no_marker
+    rows:
+      telemetry_sessions:
+        - {producer: claude_code, event_id: sess-open, parser_version: 1, session_id: s1, event_kind: open, created_timestamp: "2026-09-25T10:00:00+00:00", content: v1}
+      telemetry_observations:
+        - {producer: claude_code, event_id: step-1, parser_version: 1, session_id: s1, created_timestamp: "2026-09-25T10:01:00+00:00", content: A}
+        - {producer: claude_code, event_id: step-1, parser_version: 2, session_id: s1, created_timestamp: "2026-09-25T10:05:00+00:00", content: crashed-partial}
+    expected:
+      telemetry_observations: {surviving_event_ids: [step-1], conflicted_grain_keys: []}
+
+  - name: non_replayable_producer_two_versions_no_v_star
+    rows:
+      telemetry_sessions: []
+      telemetry_observations:
+        - {producer: litellm, event_id: mc-1, parser_version: 1, session_id: s1, created_timestamp: "2026-09-25T10:01:00+00:00", content: old}
+        - {producer: litellm, event_id: mc-1, parser_version: 2, session_id: s1, created_timestamp: "2026-09-25T10:02:00+00:00", content: new}
+    expected:
+      telemetry_observations: {surviving_event_ids: [mc-1], conflicted_grain_keys: []}
+
+  - name: two_others_rank_producers_tied_on_model_call
+    rows:
+      telemetry_sessions: []
+      telemetry_observations:
+        - {producer: toolY, event_id: mc-y, parser_version: 1, session_id: s1, created_timestamp: "2026-09-25T10:02:00+00:00", content: y, observation_id: obs-3, event_timestamp: "2026-09-25T10:01:00+00:00"}
+        - {producer: toolX, event_id: mc-x, parser_version: 1, session_id: s1, created_timestamp: "2026-09-25T10:01:00+00:00", content: x, observation_id: obs-3, event_timestamp: "2026-09-25T10:01:00+00:00"}
+    expected:
+      telemetry_observations: {surviving_event_ids: [mc-x], conflicted_grain_keys: []}
+
+  - name: concurrent_race_pair_differing_under_one_grain_key
+    rows:
+      telemetry_sessions:
+        - {producer: claude_code, event_id: sess-open, parser_version: 1, session_id: s1, event_kind: open, created_timestamp: "2026-09-25T10:00:00+00:00", content: v1}
+      telemetry_observations:
+        - {producer: claude_code, event_id: step-1, parser_version: 1, session_id: s1, created_timestamp: "2026-09-25T10:01:00+00:00", content: A}
+        - {producer: claude_code, event_id: step-1, parser_version: 1, session_id: s1, created_timestamp: "2026-09-25T10:01:01+00:00", content: B}
+    expected:
+      telemetry_observations:
+        surviving_event_ids: [step-1]
+        conflicted_grain_keys: [[claude_code, step-1, 1]]
+
+  - name: rekeyed_sub_agent_session_old_child_stays_authoritative
+    rows:
+      telemetry_sessions:
+        - {producer: claude_code, event_id: parent-open, parser_version: 1, session_id: s1, event_kind: open, created_timestamp: "2026-09-25T10:00:00+00:00", content: v1}
+        - {producer: claude_code, event_id: parent-open, parser_version: 2, session_id: s1, event_kind: open, created_timestamp: "2026-09-25T11:00:00+00:00", content: v2}
+        - {producer: claude_code, event_id: child-old-open, parser_version: 1, session_id: s2-old, event_kind: open, created_timestamp: "2026-09-25T10:01:00+00:00", content: v1}
+        - {producer: claude_code, event_id: child-new-open, parser_version: 2, session_id: s2-new, event_kind: open, created_timestamp: "2026-09-25T11:01:00+00:00", content: v2}
+      telemetry_agents:
+        - {producer: claude_code, event_id: agent-old, parser_version: 1, session_id: s2-old, created_timestamp: "2026-09-25T10:02:00+00:00", content: agent-old}
+        - {producer: claude_code, event_id: agent-new, parser_version: 2, session_id: s2-new, created_timestamp: "2026-09-25T11:02:00+00:00", content: agent-new}
+    expected:
+      telemetry_agents: {surviving_event_ids: [agent-new, agent-old], conflicted_grain_keys: []}

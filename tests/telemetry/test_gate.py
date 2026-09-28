@@ -146,3 +146,40 @@ class TestCollapseOrRejectDuplicates:
         deduped, collapsed = collapse_or_reject_duplicates(rows, ("event_id", "parser_version"))
         assert len(deduped) == 2
         assert collapsed == 0
+
+
+def test_grain_key_includes_producer() -> None:
+    """The telemetry grain key is (producer, event_id, parser_version) (Decision-cited in
+    data-modeling-standard.yaml's grain-enforced-at-write rule): two producers sharing event_id
+    and parser_version both survive; a producer_version-only difference collapses; any other
+    content difference raises.
+    """
+    grain = ("producer", "event_id", "parser_version")
+    rows = [
+        {"producer": "claude_code", "event_id": "a", "parser_version": 1, "producer_version": "1.0", "x": 1},
+        {"producer": "litellm", "event_id": "a", "parser_version": 1, "producer_version": "2.0", "x": 1},
+    ]
+    deduped, collapsed = collapse_or_reject_duplicates(rows, grain)
+    assert len(deduped) == 2
+    assert collapsed == 0
+
+    same_producer = [
+        {"producer": "claude_code", "event_id": "a", "parser_version": 1, "producer_version": "1.0", "x": 1},
+        {"producer": "claude_code", "event_id": "a", "parser_version": 1, "producer_version": "1.1", "x": 1},
+    ]
+    deduped2, collapsed2 = collapse_or_reject_duplicates(same_producer, grain)
+    assert len(deduped2) == 1
+    assert collapsed2 == 1
+
+    conflicting = [
+        {"producer": "claude_code", "event_id": "a", "parser_version": 1, "x": 1},
+        {"producer": "claude_code", "event_id": "a", "parser_version": 1, "x": 2},
+    ]
+    with pytest.raises(AppendError):
+        collapse_or_reject_duplicates(conflicting, grain)
+
+
+def test_grain_key_null_column_rejected() -> None:
+    rows = [{"producer": None, "event_id": "a", "parser_version": 1, "x": 1}]
+    with pytest.raises(AppendError):
+        collapse_or_reject_duplicates(rows, ("producer", "event_id", "parser_version"))

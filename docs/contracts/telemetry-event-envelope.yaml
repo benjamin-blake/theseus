@@ -37,15 +37,25 @@ fields:
       identity spec below. Not a business/entity key -- see entity_ref for the row's FK-shaped
       identity when the row is itself referenced by a child.
     semantics: >-
-      k-sortable by event_timestamp. DuckLake enforces no row uniqueness, so a duplicate event_id
-      (same logical event re-emitted, e.g. by a parser re-run) is resolved READ-SIDE, never by an
-      engine constraint: keep one row per event_id, preferring the highest parser_version then the
-      earliest created_timestamp. The writer's own anti-join on (event_id, parser_version) before
-      insert is best-effort, not a substitute for the read-side rule.
+      DuckLake enforces no row uniqueness, so a duplicate event_id (same logical event re-emitted,
+      e.g. by a parser re-run) is resolved READ-SIDE, never by an engine constraint. The grain is
+      (producer, event_id, parser_version), enforced at the WRITE boundary per Decision 207
+      (grain-enforced-at-write; a conflicting re-send under the same grain key is rejected loudly,
+      never silently dropped) -- see governance_notes' GENERATIONS AND READ-SIDE DEDUPE rule for
+      how a reader then selects the authoritative row across generations and producers.
     populated_by: the write boundary, from external_ref (rec-4024's append_events verb).
     dq_intent:
       not_null:
         enforced: false
+    amendment_log:
+      - date: "2026-09-28"
+        semantic_break: true
+        change_class: governance_note_add
+        summary: >-
+          PLAN-telemetry-grain-and-generations (Decision 207): semantics reworded from the retired
+          highest-version-then-oldest-write-time write-then-read-side dedupe wording to the
+          write-boundary grain (producer, event_id, parser_version) enforced at write, pointing at
+          the GENERATIONS AND READ-SIDE DEDUPE rule for read-side selection.
   event_kind:
     type: str
     iceberg_type: string
@@ -165,9 +175,10 @@ fields:
     nullable: true
     description: >-
       The producer-supplied natural reference for THIS event, grammar
-      '<source_record_id>#<block_index>/<row_role>'. Unique within (tenant, project, table); the
-      hash input for event_id. Not a caller-facing FK -- entity_ref is the field a row uses to
-      participate as (or reference) an entity/FK key.
+      '<source_record_id>#<block_index>/<row_role>'. Unique within (tenant, project, table,
+      producer) -- rescoped from (tenant, project, table): the model_call ref is shared across
+      producers by design. The hash input for event_id. Not a caller-facing FK -- entity_ref is
+      the field a row uses to participate as (or reference) an entity/FK key.
     semantics: >-
       For a model_call row specifically, external_ref is '<provider_response_id>/model_call' for
       EVERY producer that observes that response id, and is owned by the LAST source record
@@ -177,6 +188,14 @@ fields:
     dq_intent:
       not_null:
         enforced: false
+    amendment_log:
+      - date: "2026-09-28"
+        semantic_break: true
+        change_class: governance_note_add
+        summary: >-
+          PLAN-telemetry-grain-and-generations (Decision 207): description rescoped the
+          uniqueness scope to add producer to the (tenant, project, table) tuple -- the model_call
+          ref is shared across producers by design.
   entity_ref:
     type: str
     iceberg_type: string
@@ -203,13 +222,25 @@ fields:
     nullable: true
     description: >-
       Canonical id of the emitting producer, e.g. claude_code (the transcript parser), litellm, or
-      ci_annotate. Open set; used both as provenance and, on model_call rows, as the fixed
-      precedence tiebreaker in read-side dedupe (claude_code over litellm).
-    semantics: Open set; enforcement (if any) is a Phase-4 telemetry DQ config concern, not this contract.
+      ci_annotate. Open set; part of the telemetry grain key (Decision 207); used both as
+      provenance and, on model_call rows, as the fixed precedence tiebreaker in read-side dedupe
+      (claude_code over litellm, R5c).
+    semantics: >-
+      Tightened NOT NULL by each telemetry table's dq_intent_local (R2). parser_version is
+      comparable only between rows sharing producer -- versions from different producers are
+      incomparable and never sort against each other.
     populated_by: the emitting producer, self-identifying.
     dq_intent:
       not_null:
         enforced: false
+    amendment_log:
+      - date: "2026-09-28"
+        semantic_break: true
+        change_class: governance_note_add
+        summary: >-
+          PLAN-telemetry-grain-and-generations (Decision 207, rec-4061 R2): named producer as part
+          of the telemetry grain key and pointed at the R5c model_call precedence rule; semantics
+          states parser_version is comparable only between rows sharing producer.
   producer_version:
     type: str
     iceberg_type: string
@@ -225,25 +256,47 @@ fields:
     iceberg_type: bigint
     nullable: true
     description: >-
-      Monotonic INTEGER version of the parsing/emission logic that produced this row. The primary
-      read-side dedupe key (alongside event_id): among rows sharing an event_id, the highest
-      parser_version wins, then the earliest created_timestamp.
+      A per-producer, hand-maintained INTEGER constant, applied to every row the producer emits in
+      all four tables (R1). It increments iff the producer's normalised output (event_ids, entity
+      keys, every stored column except created_timestamp and producer_version) for any golden
+      input differs from the previous version; never for identical output or a build change alone;
+      never decrements, never reused -- a revert ships as a NEW higher number. Part of the
+      telemetry grain key (producer, event_id, parser_version), enforced at write (Decision 207).
+      Comparable only between rows sharing producer (R2). An identity-spec change, or a change to
+      ANY session entity_ref grammar (root or sub-agent), bumps EVERY producer and requires a
+      Decision (R10) -- the generation unit is the session, so a re-keyed session escapes R5a
+      retirement. The registry and golden-corpus check that enforce this are rec-4122.
     semantics: >-
-      A parser change that stops emitting a row kind it previously emitted must re-emit the WHOLE
-      root tree under the new parser_version -- a partial re-emission is a documented limitation,
-      not silently tolerated drift.
-    populated_by: the emitting producer, from its own build/version identity.
+      A replayable producer's bump obligation (R7): re-parse the whole root tree from the start,
+      write data rows first and ONE telemetry_sessions batch of every tree session's rows LAST
+      (the generation commit marker), bind its cursor to parser_version and reset it on mismatch,
+      never emit v for a session after a v+1 marker for it, and reuse the pinned project_ref and
+      session_started_at persisted with its cursor across a reset (never re-reading config), so a
+      re-emission cannot re-key the tree. A non-replayable producer (R8) emits no open marker,
+      never re-emits, and a bump retires nothing.
+    populated_by: the emitting producer, a hand-maintained per-producer constant (never a build identity).
     dq_intent:
       not_null:
         enforced: false
+    amendment_log:
+      - date: "2026-09-28"
+        semantic_break: true
+        change_class: governance_note_add
+        summary: >-
+          PLAN-telemetry-grain-and-generations (Decision 207, rec-4061 R1/R2/R3/R7/R10): replaced
+          the retired build-provenance populated_by wording with the bump-iff-output-changes
+          policy, the per-producer comparability scope, the never-reused/revert-is-new-version
+          rule, the identity-spec/session-grammar Decision-R10 clause, and the R7
+          replayable-producer write-order and cursor-reuse obligations.
   created_timestamp:
     type: datetime
     iceberg_type: timestamptz
     nullable: true
     description: >-
       UTC tz-aware write-time timestamp -- when the row was appended, distinct from event_timestamp
-      (source event time) and session_started_at (partition basis). The read-side dedupe tiebreaker
-      after parser_version.
+      (source event time) and session_started_at (partition basis). Excluded from the grain's
+      compared content (Decision 207); the read-side event-collapse tiebreak within a generation --
+      see governance_notes' GENERATIONS AND READ-SIDE DEDUPE rule, R5b.
     semantics: >-
       Replaces the retired per-table ingested_at column (same concept, promoted to the shared
       envelope so every telemetry table carries one write-time field under one name).
@@ -251,6 +304,14 @@ fields:
     dq_intent:
       not_null:
         enforced: false
+    amendment_log:
+      - date: "2026-09-28"
+        semantic_break: true
+        change_class: governance_note_add
+        summary: >-
+          PLAN-telemetry-grain-and-generations (Decision 207): description now excludes
+          created_timestamp from the grain's compared content and points at R5b for the read-side
+          event-collapse tiebreak within a generation.
 governance_notes: >-
   IDENTITY SPEC (Decision 199, normative -- stated ONCE here, referenced by session-id.yaml,
   observation-id.yaml, parent-observation-id.yaml, telemetry_transcripts (transcript_id),
@@ -266,17 +327,40 @@ governance_notes: >-
   cl.3, 97 cl.1-4). Ids are NEVER caller-supplied: the caller supplies a natural _ref (session_ref,
   project_ref, observation_ref, entity_ref, external_ref, parent_session_ref, parent_observation_ref)
   and the write boundary derives the stored ULID deterministically from it.
-  MODEL_CALL DEDUPE (a worked case of the general rule): a model_call's external_ref is
-  '<provider_response_id>/model_call' for every producer, but because event_id embeds each
-  producer's own event_timestamp, model_call rows do NOT de-duplicate on event_id -- they
-  de-duplicate on the producer-independent ENTITY key (observation_id, a hash of the response id
-  under the root session's prefix), one row per observation_id, with fixed precedence
-  provider-reported usage from the transcript parser (producer claude_code) over litellm, then
-  earliest created_timestamp. A failed call with no response id uses the producer's own call id
-  (e.g. litellm_call_id) as the entity_ref input instead.
-  REFS ARE UNIQUE within (tenant, project, table); DuckLake enforces no engine uniqueness, so
-  duplicate suppression for every row kind (not only model_call) is the read-side rule stated on
-  event_id above, with the writer's own anti-join best-effort only.
+  GENERATIONS AND READ-SIDE DEDUPE (Decision 207, rec-4061/rec-4062, normative -- layered, bounded
+  to one session's calendar-day partition):
+  R3 marker: producer P's telemetry_sessions open row for session S at parser_version v commits
+  all of P's rows for S, in all four tables, as complete at v. Its event_id is stable across
+  versions.
+  R4: V*(P,S) = max parser_version of P's open rows for S within S's partition. If P has no open
+  row for S, V* is undefined and R5 alone applies.
+  R5 layered rule: (a) retire P's rows for S with parser_version != V*(P,S) when V* is defined
+  (below V* is retired, above is pending, hidden from reads until committed); (b) event collapse
+  per (producer, event_id): keep the highest parser_version remaining after (a) (V* when defined,
+  else the highest version present -- a non-replayable producer), then created_timestamp
+  ascending among rows at that version -- content-identical except in the concurrent-write
+  race (Decision 81 cl.3), where the reader returns one row per grain key (which one is
+  unspecified) and reports the key as conflicted; the conflict report is the normative output and
+  the conflict is never resolved silently; (c) model_call entity collapse per observation_id:
+  producer precedence claude_code, litellm, then others, then event_timestamp DESC (final usage
+  wins, rec-4062), then created_timestamp asc, then producer asc, then event_id asc -- a total
+  order.
+  R6: a telemetry_agents row belongs to its own (child) session_id's generation, committed by the
+  child's own open-row marker, never the spawning session's.
+  R7 producer obligations: a producer never emits two different rows under one grain key (a
+  model_call is emitted only once its source record carries final usage); every emitted column is
+  a pure function of the source records plus the inputs pinned with the cursor, and incremental
+  emission equals a full re-parse for every row already emitted; a replayable producer on a bump
+  re-parses the whole root tree from the start, writes data rows first and ONE telemetry_sessions
+  batch of every tree session's rows LAST, binds its cursor to parser_version and resets it on
+  mismatch, never emits v for a session after a v+1 marker for it, and REUSES the pinned
+  project_ref and session_started_at persisted with its cursor across a reset (never re-reading
+  config), so a re-emission cannot re-key the tree.
+  R8: non-replayable producers emit no open marker, never re-emit, and a bump retires nothing.
+  DQ intents (owner rec-4063): more than one distinct row per grain key (conflict); pending
+  generations older than 2h; null producer.
+  CONFORMANCE VECTORS: tests/telemetry/fixtures/dedupe_vectors.yaml is this rule's normative
+  conformance-vector file, like identity_vectors.yaml is for the identity spec above.
   This spec ANSWERS Decision 81 clause 8's current-write-through-projection concern for telemetry,
   it does not amend Decision 81: state/friction/cost are derived at read (data-modeling-standard.yaml's
   derived-state rule), but every derivation is bounded to a session's single calendar-day
@@ -287,6 +371,17 @@ governance_notes: >-
   length/control-character rules, the closed domain-tag registry), which is implementation policy
   of src/telemetry/identity.py, not part of the ratified spec itself.
 amendment_log:
+  - date: "2026-09-28"
+    semantic_break: true
+    change_class: governance_note_add
+    summary: >-
+      PLAN-telemetry-grain-and-generations (Decision 207, rec-4061, rec-4062): replaced the
+      governance_notes model_call-specific worked dedupe case and the retired writer-anti-join
+      uniqueness sentence with the normative GENERATIONS AND READ-SIDE DEDUPE rule (R3-R8, layered
+      per-generation/per-event/per-entity dedupe, final-usage-wins model_call tiebreak), naming
+      tests/telemetry/fixtures/dedupe_vectors.yaml as its conformance vectors. Field-level changes
+      to event_id, created_timestamp, external_ref, producer and parser_version are recorded on
+      their own fields' amendment_log entries. contract_version stays 1.
   - date: "2026-09-25"
     semantic_break: false
     change_class: governance_note_add
