@@ -23,30 +23,40 @@ scope:
   - file: terraform/bootstrap/platform_security_heartbeat_canary.tf
     action: Create
     purpose: >-
-      The heartbeat's guaranteed IAM-event source (Decision 202 clause 5 control input). Six
+      The heartbeat's guaranteed IAM-event source (Decision 202 clause 5 control input). Seven
       resources, addresses and names exactly:
       (a) aws_iam_role.platform_security_heartbeat_canary (name platform-security-heartbeat-canary),
       trusted ONLY by states.amazonaws.com with Condition aws:SourceAccount = var.account_id AND
       ArnLike aws:SourceArn = the state machine ARN template
       (arn:aws:states:${var.aws_region}:${var.account_id}:stateMachine:platform-security-heartbeat-canary);
-      (b) aws_iam_role_policy.platform_security_heartbeat_canary granting exactly iam:GetRole on
-      that role's own ARN template, nothing else;
+      (b) aws_iam_role_policy.platform_security_heartbeat_canary (name
+      platform-security-heartbeat-canary) granting exactly iam:GetRole on that role's own ARN
+      template, nothing else;
       (c) aws_iam_role.platform_security_heartbeat_scheduler (name
       platform-security-heartbeat-scheduler), trusted ONLY by scheduler.amazonaws.com with
-      aws:SourceAccount = var.account_id and ArnLike aws:SourceArn = the schedule ARN template
-      (arn:aws:scheduler:${var.aws_region}:${var.account_id}:schedule/default/platform-security-heartbeat-canary);
-      (d) aws_iam_role_policy.platform_security_heartbeat_scheduler granting exactly
-      states:StartExecution on the state machine ARN template;
+      aws:SourceAccount = var.account_id and ArnLike aws:SourceArn = the dedicated schedule
+      GROUP's ARN template
+      (arn:aws:scheduler:${var.aws_region}:${var.account_id}:schedule-group/platform-security-heartbeat)
+      -- EventBridge Scheduler presents the schedule-group ARN as aws:SourceArn when it assumes an
+      execution role (Scheduler user guide, execution-role confused-deputy example), so a
+      schedule-ARN condition would deny every beat; a dedicated group narrows it to this canary;
+      (d) aws_iam_role_policy.platform_security_heartbeat_scheduler (name
+      platform-security-heartbeat-scheduler) granting exactly states:StartExecution on the state
+      machine ARN template;
       (e) aws_sfn_state_machine.platform_security_heartbeat_canary (name
-      platform-security-heartbeat-canary, type STANDARD -- 90-day execution history is the canary's
+      platform-security-heartbeat-canary, role_arn = aws_iam_role.platform_security_heartbeat_canary.arn,
+      type STANDARD -- 90-day execution history is the canary's
       own failure evidence), definition taken from a local holding a heredoc JSON document (so the
       test can json.loads it) with top-level TimeoutSeconds 30, StartAt GetRole and exactly ONE
       state: Type Task, Resource "arn:aws:states:::aws-sdk:iam:getRole", Parameters
       {"RoleName": "platform-security-heartbeat-canary"}, ResultPath null (discard the response),
       End true, no Retry and no Catch (a failed beat is a missing beat; the heartbeat is the
       alarm). No logging_configuration (no extra log group);
-      (f) aws_scheduler_schedule.platform_security_heartbeat_canary (name
-      platform-security-heartbeat-canary, default group, schedule_expression "rate(5 minutes)",
+      (f) aws_scheduler_schedule_group.platform_security_heartbeat (name
+      platform-security-heartbeat);
+      (g) aws_scheduler_schedule.platform_security_heartbeat_canary (name
+      platform-security-heartbeat-canary, group_name =
+      aws_scheduler_schedule_group.platform_security_heartbeat.name, schedule_expression "rate(5 minutes)",
       state "ENABLED" written explicitly, flexible_time_window mode "OFF", target arn =
       aws_sfn_state_machine.platform_security_heartbeat_canary.arn, target role_arn =
       aws_iam_role.platform_security_heartbeat_scheduler.arn, retry_policy
@@ -58,7 +68,9 @@ scope:
       literal, no provider or alias, no file() call, no account id (ARNs interpolate
       var.aws_region/var.account_id). Header comment: why Scheduler cannot call iam:getRole directly
       (universal targets reject get*/list* verbs) and why tampering fails closed (the heartbeat counts
-      delivered IAM events, not canary self-reports). EventBridge Scheduler and Step Functions are
+      delivered IAM events, not canary self-reports), and why Scheduler rather than an EventBridge
+      scheduled rule (events:* sits in CI's boundary DataPlaneAllow, scheduler does not, so a rule
+      would sit inside CI's reach). EventBridge Scheduler and Step Functions are
       regional in var.aws_region; the IAM call goes to the global endpoint, so the event travels the
       exact multi-region/global-events path the heartbeat proves (Decision 202 clause 4 holds).
   - file: terraform/bootstrap/platform_security_alarms.tf
@@ -98,7 +110,11 @@ scope:
       arn:aws:states:${var.aws_region}:${var.account_id}:execution:platform-security-*:*;
       PlatformSecurityHeartbeatScheduleManage -- scheduler:CreateSchedule, scheduler:UpdateSchedule,
       scheduler:GetSchedule on
-      arn:aws:scheduler:${var.aws_region}:${var.account_id}:schedule/default/platform-security-*.
+      arn:aws:scheduler:${var.aws_region}:${var.account_id}:schedule/platform-security-*/platform-security-*;
+      PlatformSecurityHeartbeatScheduleGroupManage -- scheduler:CreateScheduleGroup,
+      scheduler:GetScheduleGroup, scheduler:TagResource, scheduler:UntagResource,
+      scheduler:ListTagsForResource on
+      arn:aws:scheduler:${var.aws_region}:${var.account_id}:schedule-group/platform-security-*.
       Before writing, confirm against the terraform-provider-aws source at the version `terraform
       init` resolves for "~> 5.0" which states/scheduler calls aws_sfn_state_machine and
       aws_scheduler_schedule make on create, read and update. Add any missing read (Describe/List/Get)
@@ -148,11 +164,14 @@ scope:
       (4) _REQUIRED_CLAUSES for the tamper filter gains '$.eventSource = "scheduler.amazonaws.com"',
       and a NEW pattern red case "scheduler clause dropped" removes it.
       (5) _DETECTOR_FILES gains platform_security_heartbeat_canary.tf, so the naming and region checks
-      cover it. _NAME_ATTRS gains aws_sfn_state_machine: name and aws_scheduler_schedule: name.
+      cover it. _NAME_ATTRS gains aws_sfn_state_machine: name, aws_scheduler_schedule: name and
+      aws_scheduler_schedule_group: name, and naming_problems additionally FAILS a resource of a
+      _NAME_ATTRS type whose name attribute is absent (an auto-generated name would escape the
+      family), with a red case "unnamed inline policy".
       _mutating's service set gains states and scheduler. _DETECTOR_TARGETS gains the canary's
-      state machine, execution, schedule and both role ARNs. NEW _OTHER_REDS "CI writes the canary"
+      state machine, execution, schedule, schedule-group and both role ARNs. NEW _OTHER_REDS "CI writes the canary"
       (states:UpdateStateMachine on stateMachine:platform-security-*) and "CI disables the
-      schedule" (scheduler:UpdateSchedule on schedule/default/platform-security-*).
+      schedule" (scheduler:UpdateSchedule on schedule/platform-security-*/platform-security-*).
       The module docstring notes the canary. It stays under 500 SLOC.
   - file: tests/checks/iam_tf/test_platform_security_heartbeat_canary.py
     action: Create
@@ -160,14 +179,17 @@ scope:
       Class TestPlatformSecurityHeartbeatCanary. Every predicate returns a problem list and every
       red case drives the real predicate (the alarm-test idiom; Decision 187 red-case floor).
       Predicates:
-      canary_problems(canary_text) -- the six addresses exist with the names above; the schedule is
-      ENABLED, flexible window OFF, rate(5 minutes), targets the state machine through the scheduler
-      role, retry at most 2 and max event age <= 300; the state machine is STANDARD; its parsed
+      canary_problems(canary_text) -- the seven addresses exist with the names above; the schedule is
+      in the platform-security-heartbeat group, ENABLED, flexible window OFF, rate(5 minutes),
+      targets the state machine through the scheduler role, retry at most 2 and max event age <=
+      300; the state machine is STANDARD and its role_arn is the canary role; its parsed
       definition has exactly one state, a Task whose Resource is exactly
       arn:aws:states:::aws-sdk:iam:getRole (an IAM read, so a global-service event), with RoleName
       equal to the canary role's name, no Retry/Catch, and TimeoutSeconds <= 60.
       role_problems(canary_text) -- each trust policy names exactly one service principal (states /
-      scheduler) and carries aws:SourceAccount plus aws:SourceArn; the canary policy is exactly
+      scheduler) and carries aws:SourceAccount plus aws:SourceArn, whose VALUE is pinned: the
+      state-machine ARN template for the canary role, the schedule-group ARN template (never a
+      schedule/ ARN) for the scheduler role; the canary policy is exactly
       iam:GetRole on its own role ARN template; the scheduler policy is exactly states:StartExecution
       on the state-machine ARN template; each inline policy has the 10240 precondition.
       cadence_problems(canary_text, alarms_text) -- at least 3 beats per heartbeat period (period
@@ -175,13 +197,16 @@ scope:
       design no longer depends on GitHub's scheduler.
       admin_grant_problems(admin_text) -- every states:/scheduler: action sits in a
       PlatformSecurityHeartbeat* Sid, none is a Delete* verb or a wildcard, every Resource is a
-      platform-security-* state machine, execution or schedule ARN template, and
+      platform-security-* state machine, execution, schedule or schedule-group ARN template, and
       PlatformSecurityTrailManage is unchanged.
       description_problems(alarms_text) -- the heartbeat alarm_description names
-      platform-security-heartbeat-canary and IncomingLogEvents.
+      platform-security-heartbeat-canary and IncomingLogEvents, and its rendered length (literal
+      text plus the triage local, with ${var.aws_region} substituted by a 14-character placeholder)
+      is <= 1024.
       fixture_canary_problems(fixture_text) -- the two canary events exist with the exact
       must_match sets above.
-      Red cases (at least): schedule disabled; flexible window; slow beat rate(60 minutes) (cadence);
+      Red cases (at least): schedule disabled; schedule in the default group; state machine role_arn
+      pointing at the scheduler role; scheduler trust SourceArn on a schedule/ ARN; flexible window; slow beat rate(60 minutes) (cadence);
       sts instead of iam (aws-sdk:sts:getCallerIdentity is regional and would not prove the global
       path); iam write task (aws-sdk:iam:tagRole); a second state; Retry added; EXPRESS type; canary
       policy iam:*; canary policy Resource "*"; scheduler policy extra verb; trust without
@@ -216,7 +241,7 @@ scope:
       "> **Update (YYYY-MM-DD):** clause 5's IAM-event heartbeat no longer relies on
       terraform-drift traffic (GitHub starts that cron every 3-6 hours, so the 3 x 1 h window
       false-alarmed). platform-security-heartbeat-canary feeds it: an EventBridge Scheduler schedule
-      (every 5 minutes) starts a Step Functions state machine whose one task is iam:GetRole on its
+      (every 5 minutes, own schedule group) starts a Step Functions state machine whose one task is iam:GetRole on its
       own role, all in terraform/bootstrap in aws_region (clause 4 holds; the read travels the
       global-event path). The heartbeat is now Sum < 1 over four consecutive 900 s periods: blinding
       alarms 60-105 minutes after the last delivered IAM event. Canary tampering fails closed (it can
@@ -268,7 +293,7 @@ acceptance_criteria:
   - >-
     terraform/bootstrap declares the canary exactly as scoped: a 5-minute ENABLED schedule with no
     flexible window, a STANDARD state machine whose single Task is aws-sdk:iam:getRole on its own
-    role, and two least-privilege roles with SourceAccount/SourceArn-conditioned trust and
+    role, a dedicated schedule group, and two least-privilege roles with SourceAccount/SourceArn-conditioned trust (the scheduler role conditioned on the schedule-group ARN) and
     size-preconditioned inline policies. All platform-security-* named, in var.aws_region only,
     and outside CI's reach.
   - >-
@@ -343,12 +368,11 @@ verification_plan:
     expected: prints the marker (no stale premise text, and Decision 202's section names the canary)
     fix_if: a grep hit names the stale site -- rewrite it to the canary premise
     hermetic: true
-    expected_literals:
-      - HEARTBEAT PREMISE CURRENT
+    expected_literals: []
     graduation: waive
     graduation_waiver_reason: >-
-      A one-time sweep over this diff's own wording; once merged, the premise cannot recur without a
-      deliberate edit that step 1's and step 2's graduated predicates already catch structurally.
+      A one-time sweep over this diff's own wording (comments, description, a plan fix_if and a
+      Decision line); prose wording is not a standing regression target.
   - step: 4
     phase: pre-deploy
     action: provider-free formatting of the bootstrap root (validate/plan are CI-delegated, Decision 119)
@@ -370,8 +394,7 @@ verification_plan:
     expected: exit 0 with the marker
     fix_if: a schema error names the field -- fix the edited text
     hermetic: true
-    expected_literals:
-      - PLANS VALID
+    expected_literals: []
     graduation: waive
     graduation_waiver_reason: >-
       validate --pre already runs plan_document over every plan (step 6); this is the local fast
@@ -401,7 +424,7 @@ verification_plan:
     phase: post-deploy
     action: ADMIN -- baseline plan on main at or after the merge shows exactly this plan's changes
     command: |-
-      test -n "$CANARY_MERGE_SHA" && git fetch origin main && git checkout --detach origin/main && git merge-base --is-ancestor "$CANARY_MERGE_SHA" HEAD && test -f terraform/bootstrap/terraform.bootstrap.tfvars && git check-ignore -q terraform/bootstrap/terraform.bootstrap.tfvars && terraform -chdir=terraform/bootstrap init -input=false > /dev/null && M="${TMPDIR:-/tmp}/platform-security-canary" && mkdir -p "$M" && terraform -chdir=terraform/bootstrap plan -input=false -lock=false -var-file=terraform.bootstrap.tfvars -out="$M/base.tfplan" > /dev/null && terraform -chdir=terraform/bootstrap show -json "$M/base.tfplan" | bin/venv-python -c "import json,sys; C=['aws_iam_role.platform_security_heartbeat_canary','aws_iam_role_policy.platform_security_heartbeat_canary','aws_iam_role.platform_security_heartbeat_scheduler','aws_iam_role_policy.platform_security_heartbeat_scheduler','aws_sfn_state_machine.platform_security_heartbeat_canary','aws_scheduler_schedule.platform_security_heartbeat_canary']; U=['aws_iam_policy.platform_security_admin','aws_cloudwatch_log_metric_filter.platform_security[\"platform-security-detector-tamper\"]','aws_cloudwatch_metric_alarm.platform_security_iam_event_heartbeat']; got=sorted((r['address'],tuple(r['change']['actions'])) for r in json.load(sys.stdin).get('resource_changes',[]) if r['change']['actions'] not in (['no-op'],['read'])); want=sorted([(a,('create',)) for a in C]+[(a,('update',)) for a in U]); sys.exit(f'STOP {got}') if got!=want else print('BASELINE OK -- 6 canary creates, 3 in-place updates')"; rc=$?; rm -f "${TMPDIR:-/tmp}/platform-security-canary/base.tfplan"; test $rc -eq 0
+      test -n "$CANARY_MERGE_SHA" && git fetch origin main && git checkout --detach origin/main && git merge-base --is-ancestor "$CANARY_MERGE_SHA" HEAD && test -f terraform/bootstrap/terraform.bootstrap.tfvars && git check-ignore -q terraform/bootstrap/terraform.bootstrap.tfvars && terraform -chdir=terraform/bootstrap init -input=false > /dev/null && M="${TMPDIR:-/tmp}/platform-security-canary" && mkdir -p "$M" && terraform -chdir=terraform/bootstrap plan -input=false -lock=false -var-file=terraform.bootstrap.tfvars -out="$M/base.tfplan" > /dev/null && terraform -chdir=terraform/bootstrap show -json "$M/base.tfplan" | bin/venv-python -c "import json,sys; C=['aws_iam_role.platform_security_heartbeat_canary','aws_iam_role_policy.platform_security_heartbeat_canary','aws_iam_role.platform_security_heartbeat_scheduler','aws_iam_role_policy.platform_security_heartbeat_scheduler','aws_sfn_state_machine.platform_security_heartbeat_canary','aws_scheduler_schedule_group.platform_security_heartbeat','aws_scheduler_schedule.platform_security_heartbeat_canary']; U=['aws_iam_policy.platform_security_admin','aws_cloudwatch_log_metric_filter.platform_security[\"platform-security-detector-tamper\"]','aws_cloudwatch_metric_alarm.platform_security_iam_event_heartbeat']; got=sorted((r['address'],tuple(r['change']['actions'])) for r in json.load(sys.stdin).get('resource_changes',[]) if r['change']['actions'] not in (['no-op'],['read'])); want=sorted([(a,('create',)) for a in C]+[(a,('update',)) for a in U]); sys.exit(f'STOP {got}') if got!=want else print('BASELINE OK -- 7 canary creates, 3 in-place updates')"; rc=$?; rm -f "${TMPDIR:-/tmp}/platform-security-canary/base.tfplan"; test $rc -eq 0
     expected: BASELINE OK -- nothing else pending in the bootstrap root (no replace, no destroy)
     fix_if: STOP on any other address or action (drift or an unrelated pending change) -- resolve it with the human before phase 1; never apply a mixed plan
   - step: 9
@@ -410,7 +433,7 @@ verification_plan:
     command: |-
       M="${TMPDIR:-/tmp}/platform-security-canary" && terraform -chdir=terraform/bootstrap plan -input=false -var-file=terraform.bootstrap.tfvars -target=aws_iam_policy.platform_security_admin -out="$M/phase1.tfplan" > /dev/null && terraform -chdir=terraform/bootstrap show -json "$M/phase1.tfplan" | bin/venv-python -c "import json,sys; got=[(r['address'],r['change']['actions']) for r in json.load(sys.stdin).get('resource_changes',[]) if r['change']['actions'] not in (['no-op'],['read'])]; sys.exit(f'STOP {got}') if got!=[('aws_iam_policy.platform_security_admin',['update'])] else print('PHASE 1 OK -- detector-admin policy update only')" && terraform -chdir=terraform/bootstrap show "$M/phase1.tfplan"
     expected: >-
-      PHASE 1 OK, and the diff (the three PlatformSecurityHeartbeat* Sids added, nothing removed) is
+      PHASE 1 OK, and the diff (the four PlatformSecurityHeartbeat* Sids added, nothing removed) is
       PRESENTED in the ADMIN session only. After explicit human acceptance, run terraform apply
       "$M/phase1.tfplan". The expected email is platform-security-platform-role-iam-change
       (CreatePolicyVersion on platform-security-detector-admin); that alarm returns to OK within
@@ -420,14 +443,14 @@ verification_plan:
     phase: post-deploy
     action: ADMIN -- PlatformAdmin is allowed every canary verb it now holds, on the canary's concrete ARNs, before phase 2
     command: |-
-      R=$(echo 'var.aws_region' | terraform -chdir=terraform/bootstrap console -var-file=terraform.bootstrap.tfvars | tr -d '"') && S=$(echo 'jsonencode([for s in jsondecode(local.platform_security_admin_policy_json).Statement : s if startswith(s.Sid, "PlatformSecurityHeartbeat")])' | terraform -chdir=terraform/bootstrap console -var-file=terraform.bootstrap.tfvars) && R="$R" S="$S" bin/venv-python -c "import json,os,subprocess,sys; run=lambda *a: (lambda q: json.loads(q.stdout) if q.returncode==0 else sys.exit('aws call failed rc='+str(q.returncode)+' (stderr suppressed: it embeds ARNs)'))(subprocess.run(['aws',*a,'--profile','agent_platform_admin','--output','json'],capture_output=True,text=True)); a=run('sts','get-caller-identity')['Account']; admin='arn'+':aws:iam::'+a+':role/PlatformAdmin'; st=json.loads(json.loads(os.environ['S'])); assert len(st)==3, 'expected 3 PlatformSecurityHeartbeat Sids'; bad=[]; n=0; [bad.extend((e['EvalActionName'],e['EvalDecision']) for e in run('iam','simulate-principal-policy','--policy-source-arn',admin,'--action-names',*s['Action'],'--resource-arns',s['Resource'].replace('platform-security-*','platform-security-heartbeat-canary').replace('*','probe'))['EvaluationResults'] if e['EvalDecision']!='allowed') for s in st]; n=sum(len(s['Action']) for s in st); sys.exit('DENIED (action names only) '+repr(bad)) if bad else print('SIMULATE OK -- '+str(n)+' canary actions allowed')"
+      R=$(echo 'var.aws_region' | terraform -chdir=terraform/bootstrap console -var-file=terraform.bootstrap.tfvars | tr -d '"') && S=$(echo 'jsonencode([for s in jsondecode(local.platform_security_admin_policy_json).Statement : s if startswith(s.Sid, "PlatformSecurityHeartbeat")])' | terraform -chdir=terraform/bootstrap console -var-file=terraform.bootstrap.tfvars) && R="$R" S="$S" bin/venv-python -c "import json,os,subprocess,sys; run=lambda *a: (lambda q: json.loads(q.stdout) if q.returncode==0 else sys.exit('aws call failed rc='+str(q.returncode)+' (stderr suppressed: it embeds ARNs)'))(subprocess.run(['aws',*a,'--profile','agent_platform_admin','--output','json'],capture_output=True,text=True)); a=run('sts','get-caller-identity')['Account']; admin='arn'+':aws:iam::'+a+':role/PlatformAdmin'; st=json.loads(json.loads(os.environ['S'])); assert len(st)==4, 'expected 4 PlatformSecurityHeartbeat Sids'; bad=[]; n=0; [bad.extend((e['EvalActionName'],e['EvalDecision']) for e in run('iam','simulate-principal-policy','--policy-source-arn',admin,'--action-names',*s['Action'],'--resource-arns',s['Resource'].replace('platform-security-*','platform-security-heartbeat-canary').replace('*','probe'))['EvaluationResults'] if e['EvalDecision']!='allowed') for s in st]; n=sum(len(s['Action']) for s in st); sys.exit('DENIED (action names only) '+repr(bad)) if bad else print('SIMULATE OK -- '+str(n)+' canary actions allowed')"
     expected: SIMULATE OK (the resource ARNs are built in memory and never printed)
     fix_if: a DENIED action means phase 1 has not propagated (re-run after a minute) or the Sid is wrong (new PR); never grant by hand
   - step: 11
     phase: post-deploy
     action: ADMIN phase 2 (canary) -- PRESENT the targeted plan; apply only on explicit human direction
     command: |-
-      M="${TMPDIR:-/tmp}/platform-security-canary" && terraform -chdir=terraform/bootstrap plan -input=false -var-file=terraform.bootstrap.tfvars -target=aws_iam_role.platform_security_heartbeat_canary -target=aws_iam_role_policy.platform_security_heartbeat_canary -target=aws_iam_role.platform_security_heartbeat_scheduler -target=aws_iam_role_policy.platform_security_heartbeat_scheduler -target=aws_sfn_state_machine.platform_security_heartbeat_canary -target=aws_scheduler_schedule.platform_security_heartbeat_canary -out="$M/phase2.tfplan" > /dev/null && terraform -chdir=terraform/bootstrap show -json "$M/phase2.tfplan" | bin/venv-python -c "import json,sys; ch=[(r['address'],r['change']['actions']) for r in json.load(sys.stdin).get('resource_changes',[]) if r['change']['actions'] not in (['no-op'],['read'])]; sys.exit(f'STOP {ch}') if len(ch)!=6 or any(a!=['create'] or 'platform_security_heartbeat' not in x for x,a in ch) else print('PHASE 2 OK -- 6 canary creates only')" && terraform -chdir=terraform/bootstrap show "$M/phase2.tfplan"
+      M="${TMPDIR:-/tmp}/platform-security-canary" && terraform -chdir=terraform/bootstrap plan -input=false -var-file=terraform.bootstrap.tfvars -target=aws_iam_role.platform_security_heartbeat_canary -target=aws_iam_role_policy.platform_security_heartbeat_canary -target=aws_iam_role.platform_security_heartbeat_scheduler -target=aws_iam_role_policy.platform_security_heartbeat_scheduler -target=aws_sfn_state_machine.platform_security_heartbeat_canary -target=aws_scheduler_schedule_group.platform_security_heartbeat -target=aws_scheduler_schedule.platform_security_heartbeat_canary -out="$M/phase2.tfplan" > /dev/null && terraform -chdir=terraform/bootstrap show -json "$M/phase2.tfplan" | bin/venv-python -c "import json,sys; ch=[(r['address'],r['change']['actions']) for r in json.load(sys.stdin).get('resource_changes',[]) if r['change']['actions'] not in (['no-op'],['read'])]; sys.exit(f'STOP {ch}') if len(ch)!=7 or any(a!=['create'] or 'platform_security_heartbeat' not in x for x,a in ch) else print('PHASE 2 OK -- 7 canary creates only')" && terraform -chdir=terraform/bootstrap show "$M/phase2.tfplan"
     expected: >-
       PHASE 2 OK, and the plan is PRESENTED. After explicit human acceptance, run terraform apply
       "$M/phase2.tfplan", then export CANARY_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ). The expected email is
@@ -449,7 +472,7 @@ verification_plan:
       since = d.datetime.fromisoformat(os.environ["CANARY_AT"].replace("Z", "+00:00"))
       assert (d.datetime.now(d.timezone.utc) - since).total_seconds() >= 1200, "run >= 20 minutes after CANARY_AT"
       acct, r = run("sts", "get-caller-identity")["Account"], os.environ["R"]
-      s = run("scheduler", "get-schedule", "--name", "platform-security-heartbeat-canary")
+      s = run("scheduler", "get-schedule", "--group-name", "platform-security-heartbeat", "--name", "platform-security-heartbeat-canary")
       ex = run("stepfunctions", "list-executions", "--state-machine-arn", f"arn:aws:states:{r}:{acct}:stateMachine:platform-security-heartbeat-canary", "--max-results", "50")["executions"]
       ok = sum(e["status"] == "SUCCEEDED" for e in ex); bad = sum(e["status"] in ("FAILED", "TIMED_OUT", "ABORTED") for e in ex)
       pat = '{ ($.eventSource = "iam.amazonaws.com") && ($.eventName = "GetRole") && ($.requestParameters.roleName = "platform-security-heartbeat-canary") }'
@@ -528,11 +551,11 @@ verification_plan:
       import boto3
       try:
           s = boto3.Session(profile_name="agent_platform_admin", region_name=os.environ["R"]).client("scheduler")
-          g = s.get_schedule(Name="platform-security-heartbeat-canary")
+          g = s.get_schedule(GroupName="platform-security-heartbeat", Name="platform-security-heartbeat-canary")
           keep = {k: g[k] for k in ("Name", "GroupName", "ScheduleExpression", "ScheduleExpressionTimezone", "FlexibleTimeWindow", "Target", "Description", "StartDate", "EndDate", "KmsKeyArn", "ActionAfterCompletion") if k in g}
           assert g["State"] == "ENABLED", "schedule is not ENABLED -- nothing to prove against"
           s.update_schedule(**keep, State="DISABLED")
-          assert s.get_schedule(Name="platform-security-heartbeat-canary")["State"] == "DISABLED"
+          assert s.get_schedule(GroupName="platform-security-heartbeat", Name="platform-security-heartbeat-canary")["State"] == "DISABLED"
       except Exception as exc:  # rendered as its class only: botocore messages embed ARNs
           sys.exit(f"disable failed: {type(exc).__name__}")
       print("STARVE_AT=" + d.datetime.now(d.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
@@ -576,8 +599,10 @@ verification_plan:
       traffic fed it); run step 19 and retry steps 17-18 in a quieter window. At 120 minutes with no
       IAM event in the last 60 and no heartbeat ALARM -- the alarm does not fire on starvation:
       run step 19, STOP, RCA (Decision 55). tamper_to_alarm 0 -- the scheduler clause missed a real
-      UpdateSchedule: run step 19, then fix the pattern through a new PR. A measured latency above 105
-      is recorded, and the stated window is amended in the hand-back.
+      UpdateSchedule: run step 19, then fix the pattern through a new PR. A measured latency outside 60-105
+      makes Decision 202's Update line wrong: record it, and land a SECOND dated Update line on
+      Decision 202 (append-only, Decision 177) with the measured window through a follow-up PR,
+      plus the alarm_description if it quotes a figure.
   - step: 19
     phase: post-deploy
     action: ADMIN STARVATION PROOF 3/3 -- restore the schedule exactly
@@ -587,10 +612,10 @@ verification_plan:
       import boto3
       try:
           s = boto3.Session(profile_name="agent_platform_admin", region_name=os.environ["R"]).client("scheduler")
-          g = s.get_schedule(Name="platform-security-heartbeat-canary")
+          g = s.get_schedule(GroupName="platform-security-heartbeat", Name="platform-security-heartbeat-canary")
           keep = {k: g[k] for k in ("Name", "GroupName", "ScheduleExpression", "ScheduleExpressionTimezone", "FlexibleTimeWindow", "Target", "Description", "StartDate", "EndDate", "KmsKeyArn", "ActionAfterCompletion") if k in g}
           s.update_schedule(**keep, State="ENABLED")
-          assert s.get_schedule(Name="platform-security-heartbeat-canary")["State"] == "ENABLED"
+          assert s.get_schedule(GroupName="platform-security-heartbeat", Name="platform-security-heartbeat-canary")["State"] == "ENABLED"
       except Exception as exc:
           sys.exit(f"enable failed: {type(exc).__name__}")
       print("RESTORED_AT=" + d.datetime.now(d.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
@@ -619,7 +644,7 @@ verification_plan:
     fix_if: a path survives -- remove it by hand before ending the ADMIN session
 test_obligations:
   - source: terraform/bootstrap/platform_security_heartbeat_canary.tf
-    behavior: The canary is a 5-minute ENABLED Scheduler beat into a STANDARD one-Task aws-sdk:iam:getRole state machine, with least-privilege, confused-deputy-conditioned, size-preconditioned roles, at least 3 beats per heartbeat period, platform-security-* named, single-region and outside CI reach.
+    behavior: The canary is a 5-minute ENABLED Scheduler beat in its own schedule group into a STANDARD one-Task aws-sdk:iam:getRole state machine, with least-privilege, confused-deputy-conditioned, size-preconditioned roles, at least 3 beats per heartbeat period, platform-security-* named, single-region and outside CI reach.
     verification_step: 1
     test_selector: tests/checks/iam_tf/test_platform_security_heartbeat_canary.py::TestPlatformSecurityHeartbeatCanary
     red_green_expectation: red before (module and HCL absent), green after
@@ -671,10 +696,11 @@ constraints:
   - No rescue agents or workaround loops; an unrecoverable live failure stops for RCA (Decision 55). IMPLEMENTATION plan only (Decision 67).
 context:
   - "Decision-scout verdict FLAGS_FOUND (one NOTE, Decision 167: numbered Decision vs amendment_forms; human chose a dated note on 202 at Step 6b). CITE: 202, 126, 177, 181, 128, 132, 101. Decisions triaged: 155 of 155. Roadmap items intersected: 4; CONFLICT: 0; RELATED: 4"
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PENDING"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PENDING (round 1 REVISE -- F1 schedule-group SourceArn, F2 role_arn, F3 policy names, F4/F5 context, F6/F7/F9/F10 fixed; F8 disputed: rec-4044 closes in its own plan's step 20)"
   - "Defect evidence: the operator brief for this plan, and the PR body carries the measured drift start times and empty-hour runs. terraform-drift.yml (cron 17 * * * *) started only every 3-6 h, with 5 empty IAM hours twice on 26 Sep. rec-4044 step 16 is blocked; #1283 (1d806532) shipped the detector."
   - "AWS facts relied on: Scheduler universal targets reject get*/list* verbs (scheduler user guide, unsupported-api-actions), so Step Functions' aws-sdk:iam integration makes the call; since 2021-11-22 global service events reach only multi-region trails or us-east-1 single-region trails, so a single-region flip still starves the heartbeat."
   - "Fable advice-consult (Step 6b): adopted -- canary, 900 s x 4 of 4, STANDARD, retry 2 / 240 s, TimeoutSeconds 30, latency 60-105 min (evaluation-range slack), no sixth alarm, no write canary. Adapted -- tamper scheduler clause only; triage text in the description instead of a probe change. Rejected -- default_value 0 (IncomingLogEvents already splits triage), the single-region blind-spot claim (docs above)."
+  - "Decision 185 (executor-loop ASL subset; hand-authored ASL rejected) is scoped to the executor loop definition; this detector input deliberately uses one aws-sdk:iam:getRole Task outside that subset, so a future T4.19 subset check must scope to the executor definition."
   - "Fail-closed property: the heartbeat counts delivered IAM events, not canary self-reports, so no action on the canary can make it read OK while the IAM path is blind. Residual (unchanged): a ReadOnly-only selector change keeps reads flowing; the tamper alarm covers PutEventSelectors."
   - "Detection latency: ALARM 60-105 min after the last delivered IAM event (4 x 15 min plus CloudWatch evaluation-range slack); tolerates about 45 min of delivery lag or about 11 lost beats. Measured live in step 18."
   - "Gotcha: validate_iam_policy_size fails any bootstrap aws_iam_role_policy without a hoisted-local size precondition."
@@ -691,11 +717,12 @@ pre_implementation_checklist:
   - Decision 202 section only (docs/DECISIONS.md), plus Decisions 181 and 177 clauses cited here
   - All files in scope located and readable; the alarm test SLOC measured (483 before the move)
   - terraform-provider-aws source for aws_sfn_state_machine / aws_scheduler_schedule CRUD calls checked at the "~> 5.0" resolved version before writing the grant
+  - Scheduler trust uses the schedule-GROUP ARN (confirmed at planning time -- scheduler user guide, cross-service-confused-deputy-prevention -- 'The ARN you specify must be a schedule group')
   - Acceptance criteria understood and verifiable
 execution_steps:
   - "Create tests/checks/iam_tf/_platform_security_hcl.py by moving the helpers verbatim; repoint the alarm test's imports; run step 2 green before any other change (pure-move proof)."
-  - "Create terraform/bootstrap/platform_security_heartbeat_canary.tf exactly as scoped (six resources, hoisted policy locals with 10240 preconditions, heredoc JSON definition)."
-  - "Modify terraform/bootstrap/platform_security_admin_policy.tf -- the three PlatformSecurityHeartbeat* Sids after the provider-verb check; header comment."
+  - "Create terraform/bootstrap/platform_security_heartbeat_canary.tf exactly as scoped (seven resources, hoisted policy locals with 10240 preconditions, heredoc JSON definition)."
+  - "Modify terraform/bootstrap/platform_security_admin_policy.tf -- the four PlatformSecurityHeartbeat* Sids after the provider-verb check; header comment."
   - "Modify terraform/bootstrap/platform_security_alarms.tf -- the heartbeat shape and description, the comments, and the tamper scheduler clause; confirm the pattern is <= 1024 characters."
   - "Modify tests/fixtures/platform_security_filter_events.yaml -- the two canary events."
   - "Modify tests/checks/iam_tf/test_platform_role_iam_change_alarms.py -- the re-pin, red cases, _REQUIRED_CLAUSES, _DETECTOR_FILES/_NAME_ATTRS/_mutating/_DETECTOR_TARGETS, and the two CI red cases; confirm <= 500 SLOC."
