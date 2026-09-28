@@ -4,7 +4,10 @@ Pins terraform/bootstrap/platform_security_{admin_policy,trail,alarms}.tf (Decis
 multi-region, global-events, log-file-validated trail homed in var.aws_region with a protected
 CloudTrail-only bucket; exactly five alarms targeting the alerts topic, each filter pattern carrying
 its required clauses inside CloudWatch Logs' documented limits; the platform-security-* name family;
-no region literal or provider alias; and no CI identity statement able to write the detector.
+no region literal or provider alias; and no CI identity statement able to write the detector. The
+heartbeat alarm is now fed by platform-security-heartbeat-canary (its own declaration, roles, cadence
+and grant are pinned by test_platform_security_heartbeat_canary.py); this module covers the re-shaped
+alarm, the tamper pattern's scheduler-write clause and the extended CI-reach check.
 Every predicate returns a problem list, so each red case drives the real predicate.
 """
 
@@ -12,7 +15,6 @@ from __future__ import annotations
 
 import fnmatch
 import re
-from functools import lru_cache
 from pathlib import Path
 from typing import Callable
 
@@ -20,105 +22,29 @@ import pytest
 import yaml
 
 from scripts.checks.iam_tf import _read_coverage as rc
+from tests.checks.iam_tf._platform_security_hcl import (
+    _attr,
+    _block_body,
+    _local_map,
+    _local_string,
+    _resource_body,
+    _resources,
+    _strip_comments,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _BOOTSTRAP_DIR = _REPO_ROOT / "terraform" / "bootstrap"
 _FIXTURE_EVENTS = _REPO_ROOT / "tests" / "fixtures" / "platform_security_filter_events.yaml"
-_DETECTOR_FILES = ("platform_security_admin_policy.tf", "platform_security_trail.tf", "platform_security_alarms.tf")
+_DETECTOR_FILES = (
+    "platform_security_admin_policy.tf",
+    "platform_security_trail.tf",
+    "platform_security_alarms.tf",
+    "platform_security_heartbeat_canary.tf",
+)
 
 
 def _read_detector_texts() -> dict[str, str]:
     return {name: (_BOOTSTRAP_DIR / name).read_text(encoding="utf-8") for name in _DETECTOR_FILES}
-
-
-# --- String- and comment-aware HCL helpers (patterns are string literals full of braces, so a
-# naive brace count would split mid-string; comments are blanked so a commented header never matches).
-
-
-def _scan(text: str, blank_strings: bool) -> str:
-    out = list(text)
-    i, n = 0, len(text)
-    while i < n:
-        c = text[i]
-        if c == "#" or (c == "/" and text[i + 1 : i + 2] == "/"):
-            while i < n and text[i] != "\n":
-                out[i] = " "
-                i += 1
-        elif c == '"':
-            i += 1
-            while i < n and text[i] != '"':
-                step = 2 if text[i] == "\\" else 1
-                if blank_strings:
-                    for j in range(i, min(i + step, n)):
-                        if text[j] != "\n":
-                            out[j] = " "
-                i += step
-            i += 1
-        else:
-            i += 1
-    return "".join(out)
-
-
-@lru_cache(maxsize=256)
-def _mask(text: str) -> str:
-    """Equal-length copy with string contents and #/// comments blanked (quotes and newlines kept)."""
-    return _scan(text, blank_strings=True)
-
-
-@lru_cache(maxsize=256)
-def _strip_comments(text: str) -> str:
-    """Equal-length copy with only comments blanked; string contents intact."""
-    return _scan(text, blank_strings=False)
-
-
-def _block_body(text: str, open_brace_idx: int) -> str:
-    """Body between the '{' at open_brace_idx and its match, computed on masked text."""
-    masked = _mask(text)
-    depth = 0
-    for i in range(open_brace_idx, len(masked)):
-        if masked[i] == "{":
-            depth += 1
-        elif masked[i] == "}":
-            depth -= 1
-            if depth == 0:
-                return text[open_brace_idx + 1 : i]
-    raise ValueError(f"unbalanced braces at {open_brace_idx}")
-
-
-def _resource_body(text: str, rtype: str, rname: str) -> str | None:
-    m = re.search(rf'resource\s+"{re.escape(rtype)}"\s+"{re.escape(rname)}"\s*\{{', _strip_comments(text))
-    return None if m is None else _block_body(text, m.end() - 1)
-
-
-def _resources(text: str) -> list[tuple[str, str, str]]:
-    """Every (kind, type, name) of a resource/data block, comments ignored."""
-    return [
-        (m.group(1), m.group(2), m.group(3))
-        for m in re.finditer(r'\b(resource|data)\s+"([\w-]+)"\s+"([\w-]+)"\s*\{', _strip_comments(text))
-    ]
-
-
-def _local_map(text: str, name: str) -> dict[str, str]:
-    """A `name = { "k" = "v" ... }` string map from a locals block, values unescaped."""
-    m = re.search(rf"\b{re.escape(name)}\s*=\s*\{{", _strip_comments(text))
-    if m is None:
-        return {}
-    body = _block_body(text, m.end() - 1)
-    out: dict[str, str] = {}
-    for em in re.finditer(r'"([^"]+)"\s*=\s*"((?:[^"\\]|\\.)*)"', _strip_comments(body)):
-        out[em.group(1)] = em.group(2).replace('\\"', '"').replace("\\\\", "\\")
-    return out
-
-
-def _local_string(text: str, name: str) -> str | None:
-    m = re.search(rf'\b{re.escape(name)}\s*=\s*"((?:[^"\\]|\\.)*)"', _strip_comments(text))
-    return None if m is None else m.group(1)
-
-
-def _attr(body: str, name: str) -> str | None:
-    """Raw right-hand side of a top-level `name = ...` line inside a block body (first match)."""
-    m = re.search(rf"^\s*{re.escape(name)}\s*=\s*(.+?)\s*$", _strip_comments(body), re.M)
-    return None if m is None else m.group(1)
 
 
 def _alarm_names(alarms_text: str) -> set[str]:
@@ -151,6 +77,12 @@ _DETECTOR_TARGETS = (
     "arn:aws:s3:::platform-security-trail-ACCT-REGION/AWSLogs/ACCT/object",
     "arn:aws:iam::ACCT:role/platform-security-cloudtrail-logs",
     "arn:aws:iam::ACCT:policy/platform-security-detector-admin",
+    "arn:aws:states:REGION:ACCT:stateMachine:platform-security-heartbeat-canary",
+    "arn:aws:states:REGION:ACCT:execution:platform-security-heartbeat-canary:probe",
+    "arn:aws:scheduler:REGION:ACCT:schedule/platform-security-heartbeat/platform-security-heartbeat-canary",
+    "arn:aws:scheduler:REGION:ACCT:schedule-group/platform-security-heartbeat",
+    "arn:aws:iam::ACCT:role/platform-security-heartbeat-canary",
+    "arn:aws:iam::ACCT:role/platform-security-heartbeat-scheduler",
 )
 _NAME_ATTRS = {
     "aws_iam_policy": "name",
@@ -160,6 +92,9 @@ _NAME_ATTRS = {
     "aws_cloudwatch_log_group": "name",
     "aws_cloudtrail": "name",
     "aws_cloudwatch_metric_alarm": "alarm_name",
+    "aws_sfn_state_machine": "name",
+    "aws_scheduler_schedule": "name",
+    "aws_scheduler_schedule_group": "name",
 }
 
 
@@ -249,8 +184,11 @@ def alarm_problems(alarms_text: str) -> list[str]:
             expected = {
                 "comparison_operator": '"LessThanThreshold"',
                 "treat_missing_data": '"breaching"',
-                "evaluation_periods": "3",
-                "period": "3600",
+                "evaluation_periods": "4",
+                "datapoints_to_alarm": "4",
+                "period": "900",
+                "statistic": '"Sum"',
+                "threshold": "1",
                 "ok_actions": "[local.platform_security_alerts_topic_arn]",
             }
         else:
@@ -305,6 +243,7 @@ _REQUIRED_CLAUSES = {
         '$.requestParameters.alarmName = "platform-security-*"',
         '"DeleteAlarms"',
         '"DisableAlarmActions"',
+        '$.eventSource = "scheduler.amazonaws.com"',
     ),
     "platform-security-alerts-topic-change": (
         '$.eventSource = "sns.amazonaws.com"',
@@ -358,7 +297,11 @@ def naming_problems(texts: dict[str, str]) -> list[str]:
                 problems.append(f"{fname}: {kind}.{rtype}.{rname} address lacks the platform_security prefix")
             attr_name = _NAME_ATTRS.get(rtype)
             raw = _attr(_resource_body(text, rtype, rname) or "", attr_name) if kind == "resource" and attr_name else None
-            if raw is not None and not raw.strip('"').startswith("platform-security-"):
+            if kind == "resource" and attr_name and raw is None:
+                problems.append(
+                    f"{fname}: {rtype}.{rname} has no {attr_name} (an auto-generated name would escape the family)"
+                )
+            elif raw is not None and not raw.strip('"').startswith("platform-security-"):
                 problems.append(f"{fname}: {rtype}.{rname} {attr_name} {raw} lacks the platform-security- prefix")
     patterns = _local_map(texts.get("platform_security_alarms.tf", ""), "platform_security_filter_patterns")
     problems += [f"filter {k} lacks the platform-security- prefix" for k in patterns if not k.startswith("platform-security-")]
@@ -413,7 +356,7 @@ def _mutating(action: str) -> bool:
     service, _, verb = action.partition(":")
     if action == "*":
         return True
-    if service not in {"logs", "cloudwatch", "cloudtrail", "s3", "iam"}:
+    if service not in {"logs", "cloudwatch", "cloudtrail", "s3", "iam", "states", "scheduler"}:
         return False
     return not (verb.startswith(_READ_VERB_PREFIXES) or verb in {"StartQuery", "StopQuery"})
 
@@ -477,8 +420,17 @@ _TEXT_REDS: list[tuple] = [
     ("missing alarm", "alarm", "alarms", '"platform-security-denied-iam-write"\n', '"platform-security-other"\n'),
     ("alarm targets another topic", "alarm", "alarms", "[local.platform_security_alerts_topic_arn]", "[local.other_topic]"),
     ("heartbeat notBreaching", "alarm", "alarms", 'treat_missing_data  = "breaching"', 'treat_missing_data  = "notBreaching"'),
-    ("heartbeat two periods", "alarm", "alarms", "evaluation_periods  = 3", "evaluation_periods  = 2"),
+    ("heartbeat two periods", "alarm", "alarms", "evaluation_periods  = 4", "evaluation_periods  = 2"),
+    ("heartbeat hourly period", "alarm", "alarms", "period              = 900", "period              = 3600"),
+    ("heartbeat M-of-N", "alarm", "alarms", "datapoints_to_alarm = 4", "datapoints_to_alarm = 2"),
     ("non-prefixed name", "naming", "trail", '"platform-security-cloudtrail"\n', '"agent-platform-cloudtrail"\n'),
+    (
+        "unnamed inline policy",
+        "naming",
+        "heartbeat_canary",
+        '  name   = "platform-security-heartbeat-canary"\n  role   = aws_iam_role.platform_security_heartbeat_canary.id',
+        "  role   = aws_iam_role.platform_security_heartbeat_canary.id",
+    ),
 ]
 # (label, filter name, replacement pattern) -- or (label, filter name, old, new) as an in-pattern edit.
 _PATTERN_REDS: list[tuple] = [
@@ -490,6 +442,12 @@ _PATTERN_REDS: list[tuple] = [
     ("interpolated pattern", "platform-security-alerts-topic-change", "sns.amazonaws.com", "${var.x}"),
     ("overlong pattern", "platform-security-detector-tamper", "{ ", "{ " + " " * 300),
     ("heartbeat narrowed", HEARTBEAT, f"{{ ({_IAM}) && ($.readOnly IS FALSE) }}"),
+    (
+        "scheduler clause dropped",
+        "platform-security-detector-tamper",
+        ' || (($.eventSource = "scheduler.amazonaws.com") && ($.readOnly IS FALSE))',
+        "",
+    ),
 ]
 _OTHER_REDS: dict[str, Callable[[], list[str]]] = {
     "sixth alarm": lambda: alarm_problems(
@@ -515,6 +473,28 @@ _OTHER_REDS: dict[str, Callable[[], list[str]]] = {
     ),
     "CI wildcard write": lambda: ci_grant_problems(
         [{"sid": "Bad", "effect": "Allow", "actions": ["cloudwatch:*"], "resources_raw": '"*"'}]
+    ),
+    "CI writes the canary": lambda: ci_grant_problems(
+        [
+            {
+                "sid": "Bad",
+                "effect": "Allow",
+                "actions": ["states:UpdateStateMachine"],
+                "resources_raw": '"arn:aws:states:${var.aws_region}:${var.account_id}:stateMachine:platform-security-*"',
+            }
+        ]
+    ),
+    "CI disables the schedule": lambda: ci_grant_problems(
+        [
+            {
+                "sid": "Bad",
+                "effect": "Allow",
+                "actions": ["scheduler:UpdateSchedule"],
+                "resources_raw": (
+                    '"arn:aws:scheduler:${var.aws_region}:${var.account_id}:schedule/platform-security-*/platform-security-*"'
+                ),
+            }
+        ]
     ),
 }
 _PREDICATES: dict[str, Callable[[str], list[str]]] = {
