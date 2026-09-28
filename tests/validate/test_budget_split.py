@@ -1,6 +1,7 @@
-"""The fast tier's TWO budgets (Decision 182, amending Decision 153): an unwaivable NON-TEST
-half asserted by subtraction on ``elapsed - phase_times['pytest_diff']``, and a breadth-derived
-TEST-EXECUTION allowance asserted on that one subtracted phase.
+"""The fast tier's THREE budgets (Decision 208, amending Decision 182): an unwaivable NON-TEST
+half asserted by subtraction on ``elapsed - phase_times['pytest_diff'] - escalation_carve_out``,
+a measured-cost TEST-EXECUTION allowance asserted on the one subtracted phase, and a governed
+PRE-COMMIT ESCALATION allowance carved from the non-test half.
 
 Sibling mirror module of tests/validate/test_budget.py (which owns the pre-existing exit-code and
 rec-filing behaviour) and tests/validate/test_budget_manifest.py (which owns the recorded block) --
@@ -23,6 +24,7 @@ import pytest
 
 from scripts.checks import registry
 from scripts.checks.deps import affected_tests as at
+from scripts.checks.deps import module_cost_table as mct
 from scripts.checks.deps import selection_budget as sb
 from tests.fixtures.subprocess_stubs import _pre_mock_run
 from tests.fixtures.validate_module import _validate
@@ -32,6 +34,13 @@ from tests.fixtures.validate_module import _validate
 _INCIDENT_N = 263
 _INCIDENT_TEST_S = 308.747
 _INCIDENT_ELAPSED = 374.248
+
+
+@pytest.fixture(autouse=True)
+def _pin_cost_table_absent(monkeypatch: pytest.MonkeyPatch):
+    """No allowance-asserting test in this module depends on the live base ref's table state --
+    pin the merge-base read to the legacy `absent` arm (Decision 208)."""
+    monkeypatch.setattr(mct, "read_at_base_ref", lambda root: mct.CostTableRead("absent", {}, 0.0))
 
 
 def _drive_pre(
@@ -44,13 +53,17 @@ def _drive_pre(
     manifest: dict | None = None,
     ignore_budget: bool = False,
     checks: tuple[str, ...] = (),
+    precommit_escalated: bool = False,
+    cost_table_ok_s: float | None = None,
 ) -> tuple[int, MagicMock, MagicMock]:
     """Drive scripts/validate.py --pre with a synthetic per-phase clock and return
     (exit_code, breach_rec_mock, bypass_rec_mock).
 
     ``phases`` maps a --pre step name to the seconds that step consumes; ``unattributed`` is time
     spent before the phase loop (inside the patched derivation), so it lands in elapsed while no
-    phase carries it.
+    phase carries it. ``precommit_escalated`` stubs run_precommit_checks' RETURNED decision
+    (Decision 208); ``cost_table_ok_s``, when given, overrides this module's autouse `absent` pin
+    for this one call with a status-ok table whose selection_cost is that fixed value.
     """
     argv = ["validate", "--pre"] + (["--ignore-budget"] if ignore_budget else [])
     monkeypatch.setattr(sys, "argv", argv)
@@ -66,6 +79,10 @@ def _drive_pre(
             clock["t"] += float(phases.get(step, 0.0))
 
         return _fn
+
+    def _advance_precommit(*_args: object, **_kwargs: object) -> bool:
+        clock["t"] += float(phases.get("precommit_changed", 0.0))
+        return precommit_escalated
 
     selection = {
         "selected": [f"tests/t{index}.py" for index in range(n_selected)],
@@ -85,7 +102,7 @@ def _drive_pre(
         patch("scripts.checks.deps.affected_tests.derive_affected_tests", side_effect=_derive),
         patch("scripts.checks.deps.affected_tests.emit_manifest"),
         patch("validate.run_lint_checks", side_effect=_advance("lint")),
-        patch("validate.run_precommit_checks", side_effect=_advance("precommit_changed")),
+        patch("validate.run_precommit_checks", side_effect=_advance_precommit),
         patch("validate.run_pytest_diff", side_effect=_advance("pytest_diff")),
         patch("validate.run_coverage_check", side_effect=_advance("verifier_coverage_report")),
         patch("validate._file_budget_breach_rec", breach_rec),
@@ -99,6 +116,9 @@ def _drive_pre(
                 side_effect=_advance("validate_vp_replay"),
             )
         )
+    if cost_table_ok_s is not None:
+        contexts.append(patch.object(mct, "read_at_base_ref", lambda root: mct.CostTableRead("ok", {}, 0.0)))
+        contexts.append(patch.object(mct, "selection_cost", lambda selected, read, root: cost_table_ok_s))
 
     with ExitStack() as stack:
         for context in contexts:
@@ -127,7 +147,10 @@ class TestNonTestHalfBudget:
         monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
 
         code, breach_rec, bypass_rec = _drive_pre(
-            monkeypatch, pre_sequence_stub, phases={"lint": 250.0, "pytest_diff": 20.0}, n_selected=8
+            monkeypatch,
+            pre_sequence_stub,
+            phases={"lint": sb.NON_TEST_BUDGET_SECONDS + 10.0, "pytest_diff": 20.0},
+            n_selected=8,
         )
 
         assert code == 1
@@ -148,7 +171,7 @@ class TestNonTestHalfBudget:
         code, breach_rec, bypass_rec = _drive_pre(
             monkeypatch,
             pre_sequence_stub,
-            phases={"lint": 250.0, "pytest_diff": 20.0},
+            phases={"lint": sb.NON_TEST_BUDGET_SECONDS + 10.0, "pytest_diff": 20.0},
             n_selected=8,
             ignore_budget=True,
         )
@@ -194,15 +217,19 @@ class TestNonTestHalfBudget:
         unwaivable half and must still fit under it beside the worst measured static half -- while
         a replay phase its own guard has already hard-failed does breach, because nothing clamps
         replay time out."""
+        # The new governed static worst + unattributed max (131.8 + 10.0 = 141.8), so this case
+        # exercises the RE-DERIVED domination at 270 rather than the retired 71.8s worst.
+        governed_static_worst = 141.8
         green_replay_seconds = sb.REPLAY_ALLOWANCE_SECONDS - 1.0
         green = _drive_pre(
             monkeypatch,
             pre_sequence_stub,
-            phases={"validate_vp_replay": green_replay_seconds, "lint": 71.8, "pytest_diff": 20.0},
+            phases={"validate_vp_replay": green_replay_seconds, "lint": governed_static_worst, "pytest_diff": 20.0},
             n_selected=8,
             checks=("validate_vp_replay",),
         )
-        non_test_half = green_replay_seconds + 71.8
+        non_test_half = green_replay_seconds + governed_static_worst
+        assert non_test_half < sb.NON_TEST_BUDGET_SECONDS
         assert green[0] == 0, (
             f"a {non_test_half:.1f}s non-test half must fit under a budget that dominates the replay allowance"
         )
@@ -212,7 +239,7 @@ class TestNonTestHalfBudget:
         red = _drive_pre(
             monkeypatch,
             pre_sequence_stub,
-            phases={"validate_vp_replay": 260.0, "lint": 71.8, "pytest_diff": 20.0},
+            phases={"validate_vp_replay": 260.0, "lint": governed_static_worst, "pytest_diff": 20.0},
             n_selected=8,
             checks=("validate_vp_replay",),
         )
@@ -317,7 +344,7 @@ class TestBreadthDerivedTestBudget:
     ) -> None:
         """The breadth allowance never grows past CEILING - NON_TEST, so a test half above that cap
         hard-fails even though the selection is wide enough to ask for more."""
-        cap = sb.CEILING_SECONDS - sb.NON_TEST_BUDGET_SECONDS
+        cap = sb.CEILING_SECONDS - sb.NON_TEST_BUDGET_SECONDS - sb.PRECOMMIT_ESCALATION_ALLOWANCE_SECONDS
         code, breach_rec, _bypass = _drive_pre(
             monkeypatch,
             pre_sequence_stub,
@@ -371,7 +398,7 @@ class TestBreadthDerivedTestBudget:
         assert code == 0
         limit_s = _budget_block()["limit_s"]
         assert limit_s == sb.PER_MODULE_SECONDS * 263
-        assert limit_s < sb.CEILING_SECONDS - sb.NON_TEST_BUDGET_SECONDS
+        assert limit_s < sb.CEILING_SECONDS - sb.NON_TEST_BUDGET_SECONDS - sb.PRECOMMIT_ESCALATION_ALLOWANCE_SECONDS
 
 
 class TestLocalPrediction:
@@ -391,3 +418,115 @@ class TestLocalPrediction:
         assert "128 test module(s) selected" in out
         assert f"{low:.0f}-{high:.0f}s" in out
         assert "ADVISORY" in out
+
+
+class TestEscalationCarveOut:
+    """The escalated pre-commit phase is carved from the unwaivable half only when this run
+    actually escalated (the observed run_precommit_checks return, never re-evaluated), capped at
+    PRECOMMIT_ESCALATION_ALLOWANCE_SECONDS; excess above the allowance stays unwaivable
+    (Decision 208)."""
+
+    def test_escalated_run_within_the_carved_allowance_passes(
+        self, monkeypatch: pytest.MonkeyPatch, pre_sequence_stub
+    ) -> None:
+        other_static = sb.NON_TEST_BUDGET_SECONDS - 50.0
+        code, _breach, _bypass = _drive_pre(
+            monkeypatch,
+            pre_sequence_stub,
+            phases={"lint": other_static, "precommit_changed": 100.0, "pytest_diff": 20.0},
+            n_selected=8,
+            precommit_escalated=True,
+        )
+        assert code == 0
+        block = _budget_block()
+        assert block["outcome"] == "within_budget"
+        assert block["precommit_escalated"] is True
+        assert block["escalation_s"] == 100.0
+
+    def test_the_same_run_not_escalated_hard_fails_non_test_breach(
+        self, monkeypatch: pytest.MonkeyPatch, pre_sequence_stub
+    ) -> None:
+        other_static = sb.NON_TEST_BUDGET_SECONDS - 50.0
+        code, _breach, _bypass = _drive_pre(
+            monkeypatch,
+            pre_sequence_stub,
+            phases={"lint": other_static, "precommit_changed": 100.0, "pytest_diff": 20.0},
+            n_selected=8,
+            precommit_escalated=False,
+        )
+        assert code == 1
+        block = _budget_block()
+        assert block["outcome"] == "non_test_breach"
+        assert block["precommit_escalated"] is False
+        assert block["escalation_s"] == 0.0
+
+    def test_discriminating_excess_case(self, monkeypatch: pytest.MonkeyPatch, pre_sequence_stub) -> None:
+        """An uncapped carve would leave NON_TEST - 20 (pass); the capped carve leaves NON_TEST + 10
+        and must breach -- the case the allowance CAP, not merely the escalation flag, discriminates."""
+        other_static = sb.NON_TEST_BUDGET_SECONDS - 20.0
+        escalated_precommit_s = sb.PRECOMMIT_ESCALATION_ALLOWANCE_SECONDS + 30.0
+        code, _breach, _bypass = _drive_pre(
+            monkeypatch,
+            pre_sequence_stub,
+            phases={"lint": other_static, "precommit_changed": escalated_precommit_s, "pytest_diff": 20.0},
+            n_selected=8,
+            precommit_escalated=True,
+        )
+        assert code == 1
+        block = _budget_block()
+        assert block["outcome"] == "non_test_breach"
+        assert block["escalation_s"] == sb.PRECOMMIT_ESCALATION_ALLOWANCE_SECONDS
+
+    def test_non_vacuous_cost_path_is_recorded_and_differs_from_legacy(
+        self, monkeypatch: pytest.MonkeyPatch, pre_sequence_stub
+    ) -> None:
+        n_selected = 8
+        cost_c = 400.0
+        code, _breach, _bypass = _drive_pre(
+            monkeypatch,
+            pre_sequence_stub,
+            phases={"lint": 20.0, "pytest_diff": 50.0},
+            n_selected=n_selected,
+            cost_table_ok_s=cost_c,
+        )
+        assert code == 0
+        block = _budget_block()
+        expected = sb.cost_based_allowance(cost_c, n_selected)
+        assert block["limit_s"] == expected
+        assert expected != sb.test_execution_allowance(n_selected, census=sb.count_test_modules())
+        assert block["cost_s"] == cost_c
+        assert block["cost_table_status"] == "ok"
+
+    def test_cost_ratio_above_recorded_envelope_prints_an_advisory(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture, pre_sequence_stub
+    ) -> None:
+        code, _breach, _bypass = _drive_pre(
+            monkeypatch,
+            pre_sequence_stub,
+            phases={"lint": 20.0, "pytest_diff": 100.0},
+            n_selected=8,
+            cost_table_ok_s=1.0,
+        )
+        assert code == 0
+        out = capsys.readouterr().out
+        assert "ADVISORY: this run's cost ratio" in out
+        assert "RECORDED_K_MIN" in out
+
+    def test_unreadable_status_collapses_to_test_base(self, monkeypatch: pytest.MonkeyPatch, pre_sequence_stub) -> None:
+        """A WIDE selection (n_selected=200) discriminates this from the legacy breadth path: the
+        legacy formula would give PER_MODULE_SECONDS * 200 = 400s here, well above TEST_BASE_SECONDS
+        -- so a case that collapses to 180s regardless proves derivation_ok was actually forced
+        False on `unreadable`, not merely that a small selection happened to floor out anyway."""
+        monkeypatch.setattr(mct, "read_at_base_ref", lambda root: mct.CostTableRead("unreadable", {}, 0.0))
+        code, _breach, _bypass = _drive_pre(
+            monkeypatch,
+            pre_sequence_stub,
+            phases={"lint": 20.0, "pytest_diff": 50.0},
+            n_selected=200,
+        )
+        assert code == 0
+        block = _budget_block()
+        assert block["limit_s"] == sb.TEST_BASE_SECONDS
+        assert block["limit_s"] != sb.test_execution_allowance(200, census=sb.count_test_modules())
+        assert block["cost_table_status"] == "unreadable"
+        assert block["cost_s"] is None

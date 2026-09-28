@@ -8,9 +8,18 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from scripts.checks import registry
+from scripts.checks.deps import module_cost_table as mct
 from scripts.checks.deps import selection_budget
 from tests.fixtures.subprocess_stubs import _pre_mock_run
 from tests.fixtures.validate_module import _validate
+
+
+@pytest.fixture(autouse=True)
+def _pin_cost_table_absent(monkeypatch: pytest.MonkeyPatch):
+    """No allowance-asserting test in this module depends on the live base ref's table state --
+    pin the merge-base read to the legacy `absent` arm (Decision 208)."""
+    monkeypatch.setattr(mct, "read_at_base_ref", lambda root: mct.CostTableRead("absent", {}, 0.0))
+
 
 # All of the below are still reachable on the "validate" module object -- retained
 # _common/_scaffolding re-exports (scripts/validate.py:42-61) or module-local constants/helpers,
@@ -29,7 +38,12 @@ run_pytest_diff = _validate.run_pytest_diff
 # pytest_diff phase -- the same slow-step side_effect pattern
 # test_breach_rec_receives_a_real_dominant_phase already used -- so the case still describes the arm
 # it names. Exit codes and message assertions are unchanged.
-_UNREACHABLE_TEST_ALLOWANCE = selection_budget.CEILING_SECONDS - selection_budget.NON_TEST_BUDGET_SECONDS + 100.0
+_UNREACHABLE_TEST_ALLOWANCE = (
+    selection_budget.CEILING_SECONDS
+    - selection_budget.NON_TEST_BUDGET_SECONDS
+    - selection_budget.PRECOMMIT_ESCALATION_ALLOWANCE_SECONDS
+    + 100.0
+)
 
 
 def _test_half_clock(test_phase_s: float, elapsed: float | None = None):
@@ -121,12 +135,13 @@ class TestBudgetAssertion:
     def test_floor_total_constant_matches_the_declared_partition(self) -> None:
         """Decision 182 re-points this pin at the FLOOR TOTAL and strengthens it: the single
         equality it replaces (== 300) is now a three-way identity, so the case pins the new value
-        AND the partition identity the old one never covered."""
+        AND the partition identity the old one never covered. Decision 208 re-derives the value
+        (240 -> 270 NON_TEST) without changing the partition shape."""
         assert (
             _FAST_TIER_BUDGET_SECONDS
             == selection_budget.FLOOR_TOTAL_SECONDS
             == selection_budget.NON_TEST_BUDGET_SECONDS + selection_budget.TEST_BASE_SECONDS
-            == 420
+            == 450
         )
 
     def test_breach_rec_receives_a_real_dominant_phase(self, monkeypatch: pytest.MonkeyPatch, pre_sequence_stub) -> None:

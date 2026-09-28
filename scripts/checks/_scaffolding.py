@@ -98,12 +98,25 @@ def _precommit_global_inputs(base_ref: str) -> frozenset[str] | None:
     return frozenset(inputs)
 
 
-def _run_precommit_body(failed: list[str], *, all_files: bool, files: list[str] | None) -> None:
+def precommit_escalates(files: list[str], base_ref: str = "origin/main") -> bool:
+    """True iff `files` should escalate a not-already-all_files pre-commit run to --all-files
+    (Decision 170): the derived global-input set at `base_ref` is unreadable/unparseable (fail
+    closed, dec-55) OR `files` intersects it. Pure predicate, called from both
+    `_run_precommit_body` (the real run) and the plan-time CLI (`selection_budget._report`, which
+    has no pre-commit run to observe): the two can never disagree by construction.
+    """
+    global_inputs = _precommit_global_inputs(base_ref)
+    return global_inputs is None or bool(set(files) & global_inputs)
+
+
+def _run_precommit_body(failed: list[str], *, all_files: bool, files: list[str] | None) -> bool:
+    """Returns whether this call escalated to --all-files (False on every skip path and when the
+    caller already requested all_files=True)."""
     name = "pre-commit hooks"
     if importlib.util.find_spec("pre_commit") is None:
         print(f"\n=== {name} ===\nWARNING: pre-commit not installed; skipping (install requirements-dev.txt).")
         registry.skipped("pre-commit not installed")
-        return
+        return False
 
     escalated = False
     target: list[str] = []
@@ -112,12 +125,11 @@ def _run_precommit_body(failed: list[str], *, all_files: bool, files: list[str] 
         if not target:
             print(f"\n=== {name} ===\nNo changed files vs origin/main; skipping.")
             registry.skipped("no changed files vs origin/main")
-            return
+            return False
         # "origin/main" directly, not push_context_base(): this branch (all_files=False) is only
         # ever reached from the --pre call site, which never runs in push/post-merge context --
         # the full tier's own call site always passes all_files=True.
-        global_inputs = _precommit_global_inputs("origin/main")
-        if global_inputs is None or (set(target) & global_inputs):
+        if precommit_escalates(target, "origin/main"):
             all_files = True
             escalated = True
 
@@ -135,9 +147,10 @@ def _run_precommit_body(failed: list[str], *, all_files: bool, files: list[str] 
     if result.returncode != 0:
         failed.append(name)
     registry.examined(1, unit="precommit_invocations")
+    return escalated
 
 
-def run_precommit_checks(failed: list[str], *, all_files: bool, files: list[str] | None = None) -> None:
+def run_precommit_checks(failed: list[str], *, all_files: bool, files: list[str] | None = None) -> bool:
     """Run the pre-commit hook suite (detect-secrets, shape denylist, file hygiene).
 
     pre-commit is the single home for detect-secrets and the shape-based
@@ -153,15 +166,21 @@ def run_precommit_checks(failed: list[str], *, all_files: bool, files: list[str]
     push-to-main main-validate run (which legitimately runs on the main branch).
 
     Escalation (Decision 170): when not already all_files, a diff that touches a derived global
-    input (see _precommit_global_inputs) escalates to --all-files -- a pre-commit-config-only
-    change (e.g. a hook-repo version pin bump) must not be able to slip past its own hook suite
-    by touching no other file. Fail-closed: an unreadable or unparseable base-ref config
-    escalates rather than skips.
+    input (see precommit_escalates) escalates to --all-files -- a pre-commit-config-only change
+    (e.g. a hook-repo version pin bump) must not be able to slip past its own hook suite by
+    touching no other file. Fail-closed: an unreadable or unparseable base-ref config escalates
+    rather than skips.
+
+    Returns the escalation decision this call actually applied (Decision 208): False on every skip
+    path and when the caller already passed all_files=True -- so scripts/validate.py's budget
+    scaffold reads the OBSERVED fact instead of re-evaluating the predicate with a second git show.
     """
     before = len(failed)
+    escalated = False
     with registry.outcome_scope("run_precommit_checks", kind="scaffold"):
-        _run_precommit_body(failed, all_files=all_files, files=files)
+        escalated = _run_precommit_body(failed, all_files=all_files, files=files)
     validation_result.record_scaffold_outcome("run_precommit_checks", before, failed)
+    return escalated
 
 
 _LINT_TARGETS: tuple[str, ...] = ("src/", "tests/", "scripts/")

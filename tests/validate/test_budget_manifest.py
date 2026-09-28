@@ -28,6 +28,7 @@ import pytest
 
 from scripts.checks import _budget_recs, registry
 from scripts.checks.deps import affected_tests as at
+from scripts.checks.deps import module_cost_table as mct
 from scripts.checks.deps import selection_budget as sb
 from tests.fixtures.subprocess_stubs import _pre_mock_run
 from tests.fixtures.validate_module import _validate
@@ -37,9 +38,18 @@ _CEILING = _validate._FORCED_FULL_SUITE_CEILING_SECONDS
 # Decision 182 repair, not a relaxation: a run with every phase at 0.0 is one whose whole elapsed is
 # UNATTRIBUTED, which the unwaivable non-test arm now claims. Cases naming a TEST-half arm therefore
 # place their elapsed inside a real dominating pytest_diff phase via _drive_pre's shaping hook. A
-# test half above CEILING - NON_TEST exceeds every reachable allowance, so a case that must breach
-# does so whatever breadth the run's own derivation reports.
-_UNREACHABLE_TEST_ALLOWANCE = sb.CEILING_SECONDS - sb.NON_TEST_BUDGET_SECONDS + 100.0
+# test half above CEILING - NON_TEST - ESCALATION exceeds every reachable allowance, so a case that
+# must breach does so whatever breadth the run's own derivation reports.
+_UNREACHABLE_TEST_ALLOWANCE = (
+    sb.CEILING_SECONDS - sb.NON_TEST_BUDGET_SECONDS - sb.PRECOMMIT_ESCALATION_ALLOWANCE_SECONDS + 100.0
+)
+
+
+@pytest.fixture(autouse=True)
+def _pin_cost_table_absent(monkeypatch: pytest.MonkeyPatch):
+    """No allowance-asserting test in this module depends on the live base ref's table state --
+    pin the merge-base read to the legacy `absent` arm (Decision 208)."""
+    monkeypatch.setattr(mct, "read_at_base_ref", lambda root: mct.CostTableRead("absent", {}, 0.0))
 
 
 def _drive_pre(
@@ -232,7 +242,20 @@ class TestBudgetBlockCarriesTheSplit:
         "rec_filed",
         "rec_skipped_reason",
     }
-    _NEW_KEYS = {"n_selected", "static_s", "test_s", "replay_s", "unattributed_s", "phase_count", "waiver_cause"}
+    _NEW_KEYS = {
+        "n_selected",
+        "static_s",
+        "test_s",
+        "replay_s",
+        "unattributed_s",
+        "phase_count",
+        "waiver_cause",
+        "precommit_escalated",
+        "escalation_s",
+        "cost_s",
+        "cost_table_status",
+        "cost_ratio",
+    }
 
     def test_block_carries_the_split_without_touching_the_record_builder(
         self, monkeypatch: pytest.MonkeyPatch, pre_sequence_stub
