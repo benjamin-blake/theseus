@@ -30,8 +30,8 @@ scope:
   action: Create
   purpose: >-
     Claude Code transcript source access (stdlib json/pathlib): TranscriptTree protocol with a filesystem implementation
-    and an in-memory twin for tests, the line rules, sidecar resolution by basename, sub-agent meta discovery and the
-    session_started_at pin, per the pinned reader rules.
+    and an in-memory twin for tests, the line rules, sidecar resolution by basename, sub-agent file lookup by agentId and
+    the session_started_at pin, per the pinned reader rules.
 - file: src/turn_capture/streams.py
   action: Create
   purpose: >-
@@ -53,10 +53,16 @@ scope:
 - file: src/turn_capture/sessions.py
   action: Create
   purpose: Pure builders for telemetry_sessions and telemetry_agents rows for the root and every sub-agent session, per the pinned session and agent rules.
+- file: src/turn_capture/cursor.py
+  action: Create
+  purpose: >-
+    CaptureCursor (frozen dataclass) with to_json/from_json, validation, pin-mismatch checks and the version-mismatch
+    reset, per the pinned cursor rules (split from record_turn.py up front; the independent review sizes the cursor and
+    the pass algorithm at about 200 + 260 SLOC).
 - file: src/turn_capture/record_turn.py
   action: Create
   purpose: >-
-    PRODUCER = 'claude_code', PARSER_VERSION = 1 (hand-maintained, Decision 207 R1), the CaptureCursor, and
+    PRODUCER = 'claude_code', PARSER_VERSION = 1 (hand-maintained, Decision 207 R1), and
     record_turn(tree, cursor, *, project_ref, billing_shape='fixed_non_rollover_allowance', session_final=False) ->
     CaptureResult per the pinned cursor and emission
     rules: re-parses the whole tree each pass, selects only rows not yet emitted, returns telemetry_observations,
@@ -106,8 +112,8 @@ scope:
     tests/telemetry/test_parser_version_registry.py alike; stdlib only, fast tier): load a golden case file into the
     in-memory tree; a runtime builder for secret-shaped strings assembled by concatenation (no credential-shaped literal
     is ever committed -- the never-commit hook and detect-secrets would block it); normalise(), deriving every KEY_PLANS
-    key and event_id with fixed test tenant/project ULIDs via src.telemetry.identity; the golden digest function the
-    registry uses.
+    key and event_id with fixed test tenant/project ULIDs via src.telemetry.identity; golden_digest(), the single digest
+    definition from index.json's purpose, applied to committed expected_rows or to recomputed output alike.
 - file: tests/fixtures/turn_capture_ducklake.py
   action: Create
   purpose: >-
@@ -122,7 +128,9 @@ scope:
     pinned case-file shape {"files": {relpath: body}, "expected_rows": [...]} -- file bodies are JSON-encoded strings, so
     the trailing-partial-line and malformed-line inputs survive the end-of-file-fixer and trailing-whitespace hooks.
     expected_rows are canonical normalised rows incl. derived ids, sorted by table then event_id, created_timestamp and
-    producer_version excluded. The corpus is synthetic; every DuckLake-loaded case stays below 65,536 bytes per payload
+    producer_version excluded. The golden digest (one definition, used for both the committed and the recomputed side)
+    = sha256 over, for each case in index.json order, the case basename, a newline, and json.dumps(expected_rows,
+    sort_keys=True, separators=(",", ":"), ensure_ascii=False), newline-joined. The corpus is synthetic; every DuckLake-loaded case stays below 65,536 bytes per payload
     (Decision 199 cl.5). The listed case files become .secrets.baseline keys (64-hex content_sha256 values read as Hex
     High Entropy); the resulting baseline rewrite is sanctioned by implement-scope-boundary.yaml's
     secrets_baseline_regeneration row (trigger scope_file_in_secrets_baseline), never hand-edited.
@@ -194,7 +202,7 @@ scope:
   purpose: Scrubber rules -- every class redacted (plain, JSON-escaped, multi-line), idempotence, determinism, the negative corpus, counts never content.
 - file: tests/turn_capture/test_transcript.py
   action: Create
-  purpose: Source rules -- line rules, the pin and deferral, sidecar resolution by basename, sub-agent meta discovery.
+  purpose: Source rules -- line rules, the pin and deferral, sidecar resolution by basename, sub-agent file lookup by agentId.
 - file: tests/turn_capture/test_streams.py
   action: Create
   purpose: Classification, companion exclusion, stream membership by fields, turn spans and closure, response grouping, sub-agent completeness.
@@ -209,13 +217,18 @@ scope:
   purpose: Purpose/origin per block, scrub before hash, empty and binary block handling, sidecar-or-truncated.
 - file: tests/turn_capture/test_sessions.py
   action: Create
-  purpose: Session and agent rules -- open marker ref, workflow, sub-agent completeness, deferral, agent_type registered in source_registry.yaml.
+  purpose: >-
+    Session and agent rules -- open marker ref, workflow, sub-agent completeness, agent_type registered in
+    source_registry.yaml, and test_agent_rows_do_not_depend_on_meta_json.
 - file: tests/turn_capture/test_record_turn.py
   action: Create
   purpose: >-
     Golden corpus equality (every case); R7 -- sessions batch last, incremental equals full at every line cut, finalize
     equals a virtual prompt at EOF, cursor reset on a version mismatch reusing pins, pin mismatch and sidecar mutation are
     loud, cursor JSON round-trip; every emitted row key is caller-known for its EventTableSpec built from the real contract.
+- file: tests/turn_capture/test_cursor.py
+  action: Create
+  purpose: Cursor JSON round-trip, pin mismatches raise, sidecar contradiction raises, reset keeps exactly the four pins.
 - file: tests/turn_capture/test_render.py
   action: Create
   purpose: Exactly three fraction digits and Z; sub-millisecond input never rounds up; sorted keys.
@@ -244,8 +257,10 @@ scope:
     rec-4122 checks (stdlib, fast tier): test_output_drift_without_bump_fails, test_bump_without_drift_fails,
     test_expected_edit_without_bump_fails, test_registry_history_is_append_only_against_main (via
     scripts.checks._marker_guard.default_base_reader; an unreachable base is an advisory pass locally and authoritative
-    in PR CI), and the live guard test_registry_matches_producer (PARSER_VERSION == current == last history version;
-    recomputed golden digest == history digest == committed expected-file digest).
+    in PR CI), the live guard test_registry_matches_producer (PARSER_VERSION == current == last history version;
+    recomputed golden digest == history digest == committed expected_rows digest), and test_cases_match_index, whose
+    CASES tuple names every case file basename literally (e.g. sidecar_present.json) and must equal index.json's list --
+    the literal names are what make --pre's data-edge channel select this module when only a golden case file changes.
 - file: tests/lambda_manifest/test_bundle_checks.py
   action: Modify
   purpose: Add test_turn_capture_excluded_from_data_pipeline (excludes entry present, compute_affected_artifacts inert, staged bundle carries no turn_capture path).
@@ -255,10 +270,13 @@ followon_recs:
 - rec-4026
 - rec-4146
 - rec-4147
-infrastructure_dependencies: []
+infrastructure_dependencies:
+- >-
+  None owed. data-pipeline is marked affected only through its own manifest's excludes line (Decision 79 V2 ground,
+  slice-1 precedent); neither deploy-prod-lambdas nor deploy-ducklake-lambdas push paths match any changed file (step 9).
 acceptance_criteria:
 - Every src/turn_capture/ module is under 500 SLOC and at 100% per-file coverage from its own mirror test, importing only stdlib and src.telemetry.timestamps at runtime; the importlinter contract passes.
-- Every golden case parses to exactly its expected_rows.jsonl, and no emitted value contains a secret-shaped string.
+- Every golden case parses to exactly the expected_rows array embedded in its case file, and no emitted value contains a secret-shaped string.
 - record_turn writes telemetry_sessions last, incremental capture at every line cut equals one full parse, finalize equals a virtual prompt at EOF, and a version mismatch resets while reusing the pinned inputs.
 - All four tables built from the ratified contracts accept the output through append_events on a real local DuckLake with every FK resolving, replay inserting 0 and a mutated re-send rejected.
 - On real Claude Code transcripts from the implementer's machine the output reconciles with an independent raw walk (response ids, tool_use/tool_result blocks, prompts, sub-agent files, token sums, sidecars) and loads into local DuckLake with every FK resolving.
@@ -305,11 +323,12 @@ verification_plan:
     tests/turn_capture/test_refs.py::test_every_ref_passes_canonical_ref
     tests/turn_capture/test_render.py::test_three_fraction_digits_and_z_never_rounds_up
     tests/turn_capture/test_sessions.py::test_agent_type_is_registered_source
+    tests/turn_capture/test_sessions.py::test_agent_rows_do_not_depend_on_meta_json
     tests/turn_capture/test_record_turn.py::test_no_secret_shaped_value_emitted
     tests/turn_capture/test_record_turn.py::test_rows_use_only_caller_known_columns -q
-  expected: 'Exit 0, 10 passed. Red before: nodes absent.'
+  expected: 'Exit 0, 11 passed. Red before: nodes absent.'
   fix_if: >-
-    Golden mismatch -> fix the mapping if it departs from the pinned rules, else regenerate expected_rows.jsonl AND bump
+    Golden mismatch -> fix the mapping if it departs from the pinned rules, else regenerate that case's expected_rows AND bump
     (step 5 fails otherwise); unknown column -> rename the ref key to the EventTableSpec caller-known name.
   hermetic: true
   graduation: graduate
@@ -323,8 +342,9 @@ verification_plan:
     tests/turn_capture/test_record_turn.py::test_incremental_equals_full_at_every_line_cut
     tests/turn_capture/test_record_turn.py::test_finalize_equals_virtual_prompt_at_eof
     tests/turn_capture/test_record_turn.py::test_cursor_reset_on_version_mismatch_reuses_pins
-    tests/turn_capture/test_record_turn.py::test_pin_mismatch_and_sidecar_mutation_are_loud -q
-  expected: 'Exit 0, 5 passed. Red before: nodes absent.'
+    tests/turn_capture/test_record_turn.py::test_pin_mismatch_and_sidecar_mutation_are_loud
+    tests/turn_capture/test_cursor.py::test_reset_keeps_exactly_the_four_pins -q
+  expected: 'Exit 0, 6 passed. Red before: nodes absent.'
   fix_if: >-
     Incremental differs from full -> a row depends on records after its emission point; hold it until its turn closes. A
     reset re-reads project_ref or re-derives session_started_at -> read them from the cursor.
@@ -340,11 +360,17 @@ verification_plan:
     tests/telemetry/test_parser_version_registry.py::test_bump_without_drift_fails
     tests/telemetry/test_parser_version_registry.py::test_expected_edit_without_bump_fails
     tests/telemetry/test_parser_version_registry.py::test_registry_history_is_append_only_against_main
-    tests/telemetry/test_parser_version_registry.py::test_registry_matches_producer -q && echo ACCEPTANCE_OK
-  expected: Exit 0, 5 passed and the success marker printed. Red before, the module does not exist.
+    tests/telemetry/test_parser_version_registry.py::test_registry_matches_producer
+    tests/telemetry/test_parser_version_registry.py::test_cases_match_index -q &&
+    bin/venv-python -c "from scripts.checks.deps.affected_tests import derive_affected_tests as d;
+    r=d([('M','tests/fixtures/turn_capture/golden/sidecar_present.json')]); sel=r['selected']; print(sel);
+    assert 'tests/telemetry/test_parser_version_registry.py' in sel" && echo ACCEPTANCE_OK
+  expected: >-
+    Exit 0, 6 passed, the affected-test selection for a lone golden-case edit includes the registry module, and the
+    success marker printed. Red before, the module does not exist.
   fix_if: >-
     Live guard fails -> the output changed: bump PARSER_VERSION, append a history entry with the new digest, regenerate
-    expected_rows.jsonl; never edit a past history entry.
+    the affected cases' expected_rows; never edit a past history entry.
   hermetic: true
   graduation: graduate
   graduation_check_id: telemetry-parser-version-registry
@@ -395,7 +421,9 @@ verification_plan:
   fix_if: >-
     A mismatch names the session hash, record type and count -- a real shape the synthetic corpus missed: add a synthetic
     golden case reproducing that shape, fix the mapping, regenerate expected rows and bump if step 5 says so. Never
-    commit real content; never weaken an invariant.
+    commit real content; never weaken an invariant. A (table, external_ref) recurring ACROSS root trees (forked or
+    copied history) cannot be fixed by the mapping without changing a ratified ref grammar (constraints[1]): STOP, file
+    a contract-risk rec against the external_ref uniqueness scope, and return to /plan.
   hermetic: false
   graduation: waive
   graduation_waiver_reason: >-
@@ -437,10 +465,11 @@ verification_plan:
   action: >-
     Closure -- after the squash merge carrying 'Resolves: rec-4122', confirm it reads closed and rec-4026 stays open.
   command: >-
-    bin/venv-python -m scripts.sync.ops sync && bin/venv-python -c "import json,pathlib; r={json.loads(l)['id']:json.loads(l)['status']
-    for l in pathlib.Path('logs/.recommendations-log.jsonl').read_text().splitlines() if l.strip()}; print(r.get('rec-4122'),
-    r.get('rec-4026')); raise SystemExit(0 if (r.get('rec-4122'),r.get('rec-4026'))==('closed','open') else 1)"
-  expected: Exit 0; rec-4122 closed, rec-4026 open.
+    bin/venv-python -m scripts.ops_data_portal --sync && bin/venv-python -c "import json,pathlib;
+    r={d['id']:d for d in (json.loads(l) for l in pathlib.Path('logs/.recommendations-log.jsonl').read_text().splitlines() if l.strip())};
+    a,b=r.get('rec-4122',{}),r.get('rec-4026',{}); print(a.get('status'),b.get('status'),'SLICE 3A DELIVERED' in (b.get('context') or ''));
+    raise SystemExit(0 if (a.get('status'),b.get('status'))==('closed','open') and 'SLICE 3A DELIVERED' in (b.get('context') or '') else 1)"
+  expected: Exit 0; rec-4122 closed, rec-4026 open with its dated slice-3a note.
   fix_if: >-
     Cache sync pulls 0 recs (reader unreachable) -> confirm with the ducklake-reads rec_by_id named read; trailer closure
     no-op'd -> Decision 201 manual update_rec fallback citing the transport failure; never force-close.
@@ -481,9 +510,14 @@ test_obligations:
   test_selector: tests/turn_capture/test_observations.py::test_tool_call_outcome_precedence
   red_green_expectation: red before (module absent), green after
 - source: src/turn_capture/sessions.py
-  behavior: Session and agent rows, sub-agent completeness and a registered agent_type.
+  behavior: Session and agent rows, sub-agent completeness, a registered agent_type, and no dependence on meta.json.
   verification_step: 3
   test_selector: tests/turn_capture/test_sessions.py::test_agent_type_is_registered_source
+  red_green_expectation: red before (module absent), green after
+- source: src/turn_capture/cursor.py
+  behavior: Cursor round-trip, loud pin mismatches, and a reset that keeps exactly the four pins.
+  verification_step: 4
+  test_selector: tests/turn_capture/test_cursor.py::test_reset_keeps_exactly_the_four_pins
   red_green_expectation: red before (module absent), green after
 - source: src/turn_capture/record_turn.py
   behavior: R7 write order, incremental equals full, finalize as a virtual prompt, reset reusing pins.
@@ -544,9 +578,9 @@ context:
   Decision-scout verdict FLAGS_FOUND (re-run after Decisions 206/208 landed); CITE: 199, 207, 200, 206, 95, 96, 184, 79.
   WARN 166 resolved by moving the corpus to tests/fixtures/turn_capture/ (test_fixtures class); SPIRIT NOTE 206 resolved
   by making billing_shape a pinned capture input (default fixed_non_rollover_allowance) plus rec-4147. RELATED 97, 84,
-  81, 126, 125, 128, 130, 131, 148, 189, 201, 208, 168, 66, 67, 101, 205; roadmap T1.6, T2.54, T4.12, T4.23 RELATED.
+  81, 126, 125, 128, 130, 131, 148, 189, 201, 208, 168, 66, 67, 101, 205.
   Decisions triaged: 161 of 161. Roadmap items intersected: 4; CONFLICT: 0; RELATED: 4.
-- "gates: decision-scout=FLAGS_FOUND (resolved, 2 runs); independent-review=reconciled; plan-critique=<pending> (round 1 REVISE, 7 fixes applied)"
+- "gates: decision-scout=FLAGS_FOUND (resolved, 2 runs); independent-review=reconciled; plan-critique=<pending> (round 1 REVISE 7 fixes, round 2 REVISE 4+6 fixes)"
 - >-
   Operator choices (2026-09-28 thread): split slice 3 -- this core now, hooks/writes/project_ref as slice 3b on rec-4026
   after rec-4024 (coordinator told); bundle rec-4122; emit per CLOSED turn; add the real-transcript conformance step
@@ -563,6 +597,7 @@ context:
   Emission unit is the CLOSED turn because R7 forces it: one record per content block, interleaved with tool results,
   and a Stop hook exiting 2 continues the turn (code.claude.com/docs/en/hooks), so a live session's latest turn lags
   one turn until the next prompt or session_final (3b's SessionEnd). Rows are kernel-typed; render.py is the wire form.
+  JSONL over Claude Code's OTel export: OTel carries no transcript content or sub-agent tree and is not replayable (R7).
   The integration tests' fixed tenant/project ULIDs stand in for writer-side resolution (Decision 200); content_sha256
   and content_bytes are kernel caller inputs the writer verb may recompute and must agree with.
 - >-
@@ -570,11 +605,10 @@ context:
   duplicated as process_events (the outcome is observed once and stored on the row that observes it); gate:/precommit:
   signatures from Bash output are 3b's or a read-side classifier over tool_result rows (rec-4032).
 - >-
-  Handed on to rec-4026 (slice 3b): Stop, SessionStart catch-up and SessionEnd hooks (skip when stop_hook_active),
-  cursor file persistence and the lost-cursor runbook (recover session_started_at from a held key via
-  decode_time_prefix, never re-derive), detached writes via the writer verb, project_ref read and registered,
-  gate/precommit signatures, attachment-derived system transcripts, ducklake_smoke writes behind T3.20 c8. The legacy
-  preflight open_telemetry_session producer writes no telemetry table; linking it is rec-4030's.
+  Handed on to rec-4026 (slice 3b): Stop, SessionStart catch-up and SessionEnd hooks, cursor persistence and the
+  lost-cursor runbook (recover session_started_at via decode_time_prefix, never re-derive), writer-verb writes,
+  project_ref registration, gate/precommit signatures, attachment system transcripts, smoke writes behind T3.20 c8.
+  The legacy preflight open_telemetry_session producer writes no telemetry table; linking it is rec-4030's.
 - >-
   Contract risks from the independent review, filed at planning time (not designed around): rec-4146 (sub-agent open
   timestamp equals the root start; synthetic session-open source id) and rec-4147 (no auth-mode signal for billing_shape
@@ -596,10 +630,12 @@ execution_steps:
   after spawning at least one sub-agent, to pin the literal values the facts left open before PARSER_VERSION 1 is frozen:
   the background-agent completion record predicate, the harness denial and interrupt sentinels, whether Claude Code
   writes a native compaction or resume marker record (else which hook attachments mark one), whether any record lacks a
-  parseable timestamp, and whether any record uuid recurs across root files (fork/copied history). Reproduce each pinned
-  literal synthetically in golden/observed_real_shapes.json.
+  parseable timestamp, how a slash-command invocation is recorded in the user record (plain leading slash or harness
+  markup such as a command-name tag -- the workflow rule parses whichever is observed), and whether any record uuid
+  recurs across root files (fork/copied history; a hit is a STOP per step 8's fix_if). Reproduce each pinned literal
+  synthetically in golden/observed_real_shapes.json.
 - >-
-  Create src/turn_capture/{__init__,scrub,transcript,streams,refs,observations,transcripts,sessions,record_turn,render}.py
+  Create src/turn_capture/{__init__,scrub,transcript,streams,refs,observations,transcripts,sessions,cursor,record_turn,render}.py
   per scope and the
   pinned-rules steps below (normative for this plan; the independent review's section 2 tables are the detailed
   reference where these steps are silent -- where they conflict, these steps win).
@@ -638,7 +674,8 @@ execution_steps:
 - >-
   Pinned session and agent rules: root open marker '<sessionId>#0/open' (synthetic source id -- the pin record can lack a
   uuid; stable across versions for R3), event_timestamp = session_started_at, entity_ref sessionId, workflow = the first
-  prompt's leading slash command when one of orient|plan|implement|develop-executor|audit|overseer else claude_code,
+  prompt's slash command (in the encoding step 2 pins) when one of orient|plan|implement|develop-executor|audit|overseer
+  else claude_code,
   execution_attempt 1, branch = first non-empty gitBranch, model_primary = first assistant model; emitted once its turn
   is closed. Exactly ONE compact row per compaction and one resume row per resume (execution_attempt 2+): sourced from
   the native marker record when step 2 finds one, else from the first of the SessionStart:resume, SessionStart:compact,
@@ -646,10 +683,13 @@ execution_steps:
   '<sessionId>:<agentId>', parent_session_ref = the spawning stream's session, workflow subagent, event_timestamp and
   session_started_at = the ROOT's (contract letter; risk filed). A child's rows are emitted only once the parent holds its
   completion (sync: the spawning tool_result; background: the pinned completion record) or session_final.
-  telemetry_agents open/close keyed on the spawning toolUseId (meta.json; fallback toolUseResult.agentId), session_ref =
-  child, observation_ref = the spawning tool_call, agent_type claude-code-subagent, agent_name = agentType, trigger
-  subagent_sync|subagent_background, version = the CLI version field, outcome failed on is_error/interrupted else
-  success, error scrubbed. No close/annotate session rows in 3a.
+  telemetry_agents open/close keyed on the spawning toolUseId, session_ref = child, observation_ref = the spawning
+  tool_call, agent_type claude-code-subagent, version = the CLI version field, outcome failed on is_error/interrupted
+  else success, error scrubbed. R7 purity: every agents column comes from TRANSCRIPT RECORDS only -- agentId from the
+  spawning tool_result's toolUseResult.agentId (then the child file is subagents/agent-<agentId>.jsonl), agent_name
+  from the spawning tool_use input.subagent_type (NULL when absent), trigger from input.run_in_background
+  (subagent_background when true, else subagent_sync). meta.json is never read for row content (it may lag or vanish;
+  test_sessions.py::test_agent_rows_do_not_depend_on_meta_json proves identical rows with it present or absent). No close/annotate session rows in 3a.
 - >-
   Pinned cursor and emission rules: one cursor per root tree -- {cursor_format, producer, parser_version,
   root_session_ref, project_ref, billing_shape, session_started_at_ms (integer epoch ms), per-file lines_consumed,
@@ -674,10 +714,11 @@ execution_steps:
   pattern (plus a broader second set) matches any stored value; resolvable sidecars stored untruncated; zero malformed
   lines; no (table, external_ref) duplicated ACROSS different root trees; finalize at any cut is a subset of the full
   finalized parse (a record joining an already-finalized span fails, naming the session hash and line); then
-  append_events into local DuckLake with every FK resolving. Print the drift dashboard (unknown record and attachment
-  types, outcome and stop_reason distributions) and the parse time per tree, as counts only.
+  append_events into local DuckLake with every FK resolving -- transcript rows over 65,536 bytes are excluded from the
+  load and counted (spill is the writer's, Decision 199 cl.5). Print the drift dashboard (unknown record and attachment
+  types, outcome, stop_reason and workflow distributions) and the parse time per tree, as counts only.
 - >-
-  Generate expected_rows.jsonl per case from the implementation, review each row against the pinned rules (never accept
+  Generate each case file's expected_rows from the implementation, review each row against the pinned rules (never accept
   generated output unread), then write config/telemetry/parser_versions.yaml with the digest.
 - Modify src/lambdas/data-pipeline/manifest.yaml, .importlinter, docs/contracts/file-router.yaml and config/agent/data_quality/source_registry.yaml per scope.
 - Write the registry rows for graduated steps 1, 3, 4 and 5, plus module-level rows turn-capture-plane-neutral and turn-capture-excluded-from-data-pipeline.
@@ -685,7 +726,7 @@ execution_steps:
 - Execute Verification Plan steps 1-10 -- loop until pass (Decision 55).
 - >-
   Portal bookkeeping (get_rec_write_guidance first, Decision 66; fetch-before-update via rec_by_id, prepend a dated note,
-  never overwrite): rec-4026 context gains the slice-3a delivery, the handed-on list and the tool-error deviation from
+  never overwrite): rec-4026 context gains a note headed '[SLICE 3A DELIVERED <date> via PLAN-telemetry-turn-capture-core]' with the delivery, the handed-on list and the tool-error deviation from
   context; rec-4063 gains the note that the pending-generation DQ intent must key off marker presence, not elapsed time
   (resumed sessions append days later); acceptance unchanged on both.
 - >-
