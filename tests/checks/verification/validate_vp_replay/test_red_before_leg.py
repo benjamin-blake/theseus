@@ -33,6 +33,14 @@ def _graduate_step(step: int, command: str, *, hermetic: bool = True) -> dict:
 
 
 class TestRedBeforeLeg:
+    def test_red_before_divergence_reports_its_duration(self, tmp_path: Path) -> None:
+        """A tautological red-before divergence carries its own duration -- "after X.Xs" --
+        beside the pinned "actual=tautological" substring."""
+        repo, rel = _RedBeforeFixture().build(tmp_path, "vpr-duration", [_graduate_step(1, "true")])
+        failed: list[str] = []
+        validate_vp_replay(failed, changed_files=[rel], root=repo)
+        assert any("actual=tautological" in f and " after " in f and f.rstrip().endswith("s") for f in failed)
+
     def test_graduate_step_exiting_zero_reddens(self, tmp_path: Path) -> None:
         """A graduate step green-by-construction on the un-implemented tree is a hard failure."""
         repo, rel = _RedBeforeFixture().build(tmp_path, "vpr-tautological", [_graduate_step(1, "true")])
@@ -148,6 +156,21 @@ class TestUnmeasurable:
         repo, rel = _RedBeforeFixture().build(tmp_path, "vpr-unm-timeout", [_graduate_step(1, "sleep 5")])
         failed: list[str] = []
         with patch("scripts.checks.verification.validate_vp_replay.MAX_AGGREGATE_SECONDS", 0.1):
+            validate_vp_replay(failed, changed_files=[rel], root=repo)
+        assert any("actual=unmeasurable" in f for f in failed)
+
+    def test_deadline_kill_does_not_consult_the_classifier(self, tmp_path: Path) -> None:
+        """rec-3835: a red-before deadline kill sets TIMEOUT_OUTCOME directly and never calls
+        _classify_outcome for it -- patched to raise, the kill must still report unmeasurable."""
+        repo, rel = _RedBeforeFixture().build(tmp_path, "vpr-deadline-no-classify", [_graduate_step(1, "sleep 5")])
+        failed: list[str] = []
+        with (
+            patch("scripts.checks.verification.validate_vp_replay.MAX_AGGREGATE_SECONDS", 0.1),
+            patch(
+                "scripts.checks.verification.validate_vp_replay._classify_outcome",
+                side_effect=AssertionError("must not be called on the deadline-kill path"),
+            ),
+        ):
             validate_vp_replay(failed, changed_files=[rel], root=repo)
         assert any("actual=unmeasurable" in f for f in failed)
 

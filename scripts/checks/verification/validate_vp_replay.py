@@ -82,8 +82,10 @@ from scripts.checks.verification._vp_replay_classify import (  # noqa: F401  (re
     _SHELL_SEGMENT_SPLIT_RE,
     _UNMEASURABLE_EXIT_CODES,
     OUTCOME_CLASSES,
+    TIMEOUT_OUTCOME,
     _classify_outcome,
     _command_invokes_scripts_validate,
+    _extract_negated_rg_grep_path,
     _run_classifier_self_test,
     _run_self_test_fixture,
     _segment_invokes_scripts_validate,
@@ -113,14 +115,6 @@ MAX_REPLAYED_STEPS = 30
 # evaluator declaration resolves against THIS module (resolve_evaluator requires an
 # executable-context literal, never a docstring mention).
 _CONTRACT_BASENAME = "vp-red-before.yaml"
-
-# Negated-sweep lint (docs/contracts/vp-red-before.yaml's negated_sweep_lint): a `! rg`/`! grep`
-# invocation's tail, up to the next shell control operator. Fails OPEN (returns None -- never
-# flagged) on anything but a confident two-token (PATTERN, PATH) parse with a plain,
-# unquoted, metacharacter-free PATH token -- over-detection is the worse failure here.
-_NEGATED_RG_GREP_RE = re.compile(r"!\s*(?:rg|grep)\b(?P<tail>[^&|;\n]*)")
-_QUOTED_TOKEN_RE = re.compile(r"""^(?:"[^"]*"|'[^']*')$""")
-_SAFE_PATH_TOKEN_RE = re.compile(r"^[A-Za-z0-9_./-]+$")
 
 
 class _ReplayBudget:
@@ -238,26 +232,6 @@ def _is_red_before_eligible(plan_rel: str, root: Path, added: set[str]) -> bool:
     return not (isinstance(data, dict) and data.get("implementation_declared"))
 
 
-def _extract_negated_rg_grep_path(command: str) -> str | None:
-    """Return the candidate absent-path argument of a negated ``! rg``/``! grep`` invocation in
-    ``command``, or None if the command does not confidently parse as one (fail-open)."""
-    match = _NEGATED_RG_GREP_RE.search(command)
-    if match is None:
-        return None
-    tail = match.group("tail").strip()
-    if not tail:
-        return None
-    non_flag_tokens = [tok for tok in tail.split() if not tok.startswith("-")]
-    if len(non_flag_tokens) != 2:
-        return None
-    path_tok = non_flag_tokens[1]
-    if _QUOTED_TOKEN_RE.match(path_tok):
-        return None
-    if not _SAFE_PATH_TOKEN_RE.match(path_tok):
-        return None
-    return path_tok
-
-
 def _negated_sweep_findings(plan_rel: str, pre_deploy_steps: list, root: Path) -> dict[int, str]:
     """{step_number: finding} for every pre-deploy step (ANY disposition) whose command is a
     negated rg/grep naming an absent path -- the lint's distinct value over the dynamic leg,
@@ -309,7 +283,7 @@ def _replay_step(
                 )
             )
             return result.elapsed, None
-        outcome = _classify_outcome(step.command, None, result.output, timed_out=True)
+        outcome = TIMEOUT_OUTCOME
         failed.append(
             _vp_replay_budget.format_deadline_kill_red_before(
                 plan_rel, step.step, result.elapsed, prior_elapsed, prior_count, MAX_AGGREGATE_SECONDS
@@ -322,15 +296,17 @@ def _replay_step(
     if expected_polarity == "green":
         if result.returncode != 0:
             failed.append(
-                f"vp-replay {plan_rel}:{step.step}: actual=exit {result.returncode} "
-                f"!= expected=exit 0 (expected={step.expected!r}; output tail={combined_output[-500:]!r})"
+                _vp_replay_budget.format_green_exit_code_divergence(
+                    plan_rel, step.step, step.command, result.returncode, combined_output, step.expected, result.elapsed
+                )
             )
             return result.elapsed, None
         missing = [lit for lit in select_literals(step, schema_version) if lit not in combined_output]
         if missing:
             failed.append(
-                f"vp-replay {plan_rel}:{step.step}: actual=missing literal(s) {missing} "
-                f"!= expected={step.expected!r} (output tail={combined_output[-500:]!r})"
+                _vp_replay_budget.format_green_missing_literal_divergence(
+                    plan_rel, step.step, missing, step.expected, combined_output, result.elapsed
+                )
             )
         else:
             suffix = _vp_replay_budget.duration_suffix(result.elapsed, MAX_AGGREGATE_SECONDS)
@@ -341,8 +317,9 @@ def _replay_step(
     outcome = _classify_outcome(step.command, result.returncode, combined_output, timed_out=False)
     if outcome in ("tautological", "unmeasurable"):
         failed.append(
-            f"vp-red-before {plan_rel}:{step.step}: actual={outcome} (exit {result.returncode}) -- a graduate "
-            f"step must be genuinely red on the un-implemented tree (output tail={combined_output[-500:]!r})"
+            _vp_replay_budget.format_red_before_divergence(
+                plan_rel, step.step, outcome, result.returncode, combined_output, result.elapsed
+            )
         )
     else:
         suffix = _vp_replay_budget.duration_suffix(result.elapsed, MAX_AGGREGATE_SECONDS)

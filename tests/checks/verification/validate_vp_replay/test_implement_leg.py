@@ -22,7 +22,56 @@ from .conftest import (
 )
 
 
+class TestGreenLegUnmeasurable:
+    def test_missing_tool_exit_127_is_not_reported_as_assertion_failure(self, tmp_path: Path) -> None:
+        """rec-3920's acceptance node: a hermetic step invoking a nonexistent command still fails
+        (the green leg's verdict is unchanged), and its text carries the exit-127 unmeasurable arm
+        and the missing command's name, never a plain assertion-failure reading."""
+        repo, rel = _ResolvedFixture().build(
+            tmp_path,
+            "vpr-missing-tool",
+            [
+                {
+                    "step": 1,
+                    "phase": "pre-deploy",
+                    "hermetic": True,
+                    "action": "Invoke a command that does not exist.",
+                    "command": "definitely-not-a-real-command-xyz",
+                    "expected": "Exit 0.",
+                    "fix_if": "n/a",
+                }
+            ],
+        )
+        failed: list[str] = []
+        validate_vp_replay(failed, changed_files=[rel], root=repo)
+        assert any("vp-replay" in f and "exit 127" in f for f in failed)
+        assert any("exit_127_command_not_found" in f and "definitely-not-a-real-command-xyz" in f for f in failed)
+        assert not any("assertion_failed" in f for f in failed)
+
+
 class TestImplementLeg:
+    def test_failed_step_reports_its_duration(self, tmp_path: Path) -> None:
+        """A failed green-leg step reports its own duration -- "after X.Xs" -- alongside the
+        existing exit-code divergence text."""
+        repo, rel = _ResolvedFixture().build(
+            tmp_path,
+            "vpr-duration",
+            [
+                {
+                    "step": 1,
+                    "phase": "pre-deploy",
+                    "hermetic": True,
+                    "action": "Run a command that fails.",
+                    "command": "exit 1",
+                    "expected": "Exit 0.",
+                    "fix_if": "n/a",
+                }
+            ],
+        )
+        failed: list[str] = []
+        validate_vp_replay(failed, changed_files=[rel], root=repo)
+        assert any("vp-replay" in f and "exit 1" in f and " after " in f and f.rstrip().endswith("s") for f in failed)
+
     def test_hermetic_step_failing_command_reddens(self, tmp_path: Path) -> None:
         repo, rel = _ResolvedFixture().build(
             tmp_path,
