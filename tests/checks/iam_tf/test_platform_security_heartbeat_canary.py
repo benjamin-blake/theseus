@@ -23,14 +23,7 @@ import pytest
 import yaml
 
 from scripts.checks.iam_tf import _read_coverage as rc
-from tests.checks.iam_tf._platform_security_hcl import (
-    _HEREDOC_JSON,
-    _HEREDOC_RETRY,
-    _HEREDOC_TWO_STATES,
-    _attr,
-    _local_string,
-    _resource_body,
-)
+from tests.checks.iam_tf._platform_security_hcl import _attr, _local_string, _resource_body
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _BOOTSTRAP_DIR = _REPO_ROOT / "terraform" / "bootstrap"
@@ -56,7 +49,6 @@ _ADMIN_TRAIL_SIX = (
 )
 _VALIDATE_SID = "PlatformSecurityHeartbeatDefinitionValidate"
 _VALIDATE_ACTION = "states:ValidateStateMachineDefinition"
-_VALIDATE_RESOURCE = '"*"'
 
 
 def _canary() -> str:
@@ -308,14 +300,9 @@ def _validate_sid_problems(stmts: list[dict]) -> list[str]:
     if len(validate) != 1:
         return [f"{_VALIDATE_SID} must exist in exactly one statement, found {len(validate)}"]
     v = validate[0]
-    problems: list[str] = []
-    if v.get("effect") != "Allow":
-        problems.append(f"{_VALIDATE_SID}: effect {v.get('effect')} != Allow")
-    if list(v.get("actions") or []) != [_VALIDATE_ACTION]:
-        problems.append(f"{_VALIDATE_SID}: actions {v.get('actions')} != [{_VALIDATE_ACTION}]")
-    if (v.get("resources_raw") or "").strip() != _VALIDATE_RESOURCE:
-        problems.append(f"{_VALIDATE_SID}: resource {v.get('resources_raw')} != {_VALIDATE_RESOURCE}")
-    return problems
+    got = (v.get("effect"), list(v.get("actions") or []), (v.get("resources_raw") or "").strip())
+    want = ("Allow", [_VALIDATE_ACTION], '"*"')
+    return [] if got == want else [f"{_VALIDATE_SID}: (effect, actions, resource) {got} != {want}"]
 
 
 def _states_scope_problems(stmts: list[dict]) -> list[str]:
@@ -402,6 +389,42 @@ def fixture_canary_problems(fixture_text: str) -> list[str]:
             problems.append(f"fixture event {name} must_match {sorted(got)} != {sorted(want)}")
     return problems
 
+
+_HEREDOC_JSON = (
+    '        "Resource": "arn:aws:states:::aws-sdk:iam:getRole",\n'
+    '        "Parameters": {\n'
+    '          "RoleName": "platform-security-heartbeat-canary"\n'
+    "        },\n"
+    '        "ResultPath": null,\n'
+    '        "End": true\n'
+    "      }\n"
+    "    }\n"
+)
+_HEREDOC_TWO_STATES = (
+    '        "Resource": "arn:aws:states:::aws-sdk:iam:getRole",\n'
+    '        "Parameters": {\n'
+    '          "RoleName": "platform-security-heartbeat-canary"\n'
+    "        },\n"
+    '        "ResultPath": null,\n'
+    '        "End": true\n'
+    "      },\n"
+    '      "Second": {\n'
+    '        "Type": "Pass",\n'
+    '        "End": true\n'
+    "      }\n"
+    "    }\n"
+)
+_HEREDOC_RETRY = (
+    '        "Resource": "arn:aws:states:::aws-sdk:iam:getRole",\n'
+    '        "Parameters": {\n'
+    '          "RoleName": "platform-security-heartbeat-canary"\n'
+    "        },\n"
+    '        "ResultPath": null,\n'
+    '        "Retry": [{"ErrorEquals": ["States.ALL"], "MaxAttempts": 1}],\n'
+    '        "End": true\n'
+    "      }\n"
+    "    }\n"
+)
 
 _RED_CASES: dict[str, Callable[[], list[str]]] = {
     "schedule depends_on dropped": lambda: canary_problems(
