@@ -194,7 +194,7 @@ def format_deadline_kill_red_before(
     )
 
 
-def _green_leg_label(command: str, returncode: int, combined_output: str) -> str:
+def _green_leg_label(command: str, returncode: int | None, combined_output: str) -> str:
     """Compose the GREEN-AFTER "raw outcome:" descriptor (docs/contracts/vp-red-before.yaml's
     green_leg_labels) for one non-zero exit: unmeasurable naming the arm (exit 127 also names the
     missing command; exit 126 reads "not executable", never "missing"), target_absent with an
@@ -219,7 +219,7 @@ def format_green_exit_code_divergence(
     plan_rel: str,
     step_number: int,
     command: str,
-    returncode: int,
+    returncode: int | None,
     combined_output: str,
     expected: str,
     elapsed: float,
@@ -249,7 +249,7 @@ def format_green_missing_literal_divergence(
 
 
 def format_red_before_divergence(
-    plan_rel: str, step_number: int, outcome: str, returncode: int, combined_output: str, elapsed: float
+    plan_rel: str, step_number: int, outcome: str, returncode: int | None, combined_output: str, elapsed: float
 ) -> str:
     """Red-before-leg tautological/unmeasurable divergence: pinned substrings stay byte-identical
     ("vp-red-before", "actual=<outcome> (exit <N>)", "must be genuinely red", "output tail="),

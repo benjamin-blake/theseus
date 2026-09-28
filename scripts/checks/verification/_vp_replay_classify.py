@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+from typing import TypedDict
 
 # The FOUR frozen outcome classes (docs/contracts/vp-red-before.yaml derive-and-asserts equal to
 # this tuple) -- never restated as a fifth class or split further.
@@ -73,11 +74,19 @@ _PYTEST_INVOCATION_RE = re.compile(r"\bpytest\b")
 # form (Decision 201 point 1's axis discipline).
 GREEN_LEG_LABEL_TOKEN = "raw outcome:"
 
+
+class _CollectionHint(TypedDict):
+    name: str
+    requires: list[str]
+    forbids: list[str]
+    text: str
+
+
 # Mirrors docs/contracts/vp-red-before.yaml's green_leg_labels.hints EXACTLY -- same order, same
 # requires/forbids/text, raw (uncompiled) regex strings so TestGreenLegLabelContractPins can
 # derive-assert this structure equal to the YAML-loaded one without a compiled-vs-string mismatch.
 # collection_hint below iterates this ordered list; the contract and this module hold one copy.
-_COLLECTION_HINTS: tuple[dict[str, object], ...] = (
+_COLLECTION_HINTS: tuple[_CollectionHint, ...] = (
     {
         "name": "collection_error",
         "requires": ["found no collectors", r"\d+ errors?\b"],
