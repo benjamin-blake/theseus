@@ -525,6 +525,14 @@ Roadmap refs: rec-4044, rec-4049, rec-4067.
 > platform-security-detector-admin gains states/scheduler verbs on platform-security-* only (no
 > Delete); clause 2's six trail verbs are unchanged. Residual unchanged: a ReadOnly-only selector
 > change keeps reads flowing; the tamper alarm covers it. PLAN-platform-security-heartbeat-canary.
+>
+> **Update (2026-09-28):** the AWS provider calls states:ValidateStateMachineDefinition at plan time,
+> so platform-security-detector-admin gains one Sid, PlatformSecurityHeartbeatDefinitionValidate: that
+> single action on Resource "*". The action has no resource type and the request carries no
+> state-machine name, so no platform-security-* pattern can match it. It is the sole exception: no
+> Delete verb, no action wildcard; admin_grant_problems pins it. Re-narrow when AWS adds a resource
+> type for the action or the provider stops calling it at plan time.
+> PLAN-heartbeat-canary-plan-time-grant.
 
 ---
 

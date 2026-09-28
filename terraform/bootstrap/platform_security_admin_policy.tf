@@ -11,9 +11,9 @@
 # break-glass only. CloudWatch alarm verbs are not re-granted (AdminOps' CloudWatchAlarmManagement
 # already covers alarm:*).
 #
-# The four PlatformSecurityHeartbeat* Sids below are the canary's (platform_security_heartbeat_canary.tf)
+# The five PlatformSecurityHeartbeat* Sids below are the canary's (platform_security_heartbeat_canary.tf)
 # management grant: enumerated states/scheduler verbs, no Delete* verb, no service wildcard,
-# platform-security-* resources only. Removing the canary is break-glass only, matching the
+# platform-security-* resources only except this one plan-time validator. Removing the canary is break-glass only, matching the
 # trail/bucket/log-group convention above.
 locals {
   platform_security_admin_policy_json = jsonencode({
@@ -134,6 +134,20 @@ locals {
           "states:ListExecutions",
         ]
         Resource = "arn:aws:states:${var.aws_region}:${var.account_id}:stateMachine:platform-security-*"
+      },
+      {
+        # The AWS provider's aws_sfn_state_machine CustomizeDiff (stateMachineDefinitionValidate,
+        # v5.100.0) calls this at PLAN time whenever the definition changes, create included. The
+        # service authorization reference lists no resource type for it (read-only: it validates a
+        # document and changes nothing), and the live denial names the request resource as the
+        # literal stateMachine:*, which no platform-security-* pattern can match -- so it needs "*",
+        # like PlatformSecurityTrailRead / PlatformSecurityLogsRead above. Re-narrow (drop or
+        # re-scope this Sid) when the service authorization reference lists a resource type for the
+        # action, or the provider stops calling it at plan time.
+        Sid      = "PlatformSecurityHeartbeatDefinitionValidate"
+        Effect   = "Allow"
+        Action   = "states:ValidateStateMachineDefinition"
+        Resource = "*"
       },
       {
         # states:DescribeExecution has no ARN overlap with the stateMachine: resource type above --

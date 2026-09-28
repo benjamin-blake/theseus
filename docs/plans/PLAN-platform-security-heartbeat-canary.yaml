@@ -275,9 +275,10 @@ infrastructure_dependencies:
     code only; an ADMIN session applies post-merge under agent_platform_admin, human-directed at each
     phase.
   - >-
-    Phase 1 (grant) must precede phase 2 (canary): PlatformAdmin holds no states:/scheduler: verb
-    until aws_iam_policy.platform_security_admin's new version is live, and IAM is eventually
-    consistent. Step 10's simulate gates phase 2.
+    Phase 1 (grant) must precede ANY full bootstrap plan and phase 2 (canary): PlatformAdmin holds no
+    states:/scheduler: verb until aws_iam_policy.platform_security_admin's new version is live, the
+    provider calls states:ValidateStateMachineDefinition at plan time, and IAM is eventually
+    consistent. Step 9's simulate gates step 10's full plan and phase 2.
   - >-
     Phase 2 (canary) must precede phase 3 (alarm plus tamper filter) by at least one hour of fed
     15-minute buckets (step 13). That way the re-shaped alarm evaluates OK the moment it lands.
@@ -425,32 +426,65 @@ verification_plan:
     hermetic: false
     graduation: waive
     graduation_waiver_reason: Same recursion_refusal as step 6.
-  - step: 8
+  - step: 0
     phase: post-deploy
-    action: ADMIN -- baseline plan on main at or after the merge shows exactly this plan's changes
+    action: ADMIN -- materialise terraform.bootstrap.tfvars from the sanctioned secret, values never printed
     command: |-
-      test -n "$CANARY_MERGE_SHA" && git fetch origin main && git checkout --detach origin/main && git merge-base --is-ancestor "$CANARY_MERGE_SHA" HEAD && test -f terraform/bootstrap/terraform.bootstrap.tfvars && git check-ignore -q terraform/bootstrap/terraform.bootstrap.tfvars && terraform -chdir=terraform/bootstrap init -input=false > /dev/null && M="${TMPDIR:-/tmp}/platform-security-canary" && mkdir -p "$M" && terraform -chdir=terraform/bootstrap plan -input=false -lock=false -var-file=terraform.bootstrap.tfvars -out="$M/base.tfplan" > /dev/null && terraform -chdir=terraform/bootstrap show -json "$M/base.tfplan" | bin/venv-python -c "import json,sys; C=['aws_iam_role.platform_security_heartbeat_canary','aws_iam_role_policy.platform_security_heartbeat_canary','aws_iam_role.platform_security_heartbeat_scheduler','aws_iam_role_policy.platform_security_heartbeat_scheduler','aws_sfn_state_machine.platform_security_heartbeat_canary','aws_scheduler_schedule_group.platform_security_heartbeat','aws_scheduler_schedule.platform_security_heartbeat_canary']; U=['aws_iam_policy.platform_security_admin','aws_cloudwatch_log_metric_filter.platform_security[\"platform-security-detector-tamper\"]','aws_cloudwatch_metric_alarm.platform_security_iam_event_heartbeat']; got=sorted((r['address'],tuple(r['change']['actions'])) for r in json.load(sys.stdin).get('resource_changes',[]) if r['change']['actions'] not in (['no-op'],['read'])); want=sorted([(a,('create',)) for a in C]+[(a,('update',)) for a in U]); sys.exit(f'STOP {got}') if got!=want else print('BASELINE OK -- 7 canary creates, 3 in-place updates')"; rc=$?; rm -f "${TMPDIR:-/tmp}/platform-security-canary/base.tfplan"; test $rc -eq 0
-    expected: BASELINE OK -- nothing else pending in the bootstrap root (no replace, no destroy)
-    fix_if: STOP on any other address or action (drift or an unrelated pending change) -- resolve it with the human before phase 1; never apply a mixed plan
-  - step: 9
+      (umask 077 && aws secretsmanager get-secret-value --secret-id agent-platform-terraform-personal-tfvars --profile agent_platform_admin --query SecretString --output text | grep -E '^[[:space:]]*(account_id|owner_email)[[:space:]]*=' > terraform/bootstrap/terraform.bootstrap.tfvars) && git check-ignore -q terraform/bootstrap/terraform.bootstrap.tfvars && test "$(grep -c -E '^[[:space:]]*(account_id|owner_email)[[:space:]]*=' terraform/bootstrap/terraform.bootstrap.tfvars)" -eq 2 && echo "BOOTSTRAP TFVARS MATERIALISED (values not printed)"
+    expected: the two no-default bootstrap keys are present, the file is mode 600 and gitignored, and no value reaches the terminal
+    fix_if: a key missing from the secret -- recover it per docs/contracts/terraform-cc-web-operations.yaml tfvars_and_remote_state_recovery; never paste a value anywhere (Decision 101)
+  - step: 8
     phase: post-deploy
     action: ADMIN phase 1 (grant) -- PRESENT the targeted plan; apply only on explicit human direction
     command: |-
-      M="${TMPDIR:-/tmp}/platform-security-canary" && terraform -chdir=terraform/bootstrap plan -input=false -var-file=terraform.bootstrap.tfvars -target=aws_iam_policy.platform_security_admin -out="$M/phase1.tfplan" > /dev/null && terraform -chdir=terraform/bootstrap show -json "$M/phase1.tfplan" | bin/venv-python -c "import json,sys; got=[(r['address'],r['change']['actions']) for r in json.load(sys.stdin).get('resource_changes',[]) if r['change']['actions'] not in (['no-op'],['read'])]; sys.exit(f'STOP {got}') if got!=[('aws_iam_policy.platform_security_admin',['update'])] else print('PHASE 1 OK -- detector-admin policy update only')" && terraform -chdir=terraform/bootstrap show "$M/phase1.tfplan"
+      test -n "$CANARY_MERGE_SHA" && git fetch origin main && git checkout --detach origin/main && git merge-base --is-ancestor "$CANARY_MERGE_SHA" HEAD && test -f terraform/bootstrap/terraform.bootstrap.tfvars && git check-ignore -q terraform/bootstrap/terraform.bootstrap.tfvars && terraform -chdir=terraform/bootstrap init -input=false > /dev/null && M="${TMPDIR:-/tmp}/platform-security-canary" && mkdir -p "$M" && terraform -chdir=terraform/bootstrap plan -input=false -var-file=terraform.bootstrap.tfvars -target=aws_iam_policy.platform_security_admin -out="$M/phase1.tfplan" > /dev/null && terraform -chdir=terraform/bootstrap show -json "$M/phase1.tfplan" | bin/venv-python -c "import json,sys; got=[(r['address'],r['change']['actions']) for r in json.load(sys.stdin).get('resource_changes',[]) if r['change']['actions'] not in (['no-op'],['read'])]; sys.exit(f'STOP {got}') if got!=[('aws_iam_policy.platform_security_admin',['update'])] else print('PHASE 1 OK -- detector-admin policy update only')" && terraform -chdir=terraform/bootstrap show "$M/phase1.tfplan"
     expected: >-
-      PHASE 1 OK, and the diff (the four PlatformSecurityHeartbeat* Sids added, nothing removed) is
-      PRESENTED in the ADMIN session only. After explicit human acceptance, run terraform apply
+      PHASE 1 OK, and the diff (FIVE PlatformSecurityHeartbeat* Sids added -- the four from the
+      canary plus PlatformSecurityHeartbeatDefinitionValidate -- nothing removed) is PRESENTED in
+      the ADMIN session only. After explicit human acceptance, run terraform apply
       "$M/phase1.tfplan". The expected email is platform-security-platform-role-iam-change
       (CreatePolicyVersion on platform-security-detector-admin); that alarm returns to OK within
-      about 10 minutes.
+      about 10 minutes. This step runs BEFORE any full bootstrap plan: the provider validates the
+      state machine definition at plan time, so a full plan needs this grant live.
     fix_if: any other change -- STOP; on apply error stop and RCA (Decision 55)
+  - step: 9
+    phase: post-deploy
+    action: ADMIN -- PlatformAdmin is allowed every canary verb it now holds (five Sids, the plan-time validator on its literal request resource), before the full plan and phase 2
+    command: |-
+      R=$(echo 'var.aws_region' | terraform -chdir=terraform/bootstrap console -var-file=terraform.bootstrap.tfvars | tr -d '"') && S=$(echo 'jsonencode([for s in jsondecode(local.platform_security_admin_policy_json).Statement : s if startswith(s.Sid, "PlatformSecurityHeartbeat")])' | terraform -chdir=terraform/bootstrap console -var-file=terraform.bootstrap.tfvars) && R="$R" S="$S" bin/venv-python - <<'EOF'
+      import json, os, subprocess, sys
+      def run(*a):
+          q = subprocess.run(["aws", *a, "--profile", "agent_platform_admin", "--output", "json"], capture_output=True, text=True)
+          if q.returncode:
+              sys.exit(f"aws {a[0]} {a[1]} failed rc={q.returncode} (stderr suppressed: it embeds ARNs)")
+          return json.loads(q.stdout)
+      acct, r = run("sts", "get-caller-identity")["Account"], os.environ["R"]
+      admin = "arn" + ":aws:iam::" + acct + ":role/PlatformAdmin"
+      st = json.loads(json.loads(os.environ["S"]))
+      assert len(st) == 5, "expected 5 PlatformSecurityHeartbeat Sids"
+      bad, n = [], 0
+      for s in st:
+          acts = [s["Action"]] if isinstance(s["Action"], str) else list(s["Action"])
+          res = f"arn:aws:states:{r}:{acct}:stateMachine:*" if s["Resource"] == "*" else s["Resource"]
+          res = (res.replace("schedule-group/platform-security-*", "schedule-group/platform-security-heartbeat")
+              .replace("schedule/platform-security-*/platform-security-*", "schedule/platform-security-heartbeat/platform-security-heartbeat-canary")
+              .replace("execution:platform-security-*:*", "execution:platform-security-heartbeat-canary:probe")
+              .replace("stateMachine:platform-security-*", "stateMachine:platform-security-heartbeat-canary"))
+          for e in run("iam", "simulate-principal-policy", "--policy-source-arn", admin, "--action-names", *acts, "--resource-arns", res)["EvaluationResults"]:
+              if e["EvalDecision"] != "allowed":
+                  bad.append((e["EvalActionName"], e["EvalDecision"]))
+          n += len(acts)
+      sys.exit("DENIED (action names only) " + repr(bad)) if bad else print("SIMULATE OK -- " + str(n) + " canary actions allowed")
+      EOF
+    expected: SIMULATE OK (the resource ARNs are built in memory and never printed; the validator Sid's Resource "*" is simulated against the literal request resource stateMachine:*)
+    fix_if: a DENIED action means phase 1 has not propagated (re-run after a minute) or the Sid is wrong (new PR); never grant by hand
   - step: 10
     phase: post-deploy
-    action: ADMIN -- PlatformAdmin is allowed every canary verb it now holds, on the canary's concrete ARNs, before phase 2
+    action: ADMIN -- full baseline plan (exercises the live plan-time validator) shows exactly this plan's remaining changes, the admin policy already converged
     command: |-
-      R=$(echo 'var.aws_region' | terraform -chdir=terraform/bootstrap console -var-file=terraform.bootstrap.tfvars | tr -d '"') && S=$(echo 'jsonencode([for s in jsondecode(local.platform_security_admin_policy_json).Statement : s if startswith(s.Sid, "PlatformSecurityHeartbeat")])' | terraform -chdir=terraform/bootstrap console -var-file=terraform.bootstrap.tfvars) && R="$R" S="$S" bin/venv-python -c "import json,os,subprocess,sys; run=lambda *a: (lambda q: json.loads(q.stdout) if q.returncode==0 else sys.exit('aws call failed rc='+str(q.returncode)+' (stderr suppressed: it embeds ARNs)'))(subprocess.run(['aws',*a,'--profile','agent_platform_admin','--output','json'],capture_output=True,text=True)); a=run('sts','get-caller-identity')['Account']; admin='arn'+':aws:iam::'+a+':role/PlatformAdmin'; st=json.loads(json.loads(os.environ['S'])); assert len(st)==4, 'expected 4 PlatformSecurityHeartbeat Sids'; bad=[]; n=0; [bad.extend((e['EvalActionName'],e['EvalDecision']) for e in run('iam','simulate-principal-policy','--policy-source-arn',admin,'--action-names',*s['Action'],'--resource-arns',s['Resource'].replace('schedule-group/platform-security-*','schedule-group/platform-security-heartbeat').replace('schedule/platform-security-*/platform-security-*','schedule/platform-security-heartbeat/platform-security-heartbeat-canary').replace('execution:platform-security-*:*','execution:platform-security-heartbeat-canary:probe').replace('stateMachine:platform-security-*','stateMachine:platform-security-heartbeat-canary'))['EvaluationResults'] if e['EvalDecision']!='allowed') for s in st]; n=sum(len(s['Action']) for s in st); sys.exit('DENIED (action names only) '+repr(bad)) if bad else print('SIMULATE OK -- '+str(n)+' canary actions allowed')"
-    expected: SIMULATE OK (the resource ARNs are built in memory and never printed)
-    fix_if: a DENIED action means phase 1 has not propagated (re-run after a minute) or the Sid is wrong (new PR); never grant by hand
+      test -n "$CANARY_MERGE_SHA" && git fetch origin main && git checkout --detach origin/main && git merge-base --is-ancestor "$CANARY_MERGE_SHA" HEAD && test -f terraform/bootstrap/terraform.bootstrap.tfvars && git check-ignore -q terraform/bootstrap/terraform.bootstrap.tfvars && terraform -chdir=terraform/bootstrap init -input=false > /dev/null && M="${TMPDIR:-/tmp}/platform-security-canary" && mkdir -p "$M" && terraform -chdir=terraform/bootstrap plan -input=false -lock=false -var-file=terraform.bootstrap.tfvars -out="$M/base.tfplan" > /dev/null && terraform -chdir=terraform/bootstrap show -json "$M/base.tfplan" | bin/venv-python -c "import json,sys; C=['aws_iam_role.platform_security_heartbeat_canary','aws_iam_role_policy.platform_security_heartbeat_canary','aws_iam_role.platform_security_heartbeat_scheduler','aws_iam_role_policy.platform_security_heartbeat_scheduler','aws_sfn_state_machine.platform_security_heartbeat_canary','aws_scheduler_schedule_group.platform_security_heartbeat','aws_scheduler_schedule.platform_security_heartbeat_canary']; U=['aws_cloudwatch_log_metric_filter.platform_security[\"platform-security-detector-tamper\"]','aws_cloudwatch_metric_alarm.platform_security_iam_event_heartbeat']; got=sorted((r['address'],tuple(r['change']['actions'])) for r in json.load(sys.stdin).get('resource_changes',[]) if r['change']['actions'] not in (['no-op'],['read'])); want=sorted([(a,('create',)) for a in C]+[(a,('update',)) for a in U]); sys.exit(f'STOP {got}') if got!=want else print('BASELINE OK -- 7 canary creates, 2 in-place updates')"; rc=$?; rm -f "${TMPDIR:-/tmp}/platform-security-canary/base.tfplan"; test $rc -eq 0
+    expected: BASELINE OK -- nothing else pending in the bootstrap root (no replace, no destroy); the admin policy no longer appears because phase 1 applied it
+    fix_if: AccessDenied on states:ValidateStateMachineDefinition means phase 1 has not propagated -- re-run after a minute; STOP on any other address or action (drift or an unrelated pending change) -- resolve it with the human before phase 2; never apply a mixed plan
   - step: 11
     phase: post-deploy
     action: ADMIN phase 2 (canary) -- PRESENT the targeted plan; apply only on explicit human direction
@@ -461,7 +495,7 @@ verification_plan:
       "$M/phase2.tfplan", then export CANARY_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ). The expected email is
       platform-security-detector-tamper (CreateRole/PutRolePolicy on platform-security-heartbeat-*).
     fix_if: >-
-      an AccessDenied on a states:/scheduler: verb means the provider needs a verb the grant lacks -- STOP, add it through a new PR (never a console or CLI grant), re-run from step 9
+      an AccessDenied on a states:/scheduler: verb means the provider needs a verb the grant lacks -- STOP, add it through a new PR (never a console or CLI grant), re-run from step 8; the provider also retries CreateStateMachine on AccessDeniedException until the create timeout, so a missing create-time verb reads as a hang, not an error
   - step: 12
     phase: post-deploy
     action: ADMIN -- the canary is live, its beats reach the log group, and a live beat matches ONLY the heartbeat (the fixture events too)
@@ -641,7 +675,7 @@ verification_plan:
     command: |-
       test -n "$CANARY_MERGE_SHA" && echo "HAND-BACK: resume docs/plans/PLAN-platform-role-iam-change-alarms.yaml at step 16 (re-run the local probe; Benjamin arms SECURITY_DETECTOR_PROVISIONED; dispatch security-detector-liveness; then steps 17-21). For its step 20 set MERGE_SHA=$CANARY_MERGE_SHA. Measured starvation latency: see step 18's JSON."
     expected: the hand-back line, relayed to the human with step 16's and step 18's JSON evidence lines (counts only). The repository variable is untouched by this plan
-    fix_if: CANARY_MERGE_SHA unset -- export this plan's implementation squash-merge sha
+    fix_if: CANARY_MERGE_SHA unset -- export the squash-merge sha of PLAN-heartbeat-canary-plan-time-grant's implementation PR (it descends from the canary PR and carries the plan-time grant)
   - step: 22
     phase: post-deploy
     action: CLEANUP (ADMIN) -- remove scratch plans; also run after any STOP

@@ -4,7 +4,9 @@ Pins terraform/bootstrap/platform_security_heartbeat_canary.tf (Decision 202 cla
 ENABLED EventBridge Scheduler beat in its own schedule group, driving a STANDARD one-Task Step
 Functions state machine whose only call is iam:GetRole on its own execution role, through two
 least-privilege, confused-deputy-conditioned, size-preconditioned IAM roles. Also pins the
-canary's PlatformAdmin management grant (platform_security_admin_policy.tf), the heartbeat's
+canary's PlatformAdmin management grant (platform_security_admin_policy.tf) -- platform-security-*
+resources only, except the one Sid-keyed plan-time validator exception (the AWS provider calls
+states:ValidateStateMachineDefinition at plan time; it has no resource type) -- the heartbeat's
 cadence relationship to the schedule, the heartbeat alarm's description and the two canary fixture
 events. Every predicate returns a problem list, so each red case drives the real predicate.
 """
@@ -21,7 +23,14 @@ import pytest
 import yaml
 
 from scripts.checks.iam_tf import _read_coverage as rc
-from tests.checks.iam_tf._platform_security_hcl import _attr, _local_string, _resource_body
+from tests.checks.iam_tf._platform_security_hcl import (
+    _HEREDOC_JSON,
+    _HEREDOC_RETRY,
+    _HEREDOC_TWO_STATES,
+    _attr,
+    _local_string,
+    _resource_body,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _BOOTSTRAP_DIR = _REPO_ROOT / "terraform" / "bootstrap"
@@ -45,6 +54,9 @@ _ADMIN_TRAIL_SIX = (
     "cloudtrail:AddTags",
     "cloudtrail:RemoveTags",
 )
+_VALIDATE_SID = "PlatformSecurityHeartbeatDefinitionValidate"
+_VALIDATE_ACTION = "states:ValidateStateMachineDefinition"
+_VALIDATE_RESOURCE = '"*"'
 
 
 def _canary() -> str:
@@ -291,6 +303,49 @@ def cadence_problems(canary_text: str, alarms_text: str) -> list[str]:
     return []
 
 
+def _validate_sid_problems(stmts: list[dict]) -> list[str]:
+    validate = [s for s in stmts if s.get("sid") == _VALIDATE_SID]
+    if len(validate) != 1:
+        return [f"{_VALIDATE_SID} must exist in exactly one statement, found {len(validate)}"]
+    v = validate[0]
+    problems: list[str] = []
+    if v.get("effect") != "Allow":
+        problems.append(f"{_VALIDATE_SID}: effect {v.get('effect')} != Allow")
+    if list(v.get("actions") or []) != [_VALIDATE_ACTION]:
+        problems.append(f"{_VALIDATE_SID}: actions {v.get('actions')} != [{_VALIDATE_ACTION}]")
+    if (v.get("resources_raw") or "").strip() != _VALIDATE_RESOURCE:
+        problems.append(f"{_VALIDATE_SID}: resource {v.get('resources_raw')} != {_VALIDATE_RESOURCE}")
+    return problems
+
+
+def _states_scope_problems(stmts: list[dict]) -> list[str]:
+    problems: list[str] = []
+    for stmt in stmts:
+        sid = stmt.get("sid") or ""
+        for action in stmt.get("actions") or []:
+            if action == _VALIDATE_ACTION and sid != _VALIDATE_SID:
+                problems.append(f"{sid}: {_VALIDATE_ACTION} belongs only in {_VALIDATE_SID}")
+            if not sid.startswith("PlatformSecurityHeartbeat") and action.partition(":")[0] in {"states", "scheduler"}:
+                problems.append(f"{sid}: {action} is a states:/scheduler: verb outside a PlatformSecurityHeartbeat* Sid")
+    return problems
+
+
+def _heartbeat_sid_problems(stmt: dict) -> list[str]:
+    sid = stmt.get("sid")
+    problems: list[str] = []
+    for action in stmt.get("actions") or []:
+        service, _, verb = action.partition(":")
+        if service not in {"states", "scheduler"}:
+            problems.append(f"{sid}: action {action} is not a states:/scheduler: verb")
+        if verb.startswith("Delete") or action in {"*", "states:*", "scheduler:*"}:
+            problems.append(f"{sid}: forbidden Delete verb or wildcard {action}")
+    if sid != _VALIDATE_SID:
+        for raw in re.findall(r'"([^"]+)"', stmt.get("resources_raw") or ""):
+            if "platform-security-" not in raw:
+                problems.append(f"{sid}: resource {raw} is outside the platform-security-* family")
+    return problems
+
+
 def admin_grant_problems(admin_text: str) -> list[str]:
     stmts = rc._parse_managed_policy_statements(admin_text, "platform_security_admin")
     if not stmts:
@@ -302,20 +357,13 @@ def admin_grant_problems(admin_text: str) -> list[str]:
     elif tuple(trail[0].get("actions") or []) != _ADMIN_TRAIL_SIX:
         problems.append(f"PlatformSecurityTrailManage actions changed: {trail[0].get('actions')} != {_ADMIN_TRAIL_SIX}")
 
+    problems += _validate_sid_problems(stmts)
+    problems += _states_scope_problems(stmts)
     heartbeat_sids = [s for s in stmts if (s.get("sid") or "").startswith("PlatformSecurityHeartbeat")]
     if not heartbeat_sids:
         problems.append("no PlatformSecurityHeartbeat* Sid found")
     for stmt in heartbeat_sids:
-        sid = stmt.get("sid")
-        for action in stmt.get("actions") or []:
-            service, _, verb = action.partition(":")
-            if service not in {"states", "scheduler"}:
-                problems.append(f"{sid}: action {action} is not a states:/scheduler: verb")
-            if verb.startswith("Delete") or action in {"*", "states:*", "scheduler:*"}:
-                problems.append(f"{sid}: forbidden Delete verb or wildcard {action}")
-        for raw in re.findall(r'"([^"]+)"', stmt.get("resources_raw") or ""):
-            if "platform-security-" not in raw:
-                problems.append(f"{sid}: resource {raw} is outside the platform-security-* family")
+        problems += _heartbeat_sid_problems(stmt)
     return problems
 
 
@@ -354,42 +402,6 @@ def fixture_canary_problems(fixture_text: str) -> list[str]:
             problems.append(f"fixture event {name} must_match {sorted(got)} != {sorted(want)}")
     return problems
 
-
-_HEREDOC_JSON = (
-    '        "Resource": "arn:aws:states:::aws-sdk:iam:getRole",\n'
-    '        "Parameters": {\n'
-    '          "RoleName": "platform-security-heartbeat-canary"\n'
-    "        },\n"
-    '        "ResultPath": null,\n'
-    '        "End": true\n'
-    "      }\n"
-    "    }\n"
-)
-_HEREDOC_TWO_STATES = (
-    '        "Resource": "arn:aws:states:::aws-sdk:iam:getRole",\n'
-    '        "Parameters": {\n'
-    '          "RoleName": "platform-security-heartbeat-canary"\n'
-    "        },\n"
-    '        "ResultPath": null,\n'
-    '        "End": true\n'
-    "      },\n"
-    '      "Second": {\n'
-    '        "Type": "Pass",\n'
-    '        "End": true\n'
-    "      }\n"
-    "    }\n"
-)
-_HEREDOC_RETRY = (
-    '        "Resource": "arn:aws:states:::aws-sdk:iam:getRole",\n'
-    '        "Parameters": {\n'
-    '          "RoleName": "platform-security-heartbeat-canary"\n'
-    "        },\n"
-    '        "ResultPath": null,\n'
-    '        "Retry": [{"ErrorEquals": ["States.ALL"], "MaxAttempts": 1}],\n'
-    '        "End": true\n'
-    "      }\n"
-    "    }\n"
-)
 
 _RED_CASES: dict[str, Callable[[], list[str]]] = {
     "schedule depends_on dropped": lambda: canary_problems(
@@ -463,6 +475,40 @@ _RED_CASES: dict[str, Callable[[], list[str]]] = {
             'Resource = "arn:aws:states:${var.aws_region}:${var.account_id}:stateMachine:platform-security-*"',
             'Resource = "arn:aws:states:${var.aws_region}:${var.account_id}:stateMachine:*"',
         )
+    ),
+    "validate Sid dropped": lambda: admin_grant_problems(
+        re.sub(
+            r"      \{\n        # The AWS provider's aws_sfn_state_machine.*?Resource = \"\*\"\n      \},\n",
+            "",
+            _admin(),
+            count=1,
+            flags=re.S,
+        )
+    ),
+    "validate Sid duplicated": lambda: admin_grant_problems(
+        _sub(
+            _admin(),
+            f'        Sid      = "{_VALIDATE_SID}"',
+            f'        Sid      = "{_VALIDATE_SID}"\n        Effect   = "Allow"\n        Action   = "{_VALIDATE_ACTION}"\n'
+            f'        Resource = "*"\n      }},\n      {{\n        Sid      = "{_VALIDATE_SID}"',
+        )
+    ),
+    "validate Sid gains a second action": lambda: admin_grant_problems(
+        _sub(_admin(), f'Action   = "{_VALIDATE_ACTION}"', f'Action   = ["{_VALIDATE_ACTION}", "states:CreateStateMachine"]')
+    ),
+    "validate Sid narrowed to the family": lambda: admin_grant_problems(
+        _sub(
+            _admin(),
+            f'Action   = "{_VALIDATE_ACTION}"\n        Resource = "*"',
+            f'Action   = "{_VALIDATE_ACTION}"\n'
+            '        Resource = "arn:aws:states:${var.aws_region}:${var.account_id}:stateMachine:platform-security-*"',
+        )
+    ),
+    "validate action in StatesManage instead": lambda: admin_grant_problems(
+        _sub(_admin(), '"states:CreateStateMachine",', f'"states:CreateStateMachine",\n          "{_VALIDATE_ACTION}",')
+    ),
+    "states verb smuggled into PlatformSecurityLogsRead": lambda: admin_grant_problems(
+        _sub(_admin(), '"logs:StopQuery",', '"logs:StopQuery",\n          "states:StartExecution",')
     ),
     "description without the canary": lambda: description_problems(
         _sub(_alarms(), "platform-security-heartbeat-canary schedule and its Step Functions executions", "the canary")
