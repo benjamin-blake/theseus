@@ -1,0 +1,475 @@
+schema_version: 5
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: vp-replay-authoring-and-diagnostics
+intent: >-
+  Follow-up to PLAN-vp-replay-deadline-from-shared-budget (#1292): make hermetic VP-step authoring
+  guidance state ONE rule (rec-3334; rec-2809 re-scoped to own the one carve-out that is still only
+  prose), put the replay-cost authoring target in front of planners, and make validate_vp_replay's
+  failure reports diagnosable -- every failed step names its outcome and its own duration, a missing
+  tool reads as unmeasurable naming the arm rather than a broken assertion (rec-3920), the deadline
+  kill no longer routes through the classifier (rec-3835), and the bounded runner leaves no zombie
+  or open pipe -- so implementing agents stop inheriting steps authored under contradictory guidance
+  and stop chasing misleading replay failures.
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-vp-replay-authoring-and-diagnostics.yaml
+phase: >-
+  ad_hoc_rec (soft-warn category; no tier_item claimed, so the Tier Item Freshness Gate is
+  skipped). Bundle A of the post-#1292 gap review (2026-09-28); Bundle B (Decision 182
+  re-calibration: rec-4093, rec-3929, rec-3677) is a separate plan with no shared scope file.
+scope:
+  - file: docs/contracts/vp-red-before.yaml
+    action: Modify
+    purpose: >-
+      (a) hermetic_authoring: replace the closing sentence "Steps needing pytest/deploys stay
+      hermetic: false, excluded with a printed reason." with ONE rule -- a pytest pre-deploy step is
+      hermetic: true by default, and stays hermetic: false only when it (i) needs credentials,
+      network or live infrastructure; (ii) invokes scripts.validate (the existing recursion refusal,
+      text kept verbatim -- Decision 189 point 3); (iii) targets tests that depend on a package absent
+      from requirements-fast.txt (a module-level pytest.importorskip, today mostly duckdb) --
+      venv-less pr-validate collects no tests there (pytest exit 4 "found no collectors" for a node or
+      class selector, exit 5 for a whole-file selector) and the implementer cannot flip the flag later
+      (implement-scope-boundary.yaml implementing_plan_bookkeeping); (iv) is side-effectful or runs
+      out-of-tree; or (v) is a whole-file or whole-directory pytest re-run of test files the plan's
+      own scope creates or modifies (always inside the --pre pytest_diff affected set, so the author
+      can check it at plan time), or a ruff check/format phase, so replay would spend the non-test
+      half for no added independence. A pytest NODE or CLASS selector is never
+      covered by (v) and stays hermetic: true -- it additionally proves the named node exists (a
+      missing node exits 4), which no tier phase checks. Carve-out (iii) states that it is an interim workaround for an
+      environment mismatch and names rec-2809 as the owner of its enforcement gap and root-cause fix
+      (Decision 181 point 2 / Decision 148 "fix at root cause"); the rule points replay cost at
+      replay_bound. (b) New TOP-LEVEL key green_leg_labels (not nested under replay_bound, which is the
+      deadline model): a green-leg divergence keeps hard-failing exactly as before (the green
+      verdict's authority is Decision 148 point 1), and its text adds a descriptor under the token
+      "raw outcome:" -- deliberately NOT the red-before leg's pinned "actual=<outcome>" form, so no
+      grep-able substring is shared across polarities and no vocabulary is reused as the green
+      axis's verdict (Decision 201 point 1's axis discipline). The descriptor is the classifier's
+      class for the exit: "raw outcome: unmeasurable (<arm name>[: <command>])" -- exit 127 also names
+      the missing command, exit 126 reads not executable, never missing; "raw outcome: target_absent"
+      for any exit 4/5, with a hint only for a pytest invocation whose output matches one trigger --
+      module_level_skip: a "N skipped" summary with NO "N error(s)" count (exit 4 with "found no
+      collectors" for a node/class selector, or exit 5 for a whole-file selector; -q prints no reason)
+      -> "module-level skip -- e.g. a dependency absent from requirements-fast.txt (rec-2809)";
+      collection_error: "found no collectors" WITH an "N error(s)" count (e.g. the module's own
+      import raises) -> "collection error -- see output tail"; missing_node: "not found:" (covers
+      "file or directory not found:" and "not found: ... no match") -> "named node or file missing or
+      renamed" -- no hint otherwise, including any non-pytest exit 4/5; or "raw outcome:
+      assertion_failed" -- plus the step's own duration. The token and each hint are STRUCTURED data
+      the detector consumes, not prose: token; hints as an ordered list of {name, requires: [regex],
+      forbids: [regex], text}, gated once on a pytest invocation exiting 4/5 (collection_error
+      requires "found no collectors" and an "N error(s)" count; module_level_skip requires an "N
+      skipped" count and forbids error/passed/failed counts; missing_node requires "not found:").
+      _vp_replay_classify.py iterates a module-level copy of that same ordered structure, and a
+      parity test asserts the two are equal (the unsat_guard_suppressor_flags /
+      TestContractSuppressorParity precedent), so the contract and the check hold one copy. tautological is unreachable on a green
+      failure. This is a LABEL-ONLY reuse of the classifier on the second polarity (Decision 189: the
+      check holds no second copy).
+      outcome_classes and unmeasurable_arms are untouched. replay_bound.kill's sentence that the
+      red-before deadline kill classifies via the subprocess_timeout arm is updated to say it now sets
+      TIMEOUT_OUTCOME directly (rec-3835). (c) amendment_log entry
+      (docs/contracts/contract-population.yaml change_detection.amendment_log, checked by
+      validate_contract_drift); contract_version 5 -> 6 per this file's convention.
+  - file: .claude/skills/planning/SKILL.md
+    action: Modify
+    purpose: >-
+      The "Hermetic authoring" MANDATORY read-trigger names docs/contracts/vp-red-before.yaml#replay_bound
+      alongside #hermetic_authoring -- one clause, no restated rule; the stub heading survives and no
+      relocated rule text is re-inlined (validate_skill_prose_relocation). Prose budget: 42710 of
+      44097 bytes.
+  - file: scripts/checks/verification/_vp_replay_classify.py
+    action: Modify
+    purpose: >-
+      (a) rec-3835: a named TIMEOUT_OUTCOME = "unmeasurable"; _classify_outcome's timed_out branch
+      returns it. _run_self_test_fixture's timeout branch is deliberately UNCHANGED and keeps routing
+      through _classify_outcome -- exercising the classifier's timeout arm is that fixture's purpose,
+      and graduated row vp-red-before-classifier-self-test pins it; a one-line comment says so. (b)
+      unmeasurable_arm(command, returncode, output) -> str | None returns the contract's arm name
+      (exit_126_not_executable, exit_127_command_not_found, rg_or_grep_error_exit_2,
+      credential_absence); _classify_outcome delegates its non-timeout unmeasurable decision to it with
+      byte-identical behaviour (the existing TestUnmeasurableArms, TestClassifierArmsDoNotAlias and
+      the in-dispatch self-test prove no drift). (c) missing_executable(output) -> str | None parses the
+      real Ubuntu spellings "/bin/sh: 1: foo: not found" (dash, what shell=True runs) and "bash: line 1:
+      foo: command not found". (d) collection_hint(command, returncode, output) -> str | None, gated on
+      a pytest invocation and exit 4/5, iterating the module-level ordered hint structure (name,
+      requires, forbids, text) that mirrors green_leg_labels.hints: collection_error, then
+      module_level_skip, then missing_node; the first whose requires all match and forbids none match
+      wins; None otherwise (e.g. exit 5 "no tests ran" from a deselection). (e) The _classify_outcome docstring (which says
+      the red-before leg's real replay calls it identically) is updated: the deadline-kill path now
+      sets TIMEOUT_OUTCOME directly. Stays well under 500 SLOC (117 today).
+  - file: scripts/checks/verification/_vp_replay_budget.py
+    action: Modify
+    purpose: >-
+      (a) Divergence-text builders moved here beside the existing deadline-kill builders: green
+      exit-code divergence (composes the label from (b)-(d) above), green missing-literal
+      divergence, red-before tautological/unmeasurable divergence; each appends "after X.Xs". Existing
+      substrings stay byte-identical: "vp-replay <plan>:<step>:", "actual=exit <N>", "!= expected=exit
+      0", "actual=missing literal(s)", "vp-red-before", "actual=<outcome> (exit <N>)", "must be
+      genuinely red", "output tail=". (b) run_bounded: when the bounded post-SIGKILL reap itself times
+      out, close popen.stdout/popen.stderr and popen.wait() the already-SIGKILLed shell -- a plain
+      wait, no try/except: the kernel reaps a SIGKILLed process promptly and an escaped descendant
+      holding the pipe cannot block a wait on the shell -- so no zombie or open file descriptor
+      survives the call and no untested branch is added; the widened docstring names the residual (an
+      unbounded wait on a SIGKILLed shell can only hang on an uninterruptible kernel sleep). (c) The module docstring's scope statement widens from
+      budget telemetry to "bounded execution and replay outcome reporting" so the moved builders sit in
+      a cohesive submodule (Decision 128 point 1).
+  - file: scripts/checks/verification/validate_vp_replay.py
+    action: Modify
+    purpose: >-
+      _replay_step calls the moved builders instead of its three inline f-strings -- the builders take
+      (plan_rel, step, result) plus, respectively, nothing (green exit-code), the missing-literal list
+      (green literal) or the classified outcome (red-before), so every call site is a single line --
+      and its
+      deadline-kill branch sets outcome = TIMEOUT_OUTCOME directly instead of calling
+      _classify_outcome(step.command, None, output, timed_out=True) with three unused arguments
+      (rec-3835). No behaviour change beyond the richer failure text: every path that fails today
+      still fails, every path that passes still passes. Keeps the _CONTRACT_BASENAME evaluator literal.
+      Ends at or below 499 SLOC (it is at 499; the move is net-negative); if it would exceed 500, the
+      only sanctioned overflow move is the negated-sweep lint helpers (_NEGATED_RG_GREP_RE,
+      _QUOTED_TOKEN_RE, _SAFE_PATH_TOKEN_RE, _extract_negated_rg_grep_path) into _vp_replay_classify.py,
+      re-imported here -- never a new file, never a raise (Decision 128).
+  - file: tests/checks/verification/test__vp_replay_classify.py
+    action: Modify
+    purpose: >-
+      New TestTimeoutShortCircuit (rec-3835's acceptance class): TIMEOUT_OUTCOME == "unmeasurable" and
+      is in OUTCOME_CLASSES; _classify_outcome(timed_out=True) returns TIMEOUT_OUTCOME whatever the
+      other arguments; and _run_self_test_fixture still consults _classify_outcome on its timeout arm
+      (asserted by patching it to a sentinel and running the 0.05s sleep fixture). New
+      TestUnmeasurableArmNames: each arm name is returned for its trigger and every returned name is in
+      the contract's unmeasurable_arms (derive-asserted from docs/contracts/vp-red-before.yaml). New
+      TestMissingExecutable (both real spellings; None for other output). New TestCollectionHint (the
+      dependency hint on "found no collectors"; the missing-node hint on "not found:"; None for a
+      non-pytest command exiting 4; None on exit 1). Covers every shape measured at planning: exit 4
+      "1 skipped" + "found no collectors" -> module_level_skip; exit 4 "1 error" + "found no
+      collectors" (a module whose import raises) -> collection_error, never module_level_skip; exit 5
+      "1 skipped" (whole-file) -> module_level_skip; exit 4 "file or directory not found:" and "not
+      found: ... no match" -> missing_node; exit 5 "no tests ran" -> None. New
+      TestGreenLegLabelContractPins: the token and the ordered hint structure (names, requires,
+      forbids, texts) equal docs/contracts/vp-red-before.yaml green_leg_labels' structured values. If the
+      SLOC overflow move fires, also add direct
+      tests for every relocated branch -- the per-file coverage floor measures this module against this
+      mirror alone.
+  - file: tests/checks/verification/test__vp_replay_budget.py
+    action: Modify
+    purpose: >-
+      New TestDivergenceTextBuilders: every pinned substring survives and "after <N>s" is present;
+      the green exit-code builder labels exit 127 with the command name, exit 126 as not executable,
+      an unmeasurable arm with no parsed name (rg exit 2, a credential message), a pytest exit 4 with
+      each collection hint (including the exit-4 import-error shape getting collection_error, never
+      the skip hint), a pytest exit 5 whole-file skip with the module-level-skip hint, a
+      non-pytest exit 4 as "raw outcome: target_absent" with no hint, and a plain exit 1 as "raw
+      outcome: assertion_failed"; no green label contains "actual=<outcome>"; missing-literal and
+      red-before builders carry the duration. New TestKillAndReapBoundedWait::test_reap_timeout_closes_pipes_and_reaps_the_shell
+      with _REAP_TIMEOUT_SECONDS patched small (never a real 5s wait): after a reap timeout the shell
+      pid is reaped and both pipes are closed; the test kills its own escaped descendant in teardown.
+  - file: tests/checks/verification/validate_vp_replay/test_implement_leg.py
+    action: Modify
+    purpose: >-
+      New TestGreenLegUnmeasurable::test_missing_tool_exit_127_is_not_reported_as_assertion_failure
+      (rec-3920's acceptance node): a hermetic step invoking a nonexistent command still fails, and its
+      text carries the exit_127_command_not_found label and the command name, never assertion_failed.
+      New TestImplementLeg::test_failed_step_reports_its_duration. Existing tests unchanged.
+  - file: tests/checks/verification/validate_vp_replay/test_red_before_leg.py
+    action: Modify
+    purpose: >-
+      New TestRedBeforeLeg::test_red_before_divergence_reports_its_duration (a tautological graduate
+      step's text carries its duration beside "actual=tautological"). New
+      TestUnmeasurable::test_deadline_kill_does_not_consult_the_classifier: with
+      validate_vp_replay._classify_outcome patched to raise, a red-before deadline kill still reports
+      actual=unmeasurable. The two moved-seam tests keep intercepting at run_bounded.
+bundled_recommendations:
+  - rec-3334
+  - rec-3920
+  - rec-3835
+followon_recs:
+  - rec-2809
+infrastructure_dependencies: []
+acceptance_criteria:
+  - hermetic_authoring drops the contradicting sentence and carries the requirements-fast.txt carve-out naming rec-2809, carve-out (v)'s pytest_diff bound and the replay_bound pointer (VP steps 1, 2); the full five-carve-out rule text, including "node and class selectors stay hermetic", is reviewed against the scope row at code review (prose, not mechanically asserted).
+  - The planning skill's hermetic read-trigger names replay_bound (VP step 3).
+  - A green-leg failure still fails and carries a "raw outcome:" descriptor -- unmeasurable naming the arm (and the command for exit 127), target_absent (with an output-keyed hint only for a matching pytest exit 4/5), or assertion_failed -- plus its duration (VP steps 4, 5, 9, 10).
+  - Red-before divergences carry their duration; every pinned failure-text substring is unchanged (VP steps 6, 10, 13).
+  - The deadline-kill path uses the named TIMEOUT_OUTCOME without consulting the classifier, while the in-dispatch self-test still exercises the classifier's timeout arm (rec-3835; VP steps 7, 8).
+  - run_bounded leaves no zombie or open pipe after a reap timeout (VP step 11).
+  - validate_vp_replay.py stays <= 500 SLOC; --pre exits 0; the full tier exits 0 on the committed, rebased tree and validation_result --verify-head passes; rec-3334, rec-3920 and rec-3835 close via the Resolves trailer (VP steps 12-16).
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: rec-3334's re-pointed acceptance -- the contradicting sentence is gone and the fast-tier dependency carve-out is present.
+    command: >-
+      ! grep -q 'pytest/deploys stay' docs/contracts/vp-red-before.yaml && grep -q 'requirements-fast.txt' docs/contracts/vp-red-before.yaml
+    expected: Exit 0 (rec-3334's acceptance, verbatim).
+    fix_if: The old sentence survives, or requirements-fast.txt appears nowhere in the contract.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      rec-3334's frozen closure oracle, kept verbatim for Decision 201; it is file-scoped, so the
+      append-only amendment_log could satisfy it after a later regression. Step 2 graduates the
+      stronger, key-scoped form of the same property.
+  - step: 2
+    phase: pre-deploy
+    action: Key-scoped -- hermetic_authoring itself carries the carve-out, its rec-2809 owner and the replay_bound pointer, and no longer the contradicting sentence.
+    command: >-
+      bin/venv-python -c "import sys, yaml; t = yaml.safe_load(open('docs/contracts/vp-red-before.yaml', encoding='utf-8'))['hermetic_authoring']; ok = 'pytest/deploys stay' not in t and all(k in t for k in ('requirements-fast.txt', 'rec-2809', 'replay_bound', 'pytest_diff')); print('SINGLE_RULE' if ok else 'RULE_STALE'); sys.exit(0 if ok else 1)"
+    expected: Exit 0 printing SINGLE_RULE. Red before (RULE_STALE).
+    fix_if: RULE_STALE -- carve-out (iii), its rec-2809 owner, carve-out (v)'s pytest_diff bound or the replay_bound pointer is missing from the hermetic_authoring value itself.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: vp-hermetic-authoring-single-rule
+  - step: 3
+    phase: pre-deploy
+    action: The planning skill's hermetic read-trigger names the replay_bound key.
+    command: grep -q 'vp-red-before.yaml#replay_bound' .claude/skills/planning/SKILL.md
+    expected: Exit 0.
+    fix_if: The pointer is missing or names a different anchor than the contract key.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: planning-skill-points-at-replay-bound
+  - step: 4
+    phase: pre-deploy
+    action: rec-3920 -- a hermetic step that invokes a missing command still fails, labelled with the exit-127 arm and the command name.
+    command: bin/venv-python -m pytest tests/checks/verification/validate_vp_replay/test_implement_leg.py::TestGreenLegUnmeasurable::test_missing_tool_exit_127_is_not_reported_as_assertion_failure -q
+    expected: One test passes (rec-3920's acceptance, verbatim).
+    fix_if: The step passes (the green leg was relaxed -- forbidden), or the text still reads as a plain assertion failure.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: vp-replay-green-leg-labels-missing-tool-unmeasurable
+    expected_literals:
+      - passed
+  - step: 5
+    phase: pre-deploy
+    action: A failed green-leg step reports its own duration.
+    command: bin/venv-python -m pytest tests/checks/verification/validate_vp_replay/test_implement_leg.py::TestImplementLeg::test_failed_step_reports_its_duration -q
+    expected: One test passes.
+    fix_if: The failure text lacks the duration, or a pinned substring changed.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: vp-replay-failed-step-reports-duration
+    expected_literals:
+      - passed
+  - step: 6
+    phase: pre-deploy
+    action: A red-before divergence reports its own duration beside the pinned outcome substring.
+    command: bin/venv-python -m pytest tests/checks/verification/validate_vp_replay/test_red_before_leg.py::TestRedBeforeLeg::test_red_before_divergence_reports_its_duration -q
+    expected: One test passes.
+    fix_if: The duration is missing, or "actual=tautological" no longer appears.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: vp-red-before-divergence-reports-duration
+    expected_literals:
+      - passed
+  - step: 7
+    phase: pre-deploy
+    action: rec-3835 at the replay call site -- a deadline kill reports unmeasurable without consulting the classifier.
+    command: bin/venv-python -m pytest tests/checks/verification/validate_vp_replay/test_red_before_leg.py::TestUnmeasurable::test_deadline_kill_does_not_consult_the_classifier -q
+    expected: One test passes.
+    fix_if: The patched classifier is reached (the call survives) or the outcome is no longer unmeasurable.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Already run by the graduated class-level registry row vp-red-before-unmeasurable-hard-fails
+      (node tests/checks/verification/validate_vp_replay/test_red_before_leg.py::TestUnmeasurable), the
+      same whole-node coverage rule steps 8-11 apply.
+    expected_literals:
+      - passed
+  - step: 8
+    phase: pre-deploy
+    action: rec-3835 -- the timeout outcome is a named constant, and the self-test deliberately still exercises the classifier's timeout arm.
+    command: bin/venv-python -m pytest tests/checks/verification/test__vp_replay_classify.py::TestTimeoutShortCircuit -q
+    expected: All tests in the class pass (rec-3835's acceptance, verbatim).
+    fix_if: TIMEOUT_OUTCOME is missing, or the self-test fixture stopped consulting the classifier (that would also red graduated row vp-red-before-classifier-self-test).
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Already run by the graduated whole-file registry row
+      vp-replay-classifier-relocation-preserves-vocabulary (node tests/checks/verification/test__vp_replay_classify.py).
+    expected_literals:
+      - passed
+  - step: 9
+    phase: pre-deploy
+    action: The label helpers -- arm names and the green_leg_labels structure derive-asserted against the contract, both real shell spellings, and output-keyed collection hints.
+    command: bin/venv-python -m pytest tests/checks/verification/test__vp_replay_classify.py::TestUnmeasurableArmNames tests/checks/verification/test__vp_replay_classify.py::TestMissingExecutable tests/checks/verification/test__vp_replay_classify.py::TestCollectionHint tests/checks/verification/test__vp_replay_classify.py::TestGreenLegLabelContractPins -q
+    expected: All tests in the four classes pass.
+    fix_if: An arm name drifted from the contract, a real spelling is not parsed, or a hint fires on the wrong output.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: Already run by the graduated whole-file registry row vp-replay-classifier-relocation-preserves-vocabulary.
+    expected_literals:
+      - passed
+  - step: 10
+    phase: pre-deploy
+    action: The moved divergence-text builders carry the duration, the labels and every pinned substring.
+    command: bin/venv-python -m pytest tests/checks/verification/test__vp_replay_budget.py::TestDivergenceTextBuilders -q
+    expected: All tests in the class pass.
+    fix_if: A pinned substring changed, or a label is wrong for any of the named exit/output cases.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Already run by the graduated whole-file registry row vp-replay-bounded-runner-kills-process-group;
+      the leg-level behaviour is graduated by steps 4-6.
+    expected_literals:
+      - passed
+  - step: 11
+    phase: pre-deploy
+    action: run_bounded leaves no zombie or open pipe when its bounded reap times out.
+    command: bin/venv-python -m pytest tests/checks/verification/test__vp_replay_budget.py::TestKillAndReapBoundedWait::test_reap_timeout_closes_pipes_and_reaps_the_shell -q
+    expected: One test passes in well under a second (the reap timeout is patched small).
+    fix_if: The shell pid is still a zombie or a pipe is still open after the call.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Already run by the graduated whole-file registry row vp-replay-bounded-runner-kills-process-group
+      (node tests/checks/verification/test__vp_replay_budget.py).
+    expected_literals:
+      - passed
+  - step: 12
+    phase: pre-deploy
+    action: validate_vp_replay.py stays within the unregistered-file SLOC limit.
+    command: >-
+      bin/venv-python -c "import sys, pathlib; lines = pathlib.Path('scripts/checks/verification/validate_vp_replay.py').read_text(encoding='utf-8').splitlines(); sloc = len([l for l in lines if l.strip() and not l.strip().startswith('#')]); print('SLOC', sloc); sys.exit(0 if sloc <= 500 else 1)"
+    expected: Exit 0; SLOC at or below 499 (499 at planning; the builder move is net-negative).
+    fix_if: Over 500 -- apply the scope row's single sanctioned overflow move; never register a budget (Decision 128).
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: Governed tree-wide by the registered validate_sloc_limits check in both tiers; this step only shows the per-file margin.
+  - step: 13
+    phase: pre-deploy
+    action: Whole-surface regression -- every touched test file passes and all touched Python is lint- and format-clean.
+    command: >-
+      bin/venv-python -m pytest tests/checks/verification/validate_vp_replay tests/checks/verification/test__vp_replay_budget.py tests/checks/verification/test__vp_replay_classify.py -q && bin/venv-python -m ruff check scripts/checks/verification/ tests/checks/verification/ && bin/venv-python -m ruff format --check scripts/checks/verification/ tests/checks/verification/
+    expected: All tests pass, ruff reports no findings, and format --check reports every file already formatted. Measured ~26.6s at planning.
+    fix_if: A pre-existing test fails -- a pinned failure-text substring moved or a seam changed.
+    hermetic: false
+    graduation: not-applicable
+  - step: 14
+    phase: pre-deploy
+    action: Run the fast presubmit tier.
+    command: bin/venv-python -m scripts.validate --pre
+    expected: Zero failed checks, including validate_vp_replay, validate_contract_drift, validate_skill_prose_relocation, validate_scope_boundary and validate_graduation_completeness.
+    fix_if: Any failure -- diagnose and fix on the branch; never weaken a check to obtain green (Decision 181).
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: Invokes scripts.validate, which the vp-red-before recursion refusal forbids graduating; its constituent checks are each registered in their own right.
+  - step: 15
+    phase: pre-deploy
+    action: Run the full tier on the committed, rebased tree and attest it (git-ops.yaml handoff_sequence; Decision 163's 2026-09-26 Update, Decision 203).
+    command: >-
+      test -z "$(git status --porcelain)" && bin/venv-python -m scripts.validate && bin/venv-python -m scripts.checks.validation_result --verify-head
+    expected: A clean tree, a full-tier summary with zero failed checks, and --verify-head reporting ok for the current HEAD.
+    fix_if: >-
+      A dirty tree -- commit first, then fetch and rebase, then rerun. A timeout is BLOCKED per
+      handoff_policy -- rerun the full tier from the start; never push on a partial run.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: Same recursion refusal as step 14 at the full tier; its constituent checks are each already registered in their own right.
+  - step: 16
+    phase: post-deploy
+    action: Confirm rec-3334, rec-3920 and rec-3835 closed through the squash-merge Resolves trailer, and rec-2809 stays open as the carve-out's owner.
+    command: >-
+      bin/venv-python -m scripts.ops_data_portal --sync && bin/venv-python -c "import json, pathlib; rows = {r['id']: r.get('status') for r in (json.loads(l) for l in pathlib.Path('logs/.recommendations-log.jsonl').read_text(encoding='utf-8').splitlines() if l.strip())}; got = [rows.get(i) for i in ('rec-3334', 'rec-3920', 'rec-3835', 'rec-2809')]; print(got); raise SystemExit(0 if got == ['closed', 'closed', 'closed', 'open'] else 1)"
+    expected: Prints ['closed', 'closed', 'closed', 'open'] and exits 0.
+    fix_if: >-
+      Run only after the merge commit's trailer-closure job has completed (event-driven, never polled;
+      ci.yml declares roughly 16-20 minutes). A bundled rec still open after that -- check the squash
+      commit body carries the Resolves trailer and the closure job's acceptance verdict; never close a
+      rec by hand. rec-2809 must NOT be closed by this
+      plan -- it owns the carve-out's enforcement gap.
+    hermetic: false
+test_obligations:
+  - source: docs/contracts/vp-red-before.yaml
+    behavior: hermetic_authoring itself states one rule carrying the fast-tier dependency carve-out, its rec-2809 owner and the replay_bound pointer, without the contradicting sentence.
+    verification_step: 2
+    command: >-
+      bin/venv-python -c "import sys, yaml; t = yaml.safe_load(open('docs/contracts/vp-red-before.yaml', encoding='utf-8'))['hermetic_authoring']; ok = 'pytest/deploys stay' not in t and all(k in t for k in ('requirements-fast.txt', 'rec-2809', 'replay_bound', 'pytest_diff')); print('SINGLE_RULE' if ok else 'RULE_STALE'); sys.exit(0 if ok else 1)"
+    red_green_expectation: Red before -- RULE_STALE (the sentence is present, the three markers absent). Green after -- SINGLE_RULE.
+  - source: .claude/skills/planning/SKILL.md
+    behavior: The planning skill routes authors to replay_bound when setting hermetic on a step.
+    verification_step: 3
+    command: grep -q 'vp-red-before.yaml#replay_bound' .claude/skills/planning/SKILL.md
+    red_green_expectation: Red before -- the pointer is absent (exit 1). Green after -- exit 0.
+  - source: scripts/checks/verification/validate_vp_replay.py
+    behavior: A green-leg failure from a missing command still fails but is labelled with the exit-127 arm and the command name.
+    verification_step: 4
+    test_selector: tests/checks/verification/validate_vp_replay/test_implement_leg.py::TestGreenLegUnmeasurable::test_missing_tool_exit_127_is_not_reported_as_assertion_failure
+    red_green_expectation: Red before -- the class does not exist (collection error), and today's text says only actual=exit 127. Green after -- passes.
+  - source: scripts/checks/verification/validate_vp_replay.py
+    behavior: A failed green-leg step reports its own duration.
+    verification_step: 5
+    test_selector: tests/checks/verification/validate_vp_replay/test_implement_leg.py::TestImplementLeg::test_failed_step_reports_its_duration
+    red_green_expectation: Red before -- the node does not exist and today's text carries no duration. Green after -- passes.
+  - source: scripts/checks/verification/validate_vp_replay.py
+    behavior: A red-before divergence reports its own duration beside the pinned outcome substring.
+    verification_step: 6
+    test_selector: tests/checks/verification/validate_vp_replay/test_red_before_leg.py::TestRedBeforeLeg::test_red_before_divergence_reports_its_duration
+    red_green_expectation: Red before -- the node does not exist and today's text carries no duration. Green after -- passes.
+  - source: scripts/checks/verification/validate_vp_replay.py
+    behavior: The deadline-kill branch sets TIMEOUT_OUTCOME without consulting _classify_outcome.
+    verification_step: 7
+    test_selector: tests/checks/verification/validate_vp_replay/test_red_before_leg.py::TestUnmeasurable::test_deadline_kill_does_not_consult_the_classifier
+    red_green_expectation: Red before -- the node does not exist, and today the branch calls _classify_outcome, so the patched classifier would raise. Green after -- passes.
+  - source: scripts/checks/verification/_vp_replay_classify.py
+    behavior: TIMEOUT_OUTCOME is the named timeout short-circuit, and the self-test fixture still consults the classifier's timeout arm.
+    verification_step: 8
+    test_selector: tests/checks/verification/test__vp_replay_classify.py::TestTimeoutShortCircuit
+    red_green_expectation: Red before -- the class and TIMEOUT_OUTCOME do not exist (collection error). Green after -- all pass.
+  - source: scripts/checks/verification/_vp_replay_classify.py
+    behavior: unmeasurable_arm returns contract arm names, missing_executable parses both real spellings, and collection_hint keys on the output text.
+    verification_step: 9
+    command: bin/venv-python -m pytest tests/checks/verification/test__vp_replay_classify.py::TestUnmeasurableArmNames tests/checks/verification/test__vp_replay_classify.py::TestMissingExecutable tests/checks/verification/test__vp_replay_classify.py::TestCollectionHint tests/checks/verification/test__vp_replay_classify.py::TestGreenLegLabelContractPins -q
+    red_green_expectation: Red before -- none of the four classes or helpers exist (collection error). Green after -- all pass.
+  - source: scripts/checks/verification/_vp_replay_budget.py
+    behavior: The divergence builders carry the labels, the durations and every pinned substring.
+    verification_step: 10
+    test_selector: tests/checks/verification/test__vp_replay_budget.py::TestDivergenceTextBuilders
+    red_green_expectation: Red before -- the class and the builders do not exist (collection error). Green after -- all pass.
+  - source: scripts/checks/verification/_vp_replay_budget.py
+    behavior: run_bounded reaps the killed shell and closes both pipes when its bounded reap times out.
+    verification_step: 11
+    test_selector: tests/checks/verification/test__vp_replay_budget.py::TestKillAndReapBoundedWait::test_reap_timeout_closes_pipes_and_reaps_the_shell
+    red_green_expectation: Red before -- the node does not exist, and today the reap-timeout path returns with the shell unreaped and both pipes open. Green after -- passes.
+constraints:
+  - Never relax the green leg -- every non-zero exit still hard-fails; labels are diagnostic text only (rec-3920's own constraint; Decision 181).
+  - Decision 189's four frozen outcome_classes and unmeasurable_arms are unchanged; _classify_outcome's behaviour is byte-identical after unmeasurable_arm is extracted.
+  - _run_self_test_fixture's timeout branch keeps routing through _classify_outcome (graduated row vp-red-before-classifier-self-test pins it); rec-3835's short-circuit applies at _replay_step only.
+  - Preserve every pinned failure-text substring (12 registry rows name these four test files' nodes; 27 reference any validate_vp_replay test module).
+  - validate_vp_replay.py stays a module and keeps its _CONTRACT_BASENAME evaluator literal (23 registry rows carry it as guard_target; Decisions 104 and 168); no new file under scripts/.
+  - Keep "_RG_GREP_ERROR_EXIT_CODE and" on exactly one source line of _vp_replay_classify.py with its return on the next line, and never duplicate that condition elsewhere (e.g. in collection_hint or a builder) -- registry row vp-replay-coverage-survives-absent-ripgrep reads that shape, and no standing sweep would notice it going stale.
+  - The planning SKILL.md edit adds a pointer only; the stub heading survives and no relocated rule text is re-inlined (validate_skill_prose_relocation).
+  - Do not touch scripts/checks/deps/selection_budget.py, scripts/validate.py or docs/DECISIONS.md (Bundle B owns the Decision 182 re-calibration).
+  - The three bundled acceptances were re-pointed at planning time (2026-09-28) and must not be edited again; the implementation must satisfy them verbatim (Decision 201).
+  - The new amendment_log summary must not quote the retired sentence verbatim -- rec-3334's oracle is file-scoped and the log is append-only, so a quoted "pytest/deploys stay" would make rec-3334 permanently unclosable (VP step 1 catches it before commit).
+  - No rescue agents or workaround loops (Decision 55).
+context:
+  - "Decision-scout verdict: FLAGS_FOUND (NOTE Decision 103 -- resolved: rec-2809's disposition was the human's fork answer before any write; SPIRIT NOTE Decisions 163 and 148 -- resolved by re-scoping rec-2809 to own carve-out (iii)'s enforcement gap and root cause, named in the contract). CITE: 148, 189, 168, 128, 181, 201, 132, 59, 66. Decisions triaged: 157 of 157. Roadmap items intersected: 2; CONFLICT: 0; RELATED: 2"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PROCEED after 4 round(s); round 4 autonomous"
+  - "plan-critique round log: REVISE round 1 (F1-F13 addressed), REVISE round 2 (R1-R2 fixed; A1, A3-A8 applied; A2 applied as a rec-2809 portal note), REVISE round 3 (J1 fixed -- a refinement of round 2's R2 hint keys with measured pytest output, not a reversal; J2, J3, J6 applied; J4, J5, J7, J8 applied; J9 recorded), PROCEED round 4 (confirming; advisories K1-K7 applied as text-only edits after the verdict, K8 informational; out-of-scope stale registry row contract-version-bumped filed as rec-4123)"
+  - "Evidence (2026-09-28): rec-3334's former acceptance grepped the planning skill, where the sentence no longer lives, so it passed with the contradiction intact. 426 of 1466 pytest pre-deploy steps across 95 plans are hermetic: true; about 44 test modules carry a module-level pytest.importorskip (mostly duckdb, absent from requirements-fast.txt). PLAN-handoff-evidence-gate step 7 replayed 49.0s in CI (pr-validate 36282044351), 41% of the 120s aggregate."
+  - "Portal bookkeeping at planning time (human-confirmed; get_rec_write_guidance first; every acceptance linted): rec-3334, rec-3920 and rec-3835 acceptances re-pointed to VP steps 1, 4 and 8 verbatim; rec-2809 re-scoped (open, owner of carve-out (iii)); rec-2631 closed as satisfied by bin/venv-python's venv-less fallback; rec-4120 filed (critique-found: classify_grammar routes the canonical 'bin/venv-python -m pytest <node>' form static because the interpreter's -m reads as a pytest marker selector, so the three bundled recs close via the static probe, not junit)."
+  - "Graduated registry shards for steps 2-6 are sanctioned by implement-scope-boundary.yaml graduated_registry_shard (entries/{graduation_check_id}.yaml), so they are not listed as scope rows. Coverage rule: a new node already run by an existing whole-file or class-level row waives (steps 7-11 -- vp-red-before-unmeasurable-hard-fails, vp-replay-bounded-runner-kills-process-group, vp-replay-classifier-relocation-preserves-vocabulary); a node under no such row graduates (steps 4-6)."
+  - "Non-test half projection for the implementation PR: replayed hermetic steps 1-12 about 15-20s (the reap test patches its timeout) + validate_verification_registry admitting 5 new rows about 20-35s (#1292 admitted 6 in the same area; its pr-validate run 36268033104 measured a 135.8s non-test half) + static checks 103-125s typical = roughly 140-180s against the unwaivable 240s. A non_test_breach is BLOCKED: never weaken a step, a graduation or a check to fit -- Bundle B / rec-4093 owns the constant."
+  - "Bundle B (Decision 182 re-calibration: rec-4093, rec-3929, rec-3677) is a separate plan with no shared scope file."
+  - "fork: rec-2809 disposition -- re-scope and keep open vs build a narrow plan-time guard vs close as superseded | chosen: re-scope, keep open | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: portal rec-2809 + scope row docs/contracts/vp-red-before.yaml"
+  - "fork: bundle rec-3920 and rec-3835 (same lines this plan moves) | chosen: include both | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: bundled_recommendations"
+  - "fork: close rec-2631 as satisfied outside this plan | chosen: close now | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: portal rec-2631"
+  - "fork: home for the moved divergence-text builders -- _vp_replay_budget.py vs a new sibling module | chosen: _vp_replay_budget.py with a widened docstring | class: consistency-only | precedent: Decision 104 | precedent_kind: decision | reversible: yes | persisted: scope row scripts/checks/verification/_vp_replay_budget.py"
+  - "fork: rec-3835 at the self-test -- keep the fixture routed through the classifier vs bring test_accounting_and_self_test.py into scope | chosen: keep it routed (short-circuit at _replay_step only) | class: consistency-only | precedent: Decision 181 | precedent_kind: decision | reversible: yes | persisted: scope row _vp_replay_classify.py + constraints"
+  - "fork: carve-out (v) for steps that only duplicate the same run's --pre phases | chosen: add it | class: consistency-only | precedent: Benjamin's 2026-09-26 answer on PLAN-vp-replay-deadline-from-shared-budget round 2 R1 (do not replay the whole-surface regression step) | precedent_kind: answered-fork | reversible: yes | persisted: scope row docs/contracts/vp-red-before.yaml"
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - Only the plan-cited decision sections read
+  - All scope files located and readable
+  - Acceptance criteria understood and verifiable
+execution_steps:
+  - "Record red-before evidence: run VP steps 1-11 on the untouched tree and record each output (1-3 exit 1 or RULE_STALE; 4-11 collection errors or missing nodes)."
+  - Edit docs/contracts/vp-red-before.yaml (hermetic_authoring rule, top-level green_leg_labels, amendment_log, contract_version 6) and the planning skill's read-trigger.
+  - Edit _vp_replay_classify.py (TIMEOUT_OUTCOME, unmeasurable_arm, missing_executable, collection_hint), then _vp_replay_budget.py (divergence builders, reap fix, docstring), then validate_vp_replay.py (call the builders; TIMEOUT_OUTCOME at the deadline-kill branch); re-measure SLOC (VP step 12).
+  - Add the tests named in the four test-file scope rows; run VP steps 1-13 in order; loop until pass; never weaken an assertion; on an unrecoverable failure stop and RCA (Decision 55).
+  - Create the five sanctioned graduated registry shards for VP steps 2-6 (graduation_check_id verbatim as check_id; command_exit_zero for steps 2-3, test_selector for 4-6; field shape per an existing row of each slot) (Decisions 132/176).
+  - Set implementation_declared true in this plan and run VP step 14 (--pre).
+  - "Handoff in the git-ops.yaml handoff_sequence order: commit; git fetch origin main and rebase onto it; run VP step 15 on the clean committed tree (full tier plus --verify-head); then push with git push -u origin HEAD as its own tool call."
+  - "Closure evidence, recorded as four SEPARATE facts (implement skill Commit Flows): GitHub readiness; parent validator evidence (VP step 15's full-tier exit 0 and --verify-head ok for the pushed HEAD); structured postflight evidence; the real outcome -- PR, CI green on the head (event-driven wake, never polled), squash-merge with 'Resolves: rec-3334, rec-3920, rec-3835', then post-deploy VP step 16."
+  - "Report, naming separately: what was implemented; red-before and green-after outputs of VP steps 1-11; the SLOC figure; the full-tier output that admitted the five registry rows; and each closure fact."
+work_areas: []
+rollback: Revert the single implementation commit; no runtime, data or infrastructure state is touched.
