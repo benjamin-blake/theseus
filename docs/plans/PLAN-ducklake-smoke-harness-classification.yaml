@@ -274,7 +274,7 @@ verification_plan:
   - step: 9
     phase: pre-deploy
     action: prove the vocabulary and substrate registrations landed with their amendment_log entries
-    command: >-
+    command: &step9_cmd >-
       bin/venv-python -c "import yaml;
       d=yaml.safe_load(open('docs/contracts/data-modeling-standard.yaml', encoding='utf-8'));
       v=d['vocabulary']; assert all(set(r) >= {'reserved_meaning','do_not_use_for'} for k, r in v.items() if isinstance(r, dict)), v;
@@ -308,13 +308,27 @@ verification_plan:
     expected_literals: []
   - step: 11
     phase: pre-deploy
+    action: prove Decision 191 carries the smoke_harness amendment and the generated decisions index is fresh
+    command: &step11_cmd >-
+      bash -c "awk '/^## Decision 191:/{f=1} /^## Decision 190:/{f=0} f' docs/DECISIONS.md | grep -q smoke_harness
+      && bin/venv-python -m scripts.decisions_index --check && echo DEC191_AMENDED_INDEX_FRESH"
+    expected: prints the marker; red on the planning tree (Decision 191 never names smoke_harness)
+    fix_if: the amendment edited a clause in place instead of appending a dated trailer (Decision 177), or the index was hand-edited
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      One-time prose presence on an append-only Decision entry; the index freshness half is already the
+      registered decisions-index drift check in both tiers, so a standing row would duplicate it.
+    expected_literals: []
+  - step: 12
+    phase: pre-deploy
     action: run the authoritative fast presubmit tier
     command: bin/venv-python -m scripts.validate --pre
     expected: exit 0
     fix_if: diagnose and fix on the branch (ci-rca watches main only)
     hermetic: false
     graduation: not-applicable
-  - step: 12
+  - step: 13
     phase: pre-deploy
     action: run the full presubmit tier before handoff, as handoff_policy declares
     command: bin/venv-python -m scripts.validate
@@ -322,7 +336,7 @@ verification_plan:
     fix_if: a timeout is blocked -- resume later and rerun from the start
     hermetic: false
     graduation: not-applicable
-  - step: 13
+  - step: 14
     phase: post-deploy
     action: confirm the governed channel built, deployed and smoked all DuckLake Lambdas on the merge commit (Decision 125/126)
     command: >-
@@ -331,7 +345,7 @@ verification_plan:
     expected: all five jobs succeed -- deploy-maintenance, maintenance-smoke, reconcile-gate, deploy-serving, smoke (the smoke job's --lambda-reader still reads ducklake_smoke_current)
     fix_if: never fall back to build_lambda --ducklake-only --deploy (Decision 125/126)
     hermetic: false
-  - step: 14
+  - step: 15
     phase: post-deploy
     action: DEV agent proves the first scheduled merge_ops after deploy succeeded -- no manual invoke
     command: >-
@@ -350,19 +364,19 @@ verification_plan:
       STOP and RCA (Decision 55); an overlapping EC probe run is the only accepted transient, confirm it
       and re-read the following pass
     hermetic: false
-  - step: 15
+  - step: 16
     phase: post-deploy
     action: DEV agent hands back -- ADMIN HANDOFF block in the merged PR description plus a final PR comment naming the pickup point
     command: >-
       mcp__github__update_pull_request (append the ADMIN HANDOFF block, Decision 115) then
       mcp__github__add_issue_comment on the merged PR: the squash-merge SHA, the green
-      deploy-ducklake-lambdas.yml run URL, step 14's metric readings, and the resume instruction (rebase
+      deploy-ducklake-lambdas.yml run URL, step 15's metric readings, and the resume instruction (rebase
       onto main; resume PLAN-ducklake-partition-layout-remediation from step 16; step 18 now expects
       layouts == the ten ops tables and skipped == exactly the pair)
     expected: both exist; the DEV agent invokes no maintenance verb itself
     fix_if: a DEV-container invocation of any maintenance verb was attempted -- stop; they are admin-only
     hermetic: false
-  - step: 16
+  - step: 17
     phase: post-deploy
     action: ADMIN agent (resuming session, under explicit human direction per Decision 204) runs the read-only reconcile dry_run and PRESENTS it
     command: >-
@@ -378,7 +392,7 @@ verification_plan:
       that plan's step 18 -- reuse it, do not re-invoke
     fix_if: an unclassified-table error, or layouts/skipped other than exactly those sets -- STOP and report
     hermetic: false
-  - step: 17
+  - step: 18
     phase: post-deploy
     action: confirm rec-3864 closed through the squash-merge Resolves trailer (Decision 201 holds verdict)
     command: >-
@@ -425,6 +439,31 @@ test_obligations:
     verification_step: 5
     command: *step5_cmd
     red_green_expectation: red before (missing-row node absent), green after
+  - source: docs/contracts/data-modeling-standard.yaml
+    behavior: the vocabulary block reserves the smoke-family terms, every row carrying reserved_meaning and do_not_use_for
+    verification_step: 9
+    command: *step9_cmd
+    red_green_expectation: red before (no vocabulary key), green after
+  - source: docs/contracts/storage-substrate.yaml
+    behavior: the smoke-harness pair is registered with grain and write_mode and a status other than smoke
+    verification_step: 9
+    command: *step9_cmd
+    red_green_expectation: red before (no row names the pair), green after
+  - source: docs/contracts/ducklake_maintenance.yaml
+    behavior: the Class B contract's class list and reconcile_partitions response prose name smoke_harness and the skipped key, with an amendment_log entry
+    verification_step: 12
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: prose-only lines in a Class B ritual contract; validate_contract_drift (run by this --pre step) enforces its amendment_log discipline, and the behavior it describes is guarded by steps 3-4
+  - source: docs/contracts/ducklake-partition-remediation.yaml
+    behavior: the operator procedure's steps 18/19/21 name the exact expected layouts and skipped sets, with an amendment_log entry
+    verification_step: 12
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: operator-procedure prose executed only by the resuming ADMIN session (step 17 here); validate_contract_drift (run by this --pre step) guards its amendment_log
+  - source: docs/decisions-index.json
+    behavior: the generated index reflects the Decision 191 amendment
+    verification_step: 11
+    command: bin/venv-python -m scripts.decisions_index --check
+    waiver_reason: generated projection; its drift check is green before and after by construction, and the amendment content itself is asserted by step 11
 constraints:
   - Decision 191 -- classification is registry-driven from declared field_semantics data; no "ducklake_smoke" prefix or any name pattern anywhere in the path; write_mode stays the ops_tables class source.
   - smoke_harness -- merge_ops apply=true; reconcile_partitions and rewrite_partition_layout apply=false; no code path ALTERs or re-lays the pair; a truly undeclared table still fails closed in every verb.
@@ -460,7 +499,7 @@ context:
   - "fork: 191 amendment form | chosen: dated annotation (reversal (a)) | class: asked | precedent: Decision 137 2026-09-13 annotation | precedent_kind: decision | reversible: yes | persisted: scope docs/DECISIONS.md"
   - "fork: merge_ops on the pair | chosen: apply=true | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: maintenance_policy"
   - "fork: partition verbs on the pair | chosen: report-only (apply=false, skipped with read-only drift) | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: maintenance_policy"
-  - "fork: live proof | chosen: pass-outcome metrics read by a DEV agent | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: VP step 14"
+  - "fork: live proof | chosen: pass-outcome metrics read by a DEV agent | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: VP step 15"
   - "fork: recs | chosen: bundle rec-3864 + context update (2026-09-28); follow-ons rec-4116 move-out + rec-4117 alarm | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: followon_recs"
   - "fork: terminology | chosen: data-modeling-standard vocabulary + storage-substrate row | class: asked | precedent: environment-taxonomy vocabulary | precedent_kind: contract | reversible: yes | persisted: scope"
 pre_implementation_checklist:
@@ -477,10 +516,10 @@ execution_steps:
   - "src/lambdas/ducklake_maintenance/partition_actions.py -- skipped key with read-only layout/drift in both modes (post: step 3 green)"
   - "src/lambdas/ducklake_maintenance/handler.py -- the two pass-outcome metrics, <= 2 lines (post: steps 4 and 10 green)"
   - "Tests per scope rows, including rec-3864's acceptance node and the real-engine conformance cases (post: steps 1-5, 8 green)"
-  - "Contracts: data-modeling-standard.yaml vocabulary; storage-substrate.yaml row; ducklake_maintenance.yaml prose; ducklake-partition-remediation.yaml steps 18/19/21 -- each Class D edit with an amendment_log entry (post: step 9 green)"
-  - "Decision 191 dated amendment in docs/DECISIONS.md; regenerate docs/decisions-index.json via scripts.decisions_index; the remediation plan's steps 18/19/21"
+  - "Contracts: data-modeling-standard.yaml vocabulary; storage-substrate.yaml row; ducklake_maintenance.yaml prose; ducklake-partition-remediation.yaml steps 18/19/21 -- each contract edit (Class B and D) with an amendment_log entry (post: step 9 green)"
+  - "Decision 191 dated amendment in docs/DECISIONS.md; regenerate docs/decisions-index.json via scripts.decisions_index --write (post: step 11 green); the remediation plan's steps 18/19/21"
   - Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)
-  - "Handoff: PR squash body carries 'Resolves: rec-3864'; after merge, steps 13-15 (DEV), then step 16 in the resuming ADMIN session"
+  - "Handoff: PR squash body carries 'Resolves: rec-3864'; after merge, steps 14-16 (DEV), then step 17 in the resuming ADMIN session"
   - 'Report: what was implemented, verification results'
 rollback: >-
   Revert the squash commit; the governed channel redeploys the prior code. The only data effect is
