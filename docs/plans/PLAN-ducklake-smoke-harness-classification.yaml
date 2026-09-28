@@ -1,0 +1,487 @@
+schema_version: 5
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "ducklake-smoke-harness-classification"
+intent: >-
+  Unblock rec-4070's live run and restore the every-6h production merge_ops (rec-3864) by declaring the
+  production-resident smoke-harness pair (ducklake_smoke_current / ducklake_smoke_history) to the
+  maintenance-scope registry as its own class -- compacted by merge_ops, reported read-only by the
+  partition verbs -- so every live catalog table is classified and accounted for while a genuinely
+  undeclared table still fails closed (Decision 191); make the scheduled merge_ops outcome observable to
+  agents; and reserve the overloaded "smoke" vocabulary so residency is never again inferred from a name.
+plan_type: IMPLEMENTATION
+verification_tier: V3
+plan_path: docs/plans/PLAN-ducklake-smoke-harness-classification.yaml
+phase: ad_hoc_rec (soft-warn category; fix-forward for PLAN-ducklake-partition-layout-remediation's step-18 STOP; no tier_item claimed, so the Tier Item Freshness Gate is skipped).
+scope:
+  - file: src/common/ducklake_maintenance_scope.py
+    action: Modify
+    purpose: >-
+      Add SMOKE_HARNESS_CLASS = "smoke_harness". build_registry additionally classifies the two physical
+      tables DECLARED under field_semantics' top-level `tables:` block (tables.history.name -> side
+      "history", tables.current.name -> side "current"; table_id = the physical name) when that block is
+      present -- declared data, never a name pattern (Decision 191). A `tables:` name colliding with an
+      ops_tables physical name raises DuckLakeMaintenanceScopeError (never a silent override).
+      class_universe() includes smoke_harness only when `tables:` is declared; write_mode stays the
+      class source for every ops_tables entry. Fixture semantics without `tables:` behave as today.
+  - file: src/common/ducklake_partition_layout.py
+    action: Modify
+    purpose: >-
+      _declared_spec_text resolves a smoke_harness table's declared spec via resolve_table_spec(None,
+      semantics) (the spec create_scd2_tables(table=None) creates from), by side. The aggregated error
+      text names the registry correctly (ops_tables plus the declared smoke-harness pair). Fail-closed on
+      undeclared tables is unchanged: ONE PartitionLayoutError naming every unclassified table.
+  - file: src/lambdas/ducklake_maintenance/partition_actions.py
+    action: Modify
+    purpose: >-
+      action_reconcile_partitions returns a `skipped` key in both the dry-run and the apply response:
+      one entry per resolution.skipped table ({table, table_class, reason}) enriched with that table's
+      READ-ONLY live layout and its compare_to_declared drift (or null) -- reported, never ALTERed -- so
+      the readout accounts for every discovered table (layouts + skipped = catalog).
+  - file: src/lambdas/ducklake_maintenance/handler.py
+    action: Modify
+    purpose: >-
+      action_merge_ops emits two pass-outcome metrics beside its existing MergeOps* metrics, BEFORE the
+      aggregate raise: MergeOpsUnclassifiedTables (count) and MergeOpsPassFailed (1.0 when merge_failures
+      or unclassified is non-empty, else 0.0) -- a scheduled async invoke's 500 body is discarded, so
+      this is the only agent-readable outcome signal. At most +2 SLOC (490 -> <=492, under 500; no budget
+      raise, Decision 128). No other change.
+  - file: config/lambda/ducklake/field_semantics.static.yaml
+    action: Modify
+    purpose: >-
+      maintenance_policy gains a smoke_harness row. merge_ops apply=true (reason: bounds the pair's
+      live-file footprint left by operator-run churn probes, Decision 88 egress; a probe overlapping a
+      :30 pass may fail that one table's merge under Decision 191's per-table isolation, surfacing as
+      MergeOpsPassFailed -- accepted). reconcile_partitions and rewrite_partition_layout apply=false
+      (reason: the pair's partition layout is owned by its creator's create_scd2_tables force_recreate
+      from the declared spec and the deploy channel's --lambda-reader gate reads ducklake_smoke_current;
+      its drift is reported read-only, never ALTERed or re-laid). No gc_ops cell (Decision 192 cl.2,
+      catalog-wide). The matrix header comment's class-universe line names smoke_harness and its
+      `tables:` source.
+  - file: config/lambda/ducklake/field_semantics.yaml
+    action: Modify
+    purpose: Regenerated via bin/venv-python -m scripts.schema_to_field_semantics -- never hand-edited.
+  - file: scripts/checks/contracts/validate_maintenance_policy_matrix.py
+    action: Modify
+    purpose: >-
+      _declared_class_universe adds smoke_harness when the generated field_semantics.yaml declares the
+      `tables:` block -- still declared independently of the matrix's own keys (Decision 191 cl.2).
+  - file: tests/test_ducklake_partition_layout.py
+    action: Modify
+    purpose: >-
+      FakeMetaCon cases: ops tables plus the declared smoke pair all classify; adding two undeclared
+      tables raises exactly one PartitionLayoutError naming only those two; compare_to_declared resolves
+      the smoke_harness declared spec.
+  - file: tests/test_ducklake_partition_rewrite.py
+    action: Modify
+    purpose: rewrite_legacy_layout on an ops history table proceeds when the declared smoke pair is also resident (both whole-catalog reads).
+  - file: tests/common/test_ducklake_maintenance_scope.py
+    action: Modify
+    purpose: build_registry classifies the declared pair; collision raises; class_universe gains smoke_harness only when `tables:` is declared; the `tables:` names equal SMOKE_HISTORY_TABLE / SMOKE_CURRENT_TABLE.
+  - file: tests/common/test_ducklake_partition_conformance.py
+    action: Modify
+    purpose: >-
+      Real engine (integration-marked): a catalog built with create_scd2_tables for ops_recommendations
+      AND the smoke pair (table=None) reads and compares without error, the pair classified
+      smoke_harness; adding an undeclared raw table raises one aggregated PartitionLayoutError.
+  - file: tests/lambdas/ducklake_maintenance/test_partition_actions.py
+    action: Modify
+    purpose: reconcile_partitions returns `skipped` with read-only layout/drift in both modes (update the exact-key pin at :83); rewrite_partition_layout on ducklake_smoke_history refuses with the smoke_harness policy reason.
+  - file: tests/lambdas/ducklake_maintenance/handler/test_merge_ops_discovery.py
+    action: Modify
+    purpose: >-
+      Author rec-3864's acceptance node test_smoke_schema_tables_never_surface_unclassified_in_production
+      (ops tables + the declared pair -> ok:true, unclassified == [], the pair merged; the two
+      pass-outcome metrics emitted as 0.0); a stray-table case emits MergeOpsUnclassifiedTables 1.0 and
+      MergeOpsPassFailed 1.0 and still fails the pass.
+  - file: tests/checks/contracts/test_validate_maintenance_policy_matrix.py
+    action: Modify
+    purpose: The live-registry universe includes smoke_harness; a matrix missing the smoke_harness row or one of its cells fails.
+  - file: docs/contracts/data-modeling-standard.yaml
+    action: Modify
+    purpose: >-
+      New `vocabulary:` block (environment-taxonomy's reserved_meaning / do_not_use_for row shape)
+      disambiguating: write_mode vs maintenance class; the smoke-harness pair vs the ducklake_smoke
+      catalog vs `status: smoke` (a production ops table's lifecycle tag, e.g. ops_smoke_events) vs the
+      deploy channel's smoke gates vs the writer's operator-run EC probes vs the maintenance-smoke
+      Lambda; anti-pattern: inferring catalog residency from a field_semantics key or a "smoke" token --
+      residency is the META_SCHEMA the creating caller attached under. The anti-pattern carries no
+      mechanical check yet: the block declares it an unenforced residual owned by follow-on rec-4116
+      (Decision 181 cl.2). amendment_log entry (Class D).
+  - file: docs/contracts/storage-substrate.yaml
+    action: Modify
+    purpose: >-
+      Register the smoke-harness pair as a table row: substrate, grain + merge_key + write_mode (the
+      validator requires grain/write_mode on merge_key-bearing rows), write boundary (writer EC probes,
+      force_recreate), read boundary (reader read_current table=None; the deploy --lambda-reader gate),
+      catalog residency (ducklake_ops AND ducklake_smoke), maintenance class smoke_harness, and
+      move-out follow-on rec-4116. Its status value is NOT `smoke` (reserved by the new vocabulary).
+      amendment_log entry (Class D).
+  - file: docs/contracts/ducklake_maintenance.yaml
+    action: Modify
+    purpose: >-
+      Class B ritual contract (Decision 118): the class list (~:148) names smoke_harness; merge_ops'
+      metrics and reconcile_partitions' 200-body prose (~:306) name the new metrics and the `skipped` key;
+      new amendment_log entry (validate_contract_drift).
+  - file: docs/contracts/ducklake-partition-remediation.yaml
+    action: Modify
+    purpose: >-
+      Steps 18/19/21 name the expected sets: layouts == exactly the ten ops_* tables; skipped == exactly
+      ducklake_smoke_current + ducklake_smoke_history (smoke_harness reason, read-only drift). The
+      unclassified-table STOP is kept verbatim. New amendment_log entry (Class D).
+  - file: docs/DECISIONS.md
+    action: Modify
+    purpose: >-
+      Decision 191 gains a dated trailing-bracket [Amendment 2026-09-28: ...] (decision-entry.yaml
+      amendment_forms; Decision 177 dialect) realizing its own reversal condition (a)'s per-table
+      override through declared `tables:` membership: the smoke-harness pair joins the class universe as
+      smoke_harness from declared registry data, never string matching, and cl.2's universe is stated
+      as widened to include it; write_mode stays the class source for ops_tables (T2.36:c5). No new
+      number -- plan-critique's routing check (Decision 167) confirms the annotation route; if it
+      rejects it, mint a numbered Decision instead.
+  - file: docs/decisions-index.json
+    action: Modify
+    purpose: Regenerated via scripts.decisions_index after the Decision 191 amendment -- never hand-edited.
+  - file: docs/plans/PLAN-ducklake-partition-layout-remediation.yaml
+    action: Modify
+    purpose: >-
+      Steps 18/19/21 expected + fix_if add the same exact-set expectations (a skipped set other than
+      exactly the pair, or layouts other than exactly the ten ops tables, STOPs the run, as does any
+      unclassified-table error); a dated context line points at this plan. Nothing weakened (Decision 181).
+bundled_recommendations:
+  - rec-3864
+followon_recs:
+  - rec-4116
+  - rec-4117
+infrastructure_dependencies: []
+acceptance_criteria:
+  - read_partition_layout over a catalog carrying ops tables plus the declared smoke pair returns a layout for every table (pair classified smoke_harness); adding two undeclared tables raises exactly one PartitionLayoutError naming only those two -- FakeCon and real engine.
+  - reconcile_partitions returns `skipped` naming exactly the smoke pair with its policy reason and read-only drift; layouts/drifts cover only reconcile-scoped tables; rewrite_partition_layout on either smoke table refuses via its policy cell; no code path ALTERs or re-lays the pair.
+  - merge_ops over the ops tables plus the declared pair returns ok:true with unclassified == [] and the pair merged (rec-3864's acceptance node), emitting MergeOpsUnclassifiedTables 0.0 and MergeOpsPassFailed 0.0; an undeclared table still fails the pass and emits 1.0 for both.
+  - validate_maintenance_policy_matrix passes on the real sidecar and fails when the smoke_harness row or any of its cells is missing.
+  - src/lambdas/ducklake_maintenance/handler.py stays at or under 492 SLOC (Decision 128; no budget entry added).
+  - data-modeling-standard.yaml carries the vocabulary block; storage-substrate.yaml registers the pair; every edited Class D contract carries a new amendment_log entry; Decision 191 carries the dated amendment and decisions-index.json is regenerated.
+  - Both step-18/19/21 surfaces name the exact expected layouts and skipped sets.
+  - deploy-ducklake-lambdas.yml is green on the squash-merge SHA; the first scheduled merge_ops after deploy records MergeOpsUnclassifiedTables 0 and MergeOpsPassFailed 0 and MergeOpsTablesCount two higher than the last pre-deploy run -- read by a DEV agent, no manual invoke.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: prove the READ half classifies declared residents and still fails closed on undeclared ones
+    command: >-
+      bin/venv-python -m pytest
+      tests/test_ducklake_partition_layout.py::test_read_partition_layout_classifies_declared_smoke_harness_residents
+      tests/test_ducklake_partition_layout.py::test_read_partition_layout_undeclared_tables_still_one_error_beside_declared_residents
+      tests/test_ducklake_partition_layout.py::test_compare_to_declared_resolves_smoke_harness_declared_spec
+      tests/test_ducklake_partition_rewrite.py::test_rewrite_proceeds_with_declared_smoke_harness_resident
+      tests/test_ducklake_partition_layout.py::test_read_partition_layout_unclassified_tables_collected_into_one_error
+      -q
+    expected: all five pass. Red on the planning tree -- the four new nodes do not exist
+    fix_if: the undeclared-table case raises once per table or names a declared smoke table
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: ducklake-layout-declared-resident-classification
+  - step: 2
+    phase: pre-deploy
+    action: prove the registry sources the pair from declared data and fails closed on a collision
+    command: bin/venv-python -m pytest tests/common/test_ducklake_maintenance_scope.py -q -k smoke_harness
+    expected: every smoke_harness-selected test passes (build_registry sides, collision raise, class_universe gating, constant equality); red on the planning tree (zero selected, pytest exit 5)
+    fix_if: the pair is matched by a name prefix instead of the `tables:` block
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: ducklake-scope-smoke-harness-registry
+  - step: 3
+    phase: pre-deploy
+    action: prove reconcile_partitions accounts for skipped tables read-only and rewrite refuses the pair
+    command: &step3_cmd >-
+      bin/venv-python -m pytest
+      tests/lambdas/ducklake_maintenance/test_partition_actions.py::test_reconcile_partitions_reports_skipped_tables_read_only
+      tests/lambdas/ducklake_maintenance/test_partition_actions.py::test_rewrite_refuses_smoke_harness_table_via_policy_cell
+      tests/lambdas/ducklake_maintenance/test_partition_actions.py::test_reconcile_partitions_dry_run_defaults_true_and_never_alters
+      -q
+    expected: all three pass; red on the planning tree (the two new nodes do not exist; the third's exact-key pin gains skipped)
+    fix_if: skipped missing from either response mode, a skipped table ALTERed, or the smoke history reaching rewrite_legacy_layout
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: ducklake-reconcile-partitions-skipped
+  - step: 4
+    phase: pre-deploy
+    action: prove merge_ops merges the pair (rec-3864's acceptance), emits the pass-outcome metrics, and still fails on a stray
+    command: >-
+      bin/venv-python -m pytest
+      tests/lambdas/ducklake_maintenance/handler/test_merge_ops_discovery.py::test_smoke_schema_tables_never_surface_unclassified_in_production
+      tests/lambdas/ducklake_maintenance/handler/test_merge_ops_discovery.py::test_unclassified_table_also_triggers_the_aggregate_raise
+      tests/lambdas/ducklake_maintenance/handler/test_merge_ops_discovery.py::test_pass_outcome_metrics_flag_an_unclassified_table
+      -q
+    expected: all three pass; red on the planning tree (the rec-3864 and metrics nodes do not exist)
+    fix_if: the pair lands in unclassified or skipped, a stray table no longer fails the pass, or a metric is emitted only on success
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: ducklake-merge-ops-smoke-harness-and-outcome-metrics
+  - step: 5
+    phase: pre-deploy
+    action: prove the exhaustiveness gate knows the new class
+    command: &step5_cmd >-
+      bin/venv-python -m pytest
+      tests/checks/contracts/test_validate_maintenance_policy_matrix.py::test_missing_smoke_harness_row_fails
+      tests/checks/contracts/test_validate_maintenance_policy_matrix.py::test_default_class_universe_reads_the_live_registry
+      tests/checks/contracts/test_validate_maintenance_policy_matrix.py::test_real_sidecar_is_exhaustive
+      -q
+    expected: all three pass; red on the planning tree (the missing-row node does not exist)
+    fix_if: the universe was derived from the matrix's own keys (self-referential)
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: ducklake-policy-matrix-smoke-harness-universe
+  - step: 6
+    phase: pre-deploy
+    action: prove the regenerated projection carries the smoke_harness row -- merge on, partition verbs off
+    command: &step6_cells >-
+      bin/venv-python -c "import yaml;
+      p=yaml.safe_load(open('config/lambda/ducklake/field_semantics.yaml', encoding='utf-8'))['maintenance_policy']['smoke_harness'];
+      assert set(p) == {'merge_ops','reconcile_partitions','rewrite_partition_layout'}, p;
+      assert p['merge_ops']['apply'] is True and p['merge_ops'].get('reason'), p;
+      assert all(p[v]['apply'] is False and p[v].get('reason') for v in ('reconcile_partitions','rewrite_partition_layout')), p;
+      print('SMOKE_HARNESS_CELLS_OK')"
+    expected: prints the marker; red on the planning tree (KeyError on smoke_harness)
+    fix_if: the sidecar was edited but field_semantics.yaml was not regenerated
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: ducklake-smoke-harness-policy-cells
+    expected_literals: []
+  - step: 7
+    phase: pre-deploy
+    action: confirm the generated projection matches its sources
+    command: bin/venv-python -m scripts.schema_to_field_semantics --check
+    expected: exit 0
+    fix_if: drift means field_semantics.yaml was hand-edited or not regenerated
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Already registered as validate_field_semantics_drift in both validate tiers and green on the
+      un-implemented tree, so it cannot be a red-before graduate step.
+    expected_literals: []
+  - step: 8
+    phase: pre-deploy
+    action: prove the classification on the pinned real engine
+    command: bin/venv-python -m pytest tests/common/test_ducklake_partition_conformance.py -m integration -q -rs
+    expected: every test passes with zero skips, including the new declared-resident and undeclared-table cases
+    fix_if: a skip means the ducklake extension did not load -- resolve it; never accept a skip as green
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      Integration-marked: CI deselects integration tests and blocks sockets until rec-4071 provisions
+      the pinned extension, so a registry row would be a permanently skipped guard.
+  - step: 9
+    phase: pre-deploy
+    action: prove the vocabulary and substrate registrations landed with their amendment_log entries
+    command: >-
+      bin/venv-python -c "import yaml;
+      d=yaml.safe_load(open('docs/contracts/data-modeling-standard.yaml', encoding='utf-8'));
+      v=d['vocabulary']; assert all(set(r) >= {'reserved_meaning','do_not_use_for'} for k, r in v.items() if isinstance(r, dict)), v;
+      s=yaml.safe_load(open('docs/contracts/storage-substrate.yaml', encoding='utf-8'))['tables'];
+      rows=[r for r in s.values() if isinstance(r, dict) and 'ducklake_smoke_history' in str(r)];
+      assert rows and all(r.get('status') != 'smoke' and r.get('grain') and r.get('write_mode') for r in rows), rows;
+      print('SMOKE_VOCAB_AND_SUBSTRATE_OK')"
+    expected: prints the marker; red on the planning tree (no vocabulary key)
+    fix_if: the pair's substrate row reuses status smoke, or a vocabulary row lacks either field
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Contract-content shape check; validate_contract_drift and validate_data_model_standard already
+      guard these files' amendment_log and grain/write_mode rules, and pinning vocabulary wording as a
+      standing registry row would freeze prose.
+    expected_literals: []
+  - step: 10
+    phase: pre-deploy
+    action: prove handler.py stays within its SLOC headroom (Decision 128)
+    command: >-
+      bin/venv-python -c "import pathlib;
+      n=sum(1 for l in pathlib.Path('src/lambdas/ducklake_maintenance/handler.py').read_text(encoding='utf-8').splitlines() if l.strip() and not l.strip().startswith('#'));
+      assert n <= 492, n; print('HANDLER_SLOC', n)"
+    expected: prints HANDLER_SLOC at or under 492
+    fix_if: more than two lines added -- move the logic into a cohesive module instead of growing the handler
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      validate_sloc_limits already enforces the 500 ceiling in both tiers; this tighter 492 bound is a
+      one-plan scope guard, not a standing invariant.
+    expected_literals: []
+  - step: 11
+    phase: pre-deploy
+    action: run the authoritative fast presubmit tier
+    command: bin/venv-python -m scripts.validate --pre
+    expected: exit 0
+    fix_if: diagnose and fix on the branch (ci-rca watches main only)
+    hermetic: false
+    graduation: not-applicable
+  - step: 12
+    phase: pre-deploy
+    action: run the full presubmit tier before handoff, as handoff_policy declares
+    command: bin/venv-python -m scripts.validate
+    expected: exit 0
+    fix_if: a timeout is blocked -- resume later and rerun from the start
+    hermetic: false
+    graduation: not-applicable
+  - step: 13
+    phase: post-deploy
+    action: confirm the governed channel built, deployed and smoked all DuckLake Lambdas on the merge commit (Decision 125/126)
+    command: >-
+      mcp__github__actions_list for workflow deploy-ducklake-lambdas.yml on main, then
+      mcp__github__get_job_logs for the run whose head_sha equals the squash-merge SHA
+    expected: all five jobs succeed -- deploy-maintenance, maintenance-smoke, reconcile-gate, deploy-serving, smoke (the smoke job's --lambda-reader still reads ducklake_smoke_current)
+    fix_if: never fall back to build_lambda --ducklake-only --deploy (Decision 125/126)
+    hermetic: false
+  - step: 14
+    phase: post-deploy
+    action: DEV agent proves the first scheduled merge_ops after deploy succeeded -- no manual invoke
+    command: >-
+      aws cloudwatch get-metric-statistics --namespace DuckLakeMaintenance --profile agent_platform
+      --region eu-west-2 --statistics Maximum --period 21600 --start-time <deploy completion, ISO-8601>
+      --end-time <now, ISO-8601> --metric-name MergeOpsPassFailed; repeat for MergeOpsUnclassifiedTables
+      and MergeOpsTablesCount, and for MergeOpsTablesCount over the 24h before deploy
+    expected: >-
+      at least one post-deploy datapoint (first :30 pass); MergeOpsPassFailed 0 and
+      MergeOpsUnclassifiedTables 0; MergeOpsTablesCount exactly two higher than the pre-deploy value
+      (the pair now merged)
+    fix_if: >-
+      no datapoint yet -- wait for the next :30 pass (6-hourly), never invoke merge_ops; a
+      MergeOpsDurationMs datapoint with no MergeOpsPassFailed one means emission failed (emit_metric is
+      best-effort) -- RCA it, never infer success from absence; PassFailed 1 --
+      STOP and RCA (Decision 55); an overlapping EC probe run is the only accepted transient, confirm it
+      and re-read the following pass
+    hermetic: false
+  - step: 15
+    phase: post-deploy
+    action: DEV agent hands back -- ADMIN HANDOFF block in the merged PR description plus a final PR comment naming the pickup point
+    command: >-
+      mcp__github__update_pull_request (append the ADMIN HANDOFF block, Decision 115) then
+      mcp__github__add_issue_comment on the merged PR: the squash-merge SHA, the green
+      deploy-ducklake-lambdas.yml run URL, step 14's metric readings, and the resume instruction (rebase
+      onto main; resume PLAN-ducklake-partition-layout-remediation from step 16; step 18 now expects
+      layouts == the ten ops tables and skipped == exactly the pair)
+    expected: both exist; the DEV agent invokes no maintenance verb itself
+    fix_if: a DEV-container invocation of any maintenance verb was attempted -- stop; they are admin-only
+    hermetic: false
+  - step: 16
+    phase: post-deploy
+    action: ADMIN agent (resuming session, under explicit human direction per Decision 204) runs the read-only reconcile dry_run and PRESENTS it
+    command: >-
+      AWS_MAX_ATTEMPTS=1 aws lambda invoke --function-name agent-platform-ducklake-maintenance
+      --profile agent_platform_admin --region eu-west-2 --cli-read-timeout 960
+      --cli-binary-format raw-in-base64-out
+      --payload '{"action":"reconcile_partitions","data_path":"<data_path>","meta_schema":"<meta_schema>","dry_run":true}'
+      /tmp/reconcile_dry_run_before.json
+    expected: >-
+      HTTP 200; layouts carries exactly the ten ops_* physical tables; skipped carries exactly
+      ducklake_smoke_current and ducklake_smoke_history with the smoke_harness reason, each with its
+      read-only layout and drift; drifts as the remediation plan's step 18 expects. This response IS
+      that plan's step 18 -- reuse it, do not re-invoke
+    fix_if: an unclassified-table error, or layouts/skipped other than exactly those sets -- STOP and report
+    hermetic: false
+  - step: 17
+    phase: post-deploy
+    action: confirm rec-3864 closed through the squash-merge Resolves trailer (Decision 201 holds verdict)
+    command: >-
+      bin/venv-python -m scripts.sync.ops sync && bin/venv-python -c "import json;
+      rows=[json.loads(l) for l in open('logs/.recommendations-log.jsonl', encoding='utf-8') if l.strip()];
+      r=[x for x in rows if x.get('id')=='rec-3864'][-1]; assert r['status']=='closed', r['status'];
+      print('REC_3864_CLOSED')"
+    expected: prints the closed marker
+    fix_if: still open -- check ci.yml's closure job on the merge commit; never close it by hand without its acceptance node passing
+    hermetic: false
+test_obligations:
+  - source: src/common/ducklake_maintenance_scope.py
+    behavior: build_registry classifies the `tables:`-declared pair as smoke_harness, fails closed on a name collision, and class_universe gains the class only when declared
+    verification_step: 2
+    command: bin/venv-python -m pytest tests/common/test_ducklake_maintenance_scope.py -q -k smoke_harness
+    red_green_expectation: red before (no smoke_harness tests selected, exit 5), green after
+  - source: src/common/ducklake_partition_layout.py
+    behavior: a declared resident is classified and its declared spec resolves; undeclared tables still raise one aggregated PartitionLayoutError
+    verification_step: 1
+    test_selector: tests/test_ducklake_partition_layout.py::test_read_partition_layout_undeclared_tables_still_one_error_beside_declared_residents
+    red_green_expectation: red before (node absent; a declared resident raises today), green after
+  - source: src/lambdas/ducklake_maintenance/partition_actions.py
+    behavior: reconcile_partitions returns skipped with read-only layout/drift in both modes; the smoke pair is never ALTERed or rewritten
+    verification_step: 3
+    command: *step3_cmd
+    red_green_expectation: red before (new nodes absent), green after
+  - source: src/lambdas/ducklake_maintenance/handler.py
+    behavior: merge_ops emits MergeOpsUnclassifiedTables and MergeOpsPassFailed on every pass, success or failure
+    verification_step: 4
+    test_selector: tests/lambdas/ducklake_maintenance/handler/test_merge_ops_discovery.py::test_pass_outcome_metrics_flag_an_unclassified_table
+    red_green_expectation: red before (node absent; no such metrics), green after
+  - source: config/lambda/ducklake/field_semantics.static.yaml
+    behavior: the smoke_harness row declares merge_ops apply=true and both partition verbs apply=false, each with a reason
+    verification_step: 6
+    command: *step6_cells
+    red_green_expectation: red before (KeyError), green after
+  - source: config/lambda/ducklake/field_semantics.yaml
+    behavior: the Lambda-bundled projection carries the smoke_harness row verbatim from the sidecar
+    verification_step: 7
+    command: bin/venv-python -m scripts.schema_to_field_semantics --check
+    waiver_reason: generated artifact; its drift gate (validate_field_semantics_drift) is green before and after by construction, the content is guarded by step 6
+  - source: scripts/checks/contracts/validate_maintenance_policy_matrix.py
+    behavior: the declared class universe includes smoke_harness when `tables:` is declared, independent of the matrix keys
+    verification_step: 5
+    command: *step5_cmd
+    red_green_expectation: red before (missing-row node absent), green after
+constraints:
+  - Decision 191 -- classification is registry-driven from declared field_semantics data; no "ducklake_smoke" prefix or any name pattern anywhere in the path; write_mode stays the ops_tables class source.
+  - smoke_harness -- merge_ops apply=true; reconcile_partitions and rewrite_partition_layout apply=false; no code path ALTERs or re-lays the pair; a truly undeclared table still fails closed in every verb.
+  - Decision 128 -- handler.py grows by at most 2 SLOC (<= 492); anything more moves to a cohesive module; no budget entry or raise.
+  - Decision 125/126 -- deploy only through deploy-ducklake-lambdas.yml on merge; never build_lambda --ducklake-only --deploy.
+  - Decision 204 / 81 cl.6 / 143 -- no human, ADMIN-agent or CI invoke of merge_ops; the scheduled pass is verified from its metrics by a DEV agent; the ADMIN agent invokes only the two partition verbs under explicit human direction.
+  - Decision 181 -- the step-18/19/21 edits ADD exact-set expectations; the unclassified-table STOP is kept verbatim.
+  - Decision 192 cl.2 -- no gc_ops cell; reason texts speak only for per-table verbs.
+  - Every changed src module keeps 100% per-file coverage (no coverage_baseline entries).
+  - No rescue agents or workaround loops (Decision 55); out-of-scope findings become recs (Decision 59).
+context:
+  - "Decision-scout verdict: FLAGS_FOUND (r1: WARN 191, WARN 81, NOTE 181/88/192, SPIRIT 143; r2 on the revised approach: NOTE 191, NOTE 181, no WARN). Decisions triaged: 157 of 157. Roadmap items intersected: 14; CONFLICT: 0; RELATED: 14."
+  - "CITE: Decision 191, 204, 88, 192, 81, 143, 188, 128, 125, 126, 79, 177, 118, 181, 201, 59; RELATED 86, 127, 168, 166, 137, 84, 82, 193, 150, 167, 151, 115, 55, 66, 189, 186, 190"
+  - "gates: decision-scout=FLAGS_FOUND (2 runs); plan-critique=PENDING"
+  - >-
+    Scout dispositions: WARN 81 -> no manual/ADMIN/CI merge_ops invoke, DEV reads outcome metrics;
+    NOTE 88 -> merge_ops apply=true; NOTE 192 -> no gc_ops cell, per-table reason text; SPIRIT 143 ->
+    mandatory move-out follow-on rec-4116; NOTE 191 -> annotation realizing reversal (a); NOTE 181 -> step edits
+    are exact-set tightenings, vocabulary anti-pattern is a residual owned by rec-4116.
+  - >-
+    STOP evidence: remediation plan step 18 (2026-09-28 10:35 UTC ADMIN run) 500 "unclassified physical
+    tables ... ['ducklake_smoke_current', 'ducklake_smoke_history']"; no mutation made.
+  - >-
+    Residency is load-bearing, not leftover: writer EC probes resolve META_SCHEMA to ducklake_ops
+    (src/lambdas/ducklake_writer/smoke_actions.py:19-20; ducklake_lambdas.tf:287) and force_recreate the
+    pair; the deploy smoke job's --lambda-reader reads prod ducklake_smoke_current, row_count >= 1
+    (scripts/ducklake_smoke/lambda_ec_gates.py:191-203) -- a DROP turns every deploy red.
+  - "merge_ops: rec-3864 (2026-09-14) records ok:false every 6h since #1179; residency resolved 2026-09-17 (PLAN-gc-ops-baseline-gate-and-schedule-enable step 8); a scheduled async invoke discards the 500 body, hence the new outcome metrics."
+  - "Data-model walk: no table, grain, identity, merge_key or partition change -- one policy row and one substrate-index row for two existing tables; no Fable escalation."
+  - "Downstream: PLAN-ducklake-partition-drift-alarm (rec-4094) consumes read_partition_layout; its unclassified->typed-500 expectation still holds for undeclared tables."
+  - "Gotchas: writer partition_probe runs a catalog-wide ducklake_merge_adjacent_files against prod (rec-4116); emit_metric is best-effort, so absence is never success; both metrics fire BEFORE the aggregate raise and never replace it (Decision 188 pt 3)."
+  - "fork: resident disposition | chosen: declared smoke_harness class | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: scope"
+  - "fork: 191 amendment form | chosen: dated annotation (reversal (a)) | class: asked | precedent: Decision 137 2026-09-13 annotation | precedent_kind: decision | reversible: yes | persisted: scope docs/DECISIONS.md"
+  - "fork: merge_ops on the pair | chosen: apply=true | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: maintenance_policy"
+  - "fork: partition verbs on the pair | chosen: report-only (apply=false, skipped with read-only drift) | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: maintenance_policy"
+  - "fork: live proof | chosen: pass-outcome metrics read by a DEV agent | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: VP step 14"
+  - "fork: recs | chosen: bundle rec-3864 + context update (2026-09-28); follow-ons rec-4116 move-out + rec-4117 alarm | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: followon_recs"
+  - "fork: terminology | chosen: data-modeling-standard vocabulary + storage-substrate row | class: asked | precedent: environment-taxonomy vocabulary | precedent_kind: contract | reversible: yes | persisted: scope"
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - only the plan-cited decision sections
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+execution_steps:
+  - "src/common/ducklake_maintenance_scope.py -- SMOKE_HARNESS_CLASS, build_registry `tables:` entries + collision raise, class_universe gating (post: step 2 green)"
+  - "src/common/ducklake_partition_layout.py -- _declared_spec_text smoke_harness branch via resolve_table_spec(None); error text (post: step 1 green)"
+  - "config/lambda/ducklake/field_semantics.static.yaml -- smoke_harness row + header comment; regenerate with bin/venv-python -m scripts.schema_to_field_semantics (post: steps 6-7 green)"
+  - "scripts/checks/contracts/validate_maintenance_policy_matrix.py -- declared universe (post: step 5 green)"
+  - "src/lambdas/ducklake_maintenance/partition_actions.py -- skipped key with read-only layout/drift in both modes (post: step 3 green)"
+  - "src/lambdas/ducklake_maintenance/handler.py -- the two pass-outcome metrics, <= 2 lines (post: steps 4 and 10 green)"
+  - "Tests per scope rows, including rec-3864's acceptance node and the real-engine conformance cases (post: steps 1-5, 8 green)"
+  - "Contracts: data-modeling-standard.yaml vocabulary; storage-substrate.yaml row; ducklake_maintenance.yaml prose; ducklake-partition-remediation.yaml steps 18/19/21 -- each Class D edit with an amendment_log entry (post: step 9 green)"
+  - "Decision 191 dated amendment in docs/DECISIONS.md; regenerate docs/decisions-index.json via scripts.decisions_index; the remediation plan's steps 18/19/21"
+  - Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)
+  - "Handoff: PR squash body carries 'Resolves: rec-3864'; after merge, steps 13-15 (DEV), then step 16 in the resuming ADMIN session"
+  - 'Report: what was implemented, verification results'
+rollback: >-
+  Revert the squash commit; the governed channel redeploys the prior code. The only data effect is
+  merge_ops compacting the pair's files (row-preserving); nothing is ALTERed, re-laid or dropped.
