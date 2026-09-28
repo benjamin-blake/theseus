@@ -30,9 +30,11 @@ scope:
     row whose content differs under an existing grain key -- never silently dropped, never first-wins or last-wins. Where the
     engine offers it, the reject is the native single-statement primitive (Decision 100 spirit; no second catalog read,
     Decision 88 cl.1 egress budget).
-    Readers keep the first write only among content-identical duplicates; a differing pair (only reachable through the
-    concurrent-append race Decision 81 cl.3's no-serialization model allows) is returned AND reported as conflicted by the
-    reader, and flagged by DQ on the existing DQ path (Decision 62) -- never silently picked. Enforcement boundary: the
+    Reader rule (append_only journals): a reader returns one row per grain key; for a differing pair (only reachable
+    through the concurrent-append race Decision 81 cl.3's no-serialization model allows) which row is returned is
+    unspecified, the key is reported as conflicted, and DQ flags it -- a conflict is never resolved silently. SCD2 history
+    readers (e.g. the rec_history named verb) are exempt: a duplicate write ULID there is detected by DQ (rec-4121 item 4),
+    not by readers. Enforcement boundary: the
     write-time lookup is bounded to the batch's partitions (Decision 88), so the enforced physical grain includes the
     partition column; a cross-partition collision is a producer defect the table's own identity rules must make impossible
     (for telemetry, R7's pinned session_started_at). A stored or computed whole-row
@@ -44,7 +46,8 @@ scope:
     owned by rec-4121: the ops writer's idempotency replay and history MERGE on the write ULID, and ops_smoke_events
     (append_only, grain event_id, but write_ops MERGEs on a per-call write ULID, so a re-write inserts a duplicate); DQ side -- telemetry grain-conflict,
     pending-generation and null-producer monitors (rec-4063), ops-history duplicate-ULID-with-differing-content check
-    (rec-4121; its context was widened at planning time to own it and the ops_smoke_events residual); reader side -- telemetry reader verbs (rec-4024) and the derived-layer harness (rec-4025). Future consumers:
+    (rec-4121; its context was widened at planning time to own it and the ops_smoke_events residual); reader side -- telemetry reader verbs (rec-4024) and the derived-layer harness (rec-4025); SCD2 history readers exempt,
+    DQ-covered (rec-4121 item 4). Future consumers:
     T4.23 c9, T3.20 c2. Envelope significance numbered_decision; contract-first justification names
     data-modeling-standard.yaml (the rule lands there too) and why it cannot be the only home (changes writer failure
     semantics across write_mode classes, binds present and future writers, needs reversal conditions) and why an
@@ -61,7 +64,8 @@ scope:
   purpose: >-
     New rule `grain-enforced-at-write` beside `grain-first`, citing the new Decision and carrying its write_mode scope and
     carve-outs: the declared grain key is enforced by the write boundary (identical re-send = no-op; conflicting row = loud
-    rejection); readers never tiebreak conflicting grain-key rows; DQ owns the race window; enforcement is bounded to the
+    rejection); an append_only reader returns one row per grain key and reports a differing pair as conflicted, never
+    resolving it silently (SCD2 history readers exempt, DQ-covered); DQ owns the race window; enforcement is bounded to the
     batch's partitions, so the partition column is part of the enforced physical grain. design_time_walk step 1 (grain) gains
     one sentence: declare the grain key and enforce it at the write boundary per rule grain-enforced-at-write. Contract-level
     amendment_log entry; bump decisions_cited, version and updated_* as the file's own header convention requires.
@@ -122,9 +126,10 @@ scope:
   purpose: >-
     Add producer to the fixture columns, to _row() (lines 96-107) and to the positional seed INSERTs (lines 177-181,
     216-219). Real local DuckLake
-    (pytest -m integration): cross-batch conflict rejected and the
-    table unchanged; cross-producer same event_id both stored; identical replay inserts 0; the existing one-file-per-write
-    assertion (lines 166-200) still holds with the new MERGE.
+    (pytest -m integration): cross-batch conflict rejected and the table unchanged; cross-producer same event_id both
+    stored; identical and producer_version-only replays insert 0; a NULL producer rejected; the one-file-per-write
+    assertion (TestSingleSessionBatchOneFile, from line 135) and the day-bounded single-file read assertion
+    (TestDayBoundedMergeReadsExactlyOneFile, lines 166-200) still hold with the new MERGE.
 - file: tests/test_field_semantics_event_projection.py
   action: Modify
   purpose: >-
@@ -153,10 +158,10 @@ scope:
     retired, above pending); (b) event collapse per (producer, event_id): keep the highest parser_version remaining after (a)
     (so V* when defined, the highest version when not -- a non-replayable producer); among rows at that version keep the
     earliest created_timestamp, which the write-time rule makes content-identical except in the concurrent race, where the
-    reader returns one of the conflicting rows (which one is unspecified when created_timestamp ties) and the conflict
-    report on the grain key is the normative output; (c) model_call entity collapse per
+    reader returns one row per grain key (which one is unspecified) and reports the key as conflicted -- the conflict
+    report is the normative output and the conflict is never resolved silently; (c) model_call entity collapse per
     observation_id: producer precedence claude_code, litellm, then others, then event_timestamp DESC (final usage wins,
-    rec-4062), then created_timestamp asc, then producer asc (a total order).
+    rec-4062), then created_timestamp asc, then producer asc, then event_id asc (a total order).
     R6: a telemetry_agents row belongs to its own (child) session_id's generation.
     R7 producer obligations: a producer never emits two different rows under one grain key (a model_call is emitted only
     once its source record carries final usage); every emitted column is a pure function of the source records plus the
@@ -229,11 +234,15 @@ scope:
     (data-modeling-standard.yaml carries rule grain-enforced-at-write citing the new Decision and the design_time_walk
     mention; the Decision number is resolved from the rule's own citation, never hard-coded, and DECISIONS.md's section
     with that number and title names rec-4121, rec-4063, rec-4024 and rec-4025 as coverage owners and ops_smoke_events as
-    a residual; the Decision 81 and Decision 84 sections each carry a dated annotation naming rec-4121 and that Decision). Update the module
+    a residual and SCD2 history readers as exempt and DQ-covered; the Decision 81 and Decision 84 sections each carry a
+    dated annotation naming rec-4121 and that Decision). Update the module
     docstring's R8 sentence.
 - file: config/agent/verification_registry/entries/telemetry-dedupe-vectors.yaml
   action: Create
-  purpose: Verification-registry row for graduated VP step 1 (check_id == filename, Decision 176), node_id tests/telemetry/test_dedupe_vectors.py.
+  purpose: >-
+    Verification-registry row for graduated VP step 1 (check_id == filename, Decision 176), node_id
+    tests/telemetry/test_dedupe_vectors.py, guard_target tests/fixtures/telemetry_dedupe_reference.py and
+    tests/telemetry/fixtures/dedupe_vectors.yaml.
 - file: config/agent/verification_registry/entries/telemetry-grain-enforced-at-write.yaml
   action: Create
   purpose: >-
@@ -532,7 +541,7 @@ context:
   189; WARN 81 and 84 resolved by write_mode scoping, carve-outs, the named ops-writer residual (rec-4121) and dated
   annotations; T2.52 CONFLICT resolved by scoping derived materializations out; RELATED 55, 96, 97, 95, 200, 204, 137,
   100, 177, 62, 179. Decisions triaged: 157 of 157. Roadmap items intersected: 7; CONFLICT: 1; RELATED: 5.
-- "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=PENDING (rounds 1-3 REVISE: 14, 10 and 8 findings addressed)"
+- "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=PENDING (rounds 1-4 REVISE: 14, 10, 8 and 6 findings addressed)"
 - >-
   Operator choices (2026-09-28 thread): R8 generation rule is contract-only (no Decision); a stored row_hash was proposed and
   withdrawn -- grain-key enforcement at write replaces it; the kernel change lands in this plan; grain-at-write gets its own
