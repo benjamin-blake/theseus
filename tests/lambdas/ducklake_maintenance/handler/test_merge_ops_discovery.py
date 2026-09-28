@@ -11,7 +11,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import src.lambdas.ducklake_maintenance.handler as h
+from src.common import ducklake_maintenance_scope as scope_mod
 from src.common.ducklake_runtime import DuckLakeRuntimeError
+from src.common.ducklake_scd2_schema import load_field_semantics
 from tests.fixtures.ducklake_maintenance_handler import _FULL_DSN
 
 pytestmark = pytest.mark.unit
@@ -176,6 +178,89 @@ def test_unclassified_table_also_triggers_the_aggregate_raise():
 
     merged_tables = {c.args[1][0] for c in mock_merge.call_args_list}
     assert merged_tables == {"ops_recommendations_current", "ops_recommendations_history"}
+
+
+def test_smoke_schema_tables_never_surface_unclassified_in_production():
+    """rec-3864's acceptance node: binds the PRODUCTION data path against the REAL generated
+    field_semantics.yaml (never this module's hand-rolled _semantics() fixture) -- the ops
+    tables plus the declared smoke-harness pair enumerate cleanly, unclassified == [], the pair
+    merges, and both pass-outcome metrics emit 0.0."""
+    real_semantics = load_field_semantics()
+    registry = scope_mod.build_registry(real_semantics)
+    discovered = sorted(registry)  # every physical table the live registry declares, incl. the smoke pair
+
+    con = MagicMock()
+    con.execute.return_value.fetchall.return_value = [(name,) for name in discovered]
+
+    with (
+        patch.object(h.rt, "fetch_dsn", return_value=_FULL_DSN),
+        patch.object(h.rt, "open_connection", return_value=con),
+        patch.object(h.rt, "load_field_semantics", return_value=real_semantics),
+        patch.object(h.maint, "_count_files", return_value=1),
+        patch.object(h.maint, "merge_adjacent_files"),
+        patch.object(h, "_emit_maintenance_metric") as mock_emit,
+    ):
+        result = h.action_merge_ops({"data_path": "s3://b/ducklake/", "meta_schema": "ducklake_ops"}, None)
+
+    assert result["ok"] is True
+    assert result["unclassified"] == []
+    assert "ducklake_smoke_history" in result["tables"]
+    assert "ducklake_smoke_current" in result["tables"]
+    metric_calls = {c.args[0]: c.args[1] for c in mock_emit.call_args_list}
+    assert metric_calls["MergeOpsUnclassifiedTables"] == 0.0
+    assert metric_calls["MergeOpsPassFailed"] == 0.0
+
+
+def test_pass_outcome_metrics_flag_an_unclassified_table():
+    """A stray table alongside the real production roster still fails the pass and emits
+    MergeOpsUnclassifiedTables 1.0 and MergeOpsPassFailed 1.0."""
+    real_semantics = load_field_semantics()
+    registry = scope_mod.build_registry(real_semantics)
+    discovered = [*sorted(registry), "a_stray_table"]
+
+    con = MagicMock()
+    con.execute.return_value.fetchall.return_value = [(name,) for name in discovered]
+
+    with (
+        patch.object(h.rt, "fetch_dsn", return_value=_FULL_DSN),
+        patch.object(h.rt, "open_connection", return_value=con),
+        patch.object(h.rt, "load_field_semantics", return_value=real_semantics),
+        patch.object(h.maint, "_count_files", return_value=1),
+        patch.object(h.maint, "merge_adjacent_files"),
+        patch.object(h, "_emit_maintenance_metric") as mock_emit,
+    ):
+        with pytest.raises(DuckLakeRuntimeError, match="a_stray_table"):
+            h.action_merge_ops({"data_path": "s3://b/ducklake/", "meta_schema": "ducklake_ops"}, None)
+
+    metric_calls = {c.args[0]: c.args[1] for c in mock_emit.call_args_list}
+    assert metric_calls["MergeOpsUnclassifiedTables"] == 1.0
+    assert metric_calls["MergeOpsPassFailed"] == 1.0
+
+
+def test_merge_failure_only_pass_emits_pass_failed():
+    """A per-table merge_adjacent_files failure ALONE (no unclassified table) must still set
+    MergeOpsPassFailed 1.0, with MergeOpsUnclassifiedTables 0.0 -- proves PassFailed is keyed on
+    EITHER merge_failures OR unclassified, not unclassified alone."""
+    con = MagicMock()
+    con.execute.return_value.fetchall.return_value = [("ops_entity_counters",)]
+
+    def merge_side_effect(_con, _tables, **_kwargs):
+        raise RuntimeError("simulated merge failure")
+
+    with (
+        patch.object(h.rt, "fetch_dsn", return_value=_FULL_DSN),
+        patch.object(h.rt, "open_connection", return_value=con),
+        patch.object(h.rt, "load_field_semantics", return_value=_semantics()),
+        patch.object(h.maint, "_count_files", return_value=1),
+        patch.object(h.maint, "merge_adjacent_files", side_effect=merge_side_effect),
+        patch.object(h, "_emit_maintenance_metric") as mock_emit,
+    ):
+        with pytest.raises(DuckLakeRuntimeError):
+            h.action_merge_ops({"data_path": "s3://b/ducklake/", "meta_schema": "ducklake_ops"}, None)
+
+    metric_calls = {c.args[0]: c.args[1] for c in mock_emit.call_args_list}
+    assert metric_calls["MergeOpsPassFailed"] == 1.0
+    assert metric_calls["MergeOpsUnclassifiedTables"] == 0.0
 
 
 def test_merge_ops_response_carries_reconciliation_result():

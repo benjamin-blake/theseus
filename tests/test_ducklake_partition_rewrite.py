@@ -43,7 +43,19 @@ def _semantics() -> dict:
                 },
             },
             "ops_entity_counters": {"status": "live", "write_mode": "control"},
-        }
+        },
+        "fields": _COLUMNS,
+        "partition_transforms": {
+            "history": "year(created_timestamp), month(created_timestamp), day(created_timestamp)",
+            "current": "bucket(8, rec_id)",
+        },
+        "tables": {
+            "history": {
+                "name": "ducklake_smoke_history",
+                "partition": "year(created_timestamp), month(created_timestamp), day(created_timestamp)",
+            },
+            "current": {"name": "ducklake_smoke_current", "partition": "bucket(8, rec_id)"},
+        },
     }
 
 
@@ -317,6 +329,52 @@ def test_rewrite_happy_path_returns_full_proof_and_zero_legacy_after():
     assert result["files_before"] == 93
     assert result["files_after"] == 93  # post_commit_legacy_files=0 doesn't change live_files in this fixture
     assert result["attempts"] == 1
+    assert con._committed is True
+
+
+_SMOKE_HISTORY_ENTRY = {
+    "table_id": 7,
+    "active_scheme_id": 70,
+    "live_transforms": (("year", "created_timestamp"), ("month", "created_timestamp"), ("day", "created_timestamp")),
+    "live_files": 5,
+    "legacy_files": 0,
+}
+_SMOKE_CURRENT_ENTRY = {
+    "table_id": 8,
+    "active_scheme_id": 80,
+    "live_transforms": (("bucket(8)", "rec_id"),),
+    "live_files": 2,
+    "legacy_files": 0,
+}
+
+
+def test_rewrite_proceeds_with_declared_smoke_harness_resident():
+    """rewrite_legacy_layout's own precondition read is a whole-catalog read_partition_layout call
+    -- a catalog that also carries the declared smoke-harness pair must not fail that read closed
+    (Decision 191 amendment); an ops history table's legitimate legacy rewrite still proceeds."""
+    catalog = _catalog()
+    catalog["ducklake_smoke_history"] = dict(_SMOKE_HISTORY_ENTRY)
+    catalog["ducklake_smoke_current"] = dict(_SMOKE_CURRENT_ENTRY)
+    con = FakeRewriteCon(
+        catalog,
+        proofs={
+            "_partition_rewrite_snap": (93, "DIGEST-A"),
+            "SELECT * FROM cat.ops_recommendations_history)": (93, "DIGEST-A"),
+            "cat.ops_recommendations_history AT (VERSION => 500)": (93, "DIGEST-A"),
+            "cat.ops_recommendations_history AT (VERSION => 501)": (93, "DIGEST-A"),
+        },
+        snapshot_ids=[500, 501, 502, 503],
+        commit_message_token_to_id={},
+        post_commit_legacy_files=0,
+    )
+    _wire_commit_token(con, commit_snapshot_id=501)
+
+    result = rewrite_legacy_layout(
+        con, "ops_recommendations_history", catalog_alias="cat", semantics=_semantics(), uuid_factory=lambda: "fixed-uuid"
+    )
+
+    assert result["physical"] == "ops_recommendations_history"
+    assert result["commit_snapshot_id"] == 501
     assert con._committed is True
 
 

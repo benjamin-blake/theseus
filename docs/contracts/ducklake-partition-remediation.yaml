@@ -25,6 +25,16 @@ contract:
     agent_surface: docs/contracts/deploy-paths.yaml
 
 amendment_log:
+  - date: "2026-09-28"
+    semantic_break: false
+    change_class: field_add
+    summary: >-
+      PLAN-ducklake-smoke-harness-classification (Decision 191 amendment, rec-3864): steps 18/19/21
+      name the exact expected sets now that the smoke-harness pair classifies -- `layouts` ==
+      exactly the ten ops_* tables, `skipped` == exactly ducklake_smoke_current and
+      ducklake_smoke_history with a null drift, never ALTERed (a non-null skipped drift is
+      recorded on rec-4116, never a STOP). The unclassified-table STOP and every other step are
+      unchanged verbatim.
   - date: "2026-09-26"
     semantic_break: false
     change_class: field_add
@@ -90,15 +100,23 @@ procedure:
       action: >-
         Invoke `reconcile_partitions` with dry_run=true and PRESENT the readout to the human --
         every drifted table's declared-vs-live spec, and confirm legacy_scheme_files is 0 everywhere
-        (the day-of-month files are still the active scheme pre-ALTER). Any unexpected drift or an
+        (the day-of-month files are still the active scheme pre-ALTER). `layouts` must carry
+        exactly the ten ops_* physical tables and `skipped` exactly ducklake_smoke_current and
+        ducklake_smoke_history, each carrying the smoke_harness policy reason and a null drift
+        (2026-09-26 evidence: the smoke history is already on the calendar-day triple) -- a
+        non-null skipped drift is recorded on rec-4116, never a STOP and never ALTERed (Decision
+        191 amendment, PLAN-ducklake-smoke-harness-classification). Any unexpected drift on a
+        `layouts` table, a `skipped`/`layouts` set other than exactly those two, or an
         unclassified-table error STOPS the run; never apply on an unexpected readout.
     - step: 19
       tag: ADMIN
       action: >-
         After the human explicitly confirms the ALTER, invoke `reconcile_partitions` with
         dry_run=false. The response's post-ALTER readout (never a separate pre-ALTER one) is the
-        proof: zero spec drift, and each altered table's legacy_scheme_files equal to its live_files
-        less any file a concurrent writer committed after the ALTER.
+        proof: zero spec drift on `layouts` (exactly the ten ops_* tables), each altered table's
+        legacy_scheme_files equal to its live_files less any file a concurrent writer committed
+        after the ALTER, and `skipped` still exactly the declared smoke-harness pair with a null
+        drift, never ALTERed.
     - step: 20
       tag: ADMIN
       action: >-
@@ -110,8 +128,11 @@ procedure:
       tag: ADMIN
       action: >-
         Invoke `reconcile_partitions` (dry_run=true) and `catalog_stats` again to prove the end
-        state (zero drift, zero legacy-scheme files everywhere) and record the post-rewrite
-        footprint. A GC-debt spike is EXPECTED here until gc_ops reclaims the rewritten-out files.
+        state (zero drift, zero legacy-scheme files everywhere on `layouts`, exactly the ten
+        ops_* tables) and record the post-rewrite footprint. `skipped` still names exactly the
+        declared smoke-harness pair with a null drift, never ALTERed (a non-null skipped drift is
+        recorded on rec-4116, never a STOP). A GC-debt spike is EXPECTED here until gc_ops
+        reclaims the rewritten-out files.
     - step: 22
       tag: ADMIN
       action: >-

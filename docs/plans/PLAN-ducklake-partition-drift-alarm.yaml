@@ -6,8 +6,9 @@ slug: "ducklake-partition-drift-alarm"
 intent: >-
   Detect declared-vs-live DuckLake partition drift continuously (rec-4094): a read-only reader verb
   exposes each registered table's live partition layout and its comparison with the declared spec,
-  and a sensor on its own native 6-hourly schedule files one deduped High rec while any table drifts
-  or keeps legacy-scheme files a sanctioned rewrite can clear -- closing the gap that let a
+  and a sensor on its own native 6-hourly schedule files one deduped High rec while any table whose
+  maintenance class's reconcile_partitions cell applies drifts, or keeps legacy-scheme files a
+  sanctioned rewrite can clear -- closing the gap that let a
   declared-spec change (#1277) sit unapplied on every live history table with nothing noticing.
 plan_type: IMPLEMENTATION
 verification_tier: V3
@@ -70,8 +71,12 @@ scope:
       second reader call). THRESHOLD -- rewrite-eligible iff a sanctioned rewrite exists:
       load_policy()[table_class]['rewrite_partition_layout']['apply'] is true AND
       build_registry()[physical].side == 'history' (the remediation's rewrite refuses every other
-      side). over_threshold iff any drift, or any rewrite-eligible table has legacy_scheme_files > 0.
-      Legacy files on a control-class table or a *_current projection are reported in context --
+      side). over_threshold iff any drift on a table whose maintenance class's
+      reconcile_partitions cell applies, or any rewrite-eligible table has legacy_scheme_files > 0.
+      A report-only class's drift (e.g. smoke_harness, Decision 191 amendment,
+      PLAN-ducklake-smoke-harness-classification) never holds the alarm open, mirroring
+      action_reconcile_partitions' to_merge scoping. Legacy files on a control-class table or a
+      *_current projection are reported in context --
       remedy 'rebuild from history, Decision 81 cl.8' for current -- and never hold the alarm open.
       check_only returns the verdict without any portal call. Otherwise
       run_episode(source="ducklake_partition_drift", ...) files ONE deduped rec whose rec-fields dict
@@ -201,7 +206,10 @@ scope:
       pinned fields and the tracking-only context lead, an unchanged persistence is a no-op update
       (build_update None), a changed one updates, clear closes. Further cases: legacy on a history
       scd2 table trips the alarm while legacy on a control-class table or a *_current projection
-      does not (reported in context with its remedy); check_only returns the verdict with zero
+      does not (reported in context with its remedy); drift on a smoke_harness
+      (reconcile_partitions apply=false) table is reported in context and neither trips the alarm
+      nor fails --assert-clear (Decision 191 amendment, PLAN-ducklake-smoke-harness-classification);
+      check_only returns the verdict with zero
       portal calls; the reader object reaches run_episode; a reader failure raises, never a silent
       all-clear; source is ducklake_partition_drift, never ci_rca
   - file: tests/convergence_health/test___main__.py
@@ -222,9 +230,10 @@ acceptance_criteria:
     unclassified table is a typed 500
   - >-
     python -m scripts.convergence_health --partition-drift files exactly one deduped High rec
-    (source ducklake_partition_drift) while any table drifts or a history table with a sanctioned
-    rewrite keeps legacy-scheme files, writes no history row while nothing changes, and closes it
-    when clear; --partition-drift --assert-clear exits 0 iff there is no such drift and never writes
+    (source ducklake_partition_drift) while any table whose maintenance class's
+    reconcile_partitions cell applies drifts or a history table with a sanctioned rewrite keeps
+    legacy-scheme files, writes no history row while nothing changes, and closes it when clear;
+    --partition-drift --assert-clear exits 0 iff there is no such drift and never writes
   - >-
     the reader bundle ships the READ half and never ducklake_partition_rewrite.py, and no reader
     surface still claims a write is denied at the IAM/S3 layer
@@ -243,8 +252,10 @@ verification_plan:
       -q
     expected: >-
       all pass -- file on drift, no-op on unchanged persistence, close on clear, control and current
-      legacy ignored while history legacy trips, check_only writes nothing, loud on reader failure;
-      --assert-clear exits 1 over threshold and 0 when clear
+      legacy ignored while history legacy trips, drift on a smoke_harness (reconcile_partitions
+      apply=false) table is reported in context and neither trips the alarm nor fails
+      --assert-clear, check_only writes nothing, loud on reader failure; --assert-clear exits 1
+      over threshold and 0 when clear
     fix_if: >-
       a test reaches a real reader, portal or AWS credential -- it must inject every collaborator or
       rec-4094 cannot close under Decision 201's offline evaluator
@@ -432,7 +443,11 @@ verification_plan:
       prints the table, drift and legacy counts, the response size and any registered table not yet
       live. Before the remediation plan's ADMIN run: five drifts (the ops history tables, live day
       vs declared year,month,day). After its ALTER: zero drifts; after its rewrites: zero legacy.
-      Every state is correct; record which, and the byte count
+      The readout includes the smoke-harness pair with table_class smoke_harness (Decision 191
+      amendment, PLAN-ducklake-smoke-harness-classification, merged before this plan per the
+      pre_implementation_checklist) -- its report-only reconcile_partitions class never counts
+      against the drift/legacy figures above. Every state is correct; record which, and the byte
+      count
     fix_if: >-
       an error body naming PartitionLayoutError means a live table is missing from the DEPLOYED
       reader's bundled registry -- register it (the subset assertion only compares this checkout's
@@ -490,7 +505,7 @@ test_obligations:
     test_selector: tests/common/ducklake_reader_client/test_partition_layout.py
     red_green_expectation: red before (method and test absent), green after
   - source: scripts/convergence_health/partition_drift.py
-    behavior: one deduped rec per drift episode over rewrite-eligible tables only, closed when clear, loud on reader failure
+    behavior: one deduped rec per drift episode over reconcile-scoped drift and rewrite-eligible legacy files only, closed when clear, loud on reader failure
     verification_step: 1
     test_selector: tests/convergence_health/test_partition_drift.py
     red_green_expectation: red before (module and test absent), green after
@@ -560,6 +575,14 @@ constraints:
     credential-free. Never change that acceptance without re-running step 6
   - No rescue agents or workaround loops (Decision 55)
 context:
+  - >-
+    2026-09-28: PLAN-ducklake-smoke-harness-classification (Decision 191 amendment, rec-3864)
+    declared the production-resident smoke-harness pair maintenance class smoke_harness with
+    reconcile_partitions apply=false (report-only). This plan's drift predicate is narrowed to
+    "any drift on a table whose maintenance class's reconcile_partitions cell applies" so the
+    report-only pair's drift never holds the alarm open -- pre_implementation_checklist gains that
+    plan's merged-and-deployed prerequisite; until then the live partition_layout verb fails
+    closed on production exactly as the remediation plan's step 18 did.
   - "Decision-scout verdict: FLAGS_FOUND. Decisions triaged: 154 of 154. Roadmap items intersected: 14; CONFLICT: 1; RELATED: 12."
   - "CITE: Decision 55, 62, 79, 83, 84, 88, 125, 126, 131, 143, 162, 184, 191, 201; RELATED 190"
   - "gates: decision-scout=FLAGS_FOUND (shared with the remediation plan); plan-critique r1=REVISE (9); r2=REVISE (4 + 6); r3=REVISE (3 + 5); r4=REVISE (2 + 6; S6 read-engine listing not taken -- unenforced); r5=PROCEED (S1-S4 folded in; S5, S6 via recs); r6=PROCEED (N1-N3 applied as specified)"
@@ -596,6 +619,7 @@ pre_implementation_checklist:
   - docs/PROJECT_CONTEXT.md read
   - only the plan-cited decision sections (55, 62, 79, 83, 84, 88, 125, 126, 131, 143, 162, 184, 191, 201)
   - PLAN-ducklake-partition-layout-remediation's code PR is merged and src/common/ducklake_partition_layout.py exposes the pinned READ-half API
+  - PLAN-ducklake-smoke-harness-classification merged and deployed (deploy-ducklake-lambdas.yml green on its merge SHA)
   - All files in scope located and readable
   - Acceptance criteria understood and verifiable
 execution_steps:

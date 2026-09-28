@@ -59,7 +59,19 @@ def _semantics() -> dict:
                 "status": "live",
                 "write_mode": "control",
             },
-        }
+        },
+        "fields": _COLUMNS,
+        "partition_transforms": {
+            "history": "year(created_timestamp), month(created_timestamp), day(created_timestamp)",
+            "current": "bucket(8, rec_id)",
+        },
+        "tables": {
+            "history": {
+                "name": "ducklake_smoke_history",
+                "partition": "year(created_timestamp), month(created_timestamp), day(created_timestamp)",
+            },
+            "current": {"name": "ducklake_smoke_current", "partition": "bucket(8, rec_id)"},
+        },
     }
 
 
@@ -140,6 +152,74 @@ _CATALOG = {
         "legacy_files": 1,
     },
 }
+
+
+_SMOKE_HARNESS_CATALOG_ENTRIES = {
+    "ducklake_smoke_history": {
+        "table_id": 5,
+        "active_scheme_id": 50,
+        "live_transforms": [("year", "created_timestamp"), ("month", "created_timestamp"), ("day", "created_timestamp")],
+        "live_files": 12,
+        "legacy_files": 0,
+    },
+    "ducklake_smoke_current": {
+        "table_id": 6,
+        "active_scheme_id": 60,
+        "live_transforms": [("bucket(8)", "rec_id")],
+        "live_files": 2,
+        "legacy_files": 0,
+    },
+}
+
+
+def test_read_partition_layout_classifies_declared_smoke_harness_residents():
+    catalog = {**_CATALOG, **_SMOKE_HARNESS_CATALOG_ENTRIES}
+    con = FakeMetaCon(catalog)
+    layouts = read_partition_layout(con, catalog_alias="cat", semantics=_semantics())
+
+    history = layouts["ducklake_smoke_history"]
+    current = layouts["ducklake_smoke_current"]
+    assert history.table_class == scope.SMOKE_HARNESS_CLASS
+    assert current.table_class == scope.SMOKE_HARNESS_CLASS
+
+
+def test_read_partition_layout_undeclared_tables_still_one_error_beside_declared_residents():
+    catalog = {**_CATALOG, **_SMOKE_HARNESS_CATALOG_ENTRIES}
+    catalog["a_stray_table"] = {
+        "table_id": 99,
+        "active_scheme_id": None,
+        "live_transforms": (),
+        "live_files": 0,
+        "legacy_files": 0,
+    }
+    catalog["another_stray"] = {
+        "table_id": 98,
+        "active_scheme_id": None,
+        "live_transforms": (),
+        "live_files": 0,
+        "legacy_files": 0,
+    }
+    con = FakeMetaCon(catalog)
+
+    with pytest.raises(PartitionLayoutError) as exc_info:
+        read_partition_layout(con, catalog_alias="cat", semantics=_semantics())
+    message = str(exc_info.value)
+    assert "a_stray_table" in message
+    assert "another_stray" in message
+    assert "ducklake_smoke_history" not in message
+    assert "ducklake_smoke_current" not in message
+
+
+def test_compare_to_declared_resolves_smoke_harness_declared_spec():
+    catalog = {**_CATALOG, **_SMOKE_HARNESS_CATALOG_ENTRIES}
+    con = FakeMetaCon(catalog)
+    layouts = read_partition_layout(con, catalog_alias="cat", semantics=_semantics())
+
+    smoke_layouts = {k: v for k, v in layouts.items() if k in ("ducklake_smoke_history", "ducklake_smoke_current")}
+    drifts = compare_to_declared(smoke_layouts, semantics=_semantics())
+    # Declared shape agrees with the live shape in this fixture -- no drift, but resolving the
+    # declared spec via resolve_table_spec(None) must not raise.
+    assert drifts == []
 
 
 def test_read_partition_layout_classifies_and_counts_every_table():

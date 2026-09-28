@@ -31,6 +31,22 @@ contract:
     check: validate_data_model_standard
 
 amendment_log:
+  - date: "2026-09-28"
+    semantic_break: false
+    change_class: field_add
+    summary: >-
+      PLAN-ducklake-smoke-harness-classification (Decision 191 amendment, rec-3864): register the
+      production-resident smoke-harness pair (ducklake_smoke_history / ducklake_smoke_current) as
+      table entry ducklake_smoke_harness_pair -- substrate, grain + merge_key + write_mode, write
+      boundary (writer EC probes, force_recreate), read boundary (reader read_current(table=None);
+      the deploy --lambda-reader gate), catalog residency (ducklake_ops AND ducklake_smoke),
+      maintenance class smoke_harness, and move-out follow-on rec-4116. status: transitional (never
+      `smoke`, which the data-modeling-standard.yaml vocabulary block now reserves for a
+      production table's lifecycle tag). No existing table entry changed.
+    migration_story: >-
+      Additive registration entry; every existing table entry is unchanged. Satisfies
+      scripts/checks/contracts/validate_data_model_standard.py's merge_key-bearing-table gate
+      (grain + write_mode both present). semantic_break=false.
   - date: "2026-09-25"
     semantic_break: false
     change_class: prose_improvement
@@ -155,6 +171,43 @@ tables:
     grain: one row per event_id
     field_semantics: config/lambda/ducklake/field_semantics.yaml#ops_tables.ops_smoke_events
     note: platform-generic append_only kernel proof (T1.14); no current_table in ScdTableSpec
+
+  # ---------------------------------------------------------------------------
+  # smoke-harness pair (Decision 191 amendment, PLAN-ducklake-smoke-harness-classification,
+  # rec-3864): production-resident, load-bearing for the deploy smoke gate. status: transitional
+  # -- never `status: smoke`, which this contract's vocabulary companion
+  # (data-modeling-standard.yaml's vocabulary block) reserves for a production ops table's
+  # lifecycle tag (e.g. ops_smoke_events), not for catalog residency.
+  # ---------------------------------------------------------------------------
+  ducklake_smoke_harness_pair:
+    substrate: DuckLake-on-Neon
+    status: transitional
+    physical_tables: [ducklake_smoke_history, ducklake_smoke_current]
+    reason: >-
+      rec-3864: physically resident inside the PRODUCTION ducklake_ops catalog (proven by the
+      2026-09-17 gc_ops dry_run enumeration) even though field_semantics declares it under the
+      `tables:` block, historically shared with the isolated ducklake_smoke CI kernel-proof
+      catalog. Classified maintenance class smoke_harness (Decision 191 amendment) so a scheduled
+      merge_ops pass no longer fails closed on it. Move-out of production is follow-on rec-4116.
+    write_boundary: >-
+      ducklake_writer Lambda's smoke actions (src/lambdas/ducklake_writer/smoke_actions.py) --
+      operator-run EC (existence-check) probes force_recreate the pair from its declared spec via
+      create_scd2_tables(table=None); never the generic write_ops/file_ops/update_ops verbs.
+    read_boundary: >-
+      ducklake_reader Lambda's read_current(table=None) -- deploy-ducklake-lambdas.yml's smoke job
+      (scripts/ducklake_smoke/lambda_ec_gates.py --lambda-reader) reads production
+      ducklake_smoke_current and requires row_count >= 1 before promoting a deploy; a DROP turns
+      every deploy red.
+    catalog_residency: ducklake_ops (production, load-bearing) AND ducklake_smoke (isolated CI harness)
+    merge_key: rec_id
+    grain: one row per logical smoke write attempt (history) / one row per rec_id (current)
+    write_mode: scd2
+    field_semantics: config/lambda/ducklake/field_semantics.yaml#tables
+    maintenance_binding: >-
+      maintenance class smoke_harness (src/common/ducklake_maintenance_scope.py) -- merge_ops
+      apply=true; reconcile_partitions/rewrite_partition_layout apply=false (report-only, owned by
+      create_scd2_tables force_recreate, never ALTERed or re-laid).
+    graduation_blocker: follow-on rec-4116 (move the pair out of the production catalog)
 
   # ---------------------------------------------------------------------------
   # Telemetry tables -- canonical 4-table trace/observation model (Decision 95);

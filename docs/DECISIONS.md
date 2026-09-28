@@ -1061,6 +1061,20 @@ to a third site), Decision 137 (cl.2; ops_entity_counters partitioning already d
 09-13 amendment), Decision 143 (cl.2 untouched), Decision 84 (I-2 counter serialization point;
 I-4 no offline outbox), Decision 55, Decision 128 (scope module is a new file).
 
+[Amendment 2026-09-28: PLAN-ducklake-smoke-harness-classification (rec-3864) realizes reversal
+condition (a) -- the production-resident smoke-harness pair (ducklake_smoke_history /
+ducklake_smoke_current) needed finer-than-per-class policy the write_mode-derived registry could
+not express (it is declared only under field_semantics' `tables:` block, never `ops_tables:`), so
+a per-table override joins the class universe as `smoke_harness`, sourced from that declared
+`tables:` data -- never string matching, never a "smoke" name pattern. Clause 1's class list
+widens to `scd2`|`append_only`|`control`|`smoke_harness`; clause 2's DECLARED class universe
+(`ducklake_maintenance_scope.class_universe`) now includes `smoke_harness` whenever field_semantics
+carries a `tables:` block, while `write_mode` stays the SOLE class source for every `ops_tables`
+entry (unchanged). merge_ops's `maintenance_policy[smoke_harness]` cell is apply=true; the
+partition-layout verbs' (Decision 204) cells for the same class are apply=false, report-only. See
+that plan and rec-3864 for the production incident (a scheduled merge_ops pass failing closed on
+both tables since #1179) this amendment closes.]
+
 ---
 
 ## Decision 190: Drift is measured, never inferred from an exit code -- the convergence record carries a measured red_cause, and code-behind-state is a bounded non-status marker rather than a red latch (amends 92, 154) (Decided)

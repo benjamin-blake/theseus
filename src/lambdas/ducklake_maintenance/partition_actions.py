@@ -47,11 +47,33 @@ def _open_event_connection(event: dict[str, Any], *, action: str) -> tuple[Any, 
     return con, meta_schema
 
 
+def _skipped_with_readonly_evidence(
+    resolution: scope.ScopeResolution, all_layouts: dict[str, Any], semantics: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Enrich resolution.skipped with each table's READ-ONLY live layout + declared-spec drift
+    (or null) -- reported, never ALTERed, so the readout accounts for every discovered table."""
+    if not resolution.skipped:
+        return []
+    skipped_names = {s["table"] for s in resolution.skipped}
+    skipped_layouts = {k: v for k, v in all_layouts.items() if k in skipped_names}
+    drift_by_table = {d.physical: d for d in layout_mod.compare_to_declared(skipped_layouts, semantics=semantics)}
+    return [
+        {
+            **s,
+            "layout": asdict(skipped_layouts[s["table"]]) if s["table"] in skipped_layouts else None,
+            "drift": asdict(drift_by_table[s["table"]]) if s["table"] in drift_by_table else None,
+        }
+        for s in resolution.skipped
+    ]
+
+
 def action_reconcile_partitions(event: dict[str, Any], _con: Any) -> dict[str, Any]:
     """Report (dry_run=true, default) or apply (dry_run=false) every reconcile_partitions-scoped
-    table's live-vs-declared partition ALTER. Returns {layouts, drifts} for a dry run, or
-    {altered, layouts, drifts} for an apply -- both readouts AFTER any ALTER, never before (a
-    pre-ALTER readout would misreport a benign post-ALTER writer commit as drift)."""
+    table's live-vs-declared partition ALTER. Returns {layouts, drifts, skipped} for a dry run, or
+    {altered, layouts, drifts, skipped} for an apply -- layouts/drifts AFTER any ALTER, never
+    before (a pre-ALTER readout would misreport a benign post-ALTER writer commit as drift);
+    `skipped` names every reconcile_partitions-scoped-out table (e.g. smoke_harness) with its
+    read-only layout and drift -- never ALTERed or re-laid."""
     con, _meta_schema = _open_event_connection(event, action="reconcile_partitions")
     dry_run = event.get("dry_run", True)
     try:
@@ -69,25 +91,31 @@ def action_reconcile_partitions(event: dict[str, Any], _con: Any) -> dict[str, A
         except scope.DuckLakeMaintenanceScopeError as exc:
             raise layout_mod.PartitionLayoutError(f"reconcile_partitions scope resolution failed: {exc}") from exc
 
-        def _scoped_layouts_and_drifts() -> tuple[dict[str, Any], list[Any]]:
-            all_layouts = layout_mod.read_partition_layout(con, catalog_alias=maint.CATALOG_ALIAS, semantics=semantics)
+        def _scoped_layouts_and_drifts(all_layouts: dict[str, Any]) -> tuple[dict[str, Any], list[Any]]:
             scoped = {k: v for k, v in all_layouts.items() if k in resolution.to_merge}
             return scoped, layout_mod.compare_to_declared(scoped, semantics=semantics)
 
         if dry_run:
-            layouts, drifts = _scoped_layouts_and_drifts()
+            all_layouts = layout_mod.read_partition_layout(con, catalog_alias=maint.CATALOG_ALIAS, semantics=semantics)
+            layouts, drifts = _scoped_layouts_and_drifts(all_layouts)
+            skipped = _skipped_with_readonly_evidence(resolution, all_layouts, semantics)
             return {
                 "layouts": {k: asdict(v) for k, v in layouts.items()},
                 "drifts": [asdict(d) for d in drifts],
+                "skipped": skipped,
             }
 
-        _, drifts = _scoped_layouts_and_drifts()
+        pre_layouts = layout_mod.read_partition_layout(con, catalog_alias=maint.CATALOG_ALIAS, semantics=semantics)
+        _, drifts = _scoped_layouts_and_drifts(pre_layouts)
         altered = rewrite_mod.alter_to_declared(con, drifts, catalog_alias=maint.CATALOG_ALIAS)
-        post_layouts, post_drifts = _scoped_layouts_and_drifts()
+        post_all_layouts = layout_mod.read_partition_layout(con, catalog_alias=maint.CATALOG_ALIAS, semantics=semantics)
+        post_layouts, post_drifts = _scoped_layouts_and_drifts(post_all_layouts)
+        skipped = _skipped_with_readonly_evidence(resolution, post_all_layouts, semantics)
         return {
             "altered": altered,
             "layouts": {k: asdict(v) for k, v in post_layouts.items()},
             "drifts": [asdict(d) for d in post_drifts],
+            "skipped": skipped,
         }
     finally:
         con.close()

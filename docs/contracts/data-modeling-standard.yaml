@@ -28,6 +28,17 @@ contract:
     check: validate_data_model_standard
 
 amendment_log:
+  - date: "2026-09-28"
+    semantic_break: false
+    change_class: governance_note_add
+    summary: >-
+      PLAN-ducklake-smoke-harness-classification (Decision 191 amendment, rec-3864): added a new
+      `vocabulary:` block (environment-taxonomy.yaml's reserved_meaning / do_not_use_for row
+      shape) disambiguating write_mode vs maintenance class, the smoke_harness pair vs the
+      ducklake_smoke catalog vs a production table's `status: smoke` tag vs the deploy channel's
+      smoke gates vs the writer's operator-run EC probes vs the maintenance-smoke Lambda, plus an
+      anti_patterns entry (unenforced residual owned by follow-on rec-4116, Decision 181 cl.2). No
+      rule or write mode changed.
   - date: "2026-09-26"
     semantic_break: false
     change_class: prose_improvement
@@ -91,7 +102,73 @@ amendment_log:
 version: 2
 updated_at: "2026-09-24"
 updated_by: "PLAN-telemetry-event-journal-contracts"
-decisions_cited: [78, 81, 84, 95, 96, 97, 141, 66, 137, 199]
+decisions_cited: [78, 81, 84, 95, 96, 97, 141, 66, 137, 199, 191]
+
+# Vocabulary reservation (environment-taxonomy.yaml's reserved_meaning / do_not_use_for row
+# shape): disambiguates a cluster of "smoke"-adjacent terms that Decision 191's amendment
+# (PLAN-ducklake-smoke-harness-classification, rec-3864) proved are easy to conflate. The
+# anti_patterns entry below names the specific inference failure rec-3864 root-caused; it carries
+# no mechanical check yet -- an unenforced residual owned by follow-on rec-4116 (Decision 181
+# cl.2).
+vocabulary:
+  write_mode:
+    reserved_meaning: >-
+      An ops_tables entry's declared column, `write_mode: scd2 | append_only | control` -- the
+      SOLE class source for every ops_tables physical table (Decision 191).
+    do_not_use_for: a maintenance-scope class; a table's catalog residency
+  maintenance_class:
+    reserved_meaning: >-
+      The class ducklake_maintenance_scope.build_registry resolves per physical table --
+      write_mode for ops_tables entries, `smoke_harness` for the pair declared under
+      field_semantics' `tables:` block (Decision 191 amendment). Governs which maintenance_policy
+      cell a verb (merge_ops / reconcile_partitions / rewrite_partition_layout) consults.
+    do_not_use_for: catalog residency; a table's lifecycle `status`
+  smoke_harness:
+    reserved_meaning: >-
+      The maintenance class of the PRODUCTION-resident pair ducklake_smoke_history /
+      ducklake_smoke_current (declared under field_semantics' `tables:` block, never inferred
+      from a name pattern) -- merge_ops applies to it; reconcile_partitions and
+      rewrite_partition_layout report it read-only. Move-out of production is follow-on
+      rec-4116.
+    do_not_use_for: >-
+      the ducklake_smoke CATALOG (a separate, isolated meta_schema); a production ops table's
+      `status: smoke` lifecycle tag
+  ducklake_smoke_catalog:
+    reserved_meaning: >-
+      The ISOLATED meta_schema (ducklake_smoke) the CI smoke-Lambda kernel-proof harness writes
+      to via scripts/ducklake_smoke/core.py and the maintenance-smoke Lambda
+      (DUCKLAKE_META_SCHEMA=ducklake_smoke) -- distinct from the production ducklake_ops catalog
+      the smoke_harness pair physically resides in.
+    do_not_use_for: the smoke_harness pair's production residency; any production table
+  status_smoke:
+    reserved_meaning: >-
+      A production ops_tables entry's lifecycle `status: smoke` tag (e.g. ops_smoke_events) -- an
+      append-only kernel-proof table, unrelated to catalog residency or maintenance class.
+    do_not_use_for: the smoke_harness maintenance class; the ducklake_smoke catalog
+  deploy_smoke_gates:
+    reserved_meaning: >-
+      deploy-ducklake-lambdas.yml's smoke job (scripts/ducklake_smoke/lambda_ec_gates.py) -- reads
+      production ducklake_smoke_current via the reader's read_current(table=None) and requires
+      row_count >= 1 before promoting a deploy.
+    do_not_use_for: a maintenance verb; the smoke_harness classification
+  writer_smoke_probes:
+    reserved_meaning: >-
+      The writer's operator-run EC (existence-check) probes against the smoke-harness pair
+      (src/lambdas/ducklake_writer/smoke_actions.py) -- churn that force_recreates the pair from
+      its declared spec, load-bearing for the deploy smoke gate.
+    do_not_use_for: a maintenance verb; a production write path
+  maintenance_smoke_lambda:
+    reserved_meaning: >-
+      The CI-only ducklake_maintenance_smoke Lambda (DUCKLAKE_META_SCHEMA=ducklake_smoke) that
+      runs maintenance verbs against the ISOLATED smoke catalog for kernel-proof coverage --
+      distinct from ducklake_maintenance (production) and the smoke_harness pair it never
+      touches.
+    do_not_use_for: the production ducklake_maintenance Lambda; the smoke_harness class
+  anti_patterns:
+    - >-
+      inferring catalog residency (which META_SCHEMA a table's CREATING caller attached under)
+      from a field_semantics key or a "smoke" token anywhere in a table's declared name --
+      residency is the META_SCHEMA, never a lexical signal (rec-3864's root cause).
 
 rules:
   - id: grain-first

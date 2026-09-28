@@ -41,6 +41,23 @@ def _semantics(**extra_ops_tables) -> dict:
     return {"ops_tables": ops_tables}
 
 
+def _tables_block(*, history_name: str = "ducklake_smoke_history", current_name: str = "ducklake_smoke_current") -> dict:
+    """A field_semantics-shaped `tables:` block, matching the smoke-harness pair's declared shape."""
+    return {
+        "history": {
+            "name": history_name,
+            "partition": "year(created_timestamp), month(created_timestamp), day(created_timestamp)",
+        },
+        "current": {"name": current_name, "partition": "bucket(8, rec_id)"},
+    }
+
+
+def _semantics_with_smoke_tables(**extra_ops_tables) -> dict:
+    semantics = _semantics(**extra_ops_tables)
+    semantics["tables"] = _tables_block()
+    return semantics
+
+
 def _policy(**overrides) -> dict:
     base = {
         "scd2": {"merge_ops": {"apply": True, "reason": "standard"}},
@@ -184,6 +201,72 @@ class TestResolveScope:
         when its policy cell is apply=true -- included by declared cell, not naming accident."""
         result = scope.resolve_scope(["ops_entity_counters"], verb="merge_ops", policy=_policy(), registry=self._registry())
         assert result.to_merge == ("ops_entity_counters",)
+
+
+# ---------------------------------------------------------------------------
+# smoke_harness -- declared `tables:` membership (Decision 191 amendment,
+# PLAN-ducklake-smoke-harness-classification), never a name pattern
+# ---------------------------------------------------------------------------
+class TestSmokeHarnessRegistry:
+    def test_build_registry_classifies_declared_smoke_harness_pair(self):
+        registry = scope.build_registry(_semantics_with_smoke_tables())
+        hist = registry["ducklake_smoke_history"]
+        cur = registry["ducklake_smoke_current"]
+        assert hist.table_id == "ducklake_smoke_history"
+        assert hist.table_class == scope.SMOKE_HARNESS_CLASS
+        assert hist.side == "history"
+        assert cur.table_id == "ducklake_smoke_current"
+        assert cur.table_class == scope.SMOKE_HARNESS_CLASS
+        assert cur.side == "current"
+
+    def test_build_registry_no_smoke_harness_entries_without_tables_block(self):
+        registry = scope.build_registry(_semantics())
+        assert "ducklake_smoke_history" not in registry
+        assert "ducklake_smoke_current" not in registry
+
+    def test_build_registry_tolerates_a_missing_side_in_the_tables_block(self):
+        """A `tables:` block declaring only one side (e.g. mid-migration) registers that side
+        and skips the absent one -- never a KeyError on the missing side."""
+        semantics = _semantics_with_smoke_tables()
+        del semantics["tables"]["current"]
+        registry = scope.build_registry(semantics)
+        assert "ducklake_smoke_history" in registry
+        assert "ducklake_smoke_current" not in registry
+
+    def test_build_registry_raises_on_smoke_harness_name_collision(self):
+        semantics = _semantics_with_smoke_tables()
+        semantics["tables"]["history"]["name"] = "ops_recommendations_history"
+        with pytest.raises(scope.DuckLakeMaintenanceScopeError, match="collides"):
+            scope.build_registry(semantics)
+
+    def test_class_universe_includes_smoke_harness_only_when_tables_declared(self):
+        assert scope.SMOKE_HARNESS_CLASS not in scope.class_universe(_semantics())
+        assert scope.SMOKE_HARNESS_CLASS in scope.class_universe(_semantics_with_smoke_tables())
+
+    def test_tables_block_agrees_with_smoke_spec(self):
+        """The `tables:` block (MEMBERSHIP source) and partition_transforms via resolve_table_spec(None)
+        (declared-SPEC source, consulted by _declared_spec_text) must never diverge -- the live,
+        generated field_semantics.yaml pins both names and both normalized partition specs."""
+        from src.common.ducklake_partition_spec import normalize_partition_spec
+        from src.common.ducklake_scd2_schema import (
+            SMOKE_CURRENT_TABLE,
+            SMOKE_HISTORY_TABLE,
+            load_field_semantics,
+            resolve_table_spec,
+        )
+
+        semantics = load_field_semantics()
+        tables = semantics["tables"]
+        assert tables["history"]["name"] == SMOKE_HISTORY_TABLE
+        assert tables["current"]["name"] == SMOKE_CURRENT_TABLE
+
+        smoke_spec = resolve_table_spec(None, semantics)
+        assert normalize_partition_spec(tables["history"]["partition"]) == normalize_partition_spec(
+            smoke_spec.partition_history
+        )
+        assert normalize_partition_spec(tables["current"]["partition"]) == normalize_partition_spec(
+            smoke_spec.partition_current
+        )
 
 
 # ---------------------------------------------------------------------------

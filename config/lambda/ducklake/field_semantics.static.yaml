@@ -22,9 +22,11 @@
 # production catalog UNFILTERED (no naming-convention predicate anywhere in the path), classifies
 # every discovered table via this same sidecar's write_mode declarations (src/common/
 # ducklake_maintenance_scope.py::classify_table), then consults this matrix cell to decide whether
-# to touch it. Both the class universe (scd2 | append_only | control -- every distinct write_mode
-# value across ops_tables) and the verb universe (VERB_UNIVERSE in ducklake_maintenance_scope.py)
-# are DECLARED independently of this matrix's own keys -- see
+# to touch it. Both the class universe (scd2 | append_only | control | smoke_harness -- every
+# distinct write_mode value across ops_tables, PLUS smoke_harness when this sidecar declares a
+# `tables:` block -- Decision 191 amendment, PLAN-ducklake-smoke-harness-classification) and the
+# verb universe (VERB_UNIVERSE in ducklake_maintenance_scope.py) are DECLARED independently of
+# this matrix's own keys -- see
 # scripts/checks/contracts/validate_maintenance_policy_matrix.py, which fails the build if the
 # matrix is missing a cell, missing a reason on a false cell, or names a class outside the
 # declared universe. Regenerates into config/lambda/ducklake/field_semantics.yaml (the Lambda-
@@ -104,6 +106,27 @@ maintenance_policy:
         (Decision 84 I-2); its identity partition spec never drifts, and a delete-all rewrite
         transaction would contend with the same-table allocation serialization the counter exists
         to provide.
+  smoke_harness:
+    merge_ops:
+      apply: true
+      reason: >-
+        Decision 191 amendment (PLAN-ducklake-smoke-harness-classification, rec-3864): bounds the
+        production-resident smoke-harness pair's live-file footprint left by operator-run churn
+        probes (Decision 88 egress). A probe overlapping a :30 pass may fail that one table's
+        merge under Decision 191's per-table isolation, surfacing as MergeOpsPassFailed --
+        accepted.
+    reconcile_partitions:
+      apply: false
+      reason: >-
+        The pair's partition layout is owned by its creator's create_scd2_tables force_recreate
+        from the declared spec and the deploy channel's --lambda-reader gate reads
+        ducklake_smoke_current; its drift is reported read-only (the `skipped` key), never
+        ALTERed.
+    rewrite_partition_layout:
+      apply: false
+      reason: >-
+        Same as reconcile_partitions: the pair's layout is owned by its creator's
+        create_scd2_tables force_recreate, never re-laid by this verb.
 
 # ---------------------------------------------------------------------------
 # Smoke table definitions (smoke schema drives the test harness)

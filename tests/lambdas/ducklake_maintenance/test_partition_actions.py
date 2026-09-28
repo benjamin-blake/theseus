@@ -80,8 +80,9 @@ def test_reconcile_partitions_dry_run_defaults_true_and_never_alters():
         result = pa.action_reconcile_partitions({"data_path": "s3://b/ducklake/", "meta_schema": "ducklake_ops"}, None)
 
     mock_alter.assert_not_called()
-    assert set(result) == {"layouts", "drifts"}
+    assert set(result) == {"layouts", "drifts", "skipped"}
     assert result["layouts"]["ops_recommendations_history"]["physical"] == "ops_recommendations_history"
+    assert result["skipped"] == []
     assert con.close.called
 
 
@@ -138,6 +139,55 @@ def test_reconcile_partitions_dry_run_false_returns_post_alter_readout_not_pre_a
     assert result["altered"] == ["ops_recommendations_history"]
     # The returned readout is the POST-alter layout (legacy_scheme_files == 0), never the pre-alter one.
     assert result["layouts"]["ops_recommendations_history"]["legacy_scheme_files"] == 0
+
+
+def test_reconcile_partitions_reports_skipped_tables_read_only():
+    con = _con()
+    layouts = {
+        "ops_recommendations_history": _layout(),
+        "ducklake_smoke_history": _layout(physical="ducklake_smoke_history", table_class="smoke_harness"),
+    }
+    with (
+        patch.object(pa.rt, "fetch_dsn", return_value=_FULL_DSN),
+        patch.object(pa.rt, "open_connection", return_value=con),
+        patch.object(pa.rt, "load_field_semantics", return_value={}),
+        patch.object(pa.scope, "build_registry", return_value={}),
+        patch.object(pa.scope, "load_policy", return_value={}),
+        patch.object(
+            pa.scope,
+            "resolve_scope",
+            return_value=scope.ScopeResolution(
+                ("ops_recommendations_history",),
+                (
+                    {
+                        "table": "ducklake_smoke_history",
+                        "table_class": "smoke_harness",
+                        "reason": "owned by create_scd2_tables force_recreate",
+                    },
+                ),
+                (),
+            ),
+        ),
+        patch.object(pa.layout_mod, "read_partition_layout", return_value=layouts),
+        patch.object(pa.layout_mod, "compare_to_declared", return_value=[]) as mock_compare,
+        patch.object(pa.rewrite_mod, "alter_to_declared") as mock_alter,
+    ):
+        result = pa.action_reconcile_partitions({"data_path": "s3://b/ducklake/", "meta_schema": "ducklake_ops"}, None)
+
+    mock_alter.assert_not_called()
+    assert set(result) == {"layouts", "drifts", "skipped"}
+    assert set(result["layouts"]) == {"ops_recommendations_history"}
+    assert len(result["skipped"]) == 1
+    skipped_entry = result["skipped"][0]
+    assert skipped_entry["table"] == "ducklake_smoke_history"
+    assert skipped_entry["table_class"] == "smoke_harness"
+    assert skipped_entry["reason"] == "owned by create_scd2_tables force_recreate"
+    assert skipped_entry["layout"]["physical"] == "ducklake_smoke_history"
+    assert skipped_entry["drift"] is None  # compare_to_declared mocked to return no drift
+    # Never ALTERed or fed into the to_merge-scoped compare_to_declared call.
+    scoped_args = [set(call.args[0]) for call in mock_compare.call_args_list]
+    assert {"ops_recommendations_history"} in scoped_args
+    assert {"ducklake_smoke_history"} in scoped_args
 
 
 def test_reconcile_partitions_wraps_scope_error():
@@ -203,6 +253,28 @@ def test_rewrite_refuses_control_class_table_via_policy_cell():
                     "meta_schema": "ducklake_ops",
                     "table": "ops_entity_counters",
                     "confirm": "ops_entity_counters",
+                },
+                None,
+            )
+    assert con.close.called
+
+
+def test_rewrite_refuses_smoke_harness_table_via_policy_cell():
+    """Binds the SHIPPED smoke_harness rewrite_partition_layout policy cell to the action -- loads
+    the real generated field_semantics.yaml (never a mocked resolve_scope), so this fails if the
+    sidecar's smoke_harness row is ever edited or dropped without this action also refusing."""
+    con = _con()
+    with (
+        patch.object(pa.rt, "fetch_dsn", return_value=_FULL_DSN),
+        patch.object(pa.rt, "open_connection", return_value=con),
+    ):
+        with pytest.raises(PartitionRewriteError):
+            pa.action_rewrite_partition_layout(
+                {
+                    "data_path": "s3://b/ducklake/",
+                    "meta_schema": "ducklake_ops",
+                    "table": "ducklake_smoke_history",
+                    "confirm": "ducklake_smoke_history",
                 },
                 None,
             )
