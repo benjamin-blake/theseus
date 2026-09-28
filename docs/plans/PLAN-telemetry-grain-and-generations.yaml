@@ -21,25 +21,31 @@ scope:
 - file: docs/DECISIONS.md
   action: Modify
   purpose: >-
-    NEW numbered Decision (N = origin/main max + 1 at implementation time; 207 expected after the two persona plans) "Grain
-    enforced at the write boundary", scoped by write_mode class (Decision 191 cl.1), never by table name: it binds
+    (1) NEW numbered Decision (N = origin/main max + 1 at implementation time; 207 expected after the two persona plans)
+    "Grain enforced at the write boundary", scoped by write_mode class (Decision 191 cl.1), never by table name: it binds
     INSERT-GRAIN tables -- append_only journals and SCD2 history tables. Each declares its grain key; its write boundary
     treats a re-send identical under an existing grain key as a no-op and REJECTS LOUDLY (fails the write, names the key) a
-    row whose content differs under an existing grain key -- never silently dropped, never first-wins or last-wins. Readers
-    keep the first write only among content-identical duplicates; a differing pair (only reachable through the concurrent-append
-    race Decision 81 cl.3's no-serialization model allows) is reported by the reader and flagged by DQ on the existing DQ path
-    (Decision 62), never silently picked. A stored or computed whole-row content hash as tiebreak was considered and rejected:
-    it hides the defect. OUT OF SCOPE: Type-1 current projections (derived, rebuildable, Decision 81 cl.8 upserts by
-    design), control-class tables (the Decision 84 I-2 counter), and replacement-shaped derived materializations (T2.52 c1).
-    Builds on Decision 81 cl.3 and 199 cl.1-2 without amending them; the telemetry physical grain (producer, event_id,
-    parser_version) refines 199 cl.1's logical one row per lifecycle event. Names the known non-compliant residual (the ops
-    writer's idempotency replay returns the original result without comparing content, src/common/ducklake_writes.py
-    file_ops replay check, and the history MERGE on the write ULID) and its follow-on rec-4121 (Decision 181 cl.2
-    coverage declaration). Future consumers: T4.23 c9, T3.20 c2. Envelope significance numbered_decision; contract-first
-    justification names data-modeling-standard.yaml (the rule lands there too) and why it cannot be the only home (changes
-    writer failure semantics across write_mode classes, binds present and future writers, needs reversal conditions) and why
-    an amendment_forms annotation on 199 is not enough (platform-wide, not telemetry-only). Reversal conditions include
-    DuckLake shipping engine-enforced unique keys (adopt them, retire the compare; Decision 100). <= 6,144 bytes.
+    row whose content differs under an existing grain key -- never silently dropped, never first-wins or last-wins. Where the
+    engine offers it, the reject is the native single-statement primitive (Decision 100 spirit, Decision 88 cl.1 one scan).
+    Readers keep the first write only among content-identical duplicates; a differing pair (only reachable through the
+    concurrent-append race Decision 81 cl.3's no-serialization model allows) is returned first-write AND reported by the
+    reader, and flagged by DQ on the existing DQ path (Decision 62) -- never silently picked. A stored or computed whole-row
+    content hash as tiebreak was considered and rejected: it hides the defect. OUT OF SCOPE: Type-1 current projections
+    (derived, rebuildable from history, Decision 81 cl.8 upserts by design), control-class tables (the Decision 84 I-2
+    counter), and replacement-shaped derived materializations (T2.52 c1). Builds on Decision 81 cl.3 and 199 cl.1-2 without
+    amending them; the telemetry physical grain (producer, event_id, parser_version) refines 199 cl.1's logical one row per
+    lifecycle event. Decision 181 cl.2 coverage: writer side -- telemetry kernel (this plan), ops writer idempotency replay
+    and history MERGE on the write ULID (named non-compliant residual, rec-4121); DQ side -- telemetry grain-conflict,
+    pending-generation and null-producer monitors (rec-4063), ops-history duplicate-ULID-with-differing-content check
+    (rec-4121); reader side -- telemetry reader verbs (rec-4024) and the derived-layer harness (rec-4025). Future consumers:
+    T4.23 c9, T3.20 c2. Envelope significance numbered_decision; contract-first justification names
+    data-modeling-standard.yaml (the rule lands there too) and why it cannot be the only home (changes writer failure
+    semantics across write_mode classes, binds present and future writers, needs reversal conditions) and why an
+    amendment_forms annotation on 199 is not enough (platform-wide, not telemetry-only). Reversal conditions include DuckLake
+    shipping engine-enforced unique keys (adopt them; Decision 100). <= 6,144 bytes (Decision 167 cl.3): keep the carve-outs
+    and coverage terse, pointing at the contract rule for detail. (2) Dated trailing-bracket annotations (Decision 177
+    dialect, decision-entry.yaml amendment_forms) on Decision 81 cl.3 and Decision 84 I-2: the history MERGE on the write
+    ULID and the file_ops replay are a named residual of Decision N, fixed by rec-4121.
 - file: docs/decisions-index.json
   action: Modify
   purpose: Regenerated for the new Decision (validate_decisions_index_freshness); never hand-edited.
@@ -48,42 +54,63 @@ scope:
   purpose: >-
     New rule `grain-enforced-at-write` beside `grain-first`, citing the new Decision and carrying its write_mode scope and
     carve-outs: the declared grain key is enforced by the write boundary (identical re-send = no-op; conflicting row = loud
-    rejection); readers never tiebreak conflicting grain-key rows; DQ owns the race window. Contract-level amendment_log entry.
+    rejection); readers never tiebreak conflicting grain-key rows; DQ owns the race window. Contract-level amendment_log
+    entry; bump decisions_cited, version and updated_* as the file's own header convention requires.
 - file: src/telemetry/gate.py
   action: Modify
   purpose: >-
-    collapse_or_reject_duplicates takes the telemetry grain key (producer, event_id, parser_version); a new pure helper
-    compares an incoming row with a stored row over every stored column except created_timestamp and producer_version and
-    returns the differing column names (reused by append.py).
+    collapse_or_reject_duplicates takes the 3-column telemetry grain key (signature widens from tuple[str, str]); within a
+    batch, two rows under one grain key that differ only in created_timestamp or producer_version collapse, any other
+    difference raises (a new pure helper returns the differing column names and is used here). A new check rejects a NULL in
+    any grain-key column (AppendError naming the column).
 - file: src/telemetry/append.py
   action: Modify
   purpose: >-
-    Grain key (producer, event_id, parser_version): producer joins _STRUCTURAL_NOT_NULL; EventTableSpec.from_projection
-    requires dedupe_key [producer, event_id, parser_version]; inside the existing transaction, before the insert-only MERGE,
-    SELECT stored rows matching the batch's grain keys within its day bounds -- same connection and transaction, pruned to the
-    batch's calendar-day partitions (Decision 88 cl.1) -- and raise AppendError naming the first conflicting event_id and
-    columns (ROLLBACK, nothing inserted); the MERGE ON clause gains producer. Identical re-sends stay
-    a no-op; a producer_version-only difference is not a conflict. Docstring updated.
+    Grain key (producer, event_id, parser_version). (a) append_events enforces the grain-key columns non-null itself,
+    independent of spec.not_null (a directly-built EventTableSpec must not admit producer=None -- a NULL never matches the ON
+    clause and would re-insert on every replay); producer also joins _STRUCTURAL_NOT_NULL. (b)
+    EventTableSpec.from_projection requires dedupe_key [producer, event_id, parser_version]. (c) The single insert-only MERGE
+    becomes the native reject-on-conflict statement verified on duckdb 1.5.4 + ducklake: ON producer, event_id,
+    parser_version and the batch's day bounds; WHEN MATCHED AND (t.<c1>, ..., t.<cn>) IS DISTINCT FROM (s.<c1>, ..., s.<cn>)
+    -- every stored column except created_timestamp and producer_version -- THEN ERROR naming the event_id; WHEN NOT MATCHED
+    THEN INSERT. One statement, one scan, same transaction (Decision 88 cl.1); a conflict raises, the transaction rolls back
+    and nothing in the batch is inserted; the raised engine error is re-raised as AppendError. Identical and
+    producer_version-only re-sends stay a no-op. Module docstring updated.
 - file: scripts/field_semantics_event_projection.py
   action: Modify
-  purpose: dedupe_key projects as [producer, event_id, parser_version]; producer joins _ENVELOPE_REQUIRED_FIELDS.
+  purpose: >-
+    dedupe_key projects as [producer, event_id, parser_version]; producer joins _ENVELOPE_REQUIRED_FIELDS; module docstring
+    (line 13) restates the new key.
+- file: tests/fixtures/event_contracts/fixture-event-envelope.yaml
+  action: Modify
+  purpose: Add a producer field so the fixture-based projection tests satisfy the widened _ENVELOPE_REQUIRED_FIELDS.
+- file: tests/fixtures/event_contracts/fixture_events.yaml
+  action: Modify
+  purpose: $ref the fixture envelope's producer field.
 - file: tests/telemetry/test_gate.py
   action: Modify
-  purpose: Within-batch key includes producer (two producers, same event_id and parser_version, both kept); the comparison helper ignores created_timestamp/producer_version and names differing columns.
+  purpose: >-
+    New module-level tests test_grain_key_includes_producer (two producers, same event_id and parser_version, both kept;
+    producer_version-only difference collapses; content difference raises) and test_grain_key_null_column_rejected.
 - file: tests/telemetry/test_append.py
   action: Modify
   purpose: >-
-    test_append_events_replay_is_noop stays green; new: cross-batch conflicting row rejected with nothing inserted;
-    producer_version-only re-send is a no-op; two producers sharing event_id and parser_version both insert; null producer
-    rejected; from_projection rejects the old two-column dedupe_key.
+    Add producer to _COLUMNS and _row(); update the ON-string assertion (line 207) to the new MERGE shape. New module-level
+    tests: test_cross_batch_grain_conflict_rejected (nothing inserted, AppendError names the event_id),
+    test_producer_version_only_resend_is_noop, test_cross_producer_same_event_id_both_insert,
+    test_null_producer_rejected_without_spec_not_null (spec whose not_null omits producer), and
+    test_from_projection_rejects_two_column_dedupe_key. test_append_events_replay_is_noop stays green.
 - file: tests/telemetry/test_append_ducklake_integration.py
   action: Modify
   purpose: >-
-    Real local DuckLake (pytest -m integration): cross-batch conflict rejected and the table unchanged; cross-producer same
-    event_id both stored; identical replay inserts 0.
+    Add producer to the fixture columns. Real local DuckLake (pytest -m integration): cross-batch conflict rejected and the
+    table unchanged; cross-producer same event_id both stored; identical replay inserts 0; the existing one-file-per-write
+    assertion (lines 166-200) still holds with the new MERGE.
 - file: tests/test_field_semantics_event_projection.py
   action: Modify
-  purpose: Projected dedupe_key == [producer, event_id, parser_version] for the fixture and the four real telemetry contracts.
+  purpose: >-
+    Update the dedupe_key assertion (line 58); new module-level test_dedupe_key_is_telemetry_grain asserting
+    [producer, event_id, parser_version] for the fixture and for the four real telemetry contracts.
 - file: docs/contracts/telemetry-event-envelope.yaml
   action: Modify
   purpose: >-
@@ -91,34 +118,48 @@ scope:
     row the producer emits in all four tables; increments iff the producer's normalised output (event_ids, entity keys, every
     stored column except created_timestamp and producer_version) for any golden input differs from the previous version;
     never for identical output or a build change alone; never decrements, never reused (a revert ships as a NEW higher
-    number); an identity-spec or root session_ref grammar change bumps EVERY producer and requires a Decision (R10).
-    Replaces "from its own build/version identity" and the unconsumed whole-root-tree sentence. (2) producer semantics: part
-    of the grain key; parser_version is comparable only between rows sharing a producer (R2). (3) event_id.semantics and
-    created_timestamp.description: grain is (producer, event_id, parser_version), enforced at write per the new Decision;
-    pointer to the READ-SIDE rule. (4) governance_notes: replace MODEL_CALL DEDUPE with GENERATIONS AND READ-SIDE DEDUPE --
-    R3 marker (P's telemetry_sessions open row for S at v commits all of P's rows for S in all four tables at v; its
-    event_id is stable across versions), R4 V*(P,S) = max parser_version of P's open rows for S within S's partition, R5
-    layered rule (a retire != V* when defined -- below retired, above pending; b event collapse per (producer, event_id):
-    parser_version desc, created_timestamp asc, applied only to content-identical duplicates -- a differing pair under one
-    grain key is reported, never silently picked; c model_call entity collapse per observation_id: precedence claude_code,
-    litellm, then others, then event_timestamp DESC (final usage wins, rec-4062), created_timestamp asc), R6 a
-    telemetry_agents row belongs to its own (child) session_id's generation, R7 replayable-producer obligations (re-parse the
-    whole root tree from the start; data rows first; ONE telemetry_sessions batch of every tree session's rows LAST; cursor
-    bound to parser_version, reset on mismatch; never emit v for S after a v+1 marker; emit a model_call only once its source
-    record carries final usage), R8 non-replayable producers (no open marker, never re-emit, a bump retires nothing), and the
-    DQ intents handed to the telemetry DQ slice (pending generations older than 2h; more than one distinct row per grain key;
-    null producer). Name tests/telemetry/fixtures/dedupe_vectors.yaml as this rule's CONFORMANCE VECTORS (normative, like
+    number); an identity-spec or root session_ref grammar change bumps EVERY producer and requires a Decision (R10); the
+    registry and golden-corpus check that enforce it are rec-4122. Replaces "from its own build/version identity" and the
+    unconsumed whole-root-tree sentence. (2) producer semantics: part of the grain key; parser_version is comparable only
+    between rows sharing a producer (R2). (3) event_id.semantics and created_timestamp.description: the grain is (producer,
+    event_id, parser_version), enforced at write per the new Decision; pointer to the READ-SIDE rule. (4) external_ref
+    description: "Unique within (tenant, project, table)" rescoped to (tenant, project, table, producer) -- the model_call
+    ref is shared across producers by design. (5) governance_notes: replace MODEL_CALL DEDUPE and the "REFS ARE UNIQUE ...
+    writer's own anti-join best-effort only" sentence with GENERATIONS AND READ-SIDE DEDUPE --
+    R3 marker: P's telemetry_sessions open row for S at v commits all of P's rows for S in all four tables at v; its
+    event_id is stable across versions.
+    R4: V*(P,S) = max parser_version of P's open rows for S within S's partition.
+    R5 layered rule, bounded to that partition: (a) retire P's rows for S with parser_version != V* when V* is defined (below
+    retired, above pending); (b) event collapse per (producer, event_id): keep the highest parser_version remaining after (a)
+    (so V* when defined, the highest version when not -- a non-replayable producer); among rows at that version keep the
+    earliest created_timestamp, which the write-time rule makes content-identical except in the concurrent race, where the
+    reader returns the first write and reports the grain key as conflicted; (c) model_call entity collapse per
+    observation_id: producer precedence claude_code, litellm, then others, then event_timestamp DESC (final usage wins,
+    rec-4062), then created_timestamp asc, then producer asc (a total order).
+    R6: a telemetry_agents row belongs to its own (child) session_id's generation.
+    R7 producer obligations: a producer never emits two different rows under one grain key (a model_call is emitted only
+    once its source record carries final usage); a replayable producer on a bump re-parses the whole root tree from the
+    start, writes data rows first and ONE telemetry_sessions batch of every tree session's rows LAST, binds its cursor to
+    parser_version and resets it on mismatch, never emits v for S after a v+1 marker, and REUSES the pinned project_ref and
+    session_started_at persisted with its cursor across a reset (never re-reading config), so a re-emission cannot re-key
+    the tree.
+    R8: non-replayable producers emit no open marker, never re-emit, and a bump retires nothing.
+    DQ intents (owner rec-4063): more than one distinct row per grain key; pending generations older than 2h; null producer.
+    Name tests/telemetry/fixtures/dedupe_vectors.yaml as this rule's CONFORMANCE VECTORS (normative, like
     identity_vectors.yaml). Field-level amendment_log entries (governance_note_add, semantic_break true) plus one
     contract-level entry. contract_version stays 1.
 - file: docs/contracts/telemetry_sessions.yaml
   action: Modify
   purpose: >-
     producer gains dq_intent_local not_null enforced true (R2); event_kind governance_notes_local names the open row as the
-    producer's generation marker (pointer to the envelope). At 499/500 effective lines: compact the rec-4073 contract-level
-    amendment_log summary (relief valve 1) so the file stays within the cap -- never a raise.
+    producer's generation marker (pointer to the envelope). At 499/500 effective lines with about +5 from these edits:
+    compact the rec-4073 contract-level amendment_log summary (relief valve 1) so the file stays within the cap -- never a
+    raise.
 - file: docs/contracts/telemetry_observations.yaml
   action: Modify
-  purpose: producer gains dq_intent_local not_null enforced true (R2).
+  purpose: >-
+    producer gains dq_intent_local not_null enforced true (R2); external_ref governance_notes_local's pointer to the
+    "MODEL_CALL DEDUPE note" retargets the envelope's GENERATIONS AND READ-SIDE DEDUPE rule (R5c).
 - file: docs/contracts/telemetry_transcripts.yaml
   action: Modify
   purpose: producer gains dq_intent_local not_null enforced true (R2).
@@ -134,35 +175,45 @@ scope:
     rebuild; content change at unchanged event_ids; dropped rows/kinds; added kinds; re-keyed event_ids; revert as v+2; deploy
     mid-session for claude_code (pending v+1 rows hidden until the marker lands, then v retired) and for litellm (v and v+1
     coexist); child-keyed agents rows committed by the child marker; cross-producer model_call incl. a shared event_id;
-    same-build replay) plus a partial-then-final model_call under one parser_version (rec-4062) and a crashed re-emission
-    (data at v+1, no marker). Each vector lists input rows per table and the expected surviving event_ids per table.
-- file: tests/telemetry/dedupe_reference.py
+    same-build replay) plus a partial-then-final model_call (rec-4062), a crashed re-emission (data at v+1, no marker), a
+    non-replayable producer with rows at two versions (R5b without V*), two "others"-rank producers tied on model_call
+    (R5c total order), and a concurrent-race pair differing under one grain key (expected: first write returned AND the key
+    listed as conflicted). Each vector lists input rows per table, the expected surviving event_ids per table and the
+    expected conflicted grain keys.
+- file: tests/fixtures/telemetry_dedupe_reference.py
   action: Create
   purpose: >-
-    Test-side reference implementation (oracle) of R4/R5 as DuckDB SQL over in-memory tables built from a vector, returning
-    the authoritative rows per table. Not production code (Decision 84 I-3: callers never ship SQL); rec-4024's reader verbs
-    must pass the same vectors on DuckLake. Name must not start with test_ (Decision 131).
+    Pure-Python (stdlib only) reference implementation (oracle) of R4/R5 over lists of row dicts, returning the
+    authoritative rows per table and the conflicted grain keys -- runs on every PR (pr CI installs requirements-fast.txt,
+    which has no duckdb) and keeps test_contract_amendments.py fast-tier importable. Homed in tests/fixtures/ per
+    tests/CLAUDE.md's shared-helper rule (name never starts with test_, Decision 131). Not production code (Decision 84 I-3);
+    rec-4024's reader verbs must pass the same vectors on DuckLake.
 - file: tests/telemetry/test_dedupe_vectors.py
   action: Create
   purpose: >-
-    Parametrised over every vector: builds the tables, runs the reference, asserts surviving event_ids exactly; plus a
-    meta-test that every situation 1-10 has a vector and that the envelope governance_notes name this fixture.
+    Parametrised over every vector: runs the reference and asserts surviving event_ids and conflicted keys exactly; plus a
+    meta-test that every situation 1-10 has a vector and that the envelope governance_notes name this fixture. No duckdb
+    import.
 - file: tests/telemetry/test_contract_amendments.py
   action: Modify
   purpose: >-
-    Add the two MODULE-LEVEL tests named by the rec acceptance commands (module landed in #1295; append, never recreate):
-    test_parser_version_bump_policy_declared (R1/R2/R3/R10 phrasing over whitespace-normalised text; populated_by no longer
-    says build identity; producer not_null enforced on all four tables; amendment_log entries present) and
+    Add three MODULE-LEVEL tests (module landed in #1295; append, never recreate; stays duckdb-free):
+    test_parser_version_bump_policy_declared (R1/R2/R3/R7-pins/R10 phrasing over whitespace-normalised text; populated_by
+    no longer says build identity; producer not_null enforced on all four tables; amendment_log entries present),
     test_model_call_tiebreak_prefers_final_usage (governance_notes order model_call by event_timestamp desc after producer
     precedence; no live text keeps earliest created_timestamp as the model_call tiebreak; the partial-then-final vector's
-    final-usage row survives the reference); plus test_grain_enforced_at_write_rule_declared (data-modeling-standard.yaml
-    carries rule grain-enforced-at-write citing the new Decision). Update the module docstring's R8 sentence.
+    final-usage row survives tests/fixtures/telemetry_dedupe_reference.py), and test_grain_enforced_at_write_rule_declared
+    (data-modeling-standard.yaml carries rule grain-enforced-at-write citing the new Decision). Update the module
+    docstring's R8 sentence.
 - file: config/agent/verification_registry/entries/telemetry-dedupe-vectors.yaml
   action: Create
   purpose: Verification-registry row for graduated VP step 1 (check_id == filename, Decision 176), node_id tests/telemetry/test_dedupe_vectors.py.
 - file: config/agent/verification_registry/entries/telemetry-grain-enforced-at-write.yaml
   action: Create
-  purpose: Verification-registry row for graduated VP step 2 (the grain-conflict tests in tests/telemetry/test_append.py), guard_target src/telemetry/append.py.
+  purpose: >-
+    Verification-registry row for graduated VP step 3, node_id
+    tests/telemetry/test_append.py::test_cross_batch_grain_conflict_rejected, guard_target src/telemetry/append.py (the
+    keystone node, following the telemetry-append-events-replay-noop precedent for a duckdb-importorskip module).
 bundled_recommendations:
 - rec-4061
 - rec-4062
@@ -173,19 +224,21 @@ infrastructure_dependencies: []
 acceptance_criteria:
 - >-
   DECISIONS.md carries the new grain-enforced-at-write Decision (<= 6,144 bytes, envelope significance numbered_decision with
-  a contract-first justification); decisions-index.json is fresh; data-modeling-standard.yaml carries rule
-  grain-enforced-at-write citing it.
+  a contract-first justification, Decision 181 cl.2 coverage owners named) and dated annotations on Decision 81 cl.3 and 84
+  I-2; decisions-index.json is fresh; data-modeling-standard.yaml carries rule grain-enforced-at-write citing it.
 - >-
-  append_events rejects a cross-batch row whose content differs under an existing (producer, event_id, parser_version),
-  inserting nothing; keeps identical and producer_version-only re-sends as no-ops; stores two producers' rows sharing
-  event_id and parser_version; rejects a null producer -- on the unit tier and on real local DuckLake.
+  append_events rejects (native MERGE ... THEN ERROR, one statement) a cross-batch row whose content differs under an existing
+  (producer, event_id, parser_version), inserting nothing from the batch; keeps identical and producer_version-only re-sends
+  as no-ops; stores two producers' rows sharing event_id and parser_version; rejects a NULL grain-key column even when the
+  spec's not_null omits it -- on the unit tier and on real local DuckLake.
 - >-
   telemetry-event-envelope.yaml parser_version states the bump-iff-output-changes rule, per-producer scope, never-per-build,
-  never-reused/revert-is-new-version and the identity-spec clause; populated_by no longer says "build/version identity".
+  never-reused/revert-is-new-version and the identity-spec clause; populated_by no longer says "build/version identity"; R7
+  carries the pinned project_ref/session_started_at reuse obligation.
 - >-
   Envelope governance_notes carry the GENERATIONS AND READ-SIDE DEDUPE rule and name tests/telemetry/fixtures/dedupe_vectors.yaml
-  as conformance vectors; no live text keeps "earliest created_timestamp" as a model_call tiebreak or (event_id,
-  parser_version) as the grain.
+  as conformance vectors; no live contract text keeps "earliest created_timestamp" as a model_call tiebreak, "best-effort only"
+  write suppression, a MODEL_CALL DEDUPE pointer, or external_ref "Unique within (tenant, project, table)".
 - producer is not_null enforced on all four tables; every vector passes the reference; both rec acceptance commands pass.
 - >-
   Existing contract, projection and kernel suites stay green; category-6 amendment check clean against origin/main; every
@@ -194,38 +247,62 @@ acceptance_criteria:
 verification_plan:
 - step: 1
   phase: pre-deploy
-  action: Run the conformance vectors through the reference read rule.
+  action: Run the conformance vectors through the stdlib reference read rule (fast tier, no duckdb).
   command: bin/venv-python -m pytest tests/telemetry/test_dedupe_vectors.py -q
   expected: 'Exit 0, all vectors pass. Red before: the module and fixture do not exist on the pre-change tree.'
   fix_if: >-
-    A vector names the table and the unexpected/missing event_id -- fix the reference SQL if it departs from the contract rule,
-    else fix the vector; never loosen an expectation to match output.
+    A vector names the table and the unexpected/missing event_id or conflict key -- fix the reference if it departs from the
+    contract rule, else fix the vector; never loosen an expectation to match output.
   hermetic: true
   graduation: graduate
   graduation_check_id: telemetry-dedupe-vectors
   expected_literals: []
 - step: 2
   phase: pre-deploy
-  action: Grain enforcement in the kernel, unit tier (conflict rejected, re-sends no-op, cross-producer kept, null producer rejected).
-  command: bin/venv-python -m pytest tests/telemetry/test_append.py tests/telemetry/test_gate.py tests/test_field_semantics_event_projection.py -q
-  expected: 'Exit 0. Red before: the new conflict/cross-producer tests fail on the pre-change kernel (the MERGE silently drops).'
-  fix_if: >-
-    A conflict test inserts a row -> the pre-MERGE comparison is missing or scoped wrong; a replay test raises -> the
-    comparison includes created_timestamp or producer_version.
+  action: Grain key in the duckdb-free gate and projection (new node ids only, so the step is red before).
+  command: >-
+    bin/venv-python -m pytest tests/telemetry/test_gate.py::test_grain_key_includes_producer
+    tests/telemetry/test_gate.py::test_grain_key_null_column_rejected
+    tests/test_field_semantics_event_projection.py::test_dedupe_key_is_telemetry_grain -q
+  expected: 'Exit 0, 3 passed. Red before: the three node ids do not exist on the pre-change tree.'
+  fix_if: A failing node names the missing producer handling in gate.py or the projection -- fix the source, not the test.
   hermetic: true
+  graduation: waive
+  graduation_waiver_reason: >-
+    Both modules are already graduated at module level (telemetry-append-gate, field-semantics-event-projection), so the new
+    nodes run under standing rows in every tier.
+  expected_literals: []
+- step: 3
+  phase: pre-deploy
+  action: Grain enforcement in append_events on duckdb (keystone conflict node plus the other new append nodes).
+  command: >-
+    bin/venv-python -m pytest tests/telemetry/test_append.py::test_cross_batch_grain_conflict_rejected
+    tests/telemetry/test_append.py::test_producer_version_only_resend_is_noop
+    tests/telemetry/test_append.py::test_cross_producer_same_event_id_both_insert
+    tests/telemetry/test_append.py::test_null_producer_rejected_without_spec_not_null
+    tests/telemetry/test_append.py::test_from_projection_rejects_two_column_dedupe_key
+    tests/telemetry/test_append.py::test_append_events_replay_is_noop -q
+  expected: 'Exit 0, 6 passed. Red before: the five new node ids do not exist on the pre-change tree.'
+  fix_if: >-
+    A conflict test inserts a row -> the MERGE lacks the WHEN MATCHED ... THEN ERROR arm or its column list; a replay test
+    raises -> the compared column list includes created_timestamp or producer_version.
+  hermetic: false
   graduation: graduate
   graduation_check_id: telemetry-grain-enforced-at-write
   expected_literals: []
-- step: 3
+- step: 4
   phase: pre-deploy
   action: Grain enforcement on a real local DuckLake catalog (Decision 99 pinned engine).
   command: bin/venv-python -m pytest tests/telemetry/test_append_ducklake_integration.py -m integration -q
   expected: Exit 0; no skips (the fixture fails, never skips, when the extension is unavailable).
-  fix_if: A DuckLake-only failure (e.g. the pre-MERGE SELECT under the transaction) -> fix append.py, never mark the test skip.
+  fix_if: A DuckLake-only failure (e.g. the MERGE ERROR arm on the ducklake catalog) -> fix append.py, never mark the test skip.
   hermetic: false
   graduation: waive
-  graduation_waiver_reason: Integration tier by construction (network-installed extension); step 2's graduated unit tests guard the same behaviour on every PR.
-- step: 4
+  graduation_waiver_reason: >-
+    Integration tier by construction (network-installed extension). Step 3's keystone row guards the same rule in the full
+    tier (pre-handoff and main) only -- test_append.py importorskips duckdb, which pr CI does not install -- so neither runs
+    on PRs; the fast-tier guard of the rule's wording is step 5's contract test.
+- step: 5
   phase: pre-deploy
   action: Run each rec's acceptance command exactly as filed, plus the data-modeling rule test.
   command: >-
@@ -237,23 +314,23 @@ verification_plan:
   hermetic: true
   graduation: waive
   graduation_waiver_reason: >-
-    The module is already graduated by the telemetry-contract-risk-amendments registry row; the rec acceptance runs again at
-    trailer closure.
+    The module is already graduated by the telemetry-contract-risk-amendments registry row (node_id is the whole module);
+    the rec acceptance runs again at trailer closure.
   expected_literals:
   - ACCEPTANCE_OK
-- step: 5
+- step: 6
   phase: pre-deploy
   action: Existing telemetry contract and kernel suites still pass.
   command: >-
     bin/venv-python -m pytest tests/checks/contracts/test_telemetry_event_journal_contracts.py tests/test_contracts.py
-    tests/test_contracts_schema.py tests/telemetry -q
+    tests/test_contracts_schema.py tests/test_field_semantics_event_projection.py tests/telemetry -q
   expected: Exit 0; no failures.
   fix_if: A contract_version assertion fails -> revert the bump; any other failure names the contract or kernel file to fix.
   hermetic: true
   graduation: waive
   graduation_waiver_reason: Existing registered test modules; graduating them again duplicates standing coverage.
   expected_literals: []
-- step: 6
+- step: 7
   phase: pre-deploy
   action: Category-6 amendment ritual for the five amended telemetry contracts against origin/main.
   command: >-
@@ -267,24 +344,27 @@ verification_plan:
   hermetic: false
   graduation: waive
   graduation_waiver_reason: Diff-relative to origin/main by construction; the standing equivalent is scripts.validate's contract drift gate.
-- step: 7
+- step: 8
   phase: pre-deploy
-  action: Size cap and stale-phrase sweep over the telemetry contracts.
+  action: Size cap and stale-phrase sweep over the contracts (old grain, best-effort suppression, MODEL_CALL DEDUPE, old tiebreak).
   command: >-
     bin/venv-python -c "from scripts.checks.structural._classify import effective_lines;import re,glob;big=[(f,effective_lines(open(f).read()))
-    for f in glob.glob('docs/contracts/telemetry*.yaml') if effective_lines(open(f).read())>500];stale=[f for f in glob.glob('docs/contracts/*.yaml')
-    if re.search(r'build/version identity|then (the )?earliest created_timestamp',re.sub(r'\s+',' ',open(f).read()))];print(big,stale);assert
-    not big and not stale;print('SIZE_SWEEP_OK')"
+    for f in glob.glob('docs/contracts/telemetry*.yaml') if effective_lines(open(f).read())>500];pat=re.compile(r'build/version
+    identity|then (the )?earliest created_timestamp|best-effort only|anti-join on \(event_id, parser_version\)|MODEL_CALL
+    DEDUPE|Unique within \(tenant, project, table\)');stale=[f for f in glob.glob('docs/contracts/*.yaml') if
+    pat.search(re.sub(r'\s+',' ',open(f).read()))];print(big,stale);assert not big and not stale;print('SIZE_SWEEP_OK')"
   expected: Exit 0 and the success marker printed.
-  fix_if: An oversized contract -> compact its amendment_log (relief valve 1), never raise. A stale hit -> reword or amend that text.
+  fix_if: >-
+    An oversized contract -> compact its amendment_log (relief valve 1), never raise. A stale hit -> reword or amend that text
+    (an amendment_log summary quoting the old phrase must paraphrase it).
   hermetic: true
   graduation: waive
   graduation_waiver_reason: >-
-    Size is guarded standing by validate_structural_size_limits; the phrase sweep pins text this plan deletes and step 4's
-    graduated module asserts its absence.
+    Size is guarded standing by validate_structural_size_limits; the phrase sweep pins text this plan deletes and step 5's
+    graduated module asserts the replacement rules.
   expected_literals:
   - SIZE_SWEEP_OK
-- step: 8
+- step: 9
   phase: pre-deploy
   action: Full validation tier before handoff (decisions size/index freshness, data-model standard, SLOC, graduation completeness).
   command: bin/venv-python -m scripts.validate
@@ -292,7 +372,7 @@ verification_plan:
   fix_if: Fix the named check; never raise a budget or skip a check.
   hermetic: false
   graduation: not-applicable
-- step: 9
+- step: 10
   phase: post-deploy
   action: >-
     Closure -- after the squash merge carrying 'Resolves: rec-4061, rec-4062', confirm both recs read closed.
@@ -302,105 +382,119 @@ verification_plan:
     ('rec-4061','rec-4062') if r.get(k)!='closed']; print('open:', bad); raise SystemExit(1 if bad else 0)"
   expected: Exit 0, empty open list.
   fix_if: >-
-    Trailer closure no-op'd -> Decision 201 manual update_rec fallback citing the transport failure; an acceptance refusal ->
-    fix the failing acceptance, never force-close.
+    The recs cache sync pulls 0 recommendations (reader 502) -> confirm each status with the ducklake-reads rec_by_id named
+    read instead; trailer closure no-op'd -> Decision 201 manual update_rec fallback citing the transport failure; an
+    acceptance refusal -> fix the failing acceptance, never force-close.
 test_obligations:
 - source: src/telemetry/append.py
-  behavior: Cross-batch grain-key conflict rejected with nothing inserted; identical and producer_version-only re-sends no-op; cross-producer rows kept; null producer rejected.
-  verification_step: 2
-  test_selector: tests/telemetry/test_append.py
-  red_green_expectation: red before (conflicting row silently dropped, cross-producer row dropped), green after
+  behavior: >-
+    Cross-batch grain-key conflict rejected by the native MERGE ERROR arm with nothing inserted; identical and
+    producer_version-only re-sends no-op; cross-producer rows kept; NULL grain-key column rejected independent of spec.not_null.
+  verification_step: 3
+  test_selector: tests/telemetry/test_append.py::test_cross_batch_grain_conflict_rejected
+  red_green_expectation: red before (node absent; the old MERGE silently drops the conflicting row), green after
 - source: src/telemetry/gate.py
-  behavior: Within-batch key includes producer; comparison helper ignores created_timestamp and producer_version.
+  behavior: Within-batch key includes producer; producer_version-only difference collapses; NULL grain-key column rejected.
   verification_step: 2
-  test_selector: tests/telemetry/test_gate.py
-  red_green_expectation: red before, green after
+  test_selector: tests/telemetry/test_gate.py::test_grain_key_includes_producer
+  red_green_expectation: red before (node absent), green after
 - source: scripts/field_semantics_event_projection.py
   behavior: dedupe_key projects as [producer, event_id, parser_version].
   verification_step: 2
-  test_selector: tests/test_field_semantics_event_projection.py
+  test_selector: tests/test_field_semantics_event_projection.py::test_dedupe_key_is_telemetry_grain
+  red_green_expectation: red before (node absent), green after
+- source: tests/fixtures/event_contracts/fixture-event-envelope.yaml
+  behavior: Fixture envelope declares producer so the projection's required-field check passes.
+  verification_step: 2
+  test_selector: tests/test_field_semantics_event_projection.py::test_dedupe_key_is_telemetry_grain
+  red_green_expectation: red before, green after
+- source: tests/fixtures/event_contracts/fixture_events.yaml
+  behavior: Fixture table $refs producer.
+  verification_step: 2
+  test_selector: tests/test_field_semantics_event_projection.py::test_dedupe_key_is_telemetry_grain
   red_green_expectation: red before, green after
 - source: docs/contracts/telemetry-event-envelope.yaml
-  behavior: Bump policy, grain key, GENERATIONS AND READ-SIDE DEDUPE rule, conformance-vector pointer, model_call final-usage order.
-  verification_step: 4
+  behavior: Bump policy, grain key, GENERATIONS AND READ-SIDE DEDUPE rule, R7 pins, conformance-vector pointer, model_call order.
+  verification_step: 5
   test_selector: tests/telemetry/test_contract_amendments.py::test_parser_version_bump_policy_declared
   red_green_expectation: red before (test absent, old text present), green after
 - source: tests/telemetry/fixtures/dedupe_vectors.yaml
-  behavior: Situations 1-10 plus partial-then-final model_call and crashed re-emission resolve to the pinned authoritative rows.
+  behavior: Situations 1-10 plus the rec-4062, crash, no-marker, total-order and race vectors resolve to the pinned rows and conflicts.
   verification_step: 1
   test_selector: tests/telemetry/test_dedupe_vectors.py
   red_green_expectation: red before (fixture absent), green after
-- source: tests/telemetry/dedupe_reference.py
-  behavior: Reference R4/R5 SQL returns exactly the authoritative rows per vector.
+- source: tests/fixtures/telemetry_dedupe_reference.py
+  behavior: Stdlib reference R4/R5 returns exactly the authoritative rows and conflicted keys per vector.
   verification_step: 1
   test_selector: tests/telemetry/test_dedupe_vectors.py
   red_green_expectation: red before (module absent), green after
 - source: docs/contracts/telemetry_sessions.yaml
   behavior: producer not_null enforced; open row named as generation marker; within 500 effective lines.
-  verification_step: 4
+  verification_step: 5
   test_selector: tests/telemetry/test_contract_amendments.py::test_parser_version_bump_policy_declared
   red_green_expectation: red before, green after
 - source: docs/contracts/telemetry_observations.yaml
-  behavior: producer not_null enforced.
-  verification_step: 4
+  behavior: producer not_null enforced; external_ref note retargets the envelope rule.
+  verification_step: 5
   test_selector: tests/telemetry/test_contract_amendments.py::test_parser_version_bump_policy_declared
   red_green_expectation: red before, green after
 - source: docs/contracts/telemetry_transcripts.yaml
   behavior: producer not_null enforced.
-  verification_step: 4
+  verification_step: 5
   test_selector: tests/telemetry/test_contract_amendments.py::test_parser_version_bump_policy_declared
   red_green_expectation: red before, green after
 - source: docs/contracts/telemetry_agents.yaml
   behavior: producer not_null enforced; agents row commits with the child generation.
-  verification_step: 4
+  verification_step: 5
   test_selector: tests/telemetry/test_contract_amendments.py::test_parser_version_bump_policy_declared
   red_green_expectation: red before, green after
 - source: docs/contracts/data-modeling-standard.yaml
   behavior: Rule grain-enforced-at-write present and cites the new Decision.
-  verification_step: 4
+  verification_step: 5
   test_selector: tests/telemetry/test_contract_amendments.py::test_grain_enforced_at_write_rule_declared
   red_green_expectation: red before (rule absent), green after
 - source: docs/DECISIONS.md
-  behavior: New Decision present, within the per-entry byte cap, envelope valid.
-  verification_step: 8
+  behavior: New Decision present, within the per-entry byte cap, envelope valid; annotations on 81 cl.3 and 84 I-2.
+  verification_step: 9
   command: bin/venv-python -m scripts.validate
   waiver_reason: >-
     Decision-log shape, size and index freshness are guarded standing by the decisions validators in the full tier; a
     bespoke test would duplicate them.
 - source: docs/decisions-index.json
   behavior: Regenerated index matches DECISIONS.md.
-  verification_step: 8
+  verification_step: 9
   command: bin/venv-python -m scripts.validate
   waiver_reason: Generated artefact; validate_decisions_index_freshness is its standing check.
 - source: tests/telemetry/test_contract_amendments.py
   behavior: model_call tiebreak prefers final usage (contract text and the partial-then-final vector).
-  verification_step: 4
+  verification_step: 5
   test_selector: tests/telemetry/test_contract_amendments.py::test_model_call_tiebreak_prefers_final_usage
   red_green_expectation: red before, green after
 - source: config/agent/verification_registry/entries/telemetry-dedupe-vectors.yaml
   behavior: Registry row for the graduated step-1 check.
-  verification_step: 8
+  verification_step: 9
   command: bin/venv-python -m scripts.validate
   waiver_reason: Generated verification-registry metadata; validate_graduation_completeness (full tier) is its standing check.
 - source: config/agent/verification_registry/entries/telemetry-grain-enforced-at-write.yaml
-  behavior: Registry row for the graduated step-2 check.
-  verification_step: 8
+  behavior: Registry row for the graduated step-3 check.
+  verification_step: 9
   command: bin/venv-python -m scripts.validate
   waiver_reason: Generated verification-registry metadata; validate_graduation_completeness (full tier) is its standing check.
 constraints:
 - >-
   Sequencing: PLAN-cli-persona-backend (in implementation) edits telemetry_observations.yaml and
   tests/checks/contracts/test_telemetry_event_journal_contracts.py; if it merges first, rebase onto it (it takes
-  telemetry_observations.yaml to about 480/500 -- this plan adds one line there). Take the next free Decision number at
-  implementation time; other in-flight plans also add Decisions.
+  telemetry_observations.yaml to about 480/500 -- this plan adds about two lines there). Take the next free Decision number
+  at implementation time; other in-flight plans also add Decisions.
 - >-
   Code limited to src/telemetry/{append,gate}.py and scripts/field_semantics_event_projection.py -- deploy-inert
-  (compute_affected_artifacts returns {} for them; src/telemetry is excluded from data-pipeline.zip). No change under
-  src/common/ducklake_*.py, src/lambdas/** or config/lambda/ducklake/** (governed deploy channel); no field_semantics.yaml
-  change (telemetry is not in _CONTRACT_TABLE_IDS); no roadmap edit.
+  (compute_affected_artifacts returns {} for every scope file; src/telemetry is excluded from data-pipeline.zip). No change
+  under src/common/ducklake_*.py, src/lambdas/** or config/lambda/ducklake/** (governed deploy channel); the ops writer's
+  residual is rec-4121's. No field_semantics.yaml change (telemetry is not in _CONTRACT_TABLE_IDS); no roadmap edit.
 - >-
   Within the ratified Decision 199/200 model: no identity-spec or partition change; no contract_version bump; the writer
-  stays insert-only (a rejection writes nothing).
+  stays insert-only (a rejection writes nothing). No duckdb import reaches a fast-tier module (test_dedupe_vectors.py,
+  test_contract_amendments.py, tests/fixtures/telemetry_dedupe_reference.py).
 - >-
   Category 6: every description/semantics diff carries a NEW field-level amendment_log entry with a consistent
   change_class/semantic_break pair. Every contract stays within the 500 effective-line cap by compaction, never a raise.
@@ -408,44 +502,53 @@ constraints:
 context:
 - >-
   Decision-scout verdict FLAGS_FOUND (re-run after the grain Decision was added); CITE: 199, 150, 167, 88, 166, 118, 191,
-  189; WARN 81 and 84 resolved by write_mode scoping, carve-outs and the named ops-writer residual; T2.52 CONFLICT resolved by
-  scoping derived materializations out; RELATED 55, 96, 97, 95, 200, 204, 137, 100, 177, 62, 179. Decisions triaged: 157 of
-  157. Roadmap items intersected: 7; CONFLICT: 1; RELATED: 5.
-- "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=PENDING"
+  189; WARN 81 and 84 resolved by write_mode scoping, carve-outs, the named ops-writer residual (rec-4121) and dated
+  annotations; T2.52 CONFLICT resolved by scoping derived materializations out; RELATED 55, 96, 97, 95, 200, 204, 137,
+  100, 177, 62, 179. Decisions triaged: 157 of 157. Roadmap items intersected: 7; CONFLICT: 1; RELATED: 5.
+- "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=PENDING (round 1 REVISE, 14 findings addressed)"
 - >-
   Operator choices (2026-09-28 thread): R8 generation rule is contract-only (no Decision); a stored row_hash was proposed and
   withdrawn -- grain-key enforcement at write replaces it; the kernel change lands in this plan; grain-at-write gets its own
-  numbered Decision plus a data-modeling-standard rule.
+  numbered Decision plus a data-modeling-standard rule; the ops-writer residual is follow-on rec-4121.
 - >-
   Design source: Fable's facts-only derivation /mnt/project-files/telemetry-slice2-blockers/r8-fable-independent-derivation.md
   (brief r8-facts-brief.md); its content_hash tiebreak and report-not-reject conflict metric are deliberately NOT adopted.
+  The native MERGE ... WHEN MATCHED AND <row IS DISTINCT FROM> THEN ERROR was verified on duckdb 1.5.4 + ducklake at
+  planning time (NULL-safe, list columns, nothing inserted on conflict).
 - >-
   Obligations handed on (named in the contract, not built here): rec-4024 runs dedupe_vectors.yaml through its reader verbs
-  on DuckLake and declares the telemetry tables in the maintenance-scope registry (Decision 191) when it provisions them;
-  rec-4026 (claude_code producer) follows R7; rec-4122 builds the parser_versions registry + golden-corpus check with
-  rec-4026; rec-4121 brings the ops writer's idempotency replay under the grain Decision; the telemetry DQ slice authors the
-  DQ intents.
+  on DuckLake, reports conflicted keys, and declares the telemetry tables in the maintenance-scope registry (Decision 191);
+  rec-4026 follows R7; rec-4122 builds the parser_versions registry + golden-corpus check with rec-4026; rec-4063 owns the
+  grain-conflict, pending-generation and null-producer DQ monitors; rec-4025's harness consumes the vectors.
 - >-
-  Gotchas: the within-batch gate already rejected conflicting same-key rows; across batches the insert-only MERGE dropped
-  them silently -- the pre-MERGE comparison closes that. rec-4064's R10 (point rows re-keyed by a bump) is settled by R5a;
-  rec-4064 stays open for its other items.
+  Risk accepted: grain-at-write turns an unbumped output change into a whole-batch write failure that wedges that session's
+  cursor until a parser fix; rec-4122's golden-corpus CI is the pre-live guard.
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
-- 'Only the plan-cited decision sections read: 199, 200, 84, 131, 166, 176'
+- 'Only the plan-cited decision sections read: 81 (cl.3, cl.8), 84 (I-2, I-3), 88 (cl.1), 131, 166, 167, 176, 177, 181, 191, 199'
 - All files in scope located and readable
 - Acceptance criteria understood and verifiable
 execution_steps:
 - >-
   Tests first: extend tests/telemetry/test_gate.py, test_append.py, test_append_ducklake_integration.py and
-  tests/test_field_semantics_event_projection.py for the grain key; create the dedupe vectors, reference and test module;
-  add the three tests to tests/telemetry/test_contract_amendments.py. Confirm they FAIL on the unchanged tree.
+  tests/test_field_semantics_event_projection.py (plus the two event_contracts fixtures) for the grain key; create the
+  dedupe vectors, the stdlib reference and test_dedupe_vectors.py; add the three tests to
+  tests/telemetry/test_contract_amendments.py. Confirm the new nodes FAIL on the unchanged tree.
 - Change src/telemetry/gate.py, src/telemetry/append.py and scripts/field_semantics_event_projection.py per scope.
-- Add the Decision to docs/DECISIONS.md, regenerate docs/decisions-index.json, add the data-modeling-standard.yaml rule.
+- >-
+  Add the Decision to docs/DECISIONS.md with the annotations on 81 cl.3 and 84 I-2, regenerate docs/decisions-index.json,
+  add the data-modeling-standard.yaml rule.
 - Amend telemetry-event-envelope.yaml and the four table contracts per scope; compact telemetry_sessions' amendment_log.
-- Write the two registry rows for graduated steps 1 and 2.
-- Execute Verification Plan steps 1-8 -- loop until pass (Decision 55).
+- Write the two registry rows for graduated steps 1 and 3.
+- Execute Verification Plan steps 1-9 -- loop until pass (Decision 55).
+- >-
+  Portal bookkeeping (fetch-before-update via rec_by_id, prepend a dated note, never overwrite): rec-4024 (grain is now
+  (producer, event_id, parser_version) with native reject; readers use the GENERATIONS rule and must pass dedupe_vectors.yaml
+  on DuckLake and report conflicted keys -- replacing its "row uniqueness (event_id, parser_version)" and "max per
+  (session_id, producer)" wording); rec-4063 (owns the three DQ monitors named in the envelope); rec-4025 (consume the
+  vectors); rec-4064 (its R10 is settled by R5a, its R5 by the external_ref rescope).
 - >-
   Commit, PR, and squash merge with commit_message carrying 'Resolves: rec-4061, rec-4062' in its own trailer block; then
-  run step 9.
+  run step 10.
 - 'Report: what was changed, verification results, rec closure state'
