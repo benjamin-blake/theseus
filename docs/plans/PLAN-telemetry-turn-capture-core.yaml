@@ -172,7 +172,9 @@ scope:
   purpose: Golden case pinning the rule it is named for.
 - file: tests/fixtures/turn_capture/golden/hooks_resume_and_compact.json
   action: Create
-  purpose: Golden case pinning the rule it is named for.
+  purpose: >-
+    Golden case: one compact row per compaction and one resume row per resume, and a dangling tool_use before a resume
+    run through finalize-then-grow (the resume boundary closes the turn; the synthetic close never moves).
 - file: tests/fixtures/turn_capture/golden/empty_thinking_and_image_blocks.json
   action: Create
   purpose: Golden case pinning the rule it is named for.
@@ -255,9 +257,9 @@ scope:
   action: Create
   purpose: >-
     rec-4122 checks (stdlib, fast tier): test_output_drift_without_bump_fails, test_bump_without_drift_fails,
-    test_expected_edit_without_bump_fails, test_registry_history_is_append_only_against_main (via
-    scripts.checks._marker_guard.default_base_reader; an unreachable base is an advisory pass locally and authoritative
-    in PR CI), the live guard test_registry_matches_producer (PARSER_VERSION == current == last history version;
+    test_expected_edit_without_bump_fails, test_registry_history_is_append_only_against_main (reads the merge-base
+    copy distinguishing three states per Decision 208 cl.1: path absent at the base -> pass (this installing PR);
+    origin/main unreadable -> advisory skip locally, fail in CI; present -> append-only comparison), the live guard test_registry_matches_producer (PARSER_VERSION == current == last history version;
     recomputed golden digest == history digest == committed expected_rows digest), and test_cases_match_index, whose
     CASES tuple names every case file basename literally (e.g. sidecar_present.json) and must equal index.json's list --
     the literal names are what make --pre's data-edge channel select this module when only a golden case file changes.
@@ -289,8 +291,9 @@ verification_plan:
   action: Credential scrubber keystone (fast tier, stdlib).
   command: >-
     bin/venv-python -m pytest tests/turn_capture/test_scrub.py::test_every_credential_class_is_redacted
-    tests/turn_capture/test_scrub.py::test_scrub_is_idempotent tests/turn_capture/test_scrub.py::test_negative_corpus_untouched -q
-  expected: 'Exit 0, 3 passed. Red before: the module and nodes do not exist on the pre-change tree.'
+    tests/turn_capture/test_scrub.py::test_scrub_is_idempotent tests/turn_capture/test_scrub.py::test_negative_corpus_untouched
+    tests/turn_capture/test_scrub.py::test_aws_json_and_export_shapes_redacted -q
+  expected: 'Exit 0, 4 passed. Red before: the module and nodes do not exist on the pre-change tree.'
   fix_if: A class survives -> widen that pattern; a false positive -> tighten its anchor or boundary. Never delete a case.
   hermetic: true
   graduation: graduate
@@ -343,8 +346,9 @@ verification_plan:
     tests/turn_capture/test_record_turn.py::test_finalize_equals_virtual_prompt_at_eof
     tests/turn_capture/test_record_turn.py::test_cursor_reset_on_version_mismatch_reuses_pins
     tests/turn_capture/test_record_turn.py::test_pin_mismatch_and_sidecar_mutation_are_loud
+    tests/turn_capture/test_record_turn.py::test_finalize_then_grow_through_resume_re_emits_nothing
     tests/turn_capture/test_cursor.py::test_reset_keeps_exactly_the_four_pins -q
-  expected: 'Exit 0, 6 passed. Red before: nodes absent.'
+  expected: 'Exit 0, 7 passed. Red before: nodes absent.'
   fix_if: >-
     Incremental differs from full -> a row depends on records after its emission point; hold it until its turn closes. A
     reset re-reads project_ref or re-derives session_started_at -> read them from the cursor.
@@ -477,7 +481,10 @@ verification_plan:
   expected: Exit 0.
   fix_if: Fix the named check; decompose rather than raise a budget; never skip a check.
   hermetic: false
-  graduation: not-applicable
+  graduation: waive
+  graduation_waiver_reason: >-
+    scripts.validate cannot be a graduated step (vp-red-before.yaml recursion_refusal); it already runs as the full tier
+    before handoff and on main.
 - step: 13
   phase: post-deploy
   action: >-
@@ -598,11 +605,10 @@ context:
   by making billing_shape a pinned capture input (default fixed_non_rollover_allowance) plus rec-4147. RELATED 97, 84,
   81, 126, 125, 128, 130, 131, 148, 189, 201, 208, 168, 66, 67, 101, 205.
   Decisions triaged: 161 of 161. Roadmap items intersected: 4; CONFLICT: 0; RELATED: 4.
-- "gates: decision-scout=FLAGS_FOUND (resolved, 2 runs); independent-review=reconciled; plan-critique=<pending> (round 1 REVISE 7 fixes, round 2 REVISE 4+6, round 3 REVISE 1+4)"
+- "gates: decision-scout=FLAGS_FOUND (resolved, 2 runs); independent-review=reconciled; plan-critique=<pending> (rounds 1-3 REVISE, all fixed; round 4 confirming REVISE 3+5, escalated, fixed)"
 - >-
-  Operator choices (2026-09-28 thread): split slice 3 -- this core now, hooks/writes/project_ref as slice 3b on rec-4026
-  after rec-4024 (coordinator told); bundle rec-4122; emit per CLOSED turn; add the real-transcript conformance step
-  (step 10) and a facts-only independent design review; additive plan changes pre-approved.
+  Operator choices (2026-09-28): split slice 3 (3b on rec-4026 after rec-4024; coordinator told); bundle rec-4122; emit
+  per CLOSED turn; real-transcript conformance (step 10); facts-only independent review; additive changes pre-approved.
 - >-
   Independent review (Fable, facts-only brief): /mnt/project-files/telemetry-slice3/fable-independent-review.md.
   Adopted: session-open ref, pin/line/companion rules, stream membership by fields, turn close at the last assistant
@@ -631,6 +637,7 @@ context:
   Contract risks from the independent review, filed at planning time (not designed around): rec-4146 (sub-agent open
   timestamp equals the root start; synthetic session-open source id) and rec-4147 (no auth-mode signal for billing_shape
   on API-key Claude Code sessions). Its lost-cursor and pending-generation risks route to rec-4026 and rec-4063 notes.
+  Decision 209 (landed after the scout): consistent -- transcripts stay in the data plane.
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
@@ -651,7 +658,8 @@ execution_steps:
   parseable timestamp, how a slash-command invocation is recorded in the user record (plain leading slash or harness
   markup such as a command-name tag -- the workflow rule parses whichever is observed), and whether any record uuid
   recurs across root files (fork/copied history; a hit is a STOP per step 10's fix_if). Reproduce each pinned literal
-  synthetically in golden/observed_real_shapes.json.
+  synthetically in golden/observed_real_shapes.json. A literal never observed stays UNPINNED (empty tuple, rule
+  inactive) and is listed on rec-4026's note for 3b -- never guessed.
 - >-
   Create src/turn_capture/{__init__,scrub,transcript,streams,refs,observations,transcripts,sessions,cursor,record_turn,render}.py
   per scope and the
@@ -663,9 +671,11 @@ execution_steps:
   agentId-or-None) from record fields, sub-agent files being the normal carrier. session_started_at = the first record in
   ROOT file order whose timestamp parses under parse_iso8601_utc (any record type), else DEFER (no rows, no cursor).
   Prompt-record = type user, promptId non-empty, no sourceToolUseID, turnCompanion falsy, content a str or a list without
-  tool_result blocks; companion records never open a turn. A turn spans from its first prompt-record to the next
-  prompt-record with a different promptId; it is CLOSED iff such a record exists or session_final (finalize is exactly a
-  virtual prompt-record at EOF). Response = assistant records of one stream sharing message.id; owner = the last one.
+  tool_result blocks; companion records never open a turn. A turn spans from its first prompt-record to the next TURN
+  BOUNDARY: a prompt-record with a different promptId, or a resume boundary (the native resume marker if step 2 observes
+  one, else the first attachment of a SessionStart:resume hook group) -- a resume ends the prior turn exactly as a new
+  prompt does, so records a resume appends never join an already-closed turn. A turn is CLOSED iff a later boundary
+  exists or session_final (finalize is exactly a virtual boundary at EOF). Response = assistant records of one stream sharing message.id; owner = the last one.
   Sidecars resolve only as <session dir>/tool-results/<basename(persistedOutputPath)>, never the absolute path.
 - >-
   Pinned observation rules (session_ref = the stream's session entity_ref): turn open at the first prompt-record
@@ -680,7 +690,7 @@ execution_steps:
   then interrupted (toolUseResult.interrupted or a pinned interrupt sentinel, or the turn closed with no result), then
   error (is_error), else success. A tool_use with no tool_result inside its turn span gets ONE synthetic interrupted
   close when the turn closes: external_ref '<tool_use record uuid>#<block>/tool_call_close', event_timestamp and
-  source_ordinal of the span's last record. A tool_result located after its tool_use's turn span ended is late: no
+  source_ordinal of that tool_use record itself (an anchor that cannot move as the file grows). A tool_result located after its tool_use's turn span ended is late: no
   close row, counted in diagnostics.late_tool_results (the same rule in incremental and full parses, so R7 holds). At
   most one close row per tool_call entity_ref. process_event point per hook_* attachment ('<uuid>#0/process_event', entity_ref =
   external_ref, name 'hook:<stem of the .py/.sh script in command>' else 'hook:<hookName with : as .>', severity info
@@ -698,8 +708,9 @@ execution_steps:
   uuid; stable across versions for R3), event_timestamp = session_started_at, entity_ref sessionId, workflow = the first
   prompt's slash command (in the encoding step 2 pins) when one of orient|plan|implement|develop-executor|audit|overseer
   else claude_code,
-  execution_attempt 1, branch = first non-empty gitBranch, model_primary = first assistant model; emitted once its turn
-  is closed. Exactly ONE compact row per compaction and one resume row per resume (execution_attempt 2+): sourced from
+  execution_attempt 1, branch = first non-empty gitBranch, model_primary = first assistant model; emitted only once a
+  closed turn containing an assistant record exists, or at finalize (so a response-less first turn never emits a NULL a
+  re-parse later fills). Exactly ONE compact row per compaction and one resume row per resume (execution_attempt 2+): sourced from
   the native marker record when step 2 finds one; else a compaction is the group of PreCompact, SessionStart:compact and
   PostCompact hook attachments (and a resume the SessionStart:resume attachments) lying between the same two
   consecutive prompt-or-assistant records, and the row comes from the group's first attachment
@@ -731,7 +742,9 @@ execution_steps:
 - >-
   Pinned scrubber rules (replacement '[REDACTED:<CLASS>]', applied in order, each once): AWS_ACCESS_KEY_ID (AKIA, ASIA,
   AIDA, AROA, AGPA, ANPA, ANVA, ASCA, APKA + 16 [A-Z0-9], word-bounded); AWS_SECRET_ACCESS_KEY and AWS_SESSION_TOKEN
-  (context-anchored on their key names with = or :); ANTHROPIC_API_KEY (sk-ant- + 20+ [A-Za-z0-9_-], boundary-guarded);
+  (context-anchored on their key names -- aws_secret_access_key/SecretAccessKey, aws_session_token/SessionToken, any
+  case -- with an optional closing quote before = or : and an optional opening quote after it; required positive
+  vectors: the AWS CLI/STS JSON shape "SecretAccessKey": "..." / "SessionToken": "..." and the shell export shape); ANTHROPIC_API_KEY (sk-ant- + 20+ [A-Za-z0-9_-], boundary-guarded);
   GITHUB_TOKEN (ghp_/gho_/ghu_/ghs_/ghr_ + 36-255 alphanumerics; github_pat_ + 80+ [A-Za-z0-9_]); BEARER_TOKEN (Bearer +
   20+ token chars containing a digit or 32+ long). Applied to transcript content, metadata JSON and agents.error; never to
   refs, ids, tool/model/hook names. A pattern change is a parser_version bump by construction.
@@ -743,9 +756,12 @@ execution_steps:
   turn opens == distinct prompt promptIds; one agents open and one child session per meta.json whose toolUseId is in the
   tree; the four token sums equal the raw final-usage sums; no duplicate (table, external_ref); every ref passes
   canonical_ref; one session_started_at per tree; incremental == full at every prompt and every 50 lines; no scrub
-  pattern (plus a broader second set) matches any stored value; resolvable sidecars stored untruncated; zero malformed
-  lines; no (table, external_ref) duplicated ACROSS different root trees; finalize at any cut is a subset of the full
-  finalized parse (a record joining an already-finalized span fails, naming the session hash and line); then
+  pattern matches any stored value (plus counts-only reporting of generic high-entropy tokens, never a failure);
+  resolvable sidecars stored untruncated; malformed lines reported as counts (the producer counts and consumes them);
+  no (table, external_ref) duplicated ACROSS different root trees (vacuous with one tree; reported); at every TRUE
+  session end -- the tree's real end and the last record before each observed resume boundary -- every row of the
+  finalized parse of that prefix appears identically in the full finalized parse (row-level subset; mid-turn cuts are
+  never finalize points); then
   append_events into local DuckLake with every FK resolving -- transcript rows over 65,536 bytes are excluded from the
   load and counted (spill is the writer's, Decision 199 cl.5). Print the drift dashboard (unknown record and attachment
   types, outcome, stop_reason and workflow distributions) and the parse time per tree, as counts only.
