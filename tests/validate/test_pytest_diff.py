@@ -56,7 +56,9 @@ class TestExcludedHeavyDeps:
 
     The `full` term is the DECLARED floor file, never the compiled closure: sourcing it from
     requirements.txt would admit every transitive pin into the excluded set (see
-    test_transitive_only_pin_never_enters_the_excluded_set).
+    test_transitive_only_pin_never_enters_the_excluded_set). `ulid` (the python-ulid dist) is no
+    longer excluded (rec-4077): it is now a declared requirements-fast.txt floor, matching
+    requirements.in's specifier.
     """
 
     def test_heavy_deps_in_excluded_set(self) -> None:
@@ -66,14 +68,13 @@ class TestExcludedHeavyDeps:
             "duckdb",
             "psycopg2",
             "requests",
-            "ulid",
             "radon",
         ):
             assert name in excluded, f"{name} should be excluded (heavy, requirements.in-only)"
 
     def test_fast_tier_deps_not_in_excluded_set(self) -> None:
         excluded = _excluded_heavy_import_names()
-        for name in ("ruff", "mypy", "pytest", "pyyaml", "pydantic"):
+        for name in ("ruff", "mypy", "pytest", "pyyaml", "pydantic", "ulid"):
             assert name not in excluded, f"{name} is present in requirements-fast.txt; must not be excluded"
 
     def test_moved_dev_tools_not_in_excluded_set_post_move(self) -> None:

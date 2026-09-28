@@ -222,11 +222,10 @@ class TestBudgetBreachRecFiling:
 class TestBudgetRecFilingCiGuard:
     """CI-guard on the budget rec-filing helpers (Decision 84 I-4 / ULID anomaly root cause).
 
-    The pr-validate CI job installs requirements-fast.txt (no python-ulid) and configures no AWS
-    credentials, so a real portal file_rec() write there raises a swallowed ModuleNotFoundError
-    from ducklake_runtime's mint_write_identity. With CI=="true" neither helper may even attempt
-    the portal import -- it must print a loud diagnostic instead (never a silent skip, never a
-    buffered outbox entry).
+    The pr-validate CI job configures no AWS credentials, so a real portal file_rec() write there
+    raises a swallowed ModuleNotFoundError from ducklake_runtime's mint_write_identity. With
+    CI=="true" neither helper may even attempt the portal import -- it must print a loud
+    diagnostic instead (never a silent skip, never a buffered outbox entry).
     """
 
     @pytest.fixture(autouse=True)
