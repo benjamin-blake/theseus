@@ -10,7 +10,9 @@ intent: >-
   pre-commit tool-pin escalation becomes its own governed term instead of inflating the unwaivable
   non-test half, and NON_TEST_BUDGET_SECONDS is re-derived to dominate the corrected measured worst.
   One new numbered Decision amends 182; the ~28 symptom recs of the old contract are dispositioned
-  with per-rec evidence. Gates stop failing healthy PRs for composition and keep failing drift.
+  with per-rec evidence. The gate stops failing healthy PRs for composition or runner noise and
+  keeps a composition-aware runaway bound; slow-test drift detection moves per-module to the
+  post-merge table diff (rec-4125).
 plan_type: IMPLEMENTATION
 verification_tier: V2
 plan_path: docs/plans/PLAN-fast-tier-budget-recalibration.yaml
@@ -58,8 +60,13 @@ scope:
       costs (statistics.quantiles n=10, method inclusive): the likeliest unknown module is the PR's
       own new test. (4) selection_cost(selected, read, root, *, require_on_disk=True) -> float:
       dedupes, and with require_on_disk counts only paths that exist under root (the census-clamp
-      analogue: a corrupted or inflated selector cannot price phantom modules); unknown paths cost
-      default_cost. Well under 500 SLOC.
+      analogue: a corrupted or inflated selector cannot price phantom modules); an unknown path
+      costs default_cost ONLY when its basename is test_*.py -- conftest.py, tests/fixtures/* and
+      every other non-test path in a selection cost 0.0, since they never appear in junit (pricing
+      them at p90 inflated the cost sum ~8% on the binding run and understated k_min; Fable consult
+      2026-09-28). Well under 500 SLOC. Its git calls in tests run with -c commit.gpgsign=false and
+      a fixed identity (the tests/hooks/test_handoff_evidence_gate.py _GIT_ENV precedent -- this
+      container signs commits globally).
   - file: tests/checks/deps/test_module_cost_table.py
     action: Create
     purpose: >-
@@ -81,8 +88,15 @@ scope:
     action: Modify
     purpose: >-
       (a) Constants: NON_TEST_BUDGET_SECONDS 240.0 -> 270.0; new PRECOMMIT_ESCALATION_ALLOWANCE_SECONDS
-      = 120.0 and PRECOMMIT_PHASE_NAME = "precommit_changed"; new COST_COEFFICIENT (derived per
-      execution step 2 -- 1.0 at planning), PREPASS_FIXED_SECONDS = 1.6 and
+      = 120.0 and PRECOMMIT_PHASE_NAME = "precommit_changed"; new NOISE_MARGIN = the maximum
+      same-commit primary-session spread (max/min) over fixture groups keyed (branch, selection,
+      date) with >= 2 attempts and a minimum primary session >= 60s -- the CI-runner noise property,
+      invariant to the table's scale, hence its own named constant (1.449 at planning, 12 groups);
+      new RECORDED_K_MIN = the zero-false-positive fit k_min (1.043 at planning, non-test paths
+      costing 0); new COST_COEFFICIENT = ceil10(RECORDED_K_MIN x NOISE_MARGIN) (1.6 at planning;
+      Benjamin 2026-09-28 after a second Fable consult -- a hard duration gate on shared runners is
+      never set at the noise floor, and this repo records a green re-run as NONDETERMINISTIC, so
+      the margin, not re-runs, must absorb runner noise), PREPASS_FIXED_SECONDS = 1.6 and
       PREPASS_PER_MODULE_SECONDS = 0.041 (the measured collect-only prepass + session overhead, OLS
       1.56 + 0.0406 n over 55 single-invocation runs); TEST_BASE_SECONDS 180.0 and CEILING_SECONDS
       1500.0 unchanged; PER_MODULE_SECONDS 2.0 KEPT as the legacy fallback rate;
@@ -101,19 +115,24 @@ scope:
       budget_ingest.INGESTED_OUTCOMES is unaffected. (d) classify() gains keyword cost_s: float |
       None = None -- when given, the allowance is cost_based_allowance; when None, the legacy
       test_execution_allowance; derivation_ok False still collapses to TEST_BASE_SECONDS; branch
-      order unchanged. (e) budget_extra_keys gains precommit_escalated, escalation_s, cost_s and
-      cost_table_status. (f) Prediction uses the SAME function as the gate: predict_test_half and
+      order unchanged. (e) budget_extra_keys gains precommit_escalated, escalation_s, cost_s,
+      cost_table_status and cost_ratio ((test_s - overhead) / cost_s, null off the cost path);
+      validate.py prints ONE advisory line when cost_ratio exceeds RECORDED_K_MIN (the recorded
+      envelope) -- rec-free by construction, never an outcome, never in INGESTED_OUTCOMES, branch
+      order untouched; the recorded ratio is the series the next coefficient derivation reads. (f) Prediction uses the SAME function as the gate: predict_test_half and
       predict_ci_elapsed take keyword cost_s -- (PREDICT_COST_RATIO_LOW x cost_s + overhead,
       COST_COEFFICIENT x cost_s + overhead) with PREDICT_COST_RATIO_LOW the median of (single_s -
       overhead) / cost over ALL 98 test-green runs (the population k_min is drawn from, not the 14-run
-      single_s > TEST_BASE subset its max binds on; 0.34 at planning) -- and fall back to the legacy floor+slopes when cost_s is None;
+      single_s > TEST_BASE subset its max binds on; 0.37 at planning with non-test paths at 0) -- and fall back to the legacy floor+slopes when cost_s is None;
       _PREDICT_NON_TEST_LOW/HIGH re-derive to the recorded green governed non-test median/max
-      (56.4 / 158.0 at planning). _report() reads the table via module_cost_table (lazy import),
+      (56.4 / 158.0 at planning). _report() reads the table via the module attribute module_cost_table.read_at_base_ref (lazy
+      module import, never `from ... import read_at_base_ref`, so every seam pin binds),
       prints its status, and prints whether the scope touches a pre-commit global input (lazy
       import of scripts.checks._scaffolding.precommit_escalates). (g) Module docstring restated for
       the three-term contract, and the declare-or-split reading restated truthfully: because the
       predictor's high end IS the gate's allowance function, a plan-time `breach` is reachable only
-      when the allowance is clamped at the 1110s cap -- below it, breadth is declared, never split;
+      when the allowance is clamped at the 1110s cap or collapsed to TEST_BASE_SECONDS by a
+      derivation fallback (derivation_ok False) -- otherwise breadth is declared, never split;
       a CI breach now signals drift (tests slower than their measured cost), which no plan-time
       scope change predicts. PRECOMMIT_ESCALATION_ALLOWANCE_SECONDS
       is derived as ceil10(recorded escalated precommit_changed max 108.618) + 10s headroom for the
@@ -133,7 +152,7 @@ scope:
       555) and its four `cap = CEILING - NON_TEST` sites (lines 41, 49, 58, 64-65) become CEILING -
       NON_TEST - ESCALATION; TestPrediction's 51.014 / 71.766 literals (lines 173-184) follow the
       re-derived predictor constants; TestBudgetExtraKeys' exact seven-key set (lines 138-156) becomes
-      eleven; TestSubtractionSetPins' live step-name pin adds PRECOMMIT_PHASE_NAME;
+      twelve; TestSubtractionSetPins' live step-name pin adds PRECOMMIT_PHASE_NAME;
       _WORST_MEASURED_NON_TEST_HALF re-derives from the fixture; and TestCli
       (test_cli_reports_breadth_and_predicted_outcome and its siblings) pins the
       module_cost_table.read_at_base_ref seam explicitly -- after this plan merges, main's merge-base
@@ -168,10 +187,12 @@ scope:
       (primary_session_s set, pytest_final_green), single_s = test_s, or primary_session_s + the
       prepass term for a reactive run; cost = selection_cost(require_on_disk=False) with p90
       default; k_min = max over runs with single_s > TEST_BASE of (single_s - overhead) / cost; assert
-      k_min <= COST_COEFFICIENT <= math.ceil(k_min x 10) / 10 (a table regeneration that moves k_min
-      forces a same-PR coefficient re-derivation -- the constant's declared enforcing check,
-      Decision 181 point 2); PREDICT_COST_RATIO_LOW equals the median of the same per-run ratio
-      over the same population, rounded to 2dp (0.34 at planning), and
+      RECORDED_K_MIN == round(k_min, 3), NOISE_MARGIN == round(the same-commit max spread defined
+      on selection_budget.py, 3), COST_COEFFICIENT == ceil10(k_min x NOISE_MARGIN) EXACTLY, and the
+      floor COST_COEFFICIENT >= k_min (zero false positives over the record is the floor, not the
+      target) -- a regenerated table or series moves them and forces a same-PR re-derivation, the
+      constants' declared enforcing check (Decision 181 point 2); PREDICT_COST_RATIO_LOW equals the median of the same per-run ratio
+      over the same population, rounded to 2dp (0.37 at planning), and
       _PREDICT_NON_TEST_LOW/HIGH the green governed non-test median/max. TestCompositionAwarePrediction
       (rec-3677's rewritten acceptance node): the fixture's rec-3677 pair -- 121 modules (684
       worker-s at planning) vs 174 modules (299) -- predicts a HIGHER test half for the smaller
@@ -205,7 +226,9 @@ scope:
   - file: scripts/validate.py
     action: Modify
     purpose: >-
-      _scaffold_budget_assertion only: read the table once via module_cost_table.read_at_base_ref;
+      _scaffold_budget_assertion only: read the table once via the module attribute
+      module_cost_table.read_at_base_ref (module import, the selection_budget binding style at
+      validate.py:69-80, so seam pins and the VP 9 plugin bind);
       cost_s = selection_cost(changed_tests, ...) when status is ok, None when absent; status
       unreadable passes derivation_ok False (fail closed to TEST_BASE_SECONDS, Decision 153 point 2);
       precommit_escalated = the value _scaffold_precommit_changed captured from run_precommit_checks'
@@ -231,7 +254,9 @@ scope:
       differs from the legacy value, and that cost_s and cost_table_status are recorded (a
       validate.py that computes cost_s but never passes it to classify fails here); (4) status
       unreadable collapses the allowance to TEST_BASE_SECONDS. The escalation fact is stubbed
-      through run_precommit_checks' return value. Every registry-named class
+      through run_precommit_checks' return value. Also re-pin the two stale derived-cap sites
+      (line 320 `cap = CEILING - NON_TEST` and line 374 `limit_s < CEILING - NON_TEST`) to CEILING -
+      NON_TEST - ESCALATION. Every registry-named class
       (TestNonTestHalfBudget, TestBreadthDerivedTestBudget, TestLocalPrediction) keeps its node ids.
   - file: tests/validate/test_budget_manifest.py
     action: Modify
@@ -277,22 +302,28 @@ scope:
       and that 270 = ceil10 of the corrected joint worst 131.8 + 10.0 + 120 = 261.8; the teeth,
       honestly, for BOTH arms -- on 182's narrowest run the non-escalated margin against the retired
       300s aggregate falls from 31.683s to 1.683s, and an escalated run's non-test half may reach
-      270 + 120 = 390s before firing; the test-half teeth -- with COST_COEFFICIENT 1.0 against the
-      0.34 median ratio, a median selection's test half may grow ~2.9x before breaching, and a
-      plan-time breach is reachable only at the 1110s cap (the declare-or-split SPLIT row is
-      unreachable below it); the named residuals with owners (Decision 181 point 2) -- table
+      270 + 120 = 390s before firing; the test-half teeth, honestly -- COST_COEFFICIENT 1.6 = ceil10(k_min 1.043 x
+      NOISE_MARGIN 1.449) against the 0.37 median ratio lets a median selection's test half grow
+      ~4.3x before breaching; the median allowance for n>=120 selections rises from 330s (today's
+      2.0 x n) to ~593s, looser than a linear rule with the same zero-false-positive guarantee
+      (562s), so the PR-time test half becomes a composition-aware runaway bound and slow-test
+      drift detection moves per-module to rec-4125's table diff; a plan-time breach is reachable
+      only at the 1110s cap or under a derivation fallback; the named residuals with owners (Decision 181 point 2) -- table
       staleness and the frozen calibration series (rec-4125, rec-4126), COST_COEFFICIENT raisable
       inside one PR while the table is read at the base (rec-4125: carry the coefficient in the
       generated base-ref table), the legacy arm and its census-clamp probe unreachable in CI once
       installed, the replay-allowance record's 71.766 literal still true but weaker than 261.8,
-      content-scaled drift (rec-4127), verification-registry cost (rec-3374); reversal conditions as a
+      content-scaled drift (rec-4127), verification-registry cost (rec-3374), per-module test drift
+      undetected at PR time (rec-4125), and the binding k_min run (PR governance-work-item-boundary,
+      ratio 0.87-0.96 across three attempts -- plausibly PR-local slowness, fitted in, never
+      dropped); reversal conditions as a
       fenced `yaml reversal-conditions` stanza (the Decision 187 precedent, parsed by
       scripts/preflight/decision_conditions.py) with a review_by date six months out and each
       condition's measurement path named (rec-4126 -- the artifacts expire after 14 days, so the
       rolling-window conditions are unmeasurable until it lands): (a) green governed non-test above 0.8 x 270, (b) the replay mirror moving, (c)
       COST_COEFFICIENT re-derived with every table regeneration, (d) RE-ARMED breadth_waived majority
-      with median allowance above 2 x TEST_BASE, (e) RE-ARMED no non_test_breach for two quarters
-      while the governed static worst grows past 1.5 x 131.8, and (f) when rec-4124 lands, re-derive
+      with median allowance above 2 x TEST_BASE, (e) RE-ARMED for BOTH halves -- no non_test_breach for two quarters
+      while the governed static worst grows past 1.5 x 131.8, or no test-half breach for two quarters while the table total grows past 1.5 x its installed total, and (f) when rec-4124 lands, re-derive
       or retire the 120s escalation term against the escalations that remain. COMPRESS FIRST (one
       line each, or a pointer to tests/fixtures/fast_tier_calibration_series.json): the five-property
       tier test re-run (only the budget contract changes -- still one tier); the attribution (19/19
@@ -327,7 +358,7 @@ followon_recs:
 infrastructure_dependencies: []
 acceptance_criteria:
   - The test half is budgeted by cost_based_allowance over a module-cost table read at the merge-base; the installing PR (absent) uses the legacy 2.0 x n rule and an unreadable base fails closed to 180s; a PR cannot raise its own allowance by editing the table (VP steps 3, 6).
-  - COST_COEFFICIENT, the prepass term and the predictor constants are each pinned to the committed calibration series by a test that fails if the table or the series moves without a re-derivation (VP steps 2, 4).
+  - COST_COEFFICIENT == ceil10(RECORDED_K_MIN x NOISE_MARGIN) exactly, with NOISE_MARGIN the recorded same-commit max spread and COST_COEFFICIENT >= k_min as a floor; these, the prepass term and the predictor constants are each pinned to the committed calibration series by a test that fails if the table or the series moves without a re-derivation; the implement-time margin actually obtained on the binding run is recorded (VP steps 2, 4).
   - The governed non-test half subtracts min(precommit_changed, 120) only when the pre-commit phase actually escalated (run_precommit_checks' returned decision); excess re-enters the unwaivable half; NON_TEST_BUDGET_SECONDS is 270, the ceil-10 of the corrected joint worst 261.8, and the cap is CEILING - NON_TEST - ESCALATION = 1110 (VP steps 1, 5, 7).
   - The plan-time predictor uses the gate's own cost function and ranks rec-3677's pair correctly where the legacy predictor ranks it backwards (VP step 3).
   - One new Decision amends 182 only, within 6,144 bytes, with its waiver row and a fresh index (VP steps 10, 12).
@@ -372,7 +403,7 @@ verification_plan:
     action: The whole calibration module -- COST_COEFFICIENT is the zero-false-positive fit of the committed table over the recorded test-green runs, rounded up to 0.1; predictor constants match the series; recorded incidents fit the new allowance (one module path, so the graduated shard carries one node_id).
     command: bin/venv-python -m pytest tests/checks/deps/test_selection_budget_calibration.py -q
     expected: All tests pass. Red before -- target_absent.
-    fix_if: k_min moved above COST_COEFFICIENT (a regenerated table) -- re-derive the constant in the same PR; never drop a run or loosen the rounding.
+    fix_if: A regenerated table or series moved k_min or NOISE_MARGIN -- re-derive RECORDED_K_MIN, NOISE_MARGIN and COST_COEFFICIENT in the same PR; never drop a run, widen a rounding, or fold the margin into the coefficient by hand.
     hermetic: true
     graduation: graduate
     graduation_check_id: fast-tier-cost-coefficient-is-calibrated
@@ -567,20 +598,21 @@ constraints:
   - 'Every test whose assertions depend on an allowance or prediction value pins module_cost_table.read_at_base_ref explicitly -- the four budget test files (module-level autouse) and TestCli in test_selection_budget.py (every caller, including selection_budget._report). The other modules that reach the budget scaffold (tests/validate/test_selection_fallback.py, test_pre_glob_gating.py, test_manifest_isolation.py, test_tiers.py, test_scaffold_coverage.py, test_scaffold_gates.py, tests/checks/registry/test_resolution.py) are exempt and unedited: both arms give their empty or tiny selections TEST_BASE_SECONDS, which VP step 9 proves under the forced ok and unreadable states before merge. Never make tests/validate/conftest.py autouse (Decision 131 clause 3).'
   - The fixture carries run ids only -- never commit SHAs (hex strings trip detect-secrets, which rewrites .secrets.baseline and triggers the very --all-files escalation this plan budgets) or 12-digit job ids (the never-commit hook's AWS-account shape).
   - Out of bounds (a parallel plan owns them) -- scripts/checks/verification/*, docs/contracts/vp-red-before.yaml, .claude/skills/planning/SKILL.md; also scripts/convergence_health/budget_ingest.py and scripts/checks/_budget_recs.py (no new outcome reaches them).
-  - Decision entry compression ladder if over 6,144 bytes -- (a) Related to bare numbers, (b) the attribution to one sentence with the three figures, (c) the verdict flips to one line, (d) the coverage declaration to a two-column table; NEVER drop the point 1/2 negations, the numbers, the escalation-contract cite, the teeth restatement or the re-armed (d)/(e).
+  - 'Decision entry compression ladder if over 6,144 bytes -- (a) Related to bare numbers, (b) the attribution to one sentence with the three figures, (c) the verdict flips to one line, (d) the coverage declaration to a two-column table, (e) the reversal-conditions stanza to one-line condition descriptions and the residuals to `owner: rec-NNNN` tokens; NEVER drop the point 1/2 negations, the numbers, the escalation-contract cite, the teeth restatement or the re-armed (d)/(e).'
   - Symptom recs are closed only through close_proposed commands a human confirms (Decision 103), never through the Resolves trailer; only rec-4093, rec-3929 and rec-3677 ride the trailer (Decision 201).
   - No rescue agents or workaround loops (Decision 55).
 context:
   - "Decision-scout verdict (revised approach, 2026-09-28): FLAGS_FOUND -- SPIRIT WARN Decision 182 (270 widens rather than narrows; answered in the entry by the tail-sampling decomposition, per-check rec rec-4127 and the restated 1.683s teeth); NOTE Decision 135 (snapshot vs cross-run query -> rec-4126); NOTE Decision 103 (verdicts restricted to the closed set; local records dispositioned superseded through the portal -- they are warehouse rows). CITE: 182, 153, 73, 187, 181, 166, 168, 132, 128, 131, 177, 167, 201. Decisions triaged: 157 of 157. Roadmap items intersected: 23; CONFLICT: 0; RELATED: 23"
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PENDING (round 1 REVISE: R1 post-merge ok arm made testable pre-merge -- TestCli seam pin, exemption with proof, VP 9 plugin runs; verdict-flip basis named; both teeth arms and reversal (f) tied to rec-4124; predictor ratio population defined (0.34); 72.7th percentile / 86.5s population named; propose_or_close_rec; old-path test; step-4 single node; 120 derivation rule; residuals named; handoff order per git-ops.yaml handoff_sequence); round 2 REVISE: R1a discriminating excess case, R1b non-vacuous cost path, R2 test-half teeth and the cap-only SPLIT row declared, R3 literal paths + selection probe; I1 budget reads run_precommit_checks' applied decision, I2 predictor population, I3 rec rationale, I4 draft entry first, I5 reversal-conditions stanza, I6 PR's own band reading)"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PENDING (round 1 REVISE: R1 post-merge ok arm made testable pre-merge -- TestCli seam pin, exemption with proof, VP 9 plugin runs; verdict-flip basis named; both teeth arms and reversal (f) tied to rec-4124; predictor ratio population defined (0.34); 72.7th percentile / 86.5s population named; propose_or_close_rec; old-path test; step-4 single node; 120 derivation rule; residuals named; handoff order per git-ops.yaml handoff_sequence); round 2 REVISE: R1a discriminating excess case, R1b non-vacuous cost path, R2 test-half teeth and the cap-only SPLIT row declared, R3 literal paths + selection probe; I1 budget reads run_precommit_checks' applied decision, I2 predictor population, I3 rec rationale, I4 draft entry first, I5 reversal-conditions stanza, I6 PR's own band reading); round 3 REVISE: R1 coefficient noise margin escalated to Benjamin -> Fable consult -> K rule chosen; A1-A8 applied)"
   - "Evidence: docs/plans/reports/fast-tier-calibration-series-2026-09-28.json (moves to tests/fixtures/ in the implement PR). Attribution -- test half: 51/106 runs double-invoked, all on ModuleNotFoundError ulid (rec-4077, fixed by the keystone plan); non-test tail: pre-commit --all-files escalation on .secrets.baseline, 17/193 runs, detect-secrets 80.6s locally; 12 of 13 escalated PR heads changed only line numbers in the baseline."
-  - "Model evidence (planning table, p90 default, prepass term): linear-in-n R2 0.51 vs cost-sum R2 0.75 (max under-prediction 202s vs 120s); zero-false-positive k_min 0.956 -> COST_COEFFICIENT 1.0; predictor ratio 0.34 (median over the same 98 test-green runs); at zero false positives the median allowance for n>=120 is ~380s (cost) vs 562s (linear); today's 2.0 x n rule gives 330s. Verdict flips on the single-invocation basis: 5 test-green runs from 2 PRs stop breaching (governance-work-item-boundary x3, tender-clarke x2), none starts. On raw recorded test_s one run would start (35750101962, n=198, 387.9s vs 356.3s) -- itself a ulid double run the keystone removes."
+  - "Model evidence (planning table, p90 default for unknown test_*.py only, prepass term): linear-in-n R2 0.51 vs cost-sum R2 0.75 (max under-prediction 202s vs 120s); zero-false-positive k_min 1.043; same-commit noise max 1.449 (12 groups; median 1.12) -> COST_COEFFICIENT 1.6 with 52% headroom on the binding run (K=1.0 would already false-fail it); predictor ratio 0.37; median n>=120 allowance 593s vs today's 330s and 562s for a linear zero-false-positive rule. Verdict flips on the single-invocation basis: 5 test-green runs from 2 PRs stop breaching (governance-work-item-boundary x3, tender-clarke x2), none starts."
   - "Breadth (selection_budget --plan on this plan file, 2026-09-28): n_selected 179, allowance 358s, predicted CI test half 131.5-166.0s, predicted within_budget -- plan as one unit, no split. The PR selects two runtime-ulid modules, so it must follow the keystone (single invocation); cost-model estimate 115-227s."
   - "Fable advice consult 2026-09-28 (facts-only brief, independent landing): Q1 per-module cost for gate AND predictor (the hybrid is wrong-shaped: estimator and gate must be one function); Q2 a separate escalation allowance plus 270; Q3 keystone first; Q4 three verdict classes plus individual hand-filed dispositions. Adopted, with one evidence-driven refinement: rec-3796 and rec-4035 are rec-4077 duplicates (their incidents' primary sessions fit the old allowance run once), not acceptance rewrites."
   - "fork: test-half model -- linear re-fit vs per-module measured cost vs hybrid | chosen: per-module measured cost for gate and predictor | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: scope rows selection_budget.py / module_cost_table.py (Benjamin 2026-09-28, after the Fable consult)"
   - "fork: non-test budget -- carve-out keeping 240 vs escalation term plus 270 vs one constant ~345 | chosen: escalation term (120) plus 270 | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: scope row selection_budget.py + Decision entry (Benjamin 2026-09-28)"
   - "fork: symptom sweep breadth | chosen: all auto-filed plus the hand-filed recs, each with its own verdict | class: asked | precedent: Decision 103 | precedent_kind: decision | reversible: yes | persisted: fixture rec_dispositions + execution step 11 (Benjamin 2026-09-28)"
   - "fork: allowlisted-set escalation predicate | chosen: follow-on rec-4124, not this plan | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: followon_recs (Benjamin 2026-09-28)"
+  - "fork: cost-coefficient noise margin -- rounding only (K 1.0) vs 2-sigma (1.3) vs 3-sigma (1.5) vs max same-commit spread (1.6) | chosen: max same-commit spread via a pinned NOISE_MARGIN, K 1.6 | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: scope rows selection_budget.py / test_selection_budget_calibration.py + Decision (Benjamin 2026-09-28, after a second facts-only Fable consult; plan-critique round 3 R1)"
   - "fork: keep test_execution_allowance's signature and add cost_based_allowance beside it | chosen: yes (no graduated record needs re-authoring) | class: consistency-only | precedent: Decision 132 | precedent_kind: decision | reversible: yes | persisted: scope row selection_budget.py"
   - "fork: persist the perishable series with the plan and git mv it at implement time | chosen: yes | class: consistency-only | precedent: docs/plans/reports/ spike-note home (docs/CLAUDE.md) | precedent_kind: contract | reversible: yes | persisted: scope rows (Delete + Create)"
   - "Decision number: not reserved at draft time (candidate-decision-ratification.yaml numbering-race note); 208 expected per the operator's queue (2026-09-28)."
@@ -593,7 +625,7 @@ pre_implementation_checklist:
   - Acceptance criteria understood and verifiable
 execution_steps:
   - "Step 1 -- generate the table: `bin/venv-python -m pytest tests -m 'not integration' -n auto -q -p no:cacheprovider -o junit_family=xunit1 --junitxml=<scratch>/junit.xml` (~6.5 min on 4 cores at planning), then `bin/venv-python -m scripts.checks.deps.module_cost_table --junit <scratch>/junit.xml --write config/agent/fast_tier/module_costs.json` once module_cost_table.py exists. A failing test in that run is not a reason to skip a module -- fix or report it; the table must cover the whole suite."
-  - "Step 2 -- `git mv docs/plans/reports/fast-tier-calibration-series-2026-09-28.json tests/fixtures/fast_tier_calibration_series.json`; derive COST_COEFFICIENT, PREDICT_COST_RATIO_LOW and _PREDICT_NON_TEST_LOW/HIGH from the fixture and the step-1 table with the exact procedure TestCostModelCalibration encodes (planning values 1.0 / 0.34 / 56.4 / 158.0 used the planning table; yours may differ slightly -- record both)."
+  - "Step 2 -- `git mv docs/plans/reports/fast-tier-calibration-series-2026-09-28.json tests/fixtures/fast_tier_calibration_series.json`; derive RECORDED_K_MIN, NOISE_MARGIN, COST_COEFFICIENT, PREDICT_COST_RATIO_LOW and _PREDICT_NON_TEST_LOW/HIGH from the fixture and the step-1 table with the exact procedure TestCostModelCalibration encodes (planning values k_min 1.043 / NOISE_MARGIN 1.449 / K 1.6 / 0.37 / 56.4 / 158.0 used the planning table; yours may differ slightly -- record both, and the headroom your values give the binding run 35534645170)."
   - "Step 3 -- rewrite rec-3677's prose acceptance BEFORE any closing commit: get_rec_write_guidance(), then update_rec('rec-3677', {'acceptance': 'bin/venv-python -m pytest tests/checks/deps/test_selection_budget_calibration.py::TestCompositionAwarePrediction -q'}) through scripts.ops_data_portal -- it restates the rec's own oracle (distinguish similar-count selections by composition; the slow one not within_budget), never loosens it (Decision 181, Decision 201). Record in the update's context why the oracle's fixture pair changes from the rec's local 113/162-module re-extraction to the CI-recovered 121/174-module selections of the same two PRs (runs 34122303915 and 34512004628): the CI selections are what the gate actually saw, and both runs were ulid double runs."
   - "Record red-before evidence on the untouched tree for VP steps 1-7 (target_absent) and the red halves named in test_obligations."
   - Draft the Decision entry FIRST (before any code) and measure it with VP step 10's size check -- the 6,144-byte cap is tight (plan-critique I4); walk the compression ladder until it fits, then proceed.
