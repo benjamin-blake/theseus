@@ -4,9 +4,12 @@ The write boundary the contracts name ("populated_by: the write boundary (rec-40
 verb), derived from ..."): derives every KEY_PLANS key and event_id from the caller's refs and
 REJECTS any caller-supplied derived column; stamps tenant_id/project_id (already resolved,
 canonical) and one created_timestamp; runs the strict gate.py row gate before any SQL; collapses
-byte-identical intra-batch duplicates and rejects conflicting ones; then runs ONE transaction, ONE
-insert-only MERGE over a typed multi-row VALUES source, bound to (event_id, parser_version) AND
-the batch's UTC calendar-day range.
+intra-batch duplicates that differ only in created_timestamp/producer_version and rejects any
+other conflicting ones; then runs ONE transaction, ONE MERGE over a typed multi-row VALUES source,
+bound to (producer, event_id, parser_version) AND the batch's UTC calendar-day range: a matched row
+whose content differs (every stored column except created_timestamp and producer_version) errors
+loudly (grain enforced at the write boundary); an identical or producer_version-only re-send is a
+no-op; the writer never updates or deletes -- a rejection writes nothing from the batch.
 
 Out of scope (rec-4024, the writer verb): OCC retry, row caps, the event_timestamp-skew check,
 project_ref/tenant resolution, and parent_observation_id existence checking (contract risk R3).
@@ -34,8 +37,11 @@ if TYPE_CHECKING:
     import duckdb
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_STRUCTURAL_NOT_NULL = frozenset({"event_id", "parser_version", "session_started_at", "created_timestamp"})
+_STRUCTURAL_NOT_NULL = frozenset({"producer", "event_id", "parser_version", "session_started_at", "created_timestamp"})
 _ALWAYS_DERIVED = frozenset({"event_id", "created_timestamp", "tenant_id", "project_id"})
+_GRAIN_KEY = ("producer", "event_id", "parser_version")
+_COMPARE_EXCLUDED = frozenset({"created_timestamp", "producer_version"})
+_CONFLICT_TOKEN = "TELEMETRY_GRAIN_CONFLICT"
 
 
 @dataclass(frozen=True)
@@ -75,8 +81,8 @@ class EventTableSpec:
             raise AppendError(f"{table}: an event projection must carry no merge_key/current_table")
         if entry.get("write_mode") != "append_only":
             raise AppendError(f"{table}: write_mode must be append_only, got {entry.get('write_mode')!r}")
-        if list(entry.get("dedupe_key") or []) != ["event_id", "parser_version"]:
-            raise AppendError(f"{table}: dedupe_key must be [event_id, parser_version]")
+        if list(entry.get("dedupe_key") or []) != ["producer", "event_id", "parser_version"]:
+            raise AppendError(f"{table}: dedupe_key must be [producer, event_id, parser_version]")
         if entry.get("partition_column") != "session_started_at":
             raise AppendError(f"{table}: partition_column must be session_started_at")
 
@@ -90,7 +96,7 @@ class EventTableSpec:
             raise AppendError(f"{table}: not a registered telemetry table (no KEY_PLANS entry)")
         key_plans = KEY_PLANS[table]
 
-        for required in ("event_id", "parser_version", "session_started_at", "created_timestamp"):
+        for required in ("producer", "event_id", "parser_version", "session_started_at", "created_timestamp"):
             if required not in columns_raw:
                 raise AppendError(f"{table}: projection is missing required column {required!r}")
 
@@ -186,11 +192,16 @@ def _build_merge_sql(catalog: str, table: str, ordered_columns: list[tuple[str, 
     one_row = "(" + ", ".join(f"CAST(? AS {sql_type})" for _, sql_type in ordered_columns) + ")"
     values_clause = ", ".join([one_row] * row_count)
     insert_values = ", ".join(f"s.{c}" for c in columns)
+    on_clause = " AND ".join(f"t.{c} = s.{c}" for c in _GRAIN_KEY)
+    compare_columns = [c for c in columns if c not in _COMPARE_EXCLUDED]
+    t_tuple = ", ".join(f"t.{c}" for c in compare_columns)
+    s_tuple = ", ".join(f"s.{c}" for c in compare_columns)
     return (
         f"MERGE INTO {catalog}.{table} AS t "
         f"USING (VALUES {values_clause}) AS s({col_list}) "
-        "ON t.event_id = s.event_id AND t.parser_version = s.parser_version "
-        "AND t.session_started_at >= ? AND t.session_started_at < ? "
+        f"ON {on_clause} AND t.session_started_at >= ? AND t.session_started_at < ? "
+        f"WHEN MATCHED AND ({t_tuple}) IS DISTINCT FROM ({s_tuple}) "
+        f"THEN ERROR ('{_CONFLICT_TOKEN}: conflicting row for event_id=' || s.event_id) "
         f"WHEN NOT MATCHED THEN INSERT ({col_list}) VALUES ({insert_values})"
     )
 
@@ -232,7 +243,7 @@ def append_events(
         for raw_row in rows
     ]
 
-    deduped_rows, collapsed = collapse_or_reject_duplicates(derived_rows, ("event_id", "parser_version"))
+    deduped_rows, collapsed = collapse_or_reject_duplicates(derived_rows, _GRAIN_KEY)
 
     ordered_columns = list(table_spec.columns.items())
     lower, upper = _day_bounds([r["session_started_at"] for r in deduped_rows])
@@ -250,8 +261,10 @@ def append_events(
         assert result_row is not None
         (inserted,) = result_row
         con.execute("COMMIT")
-    except Exception:
+    except Exception as exc:
         con.execute("ROLLBACK")
+        if _CONFLICT_TOKEN in str(exc):
+            raise AppendError(str(exc)) from exc
         raise
 
     return AppendResult(submitted=submitted, collapsed=collapsed, inserted=inserted)

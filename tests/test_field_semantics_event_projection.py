@@ -55,7 +55,7 @@ class TestFixtureContractProjectionShape:
         assert "current_table" not in entry
         assert "entity_id_prefix" not in entry
         assert "id_keyspace" not in entry
-        assert entry["dedupe_key"] == ["event_id", "parser_version"]
+        assert entry["dedupe_key"] == ["producer", "event_id", "parser_version"]
         assert entry["entity_key"] == "entity_id"
         # The stored partition is the RESOLVED history spec, role-prefix stripped -- the raw
         # contract field carries "history=..." (parse_partition_by's role grammar).
@@ -262,6 +262,21 @@ def test_maintenance_policy_absent_from_sidecar_raises(tmp_path: Path) -> None:
     with patch.object(schema_mod, "_SIDECAR_PATH", tmp_sidecar):
         with pytest.raises(KeyError, match="maintenance_policy"):
             generate()
+
+
+def test_dedupe_key_is_telemetry_grain(fixture_resolved) -> None:
+    """The projected dedupe_key is the telemetry grain (producer, event_id, parser_version) for
+    the fixture and for all four real telemetry contracts (rec-4061/R2, grain-enforced-at-write).
+    """
+    doc, resolved = fixture_resolved
+    entry = _project("fixture_events", resolved, partition_by=doc.governance.partition_by)
+    assert entry["dedupe_key"] == ["producer", "event_id", "parser_version"]
+
+    for table_id in ("telemetry_sessions", "telemetry_observations", "telemetry_transcripts", "telemetry_agents"):
+        real_doc = load_contract(_CONTRACTS_DIR / f"{table_id}.yaml")
+        real_resolved = resolve_refs(real_doc, _CONTRACTS_DIR)
+        real_entry = _project(table_id, real_resolved, partition_by=real_doc.governance.partition_by)
+        assert real_entry["dedupe_key"] == ["producer", "event_id", "parser_version"], table_id
 
 
 class TestRealTelemetryContractsProject:

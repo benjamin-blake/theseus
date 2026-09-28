@@ -29,6 +29,15 @@ contract:
 
 amendment_log:
   - date: "2026-09-28"
+    semantic_break: true
+    change_class: governance_note_add
+    summary: >-
+      PLAN-telemetry-grain-and-generations (Decision 207): added rule grain-enforced-at-write --
+      every insert-grain table (append_only journal or SCD2 history) declares a grain key and
+      enforces it at the write boundary, rejecting a conflicting row loudly instead of silently
+      dropping it; applied to the telemetry kernel (producer, event_id, parser_version). Extended
+      design_time_walk step 1 with one sentence pointing at the new rule.
+  - date: "2026-09-28"
     semantic_break: false
     change_class: governance_note_add
     summary: >-
@@ -99,10 +108,10 @@ amendment_log:
       validate_table_registration.py is the new admission control this plan adds separately.
       semantic_break=false.
 
-version: 2
-updated_at: "2026-09-24"
-updated_by: "PLAN-telemetry-event-journal-contracts"
-decisions_cited: [78, 81, 84, 95, 96, 97, 141, 66, 137, 199, 191]
+version: 3
+updated_at: "2026-09-28"
+updated_by: "PLAN-telemetry-grain-and-generations"
+decisions_cited: [78, 81, 84, 95, 96, 97, 141, 66, 137, 199, 191, 207]
 
 # Vocabulary reservation (environment-taxonomy.yaml's reserved_meaning / do_not_use_for row
 # shape): disambiguates a cluster of "smoke"-adjacent terms that Decision 191's amendment
@@ -175,6 +184,25 @@ rules:
     statement: >-
       Name the table's grain -- "one row per ___" -- before choosing a write mode or a schema. If the
       grain cannot be stated in one sentence, the design is not ready.
+  - id: grain-enforced-at-write
+    statement: >-
+      Decision 207: every INSERT-GRAIN table (an append_only journal or an SCD2 history table)
+      declares a grain key and enforces it AT THE WRITE BOUNDARY -- for an SCD2 history table its
+      write ULID (one row per write), for an append_only table its declared merge/dedupe key
+      (telemetry: producer, event_id, parser_version). "Content" is every stored column except the
+      write-time stamp and declared provenance-only columns (telemetry: created_timestamp and
+      producer_version). An identical re-send under an existing grain key is a no-op; a row whose
+      content differs under an existing grain key is REJECTED LOUDLY (the write fails, naming the
+      key) -- never silently dropped, never first-wins or last-wins. Where the engine offers it,
+      the reject is the native single-statement primitive (no second catalog read, Decision 88
+      cl.1 egress budget). Reader rule: an append_only reader returns one row per grain key; a
+      differing pair (only reachable through the concurrent-append race) is reported as
+      conflicted, never resolved silently -- DQ owns the race window. SCD2 history readers are
+      exempt (a duplicate write ULID is DQ-detected, not reader-detected). Enforcement is bounded
+      to the batch's partitions, so the partition column is part of the enforced physical grain. A
+      stored whole-row content hash as tiebreak was considered and rejected -- it hides the
+      defect. OUT OF SCOPE: Type-1 current projections, control-class tables, and
+      replacement-shaped derived materializations (T2.52 c1).
   - id: identity-ulid-at-boundary
     statement: >-
       Identity is a ULID (Crockford base32), minted once at the write boundary (the writer Lambda /
@@ -226,7 +254,9 @@ design_time_walk: >-
   Walk order (relocated from the planning skill's Data-Model Assessment,
   PLAN-skills-layer-prose-relocation). Conduct this assessment if a table (DDL/schema), a
   field_semantics entry, or a warehouse write path is in scope. 1. Grain: state "one row per ___"
-  in one sentence. If it cannot be stated, the design is not ready for the remaining steps. 2.
+  in one sentence. If it cannot be stated, the design is not ready for the remaining steps.
+  Declare the grain key and enforce it at the write boundary per rule grain-enforced-at-write
+  (Decision 207). 2.
   merge_key + history/current split: identify the business key the table merges on, and whether
   the table needs a Type-1 current projection alongside its history table (SCD2) or history-only
   (append_only). 3. Identity: ULID, minted once at the write boundary -- never client-side, never

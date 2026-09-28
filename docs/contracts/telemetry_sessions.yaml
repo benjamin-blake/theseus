@@ -53,7 +53,15 @@ fields:
     governance_notes_local: >-
       Tightened NOT NULL: every telemetry_sessions row states its lifecycle position. compact
       records a context-compaction event mid-session (a new capability this event-journal shape
-      makes representable, where mint-once-and-mutate could not).
+      makes representable, where mint-once-and-mutate could not). The producer's open row is its
+      GENERATION COMMIT MARKER (Decision 207, telemetry-event-envelope.yaml R3/R5).
+    amendment_log:
+      - date: "2026-09-28"
+        semantic_break: true
+        change_class: governance_note_add
+        summary: >-
+          PLAN-telemetry-grain-and-generations (rec-4061 R3): named the open row as the producer's
+          generation commit marker, pointing at the envelope's GENERATIONS AND READ-SIDE DEDUPE rule.
   event_timestamp:
     $ref: telemetry-event-envelope.yaml#/contract/fields/event_timestamp
     dq_intent_local:
@@ -92,7 +100,17 @@ fields:
       (the parent CLI session id plus a deterministic per-agent id).
   producer:
     $ref: telemetry-event-envelope.yaml#/contract/fields/producer
+    dq_intent_local:
+      not_null:
+        enforced: true
     governance_notes_local: e.g. claude_code, litellm, ci_annotate -- whichever surface emitted this lifecycle event.
+    amendment_log:
+      - date: "2026-09-28"
+        semantic_break: true
+        change_class: not_null_tighten
+        summary: >-
+          PLAN-telemetry-grain-and-generations (Decision 207, rec-4061 R2): producer is now
+          NOT NULL enforced -- it is part of the telemetry grain key.
   producer_version:
     $ref: telemetry-event-envelope.yaml#/contract/fields/producer_version
   parser_version:
@@ -446,44 +464,28 @@ amendment_log:
     semantic_break: false
     change_class: prose_improvement
     summary: >-
-      PLAN-telemetry-kernel-identity-append implement-time deviation (rec-4073): governance.partition_by
-      respelled from the bare calendar-day triple to the role-prefixed
-      "history=year(session_started_at), month(session_started_at), day(session_started_at)" -- main's
-      src/common/ducklake_partition_spec.parse_partition_by (the shared ops grammar,
-      PLAN-ducklake-calendar-day-partition) requires a role= prefix per segment
-      ('history=...; current=...'); an append-only event table declares only the history role, no
-      current=. scripts/field_semantics_event_projection.py now delegates to parse_partition_by +
-      validate_partition_spec for this field instead of its own regex, closing rec-4073. The resolved
-      (unprefixed) spec is still what the generator's ops_tables.<table>.partition.history projection
-      carries -- only this raw contract field gained the role prefix.
+      rec-4073: governance.partition_by respelled role-prefixed ("history=year(...), month(...),
+      day(...)"), matching the shared ops partition grammar (parse_partition_by); resolved spec
+      unchanged, only the raw field gained the role prefix.
     migration_story: No live telemetry writer exists (TARGET-STATE only); no runtime migration is required.
   - date: "2026-09-25"
     semantic_break: false
     change_class: prose_improvement
     summary: >-
-      PLAN-telemetry-kernel-identity-append (rec-4065): governance.partition_by respelled from the
-      bare day(session_started_at) to the calendar-day triple year(session_started_at),
-      month(session_started_at), day(session_started_at) -- DuckLake evaluates a bare day() as
-      DAY-OF-MONTH, not calendar day, so the triple is required to keep a session's rows in one
-      partition. contract.description and governance_notes reworded to match; the four
-      populated_by read-verb bounds reworded from "day(session_started_at) partition" to
-      "calendar-day partition". Decision 199 always meant a calendar day; no table exists yet.
+      rec-4065: partition respelled to the calendar-day triple year/month/day(session_started_at)
+      -- DuckLake's bare day() is day-of-month, not calendar day. Description/notes reworded to
+      match; no table exists yet.
     migration_story: No live telemetry writer exists (TARGET-STATE only); no runtime migration is required.
   - date: "2026-09-24"
     semantic_break: false
     change_class: prose_improvement
     summary: >-
-      PLAN-telemetry-event-journal-contracts (Decision 199): contract.description re-grounded from
-      a mutate-in-place root row (open/close of the SAME row) to an append-only event journal
-      (event_kind open|resume|compact|close|annotate) with the shared telemetry-event-envelope.yaml
-      fields; session state/duration/friction roll-ups moved from stored columns to read-time
-      derivation; partition basis re-grounded to day(session_started_at). The per-field shape
-      changes (accepted_values narrowing on outcome, field additions/retirements) are recorded on
-      their own fields' amendment_log entries; this entry covers the contract-level description text.
+      Decision 199: description re-grounded to an append-only event journal (event_kind
+      open|resume|compact|close|annotate); roll-ups moved to read-time derivation. Per-field
+      changes recorded on their own fields' amendment_log entries.
     migration_story: >-
-      No live telemetry writer exists (this contract stays TARGET-STATE, dq_INTENT only); the
-      Phase 4 rebuild (T2.36) builds directly to this contract_version 2 shape, so no runtime
-      migration is required.
+      No live telemetry writer exists (TARGET-STATE, dq_INTENT only); Phase 4 (T2.36) builds
+      directly to this contract_version 2 shape.
   - date: "2026-08-26"
     semantic_break: false
     change_class: prose_improvement
@@ -491,11 +493,8 @@ amendment_log:
       Platform cleanse: references to the removed trading-product surfaces and the retired
       pre-DuckLake query-engine estate were removed or reworded.
     migration_story: >-
-      The repository became platform-only. Product surfaces (broker credentials, the product
-      roadmap, the market-data pipeline) and the retired legacy query-engine path (staging
-      outbox, ops compaction, legacy workgroup IAM) were deleted, and this contract's
-      references to them were removed in the same change. No live DuckLake field or verb
-      semantics changed.
+      The repository became platform-only; product surfaces and the retired legacy query-engine
+      path were deleted. No live DuckLake field or verb semantics changed.
 previous_versions:
   - contract_version: 1
     ratified_at: "2026-06-24"

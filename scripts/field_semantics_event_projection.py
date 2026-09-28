@@ -10,10 +10,11 @@ import (src.telemetry.identity) never appears at that module's top level.
 Projects a table_class: event Class A contract to the history-only append_only shape: no
 merge_key/current_table/entity_id_prefix/id_keyspace, history_table = the contract id, partition
 from governance.partition_by (a "history=..." role-prefixed calendar-day triple, per the shared
-ops grammar), dedupe_key [event_id, parser_version], and entity_key = the table's own KEY_PLANS
-entity column. Fail-closed on a missing envelope column, a partition_by that does not parse or
-does not resolve to exactly the day-grain calendar triple, or a migration_columns entry (an
-SCD2-only concept never valid for an append-only event table).
+ops grammar), dedupe_key [producer, event_id, parser_version] (the telemetry grain, enforced at
+the write boundary), and entity_key = the table's own KEY_PLANS entity column. Fail-closed on a
+missing envelope column, a partition_by that does not parse or does not resolve to exactly the
+day-grain calendar triple, or a migration_columns entry (an SCD2-only concept never valid for an
+append-only event table).
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ _ENVELOPE_REQUIRED_FIELDS = (
     "session_started_at",
     "external_ref",
     "entity_ref",
+    "producer",
     "parser_version",
     "created_timestamp",
     "tenant_id",
@@ -154,7 +156,7 @@ def project_event_table(
         "history_table": table_id,
         "partition": {"history": history_spec},
         "partition_column": "session_started_at",
-        "dedupe_key": ["event_id", "parser_version"],
+        "dedupe_key": ["producer", "event_id", "parser_version"],
         "entity_key": entity_key,
         "columns": columns,
     }

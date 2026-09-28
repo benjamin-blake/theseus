@@ -25,6 +25,8 @@ _COLUMNS = {
     "session_started_at": "TIMESTAMP WITH TIME ZONE",
     "external_ref": "VARCHAR",
     "entity_ref": "VARCHAR",
+    "producer": "VARCHAR",
+    "producer_version": "VARCHAR",
     "parser_version": "BIGINT",
     "created_timestamp": "TIMESTAMP WITH TIME ZONE",
     "tenant_id": "VARCHAR",
@@ -33,7 +35,7 @@ _COLUMNS = {
     "parent_session_id": "VARCHAR",
     "workflow": "VARCHAR",
 }
-_NOT_NULL = frozenset({"event_id", "parser_version", "session_started_at", "created_timestamp", "session_id"})
+_NOT_NULL = frozenset({"event_id", "parser_version", "session_started_at", "created_timestamp", "session_id", "producer"})
 
 
 def _spec() -> EventTableSpec:
@@ -57,6 +59,8 @@ def _row(**overrides: Any) -> dict[str, Any]:
         "session_started_at": t,
         "external_ref": "src#0/open",
         "entity_ref": "sess-ref-1",
+        "producer": "claude_code",
+        "producer_version": "1.0",
         "parser_version": 1,
         "workflow": "implement",
     }
@@ -173,8 +177,9 @@ class TestAppendEventsRejections:
         # MERGE -- the genuine "SQL failure mid-batch" path (not a gate rejection).
         bad_columns = {**_COLUMNS, "column_absent_from_table": "VARCHAR"}
         bad_spec = EventTableSpec(table="telemetry_sessions", columns=bad_columns, not_null=_NOT_NULL)
-        with pytest.raises(Exception):
+        with pytest.raises(Exception) as excinfo:
             append_events(con, bad_spec, [_row()], tenant_id=TENANT, project_id=PROJECT, catalog="memory")
+        assert not isinstance(excinfo.value, AppendError)
         assert con.execute("SELECT count(*) FROM telemetry_sessions").fetchone()[0] == 0
         # connection still usable after rollback
         con.execute("SELECT 1").fetchone()
@@ -203,8 +208,13 @@ class TestMergeShapeAndBounds:
         sql = captured[0]
         assert sql.count("MERGE INTO") == 1
         assert "WHEN NOT MATCHED THEN INSERT" in sql
-        assert "WHEN MATCHED" not in sql
-        assert "ON t.event_id = s.event_id AND t.parser_version = s.parser_version" in sql
+        # The only MATCHED arm ends THEN ERROR -- never THEN UPDATE, never THEN DELETE (a
+        # rejection writes nothing; the writer stays insert-only).
+        assert sql.count("WHEN MATCHED") == 1
+        assert "THEN ERROR" in sql
+        assert "THEN UPDATE" not in sql
+        assert "THEN DELETE" not in sql
+        assert "ON t.producer = s.producer AND t.event_id = s.event_id AND t.parser_version = s.parser_version" in sql
         assert "t.session_started_at >= ?" in sql
         assert "t.session_started_at < ?" in sql
 
@@ -236,10 +246,11 @@ class TestEventTableSpecFromProjection:
             "history_table": "telemetry_sessions",
             "partition": {"history": "year(session_started_at), month(session_started_at), day(session_started_at)"},
             "partition_column": "session_started_at",
-            "dedupe_key": ["event_id", "parser_version"],
+            "dedupe_key": ["producer", "event_id", "parser_version"],
             "entity_key": "session_id",
             "columns": {
                 "event_id": {"role": "derived", "sql_type": "VARCHAR", "nullable": False},
+                "producer": {"role": "input", "sql_type": "VARCHAR", "nullable": False},
                 "parser_version": {"role": "input", "sql_type": "BIGINT", "nullable": False},
                 "session_started_at": {"role": "input", "sql_type": "TIMESTAMP WITH TIME ZONE", "nullable": False},
                 "created_timestamp": {"role": "derived", "sql_type": "TIMESTAMP WITH TIME ZONE", "nullable": False},
@@ -325,3 +336,56 @@ class TestIdentifierValidation:
                 catalog="memory",
                 now=datetime(2026, 9, 25),
             )
+
+
+def test_cross_batch_grain_conflict_rejected(con: Any) -> None:
+    """Keystone: a cross-batch row whose content differs under an existing (producer, event_id,
+    parser_version) is rejected by the native MERGE ... THEN ERROR arm, and nothing from the
+    conflicting batch is inserted (grain enforced at the write boundary).
+    """
+    first = _row()
+    append_events(con, _spec(), [first], tenant_id=TENANT, project_id=PROJECT, catalog="memory")
+    conflicting = _row(workflow="plan")
+    with pytest.raises(AppendError, match="TELEMETRY_GRAIN_CONFLICT"):
+        append_events(con, _spec(), [conflicting], tenant_id=TENANT, project_id=PROJECT, catalog="memory")
+    rows = con.execute("SELECT count(*), any_value(workflow) FROM telemetry_sessions").fetchone()
+    assert rows[0] == 1
+    assert rows[1] == "implement"
+
+
+def test_producer_version_only_resend_is_noop(con: Any) -> None:
+    append_events(con, _spec(), [_row()], tenant_id=TENANT, project_id=PROJECT, catalog="memory")
+    result = append_events(
+        con, _spec(), [_row(producer_version="2.0")], tenant_id=TENANT, project_id=PROJECT, catalog="memory"
+    )
+    assert result.inserted == 0
+    assert con.execute("SELECT count(*) FROM telemetry_sessions").fetchone()[0] == 1
+
+
+def test_cross_producer_same_event_id_both_insert(con: Any) -> None:
+    claude = _row(producer="claude_code")
+    litellm = _row(producer="litellm")
+    append_events(con, _spec(), [claude], tenant_id=TENANT, project_id=PROJECT, catalog="memory")
+    result = append_events(con, _spec(), [litellm], tenant_id=TENANT, project_id=PROJECT, catalog="memory")
+    assert result.inserted == 1
+    assert con.execute("SELECT count(*) FROM telemetry_sessions").fetchone()[0] == 2
+
+
+def test_null_producer_rejected_without_spec_not_null(con: Any) -> None:
+    """A directly-built EventTableSpec whose not_null omits producer must still reject a row
+    that omits the producer key -- grain-key non-null enforcement is independent of spec.not_null.
+    An explicit producer=None is already refused by the VARCHAR type gate (a NULL literal never
+    matches the VARCHAR isinstance check), so this test omits the key entirely.
+    """
+    spec = EventTableSpec(table="telemetry_sessions", columns=dict(_COLUMNS), not_null=frozenset({"event_id"}))
+    row = _row()
+    del row["producer"]
+    with pytest.raises(AppendError):
+        append_events(con, spec, [row], tenant_id=TENANT, project_id=PROJECT, catalog="memory")
+
+
+def test_from_projection_rejects_two_column_dedupe_key() -> None:
+    entry = TestEventTableSpecFromProjection()._base_entry()
+    entry["dedupe_key"] = ["event_id", "parser_version"]
+    with pytest.raises(AppendError):
+        EventTableSpec.from_projection("telemetry_sessions", entry)

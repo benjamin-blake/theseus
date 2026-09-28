@@ -89,27 +89,55 @@ def check_and_normalize_value(column: str, value: Any, sql_type: str) -> Any:
     raise AppendError(f"column {column!r}: unsupported sql_type {sql_type!r}")
 
 
+_COLLAPSE_IGNORED_COLUMNS = frozenset({"created_timestamp", "producer_version"})
+
+
+def differing_columns(
+    a: dict[str, Any],
+    b: dict[str, Any],
+    *,
+    ignore: frozenset[str] = _COLLAPSE_IGNORED_COLUMNS,
+) -> list[str]:
+    """Return the sorted column names where *a* and *b* differ, excluding *ignore*.
+
+    *ignore* excludes the write-time stamp (created_timestamp) and declared provenance-only
+    columns (producer_version) -- the grain-enforced-at-write compared-content definition
+    (Decision-cited in data-modeling-standard.yaml's grain-enforced-at-write rule).
+    """
+    keys = (set(a) | set(b)) - ignore
+    return sorted(k for k in keys if a.get(k) != b.get(k))
+
+
 def collapse_or_reject_duplicates(
     rows: list[dict[str, Any]],
-    dedupe_key: tuple[str, str],
+    dedupe_key: tuple[str, ...],
 ) -> tuple[list[dict[str, Any]], int]:
-    """Collapse byte-identical intra-batch rows sharing *dedupe_key*; reject conflicting ones.
+    """Collapse intra-batch rows sharing *dedupe_key* whose content is identical outside the
+    ignored columns; reject conflicting ones. Rejects a NULL in any grain-key column.
 
     Returns (deduped_rows, collapsed_count). Preserves first-seen order. Raises AppendError
-    naming the event_id (never first-wins) when two rows share the dedupe key but differ.
+    naming the event_id (never first-wins) when two rows share the dedupe key but differ in any
+    other stored column.
     """
     seen: dict[tuple[Any, ...], dict[str, Any]] = {}
     deduped: list[dict[str, Any]] = []
     collapsed = 0
     for row in rows:
+        for col in dedupe_key:
+            if row.get(col) is None:
+                raise AppendError(f"grain-key column {col!r} is NULL (grain key={dedupe_key})")
         key = tuple(row[k] for k in dedupe_key)
         prior = seen.get(key)
         if prior is None:
             seen[key] = row
             deduped.append(row)
             continue
-        if prior == row:
+        diff = differing_columns(prior, row)
+        if not diff:
             collapsed += 1
             continue
-        raise AppendError(f"conflicting duplicate rows for event_id={row.get('event_id')!r} (dedupe_key={dedupe_key})")
+        raise AppendError(
+            f"conflicting duplicate rows for event_id={row.get('event_id')!r} "
+            f"(dedupe_key={dedupe_key}): differing columns {diff}"
+        )
     return deduped, collapsed
