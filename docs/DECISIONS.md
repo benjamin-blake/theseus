@@ -2,6 +2,56 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 205: GitHub-hosted persona compute keys on GitHub event origin; plans live in git; unattended agents use the API-key lane (amends Decision 184, Decision 87, Decision 116 and Decision 73) (Decided)
+
+```yaml
+number: 205
+amends: [184, 87, 116, 73]
+significance:
+  value: numbered_decision
+  justification: "Durable placement, authority and credential rule; no contract owns it; amendment_forms cannot amend four bodies"
+```
+
+**Status:** Decided
+**Date:** 2026-09-28
+
+**Problem:** Decision 184 clause 3 mis-encoded rec-3386 as "never persona compute"; Decision 87's 2026-08-19 amendment made executor plans warehouse-native.
+
+**Intent:** A persona runs where its trigger originates; every plan lives in git; On The Loop holds one inference lane.
+
+**Decision:**
+1. Event origin. The goal is to remain comfortably inside GitHub's terms for Actions usage, whose burden clause targets general-computing workloads, not repository-lifecycle work. An LLM persona runs on GitHub-hosted runners only when a GitHub-originated repository event (pull_request, push, workflow_run) triggers it, and only verdict-shaped: it reads a pinned SHA and emits a check run or rec, never a commit. Queue pickup is event-driven, but an event from outside GitHub never qualifies: opening a PR is a repository event; schedule, repository_dispatch and a workflow_dispatch from an off-GitHub App or bot are not. A workflow_run qualifies when its upstream does or on a deterministic run's failure; a workflow_dispatch, when a maintainer's own identity or a qualifying run on its own failure issues it. Eligible: decision-scout and plan-critique on a PR adding or revising a plan file (draft, then ready; revisions re-trigger), code-review on any PR changing code (draft), ci-rca, subagent-plan-review. claude.yml, the operator's first-party tool, is exempt (Decision 184 clause 4). Planning and implementation persona compute never runs on Actions (not event-triggered, general-computing, workspace-mutating). Actions stays the verdict plane (CD.38).
+2. Verdict integrity. Never pull_request_target (T4.21's guard runs no LLM): a secretless pull_request trigger chains by workflow_run to a verdict job on the default branch's definition and code, reading the PR as API data and failing, never skipping, off the author allowlist. The Actions job is a THIN SHELL: it materialises the schema-validated input, invokes the same digest-pinned container image and run_persona entrypoint that the local container twin and any cloud compute host use, and posts the structured result as the verdict. No persona logic lives in workflow YAML or composite actions. Persona code never invokes gh, never calls the GitHub API, and never reads GITHUB_TOKEN -- the shell is the only GitHub-aware layer. Moving a persona between hosts is a shell change, never a persona change. The verdict is a check run on the head SHA under a verdict identity distinct from the executor App (on Actions the job's GITHUB_TOKEN, elsewhere a dedicated verdict App); the T4.9a callback is a pointer; the orchestrator reads the Checks API and merges by SHA.
+3. Scheduled agents. Repo-scoped scheduled agents move from cron to path-filtered push-to-main triggers. Agents over non-repo data (rec-curator, transcript-review) never run on Actions -- cron-driven agentic work over product data is the serverless shape the Actions terms exclude -- and reach a scheduler port (local adapter: T4.24). Deterministic scheduled workflows stay on Actions; their job-minutes count in T4.15 c10.
+4. Credential. A consumer subscription is never a credential On The Loop holds or intermediates in any tier; it is permitted as a user-owned CLI backend (the unmodified vendor CLI, signed in by the user, on user-owned substrate) and never on the paid plane On The Loop hosts. API keys via LiteLLM remain the sole inference lane On The Loop holds; every unattended agent in a deployment On The Loop operates uses it. Decision 116's claude -p lane survives as the user-owned CLI backend class; ci-rca and subagent-plan-review keep it until T4.26. The CLI persona backend is a post-MVP tier item owned by a separate plan (PLAN-cli-persona-backend); its design-now constraints on T4.10a / Decision 199 / the run_persona port land with that plan.
+5. Plans in git. The executor App opens a draft plan PR; the approved plan merges before a separate implementation PR, whose merge writes the plan's edges (Decision 197). Content is the git file at a SHA (Decision 85 stands); status derives from PR state and verdict check runs; ops_execution_plans is a permanent projection, one row per (plan_path, head_sha). Decision 87's clause 1 destination, clause 2 flip and forward note retire; critique directives live in check-run output. A merge touching only docs/plans/** runs the fast tier on main; Main Canary's full tier backstops it.
+6. Compute plane. CD.44's plane and T4.15 cover planning and implementation only. long_running_container (Fargate) is presumptive: T4.15 confirms it live and desk-scores the three Lambda-variant arms against P1-P3; CD.27 ratifies on that record.
+
+**Options considered:** Compute-plane verdict personas -- rejected: mis-reads rec-3386. Secrets in a pull_request job -- rejected: a same-repo PR runs its own workflow. Warehouse-authoritative plans -- rejected: two systems of record split by author, at 100-300 plans a month.
+
+```yaml reversal-conditions
+decision: 205
+review_by: 2027-03-31
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: actions-policy
+    kind: manual
+    description: "GitHub restricts LLM verdict jobs or T4.15 c10's burden draws a notice: move verdict personas off Actions."
+  - id: plan-authority
+    kind: manual
+    description: "Revision cycles fall under a minute or plans go cross-repo: reopen clause 5."
+  - id: container-infeasible
+    kind: manual
+    description: "T4.15 finds long_running_container fails P1-P3: reopen clause 6."
+  - id: vendor-terms
+    kind: manual
+    description: "Vendor terms bar third-party use of subscription-backed CLIs: withdraw clause 4's CLI backend."
+```
+
+**Related:** Decisions 72, 77, 122, 164, 173; rec-3386.
+
+---
+
 ## Decision 204: Sanctioned admin-tier partition-layout rewrite for the ops history tables' day-of-month legacy files, human-directed ADMIN-agent execution (amends Decision 81, 126, 192) (Decided)
 
 ```yaml
@@ -550,6 +600,8 @@ conditions:
 > cloud-adapter property this clause already named.
 
 [Amendment 2026-09-26, audit criterion-shape-forks-9d25d918: clause 8's walk inputs are recorded here, not settled -- the walk starts from them (T4.23:c14; partition input read per rec-4068), re-verifies each against the tree, and a departure from the merge key or identity re-opens design_time_walk step 8. Verdicts: Q1 b-admitted-once, Q2 drop-the-field, Q3 pin-at-migration-time, Q4 two-tables-evidence-journal. The step-8 advice-consult question is closed for this routing run (Fable consult plus operator direction, 2026-09-26); the keys stay clause 8's. Tenancy per Decision 200, by analogy for clause 8 to confirm. Reversal readings: two-shapes-after-all not tripped, conditional on the typed method union (T4.23:c10); merge-authored-edges-lossy not tripped, conditional on the merge consuming the exact merged plan rather than trailers alone and on T4.5's ETL projecting closes_criteria as plan-row content (T4.5:c8) -- a trailer cannot carry an edge's target, criterion-version ULID or clause.]
+
+> **Update (2026-09-28):** Decision 205 clause 5 merges each plan before its implementation, so this entry's clause 5 ("the squash-merge writes them") reads as the implementation merge -- the merge that consumes the exact merged plan; the plan merge writes no edges.
 
 ---
 
@@ -1584,6 +1636,8 @@ conditions:
 
 **Related:** Decision 185 (the loop definition and leash this boundary requires), Decisions 78, 81, 84, 116, 171, 173, 178; CD.38, CD.44; rec-3386.
 
+> **Amended by Decision 205 (2026-09-28):** Clause 3's "never persona compute" mis-encoded rec-3386; Decision 205 clause 1 replaces it with an event-origin rule -- a verdict-shaped LLM persona triggered by a GitHub-originated repository event may run on GitHub-hosted runners, planning and implementation persona compute never does, and the verdict-plane role and reselling note stand. Clause 4 now reads: "A consumer subscription is never a credential On The Loop holds or intermediates in any tier; it is permitted as a user-owned CLI backend (the unmodified vendor CLI, signed in by the user, on user-owned substrate) and never on the paid plane On The Loop hosts. API keys via LiteLLM remain the sole inference lane On The Loop holds." Operator use of CC-web and setup-token CI stays first-party and out of product scope; moving the unattended ci-rca and subagent-plan-review to API keys (T4.26) is this deployment's own choice, not a product-credential ruling. This entry's actions-policy condition (the explicit-allowance direction) stays live; Decision 205's stanza adds the restriction direction.
+
 ---
 
 ## Decision 183: Two heal verbs for a red sandbox record, one routing rule -- the acknowledge-and-retry dispatch becomes total (a guard-routed fresh plan at HEAD reaches tf-gated-apply); Reconcile heals at the red commit (amends Decision 126 point 1's reconcile intent; extends Decision 158's Environment-reach accounting) (Decided)
@@ -2523,6 +2577,8 @@ argument restated as shape claims; condition (c) re-read onto the primary role),
 routing unchanged), Decisions 121, 47 (archived), 86, 127, 133, 167, 84, 55, CD.28, tier_items
 T4.2 and T4.17.
 
+> **Update (2026-09-28):** Decision 205 clause 4 moves unattended scheduled agents to the API-key lane; their draw on a fixed allowance ends only where they resolve to the metered primary role (T4.12), and ci-rca and subagent-plan-review keep a claude -p draw until T4.26, so fixed-allowance-saturation stays armed.
+
 ---
 
 ## Decision 172: GitHub's immutable OIDC subject-claim format governs post-rename repositories; trust additively, contract only with live proof (Decided)
@@ -2955,6 +3011,8 @@ and (a)'s shared-Max-pool contention as contention on the FALLBACK role's fixed-
 allowance. The conclusion -- personas route to the LiteLLM tiers rather than claude -p -- and the
 reopen-pricing obligation are unchanged. A swap changing the vendor or billing shape under either
 re-keyed condition re-arms it and owes a further dated annotation here.]
+
+> **Update (2026-09-28):** Decision 205 clause 4 admits a user's own subscription through the unmodified vendor CLI as a user-owned persona backend; that reopening of persona routing is deferred to PLAN-cli-persona-backend (T4.27), which owes this entry's collapse pricing, and reversal (b) stays live against Decision 205 clause 6's presumptive long_running_container arm.
 
 ---
 
@@ -5551,6 +5609,8 @@ fill a role from retired_providers, and may not fill both roles from one vendor.
 this entry changes: LiteLLM as the sole Layer-1 inference surface, Bedrock's retirement, and the
 Decision-121 layer reconciliation stand.]
 
+> **Update (2026-09-28):** Decision 205 clause 4 routes every unattended agent in a deployment On The Loop operates to the API-key lane, so this entry's restatement of Decision 116's judgment-to-claude -p split is historical there; T4.2 still owns the executor_path cutover.
+
 ---
 
 ## Decision 121: Retire docs/contracts/cli-json-output.md rather than convert it -- T-1.17 exempted from the CD.25 conversion wave (Decided)
@@ -5858,6 +5918,8 @@ claude -p, realization still T4.3-owned -- and copilot-sdk and gemini stay retir
 clause 2(a) forbids filling any tier role from retired_providers, so no contract edit can restore
 them. A swap changing the vendor or billing shape under the coupling above re-arms this condition
 and owes a further dated annotation here.]
+
+> **Amended by Decision 205 (2026-09-28):** Every unattended agent in a deployment On The Loop operates routes to the LiteLLM API-key lane, so the judgment agents (rec-curator, transcript-review, prompt-quality) no longer route to claude -p there; realization stays with T4.12. The claude -p lane survives as the user-owned CLI backend class (Decision 205 clause 4); ci-rca and subagent-plan-review keep it until T4.26. copilot-sdk and gemini stay retired.
 
 ---
 
@@ -7338,6 +7400,8 @@ No downstream warehouse consumer of plans exists today, and the ones that would 
 closure)" citation above is a mis-cite -- the closure-proof principle is Decision 103; Decision 70
 governs Physical Deletion of Bootstrap Records, not lifecycle-state closure.]
 
+> **Amended by Decision 205 (2026-09-28):** Every plan lives in git: the executor App opens plan PRs, and a plan's content is its git file at a commit SHA, so clause 1's warehouse-authoritative destination, clause 2's authority flip, the forward note's Decision 85 supersession and the 2026-08-19 amendment's warehouse-native executor plans retire. Clause 4's status gate derives from PR state and SHA-bound verdict check runs, critique directives live in check-run output, and ops_execution_plans is a permanent git-to-warehouse projection at grain (plan_path, head_sha) under clause 3's ETL pattern. Clause 5's role split is enforced by GitHub identities (the executor App commits; a distinct verdict identity posts verdicts), leaving one projection writer; clause 6 stands.
+
 ---
 
 ## Decision 86: INTENT prose docs retired -- architectural intent routes to roadmap tier_items, Decisions, or contracts; supersedes CD.14 (Decided)
@@ -8020,6 +8084,8 @@ Key elements:
 - `pytest --picked` may be upgraded to `pytest-testmon` later if false-negatives accumulate.
 
 **Related:** Decision 44, Decision 55, Decision 60, Decision 67, Decision 68, Decision 71, Decision 72 (RCA-as-Plan-Source), Decision 89 (branch protection), `docs/INTENT-ci-cd-architecture.md`, `docs/ROADMAP-PRODUCT.md` (Phase Infra-Env).
+
+> **Amended by Decision 205 (2026-09-28):** Once rec-4114's path filter lands, clause 2's full tier on push to main stops covering a merge touching only docs/plans/**: Decision 205 clause 5 runs the fast tier for it -- the plan checks already run in --pre on the same diff, and every full-only check that reads plan content re-asserts an invariant they gate -- with Main Canary's 3-hourly full tier as the backstop; every other push to main keeps the full tier.
 
 ---
 
