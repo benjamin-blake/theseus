@@ -66,13 +66,15 @@ from scripts.checks._scaffolding import (  # noqa: F401,E402
     run_terraform_creds_free,
 )
 
-# Module-style import (Decision 182): scripts/checks/deps/selection_budget.py is the SINGLE home of
-# every budget constant this tier asserts on, of the two-term split, and of the two phase names it
-# reports on. This file restates NO budget number -- it BINDS its two existing public constant names
-# below. Module-style rather than `from ... import <CONSTANT>` so no second CEILING-bearing name
-# enters this namespace. selection_budget defines no check and imports only stdlib at module scope,
-# so --terraform-only is unaffected; derive_affected_tests stays the function-scope import below.
-from scripts.checks.deps import selection_budget  # noqa: E402
+# Module-style imports (Decision 182, extended by Decision 208): scripts/checks/deps/selection_budget.py
+# is the SINGLE home of every budget constant this tier asserts on, of the three-term split, and of
+# the two phase names it reports on -- this file restates NO budget number, it BINDS its two existing
+# public constant names below. module_cost_table.read_at_base_ref is called via the MODULE ATTRIBUTE
+# (same binding style) so every seam pin (`monkeypatch.setattr(module_cost_table, "read_at_base_ref",
+# ...)`) binds. Module-style rather than `from ... import <name>` so no second CEILING-bearing name
+# enters this namespace. Both modules define no check and import only stdlib at module scope, so
+# --terraform-only is unaffected; derive_affected_tests stays the function-scope import below.
+from scripts.checks.deps import module_cost_table, selection_budget  # noqa: E402
 
 # Bound, never restated: the fast tier's FLOOR total (the two budgets' sum) and the derived
 # forced-run ceiling. Both names are kept for their existing readers.
@@ -324,8 +326,14 @@ def main() -> None:
         def _scaffold_lint() -> None:
             run_lint_checks(failed, files=changed)
 
+        _precommit_escalated: dict[str, bool] = {}
+
         def _scaffold_precommit_changed() -> None:
-            run_precommit_checks(failed, all_files=False, files=changed)
+            # Decision 208: capture the OBSERVED escalation decision run_precommit_checks actually
+            # applied, so the budget scaffold reads the applied fact instead of re-evaluating the
+            # predicate with a second git show. `is True` below guards against a mocked scaffold's
+            # truthy MagicMock ever counting.
+            _precommit_escalated["value"] = run_precommit_checks(failed, all_files=False, files=changed)
 
         def _scaffold_mypy_diff() -> None:
             if changed_py:
@@ -389,24 +397,43 @@ def main() -> None:
                 print(f"Selection manifest: budget-block write failed -- loud skip (Decision 55): {exc!r}")
 
         def _scaffold_budget_assertion() -> None:
-            """Assert the fast tier's TWO budgets (Decision 182, amending Decision 153).
+            """Assert the fast tier's THREE budgets (Decision 208, amending Decision 182).
 
-            The retired single aggregate averaged two quantities with different causes: an absolute
-            NON-TEST half, where Decision 73's anti-drift rationale actually applies, and a
-            TEST-EXECUTION half whose cost is a measured function of selection breadth. Both are
-            defined, bounded and dispatched in scripts/checks/deps/selection_budget.py; this scaffold
-            measures, renders and exits. The non-test half is asserted BY SUBTRACTION on the whole
-            remaining half (elapsed minus the one subtracted test phase), so unattributed time and
-            the replay phase are governed at the non-test budget rather than only at the ceiling.
+            An absolute NON-TEST half, where Decision 73's anti-drift rationale applies; a
+            MEASURED-COST test-execution allowance, priced from a per-module cost table read at
+            the merge-base; and a governed PRE-COMMIT ESCALATION allowance, carved out of the
+            non-test half only when this run actually escalated. All three are defined, bounded and
+            dispatched in scripts/checks/deps/selection_budget.py; this scaffold measures, renders
+            and exits. The non-test half is asserted BY SUBTRACTION on the whole remaining half
+            (elapsed minus the one subtracted test phase, minus the escalation carve-out), so
+            unattributed time and the replay phase are governed at the non-test budget rather than
+            only at the ceiling, and a routine escalation no longer inflates the unwaivable half.
             """
             elapsed = time.monotonic() - _t0
             dominant_phase = max(phase_times, key=lambda phase: phase_times[phase]) if phase_times else None
             static_s, test_s, replay_s, unattributed_s = selection_budget.split_phase_times(phase_times, elapsed)
-            non_test_s = elapsed - test_s
             n_selected = len(changed_tests)
+
+            # Decision 208: the observed fact run_precommit_checks itself applied, never
+            # re-evaluated -- `is True` guards against a mocked scaffold's truthy MagicMock, and a
+            # phase that never ran (precommit_changed absent from _precommit_escalated) is False,
+            # fail-closed per Decision 153 point 2.
+            precommit_escalated = _precommit_escalated.get("value") is True
+            escalation_s = selection_budget.escalation_carve_out(phase_times, precommit_escalated=precommit_escalated)
+            non_test_s = elapsed - test_s - escalation_s
+
+            cost_table_read = module_cost_table.read_at_base_ref(_common.ROOT)
+            cost_s: float | None = None
+            if cost_table_read.status == "ok":
+                cost_s = module_cost_table.selection_cost(changed_tests, cost_table_read, _common.ROOT)
+
             # Decision 153's fail-closed reads, both unchanged: _empty_manifest defaults
             # full_suite_forced to False, and a derivation fallback collapses the breadth allowance
             # to its base, so a degraded selection still hard-fails and gets no breadth relief.
+            # Decision 208 point 1: an `unreadable` merge-base read is the SAME kind of degraded
+            # derivation (Decision 55) -- it also collapses the allowance to TEST_BASE_SECONDS,
+            # never falling through to the more permissive legacy breadth rule.
+            derivation_ok = not _selection_fallback and cost_table_read.status != "unreadable"
             verdict = selection_budget.classify(
                 non_test_s=non_test_s,
                 static_s=static_s,
@@ -415,9 +442,10 @@ def main() -> None:
                 elapsed=elapsed,
                 n_selected=n_selected,
                 forced=bool(_affected_selection["manifest"].get("full_suite_forced", False)),
-                derivation_ok=not _selection_fallback,
+                derivation_ok=derivation_ok,
                 bypass=bool(args.ignore_budget),
                 census=selection_budget.count_test_modules(_common.ROOT),
+                cost_s=cost_s,
             )
             extra_keys = selection_budget.budget_extra_keys(
                 n_selected=n_selected,
@@ -427,15 +455,26 @@ def main() -> None:
                 unattributed_s=unattributed_s,
                 phase_count=len(phase_times),
                 waiver_cause=verdict.waiver_cause,
+                precommit_escalated=precommit_escalated,
+                escalation_s=escalation_s,
+                cost_s=cost_s,
+                cost_table_status=cost_table_read.status,
             )
-            predicted_low, predicted_high = selection_budget.predict_ci_elapsed(n_selected)
+            predicted_low, predicted_high = selection_budget.predict_ci_elapsed(n_selected, cost_s=cost_s)
             print(
                 f"\nSelection breadth: {n_selected} test module(s) selected; test-execution allowance "
-                f"{verdict.allowance_s:.0f}s, non-test budget {selection_budget.NON_TEST_BUDGET_SECONDS:.0f}s. "
-                f"CI-predicted elapsed {predicted_low:.0f}-{predicted_high:.0f}s. This run's local wall clock "
-                f"({elapsed:.1f}s: non-test {non_test_s:.1f}s, test {test_s:.1f}s) is ADVISORY -- local hardware "
-                "is not the CI runner, though the same two assertions are applied to it."
+                f"{verdict.allowance_s:.0f}s, non-test budget {selection_budget.NON_TEST_BUDGET_SECONDS:.0f}s "
+                f"(escalation carve-out {escalation_s:.1f}s of {selection_budget.PRECOMMIT_ESCALATION_ALLOWANCE_SECONDS:.0f}s "
+                f"allowance). CI-predicted elapsed {predicted_low:.0f}-{predicted_high:.0f}s. This run's local wall "
+                f"clock ({elapsed:.1f}s: non-test {non_test_s:.1f}s, test {test_s:.1f}s) is ADVISORY -- local "
+                "hardware is not the CI runner, though the same assertions are applied to it. Cost table: "
+                f"{cost_table_read.status}."
             )
+            if extra_keys["cost_ratio"] is not None and extra_keys["cost_ratio"] > selection_budget.RECORDED_K_MIN:
+                print(
+                    f"ADVISORY: this run's cost ratio ({extra_keys['cost_ratio']:.3f}) exceeds the recorded envelope "
+                    f"(RECORDED_K_MIN {selection_budget.RECORDED_K_MIN:.3f}) -- feeds the next coefficient derivation."
+                )
             if verdict.hard_fail and _selection_fallback:
                 print(
                     "\nNOTE: this run's affected-set derivation fell back to the edited-set, so the "
@@ -454,7 +493,9 @@ def main() -> None:
                     f"ERROR: Fast tier exceeded budget (non-test budget: {verdict.limit_s / 60:.1f} min). "
                     f"Non-test half: {non_test_s:.1f}s of {elapsed:.1f}s elapsed -- static {static_s:.1f}s, "
                     f"{selection_budget.REPLAY_PHASE_NAME} {replay_s:.1f}s (its own ratified allowance is "
-                    f"{selection_budget.REPLAY_ALLOWANCE_SECONDS:.0f}s), unattributed {unattributed_s:.1f}s. "
+                    f"{selection_budget.REPLAY_ALLOWANCE_SECONDS:.0f}s), unattributed {unattributed_s:.1f}s, "
+                    f"escalation carve-out {escalation_s:.1f}s of "
+                    f"{selection_budget.PRECOMMIT_ESCALATION_ALLOWANCE_SECONDS:.0f}s allowance already applied. "
                     f"Dominant non-test phase: {selection_budget.dominant_non_test_phase(phase_times) or 'unknown'}.\n"
                     "This half is UNWAIVABLE: no bypass, forced-scope, breadth or fallback path reaches it. "
                     "Fix the named component, or re-derive the budget by amendment against the recorded "

@@ -2,6 +2,111 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 208: Fast-tier budget re-derived from the recorded CI population -- measured per-module cost gates and predicts alike (amends Decision 182) (Decided)
+
+```yaml
+number: 208
+status: Decided
+decided_date: "2026-09-28"
+amends: [182]
+significance:
+  value: numbered_decision
+  justification: >-
+    A dated Update on 182 is not enough: a third governed term and a new measured model input
+    change 182 points 1 and 2, not a coefficient.
+```
+
+**Status:** Decided
+**Date:** 2026-09-28
+
+**Problem:** Decision 182 reversal (a)/(c) fired over 193 recorded pr-validate blocks
+(2026-09-14..28): a green governed non-test half reached 131.8s against the 240s constant meant to
+dominate it (`--all-files` escalation, 17/193 runs, distinct from static drift), and 182's
+three-run coefficient is now a 193-run population. Separately the linear `2.0 x n` test allowance
+never distinguished two similar-count selections by composition (rec-3677): a 121-module
+fixture-heavy selection costs more than a lighter 174-module one, ranked backwards.
+
+**Decision:**
+1. Point 1's `max(180, 2.0 x min(n_selected, census))` is NEGATED for measured-cost:
+   `cost_based_allowance(cost_s, n) = min(max(180, COST_COEFFICIENT x cost_s + 1.6 + 0.041 x
+   min(n, census)), 1110)`. `cost_s` prices a selection from a committed per-module junit table
+   (`module_cost_table.py`) READ AT THE MERGE-BASE with origin/main, never the working tree or
+   HEAD -- a PR cannot raise its own allowance by editing the table it is judged against. `absent`
+   fires ONLY when the merge-base resolves and the path does not exist there (the installing PR,
+   legacy `2.0 x n`); every other failure is `unreadable`, failing closed to 180s (Decision 55).
+   The SAME function gates CI and predicts at plan time: a plan-time `breach` is reachable only at
+   the 1110s cap or a derivation fallback -- otherwise breadth is declared, never split; a CI
+   breach now signals drift, not a scope change.
+2. Point 2's "elapsed minus pytest_diff" gains a third term: `--all-files` escalation is governed
+   on its OWN 120s allowance, carved only when `run_precommit_checks` (via shared predicate
+   `precommit_escalates` in `_scaffolding.py`) actually escalated -- the budget reads the applied
+   decision, never re-evaluates. Excess above 120 stays unwaivable; no new outcome. Authority:
+   `docs/contracts/presubmit-tool-pin-escalation.yaml`.
+3. `NON_TEST_BUDGET_SECONDS` 240 -> 270 = ceil10(governed static worst 131.8 + unattributed max
+   10.0 + REPLAY_ALLOWANCE_SECONDS 120 = 261.8). `FLOOR_TOTAL_SECONDS` = 270 + 180 = 450. Test cap =
+   1500 - 270 - 120 = 1110s, so the worst-case asserted total across all three terms stays exactly
+   1500. TEST_BASE_SECONDS(180)/CEILING_SECONDS(1500) unchanged; PER_MODULE_SECONDS(2.0) kept for
+   the legacy `absent`-arm. `COST_COEFFICIENT = ceil10(RECORDED_K_MIN x NOISE_MARGIN)`, the
+   zero-false-positive fit over the test-green population times the largest same-commit re-run
+   spread (a noise FLOOR: a green re-run here is NONDETERMINISTIC, never a rescue).
+4. Branch order, the unwaivable arm and CEILING_SECONDS otherwise unchanged from 182.
+
+**Teeth, both arms, honestly.** Non-escalated: 182's narrowest run's margin against the retired
+300s aggregate falls from 31.683s (at 240) to 1.683s (at 270) -- most of 71.8 -> 131.8 is tail
+under-sampling (71.766 sat at the 72.7th percentile of 176 non-escalated static_s values, not
+looser enforcement). Escalated: a non-test half may reach 270 + 120 = 390s before firing (240
+before). Test half, this table: median allowance for n>=120 is 568.9s (today's `2.0 x n`: 338.0s;
+a same-population zero-false-positive linear rule: 575.4s) -- tighter than that rule while
+discriminating by composition, which it cannot (rec-3677).
+
+**Rationale:** A hybrid (cost for the gate, a linear re-fit for the predictor) was rejected -- one
+function, or `within_budget` diverges from what CI charges. One ~345s constant folding escalation
+into NON_TEST was rejected -- indistinguishable from drift once summed. COST_COEFFICIENT is fit to
+the max same-commit spread, never rounded/sigma-banded, so the margin, not a rescue, absorbs noise.
+
+**Coverage:** `selection_budget.py`, `validate.py::_scaffold_budget_assertion` (every run).
+Residuals: `owner: rec-4125` table staleness/regen, p90 pricing of a renamed/split module; `owner:
+rec-4126` frozen series as a Decision-135 query; `owner: rec-4127` content-scaled static drift;
+`owner: rec-3374` registry differential cost; `owner: rec-4124` escalation predicate extracted, not
+widened (reversal f). Legacy `2.0 x n` unreachable once installed; replay mirror stays true weaker.
+
+**Significance:** clears Decision 150's bar -- a third governed term, a new model input, a re-derived dominant constant.
+
+**Related:** 182, 153, 73, 135, 187, 181, 166, 168, 132, 131, 177, 167, 201, 55; rec-4093/rec-3929/rec-3677 bundled; rec-4124..rec-4128 follow-on.
+
+```yaml reversal-conditions
+decision: 208
+review_by: "2027-03-28"
+on_trigger: "Re-open a planning session against the recorded series; never patch inline."
+conditions:
+  - id: a
+    kind: repo_state
+    predicate: null
+    description: A green governed non-test half is recorded above 0.8 x 270s (216s).
+  - id: b
+    kind: repo_state
+    predicate: null
+    description: The replay mirror moves -- re-derive NON_TEST_BUDGET_SECONDS and the cap together.
+  - id: c
+    kind: repo_state
+    predicate: null
+    description: A table regeneration skips re-deriving COST_COEFFICIENT/RECORDED_K_MIN/NOISE_MARGIN together.
+  - id: d
+    kind: repo_state
+    predicate: null
+    description: RE-ARMED -- most non-forced runs take breadth_waived over a rolling quarter AND median allowance > 2x TEST_BASE.
+  - id: e
+    kind: repo_state
+    predicate: null
+    description: RE-ARMED, either half -- no non_test_breach for two quarters while static worst grows past 1.5x; or no test-half breach for two quarters while the table total grows past 1.5x.
+  - id: f
+    kind: repo_state
+    predicate: null
+    description: When rec-4124 lands, re-derive or retire the 120s term against the escalations that remain.
+```
+
+---
+
 ## Decision 207: Grain enforced at the write boundary -- a platform data-modeling standard for insert-grain tables (Decided)
 
 ```yaml
