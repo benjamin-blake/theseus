@@ -17,10 +17,52 @@ terraform-validate CI job on a proxy_blocked outcome.
 from __future__ import annotations
 
 import shutil
+import subprocess
 import time
+from pathlib import Path
 
 from scripts.checks import _common
 from scripts.checks.iam_tf.validate_terraform_try import validate_terraform_try
+
+# Provider dependency drift terraform reports when `-lockfile=readonly` refuses to rewrite the
+# committed lock (measured, Terraform 1.10.5, planning session): a distinct, permanent failure --
+# never retried, never routed through _is_proxy_blocked_init's three-marker check.
+_LOCK_DRIFT_MARKER = "Provider dependency changes detected"
+
+
+def tracked_lock_files(root: Path) -> list[str] | None:
+    """Repo-relative paths of every git-tracked terraform/**/.terraform.lock.hcl file.
+
+    Calls subprocess.run DIRECTLY -- never _common.run -- so the many unrelated _common.run
+    mocks across the test suite (patched for their own purposes) never intercept this call;
+    under those tests real git runs and finds the real tracked locks. Returns None when git
+    fails or is absent (FileNotFoundError), never an empty list -- an unmeasurable corpus must
+    not be conflated with "no tracked locks" (Decision 55).
+    """
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "--", "terraform/**/.terraform.lock.hcl"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=root,
+        )
+    except FileNotFoundError:
+        return None
+    if result.returncode != 0:
+        return None
+    return [line for line in result.stdout.splitlines() if line]
+
+
+def _readonly_flag_for(root: str, tracked: list[str] | None) -> list[str]:
+    """`["-lockfile=readonly"]` iff `root`'s lock file is tracked (or, when tracked_lock_files
+    returned None because git is unavailable, iff the lock file exists on disk at all -- fail
+    closed toward never writing a lock the caller cannot prove is untracked)."""
+    lock_path = _common.ROOT / root / ".terraform.lock.hcl"
+    if tracked is None:
+        return ["-lockfile=readonly"] if lock_path.is_file() else []
+    return ["-lockfile=readonly"] if f"{root}/.terraform.lock.hcl" in tracked else []
+
 
 # Transient terraform registry.terraform.io 5xx signatures, plus provider-download network
 # transients (connection reset / timeout / handshake / truncated stream); used by
@@ -93,6 +135,16 @@ def _terraform_init_with_retry(label: str, cmd: list[str], failed: list[str]) ->
             print(result.stdout, end="")
             return "success"
         combined = result.stdout + result.stderr
+        if _LOCK_DRIFT_MARKER in combined:
+            print(combined, end="")
+            print(
+                f"FAIL: {label} -- the committed lock file is inconsistent with the configuration's "
+                "declared providers and -lockfile=readonly refuses to rewrite it. Regenerate with "
+                "`terraform init -backend=false` (no -upgrade) and commit the lock; see "
+                "validate_terraform_lock_coherence."
+            )
+            failed.append(label)
+            return "failed"
         if _is_proxy_blocked_init(combined):
             print(combined, end="")
             print(
@@ -128,11 +180,12 @@ def run_terraform_creds_free(failed: list[str], roots: tuple[str, ...] = _TERRAF
         print("\n=== Terraform checks skipped (terraform not found in PATH) ===")
         print("Terraform validate/fmt run in the terraform-validate CI job.")
         return
+    tracked = tracked_lock_files(_common.ROOT)
     for root in roots:
         chdir = f"-chdir={root}"
         outcome = _terraform_init_with_retry(
             f"Terraform init [{root}]",
-            ["terraform", chdir, "init", "-backend=false", "-input=false", "-no-color"],
+            ["terraform", chdir, "init", "-backend=false", "-input=false", "-no-color"] + _readonly_flag_for(root, tracked),
             failed,
         )
         if outcome == "failed":
@@ -153,15 +206,21 @@ def run_terraform_checks(failed: list[str]) -> None:
     # CD.21). Creds-needing: re-init the local backend, then plan. Never blocks -- when creds or
     # backend are unavailable the step degrades to a visible skip (Decision 60 actionable note).
     print("\n=== Terraform changes pending check (terraform/personal, informational) ===")
+    tracked = tracked_lock_files(_common.ROOT)
     init_res = _common.run(
-        ["terraform", "-chdir=terraform/personal", "init", "-input=false", "-no-color", "-reconfigure"],
+        ["terraform", "-chdir=terraform/personal", "init", "-input=false", "-no-color", "-reconfigure"]
+        + _readonly_flag_for("terraform/personal", tracked),
         capture_output=True,
         text=True,
         encoding="utf-8",
         cwd=_common.ROOT,
     )
     if init_res.returncode != 0:
-        print("Terraform plan skipped: backend/init unavailable (credentials missing) -- non-blocking.")
+        combined = init_res.stdout + init_res.stderr
+        if _LOCK_DRIFT_MARKER in combined:
+            print("Terraform plan skipped: lock drift (readonly init refused) -- see the creds-free init failure above.")
+        else:
+            print("Terraform plan skipped: backend/init unavailable (credentials missing) -- non-blocking.")
         return
     result = _common.run(
         ["terraform", "-chdir=terraform/personal", "plan", "-detailed-exitcode", "-no-color", "-input=false"],

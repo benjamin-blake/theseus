@@ -94,4 +94,20 @@ ENTRIES: tuple[Entry, ...] = (
         ),
         full_segment="full_after_lint",
     ),
+    Entry(
+        name="validate_terraform_lock_coherence",
+        module="scripts.checks.iam_tf.validate_terraform_lock_coherence",
+        attr="validate_terraform_lock_coherence",
+        pre=True,
+        pre_globs=(
+            "terraform/**/*.tf",
+            "terraform/**/.terraform.lock.hcl",
+            "scripts/checks/iam_tf/validate_terraform_lock_coherence.py",
+            "scripts/checks/_terraform.py",
+            "scripts/checks/iam_tf/validate_terraform_try.py",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ),
+        full_segment="full_after_lint",
+    ),
 )

@@ -27,6 +27,17 @@ contract:
     check: validate_environment_taxonomy
 
 amendment_log:
+  - date: "2026-09-28"
+    semantic_break: false
+    change_class: governance_note_add
+    summary: >-
+      PLAN-terraform-lock-coherence: #969 (7b67e21d) deleted the last null_resource from
+      terraform/personal but never re-ran `terraform providers lock`, so lockfile still claimed
+      three pinned providers. Corrected to the two the root actually declares (hashicorp/aws,
+      kislerdm/neon) and names the two guard layers added to catch this class of drift going
+      forward: the hermetic validate_terraform_lock_coherence check (--pre and full tier) and
+      `-lockfile=readonly` on the validator's own init of every tracked-lock root, authoritative
+      wherever terraform runs. No apply-model or guard-classification field changed.
   - date: "2026-09-14"
     semantic_break: false
     change_class: governance_note_add
@@ -361,16 +372,25 @@ lockfile: >-
   .terraform.lock.hcl is git-tracked (committed) and load-bearing on the apply runner (T2.42 c2,
   DEP-03). .gitignore ignores .terraform.lock.hcl broadly (terraform/**/.terraform.lock.hcl) but
   carries an explicit un-ignore for this root (!terraform/personal/.terraform.lock.hcl) -- landed
-  incidentally in commit 0fec964 / PR #605 (T2.16b/CD.34). The committed lock pins the three
-  providers this root depends on (hashicorp/aws, hashicorp/null, kislerdm/neon). The pin is
+  incidentally in commit 0fec964 / PR #605 (T2.16b/CD.34). The committed lock pins the two
+  providers this root depends on (hashicorp/aws, kislerdm/neon) -- narrowed from three by
+  PLAN-terraform-lock-coherence (2026-09-28) after #969 (7b67e21d) deleted the root's last
+  provider-requiring resource and left an orphaned, undeclared lock entry undetected. The pin is
   load-bearing, not decorative: terraform init in all three workflows that touch this root
   (terraform-apply-sandbox.yml, reconcile.yml, terraform-drift.yml) carries no -upgrade flag, so
   every init -- on the highest-privilege sandbox auto-apply path included -- resolves provider
   versions from the committed lock rather than re-resolving fresh on every run. A provider version
   bump is therefore always an explicit, reviewed lock-file diff (terraform providers lock,
-  committed in a PR), never silent drift picked up mid-run. The deterministic guard plus subagent
-  review remain the compensating controls for what the lock does not cover (the plan content
-  itself, not the provider binary supply chain).
+  committed in a PR), never silent drift picked up mid-run. Two guard layers keep the committed
+  lock from drifting undetected again: `validate_terraform_lock_coherence` (hermetic, --pre and
+  full tier) enforces that every locked provider is explicitly declared in that root's
+  required_providers and vice versa; and every tracked-lock root's own init in the validator
+  (scripts/checks/_terraform.py, both the creds-free gate and the informational backend init)
+  carries `-lockfile=readonly`, so it can never again silently rewrite a committed lock -- this is
+  authoritative wherever terraform actually runs, since it also catches hash-only drift the
+  hermetic parser cannot see. The deterministic guard plus subagent review remain the compensating
+  controls for what the lock does not cover (the plan content itself, not the provider binary
+  supply chain).
 
 general_conformance:
   - New docs/configs MUST follow the reservation in vocabulary above.
