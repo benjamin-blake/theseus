@@ -23,10 +23,13 @@ scope:
   purpose: >-
     (1) NEW numbered Decision (N = origin/main max + 1 at implementation time; 207 expected after the two persona plans)
     "Grain enforced at the write boundary", scoped by write_mode class (Decision 191 cl.1), never by table name: it binds
-    INSERT-GRAIN tables -- append_only journals and SCD2 history tables. Each declares its grain key; its write boundary
+    INSERT-GRAIN tables -- append_only journals and SCD2 history tables. The enforced grain key is, for an SCD2 history
+    table, its write ULID (one row per write), and for an append_only table, its declared merge/dedupe key (telemetry:
+    producer, event_id, parser_version). Each declares its grain key; its write boundary
     treats a re-send identical under an existing grain key as a no-op and REJECTS LOUDLY (fails the write, names the key) a
     row whose content differs under an existing grain key -- never silently dropped, never first-wins or last-wins. Where the
-    engine offers it, the reject is the native single-statement primitive (Decision 100 spirit, Decision 88 cl.1 one scan).
+    engine offers it, the reject is the native single-statement primitive (Decision 100 spirit; no second catalog read,
+    Decision 88 cl.1 egress budget).
     Readers keep the first write only among content-identical duplicates; a differing pair (only reachable through the
     concurrent-append race Decision 81 cl.3's no-serialization model allows) is returned AND reported as conflicted by the
     reader, and flagged by DQ on the existing DQ path (Decision 62) -- never silently picked. Enforcement boundary: the
@@ -37,10 +40,11 @@ scope:
     (derived, rebuildable from history, Decision 81 cl.8 upserts by design), control-class tables (the Decision 84 I-2
     counter), and replacement-shaped derived materializations (T2.52 c1). Builds on Decision 81 cl.3 and 199 cl.1-2 without
     amending them; the telemetry physical grain (producer, event_id, parser_version) refines 199 cl.1's logical one row per
-    lifecycle event. Decision 181 cl.2 coverage: writer side -- telemetry kernel (this plan), ops writer idempotency replay
-    and history MERGE on the write ULID (named non-compliant residual, rec-4121); DQ side -- telemetry grain-conflict,
+    lifecycle event. Decision 181 cl.2 coverage: writer side -- telemetry kernel (this plan); named non-compliant residuals
+    owned by rec-4121: the ops writer's idempotency replay and history MERGE on the write ULID, and ops_smoke_events
+    (append_only, grain event_id, but write_ops MERGEs on a per-call write ULID, so a re-write inserts a duplicate); DQ side -- telemetry grain-conflict,
     pending-generation and null-producer monitors (rec-4063), ops-history duplicate-ULID-with-differing-content check
-    (rec-4121, noted on it by this plan's bookkeeping step); reader side -- telemetry reader verbs (rec-4024) and the derived-layer harness (rec-4025). Future consumers:
+    (rec-4121; its context was widened at planning time to own it and the ops_smoke_events residual); reader side -- telemetry reader verbs (rec-4024) and the derived-layer harness (rec-4025). Future consumers:
     T4.23 c9, T3.20 c2. Envelope significance numbered_decision; contract-first justification names
     data-modeling-standard.yaml (the rule lands there too) and why it cannot be the only home (changes writer failure
     semantics across write_mode classes, binds present and future writers, needs reversal conditions) and why an
@@ -74,11 +78,12 @@ scope:
     Grain key (producer, event_id, parser_version). (a) append_events enforces the grain-key columns non-null itself,
     independent of spec.not_null (a directly-built EventTableSpec must not admit producer=None -- a NULL never matches the ON
     clause and would re-insert on every replay); producer also joins _STRUCTURAL_NOT_NULL. (b)
-    EventTableSpec.from_projection requires dedupe_key [producer, event_id, parser_version]. (c) The single insert-only MERGE
+    EventTableSpec.from_projection requires dedupe_key [producer, event_id, parser_version] and adds producer to its
+    required-column tuple (append.py:93), so a projection without it fails at spec construction. (c) The single insert-only MERGE
     becomes the native reject-on-conflict statement verified on duckdb 1.5.4 + ducklake: ON producer, event_id,
     parser_version and the batch's day bounds; WHEN MATCHED AND (t.<c1>, ..., t.<cn>) IS DISTINCT FROM (s.<c1>, ..., s.<cn>)
     -- every stored column except created_timestamp and producer_version -- THEN ERROR naming the event_id; WHEN NOT MATCHED
-    THEN INSERT. One statement, one scan, same transaction (Decision 88 cl.1); a conflict raises, the transaction rolls back
+    THEN INSERT. One statement, same transaction, no second catalog read (Decision 88 cl.1 egress budget); a conflict raises, the transaction rolls back
     and nothing in the batch is inserted. The ERROR arm's message carries a fixed token (TELEMETRY_GRAIN_CONFLICT) plus the
     event_id; after ROLLBACK, only an exception whose text carries that token is re-raised as AppendError -- every other
     engine error (binder, DuckLake OCC/transaction) propagates unchanged, preserving rec-4024's retry distinction (the module
@@ -115,7 +120,8 @@ scope:
 - file: tests/telemetry/test_append_ducklake_integration.py
   action: Modify
   purpose: >-
-    Add producer to the fixture columns and to the positional seed INSERTs (lines 177-181, 216-219). Real local DuckLake
+    Add producer to the fixture columns, to _row() (lines 96-107) and to the positional seed INSERTs (lines 177-181,
+    216-219). Real local DuckLake
     (pytest -m integration): cross-batch conflict rejected and the
     table unchanged; cross-producer same event_id both stored; identical replay inserts 0; the existing one-file-per-write
     assertion (lines 166-200) still holds with the new MERGE.
@@ -153,7 +159,8 @@ scope:
     rec-4062), then created_timestamp asc, then producer asc (a total order).
     R6: a telemetry_agents row belongs to its own (child) session_id's generation.
     R7 producer obligations: a producer never emits two different rows under one grain key (a model_call is emitted only
-    once its source record carries final usage); a replayable producer on a bump re-parses the whole root tree from the
+    once its source record carries final usage); every emitted column is a pure function of the source records plus the
+    inputs pinned with the cursor, and incremental emission equals a full re-parse for every row already emitted; a replayable producer on a bump re-parses the whole root tree from the
     start, writes data rows first and ONE telemetry_sessions batch of every tree session's rows LAST, binds its cursor to
     parser_version and resets it on mismatch, never emits v for S after a v+1 marker, and REUSES the pinned project_ref and
     session_started_at persisted with its cursor across a reset (never re-reading config), so a re-emission cannot re-key
@@ -220,8 +227,9 @@ scope:
     precedence; no live text keeps earliest created_timestamp as the model_call tiebreak; the partial-then-final vector's
     final-usage row survives tests/fixtures/telemetry_dedupe_reference.py), and test_grain_enforced_at_write_rule_declared
     (data-modeling-standard.yaml carries rule grain-enforced-at-write citing the new Decision and the design_time_walk
-    mention; DECISIONS.md's new Decision section names rec-4121, rec-4063, rec-4024 and rec-4025 as coverage owners; the
-    Decision 81 and Decision 84 sections each carry a dated annotation naming rec-4121 and the new Decision). Update the module
+    mention; the Decision number is resolved from the rule's own citation, never hard-coded, and DECISIONS.md's section
+    with that number and title names rec-4121, rec-4063, rec-4024 and rec-4025 as coverage owners and ops_smoke_events as
+    a residual; the Decision 81 and Decision 84 sections each carry a dated annotation naming rec-4121 and that Decision). Update the module
     docstring's R8 sentence.
 - file: config/agent/verification_registry/entries/telemetry-dedupe-vectors.yaml
   action: Create
@@ -524,7 +532,7 @@ context:
   189; WARN 81 and 84 resolved by write_mode scoping, carve-outs, the named ops-writer residual (rec-4121) and dated
   annotations; T2.52 CONFLICT resolved by scoping derived materializations out; RELATED 55, 96, 97, 95, 200, 204, 137,
   100, 177, 62, 179. Decisions triaged: 157 of 157. Roadmap items intersected: 7; CONFLICT: 1; RELATED: 5.
-- "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=PENDING (round 1 REVISE, 14 findings addressed)"
+- "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=PENDING (rounds 1-3 REVISE: 14, 10 and 8 findings addressed)"
 - >-
   Operator choices (2026-09-28 thread): R8 generation rule is contract-only (no Decision); a stored row_hash was proposed and
   withdrawn -- grain-key enforcement at write replaces it; the kernel change lands in this plan; grain-at-write gets its own
@@ -542,8 +550,9 @@ context:
   rec-4026 follows R7; rec-4122 builds the parser_versions registry + golden-corpus check with rec-4026; rec-4063 owns the
   grain-conflict, pending-generation and null-producer DQ monitors; rec-4025's harness consumes the vectors.
 - >-
-  Risk accepted: grain-at-write turns an unbumped output change into a whole-batch write failure that wedges that session's
-  cursor until a parser fix; rec-4122's golden-corpus CI is the pre-live guard.
+  Risk accepted: grain-at-write turns any producer nondeterminism (an unbumped output change, environment-sourced
+  columns, incremental-vs-full divergence) into a whole-batch write failure that wedges that session's cursor until a
+  fix; rec-4122's golden-corpus and incremental-vs-full equivalence checks are the pre-live guard.
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
@@ -568,8 +577,8 @@ execution_steps:
   (producer, event_id, parser_version) with native reject; readers use the GENERATIONS rule and must pass dedupe_vectors.yaml
   on DuckLake and report conflicted keys -- replacing its "row uniqueness (event_id, parser_version)" and "max per
   (session_id, producer)" wording); rec-4063 (owns the three DQ monitors named in the envelope); rec-4025 (consume the
-  vectors); rec-4064 (its R10 is settled by R5a, its R5 by the external_ref rescope); rec-4121 (also owns the ops-history
-  DQ check for more than one distinct history row per write ULID, as the Decision's coverage declares).
+  vectors); rec-4064 (its R10 is settled by R5a, its R5 by the external_ref rescope). rec-4121 and rec-4122 were
+  already widened at planning time (ops_smoke_events residual and ops-history DQ; R7 determinism check) -- verify, do not repeat.
 - >-
   CLOSURE -- separate facts, in order (a)-(e) (implement skill Commit Flows; docs/contracts/git-ops.yaml handoff_sequence),
   each reported on its own and never merged into one PASS. (a) READINESS: run bin/venv-python -m
