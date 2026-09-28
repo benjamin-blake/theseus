@@ -24,17 +24,20 @@ import yaml
 
 from scripts.checks import _common, registry
 from src.common.ducklake_maintenance_scope import VERB_UNIVERSE
+from src.common.ducklake_maintenance_scope import class_universe as _scope_class_universe
 
 _SIDECAR_PATH = _common.ROOT / "config" / "lambda" / "ducklake" / "field_semantics.static.yaml"
 
 
 def _declared_class_universe() -> set[str]:
-    """The live table-class universe, derived from write_mode across field_semantics ops_tables."""
+    """The live table-class universe: delegates to ducklake_maintenance_scope.class_universe over
+    the live (generated) field_semantics registry -- ONE source of truth for the smoke_harness
+    gating rule (declared only when field_semantics carries a `tables:` block), still independent
+    of the matrix's own keys."""
     from src.common.ducklake_scd2_schema import load_field_semantics
 
     semantics = load_field_semantics()
-    ops_tables = semantics.get("ops_tables", {})
-    return {spec.get("write_mode", "scd2") for spec in ops_tables.values()}
+    return set(_scope_class_universe(semantics))
 
 
 def _load_matrix(sidecar_path: Path) -> dict[str, Any]:

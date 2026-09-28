@@ -452,6 +452,8 @@ def action_merge_ops(event: dict[str, Any], _con: Any) -> dict[str, Any]:
             _emit_maintenance_metric("MergeOpsFilesBeforeTotal", float(files_before_total))
             _emit_maintenance_metric("MergeOpsFilesAfterTotal", float(files_after_total))
         _emit_maintenance_metric("MergeOpsTablesCount", float(len(resolution.to_merge)))
+        _emit_maintenance_metric("MergeOpsUnclassifiedTables", float(len(resolution.unclassified)))
+        _emit_maintenance_metric("MergeOpsPassFailed", float(len(merge_failures) + len(resolution.unclassified) > 0))
 
         if merge_failures or resolution.unclassified:
             # The per-table error detail is embedded directly in the raised message (not just

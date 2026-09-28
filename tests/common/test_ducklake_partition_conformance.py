@@ -142,6 +142,33 @@ def test_history_partition_is_one_file_per_calendar_day(con: Any, table: str | N
     )
 
 
+def test_read_partition_layout_classifies_smoke_harness_pair_alongside_ops_table(con: Any) -> None:
+    """rec-3864 / Decision 191 amendment, real engine: a catalog carrying an ops table AND the
+    declared smoke-harness pair reads and classifies both without error, the pair classified
+    smoke_harness; adding one undeclared raw table then raises exactly one aggregated
+    PartitionLayoutError naming only that table."""
+    ops_spec = schema.resolve_table_spec("ops_recommendations")
+    tables.create_scd2_tables(con, table="ops_recommendations", force_recreate=True)
+    tables.create_scd2_tables(con, table=None, force_recreate=True)  # the smoke pair
+    semantics = schema.load_field_semantics()
+
+    layouts = layout_mod.read_partition_layout(con, catalog_alias=CATALOG_ALIAS, semantics=semantics)
+    assert layouts[ops_spec.history_table].table_class == "scd2"
+    assert layouts["ducklake_smoke_history"].table_class == "smoke_harness"
+    assert layouts["ducklake_smoke_current"].table_class == "smoke_harness"
+
+    drifts = layout_mod.compare_to_declared(layouts, semantics=semantics)
+    assert not any(d.physical in ("ducklake_smoke_history", "ducklake_smoke_current") for d in drifts)
+
+    con.execute(f"CREATE TABLE {CATALOG_ALIAS}.a_stray_raw_table (x INTEGER)")
+    with pytest.raises(layout_mod.PartitionLayoutError) as exc_info:
+        layout_mod.read_partition_layout(con, catalog_alias=CATALOG_ALIAS, semantics=semantics)
+    message = str(exc_info.value)
+    assert "a_stray_raw_table" in message
+    assert "ducklake_smoke_history" not in message
+    assert "ducklake_smoke_current" not in message
+
+
 def test_create_scd2_tables_repeated_call_is_idempotent(con: Any) -> None:
     """rec-3808 twin: a repeated non-force create_scd2_tables call does not error."""
     tables.create_scd2_tables(con, force_recreate=True)

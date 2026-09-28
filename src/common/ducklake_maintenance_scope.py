@@ -29,6 +29,11 @@ from src.common.ducklake_scd2_schema import load_field_semantics
 # as gc_ops stay out -- see the matrix's own "CATALOG-WIDE VERBS TAKE NO CELL" header).
 VERB_UNIVERSE: tuple[str, ...] = ("merge_ops", "reconcile_partitions", "rewrite_partition_layout")
 
+# The production-resident smoke-harness pair's maintenance class (Decision 191 amendment,
+# PLAN-ducklake-smoke-harness-classification): sourced from field_semantics' `tables:` block
+# (declared data), never inferred from a "smoke" name pattern.
+SMOKE_HARNESS_CLASS = "smoke_harness"
+
 
 class DuckLakeMaintenanceScopeError(RuntimeError):
     """Loud-fail for a maintenance-scope invariant violation (Decision 55): a table classified to
@@ -68,15 +73,34 @@ def build_registry(semantics: dict[str, Any] | None = None) -> dict[str, Classif
             current_table = spec.get("current_table")
             if current_table:
                 out[current_table] = ClassifiedTable(current_table, table_id, write_mode, "current")
+
+    smoke_tables = semantics.get("tables")
+    if smoke_tables:
+        for side in ("history", "current"):
+            side_spec = smoke_tables.get(side)
+            if not side_spec:
+                continue
+            physical_name = side_spec["name"]
+            if physical_name in out:
+                raise DuckLakeMaintenanceScopeError(
+                    f"smoke_harness table {physical_name!r} (declared under `tables.{side}.name`) collides "
+                    "with a physical table name already declared under ops_tables -- registry membership "
+                    "must be unambiguous"
+                )
+            out[physical_name] = ClassifiedTable(physical_name, physical_name, SMOKE_HARNESS_CLASS, side)
     return out
 
 
 def class_universe(semantics: dict[str, Any] | None = None) -> frozenset[str]:
     """The DECLARED table-class universe: every distinct write_mode value across ops_tables
-    (absent write_mode defaults to "scd2"). Never read from maintenance_policy's own keys."""
+    (absent write_mode defaults to "scd2"), plus smoke_harness when field_semantics declares a
+    `tables:` block. Never read from maintenance_policy's own keys."""
     semantics = semantics if semantics is not None else load_field_semantics()
     ops_tables = semantics.get("ops_tables", {})
-    return frozenset(spec.get("write_mode", "scd2") for spec in ops_tables.values())
+    universe = {spec.get("write_mode", "scd2") for spec in ops_tables.values()}
+    if semantics.get("tables"):
+        universe.add(SMOKE_HARNESS_CLASS)
+    return frozenset(universe)
 
 
 def classify_table(physical_name: str, registry: dict[str, ClassifiedTable]) -> ClassifiedTable | None:

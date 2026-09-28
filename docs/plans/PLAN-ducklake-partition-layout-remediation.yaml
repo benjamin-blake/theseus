@@ -593,8 +593,14 @@ verification_plan:
       ops_execution_plans_history and ops_smoke_events_history (live day vs declared
       year,month,day); no drift on any current table or ops_entity_counters; legacy_scheme_files 0
       everywhere (the day-of-month files ARE the active scheme until the ALTER); live_files near the
-      2026-09-26 reading (93 / 80 / 0 / 1 / 3, give or take compaction)
-    fix_if: any other drift, or an unclassified-table error, is unexpected -- STOP and report, never apply
+      2026-09-26 reading (93 / 80 / 0 / 1 / 3, give or take compaction). `layouts` carries exactly
+      the ten ops_* physical tables; `skipped` carries exactly ducklake_smoke_current and
+      ducklake_smoke_history with the smoke_harness policy reason, each with a null drift
+      (PLAN-ducklake-smoke-harness-classification, merged and deployed prior to this run resuming
+      -- see the dated 2026-09-28 context entry above)
+    fix_if: >-
+      any other drift on `layouts`, a `layouts`/`skipped` set other than exactly those two,
+      or an unclassified-table error is unexpected -- STOP and report, never apply
     hermetic: false
   - step: 19
     phase: post-deploy
@@ -610,8 +616,10 @@ verification_plan:
       zero spec drift and, WITHIN that same readout, each altered table's legacy_scheme_files equal
       to its live_files less any file the writer committed after the ALTER (the day-of-month files
       are now the non-active scheme; comparing with step 18's separate readout would misread a
-      benign writer commit as a discrepancy)
-    fix_if: an altered table outside the presented set -- STOP and report
+      benign writer commit as a discrepancy). `layouts` carries exactly the ten ops_* tables;
+      `skipped` still carries exactly the declared smoke-harness pair with a null drift, never
+      ALTERed.
+    fix_if: an altered table outside the presented set, or a `skipped`/`layouts` set other than exactly the expected two -- STOP and report
     hermetic: false
   - step: 20
     phase: post-deploy
@@ -650,9 +658,12 @@ verification_plan:
       --cli-read-timeout 960 --cli-binary-format raw-in-base64-out
       --payload '{"action":"catalog_stats","meta_schema":"<meta_schema>"}' /tmp/stats_after.json
     expected: >-
-      zero drift and zero legacy-scheme files on every table; catalog_stats higher than before is
-      EXPECTED until gc_ops reclaims the rewritten-out files (Decision 88 caveat; rec-4095 re-measures)
-    fix_if: any legacy file remaining -- rerun step 20 for that table
+      zero drift and zero legacy-scheme files on every `layouts` table (exactly the ten ops_*
+      tables); `skipped` still carries exactly the declared smoke-harness pair with a null drift,
+      never ALTERed (a non-null skipped drift is recorded on rec-4116, never a STOP); catalog_stats
+      higher than before is EXPECTED until gc_ops reclaims the rewritten-out files (Decision 88
+      caveat; rec-4095 re-measures)
+    fix_if: any legacy file remaining on a `layouts` table -- rerun step 20 for that table
     hermetic: false
   - step: 22
     phase: post-deploy
@@ -685,8 +696,11 @@ verification_plan:
       tests/lambdas/ducklake_maintenance/test_partition_rewrite_evidence.py, which reads ONLY the
       committed fixture, never the live projection (a later plan registering a new history table,
       e.g. rec-4024 slice 2, must not redden it): every table in the fixture's recorded post-rewrite
-      reconcile readout (step 21's catalog enumeration) has zero drift and zero legacy-scheme files,
-      and that readout includes the five named ops history tables; each rewrite entry carries EITHER
+      reconcile readout's `layouts` (step 21's catalog enumeration) has zero drift and zero
+      legacy-scheme files, and that `layouts` set includes the five named ops history tables;
+      the same readout's `skipped` set equals exactly the declared smoke-harness pair
+      (ducklake_smoke_current, ducklake_smoke_history) with a null drift, never ALTERed
+      (PLAN-ducklake-smoke-harness-classification); each rewrite entry carries EITHER
       the full proof body (rows_pre == rows_commit, digest_pre == digest_commit, pre < commit
       snapshot) OR an explicit human-adjudicated gap record (table, the commit snapshot recovered via
       the '<uuid>:pre=<id>' token if recovered, reason, confirming human -- a committed rewrite has
@@ -832,6 +846,14 @@ constraints:
   - No caller-SQL query_ops in any VP step (Decision 84 I-3)
   - No rescue agents or workaround loops (Decision 55)
 context:
+  - >-
+    2026-09-28: PLAN-ducklake-smoke-harness-classification (Decision 191 amendment, rec-3864)
+    declared the production-resident smoke-harness pair (ducklake_smoke_current,
+    ducklake_smoke_history) to the maintenance-scope registry as class smoke_harness, unblocking
+    this plan's step-18 STOP (2026-09-28 10:35 UTC ADMIN run: 500 naming both smoke tables
+    unclassified, no mutation). Resume from step 16 only after that plan's merge SHA is green on
+    deploy-ducklake-lambdas.yml; steps 18/19/21/24 now expect `layouts` == exactly the ten ops_*
+    tables and `skipped` == exactly the declared pair with a null drift, never ALTERed.
   - "Decision-scout verdict: FLAGS_FOUND. Decisions triaged: 154 of 154. Roadmap items intersected: 14; CONFLICT: 1; RELATED: 12."
   - "CITE: Decision 137, 88, 84, 143, 70, 177, 167, 201, 79, 125, 127, 128, 62, 115; RELATED 192, 193, 188, 190, 100, 99, 131, 120, 113, 181, 184, 141, 91"
   - "gates: decision-scout=FLAGS_FOUND; plan-critique r1=REVISE (7 + split); r2=REVISE (4 + 10); r3=REVISE-light (3 + 8); r4=PROCEED (S1-S7 folded in); r5=PROCEED (N1, N2 folded in); r6=REVISE text-only (R1, O1, O2 applied) -> targeted REVISE (R2 entry-set binding + non-empty gap fields applied) -> R2 confirmation PROCEED"

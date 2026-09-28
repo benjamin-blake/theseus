@@ -32,6 +32,14 @@ _EXHAUSTIVE_MATRIX = {
 _UNIVERSE = {"scd2", "append_only", "control"}
 _VERBS = ("merge_ops", "reconcile_partitions", "rewrite_partition_layout")
 
+# The live registry's class universe includes smoke_harness (field_semantics.yaml declares a
+# `tables:` block, Decision 191 amendment) -- a matrix exhaustive against the LIVE default
+# universe (never overridden with class_universe=) needs this row too.
+_EXHAUSTIVE_MATRIX_WITH_SMOKE_HARNESS = {
+    **_EXHAUSTIVE_MATRIX,
+    "smoke_harness": dict(_ALL_VERBS_APPLY_TRUE),
+}
+
 
 def test_exhaustive_matrix_passes(tmp_path: Path) -> None:
     path = _write_sidecar(tmp_path, _EXHAUSTIVE_MATRIX)
@@ -115,11 +123,23 @@ def test_default_universe_rejects_what_a_self_referential_universe_would_hide(tm
 
 def test_default_class_universe_reads_the_live_registry(tmp_path: Path) -> None:
     """Without an override, class_universe is derived from the live field_semantics registry
-    (never from the matrix under test) -- exercises _declared_class_universe()'s real body."""
-    path = _write_sidecar(tmp_path, _EXHAUSTIVE_MATRIX)
+    (never from the matrix under test) -- exercises _declared_class_universe()'s real body.
+    The live registry's universe now includes smoke_harness (Decision 191 amendment), so the
+    matrix checked here must carry that row too."""
+    path = _write_sidecar(tmp_path, _EXHAUSTIVE_MATRIX_WITH_SMOKE_HARNESS)
     failed: list[str] = []
     check.validate_maintenance_policy_matrix(failed, sidecar_path=path, verb_universe=_VERBS)
     assert failed == []
+
+
+def test_missing_smoke_harness_row_fails(tmp_path: Path) -> None:
+    """The live registry's class universe includes smoke_harness -- a matrix exhaustive only over
+    the pre-amendment three-class universe now fails against the live-registry default (never a
+    universe self-referentially derived from the matrix's own keys)."""
+    path = _write_sidecar(tmp_path, _EXHAUSTIVE_MATRIX)  # no smoke_harness row
+    failed: list[str] = []
+    check.validate_maintenance_policy_matrix(failed, sidecar_path=path, verb_universe=_VERBS)
+    assert failed == ["Maintenance policy matrix exhaustiveness"]
 
 
 def test_unreadable_sidecar_path_fails(tmp_path: Path) -> None:

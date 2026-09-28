@@ -145,7 +145,9 @@ verbs:
       per-class per-verb maintenance_policy matrix (config/lambda/ducklake/field_semantics.static.yaml,
       compaction-scope-policy-matrix / Decision 191) -- NOT a naming-convention predicate. Every table
       the catalog enumeration discovers (unfiltered information_schema, no LIKE filter) is classified
-      (scd2 | append_only | control) via the field_semantics registry and merged iff its class's
+      (scd2 | append_only | control | smoke_harness -- the last declared from field_semantics'
+      `tables:` block, Decision 191 amendment, never a name pattern) via the field_semantics
+      registry and merged iff its class's
       merge_ops policy cell is apply=true; a table absent from the registry is unclassifiable and
       collected rather than silently skipped. No expire/cleanup/orphan.
     response_codes:
@@ -167,7 +169,14 @@ verbs:
         BOTH ARE ALWAYS null/false FOR EVERY ENTRY: a 200 is only ever returned when the whole
         pass had zero per-table merge failures (see 500 below) -- a non-null `error` is never an
         observable 200-response state; the keys exist for shape uniformity with the internal
-        per-table record, not because a 200 caller ever sees a populated one.
+        per-table record, not because a 200 caller ever sees a populated one. Every pass (200 or
+        the 500 aggregate below) additionally emits, BEFORE the aggregate raise: MergeOpsDurationMs,
+        MergeOpsFilesBeforeTotal/MergeOpsFilesAfterTotal (when no count was unavailable),
+        MergeOpsTablesCount, MergeOpsUnclassifiedTables (the unclassified count), and
+        MergeOpsPassFailed (1.0 when merge_failures OR unclassified is non-empty, else 0.0) --
+        PLAN-ducklake-smoke-harness-classification (rec-3864): a scheduled async invoke's 500 body
+        is discarded, so these two pass-outcome metrics are the only agent-readable signal of a
+        scheduled pass's success or failure.
       500: >-
         DuckLakeRuntimeError: missing/non-s3 data_path, missing meta_schema, no tables discovered at
         all, OR the pass completed with one or more per-table merge failures and/or unclassified
@@ -301,9 +310,14 @@ verbs:
       declared partition spec (compaction-scope-policy-matrix, Decision 191/204) and, on
       dry_run=false, ALTERs only the mismatched physical tables (no-op-free), then RE-READS --
       the response's post-ALTER layout, never a stale pre-ALTER one. Requires explicit data_path +
-      meta_schema (no-arg refused).
+      meta_schema (no-arg refused). `skipped` names every reconcile_partitions-scoped-out table
+      (e.g. the smoke_harness pair, Decision 191 amendment) with its policy reason, READ-ONLY live
+      layout, and compare_to_declared drift (or null) -- reported, never ALTERed, so the readout
+      accounts for every discovered table (layouts + skipped == catalog).
     response_codes:
-      200: "dry_run=true: {layouts, drifts}; dry_run=false: {altered, layouts, drifts} (post-ALTER readout)"
+      200: >-
+        dry_run=true: {layouts, drifts, skipped}; dry_run=false: {altered, layouts, drifts,
+        skipped} (layouts/drifts are the post-ALTER readout; skipped is always read-only)
       500: "DuckLakeRuntimeError / PartitionLayoutError: missing/non-s3 data_path, missing meta_schema, or a maintenance-scope registry error / VersionMismatchError"
     typed_errors:
       runtime: "missing s3:// data_path / meta_schema (no-arg invokes refused), or a wrapped maintenance-scope registry error (500)"
@@ -421,4 +435,19 @@ amendment_log:
       (the sole carve-out in Decision 81 cl.6's "no LLM / agent invocation" claim, restated in the
       description and audit_invariants). The "Two destructive paths" invariant becomes three, and
       the maintenance_policy invariant now names all three per-table-scoped consumers.
+  - date: "2026-09-28"
+    semantic_break: true
+    change_class: field_add
+    summary: >-
+      PLAN-ducklake-smoke-harness-classification (Decision 191 amendment, rec-3864): the
+      production-resident smoke-harness pair (ducklake_smoke_history / ducklake_smoke_current)
+      joins the classified class universe as smoke_harness, sourced from field_semantics'
+      `tables:` block -- never a name pattern. merge_ops's class list now names it and this verb's
+      metrics field is new (MergeOpsUnclassifiedTables, MergeOpsPassFailed -- the only
+      agent-readable outcome signal for a scheduled async invoke whose 500 body is discarded).
+      reconcile_partitions's response now carries a `skipped` key (READ-ONLY layout + drift for
+      every reconcile_partitions-scoped-out table). rewrite_partition_layout refuses the pair via
+      its own apply=false policy cell (no prose change needed -- the existing control-class
+      refusal prose already generalizes). No destructive-path count or guard-set invariant
+      changed.
 previous_versions: []

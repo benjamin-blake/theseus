@@ -69,6 +69,9 @@ def _declared_spec_text(classified: maintenance_scope.ClassifiedTable, semantics
     if classified.table_class == "control":
         spec = control_tables.resolve_control_spec(classified.table_id)
         return spec.partition_key
+    if classified.table_class == maintenance_scope.SMOKE_HARNESS_CLASS:
+        smoke_spec = resolve_table_spec(None, semantics)
+        return smoke_spec.partition_history if classified.side == "history" else smoke_spec.partition_current  # type: ignore[return-value]
     table_spec = resolve_table_spec(classified.table_id, semantics)
     return table_spec.partition_history if classified.side == "history" else table_spec.partition_current  # type: ignore[return-value]
 
