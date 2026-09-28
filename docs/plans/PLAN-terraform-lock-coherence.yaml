@@ -35,12 +35,13 @@ scope:
     purpose: >-
       Hermetic (no terraform binary, no network) registered check
       `validate_terraform_lock_coherence` (owner platform), modelled on
-      validate_terraform_tag_charset. Public surface pinned (tests and step 3 import it):
-      (a) `tracked_lock_files(root: Path) -> list[str] | None` -- repo-relative paths of every
-      git-tracked `terraform/**/.terraform.lock.hcl` (git ls-files; ignored/untracked locks such as
-      terraform/bootstrap's are excluded by construction), None when git fails. The ONE home of
-      tracked-lock discovery; scripts/checks/_terraform.py imports it (no second implementation).
-      (b) `lock_coherence_findings(lock_text: str, tf_texts: list[str]) -> list[str]` -- pure.
+      validate_terraform_tag_charset. Tracked-lock discovery is IMPORTED from
+      scripts/checks/_terraform.py (`from scripts.checks._terraform import tracked_lock_files`),
+      never re-implemented -- the edge points check -> _terraform, so no existing check's import
+      closure grows (critique R1/R2: four gated Entries and tests/verification_graduation's
+      _GRADUATION_DEPS already close over _terraform.py). Public surface pinned (tests and step 3
+      import it):
+      (a) `lock_coherence_findings(lock_text: str, tf_texts: list[str]) -> list[str]` -- pure.
       Parses the lock's `provider "<addr>"` blocks and each block's optional `constraints`
       string; parses every `required_providers` block across tf_texts (whole-line `#`/`//`
       comments blanked first, brace-matched like _tags_block_end). Declared address = the
@@ -48,9 +49,18 @@ scope:
       `host/ns/type` kept as-is; a legacy string entry or an object without `source` maps to
       `registry.terraform.io/hashicorp/<local name>`; `terraform.io/builtin/*` ignored. Returns
       one finding per: lock entry not declared (orphan -- today's null), declared provider absent
-      from the lock (missing), and constraints mismatch (whitespace-insensitive compare of the
-      entry's `version` with the block's `constraints`, including present-vs-absent).
-      (c) The registered function: for each tracked lock, reads every `*.tf` directly in that root
+      from the lock (missing), and constraints mismatch, including present-vs-absent. The
+      constraints arm compares CANONICAL TERM SETS, never raw strings (critique R3): split on
+      commas; each term -> (op, version) with a bare or `=` term as op `=`; a non-`~>` version
+      padded with `.0` to three components; a `~>` version padded to at least two components and
+      otherwise kept at its given precision; compare the two sets (order- and
+      duplicate-insensitive). This mirrors Terraform 1.10.5's lock serialisation, measured at
+      planning time: `">= 5.0, < 6.0,>=5.0"` locks as `">= 5.0.0, < 6.0.0"`, `"< 6.0, != 5.1,
+      >= 5.0"` as `">= 5.0.0, != 5.1.0, < 6.0.0"`, `"= 3.6.0"` and `"3.6"` as `"3.6.0"`, `"~> 3"`
+      as `"~> 3.0"`, `"~>0.9"` as `"~> 0.9"`, `"~> 3.2.0"` unchanged; a mixed-case source
+      (`HashiCorp/Random`) locks lower-cased. A term that does not parse as op + dotted numeric
+      version compares raw (never a crash).
+      (b) The registered function: for each tracked lock, reads every `*.tf` directly in that root
       directory (non-recursive -- a root module is one directory; no child modules exist today),
       prints findings, appends one failure label. Decision 170 accounting on every exit path:
       git unavailable -> `registry.skipped(reason)`; otherwise `registry.examined(N,
@@ -69,9 +79,11 @@ scope:
       One bare-literal Entry (Decision 169): name/attr `validate_terraform_lock_coherence`,
       module `scripts.checks.iam_tf.validate_terraform_lock_coherence`, pre=True,
       pre_globs=("terraform/**/*.tf", "terraform/**/.terraform.lock.hcl",
-      "scripts/checks/iam_tf/validate_terraform_lock_coherence.py", "scripts/checks/_common.py",
+      "scripts/checks/iam_tf/validate_terraform_lock_coherence.py", "scripts/checks/_terraform.py",
+      "scripts/checks/iam_tf/validate_terraform_try.py", "scripts/checks/_common.py",
       "scripts/checks/registry.py") -- covers its own module (Decision 187) and its import
-      closure (validate_pre_glob_closure); widen to any further module it imports.
+      closure via _terraform.py (validate_pre_glob_closure, BLOCKING in --pre); widen to any
+      further module it imports.
       full_segment="full_after_lint".
   - file: config/ci_rca_taxonomy.yaml
     action: Modify
@@ -86,30 +98,47 @@ scope:
       acceptance oracles and the registry shard name them):
       TestLockCoherenceFindings -- coherent aws+neon passes; each finding arm is red on a fixture:
       orphan block (null), missing entry (declared github absent from lock), constraints mismatch
-      ("~> 5.0" vs "~> 6.0"), constraints present-vs-absent; source normalisation: legacy string
-      entry, object without source, 3-part host source, mixed case; a required_providers block
-      inside a comment is ignored; two required_providers blocks across files are unioned.
-      TestTrackedLockDiscovery -- tmp git repo: tracked lock listed, gitignored lock excluded,
-      git failure returns None and the registered check declares skipped (not examined).
+      ("~> 5.0" vs "~> 6.0"; "~> 5.0" vs "~> 5.0.0" -- different semantics), constraints
+      present-vs-absent. Canonical-form fixtures that must PASS (Terraform-written forms measured
+      at planning time): ">= 5.0" vs ">= 5.0.0"; "= 0.13.0" vs "0.13.0"; "3.6" vs "3.6.0"; "~> 3"
+      vs "~> 3.0"; "< 6.0, != 5.1, >= 5.0" vs ">= 5.0.0, != 5.1.0, < 6.0.0"; a duplicated term.
+      Source normalisation: legacy string entry, object without source, 3-part host source, mixed
+      case; a required_providers block inside a comment is ignored; two required_providers blocks
+      across files are unioned.
+      TestCheckAccounting -- with tracked_lock_files patched at this module's import site: None ->
+      the registered check declares skipped (not examined) and appends nothing; [] -> examined(0).
       TestRepoLocksCoherent::test_every_tracked_lock_matches_its_root -- runs the registered
       check against the real repo with failed == [] (RED on the pre-fix tree: orphaned null).
   - file: scripts/checks/_terraform.py
     action: Modify
     purpose: >-
       Validator stops writing tracked locks (rec-3318/3369/3919/4110 item 3; Decision 55 fail
-      loud). For a root whose lock is git-tracked (tracked_lock_files; terraform/personal and
-      terraform/github today), `run_terraform_creds_free`'s init appends `-lockfile=readonly`;
-      terraform/bootstrap (lock gitignored) is unchanged. `run_terraform_checks`'s informational
-      backend init of terraform/personal appends the same flag. If tracked_lock_files returns None,
-      fall back to readonly for every root whose lock file exists on disk (fail closed toward
-      never writing). In `_terraform_init_with_retry`, output containing "Provider dependency
-      changes detected" is a named failure: print a one-line hint (lock drift -- regenerate with
-      init without -lockfile=readonly, commit the lock; see validate_terraform_lock_coherence),
-      append the label to failed, never retry, never route to proxy_blocked -- keep
-      _is_proxy_blocked_init's three-marker check untouched (Decision 119/55). Consequence
-      (Decision 83): the required terraform-validate CI check (`scripts.validate
+      loud). (1) NEW `tracked_lock_files(root: Path) -> list[str] | None` -- the ONE home of
+      tracked-lock discovery (the check imports it from here): repo-relative paths of every
+      git-tracked `terraform/**/.terraform.lock.hcl`, via `subprocess.run(["git", "ls-files",
+      ...], cwd=root)` called DIRECTLY -- never through `_common.run`, so
+      tests/validate/test_terraform_checks.py's `_common.run` mocks never swallow it (under those
+      tests real git runs and finds the real tracked locks; their membership-only argv
+      assertions stay green unmodified). Ignored/untracked locks (terraform/bootstrap's) are
+      excluded by construction; None when git fails or is absent. (2) For a root whose lock is
+      tracked (terraform/personal and terraform/github today), `run_terraform_creds_free`'s init
+      appends `-lockfile=readonly`; terraform/bootstrap is unchanged. `run_terraform_checks`'s
+      informational backend init of terraform/personal appends the same flag. If
+      tracked_lock_files returns None, fall back to readonly for every root whose lock file
+      exists on disk (fail closed toward never writing). (3) In `_terraform_init_with_retry`,
+      output containing "Provider dependency changes detected" is a named failure: print a
+      one-line hint (lock drift -- regenerate with init without -lockfile=readonly, commit the
+      lock; see validate_terraform_lock_coherence), append the label to failed, never retry,
+      never route to proxy_blocked -- keep _is_proxy_blocked_init's three-marker check untouched
+      (Decision 119/55). (4) When the informational backend init fails with that same marker,
+      print a distinct line ("Terraform plan skipped: lock drift (readonly init refused) -- see
+      the creds-free init failure above") instead of the credentials-missing message (critique
+      A6); still non-blocking there, because the creds-free init has already failed loudly.
+      Consequence (Decision 83): the required terraform-validate CI check (`scripts.validate
       --terraform-only`) now fails a PR that commits a drifted lock -- a real defect in that PR,
-      not an external wedge. Stays far under 500 SLOC (176 today).
+      not an external wedge; and drift that ever reached main would red every PR's
+      terraform-validate until fixed, which the hermetic --pre guard exists to prevent (name both
+      in the PR body). Stays far under 500 SLOC (176 today).
   - file: tests/validate/test_terraform_lock_readonly.py
     action: Create
     purpose: >-
@@ -124,9 +153,17 @@ scope:
       test_readonly_drift_failure_is_named_not_skipped -- an init result carrying "Error: Provider
       dependency changes detected" appends the label, prints the hint, makes exactly one init
       attempt, and is not proxy_blocked;
-      test_git_unavailable_falls_back_to_readonly_for_existing_locks.
-      Patch tracked_lock_files at its import site in _terraform (the existing tests mock
-      _common.run; discovery must not ride that mock).
+      test_drift_check_reports_lock_drift_distinctly -- the informational init's drift failure
+      prints the lock-drift line, not the credentials-missing one;
+      test_git_unavailable_falls_back_to_readonly_for_existing_locks -- hermetic: tracked_lock_files
+      patched to None and on-disk existence controlled (a tmp root, or the existence check
+      patched), never the real tree, whose gitignored bootstrap lock exists in admin containers
+      but not in CI (critique A2).
+      Class TestTrackedLockDiscovery -- tmp git repo: a tracked lock is listed, a gitignored lock
+      is excluded, a non-repo directory (git failure) returns None.
+      Patch tracked_lock_files at `scripts.checks._terraform.tracked_lock_files` in the
+      TestTerraformGateLockReadonly cases. tests/validate/test_terraform_checks.py is NOT modified
+      (out of scope, Decision 59).
   - file: docs/contracts/environment-taxonomy.yaml
     action: Modify
     purpose: >-
@@ -136,7 +173,8 @@ scope:
       authoritative wherever terraform runs). Keep the words "committed" and ".terraform.lock.hcl"
       (graduated shard env-taxonomy-section6-lockfile-committed asserts both; Decision 181). Add
       an amendment_log entry at the top: date = implementation date, semantic_break false,
-      change_class correction, summary naming this plan and #969 (7b67e21d) as the orphaning
+      change_class prose_improvement (the closed ChangeClass enum, scripts/contracts_schema.py --
+      critique A5), summary naming this plan and #969 (7b67e21d) as the orphaning
       commit. File stays well under the contracts line cap (381 lines today).
   - file: config/agent/verification_registry/entries/terraform-lock-coherence-guarded.yaml
     action: Create
@@ -153,7 +191,7 @@ scope:
       Graduation record for step 2: primitive_slot test_selector, guard_target
       scripts/checks/_terraform.py, guard_symbol run_terraform_creds_free, plan_slug
       terraform-lock-coherence, check_spec.node_id
-      tests/validate/test_terraform_lock_readonly.py::TestTerraformGateLockReadonly.
+      tests/validate/test_terraform_lock_readonly.py.
 bundled_recommendations:
   - rec-4110
   - rec-3400
@@ -190,14 +228,15 @@ acceptance_criteria:
     is a named, un-retried failure with a regeneration hint.
   - >-
     environment-taxonomy.yaml#lockfile names two providers and both guard layers, keeps the
-    graduated tokens, and carries a correction amendment_log entry.
+    graduated tokens, and carries a prose_improvement amendment_log entry.
   - >-
     The full tier, with terraform 1.10.5 on PATH so its init runs, followed by
     `validation_result --verify-head` prints `ok` -- the push gate is unblocked.
   - >-
     CI: pr-validate and terraform-validate green; the speculative plan reports no changes with
-    guard PASS; the merge apply converges green; rec-4110, rec-3400, rec-3318, rec-3369 and
-    rec-3919 are closed by the trailer-closure job.
+    guard PASS; the PR merges only while the sandbox convergence record is green, and the merge
+    apply converges green; rec-4110, rec-3400, rec-3318, rec-3369 and rec-3919 are closed by the
+    trailer-closure job.
 verification_plan:
   - step: 1
     phase: pre-deploy
@@ -214,8 +253,8 @@ verification_plan:
   - step: 2
     phase: pre-deploy
     action: the validator's init is readonly on tracked-lock roots and a readonly drift failure is loud
-    command: bin/venv-python -m pytest "tests/validate/test_terraform_lock_readonly.py::TestTerraformGateLockReadonly" -q
-    expected: all four tests pass
+    command: bin/venv-python -m pytest tests/validate/test_terraform_lock_readonly.py -q
+    expected: all pass (TestTerraformGateLockReadonly and TestTrackedLockDiscovery)
     fix_if: a missing flag on personal/github or a flag on bootstrap means tracked-lock discovery is wrong -- fix discovery, never hard-code root names
     hermetic: false
     graduation: graduate
@@ -261,7 +300,11 @@ verification_plan:
     action: existing terraform gate, manifest mirror and registry sequence suites stay green
     command: bin/venv-python -m pytest tests/validate/test_terraform_checks.py tests/checks/iam_tf/test__manifest.py tests/checks/registry -q
     expected: all pass (the parametrised manifest tests now include the new entry)
-    fix_if: a creds-free test asserting an exact init argv needs the readonly flag added to its expectation only where the root's lock is tracked -- never loosen the assertion otherwise
+    fix_if: >-
+      tests/validate/test_terraform_checks.py is out of scope and must not be edited (Decision 59);
+      its argv assertions are membership-only, so a red there means the _terraform.py change
+      regressed existing behaviour (e.g. discovery routed through the mocked _common.run) -- fix
+      _terraform.py, never the test
     hermetic: false
     graduation: waive
     graduation_waiver_reason: These suites are already run by the standing test tier and their own graduated shards; a second registry row would duplicate them.
@@ -297,8 +340,14 @@ verification_plan:
     phase: pre-deploy
     action: fast tier
     command: bin/venv-python -m scripts.validate --pre
-    expected: exit 0
-    fix_if: fix the named check; never add an allowlist or budget raise to get green
+    expected: >-
+      exit 0, with validate_pre_glob_closure, validate_ci_rca_taxonomy, validate_check_accounting
+      and validate_graduation_completeness all passing (the import edge points check ->
+      _terraform.py, so no existing Entry's closure grows)
+    fix_if: >-
+      validate_pre_glob_closure red naming another Entry means an import edge was added FROM
+      _terraform.py (or another shared module) to the new check -- invert it back, never widen
+      other Entries' globs; otherwise fix the named check, never add an allowlist or budget raise
     hermetic: false
     graduation: waive
     graduation_waiver_reason: Invokes scripts.validate (recursion hazard, refused as a graduate target); PR CI's pr-validate runs the same tier authoritatively (Decision 73).
@@ -308,8 +357,12 @@ verification_plan:
       the push-gate proof -- full tier with terraform on PATH, so its own init (now readonly on
       personal/github) really runs against the committed locks, then the handoff attestation
       (Decision 163/203). Replaces the brief's standalone `init && git status --porcelain`
-      command (Decision 119 WARN; human chose fold-in at Step 6b): readonly init succeeding proves
-      the committed lock equals what init would write, and --verify-head proves the tree ended clean.
+      command (Decision 119 WARN; human chose fold-in at Step 6b). What each part proves:
+      --verify-head `ok` is the proof the tree ended clean (the push gate is unblocked); readonly
+      init succeeding proves only that the lock's provider SET satisfies the configuration (plus
+      the installer's version/checksum checks) -- it suppresses, not detects, new hash or
+      constraints information, which is why step 4 (pure deletion) and step 1 (constraints arm)
+      exist.
     command: >-
       terraform version | head -1 | grep -q 'v1.10.5' &&
       bin/venv-python -m scripts.validate &&
@@ -345,6 +398,23 @@ verification_plan:
     hermetic: false
   - step: 11
     phase: post-deploy
+    action: >-
+      PRE-MERGE GATE (critique R4; rec-3400's sequencing precondition) -- the sandbox convergence
+      record is green before squash-merge, because terraform-apply-sandbox.yml refuses a push run
+      on a red record
+    command: >-
+      CONVERGENCE_HEALTH_DIAGNOSE=1 AWS_PROFILE=agent_platform bin/venv-python -m scripts.convergence_health
+      | grep -q '"status": "green"' && echo "CONVERGENCE GREEN"
+    expected: >-
+      prints CONVERGENCE GREEN (diagnose mode is read-only -- it never escalates or files a rec);
+      re-run immediately before merging if time has passed since step 10
+    fix_if: >-
+      red: do NOT merge -- heal first per docs/contracts/deploy-paths.yaml's reconcile row, then
+      re-run this step; unavailable (credentials): read the session preflight's convergence_health
+      line instead, never merge on an unknown
+    hermetic: false
+  - step: 12
+    phase: post-deploy
     action: the merge's push-run apply converges green
     command: >-
       mcp__github__actions_list list_workflow_runs resource_id=terraform-apply-sandbox.yml
@@ -355,7 +425,7 @@ verification_plan:
       green at the merge sha (the session preflight's convergence_health reads green)
     fix_if: a red record follows docs/contracts/deploy-paths.yaml's reconcile row -- no local apply
     hermetic: false
-  - step: 12
+  - step: 13
     phase: post-deploy
     action: confirm the five bundled recs closed on merge
     command: >-
@@ -417,7 +487,8 @@ constraints:
   - No standalone local `terraform init` VP command for terraform/personal (Decision 119 WARN, fold-in chosen); the full tier's own init is the local exercise.
   - Do not touch _is_proxy_blocked_init or _TRANSIENT_INIT_SIGNATURES; readonly drift must never become a SKIP or a retry (Decision 55).
   - Do not edit docs/plans/PLAN-terraform-t2-42-path-hardening.yaml -- its hermetic step 7 greps for hashicorp/null and would be replayed (and red) only if that plan entered this diff.
-  - Decompose, never raise, an SLOC budget (Decision 128); tests/validate/test_terraform_checks.py (474 SLOC) is not grown.
+  - Decompose, never raise, an SLOC budget (Decision 128); tests/validate/test_terraform_checks.py (474 SLOC) is not modified at all (out of scope).
+  - The only new import edge is check -> scripts/checks/_terraform.py; nothing shared may import the new check module (validate_pre_glob_closure, critique R1).
   - Public repo (Decision 101) -- no account id, ARN, ExternalId or internal hostname in any committed file, commit, PR body or rec; CD job logs are cited by run/job id only.
   - Scope boundary (Decision 59) -- out-of-scope findings become recs via scripts.ops_data_portal, never inline fixes.
   - No rescue agents or workaround loops; an unrecoverable failure stops for RCA (Decision 55). IMPLEMENTATION plan only (Decision 67).
@@ -430,8 +501,8 @@ context:
   - "fork: guard home and shape | chosen: registered iam_tf check, bidirectional address + constraints | class: asked | precedent: brief delegated ('your call'); validate_terraform_tag_charset | precedent_kind: answered-fork | reversible: yes | persisted: scope"
   - "Root cause: #969 (7b67e21d) removed the last null_resource; null was never in required_providers (implicit via resource type), so no declaration-vs-lock check existed. The guard's orphan arm fails on the pre-#969 tree too (implicit provider in lock, undeclared) -- it forces explicit declaration, so the #969 removal would have been caught in that PR (--pre globs cover terraform/**/*.tf)."
   - "Evidence (planning session, Terraform 1.10.5): init -backend=false of terraform/personal removes exactly the null block; terraform/github unchanged; terraform/bootstrap lock gitignored (rec-4130). readonly init fails on orphaned AND missing entries without writing, and passes on the regenerated personal lock and on github's lock. Direct fetch of kislerdm/neon succeeded without a mirror (rec-4129 asks the operator to rule on Decision 119)."
-  - "Rec closure (Decision 201): rec-3400 and rec-3318 oracles hold as written. rec-4110's is out_of_grammar, rec-3369's and rec-3919's name nonexistent tests -- re-point each via update_rec before merge to a single-segment pytest ::node_id command (junit route): rec-3369 -> tests/validate/test_terraform_lock_readonly.py::TestTerraformGateLockReadonly::test_terraform_gate_leaves_lock_unmodified; rec-3919 -> that node plus ::test_drift_check_init_is_readonly; rec-4110 -> tests/checks/iam_tf/test_validate_terraform_lock_coherence.py::TestRepoLocksCoherent plus tests/validate/test_terraform_lock_readonly.py::TestTerraformGateLockReadonly."
-  - "Gotcha: pytest in validate's tiers mocks _common.run in test_terraform_checks.py -- tracked-lock discovery must be patchable separately or those tests see a git call they do not expect."
+  - "Rec closure (Decision 201): rec-3400 and rec-3318 oracles hold as written. rec-4110's is out_of_grammar, rec-3369's and rec-3919's name nonexistent tests -- re-point each via update_rec before merge to a single-segment pytest ::node_id command (junit route): rec-3369 -> tests/validate/test_terraform_lock_readonly.py::TestTerraformGateLockReadonly::test_terraform_gate_leaves_lock_unmodified; rec-3919 -> that node plus ::test_drift_check_init_is_readonly; rec-4110 -> tests/checks/iam_tf/test_validate_terraform_lock_coherence.py::TestRepoLocksCoherent plus tests/validate/test_terraform_lock_readonly.py::TestTerraformGateLockReadonly. rec-3919's update_rec reason must state the narrowing (critique A4): its oracle moves from 'the full tier leaves no tracked file modified' to argv-level unit nodes; the full property is proven by step 9, not by the oracle."
+  - "Critique dispositions (round 1 REVISE): R1/R2 fixed by inverting the edge (tracked_lock_files homed in _terraform.py); R3 fixed by canonical constraint-term sets (Terraform forms measured at planning time); R4 fixed by step 11's pre-merge convergence gate; A1 step 9 reworded; A2 fallback test hermetic; A3 discovery runs git directly, test_terraform_checks.py untouched; A4 narrowing noted; A5 prose_improvement; A6 distinct drift message; A7 kept ci-rca category environment (validate_terraform_tag_charset precedent: a lock/config mismatch is fixed by regenerating an environment artefact)."
   - "Hand-back: once merged, the heartbeat-canary branch rebases onto main, re-runs the full tier + --verify-head, and pushes."
 pre_implementation_checklist:
   - Branch confirmed not on main
@@ -445,12 +516,12 @@ execution_steps:
   - "Regenerate the lock: `terraform -chdir=terraform/personal init -backend=false -input=false -no-color`; confirm `git status --short` shows only that file; run step 4. Also init terraform/github and terraform/bootstrap the same way and confirm neither changes a tracked file (record the result in the PR body)."
   - "Create scripts/checks/iam_tf/validate_terraform_lock_coherence.py with the pinned surface; add the _manifest.py Entry and the ci_rca_taxonomy.yaml row."
   - "Create tests/checks/iam_tf/test_validate_terraform_lock_coherence.py; confirm TestRepoLocksCoherent is red against origin/main's lock (git stash the lock change) before green."
-  - "Modify scripts/checks/_terraform.py (readonly flag, named drift failure) and create tests/validate/test_terraform_lock_readonly.py; confirm test_terraform_gate_leaves_lock_unmodified red before the _terraform.py edit."
+  - "Modify scripts/checks/_terraform.py (tracked_lock_files, readonly flag, named drift failure, distinct informational-init message) and create tests/validate/test_terraform_lock_readonly.py; confirm test_terraform_gate_leaves_lock_unmodified red before the _terraform.py flag edit."
   - "Correct docs/contracts/environment-taxonomy.yaml#lockfile and add the amendment_log entry."
   - "Create the two verification-registry entries."
   - "Execute the Verification Plan pre-deploy steps 1-9 -- loop until they pass; commit only after step 9 (full tier + --verify-head) prints ok on the committed, rebased tree."
-  - "Re-point acceptance via scripts.ops_data_portal update_rec for rec-4110, rec-3369 and rec-3919 as the context line specifies (one call each, reason in context); confirm each new command passes lint_acceptance_command(require_decidable=True) and holds locally."
-  - "Open the PR (body: root-cause commit 7b67e21d and why the guard would have caught it; github/bootstrap init results; Decision 83 consequence). Squash-merge body carries `Resolves: rec-4110, rec-3400, rec-3318, rec-3369, rec-3919`. Run steps 10-12; on an unrecoverable V3 failure stop and RCA (Decision 55)."
+  - "Re-point acceptance via scripts.ops_data_portal update_rec for rec-4110, rec-3369 and rec-3919 as the context line specifies (one call each; the reason, including rec-3919's narrowing, goes in the rec's context); confirm each new command passes lint_acceptance_command(require_decidable=True) and holds locally. Writer unreachable: leave the three open, say so in the PR body, and do not block the merge on it."
+  - "Open the PR (body: root-cause commit 7b67e21d and why the guard would have caught it; github/bootstrap init results; Decision 83 consequence). Squash-merge body carries `Resolves: rec-4110, rec-3400, rec-3318, rec-3369, rec-3919`. Run step 10, then step 11 (convergence green) immediately before the squash-merge, then steps 12-13; on an unrecoverable V3 failure stop and RCA (Decision 55)."
   - "Report: what was implemented, verification results, the speculative-plan and apply run ids, and the rec closure outcomes."
 work_areas: []
 rollback: >-
