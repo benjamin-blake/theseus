@@ -5,7 +5,7 @@ handoff_policy:
 slug: write-time-enforcement-decision
 intent: >-
   Record the platform rule that, in the append-only lakehouse, every data rule a write can decide is enforced at the write
-  boundary and data-quality monitors own only what a write cannot: a new numbered Decision (amending Decision 81 clause 5)
+  boundary and data-quality monitors own only what a write cannot: a new numbered Decision (amending Decision 81 clauses 5 and 8)
   plus a data-modeling-standard.yaml rule, so the telemetry writer (rec-4024 slice 2a) and the retroactive ops-writer work
   (rec-4158) build to one ratified standard. Clean, contract-bound telemetry is the learning signal for recursive
   self-improvement (PROJECT_CONTEXT); an invalid row that lands in an append-only store can never be corrected in place.
@@ -52,7 +52,9 @@ scope:
     exemption sits beside the rule with reason and owning rec); monotone clock-dependent rules (an identical re-send stays a no-op, Decision 207); an in-row ordering between values
     minted by different producers' clocks (e.g. a transcript-less producer's event_timestamp against a handed-off
     session_started_at, rec-4028) crosses a clock domain and is enforced only with a declared skew bound in the owning
-    contract, never as an exact comparison; fix at the source,
+    contract, never as an exact comparison; a transcript-derived producer can re-emit a rejected row after a fix
+    (re-parse under a parser_version bump) but a transcript-less producer (rec-4028) cannot, so the
+    write-time-rejects-block-valid-capture reversal condition weighs most for those; fix at the source,
     never demote to DQ; a new accepted value ships contract + writer deploy before any producer emits it; writer check
     primary on every adapter, engine constraints (e.g. NOT NULL) declared as defence in depth. design_time_walk gains one
     sentence at step 7 (the reject-CRUD checklist): classify every declared data rule as write-decidable (enforce at write
@@ -74,7 +76,7 @@ acceptance_criteria:
 - >-
   docs/DECISIONS.md carries the new Decision (<= 6,144 bytes, envelope with number, amends [81] and significance
   numbered_decision, a reversal-conditions stanza) whose Coverage names rec-4024, rec-4158, rec-4063, rec-4101 and rec-4121, and
-  Decision 81's body ends with a dated trailing-bracket annotation naming it.
+  Decision 81's body carries an appended dated trailing-bracket annotation naming it.
 - docs/decisions-index.json is fresh against DECISIONS.md.
 - >-
   docs/contracts/data-modeling-standard.yaml carries rule write-time-enforcement citing the new Decision, with the row-local
@@ -102,7 +104,8 @@ verification_plan:
     scripts.checks.decisions.validate_decision_entry_conformance import validate_decision_entry_conformance as b;from
     scripts.checks.decisions.validate_supersession_annotations import validate_supersession_annotations as c;from
     scripts.checks.decisions.validate_decisions_index_freshness import validate_decisions_index_freshness as d;from
-    scripts.checks.contracts.validate_data_model_standard import validate_data_model_standard as e;f=[];a(f);b(f);c(f);d(f);e(f,changed_files=['docs/contracts/data-modeling-standard.yaml']);print(f);assert
+    scripts.checks.contracts.validate_data_model_standard import validate_data_model_standard as e;from
+    scripts.checks.ops_governance.validate_reversal_stanzas import validate_reversal_stanzas as g;f=[];a(f);b(f);c(f);d(f);e(f,changed_files=['docs/contracts/data-modeling-standard.yaml']);g(f);print(f);assert
     not f;print('DECISION_GATES_OK')"
   expected: Exit 0, an empty failure list and the success marker printed.
   fix_if: >-
@@ -152,7 +155,7 @@ context:
   (NOTE 88) citation narrowed; (SPIRIT 163) the writer-conformance check is a named residual owned by rec-4158. CITE:
   207, 81, 177, 167, 181, 55, 88, 199, 100, 184, 163, 70, 64, 65, 103, 84. Decisions triaged: 162 of 162; Roadmap items
   intersected: 6; CONFLICT: 0; RELATED: 6.
-- 'gates: decision-scout=FLAGS_FOUND (all resolved); plan-critique=REVISE r1 (8 findings, all fixed); REVISE r2 (7 new findings, all fixed); REVISE r3 (3 text fixes + 3 notes, all applied)'
+- 'gates: decision-scout=FLAGS_FOUND (all resolved); plan-critique=REVISE r1 (8 findings, all fixed); REVISE r2 (7 new findings, all fixed); REVISE r3 (3 text fixes + 3 notes, all applied); REVISE r4 (1 text fix + 4 notes, all applied)'
 - >-
   Operator direction (Benjamin, 2026-09-29, telemetry slice-2 planning thread): "lakehouse architecture needs to move as
   much as possible, in terms of enforcement, to write time"; formalise it as a Decision and plan retroactive enforcement
@@ -170,9 +173,9 @@ context:
   contract, field_semantics.yaml, data_quality/ops.yaml via write_validators.py, CD.12 Pydantic Annotated models in
   src/schemas/rec.py) and the rec-4121 boundary; no implementation step touches it.
 - >-
-  Byte budget: a full rendering of the pinned text (all five clauses, Coverage, reversal stanza, Related with the CD.12
-  refinement) measured 4,927 bytes at planning time (/mnt/project-files/telemetry-slice2/decision-draft-v3-measured.md),
-  leaving about 1.2 KB of headroom under 6,144.
+  Byte budget: an earlier rendering (/mnt/project-files/telemetry-slice2/decision-draft-v3-measured.md) measured 5,029
+  bytes; the full pinned text with the round 2-3 additions is estimated at about 5.3 KB, leaving about 0.8 KB under
+  6,144 -- keep Coverage and Related terse; operational detail goes in the data-modeling rule.
 - 'Gotcha: validate_supersession_annotations reads prose -- every "amends Decision N" phrase in the new entry needs its victim annotation; only 81 is amended.'
 pre_implementation_checklist:
 - Branch confirmed not on main
@@ -222,7 +225,7 @@ execution_steps:
   by rec-4158 until it lands (Decision 163); DQ side -- telemetry monitors rec-4063 and rec-4101, ops-history race
   duplicates rec-4121 item 4 -- all unenforced residuals until the T1.6 scheduled monitor substrate runs them (a
   DuckLake relationships check SKIPs today). REVERSAL CONDITIONS
-  (review_by 2027-03-31, on_trigger "re-decide via /plan") -- write-time-rejects-block-valid-capture (re-examine the
+  (review_by 2027-03-31, on_trigger "re-decide via /plan"; each condition kind: manual) -- write-time-rejects-block-valid-capture (re-examine the
   rule's definition first; demote only by amending this Decision); engine-constraints-on-every-adapter (re-decide which
   layer is primary). RELATED -- 207, 81 cl.5/cl.8, 84 I-2, 103, 55, 199, 184 cl.2, 100, 181 cl.2, 163, 70, T1.6, and
   CD.12 REFINED (not amended) in three respects: the ops single-source choice is deferred to rec-4158, not re-decided
@@ -247,8 +250,9 @@ execution_steps:
   race: surface it, and renumber once it is resolved); if origin/main's highest Decision number moved past N-1, RENUMBER
   N everywhere -- heading, envelope number, reversal-conditions `decision:` field, any Warehouse ID marker, rule
   statement, design_time_walk, the contract's decisions_cited and amendment_log summary, and the Decision 81 annotation
-  -- then prove no stale reference survives (rg -n "Decision <old N>|decision: <old N>|dec-<old N>" docs/DECISIONS.md
-  docs/contracts/data-modeling-standard.yaml docs/decisions-index.json returns nothing), regenerate
+  -- then prove no stale reference survives in THIS change's own added lines (git diff origin/main -- docs/DECISIONS.md
+  docs/contracts/data-modeling-standard.yaml | grep -E '^\+' | grep -nE '(Decision <old N>|decision: <old N>|dec-<old N>)\b'
+  returns nothing; the other entry now holding <old N> is legitimately in the file and is never edited), regenerate
   docs/decisions-index.json and re-run VP steps 1-2. (c) The parent full-tier verdict as its own fact: VP step 3 (bin/venv-python -m scripts.validate) on
   the committed, rebased, clean tree, then bin/venv-python -m scripts.checks.validation_result --verify-head; on timeout
   the disposition is blocked. (d) Structured postflight evidence via bin/venv-python -m scripts.session.postflight
