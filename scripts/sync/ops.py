@@ -5,7 +5,7 @@ Read path: the DuckLake closed reader, for every migrated table. It is the sole 
 (Decision 84 I-1); on reader failure the cache is left untouched with a loud warning.
 
 Provides one CLI subcommand:
-  sync   -- pull all migrated tables from the DuckLake reader
+  sync   -- pull all migrated tables from the DuckLake reader; exits non-zero if any table pull failed
 
 Internal helpers (not for direct agent use):
   _rebuild_local_cache -- read current-state rows and overwrite local JSONL files
@@ -29,6 +29,7 @@ import logging
 import os
 import stat
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
@@ -393,6 +394,21 @@ def _write_rows_to_local(table: str, rows: list[dict], local_rel: str) -> int:
     return len(rows)
 
 
+def _rebuild_with_failures(profile: str = _SSO_PROFILE) -> tuple[dict[str, int], list[str]]:
+    """Pull every migrated table once; return (counts, failed table names).
+
+    A table is failed only when its reader pull returned None (reader unreachable) -- a
+    successful pull of zero rows is an empty table, never a failure (Decision 55: no false-zero).
+    """
+    counts: dict[str, int] = {}
+    failed: list[str] = []
+    for table in _TABLE_TO_LOCAL:
+        counts[table], rows = _pull_single_table_with_rows(table, profile=profile)
+        if rows is None:
+            failed.append(table)
+    return counts, failed
+
+
 def _rebuild_local_cache(profile: str = _SSO_PROFILE) -> dict[str, int]:
     """Read current-state and overwrite local JSONL files with fresh data.
 
@@ -402,19 +418,18 @@ def _rebuild_local_cache(profile: str = _SSO_PROFILE) -> dict[str, int]:
     Returns:
         Dict mapping table name to number of rows pulled.
     """
-    counts: dict[str, int] = {}
-    for table in _TABLE_TO_LOCAL:
-        counts[table] = _pull_single_table(table, profile=profile)
-    return counts
+    return _rebuild_with_failures(profile)[0]
 
 
-def sync(profile: str = _SSO_PROFILE) -> dict[str, dict[str, int]]:
+def sync(profile: str = _SSO_PROFILE) -> dict[str, object]:
     """Rebuild the local read caches from the DuckLake reader.
 
     Returns:
-        {"pulled": {table: count}}
+        {"pulled": {table: count}, "failed": [table, ...]} -- "failed" lists every table whose
+        reader pull failed (T2.19 c9); the CLI exits non-zero when it is non-empty.
     """
-    return {"pulled": _rebuild_local_cache(profile)}
+    counts, failed = _rebuild_with_failures(profile)
+    return {"pulled": counts, "failed": failed}
 
 
 def warm_sync(profile: str = _SSO_PROFILE) -> dict[str, object]:
@@ -453,6 +468,10 @@ def main() -> None:
     if args.command == "sync":
         result = sync(args.profile)
         print(json.dumps(result, indent=2))
+        failed = result.get("failed")
+        if failed:
+            print(f"sync_ops: reader pull failed for {failed}; local cache is stale for those tables", file=sys.stderr)
+            sys.exit(1)
 
 
 if __name__ == "__main__":
