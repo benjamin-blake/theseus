@@ -449,7 +449,7 @@ verification_plan:
     fix_if: any other change -- STOP; on apply error stop and RCA (Decision 55)
   - step: 9
     phase: post-deploy
-    action: ADMIN -- PlatformAdmin is allowed every canary verb it now holds (five Sids, the plan-time validator on its literal request resource), before the full plan and phase 2
+    action: ADMIN -- PlatformAdmin is allowed every canary verb it now holds (five Sids, the plan-time validator on request resource "*"), before the full plan and phase 2
     command: |-
       R=$(echo 'var.aws_region' | terraform -chdir=terraform/bootstrap console -var-file=terraform.bootstrap.tfvars | tr -d '"') && S=$(echo 'jsonencode([for s in jsondecode(local.platform_security_admin_policy_json).Statement : s if startswith(s.Sid, "PlatformSecurityHeartbeat")])' | terraform -chdir=terraform/bootstrap console -var-file=terraform.bootstrap.tfvars) && R="$R" S="$S" bin/venv-python - <<'EOF'
       import json, os, subprocess, sys
@@ -465,7 +465,7 @@ verification_plan:
       bad, n = [], 0
       for s in st:
           acts = [s["Action"]] if isinstance(s["Action"], str) else list(s["Action"])
-          res = f"arn:aws:states:{r}:{acct}:stateMachine:*" if s["Resource"] == "*" else s["Resource"]
+          res = s["Resource"]
           res = (res.replace("schedule-group/platform-security-*", "schedule-group/platform-security-heartbeat")
               .replace("schedule/platform-security-*/platform-security-*", "schedule/platform-security-heartbeat/platform-security-heartbeat-canary")
               .replace("execution:platform-security-*:*", "execution:platform-security-heartbeat-canary:probe")
@@ -476,7 +476,7 @@ verification_plan:
           n += len(acts)
       sys.exit("DENIED (action names only) " + repr(bad)) if bad else print("SIMULATE OK -- " + str(n) + " canary actions allowed")
       EOF
-    expected: SIMULATE OK (the resource ARNs are built in memory and never printed; the validator Sid's Resource "*" is simulated against the literal request resource stateMachine:*)
+    expected: SIMULATE OK (the resource ARNs are built in memory and never printed; the validator Sid's Resource "*" is simulated as "*")
     fix_if: a DENIED action means phase 1 has not propagated (re-run after a minute) or the Sid is wrong (new PR); never grant by hand
   - step: 10
     phase: post-deploy
