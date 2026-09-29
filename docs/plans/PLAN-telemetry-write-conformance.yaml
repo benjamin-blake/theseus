@@ -25,17 +25,19 @@ scope:
   purpose: >-
     (1) session_started_at: pinned to the EARLIEST parseable record timestamp in the root transcript at pin time (the
     first capture pass), never the first record in file order -- SessionStart hook records are written after an earlier
-    queue-operation record yet carry earlier timestamps (probe: 8 rows up to 9.87 s earlier); the value stays source-derived,
-    UTC, ms-truncated and pinned once per tree; a record appended later with a timestamp earlier than the persisted pin is a
-    producer HALT (never re-pinned, never emitted). (2) event_timestamp: dq_intent `not_before: session_started_at` (in-row
-    ordering, write-enforced, Decision 210 cl.1) with the cross-clock-domain rule -- a producer whose event_timestamp and
-    session_started_at come from different clocks (transcript-less producers, rec-4028) declares a skew allowance when it
-    lands, never an exact comparison; and `max_after_write_seconds: 300` (event_timestamp later than created_timestamp by
-    more than 300 s is rejected -- the skew bound the field already declared without a value). (3) governance_notes: every
-    timestamp column carries its full millisecond value at the writer edge (exactly three fraction digits in the wire form),
-    extending the session_started_at every-hop obligation to all timestamp columns because event_id's 48-bit prefix depends
-    on event_timestamp the same way. Field- and contract-level amendment_log entries (semantic_break true, CD.25 category
-    6). Stays <= 500 effective lines (389 today).
+    queue-operation record yet carry earlier timestamps (probe: 8 rows up to 9.87 s earlier); the value stays
+    source-derived, UTC, ms-truncated and pinned once per tree; a record appended later with a timestamp earlier than
+    the persisted pin is a producer HALT (never re-pinned, never emitted). (2) event_timestamp: dq_intent `not_before:
+    session_started_at` (in-row ordering, write-enforced, Decision 210 cl.1) with the cross-clock-domain rule -- a
+    producer whose event_timestamp and session_started_at come from different clocks (transcript-less producers,
+    rec-4028) declares a skew allowance when it lands, never an exact comparison; and `max_after_write_seconds: 300`
+    (event_timestamp later than created_timestamp by more than 300 s is rejected -- the skew bound the field already
+    declared without a value). (3) governance_notes: every timestamp column carries its full millisecond value at the
+    writer edge (exactly three fraction digits in the wire form), extending the session_started_at every-hop obligation
+    to all timestamp columns because event_id's 48-bit prefix depends on event_timestamp the same way. Field- and
+    contract-level amendment_log entries (semantic_break true, CD.25 category 6); the pin change's migration_story
+    states it re-keys any session whose earliest timestamp is not its first record in file order, and is safe only
+    because no v1 row and no persisted cursor exists anywhere. Stays <= 500 effective lines (389 today).
 - file: docs/contracts/telemetry_transcripts.yaml
   action: Modify
   purpose: >-
@@ -48,18 +50,23 @@ scope:
     [oversize]): set, with content and content_uri both NULL, when the full output exceeds the cap;
     content_sha256/content_bytes of an omission row are the RAW sidecar bytes' identity (streamed, never decoded, never
     materialised whole -- nothing is stored, so there is no scrubbed payload to hash); (4) exactly_one_of widens to
-    {fields: [content, content_uri, content_omitted_reason]}; (5) content_truncated redefined: true iff the stored
-    model-visible payload is a harness preview of a larger persisted output (the full output, when captured, is the
-    sibling tool_output row); (6) sizes on content's dq_intent: content_inline_threshold_bytes 65536 (unchanged; also
-    slice 2a-2's route threshold) and full_output_cap_bytes 8388608, plus integrity (content_sha256/content_bytes equal
-    the sha256 and UTF-8 length of an inline content); the threshold rule's two legs are split -- 'content_uri set
-    implies content_bytes > threshold' is enforced now, while 'content set implies content_bytes <= threshold' carries a
-    Decision 210 cl.3 exemption beside the rule (write_time: pending_route, reason: the blob route that makes a >64 KiB
-    payload storable lands in slice 2a-2, owner rec-4024) and activates when 2a-2 removes the exemption; (7) content and
-    content_uri each declare dq_intent representation_of: [content_sha256, content_bytes] -- representation-only
-    columns, excluded from the grain's compared content per the data-modeling-standard amendment below. Field- and
-    contract-level amendment_log entries (semantic_break true on content, content_truncated, purpose, content_sha256).
-    Stays <= 500 effective lines (317 today).
+    {fields: [content, content_uri, content_omitted_reason]}; (5) content_truncated redefined: true iff the harness
+    persisted the output, so the stored model-visible payload is a preview or a pointer (the MCP-overflow error string),
+    never the full output (the full output, when captured, is the sibling tool_output row); (6) sizes on content's
+    dq_intent: content_inline_threshold_bytes 65536 (unchanged; also slice 2a-2's route threshold) and
+    full_output_cap_bytes 8388608, plus integrity (content_sha256/content_bytes equal the sha256 and UTF-8 length of an
+    inline content); the threshold rule's two legs are split -- 'content_uri set implies content_bytes > threshold' is
+    enforced now, while 'content set implies content_bytes <= threshold' carries a Decision 210 cl.3 exemption beside
+    the rule (write_time: pending_route, reason: the blob route that makes a >64 KiB payload storable lands in slice
+    2a-2, owner rec-4024) and activates when 2a-2 removes the exemption; the cap binds the STORED payload only --
+    'content or content_uri set implies content_bytes <= cap' is enforced; an omission row's content_bytes is the raw
+    identity and is not cap-bound (it may even be <= the cap when decoding and scrubbing a non-UTF-8 sidecar grows the
+    storable text past the cap: each invalid byte becomes a 3-byte replacement character; that shape is permitted,
+    reason oversize meaning 'the storable payload would exceed the cap'); (7) content and content_uri each declare
+    dq_intent representation_of: [content_sha256, content_bytes] -- representation-only columns, excluded from the
+    grain's compared content per the data-modeling-standard amendment below. Field- and contract-level amendment_log
+    entries (semantic_break true on content, content_truncated, purpose, content_sha256). Stays <= 500 effective lines
+    (317 today).
 - file: docs/contracts/telemetry_observations.yaml
   action: Modify
   purpose: >-
@@ -67,12 +74,13 @@ scope:
     describing the tool's RAW full output (the sidecar bytes when persisted, else the model-visible text's UTF-8 bytes),
     computed by streaming, never decoded: output_capture (VARCHAR, accepted [not_persisted, captured, omitted_oversize,
     unavailable, no_result], required_when {event_kind: [close], observation_type: [tool_call]}); output_bytes (bigint),
-    output_sha256 (VARCHAR, lowercase hex), output_lines (bigint, count of LF bytes plus one when the last byte is not
-    LF and the output is non-empty) -- each required_when {output_capture: [not_persisted, captured, omitted_oversize]}.
-    no_result = the synthetic interrupted close with no tool_result; unavailable = persisted but the sidecar is
-    unreadable. Compact older amendment_log entries (relief valve 1, Decision 166) to stay <= 500 effective lines (489
-    today): a compaction entry lives only on fields this plan does NOT otherwise change, so VP step 8 can tell
-    compaction from a genuine new entry; field_add amendment_log entries on the four new fields.
+    output_sha256 (VARCHAR; dq_intent pattern '^[0-9a-f]{64}$', the same pattern content_sha256 gains), output_lines
+    (bigint, count of LF bytes plus one when the last byte is not LF and the output is non-empty) -- each required_when
+    {output_capture: [not_persisted, captured, omitted_oversize]}. no_result = the synthetic interrupted close with no
+    tool_result; unavailable = persisted but the sidecar is unreadable. Compact older amendment_log entries, the
+    contract-level amendment_log included (relief valve 1, Decision 166), to stay <= 500 effective lines (489 today): a
+    compaction entry lives only on fields this plan does NOT otherwise change, so VP step 8 can tell compaction from a
+    genuine new entry; field_add amendment_log entries on the four new fields.
 - file: docs/contracts/telemetry_sessions.yaml
   action: Modify
   purpose: >-
@@ -81,7 +89,10 @@ scope:
     <= 500 effective lines (498 today); field-level amendment_log entries.
 - file: docs/contracts/telemetry-lexicon.yaml
   action: Modify
-  purpose: Term-level only (Decision 95) -- add tool_output, output_capture and payload omission terms; the transcript term's content line points at the model-visible rule. amendment_log entry.
+  purpose: >-
+    Term-level only (Decision 95) -- add tool_output, output_capture and payload omission terms; the purpose term's
+    value list gains tool_output; the transcript term's content line points at the model-visible rule. amendment_log
+    entry.
 - file: docs/contracts/data-modeling-standard.yaml
   action: Modify
   purpose: >-
@@ -115,8 +126,10 @@ scope:
     (column -> {other_column: allowed values}), exactly_one_of groups, orderings (column not_before other column),
     max_after_write_seconds per column, content rules (inline threshold with its per-leg exemption, full-output cap,
     integrity), and a rule exemption map (rule -> reason, owner) honoured exactly as the projection declares it.
-    check_row(table, row, rules, created_timestamp) raises gate.GateError naming table, rule and column (never a content
-    value). RowRules.from_projection(columns, table_rules) builds them from the generator projection only.
+    check_row(table, row, rules, created_timestamp) raises its own neutral RowRuleError(ValueError) naming table, rule
+    and column (never a content value) -- rules.py imports nothing from gate.py, so rec-4158 can relocate it to a shared
+    module unchanged (the rec-4158 thread's request); prepare_batch wraps it into gate.GateError.
+    RowRules.from_projection(columns, table_rules) builds them from the generator projection only.
 - file: src/telemetry/gate.py
   action: Modify
   purpose: >-
@@ -149,10 +162,12 @@ scope:
   purpose: >-
     Project the rules RowRules consumes: per column accepted_values (from dq_intent.accepted_values.values, whatever its
     DQ `enforced` flag, which keeps its DQ-runner meaning), required_when (existing), not_before,
-    max_after_write_seconds, representation_of, and any write_time exemption (reason, owner); table_rules:
+    max_after_write_seconds, representation_of, pattern, and any write_time exemption (reason, owner); table_rules:
     exactly_one_of groups and content threshold/cap/integrity. Registry-sourced values: resolve_refs nulls $ref
-    (scripts/contracts.py), so the projection re-loads the RAW contract YAML to read each field's $ref; a field whose
-    $ref is 'source-lineage.yaml#/contract/fields/registry_key' (telemetry_agents.agent_type) gets accepted_values = the
+    (scripts/contracts.py), so the projection re-loads the RAW contract YAML to read each field's $ref, resolving it
+    in-module as <_CONTRACTS_DIR>/<table_id>.yaml (a module-level directory the fixture_events test contract patches) --
+    no edit to scripts/schema_to_field_semantics.py; a field whose $ref is
+    'source-lineage.yaml#/contract/fields/registry_key' (telemetry_agents.agent_type) gets accepted_values = the
     canonical_id set of the registry named by source-lineage.yaml's top-level allowed_values.registry
     (config/agent/data_quality/source_registry.yaml), read at generation time -- no new file. Fail closed on an unknown
     rule key, a malformed rule, or an exemption without reason and owner.
@@ -167,15 +182,17 @@ scope:
   action: Modify
   purpose: >-
     tool_result rows store the model-visible text (the block content as in the transcript); content_truncated true iff
-    the output was persisted. A persisted output with a readable sidecar: raw size (sidecar_size) above the cap -> a
-    tool_output OMISSION row whose content_sha256/content_bytes are the raw bytes' identity (streamed via
-    sidecar_chunks, never decoded, never scrubbed -- nothing is stored); otherwise read, scrub, then hash and size the
-    scrubbed text; if the scrubbed text exceeds the cap (scrub markers can grow a payload by a few bytes) -> an omission
-    row with the raw identity; else a tool_output row. Sidecars' cursor pin hashes by streaming (the pin value is
-    unchanged: sha256 of the raw bytes). MCP overflow: a tool_result whose toolUseResult is a string naming a saved
-    output file ('Output has been saved to <path>') resolves the sidecar by that basename exactly as persistedOutputPath
-    does (today that payload is silently lost); a string toolUseResult that names no file is counted in diagnostics
-    (unmatched_string_tool_use_result), so a harness wording change surfaces as a count, never silently.
+    the harness persisted the output (Bash persistedOutputPath or MCP saved-output). A persisted output with a readable
+    sidecar: raw size (sidecar_size) above the cap -> a tool_output OMISSION row whose content_sha256/content_bytes are
+    the raw bytes' identity (streamed via sidecar_chunks, never decoded, never scrubbed -- nothing is stored); otherwise
+    read, scrub, then hash and size the scrubbed text; if the decoded-and-scrubbed text exceeds the cap (invalid bytes
+    decode to 3-byte replacement characters; scrub markers grow text) -> an omission row with the raw identity and
+    output_capture omitted_oversize, even though the raw size is <= the cap; else a tool_output row. Sidecars' cursor
+    pin hashes by streaming (the pin value is unchanged: sha256 of the raw bytes). MCP overflow: a tool_result whose
+    toolUseResult is a string naming a saved output file ('Output has been saved to <path>') resolves the sidecar by
+    that basename exactly as persistedOutputPath does (today that payload is silently lost); a string toolUseResult that
+    names no file is counted in diagnostics (unmatched_string_tool_use_result), so a harness wording change surfaces as
+    a count, never silently.
 - file: src/turn_capture/observations.py
   action: Modify
   purpose: >-
@@ -202,13 +219,17 @@ scope:
     repeats iff its cap differs.
 - file: tests/fixtures/turn_capture/golden/index.json
   action: Modify
-  purpose: Adds the three new cases below to the ordered case list; expected_rows definition unchanged.
+  purpose: >-
+    Adds the three new cases below to the ordered case list; its purpose string documents the new optional top-level
+    full_output_cap_bytes key; expected_rows definition unchanged.
 - file: tests/fixtures/turn_capture/golden/hooks_before_first_record.json
   action: Create
   purpose: Golden case -- SessionStart hook records written after a queue-operation but timestamped earlier; the pin is the earliest timestamp.
 - file: tests/fixtures/turn_capture/golden/mcp_overflow_saved_output.json
   action: Create
-  purpose: Golden case -- an MCP tool_result whose toolUseResult is a string naming a saved output file; tool_result row stores the error text, tool_output row stores the sidecar.
+  purpose: >-
+    Golden case -- an MCP tool_result whose toolUseResult is a string naming a saved output file; tool_result row stores
+    the error text with content_truncated true, tool_output row stores the sidecar.
 - file: tests/fixtures/turn_capture/golden/full_output_omitted_over_cap.json
   action: Create
   purpose: >-
@@ -303,8 +324,9 @@ scope:
 - file: tests/telemetry/test_append.py
   action: Modify
   purpose: >-
-    Integration-level (duckdb): prepare_batch then execute_prepared equals append_events; the MERGE-level transcript
-    representation change is not a conflict; a stored conflict raises GrainConflictError.
+    Integration-level (duckdb; run WITHOUT a -m filter -- no integration marker): prepare_batch then execute_prepared
+    equals append_events; the MERGE-level transcript representation change is not a conflict; a stored conflict raises
+    GrainConflictError.
 - file: tests/telemetry/test_append_ducklake_integration.py
   action: Modify
   purpose: Four tables in one caller-owned transaction; a GrainConflictError in the third leaves the first two unwritten.
@@ -324,9 +346,9 @@ scope:
 - file: tests/telemetry/test_parser_version_registry.py
   action: Modify
   purpose: >-
-    CASES gains the three new cases; _live_digests applies the per-case cap override; registry_problems accepts a
-    digest-repeating bump iff the cap differs; new test_full_output_cap_agrees_with_contract (registry cap == producer
-    constant <= contract cap).
+    CASES gains the three new cases; _live_digests applies the per-case cap override; registry_problems AND
+    test_registry_matches_producer's own repeat-digest assertion accept a digest-repeating bump iff the cap differs; new
+    test_full_output_cap_agrees_with_contract (registry cap == producer constant <= contract cap).
 - file: tests/test_field_semantics_event_projection.py
   action: Modify
   purpose: Rule projection (accepted values incl. the registry-sourced agent_type set, required_when, not_before, max_after_write_seconds, exactly_one_of, content rules, compare exclusions) and fail-closed on unknown rule keys.
@@ -372,7 +394,8 @@ acceptance_criteria:
 - >-
   Every declared row-local rule of the four telemetry contracts (not-null, accepted values incl. the registry-sourced
   agent_type set, required_when, exactly-one-of, event_timestamp not_before session_started_at, the 300 s write-time skew,
-  content integrity, the cap, and the 'content_uri implies > threshold' leg) is projected by the generator and rejected by
+  content integrity and the pattern on content_sha256/output_sha256, the cap leg 'content or content_uri set implies
+  content_bytes <= cap' (omission rows are raw identity and not cap-bound), and the 'content_uri implies > threshold' leg) is projected by the generator and rejected by
   the kernel before any SQL with a GateError naming table, rule and column; the one exempted leg ('inline content <=
   64 KiB') is declared beside its rule with reason and owner (Decision 210 cl.3) and projected as an exemption.
 - >-
@@ -443,12 +466,13 @@ verification_plan:
   command: >-
     bin/venv-python -m pytest tests/telemetry/test_append.py::test_prepare_then_execute_equals_append_events
     tests/telemetry/test_append.py::test_grain_conflict_is_typed
-    tests/telemetry/test_append.py::test_transcript_representation_change_is_not_a_conflict
-    tests/telemetry/test_append_ducklake_integration.py::test_four_tables_one_transaction_all_or_nothing
+    tests/telemetry/test_append.py::test_transcript_representation_change_is_not_a_conflict -q && bin/venv-python -m
+    pytest tests/telemetry/test_append_ducklake_integration.py::test_four_tables_one_transaction_all_or_nothing
     tests/turn_capture/test_capture_ducklake_integration.py -m integration -q
   expected: >-
-    Exit 0; the failing-third-batch case leaves no rows in any table; the golden corpus loads with every FK resolving and
-    the route-pending rows (> 65,536 bytes) counted, not silently dropped.
+    Exit 0; the first invocation reports 3 passed (no marker filter, so no node can be deselected), the second passes with
+    no deselected node; the failing-third-batch case leaves no rows in any table; the golden corpus loads with every FK
+    resolving and the route-pending rows (> 65,536 bytes) counted, not silently dropped.
   fix_if: Rows from an aborted transaction visible -> execute_prepared opened or committed a transaction; fix it.
   hermetic: false
   graduation: waive
@@ -505,7 +529,8 @@ verification_plan:
     tests/telemetry/test_contract_amendments.py::test_sessions_required_when_fields_are_nullable
     tests/telemetry/test_contract_amendments.py::test_lexicon_names_tool_output_and_omission -q && ! grep -n
     'dedupe_key != \[event_id, parser_version\]' src/telemetry/append.py && grep -q 'dedupe_key != \[producer, event_id,
-    parser_version\]' src/telemetry/append.py && echo ACCEPTANCE_OK
+    parser_version\]' src/telemetry/append.py && ! grep -nE '_COMPARE_EXCLUDED|_COLLAPSE_IGNORED_COLUMNS'
+    src/telemetry/append.py src/telemetry/gate.py && echo ACCEPTANCE_OK
   expected: Exit 0, the index is fresh, 8 passed and the success marker printed.
   fix_if: A failing assertion names the missing contract text or a stale Decision number -- fix the document, not the test.
   hermetic: true
@@ -556,6 +581,17 @@ verification_plan:
   command: bin/venv-python -m scripts.validate
   expected: Exit 0.
   fix_if: Fix the named check; never raise a budget or skip a check.
+  hermetic: false
+  graduation: not-applicable
+- step: 13
+  phase: pre-deploy
+  action: The portal notes on rec-4024, rec-4026 and rec-4064 landed (fetch via the reader, after the bookkeeping step).
+  command: >-
+    bin/venv-python -c "from scripts.ops_data_portal import _fetch_rec_from_reader as f;
+    marks={'rec-4024':'SLICE 2A-1 DELIVERED','rec-4026':'PLAN-telemetry-write-conformance','rec-4064':'R1 delivered'};
+    miss=[r for r,m in marks.items() if m not in ((f(r) or {}).get('context') or '')];print(miss);assert not miss;print('NOTES_OK')"
+  expected: Exit 0, an empty missing list and the success marker printed.
+  fix_if: A missing note -> re-run the bookkeeping step through update_rec (fetch-before-update); never edit the cache.
   hermetic: false
   graduation: not-applicable
 - step: 12
@@ -680,15 +716,13 @@ context:
   producer constants are asserted <= it; no Resolves: rec-4024 (its acceptance lands with 2a-2, Decision 201). CITE: 207,
   199, 177, 96, 95, 184, 181, 118, 166, 79. Decisions triaged: 162 of 162; Roadmap items intersected: 6; CONFLICT: 0;
   RELATED: 5.
-- 'gates: decision-scout=FLAGS_FOUND (all resolved); plan-critique=REVISE r1 (11 findings, all fixed); confirming round pending'
+- 'gates: decision-scout=FLAGS_FOUND (all resolved); plan-critique=REVISE r1 (11 findings) and r2 (4 findings + 5 notes), all fixed'
 - >-
-  WRITE-TIME ENFORCEMENT DECISION (the numbered Decision PLAN-write-time-enforcement-decision, #1328, adds; 210 expected,
-  numbering race possible): this plan's contract text, rationale and fix_if lines cite it as "Decision 210" as a
-  placeholder. Implementation STARTS ONLY once that Decision is on origin/main (pre_implementation_checklist); the
-  implementer resolves N from the '## Decision N:' header whose data-modeling-standard rule write-time-enforcement opens
-  with "Decision N:", uses N everywhere, and VP step 7's test_write_time_decision_cited_by_its_merged_number resolves N
-  the same way and fails on any stale placeholder. Both changes touch docs/DECISIONS.md, docs/decisions-index.json and
-  data-modeling-standard.yaml, so a rebase conflict there is expected: resolve by keeping both, regenerate the index.
+  WRITE-TIME ENFORCEMENT DECISION: landed as Decision 210 (#1329, e360d987) while this plan was in critique, so its
+  "Decision 210" citations are real. The pre_implementation gate still re-resolves N from the header and VP step 7's
+  test_write_time_decision_cited_by_its_merged_number guards it. The routing call for the Decision 207 note is an
+  amendment_forms annotation, not a numbered amendment: representation-only columns are a declared class whose identity
+  is still compared, so 207's commitment is unchanged (decision-entry.yaml routing_rule question 3).
 - >-
   Direction and evidence: Benjamin 2026-09-29 (slice-2 planning thread) -- 2a re-cut so contract, producer and write
   checks land together; tool-result policy and blob route from two Fable consults. /mnt/project-files/telemetry-slice2/:
@@ -729,7 +763,7 @@ execution_steps:
   telemetry_observations and telemetry_sessions first, only on fields this plan does not otherwise change (summarise
   several entries of one plan into one shorter entry; never reword an entry into a new one). New dq_intent keys, declared
   on the fields they bind: not_before (a column name), max_after_write_seconds (int), full_output_cap_bytes (int),
-  integrity (true), representation_of (a list of column names), and write_time_exemptions (a map of rule leg -> {reason,
+  integrity (true), pattern (a regex), representation_of (a list of column names), and write_time_exemptions (a map of rule leg -> {reason,
   owner}); exactly_one_of on content lists the three fields. Append the two dated annotations to Decisions 207 and 199,
   cite the write-time Decision as N, and regenerate docs/decisions-index.json.
 - >-
@@ -759,8 +793,10 @@ execution_steps:
   never overwrite): rec-4024 gains '[SLICE 2A-1 DELIVERED <date> via PLAN-telemetry-write-conformance]' naming what
   landed and what remains for 2a-2 (writer verb, registration, dimensions, blob route, the inline-size leg's exemption
   removal, smoke proof); rec-4026 gains a note that its producer items for the tool-result policy, MCP overflow and the
-  pin landed here, leaving hooks, cursor persistence, PinOrderError recovery and the capability handshake; rec-4064 gains
-  a dated 'R1 delivered via PLAN-telemetry-write-conformance' note (R5/R9/R10/R12 stay open).
+  pin landed here, leaving hooks, cursor persistence, PinOrderError recovery and the capability handshake, plus the
+  obligation that the first capture pass never runs before the SessionStart hook records are flushed (else the pin lands
+  on a later record and the session halts); rec-4064 gains
+  a dated 'R1 delivered via PLAN-telemetry-write-conformance' note (R5/R9/R10/R12 stay open). Then run VP step 13.
 - >-
   CLOSURE -- separate facts, in order (a)-(e) (implement skill Commit Flows; docs/contracts/git-ops.yaml handoff_sequence),
   each reported on its own. (a) READINESS: bin/venv-python -m scripts.session.github_readiness. (b) Set
