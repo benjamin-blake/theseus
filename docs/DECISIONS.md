@@ -2,6 +2,50 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 210: Data rules are enforced at the write boundary wherever the write can decide them; data-quality monitors own only what a write cannot (amends Decision 81 clauses 5 and 8) (Decided)
+
+```yaml
+number: 210
+amends: [81]
+significance:
+  value: numbered_decision
+  justification: "Amends Decision 81 cl.5 and cl.8 (widens the writer duty beyond types; re-assigns the in-transaction referential check from DQ) with reversal conditions -- no contract rule or amendment_forms note can re-assign a ratified Decision's clauses; data-modeling-standard.yaml carries the operational rule (Decision 207 precedent)."
+```
+
+**Status:** Decided
+**Date:** 2026-09-29
+**Warehouse ID:** dec-210 (per Decision 84 backfill)
+
+**Problem:** The lakehouse is append-only: a committed row that breaks a data rule cannot be corrected in place (journals never mutate, Decision 199; a re-send under a grain key is rejected, Decision 207). A rule held only by a read-time DQ monitor lets invalid rows land permanently and every reader pays (the Decision 70 precedent). No telemetry value set, required_when or exactly-one-of rule is enforced at write today, and a 2026-09-29 probe of real transcripts found event_timestamp >= session_started_at broken by the current producer (8 hook events up to 9.9 s early) -- nothing enforced it, so nothing noticed.
+
+**Decision:**
+1. Row-local rules at write. A rule decidable from one row's own values plus static contract data and the writer's clock (type, not-null, accepted values, conditional requiredness, exactly-one-of, format and bounds, in-row orderings) is enforced by the writer boundary before commit. A violating row is rejected loudly and the whole request writes nothing (Decision 55; Decision 207 reject semantics). A clock-dependent rule is monotone, so an identical re-send stays a no-op.
+2. Cross-row rules at write when the write can decide them: (a) decidable inside the write's own transaction, bounded to the batch's partitions, with no extra catalog round-trip, and (b) its truth does not depend on the arrival order of independent producers. Write-owned under this test: the 207 grain MERGE, the ops writer's in-transaction referential check (81 cl.8, re-assigned from DQ), the status DAG (103) and I-2 allocation (84); the ops instances' 207 residuals stay with rec-4121 items 1-3. Everything else is a DQ monitor, alarm-not-gate for CI (T1.6): references across independent producers (telemetry parent existence, R3), concurrent-append race duplicates, pending generations, cardinalities.
+3. Single source: one declared rule source per table. Checks derive from it, never hand-restated in writer code: for telemetry the owning Class A contract; for the ops tables the choice is rec-4158's, not re-decided here. An exemption sits beside the rule with its reason and owning rec.
+4. Fix at the source, never demote to DQ. A new accepted value ships as a contract amendment plus a writer deploy before any producer emits it.
+5. The writer check is primary on every adapter (plane-neutral, Decision 184 cl.2; its reject names the rule); engine constraints such as NOT NULL are declared as defence in depth (Decision 100). Decision 207's own grain reversal condition is unchanged.
+
+**Rationale:** In an append-only store the write boundary is the only place a rule can prevent rather than detect; a moderate write-time build removes a class of DQ defects and the defensive code every reader would otherwise carry. Detail: data-modeling-standard.yaml rule write-time-enforcement.
+
+**Coverage (Decision 181 cl.2):** telemetry writer -- rec-4024 slice 2a, including the slice-3a producer's session_started_at pin; existing ops writers and contracts -- rec-4158, including the single-source choice (Decision 65, CD.12) and the Decision 64 bootstrap gates; every writer, present and future -- a writer-conformance check, an unenforced residual owned by rec-4158 until it lands (Decision 163); DQ side -- rec-4063, rec-4101 and rec-4121 item 4, unenforced residuals until the T1.6 monitor substrate runs them (a DuckLake relationships check SKIPs today).
+
+```yaml reversal-conditions
+decision: 210
+review_by: 2027-03-31
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: write-time-rejects-block-valid-capture
+    kind: manual
+    description: "A write-time rule measurably stalls capture of rows later judged valid: re-examine that rule's definition first; demote to DQ only by amending this Decision."
+  - id: engine-constraints-on-every-adapter
+    kind: manual
+    description: "Engine-enforced CHECK constraints become available on every adapter: re-decide which layer is primary."
+```
+
+**Related:** Decision 207, 81 cl.5 and cl.8 (amended), 84 I-2, 103, 55, 199, 184 cl.2, 100, 181 cl.2, 163, 70, T1.6; CD.12 refined, not amended -- its ops single-source choice is deferred to rec-4158, telemetry's source is its Class A contract (already so under Decision 199), and its FK-pre-commit discipline is narrowed to write-decidable references (references across independent producers stay DQ, already so under Decision 199 / R3); CD.12's ratification reconciles with this Decision.
+
+---
+
 ## Decision 209: Open-core paywall on organisational scale, never capability -- a multi-tenant, metadata-only control plane over a customer-owned data plane, and three monorepos placed by platform-vs-product and visibility (amends Decision 184 clause 1, Decision 178 and Decision 101 point (f)) (Decided)
 
 ```yaml
@@ -8053,6 +8097,10 @@ under Decision 207 -- it is insert-only anti-join, not the reject-on-conflict gr
 Decision 207 requires of insert-grain tables, so a re-write under the same write ULID with
 differing content is not rejected loudly. Fixed by rec-4121 (ops-writer idempotency replay and
 history MERGE on the write ULID).]
+
+[Amendment 2026-09-29, Decision 210: clause 5's schema-enforcement chokepoint is widened to every write-decidable data rule, not only types (ops-writer
+residual owned by rec-4158); clause 8's in-transaction referential existence check is write-owned under Decision 210,
+while uniqueness under the concurrent-append race stays DQ.]
 
 ---
 
