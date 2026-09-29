@@ -1,0 +1,632 @@
+schema_version: 5
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: telemetry-write-conformance
+intent: >-
+  Telemetry slice 2a-1 (rec-4024 carrier, T2.36): make the telemetry contracts, the Claude Code producer and the
+  plane-neutral write-boundary kernel agree, and enforce every declared row-local contract rule in the kernel before any
+  SQL (the write-time enforcement Decision, PLAN-write-time-enforcement-decision) -- including the operator-approved
+  tool-result capture policy (store what the model saw, the full output as its own bounded row, a typed omission above the
+  cap) and the earliest-timestamp session pin a real-transcript probe showed is needed. Clean, complete, contract-bound
+  turn telemetry is the learning signal for recursive self-improvement (PROJECT_CONTEXT); an invalid row in an append-only
+  store can never be corrected in place. Deploy-inert: the writer verb, registration, dimensions, blob route and smoke
+  proof are slice 2a-2.
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-telemetry-write-conformance.yaml
+phase: >-
+  T2.36 (telemetry re-lands on DuckLake) -- slice 2a-1 of rec-4024; closes NO exit criterion (c1/c2 need the tables
+  provisioned and the writer verb, slice 2a-2). Moves T3.20 c4 forward (tool_call output fields, tool_output purpose) without
+  meeting it. Builds on the merged slice-1 kernel (#1286), R8 (#1314) and slice 3a (#1327).
+scope:
+- file: docs/contracts/telemetry-event-envelope.yaml
+  action: Modify
+  purpose: >-
+    (1) session_started_at: pinned to the EARLIEST parseable record timestamp in the root transcript at pin time (the
+    first capture pass), never the first record in file order -- SessionStart hook records are written after an earlier
+    queue-operation record yet carry earlier timestamps (probe: 8 rows up to 9.87 s earlier); the value stays source-derived,
+    UTC, ms-truncated and pinned once per tree; a record appended later with a timestamp earlier than the persisted pin is a
+    producer HALT (never re-pinned, never emitted). (2) event_timestamp: dq_intent `not_before: session_started_at` (in-row
+    ordering, write-enforced, Decision 210 cl.1) with the cross-clock-domain rule -- a producer whose event_timestamp and
+    session_started_at come from different clocks (transcript-less producers, rec-4028) declares a skew allowance when it
+    lands, never an exact comparison; and `max_after_write_seconds: 300` (event_timestamp later than created_timestamp by
+    more than 300 s is rejected -- the skew bound the field already declared without a value). (3) governance_notes: every
+    timestamp column carries its full millisecond value at the writer edge (exactly three fraction digits in the wire form),
+    extending the session_started_at every-hop obligation to all timestamp columns because event_id's 48-bit prefix depends
+    on event_timestamp the same way. Field- and contract-level amendment_log entries (semantic_break true, CD.25 category
+    6). Stays <= 500 effective lines (389 today).
+- file: docs/contracts/telemetry_transcripts.yaml
+  action: Modify
+  purpose: >-
+    Tool-result capture policy (Fable consult, operator-approved 2026-09-29): (1) `content`'s semantics become the payload
+    AS THE MODEL SAW IT -- for a tool_result, the in-context text including a harness preview and note when the harness
+    persisted the output, never the sidecar; (2) purpose gains `tool_output`: the FULL persisted tool output as its own row
+    (external_ref '<source_record_id>#<block_index>/full', same observation_ref as the tool_result row, origin tool),
+    emitted only when the harness persisted the output and the sidecar is readable; (3) new field content_omitted_reason
+    (VARCHAR, nullable, accepted [oversize]): set, with content and content_uri both NULL, when the payload exceeds the
+    full-output cap; content_sha256/content_bytes then describe the omitted payload (streamed, never decoded); (4)
+    exactly_one_of widens to {fields: [content, content_uri, content_omitted_reason]}; (5) content_truncated redefined:
+    true iff the stored model-visible payload is a harness preview of a larger persisted output (the full output, when
+    captured, is the sibling tool_output row); (6) sizes named on content's dq_intent: content_inline_threshold_bytes 65536
+    (unchanged; also the route threshold slice 2a-2's blob grants use) and full_output_cap_bytes 8388608 (any payload
+    above it becomes an omission row), plus an integrity rule (content_sha256/content_bytes equal the sha256 and UTF-8
+    length of an inline content); (7) governance: the Decision 207 compared content for this table excludes content and
+    content_uri (representation) -- payload identity is content_sha256 + content_bytes. Field- and contract-level
+    amendment_log entries (semantic_break true on content, content_truncated, purpose, content_sha256). Stays <= 500
+    effective lines (317 today).
+- file: docs/contracts/telemetry_observations.yaml
+  action: Modify
+  purpose: >-
+    tool_call close rows gain four typed columns (typed, not metadata, so the rules are write-enforceable): output_capture
+    (VARCHAR, accepted [not_persisted, captured, omitted_oversize, unavailable, no_result], required_when {event_kind:
+    [close], observation_type: [tool_call]}); output_bytes (bigint), output_sha256 (VARCHAR, lowercase hex),
+    output_lines (bigint) -- each required_when {output_capture: [not_persisted, captured, omitted_oversize]} and
+    describing the tool's FULL output (the sidecar when persisted, else the model-visible text). no_result = the synthetic
+    interrupted close with no tool_result; unavailable = persisted but the sidecar is unreadable. Compact older
+    amendment_log entries (relief valve 1, Decision 166; never rewrite an entry so it reads as new) to stay <= 500
+    effective lines (489 today); field_add amendment_log entries on the four new fields.
+- file: docs/contracts/telemetry_sessions.yaml
+  action: Modify
+  purpose: >-
+    rec-4064 R1: workflow and execution_attempt become nullable true, matching their dq_intent.required_when (open rows
+    only) -- the projection already treats them as nullable. Compact older amendment_log entries (relief valve 1) to stay
+    <= 500 effective lines (498 today); field-level amendment_log entries.
+- file: docs/contracts/telemetry-lexicon.yaml
+  action: Modify
+  purpose: Term-level only (Decision 95) -- add tool_output, output_capture and payload omission terms; the transcript term's content line points at the model-visible rule. amendment_log entry.
+- file: docs/DECISIONS.md
+  action: Modify
+  purpose: >-
+    Two dated trailing-bracket annotations (Decision 177 dialect, appended, never mid-body): on Decision 207 -- for
+    telemetry_transcripts the compared content is the payload identity (content_sha256, content_bytes), not the
+    content/content_uri representation, so a threshold change can never turn an identical re-send into a conflict; still an
+    equality compare that rejects loudly, not the content-hash tiebreak 207 rejected; and on Decision 199 clause 5 --
+    content is the model-visible payload, the full persisted output is its own bounded row, and a payload above the
+    8 MiB cap is a typed omission row (content_omitted_reason); detail in telemetry_transcripts.yaml.
+- file: docs/decisions-index.json
+  action: Modify
+  purpose: Regenerated by bin/venv-python -m scripts.decisions_index --write; never hand-edited.
+- file: src/telemetry/rules.py
+  action: Create
+  purpose: >-
+    Stdlib-only contract-derived row rules (Decision 210 cl.1/cl.3). RowRules (frozen): not_null columns,
+    accepted_values per column, required_when per column (column -> {other_column: allowed values}), exactly_one_of
+    groups, orderings (column not_before other column), max_after_write_seconds per column, content rules (inline
+    threshold, full-output cap, integrity). check_row(table, row, rules, created_timestamp) raises gate.GateError naming
+    the table, rule and column (never the value of a content column). RowRules.from_projection(columns, table_rules)
+    builds them from the generator projection only -- no literal rule anywhere in the kernel.
+- file: src/telemetry/gate.py
+  action: Modify
+  purpose: >-
+    Add GateError(AppendError) (a row-rule or type rejection) and GrainConflictError(AppendError) (a differing row under an
+    existing grain key, in-batch or stored) so callers map by type, not substring; existing raises reclassified; within-
+    batch compare honours the spec's compare exclusions.
+- file: src/telemetry/append.py
+  action: Modify
+  purpose: >-
+    EventTableSpec gains rules (RowRules) and compare_excluded (created_timestamp, producer_version, plus the projection's
+    table-declared exclusions -- content and content_uri for telemetry_transcripts), both from from_projection. Split into
+    prepare_batch (pure: gate, rules, derivation, intra-batch collapse; raises GateError/GrainConflictError) and
+    execute_prepared (one MERGE, no BEGIN/COMMIT; caller owns the transaction; converts the MERGE ERROR token to
+    GrainConflictError); append_events stays the one-table facade (same signature and behaviour otherwise). Fix the stale
+    dedupe_key docstring (rec-4137: it must read 'dedupe_key != [producer, event_id, parser_version]') and the module docstring's R3 line (parent existence is not a write-time check under
+    the amended contract).
+- file: src/telemetry/timestamps.py
+  action: Modify
+  purpose: >-
+    parse_wire_timestamp(value): the pinned RFC 3339 profile with EXACTLY three fraction digits (rejects none, 1, 2 or
+    4-9 digits and naive input, Decision 96 cl.4) -- the writer-edge decoder slice 2a-2 applies to every timestamp column.
+    parse_iso8601_utc is unchanged.
+- file: scripts/field_semantics_event_projection.py
+  action: Modify
+  purpose: >-
+    Project the rules RowRules consumes: per column accepted_values (from dq_intent.accepted_values.values, whatever its
+    DQ `enforced` flag, which keeps its DQ-runner meaning), required_when (existing), not_before, max_after_write_seconds;
+    for a column $ref'ing source-lineage.yaml registry_key (telemetry_agents.agent_type), accepted_values = the canonical_id
+    set of config/agent/data_quality/source_registry.yaml read at generation time; table_rules: exactly_one_of groups,
+    content threshold/cap/integrity, compare_excluded. Fail closed on an unknown rule key or a malformed rule.
+- file: src/turn_capture/transcript.py
+  action: Modify
+  purpose: session_pin returns the EARLIEST parseable record timestamp among the root file's lines, not the first in file order (the envelope amendment).
+- file: src/turn_capture/transcripts.py
+  action: Modify
+  purpose: >-
+    tool_result rows store the model-visible text (the block content as in the transcript), content_truncated true iff
+    the output was persisted; a persisted output with a readable sidecar also emits a tool_output row (full sidecar text,
+    scrubbed, then hashed and sized) or, above the cap, a tool_output omission row (hash and size of the scrubbed full
+    text, streamed; content NULL; content_omitted_reason oversize); MCP overflow detection: a tool_result whose
+    toolUseResult is a string and whose text names a saved output file ('Output has been saved to <path>') resolves the
+    sidecar by that basename exactly as a persistedOutputPath does (today that payload is silently lost).
+- file: src/turn_capture/observations.py
+  action: Modify
+  purpose: >-
+    tool_call close rows carry output_capture/output_bytes/output_sha256/output_lines per the observations amendment
+    (the raw full output's bytes and sha256 before scrubbing are NOT stored -- values describe the scrubbed output, the
+    same bytes the tool_output row hashes); the synthetic interrupted close carries output_capture no_result.
+- file: src/turn_capture/refs.py
+  action: Modify
+  purpose: full_output_ref(source_record_id, block_index) -> '<source_record_id>#<block_index>/full'; ROLE vocabulary gains 'full'.
+- file: src/turn_capture/record_turn.py
+  action: Modify
+  purpose: >-
+    PARSER_VERSION 2 and a new PRODUCER_VERSION; a record in the root file whose timestamp is earlier than the persisted
+    cursor pin raises a named PinOrderError (the producer halt; never re-pinned, never emitted); FULL_OUTPUT_CAP_BYTES =
+    8388608 is a module constant equal to the registry value and <= the contract's cap (asserted by test).
+- file: config/telemetry/parser_versions.yaml
+  action: Modify
+  purpose: >-
+    claude_code current 2 with a history entry (date, golden_digest of the regenerated corpus, reason naming this plan)
+    and full_output_cap_bytes 8388608 (the producer constant; must be <= the contract's full_output_cap_bytes).
+- file: tests/fixtures/turn_capture/golden/index.json
+  action: Modify
+  purpose: Adds the three new cases below to the ordered case list; expected_rows definition unchanged.
+- file: tests/fixtures/turn_capture/golden/hooks_before_first_record.json
+  action: Create
+  purpose: Golden case -- SessionStart hook records written after a queue-operation but timestamped earlier; the pin is the earliest timestamp.
+- file: tests/fixtures/turn_capture/golden/mcp_overflow_saved_output.json
+  action: Create
+  purpose: Golden case -- an MCP tool_result whose toolUseResult is a string naming a saved output file; tool_result row stores the error text, tool_output row stores the sidecar.
+- file: tests/fixtures/turn_capture/golden/full_output_omitted_over_cap.json
+  action: Create
+  purpose: >-
+    Golden case with a small sidecar and an expected_rows computed under a test-only cap override (the case file carries
+    its own cap in a top-level "full_output_cap_bytes" key the corpus loader applies via monkeypatch) -- a tool_output
+    omission row; never a multi-MB fixture.
+- file: tests/fixtures/turn_capture/golden/sidecar_present.json
+  action: Modify
+  purpose: Regenerated expected_rows (model-visible tool_result plus tool_output row).
+- file: tests/fixtures/turn_capture/golden/large_tool_result_over_64k.json
+  action: Modify
+  purpose: Regenerated expected_rows under v2.
+- file: tests/fixtures/turn_capture/golden/sidecar_absent.json
+  action: Modify
+  purpose: Regenerated expected_rows (output_capture unavailable).
+- file: tests/fixtures/turn_capture/golden/tool_result_interrupted.json
+  action: Modify
+  purpose: Regenerated expected_rows (no_result / captured dispositions).
+- file: tests/fixtures/turn_capture/golden/pin_first_record_without_uuid.json
+  action: Modify
+  purpose: Regenerated expected_rows (earliest-timestamp pin).
+- file: tests/fixtures/turn_capture/golden/multiblock_response_interleaved_tool_results.json
+  action: Modify
+  purpose: Regenerated expected_rows (output_* on tool_call close).
+- file: tests/fixtures/turn_capture/golden/tool_result_error.json
+  action: Modify
+  purpose: Regenerated expected_rows.
+- file: tests/fixtures/turn_capture/golden/hook_blocked_tool_call.json
+  action: Modify
+  purpose: Regenerated expected_rows.
+- file: tests/fixtures/turn_capture/golden/meta_and_companion_records.json
+  action: Modify
+  purpose: Regenerated expected_rows.
+- file: tests/fixtures/turn_capture/golden/subagent_sync.json
+  action: Modify
+  purpose: Regenerated expected_rows.
+- file: tests/fixtures/turn_capture/golden/subagent_background_with_completion.json
+  action: Modify
+  purpose: Regenerated expected_rows.
+- file: tests/fixtures/turn_capture/golden/subagent_background_without_completion.json
+  action: Modify
+  purpose: Regenerated expected_rows.
+- file: tests/fixtures/turn_capture/golden/nested_subagent_depth2.json
+  action: Modify
+  purpose: Regenerated expected_rows.
+- file: tests/fixtures/turn_capture/golden/hooks_resume_and_compact.json
+  action: Modify
+  purpose: Regenerated expected_rows.
+- file: tests/fixtures/turn_capture/golden/empty_thinking_and_image_blocks.json
+  action: Modify
+  purpose: Regenerated expected_rows.
+- file: tests/fixtures/turn_capture/golden/orphan_tool_result.json
+  action: Modify
+  purpose: Regenerated expected_rows.
+- file: tests/fixtures/turn_capture/golden/unknown_record_and_attachment_types.json
+  action: Modify
+  purpose: Regenerated expected_rows.
+- file: tests/fixtures/turn_capture/golden/trailing_partial_line.json
+  action: Modify
+  purpose: Regenerated expected_rows.
+- file: tests/fixtures/turn_capture/golden/malformed_line.json
+  action: Modify
+  purpose: Regenerated expected_rows.
+- file: tests/fixtures/turn_capture/golden/observed_real_shapes.json
+  action: Modify
+  purpose: Regenerated expected_rows.
+- file: tests/fixtures/turn_capture/golden/secrets.json
+  action: Modify
+  purpose: Regenerated expected_rows (the tool_output rows are scrubbed like every other payload).
+- file: tests/fixtures/turn_capture_corpus.py
+  action: Modify
+  purpose: Loader applies a case's optional full_output_cap_bytes override; builders for an MCP-overflow tool_result and a hooks-before-first-record case.
+- file: tests/fixtures/turn_capture_ducklake.py
+  action: Modify
+  purpose: Specs built through the rules-bearing projection (load_specs) so the local-DuckLake integration tests exercise every rule.
+- file: tests/telemetry/test_rules.py
+  action: Create
+  purpose: Mirror test module for src/telemetry/rules.py (Decision 131), 100% line coverage (Decision 159).
+- file: tests/telemetry/test_append.py
+  action: Modify
+  purpose: prepare/execute split, transaction-agnostic execute, typed errors, hash-based compare for transcripts.
+- file: tests/telemetry/test_append_ducklake_integration.py
+  action: Modify
+  purpose: Four tables in one caller-owned transaction; a GrainConflictError in the third leaves the first two unwritten.
+- file: tests/telemetry/test_gate.py
+  action: Modify
+  purpose: Typed errors and compare exclusions within a batch.
+- file: tests/telemetry/test_timestamps.py
+  action: Modify
+  purpose: parse_wire_timestamp's exactly-three-digits rule.
+- file: tests/telemetry/test_contract_amendments.py
+  action: Modify
+  purpose: Guards for the envelope, transcripts, observations and sessions amendments and the two Decision annotations.
+- file: tests/telemetry/test_parser_version_registry.py
+  action: Modify
+  purpose: The registry's full_output_cap_bytes equals the producer constant and is <= the contract's cap.
+- file: tests/test_field_semantics_event_projection.py
+  action: Modify
+  purpose: Rule projection (accepted values incl. the registry-sourced agent_type set, required_when, not_before, max_after_write_seconds, exactly_one_of, content rules, compare exclusions) and fail-closed on unknown rule keys.
+- file: tests/turn_capture/test_transcript.py
+  action: Modify
+  purpose: test_pin_is_first_parseable_timestamp_in_root_file_order is replaced (guard replaced, never deleted) by the earliest-timestamp pin test.
+- file: tests/turn_capture/test_transcripts.py
+  action: Modify
+  purpose: Model-visible tool_result, tool_output row, omission over cap, MCP overflow, unavailable sidecar; test_sidecar_or_truncated_and_pins inverted to the new semantics.
+- file: tests/turn_capture/test_observations.py
+  action: Modify
+  purpose: output_* dispositions on every tool_call close shape.
+- file: tests/turn_capture/test_record_turn.py
+  action: Modify
+  purpose: Golden equality under v2; PinOrderError on a post-pin earlier record; every emitted row passes the kernel rules.
+- file: tests/turn_capture/test_refs.py
+  action: Modify
+  purpose: full_output_ref grammar passes canonical_ref.
+- file: tests/turn_capture/test_real_transcript_conformance.py
+  action: Modify
+  purpose: >-
+    The raw walk's sidecar invariant changes from 'resolvable sidecars stored untruncated' to 'every readable persisted
+    output (incl. MCP overflow) has exactly one tool_output row or omission row, and every tool_result row stores the
+    in-transcript text'; every emitted row passes the kernel rules; the pin equals the minimum raw timestamp.
+bundled_recommendations:
+- rec-4137
+followon_recs: []
+infrastructure_dependencies: []
+acceptance_criteria:
+- >-
+  Every declared row-local rule of the four telemetry contracts (not-null, accepted values incl. the registry-sourced
+  agent_type set, required_when, exactly-one-of, event_timestamp not_before session_started_at, the 300 s write-time skew,
+  content integrity/threshold/cap) is projected by the generator and rejected by the kernel before any SQL with a
+  GateError naming table, rule and column; no rule is a literal in src/telemetry.
+- append.py exposes prepare_batch and a transaction-agnostic execute_prepared; append_events keeps its behaviour; a grain conflict raises GrainConflictError; transcripts compare by (content_sha256, content_bytes).
+- parse_wire_timestamp accepts exactly three fraction digits and rejects every other width and naive input.
+- >-
+  The producer emits parser_version 2: earliest-timestamp pin (PinOrderError on a later earlier record); model-visible
+  tool_result content; tool_output rows or omission rows for persisted outputs incl. MCP overflow; output_* on every
+  tool_call close; every golden and real row passes the kernel rules; the registry carries v2 with the regenerated digest.
+- The contracts, lexicon and the two Decision annotations carry the amendments with category-6 amendment_log entries; every telemetry contract stays <= 500 effective lines.
+- rec-4137 closes (stale dedupe_key docstring fixed).
+verification_plan:
+- step: 1
+  phase: pre-deploy
+  action: Kernel row rules (fast tier, stdlib).
+  command: >-
+    bin/venv-python -m pytest tests/telemetry/test_rules.py::test_each_rule_kind_rejects_with_table_rule_and_column
+    tests/telemetry/test_rules.py::test_required_when_and_exactly_one_of_with_omission
+    tests/telemetry/test_rules.py::test_ordering_and_write_time_skew_are_monotone_on_retry
+    tests/telemetry/test_rules.py::test_content_integrity_threshold_and_cap
+    tests/telemetry/test_rules.py::test_rules_are_built_only_from_projection -q
+  expected: 'Exit 0, 5 passed. Red before: the module does not exist.'
+  fix_if: A rule passes a violating row -> fix rules.py against the pinned rule; never widen the rule.
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: telemetry-kernel-row-rules
+  expected_literals: []
+- step: 2
+  phase: pre-deploy
+  action: Rule projection from the real contracts, and fail-closed on unknown rule keys.
+  command: >-
+    bin/venv-python -m pytest tests/test_field_semantics_event_projection.py::test_row_rules_projected_from_contracts
+    tests/test_field_semantics_event_projection.py::test_agent_type_accepted_values_come_from_source_registry
+    tests/test_field_semantics_event_projection.py::test_unknown_rule_key_fails_closed -q
+  expected: 'Exit 0, 3 passed. Red before: nodes absent.'
+  fix_if: A contract rule missing from the projection -> add its mapping; an unknown key -> reject, never ignore.
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: telemetry-rule-projection
+  expected_literals: []
+- step: 3
+  phase: pre-deploy
+  action: prepare/execute split, typed errors, hash-based transcript compare, wire timestamps (fast tier).
+  command: >-
+    bin/venv-python -m pytest tests/telemetry/test_append.py::test_prepare_then_execute_equals_append_events
+    tests/telemetry/test_append.py::test_grain_conflict_is_typed
+    tests/telemetry/test_append.py::test_transcript_representation_change_is_not_a_conflict
+    tests/telemetry/test_gate.py::test_gate_errors_are_typed
+    tests/telemetry/test_timestamps.py::test_wire_timestamp_requires_exactly_three_fraction_digits -q
+  expected: 'Exit 0, 5 passed. Red before: nodes absent.'
+  fix_if: A facade behaviour change -> restore append_events' contract; a substring-mapped error -> raise the typed class.
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: telemetry-kernel-prepare-execute
+  expected_literals: []
+- step: 4
+  phase: pre-deploy
+  action: Multi-table caller-owned transaction on a real local DuckLake (duckdb; integration).
+  command: >-
+    bin/venv-python -m pytest tests/telemetry/test_append_ducklake_integration.py::test_four_tables_one_transaction_all_or_nothing
+    tests/turn_capture/test_capture_ducklake_integration.py -m integration -q
+  expected: Exit 0; the failing-third-batch case leaves no rows in any table; the golden corpus loads with every FK resolving.
+  fix_if: Rows from an aborted transaction visible -> execute_prepared opened or committed a transaction; fix it.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: Needs duckdb (absent from requirements-fast.txt); the integration suite runs in the full tier.
+- step: 5
+  phase: pre-deploy
+  action: Producer v2 behaviour and golden corpus (fast tier).
+  command: >-
+    bin/venv-python -m pytest tests/turn_capture/test_transcript.py::test_pin_is_earliest_parseable_timestamp
+    tests/turn_capture/test_transcripts.py::test_tool_result_stores_model_visible_text
+    tests/turn_capture/test_transcripts.py::test_tool_output_row_or_omission_for_persisted_output
+    tests/turn_capture/test_transcripts.py::test_mcp_overflow_output_is_captured
+    tests/turn_capture/test_observations.py::test_output_capture_on_every_tool_call_close
+    tests/turn_capture/test_record_turn.py::test_golden_cases_match_expected_rows
+    tests/turn_capture/test_record_turn.py::test_earlier_record_after_pin_halts
+    tests/turn_capture/test_record_turn.py::test_every_emitted_row_passes_kernel_rules
+    tests/turn_capture/test_refs.py::test_every_ref_passes_canonical_ref -q
+  expected: 'Exit 0, 9 passed. Red before: the new nodes are absent and the golden corpus expects v1 rows.'
+  fix_if: >-
+    A golden mismatch -> fix the mapping if it departs from the pinned rules, else regenerate that case AND bump (step 6
+    fails otherwise); a row failing the kernel rules -> fix the producer (Decision 210 cl.4), never the rule.
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: turn-capture-v2-conformance
+  expected_literals: []
+- step: 6
+  phase: pre-deploy
+  action: Parser-version registry and cap agreement.
+  command: >-
+    bin/venv-python -m pytest tests/telemetry/test_parser_version_registry.py::test_output_drift_without_bump_fails
+    tests/telemetry/test_parser_version_registry.py::test_registry_matches_producer
+    tests/telemetry/test_parser_version_registry.py::test_registry_history_is_append_only_against_main
+    tests/telemetry/test_parser_version_registry.py::test_cases_match_index
+    tests/telemetry/test_parser_version_registry.py::test_full_output_cap_agrees_with_contract -q
+  expected: 'Exit 0, 5 passed. Red before: the cap node is absent.'
+  fix_if: Digest drift -> the corpus changed without its history entry; cap mismatch -> align the registry to the producer and keep both <= the contract.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: The registry module is already graduated by slice 3a (turn-capture-golden-corpus family); the append-only leg is diff-relative to origin/main.
+- step: 7
+  phase: pre-deploy
+  action: Contract amendments, Decision annotations and rec-4137.
+  command: >-
+    bin/venv-python -m pytest tests/telemetry/test_contract_amendments.py::test_session_pin_is_earliest_timestamp
+    tests/telemetry/test_contract_amendments.py::test_tool_result_capture_policy_declared
+    tests/telemetry/test_contract_amendments.py::test_tool_call_output_fields_declared
+    tests/telemetry/test_contract_amendments.py::test_decision_annotations_for_hash_compare_and_omission
+    tests/telemetry/test_append.py::test_from_projection_rejects_two_column_dedupe_key -q && ! grep -n 'dedupe_key !=
+    \[event_id, parser_version\]' src/telemetry/append.py && grep -q 'dedupe_key != \[producer, event_id, parser_version\]'
+    src/telemetry/append.py && echo ACCEPTANCE_OK
+  expected: Exit 0, 5 passed and the success marker printed.
+  fix_if: A failing assertion names the missing contract text -- fix the contract, not the test.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: The contract-amendments module is already graduated whole (telemetry-contract-risk-amendments registry row).
+  expected_literals: []
+- step: 8
+  phase: pre-deploy
+  action: Category-6 amendment ritual for the amended telemetry contracts against origin/main.
+  command: >-
+    bin/venv-python -c "import subprocess,yaml;from scripts.contracts_schema import ContractDocument;from
+    scripts.contracts_enforcement import check_amendment_for_diff;base=lambda f:yaml.safe_load(subprocess.run(['git','show','origin/main:docs/contracts/%s.yaml'%f],capture_output=True,text=True,check=True).stdout);head=lambda
+    f:yaml.safe_load(open('docs/contracts/%s.yaml'%f,encoding='utf-8'));errs=[];[errs.extend(check_amendment_for_diff(ContractDocument.model_validate(base(f)),ContractDocument.model_validate(head(f))))
+    for f in ('telemetry-event-envelope','telemetry_transcripts','telemetry_observations','telemetry_sessions')];print(chr(10).join(errs)
+    or 'AMENDMENTS_OK');assert not errs"
+  expected: Exit 0 and the success marker printed.
+  fix_if: A category-6 error names a field -- add its field-level amendment_log entry with a consistent change_class/semantic_break pair.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: Diff-relative to origin/main by construction; the standing equivalent is scripts.validate's contract drift gate.
+- step: 9
+  phase: pre-deploy
+  action: Contract size cap after compaction.
+  command: >-
+    bin/venv-python -c "from scripts.checks.structural._classify import effective_lines;import glob;big=[(f,effective_lines(open(f).read()))
+    for f in glob.glob('docs/contracts/telemetry*.yaml') if effective_lines(open(f).read())>500];print(big);assert not big;print('SIZE_OK')"
+  expected: Exit 0 and the success marker printed.
+  fix_if: An oversized contract -> compact its amendment_log (relief valve 1), never raise the cap.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: Size is guarded standing by validate_structural_size_limits.
+  expected_literals: []
+- step: 10
+  phase: pre-deploy
+  action: Real-transcript conformance on the implementing session's own transcripts (integration).
+  command: bin/venv-python -m pytest tests/turn_capture/test_real_transcript_conformance.py -m integration -q -s
+  expected: Exit 0; every emitted row passes the kernel rules; the pin equals the minimum raw timestamp; every readable persisted output has one tool_output or omission row.
+  fix_if: >-
+    A real shape the rules reject -> fix the producer; a rule the real data shows is wrong -> STOP and return to /plan
+    (Decision 210 cl.4: fix the definition at the source, never demote).
+  hermetic: false
+  graduation: not-applicable
+- step: 11
+  phase: pre-deploy
+  action: Full validation tier before handoff.
+  command: bin/venv-python -m scripts.validate
+  expected: Exit 0.
+  fix_if: Fix the named check; never raise a budget or skip a check.
+  hermetic: false
+  graduation: not-applicable
+- step: 12
+  phase: post-deploy
+  action: >-
+    Closure -- after the squash merge carrying 'Resolves: rec-4137', confirm it reads closed.
+  command: >-
+    bin/venv-python -m scripts.sync.ops sync && bin/venv-python -c "import json,pathlib;
+    r={json.loads(l)['id']:json.loads(l)['status'] for l in pathlib.Path('logs/.recommendations-log.jsonl').read_text().splitlines() if l.strip()};
+    print(r.get('rec-4137'));raise SystemExit(0 if r.get('rec-4137')=='closed' else 1)"
+  expected: Exit 0, closed printed.
+  fix_if: The cache pulls 0 recs (reader 502) -> confirm with the ducklake-reads rec_by_id named read; trailer no-op -> Decision 201 manual update_rec fallback.
+test_obligations:
+- source: src/telemetry/rules.py
+  behavior: Every rule kind rejects a violating row with table, rule and column; rules come only from the projection.
+  verification_step: 1
+  test_selector: tests/telemetry/test_rules.py::test_each_rule_kind_rejects_with_table_rule_and_column
+  red_green_expectation: red before (module absent), green after
+- source: scripts/field_semantics_event_projection.py
+  behavior: Row rules projected from the real contracts, registry-sourced agent_type values, fail-closed on unknown keys.
+  verification_step: 2
+  test_selector: tests/test_field_semantics_event_projection.py::test_row_rules_projected_from_contracts
+  red_green_expectation: red before (node absent), green after
+- source: src/telemetry/append.py
+  behavior: prepare/execute split equals append_events; typed grain conflict; transcript representation change is not a conflict.
+  verification_step: 3
+  test_selector: tests/telemetry/test_append.py::test_prepare_then_execute_equals_append_events
+  red_green_expectation: red before (node absent), green after
+- source: src/telemetry/gate.py
+  behavior: Gate and grain errors are typed.
+  verification_step: 3
+  test_selector: tests/telemetry/test_gate.py::test_gate_errors_are_typed
+  red_green_expectation: red before (node absent), green after
+- source: src/telemetry/timestamps.py
+  behavior: Wire timestamps carry exactly three fraction digits.
+  verification_step: 3
+  test_selector: tests/telemetry/test_timestamps.py::test_wire_timestamp_requires_exactly_three_fraction_digits
+  red_green_expectation: red before (node absent), green after
+- source: src/turn_capture/transcript.py
+  behavior: The pin is the earliest parseable timestamp in the root file.
+  verification_step: 5
+  test_selector: tests/turn_capture/test_transcript.py::test_pin_is_earliest_parseable_timestamp
+  red_green_expectation: red before (node absent; the old pin is file-order), green after
+- source: src/turn_capture/transcripts.py
+  behavior: Model-visible tool_result text; tool_output row or omission; MCP overflow captured.
+  verification_step: 5
+  test_selector: tests/turn_capture/test_transcripts.py::test_tool_output_row_or_omission_for_persisted_output
+  red_green_expectation: red before (node absent), green after
+- source: src/turn_capture/observations.py
+  behavior: output_capture and output_* on every tool_call close shape.
+  verification_step: 5
+  test_selector: tests/turn_capture/test_observations.py::test_output_capture_on_every_tool_call_close
+  red_green_expectation: red before (node absent), green after
+- source: src/turn_capture/refs.py
+  behavior: full_output_ref grammar passes canonical_ref.
+  verification_step: 5
+  test_selector: tests/turn_capture/test_refs.py::test_every_ref_passes_canonical_ref
+  red_green_expectation: red before (full_output_ref absent, node fails), green after
+- source: src/turn_capture/record_turn.py
+  behavior: v2 golden equality; halt on a post-pin earlier record; every row passes the kernel rules.
+  verification_step: 5
+  test_selector: tests/turn_capture/test_record_turn.py::test_every_emitted_row_passes_kernel_rules
+  red_green_expectation: red before (node absent), green after
+- source: config/telemetry/parser_versions.yaml
+  behavior: v2 history entry with the regenerated digest; cap agrees with producer and contract.
+  verification_step: 6
+  test_selector: tests/telemetry/test_parser_version_registry.py::test_full_output_cap_agrees_with_contract
+  red_green_expectation: red before (node absent), green after
+- source: docs/contracts/telemetry-event-envelope.yaml
+  behavior: Earliest-timestamp pin, not_before ordering, 300 s skew, three-digit wire precision declared.
+  verification_step: 7
+  test_selector: tests/telemetry/test_contract_amendments.py::test_session_pin_is_earliest_timestamp
+  red_green_expectation: red before (old wording), green after
+- source: docs/contracts/telemetry_transcripts.yaml
+  behavior: Model-visible content, tool_output purpose, omission, exactly-one-of widening, sizes, hash compare declared.
+  verification_step: 7
+  test_selector: tests/telemetry/test_contract_amendments.py::test_tool_result_capture_policy_declared
+  red_green_expectation: red before, green after
+- source: docs/contracts/telemetry_observations.yaml
+  behavior: The four output_* fields with their accepted values and required_when.
+  verification_step: 7
+  test_selector: tests/telemetry/test_contract_amendments.py::test_tool_call_output_fields_declared
+  red_green_expectation: red before, green after
+- source: docs/DECISIONS.md
+  behavior: Dated annotations on Decisions 207 and 199 name the hash compare and the omission state.
+  verification_step: 7
+  test_selector: tests/telemetry/test_contract_amendments.py::test_decision_annotations_for_hash_compare_and_omission
+  red_green_expectation: red before, green after
+constraints:
+- Deploy-inert -- no Lambda manifest, field_semantics.yaml, terraform or workflow change; src/telemetry and src/turn_capture stay excluded from every package (Decision 79).
+- src/telemetry stays stdlib-only and plane-neutral (.importlinter); src/turn_capture keeps its forbidden-import contract.
+- No rule is a literal in the kernel -- every rule is projected from its contract (Decision 210 cl.3).
+- Nothing from real transcripts is committed (public repo, Decision 101); every new golden case is synthetic.
+- Contracts stay <= 500 effective lines by amendment_log compaction only (Decision 166 relief valve); a compacted entry is never reworded so it reads as a new entry.
+- A rule real data breaks is fixed at the source -- producer or rule definition -- never demoted to DQ (Decision 210 cl.4); a definition change is a STOP back to /plan.
+- No rescue agents or workaround loops (Decision 55).
+context:
+- >-
+  Decision-scout: FLAGS_FOUND, resolved here -- (WARN 199 cl.5) the omission state gets a dated annotation on Decision
+  199 beside the 207 one; the post-pin earlier record is an explicit producer halt (PinOrderError); the cap's single
+  source is the contract, the registry constant is asserted <= it; no Resolves: rec-4024 (its acceptance lands with 2a-2,
+  Decision 201). CITE: 207, 199, 177, 96, 95, 184, 181, 118, 166, 79. Decisions triaged: 162 of 162; Roadmap items
+  intersected: 6; CONFLICT: 0; RELATED: 5.
+- 'gates: decision-scout=FLAGS_FOUND (all resolved); plan-critique=<pending>'
+- >-
+  Operator direction (Benjamin, 2026-09-29, slice-2 planning thread): slice 2 split into 2a/2b/2c; 2a re-cut so contract,
+  producer and write checks land together (this plan) and registration, verbs, blob route and smoke proof follow (2a-2);
+  tool-result policy and blob route adopted from two Fable consults; "move enforcement to write time" (the Decision
+  planned in PLAN-write-time-enforcement-decision, #1328; 210 expected -- cite it by number once it lands).
+- >-
+  Evidence (/mnt/project-files/telemetry-slice2/): evidence-enforcement-and-cap.md (8 hook rows up to 9.87 s before the
+  file-order pin; a 1.74 MB MCP overflow result silently not captured); a conformance probe at planning time ran every
+  declared row-local rule over 4,990 producer rows (golden + one real session) -- the ONLY violation was the pin, so every
+  other existing rule is satisfiable today. fable-consult-tool-results/ADVICE.md (V/F policy, 8 MiB cap rationale),
+  fable-consult-blob/ADVICE.md (hash compare, omission row, route threshold), fable-independent-design.md (prepare/execute).
+- >-
+  rec-4137's filed acceptance was inverted (a bare grep that passes while the stale text is present); corrected at
+  planning time via update_rec to '! grep -n <stale> src/telemetry/append.py && grep -q <fixed> src/telemetry/append.py',
+  which VP step 7 runs as filed.
+- >-
+  The DQ `enforced:` flag on dq_intent keeps its DQ-runner meaning; the kernel enforces every declared row-local rule
+  regardless (Decision 210 cl.3). rec-4158 owns the platform-wide flag re-read.
+- >-
+  Residuals (Decision 181 cl.2): the harness denial/interrupt sentinels stay unpinned (rec-4026); cross-row rules stay DQ
+  (rec-4063, rec-4101); the writer-edge application of parse_wire_timestamp and the blob grant are slice 2a-2.
+pre_implementation_checklist:
+- Branch confirmed not on main
+- docs/PROJECT_CONTEXT.md read
+- 'Only the plan-cited decision sections read: 207, 199, 96, 95, 177, 181, and the write-time enforcement Decision once merged'
+- All files in scope located and readable
+- Acceptance criteria understood and verifiable
+execution_steps:
+- >-
+  Write the red tests first (VP steps 1, 2, 3, 5, 6, 7 nodes) and confirm each FAILS on the unchanged tree.
+- >-
+  Contracts: apply the envelope, transcripts, observations, sessions and lexicon amendments per their scope purposes, with
+  field- and contract-level amendment_log entries; compact older amendment_log entries in telemetry_observations and
+  telemetry_sessions first (summarise several entries of one plan into one shorter entry; never reword an entry into a new
+  one). New dq_intent keys: not_before (a column name), max_after_write_seconds (int), full_output_cap_bytes (int),
+  integrity (true) -- declared on the fields they bind; exactly_one_of on content lists the three fields. Append the two
+  dated annotations to Decisions 207 and 199 and regenerate docs/decisions-index.json.
+- >-
+  Projection and kernel: extend the projection per its scope purpose (one rule map per column plus table_rules), then
+  rules.py, gate.py typed errors, append.py prepare/execute and compare_excluded, timestamps.py parse_wire_timestamp. The
+  kernel checks run in this order per row: unknown/derived columns, type gate, not-null, required_when, accepted values,
+  exactly-one-of, integrity/threshold/cap, orderings, write-time skew (created_timestamp is minted once per call, so an
+  identical retry is judged against a LATER created_timestamp and a row that passed once passes again -- monotone).
+- >-
+  Producer v2: session_pin earliest; PinOrderError when a cursor exists and any root record's timestamp is earlier than
+  the cursor's pinned session_started_at; transcripts V/F per the scope purpose (scrub BEFORE hashing and sizing, exactly
+  as today; the omission row's hash/size stream the scrubbed full text chunk by chunk without holding more than the cap in
+  memory); observations output_*; refs full_output_ref; FULL_OUTPUT_CAP_BYTES = 8388608 in record_turn.py, equal to the
+  registry value by test. PARSER_VERSION 2.
+- >-
+  Regenerate every golden case's expected_rows from the implementation, review each changed row against the pinned rules
+  (never accept generated output unread), add the three new cases, then write the registry's v2 history entry with the
+  new digest.
+- Execute Verification Plan steps 1-10 -- loop until pass (Decision 55).
+- Write the registry rows for graduated steps 1, 2, 3 and 5 (check ids as declared on each step).
+- >-
+  Portal bookkeeping (get_rec_write_guidance first, Decision 66; fetch-before-update via rec_by_id; prepend a dated note,
+  never overwrite): rec-4024 gains '[SLICE 2A-1 DELIVERED <date> via PLAN-telemetry-write-conformance]' naming what
+  landed and that the writer verb, registration, dimensions, blob route and smoke proof remain (2a-2); rec-4026 gains a
+  note that its producer items for the tool-result policy, MCP overflow and the pin landed here, leaving hooks, cursor
+  persistence and the capability handshake.
+- >-
+  CLOSURE -- separate facts, in order (a)-(e) (implement skill Commit Flows; docs/contracts/git-ops.yaml handoff_sequence),
+  each reported on its own. (a) READINESS: bin/venv-python -m scripts.session.github_readiness. (b) Set
+  implementation_declared true, commit, git fetch origin main and git rebase origin/main (STOP on conflict). (c) VP step 11
+  on the committed, rebased, clean tree, then bin/venv-python -m scripts.checks.validation_result --verify-head; on
+  timeout the disposition is blocked. (d) bin/venv-python -m scripts.session.postflight --evidence. (e) Push, open the PR,
+  subscribe; on green CI squash-merge with the PR body as commit_message carrying 'Resolves: rec-4137' in its own trailer
+  block; then run step 12.
+rollback: >-
+  Revert the squash commit. Nothing is deployed and no telemetry row exists yet, so a revert restores v1 behaviour with no
+  data to repair.
