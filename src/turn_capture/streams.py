@@ -401,7 +401,8 @@ def _spawns_of(stream: Stream) -> list[Spawn]:
         result = use.result_any
         info = result.use_result if result is not None else None
         if (
-            use.block_body.get("name") not in AGENT_TOOL_NAMES
+            result is None
+            or use.block_body.get("name") not in AGENT_TOOL_NAMES
             or not isinstance(info, dict)
             or not _nonempty(info.get("agentId"))
         ):

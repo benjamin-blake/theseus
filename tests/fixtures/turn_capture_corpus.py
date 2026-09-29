@@ -21,7 +21,7 @@ PROJECT = "01BX5ZZKBKACTAV9WEVGEMMVRY"
 PROJECT_REF = "example/project"
 GOLDEN_DIR = Path(__file__).parent / "turn_capture" / "golden"
 _EPOCH = datetime(2026, 1, 1, tzinfo=timezone.utc)
-_SIDE_EFFECT_KEYS = ("created_timestamp", "producer_version")
+_SIDE_EFFECT_KEYS = ("created_timestamp", "producer_version", "content_sha256")
 
 
 def ts(seconds: float) -> str:
@@ -192,9 +192,21 @@ def _render(value: Any) -> Any:
     return render_datetime(value) if isinstance(value, datetime) else value
 
 
+def assert_content_hashes(batches: list[tuple[str, list[dict[str, Any]]]]) -> None:
+    """content_sha256 is the sha256 of the UTF-8 bytes of content and content_bytes their length. The digest is dropped
+    from the committed golden rows (64-hex strings trip detect-secrets and bloat .secrets.baseline past its size budget)
+    and asserted here for every emitted row instead."""
+    for _, rows in batches:
+        for row in rows:
+            if "content" in row:
+                data = row["content"].encode("utf-8")
+                assert row["content_sha256"] == hashlib.sha256(data).hexdigest(), row["external_ref"]
+                assert row["content_bytes"] == len(data), row["external_ref"]
+
+
 def normalise(batches: list[tuple[str, list[dict[str, Any]]]]) -> list[dict[str, Any]]:
-    """Canonical rows: derived ids added with the fixed test tenant/project, None columns and the two excluded
-    columns dropped, datetimes rendered, sorted by table then event_id."""
+    """Canonical rows: derived ids added with the fixed test tenant/project; None columns and the excluded columns
+    (created_timestamp, producer_version, content_sha256) dropped; datetimes rendered; sorted by table then event_id."""
     out: list[dict[str, Any]] = []
     for table, rows in batches:
         for row in rows:

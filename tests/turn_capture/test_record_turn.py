@@ -16,6 +16,7 @@ from src.turn_capture.transcript import MemTree
 from tests.fixtures.turn_capture_corpus import (
     PROJECT_REF,
     SID,
+    assert_content_hashes,
     assistant,
     build_secret,
     case_names,
@@ -49,6 +50,7 @@ def test_golden_cases_match_expected_rows() -> None:
     for name in names:
         files, expected = load_case(name)
         result = capture(files, final=True)
+        assert_content_hashes(result.batches)
         assert normalise(result.batches) == expected, name
 
 

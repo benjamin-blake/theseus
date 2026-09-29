@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 
 import pytest
@@ -11,7 +12,7 @@ from tests.fixtures.turn_capture_corpus import build_secret
 
 PLAIN = {
     "AWS_ACCESS_KEY_ID": "aws_access",
-    "ANTHROPIC_API_KEY": "anthropic",
+    "ANTHROPIC_API_KEY": "anthropic",  # pragma: allowlist secret
     "GITHUB_TOKEN": "github",
 }
 
@@ -47,7 +48,7 @@ def test_scrub_is_idempotent() -> None:
 def test_negative_corpus_untouched() -> None:
     corpus = [
         "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
-        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        hashlib.sha256(b"digest").hexdigest(),
         "01ARZ3NDEKTSV4RRFFQ69G5FAV",
         "AKIA" + "SHORT",
         "akia" + "abcdefghijklmnop",
