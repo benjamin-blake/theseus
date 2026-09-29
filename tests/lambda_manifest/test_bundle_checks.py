@@ -333,3 +333,30 @@ def test_telemetry_kernel_excluded_from_data_pipeline(tmp_path):
     stage_bundle(data_pipeline, stage_dir, skip_pip=True)
     staged_telemetry_paths = [p for p in stage_dir.rglob("*") if "telemetry" in p.parts]
     assert staged_telemetry_paths == [], f"src/telemetry leaked into data-pipeline.zip: {staged_telemetry_paths}"
+
+
+# ---------------------------------------------------------------------------
+# PLAN-telemetry-turn-capture-core: src/turn_capture stays out of data-pipeline (Decision 79 V2 ground);
+# the plane-neutral transcript producer core has no Lambda in slice 3a.
+# ---------------------------------------------------------------------------
+
+
+def test_turn_capture_excluded_from_data_pipeline(tmp_path):
+    manifests = load_all()
+    data_pipeline = manifests["data-pipeline"]
+    assert "src/turn_capture" in set(data_pipeline.excludes), "data-pipeline manifest must exclude src/turn_capture"
+
+    changed = [
+        "src/turn_capture/__init__.py",
+        "src/turn_capture/record_turn.py",
+        "src/turn_capture/streams.py",
+        "src/turn_capture/scrub.py",
+    ]
+    affected = compute_affected_artifacts(changed)
+    assert "data-pipeline" not in affected, affected
+
+    stage_dir = tmp_path / "stage"
+    stage_dir.mkdir()
+    stage_bundle(data_pipeline, stage_dir, skip_pip=True)
+    staged_paths = [p for p in stage_dir.rglob("*") if "turn_capture" in p.parts]
+    assert staged_paths == [], f"src/turn_capture leaked into data-pipeline.zip: {staged_paths}"
