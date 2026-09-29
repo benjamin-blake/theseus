@@ -28,6 +28,15 @@ contract:
     check: validate_data_model_standard
 
 amendment_log:
+  - date: "2026-09-29"
+    semantic_break: true
+    change_class: governance_note_add
+    summary: >-
+      PLAN-write-time-enforcement-decision (Decision 210): added rule write-time-enforcement --
+      every data rule a write can decide is enforced at the write boundary (row-local rules always;
+      cross-row rules when decidable in the write's own transaction and independent of producer
+      arrival order); DQ monitors own the remainder. Extended design_time_walk step 7 with one
+      sentence pointing at the new rule.
   - date: "2026-09-28"
     semantic_break: true
     change_class: governance_note_add
@@ -108,10 +117,10 @@ amendment_log:
       validate_table_registration.py is the new admission control this plan adds separately.
       semantic_break=false.
 
-version: 3
-updated_at: "2026-09-28"
-updated_by: "PLAN-telemetry-grain-and-generations"
-decisions_cited: [78, 81, 84, 95, 96, 97, 141, 66, 137, 199, 191, 207]
+version: 4
+updated_at: "2026-09-29"
+updated_by: "PLAN-write-time-enforcement-decision"
+decisions_cited: [78, 81, 84, 95, 96, 97, 141, 66, 137, 199, 191, 207, 210]
 
 # Vocabulary reservation (environment-taxonomy.yaml's reserved_meaning / do_not_use_for row
 # shape): disambiguates a cluster of "smoke"-adjacent terms that Decision 191's amendment
@@ -203,6 +212,36 @@ rules:
       stored whole-row content hash as tiebreak was considered and rejected -- it hides the
       defect. OUT OF SCOPE: Type-1 current projections, control-class tables, and
       replacement-shaped derived materializations (T2.52 c1).
+  - id: write-time-enforcement
+    statement: >-
+      Decision 210: every data rule a write can decide is enforced at the write boundary; DQ
+      monitors own only what a write cannot. ROW-LOCAL rules (decidable from one row's own values
+      plus static contract data and the writer's clock: type, not-null, accepted values,
+      required_when, exactly-one-of, format/bounds, in-row orderings) are always enforced at
+      write, rejecting loudly and writing nothing for the whole request (Decision 55, Decision 207
+      reject semantics). CROSS-ROW rules are write-owned only when BOTH hold: (a) decidable inside
+      the write's own transaction, bounded to the batch's partitions, with no extra catalog
+      round-trip, AND (b) its truth does not depend on the arrival order of independent
+      producers. Write-owned under this test: the Decision 207 grain MERGE, the ops writer's
+      in-transaction referential check (Decision 81 cl.8), the rec status DAG (Decision 103) and
+      Decision 84 I-2 id allocation; the ops instances' Decision 207 residuals stay with rec-4121
+      items 1-3. DQ-owned remainder: references across independent producers (telemetry parent
+      existence, R3), concurrent-append race duplicates, pending generations, cardinalities.
+      Single source: write-time checks derive from the table's ONE declared rule source, never
+      hand-restated in writer code -- for telemetry the owning Class A contract; for the ops
+      tables the choice among the Class A contract, field_semantics.yaml,
+      config/agent/data_quality/ops.yaml and the CD.12 Pydantic Annotated models is rec-4158's; an
+      exemption sits beside the rule with its reason and owning rec. A clock-dependent rule is
+      monotone (an identical re-send stays a no-op, Decision 207). An in-row ordering between
+      values minted by different producers' clocks (e.g. a transcript-less producer's
+      event_timestamp against a handed-off session_started_at, rec-4028) crosses a clock domain
+      and is enforced only with a declared skew bound in the owning contract, never as an exact
+      comparison. A transcript-derived producer can re-emit a rejected row after a fix (re-parse
+      under a parser_version bump) but a transcript-less producer (rec-4028) cannot, so the
+      write-time-rejects-block-valid-capture reversal condition weighs most for those. Fix at the
+      source, never demote to DQ; a new accepted value ships contract amendment plus writer deploy
+      before any producer emits it. The writer check is primary on every adapter; engine
+      constraints (e.g. NOT NULL) are declared as defence in depth (Decision 100).
   - id: identity-ulid-at-boundary
     statement: >-
       Identity is a ULID (Crockford base32), minted once at the write boundary (the writer Lambda /
@@ -269,7 +308,9 @@ design_time_walk: >-
   (telemetry/event tables are insert-once append_only with no SCD2 envelope, Decision 96). 6.
   Partitioning (CD.9): every table is partitioned; name the partition column. 7. Reject-CRUD
   checklist: no in-place UPDATE/DELETE as the default write path, no one-row-per-entity mutation
-  model, a read cache is never a write source (AGENTS.md Warehouse-as-source-of-truth invariant).
+  model, a read cache is never a write source (AGENTS.md Warehouse-as-source-of-truth invariant). Also classify every
+  declared data rule as write-decidable (enforce at write per rule write-time-enforcement,
+  Decision 210) or DQ-owned.
   8. Fable escalation: for load-bearing/novel calls only -- a NEW table, a NEW identity scheme, or
   a merge_key change -- dispatch a model:"fable" advice-consult per the overseer skill's Fable
   Advice-Consult Protocol before committing the design. Routine, already-settled calls (an
