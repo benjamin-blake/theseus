@@ -44,7 +44,15 @@ def test_write_time_enforcement_rule_declared() -> None:
     standard, rule, _ = _load()
     number = _decision_number(rule["statement"])
     statement = _norm(rule["statement"])
-    for phrase in ("row-local", "required_when", "exactly-one-of", "own transaction", "arrival order", "clock domain", "defence in depth"):
+    for phrase in (
+        "row-local",
+        "required_when",
+        "exactly-one-of",
+        "own transaction",
+        "arrival order",
+        "clock domain",
+        "defence in depth",
+    ):
         assert phrase in statement, f"rule statement must carry {phrase!r}"
     walk = standard["design_time_walk"]
     assert "write-time-enforcement" in walk and f"Decision {number}" in walk
