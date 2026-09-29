@@ -74,8 +74,10 @@ scope:
       of aws_iam_policy.platform_security_admin must be exactly one update, PRESENTED, applied only
       on explicit human direction; its expected text says FIVE PlatformSecurityHeartbeat* Sids are
       added (the four from #1316 plus the validator), nothing removed. Step 9 BECOMES the simulate gate (old step 10) extended to five
-      Sids: the validate Sid's Resource "*" is simulated against the literal request resource
-      arn:aws:states:REGION:ACCOUNT:stateMachine:* (built in memory, never printed), and Action is
+      Sids: the validate Sid's Resource "*" is simulated on the request resource "*" as-is, never
+      substituted by a stateMachine:* ARN (res = s["Resource"]; the IAM simulator never matches an
+      action with no resource type against a specific ARN -- context: simulator evidence), its
+      action and expected texts drop the "literal request resource" claim, and Action is
       normalised to a list (the old one-liner splatted the scalar DescribeExecution Action into
       characters). Step 10 BECOMES the full baseline plan (old step 8's -lock=false exact-address
       check) with the admin policy gone from the update set: exactly the seven canary creates plus
@@ -150,9 +152,9 @@ acceptance_criteria:
   - >-
     Before merge, the ADMIN gate shows on the PR head: the full plan fails with exactly one error,
     the ValidateStateMachineDefinition denial; every walk address except the state machine and the
-    schedule that depends on it plans (5 add, 3 change, 0 destroy) with the admin policy update carrying the new Sid; and IAM's simulator allows
-    PlatformAdmin the validator on the literal request resource only with the PR's policy, while
-    denying other states verbs off-family. The counts-only evidence is in the PR description for
+    schedule that depends on it plans (5 add, 3 change, 0 destroy) with the admin policy update carrying the new Sid; and IAM's simulator, on
+    request resource "*", allows PlatformAdmin the validator only with the PR's policy and not with
+    that Sid narrowed to the platform-security-* family, while denying other states verbs off-family. The counts-only evidence is in the PR description for
     that head (Decision 115), never in a committed file.
 verification_plan:
   - step: 1
@@ -213,6 +215,8 @@ verification_plan:
           "step 0 materialises tfvars from the sanctioned secret": 0 in s and "agent-platform-terraform-personal-tfvars" in s[0]["command"] and "umask 077" in s[0]["command"],
           "step 8 is the targeted phase-1 grant plan": plan_cmd(8) and all("-target=aws_iam_policy.platform_security_admin" in c for c in plan_cmd(8)),
           "step 9 simulates five Sids": "simulate-principal-policy" in s[9]["command"] and re.search(r"len\(st\)\s*==\s*5", s[9]["command"]),
+          "step 9 simulates the Resource-* Sid on *, never a literal stateMachine:* ARN": 'stateMachine:*"' not in s[9]["command"] and re.search(r'res\s*=\s*s\["Resource"\]\s*$', s[9]["command"], re.M),
+          "step 9 action/expected no longer claim the literal request resource": "literal request resource" not in s[9]["action"] + s[9]["expected"],
           "step 10 is the untargeted exact-address baseline": plan_cmd(10) and not any("-target" in c for c in plan_cmd(10)) and "aws_iam_policy.platform_security_admin" not in s[10]["command"],
           "no step before 10 runs an untargeted plan": all("-target" in c for n in (0, 8, 9) for c in plan_cmd(n)),
           "step 21 fix_if names this fix": "PLAN-heartbeat-canary-plan-time-grant" in s[21]["fix_if"],
@@ -321,7 +325,7 @@ verification_plan:
     graduation: not-applicable
   - step: 11
     phase: pre-deploy
-    action: PRE-MERGE GATE (ADMIN) -- IAM's own evaluator proves the new Sid is exactly the missing piece for PlatformAdmin, and grants nothing else
+    action: PRE-MERGE GATE (ADMIN) -- IAM's own evaluator, on request resource "*", proves the new Sid is exactly the missing piece for PlatformAdmin, still denies the inert family-narrowed form, and grants nothing else
     command: |-
       M="${TMPDIR:-/tmp}/canary-grant-evidence" && test -s "$M/candidate-policy.json" && test -s "$M/region" && R=$(cat "$M/region") && M="$M" R="$R" bin/venv-python - <<'EOF'
       import json, os, subprocess, sys
@@ -333,28 +337,43 @@ verification_plan:
       acct, r = run("sts", "get-caller-identity")["Account"], os.environ["R"]
       admin = "arn" + ":aws:iam::" + acct + ":role/PlatformAdmin"
       cand = open(os.path.join(os.environ["M"], "candidate-policy.json")).read()
-      req = f"arn:aws:states:{r}:{acct}:stateMachine:*"
+      V, VSID = "states:ValidateStateMachineDefinition", "PlatformSecurityHeartbeatDefinitionValidate"
+      doc = json.loads(cand)
+      vs = [s for s in doc["Statement"] if s.get("Sid") == VSID]
+      if len(vs) != 1 or vs[0].get("Resource") != "*":
+          sys.exit(f"SIMULATE STOP -- the candidate has {len(vs)} {VSID} statement(s), or its Resource is not *")
+      vs[0]["Resource"] = f"arn:aws:states:{r}:{acct}:stateMachine:platform-security-*"
+      narrowed = json.dumps(doc)
       off = f"arn:aws:states:{r}:{acct}:stateMachine:not-platform-security"
       sim = lambda extra, acts, res: {e["EvalActionName"]: e["EvalDecision"] for e in run("iam", "simulate-principal-policy", "--policy-source-arn", admin, *extra, "--action-names", *acts, "--resource-arns", res)["EvaluationResults"]}
-      before = sim([], ["states:ValidateStateMachineDefinition"], req)
-      after = sim(["--policy-input-list", cand], ["states:ValidateStateMachineDefinition"], req)
+      before = sim([], [V], "*")
+      after = sim(["--policy-input-list", cand], [V], "*")
+      inert = sim(["--policy-input-list", narrowed], [V], "*")
       offacts = ["states:CreateStateMachine", "states:StartExecution", "states:DeleteStateMachine"]
       others_today = sim([], offacts, off)
       others = sim(["--policy-input-list", cand], offacts, off)
       widened = sorted(a for a in offacts if others[a] == "allowed" and others_today[a] != "allowed")
-      print(json.dumps({"validator_live_today": before, "validator_with_pr_policy": after, "off_family_today": others_today, "off_family_with_pr_policy": others, "widened_by_pr_policy": widened}))
-      good = before["states:ValidateStateMachineDefinition"] != "allowed" and after["states:ValidateStateMachineDefinition"] == "allowed" and not widened
-      print("SIMULATE OK -- the PR policy grants exactly the missing validator call") if good else sys.exit("SIMULATE STOP")
+      print(json.dumps({"validator_live_today": before, "validator_with_pr_policy": after, "validator_with_family_narrowed_sid": inert, "off_family_today": others_today, "off_family_with_pr_policy": others, "widened_by_pr_policy": widened}))
+      good = before[V] != "allowed" and after[V] == "allowed" and inert[V] != "allowed" and not widened
+      print("SIMULATE OK -- the PR policy grants exactly the missing validator call, and the inert family-narrowed form stays denied") if good else sys.exit("SIMULATE STOP")
       EOF
     expected: >-
       one JSON line of action names and decisions only (validator implicitDeny today, allowed with
-      the PR's policy; widened_by_pr_policy empty -- the PR policy allows no off-family states verb
-      that PlatformAdmin lacked today), then SIMULATE OK. Post the
-      JSON line in the PR description with step 10's.
+      the PR's policy, not allowed with that policy's validator Sid narrowed in memory to
+      stateMachine:platform-security-*; widened_by_pr_policy empty -- the PR policy allows no
+      off-family states verb that PlatformAdmin lacked today), then SIMULATE OK. The validator is
+      simulated on request resource "*" (SimulatePrincipalPolicy's documented ResourceArns
+      default), never the literal stateMachine:* ARN: the simulator never matches an action with no
+      resource type against a specific ARN, so that form returned implicitDeny for every policy
+      (context: simulator evidence). The narrowed control keeps the probe able to fail on the inert
+      shape. Post the JSON line in the PR description with step 10's.
     fix_if: >-
       validator allowed today -- the grant is already live: stop and establish who; still denied
       with the PR policy -- the Sid's Resource or Action is wrong: fix it in this PR and re-run steps
-      10-11; widened_by_pr_policy non-empty -- the exception is too wide (step 1 should also be
+      10-11; the pre-check STOP -- the rendered validator Sid is missing, duplicated or not Resource "*" (the HCL and the admin_grant_problems pin disagree): fix it in this PR and re-run steps 10-11;
+      allowed with the family-narrowed Sid -- the probe no longer tells the inert shape apart
+      (another candidate statement grants the action, or the simulator changed): STOP and RCA with
+      the human, never drop the control (Decision 181); widened_by_pr_policy non-empty -- the exception is too wide (step 1 should also be
       red); an off-family verb already allowed today (off_family_today) is a pre-existing
       PlatformAdmin grant, not this PR -- record it and raise it with the human, it does not fail
       this step; "Backend initialization required" or a missing region file -- re-run step 10 first
@@ -411,20 +430,21 @@ constraints:
   - Edits to PLAN-platform-security-heartbeat-canary.yaml are limited to post-deploy steps 0 and 8-10, step 11 and 21 fix_if, and infrastructure_dependencies bullet 2.
   - Decompose, never raise, an SLOC budget (Decision 128). IMPLEMENTATION only (Decision 67). No rescue loops; unrecoverable live failure stops for RCA (Decision 55).
 context:
-  - "Decision-scout verdict FLAGS_FOUND (one NOTE, Decision 181: the Sid-keyed admin_grant_problems exception is a deliberate relaxation of a graduated guard -- disposition below). CITE: 202, 177, 126, 101, 48, 189, 128. Decisions triaged: 159 of 159. Roadmap items intersected: 4; CONFLICT: 0; RELATED: 4"
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PROCEED after 2 round(s); round 2 autonomous (round 1 REVISE: F1 step-11 init dependency, F2 stale Sid-count/step-number texts, F3 off-family misattribution, F4 spacing literal -- all fixed; round 2 touch-ups folded in)"
-  - "Step 6b (Benjamin, confirmed; Access Analyzer follow-on rec not requested): Resource \"*\" (documented form for a no-resource-type action; in-file precedent); read-only pre-merge gate (bootstrap-adopt precedent) over a pre-merge apply; rec-4140 filed for the standing admin-root pre-merge-plan rule."
+  - "Decision-scout verdict FLAGS_FOUND (one NOTE, Decision 181: the Sid-keyed admin_grant_problems exception is a deliberate relaxation of a graduated guard -- disposition below). CITE: 202, 177, 126, 101, 48, 189, 128. Decisions triaged: 159 of 159. Roadmap items intersected: 4; CONFLICT: 0; RELATED: 4. Amendment 2026-09-28 (step-11 probe): FLAGS_FOUND (one NOTE, Decision 181 -- disposition in the simulator-evidence bullet). CITE: 202, 48, 59, 101, 115, 126, 148, 189. Decisions triaged: 162 of 162. Roadmap items intersected: 0; CONFLICT: 0; RELATED: 0"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PROCEED after 2 round(s); round 2 autonomous (round 1 REVISE: F1 step-11 init dependency, F2 stale Sid-count/step-number texts, F3 off-family misattribution, F4 spacing literal -- all fixed; round 2 touch-ups folded in). Amendment (step-11 probe): decision-scout=FLAGS_FOUND; plan-critique=REVISE round 1 (F1 control evidence, F2 step-4 positive/text assertions, F3 pre-check fix_if -- all fixed); PROCEED after 2 round(s); round 2 autonomous"
+  - "Step 6b (Benjamin, confirmed; Access Analyzer follow-on rec not requested): Resource \"*\" (documented form for a no-resource-type action; in-file precedent); read-only pre-merge gate (bootstrap-adopt precedent) over a pre-merge apply; rec-4140 filed for the standing admin-root pre-merge-plan rule. Amendment 2026-09-29 (Benjamin): the step-11 probe rewrite and the Decision 181 disposition are directed as-is; the simulator lesson is logged as rec-4150 only (no CLAUDE.md edit here)."
   - "Decision 48 tension, stated: V3 wants deploy+verify evidence before merge, but this admin-only root merges code first (Decision 126). The pre-merge ADMIN gate (steps 10-11) is the merge precondition; the canary walk's steps 8-10 are the behavioural acceptance. Residual: the live validator's verdict on the canary definition first runs at canary step 10 (no canary resource exists then; a rejection is a new PR). rec-4140 generalises the rule."
   - "Decision 181 NOTE disposition (Fable consult, adopted): the exception is Sid-keyed and a positive pin (exactly one Allow statement, one action, Resource \"*\"), every existing red case is kept, two tightenings land in the same diff, and the re-narrow trigger is recorded in the HCL comment and the Decision 202 Update. Industry parallel: Checkov/tfsec/Kyverno exceptions keyed on a specific identity with a mandatory justification; a new rec against rec-3357 was judged unnecessary (it already owns the residual)."
   - "Canary plan AC4 ('platform-security-* resources only') is superseded by Decision 202's second Update for the one validator Sid; acceptance_criteria is a prohibited field there, so it is left as written, not drift."
   - "Re-order trade-off: whole-root drift is first observed at the new canary step 10, after the targeted phase-1 apply (bounded: step 8 asserts exactly one update). Implementer: rebase onto origin/main before VP steps 7-8 (fast-tier budget changed in #1318)."
   - "Decision 189: steps 1 and 3 are waived, not graduated -- their class selectors are already graduated rows and would be green on the plan-only tree."
+  - "Simulator evidence (ADMIN, 2026-09-28, simulate-custom-policy, AWS doc example account): every action with no resource type tried (the validator, states:ListStateMachines, s3:ListAllMyBuckets) is implicitDeny with 0 matched statements on any specific ARN, even under Resource \"*\" or the identical ARN; each is allowed on \"*\"; typed states:DescribeStateMachine is allowed on the ARN; the validator under a stateMachine:platform-security-* (or arn:aws:states:*) statement is implicitDeny on \"*\", and a PlatformAdmin prototype of step 11 returned SIMULATE OK (inert control implicitDeny) and STOPped on a typo'd action and on states:*. Hence step 11 and canary step 9 simulate on \"*\". Decision 181 disposition: a validity fix, not a softening -- the literal-ARN form could not return allowed under any policy; kept: implicitDeny today, allowed with the PR policy, the off-family check byte-unchanged; added: the family-narrowed control and the one-Sid/Resource-* pre-check; dropped: the literal-ARN simulation only; residual: the live request is first proven at canary step 10 (AWS: simulator results can differ from live)."
   - "Defect evidence: ADMIN session at origin/main 7572f3b0 -- full plan AccessDenied on states:ValidateStateMachineDefinition (request resource stateMachine:*); targeted plan of every other walk address: 5 add, 3 change, 0 destroy."
   - "Provider (hashicorp/aws v5.100.0): sfn/state_machine.go CustomizeDiff = stateMachineDefinitionValidate (API call when definition changes) + stateMachineUpdateComputedAttributesOnPublish (local); scheduler schedule.go and schedule_group.go have none. Read path: DescribeStateMachine, ListStateMachineVersions, ListTagsForResource -- granted."
   - "AWS service reference (servicereference states.json): ValidateStateMachineDefinition has no Resources entry (IsWrite false). A DEV-profile probe on 2026-09-28 reproduced the same request resource shape."
   - "Gotcha: CreateStateMachine is retried by the provider on AccessDeniedException (IAM consistency) until the create timeout -- a missing create-time verb reads as a hang in phase 2."
   - "Gotcha: #1316's step 10 splatted a scalar Action (PlatformSecurityHeartbeatExecutionRead) into characters; the rewritten step 9 normalises it. It never ran, so it was never observed."
-  - "Related, not bundled: rec-2913 (standing lint for grants at a resource axis the verb cannot authorise on -- this is that class), rec-4130 (commit the bootstrap provider lock so the plan-time call set is pinned), rec-3174 (bootstrap CLAUDE.md -var-file path)."
+  - "Related, not bundled: rec-2913 (standing lint for grants at a resource axis the verb cannot authorise on -- this is that class), rec-4130 (commit the bootstrap provider lock so the plan-time call set is pinned), rec-3174 (bootstrap CLAUDE.md -var-file path), rec-4150 (the simulator gotcha for terraform/CLAUDE.md)."
   - "Hand-back: the ADMIN session resumes PLAN-platform-security-heartbeat-canary at step 0 with CANARY_MERGE_SHA = this fix's squash sha; rec-4044 step 20 MERGE_SHA is the same sha."
 pre_implementation_checklist:
   - Branch confirmed not on main
