@@ -38,8 +38,8 @@ acceptance_criteria:
     mentions disputes while loading only the ci_rca guidance (VP step 2).
   - >-
     c9's state is shown as staged: c9 is open, its text names rec-3666 and "stays open on part (a)", it cites
-    no retired path; part (a)'s first conjunct holds (failure_category is a disputed_field value) and
-    check_absent is absent from the escape_mode enum (VP steps 3-4).
+    no retired path; the facts the staged branch (i) text asserts hold (part (a)'s first conjunct, part (b)'s
+    three registry shards, part (c)'s exact escape_mode value set without check_absent) (VP steps 3-4).
   - >-
     The staged re-grounding's premises hold: docs/INTENT-ci-rca-methodology.md and
     docs/intent-migration/MANIFEST.yaml are absent while c2's text and the T1.13 note still cite the INTENT
@@ -112,25 +112,34 @@ verification_plan:
     expected_literals: ["item=in_progress c9=open names_rec_3666=True holds_on_part_a=True cites_retired=False"]
   - step: 4
     phase: pre-deploy
-    action: Prove part (a)'s first conjunct holds and check_absent is absent from the escape_mode enum
+    action: >-
+      Prove the facts the staged branch (i) c9 text asserts: part (a)'s first conjunct holds, part (b)'s three
+      registry shards exist, and part (c)'s escape_mode enum is exactly the three values plus the abstention
+      sentinel (check_absent absent)
     command: >-
-      bin/venv-python -c "from scripts.ops_portal.ci_rca_schema import CiRcaEvidenceDispute as D, _DetectionGap as G;
-      p=D.model_fields['disputed_field'].metadata; e=G.model_fields['escape_mode'].metadata;
+      bin/venv-python -c "import pathlib,re; from scripts.ops_portal.ci_rca_schema import CiRcaEvidenceDispute as D, _DetectionGap as G;
       s=lambda m: ' '.join(str(getattr(x,'pattern','')) for x in m);
-      print('failure_category_disputable=' + str('failure_category' in s(p)) + ' escape_enum_read=' + str('tier_misplaced' in s(e)) + ' check_absent_in_enum=' + str('check_absent' in s(e)))"
+      p=s(D.model_fields['disputed_field'].metadata); e=s(G.model_fields['escape_mode'].metadata);
+      E=set(re.findall('[a-z_]+',e));
+      S=('ci-rca-priority-zero-outranks-step-name','ci-rca-generator-consumes-validation-result','ci-rca-validation-result-uploads-always');
+      n=sum(pathlib.Path('config/agent/verification_registry/entries/'+x+'.yaml').exists() for x in S);
+      print('failure_category_disputable=' + str('failure_category' in p) + ' part_b_shards=' + str(n) + '/3 escape_values=' + ','.join(sorted(E)) + ' check_absent_in_enum=' + str('check_absent' in E))"
     expected: >-
-      One line: failure_category is a disputed_field value, the escape_mode enum was read (so the absence is
-      not vacuous), and check_absent is not an escape_mode value.
+      One line: failure_category is a disputed_field value, all three part (b) shards exist, the escape_mode
+      value set is exactly check_ran_vacuously, no_premerge_gate_by_design, tier_misplaced and undetermined,
+      and check_absent is not among them.
     fix_if: >-
       An ImportError naming _DetectionGap means the model was renamed -- locate the escape_mode field in
-      scripts/ops_portal/ci_rca_schema.py and re-point the import. check_absent_in_enum=True means rec-3666
-      landed; update section 3's part (c) wording.
+      scripts/ops_portal/ci_rca_schema.py and re-point the import. Fewer than 3 shards means part (b)'s
+      regression guard moved -- re-ground report section 3's part (b) clause. A different value set means
+      part (c) moved (check_absent present means rec-3666 landed) -- update section 3's part (c) wording.
     hermetic: true
     graduation: waive
     graduation_waiver_reason: >-
       The check_absent half is red-before evidence for rec-3666's own future fix; the failure_category half
-      is already guarded by tests/ops_data_portal/test_ci_rca_dispute.py.
-    expected_literals: ["failure_category_disputable=True escape_enum_read=True check_absent_in_enum=False"]
+      is already guarded by tests/ops_data_portal/test_ci_rca_dispute.py, and the shards are themselves the
+      standing registry guards for part (b).
+    expected_literals: ["failure_category_disputable=True part_b_shards=3/3 escape_values=check_ran_vacuously,no_premerge_gate_by_design,tier_misplaced,undetermined check_absent_in_enum=False"]
   - step: 5
     phase: pre-deploy
     action: Prove the staged re-grounding's premises (retired docs absent, still cited; files_in_scope exist)
@@ -251,6 +260,9 @@ context:
   - "fork: apply the staged c9 closeout and T1.13 re-grounding | chosen: PARKED for the operator | class: asked | precedent: none (criterion flip and rewrite are always-ask) | precedent_kind: none | reversible: yes | persisted: report sections 3-4, MEMORY.md#parked R5"
   - >-
     check_accounting: no registered check is added or removed; the hygiene stream's baseline is untouched.
+    The stand-in's proposed grep of the fingerprint-dedup fail-open shape (ci_rca_runtime.py:48-80) is not a
+    VP step: it adds no evidence to this staging; report section 2 fail_closed_contract names the boundary.
+  - "gates (continued): plan-critique r1 t1-13-c9-plan-critique-r1-7a3e2c58 REVISE (M1 degraded path vs dispute flow; L1-L3) -> all addressed in r2 commit"
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read

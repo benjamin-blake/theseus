@@ -55,10 +55,24 @@ throttle_design:
     "[CI_RCA_DISPUTE_THROTTLE] reader unreachable; dispute rejected (fail-closed, Decision 55/155)".
     Never import _is_reader_unreachable_error or is_reader_unavailable to skip (Decision 155 cl.3:
     a new skip site needs a new Decision clause).
-  degraded_path: every reject text names it -- "re-file the source=ci_rca rec with the bundle's
-    value for the disputed field (bundle-authoritative) and cite this rejection in its context".
-    A ci_rca rec that mirrors the bundle passes the cross-check in strict mode, so a dispute reject
-    can never leave a main failure with no rec (Decision 73 cl.3). Warn mode is unaffected.
+  assumed_flow: a dispute presupposes its parent. parent_rec_id is "the existing source=ci_rca rec
+    whose detection_gap cross-check result is being disputed" (scripts/executor/rec_write_guidance.py:
+    187-193), so the design assumes flow A (parent filed, then disputed). Flow B (strict cross-check
+    rejects the ci_rca rec, then a dispute is attempted) has no parent to name: the schema checks only
+    the ^rec-\d+$ pattern (ci_rca_schema.py:213), so a flow-B dispute would name a rec that does not
+    exist, which the schema cannot detect.
+  degraded_path: every reject text carries a two-case instruction, keyed on whether parent_rec_id names
+    an OPEN source=ci_rca rec (the same reader rows bound 1 already loaded):
+    case_parent_open: "the parent rec stands as the Decision 73 signal; append this dispute's evidence to
+      it via update_rec instead of filing a dispute". Do NOT re-file the ci_rca rec: a same-fingerprint
+      re-file is deduplicated by the CIRCA-03(c) write-time backstop (scripts/ops_data_portal.py:318-338,
+      Decision 142), which bumps the parent and returns its id, so any citation in the re-file is lost.
+    case_no_parent: "file the source=ci_rca rec mirroring the bundle's value for the disputed field
+      (bundle-authoritative) and cite this rejection in its context". A bundle-mirroring rec passes the
+      strict cross-check (ci_rca_runtime.py:311-315), so a main failure always ends with a rec; if an open
+      rec with the same fingerprint exists the backstop dedups to it, which is case_parent_open.
+    Either way a dispute reject can never leave a main failure with no rec (Decision 73 cl.3). Warn mode
+    is unaffected (the rec files anyway).
   placement: logic in a new scripts/ops_portal/ submodule (Decision 124 facade pattern); the
     ops_data_portal.py call site stays within its 11-SLOC headroom (489 of 500, no budget entry;
     Decision 128).
@@ -105,7 +119,8 @@ Gated on MEMORY.md#parked rows R5 fork 3 and R5 fork 4, and on F2's data precond
   test for the new module; docs/contracts/ci-rca-lifecycle.yaml (dispute section).
 - Tier V2; closes_criteria [T1.13:c9]; bundled_recommendations [rec-2415].
 - VP: red-before for bound 1, bound 2 and the fail-closed reject; the degraded-path text asserted on
-  every reject; ops_data_portal.py SLOC <= 500 with no budget entry; zero net-new suppressions.
+  every reject in both cases (case_parent_open names update_rec on the parent and never a re-file;
+  case_no_parent names the bundle-mirroring re-file); ops_data_portal.py SLOC <= 500 with no budget entry; zero net-new suppressions.
   Not a registered check, so check_accounting and `examined()` are not involved.
 
 ## 3. Staged T1.13 c9 closeout (PARKED: MEMORY.md#parked R5 closeout)
@@ -133,19 +148,20 @@ progress_note. met_by per exit-criteria-ledger.yaml#fields.met_by (plan slug or 
 ## 4. Staged T1.13 re-grounding (freshness gate check 2; PARKED with the closeout)
 
 All 11 files_in_scope paths exist at 2349d467: no files_in_scope change. c9's own text cites no
-retired path. Three retired references remain elsewhere in T1.13:
+retired path. Retired references remain in c2's text, in the note (two citations), and in historical
+progress_note entries (three INTENT-doc citations plus the MANIFEST cross-link, left as is):
 
 | Where | Current text (abridged) | Staged replacement |
 |---|---|---|
 | c2 text | "after Phase 4 back-validation per docs/INTENT-ci-rca-methodology.md Section 6" | "after Phase 4 back-validation (back_validate_ci_rca, scripts/ops_portal/ci_rca_runtime.py; CLI --back-validate)" |
-| note | "See docs/INTENT-ci-rca-methodology.md 'Follow-on plans'" and "Plans AMEND the grandfathered docs/INTENT-ci-rca-methodology.md" | append one dated line: "2026-10-01: docs/INTENT-ci-rca-methodology.md was retired by Decision 178 (7b67e21d); CI-RCA semantics now live in docs/contracts/ci-rca-lifecycle.yaml and code." |
-| progress_note 2026-06-30 cross-link | "docs/intent-migration/MANIFEST.yaml marks INTENT-ci-rca-methodology.md disposition=extract_to_contract (target docs/contracts/ci-rca.yaml, Wave 3)" | historical entry, left as is; the note's dated line above covers it (Decision 147 compact storage) |
+| note (two citations) | "See docs/INTENT-ci-rca-methodology.md 'Follow-on plans'" and "Plans AMEND the grandfathered docs/INTENT-ci-rca-methodology.md" | append one dated line: "2026-10-01: docs/INTENT-ci-rca-methodology.md was retired by Decision 178 (7b67e21d); CI-RCA semantics now live in docs/contracts/ci-rca-lifecycle.yaml and code." |
+| progress_note (2026-06-30 MANIFEST cross-link; 2026-07-01 bucket-name correction; 2026-07-04 Section 7 amendment) | dated history citing docs/INTENT-ci-rca-methodology.md and docs/intent-migration/MANIFEST.yaml | historical entries, left as is; the note's dated line above covers them (Decision 147 compact storage) |
 
 Applying this edit is a roadmap change (Lambda-bundled asset, Decision 79/125; regenerate
 `.secrets.baseline` in the same commit) and rides the operator's closeout row.
 
 ## 5. Decision 73 halt check
 
-`ci_rca_open` via the ducklake-reads named read returned zero rows on 2026-10-01 (the first call
-timed out at 60s; the retry answered). This is the first slice this week to verify the halt live;
-preflight in this sandbox still reported `recs_read_status=reader_unreachable`.
+`ci_rca_open` via the ducklake-reads named read returned zero rows at about 17:58Z on 2026-10-01 (the
+first call timed out at 60s; the retry answered). Preflight in the same sandbox still reported
+`recs_read_status=reader_unreachable`.
