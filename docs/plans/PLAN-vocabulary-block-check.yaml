@@ -1,0 +1,278 @@
+schema_version: 5
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: vocabulary-block-check
+intent: 'Make vocabulary reservation contract-driven: one generic check validates every contract''s top-level vocabulary:
+  block against a shared grammar and runs the anti-pattern detectors those blocks declare, replacing the regex hardcoded in
+  validate_environment_taxonomy, and a new provisional_v0 contract seeds the first cross-cutting reservation row, "work item"
+  (meaning from Decision 197 clause 3; clause 7 bounds it: no rename). Reservation only: no term is renamed anywhere.'
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-vocabulary-block-check.yaml
+phase: 'user_explicit_out_of_scope (soft-warn category: operator charter stream D, slice D1; no tier_item claimed, no exit
+  criterion closed, no status flipped).'
+scope:
+- file: docs/contracts/vocabulary-reservation.yaml
+  action: Create
+  purpose: 'New Class D contract (status provisional_v0 with a provisional_v0 block and re_ratification_trigger, never ratified;
+    subject vocabulary-reservation; evaluator check validate_vocabulary_blocks). Scope is ONLY the shared block grammar and cross-cutting
+    rows: its description says each domain contract stays the sole home of its own reservation table (Decision 77 cl.1 for
+    environment-taxonomy.yaml) and this file never restates a domain row. Declares block_grammar (row = mapping with non-empty
+    str reserved_meaning and do_not_use_for, other row keys free; container = mapping whose values are all rows; reserved block
+    keys note / allowlisted_compound_tokens / anti_patterns; an anti_patterns entry is a prose str, never executed, or a mapping
+    {pattern, detector: {regex, ignore_case, applies_to_suffixes, skip_prefixes, allowlist_files, message}}, the ONLY form
+    any check executes - detection is opt-in per entry, Decision 181 cl.2), cross_cutting_row_grammar (origin {path under docs/audit-prompts/,
+    needle inside that prompt''s DISAMBIGUATION TRAPS section}; anchors >= 2 of {path, needle, sense} with pairwise-distinct
+    senses; a cross-cutting row key never equals a domain block''s term key; this block''s anti_patterns admit the detector
+    form only, so no new unenforced residual can be authored here), governed_blocks (the four rostered contracts, detector_owner
+    validate_environment_taxonomy on environment-taxonomy), and its own vocabulary block with the work_item row (no detector).'
+- file: scripts/checks/contracts/_vocabulary_blocks.py
+  action: Create
+  purpose: 'Engine, no I/O at import: load_block(path) -> parsed block or error; walk_rows; validate_block (grammar legs);
+    validate_cross_cutting (origin section + anchor needles); compile_detectors; scan_changed_docs(detectors) -> (errors, candidate_count).
+    A missing or unparseable contract is an error, never an empty pass.'
+- file: scripts/checks/contracts/validate_vocabulary_blocks.py
+  action: Create
+  purpose: 'Registered check validate_vocabulary_blocks: L1 roster parity (code roster == contract governed_blocks == every
+    docs/contracts/*.yaml carrying a top-level vocabulary key); L2 block grammar on all four; L3 detector compile; L4 cross-cutting
+    origin and anchors plus the no-restatement rule; L5 runs detector-form anti_patterns only (prose entries are never executed)
+    over changed docs for blocks without a detector_owner. Code roster holds the four basenames
+    as literals (Decision 168 evaluator grammar). Declares registry.examined(<rows validated>, unit="vocabulary_rows").'
+- file: scripts/checks/contracts/_manifest.py
+  action: Modify
+  purpose: 'Append Entry(name="validate_vocabulary_blocks", module="scripts.checks.contracts.validate_vocabulary_blocks", attr="validate_vocabulary_blocks",
+    pre=True, full_segment="full_after_lint"), pre_globs None: L5 self-scopes to the changed-doc diff exactly as validate_environment_taxonomy
+    does, so a static glob could only re-derive that diff.'
+- file: scripts/checks/iam_tf/validate_environment_taxonomy.py
+  action: Modify
+  purpose: 'Body delegates to the engine scoped to docs/contracts/environment-taxonomy.yaml: detectors come from that contract''s
+    vocabulary.anti_patterns; the hardcoded regex, tier tuple, allowlist and skip prefixes are removed. Registered name, failure
+    label "Environment/phase taxonomy", examined unit candidate_docs, and the contract literal are unchanged. Manifest Entry
+    untouched.'
+- file: docs/contracts/environment-taxonomy.yaml
+  action: Modify
+  purpose: 'vocabulary.anti_patterns[0] becomes the mapping form carrying today''s exact detector (regex \b(sandbox|sit|prod|production|staging)[
+    \t]+phase\b, ignore_case, suffixes .md/.yaml/.yml, skip .github/ and tests/, allowlist this contract, docs/DECISIONS.md,
+    docs/ROADMAP-PLATFORM.yaml); header comment names the engine; one amendment_log row (field_add, semantic_break false).
+    Every other top-level key (contract, axis_a, guard_classification, conformance, single_account_rule and the rest) stays
+    byte-identical in parsed form, and the vocabulary rows themselves are untouched (VP 8). T2.48 lists this file in scope;
+    nothing here touches its open c6.'
+- file: config/ci_rca_taxonomy.yaml
+  action: Modify
+  purpose: Add function_to_category row validate_vocabulary_blocks -> schema_drift beside validate_environment_taxonomy.
+- file: docs/contracts/file-router.yaml
+  action: Modify
+  purpose: 'Add route topic vocabulary-reservation, targets [docs/contracts/vocabulary-reservation.yaml] (topic equals subject),
+    plus one amendment_log field_add row. The file measures 474 effective lines against the 500 contracts-class limit, so
+    no compaction is planned; compact older amendment_log rows only if a later main merge makes the limit bind (precedent:
+    the ducklake-partition-remediation route).'
+- file: tests/checks/contracts/test_validate_vocabulary_blocks.py
+  action: Create
+  purpose: 'Mirror test for the check: one red-before case per leg (unrostered vocabulary block, roster/contract drift, row
+    missing do_not_use_for, unknown non-row key, uncompilable regex, origin needle outside the DISAMBIGUATION section, one anchor
+    only, duplicate senses, missing anchor needle, detector hit on a changed doc), the green real-tree case, and the registration
+    case.'
+- file: tests/checks/contracts/test__vocabulary_blocks.py
+  action: Create
+  purpose: 'Mirror test for the engine: walk_rows over containers (inference-provider axes/terms shape), prose vs detector anti_patterns,
+    missing-contract error path, section bounding for the DISAMBIGUATION heading.'
+- file: tests/checks/iam_tf/test_validate_environment_taxonomy.py
+  action: Modify
+  purpose: '_run copies the real environment-taxonomy.yaml into tmp_path so the patched ROOT can read it; every existing assertion
+    is unchanged (parity). Adds test_detector_is_contract_driven (editing the copied contract''s regex changes the verdict)
+    and test_missing_contract_fails_loud.'
+bundled_recommendations: []
+followon_recs: []
+closes_criteria: []
+infrastructure_dependencies: []
+acceptance_criteria:
+- validate_vocabulary_blocks passes on the real tree, validating all four governed blocks; data-modeling-standard.yaml and
+  inference-provider.yaml are read only and their prose anti_patterns are never executed (VP 1, VP 2).
+- 'Each leg reddens on its own broken input: an unrostered vocabulary block, roster drift between code and contract, a row
+  missing reserved_meaning or do_not_use_for, an unknown non-row key, an uncompilable detector regex, a cross-cutting row whose
+  origin needle sits outside the DISAMBIGUATION TRAPS section or is absent, fewer than two anchors, two anchors sharing a sense,
+  an anchor needle absent from its file, and a changed doc matching a non-owned detector (VP 2).'
+- 'validate_environment_taxonomy keeps every pre-existing assertion green, its hardcoded regex is gone from the module, editing
+  the contract''s detector regex changes its verdict, and a missing contract fails loud (VP 3).'
+- docs/contracts/vocabulary-reservation.yaml carries the work_item row (meaning from Decision 197 cl.3; no detector, so rec,
+  recommendation and file_rec are never flagged) with an origin in AUDIT-criterion-shape-forks.md section 3 and three anchors
+  with distinct senses, restates no domain row, and contract population and placement checks pass with the new file and route
+  (VP 4).
+- environment-taxonomy.yaml differs from origin/main only in vocabulary.anti_patterns and amendment_log (VP 8).
+- validate_vocabulary_blocks is registered in the contracts manifest, ungated in --pre, dispatched in both tiers, mapped in
+  config/ci_rca_taxonomy.yaml, and declares examined on its pass path (VP 5).
+- No net-new suppression (noqa, type ignore, pragma no cover, skip, xfail) in the diff, and the full presubmit tier exits 0
+  (VP 6, VP 7).
+verification_plan:
+- step: 1
+  phase: pre-deploy
+  action: Run the new check against the real tree.
+  command: bin/venv-python -c "from scripts.checks import registry;from scripts.checks.contracts.validate_vocabulary_blocks
+    import validate_vocabulary_blocks as v;f=[];v(f);assert not f,f;d=registry.pop_declaration();assert d and d.kind=='examined'
+    and d.count>=24,d;print('vocabulary rows',d.count)"
+  expected: Exit 0 printing the pass line; red before because the module does not exist.
+  fix_if: A FAIL line names the leg and contract; fix the contract or the engine, never the assertion.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: The registered check runs this exact call standing in both tiers once VP 5's registration lands;
+    a registry row would execute the same function twice for no added independence.
+  expected_literals:
+  - vocabulary rows 24
+- step: 2
+  phase: pre-deploy
+  action: Run the two new mirror tests.
+  command: bin/venv-python -m pytest tests/checks/contracts/test_validate_vocabulary_blocks.py tests/checks/contracts/test__vocabulary_blocks.py
+    tests/checks/contracts/test__manifest.py -q -p no:randomly
+  expected: Exit 0, all tests pass.
+  fix_if: A failing leg case means the leg does not detect its broken input; fix the leg.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: Whole-file pytest re-run of test files this plan creates; pytest already runs them standing in
+    both tiers.
+- step: 3
+  phase: pre-deploy
+  action: Prove the legacy check is contract-driven with parity.
+  command: bin/venv-python -m pytest tests/checks/iam_tf/test_validate_environment_taxonomy.py -q -p no:randomly && ! grep -q
+    "platform_tiers\|tier_as_phase" scripts/checks/iam_tf/validate_environment_taxonomy.py && echo "legacy delegates OK"
+  expected: Exit 0, tests pass and the hardcoded names are gone.
+  fix_if: A failing pre-existing assertion means parity broke; fix the detector mapping in the contract, never the assertion.
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: env-taxonomy-detector-contract-driven
+- step: 4
+  phase: pre-deploy
+  action: Confirm the work_item row, its origin and anchors, and the contract and route checks.
+  command: bin/venv-python -c "import yaml;from scripts.checks.contracts.validate_contract_drift import validate_contract_drift
+    as c;from scripts.checks.hygiene.validate_placement import validate_placement as p;d=yaml.safe_load(open('docs/contracts/vocabulary-reservation.yaml'));r=d['vocabulary']['work_item'];assert
+    r['origin']['path']=='docs/audit-prompts/AUDIT-criterion-shape-forks.md',r;assert len({a['sense'] for a in r['anchors']})>=3,r;assert
+    d['contract']['status']=='provisional_v0';f=[];c(f);p(f);assert not f,f;print('reservation row OK')"
+  expected: Exit 0 printing the pass line.
+  fix_if: A contract-drift FAIL names the shape rule; a placement FAIL means the route target is untracked or malformed.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: validate_contract_drift, validate_placement and the new check's L4 already run standing in both
+    tiers over this file.
+- step: 5
+  phase: pre-deploy
+  action: Confirm registration across the manifest, both sequences and the ci_rca taxonomy.
+  command: bin/venv-python -c "import yaml;from scripts.checks import registry;from scripts.checks.contracts import _manifest;e=[x
+    for x in _manifest.ENTRIES if x.name=='validate_vocabulary_blocks'][0];assert e.pre and e.full_segment=='full_after_lint'
+    and e.pre_globs is None,e;assert 'validate_vocabulary_blocks' in [s.name for s in registry.pre_sequence()] and 'validate_vocabulary_blocks'
+    in [s.name for s in registry.full_sequence()];t=yaml.safe_load(open('config/ci_rca_taxonomy.yaml'))['function_to_category'];assert
+    t['validate_vocabulary_blocks']=='schema_drift';print('registration OK')"
+  expected: Exit 0 printing the registration line.
+  fix_if: IndexError means the Entry is missing; KeyError means the taxonomy row is missing. If Step exposes the name under
+    another attribute, read scripts/checks/registry.py and use it; do not weaken the membership assertion.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: Duplicates standing guards (test__manifest.py, validate_ci_rca_taxonomy, validate_check_accounting).
+- step: 6
+  phase: pre-deploy
+  action: Assert zero net-new suppressions in the diff.
+  command: '! git diff origin/main -- scripts tests | grep "^+" | grep -E "noqa|type: ignore|pragma: no cover|pytest.mark.skip|pytest.mark.xfail"
+    && echo "no new suppressions"'
+  expected: Exit 0 printing the line.
+  fix_if: Remove the suppression and fix the underlying finding.
+  hermetic: false
+  graduation: not-applicable
+- step: 7
+  phase: pre-deploy
+  action: Run the full presubmit tier.
+  command: bin/venv-python -m scripts.validate
+  expected: Exit 0.
+  fix_if: Fix the named failure on the branch.
+  hermetic: false
+  graduation: not-applicable
+- step: 8
+  phase: pre-deploy
+  action: Prove environment-taxonomy.yaml changed only in vocabulary.anti_patterns and amendment_log.
+  command: bin/venv-python -c "import yaml,subprocess;b=yaml.safe_load(subprocess.run(['git','show','origin/main:docs/contracts/environment-taxonomy.yaml'],capture_output=True,text=True,check=True).stdout);h=yaml.safe_load(open('docs/contracts/environment-taxonomy.yaml'));d=[k
+    for k in set(b)|set(h) if k not in ('vocabulary','amendment_log') and b.get(k)!=h.get(k)];assert not d,d;bv={k:v for k,v
+    in b['vocabulary'].items() if k!='anti_patterns'};hv={k:v for k,v in h['vocabulary'].items() if k!='anti_patterns'};assert
+    bv==hv;assert isinstance(h['vocabulary']['anti_patterns'][0],dict);print('env taxonomy delta bounded')"
+  expected: Exit 0 printing the line; red before because anti_patterns[0] is still a prose string.
+  fix_if: A listed key means an out-of-bounds edit to the Terraform guard-classification SoT; revert it.
+  hermetic: false
+  graduation: not-applicable
+test_obligations:
+- source: scripts/checks/contracts/validate_vocabulary_blocks.py
+  behavior: each leg fails on its own broken input and passes the real tree
+  verification_step: 2
+  test_selector: tests/checks/contracts/test_validate_vocabulary_blocks.py
+  red_green_expectation: red before (module absent), green after
+- source: scripts/checks/contracts/_vocabulary_blocks.py
+  behavior: row walk, detector compile and the missing-contract error path
+  verification_step: 2
+  test_selector: tests/checks/contracts/test__vocabulary_blocks.py
+  red_green_expectation: red before (module absent), green after
+- source: scripts/checks/iam_tf/validate_environment_taxonomy.py
+  behavior: verdicts come from the contract detector with unchanged parity
+  verification_step: 3
+  test_selector: tests/checks/iam_tf/test_validate_environment_taxonomy.py::TestValidateEnvironmentTaxonomy::test_detector_is_contract_driven
+  red_green_expectation: red before (hardcoded regex ignores the contract edit), green after
+- source: scripts/checks/contracts/_manifest.py
+  behavior: every Entry, the new one included, resolves to an importable callable
+  verification_step: 2
+  test_selector: tests/checks/contracts/test__manifest.py
+  waiver_reason: An additive Entry has no broken prior state for the mirror test to redden on; VP 5's membership assertion
+    is the red-before proof (it fails before the Entry exists).
+constraints:
+- Reservation only - no term renamed in any file (charter never-list; Decision 197 clause 7 rename is a later, model-wide pass).
+- validate_environment_taxonomy's manifest Entry, tier membership and registered name are untouched; retiring it needs a Decision
+  that names it (Decision 187 mark-then-drop) and is parked.
+- No edit to docs/DECISIONS.md, AGENTS.md or ROADMAP-PLATFORM.yaml; no status or criterion flip; no new Decision.
+- data-modeling-standard.yaml and inference-provider.yaml are read, never edited; their prose anti_patterns stay unenforced
+  (rec-4116 owns data-modeling's residual and is neither updated nor closed, Decision 67).
+- 'F1 bounds: no path under terraform/** and no aws_iam_* resource is touched; environment-taxonomy.yaml''s header-comment edit
+  is limited to the engine pointer (its single-source-of-truth sentence stays); validate_environment_taxonomy.py keeps its
+  environment-taxonomy.yaml literal; graduated entries env-taxonomy-evaluator-resolves and env-taxonomy-yaml-allowlisted-by-lint
+  stay green (VP 3, and validate_contract_drift inside VP 7); a VP 8 key diff is reverted, never widened.'
+- environment-taxonomy.yaml stays the sole home of the environment reservation table (Decision 77 cl.1); the new contract
+  never restates a domain row.
+- Every new file under 500 SLOC (Decision 128); no assertion weakened (Decision 181).
+- No rescue agents or workaround loops (Decision 55).
+context:
+- 'Charter stream D slice D1: build the generic check, then harvest; this plan seeds only the first row. The other 25 DISAMBIGUATION
+  TRAPS sections are later D-slices, each row graded real or padded by the Fable sampler.'
+- 'Decision-scout verdict FLAGS_FOUND (3 NOTE, all folded: D181 opt-in detectors, D77 no restatement, D197 cl.3 meaning);
+  CITE: Decision 197, Decision 77, Decision 168, Decision 181, Decision 187, Decision 170, Decision 169, Decision 67. Report:
+  gates/vocabulary-block-check-decision-scout-r1-91e7c2a0.md (project files).'
+- 'gates: decision-scout=FLAGS_FOUND; step-6b stand-in (vocabulary-block-check-step-6b-stand-in-r1)=write the plan; plan-critique=PENDING'
+- 'Harvest population for later D-slices needs a recount: 15 audit prompts carry a DISAMBIGUATION TRAPS heading, 25 carry
+  some disambiguation heading, the charter says 26.'
+- 'work_item origin note: AUDIT-criterion-shape-forks.md:365 (section 7, Q2) is the closer substantive disambiguation of "work
+  item" against a plan and a criterion row; it is excluded only by L4''s DISAMBIGUATION-section bound. The Fable sampler grades
+  the row with that in view.'
+- 'Overlap: PR #1343 (W0-impl) also edits config/ci_rca_taxonomy.yaml and docs/contracts/file-router.yaml; rows differ, resolve
+  by merge from main.'
+- 'Evaluator grammar (contract-population.yaml evaluator_kinds.check): the check module must hold each governed contract basename
+  as an executable string literal, hence the code roster mirrored by governed_blocks.'
+- 'Existing blocks fit the grammar today: environment-taxonomy 5 rows, data-modeling-standard 8, inference-provider 10 (axes
+  and terms containers); 23 rows plus work_item = 24.'
+- 'fork: migrate the environment-taxonomy lint into the contract-driven engine in this slice, bounded (a), or defer it (b) | chosen: (a) bounded: environment-taxonomy.yaml changes only in vocabulary.anti_patterns[0] (prose -> detector mapping carrying today''s exact regex, ignore_case, suffixes, skip prefixes and allowlist), one amendment_log row and a header-comment pointer; the legacy module changes body only (name, Entry, failure label, examined unit and the "environment-taxonomy.yaml" literal unchanged); no path under terraform/**, no aws_iam_* resource; VP 8 pins every other key parsed-identical | class: asked | precedent: charter stream D (operator-authored, names "replacing the hardcoded taxonomy lint"; the only hardcoded taxonomy regex is validate_environment_taxonomy.py:23-24); never-list nouns read in repo vocabulary, which the charter says outranks it (AGENTS.md:36 infra = a PR touching terraform/**; environment-taxonomy.yaml#guard_classification IAM = plan-diff classes on aws_iam_* types; neither touched); D77 cl.1 (:8221-8226, lint enforcement maintained AT the contract); D168 cl.2 / contract-population.yaml#evaluator_kinds.check (literal retained); D181 cl.1 (no assertion weakened; registry entries env-taxonomy-evaluator-resolves and env-taxonomy-yaml-allowlisted-by-lint stay green); decision-scout r1 CONFLICT 0 (T2.48 RELATED, c6 only open; files_in_scope is a stale-reference check, tier-item-lifecycle.yaml:113-117); re-derived at a1fd769f: terraform_apply_guard.py:134 comment only, sole runtime parser validate_deploy_channel_conformance.py:177-186 reads conformance.* which VP 8 pins; the parked IAM-family question covers validate_boundary_attached / validate_iam_policy_size (check_accounting_baseline.yaml:36,:54), subject IAM policy, not this docs lint; D1 stand-in 2026-10-01 (delegated authority, delegation rule 2) | precedent_kind: answered-fork | reversible: yes (revert the squash commit; the hardcoded body returns) | persisted: scope rows for docs/contracts/environment-taxonomy.yaml and scripts/checks/iam_tf/validate_environment_taxonomy.py, constraints, VP 3, VP 8'
+- 'fork: retire validate_environment_taxonomy (D187 mark-then-drop) in or after this slice | chosen: PARKED (operator; MEMORY.md#parked row D1); Entry, name, tier membership and failure label stay; L5 skips blocks with a detector_owner so nothing runs twice | class: asked | precedent: none for retirement (D187 cl.4 check-name authorization, cl.5 deletion has no marker escape; dec-077, dec-104 and dec-170 bodies each contain the name once as a mention, so a marker citing one would pass mechanically without authority; a Decision naming it is ratification, never-list); D1 stand-in 2026-10-01 | precedent_kind: none | reversible: yes | persisted: constraints, MEMORY.md#parked'
+- 'fork: home for cross-cutting reservation rows: a new provisional_v0 Class D contract holding only the block grammar and cross-cutting rows, or rows inside an existing contract | chosen: new docs/contracts/vocabulary-reservation.yaml at provisional_v0 with a re_ratification_trigger, never ratified; restates no domain row; environment-taxonomy.yaml stays the sole home of the environment rows and detector; file-router route topic == subject | class: asked | precedent: D168 cl.1-2, cl.4 (:3113-3116); D118 (provisional_v0 is pre-ratification); plan-authored provisional_v0 precedents plan-obligations.yaml:13 and vp-red-before.yaml:21 (routed at file-router.yaml:344-345, :358-359); new Class D file precedent package-registry-reservation.yaml (route :386-387, amendment_log :57); D77 cl.1 (environment rows stay at that contract; hosting cross-cutting rows there is the CFG-05 two-SoT reading the scout''s D77 NOTE names); contract-population.yaml#shape_grammar (:163-189) and census (declared bucket; grandfathered_max 16 untouched); D1 stand-in 2026-10-01 | precedent_kind: decision | reversible: yes | persisted: scope row docs/contracts/vocabulary-reservation.yaml, docs/contracts/file-router.yaml route, constraints'
+- 'fork: work_item row origin: AUDIT-criterion-shape-forks.md section 3 trap 5 (inside the DISAMBIGUATION TRAPS section) or the section 7 Q2 sentence at line 365 | chosen: section 3 trap 5 (needle "names four surfaces Decision 197 clause 3 unifies", :89, inside :62-112); line 365 sits in Q2 (:339-376) and fails L4''s section bound, recorded in context for the sampler; anchors DECISIONS.md:889 (mechanism unit), decision-entry.yaml:412-413 (significance routing class), PLAN-ontheloop-placeholder-packages.yaml:648 (generic task), three distinct senses; meaning from D197 cl.3 (:889), cl.7 (:893) cited only as the no-rename bound; no detector on the row | class: asked | precedent: charter stream D ("First row: ''work item'' (Decision 197 clause 7)"; harvest source = DISAMBIGUATION TRAPS sections) and the charter vocabulary Goodhart line (audit-prompt origin + two anchors with divergent senses, graded by the Fable sampler); D197 cl.3 and cl.7; decision-scout D197 NOTE folded; operator-answered fork "vocabulary reservation-only"; D1 stand-in 2026-10-01 | precedent_kind: decision | reversible: yes (a later D-slice can re-cite; the sampler grades) | persisted: execution_steps[0], VP 4, context'
+- 'fork: seed one row (work_item) in D1 or harvest further rows now | chosen: one row; harvest is later D-slices after a population recount (at a1fd769f: 15 of 27 audit prompts carry a "DISAMBIGUATION TRAPS" heading, 17 headings in all, 25 carry some disambiguation heading; the charter says 26) | class: consistency-only | precedent: charter stream D ordering ("Build ..., then harvest"; "First row: ''work item''"); D128 decompose-by-default; D1 stand-in 2026-10-01 | precedent_kind: answered-fork | reversible: yes | persisted: context (harvest recount line), followon_recs [] (no rec filed, D67)'
+pre_implementation_checklist:
+- Branch confirmed not on main
+- docs/PROJECT_CONTEXT.md read
+- only the plan-cited decision sections
+- All files in scope located and readable
+- Acceptance criteria understood and verifiable
+execution_steps:
+- 'Create docs/contracts/vocabulary-reservation.yaml per its scope row. work_item row: reserved_meaning "the Decision 197 clause
+  3 mechanism unit: one work_items row, kind-discriminated between epic-shaped (today''s tier item) and task-shaped (today''s
+  recommendation), reached through the clause 2 storage port; designed, not built (clause 8)"; do_not_use_for "a plan (Decision
+  87 cl.6: a plan is never a work_items kind) or a criterion (a work_item_criteria child row); decision-entry.yaml''s work_item
+  significance routing value; a generic synonym for task"; origin {path: docs/audit-prompts/AUDIT-criterion-shape-forks.md,
+  needle: "names four surfaces Decision 197 clause 3 unifies"}; anchors {docs/DECISIONS.md, "one row per work item", mechanism
+  unit}, {docs/contracts/decision-entry.yaml, "Durable SEQUENCING work", significance routing class}, {docs/plans/PLAN-ontheloop-placeholder-packages.yaml,
+  "a hygiene work item this plan is not scoped to build", generic task}. No anti_patterns on this row.'
+- Create scripts/checks/contracts/_vocabulary_blocks.py and validate_vocabulary_blocks.py per their scope rows.
+- Migrate environment-taxonomy.yaml's anti_pattern to the detector mapping and make validate_environment_taxonomy delegate.
+- Register (manifest, ci_rca_taxonomy, file-router) and write the three test files.
+- Execute Verification Plan -- run each step; loop until pass; on unrecoverable failure stop and RCA (Decision 55)
+- 'Report: what was implemented, verification results'
+rollback: Revert the squash commit; the legacy check's hardcoded body returns with it.
