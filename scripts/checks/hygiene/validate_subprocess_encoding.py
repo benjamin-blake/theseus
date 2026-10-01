@@ -12,7 +12,9 @@ def validate_subprocess_encoding(failed: list[str]) -> None:
     scripts_dir = _common.ROOT / "scripts"
     errors: list[str] = []
 
-    for py_file in sorted(scripts_dir.glob("**/*.py")):
+    py_files = sorted(scripts_dir.glob("**/*.py"))
+    registry.examined(len(py_files), unit="python_files")
+    for py_file in py_files:
         content = py_file.read_text(encoding="utf-8")
         for match in re.finditer(r"\bsubprocess\.(run|Popen)\(", content):
             start = match.end()
