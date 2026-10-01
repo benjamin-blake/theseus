@@ -5,8 +5,8 @@ handoff_policy:
 slug: t1-17-c4-supersession-guard-hardening
 intent: >-
   Discharge T1.17 c4 (Wave-3 hardening of the supersession-annotation guard) so the decision log's forward-pointer
-  invariant holds on whole decision numbers and on every plural-list edge the corpus writes: _is_annotated stops
-  accepting a numeric prefix, edge extraction reuses the shared title_relation_continuation grammar instead of a third
+  invariant holds on whole decision numbers and on every plural list the shared title grammar admits: _is_annotated
+  stops accepting a numeric prefix, edge extraction reuses the shared title_relation_continuation grammar instead of a third
   hand-rolled regex (Decision 134 clause 3's last divergent consumer), and three re-derived Low findings are fixed.
 plan_type: IMPLEMENTATION
 verification_tier: V2
@@ -36,7 +36,9 @@ scope:
       under an OPERATOR-CONFIRM-PENDING ruling, with the header's admitted-category list amended in the same commit.
   - file: config/check_accounting_baseline.yaml
     action: Modify
-    purpose: Remove validate_supersession_annotations from the shrink-only grandfather roster (49 -> 48).
+    purpose: >-
+      Remove validate_supersession_annotations from the shrink-only grandfather roster (one line; VP 3 asserts
+      absence, not a count, so ordering with other hygiene removals is safe).
   - file: docs/contracts/decision-entry.yaml
     action: Modify
     purpose: >-
@@ -56,11 +58,16 @@ acceptance_criteria:
     M1: a victim block that mentions only a longer number sharing the superseder's digits (Decision 52 for superseder
     5) does not count as annotated; "Decision 5" followed by a non-digit still does.
   - >-
-    M2: plural-list edges are enumerated ("Supersedes Decisions 37, 40, 49", "amends Decisions 102/128", "amends
-    Decision 1 and Decision 2"), and every edge the pre-change regex finds is still found (0 dropped).
+    M2: plural lists the shared title grammar admits are enumerated (closed by ")" or ";", slash lists, or repeated
+    "Decision" tokens: "(Supersedes Decisions 37, 40, 49)", "amends Decisions 102/128", "amends Decision 1 and
+    Decision 2."), and every edge the pre-change regex finds is still found (0 dropped). The grammar's documented
+    limit is pinned: a sentence-final bare-number continuation ("Supersedes Decisions 1, 2.") yields only the first
+    victim.
   - >-
     Participle and gerund forms ("superseding Decision N", "amending Decision N", "does not amend Decision N",
-    "superseded by Decision N") yield no edge, matching decision-entry.yaml's rejected_forms.
+    "superseded by Decision N") yield no edge: the shared helper anchors on the whole words "amends" and
+    "supersedes" (decisions_md.py:363), and decision-entry.yaml's rejected_forms already rejects the inverse
+    "amended by" case.
   - >-
     L1: the header-annotation branch and _HEADER_SUPERSEDED_RE are gone and the existing header test still passes.
     L2: a waiver naming no extracted edge appends a FAIL naming it; a stale waiver still only WARNs. L3: a waiver
@@ -102,7 +109,7 @@ verification_plan:
       supersedes)\s+Decision\s+(\d+)');old={(int(h.group(1)),int(m.group(1))) for p in ('docs/DECISIONS.md','docs/DECISIONS_ARCHIVE.md')
       for h,b in it(open(p).read()) for m in o.finditer(b) if int(m.group(1))!=int(h.group(1))};assert old<=e,old-e;n={(52,37),(52,40),(52,49),(130,128)};assert
       n<=e,n-e;w={(int(r['superseder']),int(r['victim'])) for r in yaml.safe_load(open('config/decision_supersession_waivers.yaml'))['waivers']};assert
-      n<=w,n-w;assert len(e)>=110,len(e);assert d and d.kind=='examined' and d.unit=='supersession_edges' and d.count==len(e),d;print('guard
+      n<=w,n-w;assert len(e)>=110,len(e);assert d and d.kind=='examined' and d.unit=='supersession_edges' and d.count==len(x(Path('.'))),d;print('guard
       OK',len(e))"
     expected: Exit 0 printing the guard line with the edge count (110 at plan time; it grows with the corpus).
     fix_if: >-
@@ -158,7 +165,10 @@ verification_plan:
       decision-entry.yaml and the decisions _manifest.py.
     fix_if: Any other path means scope leaked; revert it.
     hermetic: false
-    graduation: not-applicable
+    graduation: waive
+    graduation_waiver_reason: >-
+      A one-time check on transient branch state (the diff against origin/main), which validate_scope_boundary
+      enforces at implement time; a registry row has no stable subject.
   - step: 6
     phase: pre-deploy
     action: Run the fast presubmit tier.
@@ -186,7 +196,8 @@ test_obligations:
     test_selector: tests/checks/decisions/test_validate_supersession_annotations.py
     red_green_expectation: >-
       Red before: the M1 prefix fixture passes the guard wrongly, the plural fixtures yield no edge, the orphan fixture
-      passes, the malformed fixture raises KeyError, and no declaration is recorded. Green after.
+      passes, the missing-victim fixture raises KeyError and the non-integer one ValueError, and no declaration is
+      recorded. Green after.
   - source: config/decision_supersession_waivers.yaml
     behavior: The four new red edges are waived and the real-repo guard is green.
     verification_step: 1
@@ -230,7 +241,8 @@ constraints:
     alternative_annotation_shape (if the operator declines the Decision 52 waivers): a dated trailer on Decision 37's
     compacted stub (operator-only: live file, fixed stub grammar), trailing_bracket amendments on archived Decisions 40
     and 49 (decision-entry.yaml amendment_forms; archive reach is R3's parked fork 5), a scope amendment adding both
-    corpus files, and a post-merge --backfill-decisions-md run (Decision 84). Otherwise the split fallback.
+    corpus files, closes_criteria [T1.17:c4] once T1.17 is in_progress, and a post-merge --backfill-decisions-md run
+    (Decision 84). Otherwise the split fallback.
   - >-
     No edit to docs/DECISIONS.md, docs/DECISIONS_ARCHIVE.md, scripts/decisions_md.py or docs/ROADMAP-PLATFORM.yaml
     (Decision 177 body lock; roadmap Lambda-bundled, Decisions 79/125). No waiver beyond the four named: a fifth red
@@ -239,18 +251,24 @@ constraints:
     No participle or gerund extraction and no hand-rolled widened regex: the edge grammar is scripts.decisions_md's
     shared helper (Decision 134 clause 3; CFG-06).
   - >-
-    Preserve the R1 VP replay surface: extract_supersession_edges(root), _combined_number_to_block(root) and
-    _load_waivers(root, failed) returning a (waived, allowlisted) tuple on success keep their names and shapes.
+    Preserve the R1 VP replay surface: extract_supersession_edges(root), _combined_number_to_block(root),
+    _is_annotated(superseder, victim_block) -> bool and _load_waivers(root, failed) returning a (waived,
+    allowlisted) tuple on success keep their names and shapes.
   - >-
     No recommendation bundled, filed or closed: decision-entry.yaml's "a follow-on rec tracks it" stays open for the
     operator (Decision 67; T1.17's no-new-recs provenance).
+  - >-
+    SLOC: the mirror test is at 369 SLOC (validate_sloc_limits counter, unregistered, 500 limit, whole-repo per
+    Decision 130). The M2, participle and L3 cases are pytest.mark.parametrize tables and the file stays at or under
+    500 SLOC (VP 6 enforces). No config/sloc_budgets.yaml registration and no sibling test module: both are
+    undeclared paths (a breach is a stop-and-report).
   - "No net-new suppression (noqa, type: ignore, pragma: no cover, skip/xfail)."
   - No rescue agents or workaround loops (Decision 55).
 context:
   - "Decision-scout t1-17-c4-decision-scout-r1-b7e40c39: FLAGS_FOUND. CITE 134, 167, 170, 177, 163, 79, 125, 73, 72. CONTRADICT 146 [WARN] (D52 full-supersession waivers -> parked, fork 2), 136 [WARN] (closes_criteria -> omitted, fork 3). SPIRIT 163 [NOTE] (orphan waivers -> FAIL, fork 5)."
   - "Decisions triaged: 163 of 163"
   - "Roadmap items intersected: 3; CONFLICT: 0; RELATED: 2"
-  - "gates: decision-scout=FLAGS_FOUND; step-6b=stand-in t1-17-c4-step-6b-stand-in-r1 (write the plan); plan-critique=PENDING"
+  - "gates: decision-scout=FLAGS_FOUND; step-6b=stand-in t1-17-c4-step-6b-stand-in-r1 (write the plan); plan-critique=REVISE r1 (t1-17-c4-plan-critique-r1-6e91d3f5: 2 Medium, 4 Low, all applied); r2 PENDING"
   - "fork: waive 130->128 or annotate Decision 128 | chosen: waive, reason quoting D130's title | class: asked | precedent: PLAN-decisions-supersession-guard 128->102 OPERATOR-CONFIRMED WAIVE; D177; D179 point 6; R4 stand-in 2026-10-01 | precedent_kind: answered-fork | reversible: yes | persisted: waiver row, context"
   - "fork: the three D52 title edges (52->37/40/49) | chosen: PARKED (operator, MEMORY.md#parked R4); shape: carry the waivers OPERATOR-CONFIRM-PENDING, /implement gated, header category amended in the same commit | class: asked | precedent: none for the ruling (waiver header forbids waiving a FULL supersession; D146); shape per PLAN-decisions-supersession-guard 128->102/85->58 | precedent_kind: none | reversible: yes | persisted: waiver block, constraints, MEMORY.md#parked"
   - "fork: declare closes_criteria [T1.17:c4] or omit | chosen: omit; closeout staged below; operator may add it later as a permitted_field_edit (implement-scope-boundary.yaml) once T1.17 is in_progress | class: asked | precedent: exit-criteria-ledger.yaml#plan_closes_criteria + realized-differently rule; D136; D79/125; R2/R3 stand-ins | precedent_kind: contract | reversible: yes | persisted: no closes_criteria; staged_c4_closeout"
@@ -273,10 +291,12 @@ context:
   - >-
     staged_c4_closeout (operator applies as its own roadmap micro-commit): c4 open -> met; met_by
     t1-17-c4-supersession-guard-hardening (or the implementation's 40-hex sha); text -> "Wave-3 guard hardening:
-    validate_supersession_annotations matches whole decision numbers in _is_annotated, enumerates plural-list edges
-    via decision-entry.yaml title_relation_continuation (participle forms rejected per its rejected_forms), and fixes
-    three re-derived Lows (unreachable header branch, orphan waivers now FAIL, malformed waiver entries FAIL cleanly);
-    the original three Lows were never recorded"; original wording -> progress_note; T1.17 status rides R1's row.
+    validate_supersession_annotations matches whole decision numbers in _is_annotated, enumerates the plural lists
+    decision-entry.yaml title_relation_continuation admits (a sentence-final bare-number continuation is a
+    documented limit; participle and gerund forms are not edges, by the helper's whole-word anchor), and fixes three
+    re-derived Lows (unreachable header branch, orphan waivers now FAIL, malformed waiver entries FAIL cleanly); the
+    original three Lows are not recoverable from the repo or PR #684"; original wording -> progress_note; T1.17 status
+    rides R1's row.
   - "examined() counts all enumerated edges, so the declared count tracks the growing corpus (the AUD watch item)."
   - "Decision 73 ci_rca state: unverifiable from the authoring sandbox (recs reader unreachable; ci_rca_open timed out)."
 pre_implementation_checklist:
@@ -298,14 +318,18 @@ execution_steps:
     edge set ("orphan waiver S->V names no extracted edge -- delete it") and set any_fail. (e)
     registry.examined(edge_count, unit="supersession_edges") once the edge count exists. (f) Docstring: the check runs
     in --pre and full (the _manifest.py Entry is authoritative); replace the singular-only limit with the shared
-    grammar and the participle rejection; state orphan FAIL and stale WARN.
+    grammar's actual reach: lists closed by ")" or ";", slash lists and repeated "Decision" tokens are enumerated; a
+    sentence-final bare-number continuation is not (envelope-bearing entries are covered by the Decision 167 union);
+    participle and gerund forms are not edges (whole-word anchor). State orphan FAIL and stale WARN.
   - >-
     tests/checks/decisions/test_validate_supersession_annotations.py: add classes for M1 (superseder 5, victim
-    mentions only Decision 52 -> FAIL; "Decision 5." -> pass), M2 ("Supersedes Decisions 1, 2"; "amends Decisions
-    1/2"; "amends Decision 1 and Decision 2" -> every pair extracted), participle rejection (superseding, amending,
-    does not amend, superseded by -> no edge), L2 orphan -> FAIL naming the pair, stale -> WARN only, L3 missing victim
-    and non-integer superseder -> FAIL without exception, and the declaration (kind examined, unit supersession_edges,
-    count equal to the extracted edges). tmp_path fixtures; no absolute real-repo counts.
+    mentions only Decision 52 -> FAIL; "Decision 5." -> pass); M2, pinned to forms the grammar admits ("(Supersedes
+    Decisions 1, 2)"; "amends Decisions 1/2."; "amends Decision 1 and Decision 2." -> every pair extracted) plus one
+    documented-limit case ("Supersedes Decisions 1, 2." -> only (S, 1)); participle rejection (superseding, amending,
+    does not amend, superseded by -> no edge); L2 orphan -> FAIL naming the pair (the stale -> WARN case already
+    exists); L3 missing victim and non-integer superseder -> FAIL without exception; and the declaration (kind
+    examined, unit supersession_edges, count equal to the extracted triples). The M2, participle and L3 cases are
+    pytest.mark.parametrize tables (constraint SLOC). tmp_path fixtures; no absolute real-repo counts.
   - >-
     config/decision_supersession_waivers.yaml: append 130->128 with "Decision 130's title amends Decisions 102/128
     'scan scope' only (the tests/ grandfather); Decision 128's decompose-by-default rule stands. Same clause-level
