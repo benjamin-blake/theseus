@@ -18,7 +18,7 @@ scope:
     action: Create
     purpose: >-
       The REPORT-ONLY deliverable (Decision 86 cl.2; precedent the T1.17 c1-c3 and T2.44 c2 REPORT-ONLY plans).
-      Carries the c1/c2/c3 evidence as executable VP steps, the per-site apply provenance and live-run evidence map,
+      Carries the c1/c2/c3 evidence as executable VP steps, the per-site apply provenance, the live-run map (VP 8),
       the staged c1/c2 re-grounds and completion closeout (context staged_t2_46_closeout), and the staged draft
       recommendation (context staged_rec_dep08_residual). No code, test, workflow, action, contract, roadmap or
       DECISIONS change.
@@ -41,7 +41,7 @@ acceptance_criteria:
   - C3 holds because the persist site and the fetch action both key tfplan/personal by PR number and head sha (VP step 5).
   - The c1/c2/c3 regression suites pass at current main (VP step 6).
   - >-
-    Every live run cited in the evidence map has the stated workflow, event, conclusion and head sha, and the
+    Every live run in the VP 8 run map has the stated workflow, event, conclusion and head sha, and the
     repo's own record of the 2026-07-23 rehearsal is intact (VP steps 7 and 8).
   - The staged met_by resolves to a plan whose closes_criteria names T2.46:c1, c2 and c3 (VP step 9).
   - >-
@@ -94,11 +94,11 @@ verification_plan:
     expected: >-
       No workflow is missing a shared action; build+assert is consumed five times (sandbox three, reconcile two via
       the Decision 154 side-checkout spelling); terraform apply appears at five job-level sites in three shapes and
-      in no composite action. The five sites and their mandating Decisions are the apply provenance table in
+      in no composite action. The five sites and their mandating Decisions are the apply provenance line in
       context -- the realized-differently basis of the staged c1 re-ground.
     fix_if: >-
       A missing consumer means a workflow re-implements the chain; stop, c1 no longer holds. apply_sites other than 5
-      means a route was added or removed; re-derive the provenance table before staging c1. apply_in_actions above 0
+      means a route was added or removed; re-derive the provenance line before staging c1. apply_in_actions above 0
       means the apply step moved into an action and the c1 re-ground's apply clause must be redrafted.
     hermetic: true
     graduation: waive
@@ -200,18 +200,26 @@ verification_plan:
       A one-off historical-record check; the report is append-only history and no standing invariant depends on it.
     expected_literals: ["ep1_result=1 vp15_run=1 vp14_run=1 rehearsals_closed=1"]
   - step: 8
-    phase: post-deploy
-    action: Re-read every run in the evidence map through the GitHub Actions API (named read; gh is not installed by design)
+    phase: pre-deploy
+    action: Re-read every run in the run map through the GitHub Actions API (named read; gh is not installed by design)
     command: >-
       echo "mcp__github__actions_get get_workflow_run for 30025012786 30028092620 30028593753 30028942903 31883378929
       33668842982 33923277096 35622301658 36254580399 36451984037; mcp__github__actions_list list_workflow_jobs for
       33668842982 and 36451984037"
     expected: >-
-      Each run matches the workflow, event, conclusion and head sha in the context evidence map. 36451984037's
-      apply-sandbox job shows the steps Fetch saved plan from S3, Deterministic apply guard, Subagent plan review and
-      Terraform apply (same plan file the guard inspected) all success. 33668842982's apply-reconcile job shows the
-      saved-plan fetch step failure, guard, review and apply skipped, and the record write success with status
-      unchanged. Read 2026-10-01 by this author and, independently, by the step-6b stand-in.
+      Run map (workflow event, conclusion, head, date -> criterion leg): 30025012786 sandbox dispatch success 46b9fd91
+      07-23 -> acknowledge heal after the #702 guard-load fix (inferred from timing); 30028092620 sandbox push success
+      3cd80a53 07-23 -> c1 push chain + c2 positive (pre-#1230); 30028593753 reconcile dispatch failure 3cd80a53 07-23
+      -> c2 negative (VP-15 tamper fails closed at the digest verify); 30028942903 reconcile dispatch success 3cd80a53
+      07-23 -> c1 reconcile forced-red parity rehearsal (VP-14); 31883378929 reconcile dispatch success 43e4d688 08-15
+      -> D158 route (ii) hand-off live; 33923277096 sandbox dispatch success a47e03ab 09-04 -> D183 hand-off live;
+      33668842982 reconcile dispatch failure 735e69fc 09-02 -> digest verify OK, then a provider error inside
+      fetch-saved-plan, guard/review/apply skipped, record write success with status unchanged (infra class);
+      36451984037 sandbox push success ad51af56 09-28 -> its apply-sandbox job shows Fetch saved plan from S3,
+      Deterministic apply guard, Subagent plan review and Terraform apply (same plan file the guard inspected) all
+      success, i.e. the #1230-wrapped push apply site live (step-level). 35622301658 (8107c227, 09-21) and
+      36254580399 (1d806532, 09-26) sandbox push success are run-level corroboration only. Read 2026-10-01 by this
+      author and, independently, by the step-6b stand-in.
     fix_if: >-
       A different conclusion or head sha means the cited evidence is wrong; drop that run from the map and re-present.
     hermetic: false
@@ -269,8 +277,11 @@ verification_plan:
   - step: 12
     phase: pre-deploy
     action: Confirm the change is exactly this plan file (no roadmap, workflow, action, test, contract or DECISIONS edit)
-    command: git fetch --quiet origin main && git diff --name-only origin/main...HEAD
-    expected: The only path listed is docs/plans/PLAN-t2-46-apply-chain-closeout.yaml.
+    command: >-
+      git fetch --quiet origin main && git diff --name-only origin/main...HEAD &&
+      echo "closes_criteria_keys=$(grep -c '^closes_criteria:' docs/plans/PLAN-t2-46-apply-chain-closeout.yaml)"
+    expected: >-
+      The only path listed is docs/plans/PLAN-t2-46-apply-chain-closeout.yaml, followed by closes_criteria_keys=0.
     fix_if: >-
       Any other path means scope leaked; revert it (the closeout and the recommendation are staged in context and
       applied or filed only by the operator).
@@ -300,8 +311,14 @@ constraints:
     every block its census counted (:1000 record-write, zip build+assert, init-retry) plus guard, review and
     saved-plan fetch. The criterion text "apply exists exactly once" never adjudicated true (four sites at aca711bd,
     five now), so exit-criteria-ledger.yaml#fields.status mandates staging a rewrite to the realized mechanism; one
-    apply copy is not reachable without un-ratifying Decisions 77, 158 and 183 (provenance table in context). The c2
+    apply copy is not reachable without un-ratifying Decisions 77, 158 and 183 (apply provenance in context). The c2
     re-ground (three -> four saved-plan fetch sites) is a strengthening bounded by Decision 158 pt 3.
+    The staged c1 also replaces a second clause, "both entry workflows pass their behavioral contracts in a
+    forced-red rehearsal": it is realized as the reconcile forced-red parity rehearsal (VP-14, run 30028942903) plus
+    the structural contract tests over both entry workflows and dated live runs, which is how the human-confirmed
+    PLAN-terraform-apply-chain-consolidation acceptance (:175-181, :198) defined the rehearsal. apply-sandbox has never
+    been driven red-to-green, so this clause is NOT at literal strength for apply-sandbox; it is disclosed in
+    staged_t2_46_closeout and operator option (c) is the route to literal strength.
   - >-
     No workflow, action or script edit for the DEP-08 residual: it is staged as a draft recommendation, never filed by
     a thread (recs writer unreachable; brief forbids filing; Decision 67 queue not consumed). The reconcile
@@ -314,83 +331,21 @@ constraints:
   - No new standing prose doc and no companion report file (Decision 86 cl.2); this plan file is the deliverable.
   - No rescue agents or workaround loops (Decision 55).
 context:
-  - >-
-    Decision-scout FLAGS_FOUND (t2-46-decision-scout-r1-2d7c9b40): CITE 136, 147, 181, 158, 183, 77, 144, 86; WARN D181
-    (apply drop) and WARN D136 (run re-map) both discharged by the provenance table, evidence map and staged
-    recommendation below, so always_ask's scout-flag clause is not engaged. Decisions triaged: 163 of 163.
-    Roadmap items intersected: 0; CONFLICT: 0; RELATED: 0
-  - "gates: decision-scout=FLAGS_FOUND (folded in); step-6b-confirmation=stand-in r1 (t2-46-step-6b-stand-in-r1); plan-critique=PENDING; report-critique=PENDING"
-  - >-
-    Freshness gate (tier-item-lifecycle.yaml#tier_item_freshness_gate): (1) all three criteria met and hold at
-    931f3057 (VP 1-6) -> completion closeout, not new work. (2) files_in_scope all exist; oidc.tf deliberately never
-    edited (no IAM change needed); c1 apply wording and c2 "three" inaccurate (VP 2, 4); progress_note stale (VP 7-8).
-    (3) No sibling absorbs T2.46; T2.47 depends_on it. (4) No CD or cross_tier_gates row names it.
-  - >-
-    Apply provenance (five sites, three shapes, each route-mandated): sandbox:375 apply-sandbox push, #1230-wrapped,
-    fail-closed (D77); sandbox:978 gated-apply, wrapped (D92, D183 pt 2; topology guard invariant (ii) needs literal
-    argv); reconcile:397 saved plan, inline stderr capture (D158 pt 1 stale fallthrough); reconcile:492 apply_fresh,
-    bare (D158 route (i)); reconcile:806 gated-apply-reconcile, wrapped (D158 route (ii), D92).
-  - >-
-    Evidence map (Actions API, read 2026-10-01; run / workflow event / conclusion / head / date -> proves):
-    30025012786 sandbox dispatch success 46b9fd91 07-23 -> acknowledge heal after the #702 guard-load fix (inferred
-    from timing); 30028092620 sandbox push success 3cd80a53 07-23 -> c1 push chain + c2 positive; 30028593753
-    reconcile dispatch failure 3cd80a53 07-23 -> c2 negative (VP-15 tamper fails closed); 30028942903 reconcile
-    dispatch success 3cd80a53 07-23 -> c1 reconcile forced-red rehearsal (VP-14); 31883378929 reconcile dispatch
-    success 43e4d688 08-15 -> D158 route (ii) hand-off live; 33923277096 sandbox dispatch success a47e03ab 09-04 ->
-    D183 hand-off live; 33668842982 reconcile dispatch failure 735e69fc 09-02 -> digest verify OK then a provider
-    error inside fetch-saved-plan, record status unchanged (infra class); 35622301658 / 36254580399 / 36451984037
-    sandbox push success 8107c227 / 1d806532 / ad51af56 09-21..09-28 -> the #1230-wrapped push apply site
-    (sandbox:375) and digest-verified fetch live.
-  - >-
-    Not run live (stated plainly): no forced-red rehearsal of the apply-sandbox entry workflow ever (the 07-23
-    rehearsal was reconcile-only); no forced-red rehearsal on the post-D158/D183 topology; no reconcile run since
-    09-02, none at or after #1230; the two wrapped gated apply sites (sandbox:978, reconcile:806) have not run since
-    #1230. Correction to the stand-in's map: the wrapped push site sandbox:375 has run live (runs above, all on
-    commits containing 04a402a4).
-  - >-
-    Decision 178 is not cited: no clause governs this plan (its cleanse removed and #975 restored the apply-sandbox
-    push/PR triggers; it deleted no T2.46 artefact). fetch-saved-plan is single-copy but a pinned Decision 162 R1
-    violator (composite-action-shape.yaml:73-74).
-  - >-
-    staged_t2_46_closeout (operator-applied; NOT applied here; one roadmap-bookkeeping commit, ordered BEFORE T2.47's
-    closeout because T2.47 depends_on T2.46). c1 text -> "record-write, DuckLake build+byte-assert, init-retry, guard,
-    review and saved-plan fetch each exist exactly once as composite actions under .github/actions/ and both entry
-    workflows consume them; terraform apply is an inline job-level step at five sites, one per Decision-mandated route
-    (77 push verbatim; 92/183 dispatch-gated; 158 stale fallthrough, route (i) fresh guard-PASS, route (ii) gated
-    fresh). Both entry workflows' behavioural contracts hold structurally (validate_dispatch_gated_apply_topology,
-    recovery-workflow topology, tests/verify_ci_workflow/test_apply_and_terraform.py) and ran live: reconcile
-    forced-red rehearsal 30028942903 (3cd80a53) and route-(ii) recovery 31883378929 (43e4d688); apply-sandbox push
-    30028092620 (3cd80a53) and dispatch-gated hand-off 33923277096 (a47e03ab) (DEP-08/rec-2663)"; status met, met_by
-    unchanged. c2 text -> "Overwriting a saved plan object after PR review fails the merge-time fetch closed with a
-    digest mismatch -- sha256(plan.bin) is emitted in the PR comment and the terraform-plan-digest commit status and
-    verified by the single fetch-saved-plan action at all four saved-plan fetch sites; the two run-scoped fresh-plan
-    hand-offs verify a same-run sha256, not the reviewed digest (Decision 158 pt 3) (DEP-07; negative run
-    30028593753)"; status met, met_by unchanged. c3 unchanged. Then status not_started -> complete + completed_at in
-    the same edit as completion_compaction: drop progress_note (its one ask is resolved by 30028942903); intent ->
-    "Apply-chain consolidation + saved-plan digest integrity: six blocks single-copy as composite actions, apply
-    inline per Decision-mandated route, sha256-verified saved-plan fetch at four sites, tfplan key content-addressed
-    (DEP-07/08)."; files_in_scope -> []. Superseded c1/c2 wording, the progress_note, the evidence map and the
-    provenance table go to that PR's body. Regenerate .secrets.baseline if tripped; the edit carries the
-    data-pipeline deploy obligation. Operator options: (a) apply as staged; (b) decline the apply drop -- reopen c1
-    and route the remaining consolidation to a new plan; (c) require a forced-red rehearsal on the current topology
-    first (operator-assisted only); (d) act on staged_rec_dep08_residual.
-  - >-
-    staged_rec_dep08_residual (draft; never filed by a thread; operator files, accepts or acts). Title: "DEP-08
-    residual: Decision 158/183 fresh-plan hand-off is mirrored in two workflows with no parity assertion;
-    retention-days drifted (sandbox 2, reconcile 1); stale-plan signature pinned twice, never once". Facts (VP 10):
-    EMIT/upload/download/VERIFY four steps per workflow, sandbox copy guarded by validate_dispatch_gated_apply_topology
-    (iii)-(v), reconcile copy by _check_recovery_workflow_topology (iv), nothing relating the two; signature inline at
-    reconcile.yml (pinned by recovery topology (iii)) and in stale_plan_signature.py (pinned by its test); reconcile
-    retention 1 day while gated-apply-reconcile waits on the same tf-gated-apply approval as sandbox (2 days, both
-    github-actions-evidence.yaml ephemeral_handoff), so a reconcile route-(ii) approval after 24h fails at download
-    and latches red (loud, fail-closed). Proposed check: a cross-workflow parity assertion over the two hand-off
-    quadruples (gating, artifact name, retention-days, EMIT/VERIFY symmetry) shaped like
-    terraform-init-retry-signature-parity-both-consumers. Interim fix candidate: reconcile retention-days 1 -> 2.
-  - >-
-    record_grammar (stand-in r1, 2026-10-01, delegated authority rule 2): F1 c2 re-ground staged, consistency-only,
-    contract; F2 c1 realized-differently staged, asked, decision (D77/158/183 + ledger); F3 residual carried as staged
-    rec, disposition parked, decision/none; F4 run re-map, consistency-only, contract; F5 completion staged, application
-    parked, contract/none. Full lines: /mnt/project-files/gates/t2-46-step-6b-stand-in-r1.md; parked row R8 in MEMORY.md.
+  - "Decision-scout FLAGS_FOUND (t2-46-decision-scout-r1-2d7c9b40): CITE 136, 147, 181, 158, 183, 77, 144, 86; WARN D181 and WARN D136 both discharged by the provenance line, the VP 8 run map, the c1 rehearsal disclosure and the staged rec below, so always_ask's scout-flag clause is not engaged."
+  - "Decisions triaged: 163 of 163"
+  - "Roadmap items intersected: 0; CONFLICT: 0; RELATED: 0"
+  - "gates: decision-scout=FLAGS_FOUND (folded in); step-6b-confirmation=stand-in r1 (t2-46-step-6b-stand-in-r1); plan-critique=REVISE r1 (t2-46-plan-critique-r1-5e2a90d4, M1/M2 + L1-L6 folded in), r2 PENDING; report-critique=PENDING"
+  - "Freshness gate (tier-item-lifecycle.yaml#tier_item_freshness_gate): (1) all criteria hold (VP 1-6) -> completion closeout; (2) c1 apply and rehearsal wording, c2 'three' and the progress_note are stale (VP 2, 4, 7-8), oidc.tf deliberately never edited; (3) no sibling absorbs T2.46, T2.47 depends_on it; (4) no CD or cross_tier_gates row names it."
+  - "Apply provenance (five sites, three shapes, each route-mandated): sandbox:375 apply-sandbox push, #1230-wrapped, fail-closed (D77 no-TOCTOU; D55/154 anti-masking); sandbox:978 gated-apply, wrapped (D92; D183 pt 2; topology guard invariant (ii) needs the literal argv); reconcile:397 saved plan, inline stderr capture (D158 pt 1 stale fallthrough); reconcile:492 apply_fresh, bare (D158 route (i)); reconcile:806 gated-apply-reconcile, wrapped (D158 route (ii), D92)."
+  - "Not run live: apply-sandbox was never driven red-to-green by a forced-red rehearsal (the 2026-07-23 rehearsal was reconcile-only); nothing was rehearsed on the post-D158/D183 topology; no reconcile run since 2026-09-02, none after #1230; the two wrapped gated apply sites (sandbox:978, reconcile:806) have not run since #1230. Correction to the stand-in map: the wrapped push site sandbox:375 has run live (VP 8, run 36451984037 step-level)."
+  - "Not cited: Decision 178 (no clause governs this plan; its cleanse removed and #975 restored the apply-sandbox push/PR triggers and deleted no T2.46 artefact). fetch-saved-plan is single-copy but a pinned Decision 162 R1 violator (composite-action-shape.yaml:73-74)."
+  - "fork: re-ground c2 'all three fetch sites' to 'every saved-plan fetch site (four uses of fetch-saved-plan, one action)', status and met_by unchanged | chosen: yes, staged-only in staged_t2_46_closeout, with the D158 pt 3 bound and the D162 note | class: consistency-only | precedent: exit-criteria-ledger.yaml#fields.status bookkeeping-walk clause; tier-item-lifecycle.yaml#tier_item_freshness_gate check 2; D158 pt 3; D162 / composite-action-shape.yaml:73-74; audit :983 is the source of 'three'; R8 stand-in 2026-10-01 (delegated authority, delegation rule 2) | precedent_kind: contract | reversible: yes | persisted: context staged_t2_46_closeout, VP 4"
+  - "fork: is dropping apply from c1's exactly-once set realized-differently (ledger) or a weakening (D181)? | chosen: stage c1 as realized-differently (six blocks single-copy; apply inline at five sites, one per Decision-mandated route), status met and met_by unchanged; operator acceptance rides the parked R8 application row (decline: reopen c1, operator-only) | class: asked | precedent: D181 cl.1 + implement-scope-boundary.yaml#invariants.content (weakening 'to obtain green'; audit :1000/:1008 kept at full strength for every block it counted); D77, D158 pts 1-3, D183 pt 2 (per-site apply shapes are route-mandated); exit-criteria-ledger.yaml#fields.status realized-differently clause; D136; R8 stand-in 2026-10-01 (delegated authority, delegation rule 2) | precedent_kind: decision | reversible: yes | persisted: context staged_t2_46_closeout + apply provenance, VP 2, MEMORY.md#parked R8"
+  - "fork: disposition of the D158/D183 hand-off mirror, the second stale-plan regex copy and the retention-days drift (sandbox 2, reconcile 1) | chosen: carriage as the staged draft rec staged_rec_dep08_residual naming each copy's guard, never filed by a thread; disposition PARKED for the operator | class: asked | precedent: D181 cl.1 (route to a rec, staged because the portal is unreachable); tier-item-lifecycle.yaml#completion_compaction; D86 cl.2; github-actions-evidence.yaml ephemeral_handoff; R8 stand-in 2026-10-01 (delegated authority, delegation rule 2); disposition none | precedent_kind: decision (carriage) / none (disposition) | reversible: yes | persisted: context staged_rec_dep08_residual, VP 10, MEMORY.md#parked R8"
+  - "fork: re-map the run evidence (D136 flag) | chosen: one row per criterion leg as dated named reads with head sha (VP 8), uncovered set stated plainly | class: consistency-only | precedent: exit-criteria-ledger.yaml#fields.status (re-adjudicates true today); D136; Actions API reads 2026-10-01; R8 stand-in 2026-10-01 (delegated authority, delegation rule 2) | precedent_kind: contract | reversible: yes | persisted: VP 8 expected, context Not-run-live line"
+  - "fork: stage T2.46 not_started -> complete + completed_at in completion_compaction form ahead of T2.47, and apply it | chosen: staging yes (staged_t2_46_closeout); application PARKED for the operator (options a-d) | class: asked | precedent: staging -- tier-item-lifecycle.yaml#tier_item_freshness_gate check 1, #bookkeeping_walk, #completion_compaction, D147 pts 1-2 + 2026-09-25 amendment, ROADMAP-PLATFORM.yaml T2.47 depends_on; application -- none (never-list; roadmap Lambda-bundled, D79/125); R8 stand-in 2026-10-01 (delegated authority, delegation rule 2) | precedent_kind: contract (staging) / none (application) | reversible: yes | persisted: context staged_t2_46_closeout, MEMORY.md#parked R8"
+  - "staged_t2_46_closeout (operator-applied; NOT applied here; one roadmap-bookkeeping commit ordered BEFORE T2.47's closeout, since T2.47 depends_on T2.46). c1 text -> 'record-write, DuckLake build+byte-assert, init-retry, the deterministic guard and subagent review on the apply path, and the saved-plan fetch each exist exactly once as composite actions under .github/actions/ (sentinels CONVERGENCE_WRITE_VERIFY, DUCKLAKE_ZIP_MISMATCH and the init transient-retry marker appear 0 times in the two entry workflows; the guard's logic is the single tested script scripts/terraform_apply_guard.py) and both entry workflows consume them; terraform apply is an inline job-level step at five sites, one per Decision-mandated route (77 push verbatim; 92/183 dispatch-gated; 158 pt 1 stale fallthrough, route (i) fresh guard-PASS, route (ii) gated fresh). Both entry workflows' behavioural contracts hold structurally (validate_dispatch_gated_apply_topology, the recovery-workflow topology check, tests/verify_ci_workflow/test_apply_and_terraform.py) and ran live: reconcile forced-red parity rehearsal 30028942903 (3cd80a53) and route-(ii) recovery 31883378929 (43e4d688); apply-sandbox push 36451984037 (ad51af56, wrapped apply site) and dispatch-gated hand-off 33923277096 (a47e03ab) (DEP-08/rec-2663)'; status met, met_by unchanged. Rehearsal-clause disclosure: the staged c1 also replaces 'both entry workflows pass their behavioral contracts in a forced-red rehearsal' with the reconcile forced-red rehearsal plus the structural contract tests over both workflows and the dated live runs, which is how PLAN-terraform-apply-chain-consolidation's acceptance (:175-181, :198) defined it; apply-sandbox has never been driven red-to-green, so option (c) is the route if the operator wants that clause at literal strength. c2 text -> 'Overwriting a saved plan object after PR review fails the merge-time fetch closed with a digest mismatch -- sha256(plan.bin) is emitted in the PR comment and the terraform-plan-digest commit status and verified by the single fetch-saved-plan action at all four saved-plan fetch sites (apply-sandbox, gated-apply, apply-reconcile, gated-apply-reconcile); the two run-scoped fresh-plan hand-offs verify a same-run sha256, not the reviewed digest (Decision 158 pt 3) (DEP-07; negative run 30028593753)'; status met, met_by unchanged. c3 unchanged. Then status not_started -> complete + completed_at in the same edit as completion_compaction: drop progress_note (its one ask is resolved by 30028942903); intent -> 'Apply-chain consolidation + saved-plan digest integrity: six blocks single-copy as composite actions, apply inline per Decision-mandated route, sha256-verified saved-plan fetch at four sites, tfplan key content-addressed (DEP-07/08).'; files_in_scope -> []. Superseded c1/c2 wording, the progress_note, the VP 8 run map and the apply provenance go to that PR's body. Regenerate .secrets.baseline if tripped; the edit carries the data-pipeline deploy obligation. Operator options: (a) apply as staged; (b) decline the apply drop or the rehearsal-clause realization -- reopen c1 and route the remaining work to a new plan; (c) require a forced-red rehearsal of apply-sandbox on the current topology first (operator-assisted only); (d) act on staged_rec_dep08_residual."
+  - "staged_rec_dep08_residual (draft; never filed by a thread; the operator files, accepts or acts). Title: 'DEP-08 residual: Decision 158/183 fresh-plan hand-off is mirrored in two workflows with no parity assertion; retention-days drifted (sandbox 2, reconcile 1); stale-plan signature pinned twice, never once'. Facts (VP 10): EMIT/upload/download/VERIFY, four steps per workflow; the sandbox copy is guarded by validate_dispatch_gated_apply_topology (iii)-(v), the reconcile copy by _check_recovery_workflow_topology (iv), and nothing relates the two; the signature is inline in reconcile.yml (pinned by recovery topology (iii)) and in stale_plan_signature.py (pinned by its own test); reconcile keeps the hand-off 1 day while gated-apply-reconcile waits on the same tf-gated-apply approval as sandbox (2 days; both github-actions-evidence.yaml ephemeral_handoff), so a reconcile route-(ii) approval after 24h fails at download and latches red (loud, fail-closed). Proposed check: a cross-workflow parity assertion over the two hand-off quadruples (gating, artifact name, retention-days, EMIT/VERIFY symmetry) shaped like terraform-init-retry-signature-parity-both-consumers. Interim fix candidate: reconcile retention-days 1 -> 2."
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
