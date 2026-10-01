@@ -81,7 +81,8 @@ def _validate_s1(root: Path, contract: dict[str, Any]) -> None:
             raise ValueError(f"S1 {role} target does not expose {symbol}")
 
 
-def _validate_jobs(root: Path, contract: dict[str, Any]) -> None:
+def _validate_jobs(root: Path, contract: dict[str, Any]) -> int:
+    """Validate every governed job selector; return how many were validated."""
     entries = contract.get("governed_jobs")
     if not isinstance(entries, list) or not entries:
         raise ValueError("governed_jobs must be a nonempty list")
@@ -125,6 +126,7 @@ def _validate_jobs(root: Path, contract: dict[str, Any]) -> None:
             raise ValueError(f"unknown diagnostic surface class: {workflow}:{job_key}")
         if surface.get("class") != "native_step_failure" or surface.get("step") != critical:
             raise ValueError(f"decisive surface is not tied to the selected critical step: {workflow}:{job_key}")
+    return len(entries)
 
 
 def _actual_uploads(root: Path) -> list[dict[str, Any]]:
@@ -147,7 +149,8 @@ def _actual_uploads(root: Path) -> list[dict[str, Any]]:
     return found
 
 
-def _validate_uploads(root: Path, contract: dict[str, Any]) -> None:
+def _validate_uploads(root: Path, contract: dict[str, Any]) -> int:
+    """Validate every actions/upload-artifact step's classification; return how many were validated."""
     declared = contract.get("artifact_uploads")
     if not isinstance(declared, list):
         raise ValueError("artifact_uploads must be a list")
@@ -174,21 +177,24 @@ def _validate_uploads(root: Path, contract: dict[str, Any]) -> None:
         policy = classes[classification["retention_class"]]
         if not policy["minimum_days"] <= upload["retention_days"] <= policy["maximum_days"]:
             raise ValueError(f"artifact retention is outside class bounds: {upload['workflow']}:{upload['step']}")
+    return len(actual)
 
 
-def validate_contract(root: Path) -> None:
+def validate_contract(root: Path) -> int:
+    """Validate the evidence contract against root's workflows; return the number of governed jobs
+    plus actual artifact-upload steps validated (the check's examined() count)."""
     contract = _load_yaml(root / CONTRACT_PATH)
     _validate_classes(contract)
     _validate_s1(root, contract)
-    _validate_jobs(root, contract)
-    _validate_uploads(root, contract)
+    return _validate_jobs(root, contract) + _validate_uploads(root, contract)
 
 
 @registry.register("validate_actions_evidence", owner="platform")
 def validate_actions_evidence(failed: list[str]) -> None:
     print("\n=== GitHub Actions evidence governance ===")
     try:
-        validate_contract(_common.ROOT)
+        validated = validate_contract(_common.ROOT)
+        registry.examined(validated, unit="governed_jobs_and_artifact_uploads")
         print("  PASS: governed diagnostics and artifact retention match the contract")
     except Exception as exc:
         print(f"  FAIL: {exc}")
