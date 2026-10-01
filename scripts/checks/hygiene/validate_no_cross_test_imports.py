@@ -49,15 +49,17 @@ def _imported_names_from_import_from(node: ast.ImportFrom) -> list[str]:
     return [node.module.split(".")[-1]]
 
 
-def _scan_file(path: Path) -> list[str]:
+def _scan_file(path: Path) -> tuple[list[str], bool]:
+    """Violations in one module, and whether it was actually parsed (grandfathered and
+    unparseable modules are not examined)."""
     rel = path.relative_to(_common.ROOT).as_posix()
     if rel in _GRANDFATHERED_CROSS_TEST_IMPORTS:
-        return []
+        return [], False
 
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     except SyntaxError:
-        return []
+        return [], False
 
     violations: list[str] = []
     for node in ast.walk(tree):
@@ -70,14 +72,21 @@ def _scan_file(path: Path) -> list[str]:
         for name in names:
             if name.startswith("test_"):
                 violations.append(f"{rel}:{node.lineno}: imports from another test module ({name})")
-    return violations
+    return violations, True
+
+
+def _scan_paths(paths: list[Path]) -> tuple[list[str], int]:
+    violations: list[str] = []
+    examined = 0
+    for path in paths:
+        found, parsed = _scan_file(path)
+        violations.extend(found)
+        examined += parsed
+    return violations, examined
 
 
 def _find_violations(paths: list[Path]) -> list[str]:
-    violations: list[str] = []
-    for path in paths:
-        violations.extend(_scan_file(path))
-    return violations
+    return _scan_paths(paths)[0]
 
 
 @registry.register("validate_no_cross_test_imports", owner="platform")
@@ -90,7 +99,8 @@ def validate_no_cross_test_imports(failed: list[str]) -> None:
     print("\n=== No-cross-test-import guard ===")
     tests_dir = _common.ROOT / "tests"
     paths = sorted(tests_dir.glob("**/*.py"))
-    violations = _find_violations(paths)
+    violations, examined = _scan_paths(paths)
+    registry.examined(examined, unit="test_modules")
     if violations:
         print("Cross-test-module imports found:")
         for v in violations:
