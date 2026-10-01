@@ -61,10 +61,14 @@ throttle_design:
     rejects the ci_rca rec, then a dispute is attempted) has no parent to name: the schema checks only
     the ^rec-\d+$ pattern (ci_rca_schema.py:213), so a flow-B dispute would name a rec that does not
     exist, which the schema cannot detect.
-  degraded_path: every reject text carries a two-case instruction, keyed on whether parent_rec_id names
-    an OPEN source=ci_rca rec (the same reader rows bound 1 already loaded):
-    case_parent_open: "the parent rec stands as the Decision 73 signal; append this dispute's evidence to
-      it via update_rec instead of filing a dispute". Do NOT re-file the ci_rca rec: a same-fingerprint
+  degraded_path: every reject text, including the fail-closed one, carries BOTH cases verbatim,
+    conditioned on the agent's own knowledge of its parent ("if the parent_rec_id you named is an open rec
+    you filed ...; otherwise ..."). The portal does not select the case: bound 1's read loads dispute rows
+    only (source = 'ci_rca_evidence_dispute'), not the parent's source=ci_rca row, and the fail-closed
+    reject has no rows at all, so no extra read is added and the one-call egress line holds.
+    case_parent_open: "the parent rec stands as the Decision 73 signal; add this dispute's evidence to the
+      parent's context instead of filing a dispute (read-modify-write: update_rec replaces the context
+      column, ops_data_portal.py:505)". Do NOT re-file the ci_rca rec: a same-fingerprint
       re-file is deduplicated by the CIRCA-03(c) write-time backstop (scripts/ops_data_portal.py:318-338,
       Decision 142), which bumps the parent and returns its id, so any citation in the re-file is lost.
     case_no_parent: "file the source=ci_rca rec mirroring the bundle's value for the disputed field
@@ -119,8 +123,9 @@ Gated on MEMORY.md#parked rows R5 fork 3 and R5 fork 4, and on F2's data precond
   test for the new module; docs/contracts/ci-rca-lifecycle.yaml (dispute section).
 - Tier V2; closes_criteria [T1.13:c9]; bundled_recommendations [rec-2415].
 - VP: red-before for bound 1, bound 2 and the fail-closed reject; the degraded-path text asserted on
-  every reject in both cases (case_parent_open names update_rec on the parent and never a re-file;
-  case_no_parent names the bundle-mirroring re-file); ops_data_portal.py SLOC <= 500 with no budget entry; zero net-new suppressions.
+  every reject, including the fail-closed one, carrying both cases verbatim (case_parent_open names the
+  read-modify-write update_rec on the parent and never a re-file; case_no_parent names the
+  bundle-mirroring re-file); ops_data_portal.py SLOC <= 500 with no budget entry; zero net-new suppressions.
   Not a registered check, so check_accounting and `examined()` are not involved.
 
 ## 3. Staged T1.13 c9 closeout (PARKED: MEMORY.md#parked R5 closeout)
