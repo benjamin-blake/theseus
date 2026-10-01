@@ -103,61 +103,66 @@ def _reg_of(data, i=0):
     return data["work_items"][i]["extension"]["consideration_register"]
 
 
-def _run(
-    tmp_path,
-    monkeypatch,
-    capsys,
-    data=None,
-    *,
-    text=None,
-    roadmap=_ROADMAP,
-    decisions=_DECISIONS,
-    files=None,
-    changed=(),
-    today=None,
-):
-    data = _fixture() if data is None else data
-    body = text if text is not None else _HEAD + model.render(model.Fixture.model_validate(data))
-    tree = {
-        model.FIXTURE_PATH: body,
-        "docs/ROADMAP-PLATFORM.yaml": yaml.safe_dump(roadmap),
-        "docs/DECISIONS.md": decisions,
-        "docs/notes.md": "x\n" * 5,
-        **(files or {}),
-    }
-    for rel, content in tree.items():
-        path = tmp_path / rel
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
-    _common.run(["git", "init", "-q"], cwd=tmp_path)
-    _common.run(["git", "add", "-A"], cwd=tmp_path)
-    monkeypatch.setattr(_common, "ROOT", tmp_path)
-    monkeypatch.setattr(_common, "get_changed_files", lambda root=None: list(changed))
-    registry.pop_declaration()
-    failed: list[str] = []
-    validate_work_item_pilot(failed, today=today)
-    return failed, capsys.readouterr().out
+def _canon(data):
+    return _HEAD + model.render(model.Fixture.model_validate(data))
 
 
-def _expect_red(tmp_path, monkeypatch, capsys, needle, data=None, **kwargs):
-    if "text" not in kwargs and data is not None:
-        kwargs["text"] = yaml.safe_dump(data, sort_keys=False)
-    failed, out = _run(tmp_path, monkeypatch, capsys, data, **kwargs)
-    assert failed == [_LABEL], out
-    assert needle in out, out
+@pytest.fixture
+def run(tmp_path, monkeypatch, capsys):
+    def _run(data=None, *, text=None, roadmap=_ROADMAP, decisions=_DECISIONS, files=None, changed=(), today=None):
+        data = _fixture() if data is None else data
+        tree = {
+            model.FIXTURE_PATH: text if text is not None else _canon(data),
+            "docs/ROADMAP-PLATFORM.yaml": yaml.safe_dump(roadmap),
+            "docs/DECISIONS.md": decisions,
+            "docs/notes.md": "x\n" * 5,
+            **(files or {}),
+        }
+        for rel, content in tree.items():
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_text(content, encoding="utf-8")
+        _common.run(["git", "init", "-q"], cwd=tmp_path)
+        _common.run(["git", "add", "-A"], cwd=tmp_path)
+        monkeypatch.setattr(_common, "ROOT", tmp_path)
+        monkeypatch.setattr(_common, "get_changed_files", lambda root=None: list(changed))
+        registry.pop_declaration()
+        failed: list[str] = []
+        validate_work_item_pilot(failed, today=today)
+        return failed, capsys.readouterr().out
+
+    return _run
+
+
+@pytest.fixture
+def green(run):
+    def _green(data=None, **kwargs):
+        failed, out = run(data, **kwargs)
+        assert failed == [], out
+
+    return _green
+
+
+@pytest.fixture
+def red(run):
+    def _red(needle, data=None, **kwargs):
+        if "text" not in kwargs and data is not None:
+            kwargs["text"] = yaml.safe_dump(data, sort_keys=False)
+        failed, out = run(data, **kwargs)
+        assert failed == [_LABEL], out
+        assert needle in out, out
+
+    return _red
 
 
 class TestSkeleton:
-    def test_empty_skeleton_passes_and_declares_examined(self, tmp_path, monkeypatch, capsys):
-        data = _fixture(0)
-        failed, out = _run(tmp_path, monkeypatch, capsys, data)
+    def test_empty_skeleton_passes_and_declares_examined(self, run):
+        failed, out = run(_fixture(0))
         decl = registry.pop_declaration()
         assert failed == [] and out.count("PASS") == 6, out
-        assert decl is not None and decl.kind == "examined" and decl.count == 1 and decl.unit == "fixtures"
+        assert decl is not None and (decl.kind, decl.count, decl.unit) == ("examined", 1, "fixtures")
 
-    def test_one_valid_item_passes(self, tmp_path, monkeypatch, capsys):
-        failed, out = _run(tmp_path, monkeypatch, capsys)
-        assert failed == [], out
+    def test_one_valid_item_passes(self, green):
+        green()
 
     def test_absent_fixture_fails(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setattr(_common, "ROOT", tmp_path)
@@ -166,24 +171,13 @@ class TestSkeleton:
         assert failed == [_LABEL] and "absent" in capsys.readouterr().out
 
 
-def _set(path, value):
+def _mut(path, value=None, *, drop=False):
     def apply(d):
         target = _reg_of(d)
         *keys, last = path
         for key in keys:
             target = target[key]
-        target[last] = value
-
-    return apply
-
-
-def _drop(path):
-    def apply(d):
-        target = _reg_of(d)
-        *keys, last = path
-        for key in keys:
-            target = target[key]
-        del target[last]
+        target.pop(last) if drop else target.__setitem__(last, value)
 
     return apply
 
@@ -192,7 +186,7 @@ def _second_item_shares(signal, metric):
     def apply(d):
         d["work_items"].append(_item(2))
         d["work_item_criteria"].append(_crit(2))
-        d["work_items"][1]["extension"]["consideration_register"]["failure_signal"].update(signal=signal, metric=metric)
+        _reg_of(d, 1)["failure_signal"].update(signal=signal, metric=metric)
 
     return apply
 
@@ -201,137 +195,104 @@ def _top(key, value):
     return lambda d: d["work_items"][0].__setitem__(key, value)
 
 
-_SIG = "capture rate drops for item 1"
+def _crit0(**changes):
+    return lambda d: d["work_item_criteria"][0].update(**changes)
+
+
+_PAD = " " * 10
 _SCHEMA_CASES = {
     "unknown key": (_top("bogus", 1), "Extra inputs"),
     "kind plan": (_top("kind", "plan"), "epic"),
-    "missing metric": (_drop(["failure_signal", "metric"]), "Field required"),
-    "missing source": (_drop(["failure_signal", "source"]), "Field required"),
-    "shared signal and metric": (_second_item_shares(_SIG, "capture_rate_1"), "shares its (failure_signal"),
-    "shared pair folded": (
-        _second_item_shares("  CAPTURE   rate drops for item 1", "Capture_Rate_1"),
-        "shares its (failure_signal",
+    "missing metric": (_mut(["failure_signal", "metric"], drop=True), "Field required"),
+    "missing source": (_mut(["failure_signal", "source"], drop=True), "Field required"),
+    "shared signal and metric": (
+        _second_item_shares("capture rate drops for item 1", "capture_rate_1"),
+        "shares its (failure",
     ),
-    "placeholder metric": (_set(["failure_signal", "metric"], "TBD"), "placeholder token"),
-    "under floor why": (_set(["why"], "too short"), "at least 20 characters"),
-    "padded under floor why": (_set(["why"], " " * 10 + "short" + " " * 10), "shorter than"),
-    "over length why": (_set(["why"], "a" * 241), "at most 240"),
-    "over length metric": (_set(["failure_signal", "metric"], "m" * 121), "at most 120"),
+    "shared pair folded": (_second_item_shares("  CAPTURE   rate drops for item 1", "Capture_Rate_1"), "shares its (failure"),
+    "placeholder metric": (_mut(["failure_signal", "metric"], "TBD"), "placeholder token"),
+    "under floor why": (_mut(["why"], "too short"), "at least 20 characters"),
+    "padded under floor why": (_mut(["why"], _PAD + "short" + _PAD), "shorter than"),
+    "over length why": (_mut(["why"], "a" * 241), "at most 240"),
+    "over length metric": (_mut(["failure_signal", "metric"], "m" * 121), "at most 120"),
     "non ascii text": (_top("title", "Capture producer wiring caf\u00e9"), "printable ASCII"),
-    "rec only evidence": (_set(["evidence"], [{"kind": "rec", "ref": "rec-9999"}]), "CI-resolvable"),
-    "verification names absent criterion": (_set(["verification"], ["c1", "c2"]), "absent criterion 'c2'"),
-    "duplicated verification id": (_set(["verification"], ["c1", "c1"]), "verification ids must be unique"),
-    "wrong transitions": (_set(["maturity", "transitions"], _reg(1)["maturity"]["transitions"][::-1]), "adjacent rung pairs"),
-    "duplicate planes": (_set(["planes"], ["data_plane", "data_plane"]), "planes must be unique"),
-    "duplicate row ids": (_set(["contested"], [{"id": "s1", "text": "A contested point here."}]), "row ids must be unique"),
+    "rec only evidence": (_mut(["evidence"], [{"kind": "rec", "ref": "rec-9999"}]), "CI-resolvable"),
+    "verification names absent criterion": (_mut(["verification"], ["c1", "c2"]), "absent criterion 'c2'"),
+    "duplicated verification id": (_mut(["verification"], ["c1", "c1"]), "verification ids must be unique"),
+    "wrong transitions": (_mut(["maturity", "transitions"], _reg(1)["maturity"]["transitions"][::-1]), "adjacent rung pairs"),
+    "duplicate planes": (_mut(["planes"], ["data_plane", "data_plane"]), "planes must be unique"),
+    "duplicate row ids": (_mut(["contested"], [{"id": "s1", "text": "A contested point here."}]), "row ids must be unique"),
     "duplicate item": (lambda d: d["work_items"].append(copy.deepcopy(d["work_items"][0])), "duplicate work item id"),
-    "duplicate criterion": (
-        lambda d: d["work_item_criteria"].append(copy.deepcopy(d["work_item_criteria"][0])),
-        "duplicate criterion",
-    ),
-    "criterion names absent item": (lambda d: d["work_item_criteria"][0].update(work_item="pwi-ghost"), "absent work item"),
+    "duplicate criterion": (lambda d: d["work_item_criteria"].append(_crit()), "duplicate criterion"),
+    "criterion names absent item": (_crit0(work_item="pwi-ghost"), "absent work item"),
     "too many criteria": (
         lambda d: d["work_item_criteria"].extend(_crit(1, f"c{i}") for i in range(2, 6)),
-        "above MAX_CRITERIA_PER_ITEM",
+        "above MAX_CRITERIA",
     ),
-    "unresolved_legacy method": (
-        lambda d: d["work_item_criteria"][0].update(method={"kind": "unresolved_legacy"}),
-        "unresolved_legacy",
-    ),
+    "unresolved_legacy method": (_crit0(method={"kind": "unresolved_legacy"}), "unresolved_legacy"),
     "review method without resolver": (
-        lambda d: d["work_item_criteria"][0].update(method={"kind": "review", "evidence_requirement": "A reviewer note."}),
+        _crit0(method={"kind": "review", "evidence_requirement": "A reviewer note."}),
         "Field required",
     ),
-    "execution method with both arms": (
-        lambda d: d["work_item_criteria"][0].update(method={"kind": "execution", "check": "x", "command": "y"}),
-        "exactly one of check or command",
-    ),
+    "execution method with both arms": (_crit0(method={"kind": "execution", "check": "x", "command": "y"}), "exactly one of"),
 }
+_REVIEW = {"kind": "review", "resolver": "Operator reviews the report.", "evidence_requirement": "A signed review note."}
 
 
 class TestSchema:
     @pytest.mark.parametrize("name", sorted(_SCHEMA_CASES))
-    def test_broken_input_is_red(self, name, tmp_path, monkeypatch, capsys):
+    def test_broken_input_is_red(self, name, red):
         mutate, needle = _SCHEMA_CASES[name]
         data = _fixture()
         mutate(data)
-        _expect_red(tmp_path, monkeypatch, capsys, needle, data)
+        red(needle, data)
 
-    def test_non_yaml_is_red(self, tmp_path, monkeypatch, capsys):
-        _expect_red(tmp_path, monkeypatch, capsys, "not valid YAML", text="a: [unclosed\n")
+    def test_non_yaml_is_red(self, red):
+        red("not valid YAML", text="a: [unclosed\n")
 
-    def test_review_method_with_resolver_is_green(self, tmp_path, monkeypatch, capsys):
-        method = {
-            "kind": "review",
-            "resolver": "Operator reviews the report.",
-            "evidence_requirement": "A signed review note.",
-        }
+    def test_review_method_with_resolver_is_green(self, green):
         data = _fixture()
-        data["work_item_criteria"][0]["method"] = method
-        failed, out = _run(tmp_path, monkeypatch, capsys, data)
-        assert failed == [], out
+        _crit0(method=_REVIEW)(data)
+        green(data)
 
 
 class TestCap:
-    def test_twelve_items_pass(self, tmp_path, monkeypatch, capsys):
-        failed, out = _run(tmp_path, monkeypatch, capsys, _fixture(12))
-        assert failed == [], out
+    def test_twelve_items_pass(self, green):
+        green(_fixture(12))
 
-    def test_thirteen_items_fail(self, tmp_path, monkeypatch, capsys):
-        _expect_red(
-            tmp_path,
-            monkeypatch,
-            capsys,
-            "ITEM_COUNT_CAP=12",
-            _fixture(13),
-            text=_HEAD + model.render(model.Fixture.model_validate(_fixture(13))),
-        )
+    def test_thirteen_items_fail(self, red):
+        red("ITEM_COUNT_CAP=12", _fixture(13), text=_canon(_fixture(13)))
 
-    def test_per_item_line_ceiling(self, tmp_path, monkeypatch, capsys):
+    def test_per_item_line_ceiling(self, red, monkeypatch):
         monkeypatch.setattr(model, "PER_ITEM_LINE_CEILING", 5)
         monkeypatch.setattr(model, "HEADER_LINE_CEILING", 5)
-        _expect_red(
-            tmp_path,
-            monkeypatch,
-            capsys,
-            "effective lines",
-            _fixture(),
-            text=_HEAD + model.render(model.Fixture.model_validate(_fixture())),
-        )
+        red("effective lines", _fixture(), text=_canon(_fixture()))
 
-    def test_block_style_relayout_fails_render_equality(self, tmp_path, monkeypatch, capsys):
+    def test_block_style_relayout_fails_render_equality(self, red):
         data = _fixture()
-        text = _HEAD + yaml.safe_dump(data, default_flow_style=False, sort_keys=False)
-        _expect_red(tmp_path, monkeypatch, capsys, "canonical layout", data, text=text)
+        red("canonical layout", data, text=_HEAD + yaml.safe_dump(data, default_flow_style=False, sort_keys=False))
+
+
+_SECOND = f"{model.PILOT_DIR}/second.yaml"
 
 
 class TestSingleInstance:
-    def test_second_file_under_pilot_dir_fails(self, tmp_path, monkeypatch, capsys):
-        _expect_red(tmp_path, monkeypatch, capsys, "second file", files={f"{model.PILOT_DIR}/second.yaml": "x: 1\n"})
+    @pytest.mark.parametrize(
+        ("needle", "files", "decisions"),
+        [
+            ("second file", {_SECOND: "x: 1\n"}, _DECISIONS),
+            ("column-0", {"config/other.yaml": "work_item_edges: []\n"}, _DECISIONS),
+            ("second file", {_SECOND: "x: 1\n"}, _DECISIONS + f"## Decision 300: Rehome\n{_SECOND}\n"),
+        ],
+    )
+    def test_second_fixture_is_red(self, needle, files, decisions, red):
+        red(needle, files=files, decisions=decisions)
 
-    def test_column_zero_key_elsewhere_fails(self, tmp_path, monkeypatch, capsys):
-        _expect_red(tmp_path, monkeypatch, capsys, "column-0", files={"config/other.yaml": "work_item_edges: []\n"})
+    def test_indented_key_is_not_a_second_fixture(self, green):
+        green(files={"config/other.yaml": "a:\n  work_items: []\n"})
 
-    def test_indented_key_is_not_a_second_fixture(self, tmp_path, monkeypatch, capsys):
-        failed, out = _run(tmp_path, monkeypatch, capsys, files={"config/other.yaml": "a:\n  work_items: []\n"})
-        assert failed == [], out
-
-    def test_decision_naming_path_without_cd45_does_not_admit(self, tmp_path, monkeypatch, capsys):
-        second = f"{model.PILOT_DIR}/second.yaml"
-        _expect_red(
-            tmp_path,
-            monkeypatch,
-            capsys,
-            "second file",
-            files={second: "x: 1\n"},
-            decisions=_DECISIONS + f"## Decision 300: Rehome\n{second}\n",
-        )
-
-    def test_decision_naming_path_and_cd45_admits(self, tmp_path, monkeypatch, capsys):
-        second = f"{model.PILOT_DIR}/second.yaml"
-        decisions = _DECISIONS + f"## Decision 300: Rehome\nCD.45 pilot moves to {second}\n"
-        failed, out = _run(tmp_path, monkeypatch, capsys, files={second: "x: 1\n"}, decisions=decisions)
-        assert failed == [], out
+    def test_decision_naming_path_and_cd45_admits(self, green):
+        green(files={_SECOND: "x: 1\n"}, decisions=_DECISIONS + f"## Decision 300: Rehome\nCD.45 moves to {_SECOND}\n")
 
 
 def _edge(to, kind="depends_on"):
@@ -339,32 +300,29 @@ def _edge(to, kind="depends_on"):
 
 
 class TestEdges:
-    def test_pilot_item_tier_item_and_cd_targets_pass(self, tmp_path, monkeypatch, capsys):
-        data = _fixture(2, edges=[_edge("pwi-item-2"), _edge("T4.23"), _edge("CD.45", "part_of")])
-        failed, out = _run(tmp_path, monkeypatch, capsys, data)
-        assert failed == [], out
+    def test_pilot_item_tier_item_and_cd_targets_pass(self, green):
+        green(_fixture(2, edges=[_edge("pwi-item-2"), _edge("T4.23"), _edge("CD.45", "part_of")]))
 
     @pytest.mark.parametrize(
         ("target", "needle"),
+        [("T4.23:c6", "criterion id"), ("T3.3:c1", "criterion id"), ("rec-4026", "rec id"), ("T9.99", "archived")],
+    )
+    def test_bad_target_is_red(self, target, needle, red):
+        red(needle, _fixture(edges=[_edge(target)]))
+
+    @pytest.mark.parametrize(
+        ("edges", "needle"),
         [
-            ("T4.23:c6", "criterion id"),
-            ("T3.3:c1", "criterion id"),
-            ("rec-4026", "rec id"),
-            ("T9.99", "may have been archived"),
+            ([_edge("T4.23", "informs")], "depends_on"),
+            ([_edge("pwi-item-1")], "self-edge"),
+            ([_edge("T4.23"), _edge("T4.23")], "duplicate edge"),
         ],
     )
-    def test_bad_target_is_red(self, target, needle, tmp_path, monkeypatch, capsys):
-        _expect_red(tmp_path, monkeypatch, capsys, needle, _fixture(edges=[_edge(target)]))
+    def test_malformed_edges_are_red(self, edges, needle, red):
+        red(needle, _fixture(edges=edges))
 
-    def test_informs_kind_is_red(self, tmp_path, monkeypatch, capsys):
-        _expect_red(tmp_path, monkeypatch, capsys, "depends_on", _fixture(edges=[_edge("T4.23", "informs")]))
-
-    def test_self_and_duplicate_edges_are_red(self, tmp_path, monkeypatch, capsys):
-        _expect_red(tmp_path, monkeypatch, capsys, "self-edge", _fixture(edges=[_edge("pwi-item-1")]))
-        _expect_red(tmp_path, monkeypatch, capsys, "duplicate edge", _fixture(edges=[_edge("T4.23"), _edge("T4.23")]))
-
-    def test_absent_roadmap_fails_closed(self, tmp_path, monkeypatch, capsys):
-        _expect_red(tmp_path, monkeypatch, capsys, "fail closed", _fixture(edges=[_edge("T4.23")]), roadmap={"tier_items": []})
+    def test_absent_roadmap_fails_closed(self, red):
+        red("fail closed", _fixture(edges=[_edge("T4.23")]), roadmap={"tier_items": []})
 
 
 _EVIDENCE_RED = {
@@ -388,148 +346,104 @@ _EVIDENCE_GREEN = [
 ]
 
 
+def _evidence(*rows):
+    data = _fixture()
+    _reg_of(data)["evidence"] = [{"kind": k, "ref": r} for k, r in rows]
+    return data
+
+
 class TestEvidence:
     @pytest.mark.parametrize("name", sorted(_EVIDENCE_RED))
-    def test_unresolvable_ref_is_red(self, name, tmp_path, monkeypatch, capsys):
+    def test_unresolvable_ref_is_red(self, name, red):
         kind, ref, needle = _EVIDENCE_RED[name]
-        data = _fixture()
-        _reg_of(data)["evidence"] = [{"kind": kind, "ref": ref}]
-        _expect_red(tmp_path, monkeypatch, capsys, needle, data)
+        red(needle, _evidence((kind, ref)))
 
     @pytest.mark.parametrize(("kind", "ref"), _EVIDENCE_GREEN)
-    def test_resolvable_ref_is_green(self, kind, ref, tmp_path, monkeypatch, capsys):
-        data = _fixture()
-        _reg_of(data)["evidence"] = [{"kind": kind, "ref": ref}]
-        failed, out = _run(tmp_path, monkeypatch, capsys, data)
-        assert failed == [], out
+    def test_resolvable_ref_is_green(self, kind, ref, green):
+        green(_evidence((kind, ref)))
 
-    def test_malformed_rec_ref_is_red_but_valid_rec_rides_beside_an_anchor(self, tmp_path, monkeypatch, capsys):
-        data = _fixture()
-        _reg_of(data)["evidence"] = [{"kind": "decision", "ref": "197"}, {"kind": "rec", "ref": "rec-12"}]
-        assert _run(tmp_path, monkeypatch, capsys, data)[0] == []
-        _reg_of(data)["evidence"][1]["ref"] = "rec-abc"
-        _expect_red(tmp_path, monkeypatch, capsys, "rec-NNNN", data)
+    def test_rec_ref_is_format_checked_beside_an_anchor(self, green, red):
+        green(_evidence(("decision", "197"), ("rec", "rec-12")))
+        red("rec-NNNN", _evidence(("decision", "197"), ("rec", "rec-abc")))
 
-    def test_execution_check_must_be_registered(self, tmp_path, monkeypatch, capsys):
+    def test_execution_check_must_be_registered(self, red):
         data = _fixture()
-        data["work_item_criteria"][0]["method"] = {"kind": "execution", "check": "lint"}
-        _expect_red(tmp_path, monkeypatch, capsys, "method check 'lint'", data)
+        _crit0(method={"kind": "execution", "check": "lint"})(data)
+        red("method check 'lint'", data)
+
+
+def _moved(first_of_index, key, value):
+    data = _fixture(0)
+    data["fixture"]["sunset"]["first_of"][first_of_index][key] = value
+    return data
 
 
 class TestHeader:
-    def test_cap_thirteen_is_red(self, tmp_path, monkeypatch, capsys):
-        _expect_red(
-            tmp_path,
-            monkeypatch,
-            capsys,
-            "item_count_cap 13",
-            _fixture(0, item_count_cap=13),
-            text=_HEAD + model.render(model.Fixture.model_validate(_fixture(0, item_count_cap=13))),
-        )
-
-    def test_moved_sunset_date_is_red(self, tmp_path, monkeypatch, capsys):
-        data = _fixture(0)
-        data["fixture"]["sunset"]["first_of"][1]["review_on"] = "2027-02-28"
-        _expect_red(
-            tmp_path,
-            monkeypatch,
-            capsys,
-            "review_on '2027-02-28'",
-            data,
-            text=_HEAD + model.render(model.Fixture.model_validate(data)),
-        )
-
-    def test_moved_sunset_criterion_is_red(self, tmp_path, monkeypatch, capsys):
-        data = _fixture(0)
-        data["fixture"]["sunset"]["first_of"][0]["criterion_met"] = "T4.23:c7"
-        _expect_red(
-            tmp_path,
-            monkeypatch,
-            capsys,
-            "criterion_met 'T4.23:c7'",
-            data,
-            text=_HEAD + model.render(model.Fixture.model_validate(data)),
-        )
+    @pytest.mark.parametrize(
+        ("data", "needle"),
+        [
+            (_fixture(0, item_count_cap=13), "item_count_cap 13"),
+            (_moved(1, "review_on", "2027-02-28"), "review_on '2027-02-28'"),
+            (_moved(0, "criterion_met", "T4.23:c7"), "criterion_met 'T4.23:c7'"),
+        ],
+    )
+    def test_header_differing_from_code_is_red(self, data, needle, red):
+        red(needle, data, text=_canon(data))
 
 
-_FIXTURE_TOUCHED = [model.FIXTURE_PATH]
+_TOUCHED = [model.FIXTURE_PATH]
+_AFTER = date(2027, 2, 1)
 
 
 def _roadmap(c6="open", cd_state="pending", drop=()):
     doc = copy.deepcopy(_ROADMAP)
     doc["tier_items"][0]["exit_criteria"][0]["status"] = c6
     doc["candidate_decisions"][0]["state"] = cd_state
-    if "cd" in drop:
-        doc["candidate_decisions"] = []
-    if "t423" in drop:
-        doc["tier_items"] = doc["tier_items"][1:]
-    if "c6" in drop:
-        doc["tier_items"][0]["exit_criteria"] = []
+    doc["candidate_decisions"] = [] if "cd" in drop else doc["candidate_decisions"]
+    doc["tier_items"] = doc["tier_items"][1:] if "t423" in drop else doc["tier_items"]
+    doc["tier_items"][0]["exit_criteria"] = [] if "c6" in drop else doc["tier_items"][0]["exit_criteria"]
     return doc
 
 
+_RESTRUCTURE = _DECISIONS + f"## Decision 301: Restructure\nCD.45 fixture now lives under {model.PILOT_DIR}/\n"
+
+
 class TestSunset:
-    def test_day_before_review_touched_passes(self, tmp_path, monkeypatch, capsys):
-        failed, out = _run(tmp_path, monkeypatch, capsys, changed=_FIXTURE_TOUCHED, today=date(2027, 1, 30))
-        assert failed == [], out
+    def test_day_before_review_touched_passes(self, green):
+        green(changed=_TOUCHED, today=date(2027, 1, 30))
 
-    def test_review_day_touched_fails(self, tmp_path, monkeypatch, capsys):
-        _expect_red(tmp_path, monkeypatch, capsys, "write-frozen", changed=_FIXTURE_TOUCHED, today=date(2027, 1, 31))
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"changed": _TOUCHED, "today": date(2027, 1, 31)},
+            {"changed": _TOUCHED, "today": date(2026, 10, 1), "roadmap": _roadmap(c6="met")},
+            {"changed": [f"{model.PILOT_DIR}/other.txt"], "today": _AFTER},
+            {
+                "changed": _TOUCHED,
+                "today": _AFTER,
+                "decisions": _DECISIONS + f"## Decision 301: Other\n{model.PILOT_DIR}/ only\n",
+            },
+        ],
+    )
+    def test_triggered_and_touched_is_frozen(self, kwargs, red):
+        red("write-frozen", **kwargs)
 
-    def test_c6_met_touched_fails(self, tmp_path, monkeypatch, capsys):
-        _expect_red(
-            tmp_path,
-            monkeypatch,
-            capsys,
-            "write-frozen",
-            roadmap=_roadmap(c6="met"),
-            changed=_FIXTURE_TOUCHED,
-            today=date(2026, 10, 1),
-        )
+    @pytest.mark.parametrize(
+        "kwargs",
+        [{"roadmap": _roadmap(cd_state="ratified")}, {"decisions": _RESTRUCTURE}],
+    )
+    def test_operator_only_exits_release_the_freeze(self, kwargs, green):
+        green(changed=_TOUCHED, today=_AFTER, **kwargs)
 
-    def test_any_file_under_pilot_dir_counts_as_touching(self, tmp_path, monkeypatch, capsys):
-        changed = [f"{model.PILOT_DIR}/other.txt"]
-        _expect_red(tmp_path, monkeypatch, capsys, "write-frozen", changed=changed, today=date(2027, 2, 1))
-
-    def test_triggered_untouched_passes_declared_with_report(self, tmp_path, monkeypatch, capsys):
-        failed, out = _run(tmp_path, monkeypatch, capsys, changed=["docs/notes.md"], today=date(2027, 2, 1))
+    def test_triggered_untouched_passes_declared_with_report(self, run):
+        failed, out = run(changed=["docs/notes.md"], today=_AFTER)
         decl = registry.pop_declaration()
         assert failed == [] and "SUNSET REACHED" in out
         assert decl is not None and decl.count == 1
 
-    def test_cd45_leaving_pending_releases_the_freeze(self, tmp_path, monkeypatch, capsys):
-        failed, out = _run(
-            tmp_path,
-            monkeypatch,
-            capsys,
-            roadmap=_roadmap(cd_state="ratified"),
-            changed=_FIXTURE_TOUCHED,
-            today=date(2027, 2, 1),
-        )
-        assert failed == [], out
-
-    def test_decision_naming_cd45_and_directory_releases_the_freeze(self, tmp_path, monkeypatch, capsys):
-        decisions = _DECISIONS + f"## Decision 301: Restructure\nCD.45 fixture now lives under {model.PILOT_DIR}/\n"
-        failed, out = _run(
-            tmp_path, monkeypatch, capsys, decisions=decisions, changed=_FIXTURE_TOUCHED, today=date(2027, 2, 1)
-        )
-        assert failed == [], out
-
-    def test_decision_naming_only_the_directory_does_not_release(self, tmp_path, monkeypatch, capsys):
-        decisions = _DECISIONS + f"## Decision 301: Other\n{model.PILOT_DIR}/ is mentioned\n"
-        _expect_red(
-            tmp_path,
-            monkeypatch,
-            capsys,
-            "write-frozen",
-            decisions=decisions,
-            changed=_FIXTURE_TOUCHED,
-            today=date(2027, 2, 1),
-        )
-
     @pytest.mark.parametrize("drop", [("cd",), ("t423",), ("c6",)])
-    def test_archived_anchor_fails_closed(self, drop, tmp_path, monkeypatch, capsys):
-        _expect_red(tmp_path, monkeypatch, capsys, "fail closed", roadmap=_roadmap(drop=drop))
+    def test_archived_anchor_fails_closed(self, drop, red):
+        red("fail closed", roadmap=_roadmap(drop=drop))
 
 
 def _max_len(meta):
