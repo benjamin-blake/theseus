@@ -94,40 +94,45 @@ verification_plan:
     graduation: not-applicable
   - step: 3
     phase: pre-deploy
-    action: Census every tracked file for a live reference to the deleted deploy.yml
+    action: Census every tracked file for a live reference to the deleted deploy.yml or its 'Deploy to AWS' name
     command: >-
-      bin/venv-python -c "import re,subprocess; R=re.compile(r'(?<![\w-])deploy\.yml\b');
-      X=('docs/plans/','audits/','docs/audit-prompts/','docs/SESSION_LOG','docs/DECISIONS_ARCHIVE','logs/');
+      bin/venv-python -c "import re,subprocess; R=re.compile(r'(?<![\w-])deploy\.yml\b|Deploy to AWS');
+      X=('docs/plans/','audits/','docs/SESSION_LOG','docs/DECISIONS_ARCHIVE','logs/');
       F=subprocess.run(['git','ls-files'],capture_output=True,text=True).stdout.split();
       H=sorted({f for f in F for l in open(f,encoding='utf-8',errors='ignore') if R.search(l)});
       D=[l for l in open('docs/DECISIONS.md',encoding='utf-8') if R.search(l) and 'Target channel: a dedicated, governed code-deploy CD path' not in l];
       print('live_files=' + ','.join(f for f in H if not f.startswith(X)) + ' unsanctioned_decisions_lines=' + str(len(D)) + ' historical_files=' + str(sum(f.startswith(X) for f in H)))"
     expected: >-
       live_files lists exactly docs/DECISIONS.md and docs/ROADMAP-PLATFORM.yaml, and no DECISIONS.md line
-      other than Decision 125 point 2 names the file. That one line is a sanctioned historical conditional
-      ("extending deploy.yml if it already deploys Lambda code by the time P2 lands, else a new workflow"):
-      deploy.yml's only Lambda step was an echo placeholder, the else branch was realized by deploy-ducklake-lambdas.yml
-      (#559), and the entry is append-only (Decision 177). The roadmap hit is T2.44's own name, scope and
-      criterion text, which the staged compaction removes. Plans, audits, session logs and the archive are
-      historical and excluded by prefix.
+      other than Decision 125 point 2 names the file or the workflow name. That one line is a sanctioned
+      historical conditional (it would extend the deploy.yml workflow only if that workflow already deployed
+      Lambda code by the time P2 landed, else a new workflow): deploy.yml's only Lambda step was an echo
+      placeholder, the else branch was realized by deploy-ducklake-lambdas.yml (#559), and the entry is
+      append-only (Decision 177). The roadmap hit is T2.44's own text and stays after the staged closeout (the
+      item name, the one-line intent and the re-grounded c2 all name deploy.yml); it is sanctioned history.
+      Plans, audits, session logs and the archive are historical and excluded by prefix; audit prompts are live
+      instruction surfaces and are not excluded.
     fix_if: >-
       Any other live file, or a non-zero unsanctioned_decisions_lines, means a surface still points at the
       deleted workflow; record it as a residual in the staged closeout (do not edit it here) and re-present.
     hermetic: true
     graduation: waive
     graduation_waiver_reason: >-
-      A one-off census of a deleted filename; once the operator compacts T2.44 the roadmap hit disappears, so a
-      standing row would pin a transient roadmap state rather than a durable invariant.
+      A point-in-time census of a deleted filename whose only live mentions (Decision 125 point 2 and T2.44's own
+      text) are permanent sanctioned history; a standing row would have to allow-list both, and
+      validate_ci_rca_taxonomy already guards the live fleet.
     expected_literals: ["live_files=docs/DECISIONS.md,docs/ROADMAP-PLATFORM.yaml unsanctioned_decisions_lines=0 "]
   - step: 4
     phase: pre-deploy
     action: Prove no test asserts a fleet workflow count
     command: >-
-      bin/venv-python -c "import re,pathlib; R=re.compile(r'(?i)len\([^)]*workflow[^)]*\)\s*==\s*\d+|\d+\s*==\s*len\([^)]*workflow');
+      bin/venv-python -c "import re,pathlib; R=re.compile(r'(?i)len\(.*workflow.*\)\s*\)*\s*==\s*\d+|\d+\s*==\s*len\(.*workflow|assertEqual\(\s*len\(.*workflow');
       H=[l for p in pathlib.Path('tests').rglob('*.py') for l in p.read_text(encoding='utf-8',errors='ignore').splitlines() if R.search(l)];
       print('fleet_count_asserts=' + str(sum('count-coupling-ok' not in l for l in H)) + ' marked_scoped_asserts=' + str(sum('count-coupling-ok' in l for l in H)))"
     expected: >-
-      fleet_count_asserts=0. marked_scoped_asserts is 1 at e2adb126: the dependabot pair in
+      fleet_count_asserts=0 across the assert, Yoda and assertEqual length-equality forms (nested calls
+      included). This is a census of current tests; that a count test never existed rests on it together with
+      VP 2 (#668 touched no test file). marked_scoped_asserts is 1 at e2adb126: the dependabot pair in
       tests/checks/ci_guards/test_validate_dependabot_automation.py, which carries the tests/CLAUDE.md
       count-coupling-ok waiver and counts the two dependabot workflows, not the fleet.
     fix_if: >-
@@ -309,7 +314,7 @@ context:
     ExternalId-based state recovery is admin-tier-only, and terraform/CLAUDE.md points to that contract
     (relocated by #1015)". c1/c4 status and met_by unchanged; c3 needs no re-ground. All three rewrites follow
     exit-criteria-ledger.yaml#fields.status (realized-differently). T2.44 then QUALIFIES for completion: status
-    not_started -> complete plus completed_at with Decision 147 completion_compaction in the same edit (drop
+    not_started -> complete plus completed_at (the apply date) with Decision 147 completion_compaction in the same edit (drop
     progress_note; intent -> "Audit Phase-0 hardening (DEP-04/09/13): reject-empty reviewer-id validation, stale
     deploy.yml deleted, PlatformDev denied the convergence/tfplan/tfstate anchor; landed in #668."; files_in_scope
     -> []). The dropped progress_note carries no still-live deferred obligation (its one open ask, c2, is what this
@@ -317,9 +322,9 @@ context:
     body, with c3's source pointer corrected to terraform/personal/platform_dev_policies.tf:136,151. Regenerate
     .secrets.baseline; the roadmap edit carries the data-pipeline deploy obligation.
   - "fork: stage c2 as a realized-differently rewrite, open -> met | chosen: staged only; acceptance rides parked F4 | class: asked | precedent: exit-criteria-ledger.yaml#fields.status; tier_item_freshness_gate check 1; D181 cl.1 not engaged; R2/R3/R7 stand-ins 2026-10-01 (delegated authority) | precedent_kind: contract | reversible: yes | persisted: VP 1-5, constraints, staged_t2_44_closeout"
-  - "fork: met_by for c2 | chosen: slug terraform-deploy-phase0-hardening (closes_criteria names T2.44:c2; c1/c3/c4 match); sha as VP 8 fallback | class: consistency-only | precedent: exit-criteria-ledger.yaml#fields.met_by (D136) | precedent_kind: contract | reversible: yes | persisted: staged_t2_44_closeout, VP 8"
-  - "fork: stage text-only re-grounds of met c1 and c4 | chosen: yes, same operator edit; c3 none | class: consistency-only | precedent: exit-criteria-ledger.yaml#fields.status (met-criterion mismatch stages a rewrite); scout D136 WARN | precedent_kind: contract | reversible: yes | persisted: VP 6-7, staged_t2_44_closeout"
-  - "fork: stage T2.44 complete in completion_compaction form, and apply it | chosen: staging yes; application PARKED (operator, MEMORY.md#parked R7) | class: asked | precedent: tier-item-lifecycle.yaml bookkeeping_walk + completion_compaction, D147 (staging); none for application (always-ask flips) | precedent_kind: contract (staging) / none (application) | reversible: yes | persisted: staged_t2_44_closeout, constraints, MEMORY.md#parked"
+  - "fork: met_by for c2 | chosen: slug terraform-deploy-phase0-hardening (closes_criteria names T2.44:c2; c1/c3/c4 match); sha as VP 8 fallback | class: consistency-only | precedent: exit-criteria-ledger.yaml#fields.met_by (D136); R7 stand-in 2026-10-01 (delegated authority) | precedent_kind: contract | reversible: yes | persisted: staged_t2_44_closeout, VP 8"
+  - "fork: stage text-only re-grounds of met c1 and c4 | chosen: yes, same operator edit; c3 none | class: consistency-only | precedent: exit-criteria-ledger.yaml#fields.status (met-criterion mismatch stages a rewrite); scout D136 WARN; R7 stand-in 2026-10-01 (delegated authority) | precedent_kind: contract | reversible: yes | persisted: VP 6-7, staged_t2_44_closeout"
+  - "fork: stage T2.44 complete in completion_compaction form, and apply it | chosen: staging yes; application PARKED (operator, MEMORY.md#parked R7) | class: asked | precedent: tier-item-lifecycle.yaml bookkeeping_walk + completion_compaction, D147 (staging); R7 stand-in 2026-10-01 (delegated authority); none for application (always-ask flips) | precedent_kind: contract (staging) / none (application) | reversible: yes | persisted: staged_t2_44_closeout, constraints, MEMORY.md#parked"
   - "fork: is a text-only re-ground of a met criterion a never-list criterion flip? | chosen: PARKED with F4 (operator) | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: constraints (no roadmap edit), MEMORY.md#parked"
 pre_implementation_checklist:
   - Branch confirmed not on main
