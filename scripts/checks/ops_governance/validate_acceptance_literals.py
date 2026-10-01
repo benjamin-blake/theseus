@@ -7,7 +7,8 @@ now fails validate.py, instead of silently shipping a rec no executor or human c
 Syntactic walk, not a rec-filing-site prover: it lints every statically-resolvable "acceptance"
 dict-literal value under the scanned trees, whether or not the enclosing dict is actually a
 file_rec/update_rec payload (verified harmless at planning time -- a dry run over scripts/ found
-15 resolvable literals and exactly the 5 known-bad sites, no collateral red). Values that cannot
+exactly the 5 known-bad sites, no collateral red; the live resolvable-literal count is what the check
+declares via examined(), never a figure pinned here). Values that cannot
 be statically resolved (a variable, a function call, an f-string with a non-constant format spec)
 are skipped rather than guessed at.
 """
