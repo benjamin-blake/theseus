@@ -13,6 +13,7 @@ def validate_cc_limits(failed: list[str]) -> None:
     """Enforce Decision 43/130: max 20 cyclomatic-complexity branches per function unless waivered."""
     print("\n=== Cyclomatic complexity limits (Decision 43) ===")
     errors: list[str] = []
+    measured = 0
 
     for py_file in iter_gated_py_files():
         content = py_file.read_text(encoding="utf-8", errors="replace")
@@ -28,12 +29,14 @@ def validate_cc_limits(failed: list[str]) -> None:
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
+            measured += 1
             branch_count = sum(1 for sub in ast.walk(node) if isinstance(sub, _BRANCH_TYPES))
             if branch_count > _CC_LIMIT:
                 errors.append(
                     f"{rel}::{node.name}: {branch_count} branches "
                     f"(limit {_CC_LIMIT}). Add '# complexity-waiver: decision-43' or reduce."
                 )
+    registry.examined(measured, unit="functions")
 
     if errors:
         print("Cyclomatic complexity violations:")
