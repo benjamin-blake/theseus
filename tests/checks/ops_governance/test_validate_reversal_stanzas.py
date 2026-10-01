@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+from scripts.checks import registry, validation_result
 from scripts.checks.ops_governance.validate_reversal_stanzas import validate_reversal_stanzas
 from scripts.preflight.decision_conditions import DecisionConditionState
 
@@ -95,3 +96,72 @@ class TestValidateReversalStanzasRealTree:
         failed: list[str] = []
         validate_reversal_stanzas(failed)
         assert failed == [], f"Real DECISIONS.md tree has malformed reversal-conditions stanza(s): {failed}"
+
+
+class TestReversalStanzasAccountingDeclaration:
+    """The check declares how many stanzas evaluate() returned, so a run is never recorded as undeclared."""
+
+    _EVALUATE = "scripts.checks.ops_governance.validate_reversal_stanzas.evaluate"
+
+    @classmethod
+    def _run(cls, canned: list[DecisionConditionState]) -> tuple[list[str], registry._Declaration | None]:
+        registry.pop_declaration()
+        failed: list[str] = []
+        with patch(cls._EVALUATE, return_value=canned):
+            validate_reversal_stanzas(failed)
+        return failed, registry.pop_declaration()
+
+    @classmethod
+    def _outcome(cls, canned: list[DecisionConditionState]) -> registry.CheckOutcome:
+        validation_result._OUTCOMES.clear()
+        try:
+            with patch(cls._EVALUATE, return_value=canned):
+                validation_result.dispatch_recording("validate_reversal_stanzas", [], validate_reversal_stanzas)
+            (outcome,) = validation_result._OUTCOMES
+        finally:
+            validation_result._OUTCOMES.clear()
+        return outcome
+
+    def test_declares_every_evaluated_stanza(self) -> None:
+        canned = [
+            DecisionConditionState(decision_id=133, state="not-due", review_by="2026-09-30"),
+            DecisionConditionState(decision_id=901, state="manual-review-due", review_by="2020-01-01"),
+            DecisionConditionState(decision_id=902, state="not-due", review_by="2027-01-01"),
+        ]
+        failed, declaration = self._run(canned)
+        assert failed == []
+        assert declaration is not None
+        assert (declaration.kind, declaration.count, declaration.unit) == ("examined", 3, "reversal_stanzas")
+
+    def test_declared_count_tracks_the_input(self) -> None:
+        one = [DecisionConditionState(decision_id=133, state="not-due", review_by="2026-09-30")]
+        two = one + [DecisionConditionState(decision_id=134, state="not-due", review_by="2026-09-30")]
+        _, first = self._run(one)
+        _, second = self._run(two)
+        assert first is not None and second is not None
+        assert (first.count, second.count) == (1, 2)
+
+    def test_malformed_stanzas_are_counted_as_examined(self) -> None:
+        canned = [
+            DecisionConditionState(decision_id=133, state="not-due", review_by="2026-09-30"),
+            DecisionConditionState(decision_id=905, state="MALFORMED", error="unclosed fence"),
+        ]
+        failed, declaration = self._run(canned)
+        assert len(failed) == 1
+        assert declaration is not None
+        assert (declaration.kind, declaration.count, declaration.unit) == ("examined", 2, "reversal_stanzas")
+
+    def test_no_stanzas_declares_zero_examined(self) -> None:
+        failed, declaration = self._run([])
+        assert failed == []
+        assert declaration is not None
+        assert (declaration.kind, declaration.count, declaration.unit) == ("examined", 0, "reversal_stanzas")
+
+    def test_clean_run_is_recorded_enforced(self) -> None:
+        canned = [DecisionConditionState(decision_id=133, state="not-due", review_by="2026-09-30")]
+        outcome = self._outcome(canned)
+        assert (outcome.status, outcome.examined_count, outcome.examined_unit) == ("enforced", 1, "reversal_stanzas")
+
+    def test_no_stanzas_is_recorded_vacuous(self) -> None:
+        outcome = self._outcome([])
+        assert (outcome.status, outcome.examined_count, outcome.examined_unit) == ("vacuous", 0, "reversal_stanzas")
