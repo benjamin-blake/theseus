@@ -167,3 +167,29 @@ class TestValidateCiRcaTaxonomy:
         finally:
             taxonomy_mod._TAXONOMY_PATH = original_path
             taxonomy_mod._TAXONOMY_CACHE = None
+
+    def test_success_exit_declares_examined_taxonomy_subjects(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Decision 170: the success exit declares workflows + registered checks + declared
+        failure_categories examined, so the run records enforced rather than undeclared."""
+        import scripts.checks.ci_guards.validate_ci_rca_taxonomy as subject
+        from scripts.checks import registry
+
+        synthetic = {
+            "schema_version": 1,
+            "taxonomy_version": 1,
+            "failure_categories": ["sloc_violation", "unknown", "evidence_insufficient"],
+            "function_to_category": {"validate_sloc_limits": "sloc_violation"},
+            "step_name_to_category": {},
+            "log_pattern_to_category": [],
+            "workflows": {"CI": {"tier": "CI"}, "Deploy": {"tier": "CD"}},
+        }
+        monkeypatch.setattr(subject.registry, "all_checks", lambda: {"validate_sloc_limits": object()})
+        monkeypatch.setattr("scripts.ci_rca.taxonomy.enumerate_workflow_names", lambda: ["CI", "Deploy"])
+        monkeypatch.setattr("scripts.ci_rca.taxonomy.load_taxonomy", lambda: synthetic)
+        registry.pop_declaration()
+        failed: list[str] = []
+        validate_ci_rca_taxonomy(failed)
+        declaration = registry.pop_declaration()
+        assert not failed, failed
+        assert declaration is not None
+        assert (declaration.kind, declaration.count, declaration.unit) == ("examined", 2 + 1 + 3, "taxonomy_subjects")
