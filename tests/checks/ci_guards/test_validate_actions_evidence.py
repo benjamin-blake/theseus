@@ -4,10 +4,12 @@ import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 import yaml  # type: ignore[import-untyped]
 
+from scripts.checks import registry, validation_result
 from scripts.checks.ci_guards import validate_actions_evidence as subject
 
 ROOT = Path(__file__).parents[3]
@@ -267,3 +269,56 @@ class TestUnreachedContractGuards:
         _write(workflow, document)
         with pytest.raises(ValueError, match="critical step selector is missing or ambiguous"):
             subject.validate_contract(root)
+
+
+class TestActionsEvidenceAccountingDeclaration:
+    """The check declares how many governed jobs and artifact uploads it validated, so a run is
+    recorded enforced (with a count that tracks the workflows) instead of undeclared."""
+
+    _UNIT = "governed_jobs_and_artifact_uploads"
+
+    @staticmethod
+    def _declare(root: Path) -> tuple[list[str], registry._Declaration | None]:
+        registry.pop_declaration()
+        failed: list[str] = []
+        with patch("scripts.checks._common.ROOT", root):
+            subject.validate_actions_evidence(failed)
+        return failed, registry.pop_declaration()
+
+    def test_real_tree_declares_every_governed_job_and_upload(self) -> None:
+        contract = _yaml(ROOT / subject.CONTRACT_PATH)
+        failed, declaration = self._declare(ROOT)
+        assert failed == []
+        assert declaration is not None
+        expected = len(contract["governed_jobs"]) + len(contract["artifact_uploads"])
+        assert (declaration.kind, declaration.count, declaration.unit) == ("examined", expected, self._UNIT)
+
+    def test_declared_count_tracks_jobs_and_uploads(self, tmp_path: Path) -> None:
+        root = _fixture(tmp_path)
+        _, base = self._declare(root)
+        path, contract = _contract(root)
+        contract["governed_jobs"].pop()
+        _write(path, contract)
+        _, fewer_jobs = self._declare(root)
+        workflow = root / ".github/workflows/ci.yml"
+        document = _yaml(workflow)
+        step = {"name": "Upload extra", "uses": "actions/upload-artifact@v7"}
+        step["with"] = {"name": "extra", "path": "x", "retention-days": 14}
+        document["jobs"]["pr-validate"]["steps"].append(step)
+        _write(workflow, document)
+        row = {"workflow": ".github/workflows/ci.yml", "job": "pr-validate", "step": "Upload extra"}
+        contract["artifact_uploads"].append({**row, "artifact": "extra", "retention_class": "ordinary_ci"})
+        _write(path, contract)
+        _, more_uploads = self._declare(root)
+        assert base is not None and fewer_jobs is not None and more_uploads is not None
+        assert (fewer_jobs.count, more_uploads.count) == (base.count - 1, base.count)
+
+    def test_real_tree_is_recorded_enforced(self) -> None:
+        validation_result._OUTCOMES.clear()
+        try:
+            validation_result.dispatch_recording("validate_actions_evidence", [], subject.validate_actions_evidence)
+            (outcome,) = validation_result._OUTCOMES
+        finally:
+            validation_result._OUTCOMES.clear()
+        assert (outcome.status, outcome.examined_unit) == ("enforced", self._UNIT)
+        assert outcome.examined_count is not None and outcome.examined_count > 0
