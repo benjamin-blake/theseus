@@ -30,7 +30,8 @@ followon_recs: []
 infrastructure_dependencies: []
 acceptance_criteria:
   - >-
-    The throttle is shown unbuilt: no throttle marker exists under scripts/, and rec-2415's acceptance test
+    The throttle is shown unbuilt: no throttle marker or throttle/cap/rate-limit/frequency/window wording near
+    "dispute" exists under scripts/ or src/, and rec-2415's acceptance test
     test_dispute_rate_limit_blocks_excess_disputes does not exist in tests/ops_data_portal/test_ci_rca_dispute.py
     (VP step 1).
   - >-
@@ -38,32 +39,42 @@ acceptance_criteria:
     mentions disputes while loading only the ci_rca guidance (VP step 2).
   - >-
     c9's state is shown as staged: c9 is open, its text names rec-3666 and "stays open on part (a)", it cites
-    no retired path; the facts the staged branch (i) text asserts hold (part (a)'s first conjunct, part (b)'s
-    three registry shards, part (c)'s exact escape_mode value set without check_absent) (VP steps 3-4).
+    no retired path (VP step 3); and every fact the staged c9 text asserts holds, statically (part (a)'s first
+    conjunct, part (b)'s three shards and two taxonomy categories, part (c)'s exact escape_mode value set
+    without check_absent; VP step 4) and behaviourally (the shards pass, the derivation returns all three
+    modes, check-3 cross-checks escape_mode; VP step 5).
   - >-
     The staged re-grounding's premises hold: docs/INTENT-ci-rca-methodology.md and
     docs/intent-migration/MANIFEST.yaml are absent while c2's text and the T1.13 note still cite the INTENT
-    doc, and all 11 T1.13 files_in_scope paths exist (VP step 5).
+    doc, the staged note line is not yet present, and all 11 T1.13 files_in_scope paths exist (VP step 6).
   - >-
     The placement premise for the future implementation holds: scripts/ops_data_portal.py is at or under
-    500 SLOC by the validate_sloc_limits rule with no budget entry (VP step 6).
-  - The plan validates against the PlanDocument schema (VP step 7).
+    500 SLOC by the validate_sloc_limits rule with no budget entry (VP step 7).
+  - The plan validates against the PlanDocument schema (VP step 8).
   - >-
     The branch diff against origin/main is exactly the plan and report files, with no closes_criteria,
-    roadmap, code, contract or DECISIONS edit (VP step 8).
+    roadmap, code, contract or DECISIONS edit (VP step 9).
+  - >-
+    The staged texts are apply-time safe: report sections 3-4 open with a precondition to re-run VP 1-7 at
+    apply time, and VP 3 and VP 6 each detect their own row's already-applied state.
 verification_plan:
   - step: 1
     phase: pre-deploy
-    action: Prove the dispute-frequency throttle is unbuilt and rec-2415's acceptance test does not exist
+    action: Prove the dispute-frequency throttle is unbuilt (portal and writer trees) and rec-2415's acceptance test does not exist
     command: >-
-      bin/venv-python -c "import pathlib,re; R=re.compile(r'CI_RCA_DISPUTE_THROTTLE|dispute.{0,20}rate.?limit|rate.?limit.{0,20}dispute',re.I);
-      n=sum(1 for p in pathlib.Path('scripts').rglob('*.py') if R.search(p.read_text(encoding='utf-8',errors='ignore')));
+      bin/venv-python -c "import pathlib,re; M=re.compile(r'CI_RCA_DISPUTE_[A-Z]');
+      R=re.compile(r'dispute.{0,30}(rate.?limit|throttl|frequency|\bcap\b|window)|(rate.?limit|throttl|frequency|\bcap\b).{0,30}dispute',re.I);
+      F=[p for r in ('scripts','src') for p in pathlib.Path(r).rglob('*.py')];
+      n=sum(1 for p in F if (lambda x: M.search(x) or R.search(x))(p.read_text(encoding='utf-8',errors='ignore')));
       t='test_dispute_rate_limit_blocks_excess_disputes' in pathlib.Path('tests/ops_data_portal/test_ci_rca_dispute.py').read_text(encoding='utf-8');
       print('throttle_files=' + str(n) + ' acceptance_test_present=' + str(t))"
-    expected: One line reporting zero throttle files and the acceptance test absent.
+    expected: >-
+      One line reporting zero throttle files across scripts/ and src/ (portal pre-check and writer homes) and
+      the acceptance test absent.
     fix_if: >-
-      A non-zero count or a present test means the throttle landed after this plan was drafted -- stop and
-      re-run the freshness gate's silent-completion check; the staged closeout branch (i) may then apply.
+      A non-zero count or a present test means the throttle (or a marker under another name) landed after this
+      plan was drafted -- stop and re-run the freshness gate's silent-completion check; the staged closeout
+      branch (i) may then apply.
     hermetic: true
     graduation: waive
     graduation_waiver_reason: >-
@@ -72,14 +83,14 @@ verification_plan:
     expected_literals: ["throttle_files=0 acceptance_test_present=False"]
   - step: 2
     phase: pre-deploy
-    action: Prove dispute traffic cannot accrue today (warn mode, no automated producer)
+    action: Prove dispute traffic is not prompted today (warn mode, no automated producer)
     command: >-
       bin/venv-python -c "import pathlib,yaml; m=yaml.safe_load(open('config/feature_flags.yaml'))['CI_RCA_STRICT_MODE'];
       a=pathlib.Path('.claude/agents/scheduled/ci-rca.md').read_text(encoding='utf-8');
       print('strict_mode=' + m + ' agent_dispute_mentions=' + str(a.lower().count('dispute')) + ' agent_loads_ci_rca_guidance=' + str('--guidance --source ci_rca' in a))"
     expected: >-
       One line: strict mode is warn, the agent prompt mentions disputes zero times, and it loads the ci_rca
-      guidance.
+      guidance (the zero mention count also rules out a ci_rca_evidence_dispute guidance load).
     fix_if: >-
       strict_mode=strict or a non-zero mention count means the calibration premise moved: dispute traffic may
       now exist, so re-read rec-2415 and the dispute_count gauge before keeping N unset in the report.
@@ -101,8 +112,9 @@ verification_plan:
       One line: item in_progress, c9 open, rec-3666 named, the part (a) holding line present, no retired
       path cited.
     fix_if: >-
-      c9 met means the operator already applied a closeout -- withdraw the staged closeout. A missing
-      rec-3666 or part (a) line means the 2026-09-06 re-grounding moved; re-derive which part holds c9 open
+      c9 met, or holds_on_part_a=False with c9's text naming "dispute write path", means a staged closeout
+      branch (report section 3) was already applied -- withdraw the staged closeout. A missing rec-3666 or
+      part (a) line otherwise means the 2026-09-06 re-grounding moved; re-derive which part holds c9 open
       before keeping section 3 of the report.
     hermetic: true
     graduation: waive
@@ -113,55 +125,89 @@ verification_plan:
   - step: 4
     phase: pre-deploy
     action: >-
-      Prove the facts the staged branch (i) c9 text asserts: part (a)'s first conjunct holds, part (b)'s three
-      registry shards exist, and part (c)'s escape_mode enum is exactly the three values plus the abstention
-      sentinel (check_absent absent)
+      Prove the static facts the staged c9 text asserts: part (a)'s first conjunct, part (b)'s three registry
+      shards and two taxonomy categories, and part (c)'s exact escape_mode value set (check_absent absent)
     command: >-
-      bin/venv-python -c "import pathlib,re; from scripts.ops_portal.ci_rca_schema import CiRcaEvidenceDispute as D, _DetectionGap as G;
+      bin/venv-python -c "import pathlib,re,typing; from scripts.ops_portal.ci_rca_schema import CiRcaEvidenceDispute as D, _DetectionGap as G;
       s=lambda m: ' '.join(str(getattr(x,'pattern','')) for x in m);
-      p=s(D.model_fields['disputed_field'].metadata); e=s(G.model_fields['escape_mode'].metadata);
-      E=set(re.findall('[a-z_]+',e));
+      p=s(D.model_fields['disputed_field'].metadata); f=G.model_fields['escape_mode'];
+      L={x for a in typing.get_args(f.annotation) for x in (typing.get_args(a) or (a,)) if isinstance(x,str)};
+      E=set(re.findall('[a-z_]+',s(f.metadata))) | L;
       S=('ci-rca-priority-zero-outranks-step-name','ci-rca-generator-consumes-validation-result','ci-rca-validation-result-uploads-always');
       n=sum(pathlib.Path('config/agent/verification_registry/entries/'+x+'.yaml').exists() for x in S);
-      print('failure_category_disputable=' + str('failure_category' in p) + ' part_b_shards=' + str(n) + '/3 escape_values=' + ','.join(sorted(E)) + ' check_absent_in_enum=' + str('check_absent' in E))"
+      T=pathlib.Path('config/ci_rca_taxonomy.yaml').read_text(encoding='utf-8');
+      k=sum(bool(re.search(r'^\s*- '+c+r'\s*\n',T,re.M)) for c in ('test_collection_empty','gate_escape'));
+      print('failure_category_disputable=' + str('failure_category' in p) + ' part_b_shards=' + str(n) + '/3 part_b_categories=' + str(k) + '/2 escape_values=' + ','.join(sorted(E)) + ' check_absent_in_enum=' + str('check_absent' in E))"
     expected: >-
-      One line: failure_category is a disputed_field value, all three part (b) shards exist, the escape_mode
-      value set is exactly check_ran_vacuously, no_premerge_gate_by_design, tier_misplaced and undetermined,
-      and check_absent is not among them.
+      One line: failure_category is a disputed_field value, all three part (b) shards exist, both taxonomy
+      categories are listed, the escape_mode value set is exactly check_ran_vacuously,
+      no_premerge_gate_by_design, tier_misplaced and undetermined (read from the pattern or, if the field
+      becomes a Literal, from its type arguments), and check_absent is not among them.
     fix_if: >-
       An ImportError naming _DetectionGap means the model was renamed -- locate the escape_mode field in
-      scripts/ops_portal/ci_rca_schema.py and re-point the import. Fewer than 3 shards means part (b)'s
-      regression guard moved -- re-ground report section 3's part (b) clause. A different value set means
-      part (c) moved (check_absent present means rec-3666 landed) -- update section 3's part (c) wording.
+      scripts/ops_portal/ci_rca_schema.py and re-point the import. Fewer than 3 shards or 2 categories means
+      part (b) moved -- re-ground report section 3's part (b) clause. A different value set means part (c)
+      moved (check_absent present means rec-3666 landed) -- update section 3's part (c) wording.
     hermetic: true
     graduation: waive
     graduation_waiver_reason: >-
       The check_absent half is red-before evidence for rec-3666's own future fix; the failure_category half
       is already guarded by tests/ops_data_portal/test_ci_rca_dispute.py, and the shards are themselves the
       standing registry guards for part (b).
-    expected_literals: ["failure_category_disputable=True part_b_shards=3/3 escape_values=check_ran_vacuously,no_premerge_gate_by_design,tier_misplaced,undetermined check_absent_in_enum=False"]
+    expected_literals: ["failure_category_disputable=True part_b_shards=3/3 part_b_categories=2/2 escape_values=check_ran_vacuously,no_premerge_gate_by_design,tier_misplaced,undetermined check_absent_in_enum=False"]
   - step: 5
     phase: pre-deploy
-    action: Prove the staged re-grounding's premises (retired docs absent, still cited; files_in_scope exist)
+    action: >-
+      Prove the behavioural facts the staged c9 text asserts: part (b)'s three shards pass their own
+      check_spec commands, part (c)'s derivation returns all three escape modes, and check-3 cross-checks
+      escape_mode
+    command: >-
+      bin/venv-python -c "import pathlib,subprocess,yaml;
+      S=('ci-rca-priority-zero-outranks-step-name','ci-rca-generator-consumes-validation-result','ci-rca-validation-result-uploads-always');
+      ok=sum(subprocess.run(yaml.safe_load(open('config/agent/verification_registry/entries/'+x+'.yaml'))['check_spec']['command'],capture_output=True).returncode==0 for x in S);
+      V=pathlib.Path('scripts/ci_rca/vacuous_pass.py').read_text(encoding='utf-8');
+      r=sum(('return '+chr(34)+v+chr(34)) in V for v in ('check_ran_vacuously','tier_misplaced','no_premerge_gate_by_design'));
+      x='[CI_RCA_CROSS_CHECK check-3]' in pathlib.Path('scripts/ops_portal/ci_rca_runtime.py').read_text(encoding='utf-8');
+      print('part_b_shards_pass=' + str(ok) + '/3 part_c_derivation=' + str(r) + '/3 part_c_cross_check=' + str(x))"
+    expected: >-
+      One line: all three shard commands exit 0, compute_escape_mode returns each of the three escape modes,
+      and the check-3 cross-check marker is present.
+    fix_if: >-
+      A failing shard means part (b)'s regression guard is red -- the staged part (b) clause no longer
+      adjudicates true; stop and report it. Fewer than 3 derivation returns or a missing check-3 marker means
+      part (c) moved -- re-ground report section 3's part (c) clause.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Re-runs registry shards that already run as standing guards, plus a static scan of two functions those
+      same shards and the escape-mode tests cover; a further registry row would duplicate them.
+    expected_literals: ["part_b_shards_pass=3/3 part_c_derivation=3/3 part_c_cross_check=True"]
+  - step: 6
+    phase: pre-deploy
+    action: >-
+      Prove the staged re-grounding's premises (retired docs absent, still cited, note line not yet applied;
+      files_in_scope exist)
     command: >-
       bin/venv-python -c "import pathlib,yaml; P=('docs/INTENT-ci-rca-methodology.md','docs/intent-migration/MANIFEST.yaml');
       d=yaml.safe_load(open('docs/ROADMAP-PLATFORM.yaml',encoding='utf-8')); it=[i for i in d['tier_items'] if i['id']=='T1.13'][0];
       c2=[x for x in it['exit_criteria'] if x['id']=='c2'][0]['text'];
-      print('retired_absent=' + str(sum(not pathlib.Path(p).exists() for p in P)) + '/2 c2_cites_intent=' + str('INTENT-ci-rca-methodology' in c2) + ' note_cites_intent=' + str('INTENT-ci-rca-methodology' in it['note']) + ' files_in_scope_exist=' + str(sum(pathlib.Path(f).exists() for f in it['files_in_scope'])) + '/' + str(len(it['files_in_scope'])))"
+      print('retired_absent=' + str(sum(not pathlib.Path(p).exists() for p in P)) + '/2 c2_cites_intent=' + str('INTENT-ci-rca-methodology' in c2) + ' note_cites_intent=' + str('INTENT-ci-rca-methodology' in it['note']) + ' note_has_d178_line=' + str('retired by Decision 178' in it['note']) + ' files_in_scope_exist=' + str(sum(pathlib.Path(f).exists() for f in it['files_in_scope'])) + '/' + str(len(it['files_in_scope'])))"
     expected: >-
-      One line: both retired files absent, c2 and the note still cite the INTENT doc, and all 11
-      files_in_scope paths exist.
+      One line: both retired files absent, c2 and the note still cite the INTENT doc, the staged dated note
+      line is not yet present, and all 11 files_in_scope paths exist.
     fix_if: >-
-      A retired file present means it was restored -- drop that row from section 4. A false citation flag
-      means the operator already re-grounded that text -- drop its row. Fewer than 11 existing paths means a
-      surface moved -- add a files_in_scope row to section 4.
+      A retired file present means it was restored -- drop that row from section 4. c2_cites_intent=False
+      means the c2 row was already applied -- drop it. note_has_d178_line=True means the note row was already
+      applied -- drop it (never append it twice). Fewer than 11 existing paths means a surface moved -- add a
+      files_in_scope row to section 4.
     hermetic: true
     graduation: waive
     graduation_waiver_reason: >-
       The citation flags are true only until the staged re-grounding is applied; a standing guard would block
-      the sanctioned edit. Retired-doc absence is already enforced by Decision 86's INTENT-doc freeze guard.
-    expected_literals: ["retired_absent=2/2 c2_cites_intent=True note_cites_intent=True files_in_scope_exist=11/11"]
-  - step: 6
+      the sanctioned edit. Restoring the retired INTENT doc is already caught by validate_placement (docs-root
+      allowlist) and validate_prose_allowlist (Decision 127).
+    expected_literals: ["retired_absent=2/2 c2_cites_intent=True note_cites_intent=True note_has_d178_line=False files_in_scope_exist=11/11"]
+  - step: 7
     phase: pre-deploy
     action: Measure scripts/ops_data_portal.py SLOC by the validate_sloc_limits rule and confirm no budget entry
     command: >-
@@ -170,8 +216,9 @@ verification_plan:
       b='scripts/ops_data_portal.py' in pathlib.Path('config/sloc_budgets.yaml').read_text(encoding='utf-8');
       print('sloc=' + str(s) + ' under_limit=' + str(s<=500) + ' budget_entry=' + str(b))"
     expected: >-
-      One line: sloc 489 at 2349d467, under the 500 limit, no budget entry. The headroom (500 minus sloc)
-      bounds the future call site (report section 2, placement).
+      One line: sloc 489 at 2349d467, under the 500 limit, no budget entry. The report's placement line
+      defines the future call site's headroom as 500 minus this step's printed sloc, so the value is read
+      fresh at apply time rather than pinned.
     fix_if: >-
       under_limit=False or a budget entry means the placement premise changed; re-derive the headroom in the
       report before the implementing plan is authored.
@@ -181,7 +228,7 @@ verification_plan:
       validate_sloc_limits already enforces the 500 limit in both tiers; this step only records the headroom
       the future plan must respect.
     expected_literals: ["under_limit=True budget_entry=False"]
-  - step: 7
+  - step: 8
     phase: pre-deploy
     action: Validate this plan against the PlanDocument schema
     command: bin/venv-python -m scripts.roadmap.plan_document docs/plans/PLAN-t1-13-c9-dispute-throttle-design.yaml
@@ -192,7 +239,7 @@ verification_plan:
     graduation_waiver_reason: >-
       validate_plan_documents already schema-checks every docs/plans/PLAN-*.yaml in both tiers; a per-plan
       row duplicates it.
-  - step: 8
+  - step: 9
     phase: pre-deploy
     action: Confirm the change is exactly the plan and report files
     command: git fetch --quiet origin main && git log --name-only --format= origin/main..HEAD
@@ -204,7 +251,7 @@ verification_plan:
       applied only by the operator).
     hermetic: false
     graduation: not-applicable
-  - step: 9
+  - step: 10
     phase: pre-deploy
     action: Run the fast presubmit tier over the branch
     command: bin/venv-python -m scripts.validate --pre
@@ -221,9 +268,11 @@ constraints:
     the charter stages roadmap evidence in the plan. Report sections 3-4 carry the exact staged text.
   - >-
     No recommendation bundled, filed or closed. rec-2415 and rec-3666 stay open and are named as owners only;
-    building either is gated on MEMORY.md#parked R5 fork 3 (queue consumption, Decision 67 never-item).
+    building either is gated on parked fork 3 (queue consumption, Decision 67 never-item). Anchor: fork 3 of
+    /mnt/project-files/gates/t1-13-c9-step-6b-stand-in-r1.md (out of repo), recorded as the R5 row of the
+    project MEMORY.md#parked ledger.
   - >-
-    implementation_shape (report section 2.3) is gated on MEMORY.md#parked R5 forks 3 and 4 and on rec-2415's
+    implementation_shape (report section 2.3) is gated on parked forks 3 and 4 (same anchor) and on rec-2415's
     own data precondition (sustained non-zero dispute traffic); it is not to be started by a delegate.
   - No new INTENT or standing prose doc (Decision 86); docs/DECISIONS.md and its archive untouched.
   - No rescue agents or workaround loops (Decision 55).
@@ -233,10 +282,10 @@ context:
     Roadmap items intersected: 14; CONFLICT: 0; RELATED: 13. CITE: 84, 55, 88, 66, 128, 124, 136, 73, 86.
     CONTRADICT: 210 WARN (bound 1 home, parked fork 4), 155 WARN only if fail-open (not taken), 136 WARN
     (closes_criteria omitted), 73 NOTE (degraded path staged). RELATED: 67, 201, 103, 72, 61, 142, 79, 125, 59, 57.
-  - "gates: decision-scout=FLAGS_FOUND; step-6b stand-in=write the plan (REPORT-ONLY) r1; plan-critique=PENDING; report-critique=PENDING"
+  - "gates: decision-scout=FLAGS_FOUND; step-6b stand-in=write the plan (REPORT-ONLY) r1; plan-critique=REVISE r1, REVISE r2 (one Low, folded in without an r3 on coordinator direction); report-critique=REVISE r1, r2 PENDING"
   - >-
-    Freshness gate: (1) silent completion NO, c9's blocker is part (a)'s throttle conjunct (VP 1, 3);
-    (2) stale references outside c9 (c2 text, note) staged in report section 4 (VP 5); (3) no supersession;
+    Freshness gate: (1) silent completion NO, c9's blocker is part (a)'s throttle conjunct (VP 1, 3-5);
+    (2) stale references outside c9 (c2 text, note) staged in report section 4 (VP 6); (3) no supersession;
     (4) no gating CD or cross_tier_gate.
   - >-
     closes_criteria omitted deliberately: T1.13 is in_progress so follow-on mode nominally applies, but a
@@ -262,7 +311,7 @@ context:
     check_accounting: no registered check is added or removed; the hygiene stream's baseline is untouched.
     The stand-in's proposed grep of the fingerprint-dedup fail-open shape (ci_rca_runtime.py:48-80) is not a
     VP step: it adds no evidence to this staging; report section 2 fail_closed_contract names the boundary.
-  - "gates (continued): plan-critique r1 t1-13-c9-plan-critique-r1-7a3e2c58 REVISE (M1 degraded path vs dispute flow; L1-L3) -> all addressed; r2 t1-13-c9-plan-critique-r2-e9b14d63 REVISE on L4 only (case keyed on rows bound 1 never loads) -> folded in: every reject carries both cases verbatim, no case selection, no extra read; N3 wording applied"
+  - "gates (continued): plan-critique r1 t1-13-c9-plan-critique-r1-7a3e2c58 REVISE (M1 degraded path vs dispute flow; L1-L3) -> all addressed; r2 t1-13-c9-plan-critique-r2-e9b14d63 REVISE on L4 only (case keyed on rows bound 1 never loads) -> folded in: every reject carries both cases verbatim, no case selection, no extra read; N3 wording applied; report-critique r1 t1-13-c9-report-critique-r1-b0d57a92 REVISE (4M/11L/7N) -> all addressed in the r2 commit (D73 guarantee scoped; flow B named and reject-text rewrite scoped; branch (ii) met_by = escape-mode-classifier-repair as an operator-confirmed exception; apply-time precondition and VP 3/5/6/7 apply-state detection)"
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
