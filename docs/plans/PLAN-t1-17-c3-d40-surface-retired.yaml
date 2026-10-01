@@ -2,8 +2,8 @@ schema_version: 5
 slug: "t1-17-c3-d40-surface-retired"
 intent: >-
   Settle T1.17 exit criterion c3 (D40 reconciliation) without editing the decision corpus: re-derive, as
-  executable evidence, that the doc hosting the stale "Decision 40 supersession pending" citation was deleted
-  by the Decision 178 platform-only cleanse, that no live surface still carries that claim, and that Decision
+  executable evidence, that every doc hosting the stale Decision 40 citation c3 targets was deleted by the
+  Decision 178 platform-only cleanse, that no live surface outside the decision logs still carries it, and that Decision
   40's supersession by Decision 122 is already recorded mechanically; then stage a re-grounded criterion text
   plus a met_by-valid closeout for the operator. Nothing is implemented and no criterion is flipped.
 plan_type: REPORT-ONLY
@@ -26,18 +26,21 @@ followon_recs: []
 infrastructure_dependencies: []
 acceptance_criteria:
   - >-
-    Both host surfaces of the stale D40 citation (docs/INTENT-provider-agnostic-executor.md, and
-    docs/ROADMAP-PRODUCT.md that the originating overseer ledger also named) are absent, and commit 7b67e21d
-    (the Decision 178 cleanse, #969) is the commit that deleted them (VP steps 1-2).
+    All three host surfaces of the stale D40 citation (docs/INTENT-provider-agnostic-executor.md, which c3
+    names; docs/ROADMAP-PRODUCT.md, which c3 also named until 7b67e21d narrowed it; docs/ROADMAP-PRODUCT.yaml,
+    added by PLAN-decisions-content-reconciliation) are absent, and commit 7b67e21d (the Decision 178 cleanse,
+    #969) is the commit that deleted them and is on main (VP steps 1-2).
   - >-
-    A census of every tracked file finds zero live lines pairing Decision 40 with a pending supersession;
-    the only line-level hits are in historical plan/report artefacts, and T1.17's own c3 text is exempt (VP step 3).
+    A whitespace-normalized, window-based census of every tracked file finds zero hits pairing a Decision 40
+    token with a pending/unfinished-supersession cue on live surfaces, i.e. outside the historical logs Decision
+    178 cl.3 names (decision logs, session log, plans, audits); T1.17's own c3 text is blanked structurally
+    (VP step 3). The same census detects the claim in all three deleted hosts at 7b67e21d^ (VP step 9).
   - >-
     Decision 40's supersession by Decision 122 is recorded mechanically: its archive header reads
-    (Superseded by Decision 122), Decision 122's Supersedes line names Decision 40, and the decisions-index
+    (Superseded by Decision 122), Decision 122's Supersedes clause names Decision 40, and the decisions-index
     row 40 is live false with superseded_by 122 (VP step 4).
   - >-
-    The one residual is stated honestly: Decision 40's own 2026-07-21 archive update note still reads
+    The one pending-supersession residual is stated honestly: Decision 40's own 2026-07-21 archive update note still reads
     "Formal supersession of this entry is pending", contradicting its header (VP step 5).
   - The plan validates against the PlanDocument schema (VP step 6).
   - >-
@@ -46,11 +49,11 @@ acceptance_criteria:
 verification_plan:
   - step: 1
     phase: pre-deploy
-    action: Confirm both retired host files of the stale D40 citation are absent
+    action: Confirm all three retired host files of the stale D40 citation are absent
     command: >-
-      bin/venv-python -c "import pathlib; P=('docs/INTENT-provider-agnostic-executor.md','docs/ROADMAP-PRODUCT.md');
-      print('retired_hosts_absent=' + str(sum(not pathlib.Path(p).exists() for p in P)) + '/2')"
-    expected: One line reporting both host files absent.
+      bin/venv-python -c "import pathlib; P=('docs/INTENT-provider-agnostic-executor.md','docs/ROADMAP-PRODUCT.md','docs/ROADMAP-PRODUCT.yaml');
+      print('retired_hosts_absent=' + str(sum(not pathlib.Path(p).exists() for p in P)) + '/3')"
+    expected: One line reporting all three host files absent.
     fix_if: >-
       Either file present means a host was restored; the stale citation may be live again -- stop and re-open
       the A/B fork (reconcile the citation in that file) instead of staging the closeout.
@@ -59,17 +62,18 @@ verification_plan:
     graduation_waiver_reason: >-
       Decision 178's cleanse deleted these files deliberately; re-adding a retired INTENT doc is already
       forbidden by Decision 86 cl.2, so a registry row would only re-assert a ratified retirement.
-    expected_literals: ["retired_hosts_absent=2/2"]
+    expected_literals: ["retired_hosts_absent=3/3"]
   - step: 2
     phase: pre-deploy
-    action: Confirm the staged met_by commit exists and is the one that deleted both host files
+    action: Confirm the staged met_by commit exists, deleted all three host files, and is on main
     command: >-
       git cat-file -t 7b67e21d70f733f7137875195a16e71f59822a9c && git show --format= --name-status
       7b67e21d70f733f7137875195a16e71f59822a9c -- docs/INTENT-provider-agnostic-executor.md docs/ROADMAP-PRODUCT.md
-      && git merge-base --is-ancestor 7b67e21d70f733f7137875195a16e71f59822a9c origin/main && echo met_by_on_main
+      docs/ROADMAP-PRODUCT.yaml | grep -c '^D' && git merge-base --is-ancestor
+      7b67e21d70f733f7137875195a16e71f59822a9c origin/main && echo met_by_on_main
     expected: >-
-      The object type commit, then two delete rows (status D), one for each host file, then the ancestry
-      marker line (the commit is on main, not merely present in the object store); exit 0.
+      Three lines: the object type commit, the delete-row count 3 (one status-D row per host file), then the
+      ancestry marker line (the commit is on main, not merely present in the object store); exit 0.
     fix_if: >-
       Any failure while git rev-parse --is-shallow-repository prints true means history may sit beyond the
       shallow graft (the object can exist while the ancestry test still fails) -- run a bounded fetch
@@ -80,27 +84,36 @@ verification_plan:
     graduation: not-applicable
   - step: 3
     phase: pre-deploy
-    action: Census every tracked file for a live line pairing Decision 40 with a pending supersession
+    action: Census every tracked file for a live hit pairing a Decision 40 token with a pending-supersession cue
     command: >-
-      bin/venv-python -c "import re,subprocess; R=re.compile(r'(?i)(decision 40\b|\bd40\b|dec-040).{0,200}supersession.{0,40}pending|supersession.{0,40}pending.{0,200}(decision 40\b|\bd40\b|dec-040)');
-      X=('docs/plans/','audits/','docs/SESSION_LOG.md');
+      bin/venv-python -c "import re,subprocess,yaml;
+      D=re.compile(r'decisions?\s*#?\s*(?:\d+\s*(?:,|and)\s*)*40\b|\bd-?0*40\b|\bdec-?0*40\b',re.I);
+      C=re.compile(r'supersession.{0,120}?(?:pending|deferred|not yet|unfinished|outstanding)|pending[\s-]+supersession|not yet (?:formally )?superseded|awaits? (?:formal )?supersession|supersession\s+of\s+d',re.I);
+      n=lambda s: ' '.join(s.split()); h=lambda t: sum(1 for m in C.finditer(t) if D.search(t[max(0,m.start()-200):m.end()+200]));
+      d=yaml.safe_load(open('docs/ROADMAP-PLATFORM.yaml',encoding='utf-8'));
+      [c.update(text='') for i in d['tier_items'] if i.get('id')=='T1.17' for c in i['exit_criteria'] if c['id']=='c3'];
+      R=yaml.safe_dump(d,width=10**9); X=('docs/plans/','audits/','docs/SESSION_LOG.md','docs/DECISIONS');
       F=subprocess.run(['git','ls-files'],capture_output=True,text=True).stdout.split();
-      H=[f for f in F for l in open(f,encoding='utf-8',errors='ignore') if R.search(l) and not (f=='docs/ROADMAP-PLATFORM.yaml' and 'D40 reconciliation' in l)];
-      print('live_hits=' + str(sum(not f.startswith(X) for f in H)) + ' historical_hits=' + str(sum(f.startswith(X) for f in H)))"
+      H={f: h(n(R if f=='docs/ROADMAP-PLATFORM.yaml' else open(f,encoding='utf-8',errors='ignore').read())) for f in F};
+      print('live_hits=' + str(sum(v for f,v in H.items() if not f.startswith(X))) + ' historical_hits=' + str(sum(v for f,v in H.items() if f.startswith(X))))"
     expected: >-
-      One line of two counts with live_hits 0. Once this plan is committed historical_hits is 6 at 51253cdd: two
-      lines each in PLAN-decisions-archival-hygiene.yaml and OVERSEER-decision-log-premise-integrity.yaml (which
-      recorded the finding; historical artefacts per Decision 178 cl.3) and two in this plan (intent, VP 3 regex).
-      T1.17's own c3 text is exempt by its "D40 reconciliation" marker, in docs/ROADMAP-PLATFORM.yaml only.
+      One line of two counts with live_hits 0. Matching is over whitespace-normalized text (so wrapped claims are
+      caught), counting each pending/unfinished-supersession cue with a Decision 40 token (any spelling: Decision
+      #40, Decisions 37 and 40, D40, D-040, dec-40) within 200 characters either side. Live means outside the
+      historical logs Decision 178 cl.3 names (docs/DECISIONS*.md, docs/SESSION_LOG.md, plans, audits); the
+      decision logs contribute 0 hits today, and DECISIONS_ARCHIVE.md's 2026-07-21 note is not a hit (it says
+      "this entry", not Decision 40), so VP 5 covers it. T1.17's own c3 text is blanked structurally (yaml-loaded,
+      emptied, re-dumped), never by a line marker. historical_hits is 18 at HEAD: 10 in this plan, 8 in four plan/audit/report
+      artefacts that recorded the finding.
     fix_if: >-
       A non-zero live_hits count means a live surface still carries the stale claim -- that file is the
       reconciliation target; stop and re-open the A/B fork.
     hermetic: true
     graduation: waive
     graduation_waiver_reason: >-
-      A one-off census of a single stale phrase on a retired surface; the corpus-side supersession facts are
+      A one-off census of a single stale claim on a retired surface; the corpus-side supersession facts are
       already guarded by validate_supersession_annotations and validate_decision_currency, and a standing
-      phrase grep would add a check with no ongoing failure mode.
+      claim grep would add a check with no ongoing failure mode.
     expected_literals: ["live_hits=0"]
   - step: 4
     phase: pre-deploy
@@ -174,6 +187,26 @@ verification_plan:
     fix_if: Address the reported issue in the plan file.
     hermetic: false
     graduation: not-applicable
+  - step: 9
+    phase: pre-deploy
+    action: Red-capability control for VP 3 -- its census detects the claim in each deleted host at 7b67e21d^
+    command: >-
+      bin/venv-python -c "import re,subprocess;
+      D=re.compile(r'decisions?\s*#?\s*(?:\d+\s*(?:,|and)\s*)*40\b|\bd-?0*40\b|\bdec-?0*40\b',re.I);
+      C=re.compile(r'supersession.{0,120}?(?:pending|deferred|not yet|unfinished|outstanding)|pending[\s-]+supersession|not yet (?:formally )?superseded|awaits? (?:formal )?supersession|supersession\s+of\s+d',re.I);
+      n=lambda s: ' '.join(s.split()); h=lambda t: sum(1 for m in C.finditer(t) if D.search(t[max(0,m.start()-200):m.end()+200]));
+      P=('docs/INTENT-provider-agnostic-executor.md','docs/ROADMAP-PRODUCT.md','docs/ROADMAP-PRODUCT.yaml');
+      B=[subprocess.run(['git','show','7b67e21d70f733f7137875195a16e71f59822a9c^:'+p],capture_output=True,text=True).stdout for p in P];
+      print('hosts_detected=' + str(sum(h(n(b))>0 for b in B)) + '/3')"
+    expected: >-
+      One line reporting all three hosts detected: INTENT line 3 ("the supersession of Decision 40 and CD.7 are
+      filed"), ROADMAP-PRODUCT.md:757 and ROADMAP-PRODUCT.yaml:4389-4390 (a claim wrapped across two lines).
+      This proves VP 3 can go red on the claim in each form it actually took.
+    fix_if: >-
+      Fewer than three means VP 3's census is blind to that phrasing; widen its cue or token pattern (keep VP 3
+      and this step identical) and re-run both. Missing history in a shallow clone: git fetch --depth=1500 origin main.
+    hermetic: false
+    graduation: not-applicable
 constraints:
   - >-
     No tier-item or criterion status flip, no closes_criteria entry, no ratification (project charter never-list;
@@ -210,41 +243,46 @@ constraints:
   - >-
     Out of c3: the live Decision 75 entry still cites the deleted INTENT doc (DECISIONS.md:8309, 8350-8353) as
     substrate frame-lock narrative, not as a Decision 40 claim; the staged text therefore claims no live D40
-    pending-supersession citation, never that the deleted doc has no inbound references.
+    pending-supersession citation, never that the deleted doc has no inbound references. Also out of c3 (none
+    is a pending-supersession claim; relevant to alternative B): D52's archive header "(Supersedes Decisions 37,
+    40, 49)" and index row 52 add a second supersession edge into D40 (overlaps the parked 52 -> 37/40/49 waiver
+    fork); D40's own "Decision status: Decided, deferred" line; "D40 deferred" mentions elsewhere (c2 territory).
   - >-
     staged_c3_closeout_basis: the same edit drops docs/INTENT-provider-agnostic-executor.md from T1.17
     files_in_scope, rewords decomposition_hints.basis (3) as "host doc retired by Decision 178; c3 met", and
     regenerates .secrets.baseline. It takes tier_item_freshness_gate's "its own micro-commit on human
     confirmation" branch; the Scope-row branch is closed because it would hand /implement a roadmap edit and a
     criterion flip (never-list). met_by is a bare commit because retirement is by deletion with provenance in git
-    history (Decision 174), no PLAN file exists for #969, and decisions-archival-hygiene deferred this citation
+    history (Decision 178 cl.1; Decision 174 by analogy), no PLAN file exists for #969, and decisions-archival-hygiene deferred this citation
     to T1.17 (its constraints) so did not close c3; the form satisfies exit-criteria-ledger.yaml#fields.met_by.
-    An operator scope decision, not a narrowing to obtain green (Decision 181).
+    An operator scope decision, not a narrowing to obtain green (Decision 181). Disclosure: 7b67e21d itself
+    narrowed c3 (dropped ROADMAP-PRODUCT.md from its text and from basis (3)) and left it open in the same diff
+    that deleted the INTENT doc; the operator should weigh that before accepting it as met_by.
   - No rescue agents or workaround loops (Decision 55).
 context:
   - >-
     Decision-scout FLAGS_FOUND (t1-17-c3-decision-scout-r1-6f18c0d2; 1 CONTRADICT NOTE D136 discharged: it
     assumed an 8-char met_by; the 40-hex sha passes check (i)). CITE: 178, 122, 177, 86, 136. Decisions triaged: 163 of 163. Roadmap items intersected: 0; CONFLICT: 0; RELATED: 0
-  - "gates: decision-scout=FLAGS_FOUND; step-6b=write the plan (stand-in r1, forks 4-5 parked); plan-critique=REVISE r1 (F1-F4 applied), r2 PENDING; report-critique=PENDING"
+  - "gates: decision-scout=FLAGS_FOUND; step-6b=write the plan (stand-in r1, forks 4-5 parked); plan-critique=PROCEED after 2 rounds; report-critique=REVISE r1 (F1-F7 applied), r2 PENDING"
   - >-
     Freshness gate: (1) c3 satisfied by retirement (7b67e21d, #969, D178; after T1.17 filed in #693); (2)
     dangling files_in_scope path, re-grounding staged; (3) no absorbing sibling; (4) no gating CD.
   - >-
     staged_c3_closeout (operator-applied; not applied by this plan): c3 status open -> met; met_by:
-    7b67e21d70f733f7137875195a16e71f59822a9c; text -> "D40 reconciliation: no live surface carries the stale
-    pending-supersession claim about Decision 40 (re-run: PLAN-t1-17-c3-d40-surface-retired VP 3). Both host
-    docs (INTENT-provider-agnostic-executor.md, ROADMAP-PRODUCT.md) were deleted by the Decision 178 cleanse
-    (7b67e21d); Decision 40's supersession by Decision 122 is recorded in its archive header, Decision 122's
-    Supersedes line and the decisions index. Residual: Decision 40's archived entry keeps its 2026-07-21 update
-    note calling the formal supersession unfinished (VP 5 locates it), preserved verbatim by the archive move and
-    overridden by the entry's top-of-body Superseded-by markers." Original c3 wording -> the operator's commit
-    body, not progress_note (keeps the stale phrase off live surfaces). Rest: staged_c3_closeout_basis.
+    7b67e21d70f733f7137875195a16e71f59822a9c; text -> "D40 reconciliation: no live surface outside the
+    decision logs, session log, plans and audits (historical per Decision 178 cl.3) carries the stale claim that
+    Decision 40's supersession is unfinished (re-run: PLAN-t1-17-c3-d40-surface-retired VP 3, control VP 9). All
+    three host docs (INTENT-provider-agnostic-executor.md, ROADMAP-PRODUCT.md, ROADMAP-PRODUCT.yaml) were deleted
+    by the Decision 178 cleanse (7b67e21d); Decision 40's supersession by Decision 122 is recorded in its archive
+    header, Decision 122's Supersedes clause and the decisions index. Residual: Decision 40's archived entry keeps its 2026-07-21 update
+    note calling the formal supersession unfinished (VP 5 locates it), preserved verbatim by the archive move
+    and overridden by the entry's top-of-body Superseded-by markers." Original c3 wording -> the operator's commit body, not progress_note. Rest: staged_c3_closeout_basis.
   - "decided-with-notice (stand-in confirmed): REPORT-ONLY (D86 cl.2); no rec bundled; roadmap edit staged (D79/125)."
   - >-
     fork: settle c3 by retirement evidence + staged closeout (A) or a dated trailer on D40's archived entry (B) |
     chosen: A; B operator-only (alternative_b_shape) | class: asked | precedent: exit-criteria-ledger realized-
     differently rule; freshness gate check 2; D178, D177, D86 cl.2, D146, D150, D122; R3 stand-in 2026-10-01 |
-    precedent_kind: contract | reversible: yes | persisted: plan_type, scope, VP 1-5, staged_c3_closeout
+    precedent_kind: contract | reversible: yes | persisted: plan_type, scope, VP 1-5 and 9, staged_c3_closeout
   - >-
     fork: met_by form | chosen: 40-hex sha of 7b67e21d; decisions-archival-hygiene rejected | class: consistency-only
     | precedent: exit-criteria-ledger.yaml#fields.met_by; D136 check (i); D174 | precedent_kind: contract |
