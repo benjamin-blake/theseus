@@ -137,14 +137,16 @@ verification_plan:
   phase: pre-deploy
   action: Goodhart and branch-scope sweep against the merge-base - no net-new suppression, and the branch touches only the
     five scope files and this plan.
-  command: bash -c 'b=$(git merge-base origin/main HEAD); git diff -U0 "$b" -- scripts tests config | grep -E "^\+.*(noqa|type:\s*ignore|pragma:\s*no
+  command: bash -c 'b=$(git merge-base origin/main HEAD) && [ -n "$b" ] || { echo "no merge-base, fetch origin main"; exit
+    1; }; git diff -U0 "$b" -- scripts tests config | grep -E "^\+.*(noqa|type:\s*ignore|pragma:\s*no
     cover|pytest\.mark\.(skip|xfail)|importorskip)" && exit 1; x=$(git diff --name-only "$b" | grep -vxF -e scripts/checks/ops_governance/validate_recs_read_topology.py
     -e scripts/checks/ops_governance/_manifest.py -e config/ci_rca_taxonomy.yaml -e tests/checks/ops_governance/test_validate_recs_read_topology.py
     -e tests/checks/ops_governance/test__manifest.py -e docs/plans/PLAN-t2-19-c10-recs-read-topology-guard.yaml); [ -z "$x" ]
     || { echo "out-of-scope $x"; exit 1; }; echo sweep-clean'
   expected: Exit 0 printing the clean marker.
   fix_if: A matched added line means a suppression slipped in; remove it and fix the underlying finding. An out-of-scope path
-    means scope leaked (a scanned read-path file, the baseline or the roadmap); revert it.
+    means scope leaked (a scanned read-path file, the baseline or the roadmap); revert it. No merge-base means origin/main
+    is missing or the clone is too shallow; git fetch origin main (deepen if needed), never drop the guard.
   hermetic: false
   graduation: waive
   graduation_waiver_reason: PR-relative against the merge-base; it measures this branch only and is vacuous once merged, so
@@ -222,8 +224,8 @@ context:
   169, 170, 136, 79, 125, 73, 72, 55, 131, 163. RELATED: 78, 143, 88, 197, 182, 208, 187, 181, 189. gate_run_id t2-19-c10-decision-scout-r1-c62f8a19.'
 - 'Decisions triaged: 163 of 163'
 - 'Roadmap items intersected: 3; CONFLICT: 1; RELATED: 2'
-- 'gates: decision-scout=FLAGS_FOUND (r1); step-6b=WRITE THE PLAN (t2-19-c10-step-6b-stand-in-r1; fork 3 ruling PARKED);
-  plan-critique=REVISE r1 (t2-19-c10-plan-critique-r1-a8d3f07b; M1-M3, L1-L6, I3-I4 fixed, none disputed; see commit body)'
+- 'gates: decision-scout=FLAGS_FOUND r1; step-6b=WRITE THE PLAN (t2-19-c10-step-6b-stand-in-r1, fork 3 PARKED); plan-critique=REVISE
+  r1 (t2-19-c10-plan-critique-r1-a8d3f07b), REVISE r2 (t2-19-c10-plan-critique-r2-1e5b7f39), all fixed (commit bodies)'
 - 'Citations: D140''s escape hatch is retired by the CD.15 amendment, OQ.7 and read-engine.yaml (reversing D140 amends this
   guard); Single-Portal = D78/D84 (69 archived); prior art tests/test_session_preflight_decomposition.py:534-539. VP needs
   bin/venv-python 3.12 (3.11 cannot parse scripts/convergence_health/__main__.py).'
@@ -277,8 +279,9 @@ execution_steps:
   = ("OPS_STORAGE_BACKEND", "DuckDBIcebergReader"); RETIRED_MODULES = ("pyiceberg", "iceberg_reader") matched as whole dotted
   segments, never substrings (iceberg_type passes); ENGINE_IMPORTS = ("duckdb", "psycopg2"); RUNTIME_MODULE = "src.common.ducklake_runtime"
   with ENTRY_POINTS = {open_connection, get_warm_connection, reset_warm_connection, fetch_dsn, libpq_conninfo}; SPIKE_MODULE
-  = "src.common.ducklake_spike" with SPIKE_ENTRY = "_require_duckdb". API: Finding(leg, path, line, message) and ScanResult(findings,
-  files_parsed) dataclasses; scan(root, *, allowlist=None, declared_readers=None) -> ScanResult, where None reads the module
+  = "src.common.ducklake_spike" with SPIKE_ENTRY = "_require_duckdb". API: Finding(leg: str, path: str (repo-relative POSIX), line:
+  int, message: str) and ScanResult(findings, files_parsed) dataclasses; derive_exports(root, allowlist=None) -> dict[str,
+  frozenset[str]] (the R4b map, seeds excluded) for the test; scan(root, *, allowlist=None, declared_readers=None) -> ScanResult, where None reads the module
   constant at call time (so tests may monkeypatch it); @registry.register("validate_recs_read_topology", owner="platform")
   validate_recs_read_topology(failed: list[str]) -> None prints "=== Recs read topology ===", calls scan(_common.ROOT), appends
   each finding as "<leg> <path>:<line>: <message> (Decision 84 closed boundary)", and calls registry.examined(files_parsed,
@@ -300,7 +303,8 @@ execution_steps:
   -> ENTRY_POINTS and SPIKE_MODULE -> {SPIKE_ENTRY}: a module-scope ImportFrom of a module in EXPORTS naming one of its names
   adds the bound local name to the importing module''s set; a module-scope Assign X = <name bound to a module in EXPORTS>.<one
   of its names> adds X. Then, in every walked file matching no ALLOWLIST glob, an ImportFrom of a derived module naming one
-  of its names or *, or an Attribute on a name bound to it with attr in its set, fails. R4 and R4b never match strings (scripts/ducklake_smoke/lambda_ec_gates.py
+  of its names or *, or an Attribute on a name bound to it with attr in its set, fails. R4b checks only modules the derivation
+  added, never the two seeds (R4 owns those), so no site is reported twice. R4 and R4b never match strings (scripts/ducklake_smoke/lambda_ec_gates.py
   carries reset_warm_connection as a JSON action name). No module-scope I/O (AGENTS.md safety).'
 - 'scripts/checks/ops_governance/_manifest.py: insert Entry(name="validate_recs_read_topology", module="scripts.checks.ops_governance.validate_recs_read_topology",
   attr="validate_recs_read_topology", pre=True, pre_globs=("scripts/**", "src/**"), full_segment="full_after_lint") directly
@@ -326,7 +330,8 @@ execution_steps:
   and scripts/ducklake_smoke/x.py. Real tree: the check passes; tuple(g for g, _ in ALLOWLIST) equals a pinned 12-glob tuple
   in the test and len(DECLARED_READERS)==1; every ALLOWLIST glob matches at least one walked file (no stale row); scan(ROOT,
   allowlist=()) yields only R4 findings, absorbed by exactly the 10 live globs, with scripts/ducklake_neon_smoke_test.py and
-  src/telemetry/** absorbing none; the derived R4b exports for scripts.ducklake_smoke.core include fetch_dsn and _libpq_conninfo.
+  src/telemetry/** absorbing none; derive_exports(ROOT) maps scripts.ducklake_smoke.core to a set including fetch_dsn and _libpq_conninfo
+  and contains neither seed module.
   examined(files) declared with count > 0, including on an R1 failure. Every monkeypatch uses the monkeypatch fixture so order
   is irrelevant under pytest-randomly. TestRegistration: the Entry resolved with next() (pre, pre_globs, full_after_lint),
   membership in registry.pre_sequence() and full_sequence(), and the taxonomy row.'
