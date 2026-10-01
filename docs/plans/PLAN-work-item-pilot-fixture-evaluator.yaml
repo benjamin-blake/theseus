@@ -35,12 +35,11 @@ scope:
     leg, so every later exit path is declared.'
 - file: scripts/checks/roadmap/_manifest.py
   action: Modify
-  purpose: Append one Entry(name="validate_work_item_pilot", pre=True, full_segment="full_after_lint") whose pre_globs cover
-    the check's whole read closure ("docs/work-item-pilot/**", "*.yaml", "*.yml", "docs/DECISIONS.md", "docs/DECISIONS_ARCHIVE.md",
-    "scripts/checks/structural/_classify.py", "config/structural_size_budgets.yaml", "scripts/checks/*/_manifest.py", "scripts/checks/roadmap/**",
-    "scripts/checks/_common.py", "scripts/checks/registry.py"); "*.yaml" is needed because L3 scans every tracked YAML, docs/work-item-pilot/**
-    keeps the L6 freeze in the --pre affected set (Decision 135), and the domain manifests are the Entry index L4 resolves
-    check refs against.
+  purpose: 'Append one Entry(name="validate_work_item_pilot", pre=True, full_segment="full_after_lint") with pre_globs=None
+    (ungated: runs on every --pre pass). Its read closure is data-dependent and unbounded - L4 resolves file_line evidence
+    against any tracked file a W1 item cites - so any static glob set would fail open on a diff that shortens or deletes a
+    cited file (Decision 135). Precedent: validate_placement, which resolves route targets at arbitrary paths, is ungated.
+    Measured cost about 0.55 s (the ROADMAP-PLATFORM safe_load).'
 - file: config/ci_rca_taxonomy.yaml
   action: Modify
   purpose: Add function_to_category row validate_work_item_pilot -> schema_drift, beside its roadmap-domain siblings.
@@ -84,8 +83,9 @@ acceptance_criteria:
   with no line over 2,000 characters; HEADER_LINE_CEILING + ITEM_COUNT_CAP x PER_ITEM_LINE_CEILING <= 500; the shipped header
   measures at most HEADER_LINE_CEILING; and L2 fails a fixture whose body is not exactly render(parsed) or whose effective
   lines exceed HEADER_LINE_CEILING + PER_ITEM_LINE_CEILING x len(work_items) (VP 2).'
-- validate_work_item_pilot is registered in the roadmap manifest, dispatched in both tiers, mapped in config/ci_rca_taxonomy.yaml,
-  and declares examined(1) on its pass path, so its outcome row reads enforced, never undeclared (VP 3).
+- validate_work_item_pilot is registered in the roadmap manifest, ungated in --pre (pre_globs None), dispatched in both tiers,
+  mapped in config/ci_rca_taxonomy.yaml, and declares examined(1) on its pass path, so its outcome row reads enforced, never
+  undeclared (VP 3).
 - validate_placement passes with the new route, and docs/CLAUDE.md carries the class row (VP 4).
 - The full presubmit tier exits 0 (VP 5).
 verification_plan:
@@ -119,14 +119,15 @@ verification_plan:
   action: Confirm registration across the manifest, both tier sequences, the ci_rca taxonomy and the accounting declaration.
   command: bin/venv-python -c "import yaml;from scripts.checks import registry;from scripts.checks.roadmap import _manifest;e=[x
     for x in _manifest.ENTRIES if x.name=='validate_work_item_pilot'][0];assert e.pre and e.full_segment=='full_after_lint';assert
-    '*.yaml' in e.pre_globs and 'docs/work-item-pilot/**' in e.pre_globs and 'docs/DECISIONS.md' in e.pre_globs;assert 'validate_work_item_pilot'
-    in [s.name for s in registry.pre_sequence()] and 'validate_work_item_pilot' in [s.name for s in registry.full_sequence()];t=yaml.safe_load(open('config/ci_rca_taxonomy.yaml'))['function_to_category'];assert
+    e.pre_globs is None,e.pre_globs;assert 'validate_work_item_pilot' in [s.name for s in registry.pre_sequence()] and 'validate_work_item_pilot'
+    in [s.name for s in registry.full_sequence()];t=yaml.safe_load(open('config/ci_rca_taxonomy.yaml'))['function_to_category'];assert
     t['validate_work_item_pilot']=='schema_drift';f=[];registry.resolve('validate_work_item_pilot')(f);d=registry.pop_declaration();assert
     d and d.kind=='examined' and d.count==1,d;print('registration OK')"
   expected: Exit 0 printing the registration line.
   fix_if: An IndexError means the Entry is missing; a KeyError means the taxonomy row is missing; a None declaration means
     examined() is not reached on the pass path. If Step objects expose the name under a different attribute, read scripts/checks/registry.py's
-    Step and use that attribute; do not weaken the membership assertion.
+    Step and use that attribute; do not weaken the membership assertion. A non-None pre_globs means the Entry was gated; it
+    must be ungated (R3-1, Decision 135).
   hermetic: true
   graduation: waive
   graduation_waiver_reason: Duplicates standing guards - test__manifest.py resolves every Entry, validate_ci_rca_taxonomy
@@ -183,8 +184,7 @@ test_obligations:
   test_selector: tests/checks/roadmap/test_validate_work_item_pilot.py
   red_green_expectation: Red before (module absent); green after. The budget case reddens if any cap is raised without re-derivation.
 - source: scripts/checks/roadmap/_manifest.py
-  behavior: The validate_work_item_pilot Entry exists with pre=True, full_after_lint and a pre_globs closure covering every
-    YAML file and docs/DECISIONS.md.
+  behavior: The validate_work_item_pilot Entry exists with pre=True, pre_globs=None (ungated) and full_after_lint.
   verification_step: 2
   test_selector: tests/checks/roadmap/test_validate_work_item_pilot.py
   red_green_expectation: Red before (TestRegistration resolves the Entry by name, so an absent Entry raises StopIteration
@@ -238,11 +238,12 @@ context:
 - 'Scout counts: Decisions triaged: 163 of 163 | Roadmap items intersected: 3; CONFLICT: 0; RELATED: 2'
 - 'gates: decision-scout=FLAGS_FOUND (1 WARN, 2 NOTE, all dispositioned below); step-6b=WRITE THE PLAN (W0 stand-in 2026-10-01,
   delegation rule 2); plan-critique=REVISE r1 (work-item-pilot-fixture-evaluator-plan-critique-r1-6c1e8b3f), REVISE r2 (work-item-pilot-fixture-evaluator-plan-critique-r2-71d4c09e),
-  r3 pending'
+  REVISE r3 (work-item-pilot-fixture-evaluator-plan-critique-r3-c48a1f60), r4 pending'
 - 'WARN D166: cap 12 is derived in the pinned layout (item block 34 + 3 criterion rows + 3 edge rows = 40; header 13; 13 +
   12 x 40 = 493, 13 items 533; ceiling 20 + 12 x 40 = 500, zero headroom).'
 - 'Scout NOTEs (D197 cl.5 pilot_only edges and operator-only exits; D86 text bounds), D170 examined-first, plan-critique r1
-  R1-R5 / N1-N4 and r2 R2-1..R2-3 / N1: all fixed, none disputed; per-finding detail in this revision''s commit body.'
+  R1-R5 / N1-N4 r2 R2-1..R2-3 / N1 and r3 R3-1 / N1-N4: all fixed, none disputed; per-finding detail in this revision''s commit
+  body.'
 - 'Lambda: compute_affected_artifacts(scope) = {}. classify_path(fixture) = residual.'
 - 'Environment: DuckLake reader unreachable, no AWS creds; the ci_rca zero is a degraded read (Decision 73 halt unconfirmed).
   No rec bundled.'
@@ -313,12 +314,14 @@ execution_steps:
   none, -). Constants: FIXTURE_PATH, PILOT_DIR, ITEM_COUNT_CAP=12, HEADER_LINE_CEILING=20, PER_ITEM_LINE_CEILING=40, MAX_CRITERIA_PER_ITEM=3,
   MAX_EDGES_FROM_ITEM=3, MAX_EVIDENCE=4, MAX_ROWS=3, SUNSET_CRITERION=''T4.23:c6'', SUNSET_REVIEW_DATE=date(2027,1,31), SUNSET_CD=''CD.45'',
   EDGE_KINDS, RUNGS, PLACEHOLDER_TOKENS. No file I/O at import (AGENTS.md safety). Every str and list field carries max_length;
-  planes is bounded by its two-member enum. render(fixture) -> str emits the PINNED canonical layout: fixture header, each
-  work item, its extension, its consideration_register and its maturity as block-style mappings; failure_signal as one inline
-  flow mapping; planes and verification as one flow list each; every row of transitions, evidence, settled, contested, open_questions,
-  work_item_criteria and work_item_edges as one flow line; empty lists as []. Measured worst case: item block 34 effective
-  lines + 3 criterion rows + 3 edge rows = 40 (PER_ITEM_LINE_CEILING), header 13 (<= HEADER_LINE_CEILING 20), so 20 + 12 x
-  40 = 500 with zero headroom.'
+  planes is bounded by its two-member enum. Every free-text field accepts printable ASCII only (AGENTS.md ASCII rule; keeps
+  the 2,000-char long-line bound content-independent). render(fixture) -> str emits with pinned emitter options (yaml width=float(''inf'')
+  so no scalar folds, sort_keys=False, allow_unicode=False, explicit flow/block choice per node) and the PINNED canonical
+  layout: fixture header, each work item, its extension, its consideration_register and its maturity as block-style mappings;
+  failure_signal as one inline flow mapping; planes and verification as one flow list each; every row of transitions, evidence,
+  settled, contested, open_questions, work_item_criteria and work_item_edges as one flow line; empty lists as []. Measured
+  worst case: item block 34 effective lines + 3 criterion rows + 3 edge rows = 40 (PER_ITEM_LINE_CEILING), header 13 (<= HEADER_LINE_CEILING
+  20), so 20 + 12 x 40 = 500 with zero headroom.'
 - 'scripts/checks/roadmap/validate_work_item_pilot.py: @registry.register(''validate_work_item_pilot'', owner=''platform'')
   def validate_work_item_pilot(failed: list[str], *, today: date | None = None) -> None (injectable clock: no registered check
   reads the wall clock for a verdict today, so the date leg is test-pinned on both sides). Locate ROOT/FIXTURE_PATH; absent
@@ -334,9 +337,9 @@ execution_steps:
   section that also names CD.45 (rehome exit). L4 resolution, failing closed with a message that names possible archival when
   an id is absent from ROADMAP-PLATFORM: edge targets must be a pilot item id, a tier_items id or a candidate_decisions id
   (any Tx:cN, rec-NNNN or other shape fails); evidence refs resolve by kind - file_line path:line names a tracked file with
-  at least that many lines, check names a registered check: a name in the registry''s Entry index, i.e. the union of every
-  scripts/checks/*/_manifest.py ENTRIES name (no module import; full_sequence() is wrong because it omits pre-only and untiered
-  checks and includes scaffold names), decision N has a ''## Decision N:'' header in docs/DECISIONS.md or docs/DECISIONS_ARCHIVE.md,
+  at least that many lines, check names a registered check: a key of registry._ALL_ENTRIES, the registry''s Entry index (validate_pre_glob_closure
+  precedent; importing registry loads the manifests only, never check modules; full_sequence() is wrong because it omits pre-only
+  and untiered checks and includes scaffold names), decision N has a ''## Decision N:'' header in docs/DECISIONS.md or docs/DECISIONS_ARCHIVE.md,
   roadmap is a tier_items id, a CD id, or Tx:cN only where tier item Tx lists a structured dict criterion with id cN (a bare-string
   criterion is positional and rejected citing T4.23:c13), rec is format-checked ^rec-[0-9]+$ only; ExecutionMethod.check resolves
   like a check ref. L5 header item_count_cap == ITEM_COUNT_CAP and header sunset equals SUNSET_*. L6 sunset: T4.23 or CD.45
@@ -362,12 +365,14 @@ execution_steps:
   passes; today=2027-01-31 touched fails; c6-met trigger touched fails; triggered untouched passes and still declares examined(1);
   CD.45 ratified exit passes; Decision naming CD.45 and the directory passes; absent CD.45 fails closed); TestBudget (generate
   the worst-case item from the models'' model_fields - raise on any str or list field without max_length, populate optional
-  and defaulted fields, take the longest arm of each discriminated union, every string at its max_length, every list at its
-  cap, MAX_CRITERIA_PER_ITEM criterion rows and MAX_EDGES_FROM_ITEM edge rows - round-trip it through Fixture.model_validate,
-  render it with the model module''s render(), assert yaml.safe_load(rendered) equals the by-alias dump, and assert per-item
-  effective lines <= PER_ITEM_LINE_CEILING and longest line <= 2000; assert HEADER_LINE_CEILING + ITEM_COUNT_CAP x PER_ITEM_LINE_CEILING
-  <= 500 and that the shipped header measures <= HEADER_LINE_CEILING; a field added to any model grows the generated item,
-  so the test reddens without a hand-edited template); TestRegistration (Entry by name, both tier sequences, taxonomy row).'
+  and defaulted fields, take the longest arm of each discriminated union, building ExecutionMethod once with check and once
+  with command (its exactly-one-of validator rejects both) and keeping the longer, plus one non-ASCII text red case in TestSchema,
+  every string at its max_length, every list at its cap, MAX_CRITERIA_PER_ITEM criterion rows and MAX_EDGES_FROM_ITEM edge
+  rows - round-trip it through Fixture.model_validate, render it with the model module''s render(), assert yaml.safe_load(rendered)
+  equals the by-alias dump, and assert per-item effective lines <= PER_ITEM_LINE_CEILING and longest line <= 2000; assert
+  HEADER_LINE_CEILING + ITEM_COUNT_CAP x PER_ITEM_LINE_CEILING <= 500 and that the shipped header measures <= HEADER_LINE_CEILING;
+  a field added to any model grows the generated item, so the test reddens without a hand-edited template); TestRegistration
+  (Entry by name with pre=True and pre_globs None, both tier sequences, taxonomy row).'
 - 'docs/contracts/file-router.yaml: append the route after ducklake-partition-remediation and prepend an amendment_log entry
   {date: <implement date>, semantic_break: false, change_class: field_add, summary: ''PLAN-work-item-pilot-fixture-evaluator:
   added the work-item-pilot route (CD.45 pilot fixture). Additive only.''}.'
