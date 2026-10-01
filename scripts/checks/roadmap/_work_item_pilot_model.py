@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Callable
 from datetime import date
 from typing import Annotated, Literal, Union, get_args
 
@@ -67,7 +68,7 @@ def _ident_check(value: str) -> str:
     return value
 
 
-def _free_text_check(floor: int):
+def _free_text_check(floor: int) -> Callable[[str], str]:
     def _check(value: str) -> str:
         _ascii(value)
         stripped = value.strip()
@@ -80,36 +81,24 @@ def _free_text_check(floor: int):
     return _check
 
 
-def _ident(max_length: int, pattern: str | None = None):
-    return Annotated[
-        str,
-        StringConstraints(min_length=1, max_length=max_length, pattern=pattern),
-        AfterValidator(_ident_check),
-    ]
-
-
-def _free(floor: int, max_length: int):
-    return Annotated[
-        str,
-        StringConstraints(min_length=floor, max_length=max_length),
-        AfterValidator(_free_text_check(floor)),
-    ]
+def _text(lo: int, hi: int, pattern: str | None = None) -> StringConstraints:
+    return StringConstraints(min_length=lo, max_length=hi, pattern=pattern)
 
 
 Number = Union[StrictInt, StrictFloat]
-ItemId = _ident(64, r"^pwi-[a-z0-9-]+$")
-CriterionId = _ident(8, r"^c[0-9]+$")
-RowId = _ident(8, r"^[skq][0-9]+$")
-TargetId = _ident(64, r"^[A-Za-z0-9._:-]+$")
-Ident16 = _ident(16)
-Ident64 = _ident(64)
-Ident200 = _ident(200)
-DateText = _ident(10, r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
-Command = Annotated[str, StringConstraints(min_length=1, max_length=200), AfterValidator(_ident_check)]
-Text20_240 = _free(20, 240)
-Text10_160 = _free(10, 160)
-Text10_120 = _free(10, 120)
-Text3_120 = _free(3, 120)
+ItemId = Annotated[str, _text(1, 64, r"^pwi-[a-z0-9-]+$"), AfterValidator(_ident_check)]
+CriterionId = Annotated[str, _text(1, 8, r"^c[0-9]+$"), AfterValidator(_ident_check)]
+RowId = Annotated[str, _text(1, 8, r"^[skq][0-9]+$"), AfterValidator(_ident_check)]
+TargetId = Annotated[str, _text(1, 64, r"^[A-Za-z0-9._:-]+$"), AfterValidator(_ident_check)]
+DateText = Annotated[str, _text(1, 10, r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"), AfterValidator(_ident_check)]
+Ident16 = Annotated[str, _text(1, 16), AfterValidator(_ident_check)]
+Ident64 = Annotated[str, _text(1, 64), AfterValidator(_ident_check)]
+Ident200 = Annotated[str, _text(1, 200), AfterValidator(_ident_check)]
+Command = Ident200
+Text20_240 = Annotated[str, _text(20, 240), AfterValidator(_free_text_check(20))]
+Text10_160 = Annotated[str, _text(10, 160), AfterValidator(_free_text_check(10))]
+Text10_120 = Annotated[str, _text(10, 120), AfterValidator(_free_text_check(10))]
+Text3_120 = Annotated[str, _text(3, 120), AfterValidator(_free_text_check(3))]
 
 
 class _Strict(BaseModel):

@@ -109,11 +109,11 @@ def _canon(data):
 
 @pytest.fixture
 def run(tmp_path, monkeypatch, capsys):
-    def _run(data=None, *, text=None, roadmap=_ROADMAP, decisions=_DECISIONS, files=None, changed=(), today=None):
+    def _run(data=None, *, text=None, roadmap=_ROADMAP, decisions=_DECISIONS, files=None, changed=(), today=None, git=True):
         data = _fixture() if data is None else data
         tree = {
             model.FIXTURE_PATH: text if text is not None else _canon(data),
-            "docs/ROADMAP-PLATFORM.yaml": yaml.safe_dump(roadmap),
+            "docs/ROADMAP-PLATFORM.yaml": roadmap if isinstance(roadmap, str) else yaml.safe_dump(roadmap),
             "docs/DECISIONS.md": decisions,
             "docs/notes.md": "x\n" * 5,
             **(files or {}),
@@ -121,8 +121,9 @@ def run(tmp_path, monkeypatch, capsys):
         for rel, content in tree.items():
             (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
             (tmp_path / rel).write_text(content, encoding="utf-8")
-        _common.run(["git", "init", "-q"], cwd=tmp_path)
-        _common.run(["git", "add", "-A"], cwd=tmp_path)
+        if git:
+            _common.run(["git", "init", "-q"], cwd=tmp_path)
+            _common.run(["git", "add", "-A"], cwd=tmp_path)
         monkeypatch.setattr(_common, "ROOT", tmp_path)
         monkeypatch.setattr(_common, "get_changed_files", lambda root=None: list(changed))
         registry.pop_declaration()
@@ -195,6 +196,10 @@ def _top(key, value):
     return lambda d: d["work_items"][0].__setitem__(key, value)
 
 
+def _trigger(**changes):
+    return lambda d: _reg_of(d)["maturity"]["transitions"][0]["trigger"].update(**changes)
+
+
 def _crit0(**changes):
     return lambda d: d["work_item_criteria"][0].update(**changes)
 
@@ -219,6 +224,8 @@ _SCHEMA_CASES = {
     "rec only evidence": (_mut(["evidence"], [{"kind": "rec", "ref": "rec-9999"}]), "CI-resolvable"),
     "verification names absent criterion": (_mut(["verification"], ["c1", "c2"]), "absent criterion 'c2'"),
     "duplicated verification id": (_mut(["verification"], ["c1", "c1"]), "verification ids must be unique"),
+    "blank ref": (_mut(["evidence"], [{"kind": "decision", "ref": " "}]), "must not be blank"),
+    "non finite threshold": (_trigger(threshold=float("inf")), "must be finite"),
     "wrong transitions": (_mut(["maturity", "transitions"], _reg(1)["maturity"]["transitions"][::-1]), "adjacent rung pairs"),
     "duplicate planes": (_mut(["planes"], ["data_plane", "data_plane"]), "planes must be unique"),
     "duplicate row ids": (_mut(["contested"], [{"id": "s1", "text": "A contested point here."}]), "row ids must be unique"),
@@ -323,6 +330,24 @@ class TestEdges:
 
     def test_absent_roadmap_fails_closed(self, red):
         red("fail closed", _fixture(edges=[_edge("T4.23")]), roadmap={"tier_items": []})
+
+    @pytest.mark.parametrize(
+        ("edges", "needle"),
+        [
+            ([{"from": "pwi-ghost", "to": "T4.23", "kind": "depends_on"}], "absent work item"),
+            ([_edge(t) for t in ("T4.23", "CD.45", "T9.1", "T3.3")], "above MAX_EDGES_FROM_ITEM"),
+        ],
+    )
+    def test_edge_integrity_is_red(self, edges, needle, red):
+        red(needle, _fixture(edges=edges))
+
+    def test_unreadable_roadmap_fails_closed_everywhere_it_is_read(self, red):
+        data = _fixture(edges=[_edge("T4.23")])
+        _reg_of(data)["evidence"] = [{"kind": "roadmap", "ref": "T4.23"}]
+        red("unreadable", data, roadmap="a: [unclosed\n")
+
+    def test_git_failure_fails_the_single_instance_scan_closed(self, red):
+        red("git ls-files failed", git=False)
 
 
 _EVIDENCE_RED = {
