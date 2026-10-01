@@ -25,6 +25,7 @@ def validate_reversal_stanzas(failed: list[str]) -> None:
         print(f"  FAIL: {msg}")
         return
 
+    registry.examined(len(results), unit="reversal_stanzas")
     malformed = [r for r in results if r.state == "MALFORMED"]
     if not malformed:
         print(f"  PASS: {len(results)} monitored reversal-conditions stanza(s), all well-formed.")
