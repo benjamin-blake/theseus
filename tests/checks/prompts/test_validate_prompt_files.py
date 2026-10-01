@@ -278,17 +278,27 @@ class TestPromptFilesAccountingDeclaration:
         assert declaration is not None
         assert (declaration.kind, declaration.count, declaration.unit) == ("examined", 2, "prompt_files")
 
+    def test_oversized_prompt_is_counted_as_examined(self, tmp_path: Path) -> None:
+        _write_scheduled(tmp_path, "ok.prompt.md", "# ok\n\n## s\n")
+        _write_executor(tmp_path, "big.prompt.md", _OVERSIZED_PROMPT)
+        failed, declaration = self._run(tmp_path)
+        assert failed == ["Prompt file validation"]
+        assert declaration is not None
+        assert (declaration.kind, declaration.count, declaration.unit) == ("examined", 2, "prompt_files")
+
     def test_populated_tree_is_recorded_enforced(self, tmp_path: Path) -> None:
         _write_scheduled(tmp_path, "a.prompt.md", "# a\n\n## s\n")
         _write_executor(tmp_path, "c.prompt.md", "body\n")
         outcome = self._outcome(tmp_path)
         assert (outcome.status, outcome.examined_count, outcome.examined_unit) == ("enforced", 2, "prompt_files")
 
-    def test_empty_tree_is_recorded_failed_with_zero_examined(self, tmp_path: Path) -> None:
-        """Zero files can never be recorded vacuous: the empty-governed-directory guard fails the
-        check first, so the zero-count declaration surfaces as a failed row, not a green one."""
-        outcome = self._outcome(tmp_path)
-        assert (outcome.status, outcome.examined_count, outcome.examined_unit) == ("failed", 0, "prompt_files")
+    def test_empty_tree_declares_zero_and_is_recorded_failed(self, tmp_path: Path) -> None:
+        """Zero files can never be recorded vacuous: the empty-governed-directory guard fails first."""
+        failed, declaration = self._run(tmp_path)
+        assert failed == ["Prompt file validation"]
+        assert declaration is not None
+        assert (declaration.kind, declaration.count, declaration.unit) == ("examined", 0, "prompt_files")
+        assert self._outcome(tmp_path).status == "failed"
 
     def test_real_tree_declares_exactly_the_live_prompt_population(self) -> None:
         expected = sum(
