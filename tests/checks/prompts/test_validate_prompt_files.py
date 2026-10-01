@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from scripts.checks import _common
+from scripts.checks import _common, registry, validation_result
 from scripts.checks.prompts.validate_prompt_files import (
     _MAX_PROMPT_LINES,
     _SIZE_GOVERNED_PROMPT_DIRS,
@@ -217,3 +217,88 @@ class TestPromptSizeLiveSurface:
 
     def test_limit_matches_decision_43_row(self) -> None:
         assert _MAX_PROMPT_LINES == 3000
+
+
+class TestPromptFilesAccountingDeclaration:
+    """The check declares how many .prompt.md files it read, so a run is never recorded as undeclared."""
+
+    @staticmethod
+    def _run(tmp_path: Path) -> tuple[list[str], registry._Declaration | None]:
+        registry.pop_declaration()
+        failed: list[str] = []
+        with patch("scripts.checks._common.ROOT", tmp_path):
+            validate_prompt_files(failed)
+        return failed, registry.pop_declaration()
+
+    @staticmethod
+    def _outcome(tmp_path: Path) -> registry.CheckOutcome:
+        validation_result._OUTCOMES.clear()
+        try:
+            with patch("scripts.checks._common.ROOT", tmp_path):
+                validation_result.dispatch_recording("validate_prompt_files", [], validate_prompt_files)
+            (outcome,) = validation_result._OUTCOMES
+        finally:
+            validation_result._OUTCOMES.clear()
+        return outcome
+
+    def test_declares_every_prompt_file_across_both_governed_dirs(self, tmp_path: Path) -> None:
+        _write_scheduled(tmp_path, "a.prompt.md", "# a\n\n## s\n")
+        _write_scheduled(tmp_path, "b.prompt.md", "# b\n\n## s\n")
+        _write_executor(tmp_path, "c.prompt.md", "body\n")
+        failed, declaration = self._run(tmp_path)
+        assert failed == []
+        assert declaration is not None
+        assert (declaration.kind, declaration.count, declaration.unit) == ("examined", 3, "prompt_files")
+
+    def test_declared_count_tracks_the_input(self, tmp_path: Path) -> None:
+        _write_scheduled(tmp_path, "a.prompt.md", "# a\n\n## s\n")
+        _write_executor(tmp_path, "c.prompt.md", "body\n")
+        _, first = self._run(tmp_path)
+        _write_scheduled(tmp_path, "b.prompt.md", "# b\n\n## s\n")
+        _write_executor(tmp_path, "d.prompt.md", "body\n")
+        _write_executor(tmp_path, "e.prompt.md", "body\n")
+        _, second = self._run(tmp_path)
+        assert first is not None and second is not None
+        assert (first.count, second.count) == (2, 5)
+
+    def test_files_outside_the_prompt_glob_are_not_counted(self, tmp_path: Path) -> None:
+        _write_scheduled(tmp_path, "a.prompt.md", "# a\n\n## s\n")
+        _write_scheduled(tmp_path, "notes.md", "# not a prompt\n")
+        _write_executor(tmp_path, "c.prompt.md", "body\n")
+        _write_executor(tmp_path, "c.txt", "body\n")
+        _, declaration = self._run(tmp_path)
+        assert declaration is not None
+        assert declaration.count == 2
+
+    def test_failing_prompt_is_counted_as_examined(self, tmp_path: Path) -> None:
+        _write_scheduled(tmp_path, "bad.prompt.md", "no title, no section\n")
+        _write_executor(tmp_path, "c.prompt.md", "body\n")
+        failed, declaration = self._run(tmp_path)
+        assert failed == ["Prompt file validation"]
+        assert declaration is not None
+        assert (declaration.kind, declaration.count, declaration.unit) == ("examined", 2, "prompt_files")
+
+    def test_populated_tree_is_recorded_enforced(self, tmp_path: Path) -> None:
+        _write_scheduled(tmp_path, "a.prompt.md", "# a\n\n## s\n")
+        _write_executor(tmp_path, "c.prompt.md", "body\n")
+        outcome = self._outcome(tmp_path)
+        assert (outcome.status, outcome.examined_count, outcome.examined_unit) == ("enforced", 2, "prompt_files")
+
+    def test_empty_tree_is_recorded_failed_with_zero_examined(self, tmp_path: Path) -> None:
+        """Zero files can never be recorded vacuous: the empty-governed-directory guard fails the
+        check first, so the zero-count declaration surfaces as a failed row, not a green one."""
+        outcome = self._outcome(tmp_path)
+        assert (outcome.status, outcome.examined_count, outcome.examined_unit) == ("failed", 0, "prompt_files")
+
+    def test_real_tree_declares_exactly_the_live_prompt_population(self) -> None:
+        expected = sum(
+            len(list(_common.ROOT.joinpath(*dir_parts).glob("*.prompt.md"))) for dir_parts in _SIZE_GOVERNED_PROMPT_DIRS
+        )
+        registry.pop_declaration()
+        failed: list[str] = []
+        validate_prompt_files(failed)
+        declaration = registry.pop_declaration()
+        assert failed == []
+        assert declaration is not None
+        assert (declaration.kind, declaration.unit) == ("examined", "prompt_files")
+        assert declaration.count == expected and expected > 0
