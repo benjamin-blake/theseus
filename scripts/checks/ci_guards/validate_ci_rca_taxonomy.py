@@ -10,6 +10,8 @@ def validate_ci_rca_taxonomy(failed: list[str]) -> None:
     """Fail if any .github/workflows/*.yml workflow name is absent from the workflows map.
 
     Pure file-glob + YAML parse (sub-100ms); --pre eligible (Decision 60).
+    Declares examined(workflow names + registered checks + declared failure_categories,
+    unit="taxonomy_subjects") on the success exit (Decision 170).
     """
     print("\n=== CI-RCA taxonomy coverage (workflows map) ===")
     from scripts.ci_rca.taxonomy import enumerate_workflow_names, load_taxonomy  # noqa: PLC0415
@@ -90,3 +92,4 @@ def validate_ci_rca_taxonomy(failed: list[str]) -> None:
             )
         return
     print(f"failure_categories list has {len(declared)} entries; all used categories declared.")
+    registry.examined(len(actual_names) + len(registered_checks) + len(declared), unit="taxonomy_subjects")
