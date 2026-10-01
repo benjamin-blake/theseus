@@ -99,7 +99,9 @@ throttle_design:
     case_no_parent: "file the source=ci_rca rec clearing cross-checks 1-5 (mirror the bundle's
     earliest_viable_gate and escape_mode; for check-4, set escape_mode=check_ran_vacuously or drop the
     author-discipline attribution) and cite this rejection in its context; if file_rec returns an
-    existing open id (the CIRCA-03(c) backstop dedup), follow case_parent_open on that id".
+    existing open id (the CIRCA-03(c) backstop dedup: the [CI_RCA_DEDUP] ... skipping insert log line,
+    ops_data_portal.py:333-338, or a rec_by_id read showing the id predates the call), follow
+    case_parent_open on that id".
   decision_73_scope: >-
     Outside a reader outage, a throttle reject (bound 1 or bound 2) leaves a path that ends in a rec,
     provided parent_rec_id names this failure's rec (the fingerprint condition above) or the re-file
@@ -206,9 +208,10 @@ text below is applied in the SAME staged edit as the flip, never before it
 > (check_ran_vacuously, tier_misplaced, no_premerge_gate_by_design; undetermined is the abstention
 > sentinel); escape-classified recs carry the Decision 186 closure obligation (a fix-bound gate
 > artifact at closure, scripts/ops_portal/closure_gate.py), with no_premerge_gate_by_design a waiver
-> category, which realizes the original corrective_action fork between the gate-defect modes
-> (check_ran_vacuously, tier_misplaced, check_absent) and the by-design canary catch; check_absent is
-> owned by rec-3666.
+> category, which realizes the original corrective_action fork as closure vocabulary (a fix-bound
+> gate artifact for the gate-defect modes check_ran_vacuously and tier_misplaced, and check_absent
+> once rec-3666 lands; a no_premerge_gate_by_design waiver for the by-design canary catch), selected
+> by the closer rather than keyed to escape_mode; check_absent is owned by rec-3666.
 
 - **Branch (i), throttle lands:** runs through /implement, not a micro-commit. The IMPLEMENTATION
   plan of section 2.3 declares closes_criteria [T1.13:c9]; its bookkeeping walk applies the text
