@@ -14,7 +14,9 @@ def validate_sys_executable(failed: list[str]) -> None:
 
     pattern = re.compile(r"""\bsubprocess\.(run|Popen)\s*\(\s*\[\s*['\"](python|pip)['\"]""")
 
-    for py_file in sorted(scripts_dir.glob("**/*.py")):
+    py_files = sorted(scripts_dir.glob("**/*.py"))
+    registry.examined(len(py_files), unit="python_files")
+    for py_file in py_files:
         content = py_file.read_text(encoding="utf-8")
         for m in pattern.finditer(content):
             line_num = content[: m.start()].count("\n") + 1
