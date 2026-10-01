@@ -3,6 +3,7 @@
 from pathlib import Path
 from unittest.mock import patch
 
+from scripts.checks import registry
 from scripts.checks.contracts.validate_claude_md_pointer_invariant import (
     check_claude_md_pointer_invariant,
     validate_claude_md_pointer_invariant,
@@ -63,3 +64,31 @@ class TestPointerInvariantFailureEmission:
     def test_clean_root_claude_md_appends_nothing(self, tmp_path: Path) -> None:
         (tmp_path / "CLAUDE.md").write_text("@AGENTS.md\n", encoding="utf-8")
         assert self._run(tmp_path) == []
+
+
+class TestPointerInvariantAccountingDeclaration:
+    """The wrapper declares the one file it examined, so a run is never recorded as undeclared."""
+
+    @staticmethod
+    def _declare(root: Path, content: str | None) -> registry._Declaration | None:
+        if content is not None:
+            (root / "CLAUDE.md").write_text(content, encoding="utf-8")
+        registry.pop_declaration()
+        with patch("scripts.checks.contracts.validate_claude_md_pointer_invariant._common.ROOT", root):
+            validate_claude_md_pointer_invariant([])
+        return registry.pop_declaration()
+
+    def test_clean_run_declares_one_examined_file(self, tmp_path: Path) -> None:
+        declaration = self._declare(tmp_path, "@AGENTS.md\n")
+        assert declaration is not None
+        assert (declaration.kind, declaration.count, declaration.unit) == ("examined", 1, "claude_md_files")
+
+    def test_failing_run_still_declares_the_examined_file(self, tmp_path: Path) -> None:
+        declaration = self._declare(tmp_path, "@AGENTS.md\nstray content\n")
+        assert declaration is not None
+        assert (declaration.kind, declaration.count, declaration.unit) == ("examined", 1, "claude_md_files")
+
+    def test_missing_file_run_still_declares_the_examined_file(self, tmp_path: Path) -> None:
+        declaration = self._declare(tmp_path, None)
+        assert declaration is not None
+        assert declaration.count == 1
