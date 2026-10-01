@@ -71,7 +71,8 @@ verification_plan:
       The object type commit, then two delete rows (status D), one for each host file, then the ancestry
       marker line (the commit is on main, not merely present in the object store); exit 0.
     fix_if: >-
-      An unknown-object error in a shallow clone means history is missing -- run a bounded fetch
+      Any failure while git rev-parse --is-shallow-repository prints true means history may sit beyond the
+      shallow graft (the object can exist while the ancestry test still fails) -- run a bounded fetch
       (git fetch --depth=1500 origin main) and re-run; a missing ancestry marker after that fetch means the
       commit is not on main. A different status means met_by is wrong; re-point it to the commit that deleted
       the file.
@@ -82,15 +83,15 @@ verification_plan:
     action: Census every tracked file for a live line pairing Decision 40 with a pending supersession
     command: >-
       bin/venv-python -c "import re,subprocess; R=re.compile(r'(?i)(decision 40\b|\bd40\b|dec-040).{0,200}supersession.{0,40}pending|supersession.{0,40}pending.{0,200}(decision 40\b|\bd40\b|dec-040)');
-      X=('docs/plans/','audits/','docs/audit-prompts/','docs/SESSION_LOG.md');
+      X=('docs/plans/','audits/','docs/SESSION_LOG.md');
       F=subprocess.run(['git','ls-files'],capture_output=True,text=True).stdout.split();
-      H=[f for f in F for l in open(f,encoding='utf-8',errors='ignore') if R.search(l) and 'D40 reconciliation' not in l];
+      H=[f for f in F for l in open(f,encoding='utf-8',errors='ignore') if R.search(l) and not (f=='docs/ROADMAP-PLATFORM.yaml' and 'D40 reconciliation' in l)];
       print('live_hits=' + str(sum(not f.startswith(X) for f in H)) + ' historical_hits=' + str(sum(f.startswith(X) for f in H)))"
     expected: >-
       One line of two counts with live_hits 0. Once this plan is committed historical_hits is 6 at 51253cdd: two
       lines each in PLAN-decisions-archival-hygiene.yaml and OVERSEER-decision-log-premise-integrity.yaml (which
       recorded the finding; historical artefacts per Decision 178 cl.3) and two in this plan (intent, VP 3 regex).
-      T1.17's own c3 text is exempt by its "D40 reconciliation" marker.
+      T1.17's own c3 text is exempt by its "D40 reconciliation" marker, in docs/ROADMAP-PLATFORM.yaml only.
     fix_if: >-
       A non-zero live_hits count means a live surface still carries the stale claim -- that file is the
       reconciliation target; stop and re-open the A/B fork.
@@ -139,8 +140,9 @@ verification_plan:
     hermetic: false
     graduation: waive
     graduation_waiver_reason: >-
-      Transient corpus state reported as evidence, not a gate: the value records a sanctioned historical
-      sentence the operator may later override with a trailer, so a standing guard on it would assert history.
+      Point-in-time evidence of a sanctioned, permanent historical sentence (Decision 177: corrected only by
+      an appended trailer, never edited), reported as evidence, not a gate; a standing guard on it would
+      assert history rather than guard behaviour.
   - step: 6
     phase: pre-deploy
     action: Validate this plan against the PlanDocument schema
@@ -223,19 +225,20 @@ context:
   - >-
     Decision-scout FLAGS_FOUND (t1-17-c3-decision-scout-r1-6f18c0d2; 1 CONTRADICT NOTE D136 discharged: it
     assumed an 8-char met_by; the 40-hex sha passes check (i)). CITE: 178, 122, 177, 86, 136. Decisions triaged: 163 of 163. Roadmap items intersected: 0; CONFLICT: 0; RELATED: 0
-  - "gates: decision-scout=FLAGS_FOUND; step-6b=write the plan (stand-in r1, forks 4-5 parked); plan-critique=PENDING; report-critique=PENDING"
+  - "gates: decision-scout=FLAGS_FOUND; step-6b=write the plan (stand-in r1, forks 4-5 parked); plan-critique=REVISE r1 (F1-F4 applied), r2 PENDING; report-critique=PENDING"
   - >-
     Freshness gate: (1) c3 satisfied by retirement (7b67e21d, #969, D178; after T1.17 filed in #693); (2)
     dangling files_in_scope path, re-grounding staged; (3) no absorbing sibling; (4) no gating CD.
   - >-
     staged_c3_closeout (operator-applied; not applied by this plan): c3 status open -> met; met_by:
-    7b67e21d70f733f7137875195a16e71f59822a9c; text -> "D40 reconciliation: no live surface cites Decision 40 as
-    supersession-pending (re-run: VP 3's census). Both host docs (INTENT-provider-agnostic-executor.md,
-    ROADMAP-PRODUCT.md) were deleted by the Decision 178 cleanse (7b67e21d); Decision 40's supersession by
-    Decision 122 is recorded in its archive header, Decision 122's Supersedes line and the decisions index. Residual: DECISIONS_ARCHIVE.md:1730, Decision 40's own 2026-07-21
-    note 'Formal supersession of this entry is pending', preserved verbatim by the archive move and overridden
-    by the entry's top-of-body Superseded-by markers." Original wording -> T1.17 progress_note (realized-differently
-    rule). Re-grounding, contract branch and met_by basis: constraints staged_c3_closeout_basis.
+    7b67e21d70f733f7137875195a16e71f59822a9c; text -> "D40 reconciliation: no live surface carries the stale
+    pending-supersession claim about Decision 40 (re-run: PLAN-t1-17-c3-d40-surface-retired VP 3). Both host
+    docs (INTENT-provider-agnostic-executor.md, ROADMAP-PRODUCT.md) were deleted by the Decision 178 cleanse
+    (7b67e21d); Decision 40's supersession by Decision 122 is recorded in its archive header, Decision 122's
+    Supersedes line and the decisions index. Residual: Decision 40's archived entry keeps its 2026-07-21 update
+    note calling the formal supersession unfinished (VP 5 locates it), preserved verbatim by the archive move and
+    overridden by the entry's top-of-body Superseded-by markers." Original c3 wording -> the operator's commit
+    body, not progress_note (keeps the stale phrase off live surfaces). Rest: staged_c3_closeout_basis.
   - "decided-with-notice (stand-in confirmed): REPORT-ONLY (D86 cl.2); no rec bundled; roadmap edit staged (D79/125)."
   - >-
     fork: settle c3 by retirement evidence + staged closeout (A) or a dated trailer on D40's archived entry (B) |
