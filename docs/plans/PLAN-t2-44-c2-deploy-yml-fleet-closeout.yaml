@@ -1,0 +1,329 @@
+schema_version: 5
+slug: "t2-44-c2-deploy-yml-fleet-closeout"
+intent: >-
+  Settle T2.44 exit criterion c2 (DEP-09) without implementing anything: re-derive, as executable evidence at
+  current main, that the stale unguarded deploy.yml stays deleted, that nothing live still references it, that
+  the workflow-fleet suite is green, and that the criterion's "workflow-count test is updated" clause names a
+  test that never existed and that repo policy forbids adding; then stage a realized-differently re-grounding
+  of c2 (and of met criteria c1 and c4, whose text names files that no longer hold the evidence) plus a met_by-valid closeout for the operator. No
+  criterion or item status is flipped.
+plan_type: REPORT-ONLY
+verification_tier: V1
+plan_path: docs/plans/PLAN-t2-44-c2-deploy-yml-fleet-closeout.yaml
+phase: >-
+  Platform tier T2, tier_item T2.44 (Audit Phase-0 hardening, DEP-04/09/13), criterion c2 only. c1, c3 and c4
+  are already met (met_by terraform-deploy-phase0-hardening); c1 and c4 appear here only as
+  staged text re-grounds.
+scope:
+  - file: docs/plans/PLAN-t2-44-c2-deploy-yml-fleet-closeout.yaml
+    action: Create
+    purpose: >-
+      The REPORT-ONLY deliverable (Decision 86 cl.2; precedent the T1.17 c1-c3 REPORT-ONLY plans). Carries the
+      c2 evidence as executable VP steps and the staged c1/c2/c4 re-grounding, c2 closeout and item-completion
+      staging (context: staged_t2_44_closeout). No code, test, workflow, contract, roadmap or DECISIONS change.
+bundled_recommendations: []
+followon_recs: []
+infrastructure_dependencies: []
+acceptance_criteria:
+  - >-
+    .github/workflows/deploy.yml is absent, no live workflow or the ci_rca taxonomy carries its
+    "Deploy to AWS" name, and the taxonomy's workflows map matches the live fleet in both directions (VP step 1).
+  - >-
+    Commit 936c245251f42f2de104820f178249c3c50e526d (#668) is the commit that deleted deploy.yml, it touched
+    zero test files, and no later commit re-added the file (VP step 2).
+  - >-
+    A census of every tracked file finds deploy.yml named only in docs/ROADMAP-PLATFORM.yaml (T2.44's own text)
+    and in docs/DECISIONS.md at exactly one line, Decision 125 point 2's realized conditional; every other hit is
+    a historical plan, audit, session log or archive (VP step 3).
+  - >-
+    No test asserts a fleet workflow count; the one workflow-collection count assert in tests/ is the
+    count-coupling-ok-marked dependabot pair, which is not the fleet (VP step 4).
+  - The four workflow-fleet test files pass at current main (VP step 5).
+  - >-
+    The c1 re-ground is grounded: the reject-empty validation lives in terraform/github/variables.tf and
+    environments.tf only wires the variable into the reviewer gate (VP step 6).
+  - >-
+    The c4 re-ground is grounded: terraform/CLAUDE.md no longer carries the admin-tier-only recovery text, the
+    contract key tfvars_and_remote_state_recovery.admin_tier_only does, and terraform/CLAUDE.md points to that
+    contract (VP step 7).
+  - >-
+    The staged met_by resolves: PLAN-terraform-deploy-phase0-hardening.yaml exists and its closes_criteria
+    names T2.44:c2 (VP step 8).
+  - The plan validates against the PlanDocument schema (VP step 9).
+  - >-
+    The branch diff against origin/main is exactly this plan file, with no closes_criteria entry (VP step 10).
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: Confirm deploy.yml is absent and the ci_rca taxonomy matches the live workflow fleet both ways
+    command: >-
+      bin/venv-python -c "import glob,pathlib,yaml; W={yaml.safe_load(open(f))['name'] for f in glob.glob('.github/workflows/*.y*ml')};
+      T=yaml.safe_load(open('config/ci_rca_taxonomy.yaml')); M=set(T['workflows']);
+      print('deploy_yml_absent=' + str(not pathlib.Path('.github/workflows/deploy.yml').exists())
+      + ' deploy_to_aws_live=' + str(int('Deploy to AWS' in W or 'Deploy to AWS' in M or 'Deploy to AWS' in (T.get('workflow_to_tier') or {})))
+      + ' taxonomy_orphans=' + str(len(M-W)) + ' taxonomy_missing=' + str(len(W-M)))"
+    expected: >-
+      One line: the file is absent, the retired workflow name is in neither the fleet nor the taxonomy, and
+      the taxonomy has no orphan and no missing workflow. At e2adb126 the live fleet is 25 workflows.
+    fix_if: >-
+      deploy_yml_absent=False means the file was restored; stop, the closeout no longer holds. A non-zero
+      orphan or missing count is a taxonomy drift outside this item -- record it, do not fix it here (Decision 59).
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      validate_ci_rca_taxonomy already fails CI on a live workflow missing from the taxonomy; the deletion
+      itself is a one-off audit fact with no ongoing failure mode a standing row would catch.
+    expected_literals: ["deploy_yml_absent=True deploy_to_aws_live=0 taxonomy_orphans=0 taxonomy_missing=0"]
+  - step: 2
+    phase: pre-deploy
+    action: Confirm the deleting commit, that it touched no test file, and that nothing re-added deploy.yml
+    command: >-
+      S=936c245251f42f2de104820f178249c3c50e526d; git cat-file -t $S
+      && git show --format= --name-status $S -- .github/workflows/deploy.yml
+      && echo "tests_touched=$(git show --format= --name-only $S | grep -c '^tests/')"
+      && echo "readds_since=$(git log --format=%H --diff-filter=A $S..origin/main -- .github/workflows/deploy.yml | wc -l)"
+      && git merge-base --is-ancestor $S origin/main && echo on_main=yes
+    expected: >-
+      The object type commit, one delete row (status D) for .github/workflows/deploy.yml, tests_touched=0,
+      readds_since=0 and on_main=yes (the commit is an ancestor of origin/main).
+    fix_if: >-
+      An unknown-object error in a shallow clone means history is missing -- run a bounded fetch
+      (git fetch --depth=1500 origin main) and re-run. tests_touched above 0 means #668 did update a fleet
+      test, and the "no count test ever existed" premise must be re-checked before staging the rewrite.
+    hermetic: false
+    graduation: not-applicable
+  - step: 3
+    phase: pre-deploy
+    action: Census every tracked file for a live reference to the deleted deploy.yml
+    command: >-
+      bin/venv-python -c "import re,subprocess; R=re.compile(r'(?<![\w-])deploy\.yml\b');
+      X=('docs/plans/','audits/','docs/audit-prompts/','docs/SESSION_LOG','docs/DECISIONS_ARCHIVE','logs/');
+      F=subprocess.run(['git','ls-files'],capture_output=True,text=True).stdout.split();
+      H=sorted({f for f in F for l in open(f,encoding='utf-8',errors='ignore') if R.search(l)});
+      D=[l for l in open('docs/DECISIONS.md',encoding='utf-8') if R.search(l) and 'Target channel: a dedicated, governed code-deploy CD path' not in l];
+      print('live_files=' + ','.join(f for f in H if not f.startswith(X)) + ' unsanctioned_decisions_lines=' + str(len(D)) + ' historical_files=' + str(sum(f.startswith(X) for f in H)))"
+    expected: >-
+      live_files lists exactly docs/DECISIONS.md and docs/ROADMAP-PLATFORM.yaml, and no DECISIONS.md line
+      other than Decision 125 point 2 names the file. That one line is a sanctioned historical conditional
+      ("extending deploy.yml if it already deploys Lambda code by the time P2 lands, else a new workflow"):
+      deploy.yml's only Lambda step was an echo placeholder, the else branch was realized by deploy-ducklake-lambdas.yml
+      (#559), and the entry is append-only (Decision 177). The roadmap hit is T2.44's own name, scope and
+      criterion text, which the staged compaction removes. Plans, audits, session logs and the archive are
+      historical and excluded by prefix.
+    fix_if: >-
+      Any other live file, or a non-zero unsanctioned_decisions_lines, means a surface still points at the
+      deleted workflow; record it as a residual in the staged closeout (do not edit it here) and re-present.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      A one-off census of a deleted filename; once the operator compacts T2.44 the roadmap hit disappears, so a
+      standing row would pin a transient roadmap state rather than a durable invariant.
+    expected_literals: ["live_files=docs/DECISIONS.md,docs/ROADMAP-PLATFORM.yaml unsanctioned_decisions_lines=0 "]
+  - step: 4
+    phase: pre-deploy
+    action: Prove no test asserts a fleet workflow count
+    command: >-
+      bin/venv-python -c "import re,pathlib; R=re.compile(r'(?i)len\([^)]*workflow[^)]*\)\s*==\s*\d+|\d+\s*==\s*len\([^)]*workflow');
+      H=[l for p in pathlib.Path('tests').rglob('*.py') for l in p.read_text(encoding='utf-8',errors='ignore').splitlines() if R.search(l)];
+      print('fleet_count_asserts=' + str(sum('count-coupling-ok' not in l for l in H)) + ' marked_scoped_asserts=' + str(sum('count-coupling-ok' in l for l in H)))"
+    expected: >-
+      fleet_count_asserts=0. marked_scoped_asserts is 1 at e2adb126: the dependabot pair in
+      tests/checks/ci_guards/test_validate_dependabot_automation.py, which carries the tests/CLAUDE.md
+      count-coupling-ok waiver and counts the two dependabot workflows, not the fleet.
+    fix_if: >-
+      A non-zero fleet_count_asserts means a count test now exists; read it -- if it counts the whole fleet,
+      c2's literal wording became satisfiable and the realized-differently rewrite must be re-evaluated.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      tests/CLAUDE.md Test-count coupling already forbids the pattern this census looks for; a standing row
+      would duplicate a policy the review gates hold.
+    expected_literals: ["fleet_count_asserts=0"]
+  - step: 5
+    phase: pre-deploy
+    action: Run the workflow-fleet test suite the criterion names
+    command: >-
+      bin/venv-python -m pytest -q tests/test_check_workflow_agent_safety.py
+      tests/checks/ci_guards/test_validate_ci_rca_taxonomy.py tests/test_terraform_drift_acceptance.py
+      tests/test_ci_claude_p_retry.py
+    expected: >-
+      Exits 0 with no failures (49 passed at e2adb126; the 2026-07-31 sweep saw 41 against a 19-workflow fleet).
+      test_real_workflows_pass globs the live workflows directory, so it self-adjusts to deletions.
+    fix_if: >-
+      A ModuleNotFoundError under a venv-less interpreter (the check registry imports scripts/dependency_graph,
+      which needs networkx) is an environment gap: re-run under bin/venv-python with requirements.txt installed.
+      Only a test-body failure is a fleet regression outside this plan; record it and stop.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      These are existing pytest suites already selected by --pre's affected-test diff and run in full on main;
+      a registry row would re-run tests that are themselves the standing guard.
+    expected_literals: []
+  - step: 6
+    phase: pre-deploy
+    action: Ground the c1 text re-ground (validation location versus wiring location)
+    command: >-
+      bin/venv-python -c "import pathlib; v=pathlib.Path('terraform/github/variables.tf').read_text();
+      e=pathlib.Path('terraform/github/environments.tf').read_text(); c='length(var.gated_apply_reviewer_user_ids) > 0';
+      print('c1_validation_in_variables_tf=' + str(c in v) + ' c1_validation_in_environments_tf=' + str(c in e)
+      + ' c1_gate_wired=' + str('users = var.gated_apply_reviewer_user_ids' in e))"
+    expected: >-
+      The validation is in variables.tf, not in environments.tf, and environments.tf wires the variable as the
+      reviewer users -- so c1's text names the wrong file while its intent holds.
+    fix_if: >-
+      c1_validation_in_environments_tf=True means the text is already accurate; drop the c1 re-ground from the
+      staged closeout. c1_validation_in_variables_tf=False means c1 itself regressed; stop and report.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      terraform/github is validated by CI's terraform-validate job, which already exercises the reject-empty
+      validation; this step only locates text for a roadmap re-ground.
+    expected_literals: ["c1_validation_in_variables_tf=True c1_validation_in_environments_tf=False c1_gate_wired=True"]
+  - step: 7
+    phase: pre-deploy
+    action: Ground the c4 text re-ground (the admin-tier-only recovery prose moved to a contract in #1015)
+    command: >-
+      bin/venv-python -c "import pathlib,yaml; m=pathlib.Path('terraform/CLAUDE.md').read_text(encoding='utf-8').lower();
+      t=yaml.safe_load(pathlib.Path('docs/contracts/terraform-cc-web-operations.yaml').read_text(encoding='utf-8'))['tfvars_and_remote_state_recovery']['admin_tier_only'];
+      print('c4_text_in_claude_md=' + str('admin-tier-only' in m or 'externalid' in m) + ' c4_contract_key=' + str('admin-tier-only' in t and 'T2.44' in t)
+      + ' claude_md_points_to_contract=' + str('docs/contracts/terraform-cc-web-operations.yaml' in m))"
+    expected: >-
+      terraform/CLAUDE.md no longer carries the admin-tier-only or ExternalId recovery text, the contract key
+      names it with its T2.44 provenance, and terraform/CLAUDE.md points to the contract -- so c4's text names
+      the wrong file while its intent holds (relocated by 2ebd9704, #1015).
+    fix_if: >-
+      c4_text_in_claude_md=True means the text is back in terraform/CLAUDE.md; drop the c4 re-ground.
+      c4_contract_key=False means the documentation regressed; stop and report.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      validate_terraform_cc_web_operations already guards the contract's recovery table; this step only locates
+      text for a roadmap re-ground.
+    expected_literals: ["c4_text_in_claude_md=False c4_contract_key=True claude_md_points_to_contract=True"]
+  - step: 8
+    phase: pre-deploy
+    action: Confirm the staged met_by resolves to a plan that declared T2.44:c2
+    command: >-
+      bin/venv-python -c "import pathlib,yaml; p=pathlib.Path('docs/plans/PLAN-terraform-deploy-phase0-hardening.yaml');
+      print('met_by_plan_resolves=' + str(p.exists() and 'T2.44:c2' in yaml.safe_load(p.read_text())['closes_criteria']))"
+    expected: One line reporting the plan exists and names T2.44:c2 in closes_criteria.
+    fix_if: >-
+      False means the plan was archived or rewritten; stage met_by as the full sha
+      936c245251f42f2de104820f178249c3c50e526d instead (exit-criteria-ledger.yaml#fields.met_by).
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      validate_platform_roadmap already resolves every met_by to a real plan or 40-hex sha once the operator
+      applies the closeout.
+    expected_literals: ["met_by_plan_resolves=True"]
+  - step: 9
+    phase: pre-deploy
+    action: Validate this plan against the PlanDocument schema
+    command: bin/venv-python -m scripts.roadmap.plan_document docs/plans/PLAN-t2-44-c2-deploy-yml-fleet-closeout.yaml
+    expected: The validator reports the plan valid and exits 0.
+    fix_if: Fix the reported field (unknown key, missing graduation companion, backtick literal in expected).
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      validate_plan_documents already schema-checks every docs/plans/PLAN-*.yaml in both tiers; a per-plan row
+      duplicates it.
+    expected_literals: []
+  - step: 10
+    phase: pre-deploy
+    action: Confirm the change is exactly this plan file (no roadmap, code, test, contract or DECISIONS edit)
+    command: git fetch --quiet origin main && git log --name-only --format= origin/main..HEAD
+    expected: >-
+      The only non-blank path listed (possibly repeated, once per branch commit) is
+      docs/plans/PLAN-t2-44-c2-deploy-yml-fleet-closeout.yaml; merge-from-main commits list no paths.
+    fix_if: >-
+      Any other path means scope leaked; revert it (the closeout is staged in context, applied only by the
+      operator). Empty output in a shallow clone means branch commits are missing: git fetch --deepen=50 origin HEAD.
+    hermetic: false
+    graduation: not-applicable
+  - step: 11
+    phase: pre-deploy
+    action: Run the fast presubmit tier over the branch
+    command: bin/venv-python -m scripts.validate --pre
+    expected: Exits 0; PR CI's --pre run is the authoritative gate (Decision 73).
+    fix_if: Address the reported issue in the plan file.
+    hermetic: false
+    graduation: not-applicable
+constraints:
+  - >-
+    No tier-item or criterion status flip, no closes_criteria entry, no ratification (project charter never-list;
+    Decision 136: only /implement flips criteria, and only those a plan names in closes_criteria).
+  - >-
+    docs/ROADMAP-PLATFORM.yaml stays out of scope: Decision 136 and tier-item-lifecycle.yaml
+    (Status-Trusted-Never-Inferred) reserve the flip and the completion gate to the operator, the charter forbids
+    criterion and item flips, and the file is packaged into the active data-pipeline Lambda
+    (src/lambdas/data-pipeline/manifest.yaml:54; Decision 79/125 deploy obligation). The closeout is staged only.
+  - >-
+    Not a weakened criterion (Decision 181 cl.1). The c2 rewrite drops one clause, "the workflow-count/fleet
+    test is updated to the new workflow count", because it names an artefact that never existed (VP steps 2 and
+    4) and that tests/CLAUDE.md:76-78 forbids creating ("Never assert an exact len(X) == N ... against a
+    production collection that grows by addition"). The operative DEP-09 bar,
+    audits/terraform-deploy-redesign-b67955b.yaml:1035 "File absent; fleet tests green.", is kept at full
+    strength and proven by VP steps 1-5. The rewrite records how DEP-09 was met (exit-criteria-ledger.yaml
+    realized-differently rule); it lowers no bar.
+  - >-
+    Replacement closure (tier-item-lifecycle.yaml#replacement_closure_check, fired by "delete stale deploy.yml"):
+    the replaced surface is .github/workflows/deploy.yml (the "Deploy to AWS" unguarded apply path). It is dead
+    (absent, never re-added, no taxonomy entry: VP steps 1-3) with no surviving path, so no owner is needed.
+  - >-
+    No workflow-count test is added to satisfy c2's literal wording: tests/CLAUDE.md Test-count coupling forbids
+    an exact len(X) == N against a collection that grows by addition, and the fleet tests' live-directory glob is
+    the correct design.
+  - >-
+    No docs/DECISIONS.md edit: Decision 125 point 2's conditional deploy.yml clause is accurate history, not a
+    stale claim, and the decision corpus is append-only (Decision 177) and outside this charter.
+  - >-
+    No recommendation bundled, filed or closed: the recs reader is unreachable in this sandbox (preflight
+    recs_read_status=reader_unreachable), so the recommendation-relevance gate cannot run (Decision 67 queue).
+  - No new standing prose doc and no companion report file (Decision 86 cl.2); this plan file is the deliverable.
+  - No rescue agents or workaround loops (Decision 55).
+context:
+  - >-
+    Decision-scout FLAGS_FOUND (t2-44-c2-decision-scout-r1-4f8b6e21): CITE 136, 147, 144, 86, 125; WARN D136 (c4
+    re-ground) and NOTE D181 (framing) are both discharged on this plan as written, so always_ask's scout-flag
+    clause is not engaged. Decisions triaged: 163 of 163. Roadmap items intersected: 0; CONFLICT: 0; RELATED: 0
+  - >-
+    gates: decision-scout=FLAGS_FOUND (both flags folded in); step-6b-confirmation=stand-in r1
+    (t2-44-c2-step-6b-stand-in-r1); plan-critique=PENDING; report-critique=PENDING
+  - >-
+    Freshness gate: (1) c2 open, unsatisfiable as worded (from the audit's :1034 proposed_change); c1/c3/c4 met
+    (#668). (2) files_in_scope all exist bar deploy.yml (marked delete); c1/c4 text stale (VP 6-7); progress_note
+    figures 19 workflows/41 tests are now 25/49. (3) No sibling absorbs DEP-09. (4) No CD or cross_tier_gates row.
+    The Decision 178 cleanse removed none of these targets.
+  - >-
+    staged_t2_44_closeout (operator-applied; never by this plan). Branch: tier_item_freshness_gate's "its own
+    micro-commit on human confirmation" -- the Scope-row branch is closed because it would hand /implement a
+    roadmap edit, a criterion flip and an item flip, all on the charter never-list. c2: text -> ".github/workflows/
+    deploy.yml is deleted (#668), no live workflow, config or test references it or its 'Deploy to AWS' workflow
+    name, and the workflow-fleet test suite is green; the fleet tests glob the live workflows directory, so no
+    workflow-count test exists or is required (DEP-09; audit acceptance 'File absent; fleet tests green')"; open
+    -> met; met_by terraform-deploy-phase0-hardening. c1: text -> "terraform/github/variables.tf's
+    gated_apply_reviewer_user_ids variable fails terraform validation when left empty, and
+    terraform/github/environments.tf wires it as the tf-gated-apply Environment's reviewer users, so the
+    required-reviewer gate cannot silently no-op (DEP-04/rec-2307)". c4: text -> "docs/contracts/
+    terraform-cc-web-operations.yaml's tfvars_and_remote_state_recovery.admin_tier_only documents that
+    ExternalId-based state recovery is admin-tier-only, and terraform/CLAUDE.md points to that contract
+    (relocated by #1015)". c1/c4 status and met_by unchanged; c3 needs no re-ground. All three rewrites follow
+    exit-criteria-ledger.yaml#fields.status (realized-differently). T2.44 then QUALIFIES for completion: status
+    not_started -> complete plus completed_at with Decision 147 completion_compaction in the same edit (drop
+    progress_note; intent -> "Audit Phase-0 hardening (DEP-04/09/13): reject-empty reviewer-id validation, stale
+    deploy.yml deleted, PlatformDev denied the convergence/tfplan/tfstate anchor; landed in #668."; files_in_scope
+    -> []). The dropped progress_note carries no still-live deferred obligation (its one open ask, c2, is what this
+    resolves), so nothing must be filed first. Superseded c1/c2/c4 wording and the note's evidence go to that PR's
+    body, with c3's source pointer corrected to terraform/personal/platform_dev_policies.tf:136,151. Regenerate
+    .secrets.baseline; the roadmap edit carries the data-pipeline deploy obligation.
+  - "fork: stage c2 as a realized-differently rewrite, open -> met | chosen: staged only; acceptance rides parked F4 | class: asked | precedent: exit-criteria-ledger.yaml#fields.status; tier_item_freshness_gate check 1; D181 cl.1 not engaged; R2/R3/R7 stand-ins 2026-10-01 (delegated authority) | precedent_kind: contract | reversible: yes | persisted: VP 1-5, constraints, staged_t2_44_closeout"
+  - "fork: met_by for c2 | chosen: slug terraform-deploy-phase0-hardening (closes_criteria names T2.44:c2; c1/c3/c4 match); sha as VP 8 fallback | class: consistency-only | precedent: exit-criteria-ledger.yaml#fields.met_by (D136) | precedent_kind: contract | reversible: yes | persisted: staged_t2_44_closeout, VP 8"
+  - "fork: stage text-only re-grounds of met c1 and c4 | chosen: yes, same operator edit; c3 none | class: consistency-only | precedent: exit-criteria-ledger.yaml#fields.status (met-criterion mismatch stages a rewrite); scout D136 WARN | precedent_kind: contract | reversible: yes | persisted: VP 6-7, staged_t2_44_closeout"
+  - "fork: stage T2.44 complete in completion_compaction form, and apply it | chosen: staging yes; application PARKED (operator, MEMORY.md#parked R7) | class: asked | precedent: tier-item-lifecycle.yaml bookkeeping_walk + completion_compaction, D147 (staging); none for application (always-ask flips) | precedent_kind: contract (staging) / none (application) | reversible: yes | persisted: staged_t2_44_closeout, constraints, MEMORY.md#parked"
+  - "fork: is a text-only re-ground of a met criterion a never-list criterion flip? | chosen: PARKED with F4 (operator) | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: constraints (no roadmap edit), MEMORY.md#parked"
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - Decisions 144, 136, 147, 125, 177, 181, 86 sections only
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
