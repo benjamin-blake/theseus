@@ -44,6 +44,7 @@ def validate_prompt_files(failed: list[str]) -> None:
     """
     print("\n=== Prompt file validation ===")
     errors: list[str] = []
+    examined_prompts = 0
 
     for dir_parts in _SIZE_GOVERNED_PROMPT_DIRS:
         prompts_dir = _common.ROOT.joinpath(*dir_parts)
@@ -52,6 +53,7 @@ def validate_prompt_files(failed: list[str]) -> None:
             errors.append(f"no *.prompt.md files found under {prompts_dir}")
         for f in dir_files:
             content = f.read_text(encoding="utf-8")
+            examined_prompts += 1
             line_count = len(content.splitlines())
             if line_count > _MAX_PROMPT_LINES:
                 rel_path = f.relative_to(_common.ROOT)
@@ -73,6 +75,7 @@ def validate_prompt_files(failed: list[str]) -> None:
             if not resolved.exists():
                 errors.append(f"{name} : dead reference '{ref_path}'")
 
+    registry.examined(examined_prompts, unit="prompt_files")
     if errors:
         print("Prompt validation errors:")
         for e in errors:
