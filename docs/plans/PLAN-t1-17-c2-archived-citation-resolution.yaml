@@ -2,8 +2,8 @@ schema_version: 5
 slug: "t1-17-c2-archived-citation-resolution"
 intent: >-
   Settle T1.17 exit criterion c2 (Wave-2 citation sweep) without growing the decision corpus with derived
-  data: re-derive, as executable evidence, that every citation of the 6 archived decisions already resolves
-  mechanically to its superseder through docs/decisions-index.json, that Decision 177 retired the mid-line
+  data: re-derive, as executable evidence, that each of the 6 archived decisions is resolvable to its
+  superseder by index lookup in docs/decisions-index.json, that Decision 177 retired the mid-line
   splice the criterion's literal method needs, and stage a re-grounded criterion text plus closeout for the
   operator. Nothing is implemented and no criterion is flipped.
 plan_type: REPORT-ONLY
@@ -18,7 +18,7 @@ scope:
     action: Create
     purpose: >-
       The REPORT-ONLY deliverable (Decision 86 cl.2; precedent the c1 sibling plan). Carries the citation
-      census and the mechanical-resolution evidence as executable VP steps, the staged c2 re-grounding and
+      census and the index-lookup evidence as executable VP steps, the staged c2 re-grounding and
       closeout (context: staged_c2_closeout), and the fully enumerated alternative-B trailer set
       (constraints: alternative_b_trailer_set) so the operator can choose B without re-deriving. No code,
       contract, roadmap or DECISIONS file changes.
@@ -27,22 +27,23 @@ followon_recs: []
 infrastructure_dependencies: []
 acceptance_criteria:
   - >-
-    The bare-citation census is re-derived from the shared decisions_md grammar and states the residual
-    honestly: 14 bare citations in 9 live entries and 14 in 11 archive entries remain un-annotated in prose
-    (VP step 1).
+    The 'Decision N'-form census is re-derived from the shared decisions_md grammar and prints the residual
+    per entry and section: 14 bare citations in 9 live entries and 14 in 11 archive entries, with Decision
+    72's Problem and Rationale as the only live non-reference cites (VP step 1).
   - >-
-    Every one of the 6 archived decisions (23, 40, 42, 49, 68, 71) resolves mechanically: its
+    Every one of the 6 archived decisions (23, 40, 42, 49, 68, 71) is resolvable by index lookup: its
     docs/decisions-index.json row is live false with superseded_by equal to the archive header of record and
     no currency key (VP step 2).
   - >-
-    The decision-scout consumer contract treats an index row with no currency key as archived, so no gate
-    consumer reads an archived number as live (VP step 3).
+    decision-scout's triage treats an index row with no currency key as archived, so the scout never
+    triages an archived number as live; nothing follows a bare citation inside a body to the index (VP step 3).
   - >-
     Decision 177's post-lock correction dialect retires the mid-line splice, so the criterion's literal
     inline '(superseded by NN)' method is no longer a sanctioned edit shape (VP step 4).
   - >-
-    The staged closeout's met_by resolves (docs/plans/PLAN-dcg-decisions-index.yaml exists, the predicate
-    validate_platform_roadmap (i) applies to met_by) (VP step 5).
+    The three plans that built the lookup (dcg-decisions-index: superseded_by; decision-scout-bounded-retrieval:
+    live; decision-corpus-currency: the archived-row clause) all exist, so the staged met_by and text resolve
+    (VP step 5).
   - The plan validates against the PlanDocument schema (VP step 6).
   - >-
     The branch diff against origin/main is exactly this plan file -- no roadmap, code, contract or DECISIONS
@@ -50,34 +51,39 @@ acceptance_criteria:
 verification_plan:
   - step: 1
     phase: pre-deploy
-    action: Re-derive the bare-citation census of the 6 archived decisions across both corpus files
+    action: Re-derive the bare-citation census of the 6 archived decisions, per entry and per section
     command: >-
       bin/venv-python -c "import re,pathlib,collections; from scripts.decisions_md import _iter_decision_sections as it;
       A={23:76,40:122,42:90,49:116,68:112,71:73}; R=re.compile(r'\bDecisions?\s+(23|40|42|49|68|71)\b(?!\.\d)');
-      H=[(f.split('/')[-1],int(h.group(1)),int(m.group(1)),l) for f in ('docs/DECISIONS.md','docs/DECISIONS_ARCHIVE.md')
-      for h,b in it(pathlib.Path(f).read_text(encoding='utf-8')) for l in b.splitlines() for m in R.finditer(l)
-      if int(m.group(1))!=int(h.group(1))];
-      k=lambda f,o,n,l: 'annotated' if re.search(r'superseded by (Decision )?%d\b'%A[n],l,re.I) else 'superseder_block'
-      if o==A[n] else 'heading' if l.lstrip().startswith('#') else 'bare_'+('live' if f=='DECISIONS.md' else 'archive');
-      C=collections.Counter(k(*x) for x in H); print(' '.join(f'{a}={C[a]}' for a in
-      ('bare_live','bare_archive','superseder_block','annotated','heading')))"
+      S=re.compile(r'\*\*([A-Za-z ]+):\*\*'); sec=lambda ls,i: next((S.match(ls[j]).group(1) for j in range(i,-1,-1) if S.match(ls[j])),'-');
+      H=[(f.split('/')[-1],int(h.group(1)),int(m.group(1)),l,sec(ls,i)) for f in ('docs/DECISIONS.md','docs/DECISIONS_ARCHIVE.md')
+      for h,b in it(pathlib.Path(f).read_text(encoding='utf-8')) for ls in [b.splitlines()] for i,l in enumerate(ls)
+      for m in R.finditer(l) if int(m.group(1))!=int(h.group(1))];
+      k=lambda f,o,n,l,s: 'superseder_block' if o==A[n] else 'annotated' if re.search(r'superseded by (Decision )?%d\b'%A[n],l,re.I)
+      else 'heading' if l.lstrip().startswith('#') else 'bare_'+('live' if f=='DECISIONS.md' else 'archive');
+      C=collections.Counter(k(*x) for x in H); E={t:len({x[1] for x in H if k(*x)==t}) for t in ('bare_live','bare_archive')};
+      print(' '.join(f'{a}={C[a]}' for a in ('bare_live','bare_archive','superseder_block','annotated','heading')),
+      'live_entries=%d archive_entries=%d'%(E['bare_live'],E['bare_archive']));
+      print('live_cites: '+' '.join(f'{o}<-{n}:{s}' for f,o,n,l,s in H if k(f,o,n,l,s)=='bare_live'))"
     expected: >-
-      One line of five counts. At cacdb84f: bare_live=14 bare_archive=14 superseder_block=13 annotated=4
-      heading=1 (citations inside the superseder's own block, and heading lines per Decision 177 cl.3, are
-      exempt). The bare counts are the residual the staged closeout names; they are evidence, not a gate.
+      Two lines. At 51253cdd: bare_live=14 bare_archive=14 superseder_block=16 annotated=1 heading=1
+      live_entries=9 archive_entries=11, then live_cites listing each live bare cite as entry<-cited:section --
+      every one a Related, Acknowledges, Context or [DONE]-step line except 72<-71 under Problem and Rationale.
+      Citations inside the superseder's own block and heading lines (Decision 177 cl.3) are exempt.
     fix_if: >-
-      A different bare count means the corpus moved since drafting -- update the census figures in
-      staged_c2_closeout and alternative_b_trailer_set, then re-run. The regex is not list-aware (a
-      "Decisions 37, 40, 49" form is skipped); the one such cite today is the heading-exempt Decision 52
-      archive header, so a reuse of this step on a body list-form cite would under-count.
-    hermetic: false
+      A different count means the corpus moved -- update the census in staged_c2_closeout and
+      alternative_b_trailer_set, then re-run. Blind spots: list forms ("Decisions 37, 40, 49", only the
+      heading-exempt Decision 52 header today) and shorthand ("archived-52-supersedes-live-37/40" in
+      Decision 149) are not matched, so the census covers 'Decision N'-form citations only.
+    hermetic: true
     graduation: waive
     graduation_waiver_reason: >-
       Census of a corpus that every DECISIONS*.md edit moves; the counts are point-in-time evidence for the
       staged closeout, not a standing invariant to register.
+    expected_literals: ["bare_live=14", "bare_archive=14", "live_entries=9", "archive_entries=11", "72<-71:Rationale"]
   - step: 2
     phase: pre-deploy
-    action: Prove each archived decision resolves mechanically to its header-of-record superseder via the index
+    action: Prove each archived decision resolves by index lookup to its header-of-record superseder
     command: >-
       bin/venv-python -c "import json,re,pathlib; from scripts.decisions_md import _iter_decision_sections as it;
       A={23:76,40:122,42:90,49:116,68:112,71:73};
@@ -88,7 +94,7 @@ verification_plan:
       print(f'resolved={len(ok)}/{len(A)}')"
     expected: One line reporting all six archived decisions resolved.
     fix_if: >-
-      Fewer than six resolved means the index or an archive header drifted -- the mechanical-resolution claim
+      Fewer than six resolved means the index or an archive header drifted -- the index-lookup claim
       fails for that number; stop and re-open the A/B fork (alternative B) instead of staging the closeout.
     hermetic: true
     graduation: waive
@@ -131,15 +137,19 @@ verification_plan:
     expected_literals: ["d177_midline_splice_retired=True"]
   - step: 5
     phase: pre-deploy
-    action: Confirm the staged closeout's met_by plan exists
-    command: test -f docs/plans/PLAN-dcg-decisions-index.yaml
-    expected: Exits 0 (the met_by plan file exists).
-    fix_if: Missing means the met_by target moved; re-point met_by to the plan that built the index rows.
+    action: Confirm the three plans the staged closeout credits exist
+    command: >-
+      test -f docs/plans/PLAN-dcg-decisions-index.yaml && test -f docs/plans/PLAN-decision-scout-bounded-retrieval.yaml
+      && test -f docs/plans/PLAN-decision-corpus-currency.yaml
+    expected: Exits 0 (all three plan files exist).
+    fix_if: >-
+      A missing file means a credited plan moved; re-point the staged text (and met_by, if it is
+      dcg-decisions-index) to the plan that now carries that piece of the lookup.
     hermetic: true
     graduation: waive
     graduation_waiver_reason: >-
-      validate_platform_roadmap (i) already applies this exact existence predicate to every met_by once the
-      operator lands the staged edit; a registry row would duplicate it.
+      validate_platform_roadmap (i) applies the same existence predicate to met_by once the operator lands the
+      staged edit; existence is necessary, not sufficient (exit-criteria-ledger.yaml), which the text credits cover.
   - step: 6
     phase: pre-deploy
     action: Validate this plan against the PlanDocument schema
@@ -207,22 +217,22 @@ context:
   - >-
     Decision-scout FLAGS_FOUND (t1-17-c2-decision-scout-r1-b25d8e04; D146 SPIRIT NOTE resolved in staged_c2_closeout).
     CITE: 177, 178, 86, 136. Decisions triaged: 163 of 163. Roadmap items intersected: 0; CONFLICT: 0; RELATED: 0
-  - "gates: decision-scout=FLAGS_FOUND; step-6b=stand-in A; plan-critique=PROCEED after 2 rounds (t1-17-c2-plan-critique-r2-7c41e9b3); report-critique=PENDING"
-  - >-
-    Freshness gate: (1) not complete (VP 1); (2) inline method retired by D177 -> re-grounding staged; c3's
-    INTENT file gone (flagged to c3); (3) partial absorption by dcg-decisions-index; (4) no gating CD or gate.
+  - "gates: decision-scout=FLAGS_FOUND; step-6b=stand-in A; plan-critique=PROCEED after 2 rounds; report-critique=REVISE r1, r2 PENDING"
+  - "Freshness gate: (1) open (VP 1); (2) method retired by D177, re-ground staged; c3 INTENT file gone; (3) partial; (4) none"
   - >-
     staged_c2_closeout (operator-applied, never by this plan): c2 open -> met; met_by: dcg-decisions-index; text ->
-    "Archived-decision citations resolve mechanically: every number archived by the Wave-2 move (23, 40, 42, 49,
-    68, 71) carries live false and superseded_by in docs/decisions-index.json, and decision-scout reads a
-    currency-less row as archived. In-body prose annotation is deliberately not done: Decision 177 retired the
-    mid-line splice, and dated trailers would restate index-derived data in the corpus. For Decision 146's
-    per-entry test, index resolution counts as the superseded mention. Residual: 28 bare prose citations (14 live
-    in 9 entries, 14 archive in 11), all historical, Acknowledges or Related-list entries except Decision 72's
-    Problem and Rationale, which cite Decision 71 as the infrastructure 72 reuses. rec-2057/2058/2059/2496 are
-    not satisfied by this and stay open." Original wording -> dated bullet appended to T1.17 progress_note,
-    with the parked status transition below (complete branch: commit body instead); regenerate .secrets.baseline
-    in the same commit. Operator scope decision, not narrowing to green (D181); freshness-gate micro-commit branch.
+    "Archived-decision citations resolve by index lookup: each number archived by the Wave-2 move (23, 40, 42,
+    49, 68, 71) carries live false and superseded_by in docs/decisions-index.json (dcg-decisions-index,
+    decision-scout-bounded-retrieval), and decision-scout triage reads a currency-less row as archived
+    (decision-corpus-currency). In-body annotation is deliberately not done: Decision 177 retired the mid-line
+    splice, and trailers would restate index data. Residual at 51253cdd, per this plan's VP 1: 28 'Decision
+    N'-form bare citations (14 live in 9 entries, 14 archive in 11), all Related, Acknowledges, Context or
+    [DONE]-step lines except Decision 72's Problem and Rationale, which cite Decision 71 as infrastructure 72
+    reuses; Decision 149 also carries a '37/40' shorthand. For those in-corpus mentions only, index lookup is
+    read as the Decision 146 superseded mention; docs/contracts/inference-provider.yaml:87-88 still cites
+    Decision 49 as a live constraint and is out of scope. rec-2057/2058/2059/2496 are not satisfied and stay
+    open." Old wording -> dated progress_note bullet + parked status transition (complete: commit body); note
+    files_in_scope still names DECISIONS*.md; regenerate .secrets.baseline. Operator scope call, not D181 narrowing.
   - >-
     fork: settle c2 by index-resolution evidence (A), live-entry trailers (B1), or live+archive trailers (B2) |
     chosen: A for this plan's shape; B1/B2 recorded in constraints.alternative_b_trailer_set | class: asked |
