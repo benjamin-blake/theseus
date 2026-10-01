@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,14 +20,100 @@ from unittest.mock import patch
 
 class TestSync:
     def test_sync_returns_pulled_counts(self):
-        """sync() delegates to _rebuild_local_cache() and returns its counts under "pulled"."""
-        with patch("scripts.sync.ops._rebuild_local_cache", return_value={"ops_recommendations": 50}) as mock_rebuild:
+        """sync() delegates to _rebuild_with_failures() and returns counts under "pulled", failures under "failed"."""
+        with patch("scripts.sync.ops._rebuild_with_failures", return_value=({"ops_recommendations": 50}, [])) as mock_rebuild:
             from scripts.sync.ops import sync
 
             result = sync(profile="test-profile")
 
         mock_rebuild.assert_called_once_with("test-profile")
-        assert result == {"pulled": {"ops_recommendations": 50}}
+        assert result == {"pulled": {"ops_recommendations": 50}, "failed": []}
+
+
+_TWO_TABLES = {
+    "ops_recommendations": ".recommendations-log.jsonl",
+    "ops_priority_queue": "priority-queue/.priority-queue.jsonl",
+}
+
+
+def _reader_failing_for(failing: set[str]):
+    """Return a _pull_via_reader stand-in: None (reader failure) for *failing* tables, else one row."""
+
+    def _pull(table: str):
+        return None if table in failing else [{"rec_id": "rec-001", "rank": "1"}]
+
+    return _pull
+
+
+class TestSyncExitStatus:
+    """T2.19 c9: a table pull failure must surface as a failed table and a non-zero CLI exit."""
+
+    def test_sync_reports_failed_tables(self, tmp_path):
+        """sync() names every table whose reader pull failed under "failed"; healthy tables stay in "pulled"."""
+        from scripts.sync import ops as sync_ops
+
+        with (
+            patch("scripts.sync.ops._pull_via_reader", side_effect=_reader_failing_for({"ops_recommendations"})),
+            patch("scripts.sync.ops._LOGS_DIR", tmp_path),
+            patch("scripts.sync.ops._TABLE_TO_LOCAL", _TWO_TABLES),
+        ):
+            result = sync_ops.sync()
+
+        assert result["failed"] == ["ops_recommendations"]
+        assert result["pulled"] == {"ops_recommendations": 0, "ops_priority_queue": 1}
+
+    def test_genuinely_empty_table_is_not_a_failure(self, tmp_path):
+        """A reader that succeeds with zero rows is an empty table, not a failed pull (no false-zero)."""
+        from scripts.sync import ops as sync_ops
+
+        with (
+            patch("scripts.sync.ops._pull_via_reader", return_value=[]),
+            patch("scripts.sync.ops._LOGS_DIR", tmp_path),
+            patch("scripts.sync.ops._TABLE_TO_LOCAL", _TWO_TABLES),
+        ):
+            result = sync_ops.sync()
+
+        assert result["failed"] == []
+
+    def test_main_exits_nonzero_on_any_table_failure(self, tmp_path, capsys):
+        """main() prints the JSON result and then exits 1 when any table pull failed."""
+        import pytest
+
+        from scripts.sync import ops as sync_ops
+
+        old_argv = sys.argv
+        sys.argv = ["sync_ops", "sync"]
+        try:
+            with (
+                patch("scripts.sync.ops._pull_via_reader", side_effect=_reader_failing_for({"ops_priority_queue"})),
+                patch("scripts.sync.ops._LOGS_DIR", tmp_path),
+                patch("scripts.sync.ops._TABLE_TO_LOCAL", _TWO_TABLES),
+                pytest.raises(SystemExit) as exc_info,
+            ):
+                sync_ops.main()
+        finally:
+            sys.argv = old_argv
+
+        assert exc_info.value.code == 1
+        assert json.loads(capsys.readouterr().out)["failed"] == ["ops_priority_queue"]
+
+    def test_main_exits_zero_when_every_table_pulls(self, tmp_path, capsys):
+        """main() returns normally (exit 0) when no table failed."""
+        from scripts.sync import ops as sync_ops
+
+        old_argv = sys.argv
+        sys.argv = ["sync_ops", "sync"]
+        try:
+            with (
+                patch("scripts.sync.ops._pull_via_reader", side_effect=_reader_failing_for(set())),
+                patch("scripts.sync.ops._LOGS_DIR", tmp_path),
+                patch("scripts.sync.ops._TABLE_TO_LOCAL", _TWO_TABLES),
+            ):
+                sync_ops.main()
+        finally:
+            sys.argv = old_argv
+
+        assert json.loads(capsys.readouterr().out)["failed"] == []
 
 
 # ---------------------------------------------------------------------------
