@@ -23,6 +23,7 @@ def check_claude_md_pointer_invariant(path: str = "CLAUDE.md") -> bool:
 def validate_claude_md_pointer_invariant(failed: list[str]) -> None:
     """Fail if root CLAUDE.md is anything other than exactly '@AGENTS.md\n'."""
     print("\n=== CLAUDE.md pointer invariant ===")
+    registry.examined(1, unit="claude_md_files")
     if not check_claude_md_pointer_invariant():
         print("  FAIL: CLAUDE.md must contain exactly '@AGENTS.md\\n'. Content diverges from expected pointer.")
         failed.append("CLAUDE.md pointer invariant")
