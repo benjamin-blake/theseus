@@ -1,0 +1,259 @@
+schema_version: 5
+slug: "t1-13-c9-dispute-throttle-design"
+intent: >-
+  Stage, for the operator, everything needed to close T1.13 exit criterion c9 (CI-RCA failure-category
+  integrity) without building or closing anything this week: re-derive as executable evidence that c9's
+  sole remaining blocker is part (a)'s unbuilt dispute-frequency throttle (owner rec-2415) and that its
+  calibration data cannot accrue in warn mode, then stage the throttle design, both c9 closeout branches
+  and the T1.13 re-grounding. Nothing is implemented, filed, closed or flipped.
+plan_type: REPORT-ONLY
+verification_tier: V1
+plan_path: docs/plans/PLAN-t1-13-c9-dispute-throttle-design.yaml
+phase: >-
+  Platform tier T1, tier_item T1.13 (CI-RCA methodology contract, in_progress), criterion c9 only. c2, c3
+  and c5 stay open and are out of scope; check_absent (c9 part (c)) is owned by rec-3666, not this plan.
+scope:
+  - file: docs/plans/PLAN-t1-13-c9-dispute-throttle-design.yaml
+    action: Create
+    purpose: >-
+      The planning artefact: executable evidence for the staging (VP), the fork record and staged
+      closeout pointers (context), and the gating constraints.
+  - file: docs/plans/reports/REPORT-t1-13-c9-dispute-throttle-design.md
+    action: Create
+    purpose: >-
+      The REPORT-ONLY deliverable (Decision 86 cl.2; file-router.yaml report-deliverables route): throttle
+      design, Decision 210 home analysis, rec-2415 spec drift, implementation outline, staged c9 closeout
+      branches and the staged T1.13 re-grounding. Separate file because the design would push this plan's
+      context past its 40-line budget.
+bundled_recommendations: []
+followon_recs: []
+infrastructure_dependencies: []
+acceptance_criteria:
+  - >-
+    The throttle is shown unbuilt: no throttle marker exists under scripts/, and rec-2415's acceptance test
+    test_dispute_rate_limit_blocks_excess_disputes does not exist in tests/ops_data_portal/test_ci_rca_dispute.py
+    (VP step 1).
+  - >-
+    The calibration gap is shown structural: CI_RCA_STRICT_MODE is warn, and the ci-rca agent prompt never
+    mentions disputes while loading only the ci_rca guidance (VP step 2).
+  - >-
+    c9's state is shown as staged: c9 is open, its text names rec-3666 and "stays open on part (a)", it cites
+    no retired path; part (a)'s first conjunct holds (failure_category is a disputed_field value) and
+    check_absent is absent from the escape_mode enum (VP steps 3-4).
+  - >-
+    The staged re-grounding's premises hold: docs/INTENT-ci-rca-methodology.md and
+    docs/intent-migration/MANIFEST.yaml are absent while c2's text and the T1.13 note still cite the INTENT
+    doc, and all 11 T1.13 files_in_scope paths exist (VP step 5).
+  - >-
+    The placement premise for the future implementation holds: scripts/ops_data_portal.py is at or under
+    500 SLOC by the validate_sloc_limits rule with no budget entry (VP step 6).
+  - The plan validates against the PlanDocument schema (VP step 7).
+  - >-
+    The branch diff against origin/main is exactly the plan and report files, with no closes_criteria,
+    roadmap, code, contract or DECISIONS edit (VP step 8).
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: Prove the dispute-frequency throttle is unbuilt and rec-2415's acceptance test does not exist
+    command: >-
+      bin/venv-python -c "import pathlib,re; R=re.compile(r'CI_RCA_DISPUTE_THROTTLE|dispute.{0,20}rate.?limit|rate.?limit.{0,20}dispute',re.I);
+      n=sum(1 for p in pathlib.Path('scripts').rglob('*.py') if R.search(p.read_text(encoding='utf-8',errors='ignore')));
+      t='test_dispute_rate_limit_blocks_excess_disputes' in pathlib.Path('tests/ops_data_portal/test_ci_rca_dispute.py').read_text(encoding='utf-8');
+      print('throttle_files=' + str(n) + ' acceptance_test_present=' + str(t))"
+    expected: One line reporting zero throttle files and the acceptance test absent.
+    fix_if: >-
+      A non-zero count or a present test means the throttle landed after this plan was drafted -- stop and
+      re-run the freshness gate's silent-completion check; the staged closeout branch (i) may then apply.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Red-before evidence for a future implementation, true only until the throttle lands; graduating it would
+      install a standing guard that the sanctioned fix itself must break.
+    expected_literals: ["throttle_files=0 acceptance_test_present=False"]
+  - step: 2
+    phase: pre-deploy
+    action: Prove dispute traffic cannot accrue today (warn mode, no automated producer)
+    command: >-
+      bin/venv-python -c "import pathlib,yaml; m=yaml.safe_load(open('config/feature_flags.yaml'))['CI_RCA_STRICT_MODE'];
+      a=pathlib.Path('.claude/agents/scheduled/ci-rca.md').read_text(encoding='utf-8');
+      print('strict_mode=' + m + ' agent_dispute_mentions=' + str(a.lower().count('dispute')) + ' agent_loads_ci_rca_guidance=' + str('--guidance --source ci_rca' in a))"
+    expected: >-
+      One line: strict mode is warn, the agent prompt mentions disputes zero times, and it loads the ci_rca
+      guidance.
+    fix_if: >-
+      strict_mode=strict or a non-zero mention count means the calibration premise moved: dispute traffic may
+      now exist, so re-read rec-2415 and the dispute_count gauge before keeping N unset in the report.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Describes a transient rollout state (warn mode until the c2 strict flip); the c2 flip and any prompt
+      change are sanctioned future edits a standing guard would wrongly block.
+    expected_literals: ["strict_mode=warn agent_dispute_mentions=0 agent_loads_ci_rca_guidance=True"]
+  - step: 3
+    phase: pre-deploy
+    action: Prove c9 is open, names rec-3666, holds open on part (a), and cites no retired path
+    command: >-
+      bin/venv-python -c "import yaml; d=yaml.safe_load(open('docs/ROADMAP-PLATFORM.yaml',encoding='utf-8'));
+      it=[i for i in d['tier_items'] if i['id']=='T1.13'][0]; c=[x for x in it['exit_criteria'] if x['id']=='c9'][0];
+      t=' '.join(c['text'].split());
+      print('item=' + it['status'] + ' c9=' + c['status'] + ' names_rec_3666=' + str('rec-3666' in t) + ' holds_on_part_a=' + str('stays open on part (a)' in t) + ' cites_retired=' + str('INTENT-' in t or 'MANIFEST' in t))"
+    expected: >-
+      One line: item in_progress, c9 open, rec-3666 named, the part (a) holding line present, no retired
+      path cited.
+    fix_if: >-
+      c9 met means the operator already applied a closeout -- withdraw the staged closeout. A missing
+      rec-3666 or part (a) line means the 2026-09-06 re-grounding moved; re-derive which part holds c9 open
+      before keeping section 3 of the report.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Asserts an open criterion's current text, which the staged closeout itself is meant to change; the
+      durable roadmap invariants (valid statuses, resolvable ids) are already standing roadmap checks.
+    expected_literals: ["item=in_progress c9=open names_rec_3666=True holds_on_part_a=True cites_retired=False"]
+  - step: 4
+    phase: pre-deploy
+    action: Prove part (a)'s first conjunct holds and check_absent is absent from the escape_mode enum
+    command: >-
+      bin/venv-python -c "from scripts.ops_portal.ci_rca_schema import CiRcaEvidenceDispute as D, _DetectionGap as G;
+      p=D.model_fields['disputed_field'].metadata; e=G.model_fields['escape_mode'].metadata;
+      s=lambda m: ' '.join(str(getattr(x,'pattern','')) for x in m);
+      print('failure_category_disputable=' + str('failure_category' in s(p)) + ' escape_enum_read=' + str('tier_misplaced' in s(e)) + ' check_absent_in_enum=' + str('check_absent' in s(e)))"
+    expected: >-
+      One line: failure_category is a disputed_field value, the escape_mode enum was read (so the absence is
+      not vacuous), and check_absent is not an escape_mode value.
+    fix_if: >-
+      An ImportError naming _DetectionGap means the model was renamed -- locate the escape_mode field in
+      scripts/ops_portal/ci_rca_schema.py and re-point the import. check_absent_in_enum=True means rec-3666
+      landed; update section 3's part (c) wording.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      The check_absent half is red-before evidence for rec-3666's own future fix; the failure_category half
+      is already guarded by tests/ops_data_portal/test_ci_rca_dispute.py.
+    expected_literals: ["failure_category_disputable=True escape_enum_read=True check_absent_in_enum=False"]
+  - step: 5
+    phase: pre-deploy
+    action: Prove the staged re-grounding's premises (retired docs absent, still cited; files_in_scope exist)
+    command: >-
+      bin/venv-python -c "import pathlib,yaml; P=('docs/INTENT-ci-rca-methodology.md','docs/intent-migration/MANIFEST.yaml');
+      d=yaml.safe_load(open('docs/ROADMAP-PLATFORM.yaml',encoding='utf-8')); it=[i for i in d['tier_items'] if i['id']=='T1.13'][0];
+      c2=[x for x in it['exit_criteria'] if x['id']=='c2'][0]['text'];
+      print('retired_absent=' + str(sum(not pathlib.Path(p).exists() for p in P)) + '/2 c2_cites_intent=' + str('INTENT-ci-rca-methodology' in c2) + ' note_cites_intent=' + str('INTENT-ci-rca-methodology' in it['note']) + ' files_in_scope_exist=' + str(sum(pathlib.Path(f).exists() for f in it['files_in_scope'])) + '/' + str(len(it['files_in_scope'])))"
+    expected: >-
+      One line: both retired files absent, c2 and the note still cite the INTENT doc, and all 11
+      files_in_scope paths exist.
+    fix_if: >-
+      A retired file present means it was restored -- drop that row from section 4. A false citation flag
+      means the operator already re-grounded that text -- drop its row. Fewer than 11 existing paths means a
+      surface moved -- add a files_in_scope row to section 4.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      The citation flags are true only until the staged re-grounding is applied; a standing guard would block
+      the sanctioned edit. Retired-doc absence is already enforced by Decision 86's INTENT-doc freeze guard.
+    expected_literals: ["retired_absent=2/2 c2_cites_intent=True note_cites_intent=True files_in_scope_exist=11/11"]
+  - step: 6
+    phase: pre-deploy
+    action: Measure scripts/ops_data_portal.py SLOC by the validate_sloc_limits rule and confirm no budget entry
+    command: >-
+      bin/venv-python -c "import pathlib; L=pathlib.Path('scripts/ops_data_portal.py').read_text(encoding='utf-8').splitlines();
+      s=len([x for x in L if x.strip() and not x.strip().startswith('#')]);
+      b='scripts/ops_data_portal.py' in pathlib.Path('config/sloc_budgets.yaml').read_text(encoding='utf-8');
+      print('sloc=' + str(s) + ' under_limit=' + str(s<=500) + ' budget_entry=' + str(b))"
+    expected: >-
+      One line: sloc 489 at 2349d467, under the 500 limit, no budget entry. The headroom (500 minus sloc)
+      bounds the future call site (report section 2, placement).
+    fix_if: >-
+      under_limit=False or a budget entry means the placement premise changed; re-derive the headroom in the
+      report before the implementing plan is authored.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      validate_sloc_limits already enforces the 500 limit in both tiers; this step only records the headroom
+      the future plan must respect.
+    expected_literals: ["under_limit=True budget_entry=False"]
+  - step: 7
+    phase: pre-deploy
+    action: Validate this plan against the PlanDocument schema
+    command: bin/venv-python -m scripts.roadmap.plan_document docs/plans/PLAN-t1-13-c9-dispute-throttle-design.yaml
+    expected: The validator reports the plan valid and exits 0.
+    fix_if: Fix the reported field (unknown key, missing graduation companion, backtick literal in expected).
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      validate_plan_documents already schema-checks every docs/plans/PLAN-*.yaml in both tiers; a per-plan
+      row duplicates it.
+  - step: 8
+    phase: pre-deploy
+    action: Confirm the change is exactly the plan and report files
+    command: git fetch --quiet origin main && git log --name-only --format= origin/main..HEAD
+    expected: >-
+      The only non-blank paths listed (possibly repeated, once per branch commit) are the plan file and
+      docs/plans/reports/REPORT-t1-13-c9-dispute-throttle-design.md; merge-from-main commits list no paths.
+    fix_if: >-
+      Any other path means scope leaked; revert it (the closeout and re-grounding are staged in the report,
+      applied only by the operator).
+    hermetic: false
+    graduation: not-applicable
+  - step: 9
+    phase: pre-deploy
+    action: Run the fast presubmit tier over the branch
+    command: bin/venv-python -m scripts.validate --pre
+    expected: Exits 0; PR CI's --pre run is the authoritative gate (Decision 73).
+    fix_if: Address the reported issue in the plan or report file.
+    hermetic: false
+    graduation: not-applicable
+constraints:
+  - >-
+    No tier-item or criterion status flip, no closes_criteria entry, no ratification (charter never-list;
+    Decision 136 and exit-criteria-ledger.yaml#fields.status: only /implement flips, only declared criteria).
+  - >-
+    docs/ROADMAP-PLATFORM.yaml stays out of scope: it is a data-pipeline Lambda asset (Decision 79/125), and
+    the charter stages roadmap evidence in the plan. Report sections 3-4 carry the exact staged text.
+  - >-
+    No recommendation bundled, filed or closed. rec-2415 and rec-3666 stay open and are named as owners only;
+    building either is gated on MEMORY.md#parked R5 fork 3 (queue consumption, Decision 67 never-item).
+  - >-
+    implementation_shape (report section 2.3) is gated on MEMORY.md#parked R5 forks 3 and 4 and on rec-2415's
+    own data precondition (sustained non-zero dispute traffic); it is not to be started by a delegate.
+  - No new INTENT or standing prose doc (Decision 86); docs/DECISIONS.md and its archive untouched.
+  - No rescue agents or workaround loops (Decision 55).
+context:
+  - >-
+    Decision-scout FLAGS_FOUND (gate t1-13-c9-decision-scout-r1-5d0e93b6). Decisions triaged: 163 of 163.
+    Roadmap items intersected: 14; CONFLICT: 0; RELATED: 13. CITE: 84, 55, 88, 66, 128, 124, 136, 73, 86.
+    CONTRADICT: 210 WARN (bound 1 home, parked fork 4), 155 WARN only if fail-open (not taken), 136 WARN
+    (closes_criteria omitted), 73 NOTE (degraded path staged). RELATED: 67, 201, 103, 72, 61, 142, 79, 125, 59, 57.
+  - "gates: decision-scout=FLAGS_FOUND; step-6b stand-in=write the plan (REPORT-ONLY) r1; plan-critique=PENDING; report-critique=PENDING"
+  - >-
+    Freshness gate: (1) silent completion NO, c9's blocker is part (a)'s throttle conjunct (VP 1, 3);
+    (2) stale references outside c9 (c2 text, note) staged in report section 4 (VP 5); (3) no supersession;
+    (4) no gating CD or cross_tier_gate.
+  - >-
+    closes_criteria omitted deliberately: T1.13 is in_progress so follow-on mode nominally applies, but a
+    REPORT-ONLY plan has no /implement to flip and criterion flips are charter never-list; the future
+    IMPLEMENTATION plan (report 2.3) declares [T1.13:c9].
+  - >-
+    Live reads 2026-10-01 (ducklake-reads named reads): rec_by_id rec-2415 open, context "do NOT build the
+    throttle until the gauge reports sustained non-zero dispute traffic", acceptance now a pytest selector;
+    rec-3666 open (check_absent, about 40 recs would reclassify). ci_rca_open returned 0 rows (Decision 73
+    halt verified live; preflight itself still reported reader_unreachable).
+  - >-
+    Calibration gap (report section 1): warn mode files every disagreeing rec, so no dispute traffic can
+    accrue before the c2 strict flip; the operator deferred the throttle twice for want of data
+    (PLAN-ci-rca-evidence-dispute.yaml:217-219; PLAN-ci-rca-observability-dashboard.yaml:349-351). N stays unset.
+  - "fork: reader unreachable during the throttle's pre-read: fail-open or fail-closed | chosen: fail closed, distinct loud marker naming the outage and the degraded path; never reuse _is_reader_unreachable_error to skip | class: asked | precedent: D55; D155 cl.3; D84 I-4; T2.19:c9; R5 stand-in 2026-10-01 (delegated authority) | precedent_kind: decision | reversible: yes | persisted: report section 2 fail_closed_contract"
+  - "fork: build check_absent (rec-3666) so closes_criteria [T1.13:c9] can be declared | chosen: no build, closes_criteria omitted, both closeout branches staged; c9 does not wait on check_absent | class: asked | precedent: exit-criteria-ledger.yaml#plan_closes_criteria + realized-differently rule (D136); operator-merged PLAN-escape-mode-classifier-repair 2026-09-06; R5 stand-in 2026-10-01 | precedent_kind: contract | reversible: yes | persisted: report section 3"
+  - "fork: does building rec-2415 (or rec-3666) consume the recommendation queue (D67 never-item) | chosen: PARKED for the operator | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: report section 2.3, MEMORY.md#parked R5"
+  - "fork: where bound 1 lives under D210: client pre-check, writer transaction, or DQ monitor | chosen: ruling PARKED; all three homes staged with the D210 cl.2 test, (i) client pre-check recommended OPERATOR-CONFIRM-PENDING | class: asked | precedent: none (ruling); D210 cl.2-3 for the shape; R5 stand-in 2026-10-01 | precedent_kind: none | reversible: yes | persisted: report section 2.1, MEMORY.md#parked R5"
+  - "fork: plan shape while forks 3 and 4 are parked | chosen: REPORT-ONLY now, V1, separate REPORT file | class: asked | precedent: D86 cl.2; file-router.yaml report-deliverables; R1-R3 REPORT-ONLY rulings; R5 stand-in 2026-10-01 | precedent_kind: decision | reversible: yes | persisted: plan_type, scope"
+  - "fork: apply or stage the roadmap edit | chosen: stage (freshness gate micro-commit branch, not a Scope row); files_in_scope unchanged | class: consistency-only | precedent: D79/D125; tier-item-lifecycle.yaml#tier_item_freshness_gate output discipline; R2-R4 same ruling | precedent_kind: decision | reversible: yes | persisted: report sections 3-4"
+  - "fork: apply the staged c9 closeout and T1.13 re-grounding | chosen: PARKED for the operator | class: asked | precedent: none (criterion flip and rewrite are always-ask) | precedent_kind: none | reversible: yes | persisted: report sections 3-4, MEMORY.md#parked R5"
+  - >-
+    check_accounting: no registered check is added or removed; the hygiene stream's baseline is untouched.
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - Decisions 55, 73, 84, 86, 136, 155, 210 sections only
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
