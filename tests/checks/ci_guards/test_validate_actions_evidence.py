@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -287,10 +288,14 @@ class TestActionsEvidenceAccountingDeclaration:
 
     def test_real_tree_declares_every_governed_job_and_upload(self) -> None:
         contract = _yaml(ROOT / subject.CONTRACT_PATH)
+        upload_step = re.compile(r"^\s*(-\s+)?uses:\s*actions/upload-artifact@", re.MULTILINE)
+        uploads = sum(
+            len(upload_step.findall(path.read_text(encoding="utf-8"))) for path in (ROOT / ".github/workflows").glob("*.yml")
+        )
         failed, declaration = self._declare(ROOT)
         assert failed == []
         assert declaration is not None
-        expected = len(contract["governed_jobs"]) + len(contract["artifact_uploads"])
+        expected = len(contract["governed_jobs"]) + uploads
         assert (declaration.kind, declaration.count, declaration.unit) == ("examined", expected, self._UNIT)
 
     def test_declared_count_tracks_jobs_and_uploads(self, tmp_path: Path) -> None:
@@ -302,7 +307,7 @@ class TestActionsEvidenceAccountingDeclaration:
         _, fewer_jobs = self._declare(root)
         workflow = root / ".github/workflows/ci.yml"
         document = _yaml(workflow)
-        step = {"name": "Upload extra", "uses": "actions/upload-artifact@v7"}
+        step: dict[str, Any] = {"name": "Upload extra", "uses": "actions/upload-artifact@v7"}
         step["with"] = {"name": "extra", "path": "x", "retention-days": 14}
         document["jobs"]["pr-validate"]["steps"].append(step)
         _write(workflow, document)
@@ -311,6 +316,7 @@ class TestActionsEvidenceAccountingDeclaration:
         _write(path, contract)
         _, more_uploads = self._declare(root)
         assert base is not None and fewer_jobs is not None and more_uploads is not None
+        assert base.count is not None
         assert (fewer_jobs.count, more_uploads.count) == (base.count - 1, base.count)
 
     def test_real_tree_is_recorded_enforced(self) -> None:
