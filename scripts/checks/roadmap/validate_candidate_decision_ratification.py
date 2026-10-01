@@ -239,16 +239,19 @@ def validate_candidate_decision_ratification(failed: list[str]) -> None:
 
     header_numbers = _decision_header_numbers()
     issues: list[str] = []
+    validated = 0
 
     for cd in doc.candidate_decisions:
         if cd.state == "superseded":
             continue
+        validated += 1
         if cd.state == "pending":
             _check_r2_pending(cd, issues)
             continue
         if cd.state == "ratified":
             if _check_r1_ratified(cd, header_numbers, issues):
                 _check_r4_precondition_discharge(cd, issues)
+    registry.examined(validated, unit="non_superseded_candidate_decisions")
 
     if issues:
         for issue in issues:
