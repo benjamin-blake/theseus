@@ -1,0 +1,203 @@
+schema_version: 5
+slug: "t1-17-c1-dpi06-absorption"
+intent: >-
+  Settle T1.17 exit criterion c1 (DPI-06 --reconcile orphan-report mode) without building duplicate tooling:
+  re-derive, as executable evidence, that its intent is already realized by the DCG-03 orphan-divergence
+  guard (Decision 149 cl.3, amended by 155) and the pre-merge supersession-annotation guard, and stage the
+  re-grounded criterion text plus a met_by-valid closeout for the operator. Nothing is implemented and no
+  criterion is flipped.
+plan_type: REPORT-ONLY
+verification_tier: V1
+plan_path: docs/plans/PLAN-t1-17-c1-dpi06-absorption.yaml
+phase: >-
+  Platform tier T1, tier_item T1.17 (Decision-log premise-integrity audit follow-ups), criterion c1 only --
+  the first of four per-criterion plans (decomposition_hints.splits: 4). c2 (citation sweep), c3 (D40 ->
+  Decision 122) and c4 (guard hardening) are separate plans and out of scope.
+scope:
+  - file: docs/plans/PLAN-t1-17-c1-dpi06-absorption.yaml
+    action: Create
+    purpose: >-
+      The REPORT-ONLY deliverable (Decision 86 cl.2: a REPORT-ONLY plan deliverable scoped to a single
+      decision; precedent PLAN-dependency-graph-dead-code). Carries the absorption evidence as executable VP
+      steps and the staged c1 closeout (context: staged_c1_closeout) for the operator to apply. No code,
+      contract, roadmap or DECISIONS file changes.
+bundled_recommendations: []
+followon_recs: []
+infrastructure_dependencies: []
+acceptance_criteria:
+  - >-
+    The DCG-03 orphan guard is shown live: its raise-on-new-orphan and backfill-wiring test classes pass
+    (VP step 1), proving warehouse ids absent from the parse are detected loudly, which exceeds DPI-06(b)'s
+    report-only spec.
+  - >-
+    c1's literal property is shown covered: every supersession edge the guard's extractor enumerates is either
+    victim-annotated or waived (0 unannotated-and-unwaived), and the guard is registered pre=True and green (VP steps 2-4).
+  - The plan validates against the PlanDocument schema (VP step 5).
+  - >-
+    The branch diff against origin/main is exactly this plan file -- no roadmap, code, contract or DECISIONS
+    edit, and no closes_criteria entry (VP step 6).
+  - >-
+    The staged c1 closeout names a met_by that resolves (docs/plans/PLAN-dcg-compaction-lifecycle.yaml exists)
+    and states the residuals (r1 on-demand reporting not built; r3 Decision 155 transient skip), so the operator
+    can apply it as one roadmap-bookkeeping edit.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: Run the DCG-03 guard's raise-on-new-orphan and backfill-wiring test classes (absorption of DPI-06(b))
+    command: >-
+      bin/venv-python -m pytest -q
+      "tests/ops_data_portal/test_decisions_divergence_guard.py::TestAssertNoOrphanedCurrentRows"
+      "tests/ops_data_portal/test_decisions_divergence_guard.py::TestBackfillWiresOrphanGuard"
+      "tests/ops_data_portal/test_decisions_divergence_guard.py::TestTransientReaderTolerance"
+    expected: Every selected test passes with zero failures; exit 0.
+    fix_if: >-
+      A failure or a missing node means DCG-03 no longer absorbs DPI-06(b) -- stop and re-open the A/B fork
+      (build the reconcile report) instead of staging the closeout.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Duplicates an already-standing guard: these classes run in every pytest tier as the DCG-03 suite itself;
+      a registry row would re-run the same nodes and is green-by-construction on this implementation-less tree.
+    expected_literals: ["passed"]
+  - step: 2
+    phase: pre-deploy
+    action: Re-derive c1's literal property -- no supersession edge lacks a victim annotation unless waived
+    command: >-
+      bin/venv-python -c "from pathlib import Path; import scripts.checks.decisions.validate_supersession_annotations as m;
+      r=Path('.'); e=m.extract_supersession_edges(r); c=m._combined_number_to_block(r); w,_=m._load_waivers(r,[]);
+      u=[(s,v) for s,v,_f in e if not m._is_annotated(s,c.get(v,''))];
+      print(f'edges={len(e)} unannotated={len(u)} unannotated_unwaived={sum(p not in w for p in u)}')"
+    expected: >-
+      One line of counts whose unannotated_unwaived value is 0 (at 1b172d47: 103 edges, 25 unannotated, all 25
+      waived).
+    fix_if: >-
+      A non-zero unannotated_unwaived count means the guard itself would be red -- that is a guard/content defect
+      for c2/c4, not evidence for building c1; stop and report.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Duplicates the already-standing pre-merge validate_supersession_annotations FAIL leg, which asserts the
+      same property on every DECISIONS*.md or waiver-file change; graduating it adds no independent signal.
+    expected_literals: ["unannotated_unwaived=0"]
+  - step: 3
+    phase: pre-deploy
+    action: Confirm the supersession guard is registered as a pre-merge (--pre) gate, stronger than c1's advisory report
+    command: >-
+      grep -A12 'name="validate_supersession_annotations"' scripts/checks/decisions/_manifest.py
+    expected: >-
+      The Entry block is printed and contains the line pre=True (the guard runs in the fast tier on every
+      DECISIONS*.md or waiver-file change).
+    fix_if: >-
+      A missing pre=True line means the guard was demoted from --pre; that voids the absorption argument for c1's
+      literal text -- stop and report.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Duplicates the standing registration: the manifest Entry is itself the authority the registry reads, and
+      validate_check_accounting already audits manifest Entries; a registry row grepping it adds no signal.
+    expected_literals: ["pre=True"]
+  - step: 4
+    phase: pre-deploy
+    action: Confirm the supersession guard is green on the current tree
+    command: >-
+      bin/venv-python -c "from scripts.checks.decisions.validate_supersession_annotations import
+      validate_supersession_annotations as v; f=[]; v(f); print('guard_failed=', len(f))"
+    expected: >-
+      The guard's PASS line (with its stale-waiver WARNs, 3 at 1b172d47 -- 128->102, 144->92, 144->98) and a
+      guard_failed count of 0.
+    fix_if: >-
+      A non-zero guard_failed count means the guard is red -- a guard/content defect for c2/c4, not evidence for
+      building c1; stop and report.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      The guard already runs in --pre and full tiers via its own manifest Entry; a registry row re-asserting its
+      verdict duplicates that standing check.
+    expected_literals: ["guard_failed= 0"]
+  - step: 5
+    phase: pre-deploy
+    action: Validate this plan against the PlanDocument schema
+    command: bin/venv-python -m scripts.roadmap.plan_document docs/plans/PLAN-t1-17-c1-dpi06-absorption.yaml
+    expected: The validator reports the plan valid and exits 0.
+    fix_if: Fix the reported field (unknown key, missing graduation companion, backtick literal in expected).
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      validate_plan_documents already schema-checks every docs/plans/PLAN-*.yaml in both tiers; a per-plan row
+      duplicates it.
+  - step: 6
+    phase: pre-deploy
+    action: Confirm the change is exactly this plan file (no roadmap, code, contract or DECISIONS edit)
+    command: >-
+      git fetch origin main --quiet && git diff --name-only origin/main...HEAD
+    expected: >-
+      Exactly one path is listed, docs/plans/PLAN-t1-17-c1-dpi06-absorption.yaml, and nothing else.
+    fix_if: >-
+      Any other path means scope leaked; revert it (the c1 closeout is staged in context, applied only by the
+      operator).
+    hermetic: false
+    graduation: not-applicable
+  - step: 7
+    phase: pre-deploy
+    action: Run the fast presubmit tier over the branch
+    command: bin/venv-python -m scripts.validate --pre
+    expected: Exits 0; PR CI's --pre run is the authoritative gate (Decision 73).
+    fix_if: Address the reported issue in the plan file.
+    hermetic: false
+    graduation: not-applicable
+constraints:
+  - >-
+    No tier-item or criterion status flip, no closes_criteria entry, no ratification (project charter never-list;
+    Decision 136: only /implement flips criteria, and only those a plan names in closes_criteria).
+  - >-
+    docs/ROADMAP-PLATFORM.yaml stays out of scope: it is packaged into the active data-pipeline Lambda
+    (src/lambdas/data-pipeline/manifest.yaml), so editing it carries a V3 deploy obligation (Decision 79/125);
+    the c1 closeout is staged here for the operator to apply as roadmap bookkeeping.
+  - >-
+    No new standing prose doc and no companion report file (Decision 86 cl.2; AGENTS.md Agent-First): this plan
+    file is the sole deliverable.
+  - >-
+    No reclassification of DCG-03 or the supersession guard as advisory (Decision 155 cl.3); no delete path for
+    orphan rows (Decision 70; dec-010 cleanup stays with rec-2814).
+  - "No new recommendations (T1.17 provenance -- the originating /overseer run no-new-recs constraint)."
+  - No rescue agents or workaround loops (Decision 55).
+context:
+  - >-
+    Decision-scout verdict NO_FLAGS (gate_run_id t1-17-c1-decision-scout-r1-2a8f5c7d). CITE: 149, 155, 86, 136.
+    Decisions triaged: 163 of 163. Roadmap items intersected: 1; CONFLICT: 0; RELATED: 1 (T4.23, alternative B
+    only).
+  - "gates: decision-scout=NO_FLAGS; step-6b=write the plan (stand-in r1, fork 2 parked); plan-critique=PENDING; report-critique=PENDING"
+  - >-
+    Freshness gate check 3: c1 absorbed. Its wording fuses DPI-06(b) (audit DPI-06 proposed_change b, a warehouse
+    orphan-row report) with the edge extractor: PLAN-decisions-supersession-guard.yaml:293 vs
+    OVERSEER-decision-log-premise-integrity.yaml:192. Absorber: scripts/ops_portal/decisions.py:146 (called :390).
+  - >-
+    Residuals, not built: r1 -- DCG-03 runs only on the rec-autoclose.yml backfill (co-gated on a DECISIONS*.md
+    change), so an orphan with no header change surfaces at the next change, not on demand; r3 -- Decision 155
+    skips the comparison on a transient reader outage (any warehouse-side report would share it).
+  - >-
+    staged_c1_closeout (operator-applied; not applied by this plan): status open -> met; met_by:
+    dcg-compaction-lifecycle; text -> "DPI-06(b) absorbed: warehouse orphan-row detection is realized by the
+    DCG-03 orphan-divergence guard (_assert_no_orphaned_current_rows in scripts/ops_portal/decisions.py,
+    Decision 149 cl.3 / 155), a loud-fail allowlist diff run by backfill_decisions_from_md on every DECISIONS*.md
+    change; supersession edges lacking a victim annotation are failed pre-merge by
+    validate_supersession_annotations (waived remainder enumerated in config/decision_supersession_waivers.yaml).
+    An on-demand --reconcile report is deliberately not built." Original wording -> T1.17 progress_note
+    (exit-criteria-ledger.yaml status.semantics realized-differently rule). This is an operator scope decision,
+    not a narrowing to obtain green (Decision 181). Freshness-gate branch taken: "its own micro-commit on human
+    confirmation", not a Scope row (a Scope row hands /implement a roadmap edit plus a criterion flip, both
+    never-list; the roadmap is Lambda-bundled). met_by: c1 postdates the supersession guard (T1.17 intent), so the
+    absorber is DCG-03 (Decision 149 cl.3 / 155); PLAN-dcg-compaction-lifecycle.yaml exists, so it resolves.
+  - >-
+    fork: build the advisory --reconcile edge listing (B) or stage absorption evidence and build nothing (A) | chosen: A | class: asked | precedent: tier-item-lifecycle.yaml#tier_item_freshness_gate check 3 (fully absorbed -> propose closeout instead of planning duplicate work) and its scoping rule 4 (already-satisfied criterion -> proposed bookkeeping flip); D86 cl.2; decision-scout r1 NO_FLAGS for A, D75 frame-lock NOTE on B; R1 stand-in 2026-10-01 | precedent_kind: contract | reversible: yes (a later plan can still build B) | persisted: plan_type, scope, context (VP steps 1-3 absorption evidence)
+  - >-
+    fork: apply the c1 closeout (open->met, re-grounded text, met_by dcg-compaction-lifecycle) | chosen: PARKED (operator; see MEMORY.md#parked) | class: asked | precedent: none (always-ask: criterion status flip; exit-criteria-ledger.yaml#fields.status populated_by; D136) | precedent_kind: none | reversible: yes | persisted: plan context staged_c1_closeout, MEMORY.md#parked
+  - >-
+    fork: residual r1 (no on-demand orphan report) recorded as deliberately-not-built in the staged text (A) or filed as a follow-on rec/criterion (B) | chosen: A | class: asked | precedent: exit-criteria-ledger.yaml#fields.status realized-differently rule (original wording -> progress_note on a non-terminal item); T1.17 no-new-recs provenance (ROADMAP-PLATFORM T1.17 intent); D86 cl.2 (a forward deliverable is a roadmap tier_item/criterion = operator roadmap edit, folded into the parked row); D181 not engaged (no green sought); R1 stand-in 2026-10-01 | precedent_kind: contract | reversible: yes | persisted: context staged_c1_closeout text, followon_recs [], constraints
+  - "decided-with-notice (stand-in confirmed): REPORT-ONLY, plan file sole deliverable (D86 cl.2); VP waive 1-5, n/a 6-7."
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - Decisions 149, 155, 86, 136 sections only
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
