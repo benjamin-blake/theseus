@@ -581,7 +581,8 @@ class TestCandidateDecisionRatificationAccountingDeclaration:
         assert (base.count, grown.count) == (2, 3)
 
     def test_failing_cd_still_counted(self, tmp_path: Path) -> None:
-        self._write(tmp_path, "candidate_decisions:\n  - id: CD.1\n    title: t\n    state: ratified\n    ratified_as: dec-9\n")
+        cd = "  - id: CD.1\n    title: t\n    state: ratified\n    ratified_as: dec-9\n"
+        self._write(tmp_path, "candidate_decisions:\n" + cd)
         failed, declaration = self._declare(tmp_path)
         assert failed == ["Candidate decision ratification guard"]
         assert declaration is not None and declaration.count == 1
