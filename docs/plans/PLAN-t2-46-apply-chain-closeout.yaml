@@ -1,0 +1,399 @@
+schema_version: 5
+slug: "t2-46-apply-chain-closeout"
+intent: >-
+  Settle T2.46 (apply-chain consolidation + saved-plan digest integrity, DEP-07/08) without implementing
+  anything: re-derive at current main, as executable evidence, that c1, c2 and c3 hold; map every live run to the
+  criterion leg it proves and state plainly what has not run live; and stage for the operator realized-differently
+  re-grounds of c1 and c2, a met_by-valid item completion in Decision 147 form, and a draft recommendation for the
+  DEP-08-shaped residual that Decisions 158 and 183 introduced. No criterion or item status is flipped.
+plan_type: REPORT-ONLY
+verification_tier: V1
+plan_path: docs/plans/PLAN-t2-46-apply-chain-closeout.yaml
+phase: >-
+  Platform tier T2, tier_item T2.46 (DEP-07/08). c1, c2 and c3 are already met (met_by
+  terraform-apply-chain-consolidation, #683 aca711bd); the item sits at not_started. This plan stages the c1/c2
+  re-grounds and the completion closeout only.
+scope:
+  - file: docs/plans/PLAN-t2-46-apply-chain-closeout.yaml
+    action: Create
+    purpose: >-
+      The REPORT-ONLY deliverable (Decision 86 cl.2; precedent the T1.17 c1-c3 and T2.44 c2 REPORT-ONLY plans).
+      Carries the c1/c2/c3 evidence as executable VP steps, the per-site apply provenance and live-run evidence map,
+      the staged c1/c2 re-grounds and completion closeout (context staged_t2_46_closeout), and the staged draft
+      recommendation (context staged_rec_dep08_residual). No code, test, workflow, action, contract, roadmap or
+      DECISIONS change.
+bundled_recommendations: []
+followon_recs: []
+infrastructure_dependencies: []
+acceptance_criteria:
+  - >-
+    The six single-copy blocks hold: the record-write, init-retry and DuckLake zip-mismatch sentinels appear zero
+    times in the two entry workflows and live in their action or tested script; guard, review and saved-plan fetch
+    are one composite action each; all seven composite actions declare using composite (VP step 1).
+  - >-
+    Both entry workflows consume the shared actions, the DuckLake build+assert action is used five times counting
+    reconcile's side-checkout spelling, and terraform apply is an inline job-level step at exactly five sites, never
+    inside a composite action (VP step 2).
+  - >-
+    c2 holds: the speculative-plan job posts the terraform-plan-digest commit status and prints the digest in the
+    PR comment; the four saved-plan fetches all go through fetch-saved-plan, whose verify step runs before the
+    optional terraform show; no workflow reads a tfplan object around it (VP steps 3 and 4).
+  - C3 holds because the persist site and the fetch action both key tfplan/personal by PR number and head sha (VP step 5).
+  - The c1/c2/c3 regression suites pass at current main (VP step 6).
+  - >-
+    Every live run cited in the evidence map has the stated workflow, event, conclusion and head sha, and the
+    repo's own record of the 2026-07-23 rehearsal is intact (VP steps 7 and 8).
+  - The staged met_by resolves to a plan whose closes_criteria names T2.46:c1, c2 and c3 (VP step 9).
+  - >-
+    The residual the staged recommendation cites is pinned as fact: the four fresh-plan hand-off steps exist once
+    in each workflow, the stale-plan stderr signature exists inline in reconcile.yml and in
+    scripts/ci/stale_plan_signature.py, and the hand-off retention-days read 2 (sandbox) and 1 (reconcile) (VP
+    step 10).
+  - The plan validates against the PlanDocument schema (VP step 11).
+  - The branch diff against origin/main is exactly this plan file, with no closes_criteria entry (VP step 12).
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: Census the six single-copy blocks and composite-action well-formedness (pure shell)
+    command: >-
+      S=.github/workflows/terraform-apply-sandbox.yml; C=.github/workflows/reconcile.yml;
+      echo "record_inline=$(cat $S $C | grep -c CONVERGENCE_WRITE_VERIFY)
+      init_inline=$(cat $S $C | grep -c 'terraform init transient error')
+      zip_inline=$(cat $S $C | grep -c DUCKLAKE_ZIP_MISMATCH)
+      record_home=$(grep -c CONVERGENCE_WRITE_VERIFY .github/actions/write-convergence-record/action.yml)
+      init_home=$(grep -c 'terraform init transient error' .github/actions/terraform-init-retry/action.yml)
+      zip_home=$(grep -c DUCKLAKE_ZIP_MISMATCH scripts/ci/ducklake_artifacts.py)
+      actions=$(ls .github/actions/*/action.yml | wc -l)
+      non_composite=$(grep -L 'using: composite' .github/actions/*/action.yml | wc -l)"
+    expected: >-
+      One line: zero inline copies of each sentinel in the two entry workflows, each sentinel present in its single
+      home (4, 1 and 2 occurrences at 931f3057), seven composite actions and none malformed. Guard, review and
+      saved-plan fetch are single-copy by construction (one directory each under .github/actions/). Re-runs
+      PLAN-terraform-apply-chain-consolidation VP steps 1-3 and 8 at current main.
+    fix_if: >-
+      A non-zero inline count means a block was re-inlined after #683; c1 no longer holds even as re-grounded -- stop
+      and stage a gap instead of a completion. A zero home count means the sentinel was renamed; re-derive it.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      convergence-record-write-single-copy, terraform-init-retry-single-copy and ducklake-build-assert-single-copy are
+      already graduated registry checks guarding these sentinels on every PR; this step re-adjudicates them once for
+      a roadmap closeout.
+    expected_literals: ["record_inline=0 init_inline=0 zip_inline=0 record_home=4 init_home=1 zip_home=2 actions=7 non_composite=0"]
+  - step: 2
+    phase: pre-deploy
+    action: Confirm both workflows consume the shared actions and census every terraform apply site (pure shell)
+    command: >-
+      S=.github/workflows/terraform-apply-sandbox.yml; C=.github/workflows/reconcile.yml; m=0;
+      for w in $S $C; do for a in deterministic-guard subagent-plan-review fetch-saved-plan terraform-init-retry materialise-tfvars write-convergence-record;
+      do grep -q "uses: ./.github/actions/$a" $w || m=$((m+1)); done; done;
+      echo "missing_consumers=$m
+      build_assert_uses=$(cat $S $C | grep -cE 'uses: \./(\.dispatch-tooling/)?\.github/actions/build-ducklake-artifacts$')
+      apply_sites=$(cat $S $C | grep -cE '^\s*(run: .*)?terraform apply')
+      apply_in_actions=$(cat .github/actions/*/action.yml | grep -cE '^\s*(run: .*)?terraform apply')"
+    expected: >-
+      No workflow is missing a shared action; build+assert is consumed five times (sandbox three, reconcile two via
+      the Decision 154 side-checkout spelling); terraform apply appears at five job-level sites in three shapes and
+      in no composite action. The five sites and their mandating Decisions are the apply provenance table in
+      context -- the realized-differently basis of the staged c1 re-ground.
+    fix_if: >-
+      A missing consumer means a workflow re-implements the chain; stop, c1 no longer holds. apply_sites other than 5
+      means a route was added or removed; re-derive the provenance table before staging c1. apply_in_actions above 0
+      means the apply step moved into an action and the c1 re-ground's apply clause must be redrafted.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      entry-workflows-consume-composite-actions is already a graduated check, and validate_dispatch_gated_apply_topology
+      plus _check_recovery_workflow_topology pin each apply route's shape; this census only grounds the staged c1
+      wording.
+    expected_literals: ["missing_consumers=0 build_assert_uses=5 apply_sites=5 apply_in_actions=0"]
+  - step: 3
+    phase: pre-deploy
+    action: Confirm the c2 emit half (commit status, PR comment line, statuses write) (pure shell)
+    command: >-
+      S=.github/workflows/terraform-apply-sandbox.yml;
+      echo "digest_status=$(grep -c -- '--field context=terraform-plan-digest' $S)
+      digest_emit=$(grep -c 'plan_digest.py" emit plan.bin' $S)
+      pr_comment=$(grep -c 'Saved-plan sha256 digest (DEP-07)' $S)
+      statuses_write=$(grep -c 'statuses: write' $S)"
+    expected: >-
+      digest_status, digest_emit and pr_comment are each 1; statuses_write is 2 (the speculative-plan job for the digest
+      status and the advisory-status job for terraform-converged).
+    fix_if: A zero means the emit half regressed; stop and stage the gap against c2.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      The consolidation plan's graduated digest checks already guard the emit site; this step re-adjudicates it for
+      the closeout only.
+    expected_literals: ["digest_status=1 digest_emit=1 pr_comment=1 statuses_write=2"]
+  - step: 4
+    phase: pre-deploy
+    action: Count the saved-plan fetch sites and confirm the single verify step precedes terraform show (pure shell)
+    command: >-
+      F=.github/actions/fetch-saved-plan/action.yml;
+      v=$(grep -n 'name: Verify plan.bin digest' $F | cut -d: -f1); s=$(grep -n 'name: Materialise plan.json' $F | cut -d: -f1);
+      echo "fetch_uses=$(cat .github/workflows/*.yml | grep -cE 'uses: \./\.github/actions/fetch-saved-plan$')
+      verify_steps=$(grep -c 'name: Verify plan.bin digest' $F)
+      verify_before_show=$([ "$v" -lt "$s" ] && echo yes || echo no)
+      raw_tfplan_reads=$(cat .github/workflows/*.yml | grep -v '^\s*#' | grep 'tfplan/personal' | grep -vc 'aws s3 cp plan.bin\|Persisted saved plan')"
+    expected: >-
+      Four saved-plan fetch sites (apply-sandbox, gated-apply, apply-reconcile, gated-apply-reconcile), one verify
+      step that runs before the plan.json materialisation, and no non-comment workflow line touching tfplan/personal
+      other than the persist command and its log line. c2's text says three fetch sites (audit DEP-07 wording); the
+      live count is four and was four at aca711bd -- the basis of the staged c2 re-ground.
+    fix_if: >-
+      raw_tfplan_reads above 0 means a fetch bypasses the digest verify; c2 no longer holds -- stop. A fetch_uses change
+      only re-numbers the c2 re-ground.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      fetch-saved-plan-digest-verify is already a graduated check and tests/test_plan_digest.py pins the fail-closed
+      verify; this census only grounds the staged c2 wording.
+    expected_literals: ["fetch_uses=4 verify_steps=1 verify_before_show=yes raw_tfplan_reads=0"]
+  - step: 5
+    phase: pre-deploy
+    action: Confirm c3 -- the tfplan key is content-addressed by (pr, sha) at persist and fetch (pure shell)
+    command: >-
+      echo "persist_keyed=$(grep -cF 'tfplan/personal/${PR_NUM}/${HEAD_SHA}.bin"' .github/workflows/terraform-apply-sandbox.yml)
+      fetch_keyed=$(grep -cF 'tfplan/personal/${PR_NUMBER}/${PR_HEAD_SHA}.bin' .github/actions/fetch-saved-plan/action.yml)"
+    expected: The persist command and its log line (2) and the fetch action (1) use the (pr, sha) key.
+    fix_if: A zero means the key shape changed; stop and stage the gap against c3.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      rec-2771 already records the tfplan-key regex check as tautological; a second registry row would repeat it.
+    expected_literals: ["persist_keyed=2 fetch_keyed=1"]
+  - step: 6
+    phase: pre-deploy
+    action: Run the c1/c2/c3 regression suites
+    command: >-
+      bin/venv-python -m pytest -q tests/test_ducklake_artifacts.py tests/test_plan_digest.py
+      tests/verify_ci_workflow/test_apply_and_terraform.py
+    expected: >-
+      Exits 0 with no failures (79 passed at 440e6e9e and at 931f3057). test_plan_digest covers the fail-closed verify
+      on a mismatch and on an empty reference; test_apply_and_terraform covers the ci-rca fallback, concurrency,
+      recovery-topology and review/apply pairing contracts of all four apply jobs.
+    fix_if: A failure is a regression in the consolidated chain; stop, the closeout does not hold.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      These suites are already selected by --pre's affected-test diff and run in full on main; a registry row would
+      re-run the standing guard.
+    expected_literals: []
+  - step: 7
+    phase: pre-deploy
+    action: Confirm the repo's own record of the 2026-07-23 rehearsal
+    command: >-
+      T=docs/plans/reports/OVERSEER-terraform-deploy-redesign.yaml;
+      echo "ep1_result=$(grep -c 'EP1-RESULT (2026-07-23, GREEN' $T) vp15_run=$(grep -c 'reconcile run 30028593753 FAIL-CLOSED' $T)
+      vp14_run=$(grep -c 'clean reconcile run 30028942903' $T) rehearsals_closed=$(grep -c 'D2/D3 RECONCILE REHEARSALS FULLY COMPLETE' $T)"
+    expected: >-
+      All four markers present once: the overseer report records EP1 green, the VP-15 digest-negative run, the VP-14
+      reconcile red-to-green run, and the rehearsals as closed on 2026-07-23. This is what makes T2.46's progress_note
+      ("the live rehearsal itself is still outstanding") stale.
+    fix_if: >-
+      A 0 means the report was edited or archived; fall back to VP step 8's API reads as the sole rehearsal evidence
+      and say so in the closeout.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      A one-off historical-record check; the report is append-only history and no standing invariant depends on it.
+    expected_literals: ["ep1_result=1 vp15_run=1 vp14_run=1 rehearsals_closed=1"]
+  - step: 8
+    phase: post-deploy
+    action: Re-read every run in the evidence map through the GitHub Actions API (named read; gh is not installed by design)
+    command: >-
+      echo "mcp__github__actions_get get_workflow_run for 30025012786 30028092620 30028593753 30028942903 31883378929
+      33668842982 33923277096 35622301658 36254580399 36451984037; mcp__github__actions_list list_workflow_jobs for
+      33668842982 and 36451984037"
+    expected: >-
+      Each run matches the workflow, event, conclusion and head sha in the context evidence map. 36451984037's
+      apply-sandbox job shows the steps Fetch saved plan from S3, Deterministic apply guard, Subagent plan review and
+      Terraform apply (same plan file the guard inspected) all success. 33668842982's apply-reconcile job shows the
+      saved-plan fetch step failure, guard, review and apply skipped, and the record write success with status
+      unchanged. Read 2026-10-01 by this author and, independently, by the step-6b stand-in.
+    fix_if: >-
+      A different conclusion or head sha means the cited evidence is wrong; drop that run from the map and re-present.
+    hermetic: false
+    graduation: not-applicable
+  - step: 9
+    phase: pre-deploy
+    action: Confirm the staged met_by resolves to a plan that declared all three criteria (pure shell)
+    command: >-
+      P=docs/plans/PLAN-terraform-apply-chain-consolidation.yaml;
+      echo "met_by_plan_resolves=$(grep -cE '^\s*- "?T2\.46:c[123]"?$' $P)"
+    expected: >-
+      met_by_plan_resolves=3: the plan exists and its closes_criteria lists T2.46:c1, c2 and c3.
+    fix_if: >-
+      Fewer than 3 means the plan was archived or rewritten; stage met_by as the full 40-hex sha of aca711bd
+      (git rev-parse aca711bd) instead (exit-criteria-ledger.yaml#fields.met_by, Decision 136).
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: validate_platform_roadmap already resolves every met_by to a real plan or 40-hex sha.
+    expected_literals: ["met_by_plan_resolves=3"]
+  - step: 10
+    phase: pre-deploy
+    action: Pin the residual facts the staged recommendation cites (not acceptance of the drift) (pure shell)
+    command: >-
+      S=.github/workflows/terraform-apply-sandbox.yml; C=.github/workflows/reconcile.yml;
+      P='Emit fresh plan.bin sha256|Upload fresh plan.bin as a run-scoped artifact|Download fresh plan.bin artifact|Verify downloaded fresh plan.bin sha256';
+      echo "handoff_steps_sandbox=$(grep -cE "name: ($P)" $S) handoff_steps_reconcile=$(grep -cE "name: ($P)" $C)
+      stale_regex_inline=$(grep -cF 'saved plan is stale|plan file can no longer be applied|state was changed' $C)
+      stale_regex_module=$(grep -cF 'saved plan is stale|plan file can no longer be applied|state was changed' scripts/ci/stale_plan_signature.py)
+      retention_sandbox=$(grep -E '^\s*retention-days:' $S | grep -oE '[0-9]+') retention_reconcile=$(grep -E '^\s*retention-days:' $C | grep -oE '[0-9]+')"
+    expected: >-
+      Four hand-off steps in each workflow (Decision 158 in reconcile.yml, mirrored by Decision 183 into
+      terraform-apply-sandbox.yml), the stale-plan signature inline once in reconcile.yml and present in the module (docstring and _STALE_PLAN_RE),
+      and retention-days 2 (sandbox) versus 1 (reconcile). None of these is one of c1's six single-copy blocks; they
+      are the staged_rec_dep08_residual facts, pinned so the draft recommendation cites a measured state.
+    fix_if: >-
+      Different counts mean the residual changed (consolidated, or the retention aligned); update or drop the staged
+      recommendation accordingly.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      A one-off residual census for the operator; it pins a drift the staged recommendation proposes to remove, so a
+      standing row would enshrine the defect.
+    expected_literals: ["handoff_steps_sandbox=4 handoff_steps_reconcile=4 stale_regex_inline=1 stale_regex_module=2 retention_sandbox=2 retention_reconcile=1"]
+  - step: 11
+    phase: pre-deploy
+    action: Validate this plan against the PlanDocument schema
+    command: bin/venv-python -m scripts.roadmap.plan_document docs/plans/PLAN-t2-46-apply-chain-closeout.yaml
+    expected: The validator reports the plan valid and exits 0.
+    fix_if: Fix the reported field (unknown key, missing graduation companion, backtick literal in expected).
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      validate_plan_documents already schema-checks every docs/plans/PLAN-*.yaml in both tiers.
+    expected_literals: []
+  - step: 12
+    phase: pre-deploy
+    action: Confirm the change is exactly this plan file (no roadmap, workflow, action, test, contract or DECISIONS edit)
+    command: git fetch --quiet origin main && git diff --name-only origin/main...HEAD
+    expected: The only path listed is docs/plans/PLAN-t2-46-apply-chain-closeout.yaml.
+    fix_if: >-
+      Any other path means scope leaked; revert it (the closeout and the recommendation are staged in context and
+      applied or filed only by the operator).
+    hermetic: false
+    graduation: not-applicable
+  - step: 13
+    phase: pre-deploy
+    action: Run the fast presubmit tier over the branch
+    command: bin/venv-python -m scripts.validate --pre
+    expected: Exits 0; PR CI's --pre run is the authoritative gate (Decision 73).
+    fix_if: Address the reported issue in the plan file.
+    hermetic: false
+    graduation: not-applicable
+constraints:
+  - >-
+    No tier-item or criterion status flip, no criterion text edit, no closes_criteria entry, no ratification
+    (charter never-list; Decision 136 and exit-criteria-ledger.yaml#fields.status populated_by: only /implement
+    flips, only closes_criteria refs; tier-item-lifecycle.yaml Status-Trusted-Never-Inferred).
+  - >-
+    docs/ROADMAP-PLATFORM.yaml stays out of scope: it is bundled into the active data-pipeline Lambda
+    (src/lambdas/data-pipeline/manifest.yaml:54; Decisions 79/125), so the staged edit takes the freshness gate's
+    "own micro-commit on human confirmation" branch; the Scope-row branch would hand /implement a roadmap edit and two
+    flips and is closed to this slice.
+  - >-
+    Not a weakened criterion (Decision 181 cl.1, scoped to weakening "to obtain green"; nothing here seeks green).
+    The audit's DEP-08 acceptance (audits/terraform-deploy-redesign-b67955b.yaml:1008) stays at full strength for
+    every block its census counted (:1000 record-write, zip build+assert, init-retry) plus guard, review and
+    saved-plan fetch. The criterion text "apply exists exactly once" never adjudicated true (four sites at aca711bd,
+    five now), so exit-criteria-ledger.yaml#fields.status mandates staging a rewrite to the realized mechanism; one
+    apply copy is not reachable without un-ratifying Decisions 77, 158 and 183 (provenance table in context). The c2
+    re-ground (three -> four saved-plan fetch sites) is a strengthening bounded by Decision 158 pt 3.
+  - >-
+    No workflow, action or script edit for the DEP-08 residual: it is staged as a draft recommendation, never filed by
+    a thread (recs writer unreachable; brief forbids filing; Decision 67 queue not consumed). The reconcile
+    retention-days fix is a governed apply-pipeline workflow edit the operator owns (Decision 59 scope boundary).
+  - >-
+    No recommendation bundled, filed or closed: preflight recs_read_status=reader_unreachable, so the relevance gate
+    cannot run. rec-2663 and rec-2659 closure cannot be re-read here; the #683 squash commit carries their Resolves
+    trailer.
+  - No DECISIONS.md or DECISIONS_ARCHIVE.md edit (charter never-list; Decision 177 append-only).
+  - No new standing prose doc and no companion report file (Decision 86 cl.2); this plan file is the deliverable.
+  - No rescue agents or workaround loops (Decision 55).
+context:
+  - >-
+    Decision-scout FLAGS_FOUND (t2-46-decision-scout-r1-2d7c9b40): CITE 136, 147, 181, 158, 183, 77, 144, 86; WARN D181
+    (apply drop) and WARN D136 (run re-map) both discharged by the provenance table, evidence map and staged
+    recommendation below, so always_ask's scout-flag clause is not engaged. Decisions triaged: 163 of 163.
+    Roadmap items intersected: 0; CONFLICT: 0; RELATED: 0
+  - "gates: decision-scout=FLAGS_FOUND (folded in); step-6b-confirmation=stand-in r1 (t2-46-step-6b-stand-in-r1); plan-critique=PENDING; report-critique=PENDING"
+  - >-
+    Freshness gate (tier-item-lifecycle.yaml#tier_item_freshness_gate): (1) all three criteria met and hold at
+    931f3057 (VP 1-6) -> completion closeout, not new work. (2) files_in_scope all exist; oidc.tf deliberately never
+    edited (no IAM change needed); c1 apply wording and c2 "three" inaccurate (VP 2, 4); progress_note stale (VP 7-8).
+    (3) No sibling absorbs T2.46; T2.47 depends_on it. (4) No CD or cross_tier_gates row names it.
+  - >-
+    Apply provenance (five sites, three shapes, each route-mandated): sandbox:375 apply-sandbox push, #1230-wrapped,
+    fail-closed (D77); sandbox:978 gated-apply, wrapped (D92, D183 pt 2; topology guard invariant (ii) needs literal
+    argv); reconcile:397 saved plan, inline stderr capture (D158 pt 1 stale fallthrough); reconcile:492 apply_fresh,
+    bare (D158 route (i)); reconcile:806 gated-apply-reconcile, wrapped (D158 route (ii), D92).
+  - >-
+    Evidence map (Actions API, read 2026-10-01; run / workflow event / conclusion / head / date -> proves):
+    30025012786 sandbox dispatch success 46b9fd91 07-23 -> acknowledge heal after the #702 guard-load fix (inferred
+    from timing); 30028092620 sandbox push success 3cd80a53 07-23 -> c1 push chain + c2 positive; 30028593753
+    reconcile dispatch failure 3cd80a53 07-23 -> c2 negative (VP-15 tamper fails closed); 30028942903 reconcile
+    dispatch success 3cd80a53 07-23 -> c1 reconcile forced-red rehearsal (VP-14); 31883378929 reconcile dispatch
+    success 43e4d688 08-15 -> D158 route (ii) hand-off live; 33923277096 sandbox dispatch success a47e03ab 09-04 ->
+    D183 hand-off live; 33668842982 reconcile dispatch failure 735e69fc 09-02 -> digest verify OK then a provider
+    error inside fetch-saved-plan, record status unchanged (infra class); 35622301658 / 36254580399 / 36451984037
+    sandbox push success 8107c227 / 1d806532 / ad51af56 09-21..09-28 -> the #1230-wrapped push apply site
+    (sandbox:375) and digest-verified fetch live.
+  - >-
+    Not run live (stated plainly): no forced-red rehearsal of the apply-sandbox entry workflow ever (the 07-23
+    rehearsal was reconcile-only); no forced-red rehearsal on the post-D158/D183 topology; no reconcile run since
+    09-02, none at or after #1230; the two wrapped gated apply sites (sandbox:978, reconcile:806) have not run since
+    #1230. Correction to the stand-in's map: the wrapped push site sandbox:375 has run live (runs above, all on
+    commits containing 04a402a4).
+  - >-
+    Decision 178 is not cited: no clause governs this plan (its cleanse removed and #975 restored the apply-sandbox
+    push/PR triggers; it deleted no T2.46 artefact). fetch-saved-plan is single-copy but a pinned Decision 162 R1
+    violator (composite-action-shape.yaml:73-74).
+  - >-
+    staged_t2_46_closeout (operator-applied; NOT applied here; one roadmap-bookkeeping commit, ordered BEFORE T2.47's
+    closeout because T2.47 depends_on T2.46). c1 text -> "record-write, DuckLake build+byte-assert, init-retry, guard,
+    review and saved-plan fetch each exist exactly once as composite actions under .github/actions/ and both entry
+    workflows consume them; terraform apply is an inline job-level step at five sites, one per Decision-mandated route
+    (77 push verbatim; 92/183 dispatch-gated; 158 stale fallthrough, route (i) fresh guard-PASS, route (ii) gated
+    fresh). Both entry workflows' behavioural contracts hold structurally (validate_dispatch_gated_apply_topology,
+    recovery-workflow topology, tests/verify_ci_workflow/test_apply_and_terraform.py) and ran live: reconcile
+    forced-red rehearsal 30028942903 (3cd80a53) and route-(ii) recovery 31883378929 (43e4d688); apply-sandbox push
+    30028092620 (3cd80a53) and dispatch-gated hand-off 33923277096 (a47e03ab) (DEP-08/rec-2663)"; status met, met_by
+    unchanged. c2 text -> "Overwriting a saved plan object after PR review fails the merge-time fetch closed with a
+    digest mismatch -- sha256(plan.bin) is emitted in the PR comment and the terraform-plan-digest commit status and
+    verified by the single fetch-saved-plan action at all four saved-plan fetch sites; the two run-scoped fresh-plan
+    hand-offs verify a same-run sha256, not the reviewed digest (Decision 158 pt 3) (DEP-07; negative run
+    30028593753)"; status met, met_by unchanged. c3 unchanged. Then status not_started -> complete + completed_at in
+    the same edit as completion_compaction: drop progress_note (its one ask is resolved by 30028942903); intent ->
+    "Apply-chain consolidation + saved-plan digest integrity: six blocks single-copy as composite actions, apply
+    inline per Decision-mandated route, sha256-verified saved-plan fetch at four sites, tfplan key content-addressed
+    (DEP-07/08)."; files_in_scope -> []. Superseded c1/c2 wording, the progress_note, the evidence map and the
+    provenance table go to that PR's body. Regenerate .secrets.baseline if tripped; the edit carries the
+    data-pipeline deploy obligation. Operator options: (a) apply as staged; (b) decline the apply drop -- reopen c1
+    and route the remaining consolidation to a new plan; (c) require a forced-red rehearsal on the current topology
+    first (operator-assisted only); (d) act on staged_rec_dep08_residual.
+  - >-
+    staged_rec_dep08_residual (draft; never filed by a thread; operator files, accepts or acts). Title: "DEP-08
+    residual: Decision 158/183 fresh-plan hand-off is mirrored in two workflows with no parity assertion;
+    retention-days drifted (sandbox 2, reconcile 1); stale-plan signature pinned twice, never once". Facts (VP 10):
+    EMIT/upload/download/VERIFY four steps per workflow, sandbox copy guarded by validate_dispatch_gated_apply_topology
+    (iii)-(v), reconcile copy by _check_recovery_workflow_topology (iv), nothing relating the two; signature inline at
+    reconcile.yml (pinned by recovery topology (iii)) and in stale_plan_signature.py (pinned by its test); reconcile
+    retention 1 day while gated-apply-reconcile waits on the same tf-gated-apply approval as sandbox (2 days, both
+    github-actions-evidence.yaml ephemeral_handoff), so a reconcile route-(ii) approval after 24h fails at download
+    and latches red (loud, fail-closed). Proposed check: a cross-workflow parity assertion over the two hand-off
+    quadruples (gating, artifact name, retention-days, EMIT/VERIFY symmetry) shaped like
+    terraform-init-retry-signature-parity-both-consumers. Interim fix candidate: reconcile retention-days 1 -> 2.
+  - >-
+    record_grammar (stand-in r1, 2026-10-01, delegated authority rule 2): F1 c2 re-ground staged, consistency-only,
+    contract; F2 c1 realized-differently staged, asked, decision (D77/158/183 + ledger); F3 residual carried as staged
+    rec, disposition parked, decision/none; F4 run re-map, consistency-only, contract; F5 completion staged, application
+    parked, contract/none. Full lines: /mnt/project-files/gates/t2-46-step-6b-stand-in-r1.md; parked row R8 in MEMORY.md.
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - Decisions 77, 136, 147, 158, 162, 181, 183, 86 sections only
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
