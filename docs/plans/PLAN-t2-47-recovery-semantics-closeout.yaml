@@ -36,7 +36,7 @@ acceptance_criteria:
   - >-
     c1's live record is re-derived, each run labelled with its episode shape (VP step 5): only 30028942903 stands
     in for an admin-resolved episode (an operator-accepted substitute, caveats 1-2); 30589703121 (the #809 DEP-02
-    teardown) and 31883378929 (red at #911, cause unrecorded) evidence the Reconcile stale-plan and routed
+    teardown) and 31883378929 (red at #911, cause unrecorded) evidence the Reconcile fresh re-plan and routed
     hand-off mechanism on Decision 158 code, not an admin-resolved episode.
   - >-
     c1's rec clause is evidenced: rec-autoclose run 29895552746 closed rec-2523, rec-2461, rec-2647 and rec-2648 on
@@ -235,9 +235,11 @@ verification_plan:
     expected: >-
       A routed-shaped plan classifies pending_codification; on a green record carrying pending_gated the first tick
       marks, a tick 2h01m later escalates, and the record turns red with pending_gated still present and a refusal
-      naming out-of-band drift. terraform-apply-sandbox.yml's precondition refuses pushes on a red record, so a
-      routed approval window longer than two hours re-latches the push path -- DEP-11's original failure, now
-      reintroduced. Reproduced mechanically, not observed live.
+      naming out-of-band drift. The age counts from the first drift tick that sees the delta, so the trigger is two
+      ticks at least 2h apart inside a routed window. Impact: an approved, successful gated apply overwrites the record
+      green (queued pushes wait on the shared concurrency group), so the push path stays latched only when the gated
+      apply is rejected, abandoned or fails -- then the record is red, mislabelled out-of-band drift, with no rec;
+      during the window the health verdict and PR advisory read red. Reproduced mechanically, not observed live.
     fix_if: >-
       tick2=mark or status_after other than red means convergence_classify gained pending_gated awareness; c2 may hold
       again, so re-adjudicate it and drop the option (a) staging.
@@ -354,7 +356,7 @@ constraints:
     Decision 136: only /implement flips criteria, only those a plan names in closes_criteria). Every roadmap edit
     below is staged in context for the operator's own micro-commit (tier_item_freshness_gate output discipline); a
     Scope row on docs/ROADMAP-PLATFORM.yaml is closed to this slice by the charter, Decision 79/125 (staged roadmap
-    edits; the file is packaged into the active data-pipeline Lambda) and tier-item-lifecycle.yaml follow-on rule 4.
+    edits; the file is packaged into the active data-pipeline Lambda).
   - >-
     No completion is staged (stand-in F5): tier_item_freshness_gate check 1 stages a closeout only if all criteria
     hold, and c2's drift-rec half does not (VP steps 8-9); a completion over c2 is the silent pass Decision 136
@@ -363,7 +365,8 @@ constraints:
   - >-
     c2 is not re-grounded to today's behavior: dropping or scoping away "the drift rec names the pending PR"
     weakens an acceptance criterion to obtain green (Decision 181 cl.1); no ratified Decision narrows that clause
-    (Decision 190 is silent on pending_gated ordering and lists T2.47 as closing no criterion).
+    (Decision 190 is silent on pending_gated ordering and lists T2.47 as closing no criterion;
+    PLAN-convergence-drift-classification.yaml records c2 "partially falsified ... not silently re-closed").
   - >-
     No recommendation bundled, filed, updated or closed (Decision 67 charter never-item; Decision 201 verdict
     layer). rec-2920 is named only as the owner of T2.47's status/criteria adjudication; this plan stages evidence
@@ -376,8 +379,11 @@ constraints:
     and settles two open operator questions: (2) how the 2.0h bound treats a pending_gated-explained delta, given
     Decision 190 point 3 (bounded so misclassified drift never sits indefinitely) and reversal (b) (retune the
     bound, never remove it); and (3) real drift during a routed window, where Decision 190 point 1 (drift always
-    wins) and #686's CARRY-2 (the pending_gated branch never red-flips) conflict. Both are Decision-level;
-    red-before VP steps; closes_criteria [T2.47:c2] only after option (a) is applied.
+    wins) and #686's CARRY-2 (the pending_gated branch never red-flips) conflict. Both are Decision-level. Hazard
+    for both: a pending_gated marker has no clearing path on a rejected or abandoned gated apply short of the next
+    green write, and once drift_flagged_at is set the idempotent skip swallows later drift, so a naive reorder would
+    extend that masking to pending_codification deltas; marker freshness must be bounded or validated. Red-before VP
+    steps; closes_criteria [T2.47:c2] only after option (a) is applied.
   - >-
     The stale advisory-status-pending-gated registry row is not replaced here (Decision 59 scope boundary); its
     remedy (a new check id over scripts/ci/convergence_advisory.py plus retirement) is an unfiled hygiene finding.
@@ -395,12 +401,11 @@ context:
     c2 re-ground), both discharged by staging no completion and no c2 re-ground. Decisions triaged: 163 of 163.
     Roadmap items intersected: 0; CONFLICT: 0; RELATED: 0
   - >-
-    gates: decision-scout=FLAGS_FOUND (folded); step-6b-confirmation=stand-in r1 (t2-47-step-6b-stand-in-r1;
-    F4/F6 parked, F7 answered by the operator 2026-10-01); plan-critique=PROCEED after 2 rounds
-    (r1 REVISE t2-47-plan-critique-r1-d4b07e19, M1-M3 fixed; r2 t2-47-plan-critique-r2-5a3e81bf); report-critique=PENDING
+    gates: decision-scout=FLAGS_FOUND (folded); step-6b=t2-47-step-6b-stand-in-r1 (F4/F6 parked, F7 operator-answered);
+    plan-critique=PROCEED after 2 rounds (r1 REVISE d4b07e19 fixed, r2 5a3e81bf); report-critique=REVISE r1 (8d62f0a9)
   - >-
-    Freshness gate at 931f3057: (1) c2 does not re-adjudicate (VP 8-9); (2) files_in_scope exist, progress_note
-    stale for VP-11 and the recs (VP 5-6); (3) Decisions 183 and 190 changed DEP-10/11 (VP 4, 8, 11); (4) no CD.
+    Freshness gate at 931f3057: c2 does not re-adjudicate (VP 8-9); paths exist; progress_note stale for VP-11/recs;
+    Decisions 183 and 190 changed DEP-10/11 (VP 4, 8, 11); no CD.
   - >-
     Named reads 2026-10-01 (ducklake-reads): rec-2523/2461/2647/2648 closed (rec-autoclose 29895552746, 2026-07-22;
     F3 met); rec-2920 open, widened to T2.46 and T2.47; ci_rca_open 0 rows.
@@ -409,16 +414,17 @@ context:
     unchanged): c1 text -> "An admin-resolved recovery episode whose red commit's HCL is still the desired state
     clears via a single input-free Reconcile dispatch, with at most one tf-gated-apply approval when the fresh plan
     routes (Decision 183 point 1); a red whose fix merged after the red commit clears via the acknowledge-and-retry
-    dispatch and is outside this criterion; rec-2523/rec-2461/rec-2647 are closed to the residual (DEP-10)". Original
-    wording to the progress_note (non-terminal item). Operator ruled 2026-10-01 that a text-only re-ground of a met
-    criterion is not a criterion flip (F7 answered), so the operator may apply it as roadmap bookkeeping.
+    dispatch and is outside this criterion; rec-2523/rec-2461/rec-2647 are closed to the residual (DEP-10)"; original to
+    the progress_note. Deltas: drops "forced" (no forced rehearsal ran; 30028942903 was the operator-accepted substitute,
+    EP2 skipped, stand-in F2); adds "input-free"; "updated or closed" -> "closed"; adds the Decision 183 scope and
+    approval clause. F7 answered 2026-10-01: not a criterion flip, so the operator may apply it as bookkeeping.
   - >-
     staged_t2_47_c2_option_a (OPERATOR-DECISION-PENDING; applied by nobody this week): c2 status met -> open, met_by
     dropped, text unchanged, progress_note bullet "2026-MM-DD: c2 reopened -- met by terraform-recovery-semantics
-    2026-07-22, regressed by #1174 (Decision 190) 2026-09-14: the classifier exits on pending_codification before the
-    pending_gated read, so a routed-pending drift rec names no PR [and escalates to red at 2.0h -- subject to the
-    operator's bound answer, implementation_shape question 2]". Recommended: (a),
-    then (c) re-flips c2 via closes_criteria; (b) only as a split via a rec. (a) also clears rec-2920's T2.47 shape.
+    2026-07-22, regressed by #1174 (Decision 190) 2026-09-14: the drift handler exits on pending_codification before the
+    pending_gated read, so a routed-pending drift rec names no PR [and turns red after ticks 2h apart, latching pushes
+    if the gated apply is then rejected, abandoned or fails -- subject to implementation_shape question 2]".
+    Recommended: (a), then (c) re-flips c2; (b) only as a split via a rec. (a) also clears rec-2920's T2.47 shape.
   - "fork: c1 re-ground to D183 pt 1 | chosen: staged, text-only | class: consistency-only | precedent: exit-criteria-ledger.yaml realized-differently; D183 pt 1; R7 F3; R9 stand-in | precedent_kind: contract | reversible: yes | persisted: context staged_t2_47_c1_reground"
   - "fork: c1 evidence mapping | chosen: dated named reads with caveats 1-2; re-runnable half on registry rows + topology guard | class: consistency-only | precedent: exit-criteria-ledger.yaml:70-71; D136; R9 stand-in | precedent_kind: contract | reversible: yes | persisted: VP 5, context"
   - "fork: c1 rec clause | chosen: named read, nothing bundled or closed | class: consistency-only | precedent: recommendation-relevance.yaml; git-ops.yaml#resolves_trailer; D201; D67; R9 stand-in 2026-10-01 (delegated authority) | precedent_kind: contract | reversible: yes | persisted: context"
