@@ -34,10 +34,10 @@ acceptance_criteria:
     The cited commits are on main and carry what the evidence relies on (#686 Resolves trailer, #916
     relocation, #1077 Decision 183) (VP step 4).
   - >-
-    c1's live record is re-derived from the public Actions API: three input-free Reconcile dispatches each
-    cleared a red record in one run through the stale-plan fresh re-plan, two of them through the sha256-verified
-    gated hand-off; the earliest ran before #771/#809 and is history, the two later ones ran on Decision 158 code
-    (VP step 5).
+    c1's live record is re-derived, each run labelled with its episode shape (VP step 5): only 30028942903 stands
+    in for an admin-resolved episode (an operator-accepted substitute, caveats 1-2); 30589703121 (the #809 DEP-02
+    teardown) and 31883378929 (red at #911, cause unrecorded) evidence the Reconcile stale-plan and routed
+    hand-off mechanism on Decision 158 code, not an admin-resolved episode.
   - >-
     c1's rec clause is evidenced: rec-autoclose run 29895552746 closed rec-2523, rec-2461, rec-2647 and rec-2648 on
     2026-07-22 (VP step 6), and a ducklake-reads named read on 2026-10-01 returned all four closed with that
@@ -146,21 +146,26 @@ verification_plan:
       print('run=$r fresh_replan=' + str(S.get('Fresh re-plan (STALE_PLAN_FRESH_REPLAN fallthrough)')) + ' fresh_apply=' + str(S.get('Terraform apply (fresh re-plan, guard-PASS)'))
       + ' gated_handoff=' + J['gated-apply-reconcile']['conclusion'] + ' handoff_sha_verified=' + str(gv[0] if gv else None))"; done
     expected: >-
-      run=30028942903 fresh_replan=success fresh_apply=success gated_handoff=skipped (2026-07-23, head 3cd80a53;
-      the job log reads the record back green). run=30589703121 and run=31883378929 fresh_replan=success
-      fresh_apply=skipped gated_handoff=success handoff_sha_verified=success (2026-07-30 at e994264c, the #809 merge
-      carrying Decision 158, and 2026-08-15 at 43e4d688: the fresh plan routed and tf-gated-apply applied it verbatim
-      after its sha256 verified -- one dispatch, one approval each). 31883298153, just before 31883378929, failed in
-      resolve-target only because its optional rec-id input could not reach the recs reader; the input-free
-      re-dispatch cleared. Caveat 1: 30028942903's red was admin-written and its staleness came from the push-run's
-      own apply, not an out-of-band admin apply; the operator accepted that substitute and skipped the deliberate EP2
-      rehearsal on 2026-07-23 (OVERSEER-terraform-deploy-redesign.yaml EP2-DISPOSITION). Caveat 2: 30028942903
-      predates #771, #809, #1077 and #1174 and is history; the re-runnable half is VP step 1's three reconcile rows
-      plus validate_dispatch_gated_apply_topology.
+      run=30028942903 fresh_replan=success fresh_apply=success gated_handoff=skipped. Shape: the c1 stand-in
+      episode (2026-07-23, head 3cd80a53; synthetic admin-written red, staleness from the push-run's own apply; the
+      job log reads the record back green). Caveat 1: not an out-of-band admin apply; the operator accepted the
+      substitute and skipped the deliberate EP2 rehearsal on 2026-07-23 (OVERSEER-terraform-deploy-redesign.yaml
+      EP2-DISPOSITION). Caveat 2: it predates #771, #809, #1077 and #1174 and is history.
+      run=30589703121 fresh_replan=success fresh_apply=skipped gated_handoff=success handoff_sha_verified=success.
+      Shape: the #809 DEP-02 probe-role teardown (2026-07-30 at e994264c; a guard-routed fresh re-plan destroyed the
+      orphaned role and turned the record green, docs/ROADMAP-PLATFORM.yaml T2.48 2026-07-30 note); proves the
+      Decision 158 routed hand-off, not an admin-resolved episode.
+      run=31883378929, same values. Shape: red at 43e4d688 (#911), saved plan guard-routed (the log's entry
+      condition is guard_routed), cleared through tf-gated-apply on 2026-08-15; the red cause is not recorded in the
+      repo, so it too proves the mechanism only. 31883298153 just before it failed in resolve-target because its
+      optional rec-id input could not reach the recs reader; the input-free re-dispatch cleared.
+      The re-runnable half of c1 is VP step 1's three reconcile rows, validate_dispatch_gated_apply_topology and the
+      Decision 158 recovery-workflow-topology guard (scripts/checks/ci_guards/validate_ci_workflow_guards.py).
+      From CC-web the unauthenticated API may be proxy-blocked; replay through mcp__github__actions_list
+      (list_workflow_jobs).
     fix_if: >-
-      HTTP 403 is the unauthenticated rate limit; retry later or read the same runs through
-      mcp__github__actions_list (list_workflow_jobs). Any other value means a cited run is not what the evidence says;
-      drop it and re-present.
+      HTTP 403 or a proxy body: read the same runs through mcp__github__actions_list (list_workflow_jobs). Any other
+      value means a cited run is not what the evidence says; drop it and re-present.
     hermetic: false
     graduation: not-applicable
   - step: 6
@@ -170,7 +175,8 @@ verification_plan:
       curl -sL https://api.github.com/repos/benjamin-blake/theseus/actions/jobs/88844840422/logs
       | grep -Eo 'rec-autoclose: closed rec-(2523|2461|2647|2648)$' | sort -u | wc -l
     expected: >-
-      4 -- rec-autoclose run 29895552746 (head f8d8984a, 2026-07-22) closed all four recs #686 named.
+      4 -- rec-autoclose run 29895552746 (head f8d8984a, 2026-07-22) closed all four recs #686 named. From CC-web,
+      replay through mcp__github__get_job_logs (job 88844840422) if the unauthenticated API is proxy-blocked.
     fix_if: >-
       0 with an HTTP 410 or empty body means the log passed its 90-day retention (about 2026-10-20); the
       ducklake-reads named read recorded in context and the closeout PR body's verbatim lines stand in for it.
@@ -185,7 +191,8 @@ verification_plan:
     expected: >-
       1 -- convergence-health run 30057888525 (2026-07-24T01:04Z) printed a verdict carrying the pending_gated marker
       that dispatch run 30055938891 wrote at 00:22Z. That record was red, so this is not c2's green-plus-marker shape;
-      the half is carried by assess.py and its tests (VP step 3) and this run only shows the surface live.
+      the half is carried by assess.py and its tests (VP step 3) and this run only shows the surface live. From
+      CC-web, replay through mcp__github__get_job_logs (job 89373326109) if the API is proxy-blocked.
     fix_if: >-
       0 with HTTP 410 means the log expired (about 2026-10-22); the closeout PR body carries the verdict line.
     hermetic: false
@@ -209,7 +216,10 @@ verification_plan:
       order_ok=False or pending_codification_block_names_pr=True means the workflow changed since authoring; re-read it
       and re-adjudicate c2 before the operator applies anything.
     hermetic: true
-    graduation: not-applicable
+    graduation: waive
+    graduation_waiver_reason: >-
+      Pins a defect, not an invariant: a standing row would assert the regression stays in place. The
+      option (c) slice owns the inverted red-before guard.
     expected_literals: ["order_ok=True pending_codification_block_names_pr=False escalation_files_rec=False"]
   - step: 9
     phase: pre-deploy
@@ -232,7 +242,10 @@ verification_plan:
       tick2=mark or status_after other than red means convergence_classify gained pending_gated awareness; c2 may hold
       again, so re-adjudicate it and drop the option (a) staging.
     hermetic: true
-    graduation: not-applicable
+    graduation: waive
+    graduation_waiver_reason: >-
+      Pins a defect, not an invariant: a standing row would assert the regression stays in place. The
+      option (c) slice owns the inverted red-before guard.
     expected_literals: ["verdict=pending_codification tick1=mark tick2=escalate status_after=red pending_gated_kept=True refusal_says_drift=True"]
   - step: 10
     phase: pre-deploy
@@ -248,7 +261,8 @@ verification_plan:
       consolidation), 2026-08-15T11:59Z-12:03Z (no tick) and 2026-09-20T12:52Z-17:14Z (one tick, run 35523993761 at
       9a80aa89, planned no changes, so no rec of either kind). The drift cron was also parked from #969 (2026-08-27)
       to #1082 (2026-09-04). The #686 plan's VP-12 rehearsal was never run; under VP steps 8-9 a live VP-12 would now
-      reproduce the defect, not accept c2.
+      reproduce the defect, not accept c2. From CC-web, replay through mcp__github__get_job_logs and
+      mcp__github__actions_list if the API is proxy-blocked.
     fix_if: >-
       Different counts mean the window census is wrong; re-list the drift runs for each window through
       mcp__github__actions_list and re-present.
@@ -358,17 +372,19 @@ constraints:
     implementation_shape for option (c), gated on MEMORY.md#parked row R9 and not to be started by a delegate: an
     IMPLEMENTATION plan (V2) over .github/workflows/terraform-drift.yml, scripts/ci/convergence_classify.py,
     tests/test_convergence_classify.py and tests/test_terraform_drift_acceptance.py that (1) reads pending_gated
-    before the pending_codification write so a routed-pending episode files the PENDING_GATED rec naming the PR and
-    never escalates to red on age, and (2) settles real drift during a routed window, where Decision 190 point 1
-    (drift always wins) and #686's CARRY-2 (the pending_gated branch never red-flips) conflict -- a Decision-level
-    choice; red-before VP steps for both; closes_criteria [T2.47:c2] only after option (a) is applied.
+    before the pending_codification write so a routed-pending episode files the PENDING_GATED rec naming the PR,
+    and settles two open operator questions: (2) how the 2.0h bound treats a pending_gated-explained delta, given
+    Decision 190 point 3 (bounded so misclassified drift never sits indefinitely) and reversal (b) (retune the
+    bound, never remove it); and (3) real drift during a routed window, where Decision 190 point 1 (drift always
+    wins) and #686's CARRY-2 (the pending_gated branch never red-flips) conflict. Both are Decision-level;
+    red-before VP steps; closes_criteria [T2.47:c2] only after option (a) is applied.
   - >-
     The stale advisory-status-pending-gated registry row is not replaced here (Decision 59 scope boundary); its
     remedy (a new check id over scripts/ci/convergence_advisory.py plus retirement) is an unfiled hygiene finding.
     It has failed on main since #916 (2026-08-15) because graduated rows are admission-time only (Decision 132).
   - >-
-    Actions job logs expire 90 days after each run, so VP steps 6-7 stop reproducing about 2026-10-20; the plan PR
-    body carries their lines verbatim.
+    Actions job logs expire 90 days after each run, so VP steps 6, 7 and 10 (w1 leg) stop reproducing about
+    2026-10-20 to 2026-10-22; the plan PR body carries their lines verbatim.
   - No docs/DECISIONS.md or archive edit (charter never-list; Decision 177 append-only).
   - No new standing prose doc and no companion report file (Decision 86 cl.2); this plan file is the deliverable.
   - No rescue agents or workaround loops (Decision 55).
@@ -379,21 +395,16 @@ context:
     c2 re-ground), both discharged by staging no completion and no c2 re-ground. Decisions triaged: 163 of 163.
     Roadmap items intersected: 0; CONFLICT: 0; RELATED: 0
   - >-
-    gates: decision-scout=FLAGS_FOUND (both flags folded in); step-6b-confirmation=stand-in r1
-    (t2-47-step-6b-stand-in-r1: F1/F2/F3/F5/F8 answered, F4/F6 parked; F7 answered by the operator 2026-10-01);
-    plan-critique=PENDING;
-    report-critique=PENDING
+    gates: decision-scout=FLAGS_FOUND (folded); step-6b-confirmation=stand-in r1 (t2-47-step-6b-stand-in-r1;
+    F4/F6 parked, F7 answered by the operator 2026-10-01); plan-critique=REVISE r1 (t2-47-plan-critique-r1-d4b07e19,
+    M1-M3 fixed); report-critique=PENDING
   - >-
-    Freshness gate at 931f3057: (1) not silently complete -- c2 does not re-adjudicate (VP 8-9); (2) all six
-    files_in_scope exist; the progress_note's "NOT yet confirmed: VP-11/VP-12 and rec closure" is stale for VP-11
-    and the recs (VP 5-6), still true for VP-12; (3) no sibling absorbs DEP-10/11, while Decision 183 (#1077) and
-    Decision 190 (#1174) changed them (VP 4, 8, 11); (4) no related CD, no cross_tier_gates row.
+    Freshness gate at 931f3057: (1) c2 does not re-adjudicate (VP 8-9); (2) files_in_scope exist, progress_note
+    stale for VP-11 and the recs (VP 5-6); (3) Decisions 183 and 190 changed DEP-10/11 (VP 4, 8, 11); (4) no CD.
   - >-
-    Named reads 2026-10-01 (ducklake-reads rec_by_id): rec-2523, rec-2461, rec-2647, rec-2648 all status closed,
-    resolution "Auto-closed by rec-autoclose workflow: merge commit f8d8984a... (run 29895552746)", last updated
-    2026-07-22; rec-2920 open (scope widened 2026-07-31 to T2.46 and T2.47; acceptance is a
-    status_criteria_coherence guard). ci_rca_open returned 0 rows. This discharges F3's "a named read precedes any
-    apply" for c1's rec clause.
+    Named reads 2026-10-01 (ducklake-reads): rec-2523/2461/2647/2648 closed by rec-autoclose run 29895552746
+    (2026-07-22), discharging F3's named-read condition; rec-2920 open, widened 2026-07-31 to T2.46 and T2.47;
+    ci_rca_open 0 rows.
   - >-
     staged_t2_47_c1_reground (operator-applied; text only, status met and met_by terraform-recovery-semantics
     unchanged): c1 text -> "An admin-resolved recovery episode whose red commit's HCL is still the desired state
@@ -406,21 +417,17 @@ context:
     staged_t2_47_c2_option_a (OPERATOR-DECISION-PENDING; applied by nobody this week): c2 status met -> open, met_by
     dropped, text unchanged, progress_note bullet "2026-MM-DD: c2 reopened -- met by terraform-recovery-semantics
     2026-07-22, regressed by #1174 (Decision 190) 2026-09-14: the classifier exits on pending_codification before the
-    pending_gated read, so a routed-pending drift rec names no PR and escalates to red at 2.0h". Recommended order:
-    (a) now, then (c) (constraints implementation_shape) re-flips c2 through closes_criteria; (b) only as a split
-    via a rec. Applying (a) also removes T2.47's all-met-but-not_started shape that rec-2920 names (F6).
-  - >-
-    Possible live defect (operator-facing, beyond this slice): a routed-pending gated apply awaiting approval for
-    more than 2.0h is escalated to red by the hourly drift tick and the push path then refuses, with no rec filed on
-    escalation (VP 8-9). Only the operator can read the live record.
+    pending_gated read, so a routed-pending drift rec names no PR and escalates to red at 2.0h". Recommended: (a),
+    then (c) re-flips c2 via closes_criteria; (b) only as a split via a rec. (a) also clears rec-2920's T2.47 shape.
   - "fork: c1 re-ground to D183 pt 1 | chosen: staged, text-only | class: consistency-only | precedent: exit-criteria-ledger.yaml realized-differently; D183 pt 1; R7 F3; R9 stand-in | precedent_kind: contract | reversible: yes | persisted: context staged_t2_47_c1_reground"
   - "fork: c1 evidence mapping | chosen: dated named reads with caveats 1-2; re-runnable half on registry rows + topology guard | class: consistency-only | precedent: exit-criteria-ledger.yaml:70-71; D136; R9 stand-in | precedent_kind: contract | reversible: yes | persisted: VP 5, context"
-  - "fork: c1 rec clause | chosen: named read, nothing bundled or closed | class: consistency-only | precedent: recommendation-relevance.yaml; git-ops.yaml#resolves_trailer; D201; D67 | precedent_kind: contract | reversible: yes | persisted: context"
+  - "fork: c1 rec clause | chosen: named read, nothing bundled or closed | class: consistency-only | precedent: recommendation-relevance.yaml; git-ops.yaml#resolves_trailer; D201; D67; R9 stand-in 2026-10-01 (delegated authority) | precedent_kind: contract | reversible: yes | persisted: context"
   - "fork: c2 disposition incl. live VP-12 | chosen: PARKED (MEMORY.md#parked R9); finding staged, option (a) OPERATOR-DECISION-PENDING, (c) outlined | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: context, constraints"
-  - "fork: completion staging | chosen: none staged; application parked | class: consistency-only / asked | precedent: tier_item_freshness_gate check 1; D136 | precedent_kind: contract / none | reversible: yes | persisted: constraints"
+  - "fork: completion staging | chosen: none staged | class: consistency-only | precedent: tier_item_freshness_gate check 1; D136; R9 stand-in 2026-10-01 (delegated authority) | precedent_kind: contract | reversible: yes | persisted: constraints"
+  - "fork: completion application | chosen: PARKED under F4 (never-list) | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: constraints"
   - "fork: rec-2920 ownership | chosen: PARKED (MEMORY.md#parked R9, with R5) | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: context"
   - "fork: met-criterion re-ground reach | chosen: not a criterion flip | class: asked | precedent: operator answer 2026-10-01T19:50Z point 3a (relayed by the coordinator) | precedent_kind: answered-fork | reversible: yes | persisted: context staged_t2_47_c1_reground"
-  - "fork: stale advisory registry row | chosen: stale-guard evidence, unfiled hygiene finding | class: consistency-only | precedent: D132/D163 pt 2; verification_graduation tautology refusal | precedent_kind: decision | reversible: yes | persisted: context"
+  - "fork: stale advisory registry row | chosen: stale-guard evidence, unfiled hygiene finding | class: consistency-only | precedent: D132/D163 pt 2; verification_graduation tautology refusal; R9 stand-in 2026-10-01 (delegated authority) | precedent_kind: decision | reversible: yes | persisted: context"
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
