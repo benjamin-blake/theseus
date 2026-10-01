@@ -1,0 +1,335 @@
+schema_version: 5
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: t1-17-c4-supersession-guard-hardening
+intent: >-
+  Discharge T1.17 c4 (Wave-3 hardening of the supersession-annotation guard) so the decision log's forward-pointer
+  invariant holds on whole decision numbers and on every plural-list edge the corpus writes: _is_annotated stops
+  accepting a numeric prefix, edge extraction reuses the shared title_relation_continuation grammar instead of a third
+  hand-rolled regex (Decision 134 clause 3's last divergent consumer), and three re-derived Low findings are fixed.
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-t1-17-c4-supersession-guard-hardening.yaml
+phase: >-
+  T1.17 (Decision-log premise-integrity audit follow-ups), criterion c4 only. No closes_criteria: T1.17 is not_started
+  and the c4 closeout is staged in context (exit-criteria-ledger.yaml#plan_closes_criteria). c1-c3 are disjoint
+  sibling plans (#1339, #1341, the c3 slice).
+scope:
+  - file: scripts/checks/decisions/validate_supersession_annotations.py
+    action: Modify
+    purpose: >-
+      M1 whole-number annotation match; M2 edges from scripts.decisions_md._extract_title_relation_targets over each
+      whole block for amends and supersedes, Decision 167 envelope union kept; L1 delete the unreachable header branch
+      and _HEADER_SUPERSEDED_RE; L2 FAIL on an orphan waiver (stale stays WARN); L3 clean FAIL on a malformed waiver
+      entry; registry.examined(edge_count, unit="supersession_edges") (Decision 170 touch-it-fix-it); correct the stale
+      docstring (FULL-only claim, singular-only limit).
+  - file: tests/checks/decisions/test_validate_supersession_annotations.py
+    action: Modify
+    purpose: >-
+      Mirror test (Decision 131): red-before cases for M1, M2, L2, L3 and the declaration, plus participle-rejection
+      regression cases. Existing cases stay unchanged.
+  - file: config/decision_supersession_waivers.yaml
+    action: Modify
+    purpose: >-
+      Add the four waivers the widened extractor makes red (execution_steps[2]): 130->128, and 52->37, 52->40, 52->49
+      under an OPERATOR-CONFIRM-PENDING ruling, with the header's admitted-category list amended in the same commit.
+  - file: config/check_accounting_baseline.yaml
+    action: Modify
+    purpose: Remove validate_supersession_annotations from the shrink-only grandfather roster (49 -> 48).
+  - file: docs/contracts/decision-entry.yaml
+    action: Modify
+    purpose: >-
+      Retire the field_grammar.known_divergent_grammars _EDGE_RE row (leave the key as an empty list), repoint
+      currency.consumer_contract's _EDGE_RE parenthetical to the shared helper, and add one amendment_log entry
+      (prose_improvement, semantic_break false). Class D amendment-log rule (Decision 168, validate_contract_drift).
+  - file: scripts/checks/decisions/_manifest.py
+    action: Modify
+    purpose: >-
+      Comment-only: drop the Entry comment saying the module docstring is stale and left alone for a separate change;
+      this plan is that change. No Entry field changes.
+bundled_recommendations: []
+followon_recs: []
+infrastructure_dependencies: []
+acceptance_criteria:
+  - >-
+    M1: a victim block that mentions only a longer number sharing the superseder's digits (Decision 52 for superseder
+    5) does not count as annotated; "Decision 5" followed by a non-digit still does.
+  - >-
+    M2: plural-list edges are enumerated ("Supersedes Decisions 37, 40, 49", "amends Decisions 102/128", "amends
+    Decision 1 and Decision 2"), and every edge the pre-change regex finds is still found (0 dropped).
+  - >-
+    Participle and gerund forms ("superseding Decision N", "amending Decision N", "does not amend Decision N",
+    "superseded by Decision N") yield no edge, matching decision-entry.yaml's rejected_forms.
+  - >-
+    L1: the header-annotation branch and _HEADER_SUPERSEDED_RE are gone and the existing header test still passes.
+    L2: a waiver naming no extracted edge appends a FAIL naming it; a stale waiver still only WARNs. L3: a waiver
+    entry with a missing or non-integer superseder or victim appends a clean FAIL and raises nothing.
+  - >-
+    The guard declares examined() with the full enumerated edge count, is absent from
+    config/check_accounting_baseline.yaml, and validate_check_accounting passes.
+  - >-
+    decision-entry.yaml no longer names _EDGE_RE, carries the new amendment_log entry, and validate_contract_drift
+    passes.
+  - >-
+    The real-repo guard is green with exactly four new waivers, and the full tier passes.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: Run the guard's mirror test file and the decisions manifest test.
+    command: >-
+      bin/venv-python -m pytest tests/checks/decisions/test_validate_supersession_annotations.py
+      tests/checks/decisions/test__manifest.py -q
+    expected: Exit 0, every test passes.
+    fix_if: >-
+      A failing M1/M2/L2/L3 case means that fix is missing or wrong; fix the module, never the assertion. A failing
+      participle case means the grammar was widened past the contract's rejected_forms; narrow it back.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      Whole-file pytest re-run of the guard's mirror test; pytest already runs it standing in both tiers, so a registry
+      row adds no independence.
+  - step: 2
+    phase: pre-deploy
+    action: >-
+      Run the guard on the real corpus; assert 0 edges dropped against the pre-change regex, the four new edges are
+      enumerated and waived, and the declaration counts every edge.
+    command: >-
+      bin/venv-python -c "import re,yaml;from pathlib import Path;from scripts.checks import registry;from
+      scripts.decisions_md import _iter_decision_sections as it;from scripts.checks.decisions.validate_supersession_annotations
+      import validate_supersession_annotations as v,extract_supersession_edges as x;f=[];v(f);d=registry.pop_declaration();assert
+      not f,f;e={(s,t) for s,t,_ in x(Path('.'))};o=re.compile(r'(?:Supersedes|supersedes|amends|Amends|partially
+      supersedes)\s+Decision\s+(\d+)');old={(int(h.group(1)),int(m.group(1))) for p in ('docs/DECISIONS.md','docs/DECISIONS_ARCHIVE.md')
+      for h,b in it(open(p).read()) for m in o.finditer(b) if int(m.group(1))!=int(h.group(1))};assert old<=e,old-e;n={(52,37),(52,40),(52,49),(130,128)};assert
+      n<=e,n-e;w={(int(r['superseder']),int(r['victim'])) for r in yaml.safe_load(open('config/decision_supersession_waivers.yaml'))['waivers']};assert
+      n<=w,n-w;assert len(e)>=110,len(e);assert d and d.kind=='examined' and d.unit=='supersession_edges' and d.count==len(e),d;print('guard
+      OK',len(e))"
+    expected: Exit 0 printing the guard line with the edge count (110 at plan time; it grows with the corpus).
+    fix_if: >-
+      A FAIL list means an edge is red; if it is not one of the four named edges, stop and report (never add an
+      unplanned waiver). old-e non-empty means the swap dropped an edge; n-e means the swap did not land; a None or
+      mismatched declaration means examined() is not reached on the pass path.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      The registered check runs on every --pre and full pass and fails on any red edge; validate_check_accounting
+      enforces the declaration. A registry row would repeat both.
+    expected_literals:
+      - guard OK
+  - step: 3
+    phase: pre-deploy
+    action: Confirm the check left the grandfather roster and the accounting guard is green.
+    command: >-
+      bin/venv-python -c "from scripts.checks.hygiene.validate_check_accounting import validate_check_accounting as
+      v;f=[];v(f);assert not f,f;assert 'validate_supersession_annotations' not in
+      open('config/check_accounting_baseline.yaml').read();print('accounting OK')"
+    expected: Exit 0 printing the accounting line.
+    fix_if: >-
+      A touch-it-fix-it FAIL means the module edit landed without the declaration; a shrink FAIL means another roster
+      line changed. Fix the module or the roster line, never the guard.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: validate_check_accounting already runs standing in both tiers and enforces exactly this.
+    expected_literals:
+      - accounting OK
+  - step: 4
+    phase: pre-deploy
+    action: Confirm the contract no longer names _EDGE_RE and its amendment-log rule passes.
+    command: >-
+      bin/venv-python -c "from scripts.checks.contracts.validate_contract_drift import validate_contract_drift as
+      v;f=[];v(f);assert not f,f;t=open('docs/contracts/decision-entry.yaml').read();assert '_EDGE_RE' not in t;assert
+      'PLAN-t1-17-c4-supersession-guard-hardening' in t;print('contract OK')"
+    expected: Exit 0 printing the contract line.
+    fix_if: >-
+      A drift FAIL naming decision-entry means the amendment_log entry is missing or malformed; '_EDGE_RE' still
+      present means a row was not retired or repointed. If the drift check's import path or signature differs, read
+      scripts/checks/contracts/ and call its registered entrypoint; do not weaken the assertions.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: validate_contract_drift runs standing in both tiers; the symbol removal is a one-time fact.
+    expected_literals:
+      - contract OK
+  - step: 5
+    phase: pre-deploy
+    action: Confirm the branch touches only the scope files.
+    command: git diff --name-only origin/main...HEAD | sort
+    expected: >-
+      Exactly seven paths: this plan file, the guard module, its mirror test, the waiver file, the accounting baseline,
+      decision-entry.yaml and the decisions _manifest.py.
+    fix_if: Any other path means scope leaked; revert it.
+    hermetic: false
+    graduation: not-applicable
+  - step: 6
+    phase: pre-deploy
+    action: Run the fast presubmit tier.
+    command: bin/venv-python -m scripts.validate --pre
+    expected: Exit 0; PR CI's --pre run is the authoritative pre-merge gate (Decision 73).
+    fix_if: Address the reported check; never add a suppression.
+    hermetic: false
+    graduation: not-applicable
+  - step: 7
+    phase: pre-deploy
+    action: Run the full tier before handoff (Decision 163 clause 2, validate_handoff_full_tier).
+    command: bin/venv-python -m scripts.validate
+    expected: Exit 0.
+    fix_if: >-
+      A failure in a check this plan touches is this plan's to fix; a failure elsewhere is reported with its output,
+      never suppressed (timeout_disposition blocked: rerun from the start).
+    hermetic: false
+    graduation: not-applicable
+test_obligations:
+  - source: scripts/checks/decisions/validate_supersession_annotations.py
+    behavior: >-
+      Whole-number annotation match, shared-grammar plural edges, participle rejection, orphan-waiver FAIL,
+      malformed-waiver FAIL and the examined() declaration.
+    verification_step: 1
+    test_selector: tests/checks/decisions/test_validate_supersession_annotations.py
+    red_green_expectation: >-
+      Red before: the M1 prefix fixture passes the guard wrongly, the plural fixtures yield no edge, the orphan fixture
+      passes, the malformed fixture raises KeyError, and no declaration is recorded. Green after.
+  - source: config/decision_supersession_waivers.yaml
+    behavior: The four new red edges are waived and the real-repo guard is green.
+    verification_step: 1
+    test_selector: tests/checks/decisions/test_validate_supersession_annotations.py::TestNonVacuityRealRepo::test_real_repo_guard_is_green
+    red_green_expectation: Red once the grammar swap lands without the waivers (four FAIL lines); green after.
+  - source: config/check_accounting_baseline.yaml
+    behavior: The roster no longer exempts the guard.
+    verification_step: 3
+    command: >-
+      bin/venv-python -c "from scripts.checks.hygiene.validate_check_accounting import validate_check_accounting as
+      v;f=[];v(f);assert not f,f;assert 'validate_supersession_annotations' not in
+      open('config/check_accounting_baseline.yaml').read();print('accounting OK')"
+    waiver_reason: >-
+      A one-line roster removal enforced by validate_check_accounting's shrink and touch-it-fix-it legs, which run
+      standing in both tiers; VP 3 exercises them.
+  - source: docs/contracts/decision-entry.yaml
+    behavior: The contract stops naming the retired regex and logs the amendment.
+    verification_step: 4
+    command: >-
+      bin/venv-python -c "from scripts.checks.contracts.validate_contract_drift import validate_contract_drift as
+      v;f=[];v(f);assert not f,f;t=open('docs/contracts/decision-entry.yaml').read();assert '_EDGE_RE' not in t;assert
+      'PLAN-t1-17-c4-supersession-guard-hardening' in t;print('contract OK')"
+    waiver_reason: >-
+      Prose and amendment-log edit with no runtime behavior; validate_contract_drift's Class D amendment-log rule is
+      the standing guard and VP 4 exercises it.
+  - source: scripts/checks/decisions/_manifest.py
+    behavior: Comment-only edit; no Entry field changes.
+    verification_step: 1
+    test_selector: tests/checks/decisions/test__manifest.py
+    waiver_reason: >-
+      Comment-only change with no behavior; tests/checks/decisions/test__manifest.py already resolves every Entry.
+constraints:
+  - >-
+    GATE: /implement does not start until the operator's ruling on the three Decision 52 waivers is recorded against
+    MEMORY.md#parked row R4. Merging this plan PR is not that ruling.
+  - >-
+    ATOMIC: the grammar swap and its four waivers land in one commit (the guard runs in --pre; a swap without them
+    reds main and opens a ci_rca rec, Decisions 72/73). The whole plan lands in one PR; shipping M1, L1-L3, the
+    declaration and the contract edit without the swap is the split fallback, which only the operator chooses.
+  - >-
+    alternative_annotation_shape (if the operator declines the Decision 52 waivers): a dated trailer on Decision 37's
+    compacted stub (operator-only: live file, fixed stub grammar), trailing_bracket amendments on archived Decisions 40
+    and 49 (decision-entry.yaml amendment_forms; archive reach is R3's parked fork 5), a scope amendment adding both
+    corpus files, and a post-merge --backfill-decisions-md run (Decision 84). Otherwise the split fallback.
+  - >-
+    No edit to docs/DECISIONS.md, docs/DECISIONS_ARCHIVE.md, scripts/decisions_md.py or docs/ROADMAP-PLATFORM.yaml
+    (Decision 177 body lock; roadmap Lambda-bundled, Decisions 79/125). No waiver beyond the four named: a fifth red
+    edge at implement time is a stop-and-report.
+  - >-
+    No participle or gerund extraction and no hand-rolled widened regex: the edge grammar is scripts.decisions_md's
+    shared helper (Decision 134 clause 3; CFG-06).
+  - >-
+    Preserve the R1 VP replay surface: extract_supersession_edges(root), _combined_number_to_block(root) and
+    _load_waivers(root, failed) returning a (waived, allowlisted) tuple on success keep their names and shapes.
+  - >-
+    No recommendation bundled, filed or closed: decision-entry.yaml's "a follow-on rec tracks it" stays open for the
+    operator (Decision 67; T1.17's no-new-recs provenance).
+  - "No net-new suppression (noqa, type: ignore, pragma: no cover, skip/xfail)."
+  - No rescue agents or workaround loops (Decision 55).
+context:
+  - "Decision-scout t1-17-c4-decision-scout-r1-b7e40c39: FLAGS_FOUND. CITE 134, 167, 170, 177, 163, 79, 125, 73, 72. CONTRADICT 146 [WARN] (D52 full-supersession waivers -> parked, fork 2), 136 [WARN] (closes_criteria -> omitted, fork 3). SPIRIT 163 [NOTE] (orphan waivers -> FAIL, fork 5)."
+  - "Decisions triaged: 163 of 163"
+  - "Roadmap items intersected: 3; CONFLICT: 0; RELATED: 2"
+  - "gates: decision-scout=FLAGS_FOUND; step-6b=stand-in t1-17-c4-step-6b-stand-in-r1 (write the plan); plan-critique=PENDING"
+  - "fork: waive 130->128 or annotate Decision 128 | chosen: waive, reason quoting D130's title | class: asked | precedent: PLAN-decisions-supersession-guard 128->102 OPERATOR-CONFIRMED WAIVE; D177; D179 point 6; R4 stand-in 2026-10-01 | precedent_kind: answered-fork | reversible: yes | persisted: waiver row, context"
+  - "fork: the three D52 title edges (52->37/40/49) | chosen: PARKED (operator, MEMORY.md#parked R4); shape: carry the waivers OPERATOR-CONFIRM-PENDING, /implement gated, header category amended in the same commit | class: asked | precedent: none for the ruling (waiver header forbids waiving a FULL supersession; D146); shape per PLAN-decisions-supersession-guard 128->102/85->58 | precedent_kind: none | reversible: yes | persisted: waiver block, constraints, MEMORY.md#parked"
+  - "fork: declare closes_criteria [T1.17:c4] or omit | chosen: omit; closeout staged below; operator may add it later as a permitted_field_edit (implement-scope-boundary.yaml) once T1.17 is in_progress | class: asked | precedent: exit-criteria-ledger.yaml#plan_closes_criteria + realized-differently rule; D136; D79/125; R2/R3 stand-ins | precedent_kind: contract | reversible: yes | persisted: no closes_criteria; staged_c4_closeout"
+  - "fork: re-ground c4's text | chosen: staged below; ROADMAP-PLATFORM.yaml out of scope | class: consistency-only | precedent: realized-differently rule; tier_item_freshness_gate check 2; D134 cl.3; D79/125 | precedent_kind: contract | reversible: yes | persisted: staged_c4_closeout"
+  - "fork: orphan waiver FAIL or WARN | chosen: FAIL; stale stays WARN | class: asked | precedent: D163 point 1; waiver header 'Every entry MUST name a real ... edge'; 0 orphans today | precedent_kind: decision | reversible: yes | persisted: guard, test, docstring"
+  - "fork: add decision-entry.yaml to scope | chosen: yes (retire row, repoint consumer_contract, amendment_log) | class: consistency-only | precedent: D168 + validate_contract_drift Class D rule; implement-scope-boundary disposition_on_violation | precedent_kind: contract | reversible: yes | persisted: scope, amendment_log"
+  - "fork: apply the staged c4 closeout and the T1.17 status move | chosen: PARKED (operator; rides R1's item-status row) | class: asked | precedent: none (always-ask) | precedent_kind: none | reversible: yes | persisted: staged_c4_closeout, MEMORY.md#parked"
+  - >-
+    The 3 Lows are unrecoverable: OVERSEER-decision-log-premise-integrity.yaml:91 records only "3 Low", and PR #684
+    has no review threads and one bot comment (read via the GitHub API). L1-L3 are re-derived from the module at
+    51253cdd; M1 is dormant (0 prefix-only annotations over 103 edges, all superseders >= 50).
+  - >-
+    Swap probe: the shared helper over whole blocks plus the envelope union gives 110 edges, 0 of 103 dropped; new
+    52->37/40/49 and 130->128 red, 130->102, 160->146, 164->116 annotated. Its docstring says "title", but its body
+    iterates every anchor (decisions_md.py:363-391); a title-only scan would drop 14 body edges.
+  - >-
+    Participle probe (7 hits): 204->192 already an edge, 79->67 annotated; of the 5 that would go red, D195 "does not
+    amend Decision 171" and D192 "rather than amending Decision 188" are negations, D81 x2 cite Decision 78's act,
+    D151 is a parenthetical, and D163->73 is the one plausible clause-level amend.
+  - >-
+    staged_c4_closeout (operator applies as its own roadmap micro-commit): c4 open -> met; met_by
+    t1-17-c4-supersession-guard-hardening (or the implementation's 40-hex sha); text -> "Wave-3 guard hardening:
+    validate_supersession_annotations matches whole decision numbers in _is_annotated, enumerates plural-list edges
+    via decision-entry.yaml title_relation_continuation (participle forms rejected per its rejected_forms), and fixes
+    three re-derived Lows (unreachable header branch, orphan waivers now FAIL, malformed waiver entries FAIL cleanly);
+    the original three Lows were never recorded"; original wording -> progress_note; T1.17 status rides R1's row.
+  - "examined() counts all enumerated edges, so the declared count tracks the growing corpus (the AUD watch item)."
+  - "Decision 73 ci_rca state: unverifiable from the authoring sandbox (recs reader unreachable; ci_rca_open timed out)."
+pre_implementation_checklist:
+  - Operator ruling on MEMORY.md#parked row R4 recorded (constraint GATE)
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - Only the plan-cited decision sections read
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+execution_steps:
+  - >-
+    scripts/checks/decisions/validate_supersession_annotations.py: (a) _is_annotated returns
+    re.search(rf"\bDecision {superseder}(?!\d)", victim_block) is not None; delete _HEADER_SUPERSEDED_RE. (b) In
+    extract_supersession_edges replace the _EDGE_RE loop with, for word in ("amends", "supersedes"),
+    _extract_title_relation_targets(block, word) imported from scripts.decisions_md; keep the self-reference skip, the
+    envelope union and the sorted set; delete _EDGE_RE. (c) _load_waivers: each waivers entry must be a mapping whose
+    superseder and victim coerce to int; otherwise append a FAIL naming the entry index and the file and return None.
+    (d) _check_supersession_annotations: after the edge loop, append one FAIL per waived pair absent from the extracted
+    edge set ("orphan waiver S->V names no extracted edge -- delete it") and set any_fail. (e)
+    registry.examined(edge_count, unit="supersession_edges") once the edge count exists. (f) Docstring: the check runs
+    in --pre and full (the _manifest.py Entry is authoritative); replace the singular-only limit with the shared
+    grammar and the participle rejection; state orphan FAIL and stale WARN.
+  - >-
+    tests/checks/decisions/test_validate_supersession_annotations.py: add classes for M1 (superseder 5, victim
+    mentions only Decision 52 -> FAIL; "Decision 5." -> pass), M2 ("Supersedes Decisions 1, 2"; "amends Decisions
+    1/2"; "amends Decision 1 and Decision 2" -> every pair extracted), participle rejection (superseding, amending,
+    does not amend, superseded by -> no edge), L2 orphan -> FAIL naming the pair, stale -> WARN only, L3 missing victim
+    and non-integer superseder -> FAIL without exception, and the declaration (kind examined, unit supersession_edges,
+    count equal to the extracted edges). tmp_path fixtures; no absolute real-repo counts.
+  - >-
+    config/decision_supersession_waivers.yaml: append 130->128 with "Decision 130's title amends Decisions 102/128
+    'scan scope' only (the tests/ grandfather); Decision 128's decompose-by-default rule stands. Same clause-level
+    family as the operator-confirmed 128->102 waiver; never asserted before this plan's grammar swap." Then, under a
+    comment line reading OPERATOR-CONFIRM-PENDING (MEMORY.md#parked R4), append 52->37, 52->40, 52->49, each with:
+    "Archived Decision 52's title supersedes Decisions 37, 40, 49 (a full supersession). Decision 52 is itself 'now
+    fully retired' (Decision 116). This victim already forward-points to its operative superseder, Decision <116 for
+    37 and 49, 122 for 40>, chosen in the operator-confirmed PLAN-decisions-archival-hygiene move list. The edge was
+    never asserted before this plan's grammar swap, so no existing assertion weakens (Decision 181)." In the same
+    commit amend the header's admitted categories with a fourth: "a historical full supersession by a retired
+    superseder whose victim already forward-points to its operative superseder". Remove the marker line once the
+    operator confirms.
+  - "config/check_accounting_baseline.yaml: delete the validate_supersession_annotations line."
+  - >-
+    docs/contracts/decision-entry.yaml: delete the known_divergent_grammars _EDGE_RE row (leave known_divergent_grammars:
+    []); in currency.consumer_contract replace the _EDGE_RE parenthetical with one naming
+    scripts.decisions_md._extract_title_relation_targets, which matches supersedes and amends identically; add an
+    amendment_log entry (date, semantic_break false, change_class prose_improvement) citing
+    PLAN-t1-17-c4-supersession-guard-hardening and Decision 134 clause 3.
+  - "scripts/checks/decisions/_manifest.py: delete the stale-docstring sentences in the Entry comment; keep pre=True and pre_globs."
+  - >-
+    Execute the Verification Plan: run each step; loop until pass; on an unplanned red edge stop and report rather
+    than waive (Decision 55).
+  - "Report: what was implemented, verification results"
+rollback: >-
+  Before merge: drop the commits. After merge: revert the squash commit; the guard returns to its singular-only grammar
+  and the reverted code ignores the four extra waivers.
