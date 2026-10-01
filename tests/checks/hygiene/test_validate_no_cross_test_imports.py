@@ -14,6 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
+from scripts.checks import registry, validation_result
 from scripts.checks.hygiene.validate_no_cross_test_imports import (
     _find_violations,
     validate_no_cross_test_imports,
@@ -102,3 +103,81 @@ class TestValidateNoCrossTestImportsFunction:
         failed: list[str] = []
         validate_no_cross_test_imports(failed)
         assert failed == []
+
+
+class TestNoCrossTestImportsAccountingDeclaration:
+    """The check declares how many test modules it parsed, so a run is never recorded as undeclared."""
+
+    @staticmethod
+    def _run(tmp_path: Path) -> tuple[list[str], registry._Declaration | None]:
+        registry.pop_declaration()
+        failed: list[str] = []
+        with patch("scripts.checks._common.ROOT", tmp_path):
+            validate_no_cross_test_imports(failed)
+        return failed, registry.pop_declaration()
+
+    @staticmethod
+    def _outcome(tmp_path: Path) -> registry.CheckOutcome:
+        validation_result._OUTCOMES.clear()
+        try:
+            with patch("scripts.checks._common.ROOT", tmp_path):
+                validation_result.dispatch_recording("validate_no_cross_test_imports", [], validate_no_cross_test_imports)
+            (outcome,) = validation_result._OUTCOMES
+        finally:
+            validation_result._OUTCOMES.clear()
+        return outcome
+
+    def test_declares_every_parsed_test_module(self, tmp_path: Path) -> None:
+        _write(tmp_path, "tests/test_a.py", "x = 1\n")
+        _write(tmp_path, "tests/checks/test_b.py", "y = 2\n")
+        _write(tmp_path, "tests/conftest.py", "z = 3\n")
+        failed, declaration = self._run(tmp_path)
+        assert failed == []
+        assert declaration is not None
+        assert (declaration.kind, declaration.count, declaration.unit) == ("examined", 3, "test_modules")
+
+    def test_declared_count_tracks_the_input(self, tmp_path: Path) -> None:
+        _write(tmp_path, "tests/test_a.py", "x = 1\n")
+        _, first = self._run(tmp_path)
+        _write(tmp_path, "tests/test_b.py", "y = 2\n")
+        _write(tmp_path, "tests/test_c.py", "z = 3\n")
+        _, second = self._run(tmp_path)
+        assert first is not None and second is not None
+        assert (first.count, second.count) == (1, 3)
+
+    def test_violating_module_is_counted_as_examined(self, tmp_path: Path) -> None:
+        _write(tmp_path, "tests/test_a.py", "x = 1\n")
+        _write(tmp_path, "tests/test_g.py", "from tests.test_foo import X\n")
+        failed, declaration = self._run(tmp_path)
+        assert failed == ["No-cross-test-import guard"]
+        assert declaration is not None
+        assert (declaration.kind, declaration.count, declaration.unit) == ("examined", 2, "test_modules")
+
+    def test_grandfathered_and_unparseable_modules_are_not_counted(self, tmp_path: Path) -> None:
+        _write(tmp_path, "tests/test_a.py", "x = 1\n")
+        _write(tmp_path, "tests/test_verifier_harness.py", "from tests.test_verifiers.test_harness import t\n")
+        _write(tmp_path, "tests/test_broken.py", "def (:\n")
+        failed, declaration = self._run(tmp_path)
+        assert failed == []
+        assert declaration is not None
+        assert (declaration.kind, declaration.count, declaration.unit) == ("examined", 1, "test_modules")
+
+    def test_populated_tree_is_recorded_enforced(self, tmp_path: Path) -> None:
+        _write(tmp_path, "tests/test_a.py", "x = 1\n")
+        outcome = self._outcome(tmp_path)
+        assert (outcome.status, outcome.examined_count, outcome.examined_unit) == ("enforced", 1, "test_modules")
+
+    def test_empty_tree_is_recorded_vacuous(self, tmp_path: Path) -> None:
+        (tmp_path / "tests").mkdir()
+        outcome = self._outcome(tmp_path)
+        assert (outcome.status, outcome.examined_count, outcome.examined_unit) == ("vacuous", 0, "test_modules")
+
+    def test_real_tree_examines_a_nonzero_population(self) -> None:
+        registry.pop_declaration()
+        failed: list[str] = []
+        validate_no_cross_test_imports(failed)
+        declaration = registry.pop_declaration()
+        assert failed == []
+        assert declaration is not None
+        assert declaration.kind == "examined" and declaration.unit == "test_modules"
+        assert declaration.count is not None and declaration.count > 100
