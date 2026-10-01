@@ -49,18 +49,20 @@ def _resolve_string_value(node: ast.expr) -> Optional[str]:
     return None
 
 
-def _scan_file(path: Path) -> list[str]:
+def _scan_file(path: Path) -> tuple[list[str], int]:
+    """Return (violations, number of statically-resolved acceptance literals linted)."""
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
-        return []
+        return [], 0
     try:
         tree = ast.parse(text, filename=str(path))
     except SyntaxError:
-        return []
+        return [], 0
 
     rel = path.relative_to(_common.ROOT)
     violations: list[str] = []
+    linted = 0
     for node in ast.walk(tree):
         if not isinstance(node, ast.Dict):
             continue
@@ -70,25 +72,29 @@ def _scan_file(path: Path) -> list[str]:
             resolved = _resolve_string_value(value)
             if resolved is None:
                 continue
+            linted += 1
             ok, msg = lint_acceptance_command(resolved)
             if not ok:
                 lineno = getattr(value, "lineno", node.lineno)
                 first_line = (msg or "").strip().splitlines()[0] if msg else "lint failed"
                 violations.append(f"{rel}:{lineno}: acceptance literal fails lint_acceptance_command -- {first_line}")
-    return violations
+    return violations, linted
 
 
-def _find_violations() -> list[str]:
+def _find_violations() -> tuple[list[str], int]:
     search_dirs = [_common.ROOT / "scripts"]
     personal_dir = _common.ROOT / "personal_scripts"
     if personal_dir.exists():
         search_dirs.append(personal_dir)
 
     violations: list[str] = []
+    linted = 0
     for search_dir in search_dirs:
         for py_file in sorted(search_dir.glob("**/*.py")):
-            violations.extend(_scan_file(py_file))
-    return violations
+            file_violations, file_linted = _scan_file(py_file)
+            violations.extend(file_violations)
+            linted += file_linted
+    return violations, linted
 
 
 @registry.register("validate_acceptance_literals", owner="platform")
@@ -96,7 +102,8 @@ def validate_acceptance_literals(failed: list[str]) -> None:
     """Fail any statically-resolvable "acceptance" dict-literal value under scripts/ or
     personal_scripts/ that does not pass lint_acceptance_command (rec-2772)."""
     print("\n=== Acceptance literal lint ===")
-    violations = _find_violations()
+    violations, linted = _find_violations()
+    registry.examined(linted, unit="acceptance_literals")
     if violations:
         print("Acceptance literal lint violations found:")
         for v in violations:
