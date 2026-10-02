@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
+from scripts.checks import registry
 from scripts.checks.ci_guards.validate_composite_action_manifests import (
     _scan_manifest,
     validate_composite_action_manifests,
@@ -196,3 +198,74 @@ class TestValidateCompositeActionManifestsUnparseable:
                 pytest.fail(f"validate_composite_action_manifests raised: {exc}")
         assert len(failed) == 1
         assert "unparseable" in failed[0]
+
+
+_CHECK = "validate_composite_action_manifests"
+_UNIT = "action_manifests"
+_REPO_ROOT = Path(__file__).parents[3]
+
+
+def _declared(root: Path) -> tuple[list[str], registry._Declaration | None]:
+    registry.pop_declaration()
+    with patch(f"{_MODULE}._common.ROOT", root):
+        failed: list[str] = []
+        validate_composite_action_manifests(failed)
+    return failed, registry.pop_declaration()
+
+
+def _write_action(root: Path, name: str, filename: str, body: str) -> None:
+    action_dir = root / ".github" / "actions" / name
+    action_dir.mkdir(parents=True)
+    (action_dir / filename).write_text(body, encoding="utf-8")
+
+
+_CLEAN = "name: clean\ndescription: clean\nruns:\n  using: composite\n  steps: []\n"
+
+
+class TestCompositeActionManifestsAccountingDeclaration:
+    """The check declares how many action manifests it linted, so a run records enforced with a count
+    that tracks the manifests on disk -- not a constant and not the violation count."""
+
+    def test_real_tree_declares_every_manifest(self) -> None:
+        actions_dir = _REPO_ROOT / ".github" / "actions"
+        expected = sum(1 for pattern in ("action.yml", "action.yaml") for _ in actions_dir.rglob(pattern))
+
+        failed, declaration = _declared(_REPO_ROOT)
+        outcome = registry.build_outcome(_CHECK, "check", declaration, bool(failed))
+
+        assert expected > 0
+        assert declaration is not None
+        assert (declaration.kind, declaration.count, declaration.unit) == ("examined", expected, _UNIT)
+        assert outcome.status == "enforced"
+
+    def test_count_includes_both_extensions_and_ignores_other_files(self, tmp_path: Path) -> None:
+        _write_action(tmp_path, "one", "action.yml", _CLEAN)
+        _write_action(tmp_path, "two", "action.yaml", _CLEAN)
+        _write_action(tmp_path, "three", "action.yml", _CLEAN)
+        (tmp_path / ".github" / "actions" / "three" / "README.md").write_text("${{ github.token }}\n", encoding="utf-8")
+
+        failed, declaration = _declared(tmp_path)
+
+        assert failed == []
+        assert declaration is not None
+        assert (declaration.kind, declaration.count, declaration.unit) == ("examined", 3, _UNIT)
+
+    def test_no_manifests_declares_vacuous_domain(self, tmp_path: Path) -> None:
+        failed, declaration = _declared(tmp_path)
+        outcome = registry.build_outcome(_CHECK, "check", declaration, bool(failed))
+
+        assert failed == []
+        assert declaration is not None
+        assert (declaration.kind, declaration.count, declaration.unit) == ("examined", 0, _UNIT)
+        assert outcome.status == "vacuous"
+
+    def test_violating_and_unparseable_manifests_still_record_failed(self, tmp_path: Path) -> None:
+        _write_action(tmp_path, "bad", "action.yml", "name: bad-${{ github.run_id }}\nruns:\n  using: composite\n")
+        _write_action(tmp_path, "broken", "action.yml", "name: [unterminated\n  description: oops")
+
+        failed, declaration = _declared(tmp_path)
+        outcome = registry.build_outcome(_CHECK, "check", declaration, bool(failed))
+
+        assert len(failed) == 2
+        assert declaration is not None and declaration.count == 2
+        assert outcome.status == "failed"
