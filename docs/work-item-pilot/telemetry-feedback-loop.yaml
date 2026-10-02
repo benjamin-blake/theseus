@@ -11,6 +11,43 @@ fixture:
     first_of: [{criterion_met: 'T4.23:c6'}, {review_on: '2027-01-31'}]
     outcome: lift rows into the store, or restructure (rehome or reshape) per the operator's review; never delete
   edges_disposition: pilot_only -- re-authored by the implementation merge on lift (Decision 197 clause 5), never lifted as-is
-work_items: []
-work_item_criteria: []
-work_item_edges: []
+work_items:
+  - id: pwi-telemetry-reader-verbs
+    kind: task
+    title: 'Telemetry reader verbs: partition-bound, generation-aware derived-state reads over the event journal (rec-4024)'
+    extension:
+      consideration_register:
+        why: Decision 199 stores no state, duration, roll-up, friction or cost; every feedback-loop consumer (failure signals, classifier, back-validation, T3.3) reads them only through these verbs.
+        how: 'Extend NAMED_READS with an event-journal form: a server-decoded partition predicate from session_id, one shared R4/R5 dedupe block with its conflict report, and per-session verbs that return derived rows only.'
+        planes: [data_plane]
+        maturity:
+          rung: read_all
+          transitions:
+            - {from: read_all, to: sampled, trigger: {metric: consecutive sessions whose verb outputs match the harness re-derivation, comparator: '>=', threshold: 50}}
+            - {from: sampled, to: spot_check, trigger: {metric: verb re-derivation mismatches across the last 200 sampled sessions, comparator: ==, threshold: 0}}
+            - {from: spot_check, to: anomaly_triggered, trigger: {metric: consecutive days with zero mismatches and zero conflicted grain keys reported, comparator: '>=', threshold: 30}}
+        failure_signal: {signal: 'a verb returns a derived value (state, duration, roll-up) that differs from a re-derivation over the same raw rows, silently skewing every consumer', metric: 'verb_rederivation_mismatch_rate: sampled sessions whose verb output differs from the harness re-derivation', source: rec-4025 harness in shadow mode over sampled sessions (q3); CI dedupe vectors cover R4/R5}
+        verification: [c1, c2, c3]
+        rollback: Remove the telemetry verbs from NAMED_READS and bump the registry version; reads have no side effects and stored rows are untouched.
+        evidence:
+          - {kind: file_line, ref: 'src/common/ducklake_reads.py:139'}
+          - {kind: file_line, ref: 'docs/contracts/telemetry_sessions.yaml:192'}
+          - {kind: file_line, ref: 'docs/contracts/telemetry_sessions.yaml:252'}
+          - {kind: file_line, ref: 'docs/contracts/telemetry-event-envelope.yaml:337'}
+        settled:
+          - {id: s1, text: 'Read side only: D199 derived-at-read verbs; the writer and tables are T2.36, labels rec-4032 and prices rec-4031 compose on this mechanism.'}
+          - {id: s2, text: 'NamedRead needs an event-journal form: {tbl} binds an SCD2 current projection, which append-only tables lack (renders lake.None, VP 1).'}
+          - {id: s3, text: 'Feasible: R4/R5 dedupe is one SQL statement passing 17/17 vectors (VP 2); a session_id alone yields its partition, 1 of 70 files read (VP 3).'}
+        contested:
+          - {id: k1, text: 'State and duration: contract reads any close row as terminal and times from the root start; resume-after-close and sub-agents need latest-row and own-open.'}
+          - {id: k2, text: 'Window verb (one derived row per session over <=7 days) here, or wait for T2.52''s aggregate class; capture''s signal and T3.3/T3.4 need it.'}
+        open_questions:
+          - {id: q1, text: 'Which consumer latency bound tests D199''s derived-read-too-costly falsifier? Per-verb Neon latency and catalog egress are unmeasured.'}
+          - {id: q2, text: rec-4024's own text (item 6) was unreadable here; the verb set is inferred from the contracts' populated_by rows. Operator to confirm.}
+          - {id: q3, text: 'Is rec-4025''s harness the shadow re-derivation source for the failure_signal, or does the reader own a production raw-rows path?'}
+work_item_criteria:
+  - {work_item: pwi-telemetry-reader-verbs, criterion_id: c1, text: Telemetry verbs bind the append-only tables through an event-journal registry form with a server-decoded partition predicate; the shared R4/R5 dedupe passes every dedupe vector on DuckLake and reports conflicted keys., method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_reader_verbs_ducklake.py -m integration -k dedupe_vectors}, status: open}
+  - {work_item: pwi-telemetry-reader-verbs, criterion_id: c2, text: 'Derivation verbs match golden fixtures under the k1 rule: state from the latest lifecycle row (resume after close reads running), duration from the session''s own open row, sub-agents included.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_reader_verbs.py -k derivation}, status: open}
+  - {work_item: pwi-telemetry-reader-verbs, criterion_id: c3, text: 'Before any consumer depends on a verb, its p95 latency and per-call catalog egress are measured on the production catalog against a named consumer bound (D199 falsifier, D88).', method: {kind: review, resolver: operator at the first telemetry-verb deploy review, evidence_requirement: 'per-verb p95 latency, response bytes and Neon catalog egress, compared with the named consumer bound'}, status: open}
+work_item_edges:
+  - {from: pwi-telemetry-reader-verbs, to: T2.36, kind: part_of}
