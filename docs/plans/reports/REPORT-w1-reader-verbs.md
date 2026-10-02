@@ -60,7 +60,12 @@ Measured (local only; no production catalog read):
   event_ids, and R5b keeps the same event_id whichever parser_version wins, so a mutant that keeps the
   LOWEST version still passes 17/17: VP 2 is weaker evidence for R5b's version order than for R5a and
   R5c. The sketch is correct by inspection, and criterion c1's DuckLake test compares survivors by
-  (event_id, parser_version) to close the gap.
+  (event_id, parser_version) to close the gap. A second gap of the same kind: deriving V* from every
+  telemetry_sessions row instead of only `event_kind = 'open'` also passes 17/17, yet it breaks R8 (a
+  non-replayable producer emits no open marker, so a bump retires nothing): a non-replayable producer
+  with close or annotate session rows at two parser versions would get a V* and lose its older rows. The
+  sketch filters on open rows correctly; c1's DuckLake test carries that case. The vectors are normative
+  and are not edited here; the case is a note for their owner.
 - Partition binding on a local DuckLake catalog (pinned extension, UTC, inlining off), 7 calendar days x
   10 sessions x 100 rows, each day written as 5 flushes that interleave all 10 of its sessions (35
   Parquet files), session ids derived by src/telemetry/identity.py: a per-session read filtered by
@@ -80,7 +85,10 @@ Mechanism:
 
 1. Registry form. NamedRead gains an event-journal binding: placeholders for the four append-only
    tables (history only, no current projection; the tables are registered first, rec-4024 slice 2), more
-   than one table per verb (R4's join), and a MANDATORY partition predicate rendered server-side. Per-session verbs take only `session_id`; the server decodes the calendar-day triple
+   than one table per verb (R4's join), and a MANDATORY partition predicate rendered server-side.
+   Prerequisite (Decision 128): src/common/ducklake_scd2_schema.py is near its 500-SLOC limit (rec-4024
+   records 474/500), and the registry form lands there and in ducklake_reads.py, so the implementation
+   plan decomposes it into a facade package first, never a budget raise. Per-session verbs take only `session_id`; the server decodes the calendar-day triple
    from its ULID prefix (e9), so no caller can widen the scan. NAMED_READS_VERSION bumps; `describe`
    lists the new class. No caller SQL crosses the boundary (Decision 84 I-3).
 2. Shared dedupe. Every telemetry verb composes one rendered R4/R5 block per table it reads, then
@@ -120,7 +128,11 @@ GROUP BY producer, event_id, parser_version HAVING count(DISTINCT content) > 1
    `observation_type = 'model_call'`; the vectors mark them by observation_id). `content` stands for
    every stored column except the write-time stamp and the provenance-only columns Decision 207 excludes
    from the grain's compared content (for telemetry, created_timestamp and producer_version), so a re-send
-   that differs only in producer_version is never reported as conflicted.
+   that differs only in producer_version is never reported as conflicted. In production the compare is
+   ONE row value (a struct of every non-excluded column, `count(DISTINCT row(...))`), never a
+   per-column DISTINCT: DuckDB ignores NULLs in a per-column count, so rows `('x', NULL)` and `('x', 'y')`
+   would count as one value and hide a NULL-versus-value conflict, which Decision 207 treats as a real
+   conflict.
 3. Response shape. Derived rows only: one row per session (or agent run), never raw observation rows
    and never transcript content. A 1000-turn session holds about 55k rows (component 1, section 1),
    far past a Function URL response; derived rows keep every response small (Decision 88) and keep
@@ -166,19 +178,35 @@ Contested (evidence on both sides, options listed; k1-k3 in the fixture):
   resumed session becomes a new session with execution_attempt + 1). (b) contradicts the ratified
   contract itself, where a resumed session reuses session_id and appends a resume event
   (telemetry_sessions.yaml:261-262), as well as component 1's per-finalization close; (c) keep the text
-  and document the child offset as a known bias. Recommended: (a). A ratified Class A semantic change,
-  so the operator decides; parked.
+  and document the child offset as a known bias. Recommended: (a). Two semantics inside (a) must be
+  picked knowingly, and c2's golden fixtures pin them: (i) "latest" orders by event_timestamp, then
+  source_ordinal (the envelope's read-side ordering aid), then event_id, over the lifecycle rows of
+  every producer that writes telemetry_sessions rows for the session, each after its own R5 dedupe;
+  (ii) "latest close minus own first open" is wall-clock and includes any idle gap between a close and
+  a later resume; the alternative sums the open-to-close segments as active time. Recommended: (i) as
+  stated; for (ii), wall-clock for duration_seconds, with active time left to a later field if a
+  consumer asks for it. A ratified Class A semantic change, so the operator decides; parked.
 - k2 Window verbs. Component 1's unfinalized_session_share, T3.3's daily anomaly baseline and T3.4's
-  telemetry delta all need many sessions over a time window. Options: (a) one `sessions_window` verb
-  here returning one derived row per root session for at most 7 calendar days (paginable), with every
-  share or rate computed by the consumer, so each derivation stays per-session and the scan is a
-  bounded partition range (VP 3: linear in days); (b) wait for T2.52's analytical-aggregate class (c3,
-  c7), leaving those consumers without a signal until it lands; (c) consumers loop the per-session verb,
-  which is one round trip per session. For (a): it stays inside Decision 199's per-session unit and
-  is prunable, so Decision 81 cl.8 is not reopened. Against: the contract wording binds each derivation
-  to one session's partition and T2.52 owns analytical verbs. Recommended: (a), shaped to T2.52 c3's
-  declared response schema and stable ordering so T2.52 can adopt it. rec-4024 item (6) leaves exactly
-  this open ("decide operational-verb vs T2.52 c3/c6"). Parked.
+  telemetry delta all need many sessions over a time window. Governing facts: T2.52 is
+  `deferred_post_mvp` (its progress note: "no consumer exists for it today ... telemetry is
+  unmigrated"), and Decision 93 says no live item (not_started or in_progress) may depend_on a
+  deferred_post_mvp item. T3.3 and T3.4 are live. This report names three consumers, which answers
+  T2.52's deferral rationale directly. Options: (a) one `sessions_window` verb here returning one derived
+  row per root session for at most 7 calendar days (paginable), with every share or rate computed by the
+  consumer, so each derivation stays per-session and the scan is a bounded partition range (VP 3:
+  linear in days). This un-defers part of T2.52 c3's scope before the MVP, and it reads many single-day
+  partitions where Decision 199 cl.1 says each derivation is "bounded to a session's single
+  day(session_started_at) partition". It therefore needs a governance route: a dated Decision 199
+  annotation that a bounded window of per-session derivations satisfies cl.1 (operator), or T2.52's
+  reactivation; (b) reactivate T2.52 to not_started (a tier-item status change, operator only) and build
+  the window class there, or leave T3.3, T3.4 and component 1 without a window signal before the MVP;
+  (c) consumers loop the per-session verb, one round trip per session, which stays inside cl.1 as
+  written but multiplies invocations and catalog round trips (Decision 88). For (a): each derivation
+  stays per-session and prunable, so Decision 81 cl.8 is not reopened. Against: it needs one of the two
+  operator routes above, and T2.52 owns analytical verbs. Recommended: (a) via the dated Decision 199
+  annotation, shaped to T2.52 c3's declared response schema and stable ordering so T2.52 can adopt it.
+  rec-4024 item (6) leaves exactly this open ("decide operational-verb vs T2.52 c3/c6"). No status
+  change is made here. Parked.
 - k3 Abandoned state. rec-4024 item (6) asks for running/abandoned/terminal from an `as_of` and an idle
   threshold. The ratified contract has only running and terminal, so under both the contract and k1
   (a) a session that never writes a close row (a crash, a killed process, a reclaimed container) reads
@@ -213,7 +241,12 @@ Open (q1-q2 in the fixture; none is answerable from the repository):
 - Closed (round 1's q2): rec-4024's own scope was read through `rec_by_id` (e11); it matches the
   contracts' populated_by set, and its abandoned state is now k3.
 - q2 Is rec-4025's derived-layer harness the right shadow re-derivation source for the failure_signal,
-  or should the reader own a production raw-rows path? The stdlib oracle is a test fixture
+  or should the reader own a production raw-rows path? rec-4025's recorded scope (read through
+  `rec_by_id`) is a hermetic golden-fixture reconciliation, a smoke replay and a T3.2 production ASSERT
+  over a synthetic project_id; it does not cover shadow re-derivation over sampled real sessions. A
+  "yes" therefore means widening rec-4025, a queue change the operator decides (Decision 67). Until q2
+  is resolved, the signal is partial: CI's dedupe vectors plus the conflicted-key stamp in every response
+  cover the dedupe leg only, and state, duration and roll-ups have no runtime check. The stdlib oracle is a test fixture
   (tests/fixtures/telemetry_dedupe_reference.py) and cannot run in production (Decision 84 I-3).
 
 ## 4. Consideration register (as authored in the fixture)
@@ -222,7 +255,8 @@ Open (q1-q2 in the fixture; none is answerable from the repository):
   control plane only through rec-4141's allow-list (allow-list transport component).
 - failure_signal: verb_rederivation_mismatch_rate, the share of sampled sessions whose verb output
   (state, outcome, duration, roll-ups) differs from an independent re-derivation over the same
-  session's raw rows. Source: rec-4025's derived-layer harness in shadow mode (q2); CI's dedupe vectors
+  session's raw rows. Source: rec-4025's derived-layer harness in shadow mode, which needs rec-4025
+  widened (q2); until then only the dedupe leg has a runtime read (below); CI's dedupe vectors
   cover the R4/R5 leg on every change. Why this and not latency: a slow or failing verb is loud (a 500
   or a timeout at the consumer), while a wrong derived value is silent and skews every consumer at once:
   component 1's signal, the classifier's counts and T3.4's "telemetry delta proves fix". The conflict
@@ -261,6 +295,8 @@ Open (q1-q2 in the fixture; none is answerable from the repository):
   windows makes the delta meaningless, so the response stamp is load-bearing.
 - Maturity-ladder controller: this item's rungs are measured by shadow re-derivation (q2), not by
   telemetry it emits itself. The controller needs the harness to report per verb.
+- Decision 128: the implementation plan for this item decomposes src/common/ducklake_scd2_schema.py into
+  a facade package before adding the registry form (section 2, item 1).
 - Cost/egress budget: Neon catalog egress per verb is unmeasured (q1). The sessions_window range is the
   one read shape whose cost scales with the caller's parameter; it is capped at 7 days.
 - T2.36 c3 (preflight telemetry health check) is a reader consumer: a sessions_window count is the
