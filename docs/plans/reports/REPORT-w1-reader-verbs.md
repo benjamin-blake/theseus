@@ -153,6 +153,7 @@ derivation pointer is where field semantics live (Decision 86):
 | agent_run_state_and_duration | agent-run state, duration | this item |
 | agent_run_token_rollup | tokens_input_total, tokens_output_total over the child's model_calls | this item |
 | model_call_cost_estimate | cost per model_call | rec-4031 (price table), composes this item's dedupe |
+| telemetry_health_count | T2.36 c3's preflight probe: telemetry_sessions rows over a bounded recent lookback, or a catalog row count | this item (operational counter) |
 | sessions_window (proposed, k2) | one derived row per root session over at most 7 days | T2.52 c3 if k2 (b), this item if k2 (a) |
 
 ## 3. Settled / contested / risk / open
@@ -205,8 +206,9 @@ Contested (evidence on both sides, options listed; k1-k3 in the fixture):
     session it derives. cl.1 attaches to that read shape, not to the roadmap item that hosts the verb,
     so the same reading of cl.1 is needed under every option below. The reading to confirm: "a bounded
     window of per-session derivations, each reading only its own session's single-day partition,
-    satisfies cl.1". The only route that needs no such reading is materialization (Decision 199 names
-    T2.52 c1 as where to pull it forward from), which comes later than either option.
+    satisfies cl.1". The only window routes that need no such reading are (c) below and
+    materialization, and materialization needs Decision 199's `derived-read-too-costly` reversal to fire
+    ("re-decide via /plan"; it names T2.52 c1 as where to pull materialization forward from).
   - T2.52 is `deferred_post_mvp`, and Decision 93 says no live item (not_started or in_progress) may
     depend_on a deferred_post_mvp item. T3.3 and T3.4 are live.
   - T2.52's progress note records its trigger: "ACTIVATION TRIGGER: a governed dataset exists that a
@@ -225,22 +227,27 @@ Contested (evidence on both sides, options listed; k1-k3 in the fixture):
     response schema and ordering are shaped to T2.52 c3 so T2.52 can adopt the verb when it reactivates.
     No depends_on edge to T2.52 exists, so Decision 93 is not engaged.
   - (b) When the trigger fires, the operator restores T2.52 to not_started (a status change, never made
-    here), and sessions_window is built as a T2.52 c3 verb. It needs the same cl.1 reading. Its timing
-    is no earlier than (a) under every reading of "lands". Under the c1 reading it can be built at the
-    same point; under the c2 or T2.36-met readings it is strictly later, because this item is inside
-    T2.36. Reactivation is whole-item (Decision 93): all of T2.52 c1-c7 become live, MVP-critical work.
-    "c3 first" would be a sequencing preference inside that, and c7 ("measure before designing" the
-    response-size ceiling) and c5 (D88 egress) bind sessions_window itself and come before it.
+    here), and sessions_window is built as a T2.52 c3 verb. It needs the same cl.1 reading. It is later
+    than (a) under every reading of "lands": T2.52 c7 ("measure before designing" the response-size
+    ceiling) and c5 (D88 egress) bind sessions_window itself and come before its design, whereas under (a)
+    the same measurement is this item's c3, taken after the build and before any consumer depends on the
+    verb. Under the c2 reading it is later again, because (a) is buildable at c1 while (b) waits for c2
+    and then c7; under the T2.36-met reading, also because this item is inside T2.36. "c3 first" would be
+    a sequencing preference inside a whole-item reactivation (Decision 93: all of c1-c7 become live).
   - (c) Consumers loop the per-session verb, one round trip per session. It needs no cl.1 reading, but
     it multiplies invocations and catalog round trips (Decision 88).
 
   Weighing: round 2 recommended (b) on three grounds: the recorded trigger, the same timing, and no new
-  annotation. Round 3 removed two of them. The cl.1 reading is needed under both options, and (b) is
-  no earlier than (a) and strictly later under the natural reading of "lands". What remains for (b) is
-  ownership: analytical verbs belong to T2.52, and the recorded trigger is its sanctioned path. Against
-  (b): whole-item reactivation and a later signal for component 1, T3.3 and T3.4. Recommended: (a),
-  shaped for T2.52 adoption, with the cl.1 reading confirmed by the operator. (b) remains the right
-  route if the operator wants analytical verbs only inside T2.52. On the response-size question both
+  annotation. Rounds 3 and 4 removed two of them. The cl.1 reading is needed under both options, and (b)
+  is later than (a) under every reading of "lands". T2.52's whole-item reactivation is NOT a cost of (b)
+  alone: its trigger fires at the same T2.36 milestone whichever option is chosen, so it follows from
+  the operator's reading of "lands", not from k2. The one exception is if the operator treats (a) as
+  already serving the trigger's aggregate need and keeps T2.52 deferred; then (a) takes T2.52's first
+  recorded tenant, which is the ownership cost below. This report assumes the trigger is applied as
+  written. What remains for (b) is ownership: analytical verbs belong to T2.52, and the recorded trigger
+  is its sanctioned path. Recommended: (a), on timing, which holds under every reading, shaped for T2.52
+  adoption, with the cl.1 reading confirmed by the operator. (b) remains the ownership route if the
+  operator wants analytical verbs only inside T2.52. On the response-size question both
   share: about 40 root sessions a day x 7 days is about 280 one-row-per-session rows, far under a 6 MB
   Function URL response. That is an estimate, not c7's measurement, and this item's c3 measures response
   bytes before any consumer depends on the verb. rec-4024 item (6) leaves exactly this open ("decide
@@ -348,15 +355,22 @@ Open (q1-q2 in the fixture; none is answerable from the repository):
   a facade package before adding the registry form (section 2, item 1).
 - Cost/egress budget: Neon catalog egress per verb is unmeasured (q1). The sessions_window range is the
   one read shape whose cost scales with the caller's parameter; it is capped at 7 days.
-- T2.36 c3 (preflight telemetry health check) is a reader consumer. Its probe is a single-day count verb
-  owned by this item (rows in today's telemetry_sessions partition, one partition read), never
-  sessions_window. Under k2 (b), a sessions_window probe would make T2.36 c3 depend on a T2.52 verb
+- T2.36 c3 (preflight telemetry health check) is a reader consumer. Its probe is an operational counter
+  verb owned by this item (section 2 table), never sessions_window. Its PASS condition must be "tables
+  populated", so it cannot read only today's partition: rows land in the partition of the day their ROOT
+  session started (Decision 199 cl.2), so today's partition is empty after 00:00 UTC until a new root
+  session starts, even while yesterday's sessions keep writing. Either a bounded recent lookback (today
+  and yesterday, two partition reads, one call) or a catalog-level row count that reads no data files
+  meets it; the T2.36 c3 owner picks. Under k2 (b), a sessions_window probe would make T2.36 c3 depend on a T2.52 verb
   whose trigger is T2.36 landing, which is a cycle and, while T2.52 is deferred, a Decision 93 breach.
   Per Decision 88 (ii) preflight calls the probe once, from the warm-up, never per gauge.
 - One rule, rendered once: named verbs are serving leaves (T2.52's intent: "a verb never invokes
   another verb"). So sessions_window, wherever it lives, cannot call session_state_and_duration. Both
-  verbs render the same SQL fragment for the R4/R5 block and the k1/k3 state rule, and c2's golden
-  fixtures run against both, so component 1's "one rule" guarantee rests on one copy.
+  verbs render the same SQL fragment for the R4/R5 block and the k1/k3 state rule, and both are tested
+  on the same golden fixture data, so component 1's "one rule" guarantee rests on one copy. Under k2 (a)
+  sessions_window is this item's verb and c2 covers it. Under k2 (b) the fixtures are shared DATA only:
+  the sessions_window run belongs to T2.52's own test, and this item's c2 covers only this item's verbs,
+  so no T2.36 criterion waits on a T2.52 verb.
 
 ## 6. Not done here (and why)
 
