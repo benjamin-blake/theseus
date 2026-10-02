@@ -260,6 +260,10 @@ class TestCap:
 _SECOND = f"{model.PILOT_DIR}/second.yaml"
 _CD_ONLY = _DECISIONS + "## Decision 300: Ratify\nCD.45 is ratified.\n"
 _CD_NEAR_MISS = _DECISIONS + f"## Decision 300: Other\nCD.450 moves to {_SECOND} and {model.PILOT_DIR}/\n"
+_PATH_GLUED = _DECISIONS + f"## Decision 300: Other\nCD.45 moves {_SECOND}.old\n"
+_CD_GLUED = _DECISIONS + f"## Decision 300: Other\nXCD.45 moves {_SECOND} and {model.PILOT_DIR}/\n"
+_DIR_GLUED = _DECISIONS + f"## Decision 300: Other\nCD.45 moves x{model.PILOT_DIR}/\n"
+_SENTENCE_END = _DECISIONS + f"## Decision 300: Rehome\nCD.45 moves to {_SECOND}.\n"
 _SPLIT_PATH = _DECISIONS + f"## Decision 300: Rehome\n{_SECOND} and {model.PILOT_DIR}/\n## Decision 301: Other\nCD.45 noted.\n"
 
 
@@ -273,6 +277,8 @@ class TestSingleInstance:
             ("second file", {_SECOND: "x: 1\n"}, _CD_ONLY),
             ("second file", {_SECOND: "x: 1\n"}, _SPLIT_PATH),
             ("second file", {_SECOND: "x: 1\n"}, _CD_NEAR_MISS),
+            ("second file", {_SECOND: "x: 1\n"}, _PATH_GLUED),
+            ("second file", {_SECOND: "x: 1\n"}, _CD_GLUED),
         ],
     )
     def test_second_fixture_is_red(self, needle, files, decisions, red):
@@ -283,6 +289,9 @@ class TestSingleInstance:
 
     def test_decision_naming_path_and_cd45_admits(self, green):
         green(files={_SECOND: "x: 1\n"}, decisions=_DECISIONS + f"## Decision 300: Rehome\nCD.45 moves to {_SECOND}\n")
+
+    def test_decision_naming_path_at_a_sentence_end_admits(self, green):
+        green(files={_SECOND: "x: 1\n"}, decisions=_SENTENCE_END)
 
 
 def _edge(to, kind="depends_on"):
@@ -438,6 +447,8 @@ class TestSunset:
             {"changed": _TOUCHED, "today": _AFTER, "decisions": _CD_ONLY},
             {"changed": _TOUCHED, "today": _AFTER, "decisions": _SPLIT_PATH},
             {"changed": _TOUCHED, "today": _AFTER, "decisions": _CD_NEAR_MISS},
+            {"changed": _TOUCHED, "today": _AFTER, "decisions": _CD_GLUED},
+            {"changed": _TOUCHED, "today": _AFTER, "decisions": _DIR_GLUED},
         ],
     )
     def test_triggered_and_touched_is_frozen(self, kwargs, red):

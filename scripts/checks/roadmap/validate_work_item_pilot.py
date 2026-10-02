@@ -34,7 +34,7 @@ _ARCHIVE_REL_PATH = "docs/DECISIONS_ARCHIVE.md"
 _FAIL_LABEL = "Work-item pilot fixture"
 _SINGLE_INSTANCE_RE = re.compile(r"^(?:work_items|work_item_criteria|work_item_edges):", re.MULTILINE)
 _DECISION_HEADER_RE = re.compile(r"^## Decision (\d+):", re.MULTILINE)
-_CD_RE = re.compile(re.escape(model.SUNSET_CD) + r"(?!\d)")
+_CD_RE = re.compile(r"(?<![\w.])" + re.escape(model.SUNSET_CD) + r"(?!\d)")
 _SECTION_BREAK_RE = re.compile(r"^## ", re.MULTILINE)
 _CRITERION_REF_RE = re.compile(r"^(?P<item>[^:]+):(?P<crit>c[0-9]+)$")
 _REC_RE = re.compile(r"^rec-[0-9]+$")
@@ -95,6 +95,13 @@ def _read(rel: str) -> str:
         return (_common.ROOT / rel).read_text(encoding="utf-8", errors="replace")
     except OSError:
         return ""
+
+
+def _names_path(section: str, path: str) -> bool:
+    """True when the section names `path` as a whole path: no word, dot, slash or dash glues onto either end
+    (a file path also refuses a following `.word`, so `second.yaml.old` is not `second.yaml`)."""
+    tail = "" if path.endswith("/") else r"(?![\w/-])(?!\.\w)"
+    return re.search(r"(?<![\w./-])" + re.escape(path) + tail, section) is not None
 
 
 def _names_cd(section: str) -> bool:
@@ -227,7 +234,7 @@ def _leg3_single_instance(ctx: _Context) -> list[str]:
             offenders.append((rel, "column-0 work_items / work_item_criteria / work_item_edges key"))
     errors = []
     for rel, reason in offenders:
-        if any(rel in sec and _names_cd(sec) for sec in ctx.decision_sections()):
+        if any(_names_path(sec, rel) and _names_cd(sec) for sec in ctx.decision_sections()):
             continue
         errors.append(
             f"second pilot-class fixture: {rel} ({reason}); CD.45 allows exactly one "
@@ -363,7 +370,7 @@ def _leg6_sunset(ctx: _Context, today: date | None) -> tuple[list[str], str | No
         )
         return [], note
     ratified_exit = cd.get("state") != "pending"
-    decision_exit = any(_names_cd(sec) and model.PILOT_DIR + "/" in sec for sec in ctx.decision_sections())
+    decision_exit = any(_names_cd(sec) and _names_path(sec, model.PILOT_DIR + "/") for sec in ctx.decision_sections())
     if ratified_exit or decision_exit:
         return [], f"SUNSET REACHED: freeze released by an operator-only exit; touched {', '.join(touched)}"
     message = (
