@@ -3,6 +3,8 @@
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from scripts.checks import registry
 from scripts.checks.roadmap.validate_tier_floor import validate_tier_floor
 
@@ -136,3 +138,109 @@ class TestValidateTierFloor:
         # The only manifest's handler is excludes-listed, so no code files are derived
         # and the fixture's Lambda scope file no longer forces a V3 floor.
         assert failed == []
+
+
+_CHECK = "validate_tier_floor"
+_UNIT = "v2 plans"
+_REPO_ROOT = Path(__file__).parents[3]
+_FIXTURES = _REPO_ROOT / "tests" / "fixtures" / "plan_documents"
+
+
+def _write_plan(plans_dir: Path, slug: str, *, schema_version: int = 2, violating: bool = False) -> None:
+    import yaml
+
+    source = "tier_floor_violation_v2.yaml" if violating else "valid_v2.yaml"
+    with (_FIXTURES / source).open(encoding="utf-8") as fh:
+        data = yaml.safe_load(fh)
+    data["slug"] = slug
+    data["schema_version"] = schema_version
+    (plans_dir / f"PLAN-{slug}.yaml").write_text(yaml.safe_dump(data), encoding="utf-8")
+
+
+def _declared(plans_dir: Path | None) -> tuple[list[str], registry._Declaration | None, int]:
+    from scripts.checks.roadmap import validate_tier_floor as _tier_floor_module
+
+    registry.pop_declaration()
+    failed: list[str] = []
+    with patch.object(_tier_floor_module, "_compute_floor", wraps=_tier_floor_module._compute_floor) as spy:
+        validate_tier_floor(failed, plans_dir=plans_dir)
+    return failed, registry.pop_declaration(), spy.call_count
+
+
+class TestTierFloorAccountingDeclaration:
+    """The check declares how many schema_version-2 plans it computed a floor for, so a run records enforced
+    with a count that tracks the judged plans -- not a constant, not the plan-file total, and not the violation
+    count."""
+
+    def test_real_tree_declares_every_judged_plan(self) -> None:
+        import yaml
+
+        expected = 0
+        for path in sorted((_REPO_ROOT / "docs" / "plans").glob("PLAN-*.yaml")):
+            data = yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.CSafeLoader)
+            if isinstance(data, dict) and data.get("schema_version") == 2:
+                expected += 1
+
+        failed, declaration, probes = _declared(None)
+        outcome = registry.build_outcome(_CHECK, "check", declaration, bool(failed))
+
+        assert expected > 0
+        assert declaration is not None
+        assert (declaration.kind, declaration.count, declaration.unit) == ("examined", expected, _UNIT)
+        assert probes == expected
+        assert outcome.status == ("failed" if failed else "enforced")
+
+    @pytest.mark.parametrize("n", [1, 3])
+    def test_count_tracks_v2_plans_and_excludes_other_documents(self, tmp_path: Path, n: int) -> None:
+        for i in range(n):
+            _write_plan(tmp_path, f"v2-plan-{i}")
+        _write_plan(tmp_path, "v1-plan", schema_version=1, violating=True)
+        _write_plan(tmp_path, "v3-plan", schema_version=3, violating=True)
+        (tmp_path / "PLAN-not-a-mapping.yaml").write_text("- just\n- a list\n", encoding="utf-8")
+        (tmp_path / "PLAN-empty.yaml").write_text("", encoding="utf-8")
+        (tmp_path / "notes.yaml").write_text("schema_version: 2\n", encoding="utf-8")
+
+        failed, declaration, probes = _declared(tmp_path)
+        outcome = registry.build_outcome(_CHECK, "check", declaration, bool(failed))
+
+        assert failed == []
+        assert declaration is not None
+        assert (declaration.kind, declaration.count, declaration.unit) == ("examined", n, _UNIT)
+        assert probes == n
+        assert outcome.status == "enforced"
+
+    def test_violating_plans_are_counted_and_record_failed(self, tmp_path: Path) -> None:
+        _write_plan(tmp_path, "a-bad", violating=True)
+        _write_plan(tmp_path, "b-clean")
+        _write_plan(tmp_path, "c-bad", violating=True)
+
+        failed, declaration, probes = _declared(tmp_path)
+        outcome = registry.build_outcome(_CHECK, "check", declaration, bool(failed))
+
+        assert failed == ["Deterministic V-tier floor validation"]
+        assert declaration is not None
+        assert (declaration.kind, declaration.count, declaration.unit) == ("examined", 3, _UNIT)
+        assert probes == 3
+        assert outcome.status == "failed"
+
+    def test_no_v2_plans_declares_vacuous_domain(self, tmp_path: Path) -> None:
+        _write_plan(tmp_path, "v1-only", schema_version=1)
+
+        failed, declaration, probes = _declared(tmp_path)
+        outcome = registry.build_outcome(_CHECK, "check", declaration, bool(failed))
+
+        assert failed == []
+        assert declaration is not None
+        assert (declaration.kind, declaration.count, declaration.unit) == ("examined", 0, _UNIT)
+        assert probes == 0
+        assert outcome.status == "vacuous"
+
+    def test_empty_plans_dir_declares_vacuous_domain(self, tmp_path: Path) -> None:
+        failed, declaration, probes = _declared(tmp_path)
+        outcome = registry.build_outcome(_CHECK, "check", declaration, bool(failed))
+
+        assert failed == []
+        assert declaration is not None
+        assert (declaration.kind, declaration.count, declaration.unit) == ("examined", 0, _UNIT)
+        assert probes == 0
+        assert outcome.status == "vacuous"

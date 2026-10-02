@@ -1,8 +1,14 @@
 """Tests for validate_instruction_architecture_layers()."""
 
+from collections.abc import Iterator
 from pathlib import Path
+from types import ModuleType
 from unittest.mock import MagicMock, patch
 
+import yaml
+
+from scripts.checks import registry
+from scripts.checks.contracts._shared import _load_prompt_compliance
 from scripts.checks.contracts.validate_instruction_architecture_layers import validate_instruction_architecture_layers
 
 
@@ -99,3 +105,137 @@ class TestContractPresence:
             validate_instruction_architecture_layers(failed)
 
         assert failed == []
+
+
+_CHECK = "validate_instruction_architecture_layers"
+_UNIT = "content_locations"
+_REPO_ROOT = Path(__file__).parents[3]
+_LOADER = "scripts.checks.contracts.validate_instruction_architecture_layers._load_prompt_compliance"
+
+
+class _GlobCountingRoot:
+    """Stands in for prompt_compliance.ROOT, counting the glob calls the helper makes while judging."""
+
+    def __init__(self, root: Path) -> None:
+        self._root = root
+        self.glob_calls = 0
+
+    def glob(self, pattern: str) -> Iterator[Path]:
+        self.glob_calls += 1
+        return self._root.glob(pattern)
+
+
+def _real_compliance(root: Path | _GlobCountingRoot, contract: dict) -> ModuleType:
+    """A fresh, unmocked prompt_compliance module whose layer globbing runs under `root` against `contract`."""
+    module = _load_prompt_compliance()
+    assert module is not None
+    module.ROOT = root
+    module._INSTRUCTION_ARCH_REGISTRY = contract
+    return module
+
+
+def _declared(compliance: ModuleType | None) -> tuple[list[str], registry._Declaration | None]:
+    registry.pop_declaration()
+    failed: list[str] = []
+    with patch(_LOADER, return_value=compliance):
+        validate_instruction_architecture_layers(failed)
+    return failed, registry.pop_declaration()
+
+
+class TestInstructionArchitectureLayersAccountingDeclaration:
+    """The check declares how many content_locations globs it judged, so a run records enforced with a
+    count that tracks the contract -- not a constant, not the layer count and not the violation count."""
+
+    def test_real_tree_declares_every_content_location(self) -> None:
+        contract = yaml.safe_load(
+            (_REPO_ROOT / "docs" / "contracts" / "instruction-architecture.yaml").read_text(encoding="utf-8")
+        )
+        expected = sum(len(layer.get("content_locations") or []) for layer in contract["layers"])
+
+        registry.pop_declaration()
+        failed: list[str] = []
+        validate_instruction_architecture_layers(failed)
+        declaration = registry.pop_declaration()
+        outcome = registry.build_outcome(_CHECK, "check", declaration, bool(failed))
+
+        assert failed == []
+        assert expected > 0
+        assert declaration is not None
+        assert (declaration.kind, declaration.count, declaration.unit) == ("examined", expected, _UNIT)
+        assert outcome.status == "enforced"
+
+    def test_count_spans_layers_when_every_glob_resolves(self, tmp_path: Path) -> None:
+        (tmp_path / "AGENTS.md").write_text("x\n", encoding="utf-8")
+        (tmp_path / "skills").mkdir()
+        (tmp_path / "skills" / "a.md").write_text("x\n", encoding="utf-8")
+        contract = {
+            "layers": [
+                {"layer": 1, "name": "Universal", "content_locations": ["AGENTS.md", "*.md"]},
+                {"layer": 2, "name": "Skills", "content_locations": ["skills/*.md", "skills/a.md"]},
+            ]
+        }
+
+        failed, declaration = _declared(_real_compliance(tmp_path, contract))
+        outcome = registry.build_outcome(_CHECK, "check", declaration, bool(failed))
+
+        assert failed == []
+        assert declaration is not None
+        assert (declaration.kind, declaration.count, declaration.unit) == ("examined", 4, _UNIT)
+        assert outcome.status == "enforced"
+
+    def test_unresolved_glob_is_counted_and_records_failed(self, tmp_path: Path) -> None:
+        (tmp_path / "AGENTS.md").write_text("x\n", encoding="utf-8")
+        contract = {
+            "layers": [
+                {"layer": 1, "name": "Universal", "content_locations": ["AGENTS.md", "ghost/*.md"]},
+                {"layer": 2, "name": "No globs"},
+                {"layer": 3, "name": "Also universal", "content_locations": ["*.md"]},
+            ]
+        }
+
+        failed, declaration = _declared(_real_compliance(tmp_path, contract))
+        outcome = registry.build_outcome(_CHECK, "check", declaration, bool(failed))
+
+        assert failed == ["Instruction architecture layer claims"]
+        assert declaration is not None
+        assert (declaration.kind, declaration.count, declaration.unit) == ("examined", 3, _UNIT)
+        assert outcome.status == "failed"
+
+    def test_declared_count_equals_globs_the_helper_actually_judged(self, tmp_path: Path) -> None:
+        """Pins the wrapper's count to the helper's own judging loop: a helper that stopped after the first
+        violation, or judged only some layers, would glob fewer times than the check declares."""
+        (tmp_path / "AGENTS.md").write_text("x\n", encoding="utf-8")
+        contract = {
+            "layers": [
+                {"layer": 1, "name": "Early violation", "content_locations": ["ghost/*.md", "AGENTS.md"]},
+                {"layer": 2, "name": "Second", "content_locations": ["*.md"]},
+                {"layer": 3, "name": "Third", "content_locations": ["AGENTS.md"]},
+                {"layer": 4, "name": "Fourth", "content_locations": ["phantom/*.md", "*.md"]},
+            ]
+        }
+        root = _GlobCountingRoot(tmp_path)
+
+        failed, declaration = _declared(_real_compliance(root, contract))
+
+        assert failed == ["Instruction architecture layer claims"]
+        assert declaration is not None
+        assert declaration.count == root.glob_calls == 6
+
+    def test_empty_layers_declares_vacuous_domain(self, tmp_path: Path) -> None:
+        failed, declaration = _declared(_real_compliance(tmp_path, {"layers": []}))
+        outcome = registry.build_outcome(_CHECK, "check", declaration, bool(failed))
+
+        assert failed == []
+        assert declaration is not None
+        assert (declaration.kind, declaration.count, declaration.unit) == ("examined", 0, _UNIT)
+        assert outcome.status == "vacuous"
+
+    def test_absent_prompt_compliance_declares_skipped(self) -> None:
+        failed, declaration = _declared(None)
+        outcome = registry.build_outcome(_CHECK, "check", declaration, bool(failed))
+
+        assert failed == []
+        assert declaration is not None
+        assert declaration.kind == "skipped"
+        assert "prompt_compliance.py" in (declaration.reason or "")
+        assert outcome.status == "skipped"

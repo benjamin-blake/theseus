@@ -14,6 +14,10 @@ def validate_field_semantics_drift(failed: list[str]) -> None:
     If the committed file differs from what the generator would produce, appends a failure.
     NEVER auto-writes (Decision 55). Pure Python, sub-second -- eligible for both --pre
     and the full presubmit tier (adjacent to the CD.25 contract drift gate).
+
+    Declares examined over the top-level sections of the regenerated document compared against the
+    committed file (unit "sections"). An unreadable committed file or a raising generator declares
+    nothing -- both are already failures.
     """
     print("\n=== Field semantics drift gate (T2.33) ===")
 
@@ -33,10 +37,13 @@ def validate_field_semantics_drift(failed: list[str]) -> None:
             return
 
         try:
-            generated = _gen_mod._emit_yaml(_gen_mod.generate(include_prose=False))
+            doc = _gen_mod.generate(include_prose=False)
+            generated = _gen_mod._emit_yaml(doc)
         except Exception as exc:
             failed.append(f"Field semantics drift gate: generator raised: {exc}")
             return
+
+        registry.examined(len(doc), unit="sections")
 
         if generated != committed:
             failed.append(

@@ -190,3 +190,104 @@ class TestWiring:
 
         assert callable(resolved)
         assert resolved is validate_data_model_standard
+
+
+_SUBSTRATE = "docs/contracts/storage-substrate.yaml"
+_STANDARD = "docs/contracts/data-modeling-standard.yaml"
+
+
+def _declared(contracts_dir: Path, changed_files: list[str]) -> tuple[list[str], registry._Declaration | None]:
+    registry.pop_declaration()
+    failed: list[str] = []
+    validate_data_model_standard(failed, contracts_dir=contracts_dir, changed_files=changed_files)
+    return failed, registry.pop_declaration()
+
+
+class TestExaminedDeclaration:
+    """Decision 170: skipped when no trigger file changed, else examined over the entries judged."""
+
+    def test_neither_file_changed_declares_skipped(self, tmp_path: Path) -> None:
+        failed, decl = _declared(tmp_path, [])
+        assert failed == []
+        assert decl is not None
+        assert decl.kind == "skipped"
+        assert decl.reason == "neither storage-substrate.yaml nor data-modeling-standard.yaml changed"
+        assert registry.build_outcome("validate_data_model_standard", "check", decl, appended_to_failed=False).status == (
+            "skipped"
+        )
+
+    def test_substrate_counts_every_table_entry_judged(self, tmp_path: Path) -> None:
+        tables = {
+            "a": {"merge_key": "id", "grain": "one row per id", "write_mode": "scd2"},
+            "b": {"merge_key": "id", "grain": "one row per id", "write_mode": "append_only"},
+            "group": {"note": "group entry, no merge_key"},
+        }
+        _write_yaml(tmp_path / "storage-substrate.yaml", {"tables": tables})
+        failed, decl = _declared(tmp_path, [_SUBSTRATE])
+        assert failed == []
+        assert decl is not None
+        assert (decl.kind, decl.count, decl.unit) == ("examined", 3, "entries")
+        assert registry.build_outcome("validate_data_model_standard", "check", decl, appended_to_failed=False).status == (
+            "enforced"
+        )
+
+    def test_substrate_offender_still_counts_the_judged_tables(self, tmp_path: Path) -> None:
+        _write_yaml(tmp_path / "storage-substrate.yaml", {"tables": {"a": {"merge_key": "id"}, "b": {}}})
+        failed, decl = _declared(tmp_path, [_SUBSTRATE])
+        assert len(failed) == 1
+        assert decl is not None
+        assert (decl.kind, decl.count) == ("examined", 2)
+
+    def test_empty_tables_mapping_declares_an_empty_domain(self, tmp_path: Path) -> None:
+        _write_yaml(tmp_path / "storage-substrate.yaml", {"tables": {}})
+        failed, decl = _declared(tmp_path, [_SUBSTRATE])
+        assert failed == []
+        assert decl is not None
+        assert (decl.kind, decl.count) == ("examined", 0)
+        assert registry.build_outcome("validate_data_model_standard", "check", decl, appended_to_failed=False).status == (
+            "vacuous"
+        )
+
+    def test_standard_counts_every_required_section(self, tmp_path: Path) -> None:
+        _write_yaml(tmp_path / "data-modeling-standard.yaml", _COMPLETE_STANDARD)
+        failed, decl = _declared(tmp_path, [_STANDARD])
+        assert failed == []
+        assert decl is not None
+        assert (decl.kind, decl.count, decl.unit) == ("examined", 3, "entries")
+
+    def test_missing_section_still_counts_the_judged_sections(self, tmp_path: Path) -> None:
+        _write_yaml(tmp_path / "data-modeling-standard.yaml", {"rules": []})
+        failed, decl = _declared(tmp_path, [_STANDARD])
+        assert len(failed) == 1
+        assert decl is not None
+        assert (decl.kind, decl.count) == ("examined", 3)
+
+    def test_both_files_changed_sum_their_judged_entries(self, tmp_path: Path) -> None:
+        _write_yaml(tmp_path / "storage-substrate.yaml", {"tables": {"a": {}, "b": {}}})
+        _write_yaml(tmp_path / "data-modeling-standard.yaml", _COMPLETE_STANDARD)
+        failed, decl = _declared(tmp_path, [_SUBSTRATE, _STANDARD])
+        assert failed == []
+        assert decl is not None
+        assert (decl.kind, decl.count) == ("examined", 5)
+
+    def test_files_that_never_reach_the_judgment_count_zero(self, tmp_path: Path) -> None:
+        _write_yaml(tmp_path / "storage-substrate.yaml", {"version": 1})
+        (tmp_path / "data-modeling-standard.yaml").write_text("- a\n", encoding="utf-8")
+        failed, decl = _declared(tmp_path, [_SUBSTRATE, _STANDARD])
+        assert len(failed) == 2
+        assert decl is not None
+        assert (decl.kind, decl.count) == ("examined", 0)
+        assert registry.build_outcome("validate_data_model_standard", "check", decl, appended_to_failed=True).status == (
+            "failed"
+        )
+
+    def test_live_contracts_declare_every_live_table_and_section(self) -> None:
+        from scripts.checks._common import ROOT
+
+        contracts_dir = ROOT / "docs" / "contracts"
+        live = yaml.safe_load((contracts_dir / "storage-substrate.yaml").read_text(encoding="utf-8"))
+        failed, decl = _declared(contracts_dir, [_SUBSTRATE, _STANDARD])
+        assert failed == []
+        assert decl is not None
+        assert decl.kind == "examined"
+        assert decl.count == len(live["tables"]) + 3 > 3

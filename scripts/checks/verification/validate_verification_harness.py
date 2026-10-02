@@ -7,7 +7,12 @@ from scripts.checks import _common, registry
 
 @registry.register("validate_verification_harness", owner="platform")
 def validate_verification_harness(failed: list[str]) -> None:
-    """Run all registered programmatic verifiers (V3 integration gates)."""
+    """Run all registered programmatic verifiers (V3 integration gates).
+
+    Declares examined over the verifiers that rendered a verdict (unit "verifiers"); a SKIPPED
+    result is not counted. An empty verifier registry declares examined(0). When every verifier
+    that ran reported SKIPPED, the check declares skipped() rather than an empty domain.
+    """
     print("\n=== Verification Harness (V3) ===")
     try:
         import asyncio
@@ -27,12 +32,20 @@ def validate_verification_harness(failed: list[str]) -> None:
                 sys.path.remove(root_str)
 
         has_fail = False
+        judged = 0
         for res in results:
             status_str = f"[{res.status}]"
             # res.severity is an enum; we want its name for display
             print(f"  {status_str:<10} ({res.severity}) {res.name}: {res.message} ({res.duration_ms:.1f}ms)")
+            if res.status != VerifierStatus.SKIPPED:
+                judged += 1
             if res.status == VerifierStatus.FAIL and res.severity.rank >= VerifierSeverity.HARD_GATE.rank:
                 has_fail = True
+
+        if results and judged == 0:
+            registry.skipped(f"all {len(results)} registered verifier(s) reported SKIPPED")
+        else:
+            registry.examined(judged, unit="verifiers")
 
         if has_fail:
             failed.append("Verification Harness")

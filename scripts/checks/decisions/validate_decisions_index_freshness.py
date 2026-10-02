@@ -16,9 +16,14 @@ def validate_decisions_index_freshness(failed: list[str]) -> None:
     and full presubmit tiers (placed beside validate_decisions_size, which already gates
     DECISIONS.md in both tiers). Delegates to
     scripts.decisions_index.check_index_freshness (DCG-08 / PLAN-dcg-decisions-index).
+
+    Declares examined over the regenerated decision entries compared against the committed export
+    (unit "decisions"). An absent or unreadable export declares nothing -- it is already a failure.
     """
     print("\n=== Decisions index freshness ===")
     before = len(failed)
-    check_index_freshness(failed)
+    compared = check_index_freshness(failed)
+    if compared is not None:
+        registry.examined(compared, unit="decisions")
     if len(failed) == before:
         print("  PASS: decisions index is current.")
