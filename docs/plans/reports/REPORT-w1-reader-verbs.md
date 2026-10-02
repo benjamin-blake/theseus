@@ -22,7 +22,8 @@ Fixture rows: `pwi-telemetry-reader-verbs` in `docs/work-item-pilot/telemetry-fe
 - The mechanism does not exist, and registering verbs alone cannot reach it (VP 1). The telemetry
   tables are not registered (resolve_table_spec refuses them; registration is rec-4024's own slice-2
   obligation). A NamedRead binds exactly one table, so R4's join of the sessions open rows to the
-  target table cannot be expressed. No verb carries a server-rendered, mandatory partition predicate.
+  target table cannot be expressed through the registry's table binding (nothing mechanically refuses a
+  literal second table name in verb SQL, but no verb does it and it would bypass resolve_table_spec). No verb carries a server-rendered, mandatory partition predicate.
   The `{hist}` placeholder already renders an append_only table's history, so binding one table is
   not the gap.
 - Two ratified contract rules would derive wrong values if built literally (risks R1, R2): session state
@@ -37,7 +38,7 @@ Fixture rows: `pwi-telemetry-reader-verbs` in `docs/work-item-pilot/telemetry-fe
 
 | id | fact | anchor |
 |---|---|---|
-| e1 | No NAMED_READS verb targets a telemetry table, and none of the four telemetry tables is registered (resolve_table_spec raises unknown ops table). NamedRead's fields are verb, table, sql, params, description, paginable: one table, no partition field. `{hist}` already renders an append_only history table [VP 1] | src/common/ducklake_scd2_schema.py:333-342; src/common/ducklake_reads.py:139-141 |
+| e1 | No NAMED_READS verb targets a telemetry table, and none of the four telemetry tables is registered (resolve_table_spec raises unknown ops table). NamedRead's fields are verb, table, sql, params, description, paginable: one bound table, no partition field. `{hist}` already renders an append_only history table [VP 1] | src/common/ducklake_scd2_schema.py:202 (the raise), :333-342 (NamedRead); src/common/ducklake_reads.py:139-141 (the substitution) |
 | e2 | Session state rule: "absent a close row, the session is running; present, its outcome IS the session's terminal state". A resumed session "reuses session_id ... and appends a resume event" | docs/contracts/telemetry_sessions.yaml:192, 261-262 |
 | e3 | Session duration formula: close.event_timestamp minus session_started_at [VP 4] | docs/contracts/telemetry_sessions.yaml:252 |
 | e4 | session_started_at is the ROOT's start, carried by every row of the root AND all its sub-agent sessions [VP 4] | docs/contracts/telemetry-event-envelope.yaml:100-104 |
@@ -55,7 +56,11 @@ Measured (local only; no production catalog read):
   (17 table checks: 15 observations, 2 agents) on DuckDB 1.5.4, surviving event_ids and conflicted
   grain keys both exact [VP 2]. The R5 layered rule needs one join (V* from the sessions open rows) and
   two windows. VP 2 binds `{partition}` to TRUE (every vector is one partition), so the partition
-  predicate itself is not tested there; VP 3 covers partition pruning.
+  predicate itself is not tested there; VP 3 covers partition pruning. The vectors compare surviving
+  event_ids, and R5b keeps the same event_id whichever parser_version wins, so a mutant that keeps the
+  LOWEST version still passes 17/17: VP 2 is weaker evidence for R5b's version order than for R5a and
+  R5c. The sketch is correct by inspection, and criterion c1's DuckLake test compares survivors by
+  (event_id, parser_version) to close the gap.
 - Partition binding on a local DuckLake catalog (pinned extension, UTC, inlining off), 7 calendar days x
   10 sessions x 100 rows, each day written as 5 flushes that interleave all 10 of its sessions (35
   Parquet files), session ids derived by src/telemetry/identity.py: a per-session read filtered by
@@ -113,7 +118,9 @@ GROUP BY producer, event_id, parser_version HAVING count(DISTINCT content) > 1
 
    The model_call entity collapse applies only to model_call rows (in production the guard is
    `observation_type = 'model_call'`; the vectors mark them by observation_id). `content` stands for
-   every stored column except created_timestamp (the grain's compared content, Decision 207).
+   every stored column except the write-time stamp and the provenance-only columns Decision 207 excludes
+   from the grain's compared content (for telemetry, created_timestamp and producer_version), so a re-send
+   that differs only in producer_version is never reported as conflicted.
 3. Response shape. Derived rows only: one row per session (or agent run), never raw observation rows
    and never transcript content. A 1000-turn session holds about 55k rows (component 1, section 1),
    far past a Function URL response; derived rows keep every response small (Decision 88) and keep
@@ -141,12 +148,12 @@ Settled (consistent with a Decision, a contract or measured; s1-s3 in the fixtur
   and tables are T2.36 (rec-4024 slice 2); labels (rec-4032) and prices (rec-4031) compose on this
   mechanism.
 - s2 The registry needs an event-journal form (e1, VP 1). The telemetry tables are unregistered, a
-  NamedRead binds one table while R4 needs two (the sessions open rows and the target), and no verb
+  NamedRead's table binding covers one table while R4 needs two (the sessions open rows and the target), and no verb
   carries a server-rendered, mandatory partition predicate.
 - s3 The read model is feasible as designed: R4/R5 is one SQL statement passing 17/17 vectors (VP 2), and
   a session_id alone bounds the read to its own day's files (5 of 35 locally, VP 3).
 
-Contested (evidence on both sides, options listed; k1-k2 in the fixture):
+Contested (evidence on both sides, options listed; k1-k3 in the fixture):
 
 - k1 State and duration rule. The contract (e2, e3) says no close row means running and measures
   duration from session_started_at. Against: component 1 emits one close row per finalization and a
@@ -226,8 +233,9 @@ Open (q1-q2 in the fixture; none is answerable from the repository):
   consecutive days with zero mismatches and zero conflicted grain keys. Seed values for the
   maturity-ladder controller component to challenge.
 - verification: c1 (event-journal registry form, server-decoded partition, shared dedupe passing every
-  vector on DuckLake with the conflict report), c2 (derivation verbs on golden fixtures with the k1
-  rule, children and resume-after-close included), c3 (production latency and egress measured against
+  vector on DuckLake with survivors compared by (event_id, parser_version) and the conflict report), c2
+  (derivation verbs on golden fixtures under the operator's k1/k3 resolution, children and
+  resume-after-close included; c2's text is rewritten if option (a) is not chosen), c3 (production latency and egress measured against
   a named consumer bound before any consumer depends on a verb; review method). All open.
 - rollback: remove the telemetry verbs from NAMED_READS and bump the registry version. Reads have no side
   effects and stored rows are untouched.
