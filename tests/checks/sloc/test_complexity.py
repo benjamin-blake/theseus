@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+from scripts.checks import registry
 from scripts.checks.sloc.complexity import validate_complexity
 
 
@@ -204,3 +205,120 @@ class TestPromptDensityOutliers:
         self._write_prompts(tmp_path, plain_count=10, with_outlier=False)
 
         assert self._prompt_warning_files(tmp_path) == []
+
+
+_REPO_ROOT = Path(__file__).parents[3]
+_UNIT = "files"
+_EXCLUDED_NAMES = {"__init__.py", "conftest.py"}
+_EXCLUDED_DIRS = {"pip", "lambda-packages", "docker", "terraform"}
+
+
+def _declared(root: Path) -> tuple[list[str], registry._Declaration | None]:
+    registry.pop_declaration()
+    with patch("scripts.checks._common.ROOT", root):
+        failed: list[str] = []
+        validate_complexity(failed)
+    return failed, registry.pop_declaration()
+
+
+def _measured_py(root: Path) -> int:
+    return sum(
+        1
+        for top in ("src", "scripts")
+        for p in (root / top).glob("**/*.py")
+        if p.name not in _EXCLUDED_NAMES and not _EXCLUDED_DIRS.intersection(p.parts)
+    )
+
+
+class TestComplexityAccountingDeclaration:
+    """The check declares how many Python and prompt files it measured, so a run records enforced
+    with a count that tracks both surfaces -- not a constant and not the warning count."""
+
+    def test_real_tree_declares_every_measured_file(self) -> None:
+        expected = _measured_py(_REPO_ROOT) + sum(1 for _ in (_REPO_ROOT / ".github" / "prompts").glob("**/*.md"))
+
+        _, declaration = _declared(_REPO_ROOT)
+
+        assert expected > 0
+        assert declaration is not None
+        assert (declaration.kind, declaration.count, declaration.unit) == ("examined", expected, _UNIT)
+
+    def test_count_sums_python_and_prompt_files_and_omits_excluded(self, tmp_path: Path) -> None:
+        (tmp_path / "src" / "data").mkdir(parents=True)
+        (tmp_path / "src" / "data" / "a.py").write_text("def f(): pass\n", encoding="utf-8")
+        (tmp_path / "src" / "data" / "__init__.py").write_text("", encoding="utf-8")
+        (tmp_path / "scripts" / "tools").mkdir(parents=True)
+        (tmp_path / "scripts" / "tools" / "b.py").write_text("import os\n", encoding="utf-8")
+        (tmp_path / "scripts" / "tools" / "conftest.py").write_text("", encoding="utf-8")
+        (tmp_path / "scripts" / "docker").mkdir()
+        (tmp_path / "scripts" / "docker" / "c.py").write_text("import os\n", encoding="utf-8")
+        prompts_dir = tmp_path / ".github" / "prompts" / "scheduled"
+        prompts_dir.mkdir(parents=True)
+        for name in ("one.md", "two.md", "three.md"):
+            (prompts_dir / name).write_text("You must do the thing.\n", encoding="utf-8")
+        (prompts_dir / "notes.txt").write_text("You must.\n", encoding="utf-8")
+
+        failed, declaration = _declared(tmp_path)
+
+        assert failed == []
+        assert declaration is not None
+        assert (declaration.kind, declaration.count, declaration.unit) == ("examined", 5, _UNIT)
+
+    def test_empty_tree_declares_vacuous_domain(self, tmp_path: Path) -> None:
+        failed, declaration = _declared(tmp_path)
+        outcome = registry.build_outcome("validate_complexity", "check", declaration, bool(failed))
+
+        assert failed == []
+        assert declaration is not None
+        assert (declaration.kind, declaration.count, declaration.unit) == ("examined", 0, _UNIT)
+        assert outcome.status == "vacuous"
+
+    def test_outlier_tree_records_enforced_not_failed(self, tmp_path: Path) -> None:
+        src_dir = tmp_path / "src" / "data"
+        src_dir.mkdir(parents=True)
+        for i in range(5):
+            (src_dir / f"simple{i}.py").write_text("def f(): pass\n", encoding="utf-8")
+        (src_dir / "complex.py").write_text("".join(f"def f{i}(): pass\nimport m{i}\n" for i in range(50)), encoding="utf-8")
+
+        failed, declaration = _declared(tmp_path)
+        outcome = registry.build_outcome("validate_complexity", "check", declaration, bool(failed))
+
+        assert declaration is not None and declaration.count == 6
+        assert failed == []
+        assert outcome.status == "enforced"
+
+
+class TestUnreadableInputsStayMeasured:
+    """An unparseable Python file or an undecodable / blank prompt degrades to a zero metric but is
+    still measured and counted, never crashing the advisory run or dropping out of the declaration."""
+
+    def test_unparseable_python_files_score_zero_and_are_still_counted(self, tmp_path: Path) -> None:
+        src_dir = tmp_path / "src" / "data"
+        src_dir.mkdir(parents=True)
+        for i in range(4):
+            (src_dir / f"ok{i}.py").write_text("def f(): pass\nimport os\n", encoding="utf-8")
+        (src_dir / "broken.py").write_text("def broken(:\n", encoding="utf-8")
+        (src_dir / "nul.py").write_text("x = 1\x00\n", encoding="utf-8")
+
+        failed, declaration = _declared(tmp_path)
+
+        assert failed == []
+        assert declaration is not None and declaration.count == 6
+        assert json.loads((tmp_path / "logs" / ".complexity-warnings.json").read_text(encoding="utf-8")) == []
+
+    def test_undecodable_empty_and_blank_prompts_score_zero_density(self, tmp_path: Path) -> None:
+        prompts_dir = tmp_path / ".github" / "prompts"
+        prompts_dir.mkdir(parents=True)
+        (prompts_dir / "binary.md").write_bytes(b"You must \xff\xfe do it.\n")
+        (prompts_dir / "empty.md").write_text("", encoding="utf-8")
+        (prompts_dir / "blank.md").write_text("   \n\n\t\n", encoding="utf-8")
+        for i in range(6):
+            (prompts_dir / f"plain{i}.md").write_text("Regular narrative line.\n", encoding="utf-8")
+        (prompts_dir / "outlier.md").write_text("You must do the thing.\n", encoding="utf-8")
+
+        failed, declaration = _declared(tmp_path)
+        warnings = json.loads((tmp_path / "logs" / ".complexity-warnings.json").read_text(encoding="utf-8"))
+
+        assert failed == []
+        assert declaration is not None and declaration.count == 10
+        assert [w["file"] for w in warnings] == [".github/prompts/outlier.md"]
