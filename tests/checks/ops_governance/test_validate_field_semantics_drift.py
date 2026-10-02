@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from scripts.checks import registry
 from scripts.checks._common import ROOT
 from scripts.checks.ops_governance.validate_field_semantics_drift import validate_field_semantics_drift
 
@@ -105,3 +106,91 @@ class TestFieldSemanticsDriftErrorBranches:
             validate_field_semantics_drift(failed)
 
         assert failed == ["Field semantics drift gate: generator raised: synthetic boom"]
+
+
+_UNIT = "sections"
+_SYNTHETIC_DOC = {"tables": {"history": {}}, "fields": {"ulid": {}}, "ops_tables": {}}
+
+
+def _declared(output: Path, doc: dict | None = None) -> tuple[list[str], registry._Declaration | None]:
+    import unittest.mock as _m
+
+    registry.pop_declaration()
+    failed: list[str] = []
+    with _m.patch("scripts.schema_to_field_semantics._OUTPUT_PATH", output):
+        if doc is None:
+            validate_field_semantics_drift(failed)
+        else:
+            with _m.patch("scripts.schema_to_field_semantics.generate", return_value=doc):
+                validate_field_semantics_drift(failed)
+    return failed, registry.pop_declaration()
+
+
+class TestExaminedDeclaration:
+    """Decision 170: the check declares examined over the regenerated document's top-level sections."""
+
+    def test_matching_file_declares_examined_over_the_regenerated_sections(self, tmp_path: Path) -> None:
+        from scripts.schema_to_field_semantics import _emit_yaml
+
+        output = tmp_path / "field_semantics.yaml"
+        output.write_text(_emit_yaml(_SYNTHETIC_DOC), encoding="utf-8")
+        failed, decl = _declared(output, _SYNTHETIC_DOC)
+        assert failed == []
+        assert decl is not None
+        assert (decl.kind, decl.count, decl.unit) == ("examined", 3, _UNIT)
+        outcome = registry.build_outcome("validate_field_semantics_drift", "check", decl, appended_to_failed=False)
+        assert outcome.status == "enforced"
+
+    def test_drifted_file_counts_the_regenerated_side_not_the_committed_side(self, tmp_path: Path) -> None:
+        output = tmp_path / "field_semantics.yaml"
+        output.write_text("tables: {}\n", encoding="utf-8")
+        failed, decl = _declared(output, _SYNTHETIC_DOC)
+        assert len(failed) == 1
+        assert decl is not None
+        assert (decl.kind, decl.count, decl.unit) == ("examined", 3, _UNIT)
+        outcome = registry.build_outcome("validate_field_semantics_drift", "check", decl, appended_to_failed=True)
+        assert outcome.status == "failed"
+
+    def test_empty_regenerated_document_declares_a_vacuous_domain(self, tmp_path: Path) -> None:
+        from scripts.schema_to_field_semantics import _emit_yaml
+
+        output = tmp_path / "field_semantics.yaml"
+        output.write_text(_emit_yaml({}), encoding="utf-8")
+        failed, decl = _declared(output, {})
+        assert failed == []
+        assert decl is not None
+        assert (decl.kind, decl.count) == ("examined", 0)
+        outcome = registry.build_outcome("validate_field_semantics_drift", "check", decl, appended_to_failed=False)
+        assert outcome.status == "vacuous"
+
+    def test_live_tree_declares_every_generated_section(self, tmp_path: Path) -> None:
+        from scripts.schema_to_field_semantics import _emit_yaml, generate
+
+        live = generate(include_prose=False)
+        output = tmp_path / "field_semantics.yaml"
+        output.write_text(_emit_yaml(live), encoding="utf-8")
+        failed, decl = _declared(output)
+        assert failed == []
+        assert decl is not None
+        assert decl.kind == "examined"
+        assert decl.count == len(live) > 0
+
+    def test_unreadable_file_fails_without_a_declaration(self, tmp_path: Path) -> None:
+        failed, decl = _declared(tmp_path / "never_created" / "field_semantics.yaml", _SYNTHETIC_DOC)
+        assert len(failed) == 1
+        assert decl is None
+
+    def test_raising_generator_fails_without_a_declaration(self, tmp_path: Path) -> None:
+        import unittest.mock as _m
+
+        output = tmp_path / "field_semantics.yaml"
+        output.write_text("committed: content\n", encoding="utf-8")
+        registry.pop_declaration()
+        failed: list[str] = []
+        with (
+            _m.patch("scripts.schema_to_field_semantics._OUTPUT_PATH", output),
+            _m.patch("scripts.schema_to_field_semantics.generate", side_effect=RuntimeError("synthetic boom")),
+        ):
+            validate_field_semantics_drift(failed)
+        assert len(failed) == 1
+        assert registry.pop_declaration() is None
