@@ -40,11 +40,12 @@ def validate_instruction_architecture_layers(failed: list[str]) -> None:
     contract = compliance._load_instruction_architecture()
     violations = compliance.check_layer_compliance(contract)
     layers = contract.get("layers", [])
-    registry.examined(sum(1 for layer in layers for _ in layer.get("content_locations", [])), unit="content_locations")
+    examined = sum(1 for layer in layers for _ in layer.get("content_locations", []))
+    registry.examined(examined, unit="content_locations")
     if violations:
         print("Layer claims violations:")
         for v in violations:
             print(f"  - {v}")
         failed.append("Instruction architecture layer claims")
     else:
-        print(f"Layer claims: {len(layers)} layer(s) checked, all content_locations resolve.")
+        print(f"Layer claims: {len(layers)} layer(s), {examined} content_locations checked, all resolve.")

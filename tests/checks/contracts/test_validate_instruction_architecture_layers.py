@@ -1,5 +1,6 @@
 """Tests for validate_instruction_architecture_layers()."""
 
+from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType
 from unittest.mock import MagicMock, patch
@@ -112,7 +113,19 @@ _REPO_ROOT = Path(__file__).parents[3]
 _LOADER = "scripts.checks.contracts.validate_instruction_architecture_layers._load_prompt_compliance"
 
 
-def _real_compliance(root: Path, contract: dict) -> ModuleType:
+class _GlobCountingRoot:
+    """Stands in for prompt_compliance.ROOT, counting the glob calls the helper makes while judging."""
+
+    def __init__(self, root: Path) -> None:
+        self._root = root
+        self.glob_calls = 0
+
+    def glob(self, pattern: str) -> Iterator[Path]:
+        self.glob_calls += 1
+        return self._root.glob(pattern)
+
+
+def _real_compliance(root: Path | _GlobCountingRoot, contract: dict) -> ModuleType:
     """A fresh, unmocked prompt_compliance module whose layer globbing runs under `root` against `contract`."""
     module = _load_prompt_compliance()
     assert module is not None
@@ -187,6 +200,26 @@ class TestInstructionArchitectureLayersAccountingDeclaration:
         assert declaration is not None
         assert (declaration.kind, declaration.count, declaration.unit) == ("examined", 3, _UNIT)
         assert outcome.status == "failed"
+
+    def test_declared_count_equals_globs_the_helper_actually_judged(self, tmp_path: Path) -> None:
+        """Pins the wrapper's count to the helper's own judging loop: a helper that stopped after the first
+        violation, or judged only some layers, would glob fewer times than the check declares."""
+        (tmp_path / "AGENTS.md").write_text("x\n", encoding="utf-8")
+        contract = {
+            "layers": [
+                {"layer": 1, "name": "Early violation", "content_locations": ["ghost/*.md", "AGENTS.md"]},
+                {"layer": 2, "name": "Second", "content_locations": ["*.md"]},
+                {"layer": 3, "name": "Third", "content_locations": ["AGENTS.md"]},
+                {"layer": 4, "name": "Fourth", "content_locations": ["phantom/*.md", "*.md"]},
+            ]
+        }
+        root = _GlobCountingRoot(tmp_path)
+
+        failed, declaration = _declared(_real_compliance(root, contract))
+
+        assert failed == ["Instruction architecture layer claims"]
+        assert declaration is not None
+        assert declaration.count == root.glob_calls == 6
 
     def test_empty_layers_declares_vacuous_domain(self, tmp_path: Path) -> None:
         failed, declaration = _declared(_real_compliance(tmp_path, {"layers": []}))
