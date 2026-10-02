@@ -1,6 +1,7 @@
 """Tests for validate_field_semantics_drift() -- the T2.33 fail-closed drift gate."""
 
 from pathlib import Path
+from typing import Any
 
 from scripts.checks import registry
 from scripts.checks._common import ROOT
@@ -109,7 +110,7 @@ class TestFieldSemanticsDriftErrorBranches:
 
 
 _UNIT = "sections"
-_SYNTHETIC_DOC = {"tables": {"history": {}}, "fields": {"ulid": {}}, "ops_tables": {}}
+_SYNTHETIC_DOC: dict[str, Any] = {"tables": {"history": {}}, "fields": {"ulid": {}}, "ops_tables": {}}
 
 
 def _declared(output: Path, doc: dict | None = None) -> tuple[list[str], registry._Declaration | None]:
