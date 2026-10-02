@@ -53,8 +53,10 @@ URL request; external, not re-verified here).
 1. Trigger: Stop (every completed response), SessionStart (catch-up for trees whose cursor lags their
    file) and SessionEnd (session_final=True). SubagentStop is not needed: a child's rows are emitted by
    the root pass once the parent holds its completion.
-2. One pass per root tree under an exclusive per-tree lock; a second concurrent pass exits 0
-   immediately (the next Stop catches up). The cursor write is monotonic (never replaces a later
+2. One pass per root tree under an exclusive per-tree lock; a second concurrent Stop or SessionStart
+   pass exits 0 immediately (the next Stop catches up). The SessionEnd pass never does that, because
+   no Stop follows it: it waits for the lock with a bound inside the hook timeout, and if the bound
+   expires it exits 1 (loud), never 0 (plan-critique r1, M2). The cursor write is monotonic (never replaces a later
    lines_consumed with an earlier one).
 3. Send order: observations, transcripts, agents, then the single sessions batch (record_turn.py
    CaptureResult.batches), each table byte-chunked; a chunk failure stops the pass.
@@ -76,7 +78,13 @@ URL request; external, not re-verified here).
    that anchoring record's, and readers order lifecycle rows by (event_timestamp, source_ordinal) with
    close ranked LAST on a tie: a session resumed and ended with no new prompt anchors its close on the
    resume boundary record itself, so a close-first tie-break would flag a clean session (verification
-   r3, H2, scenario I). A session-level ref would
+   r3, H2, scenario I). Outcome: the contract stores success | failed | cancelled on the close row
+   (telemetry_sessions.yaml:184-193). It is a constant per finalize (success) or derived from the
+   transcript, never taken from SessionEnd hook input: hook input is not transcript content, so a retried
+   or duplicate SessionEnd with a different reason would send the same ref with different content, which
+   D207 rejects loudly, and step 8's transcript-only re-derivation could not reproduce it (plan-critique
+   r1, M1). Owner: this rule and the R2 fix are both src/turn_capture rule changes owned by rec-4026; the
+   close-row rule ships in slice 3b's PR (plan-critique r1, M7). A session-level ref would
    already sit in the prior set after the first finalize (record_turn.py:98-104), so a resumed and
    re-finalized session would emit no second close row and read as unfinalized (verification r2, G1,
    scenario E).
@@ -111,13 +119,26 @@ Contested (evidence on both sides, options listed; k1-k2 in the fixture):
   pass when exceeded; (b) detached pass whose failure is surfaced by the next pass; (c) make the warm
   pass O(new lines) by caching the prior emission set beside the cursor, which re-opens the 3a
   "positions only" cursor rule. Recommended: (a); (c) only if the budget is breached in practice.
+  The budget is set relative to the configured Claude Code hook timeout (60 s by default per the
+  hooks documentation; external, not re-verified here), and .claude/settings.json sets that timeout
+  explicitly; a killed pass leaves no close row (plan-critique r1, M3). "Breached in practice" needs a
+  measurable trigger: the runner's diagnostics count deferrals per session, because under (a) a long
+  enough session defers every Stop pass and all capture falls to SessionEnd, the hook q2 doubts
+  (plan-critique r1, M4). Under (b), and under (a) with a slow pass, the SessionEnd lock wait of runner
+  step 2 is what keeps finalize from being skipped (M2).
 - k2 Cursor home. A local file is lost when a CC-web container is reclaimed. Losing it is safe for
   rows (full re-send, all no-ops) but not for the pin: re-reading project_ref from repository config
   after loss is exactly what project-id.yaml:47-51 forbids. Options: (a) accept config re-read for the
   root producer only and amend the contract (operator, always-ask); (b) make the pin a transcript
   fact by having the SessionStart hook emit it as additional context, which Claude Code writes into the
   transcript, so a lost cursor re-derives it from the tree (needs a parser rule and a PARSER_VERSION
-  bump); (c) defer emission for cursor-less trees. Recommended: (b), pending q2.
+  bump); (c) defer emission for cursor-less trees. Recommended: (b), pending q2. If the operator picks
+  (b), the parser rule keys on the SessionStart hook attachment (attachment type hook_*, hookEvent
+  SessionStart) and takes the EARLIEST one, so a later SessionStart:resume carrying a changed config
+  value, or prompt or tool_result text that looks like a pin, never re-pins (project-id.yaml:47-51,
+  "PINNED once"). Option (a) is operator-only because of D200 cl.1: re-reading config after loss can
+  send a different project_ref, which auto-registers a new project_id for the same tree (plan-critique
+  r1, M6).
 
 Risk (a known loss mode, not a choice; carried in the fixture as q2 and as the failure_signal):
 
@@ -147,8 +168,12 @@ Parked (a recommendation with no precedent; nothing moved):
 
 Open (q1-q3 in the fixture; none is answerable from the repository):
 
-- q1 A runner that never succeeds lands no rows, so no warehouse metric can see it. Who counts runner
-  exit-1s out of band? Candidates: the runner's own stderr or diagnostics, or the hook rows'
+- q1 Two classes land no rows at all, so no warehouse metric can see them: a runner that never
+  succeeds, and a session lost before its first turn closes (B1 below). Seeing them needs an
+  independent, out-of-band session denominator. Candidates: the runner's own diagnostics, or an open
+  row at the SessionStart pass. The second is a record_turn rule change against the generation-marker
+  rule (the open row is the generation commit marker, D207 R3; sessions.py:3-4), so it belongs to the
+  operator. For runner exit-1s specifically, the other candidate is the hook rows'
   exit_code (observations.py:328) once any later pass succeeds. The second candidate cannot cover the
   SessionEnd run itself: a record appended after a successful finalize is withheld from every later
   non-final pass (the finalized prefix treats its open last turn as closed), so the SessionEnd hook's
@@ -163,9 +188,16 @@ Open (q1-q3 in the fixture; none is answerable from the repository):
 - planes: data_plane.
 - failure_signal: unfinalized_session_share, the share of root sessions whose LATEST lifecycle row
   (open, resume, compact or close) is not close, 24 h after their last event. Source:
-  telemetry_sessions through the rec-4024 reader verbs. It sees R1 directly: a session, or its latest
-  resumed segment, whose last turn was lost was never finalized, so its latest lifecycle row is not
-  close. "No close row at all" was rejected in verification r2 (G1, scenario D): a session finalized
+  telemetry_sessions through the rec-4024 reader verbs. It sees R1 for sessions, and resumed
+  segments, that already emitted an open or resume row: their last turn was lost, the session or
+  segment was never finalized, so the latest lifecycle row is not close. It does NOT see R1 when the
+  lost turn is the session's ONLY turn: the open row is emitted only once a closed turn holding an
+  assistant record exists, or at finalize (sessions.py:3-4), so a single-turn session reclaimed before
+  SessionEnd, or whose SessionEnd pass fails, lands no row in any table and drops out of both numerator
+  and denominator (plan-critique r1, B1; probe scenarios Z and Y). Thread and gate sessions in this
+  project are often one or two prompts long (inferred, not measured), so the share undercounts exactly
+  the unattended population; the spot_check -> anomaly_triggered rung must not promote on it until
+  q1's independent denominator exists. "No close row at all" was rejected in verification r2 (G1, scenario D): a session finalized
   once, then resumed and reclaimed, already holds a close row, so its lost turn would be invisible. The
   per-finalization close identity (step 7) keeps a clean re-finalized session from flagging.
   It does NOT see R2: that loss happens with SessionEnd and the close row both landing (r2 scenario
@@ -178,8 +210,13 @@ Open (q1-q3 in the fixture; none is answerable from the repository):
   (benign, like an idle session), and a finalize pass whose sessions chunk alone fails and is never
   retried (a correct flag: the pass failed).
   If SessionEnd never fires on CC-web (q2), the share reads near 1 for those sessions, which is real
-  exposure, not a false positive. LIMIT: a runner that never succeeds lands no rows and cannot be seen
-  from the warehouse; that is q1 and needs an out-of-band count.
+  exposure, not a false positive. LIMIT: a runner that never succeeds, and a session lost before its
+  first turn closes, land no rows and cannot be seen from the warehouse; that is q1 and needs an
+  out-of-band denominator.
+  Contract dependency: the metric reads the LATEST lifecycle row, while telemetry_sessions.yaml:186-193
+  still says "absent a close row, the session is running". The reader-verbs component (W1-2) carries
+  that amendment as a contested option, so this failure_signal depends on an unratified contract
+  change. W2 and W3 should stage it as a pending item, not assume it (plan-critique r1, M10).
 - Rejected in verification round 1 (w1-capture-producer-wiring-zero-context-verification-r1-4d1a8e63,
   F1): turn_coverage_gap (capture-hook process_events minus turn_close rows). A hook attachment joins
   its turn (streams.py:266-269), so its row and the turn_close row are emitted together or not at all
@@ -206,6 +243,9 @@ Open (q1-q3 in the fixture; none is answerable from the repository):
   carry `depends_on: pwi-capture-producer-wiring`.
 - Reader verbs (rec-4024 item 6) are this item's failure_signal source; back-validation (T3.4) and the
   friction classifier both read only rows this item writes.
+- T3.20 c3 (an orphan/coverage DQ check in config/agent/data_quality/ops.yaml, alarm-not-gate) is the
+  likely registration home for the unfinalized_session_share alarm and for step 8's conformance
+  counter (plan-critique r1, M8).
 - T3.20 c1's launch criterion (a pre-write credential scrub) is already met inside record_turn
   (transcripts.py:129, observations.py:331-332, sessions.py:222). The runner owes nothing there, and
   the fixture's c1 does not drop it.
