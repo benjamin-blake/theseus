@@ -21,6 +21,8 @@ def validate_complexity(failed: list[str]) -> list[dict]:
     for imperative-statement density. Flags files >2 std-devs above their
     package mean as warnings. Packages with <3 files are skipped. Writes
     warnings to logs/.complexity-warnings.json. Never appends to failed.
+
+    Declares examined(Python files measured + prompt files measured, unit="files") (Decision 170).
     """
     print("\n=== Code complexity analysis ===")
 
@@ -62,14 +64,10 @@ def validate_complexity(failed: list[str]) -> list[dict]:
         return len(imports)
 
     def _get_package(filepath: Path) -> str:
-        try:
-            rel = filepath.relative_to(_common.ROOT)
-            parts = rel.parts
-            if parts[0] == "src" and len(parts) > 1:
-                return parts[1]
-            return parts[0]
-        except ValueError:
-            return "unknown"
+        parts = filepath.relative_to(_common.ROOT).parts
+        if parts[0] == "src" and len(parts) > 1:
+            return parts[1]
+        return parts[0]
 
     def _count_imperative_statements(filepath: Path) -> float:
         try:
@@ -144,9 +142,9 @@ def validate_complexity(failed: list[str]) -> list[dict]:
 
     # Collect prompt file metrics
     prompt_warnings: list[dict] = []
+    prompt_entries: list[tuple[Path, float]] = []
     prompts_dir = _common.ROOT / ".github" / "prompts"
     if prompts_dir.exists():
-        prompt_entries: list[tuple[Path, float]] = []
         for md_file in sorted(prompts_dir.glob("**/*.md")):
             density = _count_imperative_statements(md_file)
             prompt_entries.append((md_file, density))
@@ -171,6 +169,7 @@ def validate_complexity(failed: list[str]) -> list[dict]:
                             }
                         )
 
+    registry.examined(sum(len(entries) for entries in py_metrics.values()) + len(prompt_entries), unit="files")
     warnings = py_warnings + prompt_warnings
 
     # Write warnings to JSON file

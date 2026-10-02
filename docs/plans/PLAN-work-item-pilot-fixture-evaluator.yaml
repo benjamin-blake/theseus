@@ -45,11 +45,19 @@ scope:
   purpose: Add function_to_category row validate_work_item_pilot -> schema_drift, beside its roadmap-domain siblings.
 - file: tests/checks/roadmap/test_validate_work_item_pilot.py
   action: Create
-  purpose: 'Mirror test: one red-before case per leg and exit, the green empty-skeleton case, the registration case, and the
-    model-driven budget case (a worst-case item generated from model_fields - failing on any unbounded str or list field,
-    populating optional and defaulted fields, taking the longest union arm - round-tripped through Fixture.model_validate,
-    rendered by the model module''s render(), parsed back equal to the by-alias dump, and measured at no more than PER_ITEM_LINE_CEILING
-    effective lines).'
+  purpose: 'Mirror test: one red-before case per leg and exit, the green empty-skeleton case and the registration case. The
+    model-level cases and the model-driven budget case live in the model mirror test below (operator-approved scope amendment
+    2026-10-02).'
+- file: tests/checks/roadmap/test__work_item_pilot_model.py
+  action: Create
+  purpose: 'Mirror test for _work_item_pilot_model.py, required by the repo mirror convention (tests/CLAUDE.md, Decisions 131/104:
+    scripts.test_coverage_checker --check-tests and test_unmapped_sources_do_not_grow fail without it). Model-level red-before
+    cases (unknown key, kind plan, missing failure_signal metric or source, placeholder, floor, ceiling, non-ASCII, blank and
+    non-finite values, rec-only evidence, duplicate ids, wrong transitions, exactly-one-of method) plus the model-driven budget
+    case (a worst-case item generated from model_fields - failing on any unbounded str or list field, populating optional and
+    defaulted fields, taking the longest union arm - round-tripped through Fixture.model_validate, rendered by render(), parsed
+    back equal to the by-alias dump, and measured at no more than PER_ITEM_LINE_CEILING effective lines). Covers the model
+    module at 100 percent on its own.'
 - file: docs/contracts/file-router.yaml
   action: Modify
   purpose: Add route topic work-item-pilot, targets [docs/work-item-pilot/telemetry-feedback-loop.yaml], description naming
@@ -105,8 +113,9 @@ verification_plan:
   - pilot fixture OK residual
 - step: 2
   phase: pre-deploy
-  action: Run the mirror test (every leg red-before case, both sunset exits, the green skeleton and the budget reconciliation).
-  command: bin/venv-python -m pytest tests/checks/roadmap/test_validate_work_item_pilot.py -q -p no:randomly
+  action: Run the mirror tests (every leg red-before case, both sunset exits, the green skeleton, the model cases and the budget reconciliation).
+  command: bin/venv-python -m pytest tests/checks/roadmap/test_validate_work_item_pilot.py tests/checks/roadmap/test__work_item_pilot_model.py
+    -q
   expected: Exit 0, all tests pass.
   fix_if: A failing leg case means the leg does not detect its broken input; fix the leg. A failing budget case means a cap
     was raised without re-deriving it (plan context); lower the cap, never raise the line budget.
@@ -181,7 +190,7 @@ test_obligations:
   behavior: The models reject unknown keys, kind plan, a missing failure_signal metric or source, prose-only evidence, over-length
     text and over-cap lists; and the frozen caps keep a worst-case fixture within 500 effective lines.
   verification_step: 2
-  test_selector: tests/checks/roadmap/test_validate_work_item_pilot.py
+  test_selector: tests/checks/roadmap/test__work_item_pilot_model.py
   red_green_expectation: Red before (module absent); green after. The budget case reddens if any cap is raised without re-derivation.
 - source: scripts/checks/roadmap/_manifest.py
   behavior: The validate_work_item_pilot Entry exists with pre=True, pre_globs=None (ungated) and full_after_lint.
@@ -204,7 +213,7 @@ test_obligations:
   red_green_expectation: Red before (validate_placement passes but the route lookup raises IndexError, no work-item-pilot
     route); green after.
 constraints:
-- IMPLEMENTATION only (Decision 67 freeze); eight scope files; the >5-file heuristic is suspended under the freeze.
+- IMPLEMENTATION only (Decision 67 freeze); nine scope files; the >5-file heuristic is suspended under the freeze.
 - 'Nothing is ratified: CD.45 stays pending; no docs/DECISIONS.md edit, no portal write, no ROADMAP-PLATFORM edit, no tier-item
   or criterion status flip.'
 - The fixture ships EMPTY (zero work_items, criteria and edges). W1 adds items, each complete on the register when it lands,
@@ -364,16 +373,18 @@ execution_steps:
   past the file''s end, and T3.3:c1 on a bare-criteria item each fail; T4.23:c6 on a structured item and the pre-only check
   validate_sloc_budget_raises pass); TestHeader (cap 13 or a moved sunset date fails); TestSunset (today=2027-01-30 touched
   passes; today=2027-01-31 touched fails; c6-met trigger touched fails; triggered untouched passes and still declares examined(1);
-  CD.45 ratified exit passes; Decision naming CD.45 and the directory passes; absent CD.45 fails closed); TestBudget (generate
+  CD.45 ratified exit passes; Decision naming CD.45 and the directory passes; absent CD.45 fails closed); TestRegistration
+  (Entry by name with pre=True and pre_globs None, both tier sequences, taxonomy row).'
+- 'tests/checks/roadmap/test__work_item_pilot_model.py: direct Fixture.model_validate cases for every model validator and bound (no
+  tmp repo), and TestBudget (generate
   the worst-case item from the models'' model_fields - raise on any str or list field without max_length, populate optional
   and defaulted fields, take the longest arm of each discriminated union, building ExecutionMethod once with check and once
-  with command (its exactly-one-of validator rejects both) and keeping the longer, plus one non-ASCII text red case in TestSchema,
+  with command (its exactly-one-of validator rejects both) and keeping the longer,
   every string at its max_length, every list at its cap, MAX_CRITERIA_PER_ITEM criterion rows and MAX_EDGES_FROM_ITEM edge
   rows - round-trip it through Fixture.model_validate, render it with the model module''s render(), assert yaml.safe_load(rendered)
   equals the by-alias dump, and assert per-item effective lines <= PER_ITEM_LINE_CEILING and longest line <= 2000; assert
   HEADER_LINE_CEILING + ITEM_COUNT_CAP x PER_ITEM_LINE_CEILING <= 500 and that the shipped header measures <= HEADER_LINE_CEILING;
-  a field added to any model grows the generated item, so the test reddens without a hand-edited template); TestRegistration
-  (Entry by name with pre=True and pre_globs None, both tier sequences, taxonomy row).'
+  a field added to any model grows the generated item, so the test reddens without a hand-edited template).'
 - 'docs/contracts/file-router.yaml: append the route after ducklake-partition-remediation and prepend an amendment_log entry
   {date: <implement date>, semantic_break: false, change_class: field_add, summary: ''PLAN-work-item-pilot-fixture-evaluator:
   added the work-item-pilot route (CD.45 pilot fixture). Additive only.''}.'

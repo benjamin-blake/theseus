@@ -31,14 +31,15 @@ def _load_yaml(path: Path) -> tuple[object | None, str | None]:
         return None, f"could not parse {path}: {exc}"
 
 
-def _check_storage_substrate(failed: list[str], path: Path) -> None:
+def _check_storage_substrate(failed: list[str], path: Path) -> int:
+    """Returns the number of table entries judged (0 when the file never reached the judgment)."""
     data, err = _load_yaml(path)
     if err is not None:
         failed.append(f"Data-model standard: {err}")
-        return
+        return 0
     if not isinstance(data, dict) or not isinstance(data.get("tables"), dict):
         failed.append(f"Data-model standard: {path} missing a 'tables' mapping")
-        return
+        return 0
 
     offenders = sorted(
         name
@@ -52,21 +53,24 @@ def _check_storage_substrate(failed: list[str], path: Path) -> None:
         )
     else:
         print("  PASS: storage-substrate.yaml -- every merge_key-bearing table declares grain + write_mode.")
+    return len(data["tables"])
 
 
-def _check_standard_contract(failed: list[str], path: Path) -> None:
+def _check_standard_contract(failed: list[str], path: Path) -> int:
+    """Returns the number of required sections judged (0 when the file never reached the judgment)."""
     data, err = _load_yaml(path)
     if err is not None:
         failed.append(f"Data-model standard: {err}")
-        return
+        return 0
     if not isinstance(data, dict):
         failed.append(f"Data-model standard: {path} is not a YAML mapping")
-        return
+        return 0
     missing = [section for section in _REQUIRED_STANDARD_SECTIONS if section not in data]
     if missing:
         failed.append(f"Data-model standard: {path} missing required section(s): {missing}")
-        return
-    print("  PASS: data-modeling-standard.yaml -- all required sections present.")
+    else:
+        print("  PASS: data-modeling-standard.yaml -- all required sections present.")
+    return len(_REQUIRED_STANDARD_SECTIONS)
 
 
 @registry.register("validate_data_model_standard", owner="platform")
@@ -80,6 +84,11 @@ def validate_data_model_standard(
 
     contracts_dir / changed_files: overrides for test isolation (default to ROOT/docs/contracts
     and _common.get_changed_files()).
+
+    Declares skipped when neither trigger file changed (the diff-aware precondition is unmet), else
+    examined over the entries actually judged (unit "entries"): every storage-substrate.yaml table
+    entry plus every required data-modeling-standard.yaml section, for each changed file that
+    reached its judgment.
     """
     print("\n=== Data-modeling standard gate ===")
 
@@ -92,9 +101,12 @@ def validate_data_model_standard(
 
     if not substrate_changed and not standard_changed:
         print("  SKIP: neither storage-substrate.yaml nor data-modeling-standard.yaml changed.")
+        registry.skipped("neither storage-substrate.yaml nor data-modeling-standard.yaml changed")
         return
 
+    judged = 0
     if substrate_changed:
-        _check_storage_substrate(failed, target_dir / "storage-substrate.yaml")
+        judged += _check_storage_substrate(failed, target_dir / "storage-substrate.yaml")
     if standard_changed:
-        _check_standard_contract(failed, target_dir / "data-modeling-standard.yaml")
+        judged += _check_standard_contract(failed, target_dir / "data-modeling-standard.yaml")
+    registry.examined(judged, unit="entries")

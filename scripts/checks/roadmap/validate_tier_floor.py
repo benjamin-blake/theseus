@@ -66,22 +66,30 @@ def validate_tier_floor(failed: list[str], plans_dir: Path | None = None) -> Non
 
     schema_version-1 plans are skipped entirely (grandfathered, Option A). plans_dir
     overrides the scanned directory (test seam, mirrors validate_plan_documents).
+
+    Declares examined over the schema_version-2 plans whose floor it computes (unit "v2
+    plans"); plans of any other schema_version, and non-mapping documents, are neither judged
+    nor counted. A directory with no PLAN-*.yaml, or none at schema_version 2, declares
+    examined(0).
     """
     print("\n=== Deterministic V-tier floor validation ===")
 
     target_dir = plans_dir if plans_dir is not None else _common.ROOT / "docs" / "plans"
     plan_paths = sorted(target_dir.glob("PLAN-*.yaml"))
     if not plan_paths:
+        registry.examined(0, unit="v2 plans")
         print("  PASS: no PLAN-*.yaml files to validate.")
         return
 
     code_files = _lambda_code_files()
     violations: list[str] = []
+    judged = 0
     for path in plan_paths:
         with path.open(encoding="utf-8") as fh:
             data = yaml.safe_load(fh)
         if not isinstance(data, dict) or data.get("schema_version") != 2:
             continue
+        judged += 1
         scope_files = [entry["file"] for entry in data.get("scope", []) if "file" in entry]
         floor = _compute_floor(scope_files, code_files)
         declared = data.get("verification_tier", "V1")
@@ -90,6 +98,7 @@ def validate_tier_floor(failed: list[str], plans_dir: Path | None = None) -> Non
             print(f"  FAIL: {msg}")
             violations.append(msg)
 
+    registry.examined(judged, unit="v2 plans")
     if violations:
         failed.append("Deterministic V-tier floor validation")
     else:

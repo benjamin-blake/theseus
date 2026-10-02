@@ -12,11 +12,15 @@ def validate_workflow_agent_safety(failed: list[str]) -> None:
     Guards the silent-failure class behind the ci-rca "Input must be provided ... when
     using --print" regression: a masked invocation (|| true / continue-on-error) with no
     output assertion passes as a green no-op. See scripts/check_workflow_agent_safety.py.
+
+    Declares examined(headless claude -p run steps found, unit="headless_claude_steps") (Decision 170);
+    a tree with none is examined(0).
     """
     print("\n=== Workflow agent-safety (headless claude -p) ===")
-    from scripts.check_workflow_agent_safety import check_workflow_agent_safety
+    from scripts.check_workflow_agent_safety import scan_workflow_agent_safety
 
-    violations = check_workflow_agent_safety()
+    violations, examined = scan_workflow_agent_safety()
+    registry.examined(examined, unit="headless_claude_steps")
     if violations:
         print("Workflow agent-safety violations:")
         for v in violations:

@@ -3,6 +3,7 @@
 from pathlib import Path
 from unittest.mock import patch
 
+from scripts.checks import registry
 from scripts.checks.sloc.validate_sloc_budget_raises import _SPEC, validate_sloc_budget_raises
 
 
@@ -135,3 +136,98 @@ class TestValidateSlocBudgetRaises:
             validate_sloc_budget_raises(failed, base_reader=base_reader)
 
         assert len(failed) == 1
+
+
+def _declared(tmp_path: Path, base_text: str | None) -> tuple[list[str], registry._Declaration | None]:
+    registry.pop_declaration()
+    failed: list[str] = []
+    with patch("scripts.checks._common.ROOT", tmp_path):
+        validate_sloc_budget_raises(failed, base_reader=lambda _rel: base_text)
+    return failed, registry.pop_declaration()
+
+
+def _write(tmp_path: Path, rel: str, body: str) -> None:
+    target = tmp_path / rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(body, encoding="utf-8")
+
+
+class TestExaminedDeclaration:
+    """Decision 170: skipped when the registry or its base is unavailable, else examined over the entries judged."""
+
+    def test_missing_registry_declares_skipped(self, tmp_path: Path) -> None:
+        failed, decl = _declared(tmp_path, "budgets: {}\n")
+        assert failed == []
+        assert decl is not None
+        assert decl.kind == "skipped"
+        assert decl.reason == "config/sloc_budgets.yaml not found"
+
+    def test_unreachable_base_declares_skipped(self, tmp_path: Path) -> None:
+        _write(tmp_path, "config/sloc_budgets.yaml", "budgets:\n  scripts/heavy.py: 800\n")
+        _write(tmp_path, "docs/DECISIONS.md", "")
+        failed, decl = _declared(tmp_path, None)
+        assert failed == []
+        assert decl is not None
+        assert decl.kind == "skipped"
+        assert decl.reason == "origin/main unreachable"
+        assert registry.build_outcome("validate_sloc_budget_raises", "check", decl, appended_to_failed=False).status == (
+            "skipped"
+        )
+
+    def test_unreachable_base_still_fails_on_unauthorized_present_marker(self, tmp_path: Path) -> None:
+        _write(tmp_path, "config/sloc_budgets.yaml", "budgets:\n  scripts/heavy.py: 800  # raise-approved: dec-102 x\n")
+        _write(tmp_path, "docs/DECISIONS.md", "## Decision 102: Some title (Decided)\n")
+        failed, decl = _declared(tmp_path, None)
+        assert len(failed) == 1
+        assert decl is not None
+        assert decl.kind == "skipped"
+        assert registry.build_outcome("validate_sloc_budget_raises", "check", decl, appended_to_failed=True).status == (
+            "failed"
+        )
+
+    def test_clean_registry_counts_every_current_entry(self, tmp_path: Path) -> None:
+        body = "budgets:\n  scripts/a.py: 600\n  scripts/b.py: 700\n  scripts/c.py: 520\n"
+        _write(tmp_path, "config/sloc_budgets.yaml", body)
+        _write(tmp_path, "docs/DECISIONS.md", "")
+        failed, decl = _declared(tmp_path, body)
+        assert failed == []
+        assert decl is not None
+        assert decl.kind == "examined"
+        assert decl.count == 3
+        assert decl.unit == "entries"
+        assert registry.build_outcome("validate_sloc_budget_raises", "check", decl, appended_to_failed=False).status == (
+            "enforced"
+        )
+
+    def test_failing_diff_still_declares_examined_count(self, tmp_path: Path) -> None:
+        _write(tmp_path, "config/sloc_budgets.yaml", "budgets:\n  scripts/a.py: 900\n  scripts/b.py: 700\n")
+        _write(tmp_path, "docs/DECISIONS.md", "")
+        failed, decl = _declared(tmp_path, "budgets:\n  scripts/a.py: 600\n  scripts/b.py: 700\n")
+        assert len(failed) == 1
+        assert decl is not None
+        assert decl.kind == "examined"
+        assert decl.count == 2
+
+    def test_empty_registry_declares_vacuous(self, tmp_path: Path) -> None:
+        _write(tmp_path, "config/sloc_budgets.yaml", "budgets: {}\n")
+        _write(tmp_path, "docs/DECISIONS.md", "")
+        failed, decl = _declared(tmp_path, "budgets:\n  scripts/a.py: 600\n")
+        assert failed == []
+        assert decl is not None
+        assert decl.kind == "examined"
+        assert decl.count == 0
+        assert registry.build_outcome("validate_sloc_budget_raises", "check", decl, appended_to_failed=False).status == (
+            "vacuous"
+        )
+
+    def test_live_registry_examines_every_entry(self) -> None:
+        live = (Path(__file__).resolve().parents[3] / "config" / "sloc_budgets.yaml").read_text(encoding="utf-8")
+        registry.pop_declaration()
+        failed: list[str] = []
+        validate_sloc_budget_raises(failed, base_reader=lambda _rel: live)
+        decl = registry.pop_declaration()
+        assert failed == []
+        assert decl is not None
+        assert decl.kind == "examined"
+        assert decl.count == len(_SPEC.extractor(live))
+        assert decl.count > 0
