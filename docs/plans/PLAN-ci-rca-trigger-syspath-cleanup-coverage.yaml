@@ -1,0 +1,204 @@
+schema_version: 5
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "ci-rca-trigger-syspath-cleanup-coverage"
+intent: >-
+  Close CI-RCA rec-4159 by covering the one untested statement in
+  scripts/checks/ci_guards/validate_ci_rca_trigger.py (line 34, the finally-block sys.path cleanup),
+  restoring the file to the 100%-per-file floor so main's post-merge full tier goes green and the
+  Decision 73 halt lifts.
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-ci-rca-trigger-syspath-cleanup-coverage.yaml
+phase: >-
+  ci_rca soft-warn exception category; no tier_item claimed. Adjacent to T3.7 (diff-line-coverage
+  ratchet) and T2.55 (shrink-only baselines) -- neither is advanced here.
+scope:
+  - file: tests/checks/ci_guards/test_validate_ci_rca_trigger.py
+    action: Modify
+    purpose: >-
+      Add test_sys_path_cleanup_branch_exercised to TestValidateCiRcaTrigger, parametrized over
+      the guard's success and raising exits, which runs the check with ROOT absent from sys.path
+      and asserts ROOT is injected during the guard call and removed afterwards -- covering line 34,
+      the only uncovered statement.
+bundled_recommendations:
+  - rec-4159
+followon_recs:
+  - rec-3232
+infrastructure_dependencies: []
+acceptance_criteria:
+  - >-
+    scripts/checks/ci_guards/validate_ci_rca_trigger.py measures 100% per-file line coverage under
+    scripts.test_coverage_checker --check-coverage (94.7%, missing [34], at planning time).
+  - >-
+    With ROOT removed from sys.path before the call, ROOT is present on sys.path while
+    _check_ci_rca_filter runs and absent after validate_ci_rca_trigger returns, on both the success
+    exit and the exception exit.
+  - >-
+    rec-4159's own acceptance command passes verbatim (it runs the single node id with
+    --cov-fail-under=100, so the node id alone must reach every statement, including the except
+    body -- hence the two-exit parametrization).
+  - >-
+    The full tier (bin/venv-python -m scripts.validate) exits 0 locally before the PR is opened.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: >-
+      Run rec-4159's acceptance command verbatim -- the rec's closure oracle, replayed by ci.yml's
+      trailer-acceptance-evaluate job. The node id does not exist today, so this is a genuine
+      red-before probe (verified at planning time: pytest "not found").
+    command: bin/venv-python -m pytest tests/checks/ci_guards/test_validate_ci_rca_trigger.py::TestValidateCiRcaTrigger::test_sys_path_cleanup_branch_exercised --cov=scripts.checks.ci_guards.validate_ci_rca_trigger --cov-fail-under=100 -q
+    expected: >-
+      exit 0; 2 passed; total coverage 100%. Before the change pytest reports the node id not found.
+    fix_if: >-
+      Node id does not resolve -- rename to match rec-4159 verbatim, never edit the rec. Coverage
+      under 100% -- one parametrization is not reaching its exit; read the Missing column.
+    hermetic: true
+    expected_literals: ["2 passed"]
+    graduation: graduate
+    graduation_check_id: ci-rca-trigger-syspath-cleanup-exercised
+  - step: 2
+    phase: pre-deploy
+    action: >-
+      Assert 100% per-file coverage through the same baseline-aware code path the full-tier gate
+      uses (validate_test_coverage -> check_per_file_coverage). Standalone the tool prints
+      DIAGNOSTIC VERDICT; step 3 runs the authoritative gate.
+    command: bin/venv-python -m scripts.test_coverage_checker --check-coverage --files scripts/checks/ci_guards/validate_ci_rca_trigger.py
+    expected: >-
+      exit 0. Today it exits 1 reporting 94.7% line coverage, missing lines [34].
+    fix_if: >-
+      Still short of 100%: add the covering assertion. Never add a config/coverage_baseline.yaml
+      entry (Decision 181 gate-weakening; Decision 159 clause 3 tamper guard).
+    hermetic: true
+    expected_literals: []
+    graduation: waive
+    graduation_waiver_reason: >-
+      Duplicates an already-permanent gate. validate_test_coverage enforces this identical per-file
+      oracle in the full tier for any diff touching the file; step 1's graduated test_selector shard
+      covers the residual case (the test deleted without the source being touched).
+  - step: 3
+    phase: pre-deploy
+    action: >-
+      Discharge the handoff obligation with a real full-tier run to completion, reading the
+      Validation Summary. Non-execution of this tier before #1358 merged is how the escape landed.
+    command: bin/venv-python -m scripts.validate
+    expected: exit 0; no "Coverage below 100%" entry in the Validation Summary.
+    fix_if: >-
+      A full-tier failure in this plan's scope is fixed on the branch. Never skip a test, relax an
+      assertion, or add a baseline or budget entry. A failure outside scope becomes a rec via
+      scripts.ops_data_portal (Decision 59, Decision 55).
+    hermetic: false
+    graduation: not-applicable
+  - step: 4
+    phase: post-deploy
+    action: >-
+      After squash-merge with a "Resolves: rec-4159" trailer, confirm the trailer-closure job
+      closed the rec in the warehouse (closure obligation for a rec-resolving plan).
+    command: bin/venv-python -c "from scripts.ops_data_portal import _fetch_rec_from_reader as f; r=f('rec-4159'); print(r['status']); assert r['status']=='closed'"
+    expected: >-
+      prints closed; exit 0.
+    fix_if: >-
+      Still open: read the trailer-closure job log. On a transport or merge-leg refusal use the
+      sanctioned --update-rec fallback with --closure-artifact shard:ci-rca-trigger-syspath-cleanup-exercised;
+      on an acceptance-verdict refusal use only the printed close_proposed command (git-ops.yaml
+      resolves_trailer). Never edit the local cache.
+    hermetic: false
+    graduation: not-applicable
+test_obligations:
+  - source: tests/checks/ci_guards/test_validate_ci_rca_trigger.py
+    behavior: >-
+      validate_ci_rca_trigger's finally-block removes a ROOT it injected, on both the success and
+      the exception exit, so the sys.path cleanup stays exercised and the file stays at 100%.
+    verification_step: 1
+    test_selector: tests/checks/ci_guards/test_validate_ci_rca_trigger.py::TestValidateCiRcaTrigger::test_sys_path_cleanup_branch_exercised
+    red_green_expectation: >-
+      red before, green after -- the node id does not resolve today (pytest exit 4, "not found")
+      and passes once the parametrized test is added.
+constraints:
+  - No rescue agents or workaround loops (Decision 55).
+  - >-
+    Add a test; never add a config/coverage_baseline.yaml entry for this file (Decision 181,
+    Decision 159 clause 3).
+  - >-
+    Do not modify scripts/checks/ci_guards/validate_ci_rca_trigger.py. Deleting the defensive
+    injection/cleanup pair to remove the uncovered line would edit source to satisfy a coverage
+    metric, diverge the two callers of _shared._ensure_root_on_path, and leave rec-4159's
+    acceptance node id unresolvable (Decision 201 cl.3).
+  - >-
+    Tests colocate at the Decision 131 mirror path already in use; no second test home.
+  - >-
+    Node id must match rec-4159's acceptance string verbatim -- the trailer-acceptance gate
+    replays it.
+  - >-
+    Zero net-new suppressions (noqa, type: ignore, pragma: no cover, skip/xfail).
+  - >-
+    Out of scope: prevention of this escape class. Owned by rec-3232 (validate_diff_coverage
+    adjudication) and the operator-requested prevention report from this thread; this plan
+    files nothing further.
+context:
+  - >-
+    Decision-scout verdict NO_FLAGS (ci-rca-trigger-syspath-cleanup-coverage-decision-scout-r1-7e3c9a51).
+    CITE list (verbatim): Decision 73, Decision 72, Decision 55, Decision 159, Decision 181,
+    Decision 131, Decision 163, Decision 186, Decision 201, Decision 132. Decisions triaged: 163 of
+    163. Roadmap items intersected: 1; CONFLICT: 0; RELATED: 1. Decision 159 cl.3 reads as amended
+    by Decision 165.
+  - "gates: decision-scout=NO_FLAGS; step-6b=stand-in r1 write-the-plan; plan-critique=PENDING"
+  - >-
+    rec-4159 (Critical, tier_misplaced); red runs on 32d65563: ci.yml 36927144273, Main Canary
+    36945564727. Its why_chain misattributes line 34 to 32d65563: the line is pre-existing (#1358
+    only added examined()); touching the file put it in the changed-file set. It is cold because
+    pytest always has ROOT on sys.path, so _shared._ensure_root_on_path() returns False.
+  - >-
+    Gotcha: the test must drop ROOT via monkeypatch.setattr(sys, "path", [...]) so the check's
+    own sys.path reads see the filtered list, and stub scripts.verify_ci_workflow through
+    patch.dict(sys.modules, ...) as the six existing tests do, so the lazy import resolves without
+    ROOT on the path.
+  - >-
+    Precedent: PLAN-selection-budget-coverage-gap (rec-3551), same class and shape. Sibling
+    construct precedent: scripts/checks/ci_guards/validate_ci_workflow_guards.py carries the same
+    _ensure_root_on_path inject/finally-remove pair, covered (not deleted) by
+    tests/checks/ci_guards/test_validate_ci_workflow_guards.py::test_removes_injected_sys_path_entry_on_the_way_out
+    (rec-2027); this plan runs the real helper instead of patching it, so it also proves insertion.
+  - >-
+    Closure route: Decision 201 -- trailer-closure closes rec-4159 only on a holds verdict from
+    replaying its acceptance command at the closing commit. Decision 186 -- escape-classified,
+    so the step 1 graduated shard (Decision 132) is the fix-bound closure artifact. Decision 163 --
+    VP step 3 is the full-tier obligation whose non-execution let #1358 land.
+  - >-
+    fork: cover validate_ci_rca_trigger.py:34 with a test, or delete the inject/finally-remove
+    pair | chosen: add test_sys_path_cleanup_branch_exercised, no source change, no baseline entry
+    | class: consistency-only | precedent: D201 cl.3 + D181 cl.1 + D159 cl.2; sibling rec-2027 |
+    precedent_kind: decision | reversible: yes | full line in gate record
+    ci-rca-trigger-syspath-cleanup-coverage-step-6b-stand-in-r1
+  - >-
+    rec-4159 acceptance string read by the author via rec_by_id at planning time; it names
+    ::TestValidateCiRcaTrigger::test_sys_path_cleanup_branch_exercised verbatim (VP step 1
+    command). Step 1 fix_if governs a mismatch (rename the test, never edit the rec).
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - Only the plan-cited decision sections read (159, 165, 181, 131, 163, 186, 201, 132)
+  - tests/checks/ci_guards/test_validate_ci_rca_trigger.py and the source read
+  - Acceptance criteria understood and verifiable
+execution_steps:
+  - >-
+    tests/checks/ci_guards/test_validate_ci_rca_trigger.py -- add
+    test_sys_path_cleanup_branch_exercised to TestValidateCiRcaTrigger, parametrized over
+    (guard returns an int) and (guard raises). Each case: filter ROOT out of sys.path with
+    monkeypatch, stub _check_ci_rca_filter via patch.dict(sys.modules) with a side effect that
+    records whether ROOT is on sys.path at call time, call validate_ci_rca_trigger, pop any
+    declaration, then assert ROOT was present during the call and is absent afterwards; also
+    assert the failed list matches the exit taken.
+  - >-
+    Prove the assertion bites beyond the node-id red-before: temporarily delete line 34 locally,
+    confirm the new test fails on the "ROOT absent afterwards" assertion, then restore the file
+    (git diff on the source must be empty before commit).
+  - >-
+    Execute the Verification Plan -- run each step; loop until pass (Decision 55).
+  - 'Report: what was implemented, verification results'
+work_areas: []
+rollback: >-
+  Revert the commit (test file plus the graduated shard
+  config/agent/verification_registry/entries/ci-rca-trigger-syspath-cleanup-exercised.yaml). No
+  source or schema changes; the file returns to 94.7% and rec-4159 reopens.
