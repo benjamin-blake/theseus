@@ -4,8 +4,10 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from scripts import lambda_manifest
-from scripts.checks import registry
+from scripts.checks import _common, registry
 from scripts.checks.lambda_pkg.validate_lambda_manifests import validate_lambda_manifests
 
 
@@ -151,3 +153,40 @@ class TestLambdaManifestsAccountingDeclaration:
         assert declaration is not None
         assert (declaration.kind, declaration.count, declaration.unit) == ("examined", 0, _UNIT)
         assert outcome.status == "failed"
+
+
+class TestSysPathShim:
+    """Both branches of the repo-root sys.path shim around the helper import."""
+
+    def test_injects_root_for_the_call_and_removes_it_after(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        root_str = str(_common.ROOT)
+        monkeypatch.setattr(sys, "path", [p for p in sys.path if p != root_str])
+        seen_during_call: list[bool] = []
+
+        def _record_shim(_args: object) -> int:
+            seen_during_call.append(root_str in sys.path)
+            return 0
+
+        mock_lm = MagicMock()
+        mock_lm.cmd_validate.side_effect = _record_shim
+
+        with patch.dict(sys.modules, {"scripts.lambda_manifest": mock_lm}):
+            failed: list[str] = []
+            validate_lambda_manifests(failed)
+
+        assert failed == []
+        assert seen_during_call == [True]
+        assert root_str not in sys.path
+
+    def test_leaves_root_in_place_when_already_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        root_str = str(_common.ROOT)
+        monkeypatch.setattr(sys, "path", [root_str, *(p for p in sys.path if p != root_str)])
+        mock_lm = MagicMock()
+        mock_lm.cmd_validate.return_value = 0
+
+        with patch.dict(sys.modules, {"scripts.lambda_manifest": mock_lm}):
+            failed: list[str] = []
+            validate_lambda_manifests(failed)
+
+        assert failed == []
+        assert sys.path.count(root_str) == 1
