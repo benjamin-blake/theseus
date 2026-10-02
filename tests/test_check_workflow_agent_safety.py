@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from scripts import check_workflow_agent_safety as mod
-from scripts.check_workflow_agent_safety import check_workflow_agent_safety
+from scripts.check_workflow_agent_safety import check_workflow_agent_safety, scan_workflow_agent_safety
 
 _MASKED_NO_GUARD = """\
 name: x
@@ -159,5 +159,48 @@ def test_missing_workflows_dir_returns_empty(tmp_path: Path, monkeypatch: pytest
 
 
 def test_real_workflows_pass() -> None:
-    """The live .github/workflows must already satisfy the rule (both raw claude -p sites)."""
+    """The live .github/workflows must already satisfy the rule."""
     assert check_workflow_agent_safety() == []
+
+
+def test_scan_counts_every_headless_claude_step_across_files(workflows_dir: Path) -> None:
+    """Masked, unmasked and violating claude -p steps all count; steps without a raw invocation do not."""
+    _write(workflows_dir, "a.yml", _MASKED_WITH_GUARD)
+    _write(workflows_dir, "b.yml", _UNMASKED)
+    _write(workflows_dir, "c.yml", _CONTINUE_ON_ERROR_NO_GUARD)
+    _write(workflows_dir, "d.yml", _NO_CLAUDE)
+    _write(workflows_dir, "e.yml", _USES_ACTION)
+    _write(workflows_dir, "f.yml", _NOT_A_MAPPING)
+    violations, examined = scan_workflow_agent_safety()
+    assert examined == 3
+    assert len(violations) == 1
+    assert "c.yml" in violations[0]
+
+
+def test_scan_count_tracks_the_tree(workflows_dir: Path) -> None:
+    _write(workflows_dir, "one.yml", _UNMASKED)
+    assert scan_workflow_agent_safety() == ([], 1)
+    _write(workflows_dir, "two.yml", _MASKED_WITH_GUARD)
+    assert scan_workflow_agent_safety() == ([], 2)
+
+
+def test_scan_of_tree_without_claude_steps_examines_zero(workflows_dir: Path) -> None:
+    _write(workflows_dir, "wf.yml", _NO_CLAUDE)
+    assert scan_workflow_agent_safety() == ([], 0)
+
+
+def test_scan_of_missing_workflows_dir_examines_zero(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(mod, "WORKFLOWS_DIR", tmp_path / "does-not-exist")
+    assert scan_workflow_agent_safety() == ([], 0)
+
+
+def test_jobs_not_a_mapping_examines_nothing(workflows_dir: Path) -> None:
+    _write(workflows_dir, "wf.yml", "name: x\non: [push]\njobs:\n  - claude -p hi || true\n")
+    assert scan_workflow_agent_safety() == ([], 0)
+
+
+def test_job_not_a_mapping_is_skipped_without_hiding_its_siblings(workflows_dir: Path) -> None:
+    _write(workflows_dir, "wf.yml", _CONTINUE_ON_ERROR_NO_GUARD.replace("jobs:\n", "jobs:\n  odd: claude -p hi || true\n"))
+    violations, examined = scan_workflow_agent_safety()
+    assert examined == 1
+    assert len(violations) == 1

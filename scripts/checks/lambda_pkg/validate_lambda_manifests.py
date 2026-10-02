@@ -14,6 +14,9 @@ def validate_lambda_manifests(failed: list[str]) -> None:
     Delegates to scripts.lambda_manifest.cmd_validate. Parallel to
     validate_platform_roadmap; runs in the full presubmit tier (NOT --pre).
     Rejects structural drift: unknown fields, missing artifact, invalid status.
+
+    Declares examined(manifest.yaml files schema-validated, unit="manifests") (Decision 170); a
+    src/lambdas/ with no manifests, or no src/lambdas/ at all, is examined(0).
     """
     print("\n=== Lambda manifest schema validation ===")
 
@@ -22,9 +25,17 @@ def validate_lambda_manifests(failed: list[str]) -> None:
     if injected:
         sys.path.insert(0, root_str)
     try:
-        from scripts.lambda_manifest import cmd_validate  # noqa: PLC0415
+        from scripts.lambda_manifest import _LAMBDAS_DIR, cmd_validate  # noqa: PLC0415
 
         rc = cmd_validate(None)
+        examined = 0
+        if _LAMBDAS_DIR.exists():
+            examined = sum(
+                1
+                for child in _LAMBDAS_DIR.iterdir()
+                if child.is_dir() and child.name != "__pycache__" and (child / "manifest.yaml").exists()
+            )
+        registry.examined(examined, unit="manifests")
         if rc != 0:
             failed.append("Lambda manifest schema validation")
     except ImportError as exc:

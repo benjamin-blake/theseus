@@ -14,6 +14,8 @@ def validate_ci_rca_trigger(failed: list[str]) -> None:
 
     Wires the ci-rca-filter guard from scripts/verify_ci_workflow.py into the
     presubmit tier per Decision 60: a check is only a gate if it runs via validate.py.
+    Declares examined(ci-rca.yml workflow_run.workflows entries, unit="ci_rca_trigger_workflows")
+    on the success exit (Decision 170).
     """
     print("\n=== ci-rca trigger gate ===")
     root_str = str(_common.ROOT)
@@ -21,8 +23,9 @@ def validate_ci_rca_trigger(failed: list[str]) -> None:
     try:
         from scripts.verify_ci_workflow import _check_ci_rca_filter
 
-        _check_ci_rca_filter()
+        examined_workflows = _check_ci_rca_filter()
         print("  PASS: ci-rca trigger gate (main-branch gate + FILED: marker contract present)")
+        registry.examined(examined_workflows, unit="ci_rca_trigger_workflows")
     except Exception as exc:
         print(f"  FAIL: {exc}")
         failed.append("ci-rca trigger gate")

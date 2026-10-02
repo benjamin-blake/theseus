@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
-from scripts.checks import _marker_guard, registry
+from scripts.checks import _common, _marker_guard, registry
 
 _BUDGETS_REL_PATH = "config/sloc_budgets.yaml"
 
@@ -43,9 +43,22 @@ def validate_sloc_budget_raises(
     base_reader: Optional[Callable[[str], Optional[str]]] = None,
 ) -> None:
     """Fail on an unauthorized config/sloc_budgets.yaml increase, new >500 registration, or a
-    currently-committed marker that no longer authorizes its entry."""
+    currently-committed marker that no longer authorizes its entry.
+
+    Declares skipped when the registry file is absent or origin/main is unreachable (the diff leg's
+    base is unavailable), else examined over the current registry entries (unit "entries"), each of
+    which the diff leg judged against its base value.
+    """
     print(f"\n=== {_SPEC.label} ===")
-    violations = _marker_guard.check_diff(_SPEC, base_reader=base_reader) + _marker_guard.check_present_markers(_SPEC)
+    current_path = _common.ROOT / _SPEC.rel_path
+    if not current_path.exists():
+        print(f"  {_SPEC.rel_path} not found -- nothing to check.")
+        registry.skipped(f"{_SPEC.rel_path} not found")
+        return
+
+    base_text = (base_reader or _marker_guard.default_base_reader)(_SPEC.rel_path)
+    diff_violations = _marker_guard.check_diff(_SPEC, base_reader=lambda _rel: base_text)
+    violations = diff_violations + _marker_guard.check_present_markers(_SPEC)
 
     if violations:
         print("SLOC budget-raise violations:")
@@ -54,3 +67,8 @@ def validate_sloc_budget_raises(
         failed.append(_SPEC.label)
     else:
         print("No unauthorized SLOC budget raises.")
+
+    if base_text is None:
+        registry.skipped("origin/main unreachable")
+    else:
+        registry.examined(len(_SPEC.extractor(current_path.read_text(encoding="utf-8"))), unit="entries")

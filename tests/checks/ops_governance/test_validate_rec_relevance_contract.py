@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import yaml
 
+from scripts.checks import registry
 from scripts.checks.ops_governance.validate_rec_relevance_contract import validate_rec_relevance_contract
 
 
@@ -97,3 +98,57 @@ class TestRecRelevanceContractResidualBranches:
             failed = self._run(tmp_path)
         assert len(failed) == 1, f"Expected exactly one failure but got: {failed}"
         assert failed[0].startswith("rec-relevance contract: cannot import scripts.rec_relevance: ")
+
+
+def _declared(tmp_path: Path, body: str) -> tuple[list[str], registry._Declaration | None]:
+    contracts_dir = tmp_path / "docs" / "contracts"
+    contracts_dir.mkdir(parents=True, exist_ok=True)
+    (contracts_dir / "recommendation-relevance.yaml").write_text(body, encoding="utf-8")
+    registry.pop_declaration()
+    failed: list[str] = []
+    with patch("scripts.checks._common.ROOT", tmp_path):
+        validate_rec_relevance_contract(failed)
+    return failed, registry.pop_declaration()
+
+
+class TestExaminedDeclaration:
+    """Decision 170: the check declares examined over the union of the compared verdict sets."""
+
+    def test_matching_enum_declares_examined_over_every_verdict(self, tmp_path: Path) -> None:
+        from scripts.rec_relevance import RELEVANCE_VERDICTS
+
+        failed, decl = _declared(tmp_path, yaml.dump({"verdicts": sorted(RELEVANCE_VERDICTS)}))
+        assert failed == []
+        assert decl is not None
+        assert (decl.kind, decl.count, decl.unit) == ("examined", len(RELEVANCE_VERDICTS), "verdicts")
+        outcome = registry.build_outcome("validate_rec_relevance_contract", "check", decl, appended_to_failed=False)
+        assert outcome.status == "enforced"
+
+    def test_drifted_enum_counts_the_union_of_both_sides(self, tmp_path: Path) -> None:
+        from scripts.rec_relevance import RELEVANCE_VERDICTS
+
+        failed, decl = _declared(tmp_path, yaml.dump({"verdicts": ["relevant", "not_a_real_verdict"]}))
+        assert len(failed) == 1
+        assert decl is not None
+        assert (decl.kind, decl.count, decl.unit) == ("examined", len(RELEVANCE_VERDICTS) + 1, "verdicts")
+        outcome = registry.build_outcome("validate_rec_relevance_contract", "check", decl, appended_to_failed=True)
+        assert outcome.status == "failed"
+
+    def test_live_contract_declares_every_live_verdict(self) -> None:
+        from scripts.checks._common import ROOT
+        from scripts.rec_relevance import RELEVANCE_VERDICTS
+
+        live = yaml.safe_load((ROOT / "docs" / "contracts" / "recommendation-relevance.yaml").read_text(encoding="utf-8"))
+        registry.pop_declaration()
+        failed: list[str] = []
+        validate_rec_relevance_contract(failed)
+        decl = registry.pop_declaration()
+        assert failed == []
+        assert decl is not None
+        assert decl.kind == "examined"
+        assert decl.count == len(set(live["verdicts"]) | set(RELEVANCE_VERDICTS)) > 0
+
+    def test_failure_before_the_comparison_declares_nothing(self, tmp_path: Path) -> None:
+        failed, decl = _declared(tmp_path, yaml.dump({"verdicts": []}))
+        assert failed == ["rec-relevance contract: missing or empty 'verdicts' list"]
+        assert decl is None

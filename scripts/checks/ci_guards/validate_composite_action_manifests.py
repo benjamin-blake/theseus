@@ -57,10 +57,14 @@ def _scan_manifest(data: Any) -> list[str]:
 
 @registry.register("validate_composite_action_manifests", owner="platform")
 def validate_composite_action_manifests(failed: list[str]) -> None:
-    """Lint every .github/actions/**/action.{yml,yaml} for metadata-position template expressions."""
+    """Lint every .github/actions/**/action.{yml,yaml} for metadata-position template expressions.
+
+    Declares examined(manifests found, unit="action_manifests") (Decision 170); no manifests is examined(0).
+    """
     print("\n=== composite-action manifest guard ===")
     actions_dir = _common.ROOT / ".github" / "actions"
     manifest_paths = sorted(path for pattern in _MANIFEST_GLOBS for path in actions_dir.rglob(pattern))
+    registry.examined(len(manifest_paths), unit="action_manifests")
 
     if not manifest_paths:
         print("  PASS: no composite-action manifests found")

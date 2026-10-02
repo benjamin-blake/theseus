@@ -13,10 +13,13 @@ the WRAPPER only and deliberately does not restate the helper's detection matrix
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
+import yaml
 
+from scripts.checks import registry
 from scripts.checks.ci_guards.validate_workflow_agent_safety import validate_workflow_agent_safety
 
 _GUARDED_WORKFLOW = """\
@@ -93,3 +96,90 @@ def test_live_workflows_pass() -> None:
     failed: list[str] = []
     validate_workflow_agent_safety(failed)
     assert failed == []
+
+
+_CHECK = "validate_workflow_agent_safety"
+_UNIT = "headless_claude_steps"
+_REPO_ROOT = Path(__file__).parents[3]
+_INVOCATION = re.compile(r"\bclaude\s+(?:-p|--print)\b")
+
+_UNMASKED_WORKFLOW = """\
+name: unmasked
+on: push
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Plain agent
+        run: claude -p "summarise the diff"
+      - name: Not an agent
+        run: echo hi || true
+      - uses: anthropics/claude-code-action@v1
+"""
+
+
+def _declared(workflows_dir: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[list[str], registry._Declaration | None]:
+    registry.pop_declaration()
+    failed = _run(workflows_dir, monkeypatch)
+    return failed, registry.pop_declaration()
+
+
+def _live_headless_steps() -> int:
+    count = 0
+    for wf_path in (_REPO_ROOT / ".github" / "workflows").glob("*.yml"):
+        workflow = yaml.safe_load(wf_path.read_text(encoding="utf-8"))
+        for job in (workflow.get("jobs") or {}).values():
+            for step in job.get("steps") or []:
+                if isinstance(step.get("run"), str) and _INVOCATION.search(step["run"]):
+                    count += 1
+    return count
+
+
+class TestWorkflowAgentSafetyAccountingDeclaration:
+    """The check declares how many headless claude -p steps it judged, so a run records enforced with a
+    count that tracks the workflows on disk -- not a constant and not the violation count."""
+
+    def test_real_tree_declares_every_headless_step(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The live tree's only masked agent call goes through scripts/ci/claude_p_retry.sh, which the raw
+        `claude -p` pattern does not match, so the honest live count may be 0 and the run vacuous."""
+        expected = _live_headless_steps()
+
+        failed, declaration = _declared(_REPO_ROOT / ".github" / "workflows", monkeypatch)
+        outcome = registry.build_outcome(_CHECK, "check", declaration, bool(failed))
+
+        assert failed == []
+        assert declaration is not None
+        assert (declaration.kind, declaration.count, declaration.unit) == ("examined", expected, _UNIT)
+        assert outcome.status == ("enforced" if expected else "vacuous")
+
+    def test_count_spans_files_and_ignores_non_invocations(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        (tmp_path / "guarded.yml").write_text(_GUARDED_WORKFLOW, encoding="utf-8")
+        (tmp_path / "unmasked.yml").write_text(_UNMASKED_WORKFLOW, encoding="utf-8")
+
+        failed, declaration = _declared(tmp_path, monkeypatch)
+
+        assert failed == []
+        assert declaration is not None
+        assert (declaration.kind, declaration.count, declaration.unit) == ("examined", 2, _UNIT)
+
+    def test_no_headless_steps_declares_vacuous_domain(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        failed, declaration = _declared(tmp_path, monkeypatch)
+        outcome = registry.build_outcome(_CHECK, "check", declaration, bool(failed))
+
+        assert failed == []
+        assert declaration is not None
+        assert (declaration.kind, declaration.count, declaration.unit) == ("examined", 0, _UNIT)
+        assert outcome.status == "vacuous"
+
+    def test_violating_and_unparseable_workflows_still_record_failed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        (tmp_path / "masked.yml").write_text(_MASKED_UNGUARDED_WORKFLOW, encoding="utf-8")
+        (tmp_path / "broken.yml").write_text(_UNPARSEABLE_WORKFLOW, encoding="utf-8")
+
+        failed, declaration = _declared(tmp_path, monkeypatch)
+        outcome = registry.build_outcome(_CHECK, "check", declaration, bool(failed))
+
+        assert failed == ["Workflow agent-safety"]
+        assert declaration is not None and declaration.count == 1
+        assert outcome.status == "failed"

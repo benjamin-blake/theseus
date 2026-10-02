@@ -61,11 +61,12 @@ def _has_output_guard(run: str) -> bool:
     return bool(_GUARD_CONDITION.search(run)) and bool(_GUARD_FAILURE.search(run))
 
 
-def check_workflow_agent_safety() -> list[str]:
-    """Return a list of human-readable violation strings (empty == pass)."""
+def scan_workflow_agent_safety() -> tuple[list[str], int]:
+    """Return (violation strings, headless `claude -p` run steps examined); no violations == pass."""
     violations: list[str] = []
+    examined = 0
     if not WORKFLOWS_DIR.is_dir():
-        return violations
+        return violations, examined
 
     for wf_path in sorted(WORKFLOWS_DIR.glob("*.yml")):
         try:
@@ -80,6 +81,7 @@ def check_workflow_agent_safety() -> list[str]:
             run = step["run"]
             if not _CLAUDE_INVOCATION.search(run):
                 continue
+            examined += 1
             if not _is_masked(step, run):
                 # Unmasked: a broken claude exits non-zero and reds the step already.
                 continue
@@ -92,7 +94,12 @@ def check_workflow_agent_safety() -> list[str]:
                 "with `exit 1` or `::error::`). A misparsed prompt or empty response would pass silently."
             )
 
-    return violations
+    return violations, examined
+
+
+def check_workflow_agent_safety() -> list[str]:
+    """Return a list of human-readable violation strings (empty == pass)."""
+    return scan_workflow_agent_safety()[0]
 
 
 if __name__ == "__main__":
