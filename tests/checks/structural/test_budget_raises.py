@@ -9,6 +9,7 @@ import io
 from pathlib import Path
 from unittest.mock import patch
 
+from scripts.checks import registry
 from scripts.checks.structural.budget_raises import (
     _BUDGET_SPEC,
     _LONG_LINE_SPEC,
@@ -360,3 +361,110 @@ class TestBaseUnreachableContract:
         assert failed == []
         assert "SKIP" not in output
         assert "No unauthorized structural-size budget raises." in output
+
+
+def _declared(tmp_path: Path, base_text: str | None) -> tuple[list[str], registry._Declaration | None]:
+    registry.pop_declaration()
+    failed: list[str] = []
+    with patch("scripts.checks._common.ROOT", tmp_path), contextlib.redirect_stdout(io.StringIO()):
+        validate_structural_size_budget_raises(failed, base_reader=lambda _rel: base_text)
+    return failed, registry.pop_declaration()
+
+
+_TWO_SECTION_BODY = (
+    _BASE_CLASSES_BLOCK
+    + "budgets:\n  config/heavy.yaml: 800\n  config/other.yaml: 700\n"
+    + "long_line_budgets:\n  config/long.yaml: 2200\n"
+)
+
+
+class TestExaminedDeclaration:
+    """Decision 170: skipped when the registry or its base is unavailable, else examined over
+    the entries of both sections the diff legs judged."""
+
+    def test_missing_registry_declares_skipped(self, tmp_path: Path) -> None:
+        failed, decl = _declared(tmp_path, _TWO_SECTION_BODY)
+        assert failed == []
+        assert decl is not None
+        assert decl.kind == "skipped"
+        assert decl.reason == "config/structural_size_budgets.yaml not found"
+
+    def test_unreachable_base_declares_skipped(self, tmp_path: Path) -> None:
+        _write_current(tmp_path, _TWO_SECTION_BODY)
+        _write_decisions(tmp_path, [])
+        failed, decl = _declared(tmp_path, None)
+        assert failed == []
+        assert decl is not None
+        assert decl.kind == "skipped"
+        assert decl.reason == "origin/main unreachable"
+        outcome = registry.build_outcome("validate_structural_size_budget_raises", "check", decl, appended_to_failed=False)
+        assert outcome.status == "skipped"
+
+    def test_unreachable_base_still_fails_on_unauthorized_present_marker(self, tmp_path: Path) -> None:
+        body = _BASE_CLASSES_BLOCK + "budgets:\n  config/heavy.yaml: 900  # raise-approved: dec-166 x\nlong_line_budgets: {}\n"
+        _write_current(tmp_path, body)
+        _write_decisions(tmp_path, [166])
+        failed, decl = _declared(tmp_path, None)
+        assert len(failed) == 1
+        assert decl is not None
+        assert decl.kind == "skipped"
+        outcome = registry.build_outcome("validate_structural_size_budget_raises", "check", decl, appended_to_failed=True)
+        assert outcome.status == "failed"
+
+    def test_clean_registry_counts_entries_of_both_sections(self, tmp_path: Path) -> None:
+        _write_current(tmp_path, _TWO_SECTION_BODY)
+        _write_decisions(tmp_path, [])
+        failed, decl = _declared(tmp_path, _TWO_SECTION_BODY)
+        assert failed == []
+        assert decl is not None
+        assert decl.kind == "examined"
+        assert decl.count == 3
+        assert decl.unit == "entries"
+        outcome = registry.build_outcome("validate_structural_size_budget_raises", "check", decl, appended_to_failed=False)
+        assert outcome.status == "enforced"
+
+    def test_failing_diff_still_declares_examined_count(self, tmp_path: Path) -> None:
+        _write_current(tmp_path, _TWO_SECTION_BODY.replace("config/long.yaml: 2200", "config/long.yaml: 2900"))
+        _write_decisions(tmp_path, [])
+        failed, decl = _declared(tmp_path, _TWO_SECTION_BODY)
+        assert len(failed) == 1
+        assert decl is not None
+        assert decl.kind == "examined"
+        assert decl.count == 3
+
+    def test_empty_sections_declare_vacuous(self, tmp_path: Path) -> None:
+        _write_current(tmp_path, _BASE_CLASSES_BLOCK + "budgets: {}\nlong_line_budgets: {}\n")
+        _write_decisions(tmp_path, [])
+        failed, decl = _declared(tmp_path, _TWO_SECTION_BODY)
+        assert failed == []
+        assert decl is not None
+        assert decl.kind == "examined"
+        assert decl.count == 0
+        outcome = registry.build_outcome("validate_structural_size_budget_raises", "check", decl, appended_to_failed=False)
+        assert outcome.status == "vacuous"
+
+    def test_base_is_read_once_for_every_leg(self, tmp_path: Path) -> None:
+        _write_current(tmp_path, _TWO_SECTION_BODY)
+        _write_decisions(tmp_path, [])
+        calls: list[str] = []
+
+        def _recording_reader(rel: str) -> str:
+            calls.append(rel)
+            return _TWO_SECTION_BODY
+
+        with patch("scripts.checks._common.ROOT", tmp_path), contextlib.redirect_stdout(io.StringIO()):
+            validate_structural_size_budget_raises([], base_reader=_recording_reader)
+        assert calls == ["config/structural_size_budgets.yaml"]
+
+    def test_live_registry_examines_every_entry(self) -> None:
+        live = (Path(__file__).resolve().parents[3] / "config" / "structural_size_budgets.yaml").read_text(encoding="utf-8")
+        registry.pop_declaration()
+        failed: list[str] = []
+        with contextlib.redirect_stdout(io.StringIO()):
+            validate_structural_size_budget_raises(failed, base_reader=lambda _rel: live)
+        decl = registry.pop_declaration()
+        assert failed == []
+        assert decl is not None
+        assert decl.kind == "examined"
+        assert decl.count == len(_BUDGET_SPEC.extractor(live)) + len(_LONG_LINE_SPEC.extractor(live))
+        assert decl.count > 0
