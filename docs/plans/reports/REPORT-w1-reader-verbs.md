@@ -200,38 +200,51 @@ Contested (evidence on both sides, options listed; k1-k3 in the fixture):
   semantic change, so the operator decides; parked.
 - k2 Window verbs. Component 1's unfinalized_session_share, T3.3's daily anomaly baseline and T3.4's
   telemetry delta all need many sessions over a time window. Governing facts:
+  - Decision 199 cl.1 bounds every state and duration derivation "to a session's single
+    day(session_started_at) partition". A window verb reads up to 7 single-day partitions, one per
+    session it derives. cl.1 attaches to that read shape, not to the roadmap item that hosts the verb,
+    so the same reading of cl.1 is needed under every option below. The reading to confirm: "a bounded
+    window of per-session derivations, each reading only its own session's single-day partition,
+    satisfies cl.1". The only route that needs no such reading is materialization (Decision 199 names
+    T2.52 c1 as where to pull it forward from), which comes later than either option.
   - T2.52 is `deferred_post_mvp`, and Decision 93 says no live item (not_started or in_progress) may
     depend_on a deferred_post_mvp item. T3.3 and T3.4 are live.
-  - T2.52's progress note records its own trigger: "ACTIVATION TRIGGER: a governed dataset exists that a
+  - T2.52's progress note records its trigger: "ACTIVATION TRIGGER: a governed dataset exists that a
     human or an analysis agent actually needs to read in aggregate -- concretely T2.51 reactivates, OR
     telemetry lands on DuckLake (T2.36), OR data-quality coverage becomes non-zero ... Reactivate by
-    restoring status -> not_started."
-  - This item is part_of T2.36, and its verbs cannot be built before T2.36 provisions the tables
-    (plan constraints). So the moment the window verb becomes buildable is the moment T2.52's
-    pre-agreed trigger fires.
+    restoring status -> not_started." Which T2.36 milestone "lands" means is the operator's reading:
+    c1 (tables provisioned), c2 (telemetry flowing through the writer) or T2.36 met. T2.36's own name,
+    "telemetry re-lands on DuckLake", favours c2 or T2.36 met, but that is an inference, not a settled
+    fact.
+  - This item is part_of T2.36 and is buildable at T2.36 c1 (plan constraints).
 
   Options:
   - (a) One `sessions_window` verb here, returning one derived row per root session for at most 7
-    calendar days (paginable), with every share or rate computed by the consumer. Each derivation stays
-    per-session and the scan is a bounded partition range (VP 3: linear in days). It reads many
-    single-day partitions where Decision 199 cl.1 says each derivation is "bounded to a session's single
-    day(session_started_at) partition". So it needs a dated Decision 199 annotation that a bounded
-    window of per-session derivations satisfies cl.1. That route has no precedent, and it builds part of
-    T2.52 c3's scope outside T2.52.
-  - (b) When T2.36 lands, the operator reactivates T2.52 per its recorded trigger (restore
-    not_started; a status change, never made here), and sessions_window is built as T2.52 c3's first
-    analytical verb, in the same shape. This is the route already written down. It leaves T3.3, T3.4 and
-    component 1 no longer without a window signal than (a) does, because neither option can be built
-    before T2.36. Once T2.52 is live, Decision 93 no longer bars the edge.
-  - (c) Consumers loop the per-session verb, one round trip per session. This stays inside cl.1 as
-    written but multiplies invocations and catalog round trips (Decision 88).
+    calendar days (paginable), with every share or rate computed by the consumer. It ships with this
+    item, needs the cl.1 reading above, and keeps T2.52 deferred until its own trigger fires. Its
+    response schema and ordering are shaped to T2.52 c3 so T2.52 can adopt the verb when it reactivates.
+    No depends_on edge to T2.52 exists, so Decision 93 is not engaged.
+  - (b) When the trigger fires, the operator restores T2.52 to not_started (a status change, never made
+    here), and sessions_window is built as a T2.52 c3 verb. It needs the same cl.1 reading. Its timing
+    is no earlier than (a) under every reading of "lands". Under the c1 reading it can be built at the
+    same point; under the c2 or T2.36-met readings it is strictly later, because this item is inside
+    T2.36. Reactivation is whole-item (Decision 93): all of T2.52 c1-c7 become live, MVP-critical work.
+    "c3 first" would be a sequencing preference inside that, and c7 ("measure before designing" the
+    response-size ceiling) and c5 (D88 egress) bind sessions_window itself and come before it.
+  - (c) Consumers loop the per-session verb, one round trip per session. It needs no cl.1 reading, but
+    it multiplies invocations and catalog round trips (Decision 88).
 
-  Weighing: the earlier case for (a) assumed (b) meant a discretionary reactivation that could leave
-  consumers waiting. The recorded trigger removes that: (b) has the same timing, an existing precedent
-  and no new Decision annotation. Against (b): reactivating T2.52 also reopens its materialization half
-  (c1, c2, c4); only c3 is needed here. Recommended: (b), scoped to c3 first, with (a) as the fallback if
-  the operator keeps T2.52 deferred when T2.36 lands. rec-4024 item (6) leaves exactly this open
-  ("decide operational-verb vs T2.52 c3/c6"). No status change is made here. Parked.
+  Weighing: round 2 recommended (b) on three grounds: the recorded trigger, the same timing, and no new
+  annotation. Round 3 removed two of them. The cl.1 reading is needed under both options, and (b) is
+  no earlier than (a) and strictly later under the natural reading of "lands". What remains for (b) is
+  ownership: analytical verbs belong to T2.52, and the recorded trigger is its sanctioned path. Against
+  (b): whole-item reactivation and a later signal for component 1, T3.3 and T3.4. Recommended: (a),
+  shaped for T2.52 adoption, with the cl.1 reading confirmed by the operator. (b) remains the right
+  route if the operator wants analytical verbs only inside T2.52. On the response-size question both
+  share: about 40 root sessions a day x 7 days is about 280 one-row-per-session rows, far under a 6 MB
+  Function URL response. That is an estimate, not c7's measurement, and this item's c3 measures response
+  bytes before any consumer depends on the verb. rec-4024 item (6) leaves exactly this open ("decide
+  operational-verb vs T2.52 c3/c6"). No status change is made here. Parked.
 - k3 Abandoned state. rec-4024 item (6) asks for running/abandoned/terminal from an `as_of` and an idle
   threshold. The ratified contract has only running and terminal, so under both the contract and k1
   (a) a root session that never writes a close row (a crash, a killed process, a reclaimed container)
@@ -255,7 +268,12 @@ Risk (known loss modes, not choices):
   sub-agent session as running forever with a NULL duration, because no child close row is emitted
   (e12). If child close rows are ever emitted, e3 overstates each child's duration by its spawn offset
   from the root start, a plausible value nothing downstream can detect. Covered by k1 and by c2's
-  child-session fixture.
+  child-session fixture. Under k1 (a), the agent-run pair is exact for a synchronous child. For a
+  background (async) child, the close is the parent-stream record carrying the completion notification
+  (src/turn_capture/streams.py:410-413). I infer, without checking a real transcript, that it can lag
+  the child's own last event while the parent is mid-turn, so the pair is an upper bound there. c2's
+  golden fixtures include an async child, and the verb may bound an async child's end by its own last
+  event.
 - R2 Resume-after-close state. A literal build of e2 reads finalized-then-resumed sessions as terminal,
   although the contract itself appends a resume event under the same session_id
   (telemetry_sessions.yaml:261-262). The same ambiguity component 1 hit in its failure_signal (its G1);
@@ -330,8 +348,15 @@ Open (q1-q2 in the fixture; none is answerable from the repository):
   a facade package before adding the registry form (section 2, item 1).
 - Cost/egress budget: Neon catalog egress per verb is unmeasured (q1). The sessions_window range is the
   one read shape whose cost scales with the caller's parameter; it is capped at 7 days.
-- T2.36 c3 (preflight telemetry health check) is a reader consumer: a sessions_window count is the
-  natural probe, and per Decision 88 (ii) preflight must call it once, from the warm-up, never per gauge.
+- T2.36 c3 (preflight telemetry health check) is a reader consumer. Its probe is a single-day count verb
+  owned by this item (rows in today's telemetry_sessions partition, one partition read), never
+  sessions_window. Under k2 (b), a sessions_window probe would make T2.36 c3 depend on a T2.52 verb
+  whose trigger is T2.36 landing, which is a cycle and, while T2.52 is deferred, a Decision 93 breach.
+  Per Decision 88 (ii) preflight calls the probe once, from the warm-up, never per gauge.
+- One rule, rendered once: named verbs are serving leaves (T2.52's intent: "a verb never invokes
+  another verb"). So sessions_window, wherever it lives, cannot call session_state_and_duration. Both
+  verbs render the same SQL fragment for the R4/R5 block and the k1/k3 state rule, and c2's golden
+  fixtures run against both, so component 1's "one rule" guarantee rests on one copy.
 
 ## 6. Not done here (and why)
 
