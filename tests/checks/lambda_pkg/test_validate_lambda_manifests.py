@@ -1,6 +1,8 @@
 """Tests for validate_lambda_manifests()."""
 
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -56,6 +58,20 @@ def _write_manifest(lambdas_dir: Path, name: str, body: str = "artifact: x.zip\n
     (lambdas_dir / name / "manifest.yaml").write_text(body, encoding="utf-8")
 
 
+@contextmanager
+def _counting_load() -> Iterator[list[Path]]:
+    """Wrap the real lambda_manifest.load so a test sees every manifest the helper actually validated."""
+    real_load = lambda_manifest.load
+    loaded: list[Path] = []
+
+    def _load(manifest_path: Path) -> lambda_manifest.LambdaManifest:
+        loaded.append(manifest_path)
+        return real_load(manifest_path)
+
+    with patch.object(lambda_manifest, "load", _load):
+        yield loaded
+
+
 def _declared(lambdas_dir: Path) -> tuple[list[str], registry._Declaration | None]:
     """Run the check against the real, unmocked helper with its src/lambdas/ pointed at `lambdas_dir`."""
     registry.pop_declaration()
@@ -74,7 +90,8 @@ class TestLambdaManifestsAccountingDeclaration:
 
         registry.pop_declaration()
         failed: list[str] = []
-        validate_lambda_manifests(failed)
+        with _counting_load() as loaded:
+            validate_lambda_manifests(failed)
         declaration = registry.pop_declaration()
         outcome = registry.build_outcome(_CHECK, "check", declaration, bool(failed))
 
@@ -82,6 +99,7 @@ class TestLambdaManifestsAccountingDeclaration:
         assert expected > 0
         assert declaration is not None
         assert (declaration.kind, declaration.count, declaration.unit) == ("examined", expected, _UNIT)
+        assert len(loaded) == expected
         assert outcome.status == "enforced"
 
     def test_count_excludes_dirs_without_manifest_pycache_and_files(self, tmp_path: Path) -> None:
@@ -120,14 +138,7 @@ class TestLambdaManifestsAccountingDeclaration:
         _write_manifest(tmp_path, "d_good")
         (tmp_path / "e_no_manifest").mkdir()
         _write_manifest(tmp_path, "__pycache__")
-        real_load = lambda_manifest.load
-        loaded: list[Path] = []
-
-        def _counting_load(manifest_path: Path) -> lambda_manifest.LambdaManifest:
-            loaded.append(manifest_path)
-            return real_load(manifest_path)
-
-        with patch.object(lambda_manifest, "load", _counting_load):
+        with _counting_load() as loaded:
             failed, declaration = _declared(tmp_path)
 
         assert failed == [_FAILED_LABEL]
