@@ -26,14 +26,14 @@ work_items:
             - {from: read_all, to: sampled, trigger: {metric: consecutive finalized sessions whose runner-side conformance check reports zero violations, comparator: '>=', threshold: 20}}
             - {from: sampled, to: spot_check, trigger: {metric: runner-side conformance violations across the last 30 sampled sessions, comparator: ==, threshold: 0}}
             - {from: spot_check, to: anomaly_triggered, trigger: {metric: consecutive days with unfinalized_session_share at or below 0.05, comparator: '>=', threshold: 30}}
-        failure_signal: {signal: 'turns never reach the warehouse because the session is never finalized, so its last turn never closes (risk R1)', metric: 'unfinalized_session_share: root sessions with no close row 24 h after their last event, 7-day window', source: telemetry_sessions via rec-4024 reader verbs; blind to a never-succeeding runner (q1)}
+        failure_signal: {signal: 'turns never reach the warehouse because the session, or its latest resumed segment, is never finalized, so its last turn never closes (R1)', metric: 'unfinalized_session_share: root sessions whose latest lifecycle row is not close 24 h after their last event', source: telemetry_sessions via rec-4024 reader verbs; blind to a never-succeeding runner (q1)}
         verification: [c1, c2, c3]
         rollback: Remove the capture hook entries from .claude/settings.json; written rows are append-only and stay, cursors hold positions only, so re-enabling resumes or re-sends identical rows as writer no-ops.
         evidence:
           - {kind: file_line, ref: 'src/turn_capture/record_turn.py:6'}
           - {kind: file_line, ref: 'docs/plans/PLAN-telemetry-turn-capture-core.yaml:640'}
           - {kind: file_line, ref: 'docs/contracts/project-id.yaml:47'}
-          - {kind: rec, ref: rec-4026}
+          - {kind: file_line, ref: 'src/turn_capture/record_turn.py:115'}
         settled:
           - {id: s1, text: 'Producer side only: the telemetry writer verb, tables and project registration stay T2.36/rec-4024''s, a depends_on edge, not a pilot item.'}
           - {id: s2, text: 'Data plane only (D209 cl.2a): hook to writer Function URL to the operator-owned DuckLake; nothing crosses to a control plane.'}
@@ -46,8 +46,8 @@ work_items:
           - {id: q2, text: 'Does SessionEnd fire on CC-web reclaim, and is a resumed transcript restored whole? Final-turn loss (R1) hinges on it.'}
           - {id: q3, text: 'billing_shape source for API-key sessions (rec-4147): the default mislabels unattended API-key runs as subscription.'}
 work_item_criteria:
-  - {work_item: pwi-capture-producer-wiring, criterion_id: c1, text: 'Stop, SessionStart catch-up and SessionEnd hooks run record_turn and write every batch via the writer verb data-first, byte-chunked, cursor saved after all acks; SessionEnd emits a root close row; never exit 2.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/turn_capture/test_capture_runner.py -k hooks_and_ordering}, status: open}
-  - {work_item: pwi-capture-producer-wiring, criterion_id: c2, text: A failed or killed pass leaves the cursor unadvanced and the next pass re-sends identical rows as writer no-ops; a lost cursor re-derives the same pins or defers., method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/turn_capture/test_capture_runner.py -k replay_and_lost_cursor}, status: open}
+  - {work_item: pwi-capture-producer-wiring, criterion_id: c1, text: 'Stop, SessionStart catch-up and SessionEnd hooks run record_turn and write every batch via the writer verb data-first, byte-chunked, cursor saved after all acks; SessionEnd emits a per-finalization close row; never exit 2.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/turn_capture/test_capture_runner.py -k hooks_and_ordering}, status: open}
+  - {work_item: pwi-capture-producer-wiring, criterion_id: c2, text: 'Failed or killed passes replay as writer no-ops; a lost cursor re-derives pins or defers; at finalize a runner-side check proves incremental equals one full parse, resume-after-finalize included.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/turn_capture/test_capture_runner.py -k replay_lost_cursor_and_conformance}, status: open}
   - {work_item: pwi-capture-producer-wiring, criterion_id: c3, text: 'Smoke-first (T3.20 c8): one live-catalog turn lands through the writer boundary and the rec-4101 orphan monitor runs on it before the hooks are enabled broadly.', method: {kind: review, resolver: operator at the T3.20 c8 smoke gate, evidence_requirement: smoke invocation output plus a rec-4101 monitor run over the smoke rows}, status: open}
 work_item_edges:
   - {from: pwi-capture-producer-wiring, to: T3.20, kind: part_of}
