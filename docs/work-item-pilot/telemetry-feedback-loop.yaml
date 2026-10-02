@@ -11,6 +11,45 @@ fixture:
     first_of: [{criterion_met: 'T4.23:c6'}, {review_on: '2027-01-31'}]
     outcome: lift rows into the store, or restructure (rehome or reshape) per the operator's review; never delete
   edges_disposition: pilot_only -- re-authored by the implementation merge on lift (Decision 197 clause 5), never lifted as-is
-work_items: []
-work_item_criteria: []
-work_item_edges: []
+work_items:
+  - id: pwi-capture-producer-wiring
+    kind: task
+    title: 'Capture producer wiring: run record_turn from session hooks into the telemetry writer (rec-4026 slice 3b)'
+    extension:
+      consideration_register:
+        why: record_turn is pure (no writer call, no cursor store), so no turn, tool, cost or friction row reaches the warehouse; every other feedback-loop component reads rows only this wiring produces.
+        how: Stop and SessionStart catch-up hooks (SessionEnd finalizes) run one locked pass per root tree, send byte-chunked batches data-first to the T2.36 writer verb, then persist the cursor.
+        planes: [data_plane]
+        maturity:
+          rung: read_all
+          transitions:
+            - {from: read_all, to: sampled, trigger: {metric: consecutive captured sessions with zero conformance-walk invariant violations, comparator: '>=', threshold: 20}}
+            - {from: sampled, to: spot_check, trigger: {metric: conformance-walk violations across the last 30 sampled sessions, comparator: ==, threshold: 0}}
+            - {from: spot_check, to: anomaly_triggered, trigger: {metric: days since the last turn_coverage_gap breach, comparator: '>=', threshold: 30}}
+        failure_signal: {signal: 'closed turns never reach the warehouse: a pass fails, is skipped, or the session ends before its last turn closes', metric: 'turn_coverage_gap: share of root sessions whose capture-hook process_events exceed turn_close rows by more than 1', source: 'telemetry_observations via the rec-4024 reader verbs (process_event hook:<runner>, turn_close)'}
+        verification: [c1, c2, c3]
+        rollback: Remove the capture hook entries from .claude/settings.json; written rows are append-only and stay, cursors hold positions only, so re-enabling resumes or re-sends identical rows as writer no-ops.
+        evidence:
+          - {kind: file_line, ref: 'src/turn_capture/record_turn.py:6'}
+          - {kind: file_line, ref: 'docs/plans/PLAN-telemetry-turn-capture-core.yaml:640'}
+          - {kind: file_line, ref: 'docs/contracts/project-id.yaml:47'}
+          - {kind: rec, ref: rec-4026}
+        settled:
+          - {id: s1, text: 'Producer side only: the telemetry writer verb, tables and project registration stay T2.36/rec-4024''s, a depends_on edge, not a pilot item.'}
+          - {id: s2, text: 'Data plane only (D209 cl.2a): hook to writer Function URL to the operator-owned DuckLake; nothing crosses to a control plane.'}
+          - {id: s3, text: 'Cursor advances only after every chunk is acked; the transcript is the replay source, so no outbox (D84 I-4) and re-sends are no-ops (D207).'}
+        contested:
+          - {id: k1, text: 'Sync Stop hook vs detached pass: a pass is O(session), 8.8 s warm at 22k lines measured, but detaching loses the loud failure D84 I-4 wants.'}
+          - {id: k2, text: 'Cursor home on ephemeral CC-web containers: a local file dies on reclaim, and re-reading project_ref from config breaks the pin rule.'}
+          - {id: k3, text: 'Final-turn loss: emission is per closed turn, so a session that ends without SessionEnd (container reclaim) never emits its last turn.'}
+        open_questions:
+          - {id: q1, text: 'Are Stop hook runs written to the transcript as hook attachments? The failure_signal metric counts them.'}
+          - {id: q2, text: 'Does SessionEnd fire on CC-web container reclaim, and is the transcript restored whole on resume?'}
+          - {id: q3, text: 'billing_shape source for API-key sessions (rec-4147): the default mislabels unattended API-key runs as subscription.'}
+work_item_criteria:
+  - {work_item: pwi-capture-producer-wiring, criterion_id: c1, text: 'Stop, SessionStart catch-up and SessionEnd hooks run record_turn and write every batch through the writer verb data-first, byte-chunked, cursor saved after all acks; never exit 2.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/turn_capture/test_capture_runner.py -k hooks_and_ordering}, status: open}
+  - {work_item: pwi-capture-producer-wiring, criterion_id: c2, text: A failed or killed pass leaves the cursor unadvanced and the next pass re-sends identical rows as writer no-ops; a lost cursor re-derives the same pins or defers., method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/turn_capture/test_capture_runner.py -k replay_and_lost_cursor}, status: open}
+  - {work_item: pwi-capture-producer-wiring, criterion_id: c3, text: 'Smoke-first (T3.20 c8): one live-catalog turn lands through the writer boundary and the rec-4101 orphan monitor runs on it before the hooks are enabled broadly.', method: {kind: review, resolver: operator at the T3.20 c8 smoke gate, evidence_requirement: smoke invocation output plus a rec-4101 monitor run over the smoke rows}, status: open}
+work_item_edges:
+  - {from: pwi-capture-producer-wiring, to: T3.20, kind: part_of}
+  - {from: pwi-capture-producer-wiring, to: T2.36, kind: depends_on}
