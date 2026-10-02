@@ -53,10 +53,14 @@ URL request; external, not re-verified here).
 1. Trigger: Stop (every completed response), SessionStart (catch-up for trees whose cursor lags their
    file) and SessionEnd (session_final=True). SubagentStop is not needed: a child's rows are emitted by
    the root pass once the parent holds its completion.
-2. One pass per root tree under an exclusive per-tree lock; a second concurrent Stop or SessionStart
+2. One pass per root tree under an exclusive per-tree advisory OS lock (flock/fcntl), which the kernel
+   releases when the holding process dies, never a lockfile, so a pass killed mid-run or at its budget
+   cannot wedge the next one (plan-critique r2, C8); a second concurrent Stop or SessionStart
    pass exits 0 immediately (the next Stop catches up). The SessionEnd pass never does that, because
-   no Stop follows it: it waits for the lock with a bound inside the hook timeout, and if the bound
-   expires it exits 1 (loud), never 0 (plan-critique r1, M2). The cursor write is monotonic (never replaces a later
+   no Stop follows it: it waits for the lock with a bound W, and if the bound expires it exits 1
+   (loud), never 0 (plan-critique r1, M2). W comes out of the same SessionEnd budget as the finalize
+   pass P (W + P <= the configured SessionEnd timeout <= 60 s; see k1), so W is a fixed fraction of
+   that timeout, never the whole of it (plan-critique r2, C1). The cursor write is monotonic (never replaces a later
    lines_consumed with an earlier one).
 3. Send order: observations, transcripts, agents, then the single sessions batch (record_turn.py
    CaptureResult.batches), each table byte-chunked; a chunk failure stops the pass.
@@ -79,8 +83,11 @@ URL request; external, not re-verified here).
    close ranked LAST on a tie: a session resumed and ended with no new prompt anchors its close on the
    resume boundary record itself, so a close-first tie-break would flag a clean session (verification
    r3, H2, scenario I). Outcome: the contract stores success | failed | cancelled on the close row
-   (telemetry_sessions.yaml:184-193). It is a constant per finalize (success) or derived from the
-   transcript, never taken from SessionEnd hook input: hook input is not transcript content, so a retried
+   (telemetry_sessions.yaml:184-193). It is derived from the transcript (for example, an interrupted
+   last turn reads cancelled, otherwise success), never a constant, which would make the stored column
+   vacuous for back-validation and the friction classifier (plan-critique r2, C6), and never taken from
+   SessionEnd hook input. SessionEnd's own reason values (clear, resume, logout, prompt_input_exit,
+   other) do not map to failed or cancelled anyway, and hook input is not transcript content, so a retried
    or duplicate SessionEnd with a different reason would send the same ref with different content, which
    D207 rejects loudly, and step 8's transcript-only re-derivation could not reproduce it (plan-critique
    r1, M1). Owner: this rule and the R2 fix are both src/turn_capture rule changes owned by rec-4026; the
@@ -119,9 +126,19 @@ Contested (evidence on both sides, options listed; k1-k2 in the fixture):
   pass when exceeded; (b) detached pass whose failure is surfaced by the next pass; (c) make the warm
   pass O(new lines) by caching the prior emission set beside the cursor, which re-opens the 3a
   "positions only" cursor rule. Recommended: (a); (c) only if the budget is breached in practice.
-  The budget is set relative to the configured Claude Code hook timeout (60 s by default per the
-  hooks documentation; external, not re-verified here), and .claude/settings.json sets that timeout
-  explicitly; a killed pass leaves no close row (plan-critique r1, M3). "Breached in practice" needs a
+  Hook budgets, verified against the Claude Code hooks reference (code.claude.com/docs/en/hooks,
+  fetched 2026-10-02): "Defaults: 600 for command, http, and mcp_tool ... SessionEnd hooks share a
+  1.5-second budget; if your settings set a longer per-hook timeout, Claude Code raises the budget to
+  match, up to 60 seconds". So the Stop pass's constraint is user-facing latency (it is killed only at
+  600 s), while SessionEnd is the binding cap: unconfigured, a finalize pass that makes any writer
+  round-trip is very likely killed at 1.5 s and lands no close row, and even configured it has a hard
+  60 s ceiling for the lock wait, the finalize parse and every remaining chunk. .claude/settings.json
+  must therefore set the SessionEnd timeout explicitly (c1). Under option (a), a long session whose
+  Stop passes all defer pushes its whole tail into that capped pass (a cold 22k-line parse is 3.84 s,
+  plus about 50 MB of rows in at least nine chunks), so the deferral-count trigger below must fire
+  before the deferred tail can exceed what one SessionEnd pass can send. The cap weakens (a)'s
+  defer-to-SessionEnd path and strengthens (c). The previous wording here ("60 s by default", round 1
+  M3) was wrong (plan-critique r2, C1). "Breached in practice" needs a
   measurable trigger: the runner's diagnostics count deferrals per session, because under (a) a long
   enough session defers every Stop pass and all capture falls to SessionEnd, the hook q2 doubts
   (plan-critique r1, M4). Under (b), and under (a) with a slow pass, the SessionEnd lock wait of runner
@@ -156,8 +173,9 @@ Risk (a known loss mode, not a choice; carried in the fixture as q2 and as the f
   resumed segment's last turn is never emitted, even though SessionEnd succeeds and the close row lands.
   No session-row metric can see it. It falsifies s3's precondition (incremental capture equals one full
   parse, record_turn.py:5). The probe reports 4 of 5 turns; locally setting the flag to session_final
-  alone gives 5 of 5 (gate report r2; VP 8 reproduces it from the repo). PRECONDITION of c1 and c2, owned by the turn-capture owner
-  (rec-4026 / slice 3a), routed by the operator. Not fixed in this REPORT-ONLY PR. Detector: the
+  alone gives 5 of 5 (gate report r2; VP 8 reproduces it from the repo). PRECONDITION of c1 and c2, owned by rec-4026
+  like every src/turn_capture rule change, shipping in slice 3b's PR, routed by the operator
+  (plan-critique r2, C5). Not fixed in this REPORT-ONLY PR. Detector: the
   runner-side check at finalize (step 8) with its resume-boundary cut schedule, named in c2; the
   existing conformance walk cannot see it.
 
@@ -169,7 +187,7 @@ Parked (a recommendation with no precedent; nothing moved):
 Open (q1-q3 in the fixture; none is answerable from the repository):
 
 - q1 Two classes land no rows at all, so no warehouse metric can see them: a runner that never
-  succeeds, and a session lost before its first turn closes (B1 below). Seeing them needs an
+  succeeds, and a session lost before its first turn closes (section 4; plan-critique r1, B1). Seeing them needs an
   independent, out-of-band session denominator. Candidates: the runner's own diagnostics, or an open
   row at the SessionStart pass. The second is a record_turn rule change against the generation-marker
   rule (the open row is the generation commit marker, D207 R3; sessions.py:3-4), so it belongs to the
@@ -179,7 +197,9 @@ Open (q1-q3 in the fixture; none is answerable from the repository):
   non-final pass (the finalized prefix treats its open last turn as closed), so the SessionEnd hook's
   own row lands only if the session is resumed and re-finalized (verification r3, H4).
 - q2 Does SessionEnd fire on CC-web reclaim, and is a resumed session's transcript restored whole (so
-  catch-up sees the prefix)? R1's size hinges on it.
+  catch-up sees the prefix)? And does a SessionEnd pass fit the 60 s cap (k1)? A killed SessionEnd pass on
+  a multi-turn session is visible to the failure_signal; on a single-turn one it is the section 4 blind
+  spot. R1's size hinges on these.
 - q3 billing_shape for API-key sessions (rec-4147): the default fixed_non_rollover_allowance mislabels
   unattended API-key runs (Decision 205) as subscription spend.
 
@@ -225,13 +245,21 @@ Open (q1-q3 in the fixture; none is answerable from the repository):
 - maturity: starts at read_all, meaning every finalized session is checked by the runner-side
   conformance check (runner step 8, verified by c2). read_all -> sampled at >= 20 consecutive finalized sessions with
   zero violations; sampled -> spot_check at 0 violations across the last 30 sampled; spot_check ->
-  anomaly_triggered at >= 30 consecutive days with unfinalized_session_share at or below 0.05. The
-  numbers are seed values for the maturity-ladder controller component to challenge.
-- verification: c1 (hooks, ordering, chunking, cursor-after-ack, SessionEnd close row, never exit 2),
+  anomaly_triggered at >= 30 consecutive days with unfinalized_session_share <= 0.05 over the q1
+  out-of-band session denominator. That last trigger is unmeetable until q1 is answered, which is the
+  intent: the ladder must not promote on a share that cannot see single-turn losses (plan-critique r2,
+  C2). The numbers are seed values for the maturity-ladder controller component to challenge.
+- verification: c1 (hooks, data-first order, chunking, cursor-after-ack, close row, SessionEnd lock wait,
+  never exit 2, SessionEnd timeout set explicitly),
   c2 (failed/killed pass and lost cursor replay as no-ops or defer; the runner-side conformance check
   at finalize proves incremental equals one full parse, resume-after-finalize included, which R2 fails
   today), c3 (T3.20 c8 smoke plus a
-  rec-4101 monitor run, review method). All open.
+  rec-4101 monitor run, review method). All open. The c1 and c2 commands run one pytest invocation per
+  obligation, chained with &&, so each obligation needs its own matching test (pytest exits 5 when a -k
+  term matches nothing). An OR selector would be met by one test (plan-critique r2, C3; probe: a file
+  with only test_hooks_and_ordering passes an OR selector but fails the chain with exit 5, while a file
+  with one test per term passes). This is still a floor: one test whose name contains every term would
+  pass, so the 3b plan names one red-before node id per obligation.
 - rollback: remove the hook entries; rows stay (append-only); cursors hold positions only.
 - edges: part_of T3.20; depends_on T2.36.
 
@@ -254,6 +282,9 @@ Open (q1-q3 in the fixture; none is answerable from the repository):
   session-state reader verb should derive state from the LATEST lifecycle row, ordered by
   (event_timestamp, source_ordinal) with close ranked last on a tie (step 7). Boundary note only;
   the contract is not edited here.
+- W0 schema note: MAX_CRITERIA_PER_ITEM (3) times Command's 200-character cap makes a many-obligation
+  criterion hard to enforce by selector; c1's eight per-term invocations fit at 183 characters, a ninth
+  would not. Worth carrying to W2 as a W0 schema observation (plan-critique r2, C3).
 - No seed component owns the WRITER verb. It is already tracked (T2.36 c1/c2, rec-4024 slice 2), so
   the pilot should point at it by edge rather than add an item.
 
