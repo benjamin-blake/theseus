@@ -266,14 +266,10 @@ def _scalar(value: object) -> str:
     return out.removesuffix("...\n").rstrip("\n")
 
 
-def _flow(value: object) -> str:
-    return _scalar(value)
-
-
 def _block_rows(indent: str, key: str, rows: list) -> list[str]:
     if not rows:
         return [f"{indent}{key}: []"]
-    return [f"{indent}{key}:", *(f"{indent}  - {_flow(row)}" for row in rows)]
+    return [f"{indent}{key}:", *(f"{indent}  - {_scalar(row)}" for row in rows)]
 
 
 def _render_register(reg: dict, ind: str) -> list[str]:
@@ -281,12 +277,12 @@ def _render_register(reg: dict, ind: str) -> list[str]:
     lines = [
         f"{ind}why: {_scalar(reg['why'])}",
         f"{ind}how: {_scalar(reg['how'])}",
-        f"{ind}planes: {_flow(reg['planes'])}",
+        f"{ind}planes: {_scalar(reg['planes'])}",
         f"{ind}maturity:",
         f"{ind}  rung: {_scalar(maturity['rung'])}",
         *_block_rows(f"{ind}  ", "transitions", maturity["transitions"]),
-        f"{ind}failure_signal: {_flow(reg['failure_signal'])}",
-        f"{ind}verification: {_flow(reg['verification'])}",
+        f"{ind}failure_signal: {_scalar(reg['failure_signal'])}",
+        f"{ind}verification: {_scalar(reg['verification'])}",
         f"{ind}rollback: {_scalar(reg['rollback'])}",
     ]
     for key in ("evidence", "settled", "contested", "open_questions"):
@@ -322,7 +318,7 @@ def render(fixture: Fixture) -> str:
         f"  grain: {_scalar(head['grain'])}",
         f"  item_count_cap: {_scalar(head['item_count_cap'])}",
         "  sunset:",
-        f"    first_of: {_flow(head['sunset']['first_of'])}",
+        f"    first_of: {_scalar(head['sunset']['first_of'])}",
         f"    outcome: {_scalar(head['sunset']['outcome'])}",
         f"  edges_disposition: {_scalar(head['edges_disposition'])}",
     ]

@@ -6,9 +6,11 @@ from __future__ import annotations
 
 import copy
 from datetime import date
+from typing import Any
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from scripts.checks import _common, registry
 from scripts.checks.roadmap import _manifest
@@ -19,7 +21,7 @@ from scripts.checks.structural._classify import classify_path
 _LABEL = "Work-item pilot fixture"
 _HEAD = "# test fixture comment\n"
 _DECISIONS = "## Decision 197: Work-item boundary (Decided)\nbody\n"
-_ROADMAP = {
+_ROADMAP: dict[str, Any] = {
     "candidate_decisions": [{"id": "CD.45", "state": "pending"}],
     "tier_items": [
         {"id": "T4.23", "exit_criteria": [{"id": "c6", "text": "target model", "status": "open"}]},
@@ -140,11 +142,16 @@ def green(run):
 @pytest.fixture
 def red(run):
     def _red(needle, data=None, **kwargs):
-        if "text" not in kwargs and data is not None:
-            kwargs["text"] = yaml.safe_dump(data, sort_keys=False)
+        explicit_text = "text" in kwargs
+        if not explicit_text and data is not None:
+            try:
+                kwargs["text"] = _canon(data)
+            except ValidationError:
+                kwargs["text"] = yaml.safe_dump(data, sort_keys=False)
         failed, out = run(data, **kwargs)
         assert failed == [_LABEL], out
         assert needle in out, out
+        assert explicit_text or "FAIL: L2" not in out, out
 
     return _red
 
@@ -251,6 +258,9 @@ class TestCap:
 
 
 _SECOND = f"{model.PILOT_DIR}/second.yaml"
+_CD_ONLY = _DECISIONS + "## Decision 300: Ratify\nCD.45 is ratified.\n"
+_CD_NEAR_MISS = _DECISIONS + f"## Decision 300: Other\nCD.450 moves to {_SECOND} and {model.PILOT_DIR}/\n"
+_SPLIT_PATH = _DECISIONS + f"## Decision 300: Rehome\n{_SECOND} and {model.PILOT_DIR}/\n## Decision 301: Other\nCD.45 noted.\n"
 
 
 class TestSingleInstance:
@@ -260,6 +270,9 @@ class TestSingleInstance:
             ("second file", {_SECOND: "x: 1\n"}, _DECISIONS),
             ("column-0", {"config/other.yaml": "work_item_edges: []\n"}, _DECISIONS),
             ("second file", {_SECOND: "x: 1\n"}, _DECISIONS + f"## Decision 300: Rehome\n{_SECOND}\n"),
+            ("second file", {_SECOND: "x: 1\n"}, _CD_ONLY),
+            ("second file", {_SECOND: "x: 1\n"}, _SPLIT_PATH),
+            ("second file", {_SECOND: "x: 1\n"}, _CD_NEAR_MISS),
         ],
     )
     def test_second_fixture_is_red(self, needle, files, decisions, red):
@@ -311,10 +324,14 @@ class TestEdges:
     def test_edge_integrity_is_red(self, edges, needle, red):
         red(needle, _fixture(edges=edges))
 
-    def test_unreadable_roadmap_fails_closed_everywhere_it_is_read(self, red):
+    @pytest.mark.parametrize(
+        "needle",
+        ["edge targets cannot resolve", "yaml unreadable (fail closed)", "sunset cannot be evaluated"],
+    )
+    def test_unreadable_roadmap_fails_closed_everywhere_it_is_read(self, needle, red):
         data = _fixture(edges=[_edge("T4.23")])
         _reg_of(data)["evidence"] = [{"kind": "roadmap", "ref": "T4.23"}]
-        red("unreadable", data, roadmap="a: [unclosed\n")
+        red(needle, data, roadmap="a: [unclosed\n")
 
     def test_git_failure_fails_the_single_instance_scan_closed(self, red):
         red("git ls-files failed", git=False)
@@ -418,6 +435,9 @@ class TestSunset:
                 "today": _AFTER,
                 "decisions": _DECISIONS + f"## Decision 301: Other\n{model.PILOT_DIR}/ only\n",
             },
+            {"changed": _TOUCHED, "today": _AFTER, "decisions": _CD_ONLY},
+            {"changed": _TOUCHED, "today": _AFTER, "decisions": _SPLIT_PATH},
+            {"changed": _TOUCHED, "today": _AFTER, "decisions": _CD_NEAR_MISS},
         ],
     )
     def test_triggered_and_touched_is_frozen(self, kwargs, red):
@@ -425,7 +445,11 @@ class TestSunset:
 
     @pytest.mark.parametrize(
         "kwargs",
-        [{"roadmap": _roadmap(cd_state="ratified")}, {"decisions": _RESTRUCTURE}],
+        [
+            {"roadmap": _roadmap(cd_state="ratified")},
+            {"roadmap": _roadmap(cd_state="superseded")},
+            {"decisions": _RESTRUCTURE},
+        ],
     )
     def test_operator_only_exits_release_the_freeze(self, kwargs, green):
         green(changed=_TOUCHED, today=_AFTER, **kwargs)

@@ -34,6 +34,7 @@ _ARCHIVE_REL_PATH = "docs/DECISIONS_ARCHIVE.md"
 _FAIL_LABEL = "Work-item pilot fixture"
 _SINGLE_INSTANCE_RE = re.compile(r"^(?:work_items|work_item_criteria|work_item_edges):", re.MULTILINE)
 _DECISION_HEADER_RE = re.compile(r"^## Decision (\d+):", re.MULTILINE)
+_CD_RE = re.compile(re.escape(model.SUNSET_CD) + r"(?!\d)")
 _SECTION_BREAK_RE = re.compile(r"^## ", re.MULTILINE)
 _CRITERION_REF_RE = re.compile(r"^(?P<item>[^:]+):(?P<crit>c[0-9]+)$")
 _REC_RE = re.compile(r"^rec-[0-9]+$")
@@ -94,6 +95,11 @@ def _read(rel: str) -> str:
         return (_common.ROOT / rel).read_text(encoding="utf-8", errors="replace")
     except OSError:
         return ""
+
+
+def _names_cd(section: str) -> bool:
+    """True when the section names CD.45 as a whole id, so CD.450 to CD.459 never open an exit."""
+    return _CD_RE.search(section) is not None
 
 
 def _norm(value: str) -> str:
@@ -211,21 +217,20 @@ def _leg3_single_instance(ctx: _Context) -> list[str]:
     tracked = ctx.tracked()
     if tracked is None:
         return ["git ls-files failed; the single-instance scan cannot run (fail closed)"]
-    offenders = []
+    offenders: list[tuple[str, str]] = []
     for rel in tracked:
         if rel == model.FIXTURE_PATH:
             continue
         if rel.startswith(model.PILOT_DIR + "/"):
-            offenders.append(f"{rel} (second file under {model.PILOT_DIR}/)")
+            offenders.append((rel, f"second file under {model.PILOT_DIR}/"))
         elif rel.endswith((".yaml", ".yml")) and _SINGLE_INSTANCE_RE.search(_read(rel)):
-            offenders.append(f"{rel} (column-0 work_items / work_item_criteria / work_item_edges key)")
+            offenders.append((rel, "column-0 work_items / work_item_criteria / work_item_edges key"))
     errors = []
-    for entry in offenders:
-        rel = entry.split(" ", 1)[0]
-        if any(rel in sec and model.SUNSET_CD in sec for sec in ctx.decision_sections()):
+    for rel, reason in offenders:
+        if any(rel in sec and _names_cd(sec) for sec in ctx.decision_sections()):
             continue
         errors.append(
-            f"second pilot-class fixture: {entry}; CD.45 allows exactly one "
+            f"second pilot-class fixture: {rel} ({reason}); CD.45 allows exactly one "
             f"(a docs/DECISIONS.md Decision section naming both {rel} and {model.SUNSET_CD} is the rehome exit)"
         )
     return errors
@@ -358,7 +363,7 @@ def _leg6_sunset(ctx: _Context, today: date | None) -> tuple[list[str], str | No
         )
         return [], note
     ratified_exit = cd.get("state") != "pending"
-    decision_exit = any(model.SUNSET_CD in sec and model.PILOT_DIR + "/" in sec for sec in ctx.decision_sections())
+    decision_exit = any(_names_cd(sec) and model.PILOT_DIR + "/" in sec for sec in ctx.decision_sections())
     if ratified_exit or decision_exit:
         return [], f"SUNSET REACHED: freeze released by an operator-only exit; touched {', '.join(touched)}"
     message = (
