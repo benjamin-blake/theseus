@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
+from scripts.checks import registry
 from scripts.checks.prose.prose_budget_raises import _SPEC, validate_prose_budget_raises
 
 
@@ -190,3 +191,98 @@ class TestValidateProseBudgetRaises:
             validate_prose_budget_raises(failed, base_reader=base_reader)
 
         assert len(failed) == 1
+
+
+def _declared(tmp_path: Path, base_text: str | None) -> tuple[list[str], registry._Declaration | None]:
+    registry.pop_declaration()
+    failed: list[str] = []
+    with patch("scripts.checks._common.ROOT", tmp_path):
+        validate_prose_budget_raises(failed, base_reader=lambda _rel: base_text)
+    return failed, registry.pop_declaration()
+
+
+def _write(tmp_path: Path, rel: str, body: str) -> None:
+    target = tmp_path / rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(body, encoding="utf-8")
+
+
+class TestExaminedDeclaration:
+    """Decision 170: skipped when the registry or its base is unavailable, else examined over the entries judged."""
+
+    def test_missing_registry_declares_skipped(self, tmp_path: Path) -> None:
+        failed, decl = _declared(tmp_path, "S1: {}\n")
+        assert failed == []
+        assert decl is not None
+        assert decl.kind == "skipped"
+        assert decl.reason == "config/prose_budgets.yaml not found"
+
+    def test_unreachable_base_declares_skipped(self, tmp_path: Path) -> None:
+        _write(tmp_path, "config/prose_budgets.yaml", "S1:\n  root_ambient_load_set: 30000\n")
+        _write(tmp_path, "docs/DECISIONS.md", "")
+        failed, decl = _declared(tmp_path, None)
+        assert failed == []
+        assert decl is not None
+        assert decl.kind == "skipped"
+        assert decl.reason == "origin/main unreachable"
+        assert registry.build_outcome("validate_prose_budget_raises", "check", decl, appended_to_failed=False).status == (
+            "skipped"
+        )
+
+    def test_unreachable_base_still_fails_on_unauthorized_present_marker(self, tmp_path: Path) -> None:
+        _write(tmp_path, "config/prose_budgets.yaml", "S1:\n  root_ambient_load_set: 40000  # raise-approved: dec-134 x\n")
+        _write(tmp_path, "docs/DECISIONS.md", "## Decision 134: Some title (Decided)\n")
+        failed, decl = _declared(tmp_path, None)
+        assert len(failed) == 1
+        assert decl is not None
+        assert decl.kind == "skipped"
+        assert registry.build_outcome("validate_prose_budget_raises", "check", decl, appended_to_failed=True).status == (
+            "failed"
+        )
+
+    def test_clean_registry_counts_every_current_entry(self, tmp_path: Path) -> None:
+        body = "S1:\n  root_ambient_load_set: 30000\nS2:\n  docs/CLAUDE.md: 4000\n  scripts/CLAUDE.md: 3000\n"
+        _write(tmp_path, "config/prose_budgets.yaml", body)
+        _write(tmp_path, "docs/DECISIONS.md", "")
+        failed, decl = _declared(tmp_path, body)
+        assert failed == []
+        assert decl is not None
+        assert decl.kind == "examined"
+        assert decl.count == 3
+        assert decl.unit == "entries"
+        assert registry.build_outcome("validate_prose_budget_raises", "check", decl, appended_to_failed=False).status == (
+            "enforced"
+        )
+
+    def test_failing_diff_still_declares_examined_count(self, tmp_path: Path) -> None:
+        _write(tmp_path, "config/prose_budgets.yaml", "S2:\n  docs/CLAUDE.md: 9000\n  scripts/CLAUDE.md: 3000\n")
+        _write(tmp_path, "docs/DECISIONS.md", "")
+        failed, decl = _declared(tmp_path, "S2:\n  docs/CLAUDE.md: 4000\n  scripts/CLAUDE.md: 3000\n")
+        assert len(failed) == 1
+        assert decl is not None
+        assert decl.kind == "examined"
+        assert decl.count == 2
+
+    def test_empty_registry_declares_vacuous(self, tmp_path: Path) -> None:
+        _write(tmp_path, "config/prose_budgets.yaml", "S1: {}\n")
+        _write(tmp_path, "docs/DECISIONS.md", "")
+        failed, decl = _declared(tmp_path, "S1:\n  root_ambient_load_set: 30000\n")
+        assert failed == []
+        assert decl is not None
+        assert decl.kind == "examined"
+        assert decl.count == 0
+        assert registry.build_outcome("validate_prose_budget_raises", "check", decl, appended_to_failed=False).status == (
+            "vacuous"
+        )
+
+    def test_live_registry_examines_every_entry(self) -> None:
+        live = (Path(__file__).resolve().parents[3] / "config" / "prose_budgets.yaml").read_text(encoding="utf-8")
+        registry.pop_declaration()
+        failed: list[str] = []
+        validate_prose_budget_raises(failed, base_reader=lambda _rel: live)
+        decl = registry.pop_declaration()
+        assert failed == []
+        assert decl is not None
+        assert decl.kind == "examined"
+        assert decl.count == len(_SPEC.extractor(live))
+        assert decl.count > 0
