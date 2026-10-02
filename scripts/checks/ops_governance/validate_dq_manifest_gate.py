@@ -13,6 +13,9 @@ def validate_dq_manifest_gate(failed: list[str]) -> None:
     Allowed states: READY_NOW, write_fix_deployed, GRADUATED, NEEDS_TEMPORAL_GATE.
     Any other state (including NEEDS_WRITE_FIX, NEEDS_DATA_CORRECTION, missing, or unknown)
     is rejected so that unrecognised states fail closed rather than silently passing.
+
+    Declares examined over the enforced tests it judged (unit "enforced tests"). An absent or
+    unparseable ops.yaml declares skipped() -- the input is unavailable, not an empty domain.
     """
     import yaml as _yaml  # noqa: PLC0415
 
@@ -23,12 +26,14 @@ def validate_dq_manifest_gate(failed: list[str]) -> None:
 
     if not ops_yaml_path.exists():
         print("  ops.yaml not found -- skipping.")
+        registry.skipped("config/agent/data_quality/ops.yaml not found")
         return
 
     try:
         ops_data = _yaml.safe_load(ops_yaml_path.read_text(encoding="utf-8")) or {}
     except (OSError, _yaml.YAMLError) as exc:
         print(f"  WARN: could not parse ops.yaml: {exc}")
+        registry.skipped(f"config/agent/data_quality/ops.yaml unparseable: {exc}")
         return
 
     manifests: dict[str, dict] = {}
@@ -44,6 +49,7 @@ def validate_dq_manifest_gate(failed: list[str]) -> None:
 
     _ALLOWED_STATES = {"READY_NOW", "write_fix_deployed", "GRADUATED", "NEEDS_TEMPORAL_GATE"}
     errors: list[str] = []
+    judged = 0
 
     for table_name, table_def in ops_data.get("tables", {}).items():
         manifest_fields = manifests.get(table_name, {}).get("fields", {})
@@ -56,6 +62,7 @@ def validate_dq_manifest_gate(failed: list[str]) -> None:
                 for test_name, params in test_entry.items():
                     if not isinstance(params, dict) or not params.get("enforced"):
                         continue
+                    judged += 1
                     state = manifest_fields.get(col_name, {}).get("enforcement_ready", "")
                     if state not in _ALLOWED_STATES:
                         errors.append(
@@ -65,6 +72,7 @@ def validate_dq_manifest_gate(failed: list[str]) -> None:
                             f"Update manifest before promoting enforcement."
                         )
 
+    registry.examined(judged, unit="enforced tests")
     if errors:
         for e in errors:
             print(f"  FAIL: {e}")
