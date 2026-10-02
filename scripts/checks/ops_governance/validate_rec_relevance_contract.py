@@ -15,6 +15,9 @@ def validate_rec_relevance_contract(failed: list[str]) -> None:
     (a) docs/contracts/recommendation-relevance.yaml parses and has a 'verdicts' list.
     (b) The contract verdicts == rec_relevance.RELEVANCE_VERDICTS (no drift).
     (c) The contract declares no 'columns' or 'fields' (Decision 84: no new Class A columns).
+
+    Declares examined over the union of the contract and evaluator verdict sets compared in (b)
+    (unit "verdicts"). Every earlier exit is already a failure and declares nothing.
     """
     print("\n=== Recommendation-relevance contract drift gate (T3.8) ===")
     root_str = str(_common.ROOT)
@@ -59,6 +62,8 @@ def validate_rec_relevance_contract(failed: list[str]) -> None:
         except Exception as exc:
             failed.append(f"rec-relevance contract: cannot import scripts.rec_relevance: {exc}")
             return
+
+        registry.examined(len(contract_verdicts | evaluator_verdicts), unit="verdicts")
 
         diff = contract_verdicts ^ evaluator_verdicts
         if diff:
