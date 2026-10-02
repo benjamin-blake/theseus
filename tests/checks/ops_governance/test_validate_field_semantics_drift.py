@@ -194,3 +194,36 @@ class TestExaminedDeclaration:
             validate_field_semantics_drift(failed)
         assert len(failed) == 1
         assert registry.pop_declaration() is None
+
+
+class TestSysPathInjection:
+    """The repo root is injected onto sys.path only when absent, and removed again on exit."""
+
+    def test_absent_root_is_injected_for_the_run_and_removed_afterwards(self, tmp_path: Path) -> None:
+        import sys
+        import unittest.mock as _m
+
+        from scripts.schema_to_field_semantics import _emit_yaml
+
+        output = tmp_path / "field_semantics.yaml"
+        output.write_text(_emit_yaml(_SYNTHETIC_DOC), encoding="utf-8")
+        root_str = str(ROOT)
+        seen: list[bool] = []
+
+        def _generate(*, include_prose: bool = False) -> dict:
+            seen.append(sys.path[0] == root_str)
+            return _SYNTHETIC_DOC
+
+        stripped = [p for p in sys.path if p != root_str]
+        with (
+            _m.patch.object(sys, "path", stripped),
+            _m.patch("scripts.schema_to_field_semantics._OUTPUT_PATH", output),
+            _m.patch("scripts.schema_to_field_semantics.generate", side_effect=_generate),
+        ):
+            failed: list[str] = []
+            validate_field_semantics_drift(failed)
+            after = list(sys.path)
+
+        assert failed == []
+        assert seen == [True]
+        assert root_str not in after
