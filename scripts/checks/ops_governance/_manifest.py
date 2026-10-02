@@ -69,6 +69,14 @@ ENTRIES: tuple[Entry, ...] = (
         full_segment="full_after_lint",
     ),
     Entry(
+        name="validate_recs_read_topology",
+        module="scripts.checks.ops_governance.validate_recs_read_topology",
+        attr="validate_recs_read_topology",
+        pre=True,
+        pre_globs=("scripts/**", "src/**"),
+        full_segment="full_after_lint",
+    ),
+    Entry(
         name="check_source_registry",
         module="scripts.checks.ops_governance.check_source_registry",
         attr="check_source_registry",

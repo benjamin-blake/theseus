@@ -127,6 +127,13 @@ _CLOSURE_INPUTS: dict[str, tuple[str, ...]] = {
         "scripts/checks/_common.py",
         "scripts/checks/registry.py",
     ),
+    # Scan scope IS the closure: scripts/ AND src/ are walked, and the reader client R1 parses lives under src/.
+    "validate_recs_read_topology": (
+        "scripts/checks/ops_governance/validate_recs_read_topology.py",
+        "src/common/ducklake_reader_client.py",
+        "scripts/checks/_common.py",
+        "scripts/checks/registry.py",
+    ),
     # Symmetric-difference of the Dq* Annotated markers against the per-column tests: BOTH sides
     # are inputs, so a src/schemas/ marker edit alone must fire the gate.
     "validate_pydantic_yaml_drift": (
