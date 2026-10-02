@@ -57,10 +57,12 @@ def validate_candidate_decision_supersession(failed: list[str]) -> None:
 
     cd_by_id = {cd.id: cd for cd in doc.candidate_decisions}
     issues: list[str] = []
+    scanned = 0
 
     for cd in doc.candidate_decisions:
         if cd.state != "pending":
             continue
+        scanned += 1
         m = _FULLY_SUPERSEDED_RE.search(cd.detail)
         if not m:
             continue
@@ -74,6 +76,7 @@ def validate_candidate_decision_supersession(failed: list[str]) -> None:
                 f"{superseder_id}', and {superseder_id} is state=ratified -- flip {cd.id} to "
                 "state=superseded in this same edit (the superseding decision is decision-final)."
             )
+    registry.examined(scanned, unit="pending_candidate_decisions")
 
     if issues:
         for issue in issues:
