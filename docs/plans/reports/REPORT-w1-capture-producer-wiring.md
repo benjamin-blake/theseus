@@ -69,7 +69,10 @@ URL request; external, not re-verified here).
    makes the overlap a no-op. The transcript is the replay source, so no outbox exists (Decision 84
    I-4 holds).
 5. Exit codes: 0 on success or lock contention; 1 (non-blocking, stderr names the table, chunk and
-   status) on any failure. NEVER 2: on Stop, exit 2 forces the turn to continue (e6).
+   status) on any failure. NEVER 2: on Stop, exit 2 forces the turn to continue (e6). The runner writes
+   NOTHING to stdout on any event: Claude Code adds SessionStart stdout to the model's context, so any
+   output from the catch-up pass would be injected into every session and captured back as rows.
+   Diagnostics go to stderr or the runner's diagnostics file (plan-critique r3, D4).
 6. Pins: project_ref and billing_shape are passed in from the runner's configuration ONCE, at the
    pass that creates the cursor, and travel in the cursor (record_turn checks them via check_pins).
 7. Finalize marker: the SessionEnd pass (session_final=True) emits a root telemetry_sessions row with
@@ -134,7 +137,8 @@ Contested (evidence on both sides, options listed; k1-k2 in the fixture):
   round-trip is very likely killed at 1.5 s and lands no close row, and even configured it has a hard
   60 s ceiling for the lock wait, the finalize parse and every remaining chunk. .claude/settings.json
   must therefore set the SessionEnd timeout explicitly (c1). Under option (a), a long session whose
-  Stop passes all defer pushes its whole tail into that capped pass (a cold 22k-line parse is 3.84 s,
+  Stop passes all defer pushes its whole tail into that capped pass (the SessionEnd pass is warm-shaped, since the cursor
+  already exists: its parse alone costs 3.84-8.80 s at 22k lines, cold to warm, section 1, before any chunk is sent,
   plus about 50 MB of rows in at least nine chunks), so the deferral-count trigger below must fire
   before the deferred tail can exceed what one SessionEnd pass can send. The cap weakens (a)'s
   defer-to-SessionEnd path and strengthens (c). The previous wording here ("60 s by default", round 1
@@ -150,8 +154,13 @@ Contested (evidence on both sides, options listed; k1-k2 in the fixture):
   fact by having the SessionStart hook emit it as additional context, which Claude Code writes into the
   transcript, so a lost cursor re-derives it from the tree (needs a parser rule and a PARSER_VERSION
   bump); (c) defer emission for cursor-less trees. Recommended: (b), pending q2. If the operator picks
-  (b), the parser rule keys on the SessionStart hook attachment (attachment type hook_*, hookEvent
-  SessionStart) and takes the EARLIEST one, so a later SessionStart:resume carrying a changed config
+  (b), the parser rule keys on the PIN HOOK's identity and payload, not on SessionStart output in
+  general: the earliest SessionStart hook attachment (attachment type hook_*, hookEvent SessionStart)
+  whose command is the pin hook's declared command AND whose content matches a declared pin grammar
+  (for example a fixed prefix; the 3b plan owns the exact grammar). This repo already runs eight
+  SessionStart hooks in parallel (.claude/settings.json; the hooks reference says matching hooks run in
+  parallel), so the earliest SessionStart attachment is whichever hook finished first and is usually
+  not the pin hook (plan-critique r3, D1). A later SessionStart:resume carrying a changed config
   value, or prompt or tool_result text that looks like a pin, never re-pins (project-id.yaml:47-51,
   "PINNED once"). Option (a) is operator-only because of D200 cl.1: re-reading config after loss can
   send a different project_ref, which auto-registers a new project_id for the same tree (plan-critique
