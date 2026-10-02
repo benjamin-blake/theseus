@@ -18,6 +18,9 @@ def validate_rec_write_paths(failed: list[str]) -> None:
     Whitelisted files (permitted to write directly):
       - scripts/ops_data_portal.py  (the portal itself)
       - scripts/sync/recommendations.py  (cache overwrite by design)
+
+    Declares examined(non-whitelisted .py files read and pattern-scanned, unit="py files") (Decision 170);
+    an unreadable file is not scanned and not counted.
     """
     print("\n=== Rec JSONL write-path enforcement ===")
     scripts_dir = _common.ROOT / "scripts"
@@ -38,6 +41,7 @@ def validate_rec_write_paths(failed: list[str]) -> None:
         re.compile(r'append_jsonl\s*\(\s*["\']\.recommendations-log\.jsonl["\']'),
     ]
     errors: list[str] = []
+    scanned = 0
 
     search_dirs = [scripts_dir]
     if personal_dir.exists():
@@ -51,6 +55,7 @@ def validate_rec_write_paths(failed: list[str]) -> None:
                 content = py_file.read_text(encoding="utf-8")
             except OSError:
                 continue
+            scanned += 1
             for pattern in _PATTERNS:
                 for m in pattern.finditer(content):
                     lineno = content[: m.start()].count("\n") + 1
@@ -58,6 +63,7 @@ def validate_rec_write_paths(failed: list[str]) -> None:
                     errors.append(f"{rel}:{lineno}: direct rec JSONL write detected (use ops_data_portal)")
                     break  # one report per file per pattern is enough
 
+    registry.examined(scanned, unit="py files")
     if errors:
         print("Rec write-path violations found:")
         for e in errors:

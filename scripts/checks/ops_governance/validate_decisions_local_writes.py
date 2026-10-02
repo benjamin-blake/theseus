@@ -18,6 +18,9 @@ def validate_decisions_local_writes(failed: list[str]) -> None:
     Whitelisted files (permitted to write directly):
       - scripts/ops_data_portal.py  (write-through cache update)
       - scripts/sync/ops.py         (cache rebuild from the DuckLake reader)
+
+    Declares examined(non-whitelisted .py files read and pattern-scanned, unit="py files") (Decision 170);
+    an unreadable file is not scanned and not counted.
     """
     print("\n=== Decisions JSONL write-path enforcement ===")
     scripts_dir = _common.ROOT / "scripts"
@@ -32,6 +35,7 @@ def validate_decisions_local_writes(failed: list[str]) -> None:
         re.compile(r'decisions.index\.jsonl.*["\'][aw]["\']'),
     ]
     errors: list[str] = []
+    scanned = 0
 
     search_dirs = [scripts_dir]
     if personal_dir.exists():
@@ -45,6 +49,7 @@ def validate_decisions_local_writes(failed: list[str]) -> None:
                 content = py_file.read_text(encoding="utf-8")
             except OSError:
                 continue
+            scanned += 1
             for pattern in _PATTERNS:
                 if pattern.search(content):
                     rel = py_file.relative_to(_common.ROOT)
@@ -54,6 +59,7 @@ def validate_decisions_local_writes(failed: list[str]) -> None:
                     )
                     break
 
+    registry.examined(scanned, unit="py files")
     if errors:
         print("Decisions JSONL write-path violations:")
         for e in errors:

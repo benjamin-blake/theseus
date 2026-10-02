@@ -3,7 +3,11 @@
 from pathlib import Path
 from unittest.mock import patch
 
+from scripts.checks import registry
 from scripts.checks.hygiene.validate_cli_tools_in_prompts import validate_cli_tools_in_prompts
+
+_REPO_ROOT = Path(__file__).parents[3]
+_UNIT = "prompt_files"
 
 
 class TestValidateCliToolsInPrompts:
@@ -87,3 +91,66 @@ class TestValidateCliToolsInPrompts:
             validate_cli_tools_in_prompts(failed)
 
         assert failed == []
+
+
+def _declared(root: Path, which: str | None = "/usr/bin/tool") -> tuple[list[str], registry._Declaration | None]:
+    registry.pop_declaration()
+    with (
+        patch("scripts.checks._common.ROOT", root),
+        patch("scripts.checks.hygiene.validate_cli_tools_in_prompts.shutil.which", return_value=which),
+    ):
+        failed: list[str] = []
+        validate_cli_tools_in_prompts(failed)
+    return failed, registry.pop_declaration()
+
+
+def _prompt_dir(root: Path) -> Path:
+    prompt_dir = root / ".github" / "prompts" / "scheduled"
+    prompt_dir.mkdir(parents=True)
+    return prompt_dir
+
+
+class TestCliToolsInPromptsAccountingDeclaration:
+    """The check declares how many scheduled-prompt *.md files it read, so a run records enforced
+    with a count that tracks the prompt surface -- not a constant and not the referenced-tool count."""
+
+    def test_real_tree_declares_every_scheduled_prompt_file(self) -> None:
+        expected = sum(1 for p in (_REPO_ROOT / ".github" / "prompts" / "scheduled").glob("*.md") if p.is_file())
+
+        _, declaration = _declared(_REPO_ROOT)
+
+        assert expected > 0
+        assert declaration is not None
+        assert (declaration.kind, declaration.count, declaration.unit) == ("examined", expected, _UNIT)
+
+    def test_count_tracks_md_files_not_referenced_tools(self, tmp_path: Path) -> None:
+        prompt_dir = _prompt_dir(tmp_path)
+        (prompt_dir / "a.prompt.md").write_text("```bash\naws s3 ls\n```\n", encoding="utf-8")
+        (prompt_dir / "b.prompt.md").write_text("no code blocks here\n", encoding="utf-8")
+        (prompt_dir / "c.prompt.md").write_text("```bash\naws sts get-caller-identity\n```\n", encoding="utf-8")
+        (prompt_dir / "notes.txt").write_text("```bash\nterraform plan\n```\n", encoding="utf-8")
+
+        failed, declaration = _declared(tmp_path)
+
+        assert failed == []
+        assert declaration is not None
+        assert (declaration.kind, declaration.count, declaration.unit) == ("examined", 3, _UNIT)
+
+    def test_absent_prompt_dir_declares_vacuous_domain(self, tmp_path: Path) -> None:
+        failed, declaration = _declared(tmp_path)
+        outcome = registry.build_outcome("validate_cli_tools_in_prompts", "check", declaration, bool(failed))
+
+        assert failed == []
+        assert declaration is not None
+        assert (declaration.kind, declaration.count, declaration.unit) == ("examined", 0, _UNIT)
+        assert outcome.status == "vacuous"
+
+    def test_missing_tool_still_records_failed_over_examined(self, tmp_path: Path) -> None:
+        (_prompt_dir(tmp_path) / "infra.prompt.md").write_text("```bash\nterraform validate\n```\n", encoding="utf-8")
+
+        failed, declaration = _declared(tmp_path, which=None)
+        outcome = registry.build_outcome("validate_cli_tools_in_prompts", "check", declaration, bool(failed))
+
+        assert declaration is not None and declaration.count == 1
+        assert failed == ["CLI tool verification"]
+        assert outcome.status == "failed"

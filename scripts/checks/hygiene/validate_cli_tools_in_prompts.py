@@ -16,19 +16,24 @@ _OPTIONAL_CLI_TOOLS = {"gh"}
 
 @registry.register("validate_cli_tools_in_prompts", owner="platform")
 def validate_cli_tools_in_prompts(failed: list[str]) -> None:
-    """Scan the scheduled-prompt surface for CLI tool references and verify each is in PATH."""
+    """Scan the scheduled-prompt surface for CLI tool references and verify each is in PATH.
+
+    Declares examined(scheduled-prompt *.md files read, unit="prompt_files") (Decision 170).
+    """
     print("\n=== CLI tool verification (prompt/agent files) ===")
     search_dirs = [
         _common.ROOT / ".github" / "prompts" / "scheduled",
     ]
     errors: list[str] = []
     referenced: dict[str, str] = {}  # tool -> first file that references it
+    read = 0
 
     for directory in search_dirs:
         if not directory.exists():
             continue
         for md_file in directory.glob("*.md"):
             content = md_file.read_text(encoding="utf-8")
+            read += 1
             # Extract fenced code blocks (bash or unspecified language)
             code_blocks = re.findall(r"```(?:bash|sh)?\n(.*?)```", content, re.DOTALL)
             for block in code_blocks:
@@ -40,6 +45,7 @@ def validate_cli_tools_in_prompts(failed: list[str]) -> None:
                     if first_word in _KNOWN_CLI_TOOLS and first_word not in referenced:
                         referenced[first_word] = md_file.name
 
+    registry.examined(read, unit="prompt_files")
     for tool, source_file in referenced.items():
         if shutil.which(tool) is None:
             if tool in _OPTIONAL_CLI_TOOLS:

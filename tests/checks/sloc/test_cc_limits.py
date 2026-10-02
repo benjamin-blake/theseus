@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
+from scripts.checks import registry
 from scripts.checks.sloc.cc_limits import validate_cc_limits
 
 
@@ -72,3 +73,20 @@ class TestValidateCcLimits:
             validate_cc_limits(failed)
 
         assert failed == []
+
+    def test_skips_unparsable_file_and_leaves_it_out_of_the_declaration(self, tmp_path: Path) -> None:
+        """A file ast cannot parse is skipped, not crashed on, and its functions are not declared measured."""
+        scripts_dir = tmp_path / "scripts"
+        scripts_dir.mkdir()
+        (scripts_dir / "broken.py").write_text("def broken(:\n", encoding="utf-8")
+        (scripts_dir / "ok.py").write_text("def ok():\n    pass\n", encoding="utf-8")
+
+        registry.pop_declaration()
+        with patch("scripts.checks._common.ROOT", tmp_path):
+            failed: list[str] = []
+            validate_cc_limits(failed)
+        declaration = registry.pop_declaration()
+
+        assert failed == []
+        assert declaration is not None
+        assert (declaration.count, declaration.unit) == (1, "functions")

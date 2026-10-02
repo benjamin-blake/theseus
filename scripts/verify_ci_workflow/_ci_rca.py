@@ -42,7 +42,8 @@ def _check_canary() -> None:
 _REQUIRED_CI_RCA_WORKFLOWS = ("CI", "terraform-apply-sandbox", "rec-autoclose", "deploy-ducklake-lambdas")
 
 
-def _check_ci_rca_filter() -> None:
+def _check_ci_rca_filter() -> int:
+    """Return the number of ci-rca.yml workflow_run.workflows entries examined."""
     canary_data = _load(".github/workflows/main-canary.yml")
     canary_name = canary_data.get("name")
     assert canary_name, "main-canary.yml has no name field"
@@ -71,6 +72,7 @@ def _check_ci_rca_filter() -> None:
         ".claude/agents/scheduled/ci-rca.md missing FILED: marker contract -- "
         "the prompt rewrite plan must preserve this signal for the workflow parser"
     )
+    return len(workflows)
 
 
 _PATTERN_MATCHING_CONSTRUCT_RE = re.compile(

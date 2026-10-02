@@ -478,35 +478,39 @@ class TestCheckIndexFreshnessDirect:
         missing = tmp_path / "nonexistent.json"
         with patch("scripts.decisions_index._EXPORT_PATH", missing):
             failed: list[str] = []
-            check_index_freshness(failed)
+            compared = check_index_freshness(failed)
         assert len(failed) == 1
         assert "missing" in failed[0].lower()
+        assert compared is None
 
     def test_fails_when_export_is_unreadable_json(self, tmp_path) -> None:
         export_path = tmp_path / "decisions-index.json"
         export_path.write_text("not valid json {{{", encoding="utf-8")
         with patch("scripts.decisions_index._EXPORT_PATH", export_path):
             failed: list[str] = []
-            check_index_freshness(failed)
+            compared = check_index_freshness(failed)
         assert len(failed) == 1
         assert "cannot read" in failed[0].lower()
+        assert compared is None
 
     def test_fails_when_export_is_stale(self, tmp_path) -> None:
         export_path = tmp_path / "decisions-index.json"
         export_path.write_text(json.dumps({"decisions": [], "metadata": {}}), encoding="utf-8")
         with patch("scripts.decisions_index._EXPORT_PATH", export_path):
             failed: list[str] = []
-            check_index_freshness(failed)
+            compared = check_index_freshness(failed)
         assert len(failed) == 1
         assert "stale" in failed[0].lower()
+        assert compared == len(build_index()["decisions"]) > 0
 
     def test_passes_when_export_is_fresh(self, tmp_path) -> None:
         export_path = tmp_path / "decisions-index.json"
         export_path.write_text(json.dumps(build_index(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
         with patch("scripts.decisions_index._EXPORT_PATH", export_path):
             failed: list[str] = []
-            check_index_freshness(failed)
+            compared = check_index_freshness(failed)
         assert not failed
+        assert compared == len(build_index()["decisions"]) > 0
 
 
 class TestMainCLI:

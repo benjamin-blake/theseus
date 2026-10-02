@@ -1,0 +1,344 @@
+schema_version: 5
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: t2-19-c10-recs-read-topology-guard
+intent: 'Close T2.19 c10 (audit F-004) in its realized form: one manifest-registered, AST-only --pre check, validate_recs_read_topology,
+  that keeps the recs reader path DuckLake-only, so a regression that re-opens a non-DuckLake read path (an undeclared Reader
+  implementation, a retired legacy-engine token, or a direct engine entry point outside the DuckLake plane) fails CI. It is
+  the read-side complement of validate_warehouse_write_sources and detective defence in depth; IAM stays the boundary (Decision
+  143).'
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-t2-19-c10-recs-read-topology-guard.yaml
+phase: T2.19 (in_progress; follow-on plan for criterion c10)
+scope:
+- file: scripts/checks/ops_governance/validate_recs_read_topology.py
+  action: Create
+  purpose: 'The guard: a pure scan(root, *, allowlist=None, declared_readers=None) running legs R0-R4 (R4b: re-exported entry
+    points) over every non-test .py under scripts/ and src/ (self-excluded via _self_path), with the frozen DECLARED_READERS
+    and ALLOWLIST tuples (each row carries a reason), wrapped by the registered check. Filesystem-only, in-process, never imports
+    a scanned module. Declares examined(files parsed). Spec in execution_steps[0].'
+- file: scripts/checks/ops_governance/_manifest.py
+  action: Modify
+  purpose: 'Add the validate_recs_read_topology Entry directly after validate_warehouse_write_sources: pre=True, pre_globs
+    ("scripts/**", "src/**") (the scan scope and the check''s whole closure, the twin''s shape), full_segment "full_after_lint".'
+- file: config/ci_rca_taxonomy.yaml
+  action: Modify
+  purpose: Map validate_recs_read_topology to code_regression under function_to_category, after validate_warehouse_write_sources.
+- file: tests/checks/ops_governance/test_validate_recs_read_topology.py
+  action: Create
+  purpose: 'Mirror test (Decision 131): a red-before fixture per leg, the real reader client with an undeclared return injected,
+    SyntaxError, non-UTF-8 and missing-client fixtures, the false-positive negatives, the ALLOWLIST globs pinned by equality,
+    the empty-allowlist real-tree test proving each of the 10 live rows load-bearing, a no-stale-row test, examined accounting,
+    and registration.'
+- file: tests/checks/ops_governance/test__manifest.py
+  action: Modify
+  purpose: 'Add the validate_recs_read_topology row to _CLOSURE_INPUTS (the check module, src/common/ducklake_reader_client.py,
+    scripts/checks/_common.py, scripts/checks/registry.py) so TestClosureMembersAreCovered pins the gate''s coverage.'
+closes_criteria:
+- T2.19:c10
+bundled_recommendations: []
+followon_recs: []
+infrastructure_dependencies: []
+acceptance_criteria:
+- 'T2.19:c10 (realized form, Decision 169): validate_recs_read_topology is registered in the ops_governance manifest (pre=True,
+  pre_globs scripts/** and src/**, full_after_lint), dispatched in both tiers and mapped to code_regression; it passes on
+  the current tree with examined(files parsed) declared (VP 1, VP 4, VP 5); each leg fails its own regression - an allowlist
+  or declared row with an empty reason (R0), a make_reader return constructing an undeclared class including on the real
+  reader client (R1), an undeclared class structurally implementing Reader (R2), a retired legacy-engine token (R3), a runtime
+  engine import or a ducklake_runtime / ducklake_spike entry point imported or attribute-accessed outside the allowlist, aliased,
+  unaliased or fully qualified (R4), the same entry point imported through a module-scope re-export of an allowlisted module
+  (R4b), and a missing reader client, an unparseable or a non-UTF-8 file (Decision 55) - while docstrings, string-only action
+  names, TYPE_CHECKING imports, constants-only ducklake_runtime imports, exception classes named *Reader* and allowlisted planes
+  pass (VP 3); the ALLOWLIST globs equal the pinned tuple, every row matches a real file, and with the allowlist emptied exactly
+  the 10 live rows absorb findings (VP 2, VP 3); the diff against the merge-base adds no suppression and touches only the scope
+  files and this plan (VP 6, VP 7); and the full tier exits 0 (VP 8).'
+verification_plan:
+- step: 1
+  phase: pre-deploy
+  action: Run the new check against the real tree and assert a clean pass and the pinned row counts.
+  command: bin/venv-python -c "from scripts.checks.ops_governance import validate_recs_read_topology as m;f=[];m.validate_recs_read_topology(f);assert
+    not f,f;assert len(m.ALLOWLIST)==12 and len(m.DECLARED_READERS)==1,(len(m.ALLOWLIST),len(m.DECLARED_READERS));print('recs
+    read topology OK')"
+  expected: Exit 0 printing the pass line; red before because the module does not exist (ModuleNotFoundError).
+  fix_if: 'A finding on the real tree is either a genuine out-of-boundary read (stop; it is an out-of-scope finding for a
+    recommendation, never an inline allowlist row, Decision 59/181) or an AST false positive (narrow the detector, never the
+    assertion). A row-count mismatch means the allowlist drifted from execution_steps[0]; restore it.'
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: The registered check runs this exact call standing in both tiers once VP 4's registration lands,
+    and the mirror test pins the rows; a registry row would execute the same function twice for no added independence.
+  expected_literals:
+  - recs read topology OK
+- step: 2
+  phase: pre-deploy
+  action: Empty the allowlist over the real tree and prove exactly the 10 live rows are load-bearing (the two defensive rows
+    absorb nothing).
+  command: bin/venv-python -c "from fnmatch import fnmatch;from scripts.checks import _common;from scripts.checks.ops_governance
+    import validate_recs_read_topology as m;r=m.scan(_common.ROOT,allowlist=());assert {f.leg for f in r.findings}=={'R4'},sorted({f.leg
+    for f in r.findings});hit={g for g,_ in m.ALLOWLIST if any(fnmatch(f.path,g) for f in r.findings)};dead={g for g,_ in m.ALLOWLIST}-hit;assert
+    dead=={'scripts/ducklake_neon_smoke_test.py','src/telemetry/**'},dead;print('allowlist load-bearing',len(hit))"
+  expected: Exit 0 printing the load-bearing line with a count of 10; red before because the module does not exist.
+  fix_if: 'A live row absorbing nothing means the detector lost a site (fix the detector) or the tree changed (re-derive and
+    say so in the PR body); a defensive row absorbing findings means a new direct-engine site appeared there (report it).
+    Never edit the expected set to get green.'
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: The mirror test carries the same empty-allowlist assertion standing in the pytest phase of both
+    tiers; a registry row would duplicate it.
+  expected_literals:
+  - allowlist load-bearing 10
+- step: 3
+  phase: pre-deploy
+  action: Run the mirror test (every leg's red-before fixture, the real-client injection, the SyntaxError, non-UTF-8 and missing-client
+    fixtures, the negatives, the pinned globs, the load-bearing and stale-row tests, accounting and registration).
+  command: bin/venv-python -m pytest tests/checks/ops_governance/test_validate_recs_read_topology.py -q
+  expected: Exit 0, all tests pass under pytest-randomly's shuffled order.
+  fix_if: A failing leg case means the leg misses its regression; fix the leg. A failing negative means a false positive;
+    narrow the matcher, never widen the allowlist to absorb it. An order-dependent failure means a test leaked a monkeypatched
+    constant or the registry declaration slot; isolate it.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: Whole-file pytest re-run of a test file this plan creates (hermetic_authoring clause v); the pytest
+    phase already runs it standing in both tiers.
+- step: 4
+  phase: pre-deploy
+  action: Confirm registration across the manifest, both tier sequences, the ci_rca taxonomy and the accounting declaration.
+  command: bin/venv-python -c "import yaml;from scripts.checks import registry;from scripts.checks.ops_governance import _manifest;e=[x
+    for x in _manifest.ENTRIES if x.name=='validate_recs_read_topology'][0];assert e.pre and e.full_segment=='full_after_lint';assert
+    tuple(e.pre_globs)==('scripts/**','src/**'),e.pre_globs;assert 'validate_recs_read_topology' in [s.name for s in registry.pre_sequence()]
+    and 'validate_recs_read_topology' in [s.name for s in registry.full_sequence()];t=yaml.safe_load(open('config/ci_rca_taxonomy.yaml'))['function_to_category'];assert
+    t['validate_recs_read_topology']=='code_regression';f=[];registry.resolve('validate_recs_read_topology')(f);d=registry.pop_declaration();assert
+    d and d.kind=='examined' and d.unit=='files' and d.count>400,d;print('registration OK')"
+  expected: Exit 0 printing the registration line.
+  fix_if: An IndexError means the Entry is missing; a KeyError means the taxonomy row is missing; a None declaration means
+    examined() is not reached; a count at or below 400 means the walk lost a root (477 files at e2adb126). If Step objects
+    expose the name under another attribute, read scripts/checks/registry.py's Step and use it; never weaken the membership
+    assertion.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: Duplicates standing guards; test__manifest.py resolves every Entry, validate_ci_rca_taxonomy
+    enforces the taxonomy row and validate_check_accounting enforces the declaration in both tiers.
+  expected_literals:
+  - registration OK
+- step: 5
+  phase: pre-deploy
+  action: Run the ops_governance manifest test, which carries the new closure row.
+  command: bin/venv-python -m pytest tests/checks/ops_governance/test__manifest.py -q
+  expected: Exit 0, all tests pass, including the validate_recs_read_topology closure parametrisations.
+  fix_if: A closure member not matched means pre_globs lost coverage of the check's own closure; widen pre_globs, never drop
+    the member.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: Whole-file pytest re-run of a test file this plan modifies (hermetic_authoring clause v); the
+    pytest phase already runs it standing.
+- step: 6
+  phase: pre-deploy
+  action: Goodhart and branch-scope sweep against the merge-base - no net-new suppression, and the branch touches only the
+    five scope files and this plan.
+  command: bash -c 'b=$(git merge-base origin/main HEAD) && [ -n "$b" ] || { echo "no merge-base, fetch origin main"; exit
+    1; }; git diff -U0 "$b" -- scripts tests config | grep -E "^\+.*(noqa|type:\s*ignore|pragma:\s*no
+    cover|pytest\.mark\.(skip|xfail)|importorskip)" && exit 1; x=$(git diff --name-only "$b" | grep -vxF -e scripts/checks/ops_governance/validate_recs_read_topology.py
+    -e scripts/checks/ops_governance/_manifest.py -e config/ci_rca_taxonomy.yaml -e tests/checks/ops_governance/test_validate_recs_read_topology.py
+    -e tests/checks/ops_governance/test__manifest.py -e docs/plans/PLAN-t2-19-c10-recs-read-topology-guard.yaml); [ -z "$x" ]
+    || { echo "out-of-scope $x"; exit 1; }; echo sweep-clean'
+  expected: Exit 0 printing the clean marker.
+  fix_if: A matched added line means a suppression slipped in; remove it and fix the underlying finding. An out-of-scope path
+    means scope leaked (a scanned read-path file, the baseline or the roadmap); revert it. No merge-base means origin/main
+    is missing or the clone is too shallow; git fetch origin main (deepen if needed), never drop the guard.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: PR-relative against the merge-base; it measures this branch only and is vacuous once merged, so
+    it is not a standing regression guard.
+- step: 7
+  phase: pre-deploy
+  action: Lint, format and type-check the new and modified Python files.
+  command: bin/venv-python -m ruff check scripts/checks/ops_governance/validate_recs_read_topology.py scripts/checks/ops_governance/_manifest.py
+    tests/checks/ops_governance/test_validate_recs_read_topology.py tests/checks/ops_governance/test__manifest.py && bin/venv-python
+    -m ruff format --check scripts/checks/ops_governance/validate_recs_read_topology.py scripts/checks/ops_governance/_manifest.py
+    tests/checks/ops_governance/test_validate_recs_read_topology.py tests/checks/ops_governance/test__manifest.py && bin/venv-python
+    -m mypy scripts/checks/ops_governance/validate_recs_read_topology.py
+  expected: Exit 0 from all three tools.
+  fix_if: Fix the reported line; never add a suppression (VP 6 fails on one).
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: A ruff/mypy phase (hermetic_authoring clause v); the lint and typing phases of both tiers already
+    run these standing.
+- step: 8
+  phase: pre-deploy
+  action: Full presubmit tier before handoff (Decision 163 clause 2).
+  command: bin/venv-python -m scripts.validate
+  expected: Exit 0.
+  fix_if: 'Diagnose the named failing check on the branch (Decision 55: no rescue loops); a failure unrelated to this scope
+    is recorded, not patched inline (implement-scope-boundary.yaml).'
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: Invokes scripts.validate (recursion hazard, vp-red-before.yaml recursion_refusal); it is the handoff
+    gate itself, not a regression guard.
+test_obligations:
+- source: scripts/checks/ops_governance/validate_recs_read_topology.py
+  behavior: Each of legs R0-R4b fails its own regression, a missing client, an unparseable and a non-UTF-8 file fail, the
+    real reader client with an undeclared return fails R1, the negatives pass, the ALLOWLIST globs are pinned by equality,
+    every row matches a real file, the 10 live rows are load-bearing, and examined(files) is declared on every exit path.
+  verification_step: 3
+  test_selector: tests/checks/ops_governance/test_validate_recs_read_topology.py
+  red_green_expectation: Red before (the module does not exist, so collection fails with ModuleNotFoundError); green after.
+- source: scripts/checks/ops_governance/_manifest.py
+  behavior: The validate_recs_read_topology Entry exists with pre=True, pre_globs ("scripts/**", "src/**") and full_after_lint.
+  verification_step: 3
+  test_selector: tests/checks/ops_governance/test_validate_recs_read_topology.py
+  red_green_expectation: Red before (TestRegistration resolves the Entry by name with next(), so an absent Entry raises StopIteration
+    rather than silently not parametrizing); green after.
+- source: config/ci_rca_taxonomy.yaml
+  behavior: validate_recs_read_topology maps to code_regression.
+  verification_step: 3
+  test_selector: tests/checks/ops_governance/test_validate_recs_read_topology.py
+  red_green_expectation: Red before (TestRegistration hits a KeyError on the missing row); green after.
+constraints:
+- IMPLEMENTATION only (Decision 67 freeze); five scope files.
+- '/implement does not start until the operator''s ruling is recorded against MEMORY.md#parked row R6; a merge of this plan
+  PR is not by itself the ruling. Under ruling (a), /implement withholds the bookkeeping walk''s docs/ROADMAP-PLATFORM.yaml
+  edit and places the staged text under a "## Staged roadmap bookkeeping" heading in the PR body; under ruling (b), /implement
+  runs the walk as written.'
+- 'Out of scope: docs/ROADMAP-PLATFORM.yaml (data-pipeline Lambda asset, Decisions 79/125: staged only), scripts/validate.py
+  (Decision 169), config/check_accounting_baseline.yaml (Decision 170: the check declares examined and never enters it), src/common/ducklake_reader_client.py
+  and docs/contracts/read-engine.yaml (cited, not edited).'
+- 'No recommendation is claimed, bundled, filed, closed or trailered (charter Decision 67 never-item). A later-found open
+  rec owning c10 or audit F-004 is PARKED, never bundled by a delegate.'
+- 'c8 and c9 are not closed or flipped: the guard is evidence for them only (context). The guard scans scripts/sync/ops.py,
+  scripts/ops_portal/cache.py and scripts/ops_data_portal.py read-only and never edits them; the sync() / _sync_table exit-code
+  gap stays with the parked c9 flip.'
+- 'Ops-store plane only: src/telemetry/** is allowlisted as a separate plane (Decision 184 cl.2 plane-neutral kernel); its
+  producer boundary belongs to the W1 capture-producer design (rec-4026).'
+- 'Detection is AST Name/Attribute/Import nodes, never raw strings (R3''s non-docstring string match is the one exception,
+  for the retired flag only); a finding on the real tree is reported, never allowlisted inline. Widening ALLOWLIST or DECLARED_READERS
+  is a reviewed code edit with a reason; the test pins the glob tuple by equality, both counts, and the 10 load-bearing
+  rows (Decisions 181/187).'
+- No net-new suppressions (noqa, type ignore, pragma no cover, skip, xfail) in the diff (project Goodhart countermeasure);
+  every new test fails on broken code. New module stays under 500 SLOC unregistered (Decision 128).
+- No rescue agents or workaround loops (Decision 55). No emojis; ASCII hyphens only.
+context:
+- 'Decision-scout verdict + CITE list (verbatim decision ids): FLAGS_FOUND (CONTRADICT WARN Decision 184, NOTE Decision 140;
+  ROADMAP CONFLICT T4.23; all discharged by fork 1 and the Decision 140 citation below, no residual conflict). CITE: 84, 81,
+  169, 170, 136, 79, 125, 73, 72, 55, 131, 163. RELATED: 78, 143, 88, 197, 182, 208, 187, 181, 189. gate_run_id t2-19-c10-decision-scout-r1-c62f8a19.'
+- 'Decisions triaged: 163 of 163'
+- 'Roadmap items intersected: 3; CONFLICT: 1; RELATED: 2'
+- 'gates: decision-scout=FLAGS_FOUND r1; step-6b=WRITE THE PLAN (t2-19-c10-step-6b-stand-in-r1, fork 3 PARKED); plan-critique=PROCEED
+  after 3 rounds (REVISE r1 a8d3f07b, REVISE r2 1e5b7f39, PROCEED r3 c7a24e85; all fixed, none disputed); round 3 confirming'
+- 'Citations: D140''s escape hatch is retired by the CD.15 amendment, OQ.7 and read-engine.yaml (reversing D140 amends this
+  guard); Single-Portal = D78/D84 (69 archived); prior art tests/test_session_preflight_decomposition.py:534-539. VP needs
+  bin/venv-python 3.12 (3.11 cannot parse scripts/convergence_health/__main__.py).'
+- 'Census (AST prototype, 477 files): R0-R4b zero findings; empty allowlist hits exactly 10 live rows (neon smoke test and
+  src/telemetry/** are the stand-in''s defensive rows); R4b exports: ducklake_smoke.core and neon smoke test {fetch_dsn, _libpq_conninfo},
+  ducklake_maintenance {libpq_conninfo}, zero outside importers (440e6e9e). c10 open: only pytest covers make_reader; the June
+  progress_note guard is write-side.'
+- 'staged_c10_closeout (operator applies as its own micro-commit on confirmation, never this plan): c10 status open -> met;
+  met_by PLAN-t2-19-c10-recs-read-topology-guard (or the implementation commit''s 40-hex sha, Decision 136); text re-grounded
+  (realized-differently rule): "A manifest-registered --pre check, scripts/checks/ops_governance/validate_recs_read_topology.py
+  (Decision 169), asserts the recs reader path is DuckLake-only: make_reader returns only declared DuckLake-backed implementations,
+  no other class implements Reader, no retired legacy-engine token survives in scripts/ or src/, and no direct engine entry
+  point exists outside the reasoned allowlist; a regression re-opening a non-DuckLake recs read path fails CI." The original
+  wording moves to progress_note with one sentence noting the June guard was write-side. Evidence only, no status change:
+  R4 is the static leg of c8 (no out-of-band DuckLake access), R3 of c9 (no legacy fallback); c9 stays PARTIAL.'
+- 'Residual: open-rec overlap unverified (reader unreachable; no rec id on c10 or F-004); D73 halt unconfirmed (degraded
+  read). No Lambda-bundled scope file, no .tf. H11 avoids ops_governance until R6 lands.'
+- 'fork: strict one-reader/no-branch vs DuckLake-only declared implementations for R1/R2 | chosen: declared list {DuckLakeReader},
+  every make_reader return constructs a declared class, structural Reader implementations must be declared, no "no branch"
+  wording | class: asked | precedent: D184 cl.2, D197 cl.2, T4.23 c2/c4, read-engine.yaml#reader_client, c10 text; R6 stand-in
+  2026-10-01 (delegated authority) | precedent_kind: decision | reversible: yes | persisted: guard code, test, plan context'
+- 'fork: R4 allowlist and telemetry plane | chosen: 12 reasoned prefix rows, AST, TYPE_CHECKING-aware; smoke harness break-glass;
+  src/telemetry/** separate plane | class: asked | precedent: D81 cl.7, DUCKLAKE_ALLOW_DIRECT_GATE, D73/D72, D184 cl.2; R6 stand-in
+  2026-10-01 | precedent_kind: decision | reversible: yes | persisted: ALLOWLIST, test'
+- 'fork: closes_criteria and how the c10 flip is carried | chosen: PARKED ruling (a) or (b) with the operator; shape while
+  parked: declare [T2.19:c10], roadmap out of scope, closeout staged, /implement gated | class: asked | precedent: tier-item-lifecycle
+  follow_on_plan_mode (3), plan-critique 12l, D136, D79; R4 fork 2 carry shape; R6 stand-in 2026-10-01 | precedent_kind:
+  contract | reversible: yes | persisted: closes_criteria, constraints, staged_c10_closeout, MEMORY.md#parked'
+- 'fork: c8/c9 evidence | chosen: evidence only | class: consistency-only | precedent: exit-criteria-ledger.yaml#fields.met_by | precedent_kind: contract | reversible: yes | persisted: staged_c10_closeout'
+- 'fork: rec overlap | chosen: none claimed; later-found rec PARKED | class: asked | precedent: recommendation-relevance.yaml#planning_gate_protocol,
+  charter D67 never-item; R2/R4/R5 delegate rulings; R6 stand-in 2026-10-01 | precedent_kind: contract | reversible: yes
+  | persisted: constraints, residual line'
+pre_implementation_checklist:
+- Branch confirmed not on main (claude/ prefix)
+- Operator's ruling on MEMORY.md#parked row R6 recorded (constraints)
+- docs/PROJECT_CONTEXT.md read
+- 'Only the plan-cited decision sections read: Decisions 84 (I-1, I-3), 81 (cl.7), 184 (cl.2), 169, 170'
+- 'All files in scope located and readable, plus scripts/checks/ops_governance/validate_warehouse_write_sources.py (the twin)
+  and tests/checks/ops_governance/test_validate_warehouse_write_sources.py (fixture pattern)'
+- Acceptance criteria understood and verifiable
+execution_steps:
+- 'scripts/checks/ops_governance/validate_recs_read_topology.py: module docstring says detective defence in depth for the ops-store
+  plane (IAM is the boundary, Decision 143), table-agnostic by construction, and that R4b follows module-scope re-exports of
+  allowlisted modules only. Frozen constants: READER_CLIENT_REL = "src/common/ducklake_reader_client.py"; DECLARED_READERS
+  = (("DuckLakeReader", "read-engine.yaml#reader_client; Decision 84 I-1"),); ALLOWLIST = 12 (glob, reason) rows, matched
+  with fnmatch.fnmatch on the repo-relative POSIX path: src/common/ducklake_runtime.py (the primitive); src/common/ducklake_spike.py,
+  src/common/ducklake_connect_probe.py, src/common/ducklake_maintenance.py (privileged-host operational tools); src/lambdas/ducklake_reader/**,
+  src/lambdas/ducklake_writer/**, src/lambdas/ducklake_maintenance/**, src/lambdas/ducklake_maintenance_smoke/**, src/lambdas/ducklake_catalog_dr/**
+  (the boundary itself, Decision 81 cl.1/cl.7); scripts/ducklake_smoke/**, scripts/ducklake_neon_smoke_test.py (break-glass
+  smoke harness, DUCKLAKE_ALLOW_DIRECT_GATE, Decision 81 cl.7); src/telemetry/** (separate plane, Decision 184 cl.2); RETIRED_TOKENS
+  = ("OPS_STORAGE_BACKEND", "DuckDBIcebergReader"); RETIRED_MODULES = ("pyiceberg", "iceberg_reader") matched as whole dotted
+  segments, never substrings (iceberg_type passes); ENGINE_IMPORTS = ("duckdb", "psycopg2"); RUNTIME_MODULE = "src.common.ducklake_runtime"
+  with ENTRY_POINTS = {open_connection, get_warm_connection, reset_warm_connection, fetch_dsn, libpq_conninfo}; SPIKE_MODULE
+  = "src.common.ducklake_spike" with SPIKE_ENTRY = "_require_duckdb". API: Finding(leg: str, path: str (repo-relative POSIX), line:
+  int, message: str) and ScanResult(findings, files_parsed) dataclasses; derive_exports(root, allowlist=None) -> dict[str,
+  frozenset[str]] (the R4b map, seeds excluded) for the test; scan(root, *, allowlist=None, declared_readers=None) -> ScanResult, where None reads the module
+  constant at call time (so tests may monkeypatch it); @registry.register("validate_recs_read_topology", owner="platform")
+  validate_recs_read_topology(failed: list[str]) -> None prints "=== Recs read topology ===", calls scan(_common.ROOT), appends
+  each finding as "<leg> <path>:<line>: <message> (Decision 84 closed boundary)", and calls registry.examined(files_parsed,
+  unit="files") on every exit path. Walk every *.py under scripts/ and src/ except _self_path, sorted; read as UTF-8; an OSError,
+  UnicodeDecodeError or SyntaxError is a FAIL naming the file (Decision 55), never a skip. Binding resolution, per file: a local
+  name bound to a module is the asname, else the bound name, of `import a.b.c as X`, `from a.b import c` or `from a.b import
+  c as X`; a bare `import a.b.c` binds the dotted chain, matched as an Attribute chain whose ast.unparse equals the module
+  name. TYPE_CHECKING blocks: the body (never orelse) of an If whose test is the Name TYPE_CHECKING or an Attribute with attr
+  TYPE_CHECKING. R0: every DECLARED_READERS and ALLOWLIST reason is non-empty after strip(), else FAIL. R1: READER_CLIENT_REL
+  must exist (FAIL naming the path if absent) and define a module-level make_reader with at least one Return, every Return
+  value a Call whose func is a Name in DECLARED_READERS. R2: every ClassDef in the walked set whose body defines both current_state
+  and latest_snapshot is named in DECLARED_READERS, except a class with a base Name or Attribute ending Protocol. R3: in every
+  walked file, a Name or Attribute equal to a RETIRED_TOKEN; a non-docstring str Constant containing OPS_STORAGE_BACKEND (case-insensitive);
+  an Import whose name has a dotted segment in RETIRED_MODULES; or an ImportFrom whose module or any imported alias name has
+  such a segment. R4, in every walked file matching no ALLOWLIST glob: an Import/ImportFrom of an ENGINE_IMPORTS root at any
+  scope outside a TYPE_CHECKING body; an ImportFrom of RUNTIME_MODULE naming an ENTRY_POINT or *, or of SPIKE_MODULE naming
+  SPIKE_ENTRY or *; an Attribute whose value is bound (as above) to RUNTIME_MODULE with attr in ENTRY_POINTS, or to SPIKE_MODULE
+  with attr SPIKE_ENTRY. R4b: first derive EXPORTS over the allowlisted walked files to a fixed point, seeded RUNTIME_MODULE
+  -> ENTRY_POINTS and SPIKE_MODULE -> {SPIKE_ENTRY}: a module-scope ImportFrom of a module in EXPORTS naming one of its names
+  adds the bound local name to the importing module''s set; a module-scope Assign X = <name bound to a module in EXPORTS>.<one
+  of its names> adds X. Then, in every walked file matching no ALLOWLIST glob, an ImportFrom of a derived module naming one
+  of its names or *, or an Attribute on a name bound to it with attr in its set, fails. R4b checks only modules the derivation
+  added, never the two seeds (R4 owns those), so no site is reported twice. R4 and R4b never match strings (scripts/ducklake_smoke/lambda_ec_gates.py
+  carries reset_warm_connection as a JSON action name). No module-scope I/O (AGENTS.md safety).'
+- 'scripts/checks/ops_governance/_manifest.py: insert Entry(name="validate_recs_read_topology", module="scripts.checks.ops_governance.validate_recs_read_topology",
+  attr="validate_recs_read_topology", pre=True, pre_globs=("scripts/**", "src/**"), full_segment="full_after_lint") directly
+  after the validate_warehouse_write_sources Entry.'
+- 'config/ci_rca_taxonomy.yaml: add validate_recs_read_topology: code_regression under function_to_category directly after
+  validate_warehouse_write_sources.'
+- 'tests/checks/ops_governance/test_validate_recs_read_topology.py: tmp_path trees with patch("scripts.checks._common.ROOT",
+  tmp_path) (the twin''s fixture pattern); each tree writes a minimal clean src/common/ducklake_reader_client.py unless the
+  case targets it. Red cases: R0 a monkeypatched ALLOWLIST row with an empty and a whitespace-only reason; R1 a make_reader
+  returning another class, a conditional return of an undeclared class, a missing make_reader, a missing client file, and
+  the REAL client text (read from the repo) with an added "if table == ''x'': return LegacyReader()" branch; R2 a class under
+  scripts/ defining current_state and latest_snapshot; R3 os.environ["OPS_STORAGE_BACKEND"], a DuckDBIcebergReader name,
+  import pyiceberg, from src.common.iceberg_reader import x, from src.common import iceberg_reader; R4 a function-scope import
+  duckdb, import psycopg2, from src.common.ducklake_runtime import open_connection, rt.get_warm_connection() with import src.common.ducklake_runtime
+  as rt, ducklake_runtime.fetch_dsn() with the unaliased from src.common import ducklake_runtime, src.common.ducklake_runtime.open_connection()
+  with a bare import src.common.ducklake_runtime, ducklake_spike._require_duckdb() with from src.common import ducklake_spike;
+  R4b from scripts.ducklake_smoke.core import fetch_dsn where the tree''s allowlisted scripts/ducklake_smoke/core.py binds
+  fetch_dsn = ducklake_runtime.fetch_dsn; each under scripts/; plus a SyntaxError file and a non-UTF-8 file. Negatives (all
+  pass): a docstring naming OPS_STORAGE_BACKEND, iceberg_type, "reset_warm_connection" as a string, duckdb under if TYPE_CHECKING:
+  and under if typing.TYPE_CHECKING:, from src.common.ducklake_runtime import resolve_table_spec, from scripts.ducklake_smoke.core
+  import a non-entry name, class ReaderInvokeError(RuntimeError), a conditional return choosing between two declared classes
+  (DECLARED_READERS monkeypatched to two rows, the T4.23 shape), and open_connection used under src/lambdas/ducklake_reader/x.py
+  and scripts/ducklake_smoke/x.py. Real tree: the check passes; tuple(g for g, _ in ALLOWLIST) equals a pinned 12-glob tuple
+  in the test and len(DECLARED_READERS)==1; every ALLOWLIST glob matches at least one walked file (no stale row); scan(ROOT,
+  allowlist=()) yields only R4 findings, absorbed by exactly the 10 live globs, with scripts/ducklake_neon_smoke_test.py and
+  src/telemetry/** absorbing none; derive_exports(ROOT) maps scripts.ducklake_smoke.core to a set including fetch_dsn and _libpq_conninfo
+  and contains neither seed module.
+  examined(files) declared with count > 0, including on an R1 failure. Every monkeypatch uses the monkeypatch fixture so order
+  is irrelevant under pytest-randomly. TestRegistration: the Entry resolved with next() (pre, pre_globs, full_after_lint),
+  membership in registry.pre_sequence() and full_sequence(), and the taxonomy row.'
+- 'tests/checks/ops_governance/test__manifest.py: add the _CLOSURE_INPUTS row "validate_recs_read_topology": (scripts/checks/ops_governance/validate_recs_read_topology.py,
+  src/common/ducklake_reader_client.py, scripts/checks/_common.py, scripts/checks/registry.py) with a one-line comment that
+  the scan scope is the closure, as the twin''s row says.'
+- Execute Verification Plan - run each step; loop until pass; on an unrecoverable failure stop and RCA (Decision 55).
+- 'Report: what was implemented, verification results, and the staged c10 closeout (context) under the ruling the operator
+  recorded; never apply the roadmap edit outside that ruling.'
+rollback: Revert the implementation PR; the check is additive and nothing reads its output except the tier dispatch.

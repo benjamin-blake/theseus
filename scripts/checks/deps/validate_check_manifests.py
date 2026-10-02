@@ -69,6 +69,7 @@ def validate_check_manifests(failed: list[str]) -> None:
     from scripts.dependency_graph import build_graph  # noqa: PLC0415
 
     graph = build_graph(repo_root=_common.ROOT)
+    entries_examined = 0
 
     for path in manifest_paths:
         rel = path.relative_to(_common.ROOT).as_posix()
@@ -80,6 +81,7 @@ def validate_check_manifests(failed: list[str]) -> None:
             continue
 
         for call in _entry_calls(tree):
+            entries_examined += 1
             entry_name = _entry_display_name(call)
             for field in ("module", "attr"):
                 value_node = _kwarg_value(call, field)
@@ -105,6 +107,7 @@ def validate_check_manifests(failed: list[str]) -> None:
                             f"Check-manifest grammar: {rel}: Entry {entry_name!r}'s module={module_value!r} does "
                             "not resolve to a real scripts.dependency_graph node."
                         )
+    registry.examined(entries_examined, unit="manifest_entries")
 
     try:
         contract_data = yaml.safe_load(contract_path.read_text(encoding="utf-8"))
