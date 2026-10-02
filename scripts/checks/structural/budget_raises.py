@@ -120,21 +120,16 @@ def frozen_base_violations(base_text: str, current_text: str) -> list[str]:
     return violations
 
 
-def _frozen_leg(base_reader: Optional[Callable[[str], Optional[str]]]) -> list[str]:
-    """Run the frozen legs through the SAME base_reader seam check_diff uses, preserving its
+def _frozen_leg(base_text: Optional[str], current_text: str) -> list[str]:
+    """Run the frozen legs on the SAME base text check_diff saw, preserving its
     base-unreachable contract exactly: a None base is a SKIP that evaluates NO frozen leg.
-    Never `reader(rel) or ""` -- an empty base text yields an empty base map, which makes
+    Never `base_text or ""` -- an empty base text yields an empty base map, which makes
     every frozen leg vacuous and reports a clean pass on an unreachable base, indistinguishable
     in CI from a genuine pass (the masking shape Decision 55 forbids).
     """
-    current_path = _common.ROOT / _REGISTRY_REL_PATH
-    if not current_path.exists():
-        return []
-    reader = base_reader or _marker_guard.default_base_reader
-    base_text = reader(_REGISTRY_REL_PATH)
     if base_text is None:
         return []
-    return frozen_base_violations(base_text, current_path.read_text(encoding="utf-8"))
+    return frozen_base_violations(base_text, current_text)
 
 
 @registry.register("validate_structural_size_budget_raises", owner="platform")
@@ -145,14 +140,27 @@ def validate_structural_size_budget_raises(
     """Fail on an unauthorized config/structural_size_budgets.yaml `budgets:` or
     `long_line_budgets:` increase, new >limit registration, or a currently-committed
     marker that no longer authorizes its entry -- over BOTH sections, each via its own
-    section-scoped extractor."""
+    section-scoped extractor.
+
+    Declares skipped when the registry file is absent or origin/main is unreachable (the diff
+    legs' base is unavailable), else examined over the current entries of both sections (unit
+    "entries"), each of which a diff leg judged against its base value.
+    """
     print(f"\n=== {_BUDGET_SPEC.label} ===")
+    current_path = _common.ROOT / _REGISTRY_REL_PATH
+    if not current_path.exists():
+        print(f"  {_REGISTRY_REL_PATH} not found -- nothing to check.")
+        registry.skipped(f"{_REGISTRY_REL_PATH} not found")
+        return
+
+    base_text = (base_reader or _marker_guard.default_base_reader)(_REGISTRY_REL_PATH)
+    current_text = current_path.read_text(encoding="utf-8")
     violations = (
-        _marker_guard.check_diff(_BUDGET_SPEC, base_reader=base_reader)
+        _marker_guard.check_diff(_BUDGET_SPEC, base_reader=lambda _rel: base_text)
         + _marker_guard.check_present_markers(_BUDGET_SPEC)
-        + _marker_guard.check_diff(_LONG_LINE_SPEC, base_reader=base_reader)
+        + _marker_guard.check_diff(_LONG_LINE_SPEC, base_reader=lambda _rel: base_text)
         + _marker_guard.check_present_markers(_LONG_LINE_SPEC)
-        + _frozen_leg(base_reader)
+        + _frozen_leg(base_text, current_text)
     )
 
     if violations:
@@ -162,3 +170,9 @@ def validate_structural_size_budget_raises(
         failed.append(_BUDGET_SPEC.label)
     else:
         print("No unauthorized structural-size budget raises.")
+
+    if base_text is None:
+        registry.skipped("origin/main unreachable")
+    else:
+        examined = len(_BUDGET_SPEC.extractor(current_text)) + len(_LONG_LINE_SPEC.extractor(current_text))
+        registry.examined(examined, unit="entries")

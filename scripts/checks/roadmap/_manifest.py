@@ -173,6 +173,13 @@ ENTRIES: tuple[Entry, ...] = (
         full_segment="full_after_lint",
     ),
     Entry(
+        name="validate_work_item_pilot",
+        module="scripts.checks.roadmap.validate_work_item_pilot",
+        attr="validate_work_item_pilot",
+        pre=True,
+        full_segment="full_after_lint",
+    ),
+    Entry(
         name="_check_graduation_guard",
         module="scripts.checks.roadmap.check_graduation_guard",
         attr="_check_graduation_guard",
