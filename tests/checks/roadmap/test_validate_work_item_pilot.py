@@ -1,26 +1,20 @@
-"""Mirror tests for scripts/checks/roadmap/validate_work_item_pilot.py and its model module -- the CD.45
-work-item pilot fixture evaluator (PLAN-work-item-pilot-fixture-evaluator). Each leg has a red-before case
-that fails on its own broken input; the model-driven budget case derives the worst-case item from
-model_fields so a field added to any model grows the generated item and reddens the budget."""
+"""Mirror tests for scripts/checks/roadmap/validate_work_item_pilot.py -- the CD.45 work-item pilot fixture
+evaluator (PLAN-work-item-pilot-fixture-evaluator). Each leg has a red-before case that fails on its own broken
+input. The model-level cases and the model-driven budget case live in test__work_item_pilot_model.py."""
 
 from __future__ import annotations
 
 import copy
-import json
-import types
-import typing
 from datetime import date
 
 import pytest
 import yaml
-from annotated_types import MaxLen
-from pydantic import BaseModel
 
 from scripts.checks import _common, registry
 from scripts.checks.roadmap import _manifest
 from scripts.checks.roadmap import _work_item_pilot_model as model
 from scripts.checks.roadmap.validate_work_item_pilot import validate_work_item_pilot
-from scripts.checks.structural._classify import classify_path, effective_lines, longest_line
+from scripts.checks.structural._classify import classify_path
 
 _LABEL = "Work-item pilot fixture"
 _HEAD = "# test fixture comment\n"
@@ -196,15 +190,10 @@ def _top(key, value):
     return lambda d: d["work_items"][0].__setitem__(key, value)
 
 
-def _trigger(**changes):
-    return lambda d: _reg_of(d)["maturity"]["transitions"][0]["trigger"].update(**changes)
-
-
 def _crit0(**changes):
     return lambda d: d["work_item_criteria"][0].update(**changes)
 
 
-_PAD = " " * 10
 _SCHEMA_CASES = {
     "unknown key": (_top("bogus", 1), "Extra inputs"),
     "kind plan": (_top("kind", "plan"), "epic"),
@@ -215,20 +204,7 @@ _SCHEMA_CASES = {
         "shares its (failure",
     ),
     "shared pair folded": (_second_item_shares("  CAPTURE   rate drops for item 1", "Capture_Rate_1"), "shares its (failure"),
-    "placeholder metric": (_mut(["failure_signal", "metric"], "TBD"), "placeholder token"),
-    "under floor why": (_mut(["why"], "too short"), "at least 20 characters"),
-    "padded under floor why": (_mut(["why"], _PAD + "short" + _PAD), "shorter than"),
-    "over length why": (_mut(["why"], "a" * 241), "at most 240"),
-    "over length metric": (_mut(["failure_signal", "metric"], "m" * 121), "at most 120"),
-    "non ascii text": (_top("title", "Capture producer wiring caf\u00e9"), "printable ASCII"),
-    "rec only evidence": (_mut(["evidence"], [{"kind": "rec", "ref": "rec-9999"}]), "CI-resolvable"),
     "verification names absent criterion": (_mut(["verification"], ["c1", "c2"]), "absent criterion 'c2'"),
-    "duplicated verification id": (_mut(["verification"], ["c1", "c1"]), "verification ids must be unique"),
-    "blank ref": (_mut(["evidence"], [{"kind": "decision", "ref": " "}]), "must not be blank"),
-    "non finite threshold": (_trigger(threshold=float("inf")), "must be finite"),
-    "wrong transitions": (_mut(["maturity", "transitions"], _reg(1)["maturity"]["transitions"][::-1]), "adjacent rung pairs"),
-    "duplicate planes": (_mut(["planes"], ["data_plane", "data_plane"]), "planes must be unique"),
-    "duplicate row ids": (_mut(["contested"], [{"id": "s1", "text": "A contested point here."}]), "row ids must be unique"),
     "duplicate item": (lambda d: d["work_items"].append(copy.deepcopy(d["work_items"][0])), "duplicate work item id"),
     "duplicate criterion": (lambda d: d["work_item_criteria"].append(_crit()), "duplicate criterion"),
     "criterion names absent item": (_crit0(work_item="pwi-ghost"), "absent work item"),
@@ -236,12 +212,6 @@ _SCHEMA_CASES = {
         lambda d: d["work_item_criteria"].extend(_crit(1, f"c{i}") for i in range(2, 6)),
         "above MAX_CRITERIA",
     ),
-    "unresolved_legacy method": (_crit0(method={"kind": "unresolved_legacy"}), "unresolved_legacy"),
-    "review method without resolver": (
-        _crit0(method={"kind": "review", "evidence_requirement": "A reviewer note."}),
-        "Field required",
-    ),
-    "execution method with both arms": (_crit0(method={"kind": "execution", "check": "x", "command": "y"}), "exactly one of"),
 }
 _REVIEW = {"kind": "review", "resolver": "Operator reviews the report.", "evidence_requirement": "A signed review note."}
 
@@ -469,124 +439,6 @@ class TestSunset:
     @pytest.mark.parametrize("drop", [("cd",), ("t423",), ("c6",)])
     def test_archived_anchor_fails_closed(self, drop, red):
         red("fail closed", roadmap=_roadmap(drop=drop))
-
-
-def _max_len(meta):
-    return next((m.max_length for m in meta if getattr(m, "max_length", None) is not None), None)
-
-
-def _pattern(meta):
-    return next((m.pattern for m in meta if getattr(m, "pattern", None)), None)
-
-
-_PATTERN_SAMPLES = {
-    r"^pwi-[a-z0-9-]+$": lambda n, i: "pwi-" + "a" * (n - 4),
-    r"^c[0-9]+$": lambda n, i: f"c{i + 1}",
-    r"^[skq][0-9]+$": lambda n, i: f"s{i + 1}",
-    r"^[A-Za-z0-9._:-]+$": lambda n, i: "a" * n,
-}
-_ROW_PREFIX = {"settled": "s", "contested": "k", "open_questions": "q"}
-
-
-def _worst(tp, meta=(), name="", index=0):
-    """The longest valid value for a type, derived from model_fields: raises on any unbounded str or list."""
-    origin = typing.get_origin(tp)
-    if origin is typing.Annotated:
-        return _worst(typing.get_args(tp)[0], (*meta, *typing.get_args(tp)[1:]), name, index)
-    if origin in (typing.Union, types.UnionType):
-        arms = [a for a in typing.get_args(tp) if a is not type(None)]
-        return max((_worst(a, meta, name, index) for a in arms), key=lambda v: len(json.dumps(v)))
-    if origin is typing.Literal:
-        return max(typing.get_args(tp), key=lambda v: len(str(v)))
-    if origin is list:
-        (elem,) = typing.get_args(tp)
-        cap = _max_len(meta)
-        assert cap is not None, f"unbounded list field {name!r}"
-        if typing.get_origin(elem) is typing.Literal:
-            return list(typing.get_args(elem))[:cap]
-        rows = [_worst(elem, (), name, i) for i in range(cap)]
-        for i, row in enumerate(rows):
-            if name in _ROW_PREFIX:
-                row["id"] = f"{_ROW_PREFIX[name]}{i + 1}"
-        return rows
-    if tp is str:
-        cap = _max_len(meta)
-        assert cap is not None, f"unbounded str field {name!r}"
-        pattern = _pattern(meta)
-        if pattern is None:
-            return "a" * cap
-        assert pattern in _PATTERN_SAMPLES, f"no sample for pattern {pattern!r} on {name!r}"
-        return _PATTERN_SAMPLES[pattern](cap, index)
-    if tp is int or tp is float:
-        return -1.2345678901234567e-300
-    if isinstance(tp, type) and issubclass(tp, BaseModel):
-        return _worst_model(tp, index)
-    raise AssertionError(f"unhandled annotation {tp!r} on {name!r}")
-
-
-def _worst_model(cls, index=0):
-    out = {}
-    for fname, info in cls.model_fields.items():
-        out[info.alias or fname] = _worst(info.annotation, tuple(info.metadata), fname, index)
-    if cls is model.Maturity:
-        pairs = list(zip(model.RUNGS, model.RUNGS[1:]))
-        for row, (a, b) in zip(out["transitions"], pairs):
-            row["from"], row["to"] = a, b
-    if cls is model.ExecutionMethod:
-        out["command"] = None
-    return out
-
-
-def _worst_item_fixture():
-    item = _worst_model(model.WorkItem)
-    crits = [_worst_model(model.Criterion, i) for i in range(model.MAX_CRITERIA_PER_ITEM)]
-    edges = [_worst_model(model.Edge, i) for i in range(model.MAX_EDGES_FROM_ITEM)]
-    for crit in crits:
-        crit["work_item"] = item["id"]
-    for edge in edges:
-        edge["from"] = item["id"]
-    # the exactly-one-of validator rejects both arms at once: build once with check, once with command, keep the longer
-    with_command = copy.deepcopy(crits[0])
-    with_command["method"] = {"kind": "execution", "command": "c" * 200}
-    if len(json.dumps(with_command["method"])) > len(json.dumps(crits[0]["method"])):
-        crits = [{**c, "method": with_command["method"]} for c in crits]
-    base = _fixture(0)
-    base.update(work_items=[item], work_item_criteria=crits, work_item_edges=edges)
-    return base
-
-
-class TestBudget:
-    def test_worst_case_item_round_trips_and_fits_the_ceiling(self):
-        data = _worst_item_fixture()
-        fixture = model.Fixture.model_validate(data)
-        rendered = model.render(fixture)
-        assert yaml.safe_load(rendered) == fixture.model_dump(by_alias=True, mode="json")
-        header = effective_lines(model.render(model.Fixture.model_validate(_fixture(0))))
-        assert effective_lines(rendered) - header <= model.PER_ITEM_LINE_CEILING
-        assert longest_line(rendered) <= model.MAX_LONG_LINE
-        assert "failure_signal: {signal: " in rendered and "- {id: s1, text: " in rendered and "- {from: " in rendered
-
-    def test_ceilings_reconcile_with_the_residual_limit(self):
-        shipped = (_common.ROOT / model.FIXTURE_PATH).read_text(encoding="utf-8")
-        assert model.HEADER_LINE_CEILING + model.ITEM_COUNT_CAP * model.PER_ITEM_LINE_CEILING <= 500
-        assert effective_lines(shipped) <= model.HEADER_LINE_CEILING
-
-    def test_generator_raises_on_an_unbounded_field(self):
-        class Unbounded(BaseModel):
-            text: str
-
-        with pytest.raises(AssertionError, match="unbounded str"):
-            _worst_model(Unbounded)
-
-    def test_generator_grows_with_a_new_bounded_field(self):
-        class Wider(BaseModel):
-            extra: typing.Annotated[str, MaxLen(7)]
-
-        assert _worst_model(Wider) == {"extra": "a" * 7}
-
-    def test_frozen_vocabularies_match_their_literals(self):
-        assert model.EDGE_KINDS == ("depends_on", "part_of")
-        assert model.RUNGS == ("read_all", "sampled", "spot_check", "anomaly_triggered")
 
 
 class TestRegistration:
