@@ -27,8 +27,10 @@ Fixture rows: `pwi-telemetry-reader-verbs` in `docs/work-item-pilot/telemetry-fe
   The `{hist}` placeholder already renders an append_only table's history, so binding one table is
   not the gap.
 - Two ratified contract rules would derive wrong values if built literally (risks R1, R2): session state
-  ignores resume-after-close, and session duration is measured from the ROOT start, which is wrong for
-  every sub-agent session. Staged as contested k1. The ratified contract also has no abandoned state,
+  ignores resume-after-close, and session duration is measured from the ROOT start. A sub-agent session
+  has neither its own start nor a close row: its open row carries the root start and the producer emits
+  no child close. So its only real start and end are its telemetry_agents agent-run pair. Staged as
+  contested k1. The ratified contract also has no abandoned state,
   which rec-4024 item (6) asks for and component 1's signal needs (k3). The contract is not edited here.
 - One item fits the clause-3 grain (kind task; three criteria; one edge, part_of T2.36). The verbs share
   one failure mode (a wrong derived value), so splitting them would spend the 12-item cap on rows with
@@ -42,7 +44,8 @@ Fixture rows: `pwi-telemetry-reader-verbs` in `docs/work-item-pilot/telemetry-fe
 | e2 | Session state rule: "absent a close row, the session is running; present, its outcome IS the session's terminal state". A resumed session "reuses session_id ... and appends a resume event" | docs/contracts/telemetry_sessions.yaml:192, 261-262 |
 | e3 | Session duration formula: close.event_timestamp minus session_started_at [VP 4] | docs/contracts/telemetry_sessions.yaml:252 |
 | e4 | session_started_at is the ROOT's start, carried by every row of the root AND all its sub-agent sessions [VP 4] | docs/contracts/telemetry-event-envelope.yaml:100-104 |
-| e5 | Agent-run duration is paired open/close on agent_run_id, the envelope's span rule; session duration is not | docs/contracts/telemetry_agents.yaml:221; docs/contracts/telemetry-event-envelope.yaml:72 |
+| e5 | Agent-run duration is paired open/close on agent_run_id, the envelope's span rule; session duration is not. The agent-run open is stamped with the spawn record's time and the close with the tool result's | docs/contracts/telemetry_agents.yaml:221; docs/contracts/telemetry-event-envelope.yaml:72; src/turn_capture/sessions.py:175-212 |
+| e12 | The open row's event_timestamp "EQUALS session_started_at" (the root start), and the producer writes every open row, sub-agents included, at ctx.started with source_ordinal 0 for a child [VP 4]. Component 1 emits ONE root close per finalization, never one per session, with close ranked LAST on an (event_timestamp, source_ordinal) tie | docs/contracts/telemetry_sessions.yaml:71; src/turn_capture/sessions.py:144-146; #1384 report section 2 step 7 (head 18194019) |
 | e6 | Read-side dedupe R4/R5 (generation retire, event collapse, model_call entity collapse); the conflict report is normative output | docs/contracts/telemetry-event-envelope.yaml:335-347 |
 | e7 | The reader verbs must pass tests/telemetry/fixtures/dedupe_vectors.yaml independently of the stdlib oracle [VP 2] | tests/telemetry/fixtures/dedupe_vectors.yaml:5 |
 | e8 | Every derivation is bounded to one session's calendar-day partition (answers Decision 81 cl.8); falsifier `derived-read-too-costly` pulls materialization forward from T2.52 c1 | Decision 199 cl.1 and reversal conditions (docs/DECISIONS.md:697, 715-717) |
@@ -150,7 +153,7 @@ derivation pointer is where field semantics live (Decision 86):
 | agent_run_state_and_duration | agent-run state, duration | this item |
 | agent_run_token_rollup | tokens_input_total, tokens_output_total over the child's model_calls | this item |
 | model_call_cost_estimate | cost per model_call | rec-4031 (price table), composes this item's dedupe |
-| sessions_window (proposed, k2) | one derived row per root session over at most 7 days | this item if k2 (a) |
+| sessions_window (proposed, k2) | one derived row per root session over at most 7 days | T2.52 c3 if k2 (b), this item if k2 (a) |
 
 ## 3. Settled / contested / risk / open
 
@@ -168,64 +171,91 @@ Settled (consistent with a Decision, a contract or measured; s1-s3 in the fixtur
 Contested (evidence on both sides, options listed; k1-k3 in the fixture):
 
 - k1 State and duration rule. The contract (e2, e3) says no close row means running and measures
-  duration from session_started_at. Against: component 1 emits one close row per finalization and a
-  resume row after it, so "a close row exists" reads terminal for a session that is running again; and
-  session_started_at is the ROOT start (e4), so a sub-agent spawned two hours into its root reports two
-  extra hours. Options: (a) amend telemetry_sessions: state = latest lifecycle row among open, resume,
-  compact and close (annotate excluded; running unless it is close), outcome = that close's outcome,
-  duration = latest close minus the session's OWN first open row, which is the envelope's span-pairing
-  rule (e5) and equals the old formula for a root; (b) keep the text and forbid resume after close (a
-  resumed session becomes a new session with execution_attempt + 1). (b) contradicts the ratified
+  duration from session_started_at. Against, for roots: component 1 emits one close row per finalization
+  and a resume row after it, so "a close row exists" reads terminal for a session that is running again.
+  Against, for sub-agent sessions (e12): the child's open row carries the ROOT start, and no child close
+  row is ever emitted, so no session-level rule can time or close a child. Its only real start and end
+  are its telemetry_agents agent-run open and close (e5), which belong to the child's own session_id
+  (envelope R6). Options: (a) amend telemetry_sessions. For a ROOT, state comes from the latest
+  lifecycle row among open, resume, compact and close (annotate excluded; running unless it is close),
+  outcome from that close, and duration = latest close minus session_started_at (the old formula,
+  pinned to the latest close). For a SUB-AGENT session, state and duration come from its agent-run
+  open/close pair (agent_run_state_and_duration). (b) keep the text and forbid resume after close (a
+  resumed session becomes a new session with execution_attempt + 1). This contradicts the ratified
   contract itself, where a resumed session reuses session_id and appends a resume event
-  (telemetry_sessions.yaml:261-262), as well as component 1's per-finalization close; (c) keep the text
-  and document the child offset as a known bias. Recommended: (a). Two semantics inside (a) must be
-  picked knowingly, and c2's golden fixtures pin them: (i) "latest" orders by event_timestamp, then
-  source_ordinal (the envelope's read-side ordering aid), then event_id, over the lifecycle rows of
-  every producer that writes telemetry_sessions rows for the session, each after its own R5 dedupe;
-  (ii) "latest close minus own first open" is wall-clock and includes any idle gap between a close and
-  a later resume; the alternative sums the open-to-close segments as active time. Recommended: (i) as
-  stated; for (ii), wall-clock for duration_seconds, with active time left to a later field if a
-  consumer asks for it. A ratified Class A semantic change, so the operator decides; parked.
+  (telemetry_sessions.yaml:261-262), as well as component 1's per-finalization close. (c) keep the text
+  and document the child gap: child duration is NULL and child state is running forever. (d) give
+  children their own start and close: amend telemetry_sessions.yaml:71 so a child's open row carries
+  the child's first event time, and emit child close rows. This needs a record_turn rule change with a
+  PARSER_VERSION bump (turn-capture owner). Recommended: (a); it needs no producer change. Two semantics
+  inside (a) must be picked knowingly, and c2's golden fixtures pin them: (i) "latest" orders by
+  event_timestamp, then source_ordinal (the envelope's read-side ordering aid), then close ranked LAST
+  on a tie, then event_id. This is the same rule component 1 states (e12): a session resumed and ended
+  with no new prompt anchors its close on the resume record itself, so any other tie-break reads a
+  cleanly ended session as running. The order runs over the lifecycle rows of every producer that writes
+  telemetry_sessions rows for the session, each after its own R5 dedupe. (ii) a root's duration is
+  wall-clock and includes any idle gap between a close and a later resume; the alternative sums the
+  open-to-close segments as active time. Recommended: (i) as stated; for (ii), wall-clock for
+  duration_seconds, with active time left to a later field if a consumer asks for it. A ratified Class A
+  semantic change, so the operator decides; parked.
 - k2 Window verbs. Component 1's unfinalized_session_share, T3.3's daily anomaly baseline and T3.4's
-  telemetry delta all need many sessions over a time window. Governing facts: T2.52 is
-  `deferred_post_mvp` (its progress note: "no consumer exists for it today ... telemetry is
-  unmigrated"), and Decision 93 says no live item (not_started or in_progress) may depend_on a
-  deferred_post_mvp item. T3.3 and T3.4 are live. This report names three consumers, which answers
-  T2.52's deferral rationale directly. Options: (a) one `sessions_window` verb here returning one derived
-  row per root session for at most 7 calendar days (paginable), with every share or rate computed by the
-  consumer, so each derivation stays per-session and the scan is a bounded partition range (VP 3:
-  linear in days). This un-defers part of T2.52 c3's scope before the MVP, and it reads many single-day
-  partitions where Decision 199 cl.1 says each derivation is "bounded to a session's single
-  day(session_started_at) partition". It therefore needs a governance route: a dated Decision 199
-  annotation that a bounded window of per-session derivations satisfies cl.1 (operator), or T2.52's
-  reactivation; (b) reactivate T2.52 to not_started (a tier-item status change, operator only) and build
-  the window class there, or leave T3.3, T3.4 and component 1 without a window signal before the MVP;
-  (c) consumers loop the per-session verb, one round trip per session, which stays inside cl.1 as
-  written but multiplies invocations and catalog round trips (Decision 88). For (a): each derivation
-  stays per-session and prunable, so Decision 81 cl.8 is not reopened. Against: it needs one of the two
-  operator routes above, and T2.52 owns analytical verbs. Recommended: (a) via the dated Decision 199
-  annotation, shaped to T2.52 c3's declared response schema and stable ordering so T2.52 can adopt it.
-  rec-4024 item (6) leaves exactly this open ("decide operational-verb vs T2.52 c3/c6"). No status
-  change is made here. Parked.
+  telemetry delta all need many sessions over a time window. Governing facts:
+  - T2.52 is `deferred_post_mvp`, and Decision 93 says no live item (not_started or in_progress) may
+    depend_on a deferred_post_mvp item. T3.3 and T3.4 are live.
+  - T2.52's progress note records its own trigger: "ACTIVATION TRIGGER: a governed dataset exists that a
+    human or an analysis agent actually needs to read in aggregate -- concretely T2.51 reactivates, OR
+    telemetry lands on DuckLake (T2.36), OR data-quality coverage becomes non-zero ... Reactivate by
+    restoring status -> not_started."
+  - This item is part_of T2.36, and its verbs cannot be built before T2.36 provisions the tables
+    (plan constraints). So the moment the window verb becomes buildable is the moment T2.52's
+    pre-agreed trigger fires.
+
+  Options:
+  - (a) One `sessions_window` verb here, returning one derived row per root session for at most 7
+    calendar days (paginable), with every share or rate computed by the consumer. Each derivation stays
+    per-session and the scan is a bounded partition range (VP 3: linear in days). It reads many
+    single-day partitions where Decision 199 cl.1 says each derivation is "bounded to a session's single
+    day(session_started_at) partition". So it needs a dated Decision 199 annotation that a bounded
+    window of per-session derivations satisfies cl.1. That route has no precedent, and it builds part of
+    T2.52 c3's scope outside T2.52.
+  - (b) When T2.36 lands, the operator reactivates T2.52 per its recorded trigger (restore
+    not_started; a status change, never made here), and sessions_window is built as T2.52 c3's first
+    analytical verb, in the same shape. This is the route already written down. It leaves T3.3, T3.4 and
+    component 1 no longer without a window signal than (a) does, because neither option can be built
+    before T2.36. Once T2.52 is live, Decision 93 no longer bars the edge.
+  - (c) Consumers loop the per-session verb, one round trip per session. This stays inside cl.1 as
+    written but multiplies invocations and catalog round trips (Decision 88).
+
+  Weighing: the earlier case for (a) assumed (b) meant a discretionary reactivation that could leave
+  consumers waiting. The recorded trigger removes that: (b) has the same timing, an existing precedent
+  and no new Decision annotation. Against (b): reactivating T2.52 also reopens its materialization half
+  (c1, c2, c4); only c3 is needed here. Recommended: (b), scoped to c3 first, with (a) as the fallback if
+  the operator keeps T2.52 deferred when T2.36 lands. rec-4024 item (6) leaves exactly this open
+  ("decide operational-verb vs T2.52 c3/c6"). No status change is made here. Parked.
 - k3 Abandoned state. rec-4024 item (6) asks for running/abandoned/terminal from an `as_of` and an idle
   threshold. The ratified contract has only running and terminal, so under both the contract and k1
-  (a) a session that never writes a close row (a crash, a killed process, a reclaimed container) reads
-  running forever. Component 1's unfinalized_session_share (latest lifecycle row not close, 24 h after
-  the last event) is exactly abandoned with a 24 h threshold. Options: (a) amend telemetry_sessions with
-  a derived abandoned state: not terminal, and `as_of` minus the session's last event_timestamp above a
-  governed idle threshold (a resume moves it back to running; nothing is stored); (b) keep running
-  only, and let each consumer apply its own idle cut, so component 1 and T3.3 can disagree on the same
-  session; (c) put the threshold as a caller parameter, with the same disagreement risk and an
-  unbounded input. For (a): one definition for every consumer. Against: the threshold value has no
-  measurement yet (long-idle project threads, component 1 section 4). Recommended: (a), with the
-  threshold in governed config, seeded at component 1's 24 h. A ratified Class A semantic change;
-  parked.
+  (a) a root session that never writes a close row (a crash, a killed process, a reclaimed container)
+  reads running forever. Component 1's unfinalized_session_share (latest lifecycle row not close, 24 h
+  after the last event) is exactly abandoned with a 24 h threshold. Options: (a) amend telemetry_sessions
+  with a derived abandoned state: not terminal, and `as_of` minus the session's last event_timestamp
+  above a governed idle threshold (a resume moves it back to running; nothing is stored); (b) keep
+  running only, and let each consumer apply its own idle cut, so component 1 and T3.3 can disagree on
+  the same session; (c) put the threshold as a caller parameter, with the same disagreement risk and an
+  unbounded input. Scope: under k1 (a), abandoned applies to ROOT sessions by their lifecycle rows. A
+  sub-agent session takes its state from its agent-run pair, so it is abandoned only when its agent-run
+  open has no close past the same threshold. Applied to a child's session rows instead, every sub-agent
+  would read abandoned 24 h after its last event, because no child close row exists (e12). For (a): one
+  definition for every consumer. Against: the threshold value has no measurement yet (long-idle project
+  threads, component 1 section 4). Recommended: (a), with the threshold in governed config, seeded at
+  component 1's 24 h. A ratified Class A semantic change; parked.
 
 Risk (known loss modes, not choices):
 
-- R1 Child-session duration bias. A literal build of e3 overstates every sub-agent session's duration by
-  its spawn offset from the root start. Nothing downstream can detect it, because the value is
-  plausible. Covered by k1 and by c2's child-session fixture.
+- R1 Child-session state and duration. A literal build of e2 and e3 against today's producer reads every
+  sub-agent session as running forever with a NULL duration, because no child close row is emitted
+  (e12). If child close rows are ever emitted, e3 overstates each child's duration by its spawn offset
+  from the root start, a plausible value nothing downstream can detect. Covered by k1 and by c2's
+  child-session fixture.
 - R2 Resume-after-close state. A literal build of e2 reads finalized-then-resumed sessions as terminal,
   although the contract itself appends a resume event under the same session_id
   (telemetry_sessions.yaml:261-262). The same ambiguity component 1 hit in its failure_signal (its G1);
@@ -277,8 +307,9 @@ Open (q1-q2 in the fixture; none is answerable from the repository):
 
 ## 5. Boundary notes for W2 synthesis
 
-- Component 1 (capture producer wiring): its failure_signal source is this item's sessions_window verb
-  (k2) with the latest-lifecycle-row state rule (k1); its unfinalized_session_share is the abandoned
+- Component 1 (capture producer wiring): its failure_signal source is the sessions_window verb (k2,
+  wherever it lands) with the latest-lifecycle-row state rule and close-last tie (k1), which both
+  components now state identically; its unfinalized_session_share is the abandoned
   share under k3 (a) with a 24 h threshold, so the two definitions should be one. On merge of both PRs,
   W2 should add an edge `pwi-capture-producer-wiring depends_on pwi-telemetry-reader-verbs`. It is not
   added here: the evaluator's L4 accepts an edge only to a pilot item in the same fixture or a
@@ -291,7 +322,7 @@ Open (q1-q2 in the fixture; none is answerable from the repository):
   bundled registry config is the classifier's call, and it decides whether that verb reads one table
   or two.
 - Back-validation (T3.4): "telemetry delta proves fix" is a before/after comparison over windows, so it
-  needs k2 (a) or T2.52. Deltas must be read at one registry_version; a version bump between the
+  needs sessions_window (k2 (b) via T2.52, or k2 (a)). Deltas must be read at one registry_version; a version bump between the
   windows makes the delta meaningless, so the response stamp is load-bearing.
 - Maturity-ladder controller: this item's rungs are measured by shadow re-derivation (q2), not by
   telemetry it emits itself. The controller needs the harness to report per verb.
