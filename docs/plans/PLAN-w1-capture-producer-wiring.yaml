@@ -50,6 +50,9 @@ acceptance_criteria:
     The failure_signal's producer gap is shown: a finalized tree yields no root close row today, so the
     close row in report section 2 step 7 is a 3b obligation (VP step 7).
   - >-
+    R2 is shown from the repo alone: a finalized, resumed, Stop-then-SessionEnd session loses its resumed
+    segment's last turn under the sticky finalized flag (VP step 8).
+  - >-
     The branch diff against origin/main is exactly the plan, the report and the fixture, with no code,
     roadmap, contract, rec or DECISIONS edit (VP step 6).
 verification_plan:
@@ -172,6 +175,31 @@ verification_plan:
     expected_literals: ["final_session_kinds=open close_rows=0"]
   - step: 8
     phase: pre-deploy
+    action: Reproduce R2, the sticky finalized flag dropping a resumed-after-finalize segment's last turn
+    command: >-
+      bin/venv-python -c "import json,pathlib,tempfile; from src.turn_capture.record_turn import record_turn; from src.turn_capture.transcript import FsTree;
+      S='aaaaaaaa-0000-4000-8000-000000000001'; B={'sessionId':S,'cwd':'/w','version':'2.1.0'}; T=lambda n: '2026-01-01T00:%02d:%02d.000Z' % (n//60%60,n%60);
+      U=lambda t: [dict(B,type='user',uuid='u%d'%t,promptId='p%d'%t,timestamp=T(t*10),message={'role':'user','content':'go'}),dict(B,type='assistant',uuid='z%d'%t,timestamp=T(t*10+2),message={'id':'mz%d'%t,'model':'m','role':'assistant','stop_reason':'end_turn','usage':{'input_tokens':1,'output_tokens':1},'content':[{'type':'text','text':'ok'}]})];
+      H=dict(B,type='attachment',uuid='rs',timestamp=T(300),attachment={'type':'hook_success','hookName':'SessionStart:resume','hookEvent':'SessionStart','command':'x','exitCode':0,'durationMs':5});
+      p=pathlib.Path(tempfile.mkdtemp())/(S+'.jsonl'); W=lambda rs: p.open('a').write(''.join(json.dumps(x)+chr(10) for x in rs));
+      C=lambda r: sum(x['external_ref'].endswith('/turn_close') for x in r.observations);
+      W([x for t in (1,2,3) for x in U(t)]); r=record_turn(FsTree(p),None,project_ref='p',session_final=True); n=C(r); c=r.next_cursor;
+      W([H]+[x for t in (11,12) for x in U(t)]); r=record_turn(FsTree(p),c,project_ref='p'); n+=C(r); r=record_turn(FsTree(p),r.next_cursor,project_ref='p',session_final=True); n+=C(r);
+      print('resume_after_finalize_stop_turn_closes=%d/5 cursor_finalized_sticky=%s' % (n, r.next_cursor.finalized))"
+    expected: >-
+      One line: 4 of 5 turn_close rows across finalize, resume, Stop pass, SessionEnd (the resumed segment's last
+      turn is never emitted) and a sticky finalized cursor flag.
+    fix_if: >-
+      5/5 means the turn-capture owner fixed record_turn.py:115 -- R2 is closed; drop the s3 precondition in the
+      report and fixture. Any other count means the emission rules moved; re-read record_turn.py.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Red-before evidence for the turn-capture owner's own fix, true only until it lands; a standing guard
+      would block that sanctioned fix.
+    expected_literals: ["resume_after_finalize_stop_turn_closes=4/5 cursor_finalized_sticky=True"]
+  - step: 9
+    phase: pre-deploy
     action: Run the fast presubmit tier over the branch
     command: bin/venv-python -m scripts.validate --pre
     expected: Exits 0; PR CI's --pre run is the authoritative gate (Decision 73).
@@ -213,20 +241,11 @@ context:
   - "fork: cursor-loss pin recovery (k2) | chosen: none; option (b) recommended, contract amendment option (a) is always-ask | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: report k2, PARKED for the operator"
   - "fork: sync vs detached Stop pass (k1) | chosen: none; option (a) recommended | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: report k1, PARKED for the operator"
   - >-
-    gates: zero-context verification r1 w1-capture-producer-wiring-zero-context-verification-r1-4d1a8e63 REVISE
-    (F1 blocking: turn_coverage_gap blind to final-turn loss and false-flags a clean SessionStart+SessionEnd
-    session; F2-F5 minor) -> all addressed: failure_signal redefined as unfinalized_session_share over a root
-    close row (report section 2 step 7, VP 7) with its never-succeeding-runner limit stated (q1); k3 recast as
-    risk R1; the gate/precommit recommendation moved from s1 to parked P1; per-session conformance named a
-    runner obligation (step 8); T3.20 c1 scrub noted as met upstream.
-  - >-
-    gates (continued): zero-context verification r2 w1-capture-producer-wiring-zero-context-verification-r2-8b3f6c12
-    REVISE (G1 blocking: "no close row" is blind to a resumed-then-reclaimed session and the close row had no
-    identity; G2 blocking to record: the sticky finalized flag at record_turn.py:115 drops the last turn of
-    finalize, resume, Stop sessions on merged code; G3, G4 minor) -> all addressed, text only: the metric now
-    reads the session's LATEST lifecycle row, the close row is one per finalization (report section 2 step 7);
-    G2 recorded as risk R2, a precondition of c1/c2 owned by the turn-capture owner, detected by the
-    runner-side conformance check now named in c2 (G4); idle live sessions noted in report section 4 (G3).
+    gates: zero-context verification r1 (-4d1a8e63) REVISE, F1 hook-count metric blind to final-turn loss ->
+    latest-lifecycle-row metric; r2 (-8b3f6c12) REVISE, G1 resumed sessions + close identity, G2 sticky
+    finalized flag -> per-finalization close row, risk R2 recorded (VP 8), detector in c2; r3 (-c5a07d39)
+    PROCEED, minors H1-H5 folded in (resume-boundary cut schedule, close-last tie rule, fixture s3 precondition,
+    q1 SessionEnd note, wording). Reports: /mnt/project-files/gates/w1-capture-producer-wiring-zero-context-verification-r{1,2,3}-*.md
   - >-
     check_accounting: no registered check is added or removed; the hygiene stream's baseline is untouched.
 pre_implementation_checklist:

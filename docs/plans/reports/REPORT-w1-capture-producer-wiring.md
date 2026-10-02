@@ -71,14 +71,24 @@ URL request; external, not re-verified here).
    record_turn emits none today: a finalized tree yields only open/resume/compact rows (VP 7). Adding it
    is a record_turn rule change, so it carries a PARSER_VERSION bump. The failure_signal depends on it.
    Identity: ONE close row per finalization, never one per session. Its ref is a role_ref of the last
-   record in the tree at that finalize ('<last record uuid>#0/close', refs.py:22). A session-level ref would
+   root-stream record with a uuid at that finalize ('<uuid>#0/close', refs.py:22); trailing ignored or
+   uuid-less records (streams.py:20, :174) never anchor it. Its event_timestamp and source_ordinal are
+   that anchoring record's, and readers order lifecycle rows by (event_timestamp, source_ordinal) with
+   close ranked LAST on a tie: a session resumed and ended with no new prompt anchors its close on the
+   resume boundary record itself, so a close-first tie-break would flag a clean session (verification
+   r3, H2, scenario I). A session-level ref would
    already sit in the prior set after the first finalize (record_turn.py:98-104), so a resumed and
    re-finalized session would emit no second close row and read as unfinalized (verification r2, G1,
    scenario E).
-8. Runner-side conformance: at finalize the runner holds the whole transcript, so it can run the
-   conformance-walk invariants (tests/turn_capture/test_real_transcript_conformance.py) on that one tree
-   and report counts. Today the walk is a local integration test, not a per-session job. Running it per
-   session is this item's obligation; if dropped, it is a gap the maturity-ladder component inherits.
+8. Runner-side conformance: at finalize the runner holds the whole transcript, so it re-derives from
+   that transcript alone (no emission history; the cursor holds positions only, D84 I-4): finalize
+   (session_final=True) at each SessionStart:resume boundary, a Stop cut at each later prompt, a final
+   cut at EOF, then compare the union of per-cut emissions with one full parse; any ref missing is a
+   violation. This is NOT the existing walk: test_real_transcript_conformance.py's incremental test
+   finalizes only at its last cut (:338-352) and reports 0 missing on an R2-defective tree, so it is
+   blind to R2 (verification r3, probe 2: 6 missing refs on the defective tree, 0 once patched, 0 on
+   clean trees, 1.2 s on a 1,231-line tree). Running this check per session is this item's obligation
+   (c2); if dropped, it is a gap the maturity-ladder component inherits.
 
 ## 3. Settled / contested / risk / open
 
@@ -125,10 +135,10 @@ Risk (a known loss mode, not a choice; carried in the fixture as q2 and as the f
   resumed segment's last turn is never emitted, even though SessionEnd succeeds and the close row lands.
   No session-row metric can see it. It falsifies s3's precondition (incremental capture equals one full
   parse, record_turn.py:5). The probe reports 4 of 5 turns; locally setting the flag to session_final
-  alone gives 5 of 5 (gate report r2). PRECONDITION of c1 and c2, owned by the turn-capture owner
+  alone gives 5 of 5 (gate report r2; VP 8 reproduces it from the repo). PRECONDITION of c1 and c2, owned by the turn-capture owner
   (rec-4026 / slice 3a), routed by the operator. Not fixed in this REPORT-ONLY PR. Detector: the
-  runner-side conformance check at finalize (step 8) comparing incremental emission with one full
-  parse, now named in c2.
+  runner-side check at finalize (step 8) with its resume-boundary cut schedule, named in c2; the
+  existing conformance walk cannot see it.
 
 Parked (a recommendation with no precedent; nothing moved):
 
@@ -139,7 +149,10 @@ Open (q1-q3 in the fixture; none is answerable from the repository):
 
 - q1 A runner that never succeeds lands no rows, so no warehouse metric can see it. Who counts runner
   exit-1s out of band? Candidates: the runner's own stderr or diagnostics, or the hook rows'
-  exit_code (observations.py:328) once any later pass succeeds.
+  exit_code (observations.py:328) once any later pass succeeds. The second candidate cannot cover the
+  SessionEnd run itself: a record appended after a successful finalize is withheld from every later
+  non-final pass (the finalized prefix treats its open last turn as closed), so the SessionEnd hook's
+  own row lands only if the session is resumed and re-finalized (verification r3, H4).
 - q2 Does SessionEnd fire on CC-web reclaim, and is a resumed session's transcript restored whole (so
   catch-up sees the prefix)? R1's size hinges on it.
 - q3 billing_shape for API-key sessions (rec-4147): the default fixed_non_rollover_allowance mislabels
@@ -149,7 +162,7 @@ Open (q1-q3 in the fixture; none is answerable from the repository):
 
 - planes: data_plane.
 - failure_signal: unfinalized_session_share, the share of root sessions whose LATEST lifecycle row
-  (open, resume, compact or close) is not close, 24 h after their last event (7-day window). Source:
+  (open, resume, compact or close) is not close, 24 h after their last event. Source:
   telemetry_sessions through the rec-4024 reader verbs. It sees R1 directly: a session, or its latest
   resumed segment, whose last turn was lost was never finalized, so its latest lifecycle row is not
   close. "No close row at all" was rejected in verification r2 (G1, scenario D): a session finalized
@@ -160,7 +173,10 @@ Open (q1-q3 in the fixture; none is answerable from the repository):
   Idle live sessions: a live session idle for more than 24 h counts as unfinalized while its last turn
   is pending (e6). That turn is pending, not lost; it lands when the session resumes and the session
   leaves the count once a later close lands. Long-idle sessions (this project's threads) inflate the
-  share, so the spot_check -> anomaly_triggered threshold must be read with them in mind.
+  share, so the spot_check -> anomaly_triggered threshold must be read with them in mind. Two more
+  no-loss flags count the same way: a resumed segment with no new prompt that is then reclaimed
+  (benign, like an idle session), and a finalize pass whose sessions chunk alone fails and is never
+  retried (a correct flag: the pass failed).
   If SessionEnd never fires on CC-web (q2), the share reads near 1 for those sessions, which is real
   exposure, not a false positive. LIMIT: a runner that never succeeds lands no rows and cannot be seen
   from the warehouse; that is q1 and needs an out-of-band count.
@@ -195,7 +211,8 @@ Open (q1-q3 in the fixture; none is answerable from the repository):
   the fixture's c1 does not drop it.
 - Reader-verb owner (rec-4024): the contract's derived-state rule ("absent a close row, the session is
   running", telemetry_sessions.yaml:186-193) has the same resume-after-close ambiguity as G1. The
-  session-state reader verb should derive state from the LATEST lifecycle row. Boundary note only;
+  session-state reader verb should derive state from the LATEST lifecycle row, ordered by
+  (event_timestamp, source_ordinal) with close ranked last on a tie (step 7). Boundary note only;
   the contract is not edited here.
 - No seed component owns the WRITER verb. It is already tracked (T2.36 c1/c2, rec-4024 slice 2), so
   the pilot should point at it by edge rather than add an item.
