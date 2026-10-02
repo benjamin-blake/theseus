@@ -238,13 +238,16 @@ def build_index() -> dict[str, Any]:
     }
 
 
-def check_index_freshness(failed: list[str]) -> None:
+def check_index_freshness(failed: list[str]) -> int | None:
     """Fail on drift OR absence of the committed docs/decisions-index.json (DCG-08).
 
     Unlike scripts.dependency_graph.check_export_freshness (no-op when absent, Decision 80
     lean-by-default posture for a compute-on-demand oracle), this index IS a required
     committed artifact -- absence is itself a failure, with a regenerate hint, never a silent
     no-op. repo_root-relative display mirrors check_export_freshness's ValueError fallback.
+
+    Returns the number of regenerated decision entries compared against the committed export, or
+    None when the export is absent or unreadable (the failure is appended; nothing was compared).
     """
     current = build_index()
 
@@ -256,13 +259,13 @@ def check_index_freshness(failed: list[str]) -> None:
         failed.append(
             f"Decisions index {path_display} is missing. Regenerate: bin/venv-python -m scripts.decisions_index --write"
         )
-        return
+        return None
 
     try:
         committed = json.loads(_EXPORT_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         failed.append(f"Decisions index freshness: cannot read committed export: {exc}")
-        return
+        return None
 
     if committed != current:
         try:
@@ -273,6 +276,7 @@ def check_index_freshness(failed: list[str]) -> None:
             f"Decisions index {path_display} is stale (drifted from docs/DECISIONS.md + "
             "docs/DECISIONS_ARCHIVE.md). Regenerate: bin/venv-python -m scripts.decisions_index --write"
         )
+    return len(current["decisions"])
 
 
 def _print_json(obj: Any) -> None:
