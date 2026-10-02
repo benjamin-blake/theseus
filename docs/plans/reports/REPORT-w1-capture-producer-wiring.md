@@ -66,21 +66,27 @@ URL request; external, not re-verified here).
    status) on any failure. NEVER 2: on Stop, exit 2 forces the turn to continue (e6).
 6. Pins: project_ref and billing_shape are passed in from the runner's configuration ONCE, at the
    pass that creates the cursor, and travel in the cursor (record_turn checks them via check_pins).
+7. Finalize marker: the SessionEnd pass (session_final=True) emits a root telemetry_sessions row with
+   event_kind close. The contract already accepts it (docs/contracts/telemetry_sessions.yaml:48), but
+   record_turn emits none today: a finalized tree yields only open/resume/compact rows (VP 7). Adding it
+   is a record_turn rule change, so it carries a PARSER_VERSION bump. The failure_signal depends on it.
+8. Runner-side conformance: at finalize the runner holds the whole transcript, so it can run the
+   conformance-walk invariants (tests/turn_capture/test_real_transcript_conformance.py) on that one tree
+   and report counts. Today the walk is a local integration test, not a per-session job. Running it per
+   session is this item's obligation; if dropped, it is a gap the maturity-ladder component inherits.
 
-## 3. Settled / contested / open
+## 3. Settled / contested / risk / open
 
 Settled (consistent with a Decision, a contract or the 3a plan; mirrored as s1-s3 in the fixture):
 
 - s1 Boundary: producer side only. Writer verb, tables, project registration = T2.36 / rec-4024 (e3,
-  e4). The gate/precommit signatures on the handed-on list (e5) belong to the read-side friction
-  classifier over tool_result rows (rec-4032), which keeps the producer transcript-pure; this report
-  recommends that reading and moves nothing.
+  e4).
 - s2 Data plane only (Decision 209 cl.2a: agent transcripts never leave the data plane). The hook
   writes to the operator-owned writer; the allow-list transport (rec-4141) never carries these rows.
 - s3 Failure semantics: cursor-after-ack plus transcript replay plus Decision 207 no-op re-send (e1, e9;
   runner steps 2-5). Loud failure = non-zero non-2 exit with the cursor unadvanced.
 
-Contested (evidence on both sides; k1-k3 in the fixture):
+Contested (evidence on both sides, options listed; k1-k2 in the fixture):
 
 - k1 Synchronous Stop hook vs detached pass. For: loud, attributable failure in the session (D84 I-4
   spirit). Against: per-pass cost grows linearly with the session (8.8 s warm at 22k lines, measured)
@@ -95,35 +101,52 @@ Contested (evidence on both sides; k1-k3 in the fixture):
   fact by having the SessionStart hook emit it as additional context, which Claude Code writes into the
   transcript, so a lost cursor re-derives it from the tree (needs a parser rule and a PARSER_VERSION
   bump); (c) defer emission for cursor-less trees. Recommended: (b), pending q2.
-- k3 Final-turn loss. Emission is per CLOSED turn (e6); a session whose container is reclaimed without
-  SessionEnd never closes its last turn. This is the dominant expected loss on CC-web. The
-  failure_signal below is chosen to see it.
+
+Risk (a known loss mode, not a choice; carried in the fixture as q2 and as the failure_signal):
+
+- R1 Final-turn loss. Emission is per CLOSED turn (e6); a session whose container is reclaimed without
+  SessionEnd never closes its last turn, and none of that turn's rows (its hook rows included) ever
+  reach the warehouse. It is expected to be the dominant loss on CC-web. Mitigations: runner step 7's
+  close row makes it observable; SessionStart catch-up on resume recovers it only if the transcript is
+  restored whole (q2).
+
+Parked (a recommendation with no precedent; nothing moved):
+
+- P1 The gate/precommit signatures on the handed-on list (e5) are recommended for the read-side friction
+  classifier over tool_result rows (rec-4032), which keeps the producer transcript-pure. Operator decides.
 
 Open (q1-q3 in the fixture; none is answerable from the repository):
 
-- q1 Are Stop hook runs written into the transcript as hook attachments (they become process_event
-  rows named hook:<runner stem>)? The failure_signal metric counts them; if not, the metric must use
-  the runner's own diagnostics instead.
+- q1 A runner that never succeeds lands no rows, so no warehouse metric can see it. Who counts runner
+  exit-1s out of band? Candidates: the runner's own stderr or diagnostics, or the hook rows'
+  exit_code (observations.py:328) once any later pass succeeds.
 - q2 Does SessionEnd fire on CC-web reclaim, and is a resumed session's transcript restored whole (so
-  catch-up sees the prefix)?
+  catch-up sees the prefix)? R1's size hinges on it.
 - q3 billing_shape for API-key sessions (rec-4147): the default fixed_non_rollover_allowance mislabels
   unattended API-key runs (Decision 205) as subscription spend.
 
 ## 4. Consideration register (as authored in the fixture)
 
 - planes: data_plane.
-- failure_signal: turn_coverage_gap, the share of root sessions whose capture-hook process_events
-  exceed their turn_close rows by more than 1 (the inherent one-turn lag). Source: telemetry_observations
-  through the rec-4024 reader verbs. It sees k3 (lost final turns) and failed passes alike, from the
-  warehouse alone.
-- maturity: starts at read_all (every captured session reconciled by the conformance walk,
-  tests/turn_capture/test_real_transcript_conformance.py). read_all -> sampled at >= 20 consecutive
-  clean sessions; sampled -> spot_check at 0 violations across the last 30 sampled; spot_check ->
-  anomaly_triggered at >= 30 days without a turn_coverage_gap breach. The numbers are seed values for
-  the maturity-ladder controller component to challenge.
-- verification: c1 (hooks, ordering, chunking, cursor-after-ack, never exit 2), c2 (failed/killed
-  pass and lost cursor replay as no-ops or defer), c3 (T3.20 c8 smoke plus a rec-4101 monitor run,
-  review method). All open.
+- failure_signal: unfinalized_session_share, the share of root sessions with no close row 24 h after
+  their last event (7-day window). Source: telemetry_sessions through the rec-4024 reader verbs. It
+  sees R1 directly: a session whose last turn was lost was never finalized, so it has no close row.
+  If SessionEnd never fires on CC-web (q2), the share reads near 1 for those sessions, which is real
+  exposure, not a false positive. LIMIT: a runner that never succeeds lands no rows and cannot be seen
+  from the warehouse; that is q1 and needs an out-of-band count.
+- Rejected in verification round 1 (w1-capture-producer-wiring-zero-context-verification-r1-4d1a8e63,
+  F1): turn_coverage_gap (capture-hook process_events minus turn_close rows). A hook attachment joins
+  its turn (streams.py:266-269), so its row and the turn_close row are emitted together or not at all
+  (observations.py:341-343). The gap never opens on a lost final turn, and a clean session with
+  SessionStart and SessionEnd runner rows breaches falsely.
+- maturity: starts at read_all, meaning every finalized session is checked by the runner-side
+  conformance check (runner step 8). read_all -> sampled at >= 20 consecutive finalized sessions with
+  zero violations; sampled -> spot_check at 0 violations across the last 30 sampled; spot_check ->
+  anomaly_triggered at >= 30 consecutive days with unfinalized_session_share at or below 0.05. The
+  numbers are seed values for the maturity-ladder controller component to challenge.
+- verification: c1 (hooks, ordering, chunking, cursor-after-ack, SessionEnd close row, never exit 2),
+  c2 (failed/killed pass and lost cursor replay as no-ops or defer), c3 (T3.20 c8 smoke plus a
+  rec-4101 monitor run, review method). All open.
 - rollback: remove the hook entries; rows stay (append-only); cursors hold positions only.
 - edges: part_of T3.20; depends_on T2.36.
 
@@ -135,6 +158,9 @@ Open (q1-q3 in the fixture; none is answerable from the repository):
   carry `depends_on: pwi-capture-producer-wiring`.
 - Reader verbs (rec-4024 item 6) are this item's failure_signal source; back-validation (T3.4) and the
   friction classifier both read only rows this item writes.
+- T3.20 c1's launch criterion (a pre-write credential scrub) is already met inside record_turn
+  (transcripts.py:129, observations.py:331-332, sessions.py:222). The runner owes nothing there, and
+  the fixture's c1 does not drop it.
 - No seed component owns the WRITER verb. It is already tracked (T2.36 c1/c2, rec-4024 slice 2), so
   the pilot should point at it by edge rather than add an item.
 

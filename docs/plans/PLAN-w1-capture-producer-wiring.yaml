@@ -47,6 +47,9 @@ acceptance_criteria:
     legs (VP step 4).
   - The plan validates against the PlanDocument schema (VP step 5).
   - >-
+    The failure_signal's producer gap is shown: a finalized tree yields no root close row today, so the
+    close row in report section 2 step 7 is a 3b obligation (VP step 7).
+  - >-
     The branch diff against origin/main is exactly the plan, the report and the fixture, with no code,
     roadmap, contract, rec or DECISIONS edit (VP step 6).
 verification_plan:
@@ -149,6 +152,26 @@ verification_plan:
     graduation: not-applicable
   - step: 7
     phase: pre-deploy
+    action: Prove record_turn emits no root close row today, even for a finalized tree (the failure_signal's producer gap)
+    command: >-
+      bin/venv-python -c "import json,pathlib,tempfile; from src.turn_capture.record_turn import record_turn; from src.turn_capture.transcript import FsTree;
+      S='aaaaaaaa-0000-4000-8000-000000000001'; B={'sessionId':S,'cwd':'/w','version':'2.1.0'};
+      r=[dict(B,type='user',uuid='u1',promptId='p1',timestamp='2026-01-01T00:00:01.000Z',message={'role':'user','content':'go'}),dict(B,type='assistant',uuid='z1',timestamp='2026-01-01T00:00:02.000Z',message={'id':'m1','model':'m','role':'assistant','stop_reason':'end_turn','usage':{'input_tokens':1,'output_tokens':1},'content':[{'type':'text','text':'ok'}]})];
+      p=pathlib.Path(tempfile.mkdtemp())/(S+'.jsonl'); p.write_text(''.join(json.dumps(x)+chr(10) for x in r));
+      s=dict(record_turn(FsTree(p),None,project_ref='p',session_final=True).batches)['telemetry_sessions'];
+      print('final_session_kinds=' + ','.join(sorted(x['event_kind'] for x in s)) + ' close_rows=' + str(sum(x['event_kind']=='close' for x in s)))"
+    expected: One line reporting that a finalized one-turn tree yields only the open row and zero close rows.
+    fix_if: >-
+      close_rows=1 means a root close row landed (runner step 7 of the report); the failure_signal's producer
+      gap is closed, so drop the PARSER_VERSION note in report section 2 step 7.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Red-before evidence for the 3b close-row rule, true only until it lands; a standing guard would block
+      the sanctioned change.
+    expected_literals: ["final_session_kinds=open close_rows=0"]
+  - step: 8
+    phase: pre-deploy
     action: Run the fast presubmit tier over the branch
     command: bin/venv-python -m scripts.validate --pre
     expected: Exits 0; PR CI's --pre run is the authoritative gate (Decision 73).
@@ -183,9 +206,16 @@ context:
     Boundary challenge (report section 0): the seed "record_turn -> writer" spans two owners. Kept as one
     producer-side item; the writer half is T2.36 / rec-4024 by depends_on edge, never a second pilot item.
   - "fork: one item vs split runner/transport | chosen: one task item | class: consistency-only | precedent: CD.45 item-count cap 12 across about ten components; Decision 197 cl.3 grain (one row per work item) | precedent_kind: contract | reversible: yes | persisted: fixture"
-  - "fork: who owns gate/precommit signatures on rec-4026's handed-on list | chosen: recommended read-side (rec-4032), nothing moved | class: asked | precedent: PLAN-telemetry-turn-capture-core.yaml:636-639 names both homes | precedent_kind: none | reversible: yes | persisted: report s1, PARKED for the operator"
+  - "fork: who owns gate/precommit signatures on rec-4026's handed-on list | chosen: recommended read-side (rec-4032), nothing moved | class: asked | precedent: PLAN-telemetry-turn-capture-core.yaml:636-639 names both homes | precedent_kind: none | reversible: yes | persisted: report P1, /mnt/project-files/gates/w1-c1-parked-forks.md, PARKED for the operator"
   - "fork: cursor-loss pin recovery (k2) | chosen: none; option (b) recommended, contract amendment option (a) is always-ask | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: report k2, PARKED for the operator"
   - "fork: sync vs detached Stop pass (k1) | chosen: none; option (a) recommended | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: report k1, PARKED for the operator"
+  - >-
+    gates: zero-context verification r1 w1-capture-producer-wiring-zero-context-verification-r1-4d1a8e63 REVISE
+    (F1 blocking: turn_coverage_gap blind to final-turn loss and false-flags a clean SessionStart+SessionEnd
+    session; F2-F5 minor) -> all addressed: failure_signal redefined as unfinalized_session_share over a root
+    close row (report section 2 step 7, VP 7) with its never-succeeding-runner limit stated (q1); k3 recast as
+    risk R1; the gate/precommit recommendation moved from s1 to parked P1; per-session conformance named a
+    runner obligation (step 8); T3.20 c1 scrub noted as met upstream.
   - >-
     check_accounting: no registered check is added or removed; the hygiene stream's baseline is untouched.
 pre_implementation_checklist:
