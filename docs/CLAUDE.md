@@ -26,6 +26,7 @@ Every non-governance doc class has a subtree home; put new files there, not at t
 | Audit prompts (`AUDIT-{slug}.md`) | `docs/audit-prompts/` |
 | REPORT-ONLY deliverables + spike notes | `docs/plans/reports/` |
 | Operator procedures (agent-led) | `procedure:` blocks in `docs/contracts/*.yaml` |
+| Work-item pilot fixture (CD.45 one-off, provisional_v0; not a roadmap) | `docs/work-item-pilot/` |
 
 Example: `docs/contracts/package-registry-reservation.yaml`'s `procedure:` block holds the
 PyPI/npm/crates.io namespace-reservation walkthrough (rec-3941).

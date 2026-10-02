@@ -1,0 +1,443 @@
+schema_version: 5
+slug: "t2-47-recovery-semantics-closeout"
+intent: >-
+  Stage, without implementing or flipping anything, the evidence the operator needs to settle tier item T2.47
+  (Recovery-path unification + routed-pending observability, DEP-10/11), whose two criteria read met (met_by
+  terraform-recovery-semantics, #686) while the item reads not_started. c1 re-adjudicates true and is staged
+  for a Decision 183 text re-ground; c2's drift-rec half no longer holds at current main (the Decision 190
+  classifier added in #1174 runs ahead of the pending_gated branch), so this plan stages that finding, a
+  ready-to-apply c2 reversal marked OPERATOR-DECISION-PENDING and an outline of the fix, and no completion.
+plan_type: REPORT-ONLY
+verification_tier: V1
+plan_path: docs/plans/PLAN-t2-47-recovery-semantics-closeout.yaml
+phase: >-
+  Platform tier T2, tier_item T2.47 (DEP-10/11), depends_on T2.46. Both exit criteria read met
+  (met_by terraform-recovery-semantics); this plan re-adjudicates them and stages operator edits only.
+scope:
+  - file: docs/plans/PLAN-t2-47-recovery-semantics-closeout.yaml
+    action: Create
+    purpose: >-
+      The REPORT-ONLY deliverable (Decision 86 cl.2; precedent the T1.17 c1-c3, T1.13 c9 and T2.44 c2
+      REPORT-ONLY plans). Carries the c1/c2 evidence as executable VP steps, the staged c1 re-ground, the c2
+      finding and its staged option (a) edit, and the option (c) implementation shape. No code, test, workflow,
+      registry, contract, roadmap or DECISIONS change.
+bundled_recommendations: []
+followon_recs: []
+infrastructure_dependencies: []
+acceptance_criteria:
+  - >-
+    Six of the seven graduated checks terraform-recovery-semantics registered still pass at current main; the
+    seventh (advisory-status-pending-gated) fails because #916 moved its target, and the moved behavior is
+    unit-tested (VP steps 1-2).
+  - The DEP-10/11 and Decision 190 classifier test files pass at current main (VP step 3).
+  - >-
+    The cited commits are on main and carry what the evidence relies on (#686 Resolves trailer, #916
+    relocation, #1077 Decision 183) (VP step 4).
+  - >-
+    c1's live record is re-derived, each run labelled with its episode shape (VP step 5): only 30028942903 stands
+    in for an admin-resolved episode (an operator-accepted substitute, caveats 1-2); 30589703121 (the #809 DEP-02
+    teardown) and 31883378929 (red at #911, cause unrecorded) evidence the Reconcile fresh re-plan and routed
+    hand-off mechanism on Decision 158 code, not an admin-resolved episode.
+  - >-
+    c1's rec clause is evidenced: rec-autoclose run 29895552746 closed rec-2523, rec-2461, rec-2647 and rec-2648 on
+    2026-07-22 (VP step 6), and a ducklake-reads named read on 2026-10-01 returned all four closed with that
+    resolution (context).
+  - >-
+    c2's health-verdict half is evidenced (VP step 7); its drift-rec half does not hold: the classifier exits on
+    pending_codification before the pending_gated read, the pending_codification rec names no PR, and a routed
+    record escalates to red after 2.0h while still carrying pending_gated (VP steps 8-9); no live run ever fired
+    the PENDING_GATED_DRIFT branch (VP step 10).
+  - Decision 183 point 1 is the routing rule the staged c1 re-ground uses (VP step 11).
+  - >-
+    The met_by resolves and the roadmap state the staged edits target holds: T2.47 and T2.46 each read
+    not_started with every criterion met (VP steps 12-13).
+  - The plan validates against the PlanDocument schema and the branch diff is exactly this file (VP steps 14-15).
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: Run every graduated check the terraform-recovery-semantics plan registered
+    command: >-
+      bin/venv-python -c "import glob,subprocess,yaml;
+      E=[yaml.safe_load(open(f)) for f in sorted(glob.glob('config/agent/verification_registry/entries/*.yaml'))];
+      R=[e for e in E if e.get('plan_slug')=='terraform-recovery-semantics'];
+      F=[e['check_id'] for e in R if subprocess.run(e['check_spec']['command'],capture_output=True).returncode!=0];
+      print('graduated_rows=' + str(len(R)) + ' passing=' + str(len(R)-len(F)) + ' failing=' + ','.join(F))"
+    expected: >-
+      Seven rows, six passing; the failing row is advisory-status-pending-gated, which greps
+      terraform-apply-sandbox.yml for the pending_gated token. Existing registry rows are never re-run by CI
+      (validate_verification_registry executes only added or modified rows), so it has failed silently since #916.
+    fix_if: >-
+      More than one failing row means a DEP-10/11 surface regressed; stop and re-present. Zero failing rows means
+      the stale row was replaced since authoring; drop the stale-guard residual.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      The seven rows are themselves the standing guards; this step audits them once, and re-registering them would
+      duplicate the registry.
+    expected_literals: ["graduated_rows=7 passing=6 failing=advisory-status-pending-gated"]
+  - step: 2
+    phase: pre-deploy
+    action: Prove the advisory pending-gated surface moved to a tested module rather than disappearing
+    command: >-
+      bin/venv-python -c "import pathlib; w=pathlib.Path('.github/workflows/terraform-apply-sandbox.yml').read_text();
+      m=pathlib.Path('scripts/ci/convergence_advisory.py').read_text();
+      t=pathlib.Path('tests/test_convergence_advisory.py').read_text();
+      print('apply_sandbox_pending_gated=' + str(w.count('pending_gated')) + ' advisory_module_invoked=' + str('scripts.ci.convergence_advisory' in w)
+      + ' module_pending_gated=' + str('pending-gated' in m and 'pending_gated' in m) + ' module_test=' + str('def test_pending_gated_marker_is_success_with_routed_pending_description' in t))"
+    expected: >-
+      The workflow no longer carries the token, it invokes the advisory module, the module renders the
+      pending-gated description, and a named unit test pins it. The advisory leg is the #686 plan's acceptance
+      criterion, not c2's text, so the stale row says nothing about c2.
+    fix_if: >-
+      module_pending_gated=False or module_test=False means the advisory behavior regressed; stop and report.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      tests/test_convergence_advisory.py is the standing guard for the relocated behavior; replacing the stale row
+      needs a new check id plus retirement (verification_graduation refuses a tautological in-place repoint),
+      which is a hygiene slice, not this report.
+    expected_literals: ["apply_sandbox_pending_gated=0 advisory_module_invoked=True module_pending_gated=True module_test=True"]
+  - step: 3
+    phase: pre-deploy
+    action: Run the DEP-10/11 and Decision 190 classifier test files
+    command: >-
+      bin/venv-python -m pytest -q tests/convergence_health/test_assess.py tests/convergence_health/test___main__.py
+      tests/test_terraform_drift_acceptance.py tests/test_convergence_advisory.py tests/test_stale_plan_signature.py
+      tests/test_reconcile_reachability.py tests/test_reconcile_target.py tests/test_convergence_classify.py
+    expected: >-
+      Exits 0 with no failures (217 passed at 931f3057). Green here does not clear c2: the ordering tests in
+      test_terraform_drift_acceptance.py pin the pending_gated branch only against the out-of-band narrative, and
+      test_convergence_classify.py has no pending_gated case, so no test covers the interaction VP steps 8-9 show.
+    fix_if: A failure is a regression outside this plan; record it and stop.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Existing pytest suites already run in full on main and in --pre's affected-test diff; a registry row would
+      re-run the tests that are themselves the guard.
+    expected_literals: []
+  - step: 4
+    phase: pre-deploy
+    action: Confirm the cited commits are on main and carry what the evidence relies on
+    command: >-
+      git merge-base --is-ancestor f8d8984aa909e168bb456bfb306300e19d48e85d origin/main
+      && git merge-base --is-ancestor c6e708c21a0a41af30bc948efcb4091129265443 origin/main
+      && git merge-base --is-ancestor a47e03abfe06b5bbc79fd670b7cb7cdf14efba62 origin/main
+      && git merge-base --is-ancestor 59951c5d56584ad808b1801d5827605139d86c35 origin/main
+      && echo "resolves_686=$(git show -s --format=%B f8d8984aa909e168bb456bfb306300e19d48e85d | grep -c '^Resolves: rec-2523, rec-2461, rec-2647, rec-2648$')
+      relocation_916=$(git show c6e708c21a0a41af30bc948efcb4091129265443 -- .github/workflows/terraform-apply-sandbox.yml | grep -c '^-.*pending_gated')
+      d183_in_1077=$(git show a47e03abfe06b5bbc79fd670b7cb7cdf14efba62 -- docs/DECISIONS.md | grep -c '^+## Decision 183:')"
+    expected: >-
+      All four ancestry checks pass, then resolves_686=1, relocation_916 at least 1 (the #916 diff removes the
+      pending_gated lines from the workflow) and d183_in_1077=1. 59951c5d is #1174, which added the Decision 190
+      classifier VP steps 8-9 examine.
+    fix_if: >-
+      An unknown-revision error in a shallow clone means history is missing; run git fetch --depth=2000 origin
+      main and re-run.
+    hermetic: false
+    graduation: not-applicable
+  - step: 5
+    phase: pre-deploy
+    action: Re-derive c1's live record from the public GitHub API (three input-free Reconcile dispatches)
+    command: >-
+      for r in 30028942903 30589703121 31883378929; do curl -s "https://api.github.com/repos/benjamin-blake/theseus/actions/runs/$r/jobs"
+      | python3 -c "import json,sys; J={j['name']:j for j in json.load(sys.stdin)['jobs']}; S={s['name']:s['conclusion'] for s in J['apply-reconcile']['steps']};
+      G={s['name']:s['conclusion'] for s in J['gated-apply-reconcile']['steps']} if J['gated-apply-reconcile']['conclusion']=='success' else {};
+      gv=[v for k,v in G.items() if k.startswith('Verify downloaded fresh plan.bin sha256')];
+      print('run=$r fresh_replan=' + str(S.get('Fresh re-plan (STALE_PLAN_FRESH_REPLAN fallthrough)')) + ' fresh_apply=' + str(S.get('Terraform apply (fresh re-plan, guard-PASS)'))
+      + ' gated_handoff=' + J['gated-apply-reconcile']['conclusion'] + ' handoff_sha_verified=' + str(gv[0] if gv else None))"; done
+    expected: >-
+      run=30028942903 fresh_replan=success fresh_apply=success gated_handoff=skipped. Shape: the c1 stand-in
+      episode (2026-07-23, head 3cd80a53; synthetic admin-written red, staleness from the push-run's own apply; the
+      job log reads the record back green). Caveat 1: not an out-of-band admin apply; the operator accepted the
+      substitute and skipped the deliberate EP2 rehearsal on 2026-07-23 (OVERSEER-terraform-deploy-redesign.yaml
+      EP2-DISPOSITION). Caveat 2: it predates #771, #809, #1077 and #1174 and is history.
+      run=30589703121 fresh_replan=success fresh_apply=skipped gated_handoff=success handoff_sha_verified=success.
+      Shape: the #809 DEP-02 probe-role teardown (2026-07-30 at e994264c; a guard-routed fresh re-plan destroyed the
+      orphaned role and turned the record green, docs/ROADMAP-PLATFORM.yaml T2.48 2026-07-30 note); proves the
+      Decision 158 routed hand-off, not an admin-resolved episode.
+      run=31883378929, same values. Shape: red at 43e4d688 (#911), saved plan guard-routed (the log's entry
+      condition is guard_routed), cleared through tf-gated-apply on 2026-08-15; the red cause is not recorded in the
+      repo, so it too proves the mechanism only. 31883298153 just before it failed in resolve-target because its
+      optional rec-id input could not reach the recs reader; the input-free re-dispatch cleared.
+      The re-runnable half of c1 is VP step 1's three reconcile rows, validate_dispatch_gated_apply_topology and the
+      Decision 158 recovery-workflow-topology guard (scripts/checks/ci_guards/validate_ci_workflow_guards.py).
+      From CC-web the unauthenticated API may be proxy-blocked; replay through mcp__github__actions_list
+      (list_workflow_jobs).
+    fix_if: >-
+      HTTP 403 or a proxy body: read the same runs through mcp__github__actions_list (list_workflow_jobs). Any other
+      value means a cited run is not what the evidence says; drop it and re-present.
+    hermetic: false
+    graduation: not-applicable
+  - step: 6
+    phase: pre-deploy
+    action: Re-derive c1's rec clause from the rec-autoclose job log for #686
+    command: >-
+      curl -sL https://api.github.com/repos/benjamin-blake/theseus/actions/jobs/88844840422/logs
+      | grep -Eo 'rec-autoclose: closed rec-(2523|2461|2647|2648)$' | sort -u | wc -l
+    expected: >-
+      4 -- rec-autoclose run 29895552746 (head f8d8984a, 2026-07-22) closed all four recs #686 named. From CC-web,
+      replay through mcp__github__get_job_logs (job 88844840422) if the unauthenticated API is proxy-blocked.
+    fix_if: >-
+      0 with an HTTP 410 or empty body means the log passed its 90-day retention (about 2026-10-20); the
+      ducklake-reads named read recorded in context and the closeout PR body's verbatim lines stand in for it.
+    hermetic: false
+    graduation: not-applicable
+  - step: 7
+    phase: pre-deploy
+    action: Re-derive c2's health-verdict half from a live routed episode
+    command: >-
+      curl -sL https://api.github.com/repos/benjamin-blake/theseus/actions/jobs/89373326109/logs
+      | grep -c 'HealthVerdict: {.*"pending_gated": {"routed_at": "2026-07-24T00:22:13Z"'
+    expected: >-
+      1 -- convergence-health run 30057888525 (2026-07-24T01:04Z) printed a verdict carrying the pending_gated marker
+      that dispatch run 30055938891 wrote at 00:22Z. That record was red, so this is not c2's green-plus-marker shape;
+      the half is carried by assess.py and its tests (VP step 3) and this run only shows the surface live. From
+      CC-web, replay through mcp__github__get_job_logs (job 89373326109) if the API is proxy-blocked.
+    fix_if: >-
+      0 with HTTP 410 means the log expired (about 2026-10-22); the closeout PR body carries the verdict line.
+    hermetic: false
+    graduation: not-applicable
+  - step: 8
+    phase: pre-deploy
+    action: Show the drift workflow's branch order (c2 drift-rec half, structural)
+    command: >-
+      bin/venv-python -c "L=open('.github/workflows/terraform-drift.yml').read().splitlines();
+      f=lambda s,st=0: next(i for i in range(st,len(L)) if s in L[i]);
+      iv=f('VERDICT=\$(PLAN_JSON'); ipc=f('if [ \"\$VERDICT\" = \"pending_codification\" ]'); ipe=f('pending_codification tf_drift rec filed');
+      ipg=f('PENDING_GATED_PRESENT=\$('); e=f('CONVERGENCE_STALE_MARKER_ESCALATED'); ne=f('exit 0',e); nr=f('ops_data_portal',e);
+      print('order_ok=' + str(iv<ipc<ipe<ipg) + ' pending_codification_block_names_pr=' + str(any('PENDING_PR' in l or 'pending_gated' in l for l in L[ipc:ipe]))
+      + ' escalation_files_rec=' + str(nr<ne))"
+    expected: >-
+      The Decision 190 verdict is computed (line 282 at 931f3057) before the pending_codification branch (290), which
+      files its generic rec and exits (313) before the pending_gated read (323); that branch's rec text names no PR,
+      and the escalation exit (298-299) files no rec. A routed-pending episode is code ahead of state with no
+      resource_drift, so it takes the pending_codification branch and never reaches PENDING_GATED_DRIFT.
+    fix_if: >-
+      order_ok=False or pending_codification_block_names_pr=True means the workflow changed since authoring; re-read it
+      and re-adjudicate c2 before the operator applies anything.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Pins a defect, not an invariant: a standing row would assert the regression stays in place. The
+      option (c) slice owns the inverted red-before guard.
+    expected_literals: ["order_ok=True pending_codification_block_names_pr=False escalation_files_rec=False"]
+  - step: 9
+    phase: pre-deploy
+    action: Replay the classifier over a routed-pending record (c2 drift-rec half, behavioral)
+    command: >-
+      bin/venv-python -c "import json; from datetime import datetime,timezone,timedelta; import scripts.ci.convergence_classify as C;
+      v=C.classify_plan(json.dumps({'resource_changes':[{'address':'aws_iam_role.x','change':{'actions':['create']}}],'resource_drift':[]}));
+      t0=datetime(2026,10,1,12,0,tzinfo=timezone.utc); r0={'status':'green','pending_gated':{'commit_sha':'abc','routed_at':'2026-10-01T11:55:00Z'}};
+      a1=C.decide_pending_codification_action(r0,t0); r1=C.apply_pending_codification_write(r0,t0,'https://x/runs/1'); t2=t0+timedelta(hours=2,minutes=1);
+      a2=C.decide_pending_codification_action(r1,t2); r2=C.escalate_stale_pending_codification(r1,t2,'https://x/runs/2');
+      print('verdict=' + v + ' tick1=' + a1 + ' tick2=' + a2 + ' status_after=' + r2['status'] + ' pending_gated_kept=' + str('pending_gated' in r2)
+      + ' refusal_says_drift=' + str('MEASURED out-of-band drift' in C.render_convergence_red_refusal(r2)))"
+    expected: >-
+      A routed-shaped plan classifies pending_codification; on a green record carrying pending_gated the first tick
+      marks, a tick 2h01m later escalates, and the record turns red with pending_gated still present and a refusal
+      naming out-of-band drift. The age counts from the first drift tick that sees the delta, so the trigger is two
+      ticks at least 2h apart inside a routed window. Impact: an approved, successful gated apply overwrites the record
+      green (queued pushes wait on the shared concurrency group), so the push path stays latched only when the gated
+      apply is rejected, abandoned or fails before the apply step -- then the record stays red, mislabelled out-of-band
+      drift, with no rec naming the PR (an apply-step failure is a correctly labelled apply_failure red); during the
+      window the health verdict and PR advisory read red. Reproduced mechanically, not observed live.
+    fix_if: >-
+      tick2=mark or status_after other than red means convergence_classify gained pending_gated awareness; c2 may hold
+      again, so re-adjudicate it and drop the option (a) staging.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Pins a defect, not an invariant: a standing row would assert the regression stays in place. The
+      option (c) slice owns the inverted red-before guard.
+    expected_literals: ["verdict=pending_codification tick1=mark tick2=escalate status_after=red pending_gated_kept=True refusal_says_drift=True"]
+  - step: 10
+    phase: pre-deploy
+    action: Show that no live run ever fired the PENDING_GATED_DRIFT branch
+    command: >-
+      a=$(curl -sL https://api.github.com/repos/benjamin-blake/theseus/actions/jobs/89393887391/logs | grep -c 'Could not assume role with OIDC');
+      b=$(curl -sL https://api.github.com/repos/benjamin-blake/theseus/actions/jobs/106112836526/logs | grep -c 'No changes.');
+      c=$(curl -s "https://api.github.com/repos/benjamin-blake/theseus/actions/workflows/terraform-drift.yml/runs?created=2026-08-15T11:59:00Z..2026-08-15T12:04:00Z" | python3 -c "import json,sys; print(json.load(sys.stdin)['total_count'])");
+      echo "w1_drift_could_not_assume=$a w3_drift_no_changes=$b w2_drift_runs=$c"
+    expected: >-
+      w1_drift_could_not_assume at least 1, w3_drift_no_changes at least 1, w2_drift_runs=0. The three routed windows
+      found: 2026-07-24T00:22Z-10:02Z (three drift ticks, each unable to assume the drift role during the T2.49 role
+      consolidation), 2026-08-15T11:59Z-12:03Z (no tick) and 2026-09-20T12:52Z-17:14Z (one tick, run 35523993761 at
+      9a80aa89, planned no changes, so no rec of either kind). The drift cron was also parked from #969 (2026-08-27)
+      to #1082 (2026-09-04). The #686 plan's VP-12 rehearsal was never run; under VP steps 8-9 a live VP-12 would now
+      reproduce the defect, not accept c2. From CC-web, replay through mcp__github__get_job_logs and
+      mcp__github__actions_list if the API is proxy-blocked.
+    fix_if: >-
+      Different counts mean the window census is wrong; re-list the drift runs for each window through
+      mcp__github__actions_list and re-present.
+    hermetic: false
+    graduation: not-applicable
+  - step: 11
+    phase: pre-deploy
+    action: Confirm Decision 183 point 1's routing rule, which the staged c1 re-ground uses
+    command: >-
+      bin/venv-python -c "import pathlib; d=pathlib.Path('docs/DECISIONS.md').read_text(encoding='utf-8'); i=d.index('## Decision 183:'); b=' '.join(d[i:i+12000].split());
+      print('d183_reconcile_rule=' + str(\"Red commit's HCL still the desired state -> Reconcile\" in b)
+      + ' d183_ack_rule=' + str('merged AFTER the red commit -> the acknowledge-and-retry dispatch' in b)
+      + ' d183_related_t2_47=' + str('T2.47' in b))"
+    expected: >-
+      Both routing clauses are present and the entry names T2.47. An admin-resolved episode leaves the red commit's
+      HCL as the desired state, so c1 sits in the Reconcile half; the fix-merged-later shape (reconcile run
+      33668842982 failed at the saved-plan fetch on 2026-09-02) is the acknowledge-and-retry half since #1077.
+    fix_if: False on either clause means Decision 183 was amended; re-read it and re-stage the c1 re-ground.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      validate_dispatch_gated_apply_topology already enforces the Decision 183 mechanism; this step reads the routing
+      text once for the re-ground.
+    expected_literals: ["d183_reconcile_rule=True d183_ack_rule=True d183_related_t2_47=True"]
+  - step: 12
+    phase: pre-deploy
+    action: Confirm met_by resolves to a plan that declared both criteria
+    command: >-
+      bin/venv-python -c "import pathlib,yaml; p=pathlib.Path('docs/plans/PLAN-terraform-recovery-semantics.yaml');
+      c=yaml.safe_load(p.read_text())['closes_criteria'] if p.exists() else [];
+      print('met_by_plan_resolves=' + str('T2.47:c1' in c and 'T2.47:c2' in c))"
+    expected: One line reporting the plan exists and names both T2.47:c1 and T2.47:c2 in closes_criteria.
+    fix_if: >-
+      False means the plan was archived or rewritten; the c1 re-ground then stages met_by as the full sha
+      f8d8984aa909e168bb456bfb306300e19d48e85d (Decision 136; exit-criteria-ledger.yaml#fields.met_by).
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: validate_platform_roadmap already resolves every met_by to a real plan or 40-hex sha.
+    expected_literals: ["met_by_plan_resolves=True"]
+  - step: 13
+    phase: pre-deploy
+    action: Confirm the roadmap state the staged edits target (T2.47 and its depends_on T2.46)
+    command: >-
+      bin/venv-python -c "import yaml; I={t['id']:t for t in yaml.safe_load(open('docs/ROADMAP-PLATFORM.yaml'))['tier_items']};
+      f=lambda k: k + '=' + I[k]['status'] + '/' + ','.join(c['id'] + ':' + c['status'] for c in I[k]['exit_criteria']);
+      print(f('T2.47') + ' ' + f('T2.46') + ' t2_47_depends_on=' + ','.join(I['T2.47']['depends_on']))"
+    expected: T2.47 reads not_started with c1 and c2 met, T2.46 not_started with c1-c3 met, and T2.47 depends on T2.46 only.
+    fix_if: >-
+      A changed status means the operator or another slice already acted; re-stage against the new state.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      A snapshot of the roadmap state the operator's edits are meant to change; a standing row would pin a transient
+      state.
+    expected_literals: ["T2.47=not_started/c1:met,c2:met T2.46=not_started/c1:met,c2:met,c3:met t2_47_depends_on=T2.46"]
+  - step: 14
+    phase: pre-deploy
+    action: Validate this plan against the PlanDocument schema
+    command: bin/venv-python -m scripts.roadmap.plan_document docs/plans/PLAN-t2-47-recovery-semantics-closeout.yaml
+    expected: The validator reports the plan valid and exits 0.
+    fix_if: Fix the reported field (unknown key, missing graduation companion, backtick literal in expected).
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      validate_plan_documents already schema-checks every docs/plans/PLAN-*.yaml in both tiers; a per-plan row
+      duplicates it.
+    expected_literals: []
+  - step: 15
+    phase: pre-deploy
+    action: Confirm the change is exactly this plan file (no roadmap, code, test, registry, contract or DECISIONS edit)
+    command: git fetch --quiet origin main && git log --name-only --format= origin/main..HEAD
+    expected: >-
+      The only non-blank path listed (possibly repeated, once per branch commit) is
+      docs/plans/PLAN-t2-47-recovery-semantics-closeout.yaml; merge-from-main commits list no paths.
+    fix_if: Any other path means scope leaked; revert it (every edit here is staged in context, applied only by the operator).
+    hermetic: false
+    graduation: not-applicable
+  - step: 16
+    phase: pre-deploy
+    action: Run the fast presubmit tier over the branch
+    command: bin/venv-python -m scripts.validate --pre
+    expected: Exits 0; PR CI's --pre run is the authoritative gate (Decision 73).
+    fix_if: Address the reported issue in the plan file.
+    hermetic: false
+    graduation: not-applicable
+constraints:
+  - >-
+    No tier-item or criterion status flip, no closes_criteria entry, no ratification (charter never-list;
+    Decision 136: only /implement flips criteria, only those a plan names in closes_criteria). Every roadmap edit
+    below is staged in context for the operator's own micro-commit (tier_item_freshness_gate output discipline); a
+    Scope row on docs/ROADMAP-PLATFORM.yaml is closed to this slice by the charter, Decision 79/125 (staged roadmap
+    edits; the file is packaged into the active data-pipeline Lambda).
+  - >-
+    No completion is staged (stand-in F5): tier_item_freshness_gate check 1 stages a closeout only if all criteria
+    hold, and c2's drift-rec half does not (VP steps 8-9); a completion over c2 is the silent pass Decision 136
+    forbids. T2.47 qualifies for the completion gate only after c2 is restored under option (c) and re-flipped
+    through closes_criteria, and that closeout is ordered after T2.46's (depends_on; discipline, no validator).
+  - >-
+    c2 is not re-grounded to today's behavior: dropping or scoping away "the drift rec names the pending PR"
+    weakens an acceptance criterion to obtain green (Decision 181 cl.1); no ratified Decision narrows that clause
+    (Decision 190 is silent on pending_gated ordering and lists T2.47 as closing no criterion;
+    PLAN-convergence-drift-classification.yaml records c2 "partially falsified ... not silently re-closed").
+  - >-
+    No recommendation bundled, filed, updated or closed (Decision 67 charter never-item; Decision 201 verdict
+    layer). rec-2920 is named only as the owner of T2.47's status/criteria adjudication; this plan stages evidence
+    for it and adjudicates nothing.
+  - >-
+    implementation_shape for option (c), gated on MEMORY.md#parked row R9 and not to be started by a delegate: an
+    IMPLEMENTATION plan (V2) over .github/workflows/terraform-drift.yml, scripts/ci/convergence_classify.py,
+    tests/test_convergence_classify.py and tests/test_terraform_drift_acceptance.py that (1) reads pending_gated
+    before the pending_codification write so a routed-pending episode files the PENDING_GATED rec naming the PR,
+    and settles two open operator questions: (2) how the 2.0h bound treats a pending_gated-explained delta, given
+    Decision 190 point 3 (bounded so misclassified drift never sits indefinitely) and reversal (b) (retune the
+    bound, never remove it); and (3) real drift during a routed window, where Decision 190 point 1 (drift always
+    wins) and #686's CARRY-2 (the pending_gated branch never red-flips) conflict. Both are Decision-level. Hazard
+    for both: a pending_gated marker has no clearing path on a rejected or abandoned gated apply short of the next
+    green write, and once drift_flagged_at is set the idempotent skip swallows later drift, so a naive reorder would
+    extend that masking to pending_codification deltas; marker freshness must be bounded or validated. Red-before VP
+    steps; closes_criteria [T2.47:c2] only after option (a) is applied.
+  - >-
+    The stale advisory-status-pending-gated registry row is not replaced here (Decision 59 scope boundary); its
+    remedy (a new check id over scripts/ci/convergence_advisory.py plus retirement) is an unfiled hygiene finding.
+    It has failed on main since #916 (2026-08-15) because graduated rows are admission-time only (Decision 132).
+  - >-
+    Actions job logs expire 90 days after each run, so VP steps 6, 7 and 10 (w1 leg) stop reproducing about
+    2026-10-20 to 2026-10-22; the plan PR body carries their lines verbatim.
+  - No docs/DECISIONS.md or archive edit (charter never-list; Decision 177 append-only).
+  - No new standing prose doc and no companion report file (Decision 86 cl.2); this plan file is the deliverable.
+  - No rescue agents or workaround loops (Decision 55).
+context:
+  - >-
+    Decision-scout FLAGS_FOUND (t2-47-decision-scout-r1-8a1e4c63): CITE 136, 183, 190, 158, 147, 181, 144, 86;
+    RELATED 126, 154, 77, 163/132, 55/92, 67, 201/84/103, 189; WARN D136 (no silent pass over c2) and WARN D181 (no
+    c2 re-ground), both discharged by staging no completion and no c2 re-ground. Decisions triaged: 163 of 163.
+    Roadmap items intersected: 0; CONFLICT: 0; RELATED: 0
+  - >-
+    gates: decision-scout=FLAGS_FOUND (folded); step-6b=t2-47-step-6b-stand-in-r1 (F4/F6 parked, F7 operator-answered);
+    plan-critique=PROCEED r2 (r1 d4b07e19, r2 5a3e81bf); report-critique=PROCEED r2 (r1 8d62f0a9, r2 0b7d93e6)
+  - >-
+    Freshness gate at 931f3057: c2 does not re-adjudicate (VP 8-9); paths exist; progress_note stale for VP-11/recs;
+    Decisions 183 and 190 changed DEP-10/11 (VP 4, 8, 11); no CD.
+  - >-
+    Named reads 2026-10-01 (ducklake-reads): rec-2523/2461/2647/2648 closed (rec-autoclose 29895552746, 2026-07-22;
+    F3 met); rec-2920 open, widened to T2.46 and T2.47; ci_rca_open 0 rows.
+  - >-
+    staged_t2_47_c1_reground (operator-applied; text only, status met and met_by terraform-recovery-semantics
+    unchanged): c1 text -> "An admin-resolved recovery episode whose red commit's HCL is still the desired state
+    clears via a single input-free Reconcile dispatch, with at most one tf-gated-apply approval when the fresh plan
+    routes (Decision 183 point 1); a red whose fix merged after the red commit clears via the acknowledge-and-retry
+    dispatch and is outside this criterion; rec-2523/rec-2461/rec-2647 are closed to the residual (DEP-10)"; original to
+    the progress_note. Deltas: drops "forced" (no forced rehearsal ran; 30028942903 was the operator-accepted substitute,
+    EP2 skipped, stand-in F2); adds "input-free"; "updated or closed" -> "closed"; adds the Decision 183 scope and
+    approval clause. F7 answered 2026-10-01: not a criterion flip, so the operator may apply it as bookkeeping.
+  - >-
+    staged_t2_47_c2_option_a (OPERATOR-DECISION-PENDING; applied by nobody this week): c2 status met -> open, met_by
+    dropped, text unchanged, progress_note bullet "2026-MM-DD: c2 reopened -- met by terraform-recovery-semantics
+    2026-07-22, regressed by #1174 (Decision 190) 2026-09-14: the drift handler exits on pending_codification before the
+    pending_gated read, so a routed-pending drift rec names no PR [and turns red after ticks 2h apart, latching pushes
+    if the gated apply is rejected, abandoned or fails pre-apply -- subject to implementation_shape question 2]".
+    Recommended: (a), then (c) re-flips c2; (b) only as a split via a rec. (a) also clears rec-2920's T2.47 shape.
+  - "fork: c1 re-ground to D183 pt 1 | chosen: staged, text-only | class: consistency-only | precedent: exit-criteria-ledger.yaml realized-differently; D183 pt 1; R7 F3; R9 stand-in | precedent_kind: contract | reversible: yes | persisted: context staged_t2_47_c1_reground"
+  - "fork: c1 evidence mapping | chosen: dated named reads with caveats 1-2; re-runnable half on registry rows + topology guard | class: consistency-only | precedent: exit-criteria-ledger.yaml:70-71; D136; R9 stand-in | precedent_kind: contract | reversible: yes | persisted: VP 5, context"
+  - "fork: c1 rec clause | chosen: named read, nothing bundled or closed | class: consistency-only | precedent: recommendation-relevance.yaml; git-ops.yaml#resolves_trailer; D201; D67; R9 stand-in 2026-10-01 (delegated authority) | precedent_kind: contract | reversible: yes | persisted: context"
+  - "fork: c2 disposition incl. live VP-12 | chosen: PARKED (MEMORY.md#parked R9); finding staged, option (a) OPERATOR-DECISION-PENDING, (c) outlined | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: context, constraints"
+  - "fork: completion staging | chosen: none staged | class: consistency-only | precedent: tier_item_freshness_gate check 1; D136; R9 stand-in 2026-10-01 (delegated authority) | precedent_kind: contract | reversible: yes | persisted: constraints"
+  - "fork: completion application | chosen: PARKED under F4 (never-list) | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: constraints"
+  - "fork: rec-2920 ownership | chosen: PARKED (MEMORY.md#parked R9, with R5) | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: context"
+  - "fork: met-criterion re-ground reach | chosen: not a criterion flip | class: asked | precedent: operator answer 2026-10-01T19:50Z point 3a (relayed by the coordinator) | precedent_kind: answered-fork | reversible: yes | persisted: context staged_t2_47_c1_reground"
+  - "fork: stale advisory registry row | chosen: stale-guard evidence, unfiled hygiene finding | class: consistency-only | precedent: D132/D163 pt 2; verification_graduation tautology refusal; R9 stand-in 2026-10-01 (delegated authority) | precedent_kind: decision | reversible: yes | persisted: context"
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - Decisions 126, 136, 144, 147, 158, 181, 183, 190 sections only
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
