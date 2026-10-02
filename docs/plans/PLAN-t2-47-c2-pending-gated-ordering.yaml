@@ -20,64 +20,94 @@ scope:
   - file: scripts/ci/convergence_classify.py
     action: Modify
     purpose: >-
-      Stdlib delegate gains the routed-pending decision. (1) The pending-codification write reads
-      pending_gated first: with a marker present it returns action "pending_gated" on the first tick
-      (stamping pending_gated.drift_flagged_at, write-once) or "pending_gated_flagged" on later ticks, and
-      still writes the pending_codification marker so the Decision 190 pt 3 bound runs. (2) Escalation
-      with pending_gated present sets a stale_gated_approval field and a drift_reason naming the pending
-      commit and run; derive_red_cause stays binary (drift_run_url -> out_of_band_drift, Decision 190 pt
-      4 / Decision 142). (3) render_convergence_red_refusal and render_convergence_advisory_red_description
-      word a stale-gated red as an unapproved gated change and name the heal (approve or reject the waiting
-      gated run; after a rejection, the acknowledge-and-retry dispatch, Decision 183), never "MEASURED
-      out-of-band drift". (4) New predicate drift_red_postdates_route(record) plus CLI --drift-guard: true
-      only when status is red, drift_detected_at is newer than pending_gated.routed_at, and the red is not
-      a stale_gated_approval red.
+      Stdlib delegate owns every routed-pending decision (state matrix in context). (1) Pending-codification
+      write, decision order escalate > pending_gated > pending_gated_flagged: a stale marker escalates first
+      even when pending_gated.drift_flagged_at is already set; otherwise, with pending_gated present, the
+      first tick returns "pending_gated" (stamps drift_flagged_at, write-once) and later ticks
+      "pending_gated_flagged"; the pending_codification marker is always written so the Decision 190 pt 3
+      bound runs. (2) Escalation sets stale_gated_approval (and names the pending commit and run in
+      drift_reason) only when pending_gated is present and pending_codification.first_seen >=
+      pending_gated.routed_at; derive_red_cause stays binary (Decision 190 pt 4 / Decision 142). (3) Both
+      renderers word a stale-gated red as an unapproved gated change and name the heal (approve or reject the
+      waiting gated run; after a rejection, the acknowledge-and-retry dispatch, Decision 183); the advisory
+      description stays within GitHub's 140-character limit. (4) Out-of-band red-flip record builder (moved
+      out of the inline shell): sets drift_detected_at, drift_run_url, drift_reason (naming the routed commit
+      when pending_gated is present) and pops pending_codification and stale_gated_approval (Decision 190 pt
+      3, marker superseded by the red). (5) prior-red short-circuit predicate: a prior red skips the tick
+      EXCEPT a stale_gated_approval red meeting an out_of_band_drift verdict, which falls through to the
+      red-flip. (6) --drift-guard, FAIL-CLOSED: prints false only when it positively clears the green write
+      (NoSuchKey / empty record = pass-on-absent; a green record; a red without drift fields; a red whose
+      drift_detected_at <= pending_gated.routed_at; a stale_gated_approval red); a non-NoSuchKey read error,
+      an unparseable record, or a missing or malformed timestamp on a drift red prints true.
   - file: tests/test_convergence_classify.py
     action: Modify
     purpose: >-
-      Unit tests for the routed-pending matrix, the stale-gated escalation and wording, the drift-guard
-      predicate, and the unchanged no-marker path.
+      Unit tests for the state matrix: routed first/flagged ticks; escalation on the realistic record (stale
+      pending_codification plus pending_gated with drift_flagged_at already set); stale_gated_approval only
+      when first_seen >= routed_at; stale-gated red then real drift falls through and the guard then blocks;
+      the red-flip pops pending_codification; fail-closed guard cases (unparseable record, read error,
+      malformed timestamp); the 140-character advisory limit; the no-marker paths.
   - file: .github/workflows/terraform-drift.yml
     action: Modify
     purpose: >-
-      Handle-drift step: dispatch on the delegate's action. "pending_gated" resolves the pending PR
-      (existing GH_TOKEN commits/.../pulls lookup) and files the PR-naming tf_drift rec instead of the
-      generic one; "pending_gated_flagged" files nothing; "escalated" files a tf_drift rec that embeds the
-      exact drift_run_url written to the record (Decision 142 dedup key, Decision 190 pt 5) and names the
-      pending PR when pending_gated is present. Verdict out_of_band_drift with pending_gated present
-      red-flips through the existing out-of-band path with the routed commit named as context; the
-      green-keeping PENDING_GATED_DRIFT branch is removed (Decision 190 pt 1, drift always wins). The
-      PENDING_GATED rec's context and acceptance are rewritten so they stay true under the 2.0h red
-      (Decision 103/201).
+      Handle-drift step dispatches on the delegate. The prior-red short-circuit asks the delegate (R1: a
+      stale-gated red meeting real drift falls through). "pending_gated" resolves the pending PR (existing
+      GH_TOKEN commits/.../pulls lookup) and files the PR-naming tf_drift rec instead of the generic one;
+      "pending_gated_flagged" files nothing; "escalated" files a tf_drift rec embedding the exact
+      drift_run_url written to the record (Decision 142 dedup key, Decision 190 pt 5), naming the pending PR
+      when pending_gated is present, on every escalation (marker or not). Verdict out_of_band_drift red-flips
+      through the delegate's record builder whether or not pending_gated is present; the green-keeping
+      PENDING_GATED_DRIFT branch is removed (Decision 190 pt 1). The PENDING_GATED rec keeps source tf_drift;
+      its context drops "stays green" and its acceptance becomes "aws s3 cp
+      s3://agent-platform-data-lake/convergence/personal/sandbox.json - | grep -qv pending_gated" (unchanged
+      probe, true once a full write clears the marker) with the context naming the 2.0h red.
   - file: tests/test_terraform_drift_acceptance.py
     action: Modify
     purpose: >-
-      Structural guards for the new order: the pending_gated read precedes the generic pending_codification
-      rec, the escalation branch files a rec carrying drift_run_url, and real drift with pending_gated
-      red-flips. The two CARRY-2 assertions (pending_gated branch never red-flips; out-of-band path gated
-      behind marker absence) are replaced by stronger ones asserting the red, traced to Decision 190 pt 1.
+      Disposition of all five pending_gated tests (each replacement at least as strong, traced to Decision
+      190 pt 1 or the operator ruling): test_drift_workflow_has_pending_gated_branch (:139) rewritten to
+      assert the "pending_gated" action dispatch and the PR-naming rec title; test_drift_workflow_names_the_
+      pending_pr_via_authenticated_lookup (:148) kept; test_drift_workflow_pending_gated_checked_before_out_of
+      _band_flip (:169) rewritten to assert the delegate's pending-codification write precedes the generic
+      rec; test_drift_workflow_pending_gated_branch_never_red_flips (:180) replaced by an assertion that the
+      out-of-band verdict red-flips regardless of pending_gated; test_drift_workflow_stamps_drift_flagged_at
+      _for_idempotency (:192) moved to a delegate unit test of the write-once stamp;
+      test_drift_workflow_out_of_band_branch_still_gated_behind_marker_absence (:201) replaced by an
+      assertion that the escalated branch files a rec carrying drift_run_url and that the prior-red
+      short-circuit consults the delegate.
   - file: .github/workflows/terraform-apply-sandbox.yml
     action: Modify
     purpose: >-
-      gated-apply job: a drift-guard step before the record writer reads the record and runs
-      scripts.ci.convergence_classify --drift-guard; its output feeds the writer's existing refused input,
-      so an approved gated apply leaves a drift red that postdates the route in place (Decision 92 pt 2:
-      a red clears only via the acknowledge-and-retry path). A stale-gated red still clears on approval.
+      gated-apply job: a drift-guard step before the record writer reads the record (passing the raw read rc
+      and body to the delegate) and runs scripts.ci.convergence_classify --drift-guard. The writer is wired
+      fail-closed, refused set to steps.apply.outcome == 'success' && steps.drift_guard.outputs.refused !=
+      'false', so an erroring or skipped guard can only block a green write, never a red one (Decision 92 pt
+      2). The comment at :988-994 ("the record cannot go red ... while this job holds the group") is
+      corrected: the drift workflow is outside that group. If within its R3 ceiling, the wake comment reports
+      that the record stayed red and names the acknowledge-and-retry heal when the guard refused.
   - file: tests/test_gated_apply_drift_guard.py
     action: Create
     purpose: >-
-      Structural mirror for the gated-apply wiring: the drift-guard step exists in gated-apply only,
-      precedes the writer, invokes the delegate, and feeds the writer's refused input; apply-sandbox,
+      Structural mirror for the gated-apply wiring: the drift-guard step exists in gated-apply only, precedes
+      the writer, invokes the delegate, and feeds refused through the fail-closed expression; apply-sandbox,
       apply-reconcile and gated-apply-reconcile writers are untouched.
   - file: scripts/convergence_health/escalate.py
     action: Modify
     purpose: >-
       The pending_codification ticket context names the pending gated commit and run when pending_gated is
-      also present, instead of the "land the codifying change" narrative (c2's health-verdict half; the
-      trigger stays unconditional, Decision 190).
+      also present and status is green, instead of the "land the codifying change" narrative (c2's
+      health-verdict half; the trigger stays unconditional, Decision 190). A red record never gets this
+      context (the red-flip pops pending_codification, scope row 1 item 4).
   - file: tests/convergence_health/test_escalate.py
     action: Modify
     purpose: Test for the pending_gated-aware pending_codification context.
+  - file: config/agent/verification_registry/entries/drift-pending-gated-narrative.yaml
+    action: Modify
+    purpose: >-
+      Graduated 2026-07-22, it greps for the PENDING_GATED_DRIFT literal this plan removes. Re-point its
+      check_spec to the new dispatch (the delegate's pending_gated / pending_gated_flagged actions and the
+      workflow's PR-naming rec); the modified entry fails on origin/main and passes on HEAD, so the
+      differential gate admits it.
   - file: config/composite_action_body_baseline.yaml
     action: Modify
     purpose: >-
@@ -97,17 +127,21 @@ acceptance_criteria:
     resource_drift) files exactly one tf_drift rec that names the pending PR, on the first tick; later
     ticks file none; the pending_codification marker is still written.
   - >-
-    After the 2.0h bound the record turns red carrying stale_gated_approval and a drift_reason naming the
-    pending commit; a tf_drift rec embedding that drift_run_url and naming the pending PR is filed; the
+    After the 2.0h bound, on the realistic record (pending_gated already flagged), the record turns red carrying
+    stale_gated_approval and a drift_reason naming the pending commit; a tf_drift rec embedding that drift_run_url and naming the pending PR is filed; the
     refusal and advisory text never say "MEASURED out-of-band drift" for this red and name the approve or
     reject heal.
   - >-
-    Real drift (resource_drift non-empty) during an approval window red-flips the record; no branch keeps
-    it green.
+    Real drift (resource_drift non-empty) during an approval window red-flips the record, including after the
+    2.0h stale-gated red; no branch keeps it green and an approval cannot green over it.
   - >-
     An approved gated apply does not overwrite a drift red whose drift_detected_at is newer than
-    pending_gated.routed_at; it does overwrite a stale-gated red.
-  - The no-pending_gated paths (pending_codification mark/escalate, out-of-band red-flip) behave as before.
+    pending_gated.routed_at, and a guard error blocks the green write (fail-closed); it does overwrite a
+    stale-gated red.
+  - >-
+    The no-pending_gated paths behave as before, except that every escalation now files a tf_drift rec
+    carrying the record's drift_run_url (the escalation-rec fork) and the out-of-band red-flip pops
+    pending_codification.
   - >-
     The handle-drift inline body is at or below its old 116-line ceiling and the baseline only shrinks or
     gains the new drift-guard entry; validate --pre is green.
@@ -123,10 +157,12 @@ verification_plan:
     graduation_check_id: routed-pending-tick-flags-pending-gated
   - step: 2
     phase: pre-deploy
-    action: Escalation with pending_gated present marks stale_gated_approval, names the pending commit, and the refusal/advisory word it as an unapproved gated change
-    command: bin/venv-python -m pytest "tests/test_convergence_classify.py::TestRoutedPending::test_escalation_marks_stale_gated_approval" "tests/test_convergence_classify.py::TestRoutedPending::test_stale_gated_refusal_is_not_out_of_band_wording" -q
-    expected: Both pass.
-    fix_if: The red still renders "MEASURED out-of-band drift", or derive_red_cause gained a third value.
+    action: Escalation on the realistic flagged record marks stale_gated_approval, names the pending commit, and the refusal/advisory word it as an unapproved gated change
+    command: bin/venv-python -m pytest "tests/test_convergence_classify.py::TestRoutedPending::test_escalation_marks_stale_gated_approval" "tests/test_convergence_classify.py::TestRoutedPending::test_stale_gated_refusal_is_not_out_of_band_wording" "tests/test_convergence_classify.py::TestRoutedPending::test_stale_gated_then_drift_falls_through_and_blocks" -q
+    expected: All three pass.
+    fix_if: >-
+      The red still renders "MEASURED out-of-band drift", derive_red_cause gained a third value, a flagged
+      record never escalates, or drift after the stale-gated red is swallowed.
     hermetic: true
     graduation: graduate
     graduation_check_id: stale-gated-red-names-pending-change
@@ -134,7 +170,9 @@ verification_plan:
     phase: pre-deploy
     action: The drift-guard predicate blocks only a drift red that postdates the route
     command: bin/venv-python -m pytest "tests/test_convergence_classify.py::TestDriftGuard" -q
-    expected: Passes; cases cover drift-after-route (blocked), drift-before-route, stale-gated red, green record and missing marker (not blocked).
+    expected: >-
+      Passes; cases cover drift-after-route, unparseable record, read error and malformed timestamp
+      (blocked), and drift-before-route, stale-gated red, green record and NoSuchKey (not blocked).
     fix_if: A stale-gated red is blocked (approval could never clear it) or a post-route drift red is not.
     hermetic: true
     graduation: graduate
@@ -226,6 +264,13 @@ test_obligations:
     verification_step: 7
     test_selector: tests/convergence_health/test_escalate.py::test_pending_codification_context_names_pending_gated_change
     red_green_expectation: red before (codify narrative), green after
+  - source: config/agent/verification_registry/entries/drift-pending-gated-narrative.yaml
+    behavior: The graduated row guards the new routed-pending dispatch instead of the removed literal
+    verification_step: 8
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: >-
+      A registry data row; validate_verification_registry (run by --pre) replays a modified row's
+      differential (fail on origin/main, pass on HEAD), which is the existing guard for it.
   - source: config/composite_action_body_baseline.yaml
     behavior: R3 ceilings only shrink (handle-drift) or gain the one measured drift-guard entry
     verification_step: 8
@@ -257,6 +302,13 @@ constraints:
     no raise-approved marker. write-convergence-record/action.yml is NOT modified (its body sits at its 97
     ceiling); the guard reuses its refused input.
   - >-
+    Sequencing: /implement branches from a main that contains PR #1383 (c2 reopened); closes_criteria needs
+    c2 open.
+  - >-
+    Operator note for merge (Decision 92 pt 2): an approved gated apply clears a stale-gated red outside the
+    acknowledge-and-retry path. This is the existing always-run writer behavior, sanctioned here by the
+    operator's ruling (the approver is present again), not by Decision 183; the PR body says so.
+  - >-
     Decision 181: the two CARRY-2 test assertions are replaced by assertions of the opposite, stricter
     behavior (red), traced to Decision 190 pt 1 and the operator ruling; no other existing assertion is
     loosened, and every pre-existing test_convergence_classify.py test passes unmodified.
@@ -280,10 +332,17 @@ context:
     files a tf_drift rec embedding drift_run_url) and WARN D92 (approval must not green-over a drift red --
     folded: gated-apply drift guard). Decisions triaged: 163 of 163.
     Roadmap items intersected: 2; CONFLICT: 0; RELATED: 1
-  - "gates: decision-scout=FLAGS_FOUND (both WARNs folded); plan-critique=PENDING"
+  - "gates: decision-scout=FLAGS_FOUND (both WARNs folded); plan-critique=REVISE r1 (6f2e8a95; R1-R5, S1-S4 folded)"
   - >-
     Freshness (T2.47 at 2a374530 plus PR #1383): c2 open after #1383; files_in_scope exist; this plan adds
     escalate.py (c2's health half) and the gated-apply job, both outside the item's listed files; no CD.
+  - >-
+    State matrix (prior record + verdict -> action): green, no marker, codification -> mark + generic rec;
+    green + pending_gated, codification -> pending_gated (PR rec) then flagged; any marker age >= 2.0h ->
+    escalate (rec with drift_run_url; stale_gated_approval iff pending_gated and first_seen >= routed_at);
+    any status, drift -> red-flip (pops pending_codification, stale_gated_approval); red stale-gated + drift
+    -> red-flip; other red -> skip; approval write -> blocked iff drift red newer than routed_at or guard
+    error.
   - >-
     Defect evidence: PLAN-t2-47-recovery-semantics-closeout VP 8-9 (terraform-drift.yml :282/:290/:313 vs
     :323; replay pending_codification -> mark -> escalate -> red with pending_gated kept).
@@ -318,6 +377,7 @@ execution_steps:
     feed its output into refused; tests/test_gated_apply_drift_guard.py.
   - scripts/convergence_health/escalate.py and its test.
   - 'config/composite_action_body_baseline.yaml: measured shrink plus the one new entry.'
+  - 'config/agent/verification_registry/entries/drift-pending-gated-narrative.yaml: re-point to the new dispatch.'
   - Execute Verification Plan -- run each step; loop until pass; on unrecoverable failure stop and RCA (Decision 55).
   - 'Bookkeeping: flip T2.47 c2 per closes_criteria (met_by t2-47-c2-pending-gated-ordering); leave item status alone.'
   - 'Report: what was implemented, verification results'
