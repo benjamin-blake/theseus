@@ -3,10 +3,10 @@ slug: "w1-reader-verbs"
 intent: >-
   Stage, for the operator, the design of telemetry-feedback-loop W1 component 2 (telemetry reader verbs, the
   read side of rec-4024) without building anything: prove with executable evidence that today's named-read
-  registry cannot serve the append-only telemetry tables, that the Decision 207 read-side dedupe is expressible
-  as one SQL statement passing every committed conformance vector, and that a session_id alone yields its
-  calendar-day partition; record two ratified contract rules that would derive wrong values if built
-  literally; split the design into settled, contested and open rows; and author the component's one CD.45
+  registry cannot serve the telemetry tables (unregistered, one table per verb, no forced partition), that
+  the Decision 207 read-side dedupe is expressible as one SQL statement passing every committed conformance
+  vector, and that a session_id alone bounds a read to its own calendar day; record the ratified contract
+  rules that would derive wrong values if built literally and the abandoned state they lack; split the design into settled, contested and open rows; and author the component's one CD.45
   pilot item in the Decision 197 clause-3 grain. Nothing is implemented, filed, closed or flipped.
 plan_type: REPORT-ONLY
 verification_tier: V1
@@ -36,18 +36,20 @@ followon_recs: []
 infrastructure_dependencies: []
 acceptance_criteria:
   - >-
-    The registry gap is shown: no NAMED_READS verb targets a telemetry table, and named_read renders an
-    append_only table's placeholder as a None current projection (VP step 1).
+    The registry gap is shown: no NAMED_READS verb targets a telemetry table, none of the four telemetry
+    tables is registered, and a NamedRead carries exactly one table and no partition field (VP step 1).
   - >-
-    The dedupe sketch in report section 2, read from the report itself, passes every committed
-    dedupe_vectors.yaml vector on DuckDB, surviving event_ids and conflicted grain keys both exact (VP step 2).
+    The two SQL sketches in report section 2 (survivors and conflicts), read from the report itself, pass
+    every committed dedupe_vectors.yaml vector on DuckDB, surviving event_ids and conflicted grain keys both
+    exact; the partition placeholder is bound to TRUE there, so pruning is VP step 3's (VP step 2).
   - >-
-    The partition-binding claim is reproduced on a local DuckLake catalog: a session_id decodes to its root
-    start and a per-session read touches one data file with or without the decoded day triple (VP step 3).
+    The partition-binding claim is reproduced on a local DuckLake catalog with interleaved flushes: a
+    session_id decodes to its root start and a per-session read touches only its own day's files, with or
+    without the decoded day triple (VP step 3).
   - >-
-    The two contract-rule risks are re-derived from the ratified text: duration is measured from
-    session_started_at, which every sub-agent row carries as the root's start, and state reads any close row
-    as terminal although resume is a lifecycle kind (VP step 4).
+    The contract-rule risks are re-derived from the ratified text: duration is measured from
+    session_started_at, which every sub-agent row carries as the root's start; state reads any close row as
+    terminal although a resumed session reuses its session_id; and no abandoned state exists (VP step 4).
   - >-
     The pilot fixture carries exactly one item for this component and validate_work_item_pilot passes all six
     legs (VP step 5).
@@ -58,34 +60,35 @@ acceptance_criteria:
 verification_plan:
   - step: 1
     phase: pre-deploy
-    action: Prove the named-read registry has no telemetry verb and cannot bind an append-only table
+    action: Prove the telemetry tables are unregistered and a named read binds one table with no partition field
     command: >-
-      bin/venv-python -c "import src.common.ducklake_reads as R, src.common.ducklake_scd2_schema as S; from dataclasses import replace;
-      T=[n for n,v in S.NAMED_READS.items() if v.table.startswith('telemetry_')]; sp=replace(R.resolve_table_spec('ops_recommendations'),table='telemetry_sessions',current_table=None,partition_current=None,write_mode='append_only'); q=[];
-      C=type('C',(),{'execute':lambda s,sql,*a:(q.append(sql),s)[1],'description':[('x',)],'fetchall':lambda s:[]})();
-      R.NAMED_READS['probe']=S.NamedRead(verb='probe',table='telemetry_sessions',sql='SELECT * FROM {tbl}'); R.resolve_table_spec=lambda t:sp; R.named_read(C,verb='probe');
-      print('telemetry_verbs=%d append_only_tbl_renders_None=%s' % (len(T), q[0].endswith('.None')))"
-    expected: One line reporting zero telemetry verbs and an append-only placeholder rendered as None.
+      bin/venv-python -c "import dataclasses as dc, src.common.ducklake_scd2_schema as S; T=['telemetry_sessions','telemetry_observations','telemetry_transcripts','telemetry_agents'];
+      print('telemetry_verbs=%d telemetry_tables_registered=%d/4 namedread_fields=%s' % (sum(v.table.startswith('telemetry_') for v in S.NAMED_READS.values()), sum(t in S.ops_table_names() for t in T), ','.join(f.name for f in dc.fields(S.NamedRead))))"
+    expected: >-
+      One line reporting zero telemetry verbs, 0 of 4 telemetry tables registered, and the six NamedRead
+      fields verb, table, sql, params, description, paginable.
     fix_if: >-
-      A non-zero verb count means telemetry verbs landed (rec-4024): re-read them before keeping settled row
-      s2. False means named_read learned an append-only binding: s2 is satisfied, update report section 2.
+      A non-zero verb or table count means rec-4024 slice 2 landed: re-read the registration before keeping
+      settled row s2. A changed field list (a second table or a partition field) means the event-journal form
+      landed: s2 is satisfied, update report section 2.
     hermetic: true
     graduation: waive
     graduation_waiver_reason: >-
       Red-before evidence for a future implementation, true only until the event-journal registry form lands;
       a standing guard would block the sanctioned change.
-    expected_literals: ["telemetry_verbs=0 append_only_tbl_renders_None=True"]
+    expected_literals: ["telemetry_verbs=0 telemetry_tables_registered=0/4 namedread_fields=verb,table,sql,params,description,paginable"]
   - step: 2
     phase: pre-deploy
-    action: Run the report's dedupe SQL sketch against every committed dedupe conformance vector on DuckDB
+    action: Run the report's two SQL sketches against every committed dedupe conformance vector on DuckDB
     command: >-
-      bin/venv-python -c "import re,duckdb,yaml; F=chr(96)*3; S=re.search(F+'sql\n(.*?)'+F,open('docs/plans/reports/REPORT-w1-reader-verbs.md',encoding='utf-8').read(),re.S).group(1).replace('{sessions}','sess').replace('{table}','tbl').replace('{partition}','TRUE');
+      bin/venv-python -c "import re,duckdb,yaml; F=chr(96)*3; B=[b.replace('{sessions}','sess').replace('{table}','tbl').replace('{partition}','TRUE') for b in re.findall(F+'sql\n(.*?)'+F,open('docs/plans/reports/REPORT-w1-reader-verbs.md',encoding='utf-8').read(),re.S)]; S,X=B[0],B[1];
       V=yaml.safe_load(open('tests/telemetry/fixtures/dedupe_vectors.yaml',encoding='utf-8'))['vectors']; c=duckdb.connect(); c.execute(\"SET TimeZone='UTC'\"); K=['producer','event_id','parser_version','session_id','event_kind','created_timestamp','content','observation_id','event_timestamp'];
       L=lambda n,R: [c.execute('CREATE OR REPLACE TABLE '+n+' (producer VARCHAR, event_id VARCHAR, parser_version BIGINT, session_id VARCHAR, event_kind VARCHAR, created_timestamp TIMESTAMPTZ, content VARCHAR, observation_id VARCHAR, event_timestamp TIMESTAMPTZ)')]+[c.execute('INSERT INTO '+n+' VALUES (?,?,?,?,?,?,?,?,?)',[str(r[k]) if k=='content' else r.get(k) for k in K]) for r in R];
-      Q=lambda e: sorted(r[0] for r in c.execute(S).fetchall())==sorted(e['surviving_event_ids']) and {tuple(r) for r in c.execute('SELECT producer,event_id,parser_version FROM tbl GROUP BY ALL HAVING count(DISTINCT content)>1').fetchall()}=={tuple(x) for x in e['conflicted_grain_keys']};
+      Q=lambda e: sorted(r[0] for r in c.execute(S).fetchall())==sorted(e['surviving_event_ids']) and {tuple(r) for r in c.execute(X).fetchall()}=={tuple(x) for x in e['conflicted_grain_keys']};
       R=[ok for v in V for ok in [L('sess',v['rows'].get('telemetry_sessions') or []) and None] + [(L('tbl',v['rows'].get(t) or []), Q(e))[1] for t,e in v['expected'].items()] if ok is not None];
-      print('vectors=%d sql_pass=%d/%d' % (len(V),sum(R),len(R)))"
-    expected: One line reporting 17 vectors and 17 of 17 table checks passing.
+      print('sql_blocks=%d vectors=%d sql_pass=%d/%d' % (len(B),len(V),sum(R),len(R)))"
+    expected: >-
+      One line reporting two SQL blocks read from the report, 17 vectors and 17 of 17 table checks passing.
     fix_if: >-
       A lower pass count means the sketch in report section 2 diverges from the R4/R5 rule or the vectors
       changed; fix the sketch, never the vectors (they are the contract's normative conformance file). A
@@ -95,27 +98,28 @@ verification_plan:
     graduation_waiver_reason: >-
       Design evidence for one settled row; the production verbs carry their own DuckLake conformance test
       (criterion c1), which is the standing guard.
-    expected_literals: ["vectors=17 sql_pass=17/17"]
+    expected_literals: ["sql_blocks=2 vectors=17 sql_pass=17/17"]
   - step: 3
     phase: pre-deploy
-    action: Reproduce the partition-binding measurement on a local DuckLake catalog with real derived session ids
+    action: Reproduce the partition-binding measurement on a local DuckLake catalog with interleaved flushes
     command: >-
       bin/venv-python -c "import duckdb,pathlib,re,tempfile; from datetime import datetime,timedelta,timezone; from src.telemetry.identity import derive_entity_key as K, decode_time_prefix as D;
       TN='01ARZ3NDEKTSV4RRFFQ69G5FAV'; PJ='01BRZ3NDEKTSV4RRFFQ69G5FBW'; d=tempfile.mkdtemp(); c=duckdb.connect(); c.execute('INSTALL ducklake;LOAD ducklake'); c.execute(\"SET TimeZone='UTC'\"); c.execute('SET ducklake_default_data_inlining_row_limit=0'); c.execute(f\"ATTACH 'ducklake:{d}/c.ducklake' AS lake (DATA_PATH '{d}/data/')\");
       c.execute('CREATE TABLE lake.obs (session_id VARCHAR, session_started_at TIMESTAMPTZ, observation_type VARCHAR)'); c.execute('ALTER TABLE lake.obs SET PARTITIONED BY (year(session_started_at), month(session_started_at), day(session_started_at))');
       B=datetime(2026,9,1,tzinfo=timezone.utc); S=[(K('telemetry_sessions:session_id',TN,PJ,'s%d-%d'%(n,j),B+timedelta(days=n,minutes=37*j)),B+timedelta(days=n,minutes=37*j)) for n in range(7) for j in range(10)];
-      [c.execute('INSERT INTO lake.obs SELECT ?, ?, CASE WHEN r%7=0 THEN chr(112) ELSE chr(116) END FROM range(500) t(r)',[s,t]) for s,t in S];
+      [c.execute('INSERT INTO lake.obs SELECT s.sid, s.st, CASE WHEN r%7=0 THEN chr(112) ELSE chr(116) END FROM (SELECT unnest(?) AS sid, unnest(?) AS st) s, range(100) t(r)',[[x for x,_ in S[n*10:n*10+10]],[y for _,y in S[n*10:n*10+10]]]) for n in range(7) for f in range(5)];
       sid,st=S[33]; t=D(sid); F=lambda sql,a: ','.join(re.findall(r'Total Files Read:\s*(\d+)',c.execute('EXPLAIN ANALYZE '+sql,a).fetchall()[0][1]));
       q='SELECT count(*) FROM lake.obs WHERE session_id=?'; a=F(q,[sid]); b=F(q+' AND year(session_started_at)=? AND month(session_started_at)=? AND day(session_started_at)=?',[sid,t.year,t.month,t.day]);
       w=F('SELECT session_id,count(*) FROM lake.obs WHERE session_started_at>=?::TIMESTAMPTZ AND session_started_at<?::TIMESTAMPTZ GROUP BY 1',[str(B+timedelta(days=2)),str(B+timedelta(days=5))]);
-      print('decoded_prefix_is_root_start=%s files=%d per_session_id_only=%s per_session_triple=%s window_3_days=%s' % (t==st, len(list(pathlib.Path(d).rglob('*.parquet'))), a, b, w))"
+      print('decoded_prefix_is_root_start=%s files=%d files_per_day=5 per_session_id_only=%s per_session_triple=%s window_3_days=%s' % (t==st, len(list(pathlib.Path(d).rglob('*.parquet'))), a, b, w))"
     expected: >-
-      One line reading exactly decoded_prefix_is_root_start=True files=70 per_session_id_only=1
-      per_session_triple=1 window_3_days=30 (the root start decodes from the id, one file read per session with
-      or without the decoded day triple, 30 files for a 3-day window).
+      One line reading exactly decoded_prefix_is_root_start=True files=35 files_per_day=5
+      per_session_id_only=5 per_session_triple=5 window_3_days=15 (the root start decodes from the id; a
+      per-session read touches only its own day's 5 files, with or without the decoded day triple; a 3-day
+      window touches 15).
     fix_if: >-
-      More than one file per session means pruning changed with the pinned duckdb or ducklake version; re-measure
-      and revise settled row s3 and contested row k2. An extension-load error is an environment defect (network
+      More than 5 files per session (files from other days read) means pruning changed with the pinned duckdb or
+      ducklake version; re-measure and revise settled row s3 and contested row k2. An extension-load error is an environment defect (network
       or pin), not a pass.
     hermetic: false
     graduation: waive
@@ -124,19 +128,19 @@ verification_plan:
       review, so a standing guard here would assert the wrong environment.
   - step: 4
     phase: pre-deploy
-    action: Re-derive the two contract-rule risks (k1, R1, R2) from the ratified contract text
+    action: Re-derive the contract-rule risks (k1, k3, R1, R2) from the ratified contract text
     command: >-
       bin/venv-python -c "N=lambda p: ' '.join(open(p,encoding='utf-8').read().split()); s=N('docs/contracts/telemetry_sessions.yaml'); e=N('docs/contracts/telemetry-event-envelope.yaml'); a=N('docs/contracts/telemetry_agents.yaml');
-      print('duration_from_session_started_at=%s child_rows_carry_root_start=%s no_close_means_running=%s resume_kind=%s agent_duration_paired=%s' % ('(close.event_timestamp - session_started_at).total_seconds()' in s, 'Every row of a root session AND all its sub-agent sessions carries this SAME value' in e, 'absent a close row, the session is running' in s, 'open | resume | compact | close | annotate' in e, 'paired on agent_run_id' in a))"
-    expected: One line with all five facts True.
+      print('duration_from_session_started_at=%s child_rows_carry_root_start=%s no_close_means_running=%s resume_reuses_session_id=%s agent_duration_paired=%s abandoned_in_contract=%s' % ('(close.event_timestamp - session_started_at).total_seconds()' in s, 'Every row of a root session AND all its sub-agent sessions carries this SAME value' in e, 'absent a close row, the session is running' in s, 'A resumed session reuses session_id' in s and 'appends a resume event' in s, 'paired on agent_run_id' in a, 'abandoned' in s))"
+    expected: One line with the first five facts True and abandoned_in_contract False.
     fix_if: >-
-      A False means the contract was amended: re-read telemetry_sessions.yaml and the envelope, and update
-      contested row k1 and risks R1-R2 (an amendment along option (a) settles k1).
+      A changed fact means the contract was amended: re-read telemetry_sessions.yaml and the envelope, and
+      update contested rows k1 and k3 and risks R1-R2 (an amendment along option (a) settles the row).
     hermetic: true
     graduation: waive
     graduation_waiver_reason: >-
       True only until k1 is decided; a standing guard would block the amendment the report recommends.
-    expected_literals: ["duration_from_session_started_at=True child_rows_carry_root_start=True no_close_means_running=True resume_kind=True agent_duration_paired=True"]
+    expected_literals: ["duration_from_session_started_at=True child_rows_carry_root_start=True no_close_means_running=True resume_reuses_session_id=True agent_duration_paired=True abandoned_in_contract=False"]
   - step: 5
     phase: pre-deploy
     action: Prove the fixture carries this component's one item and the pilot evaluator passes
@@ -147,7 +151,9 @@ verification_plan:
     expected: Six PASS leg lines, then one line reporting one component item and an empty failure list.
     fix_if: >-
       A failing leg names the row; fix it in the fixture using the canonical layout (render(parsed)). A count
-      other than 1 means a concurrent W1 thread touched this item; reconcile before merging.
+      other than 1 means a concurrent W1 thread touched this item; reconcile before merging. A textual merge
+      conflict with another W1 PR (both replace the empty item lists) is resolved by merging main, re-rendering
+      with render(parsed) and re-running this step.
     hermetic: true
     graduation: waive
     graduation_waiver_reason: >-
@@ -209,15 +215,24 @@ context:
     Inputs read: component 1's report (#1384 head 38056c78), including its boundary note that the session
     state verb should derive from the LATEST lifecycle row; the telemetry contracts' populated_by and
     derived_by rows; the reader Lambda, NAMED_READS and named_read; Decision 199 cl.1 and its reversal
-    conditions; Decision 88; Decision 209 cl.2; T2.36 and T2.52. rec-4024's own text was not readable: no
-    AWS credentials and no local rec cache in this session (open question q2).
+    conditions; Decision 88; Decision 209 cl.2; T2.36 and T2.52. rec-4024 read through the rec_by_id named
+    read in round 2 (status open; item (6) names the reader verbs and the running/abandoned/terminal state).
   - >-
     Measurement (report section 1): local DuckDB 1.5.4 and the pinned ducklake extension only; no production
     catalog read. A larger scratch run (1.12M rows, 14 days) is reported as informational, not a VP step.
   - "fork: one item vs split mechanism/verbs | chosen: one task item | class: consistency-only | precedent: CD.45 item-count cap 12 across about ten components; Decision 197 cl.3 grain (one row per work item); component 1 precedent | precedent_kind: contract | reversible: yes | persisted: fixture"
-  - "fork: edge to pwi-capture-producer-wiring | chosen: none here, noted for W2 | class: consistency-only | precedent: validate_work_item_pilot L4 fails an edge to an item absent from main | precedent_kind: contract | reversible: yes | persisted: report section 5"
+  - "fork: edge to pwi-capture-producer-wiring | chosen: none here, noted for W2 | class: consistency-only | precedent: validate_work_item_pilot L4 accepts an edge only to a pilot item in the same fixture or a ROADMAP-PLATFORM tier or candidate-decision id, and the capture item is not in this branch's fixture | precedent_kind: contract | reversible: yes | persisted: report section 5"
   - "fork: session state and duration rule (k1) | chosen: none; option (a) recommended | class: asked | precedent: none (ratified Class A semantic change) | precedent_kind: none | reversible: yes | persisted: report k1, /mnt/project-files/gates/w1-c2-parked-forks.md, PARKED for the operator"
+  - "fork: abandoned state with an as_of and idle threshold (k3) | chosen: none; option (a) recommended, threshold in governed config seeded at 24 h | class: asked | precedent: rec-4024 item (6) names it, the ratified contract lacks it | precedent_kind: none | reversible: yes | persisted: report k3, /mnt/project-files/gates/w1-c2-parked-forks.md, PARKED for the operator"
   - "fork: window verbs here vs T2.52 (k2) | chosen: none; option (a) recommended | class: asked | precedent: none (T2.52 c3 owns the analytical class) | precedent_kind: none | reversible: yes | persisted: report k2, /mnt/project-files/gates/w1-c2-parked-forks.md, PARKED for the operator"
+  - >-
+    gates: zero-context verification r1 w1-reader-verbs-zero-context-verification-r1-7e2b94c1 REVISE (B1
+    blocking: s2's lake.None premise was a strawman, the history placeholder already binds an append_only
+    table; B2 blocking: q2 answerable from rec-4024 item (6), which adds an abandoned state; M1-M5 minor) ->
+    all addressed: s2, e1, AC1 and VP 1 re-grounded on unregistered tables, one table per verb and no forced
+    partition; q2 closed and k3 added; VP 3 uses interleaved flushes (own day's files, not one file); the
+    conflict query moved into the report and VP 2 runs both blocks; the resume-reuses-session_id anchor
+    cited in e2, R2 and k1; fork 2's precedent and the merge-conflict path corrected.
   - >-
     check_accounting: no registered check is added or removed; the hygiene stream's baseline is untouched.
 pre_implementation_checklist:
