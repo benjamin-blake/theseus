@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 import scripts.verifiers
+from scripts.checks import registry
 from scripts.checks.verification.validate_verification_harness import validate_verification_harness
 from scripts.verifiers.harness import VerifierResult, VerifierSeverity, VerifierStatus
 
@@ -109,3 +110,69 @@ def test_live_registry_passes() -> None:
     failed: list[str] = []
     validate_verification_harness(failed)
     assert failed == []
+
+
+_CHECK = "validate_verification_harness"
+_UNIT = "verifiers"
+
+
+def _declared(monkeypatch: pytest.MonkeyPatch, fake: _Harness | None) -> tuple[list[str], registry._Declaration | None]:
+    if fake is not None:
+        monkeypatch.setattr("scripts.verifiers.run_all_verifiers", fake)
+    registry.pop_declaration()
+    failed: list[str] = []
+    validate_verification_harness(failed)
+    return failed, registry.pop_declaration()
+
+
+class TestVerificationHarnessAccountingDeclaration:
+    """The check declares how many verifiers rendered a verdict, so a run records enforced with a count
+    that tracks the verdicts -- not a constant, not the raw result total, and not the failure count."""
+
+    def test_live_empty_registry_declares_vacuous_domain(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert scripts.verifiers.REGISTRY == []
+        failed, declaration = _declared(monkeypatch, None)
+        outcome = registry.build_outcome(_CHECK, "check", declaration, bool(failed))
+
+        assert failed == []
+        assert declaration is not None
+        assert (declaration.kind, declaration.count, declaration.unit) == ("examined", 0, _UNIT)
+        assert outcome.status == "vacuous"
+
+    @pytest.mark.parametrize("n", [1, 3])
+    def test_count_tracks_verdicts_and_excludes_skipped(self, monkeypatch: pytest.MonkeyPatch, n: int) -> None:
+        results = [_result(VerifierStatus.PASS) for _ in range(n)]
+        results += [_result(VerifierStatus.SKIPPED), _result(VerifierStatus.SKIPPED)]
+        results.append(_result(VerifierStatus.WARN))
+        results.append(_result(VerifierStatus.FAIL, VerifierSeverity.ADVISORY))
+
+        failed, declaration = _declared(monkeypatch, _returning(results))
+        outcome = registry.build_outcome(_CHECK, "check", declaration, bool(failed))
+
+        assert failed == []
+        assert declaration is not None
+        assert (declaration.kind, declaration.count, declaration.unit) == ("examined", n + 2, _UNIT)
+        assert outcome.status == "enforced"
+
+    def test_hard_gate_failure_is_counted_and_records_failed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        results = [_result(VerifierStatus.FAIL), _result(VerifierStatus.PASS), _result(VerifierStatus.FAIL)]
+
+        failed, declaration = _declared(monkeypatch, _returning(results))
+        outcome = registry.build_outcome(_CHECK, "check", declaration, bool(failed))
+
+        assert failed == ["Verification Harness"]
+        assert declaration is not None
+        assert (declaration.kind, declaration.count, declaration.unit) == ("examined", 3, _UNIT)
+        assert outcome.status == "failed"
+
+    def test_all_skipped_declares_skipped_not_vacuous(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        results = [_result(VerifierStatus.SKIPPED), _result(VerifierStatus.SKIPPED)]
+
+        failed, declaration = _declared(monkeypatch, _returning(results))
+        outcome = registry.build_outcome(_CHECK, "check", declaration, bool(failed))
+
+        assert failed == []
+        assert declaration is not None
+        assert declaration.kind == "skipped"
+        assert declaration.reason == "all 2 registered verifier(s) reported SKIPPED"
+        assert outcome.status == "skipped"
