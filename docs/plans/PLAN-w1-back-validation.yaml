@@ -45,7 +45,7 @@ acceptance_criteria:
     are the rec cache, a window and a clock (VP step 1).
   - >-
     The verdict SQL and the params and vectors blocks in report section 2, read from the report itself, pass
-    every vector on DuckDB across four verdicts, seven reasons and four actions, three by raising (VP step 2).
+    every vector on DuckDB across four verdicts, seven reasons and four actions, four by raising (VP step 2).
   - >-
     The seeded null-effect simulation in report section 2, decided by the same SQL, shows the naive delta
     proving 44% to 79% of no-op fixes and the staged rule at most 3.0%, with its power on a 75% reduction
@@ -94,14 +94,14 @@ verification_plan:
       bin/venv-python -c "import re,functools,unittest,duckdb,yaml; F=chr(96)*3; T=open('docs/plans/reports/REPORT-w1-back-validation.md',encoding='utf-8').read(); S=re.findall(F+'sql\n(.*?)'+F,T,re.S); Y=[yaml.safe_load(b) for b in re.findall(F+'yaml\n(.*?)'+F,T,re.S)]; P,V=Y[0],Y[1]['vectors'];
       q=functools.reduce(lambda s,k: s.replace('{'+k+'}',str(P[k])),[k for k in P if k!='params_version'],S[0]).replace('{candidates}','c').replace('{sessions}','s');
       D=['CREATE TABLE c (rec_id VARCHAR, fix_day BIGINT, chain_len INT, decide_day BIGINT)','CREATE TABLE s (rec_id VARCHAR, session_id VARCHAR, day BIGINT, producer VARCHAR, parser_version INT, classifier_version INT, exposed BOOLEAN, affected BOOLEAN, addressed BOOLEAN)'];
-      X=lambda v: [[r[0],'%s-%d-%d' % (r[0],j,i)]+r[1:5]+[i<r[6],i<r[7],i<r[8]] for j,r in enumerate(v['sessions']) for i in range(max(r[5],r[7]))];
+      X=lambda v: [[r[0],'%s-%s-%d' % (r[0],r[9] if len(r)>9 else j,i)]+r[1:5]+[i<r[6],i<r[7],i<r[8]] for j,r in enumerate(v['sessions']) for i in range(max(r[5],r[7]))];
       E=lambda f: (unittest.TestCase().assertRaises(duckdb.Error,f),True)[1];
       G=lambda c,v: ([c.execute(x) for x in D],[c.execute('INSERT INTO c VALUES (?,?,?,?)',r) for r in v['candidates']],[c.execute('INSERT INTO s VALUES (?,?,?,?,?,?,?,?,?)',r) for r in X(v)],E(lambda: c.execute(q).fetchall()) if v['expected']=='error' else sorted(map(tuple,c.execute(q).fetchall()))==sorted(map(tuple,v['expected'])))[-1];
       R=[G(duckdb.connect(),v) for v in V]; O=[e for v in V if v['expected']!='error' for e in v['expected']];
       print('sql_blocks=%d vectors=%d pass=%d/%d raises=%d verdicts=%d reasons=%d actions=%d' % (len(S),len(V),sum(R),len(V),sum(v['expected']=='error' for v in V),len({e[1] for e in O}),len({e[2] for e in O}),len({e[3] for e in O})))"
     expected: >-
-      One line: two SQL blocks, 27 vectors, 27 of 27 passing on rec_id, verdict, reason and action (three of
-      them, v22-v24, by raising as expected), four verdicts, seven reasons and four actions exercised.
+      One line: two SQL blocks, 28 vectors, 28 of 28 passing on rec_id, verdict, reason and action (four of
+      them, v22-v24 and v27, by raising as expected), four verdicts, seven reasons and four actions exercised.
     fix_if: >-
       A lower pass count means the SQL diverges from the action table in report section 2: fix the SQL or the
       vector that encodes the wrong intent, and say which in the report.
@@ -110,7 +110,7 @@ verification_plan:
     graduation_waiver_reason: >-
       Design evidence for settled row s2; the production verdict carries its own vector test (criterion c1),
       which is the standing guard.
-    expected_literals: ["sql_blocks=2 vectors=27 pass=27/27 raises=3 verdicts=4 reasons=7 actions=4"]
+    expected_literals: ["sql_blocks=2 vectors=28 pass=28/28 raises=4 verdicts=4 reasons=7 actions=4"]
   - step: 3
     phase: pre-deploy
     action: Run the report's seeded null-effect simulation through the same verdict SQL
@@ -243,7 +243,7 @@ context:
     telemetry_sessions; the source registry; Decisions 103, 199 and 201 (sections), 55 and 186 (by citation); T3.3, T3.4.
   - >-
     Measurement (report section 1): merges to main per day from git log on origin/main (counts only), as a
-    lower bound on session volume. The twenty-three-mutant check of the verdict SQL was run once by hand and
+    lower bound on session volume. The twenty-five-mutant check of the verdict SQL was run once by hand and
     is reported, not a VP step.
   - "fork: one item vs split verdict/route/record | chosen: one task item | class: consistency-only | precedent: CD.45 item-count cap 12 across about ten components; Decision 197 cl.3 grain; components 1-5 precedent | precedent_kind: contract | reversible: yes | persisted: fixture"
   - "fork: edge home | chosen: part_of T3.4, depends_on T2.36 | class: consistency-only | precedent: T3.4's exit criterion ends at telemetry delta proves fix; validate_work_item_pilot L4 (edge targets are tier ids) | precedent_kind: roadmap | reversible: yes | persisted: fixture"
@@ -254,6 +254,14 @@ context:
   - "fork: unmeasurable at the deadline (k2) | chosen: none; (b) close_proposed recommended | class: asked | precedent: none (Decision 103 covers semantic verdicts, not unmeasurable) | precedent_kind: none | reversible: yes | persisted: report k2, /mnt/project-files/gates/w1-c6-parked-forks.md, PARKED"
   - "fork: confound control (k3) | chosen: none; (a) single-subject test with an advisory control recommended | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: report k3, /mnt/project-files/gates/w1-c6-parked-forks.md, PARKED"
   - "fork: chronic close and verdict record home | chosen: inherited, not decided here (rec-filing k6 sets chronic_from; rec-filing q4 sets the record home) | class: consistency-only | precedent: #1396 parked forks | precedent_kind: contract | reversible: yes | persisted: report sections 2, 3"
+  - >-
+    gates (reports in /mnt/project-files/gates/): zero-context verification r1
+    (w1-back-validation-zero-context-verification-r1-7d3a0c58) REVISE on b8570842: M1 rows counted, not
+    sessions, so a duplicated session row could flip v03 to holds; folded as a fourth fail-loud guard
+    (duplicate session_id), vector v27 and its mutant. S1 s1 no longer settles the late-close sha keying
+    (k1 owns it); S2 the late closer's closing sha comes from the fix-attempt stamp, and it is a non-trailer
+    update_rec caller (k1 text, c2). N1 upper-tail mutant relabelled and a doubled-p mutant added; N2, N3,
+    N5 folded in text.
   - >-
     check_accounting: no registered check is added or removed; the hygiene stream's baseline is untouched.
 pre_implementation_checklist:

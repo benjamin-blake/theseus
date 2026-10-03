@@ -10,8 +10,8 @@ read for content or written while preparing it (Decision 67). Every rec operatio
 - T3.4's loop ends at "fix -> telemetry delta proves fix" (ROADMAP-PLATFORM.yaml:6593). The component is
   a deterministic VERDICT per filer rec, not a dashboard: given the fix sha and the telemetry before and
   after it, it returns one of Decision 201's verdicts (holds, fails, unmeasurable) or pending. One SQL
-  statement does it and passes 27 of 27 hand-written vectors on DuckDB (VP 2), three of them by raising on
-  malformed input. Twenty-three mutants were run once by hand; each fails a named vector.
+  statement does it and passes 28 of 28 hand-written vectors on DuckDB (VP 2), four of them by raising on
+  malformed input. Twenty-five mutants were run once by hand; each fails a named vector.
 - The obvious rule is wrong, and the evidence is measured, not argued. A filer files when a count crosses
   a floor, so the filing window is selected on a high value. Read "the count fell after the fix" as proof
   and a fix that changed nothing is proven 44% to 79% of the time, depending on the base rate (VP 3: a
@@ -20,7 +20,8 @@ read for content or written while preparing it (Decision 67). Every rec operatio
   when the friction touches 5% to 20% of exposed sessions.
 - What makes the difference, each with its own vector and mutant:
   - The unit is the SESSION, and the denominator is EXPOSED sessions (sessions that could have shown the
-    finding, such as sessions that called the tool), so a quiet week is not a fixed week (v19).
+    finding, such as sessions that called the tool), so a quiet week is not a fixed week (v19). A verb
+    that returns one session twice fails loud rather than counting it twice (v27).
   - The post-fix sample size is fixed from the baseline BEFORE any post-fix data is read: enough exposed
     sessions to expect 10 affected ones if nothing changed, never fewer than 60, stopping at the first
     whole day that reaches it. A daily job therefore never peeks its way to a pass (v10, v11).
@@ -69,17 +70,18 @@ read for content or written while preparing it (Decision 67). Every rec operatio
 
 Measured (no rec content read or written):
 
-- Verdict table: the SQL in section 2 passes 27 of 27 vectors (three by raising), with four verdicts,
-  seven reasons and four actions exercised [VP 2]. Twenty-three mutants were run once by hand, not as a VP
+- Verdict table: the SQL in section 2 passes 28 of 28 vectors (four by raising), with four verdicts,
+  seven reasons and four actions exercised [VP 2]. Twenty-five mutants were run once by hand, not as a VP
   step; each fails the vectors named: the fix day counted as post-fix (v13) or as baseline (v13b), the
   fix sessions counted (v12), unexposed sessions in the denominator (v19), an unbounded baseline (v14),
   an exclusive baseline lower bound (v26), strata pooled (v15, v16), a fixed post-fix sample of 60 (v09,
   v10, v13b, v14), the decision day counted (v18), the deadline day expiring (v06), significance alone
   (v02, v20, v25), reduction alone (v03), significance tested before the reduction (v25), no affected
   floor on the baseline (v08), no rarity cap (v09, v13b, v14), the chronic tag ignored or off by one
-  (v17), candidates inner-joined so a rec with no sessions vanishes (v21), each of the three fail-loud
-  guards removed (v22, v23, v24), a two-sided tail (nine vectors) and the sample stopping on the last
-  day instead of the first full one (v11).
+  (v17), candidates inner-joined so a rec with no sessions vanishes (v21, and v24, whose NULL-day row
+  then never reaches the guard), each of the four fail-loud guards removed (v22, v23, v24, v27), the
+  upper tail summed instead of the lower (the nine holds vectors), a doubled p for a two-sided test
+  (v19) and the sample stopping on the last day instead of the first full one (v11).
 - Null-effect simulation [VP 3], seeded and hash-driven so it is identical on every run: 12 sessions a
   day, every session exposed, a constant affected rate p0, the rec-filing seed floor (3 affected sessions
   in a 7-day window, after a 60-day warm-up), a fix 2 to 10 days after filing, and a verdict read after
@@ -100,7 +102,8 @@ Measured (no rec content read or written):
 - Session volume: no friction or telemetry session rows exist in production until W1-1's wiring lands
   (rec-filing q3). The nearest proxy is merges to main, a lower bound on sessions: 168 commits over the
   14 full days 2026-09-19 to 2026-10-02, mean 12 a day, median 11.5, range 0 to 31 (git log on
-  origin/main, counts only). The simulation's 12 sessions a day is that lower bound.
+  origin/main, counts only, each commit dated on its own commit-local day; on UTC days it is 172, median
+  10.5, range 0 to 35). The simulation's 12 sessions a day is that lower bound.
 
 ## 2. Back-validation design (what this item stages)
 
@@ -153,16 +156,19 @@ chronic_from: 3
 The decision, verified against the vectors below (VP 2). `{candidates}` is one row per candidate:
 rec_id, fix_day, chain_len (records in the rec's fingerprint chain, from the rec-filing heads input) and
 decide_day; `{sessions}` is the verb's rows, keyed by rec_id. Placeholders render from the params block.
-Three malformed inputs raise instead of deciding (fail loud, Decision 55): a NULL in any session or
-candidate column (v24), two classifier versions in one call (v22) and an affected session that was not
-exposed (v23). The guards are aggregates read by the final projection, so no optimiser can skip them by
+Four malformed inputs raise instead of deciding (fail loud, Decision 55): a NULL in any session or
+candidate column (v24), two classifier versions in one call (v22), an affected session that was not
+exposed (v23) and a session_id that appears on more than one row (v27). The last matters because every
+count is a row count: the telemetry journal can hold several rows per session (open, annotate and late
+rows, R2), and a verb that leaked them would inflate the post-fix sample toward a false holds. The guards are aggregates read by the final projection, so no optimiser can skip them by
 pushing a filter below them:
 
 ```sql
 WITH g AS (
   SELECT rec_id,
-         bool_or(day IS NULL OR producer IS NULL OR parser_version IS NULL OR classifier_version IS NULL
+         bool_or(session_id IS NULL OR day IS NULL OR producer IS NULL OR parser_version IS NULL OR classifier_version IS NULL
                  OR exposed IS NULL OR affected IS NULL OR addressed IS NULL) AS has_null,
+         count(*) > count(DISTINCT session_id) AS dup,
          count(DISTINCT classifier_version) AS n_cv,
          bool_or(affected AND NOT exposed) AS orphan
   FROM {sessions} GROUP BY rec_id
@@ -226,6 +232,7 @@ v AS (
       WHEN g.has_null OR t.fix_day IS NULL OR t.decide_day IS NULL OR t.chain_len IS NULL
       THEN error('malformed back-validation input: NULL session column or candidate column')
       WHEN g.n_cv > 1 THEN error('mixed classifier_version: both windows must come from one verb call')
+      WHEN g.dup THEN error('duplicate session_id: one row per session per verb call')
       WHEN g.orphan THEN error('malformed back-validation input: affected without exposure')
       WHEN t.n_pre < {min_pre_exposed} OR t.k_pre < {min_pre_affected} THEN 'baseline'
       WHEN t.n_req > {max_post_exposed} THEN 'too_rare'
@@ -251,7 +258,7 @@ FROM v
 | verdict | reason | when | action (described only) |
 |---|---|---|---|
 | pending | waiting | the post-fix sample has not reached n_req and the deadline (fix day + settle + max_wait_days) has not passed (v04, v06, v10, v18) | none |
-| holds | proven | one-sided Fisher exact p <= alpha AND the post-fix rate is at most (1 - min_reduction) of the baseline rate (v01, v11, v12, v13, v16, v19, v26) | close the rec through update_rec with the verdict record (Decision 103 deterministic satisfaction, Decision 201 record keyed to the fix sha); close_proposed instead when chain_len >= chronic_from (v17; rec-filing k6 (a)) |
+| holds | proven | one-sided Fisher exact p <= alpha AND the post-fix rate is at most (1 - min_reduction) of the baseline rate (v01, v11, v12, v13, v16, v19, v26) | close the rec through update_rec with the verdict record (Decision 103 deterministic satisfaction, Decision 201 record; its sha keying for a late close is k1); close_proposed instead when chain_len >= chronic_from (v17; rec-filing k6 (a)) |
 | fails | no_reduction | the post-fix rate is above (1 - min_reduction) of the baseline rate, significant or not (v02, v25) | record the verdict on the fix attempt; the rec stays open with its fix attempt marked fails |
 | unmeasurable | baseline | fewer than min_pre_exposed exposed or min_pre_affected affected baseline sessions, including a subject the classifier no longer labels (v07, v08, v21) | record; disposition is k2 |
 | unmeasurable | too_rare | n_req > max_post_exposed (v09, v13b, v14) | record; disposition is k2 |
@@ -260,7 +267,7 @@ FROM v
 
 Every run writes one run record (counts per verdict and reason, params_version, the classifier and
 parser versions read) beside the per-rec verdict records, so nothing is decided silently. A verdict
-record carries {rec_id, sha: the fix sha, acceptance_sha256, verdict, source: telemetry, arm: the
+record carries {rec_id, sha (the fix sha under k1 (a)), acceptance_sha256, verdict, source: telemetry, arm: the
 reason}, the shape `assert_acceptance_verdict` already checks (e3), plus n_pre, k_pre, n_post, k_post,
 the stop day, p and params_version, so a later reader re-reads the record instead of re-deriving it
 (R2; the TAP rule, e6). The filer rec's acceptance is a command that reads that record, `bin/venv-python
@@ -285,6 +292,8 @@ chain_len, decide_day]`. sessions rows are count rows `[rec_id, day, producer, p
 classifier_version, sessions, exposed, affected, addressed]`, which the harness expands into one row per
 session: session i is exposed when i < exposed, affected when i < affected and addressed when i <
 addressed, so the affected sessions are the first ones and the addressed sessions are drawn from them.
+A row may carry a tenth element, a tag that replaces the row index in its session ids, so two rows with
+the same tag describe the same sessions (v27 uses it to send a session twice).
 `expected` lists `[rec_id, verdict, reason, action]` or `error`:
 
 ```yaml
@@ -397,6 +406,10 @@ vectors:
     candidates: [[rec-100, 30, 1, 60]]
     sessions: [[rec-100, 2, claude_code, 1, 1, 120, 120, 24, 0], [rec-100, 31, claude_code, 1, 1, 60, 60, 1, 0]]
     expected: [[rec-100, holds, proven, close]]
+  - id: v27-duplicate-session-row-fails-loud
+    candidates: [[rec-100, 30, 1, 60]]
+    sessions: [[rec-100, 15, claude_code, 1, 1, 60, 60, 6, 0, pre], [rec-100, 31, claude_code, 1, 1, 100, 100, 4, 0, post], [rec-100, 31, claude_code, 1, 1, 100, 100, 0, 0, post]]
+    expected: error
 ```
 
 The null-effect simulation (VP 3) builds its sessions and candidates with the SQL below and decides them
@@ -451,14 +464,16 @@ production false-proof rate, which the failure signal measures (section 4).
 
 Settled (consistent with a Decision, a contract or measured; s1-s3 in the fixture):
 
-- s1 The verdict vocabulary is Decision 201's (holds, fails, unmeasurable), and a verdict record is keyed
-  to the rec, its acceptance sha256 and the FIX sha; a proof close goes through update_rec with that
-  record. Precedent: Decision 103 (deterministic satisfaction with a recorded proof) and Decision 201
-  (the record and its single enforcement site), which already admits it (VP 1). pending is not a verdict;
-  it is the absence of one.
+- s1 The verdict vocabulary is Decision 201's (holds, fails, unmeasurable), recorded in Decision 201's
+  record shape {rec_id, sha, acceptance_sha256, verdict, source, arm}, and a proof close goes through
+  update_rec with that record. Precedent: Decision 103 (deterministic satisfaction with a recorded proof)
+  and Decision 201 (the record and its single enforcement site), which already admits it (VP 1). pending
+  is not a verdict; it is the absence of one. Which sha the record carries is settled only for the
+  trailer path, where the closing sha is the fix merge commit; for a verdict written days later it is
+  k1, not this row.
 - s2 One SQL statement decides per rec: exposed sessions only, the baseline's stratum, a post-fix sample
   sized from the baseline before it is read, a one-sided Fisher exact test and a minimum reduction. It
-  passes 27/27 vectors; in the simulation it proves at most 3.0% of no-op fixes where the naive delta
+  passes 28/28 vectors; in the simulation it proves at most 3.0% of no-op fixes where the naive delta
   proves 44% to 79% (VP 2, VP 3).
 - s3 The fix day, the fix's own sessions and other producer strata are on neither side, and both windows
   come from one verb call at one classifier_version, so a classifier edit cannot prove a fix (v08, v12,
@@ -478,8 +493,12 @@ Contested (evidence on both sides, options listed; k1-k3 in the fixture; all par
   For (a): one trailer, one census, one enforcement site; the record shape already passes (VP 1). Against
   (a): a verdict evaluated days after the merge, keyed to the fix sha rather than the evaluating
   commit, is a new kind of source under Decision 201, and today the same command resolves `fails` at
-  merge (e4, e5). Recommended: (a). It amends a Decision's layer, so it is parked, with candidate
-  decision text staged in section 5 for W3.
+  merge (e4, e5). Two build constraints ride with (a): the late closer passes update_rec a closing sha
+  taken from the fix-attempt stamp on the rec, never from the verdict record (reading it back out of
+  the record makes the sha check a self-comparison, closure_gate.py:330-365); and it is a non-trailer
+  update_rec caller, the fail-open Decision 201 cl.3 leaves to rec-3999, so it must always supply a
+  record. Recommended: (a). It amends a Decision's layer, so it is parked, with candidate decision text
+  staged in section 5 for W3.
 - k2 What happens to an unmeasurable verdict at the deadline (the fallback the rec-filing k4 recommendation
   names).
   - (a) The rec stays open and is listed for triage with its reason.
@@ -535,7 +554,9 @@ Open (q1-q3 in the fixture; none is answerable from the repository):
 
 - q1 Who declares exposure? Each detector must supply, per subject, the predicate for "this session could
   have shown it" and return exposed and affected per session. No verb returns either today; the friction
-  verb returns per-session label counts (W1-3) and would need tool-call presence per tool.
+  verb returns per-session label counts (W1-3) and would need tool-call presence per tool. The verb
+  must also return exactly one row per session (v27) and a non-NULL rec_id on every row: a row whose
+  rec_id is NULL joins to no candidate and is dropped without an error.
 - q2 What is the effective day of a fix that is not live at merge? The merge day is right for repo hooks,
   skills and scripts that a new session picks up. A Lambda fix is live at its governed deploy, and a
   model or harness change has no sha in this repository.
