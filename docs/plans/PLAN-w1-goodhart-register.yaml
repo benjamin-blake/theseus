@@ -51,8 +51,8 @@ acceptance_criteria:
     the cheap path and holds on the real improvement; two declared companions are computable and one of them
     moves (VP step 3).
   - >-
-    The verdict SQL assembled from the report passes all 133 vectors on DuckDB with one row per detector, 44
-    by raising with the stated message; each of 204 mutants (named plus a rule sweep) replaces exactly one
+    The verdict SQL assembled from the report passes all 159 vectors on DuckDB with one row per detector, 49
+    by raising with the stated message; each of 246 mutants (named plus a rule sweep) replaces exactly one
     site and fails at least one vector; and on both sides of every boundary grid it reads 520 recall pairs
     and 9,800 exact-eps moves correctly (VP step 4).
   - >-
@@ -130,13 +130,13 @@ verification_plan:
     action: Assemble the verdict SQL from the report, run every vector on DuckDB, then every mutant, then the boundary grids
     command: |
       bin/venv-python -c "import re,datetime as D,duckdb,yaml; F=chr(96)*3; T=open('docs/plans/reports/REPORT-w1-goodhart-register.md',encoding='utf-8').read(); Y={k:v for b in re.findall(F+'yaml\n(.*?)'+F,T,re.S) for k,v in yaml.safe_load(b).items()}; V,Q=Y['vectors'],Y['verdict']; t=D.date.fromisoformat(V['defaults']['today']); N=lambda o: None if o is None else t+D.timedelta(o)
-      A=lambda q: [q:=q.replace('{'+k+'}',str(v)) for k,v in dict(Q['params'],today=\"DATE '%s'\" % t,register='register',signal='signal',drills='drills').items()][-1]
+      A=lambda q,P={}: [q:=q.replace('{'+k+'}',str(v)) for k,v in dict(Q['params'],**P,today=\"DATE '%s'\" % t,register='register',signal='signal',drills='drills').items()][-1]
       def G(v,q):
         c=duckdb.connect(); c.execute('CREATE TABLE register (detector VARCHAR, threshold DOUBLE, counter_floor DOUBLE, drill_min INTEGER, drill_recall_min DOUBLE, upstream VARCHAR[])'); c.execute('CREATE TABLE signal (detector VARCHAR, day DATE, primary_value DOUBLE, counter_value DOUBLE)'); c.execute('CREATE TABLE drills (detector VARCHAR, day DATE, injected INTEGER, detected INTEGER)')
         [c.execute('INSERT INTO register VALUES (?,?,?,?,?,?)',[r[k] for k in ('detector','threshold','counter_floor','drill_min','drill_recall_min','upstream')]) for r in (dict(V['defaults']['register_row'],**x) for x in v['register'])]
         [c.execute('INSERT INTO signal VALUES (?,?,?,?)',[s['detector'],N(o),s['primary'],s['counter']]) for s in v['signal'] for o in (range(s['from'],s['to']+1) if s['from'] is not None else [None])]
         [c.execute('INSERT INTO drills VALUES (?,?,?,?)',[d['detector'],N(d['day']),d['injected'],d['detected']]) for d in v['drills']]
-        try: rows=c.execute(A(q)).fetchall(); g=dict(rows)
+        try: rows=c.execute(A(q,v.get('params',{}))).fetchall(); g=dict(rows)
         except Exception as ex: return v['expected']=='error' and v['raises'] in str(ex)
         return v['expected']!='error' and len(rows)==len(g) and g==v['expected']
       P=[G(v,Q['sql']) for v in V['cases']]; print('vectors=%d pass=%d/%d raises=%d failed=%s' % (len(P),sum(P),len(P),sum(v['expected']=='error' for v in V['cases']),[v['id'] for v,p in zip(V['cases'],P) if not p]))
@@ -149,14 +149,14 @@ verification_plan:
       g=E(A(Q['sql'])).fetchall(); B=lambda p: [x for d,x in g if d[0]==p]
       print('grid recall_boundary=%d blind=%d near_blind=%d eps_both=%d diverging=%d near=%d eps_primary_only=%d diverging=%d near=%d eps_counter_only=%d diverging=%d near=%d' % (len(B('r')),B('r').count('blind'),B('R').count('blind'),len(B('e')),B('e').count('diverging'),B('E').count('diverging'),len(B('p')),B('p').count('diverging'),B('P').count('diverging'),len(B('c')),B('c').count('diverging'),B('C').count('diverging')))"
     expected: >-
-      Three lines: 133 vectors, 133 of 133 passing (44, e01-e44, by raising with their stated message), each
-      returning one row per detector, and an empty failed list; then 204 mutants (34 named, the rest the rule
-      sweep of report section 2.6), each replacing exactly one site of the SQL, all 204 killed, no survivors,
-      and the one equivalent mutant listed apart; then the boundary grids of report section 2.4, each with a
+      Three lines: 159 vectors, 159 of 159 passing (49, e01-e49, by raising with their stated message), each
+      returning one row per detector under its own params override if it carries one, and an empty failed
+      list; then 246 mutants (34 named, the rest the rule sweep of report section 2.6), each replacing exactly
+      one site of the SQL, all 246 killed, no survivors, and the three equivalent mutants listed apart; then the boundary grids of report section 2.4, each with a
       far side and a near side: 520 exact recall boundaries with none read blind and, one detected fewer,
       all 520 read blind; exact-eps falls on both series (9,604), on the primary alone (98) and on the counter
       alone (98) with none read diverging and, 1e-8 further, all read diverging. A refusal with another
-      message, or a repeated detector row, counts as a failure. Takes a few minutes.
+      message, or a repeated detector row, counts as a failure. Takes 15-25 minutes on 4 cores.
     fix_if: >-
       A failing vector means the SQL and the verdict table in report section 2.4 disagree: fix the one that
       encodes the wrong intent and say which in the report. A survivor means a vector is missing: add one that
@@ -165,7 +165,7 @@ verification_plan:
     graduation: waive
     graduation_waiver_reason: >-
       Design evidence for the staged verdict; the production SQL carries its own vector test (criterion c1).
-    expected_literals: ["vectors=133 pass=133/133 raises=44 failed=[]", "mutants=204 unique_site=204 killed=204 survivors=[] equivalent=1", "grid recall_boundary=520 blind=0 near_blind=520 eps_both=9604 diverging=0 near=9604 eps_primary_only=98 diverging=0 near=98 eps_counter_only=98 diverging=0 near=98"]
+    expected_literals: ["vectors=159 pass=159/159 raises=49 failed=[]", "mutants=246 unique_site=246 killed=246 survivors=[] equivalent=3", "grid recall_boundary=520 blind=0 near_blind=520 eps_both=9604 diverging=0 near=9604 eps_primary_only=98 diverging=0 near=98 eps_counter_only=98 diverging=0 near=98"]
   - step: 5
     phase: pre-deploy
     action: Prove the fixture carries this component's one item and the pilot evaluator passes
@@ -270,6 +270,7 @@ context:
   - "fork: how the register's own drill stays live (verification r1 F1) | chosen: none; staged a 28-day unregistered read with one dated drill- series a day, excluded from unsound_reads, and every history read windowed, guards included, so history older than the window never reads unregistered or raises | class: asked | precedent: none (the alternative is a today-only unregistered read) | precedent_kind: none | reversible: yes | persisted: report section 2.4 and section 4, fixture top trigger and failure_signal source, /mnt/project-files/gates/w1-c9-parked-forks.md, PARKED under k2"
   - "fork: retirement and onboarding (verification r3 F1) | chosen: none; staged in-window signal and drill rows of a detector with no register row both read unregistered, so neither halts the run, and a retirement reads unregistered for 27 days (with k1 (iii) as staged, promotion freezes for those days) | class: asked | precedent: none (alternatives: a retired_on marker on the register row; a halt with a stated 28-day retirement procedure) | precedent_kind: none | reversible: yes | persisted: report section 2.4 and k2, vectors v60-v62, /mnt/project-files/gates/w1-c9-parked-forks.md, PARKED under k2"
   - "fork: exact-boundary arithmetic (verification r1 F3) | chosen: none; staged recall as detected / injected and 9-place rounding of late-half means and eps bounds, so the stated boundaries hold exactly to 9 decimal places | class: asked | precedent: none (the alternative is to state the rules as approximate) | precedent_kind: none | reversible: yes | persisted: report section 2.4, VP 4 grids, /mnt/project-files/gates/w1-c9-parked-forks.md, PARKED under k6"
+  - "fork: malformed-input blast radius (verification r4 F2) | chosen: none; staged any guard firing raises the whole run, so one malformed in-window row suppresses every detector's verdict for up to 27 days, and the ladder holds every rung on a day without verdicts | class: asked | precedent: none (Decision 55 by analogy only: fail loud, not fail wide; alternatives: a per-detector malformed verdict for signal and drill defects with the whole-run raise kept for register defects; quarantine the row and read the rest; the halt with a stated repair procedure) | precedent_kind: none | reversible: yes | persisted: report section 2.4 and k2, vector e45, /mnt/project-files/gates/w1-c9-parked-forks.md, PARKED under k2"
   - "fork: staleness (verification r2 N2 (i), r3 A1) | chosen: none; staged the latest defined value anywhere in the 28-day window decides, which fails open on a counter that stops arriving | class: asked | precedent: none (the alternative is a freshness bound, which needs a per-detector cadence) | precedent_kind: none | reversible: yes | persisted: report section 2.4 and k1 (iv), fixture k1 text, vectors v41 and v63, /mnt/project-files/gates/w1-c9-parked-forks.md, PARKED under k1"
   - "fork: what the ladder does with unregistered rows (k1 (iii), verification r2 N2 (ii)) | chosen: none; staged ignore dated drill- rows, block every promotion while any other unregistered row exists | class: asked | precedent: none (the alternative is a register defect that blocks nothing) | precedent_kind: none | reversible: yes | persisted: report k1, fixture k1, /mnt/project-files/gates/w1-c9-parked-forks.md, PARKED"
   - "fork: seeds (counter floor 0.99, drill 20 per 28 days at 0.9, eps 0.01, maturity 40/40/30) | chosen: none; carried as provisional seeds | class: asked | precedent: none (no measurement, no Decision) | precedent_kind: none | reversible: yes | persisted: report q2, fixture q2 and maturity (every trigger marked provisional)"

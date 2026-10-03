@@ -49,10 +49,12 @@ Staged, not decided: one register row per detector (section 2.2) and one determi
 (section 2.4) that reads the register, a daily (primary, counter) series per detector and a drill log, and
 returns one verdict per detector: ok, dark, breach, counter_dark, counter_low, undrilled, blind,
 diverging, upstream_unsound or unregistered. A detector is ok only when its own signal, counter and drill
-are sound and so is every detector upstream of it; a series with no register row reads unregistered. It
-passes 94/94 vectors with one row per detector, 35 by raising on malformed input; each of 112 mutants,
-named or from a rule sweep over every comparison, clause, rounding and branch, fails at least one vector;
-and it misreads none of 520 exact recall boundaries or 9,800 exact-eps moves (VP 4).
+are sound and so is every detector upstream of it; a signal or drill row with no register row reads
+unregistered. It passes 159/159 vectors with one row per detector, 49 by raising on malformed input; each of
+246 mutants, named or from a rule sweep by class (comparisons, clauses, rounding and precision, tolerance,
+aggregates, branch order, propagation, undefined days, half splits, params), fails at least one vector,
+and three more are equivalent; and it reads both sides of every boundary grid correctly (520 recall pairs,
+9,800 exact-eps moves; VP 4).
 The maturity-ladder controller would read the verdict as an input; what a non-ok
 verdict does to a rung is k1.
 
@@ -74,8 +76,8 @@ cost/egress component owns (R4).
 | e4 | The pilot FailureSignal model is three free-text fields (signal, metric, source): no counter, drill or recall field exists | scripts/checks/roadmap/_work_item_pilot_model.py:162 |
 | e5 | No file under src/ or scripts/ other than the pilot model and its evaluator names failure_signal or goodhart; the six telemetry contracts carry 0 synthetic or drill markers [VP 2] | repository grep |
 | e6 | In the per-detector model, each cheap path lowers the primary (8/8) by at least as much as a real halving of the failure rate (8/8 within 0.001); each counter falls under its floor on the cheap path (8/8) and holds on the real improvement (8/8); 2 declared companions are computable and 1 of them moves [VP 3] | section 2.3 |
-| e7 | The staged verdict SQL passes 94 vectors with one row per detector, 35 by raising with the stated message, and misreads none of 520 exact recall boundaries or 9,800 exact-eps moves [VP 4] | sections 2.4, 2.5 |
-| e8 | Each of 112 mutants of the verdict SQL (34 named, 78 from the rule sweep) replaces one unique site and fails at least one vector; one further mutant is equivalent and listed apart [VP 4] | section 2.6 |
+| e7 | The staged verdict SQL passes 159 vectors with one row per detector, 49 by raising with the stated message, and reads both sides of 520 exact recall boundaries and 9,800 exact-eps moves correctly [VP 4] | sections 2.4, 2.5 |
+| e8 | Each of 246 mutants of the verdict SQL (34 named, 212 from the rule sweep) replaces one unique site and fails at least one vector; three further mutants are equivalent and listed apart [VP 4] | section 2.6 |
 | e9 | #1398 (unmerged) measured that a half-blind monitor reaches the top rung in 58 of 60 components at a 5% error rate, against 25 of 60 at recall 1.0, and named reviewer error (R3) and unequal harm (R6) for this register | REPORT-w1-maturity-ladder.md section 0 and Risks, at f6183430 |
 | e10 | Four sibling reports carry a Goodhart paragraph naming a cheap path and a guard (#1394, #1395, #1396, #1397); #1384 section 4 names its own blind spot; five (#1394-#1398) name what they hand to this register | sibling reports at the pinned heads |
 | e11 | The producer writes a hook row's severity from its exit code: 2 is error, 0 or a missing code is info, anything else warning; an info row is outside unmapped_failure_share's denominator | src/turn_capture/observations.py:311 |
@@ -328,7 +330,17 @@ NULL detector, a non-finite primary, a counter outside [0, 1] (section 2.1 orien
 NaN and infinities included) or a duplicate day. Drills, in the window: a NULL field, a negative detected
 count or more detected than injected. A sentinel row makes the guard fire even when no detector row would be
 returned (e13, e24). Each range edge is pinned on both sides: the edge value itself is legal (v57, v64,
-v65, v80) and a value 1e-7 past it raises (e40-e44).
+v65, v80) and a value 1e-7 past it raises (e40-e44). When several classes are malformed at once, the
+outer CASE order decides the message: register, upstream, cycle, signal, drill (e46-e49).
+
+Blast radius (staged; k2): any guard firing raises the whole run. So one malformed in-window row (a NaN
+primary, a counter of 1.0000001, a duplicate detector-day, more detected than injected) suppresses every
+detector's verdict, every day, until the row is corrected or leaves the window, up to 27 days later (e45:
+X's one bad counter on day -20 halts A too). The [0, 1] counter guard widens this: an undercounting
+out-of-band denominator now halts the register rather than reading ok for one detector. On a raised day
+there is no verdict at all; staged, the ladder reads that as no promotion and no demotion for any detector
+(every rung holds) and the run's error is the alarm. Decision 55 says fail loud, not fail wide, and is cited
+only by analogy, so this is a choice, parked under k2 with its alternatives.
 
 ```yaml
 verdict:
@@ -419,15 +431,15 @@ verdict:
 | verdict | when (precedence top-down) | vectors |
 |---|---|---|
 | dark | no defined primary in the window | v02, v03, v21, v49 |
-| breach | the latest defined primary exceeds the row's threshold (strictly) | v04, v23, v26, v27, v66 |
-| counter_dark | no defined counter in the window | v06 |
-| counter_low | the latest defined counter is under its floor (strictly) | v07, v28, v29, v64, v67 |
-| undrilled | fewer than drill_min faults injected in the window | v09, v10, v13 |
-| blind | detected / injected in the window below drill_recall_min | v11, v20, v23, v59, v68, v79 |
-| diverging | the primary's late-half mean fell by more than eps AND the counter's fell by more than eps | v15, v37, v46-v48, v69-v71, v73, v77, v78, v83, v84, v88 |
-| upstream_unsound | own verdict ok, and some upstream, at any depth, is not ok | v20, v21, v48, v49 |
+| breach | the latest defined primary exceeds the row's threshold (strictly) | v04, v23, v26, v27, v66, v90, v100 |
+| counter_dark | no defined counter in the window | v06, v91 |
+| counter_low | the latest defined counter is under its floor (strictly) | v07, v28, v29, v64, v67, v92 |
+| undrilled | fewer than drill_min faults injected in the window | v09, v10, v13, v93, v101 |
+| blind | detected / injected in the window below drill_recall_min | v11, v20, v23, v59, v68, v79, v102 |
+| diverging | the primary's late-half mean fell by more than eps AND the counter's fell by more than eps | v15, v37, v46-v48, v69-v71, v73, v77, v78, v83, v84, v88, v94, v95, v98, v99, v107, v109 |
+| upstream_unsound | own verdict ok, and some upstream, at any depth, is not ok (every non-ok verdict propagates) | v20, v21, v48, v49, v90-v93 |
 | unregistered | a signal or drill row in the window whose detector has no register row (one row however many days) | v24, v33, v50, v60-v62 |
-| ok | otherwise | v01, v05, v08, v12, v14, v16-v19, v22, v25, v30-v32, v34-v36, v38-v45, v51-v58, v63, v65, v72, v74-v76, v80-v82, v85-v87, v89 |
+| ok | otherwise | v01, v05, v08, v12, v14, v16-v19, v22, v25, v30-v32, v34-v36, v38-v45, v51-v58, v63, v65, v72, v74-v76, v80-v82, v85-v87, v89, v96, v97, v103-v106, v108, v110 |
 
 Staleness (staged; k1 (iv)): p_last and c_last are the latest defined values anywhere in the window,
 however old, so a detector that last emitted 27 days ago decides on that value (v41); at 28 days it reads
@@ -465,8 +477,15 @@ The register's own drill injects one series a day whose name carries that day's 
 A day's drill passes only when that day's name reads unregistered. An earlier day's series still reads
 unregistered inside the window (v33), so a fixed name would pass every day after the first, whether or not
 the injection ran. The dated drill- series are excluded from the item's unsound_reads count. A detector's own non-ok verdict
-outranks upstream_unsound (v23). breach outranks the counter (v27): a breach is evidence the detector sees.
-A low counter outranks a missing drill (v28). Several detectors decide independently (v29).
+outranks upstream_unsound (v23). breach outranks the counter, low or missing (v27, v100): a breach is
+evidence the detector sees. A low counter outranks a missing drill (v28), too few faults outrank a low
+recall on them (v101), and blind outranks diverging (v102), so each adjacent pair in the staged precedence
+that can differ is pinned (k1 (ii)). Every non-ok upstream verdict propagates at full strength: dark,
+breach, counter_dark, counter_low, undrilled, blind and diverging (v21, v90, v91, v92, v93, v20, v48; k1
+(i)). Several detectors decide independently (v29). Inside a half-mean an undefined day is skipped, not read
+as 0 (v96-v99), and each half starts and ends where stated (v37, v46, v94, v95). Params are read by name:
+v103-v110 each override one param, so a build that reads eps_primary for eps_counter, or window_days as twice
+half_days, fails a vector.
 
 ### 2.5 Vectors (VP 4)
 
@@ -580,6 +599,27 @@ vectors:
     - {id: v87, note: 'primary early half not constant: the mean bound is not crossed, the max bound would be', register: [{detector: A, counter_floor: 0.9}], signal: [{detector: A, from: -27, to: -27, primary: 0.06, counter: 1.0}, {detector: A, from: -26, to: -14, primary: 0.04, counter: 1.0}, {detector: A, from: -13, to: 0, primary: 0.032, counter: 0.95}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: ok}}
     - {id: v88, note: 'primary late half not constant: the mean falls past eps, the median and the max do not', register: [{detector: A, counter_floor: 0.9}], signal: [{detector: A, from: -27, to: -14, primary: 0.04, counter: 1.0}, {detector: A, from: -13, to: -8, primary: 0.02, counter: 0.95}, {detector: A, from: -7, to: 0, primary: 0.035, counter: 0.95}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: diverging}}
     - {id: v89, note: 'counter late half not constant: the mean does not fall eps, the min would', register: [{detector: A, counter_floor: 0.9}], signal: [{detector: A, from: -27, to: -14, primary: 0.04, counter: 1.0}, {detector: A, from: -13, to: -13, primary: 0.02, counter: 0.95}, {detector: A, from: -12, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: ok}}
+    - {id: v90, note: a breaching upstream propagates (staged k1 (i) full strength; verifier r4v01), register: [{detector: A}, {detector: B, upstream: [A]}], signal: [{detector: A, from: -27, to: 0, primary: 0.06, counter: 1.0}, {detector: B, from: -27, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}, {detector: B, day: -1, injected: 20, detected: 20}], expected: {A: breach, B: upstream_unsound}}
+    - {id: v91, note: a counter_dark upstream propagates (verifier r4v02), register: [{detector: A}, {detector: B, upstream: [A]}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: null}, {detector: B, from: -27, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}, {detector: B, day: -1, injected: 20, detected: 20}], expected: {A: counter_dark, B: upstream_unsound}}
+    - {id: v92, note: a counter_low upstream propagates (verifier r4v03), register: [{detector: A}, {detector: B, upstream: [A]}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 0.5}, {detector: B, from: -27, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}, {detector: B, day: -1, injected: 20, detected: 20}], expected: {A: counter_low, B: upstream_unsound}}
+    - {id: v93, note: an undrilled upstream propagates (verifier r4v04), register: [{detector: A}, {detector: B, upstream: [A]}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}, {detector: B, from: -27, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: B, day: -1, injected: 20, detected: 20}], expected: {A: undrilled, B: upstream_unsound}}
+    - {id: v94, note: 'the late half starts on day -13: a low primary that day carries the fall past eps (verifier r4v06)', register: [{detector: A, counter_floor: 0.9}], signal: [{detector: A, from: -27, to: -14, primary: 0.04, counter: 1.0}, {detector: A, from: -13, to: -13, primary: 0.01, counter: 0.95}, {detector: A, from: -12, to: 0, primary: 0.0305, counter: 0.95}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: diverging}}
+    - {id: v95, note: 'the late half starts on day -13: a low counter that day carries the fall past eps (verifier r4v07)', register: [{detector: A, counter_floor: 0.9}], signal: [{detector: A, from: -27, to: -14, primary: 0.04, counter: 1.0}, {detector: A, from: -13, to: -13, primary: 0.02, counter: 0.9}, {detector: A, from: -12, to: 0, primary: 0.02, counter: 0.9905}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: diverging}}
+    - {id: v96, note: 'primary undefined for the last 7 days: the late mean is over defined days only, so no eps fall (verifier r4v08)', register: [{detector: A, counter_floor: 0.9}], signal: [{detector: A, from: -27, to: -14, primary: 0.04, counter: 1.0}, {detector: A, from: -13, to: -7, primary: 0.035, counter: 0.95}, {detector: A, from: -6, to: 0, primary: null, counter: 0.95}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: ok}}
+    - {id: v97, note: 'counter undefined for the last 7 days: the late mean is over defined days only, so no eps fall (verifier r4v09)', register: [{detector: A, counter_floor: 0.9}], signal: [{detector: A, from: -27, to: -14, primary: 0.04, counter: 1.0}, {detector: A, from: -13, to: -7, primary: 0.02, counter: 0.995}, {detector: A, from: -6, to: 0, primary: 0.02, counter: null}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: ok}}
+    - {id: v98, note: 'primary undefined for 7 early days: the early mean is over defined days only, so the fall diverges (verifier r4v10)', register: [{detector: A, counter_floor: 0.9}], signal: [{detector: A, from: -27, to: -21, primary: 0.04, counter: 1.0}, {detector: A, from: -20, to: -14, primary: null, counter: 1.0}, {detector: A, from: -13, to: 0, primary: 0.02, counter: 0.95}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: diverging}}
+    - {id: v99, note: 'counter undefined for 7 early days: the early mean is over defined days only, so the fall diverges (verifier r4v11)', register: [{detector: A, counter_floor: 0.9}], signal: [{detector: A, from: -27, to: -21, primary: 0.04, counter: 1.0}, {detector: A, from: -20, to: -14, primary: 0.04, counter: null}, {detector: A, from: -13, to: 0, primary: 0.02, counter: 0.95}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: diverging}}
+    - {id: v100, note: breach outranks a missing counter (k1 (ii) as staged; verifier r4v12), register: [{detector: A}], signal: [{detector: A, from: -27, to: 0, primary: 0.06, counter: null}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: breach}}
+    - {id: v101, note: undrilled outranks a low recall on too few faults (k1 (ii) as staged; verifier r4v13), register: [{detector: A}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 10, detected: 5}], expected: {A: undrilled}}
+    - {id: v102, note: blind outranks diverging (k1 (ii) as staged; verifier r4v14), register: [{detector: A, counter_floor: 0.9}], signal: [{detector: A, from: -27, to: -14, primary: 0.04, counter: 1.0}, {detector: A, from: -13, to: 0, primary: 0.02, counter: 0.95}], drills: [{detector: A, day: -1, injected: 20, detected: 10}], expected: {A: blind}}
+    - {id: v103, note: 'eps_counter 0.02: a counter fall of 0.015 is under its own eps (params override; verifier r4p1)', params: {eps_counter: 0.02}, register: [{detector: A, counter_floor: 0.9}], signal: [{detector: A, from: -27, to: -14, primary: 0.04, counter: 1.0}, {detector: A, from: -13, to: 0, primary: 0.02, counter: 0.985}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: ok}}
+    - {id: v104, note: 'eps_primary 0.02: a primary fall of 0.015 is under its own eps (params override; verifier r4p2)', params: {eps_primary: 0.02}, register: [{detector: A, counter_floor: 0.9}], signal: [{detector: A, from: -27, to: -14, primary: 0.04, counter: 1.0}, {detector: A, from: -13, to: 0, primary: 0.025, counter: 0.95}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: ok}}
+    - {id: v105, note: 'window_days 30: a drill on day -29 is inside the window (params override; verifier r4p3)', params: {window_days: 30}, register: [{detector: A}], signal: [{detector: A, from: -29, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -29, injected: 20, detected: 20}], expected: {A: ok}}
+    - {id: v106, note: 'window_days 30: a signal defined only on day -29 still decides (params override)', params: {window_days: 30}, register: [{detector: A}], signal: [{detector: A, from: -29, to: -29, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: ok}}
+    - {id: v107, note: 'half_days 10: the primary late half is days -9..0, whose fall of 0.011 diverges (params override)', params: {half_days: 10}, register: [{detector: A, counter_floor: 0.9}], signal: [{detector: A, from: -27, to: -10, primary: 0.04, counter: 1.0}, {detector: A, from: -9, to: 0, primary: 0.029, counter: 0.95}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: diverging}}
+    - {id: v108, note: 'half_days 10: the primary early half is days -27..-10, whose mean 0.0411 is not crossed (params override)', params: {half_days: 10}, register: [{detector: A, counter_floor: 0.9}], signal: [{detector: A, from: -27, to: -14, primary: 0.05, counter: 1.0}, {detector: A, from: -13, to: -10, primary: 0.01, counter: 1.0}, {detector: A, from: -9, to: 0, primary: 0.035, counter: 0.95}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: ok}}
+    - {id: v109, note: 'half_days 10: the counter late half is days -9..0, whose fall of 0.011 diverges (params override)', params: {half_days: 10}, register: [{detector: A, counter_floor: 0.9}], signal: [{detector: A, from: -27, to: -10, primary: 0.04, counter: 1.0}, {detector: A, from: -9, to: 0, primary: 0.02, counter: 0.989}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: diverging}}
+    - {id: v110, note: 'half_days 10: the counter early half is days -27..-10, whose mean is not crossed (params override)', params: {half_days: 10}, register: [{detector: A, counter_floor: 0.5}], signal: [{detector: A, from: -27, to: -14, primary: 0.04, counter: 1.0}, {detector: A, from: -13, to: -10, primary: 0.04, counter: 0.6}, {detector: A, from: -9, to: 0, primary: 0.02, counter: 0.905}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: ok}}
     - {id: e16, note: a signal row with a NULL day raises (verifier k01), register: [{detector: A}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}, {detector: A, from: null, to: null, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: error, raises: 'malformed signal: NULL key'}
     - {id: e17, note: a drill row with a NULL day raises (verifier k02), register: [{detector: A}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}, {detector: A, day: null, injected: 20, detected: 20}], expected: error, raises: 'malformed drill: NULL field'}
     - {id: e18, note: a drill row with a NULL injected raises (verifier k03), register: [{detector: A}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}, {detector: A, day: -2, injected: null, detected: 0}], expected: error, raises: 'malformed drill: NULL field'}
@@ -609,13 +649,18 @@ vectors:
     - {id: e42, note: a counter floor 1e-7 above 1 raises, register: [{detector: A, counter_floor: 1.0000001}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: error, raises: 'floor outside [0, 1]'}
     - {id: e43, note: a counter 1e-7 below 0 raises, register: [{detector: A}], signal: [{detector: A, from: -27, to: -1, primary: 0.02, counter: 1.0}, {detector: A, from: 0, to: 0, primary: 0.02, counter: -1.0e-07}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: error, raises: 'counter outside [0, 1]'}
     - {id: e44, note: a counter 1e-7 above 1 raises, register: [{detector: A}], signal: [{detector: A, from: -27, to: -1, primary: 0.02, counter: 1.0}, {detector: A, from: 0, to: 0, primary: 0.02, counter: 1.0000001}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: error, raises: 'counter outside [0, 1]'}
+    - {id: e45, note: 'staged blast radius: one out-of-range counter of X on day -20 halts every detector today, A included (verifier r4v05; k2)', register: [{detector: A}, {detector: X}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}, {detector: X, from: -27, to: -21, primary: 0.02, counter: 1.0}, {detector: X, from: -20, to: -20, primary: 0.02, counter: 1.0000001}, {detector: X, from: -19, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}, {detector: X, day: -1, injected: 20, detected: 20}], expected: error, raises: 'counter outside [0, 1]'}
+    - {id: e46, note: a register defect outranks an unregistered upstream (verifier r4e01), register: [{detector: A, threshold: null}, {detector: B, upstream: [Z]}], signal: [], drills: [], expected: error, raises: 'malformed register: NULL field'}
+    - {id: e47, note: an unregistered upstream outranks a cycle (verifier r4e02), register: [{detector: A, upstream: [A, Z]}], signal: [], drills: [], expected: error, raises: upstream names an unregistered detector}
+    - {id: e48, note: a cycle outranks a malformed signal (verifier r4e03), register: [{detector: A, upstream: [A]}], signal: [{detector: A, from: 0, to: 0, primary: .nan, counter: 1.0}], drills: [], expected: error, raises: upstream cycle}
+    - {id: e49, note: a malformed signal outranks a malformed drill (verifier r4e04), register: [{detector: A}], signal: [{detector: A, from: 0, to: 0, primary: .nan, counter: 1.0}], drills: [{detector: A, day: -1, injected: 1, detected: 2}], expected: error, raises: malformed signal}
 ```
 
 ### 2.6 Mutants (VP 4)
 
 Each mutant replaces one exact substring of the verdict SQL (it must occur exactly once) and must fail at
-least one vector. m01-m34 are named. m35-m204 are a rule sweep, generated by class rather than by instance
-after verification rounds 1-3 found survivors on sites mirroring killed ones. Its classes:
+least one vector. m01-m34 are named. m35-m246 are a rule sweep, generated by class rather than by instance
+after verification rounds 1-4 found survivors on sites mirroring killed ones. Its classes:
 
 - every comparison flipped (< and <=, > and >=, = and <>);
 - every OR or AND clause dropped, every CASE branch and every guard term dropped;
@@ -625,18 +670,30 @@ after verification rounds 1-3 found survivors on sites mirroring killed ones. It
   each drill sum for max and min;
 - arithmetic: the eps sign, the recall division, the recursion step;
 - every window bound and guard read widened to all history, and the mirror of each named mutant on the other
-  series.
+  series;
+- the order of every WHEN in both CASEs: each adjacent pair swapped and each line moved to the top (the
+  staged precedence of k1 (ii) and the error precedence);
+- the propagation predicate narrowed to skip each upstream verdict in turn (the staged full strength of k1
+  (i));
+- an undefined day read as 0 inside each half-mean, and each half split moved a day either way;
+- each param read as its sibling (eps_primary and eps_counter, window_days as twice half_days and half_days
+  as half of window_days). Under the seed params these are equivalent, so a vector may override the params
+  (v103-v110), as the build's versioned params will.
 
 Each pass's survivors were either pinned by a new vector (v55-v59 legal edges; v66-v89 near sides,
-precision and non-constant halves; e40-e44 range edges) or, where no input could tell them apart, removed
-from the SQL as redundant: a NULL-detector clause the duplicate count already catches, arg_max FILTERs
+precision and non-constant halves; e40-e44 range edges; v90-v110 and e46-e49 precedence, propagation,
+undefined days, half splits and params) or, where no input could tell them apart, removed from the SQL as
+redundant: a NULL-detector clause the duplicate count already catches, arg_max FILTERs
 DuckDB's arg_max already applies, a negative-injected clause the detected clauses imply, the early-half
 rounding, and the non-finite checks on the counter and its floor that the [0, 1] range already makes. One
-mutant stays equivalent and is listed apart (q01): reading the reach depth bound inclusively only lets the
-recursion run one step further, and a path that long already contains a cycle the guard catches
-(verification r3 checked it on every graph of 1-3 detectors and 400 random graphs of 4-5). Two further
-equivalents verification r3 found by the same argument, a recursion base depth of 0 and `s JOIN dr` read as
-a LEFT JOIN, are not generated by the sweep. VP 4 counts the kills and the unique sites; the table lists
+Three mutants stay equivalent and are listed apart. q01: reading the reach depth bound inclusively only
+lets the recursion run one step further, and a path that long already contains a cycle the guard catches
+(verification r3 checked it on every graph of 1-3 detectors and 400 random graphs of 4-5). q02 and q03:
+swapping dark with breach, or counter_dark with counter_low, cannot change a verdict, because when the
+latest value is NULL the comparison in the other branch is NULL too. Three further equivalents the
+verifiers found by the same arguments are not generated by the sweep: a recursion base depth of 0, `s JOIN
+dr` read as a LEFT JOIN, and the coalesce on detected dropped (detected is NULL only when injected is 0,
+which reads undrilled first). VP 4 counts the kills and the unique sites; the table lists
 every killing vector.
 
 ```yaml
@@ -865,8 +922,52 @@ mutants:
   - {id: m202, what: 'arithmetic s.c_early - {eps_counter} -> s.c_early + {eps_counter}', old: 's.c_early - {eps_counter}', new: 's.c_early + {eps_counter}'}
   - {id: m203, what: 'arithmetic dr.det::DOUBLE / dr.inj -> dr.det // dr.inj', old: 'dr.det::DOUBLE / dr.inj', new: dr.det // dr.inj}
   - {id: m204, what: arithmetic r.depth + 1 -> r.depth + 2, old: r.depth + 1, new: r.depth + 2}
+  - {id: m205, what: 'order verdict: swap WHEN s.p_last > s.threshold THEN ''breach / WHEN s.c_last IS NULL THEN ''counter_dark', old: "      WHEN s.p_last > s.threshold THEN 'breach'\n      WHEN s.c_last IS NULL THEN 'counter_dark'", new: "      WHEN s.c_last IS NULL THEN 'counter_dark'\n      WHEN s.p_last > s.threshold THEN 'breach'"}
+  - {id: m206, what: 'order verdict: swap WHEN s.c_last < s.counter_floor THEN ''co / WHEN dr.inj < s.drill_min THEN ''undrille', old: "      WHEN s.c_last < s.counter_floor THEN 'counter_low'\n      WHEN dr.inj < s.drill_min THEN 'undrilled'", new: "      WHEN dr.inj < s.drill_min THEN 'undrilled'\n      WHEN s.c_last < s.counter_floor THEN 'counter_low'"}
+  - {id: m207, what: 'order verdict: swap WHEN dr.inj < s.drill_min THEN ''undrille / WHEN dr.det::DOUBLE / dr.inj < s.drill_r', old: "      WHEN dr.inj < s.drill_min THEN 'undrilled'\n      WHEN dr.det::DOUBLE / dr.inj < s.drill_recall_min THEN 'blind'", new: "      WHEN dr.det::DOUBLE / dr.inj < s.drill_recall_min THEN 'blind'\n      WHEN dr.inj < s.drill_min THEN 'undrilled'"}
+  - {id: m208, what: 'order verdict: swap WHEN dr.det::DOUBLE / dr.inj < s.drill_r / WHEN s.p_late < round(s.p_early - {eps_p', old: "      WHEN dr.det::DOUBLE / dr.inj < s.drill_recall_min THEN 'blind'\n      WHEN s.p_late < round(s.p_early - {eps_primary}, 9) AND s.c_late < round(s.c_early - {eps_counter}, 9) THEN 'diverging'", new: "      WHEN s.p_late < round(s.p_early - {eps_primary}, 9) AND s.c_late < round(s.c_early - {eps_counter}, 9) THEN 'diverging'\n      WHEN dr.det::DOUBLE / dr.inj < s.drill_recall_min THEN 'blind'"}
+  - {id: m209, what: 'order verdict: move to top WHEN s.c_last IS NULL THEN ''counter_dark''', old: "      WHEN s.p_last IS NULL THEN 'dark'\n      WHEN s.p_last > s.threshold THEN 'breach'\n      WHEN s.c_last IS NULL THEN 'counter_dark'", new: "      WHEN s.c_last IS NULL THEN 'counter_dark'\n      WHEN s.p_last IS NULL THEN 'dark'\n      WHEN s.p_last > s.threshold THEN 'breach'"}
+  - {id: m210, what: 'order verdict: move to top WHEN s.c_last < s.counter_floor THEN ''counter_low''', old: "      WHEN s.p_last IS NULL THEN 'dark'\n      WHEN s.p_last > s.threshold THEN 'breach'\n      WHEN s.c_last IS NULL THEN 'counter_dark'\n      WHEN s.c_last < s.counter_floor THEN 'counter_low'", new: "      WHEN s.c_last < s.counter_floor THEN 'counter_low'\n      WHEN s.p_last IS NULL THEN 'dark'\n      WHEN s.p_last > s.threshold THEN 'breach'\n      WHEN s.c_last IS NULL THEN 'counter_dark'"}
+  - {id: m211, what: 'order verdict: move to top WHEN dr.inj < s.drill_min THEN ''undrilled''', old: "      WHEN s.p_last IS NULL THEN 'dark'\n      WHEN s.p_last > s.threshold THEN 'breach'\n      WHEN s.c_last IS NULL THEN 'counter_dark'\n      WHEN s.c_last < s.counter_floor THEN 'counter_low'\n      WHEN dr.inj < s.drill_min THEN 'undrilled'", new: "      WHEN dr.inj < s.drill_min THEN 'undrilled'\n      WHEN s.p_last IS NULL THEN 'dark'\n      WHEN s.p_last > s.threshold THEN 'breach'\n      WHEN s.c_last IS NULL THEN 'counter_dark'\n      WHEN s.c_last < s.counter_floor THEN 'counter_low'"}
+  - {id: m212, what: 'order verdict: move to top WHEN dr.det::DOUBLE / dr.inj < s.drill_recall_min ', old: "      WHEN s.p_last IS NULL THEN 'dark'\n      WHEN s.p_last > s.threshold THEN 'breach'\n      WHEN s.c_last IS NULL THEN 'counter_dark'\n      WHEN s.c_last < s.counter_floor THEN 'counter_low'\n      WHEN dr.inj < s.drill_min THEN 'undrilled'\n      WHEN dr.det::DOUBLE / dr.inj < s.drill_recall_min THEN 'blind'", new: "      WHEN dr.det::DOUBLE / dr.inj < s.drill_recall_min THEN 'blind'\n      WHEN s.p_last IS NULL THEN 'dark'\n      WHEN s.p_last > s.threshold THEN 'breach'\n      WHEN s.c_last IS NULL THEN 'counter_dark'\n      WHEN s.c_last < s.counter_floor THEN 'counter_low'\n      WHEN dr.inj < s.drill_min THEN 'undrilled'"}
+  - {id: m213, what: 'order verdict: move to top WHEN s.p_late < round(s.p_early - {eps_primary}, 9', old: "      WHEN s.p_last IS NULL THEN 'dark'\n      WHEN s.p_last > s.threshold THEN 'breach'\n      WHEN s.c_last IS NULL THEN 'counter_dark'\n      WHEN s.c_last < s.counter_floor THEN 'counter_low'\n      WHEN dr.inj < s.drill_min THEN 'undrilled'\n      WHEN dr.det::DOUBLE / dr.inj < s.drill_recall_min THEN 'blind'\n      WHEN s.p_late < round(s.p_early - {eps_primary}, 9) AND s.c_late < round(s.c_early - {eps_counter}, 9) THEN 'diverging'", new: "      WHEN s.p_late < round(s.p_early - {eps_primary}, 9) AND s.c_late < round(s.c_early - {eps_counter}, 9) THEN 'diverging'\n      WHEN s.p_last IS NULL THEN 'dark'\n      WHEN s.p_last > s.threshold THEN 'breach'\n      WHEN s.c_last IS NULL THEN 'counter_dark'\n      WHEN s.c_last < s.counter_floor THEN 'counter_low'\n      WHEN dr.inj < s.drill_min THEN 'undrilled'\n      WHEN dr.det::DOUBLE / dr.inj < s.drill_recall_min THEN 'blind'"}
+  - {id: m214, what: 'order error: swap WHEN g.bad_register > 0 THEN error(''malf / WHEN g.bad_upstream > 0 THEN error(''malf', old: "    WHEN g.bad_register > 0 THEN error('malformed register: NULL field, duplicate detector, drill_min below 1, recall outside (0, 1], non-finite threshold or floor, or floor outside [0, 1]')\n    WHEN g.bad_upstream > 0 THEN error('malformed register: upstream names an unregistered detector')", new: "    WHEN g.bad_upstream > 0 THEN error('malformed register: upstream names an unregistered detector')\n    WHEN g.bad_register > 0 THEN error('malformed register: NULL field, duplicate detector, drill_min below 1, recall outside (0, 1], non-finite threshold or floor, or floor outside [0, 1]')"}
+  - {id: m215, what: 'order error: swap WHEN g.bad_upstream > 0 THEN error(''malf / WHEN g.cycle > 0 THEN error(''malformed r', old: "    WHEN g.bad_upstream > 0 THEN error('malformed register: upstream names an unregistered detector')\n    WHEN g.cycle > 0 THEN error('malformed register: upstream cycle')", new: "    WHEN g.cycle > 0 THEN error('malformed register: upstream cycle')\n    WHEN g.bad_upstream > 0 THEN error('malformed register: upstream names an unregistered detector')"}
+  - {id: m216, what: 'order error: swap WHEN g.cycle > 0 THEN error(''malformed r / WHEN g.bad_signal > 0 THEN error(''malfor', old: "    WHEN g.cycle > 0 THEN error('malformed register: upstream cycle')\n    WHEN g.bad_signal > 0 THEN error('malformed signal: NULL key, non-finite value, counter outside [0, 1] or duplicate detector day')", new: "    WHEN g.bad_signal > 0 THEN error('malformed signal: NULL key, non-finite value, counter outside [0, 1] or duplicate detector day')\n    WHEN g.cycle > 0 THEN error('malformed register: upstream cycle')"}
+  - {id: m217, what: 'order error: swap WHEN g.bad_signal > 0 THEN error(''malfor / WHEN g.bad_drills > 0 THEN error(''malfor', old: "    WHEN g.bad_signal > 0 THEN error('malformed signal: NULL key, non-finite value, counter outside [0, 1] or duplicate detector day')\n    WHEN g.bad_drills > 0 THEN error('malformed drill: NULL field, negative count or detected above injected')", new: "    WHEN g.bad_drills > 0 THEN error('malformed drill: NULL field, negative count or detected above injected')\n    WHEN g.bad_signal > 0 THEN error('malformed signal: NULL key, non-finite value, counter outside [0, 1] or duplicate detector day')"}
+  - {id: m218, what: 'order error: move to top WHEN g.cycle > 0 THEN error(''malformed register: u', old: "    WHEN g.bad_register > 0 THEN error('malformed register: NULL field, duplicate detector, drill_min below 1, recall outside (0, 1], non-finite threshold or floor, or floor outside [0, 1]')\n    WHEN g.bad_upstream > 0 THEN error('malformed register: upstream names an unregistered detector')\n    WHEN g.cycle > 0 THEN error('malformed register: upstream cycle')", new: "    WHEN g.cycle > 0 THEN error('malformed register: upstream cycle')\n    WHEN g.bad_register > 0 THEN error('malformed register: NULL field, duplicate detector, drill_min below 1, recall outside (0, 1], non-finite threshold or floor, or floor outside [0, 1]')\n    WHEN g.bad_upstream > 0 THEN error('malformed register: upstream names an unregistered detector')"}
+  - {id: m219, what: 'order error: move to top WHEN g.bad_signal > 0 THEN error(''malformed signal', old: "    WHEN g.bad_register > 0 THEN error('malformed register: NULL field, duplicate detector, drill_min below 1, recall outside (0, 1], non-finite threshold or floor, or floor outside [0, 1]')\n    WHEN g.bad_upstream > 0 THEN error('malformed register: upstream names an unregistered detector')\n    WHEN g.cycle > 0 THEN error('malformed register: upstream cycle')\n    WHEN g.bad_signal > 0 THEN error('malformed signal: NULL key, non-finite value, counter outside [0, 1] or duplicate detector day')", new: "    WHEN g.bad_signal > 0 THEN error('malformed signal: NULL key, non-finite value, counter outside [0, 1] or duplicate detector day')\n    WHEN g.bad_register > 0 THEN error('malformed register: NULL field, duplicate detector, drill_min below 1, recall outside (0, 1], non-finite threshold or floor, or floor outside [0, 1]')\n    WHEN g.bad_upstream > 0 THEN error('malformed register: upstream names an unregistered detector')\n    WHEN g.cycle > 0 THEN error('malformed register: upstream cycle')"}
+  - {id: m220, what: 'order error: move to top WHEN g.bad_drills > 0 THEN error(''malformed drill:', old: "    WHEN g.bad_register > 0 THEN error('malformed register: NULL field, duplicate detector, drill_min below 1, recall outside (0, 1], non-finite threshold or floor, or floor outside [0, 1]')\n    WHEN g.bad_upstream > 0 THEN error('malformed register: upstream names an unregistered detector')\n    WHEN g.cycle > 0 THEN error('malformed register: upstream cycle')\n    WHEN g.bad_signal > 0 THEN error('malformed signal: NULL key, non-finite value, counter outside [0, 1] or duplicate detector day')\n    WHEN g.bad_drills > 0 THEN error('malformed drill: NULL field, negative count or detected above injected')", new: "    WHEN g.bad_drills > 0 THEN error('malformed drill: NULL field, negative count or detected above injected')\n    WHEN g.bad_register > 0 THEN error('malformed register: NULL field, duplicate detector, drill_min below 1, recall outside (0, 1], non-finite threshold or floor, or floor outside [0, 1]')\n    WHEN g.bad_upstream > 0 THEN error('malformed register: upstream names an unregistered detector')\n    WHEN g.cycle > 0 THEN error('malformed register: upstream cycle')\n    WHEN g.bad_signal > 0 THEN error('malformed signal: NULL key, non-finite value, counter outside [0, 1] or duplicate detector day')"}
+  - {id: m221, what: propagation skips dark, old: x.verdict <> 'ok', new: 'x.verdict NOT IN (''ok'', ''dark'')'}
+  - {id: m222, what: propagation skips breach, old: x.verdict <> 'ok', new: 'x.verdict NOT IN (''ok'', ''breach'')'}
+  - {id: m223, what: propagation skips counter_dark, old: x.verdict <> 'ok', new: 'x.verdict NOT IN (''ok'', ''counter_dark'')'}
+  - {id: m224, what: propagation skips counter_low, old: x.verdict <> 'ok', new: 'x.verdict NOT IN (''ok'', ''counter_low'')'}
+  - {id: m225, what: propagation skips undrilled, old: x.verdict <> 'ok', new: 'x.verdict NOT IN (''ok'', ''undrilled'')'}
+  - {id: m226, what: propagation skips blind, old: x.verdict <> 'ok', new: 'x.verdict NOT IN (''ok'', ''blind'')'}
+  - {id: m227, what: NULL read as 0 in primary early half, old: 'avg(w.primary_value) FILTER (WHERE w.day <= {today} - {half_days}) AS p_early', new: 'avg(coalesce(w.primary_value, 0)) FILTER (WHERE w.day <= {today} - {half_days}) AS p_early'}
+  - {id: m228, what: half split + 1 day on primary early half, old: 'avg(w.primary_value) FILTER (WHERE w.day <= {today} - {half_days}) AS p_early', new: 'avg(w.primary_value) FILTER (WHERE w.day <= {today} - {half_days} + 1) AS p_early'}
+  - {id: m229, what: half split - 1 day on primary early half, old: 'avg(w.primary_value) FILTER (WHERE w.day <= {today} - {half_days}) AS p_early', new: 'avg(w.primary_value) FILTER (WHERE w.day <= {today} - {half_days} - 1) AS p_early'}
+  - {id: m230, what: NULL read as 0 in primary late half, old: 'avg(w.primary_value) FILTER (WHERE w.day > {today} - {half_days}), 9) AS p_late', new: 'avg(coalesce(w.primary_value, 0)) FILTER (WHERE w.day > {today} - {half_days}), 9) AS p_late'}
+  - {id: m231, what: half split + 1 day on primary late half, old: 'avg(w.primary_value) FILTER (WHERE w.day > {today} - {half_days}), 9) AS p_late', new: 'avg(w.primary_value) FILTER (WHERE w.day > {today} - {half_days} + 1), 9) AS p_late'}
+  - {id: m232, what: half split - 1 day on primary late half, old: 'avg(w.primary_value) FILTER (WHERE w.day > {today} - {half_days}), 9) AS p_late', new: 'avg(w.primary_value) FILTER (WHERE w.day > {today} - {half_days} - 1), 9) AS p_late'}
+  - {id: m233, what: NULL read as 0 in counter early half, old: 'avg(w.counter_value) FILTER (WHERE w.day <= {today} - {half_days}) AS c_early', new: 'avg(coalesce(w.counter_value, 0)) FILTER (WHERE w.day <= {today} - {half_days}) AS c_early'}
+  - {id: m234, what: half split + 1 day on counter early half, old: 'avg(w.counter_value) FILTER (WHERE w.day <= {today} - {half_days}) AS c_early', new: 'avg(w.counter_value) FILTER (WHERE w.day <= {today} - {half_days} + 1) AS c_early'}
+  - {id: m235, what: half split - 1 day on counter early half, old: 'avg(w.counter_value) FILTER (WHERE w.day <= {today} - {half_days}) AS c_early', new: 'avg(w.counter_value) FILTER (WHERE w.day <= {today} - {half_days} - 1) AS c_early'}
+  - {id: m236, what: NULL read as 0 in counter late half, old: 'avg(w.counter_value) FILTER (WHERE w.day > {today} - {half_days}), 9) AS c_late', new: 'avg(coalesce(w.counter_value, 0)) FILTER (WHERE w.day > {today} - {half_days}), 9) AS c_late'}
+  - {id: m237, what: half split + 1 day on counter late half, old: 'avg(w.counter_value) FILTER (WHERE w.day > {today} - {half_days}), 9) AS c_late', new: 'avg(w.counter_value) FILTER (WHERE w.day > {today} - {half_days} + 1), 9) AS c_late'}
+  - {id: m238, what: half split - 1 day on counter late half, old: 'avg(w.counter_value) FILTER (WHERE w.day > {today} - {half_days}), 9) AS c_late', new: 'avg(w.counter_value) FILTER (WHERE w.day > {today} - {half_days} - 1), 9) AS c_late'}
+  - {id: m239, what: param eps_counter read as eps_primary, old: 'round(s.c_early - {eps_counter}, 9)', new: 'round(s.c_early - {eps_primary}, 9)'}
+  - {id: m240, what: param eps_primary read as eps_counter, old: 'round(s.p_early - {eps_primary}, 9)', new: 'round(s.p_early - {eps_counter}, 9)'}
+  - {id: m241, what: param signal window read as 2 x half_days, old: '{signal} WHERE day > {today} - {window_days}', new: '{signal} WHERE day > {today} - 2 * {half_days}'}
+  - {id: m242, what: param drill window read as 2 x half_days, old: '{drills} WHERE day > {today} - {window_days}', new: '{drills} WHERE day > {today} - 2 * {half_days}'}
+  - {id: m243, what: param half_days read as window_days / 2 on primary early half, old: 'avg(w.primary_value) FILTER (WHERE w.day <= {today} - {half_days}) AS p_early', new: 'avg(w.primary_value) FILTER (WHERE w.day <= {today} - ({window_days} // 2)) AS p_early'}
+  - {id: m244, what: param half_days read as window_days / 2 on primary late half, old: 'avg(w.primary_value) FILTER (WHERE w.day > {today} - {half_days}), 9) AS p_late', new: 'avg(w.primary_value) FILTER (WHERE w.day > {today} - ({window_days} // 2)), 9) AS p_late'}
+  - {id: m245, what: param half_days read as window_days / 2 on counter early half, old: 'avg(w.counter_value) FILTER (WHERE w.day <= {today} - {half_days}) AS c_early', new: 'avg(w.counter_value) FILTER (WHERE w.day <= {today} - ({window_days} // 2)) AS c_early'}
+  - {id: m246, what: param half_days read as window_days / 2 on counter late half, old: 'avg(w.counter_value) FILTER (WHERE w.day > {today} - {half_days}), 9) AS c_late', new: 'avg(w.counter_value) FILTER (WHERE w.day > {today} - ({window_days} // 2)), 9) AS c_late'}
 equivalent:
   - {id: q01, what: 'reach depth bound read inclusively; the recursion only runs one step further, so no path or cycle changes', old: pth < (SE, new: pth <= (SE}
+  - {id: q02, what: 'dark and breach swapped; when p_last is NULL the breach comparison is NULL, so neither branch can fire before the other', old: "      WHEN s.p_last IS NULL THEN 'dark'\n      WHEN s.p_last > s.threshold THEN 'breach'", new: "      WHEN s.p_last > s.threshold THEN 'breach'\n      WHEN s.p_last IS NULL THEN 'dark'"}
+  - {id: q03, what: 'counter_dark and counter_low swapped; when c_last is NULL the floor comparison is NULL, so neither branch can fire before the other', old: "      WHEN s.c_last IS NULL THEN 'counter_dark'\n      WHEN s.c_last < s.counter_floor THEN 'counter_low'", new: "      WHEN s.c_last < s.counter_floor THEN 'counter_low'\n      WHEN s.c_last IS NULL THEN 'counter_dark'"}
 ```
 
 | mutant | killed by |
@@ -875,21 +976,21 @@ equivalent:
 | m02 counter floor read as strict | v08, v65 |
 | m03 recall floor read as strict | v12, v30, v34, v57 |
 | m04 drill window opened one day early | v13 |
-| m05 no upstream propagation | v20, v21, v48, v49 |
+| m05 no upstream propagation | v20, v21, v48, v49, v90, v91, v92, v93 |
 | m06 direct upstream only | v21, v49 |
 | m07 unregistered series dropped | v24, v33, v50, v60, v61, v62 |
 | m08 duplicate register rows allowed | e01, e34 |
-| m09 no cycle guard | e07, e08, e25 |
+| m09 no cycle guard | e07, e08, e25, e48 |
 | m10 no sentinel row | e13, e24, e34 |
-| m11 only today's value read | v26, v41 |
-| m12 divergence on the primary alone | v16, v45, v53, v54, v75, v82, v86, v89 |
-| m13 divergence on the counter alone | v17, v36, v51, v52, v72, v74, v81, v85, v87 |
+| m11 only today's value read | v26, v41, v96, v106 |
+| m12 divergence on the primary alone | v16, v45, v53, v54, v75, v82, v86, v89, v97, v103, v110 |
+| m13 divergence on the counter alone | v17, v36, v51, v52, v72, v74, v81, v85, v87, v96, v104, v108 |
 | m14 future signal rows read | v25, v31 |
-| m15 no drill_min | v09 |
+| m15 no drill_min | v09, v101 |
 | m16 detected above injected allowed | e11 |
 | m17 upstream overrides a detector's own verdict | v23 |
 | m18 drills read without a window | v13, v25, v39, v40, v44 |
-| m19 counter checked before breach | v27 |
+| m19 counter checked before breach | v27, v100 |
 | m20 no drill-recall bounds | e03, e04, e32, e40 |
 | m21 in-window drill rows of an unregistered detector not read as unregistered | v60, v62 |
 | m22 unregistered branch reads all history | v31, v32, v39, v40 |
@@ -902,43 +1003,43 @@ equivalent:
 | m29 NULL drill_min accepted | e22 |
 | m30 NULL drill_recall_min accepted | e23 |
 | m31 sentinel ignores a malformed signal | e24 |
-| m32 no eps on the primary | v36, v51, v52, v74, v81, v85, v87 |
+| m32 no eps on the primary | v36, v51, v52, v74, v81, v85, v87, v96, v104, v108 |
 | m33 early half drops its last day | v37 |
 | m34 recall floor read by multiplication | v34 |
 | m35 comparison = read as <> in: SELECT r.d, e.u, r.depth + 1 FROM reach r JOIN edge e ON e.d = r.u | v21, e07, v49 |
 | m36 comparison > read as >= in: w AS (SELECT * FROM {signal} WHERE day > {today} - {window_days} AND day <= {today}), | v02 |
-| m37 comparison <= read as < in: w AS (SELECT * FROM {signal} WHERE day > {today} - {window_days} AND day <= {today}), | v04, v07, v24, e09, e10, v64, v66, v67, e24, e26, e27, e28, e29, e36, e37, e43, e44 |
+| m37 comparison <= read as < in: w AS (SELECT * FROM {signal} WHERE day > {today} - {window_days} AND day <= {today}), | v04, v07, v24, e09, e10, v64, v66, v67, e24, e26, e27, e28, e29, e36, e37, e43, e44, e49 |
 | m38 comparison <= read as < in: dw AS (SELECT * FROM {drills} WHERE day > {today} - {window_days} AND day <= {today}), | v55, v62 |
 | m39 comparison < read as <= in: OR NOT isfinite(threshold) OR counter_floor < 0 OR counter_floor > 1 | v51, v52, v53, v54, v65 |
 | m40 comparison > read as >= in: OR NOT isfinite(threshold) OR counter_floor < 0 OR counter_floor > 1 | v65 |
 | m41 comparison < read as <= in: OR drill_min < 1 OR drill_recall_min <= 0 OR drill_recall_min > 1) AS bad_register, | v56 |
 | m42 comparison <= read as < in: OR drill_min < 1 OR drill_recall_min <= 0 OR drill_recall_min > 1) AS bad_register, | e04 |
 | m43 comparison > read as >= in: OR drill_min < 1 OR drill_recall_min <= 0 OR drill_recall_min > 1) AS bad_register, | v57 |
-| m44 comparison = read as <> in: (SELECT count(*) FROM reach WHERE d = u) AS cycle, | v20, v21, v22, v23, e08, v48, v49 |
+| m44 comparison = read as <> in: (SELECT count(*) FROM reach WHERE d = u) AS cycle, | v20, v21, v22, v23, e08, v48, v49, v90, v91, v92, v93, e48 |
 | m45 comparison < read as <= in: + (SELECT count(*) FROM w WHERE detector IS NULL OR NOT isfinite(primary_value) OR counter | v64 |
-| m46 comparison > read as >= in: + (SELECT count(*) FROM w WHERE detector IS NULL OR NOT isfinite(primary_value) OR counter | v01, v03, v04, v05, v07, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v20, v21, v22, v23, v24, v25, v26, v29, v30, e11, e12, e15, v31, v32, v33, v34, v36, v37, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v55, v56, v57, v58, v59, v60, v61, v62, v63, v64, v65, v66, v67, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v79, v80, v81, v82, v83, v85, v87, v88, v89, e17, e18, e19, e35 |
-| m47 comparison > read as >= in: + (SELECT count(*) FROM (SELECT detector, day FROM w GROUP BY ALL HAVING count(*) > 1)) AS | v01, v03, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v20, v21, v22, v23, v24, v25, v26, v27, v28, v29, v30, e11, e12, e15, v31, v32, v33, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59, v60, v61, v62, v63, v64, v65, v66, v67, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v78, v79, v80, v81, v82, v83, v84, v85, v86, v87, v88, v89, e17, e18, e19, e35 |
+| m46 comparison > read as >= in: + (SELECT count(*) FROM w WHERE detector IS NULL OR NOT isfinite(primary_value) OR counter | v01, v03, v04, v05, v07, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v20, v21, v22, v23, v24, v25, v26, v29, v30, e11, e12, e15, v31, v32, v33, v34, v36, v37, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v55, v56, v57, v58, v59, v60, v61, v62, v63, v64, v65, v66, v67, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v79, v80, v81, v82, v83, v85, v87, v88, v89, v90, v91, v92, v93, v94, v95, v96, v97, v98, v99, v101, v102, v103, v104, v105, v106, v107, v108, v109, v110, e17, e18, e19, e35 |
+| m47 comparison > read as >= in: + (SELECT count(*) FROM (SELECT detector, day FROM w GROUP BY ALL HAVING count(*) > 1)) AS | v01, v03, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v20, v21, v22, v23, v24, v25, v26, v27, v28, v29, v30, e11, e12, e15, v31, v32, v33, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59, v60, v61, v62, v63, v64, v65, v66, v67, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v78, v79, v80, v81, v82, v83, v84, v85, v86, v87, v88, v89, v90, v91, v92, v93, v94, v95, v96, v97, v98, v99, v100, v101, v102, v103, v104, v105, v106, v107, v108, v109, v110, e17, e18, e19, e35 |
 | m48 comparison < read as <= in: OR detected < 0 OR detected > injected) AS bad_drills | v58, v59 |
-| m49 comparison > read as >= in: OR detected < 0 OR detected > injected) AS bad_drills | v01, v02, v03, v04, v05, v06, v07, v08, v09, v14, v15, v16, v17, v18, v19, v20, v21, v22, v23, v24, v25, v26, v27, v29, v31, v32, v33, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v60, v61, v62, v63, v64, v65, v66, v67, v69, v70, v71, v72, v73, v74, v75, v76, v77, v78, v80, v81, v82, v83, v84, v85, v86, v87, v88, v89 |
-| m50 comparison > read as >= in: round(avg(w.primary_value) FILTER (WHERE w.day > {today} - {half_days}), 9) AS p_late, | v37, v69, v71, v77, v83 |
-| m51 comparison <= read as < in: avg(w.counter_value) FILTER (WHERE w.day <= {today} - {half_days}) AS c_early, | v46 |
-| m52 comparison > read as >= in: round(avg(w.counter_value) FILTER (WHERE w.day > {today} - {half_days}), 9) AS c_late | v46, v47, v70, v78, v84 |
-| m53 comparison = read as <> in: FROM {register} r LEFT JOIN w ON w.detector = r.detector | v01, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v21, v23, v25, v26, v27, v28, v29, v30, v31, v32, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v51, v52, v53, v54, v55, v56, v57, v58, v59, v60, v62, v63, v64, v65, v66, v67, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v78, v79, v80, v81, v82, v83, v84, v85, v86, v87, v88, v89 |
-| m54 comparison = read as <> in: FROM {register} r LEFT JOIN dw d ON d.detector = r.detector | v01, v05, v08, v11, v12, v14, v15, v16, v17, v18, v19, v20, v23, v24, v25, v30, v31, v32, v33, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59, v61, v63, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v78, v79, v80, v81, v82, v83, v84, v85, v86, v87, v88, v89 |
-| m55 comparison < read as <= in: WHEN dr.inj < s.drill_min THEN 'undrilled' | v01, v05, v08, v11, v12, v14, v15, v16, v17, v18, v19, v20, v21, v22, v23, v24, v25, v29, v30, v31, v32, v33, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59, v60, v61, v62, v63, v65, v69, v70, v71, v72, v73, v74, v75, v76, v77, v78, v80, v81, v82, v83, v84, v85, v86, v87, v88, v89 |
+| m49 comparison > read as >= in: OR detected < 0 OR detected > injected) AS bad_drills | v01, v02, v03, v04, v05, v06, v07, v08, v09, v14, v15, v16, v17, v18, v19, v20, v21, v22, v23, v24, v25, v26, v27, v29, v31, v32, v33, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v60, v61, v62, v63, v64, v65, v66, v67, v69, v70, v71, v72, v73, v74, v75, v76, v77, v78, v80, v81, v82, v83, v84, v85, v86, v87, v88, v89, v90, v91, v92, v93, v94, v95, v96, v97, v98, v99, v100, v103, v104, v105, v106, v107, v108, v109, v110 |
+| m50 comparison > read as >= in: round(avg(w.primary_value) FILTER (WHERE w.day > {today} - {half_days}), 9) AS p_late, | v37, v69, v71, v77, v83, v107 |
+| m51 comparison <= read as < in: avg(w.counter_value) FILTER (WHERE w.day <= {today} - {half_days}) AS c_early, | v46, v110 |
+| m52 comparison > read as >= in: round(avg(w.counter_value) FILTER (WHERE w.day > {today} - {half_days}), 9) AS c_late | v46, v47, v70, v78, v84, v109, v110 |
+| m53 comparison = read as <> in: FROM {register} r LEFT JOIN w ON w.detector = r.detector | v01, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v21, v23, v25, v26, v27, v28, v29, v30, v31, v32, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v51, v52, v53, v54, v55, v56, v57, v58, v59, v60, v62, v63, v64, v65, v66, v67, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v78, v79, v80, v81, v82, v83, v84, v85, v86, v87, v88, v89, v90, v91, v92, v94, v95, v96, v97, v98, v99, v100, v101, v102, v103, v104, v105, v106, v107, v108, v109, v110 |
+| m54 comparison = read as <> in: FROM {register} r LEFT JOIN dw d ON d.detector = r.detector | v01, v05, v08, v11, v12, v14, v15, v16, v17, v18, v19, v20, v23, v24, v25, v30, v31, v32, v33, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59, v61, v63, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v78, v79, v80, v81, v82, v83, v84, v85, v86, v87, v88, v89, v93, v94, v95, v96, v97, v98, v99, v102, v103, v104, v105, v106, v107, v108, v109, v110 |
+| m55 comparison < read as <= in: WHEN dr.inj < s.drill_min THEN 'undrilled' | v01, v05, v08, v11, v12, v14, v15, v16, v17, v18, v19, v20, v21, v22, v23, v24, v25, v29, v30, v31, v32, v33, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59, v60, v61, v62, v63, v65, v69, v70, v71, v72, v73, v74, v75, v76, v77, v78, v80, v81, v82, v83, v84, v85, v86, v87, v88, v89, v90, v91, v92, v93, v94, v95, v96, v97, v98, v99, v102, v103, v104, v105, v106, v107, v108, v109, v110 |
 | m56 comparison < read as <= in: WHEN s.p_late < round(s.p_early - {eps_primary}, 9) AND s.c_late < round(s.c_early - {eps_ | v51, v52, v81, v85 |
 | m57 comparison < read as <= in: WHEN s.p_late < round(s.p_early - {eps_primary}, 9) AND s.c_late < round(s.c_early - {eps_ | v53, v54, v82, v86 |
-| m58 comparison = read as <> in: FROM s JOIN dr ON dr.detector = s.detector | v01, v02, v03, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v20, v21, v23, v24, v25, v26, v27, v28, v30, v31, v32, v33, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59, v60, v61, v62, v63, v64, v66, v67, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v78, v79, v80, v81, v82, v83, v84, v85, v86, v87, v88, v89 |
-| m59 comparison = read as <> in: CASE WHEN o.verdict = 'ok' AND EXISTS ( | v20, v21, v23, v48, v49 |
-| m60 comparison = read as <> in: SELECT 1 FROM reach a JOIN own x ON x.detector = a.u WHERE a.d = o.detector AND x.verdict  | v20, v21, v48, v49 |
-| m61 comparison = read as <> in: SELECT 1 FROM reach a JOIN own x ON x.detector = a.u WHERE a.d = o.detector AND x.verdict  | v20, v48 |
-| m62 comparison <> read as = in: SELECT 1 FROM reach a JOIN own x ON x.detector = a.u WHERE a.d = o.detector AND x.verdict  | v20, v21, v22, v48, v49 |
-| m63 comparison > read as >= in: SELECT NULL, NULL FROM g WHERE g.bad_register + g.bad_upstream + g.cycle + g.bad_signal +  | v01, v02, v03, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v20, v21, v22, v23, v24, v25, v26, v27, v28, v29, v30, v31, v32, v33, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59, v60, v61, v62, v63, v64, v65, v66, v67, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v78, v79, v80, v81, v82, v83, v84, v85, v86, v87, v88, v89 |
-| m64 comparison > read as >= in: WHEN g.bad_register > 0 THEN error('malformed register: NULL field, duplicate detector, dr | v01, v02, v03, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v20, v21, v22, v23, v24, v25, v26, v27, v28, v29, v30, e06, e07, e08, e09, e10, e11, e12, e13, e15, v31, v32, v33, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59, v60, v61, v62, v63, v64, v65, v66, v67, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v78, v79, v80, v81, v82, v83, v84, v85, v86, v87, v88, v89, e16, e17, e18, e19, e20, e24, e25, e26, e27, e28, e29, e35, e36, e37, e43, e44 |
-| m65 comparison > read as >= in: WHEN g.bad_upstream > 0 THEN error('malformed register: upstream names an unregistered det | v01, v02, v03, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v20, v21, v22, v23, v24, v25, v26, v27, v28, v29, v30, e07, e08, e09, e10, e11, e12, e13, e15, v31, v32, v33, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59, v60, v61, v62, v63, v64, v65, v66, v67, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v78, v79, v80, v81, v82, v83, v84, v85, v86, v87, v88, v89, e16, e17, e18, e19, e24, e25, e26, e27, e28, e29, e35, e36, e37, e43, e44 |
-| m66 comparison > read as >= in: WHEN g.cycle > 0 THEN error('malformed register: upstream cycle') | v01, v02, v03, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v20, v21, v22, v23, v24, v25, v26, v27, v28, v29, v30, e09, e10, e11, e12, e13, e15, v31, v32, v33, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59, v60, v61, v62, v63, v64, v65, v66, v67, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v78, v79, v80, v81, v82, v83, v84, v85, v86, v87, v88, v89, e16, e17, e18, e19, e24, e26, e27, e28, e29, e35, e36, e37, e43, e44 |
-| m67 comparison > read as >= in: WHEN g.bad_signal > 0 THEN error('malformed signal: NULL key, non-finite value, counter ou | v01, v02, v03, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v20, v21, v22, v23, v24, v25, v26, v27, v28, v29, v30, e11, e12, e13, e15, v31, v32, v33, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59, v60, v61, v62, v63, v64, v65, v66, v67, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v78, v79, v80, v81, v82, v83, v84, v85, v86, v87, v88, v89, e17, e18, e19, e35 |
-| m68 comparison > read as >= in: WHEN g.bad_drills > 0 THEN error('malformed drill: NULL field, negative count or detected  | v01, v02, v03, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v20, v21, v22, v23, v24, v25, v26, v27, v28, v29, v30, v31, v32, v33, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59, v60, v61, v62, v63, v64, v65, v66, v67, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v78, v79, v80, v81, v82, v83, v84, v85, v86, v87, v88, v89 |
+| m58 comparison = read as <> in: FROM s JOIN dr ON dr.detector = s.detector | v01, v02, v03, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v20, v21, v23, v24, v25, v26, v27, v28, v30, v31, v32, v33, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59, v60, v61, v62, v63, v64, v66, v67, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v78, v79, v80, v81, v82, v83, v84, v85, v86, v87, v88, v89, v93, v94, v95, v96, v97, v98, v99, v100, v101, v102, v103, v104, v105, v106, v107, v108, v109, v110 |
+| m59 comparison = read as <> in: CASE WHEN o.verdict = 'ok' AND EXISTS ( | v20, v21, v23, v48, v49, v90, v91, v92, v93 |
+| m60 comparison = read as <> in: SELECT 1 FROM reach a JOIN own x ON x.detector = a.u WHERE a.d = o.detector AND x.verdict  | v20, v21, v48, v49, v90, v91, v92, v93 |
+| m61 comparison = read as <> in: SELECT 1 FROM reach a JOIN own x ON x.detector = a.u WHERE a.d = o.detector AND x.verdict  | v20, v48, v90, v91, v92, v93 |
+| m62 comparison <> read as = in: SELECT 1 FROM reach a JOIN own x ON x.detector = a.u WHERE a.d = o.detector AND x.verdict  | v20, v21, v22, v48, v49, v90, v91, v92, v93 |
+| m63 comparison > read as >= in: SELECT NULL, NULL FROM g WHERE g.bad_register + g.bad_upstream + g.cycle + g.bad_signal +  | v01, v02, v03, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v20, v21, v22, v23, v24, v25, v26, v27, v28, v29, v30, v31, v32, v33, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59, v60, v61, v62, v63, v64, v65, v66, v67, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v78, v79, v80, v81, v82, v83, v84, v85, v86, v87, v88, v89, v90, v91, v92, v93, v94, v95, v96, v97, v98, v99, v100, v101, v102, v103, v104, v105, v106, v107, v108, v109, v110 |
+| m64 comparison > read as >= in: WHEN g.bad_register > 0 THEN error('malformed register: NULL field, duplicate detector, dr | v01, v02, v03, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v20, v21, v22, v23, v24, v25, v26, v27, v28, v29, v30, e06, e07, e08, e09, e10, e11, e12, e13, e15, v31, v32, v33, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59, v60, v61, v62, v63, v64, v65, v66, v67, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v78, v79, v80, v81, v82, v83, v84, v85, v86, v87, v88, v89, v90, v91, v92, v93, v94, v95, v96, v97, v98, v99, v100, v101, v102, v103, v104, v105, v106, v107, v108, v109, v110, e16, e17, e18, e19, e20, e24, e25, e26, e27, e28, e29, e35, e36, e37, e43, e44, e45, e47, e48, e49 |
+| m65 comparison > read as >= in: WHEN g.bad_upstream > 0 THEN error('malformed register: upstream names an unregistered det | v01, v02, v03, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v20, v21, v22, v23, v24, v25, v26, v27, v28, v29, v30, e07, e08, e09, e10, e11, e12, e13, e15, v31, v32, v33, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59, v60, v61, v62, v63, v64, v65, v66, v67, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v78, v79, v80, v81, v82, v83, v84, v85, v86, v87, v88, v89, v90, v91, v92, v93, v94, v95, v96, v97, v98, v99, v100, v101, v102, v103, v104, v105, v106, v107, v108, v109, v110, e16, e17, e18, e19, e24, e25, e26, e27, e28, e29, e35, e36, e37, e43, e44, e45, e48, e49 |
+| m66 comparison > read as >= in: WHEN g.cycle > 0 THEN error('malformed register: upstream cycle') | v01, v02, v03, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v20, v21, v22, v23, v24, v25, v26, v27, v28, v29, v30, e09, e10, e11, e12, e13, e15, v31, v32, v33, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59, v60, v61, v62, v63, v64, v65, v66, v67, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v78, v79, v80, v81, v82, v83, v84, v85, v86, v87, v88, v89, v90, v91, v92, v93, v94, v95, v96, v97, v98, v99, v100, v101, v102, v103, v104, v105, v106, v107, v108, v109, v110, e16, e17, e18, e19, e24, e26, e27, e28, e29, e35, e36, e37, e43, e44, e45, e49 |
+| m67 comparison > read as >= in: WHEN g.bad_signal > 0 THEN error('malformed signal: NULL key, non-finite value, counter ou | v01, v02, v03, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v20, v21, v22, v23, v24, v25, v26, v27, v28, v29, v30, e11, e12, e13, e15, v31, v32, v33, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59, v60, v61, v62, v63, v64, v65, v66, v67, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v78, v79, v80, v81, v82, v83, v84, v85, v86, v87, v88, v89, v90, v91, v92, v93, v94, v95, v96, v97, v98, v99, v100, v101, v102, v103, v104, v105, v106, v107, v108, v109, v110, e17, e18, e19, e35 |
+| m68 comparison > read as >= in: WHEN g.bad_drills > 0 THEN error('malformed drill: NULL field, negative count or detected  | v01, v02, v03, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v20, v21, v22, v23, v24, v25, v26, v27, v28, v29, v30, v31, v32, v33, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59, v60, v61, v62, v63, v64, v65, v66, v67, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v78, v79, v80, v81, v82, v83, v84, v85, v86, v87, v88, v89, v90, v91, v92, v93, v94, v95, v96, v97, v98, v99, v100, v101, v102, v103, v104, v105, v106, v107, v108, v109, v110 |
 | m69 clause dropped: AND day <= {today} | v25, v40 |
 | m70 clause dropped: OR counter_floor IS NULL | e21 |
 | m71 clause dropped: OR drill_min IS NULL | e22 |
@@ -949,34 +1050,34 @@ equivalent:
 | m76 clause dropped: OR drill_min < 1 | e02 |
 | m77 clause dropped: OR drill_recall_min <= 0 | e04 |
 | m78 clause dropped: OR drill_recall_min > 1 | e03, e32, e40 |
-| m79 clause dropped: OR u NOT IN (SELECT detector FROM {register}) | e06 |
-| m80 clause dropped: OR NOT isfinite(primary_value) | e27, e29 |
+| m79 clause dropped: OR u NOT IN (SELECT detector FROM {register}) | e06, e47 |
+| m80 clause dropped: OR NOT isfinite(primary_value) | e27, e29, e49 |
 | m81 clause dropped: OR counter_value < 0 | e37, e43 |
-| m82 clause dropped: OR counter_value > 1 | e26, e28, e36, e44 |
+| m82 clause dropped: OR counter_value > 1 | e26, e28, e36, e44, e45 |
 | m83 clause dropped: OR detected IS NULL | e15 |
 | m84 clause dropped: OR detected < 0 | e12, e19 |
 | m85 clause dropped: OR detected > injected | e11 |
 | m86 clause dropped: AND EXISTS (
-           SELECT 1 FROM reach a JOIN | v01, v05, v08, v12, v14, v16, v17, v18, v19, v22, v24, v25, v29, v30, v31, v32, v33, v34, v35, v36, v38, v39, v40, v41, v42, v43, v44, v45, v50, v51, v52, v53, v54, v55, v56, v57, v58, v60, v61, v62, v63, v65, v72, v74, v75, v76, v80, v81, v82, v85, v86, v87, v89 |
-| m87 clause dropped: AND detector NOT IN (SELECT detector FROM {registe | v01, v02, v03, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v20, v21, v22, v23, v24, v25, v26, v27, v28, v29, v30, v31, v32, v33, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59, v60, v61, v62, v63, v64, v65, v66, v67, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v78, v79, v80, v81, v82, v83, v84, v85, v86, v87, v88, v89 |
+           SELECT 1 FROM reach a JOIN | v01, v05, v08, v12, v14, v16, v17, v18, v19, v22, v24, v25, v29, v30, v31, v32, v33, v34, v35, v36, v38, v39, v40, v41, v42, v43, v44, v45, v50, v51, v52, v53, v54, v55, v56, v57, v58, v60, v61, v62, v63, v65, v72, v74, v75, v76, v80, v81, v82, v85, v86, v87, v89, v96, v97, v103, v104, v105, v106, v108, v110 |
+| m87 clause dropped: AND detector NOT IN (SELECT detector FROM {registe | v01, v02, v03, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v20, v21, v22, v23, v24, v25, v26, v27, v28, v29, v30, v31, v32, v33, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59, v60, v61, v62, v63, v64, v65, v66, v67, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v78, v79, v80, v81, v82, v83, v84, v85, v86, v87, v88, v89, v90, v91, v92, v93, v94, v95, v96, v97, v98, v99, v100, v101, v102, v103, v104, v105, v106, v107, v108, v109, v110 |
 | m88 rounding removed: avg(w.primary_value) FILTER (WHERE w.day | v51, v81 |
 | m89 rounding removed: avg(w.counter_value) FILTER (WHERE w.day | v53, v82 |
 | m90 rounding removed: s.p_early - {eps_primary} | v52, v85 |
 | m91 rounding removed: s.c_early - {eps_counter} | v54, v86 |
 | m92 branch dropped: WHEN s.p_last IS NULL THEN 'dark' | v02, v03, v21, v49 |
-| m93 branch dropped: WHEN s.p_last > s.threshold THEN 'breach' | v04, v23, v26, v27, v66 |
-| m94 branch dropped: WHEN s.c_last IS NULL THEN 'counter_dark' | v06 |
-| m95 branch dropped: WHEN s.c_last < s.counter_floor THEN 'counter_low' | v07, v28, v29, v64, v67 |
-| m96 branch dropped: WHEN dr.inj < s.drill_min THEN 'undrilled' | v09, v10, v13 |
-| m97 branch dropped: WHEN dr.det::DOUBLE / dr.inj < s.drill_recall_min | v11, v20, v23, v59, v68, v79 |
-| m98 branch dropped: WHEN s.p_late < round(s.p_early - {eps_primary}, 9 | v15, v37, v46, v47, v48, v69, v70, v71, v73, v77, v78, v83, v84, v88 |
-| m99 branch dropped: WHEN g.bad_register > 0 THEN error('malformed regi | e01, e02, e03, e04, e05, e14, e21, e22, e23, e30, e31, e32, e33, e34, e38, e39, e40, e41, e42 |
-| m100 branch dropped: WHEN g.bad_upstream > 0 THEN error('malformed regi | e06, e20 |
-| m101 branch dropped: WHEN g.cycle > 0 THEN error('malformed register: u | e07, e08, e25 |
-| m102 branch dropped: WHEN g.bad_signal > 0 THEN error('malformed signal | e09, e10, e16, e24, e26, e27, e28, e29, e36, e37, e43, e44 |
+| m93 branch dropped: WHEN s.p_last > s.threshold THEN 'breach' | v04, v23, v26, v27, v66, v90, v100 |
+| m94 branch dropped: WHEN s.c_last IS NULL THEN 'counter_dark' | v06, v91 |
+| m95 branch dropped: WHEN s.c_last < s.counter_floor THEN 'counter_low' | v07, v28, v29, v64, v67, v92 |
+| m96 branch dropped: WHEN dr.inj < s.drill_min THEN 'undrilled' | v09, v10, v13, v93, v101 |
+| m97 branch dropped: WHEN dr.det::DOUBLE / dr.inj < s.drill_recall_min | v11, v20, v23, v59, v68, v79, v102 |
+| m98 branch dropped: WHEN s.p_late < round(s.p_early - {eps_primary}, 9 | v15, v37, v46, v47, v48, v69, v70, v71, v73, v77, v78, v83, v84, v88, v94, v95, v98, v99, v107, v109 |
+| m99 branch dropped: WHEN g.bad_register > 0 THEN error('malformed regi | e01, e02, e03, e04, e05, e14, e21, e22, e23, e30, e31, e32, e33, e34, e38, e39, e40, e41, e42, e46 |
+| m100 branch dropped: WHEN g.bad_upstream > 0 THEN error('malformed regi | e06, e20, e47 |
+| m101 branch dropped: WHEN g.cycle > 0 THEN error('malformed register: u | e07, e08, e25, e48 |
+| m102 branch dropped: WHEN g.bad_signal > 0 THEN error('malformed signal | e09, e10, e16, e24, e26, e27, e28, e29, e36, e37, e43, e44, e45, e49 |
 | m103 branch dropped: WHEN g.bad_drills > 0 THEN error('malformed drill: | e11, e12, e13, e15, e17, e18, e19, e35 |
-| m104 guard term dropped: + (SELECT count(*) FROM {register} WHERE threshold | e02, e03, e04, e05, e14, e21, e22, e23, e30, e31, e32, e33, e38, e39, e40, e41, e42 |
-| m105 guard term dropped: + (SELECT count(*) FROM w WHERE detector IS NULL O | e10, e24, e26, e27, e28, e29, e36, e37, e43, e44 |
+| m104 guard term dropped: + (SELECT count(*) FROM {register} WHERE threshold | e02, e03, e04, e05, e14, e21, e22, e23, e30, e31, e32, e33, e38, e39, e40, e41, e42, e46 |
+| m105 guard term dropped: + (SELECT count(*) FROM w WHERE detector IS NULL O | e10, e24, e26, e27, e28, e29, e36, e37, e43, e44, e45, e49 |
 | m106 guard term dropped: + (SELECT count(*) FROM (SELECT detector, day FROM | e09 |
 | m107 guard term dropped: + (SELECT count(*) FROM dw WHERE detector IS NULL | e11, e12, e13, e15, e18, e19, e35 |
 | m108 unregistered rows not deduplicated (one row per day) | v50, v61 |
@@ -989,7 +1090,7 @@ equivalent:
 | m115 duplicate signal days checked over all history | v43 |
 | m116 signal value guard reads all history | v42 |
 | m117 drill guard reads all history | v44 |
-| m118 no eps on the counter | v45, v53, v54, v75, v82, v86, v89 |
+| m118 no eps on the counter | v45, v53, v54, v75, v82, v86, v89, v97, v103, v110 |
 | m119 tolerance s.p_last > s.threshold + 0.000001 | v66 |
 | m120 tolerance s.p_last > s.threshold - 0.000001 | v05 |
 | m121 tolerance s.p_last > s.threshold + 0.001 | v66 |
@@ -1005,11 +1106,11 @@ equivalent:
 | m131 tolerance round(s.p_early - {eps_primary}, 9) + 0.000001 | v51, v52, v81, v85 |
 | m132 tolerance round(s.p_early - {eps_primary}, 9) - 0.000001 | v69, v83 |
 | m133 tolerance round(s.p_early - {eps_primary}, 9) + 0.001 | v51, v52, v81, v85, v87 |
-| m134 tolerance round(s.p_early - {eps_primary}, 9) - 0.001 | v69, v71, v77, v83 |
+| m134 tolerance round(s.p_early - {eps_primary}, 9) - 0.001 | v69, v71, v77, v83, v94, v107 |
 | m135 tolerance round(s.c_early - {eps_counter}, 9) + 0.000001 | v53, v54, v82, v86 |
 | m136 tolerance round(s.c_early - {eps_counter}, 9) - 0.000001 | v70, v84 |
 | m137 tolerance round(s.c_early - {eps_counter}, 9) + 0.001 | v53, v54, v82, v86 |
-| m138 tolerance round(s.c_early - {eps_counter}, 9) - 0.001 | v47, v70, v78, v84 |
+| m138 tolerance round(s.c_early - {eps_counter}, 9) - 0.001 | v47, v70, v78, v84, v109 |
 | m139 tolerance OR drill_recall_min <= 0 + 0.000001 | v80 |
 | m140 tolerance OR drill_recall_min <= 0 - 0.000001 | e04 |
 | m141 tolerance OR drill_recall_min <= 0 + 0.001 | v80 |
@@ -1030,15 +1131,15 @@ equivalent:
 | m156 tolerance OR counter_value < 0 - 0.000001 | e43 |
 | m157 tolerance OR counter_value < 0 + 0.001 | v64 |
 | m158 tolerance OR counter_value < 0 - 0.001 | e43 |
-| m159 tolerance OR counter_value > 1 + 0.000001 | e44 |
-| m160 tolerance OR counter_value > 1 - 0.000001 | v01, v03, v04, v05, v07, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v20, v21, v22, v23, v24, v25, v26, v29, v30, e11, e12, e15, v31, v32, v33, v34, v36, v37, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v55, v56, v57, v58, v59, v60, v61, v62, v63, v64, v65, v66, v67, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v79, v80, v81, v82, v83, v85, v87, v88, v89, e17, e18, e19, e35 |
-| m161 tolerance OR counter_value > 1 + 0.001 | e44 |
-| m162 tolerance OR counter_value > 1 - 0.001 | v01, v03, v04, v05, v07, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v20, v21, v22, v23, v24, v25, v26, v29, v30, e11, e12, e15, v31, v32, v33, v34, v36, v37, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v55, v56, v57, v58, v59, v60, v61, v62, v63, v64, v65, v66, v67, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v79, v80, v81, v82, v83, v85, v87, v88, v89, e17, e18, e19, e35 |
-| m163 precision 2: avg(w.primary_value) FILTER (WHERE w.day > {today} | v69, v71, v87, v88 |
+| m159 tolerance OR counter_value > 1 + 0.000001 | e44, e45 |
+| m160 tolerance OR counter_value > 1 - 0.000001 | v01, v03, v04, v05, v07, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v20, v21, v22, v23, v24, v25, v26, v29, v30, e11, e12, e15, v31, v32, v33, v34, v36, v37, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v55, v56, v57, v58, v59, v60, v61, v62, v63, v64, v65, v66, v67, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v79, v80, v81, v82, v83, v85, v87, v88, v89, v90, v91, v92, v93, v94, v95, v96, v97, v98, v99, v101, v102, v103, v104, v105, v106, v107, v108, v109, v110, e17, e18, e19, e35 |
+| m161 tolerance OR counter_value > 1 + 0.001 | e44, e45 |
+| m162 tolerance OR counter_value > 1 - 0.001 | v01, v03, v04, v05, v07, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v20, v21, v22, v23, v24, v25, v26, v29, v30, e11, e12, e15, v31, v32, v33, v34, v36, v37, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v55, v56, v57, v58, v59, v60, v61, v62, v63, v64, v65, v66, v67, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v79, v80, v81, v82, v83, v85, v87, v88, v89, v90, v91, v92, v93, v94, v95, v96, v97, v98, v99, v101, v102, v103, v104, v105, v106, v107, v108, v109, v110, e17, e18, e19, e35 |
+| m163 precision 2: avg(w.primary_value) FILTER (WHERE w.day > {today} | v69, v71, v87, v88, v94, v107 |
 | m164 precision 4: avg(w.primary_value) FILTER (WHERE w.day > {today} | v69 |
 | m165 precision 6: avg(w.primary_value) FILTER (WHERE w.day > {today} | v69 |
 | m166 precision 12: avg(w.primary_value) FILTER (WHERE w.day > {today} | v81 |
-| m167 precision 2: avg(w.counter_value) FILTER (WHERE w.day > {today} | v47, v70 |
+| m167 precision 2: avg(w.counter_value) FILTER (WHERE w.day > {today} | v47, v70, v109 |
 | m168 precision 4: avg(w.counter_value) FILTER (WHERE w.day > {today} | v70 |
 | m169 precision 6: avg(w.counter_value) FILTER (WHERE w.day > {today} | v70 |
 | m170 precision 12: avg(w.counter_value) FILTER (WHERE w.day > {today} | v82 |
@@ -1057,25 +1158,67 @@ equivalent:
 | m183 aggregate arg_max(w.counter_value, w.day) -> max(w.counter_value) | v07, v64, v67 |
 | m184 aggregate arg_max(w.counter_value, w.day) -> min(w.counter_value) | v72 |
 | m185 aggregate avg -> min on w.primary_value <= | v37 |
-| m186 aggregate avg -> max on w.primary_value <= | v87 |
-| m187 aggregate avg -> median on w.primary_value <= | v37 |
+| m186 aggregate avg -> max on w.primary_value <= | v87, v108 |
+| m187 aggregate avg -> median on w.primary_value <= | v37, v108 |
 | m188 aggregate avg -> min on w.primary_value > | v74 |
-| m189 aggregate avg -> max on w.primary_value > | v88 |
-| m190 aggregate avg -> median on w.primary_value > | v88 |
+| m189 aggregate avg -> max on w.primary_value > | v88, v94 |
+| m190 aggregate avg -> median on w.primary_value > | v88, v94 |
 | m191 aggregate avg -> min on w.counter_value <= | v46 |
-| m192 aggregate avg -> max on w.counter_value <= | v75 |
-| m193 aggregate avg -> median on w.counter_value <= | v46 |
+| m192 aggregate avg -> max on w.counter_value <= | v75, v110 |
+| m193 aggregate avg -> median on w.counter_value <= | v46, v110 |
 | m194 aggregate avg -> min on w.counter_value > | v89 |
-| m195 aggregate avg -> max on w.counter_value > | v73 |
-| m196 aggregate avg -> median on w.counter_value > | v73 |
+| m195 aggregate avg -> max on w.counter_value > | v73, v95 |
+| m196 aggregate avg -> median on w.counter_value > | v73, v95 |
 | m197 aggregate coalesce(sum(d.injected), 0) AS inj -> coalesce(max(d.injected), 0) AS inj | v30 |
 | m198 aggregate coalesce(sum(d.injected), 0) AS inj -> coalesce(min(d.injected), 0) AS inj | v30, v58 |
 | m199 aggregate coalesce(sum(d.detected), 0) AS det -> coalesce(max(d.detected), 0) AS det | v30 |
 | m200 aggregate coalesce(sum(d.detected), 0) AS det -> coalesce(min(d.detected), 0) AS det | v30, v58 |
-| m201 arithmetic s.p_early - {eps_primary} -> s.p_early + {eps_primary} | v17, v36, v51, v52, v72, v74, v81, v85, v87 |
-| m202 arithmetic s.c_early - {eps_counter} -> s.c_early + {eps_counter} | v16, v45, v53, v54, v75, v82, v86, v89 |
+| m201 arithmetic s.p_early - {eps_primary} -> s.p_early + {eps_primary} | v17, v36, v51, v52, v72, v74, v81, v85, v87, v96, v104, v108 |
+| m202 arithmetic s.c_early - {eps_counter} -> s.c_early + {eps_counter} | v16, v45, v53, v54, v75, v82, v86, v89, v97, v103, v110 |
 | m203 arithmetic dr.det::DOUBLE / dr.inj -> dr.det // dr.inj | v12, v30, v34 |
 | m204 arithmetic r.depth + 1 -> r.depth + 2 | e25 |
+| m205 order verdict: swap WHEN s.p_last > s.threshold THEN 'breach / WHEN s.c_last IS NULL THEN 'counter_dark | v100 |
+| m206 order verdict: swap WHEN s.c_last < s.counter_floor THEN 'co / WHEN dr.inj < s.drill_min THEN 'undrille | v28 |
+| m207 order verdict: swap WHEN dr.inj < s.drill_min THEN 'undrille / WHEN dr.det::DOUBLE / dr.inj < s.drill_r | v101 |
+| m208 order verdict: swap WHEN dr.det::DOUBLE / dr.inj < s.drill_r / WHEN s.p_late < round(s.p_early - {eps_p | v102 |
+| m209 order verdict: move to top WHEN s.c_last IS NULL THEN 'counter_dark' | v02, v21, v49, v100 |
+| m210 order verdict: move to top WHEN s.c_last < s.counter_floor THEN 'counter_low' | v27 |
+| m211 order verdict: move to top WHEN dr.inj < s.drill_min THEN 'undrilled' | v28 |
+| m212 order verdict: move to top WHEN dr.det::DOUBLE / dr.inj < s.drill_recall_min  | v101 |
+| m213 order verdict: move to top WHEN s.p_late < round(s.p_early - {eps_primary}, 9 | v102 |
+| m214 order error: swap WHEN g.bad_register > 0 THEN error('malf / WHEN g.bad_upstream > 0 THEN error('malf | e46 |
+| m215 order error: swap WHEN g.bad_upstream > 0 THEN error('malf / WHEN g.cycle > 0 THEN error('malformed r | e47 |
+| m216 order error: swap WHEN g.cycle > 0 THEN error('malformed r / WHEN g.bad_signal > 0 THEN error('malfor | e48 |
+| m217 order error: swap WHEN g.bad_signal > 0 THEN error('malfor / WHEN g.bad_drills > 0 THEN error('malfor | e49 |
+| m218 order error: move to top WHEN g.cycle > 0 THEN error('malformed register: u | e47 |
+| m219 order error: move to top WHEN g.bad_signal > 0 THEN error('malformed signal | e48 |
+| m220 order error: move to top WHEN g.bad_drills > 0 THEN error('malformed drill: | e49 |
+| m221 propagation skips dark | v21, v49 |
+| m222 propagation skips breach | v90 |
+| m223 propagation skips counter_dark | v91 |
+| m224 propagation skips counter_low | v92 |
+| m225 propagation skips undrilled | v93 |
+| m226 propagation skips blind | v20 |
+| m227 NULL read as 0 in primary early half | v98 |
+| m228 half split + 1 day on primary early half | v69, v71, v77, v83, v94 |
+| m229 half split - 1 day on primary early half | v37 |
+| m230 NULL read as 0 in primary late half | v96 |
+| m231 half split + 1 day on primary late half | v94 |
+| m232 half split - 1 day on primary late half | v37, v69, v71, v77, v83, v107 |
+| m233 NULL read as 0 in counter early half | v99 |
+| m234 half split + 1 day on counter early half | v47, v70, v78, v84, v95 |
+| m235 half split - 1 day on counter early half | v46, v110 |
+| m236 NULL read as 0 in counter late half | v97 |
+| m237 half split + 1 day on counter late half | v95 |
+| m238 half split - 1 day on counter late half | v46, v47, v70, v78, v84, v109, v110 |
+| m239 param eps_counter read as eps_primary | v103 |
+| m240 param eps_primary read as eps_counter | v104 |
+| m241 param signal window read as 2 x half_days | v106 |
+| m242 param drill window read as 2 x half_days | v105 |
+| m243 param half_days read as window_days / 2 on primary early half | v108 |
+| m244 param half_days read as window_days / 2 on primary late half | v107, v108 |
+| m245 param half_days read as window_days / 2 on counter early half | v110 |
+| m246 param half_days read as window_days / 2 on counter late half | v109, v110 |
 
 ## 3. Settled / contested / risk / open
 
@@ -1127,7 +1270,12 @@ equivalent:
   today-only unregistered read. So does retirement and onboarding: staged, in-window signal and drill rows of
   a detector with no register row both read unregistered, so neither halts the run (v60-v62); the
   alternatives are a retired_on marker on the register row, so in-window history still resolves, or a halt
-  with a stated 28-day retirement procedure.
+  with a stated 28-day retirement procedure. So does the blast radius of malformed input: staged, any guard
+  firing raises the whole run, suppressing every detector's verdict for up to 27 days (e45), and the ladder
+  holds every rung on a day without verdicts. The alternatives: (a) a per-detector malformed verdict for
+  signal and drill defects, keeping the whole-run raise for register defects only; (b) quarantine the
+  offending row and read the rest; (c) keep the halt with a stated repair procedure (correct or delete the
+  row). Only Decision 55, by analogy, bears on it, and it asks for loud failure, not wide failure.
 - **k3 (asked). Where counters and drills are declared.** (a) In this item's register rows only (staged).
   (b) Two new FailureSignal fields, counter and drill, on every pilot item, with the evaluator requiring them
   (a pilot-schema change, the evaluator owner's, O1). (c) In each item's prose. Recommended (a) now and (b) at
