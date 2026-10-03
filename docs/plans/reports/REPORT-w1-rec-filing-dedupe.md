@@ -41,8 +41,12 @@ rec was written while preparing it (Decision 67). Every rec operation below is a
   while rec-N is open, regression or drop by the time rule once rec-N closes). Where the link lives is
   contested and parked (k1). This is also where the retired transcript-review prompt's missing-gotcha
   pattern lands, as the friction report asked (its section 2 table).
-- The filer never closes a rec. Below the floor is `hold`, not close. Closure needs a recorded proof
-  (Decision 103), and that proof is back-validation's (T3.4, a later W1 component).
+- The staged decision closes nothing. Below the floor is `hold`, not close. Whether the filer may ever
+  close is a parked fork, not a settled rule (k4): Decision 103 allows a deterministic close with a
+  recorded proof, and ci_rca uses one (a 30-day inactivity close, ci-rca-lifecycle.yaml:185-193), while the
+  loop_liveness_stale monitor never auto-closes. Recommended: no filer close until back-validation (T3.4,
+  a later W1 component) supplies a proof. The cost is stated: filer recs accumulate at up to file_budget
+  per run until a human or that proof closes them.
 - The queue is already 5x over its soft cap: 1244 of 1419 open recs are non-automatable against
   `_NON_AUTOMATABLE_SOFTCAP = 250` (measured, section 1). The item starts at the read_all rung, where the
   filer files nothing and every proposal is reviewed; whether the cap stops filing later is parked (k3).
@@ -112,6 +116,13 @@ the way ci_rca's "v2" does. One registered filer source holds every detector (on
 fingerprint, the Decision 142 shape), so one scoped `current_state` read per run returns the whole chain
 set; never the open_recs bulk read, which lacks source and context_v2_json (e11, the rec-3291 defect
 class).
+
+Cadence and window shape: the filer runs daily (T3.3's "runs daily"), and each run reads one rolling
+window of `window_days` ending at the run. Successive windows therefore overlap. An update stores the
+latest window's counts and never sums them, and `occurrence_count` counts runs that saw the fingerprint
+fileable (runs-seen), not distinct events. A regression needs a full window that starts after the close,
+so the earliest regression is `window_days` after the fix, and a window that spans the fix drops (v08,
+v13), the same boundary back-validation must use.
 
 Params are data, stamped as `params_version` in every run record (seed values, all unmeasured, q3):
 
@@ -218,7 +229,7 @@ What each action does, as the build would wire it (none of it runs here):
 | file | fileable, no chain head | file_rec: templated title and context, context_v2_json identity, source priority | - |
 | update | open, in_progress or deferred head, window advanced (a deferred rec is parked, not resolved: v23) | update_rec on the head: occurrence_count + 1, last_seen_end, detector_version, latest counts | head |
 | unchanged | same head, window not advanced (re-run) | none | head |
-| regression | closed head, or a superseded head's closed cover, and the window starts after that close, or the close time is unknown (fail closed) | file_rec: "REGRESSION: " prefix, regression_of = ref, priority one step up | the rec whose close decided it: head when the head is closed (even if it still carries covered_by, v22), cover only for a superseded head |
+| regression | closed head, or a superseded head's closed cover, and the window starts after that close, or the close time is unknown (fail closed) | file_rec: "REGRESSION: " prefix, regression_of = ref, priority one step above the filer source's own priority (measured from the source, never from the previous head, so it cannot ratchet); from the third record in a chain, tagged chronic (below) | the rec whose close decided it: head when the head is closed (even if it still carries covered_by, v22), cover only for a superseded head |
 | drop | the window still includes sessions from before that close | none; logged | as for regression |
 | covered | superseded head whose covered_by rec is open, in_progress or deferred (v24) | none | cover |
 | suppressed | declined head, superseded head with no cover, or a declined cover | none; counted with its sessions | head |
@@ -230,9 +241,30 @@ Every run writes one run record (counts per action, params_version, the detector
 fingerprints with sessions per suppressed, unresolved, over_budget and collapsed finding), so nothing the filer declines
 to file is silent (Decision 55: dedup never swallows a finding). The sketch returns detector_id,
 subject_key, action and ref only; the build projects fingerprint and sessions too, so the run record
-never re-derives them. The filer never calls update_rec to close:
-a filer rec closes only through back-validation's proof (T3.4) or a human. A concurrent second run is
-prevented by a schedule concurrency group and caught by the generalised write-time backstop (R2).
+never re-derives them. The staged filer never calls update_rec to close (k4): a filer rec closes through
+a human, or through back-validation's proof (T3.4) once it exists. A concurrent second run is prevented by
+a schedule concurrency group and caught by the generalised write-time backstop (R2).
+
+Run record and failure path (its storage home is open, q4):
+- Written on every run, failed runs included: status (ok, quarantined or failed), params_version, detector
+  versions, per-action counts per detector, the fingerprints with sessions behind every non-filing
+  action, and on failure the error and the detector_id it is attributable to.
+- Blast radius, chosen: a validation stage runs before the decision. A detector with any malformed
+  finding (a NULL subject_key, window_start or window_end) is quarantined whole: its findings are recorded
+  and not decided, the other detectors decide normally, and the run still exits non-zero. A NULL
+  detector_id cannot be attributed, so it aborts the whole run. The SQL's error() guard (v33) stays as the
+  last line behind that stage. Reason: identity includes detector_id, so detectors are independent, and
+  one broken detector must not blind the rest; but nothing malformed is ever filed or held quietly.
+- The schedule is a governed loop like any other, so the loop_liveness_stale sensor's cadence leg (did it
+  run) and success leg (did it exit 0) alarm on a missing or failing filer
+  (scripts/convergence_health/sensor_liveness_episodes.py:43-48). A filer outage therefore reads as a
+  liveness alarm, never as a quiet queue.
+- Chain length (ci_rca's flake_escalation, adapted, not dropped). ci_rca quarantines a fingerprint whose
+  chain reaches 3 records instead of filing again. Here a regression is filed only after someone or
+  something closed the previous head, so a chain grows one close at a time. From the third record in a
+  chain the regression is still filed (a fix that keeps failing must stay visible) but tagged chronic, and
+  back-validation may not close a chronic rec on proof alone; a human closes it. That stops an automatic
+  close-and-regress loop once back-validation can close.
 
 Vectors (hand-written for this report; VP 2 runs every one). findings rows are `[detector_id,
 detector_version, subject_key, window_start, window_end, sessions, events]`; heads rows are `[rec_id,
@@ -439,11 +471,10 @@ Settled (consistent with a Decision, a contract or measured; s1-s3 in the fixtur
 - s2 The filing decision is one SQL statement over the filer's own source plus one read per covering
   rec. It passes 34/34 vectors across ten actions plus the collapsed listing; every non-filing outcome is counted in the run record
   (VP 2).
-- s3 The filer never closes. Below the floor is hold. Closure needs a recorded proof (Decision 103, e13),
-  which belongs to back-validation (T3.4). VP 1 shows that rec_episode's truth table would close an open
-  rec with no proof the moment a detector goes quiet, which can also happen because no sessions ran.
-  The loop_liveness_stale monitor already follows the same rule ("Never auto-closed",
-  scripts/convergence_health/sensor_liveness_episodes.py:135).
+- s3 A malformed finding never files and is never silent. A NULL identity or window column cannot be
+  deduped (its fingerprint is NULL and never matches again), so it is quarantined by detector, recorded,
+  and the run exits non-zero; the SQL raises as the last guard (v33). Precedent: Decision 55 (dedup never
+  swallows a finding) and the fail-loud rec_id cast (S4).
 
 Contested (evidence on both sides, options listed; k1-k3 in the fixture; all parked, see
 /mnt/project-files/gates/w1-c5-parked-forks.md):
@@ -476,7 +507,21 @@ Contested (evidence on both sides, options listed; k1-k3 in the fixture; all par
     record unaffected. At today's numbers it never files.
   - (c) File with automatable false and the source's Low priority, and let /orient rank.
   Recommended: (a) for the sampled rung; read_all files nothing either way. This is the operator's
-  queue policy, so it is parked.
+  queue policy, so it is parked. Read with k4: with no filer close, every filed rec stays open until a
+  human or back-validation closes it.
+- k4 (report-only: the fixture's contested list is capped at 3) Whether the filer may close its own recs.
+  - (a) Never; closure comes from a human or back-validation's proof.
+  - (b) ci_rca's deterministic inactivity close, adapted with a denominator: close as stale_no_recurrence
+    only after N consecutive below-floor windows that each observed at least M sessions, and only when the
+    rec is at least 14 days old. Decision 103 allows it (deterministic satisfaction with a recorded proof)
+    and ci-rca-lifecycle.yaml:185-193 is the precedent.
+  - (c) close_proposed only, for the operator to confirm.
+  Against (b): quiet is not fixed. The detector can go quiet because the work that produced the friction
+  stopped, and only a post-fix delta (T3.4) distinguishes the two. rec_episode's close (VP 1) is the
+  no-denominator version and is rejected outright. For (b): it bounds accumulation in an over-cap queue
+  (k3). Recommended: (a) until back-validation exists, then revisit (b) as its fallback. Two contract
+  precedents disagree (ci_rca closes on inactivity; loop_liveness_stale never auto-closes), so it is
+  parked.
 
 Risk (known loss modes, not choices):
 
@@ -492,7 +537,11 @@ Risk (known loss modes, not choices):
   on a second open rec per fingerprint.
 - R3 Version floods. A new classifier_version can surface many labels at once (friction R5). The budget
   holds back everything past 3 per run as over_budget, smallest first (v20, v21), so the queue sees at most
-  3 new recs per run, and the over_budget fingerprints are listed.
+  3 new recs per run, and the over_budget fingerprints are listed. The ranking is global: a flood of N
+  labels from one detector delays a smaller detector's new findings by about N/3 runs. Filed fingerprints
+  move to update, which the budget does not count, so the delay is bounded. Ranking per detector is the
+  build's alternative if that delay matters. The build also rejects a subject_key that is empty or holds
+  NUL (the key separator).
 - R4 Egress. One scoped `current_state` read per run plus one `rec_by_id` per distinct cover. Never the
   open_recs bulk read: it is unscoped and lacks source and context_v2_json (e11). The registered
   validate_episode_lookup_projection guard exists because of that defect class.
@@ -512,6 +561,11 @@ Open (q1-q3 in the fixture; none is answerable from the repository):
   into the superseded state with covered_by set (a recorded lifecycle closure, not a deletion).
 - q3 Seed values: min_sessions 3, min_events 5, window 7 days, budget 3. All are unmeasured, because no
   friction rows exist in production until W1-1's producer wiring lands.
+- q4 (report-only: the fixture's open list is capped at 3) Where does the run record live? Candidates:
+  (a) the Decision 199 telemetry journal, a filer run being one telemetry session whose process_event rows
+  carry the record (append-only, data plane, already budgeted); (b) a scheduled-job artifact like ci_rca's
+  evidence bundle (cheap, but not queryable across runs); (c) a new ops table (a Class A contract, the
+  heaviest). Recommended: (a). No precedent places a job's run record there, so it is parked.
 
 ## 4. Consideration register (as authored in the fixture)
 
@@ -521,7 +575,8 @@ Open (q1-q3 in the fixture; none is answerable from the repository):
   or a declined or covered finding re-filed. Loss is a recurring finding never filed. Metric
   `rejected_share`: the share of filer proposals (read_all) or filed recs (later rungs) that the operator
   marks covered, duplicate or reject, per 30 days per detector. Source: the operator verdicts plus the run
-  record's per-action counts. Why this metric: a filer graded on recs filed floods the queue, and one
+  record's per-action counts, read beside run liveness (run records written against runs scheduled, from
+  the loop_liveness_stale legs), so an outage never reads as a quiet queue. Why this metric: a filer graded on recs filed floods the queue, and one
   graded on dedupe rate merges everything into one rec. rejected_share is also the T3.3 false-positive
   rate that audit F-035 found undefined, so W3 can stage it as that criterion's formula.
 - Goodhart guard: the cheap way to a low rejected_share is to file nothing, or to absorb everything into
@@ -557,7 +612,10 @@ Open (q1-q3 in the fixture; none is answerable from the repository):
   through T2.36 here and through the pilot item at W2.
 - Back-validation (next W1 component): it owns the close-with-proof step, the acceptance probe (q1), and
   the post-fix delta that this design's `regression` action mirrors. The two must agree on the window
-  rule: a window that spans the fix is neither proof nor regression (v08, v13).
+  rule: a window that spans the fix is neither proof nor regression (v08, v13). It must also honour the
+  chronic tag (no proof-only close from the third chain record), and k4 (b) is its candidate fallback.
+- Two chain resolvers: ci_rca_lifecycle.resolve_chain orders by last_updated_timestamp, this SQL by
+  created. W2 or the build decides whether to generalise resolve_chain by source or keep both on purpose.
 - Maturity-ladder controller and Goodhart register: this item's rungs and its rejected_share and
   hold/suppressed counts are inputs to both.
 - Allow-list transport (rec-4141): per-action counts are a closed vocabulary; subject keys are not (R5).
