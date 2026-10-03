@@ -35,8 +35,9 @@ Fixture rows: `pwi-deliberation-capture` in `docs/work-item-pilot/telemetry-feed
   enforcement; the read also counts a missing visibility after cutover as drift, so the rule does not rest
   on the writer alone. Rows written before a producer classified are a coverage count, not drift. One SQL
   statement, grouped by producer, parser_version, model and visibility, passes 16 of 16 vectors (VP 4).
-- One item fits the clause-3 grain (kind task; three criteria; part_of T3.20, depends_on T2.36 and
-  T4.2). The verb and the monitor share one failure mode and one SQL, so a split would spend the cap
+- One item fits the clause-3 grain (kind task; three criteria; part_of T3.20, depends_on T2.36). The
+  LiteLLM lane's arrival with rec-4028 and T4.2 is a maturity-ladder event, not a build dependency (section
+  4 edges). The verb and the monitor share one failure mode and one SQL, so a split would spend the cap
   on rows with one failure signal.
 
 ## 1. Evidence (each row re-derivable; VP step in brackets)
@@ -165,6 +166,21 @@ figure, never drift, and excluded from every maturity trigger. It should fall to
 captured after 2a-1 and for trees the bump re-parses (env R7 replay); what stays is history whose
 transcript is gone (inferred, not measured). Any other NULL visibility (litellm at any version, claude_code
 from 2a-1 on) is `visibility_missing` and counts as drift (v15).
+
+Contract declaration (data-modeling-standard.yaml rule derived-state, Decision 199; the build's edit, not
+this PR's). Every read-derived telemetry metric is declared in its Class A contract with `derivation:
+{timing: read, derived_by: reader_verb:..., realized: false}` (telemetry_observations.yaml:290,
+telemetry_sessions.yaml:219-252). The build declares, before or with the verb: `deliberation_class` on
+telemetry_observations, a model_call-grain read-derived field (legacy, text_missing, text_unexpected,
+visibility_missing or NULL for clean) with `derived_by: reader_verb:session_deliberation_rollup`; and
+session-grain totals on telemetry_sessions with the same derived_by (classified_calls, legacy_calls,
+deliberation_drift_calls, reasoning_tokens_total, counted_output_tokens_total). The model_call field rides
+with 2a-1's telemetry_observations amendment; the session fields ride with the verb's build plan. The
+per-(producer, parser_version, model, visibility) roll-up is multi-row per session and fits no single Class
+A field; where its shape is declared is q4. Decision 210 cl.3 also binds the SQL's literals to these
+sources: the text-bearing set (full, summarized) is read from the 2a-1 contract's visibility vocabulary and
+the cutover from parser_versions.yaml, never restated. A new value such as R9's would read
+text_unexpected (loud) until the vocabulary classes it.
 
 Writer-side, not here (Decision 210 cl.1 and cl.4, rec-4024 slice 2a; the rules are the 2a-1 contract's):
 reasoning_visibility in its accepted set; reasoning_visibility NOT NULL on model_call rows at a
@@ -336,7 +352,11 @@ Risk (known loss modes, not choices). R1-R6 and R9 are this report's ids; a rule
   not filed.
 - R5 Grouping key. `provider` is NULL on claude_code rows (e5), so the verb groups by producer and model.
   A Claude Code session pointed at DeepSeek's Anthropic-format endpoint would land under claude_code
-  with a DeepSeek model id; grouping by model keeps it apart.
+  with a DeepSeek model id; grouping by model keeps it apart. Decision 206's persona_backend (litellm |
+  claude_cli) is on model_call rows, and outcome-parity reads group by (agent_name, persona_backend). Once
+  claude_cli personas (T4.27) share the claude_code producer with interactive sessions, the two can carry
+  different visibility mixes, so the build should consider persona_backend in the grain; q2's outcome join
+  needs it either way.
 - R6 One call, two producers. env R5(c) keeps claude_code's model_call row, but both producers' thinking rows
   survive; the verb tests existence per observation_id (v05). This is also why the drift rule cannot be
   a write check (s3): neither producer's write can see the other's rows. The existence test is per call,
@@ -358,7 +378,7 @@ Risk (known loss modes, not choices). R1-R6 and R9 are this report's ids; a rule
   rest on the writer, which the build gate waits for. The remaining lever is a producer that misclassifies
   consistently, which section 4 assigns to the producer conformance tests and c3's review.
 
-Open (q1-q3 in the fixture; none is answerable from the repository):
+Open (q1-q3 in the fixture, q4 report-only; none is answerable from the repository):
 
 - q1 Where is the 2a-1 plan? rec-4028 says it was accepted on 2026-09-29 and owns the contract fields and
   the claude_code parser_version 2 mapping. Checked: contract, `docs/plans`, remote branch names, the
@@ -370,6 +390,10 @@ Open (q1-q3 in the fixture; none is answerable from the repository):
   session_started_at and project_ref (e9), but a non-replayable producer emits no open marker (e8), so a
   persona run with no Claude Code transcript has no telemetry_sessions open row, and W1-2's session verbs
   cannot see it. The deliberation verb is unaffected (it reads model_call rows by session_id).
+- q4 Where is the multi-row roll-up's shape declared? The per-call class and the session totals have Class
+  A homes (section 2), but the per-(producer, parser_version, model, visibility) rows do not. Options: a
+  response-shape entry in the reader registry, or a declared verb-response contract. For W2 and the
+  verb's build plan; not in the fixture (its open list holds three rows).
 
 ## 4. Consideration register (as authored in the fixture)
 
@@ -408,8 +432,12 @@ Open (q1-q3 in the fixture; none is answerable from the repository):
 - edges: part_of T3.20 (its c3 join check is the monitor's home and its turn-grain rows carry the
   Claude Code facts); depends_on T2.36 (the DuckLake write and read path the verb runs on; it does not
   own row-local rule enforcement, which is rec-4024 slice 2a and a plan build gate, not an edge, since no
-  tier id owns it); depends_on
-  T4.2 (the LiteLLM lane, rec-4028 "lands with/after T4.2's LiteLLM transport").
+  tier id owns it). No edge to T4.2: T4.2 depends on T3.4, which depends on T3.3, and this item feeds both
+  (c3, q2, the Goodhart line, the T3.4 note in section 5), so the edge would order it after its own
+  consumers and hold the claude_code lane behind the LiteLLM one. Nothing in c1 or c2 needs T4.2: both are
+  vector tests over synthetic rows and the SQL is producer-generic. The LiteLLM lane arrives as a new
+  producer when rec-4028 lands with T4.2, which is a rung event that starts that producer at read_all; k2,
+  R3 and R4 keep the T4.2 pointers in prose.
 
 ## 5. Boundary notes for W2 synthesis
 
