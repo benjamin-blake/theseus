@@ -920,12 +920,13 @@ output differs by component (R6).
 
 ## 6. Staged candidate decision text (for W3; not filed)
 
-This text presumes the recommended options of parked forks: k1 (a), k2 (a) with (a1), k3 (a), k5 (a) and
-k7 (a). It is not settled; a W3 stager restates it after the operator answers them.
+This text presumes the recommended options of parked forks: k1 (a), k2 (a) with (a1), k3 (a), k5 (a), and
+k7 (a) for a breach. It does not presume any dark-signal rule: that is k7, and the bracketed clause below
+stays open until k7 is answered. It is not settled; a W3 stager restates it after the operator answers.
 
 "A loop component's review rung moves only by a deterministic controller over recorded reviews. Every
 upward transition is paired with a return leg: a wrong output found above read_all returns the component
-to read_all, a failure_signal that breaches or goes dark demotes it, and a rule-set version change
+to read_all, a failure_signal that breaches demotes it [a dark failure_signal: as k7 decides], and a rule-set version change
 restarts it at read_all. Promotion needs operator approval; demotion and restart apply on the run that
 finds them. The top rung needs a passed monitor drill with a stated recall floor. Thresholds are stated with their denominator,
 window and source."
