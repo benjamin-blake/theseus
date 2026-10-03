@@ -15,7 +15,7 @@ Fixture rows: `pwi-deliberation-capture` in `docs/work-item-pilot/telemetry-feed
   request messages). What no artefact holds is the read side: which metrics derive from those facts,
   and how a silent capture loss would be seen.
 - The 2a-1 plan is not in this repository (VP 2): no contract field, no `docs/plans` file, no remote
-  branch and none of the last 100 PRs names `reasoning_visibility`, and rec-4028's evidence file
+  branch and no title among the last 100 PRs names `reasoning_visibility`, and rec-4028's evidence file
   (`/mnt/project-files/telemetry-reasoning/`) is not in this project's shared folder. Until it lands,
   the live producer stores Claude thinking tokens only under an undocumented metadata key (VP 1, VP 2).
   Where 2a-1 lives is q1, for the operator.
@@ -273,13 +273,13 @@ Open (q1-q3 in the fixture; none is answerable from the repository):
 
 - q1 Where is the 2a-1 plan? rec-4028 says it was accepted on 2026-09-29 and owns the contract fields and
   the claude_code parser_version 2 mapping. Checked: contract, `docs/plans`, remote branch names, the
-  last 100 PRs, open recs (only rec-4028 names it), and this project's shared folder.
+  titles of the last 100 PRs, open recs (only rec-4028 names it), and this project's shared folder.
 - q2 Does deliberation predict outcome? One session spent 64% of output tokens thinking; nothing joins
   that to an outcome yet, so T3.3 must not alarm on a deliberation share until a measurement shows it
   means something.
 - q3 Who roots a LiteLLM-only persona tree? rec-4028 has the executor loop propagate session_ref, the root
   session_started_at and project_ref (e9), but a non-replayable producer emits no open marker (e8), so a
-  persona run with no Claude Code transcript has no telemetry_sessions rows, and W1-2's session verbs
+  persona run with no Claude Code transcript has no telemetry_sessions open row, and W1-2's session verbs
   cannot see it. The deliberation verb is unaffected (it reads model_call rows by session_id).
 
 ## 4. Consideration register (as authored in the fixture)
