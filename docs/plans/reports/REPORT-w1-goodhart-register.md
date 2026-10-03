@@ -308,17 +308,27 @@ detector (VP 4 fails a repeated row: unsound_reads counts rows).
 
 One rule governs history: every read of `{signal}` or `{drills}` goes through the window (`w`, `dw`: after
 today minus 28 days, up to and including today), the guards included. Rows dated after today or before the
-window are never read, so a retired detector's signal or drill history, malformed or not, neither reads
-unregistered nor halts the run (v31, v32, v39, v40, v42-v44). The one exception is a row with a NULL day,
-which cannot be placed in time, so it raises wherever it is (e16, e17).
+window are never read: history older than the window, malformed or not, neither reads unregistered nor
+raises (v31, v32, v39, v40, v42-v44). The one exception is a row with a NULL day, which cannot be placed in
+time, so it raises wherever it is (e16, e17).
+
+Retiring or onboarding a detector never halts the run (staged; k2). An in-window signal or drill row whose
+detector has no register row reads unregistered, the same for both tables (v24, v33, v60-v62): a detector
+retired today keeps reading unregistered for 27 days, until its last row leaves the window, and a drill that
+lands before its register row reads unregistered until the row exists. Under k1 (iii) as staged, an
+unregistered row other than the register's own drill blocks every promotion, so a retirement freezes
+promotion for those 27 days. The alternatives are k2's: a retired_on marker on the register row so its
+in-window history still resolves, or a halt with a stated 28-day retirement procedure.
 
 Malformed input raises instead of deciding (fail loud, Decision 55 by analogy). Register: a duplicate or
-NULL detector, a NULL field, a non-finite threshold or counter floor, drill_min below 1 (every row must be
-drilled), a recall floor outside (0, 1] (NaN included), an upstream that names no register row, or an
-upstream cycle (self-loop included). Signal, in the window: a NULL detector, a non-finite value or a
-duplicate day. Drills, in the window: a NULL field, a negative detected count, more detected than injected,
-or no register row. A sentinel row makes the guard fire even when no detector row would be returned (e13,
-e24).
+NULL detector, a NULL field, a non-finite threshold, a counter floor outside [0, 1] (NaN and infinities
+included), drill_min below 1 (every row must be drilled), a recall floor outside (0, 1] (NaN included), an
+upstream that names no register row, or an upstream cycle (self-loop included). Signal, in the window: a
+NULL detector, a non-finite primary, a counter outside [0, 1] (section 2.1 orients every counter in [0, 1];
+NaN and infinities included) or a duplicate day. Drills, in the window: a NULL field, a negative detected
+count or more detected than injected. A sentinel row makes the guard fire even when no detector row would be
+returned (e13, e24). Each range edge is pinned on both sides: the edge value itself is legal (v57, v64,
+v65, v80) and a value 1e-7 past it raises (e40-e44).
 
 ```yaml
 verdict:
@@ -339,17 +349,16 @@ verdict:
         (SELECT count(*) - count(DISTINCT detector) FROM {register})
         + (SELECT count(*) FROM {register} WHERE threshold IS NULL OR counter_floor IS NULL
              OR drill_min IS NULL OR drill_recall_min IS NULL OR upstream IS NULL
-             OR NOT isfinite(threshold) OR NOT isfinite(counter_floor)
+             OR NOT isfinite(threshold) OR counter_floor < 0 OR counter_floor > 1
              OR drill_min < 1 OR drill_recall_min <= 0 OR drill_recall_min > 1) AS bad_register,
         (SELECT count(*) FROM edge WHERE u IS NULL OR u NOT IN (SELECT detector FROM {register})) AS bad_upstream,
         (SELECT count(*) FROM reach WHERE d = u) AS cycle,
         (SELECT count(*) FROM {signal} WHERE day IS NULL)
-        + (SELECT count(*) FROM w WHERE detector IS NULL OR NOT isfinite(primary_value) OR NOT isfinite(counter_value))
+        + (SELECT count(*) FROM w WHERE detector IS NULL OR NOT isfinite(primary_value) OR counter_value < 0 OR counter_value > 1)
         + (SELECT count(*) FROM (SELECT detector, day FROM w GROUP BY ALL HAVING count(*) > 1)) AS bad_signal,
         (SELECT count(*) FROM {drills} WHERE day IS NULL)
         + (SELECT count(*) FROM dw WHERE detector IS NULL OR injected IS NULL OR detected IS NULL
-             OR detected < 0 OR detected > injected
-             OR detector NOT IN (SELECT detector FROM {register})) AS bad_drills
+             OR detected < 0 OR detected > injected) AS bad_drills
     ),
     s AS (
       SELECT r.detector, any_value(r.threshold) AS threshold, any_value(r.counter_floor) AS counter_floor,
@@ -390,18 +399,18 @@ verdict:
              THEN 'upstream_unsound' ELSE o.verdict END AS verdict
       FROM own o
       UNION ALL
-      SELECT DISTINCT detector, 'unregistered' FROM w
+      SELECT DISTINCT detector, 'unregistered' FROM (SELECT detector FROM w UNION ALL SELECT detector FROM dw)
       WHERE detector IS NOT NULL AND detector NOT IN (SELECT detector FROM {register})
       UNION ALL
       SELECT NULL, NULL FROM g WHERE g.bad_register + g.bad_upstream + g.cycle + g.bad_signal + g.bad_drills > 0
     )
     SELECT f.detector,
       CASE
-        WHEN g.bad_register > 0 THEN error('malformed register: NULL field, duplicate detector, drill_min below 1, recall outside (0, 1] or non-finite threshold or floor')
+        WHEN g.bad_register > 0 THEN error('malformed register: NULL field, duplicate detector, drill_min below 1, recall outside (0, 1], non-finite threshold or floor, or floor outside [0, 1]')
         WHEN g.bad_upstream > 0 THEN error('malformed register: upstream names an unregistered detector')
         WHEN g.cycle > 0 THEN error('malformed register: upstream cycle')
-        WHEN g.bad_signal > 0 THEN error('malformed signal: NULL key, non-finite value or duplicate detector day')
-        WHEN g.bad_drills > 0 THEN error('malformed drill: NULL field, negative count, detected above injected or unregistered detector')
+        WHEN g.bad_signal > 0 THEN error('malformed signal: NULL key, non-finite value, counter outside [0, 1] or duplicate detector day')
+        WHEN g.bad_drills > 0 THEN error('malformed drill: NULL field, negative count or detected above injected')
         ELSE f.verdict
       END AS verdict
     FROM fin f CROSS JOIN g
@@ -410,33 +419,43 @@ verdict:
 | verdict | when (precedence top-down) | vectors |
 |---|---|---|
 | dark | no defined primary in the window | v02, v03, v21, v49 |
-| breach | the latest defined primary exceeds the row's threshold (strictly) | v04, v23, v26, v27 |
+| breach | the latest defined primary exceeds the row's threshold (strictly) | v04, v23, v26, v27, v66 |
 | counter_dark | no defined counter in the window | v06 |
-| counter_low | the latest defined counter is under its floor (strictly) | v07, v28, v29 |
+| counter_low | the latest defined counter is under its floor (strictly) | v07, v28, v29, v64, v67 |
 | undrilled | fewer than drill_min faults injected in the window | v09, v10, v13 |
-| blind | detected / injected in the window below drill_recall_min | v11, v20, v23, v59 |
-| diverging | the primary's late-half mean fell by more than eps AND the counter's fell by more than eps | v15, v37, v46-v48 |
+| blind | detected / injected in the window below drill_recall_min | v11, v20, v23, v59, v68, v79 |
+| diverging | the primary's late-half mean fell by more than eps AND the counter's fell by more than eps | v15, v37, v46-v48, v69-v71, v73, v77, v78, v83, v84, v88 |
 | upstream_unsound | own verdict ok, and some upstream, at any depth, is not ok | v20, v21, v48, v49 |
-| unregistered | a signal series in the window whose detector has no register row (one row however many days) | v24, v33, v50 |
-| ok | otherwise | v01, v05, v08, v12, v14, v16-v19, v22, v25, v30-v32, v34-v36, v38-v45, v51-v58 |
+| unregistered | a signal or drill row in the window whose detector has no register row (one row however many days) | v24, v33, v50, v60-v62 |
+| ok | otherwise | v01, v05, v08, v12, v14, v16-v19, v22, v25, v30-v32, v34-v36, v38-v45, v51-v58, v63, v65, v72, v74-v76, v80-v82, v85-v87, v89 |
 
-Staleness (staged, k6): p_last and c_last are the latest defined values anywhere in the window, however
-old, so a detector that last emitted 27 days ago decides on that value (v41); at 28 days it reads dark.
+Staleness (staged; k1 (iv)): p_last and c_last are the latest defined values anywhere in the window,
+however old, so a detector that last emitted 27 days ago decides on that value (v41); at 28 days it reads
+dark. This fails open on the counter: a detector whose counter stops arriving keeps reading ok on its last
+counter value for 27 days while its primary stays current (v63), and not emitting the counter is the
+cheapest way to game it (R2). The latest value decides, not an extreme: a breach or a counter dip that
+recovered inside the window does not count (v72, v76).
 Each window edge is pinned: a drill dated today counts (v55) and one on the day the window opens does not
 (v13); signal edges are v02 and v14.
 
-Boundaries are exact to 9 decimal places. Recall is read as detected / injected against the floor; IEEE
-division is correctly rounded, so 7 of 25 at 0.28 meets it exactly (v34), and the legal edges drill_min 1,
-recall 1.0, a run that injected nothing and one that detected nothing are pinned (v56-v59). For divergence,
-the late-half means and each eps-shifted bound are rounded to 9 places before they are compared, so a fall
-of exactly eps is not diverging (v35, v38, v51-v54), while a fall larger than eps by under 1e-9 also reads
-not diverging. The early-half means are not rounded: the bound is rounded after the subtraction, so
+Boundaries are exact to 9 decimal places, and each is pinned on both sides. Recall is read as detected /
+injected against the floor; IEEE division is correctly rounded, so 7 of 25 at 0.28 meets it exactly (v34),
+and 5e-7 under the floor is blind (v79); the legal edges drill_min 1, recall 1.0, a run that injected nothing
+and one that detected nothing are pinned (v56-v59). A primary 1e-9 over its threshold breaches (v66) and a
+counter 1e-9 under its floor is low (v67). For divergence, the late-half means and each eps-shifted bound
+are rounded to 9 places before they are compared, so a fall of exactly eps is not diverging (v35, v38,
+v51-v54), a fall larger than eps by 1e-8 is (v69, v70), and a fall larger than eps by 1e-11 is not (v81,
+v82, v85, v86): that last pair is what "to 9 decimal places" means. Early means with 6- and 7-decimal
+detail pin the bound's precision (v77, v78, v83, v84), and halves that are not constant pin the averages
+against min, max and median (v73-v75, v87-v89). The early-half means are not rounded: the bound is rounded after the subtraction, so
 rounding them changes nothing (verification r2's y12, y14 found no input that tells them apart). Each of
 the four rounding sites is pinned on its own: one vector each (v51-v54) and one grid each. VP 4 checks
 every (recall_min, injected) pair from 0.01-1.00 and 1-100 whose detected count is a whole number (520
 pairs, 0 read blind; the multiplication form reads 13), every exact-eps fall on both series from 0.02-0.99
 (9,604 detectors), and, because divergence needs both series, an exact-eps fall on one series while the
 other falls clearly, from 0.02-0.99 on each side (98 and 98): 0 read diverging on all three, on every run.
+Each grid has a near side too: one detected fewer reads blind for all 520 pairs, and a fall of eps + 1e-8
+reads diverging for all 9,604, 98 and 98.
 Without the rounding the counts are not even stable: over these grids DuckDB sums in parallel, so a
 half-mean of equal values lands a few ulps either side from run to run. Removing any single rounding site
 misread between 7 and 31 moves of its one-series grid across our runs, and removing all four misread 262
@@ -499,7 +518,7 @@ vectors:
     - {id: e10, register: [{detector: A}], signal: [{detector: null, from: 0, to: 0, primary: 0.02, counter: 1.0}], drills: [], expected: error, raises: 'malformed signal: NULL key'}
     - {id: e11, register: [{detector: A}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 10, detected: 11}], expected: error, raises: detected above injected}
     - {id: e12, register: [{detector: A}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: -1, detected: -2}], expected: error, raises: negative count}
-    - {id: e13, register: [], signal: [], drills: [{detector: Q, day: -1, injected: 20, detected: 20}], expected: error, raises: unregistered detector}
+    - {id: e13, note: a drill row with a NULL detector and no register row still raises through the sentinel, register: [], signal: [], drills: [{detector: null, day: -1, injected: 20, detected: 20}], expected: error, raises: 'malformed drill: NULL field'}
     - {id: e14, register: [{detector: A, upstream: null}], signal: [], drills: [], expected: error, raises: 'malformed register: NULL field'}
     - {id: e15, register: [{detector: A}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: null}], expected: error, raises: 'malformed drill: NULL field'}
     - {id: v31, note: a series dated after today is not read as unregistered (verifier o04), register: [{detector: A}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}, {detector: X, from: 5, to: 5, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: ok}}
@@ -531,6 +550,36 @@ vectors:
     - {id: v57, note: a recall floor of exactly 1 is allowed, register: [{detector: A, drill_recall_min: 1.0}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: ok}}
     - {id: v58, note: a drill run that injected nothing is allowed, register: [{detector: A}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}, {detector: A, day: -2, injected: 0, detected: 0}], expected: {A: ok}}
     - {id: v59, note: 'a drill that detected nothing reads blind, not malformed', register: [{detector: A}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 0}], expected: {A: blind}}
+    - {id: v60, note: 'retired today: X''s in-window drill reads unregistered and the run goes on (verifier z12)', register: [{detector: A}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}, {detector: X, day: -1, injected: 20, detected: 20}], expected: {A: ok, X: unregistered}}
+    - {id: v61, note: 'retired today: X''s in-window signal reads unregistered until it leaves the window (verifier z13)', register: [{detector: A}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}, {detector: X, from: -27, to: -1, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: ok, X: unregistered}}
+    - {id: v62, note: 'onboarding: B''s first drill lands before its register row and reads unregistered (verifier z14)', register: [{detector: A}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}, {detector: B, day: 0, injected: 20, detected: 20}], expected: {A: ok, B: unregistered}}
+    - {id: v63, note: 'staged staleness on the counter: last defined 27 days ago still decides, so a silent counter reads ok (verifier z15; k1 (iv))', register: [{detector: A}], signal: [{detector: A, from: -27, to: -27, primary: 0.02, counter: 1.0}, {detector: A, from: -26, to: 0, primary: 0.02, counter: null}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: ok}}
+    - {id: v64, note: a counter of exactly 0 is in range (and low), register: [{detector: A}], signal: [{detector: A, from: -27, to: -1, primary: 0.02, counter: 1.0}, {detector: A, from: 0, to: 0, primary: 0.02, counter: 0.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: counter_low}}
+    - {id: v65, note: a floor of exactly 0 and of exactly 1 are in range, register: [{detector: A, counter_floor: 0.0}, {detector: B, counter_floor: 1.0}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 0.5}, {detector: B, from: -27, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}, {detector: B, day: -1, injected: 20, detected: 20}], expected: {A: ok, B: ok}}
+    - {id: v66, note: primary 1e-9 above threshold breaches (verifier z01), register: [{detector: A}], signal: [{detector: A, from: -27, to: -1, primary: 0.02, counter: 1.0}, {detector: A, from: 0, to: 0, primary: 0.050000001, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: breach}}
+    - {id: v67, note: counter 1e-9 under floor is low (verifier z02), register: [{detector: A}], signal: [{detector: A, from: -27, to: -1, primary: 0.02, counter: 1.0}, {detector: A, from: 0, to: 0, primary: 0.02, counter: 0.989999999}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: counter_low}}
+    - {id: v68, note: recall 0.8995 under 0.9 is blind (verifier z03), register: [{detector: A}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 2000, detected: 1799}], expected: {A: blind}}
+    - {id: v69, note: 'primary falls eps+1e-8 while the counter falls clearly: diverging (verifier z04)', register: [{detector: A, counter_floor: 0.9}], signal: [{detector: A, from: -27, to: -14, primary: 0.04, counter: 1.0}, {detector: A, from: -13, to: 0, primary: 0.02999999, counter: 0.95}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: diverging}}
+    - {id: v70, note: 'counter falls eps+1e-8 while the primary falls clearly: diverging (verifier z05)', register: [{detector: A, counter_floor: 0.9}], signal: [{detector: A, from: -27, to: -14, primary: 0.04, counter: 1.0}, {detector: A, from: -13, to: 0, primary: 0.02, counter: 0.98999999}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: diverging}}
+    - {id: v71, note: 'primary falls 0.0105, so a 3-decimal late mean would hide it: diverging (verifier z06)', register: [{detector: A, counter_floor: 0.9}], signal: [{detector: A, from: -27, to: -14, primary: 0.04, counter: 1.0}, {detector: A, from: -13, to: 0, primary: 0.0295, counter: 0.95}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: diverging}}
+    - {id: v72, note: 'counter dipped under its floor mid-window and recovered: the latest value decides (verifier z07)', register: [{detector: A}], signal: [{detector: A, from: -27, to: -11, primary: 0.02, counter: 1.0}, {detector: A, from: -10, to: -10, primary: 0.02, counter: 0.5}, {detector: A, from: -9, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: ok}}
+    - {id: v73, note: 'counter late half not constant: the mean 0.971 falls, the median 1.0 would not (verifier z08)', register: [{detector: A, counter_floor: 0.9}], signal: [{detector: A, from: -27, to: -14, primary: 0.04, counter: 1.0}, {detector: A, from: -13, to: -10, primary: 0.02, counter: 0.9}, {detector: A, from: -9, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: diverging}}
+    - {id: v74, note: 'primary late half not constant: the mean 0.0332 does not fall eps, the min would (verifier z09)', register: [{detector: A, counter_floor: 0.9}], signal: [{detector: A, from: -27, to: -14, primary: 0.04, counter: 1.0}, {detector: A, from: -13, to: -13, primary: 0.01, counter: 0.95}, {detector: A, from: -12, to: 0, primary: 0.035, counter: 0.95}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: ok}}
+    - {id: v75, note: 'counter early half not constant: the mean bound 0.948 is not crossed, the max bound would be (verifier z10)', register: [{detector: A, counter_floor: 0.9}], signal: [{detector: A, from: -27, to: -27, primary: 0.04, counter: 1.0}, {detector: A, from: -26, to: -14, primary: 0.04, counter: 0.955}, {detector: A, from: -13, to: 0, primary: 0.02, counter: 0.95}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: ok}}
+    - {id: v76, note: 'primary breached mid-window and recovered: the latest value decides (verifier z11)', register: [{detector: A}], signal: [{detector: A, from: -27, to: -6, primary: 0.02, counter: 1.0}, {detector: A, from: -5, to: -5, primary: 0.09, counter: 1.0}, {detector: A, from: -4, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: ok}}
+    - {id: v77, note: 'primary bound at a 6-decimal early mean: a fall of 0.010029 diverges (verifier z17)', register: [{detector: A, counter_floor: 0.9}], signal: [{detector: A, from: -27, to: -14, primary: 0.040049, counter: 1.0}, {detector: A, from: -13, to: 0, primary: 0.03002, counter: 0.95}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: diverging}}
+    - {id: v78, note: 'counter bound at a 6-decimal early mean: a fall of 0.010029 diverges (verifier z18)', register: [{detector: A, counter_floor: 0.9}], signal: [{detector: A, from: -27, to: -14, primary: 0.04, counter: 0.990049}, {detector: A, from: -13, to: 0, primary: 0.02, counter: 0.98002}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: diverging}}
+    - {id: v79, note: 'recall 5e-7 under its floor is blind (1,799,999 of 2,000,000 at 0.9)', register: [{detector: A}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 2000000, detected: 1799999}], expected: {A: blind}}
+    - {id: v80, note: a recall floor just above 0 is allowed, register: [{detector: A, drill_recall_min: 5.0e-07}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: ok}}
+    - {id: v81, note: 'a primary fall larger than eps by 1e-11 is not diverging: the rule is exact to 9 decimal places', register: [{detector: A, counter_floor: 0.9}], signal: [{detector: A, from: -27, to: -14, primary: 0.04, counter: 1.0}, {detector: A, from: -13, to: 0, primary: 0.02999999999, counter: 0.95}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: ok}}
+    - {id: v82, note: a counter fall larger than eps by 1e-11 is not diverging, register: [{detector: A, counter_floor: 0.9}], signal: [{detector: A, from: -27, to: -14, primary: 0.04, counter: 1.0}, {detector: A, from: -13, to: 0, primary: 0.02, counter: 0.98999999999}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: ok}}
+    - {id: v83, note: 'primary bound at a 7-decimal early mean: a fall of 0.0100002 diverges', register: [{detector: A, counter_floor: 0.9}], signal: [{detector: A, from: -27, to: -14, primary: 0.0400004, counter: 1.0}, {detector: A, from: -13, to: 0, primary: 0.0300002, counter: 0.95}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: diverging}}
+    - {id: v84, note: 'counter bound at a 7-decimal early mean: a fall of 0.0100002 diverges', register: [{detector: A, counter_floor: 0.9}], signal: [{detector: A, from: -27, to: -14, primary: 0.04, counter: 0.9900004}, {detector: A, from: -13, to: 0, primary: 0.02, counter: 0.9800002}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: diverging}}
+    - {id: v85, note: 'primary early mean with 1e-11 detail: a fall of eps+1e-11 is not diverging', register: [{detector: A, counter_floor: 0.9}], signal: [{detector: A, from: -27, to: -14, primary: 0.04000000001, counter: 1.0}, {detector: A, from: -13, to: 0, primary: 0.03, counter: 0.95}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: ok}}
+    - {id: v86, note: 'counter early mean with 1e-11 detail: a fall of eps+1e-11 is not diverging', register: [{detector: A, counter_floor: 0.9}], signal: [{detector: A, from: -27, to: -14, primary: 0.04, counter: 0.99000000001}, {detector: A, from: -13, to: 0, primary: 0.02, counter: 0.98}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: ok}}
+    - {id: v87, note: 'primary early half not constant: the mean bound is not crossed, the max bound would be', register: [{detector: A, counter_floor: 0.9}], signal: [{detector: A, from: -27, to: -27, primary: 0.06, counter: 1.0}, {detector: A, from: -26, to: -14, primary: 0.04, counter: 1.0}, {detector: A, from: -13, to: 0, primary: 0.032, counter: 0.95}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: ok}}
+    - {id: v88, note: 'primary late half not constant: the mean falls past eps, the median and the max do not', register: [{detector: A, counter_floor: 0.9}], signal: [{detector: A, from: -27, to: -14, primary: 0.04, counter: 1.0}, {detector: A, from: -13, to: -8, primary: 0.02, counter: 0.95}, {detector: A, from: -7, to: 0, primary: 0.035, counter: 0.95}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: diverging}}
+    - {id: v89, note: 'counter late half not constant: the mean does not fall eps, the min would', register: [{detector: A, counter_floor: 0.9}], signal: [{detector: A, from: -27, to: -14, primary: 0.04, counter: 1.0}, {detector: A, from: -13, to: -13, primary: 0.02, counter: 0.95}, {detector: A, from: -12, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: ok}}
     - {id: e16, note: a signal row with a NULL day raises (verifier k01), register: [{detector: A}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}, {detector: A, from: null, to: null, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: error, raises: 'malformed signal: NULL key'}
     - {id: e17, note: a drill row with a NULL day raises (verifier k02), register: [{detector: A}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}, {detector: A, day: null, injected: 20, detected: 20}], expected: error, raises: 'malformed drill: NULL field'}
     - {id: e18, note: a drill row with a NULL injected raises (verifier k03), register: [{detector: A}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}, {detector: A, day: -2, injected: null, detected: 0}], expected: error, raises: 'malformed drill: NULL field'}
@@ -551,22 +600,44 @@ vectors:
     - {id: e33, note: a NULL threshold raises, register: [{detector: A, threshold: null}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: error, raises: 'malformed register: NULL field'}
     - {id: e34, note: a NULL register detector raises, register: [{detector: null}], signal: [], drills: [], expected: error, raises: 'malformed register: NULL field'}
     - {id: e35, note: a drill row with a NULL detector in the window raises, register: [{detector: A}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}, {detector: null, day: -2, injected: 1, detected: 1}], expected: error, raises: 'malformed drill: NULL field'}
+    - {id: e36, note: a counter above 1 raises (verifier z16), register: [{detector: A}], signal: [{detector: A, from: -27, to: -1, primary: 0.02, counter: 1.0}, {detector: A, from: 0, to: 0, primary: 0.02, counter: 1.7}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: error, raises: 'counter outside [0, 1]'}
+    - {id: e37, note: a counter below 0 raises, register: [{detector: A}], signal: [{detector: A, from: -27, to: -1, primary: 0.02, counter: 1.0}, {detector: A, from: 0, to: 0, primary: 0.02, counter: -0.1}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: error, raises: 'counter outside [0, 1]'}
+    - {id: e38, note: a counter floor above 1 raises, register: [{detector: A, counter_floor: 1.01}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: error, raises: 'floor outside [0, 1]'}
+    - {id: e39, note: a counter floor below 0 raises, register: [{detector: A, counter_floor: -0.01}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: error, raises: 'floor outside [0, 1]'}
+    - {id: e40, note: a recall floor 1e-7 above 1 raises, register: [{detector: A, drill_recall_min: 1.0000001}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: error, raises: 'recall outside (0, 1]'}
+    - {id: e41, note: a counter floor 1e-7 below 0 raises, register: [{detector: A, counter_floor: -1.0e-07}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: error, raises: 'floor outside [0, 1]'}
+    - {id: e42, note: a counter floor 1e-7 above 1 raises, register: [{detector: A, counter_floor: 1.0000001}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: error, raises: 'floor outside [0, 1]'}
+    - {id: e43, note: a counter 1e-7 below 0 raises, register: [{detector: A}], signal: [{detector: A, from: -27, to: -1, primary: 0.02, counter: 1.0}, {detector: A, from: 0, to: 0, primary: 0.02, counter: -1.0e-07}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: error, raises: 'counter outside [0, 1]'}
+    - {id: e44, note: a counter 1e-7 above 1 raises, register: [{detector: A}], signal: [{detector: A, from: -27, to: -1, primary: 0.02, counter: 1.0}, {detector: A, from: 0, to: 0, primary: 0.02, counter: 1.0000001}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: error, raises: 'counter outside [0, 1]'}
 ```
 
 ### 2.6 Mutants (VP 4)
 
 Each mutant replaces one exact substring of the verdict SQL (it must occur exactly once) and must fail at
-least one vector. m01-m34 are named. m35-m112 are a rule sweep, generated by class rather than by instance
-after verification rounds 1 and 2 found survivors on sites mirroring killed ones: every comparison flipped
-(< and <=, > and >=, = and <>), every OR or AND clause dropped, every round() removed, every CASE branch and
-every guard term dropped, every window bound and guard read widened to all history, plus the mirrors of
-named mutants on the other series. The sweep's first pass left survivors on legal edge values (now v55-v59)
-and on four redundant sites (a NULL-detector clause the duplicate count already catches, arg_max FILTERs
-DuckDB's arg_max already applies, a negative-injected clause the detected clauses imply, and the early-half
-rounding), which were removed from the SQL rather than kept as equivalents. One mutant stays equivalent and
-is listed apart (q01): reading the reach depth bound inclusively only lets the recursion run one step
-further, and a path that long already contains a cycle the guard catches. VP 4 counts the kills and the
-unique sites; the table lists every killing vector.
+least one vector. m01-m34 are named. m35-m204 are a rule sweep, generated by class rather than by instance
+after verification rounds 1-3 found survivors on sites mirroring killed ones. Its classes:
+
+- every comparison flipped (< and <=, > and >=, = and <>);
+- every OR or AND clause dropped, every CASE branch and every guard term dropped;
+- every round() removed, and each re-rounded to 2, 4, 6 and 12 places;
+- a tolerance of 1e-6 and 1e-3, in both directions, on every comparison against a DOUBLE (verdict and guard);
+- every aggregate swapped: arg_max for arg_min, max and min; each half-mean avg for min, max and median;
+  each drill sum for max and min;
+- arithmetic: the eps sign, the recall division, the recursion step;
+- every window bound and guard read widened to all history, and the mirror of each named mutant on the other
+  series.
+
+Each pass's survivors were either pinned by a new vector (v55-v59 legal edges; v66-v89 near sides,
+precision and non-constant halves; e40-e44 range edges) or, where no input could tell them apart, removed
+from the SQL as redundant: a NULL-detector clause the duplicate count already catches, arg_max FILTERs
+DuckDB's arg_max already applies, a negative-injected clause the detected clauses imply, the early-half
+rounding, and the non-finite checks on the counter and its floor that the [0, 1] range already makes. One
+mutant stays equivalent and is listed apart (q01): reading the reach depth bound inclusively only lets the
+recursion run one step further, and a path that long already contains a cycle the guard catches
+(verification r3 checked it on every graph of 1-3 detectors and 400 random graphs of 4-5). Two further
+equivalents verification r3 found by the same argument, a recursion base depth of 0 and `s JOIN dr` read as
+a LEFT JOIN, are not generated by the sweep. VP 4 counts the kills and the unique sites; the table lists
+every killing vector.
 
 ```yaml
 mutants:
@@ -590,12 +661,8 @@ mutants:
   - {id: m18, what: drills read without a window, old: 'dw AS (SELECT * FROM {drills} WHERE day > {today} - {window_days} AND day <= {today})', new: 'dw AS (SELECT * FROM {drills})'}
   - {id: m19, what: counter checked before breach, old: "WHEN s.p_last > s.threshold THEN 'breach'\n      WHEN s.c_last IS NULL THEN 'counter_dark'\n      WHEN s.c_last < s.counter_floor THEN 'counter_low'", new: "WHEN s.c_last IS NULL THEN 'counter_dark'\n      WHEN s.c_last < s.counter_floor THEN 'counter_low'\n      WHEN s.p_last > s.threshold THEN 'breach'"}
   - {id: m20, what: no drill-recall bounds, old: OR drill_min < 1 OR drill_recall_min <= 0 OR drill_recall_min > 1, new: OR drill_min < 1}
-  - {id: m21, what: drills for unregistered detectors accepted, old: "\n         OR detector NOT IN (SELECT detector FROM {register})) AS bad_drills", new: ) AS bad_drills}
-  - {id: m22, what: unregistered branch reads all history, old: '''unregistered'' FROM w
-
-    ', new: '''unregistered'' FROM {signal}
-
-    '}
+  - {id: m21, what: in-window drill rows of an unregistered detector not read as unregistered, old: SELECT detector FROM w UNION ALL SELECT detector FROM dw, new: SELECT detector FROM w}
+  - {id: m22, what: unregistered branch reads all history, old: SELECT detector FROM w UNION ALL SELECT detector FROM dw, new: 'SELECT detector FROM {signal} UNION ALL SELECT detector FROM {drills}'}
   - {id: m23, what: signal NULL day accepted, old: '(SELECT count(*) FROM {signal} WHERE day IS NULL)', new: '0'}
   - {id: m24, what: drill NULL day accepted, old: '(SELECT count(*) FROM {drills} WHERE day IS NULL)', new: '0'}
   - {id: m25, what: drill NULL injected accepted, old: OR injected IS NULL OR detected IS NULL, new: OR detected IS NULL}
@@ -620,88 +687,184 @@ mutants:
     g ', new: 'ays} AND day < {today}),
 
     g '}
-  - {id: m39, what: 'comparison < read as <= in: OR drill_min < 1 OR drill_recall_min <= 0 OR drill_recall_min > 1) AS bad_register,', old: min < 1 O, new: min <= 1 O}
-  - {id: m40, what: 'comparison <= read as < in: OR drill_min < 1 OR drill_recall_min <= 0 OR drill_recall_min > 1) AS bad_register,', old: min <= 0 O, new: min < 0 O}
-  - {id: m41, what: 'comparison > read as >= in: OR drill_min < 1 OR drill_recall_min <= 0 OR drill_recall_min > 1) AS bad_register,', old: 'min > 1) ', new: 'min >= 1) '}
-  - {id: m42, what: 'comparison = read as <> in: (SELECT count(*) FROM reach WHERE d = u) AS cycle,', old: 'E d = u) ', new: 'E d <> u) '}
-  - {id: m43, what: 'comparison > read as >= in: + (SELECT count(*) FROM (SELECT detector, day FROM w GROUP BY ALL HAVING count(*) > 1)) AS', old: (*) > 1)), new: (*) >= 1))}
-  - {id: m44, what: 'comparison < read as <= in: OR detected < 0 OR detected > injected', old: ted < 0 O, new: ted <= 0 O}
-  - {id: m45, what: 'comparison > read as >= in: OR detected < 0 OR detected > injected', old: ted > inj, new: ted >= inj}
-  - {id: m46, what: 'comparison > read as >= in: round(avg(w.primary_value) FILTER (WHERE w.day > {today} - {half_days}), 9) AS p_late,', old: 'ary_value) FILTER (WHERE w.day > {today} - {half_days}), 9) AS ', new: 'ary_value) FILTER (WHERE w.day >= {today} - {half_days}), 9) AS '}
-  - {id: m47, what: 'comparison <= read as < in: avg(w.counter_value) FILTER (WHERE w.day <= {today} - {half_days}) AS c_early,', old: '_value) FILTER (WHERE w.day <= {today} - {half_days}) AS c', new: '_value) FILTER (WHERE w.day < {today} - {half_days}) AS c'}
-  - {id: m48, what: 'comparison > read as >= in: round(avg(w.counter_value) FILTER (WHERE w.day > {today} - {half_days}), 9) AS c_late', old: 'ter_value) FILTER (WHERE w.day > {today} - {half_days}), 9) AS ', new: 'ter_value) FILTER (WHERE w.day >= {today} - {half_days}), 9) AS '}
-  - {id: m49, what: 'comparison = read as <> in: FROM {register} r LEFT JOIN w ON w.detector = r.detector', old: "N w.detector = r.detector\n ", new: "N w.detector <> r.detector\n "}
-  - {id: m50, what: 'comparison = read as <> in: FROM {register} r LEFT JOIN dw d ON d.detector = r.detector', old: "N d.detector = r.detector\n ", new: "N d.detector <> r.detector\n "}
-  - {id: m51, what: 'comparison < read as <= in: WHEN dr.inj < s.drill_min THEN ''undrilled''', old: EN dr.inj < s.drill_m, new: EN dr.inj <= s.drill_m}
-  - {id: m52, what: 'comparison < read as <= in: WHEN s.p_late < round(s.p_early - {eps_primary}, 9) AND s.c_late < round(s.c_early - {eps_', old: p_late < round(, new: p_late <= round(}
-  - {id: m53, what: 'comparison < read as <= in: WHEN s.p_late < round(s.p_early - {eps_primary}, 9) AND s.c_late < round(s.c_early - {eps_', old: c_late < round(, new: c_late <= round(}
-  - {id: m54, what: 'comparison = read as <> in: FROM s JOIN dr ON dr.detector = s.detector', old: tor = s.d, new: tor <> s.d}
-  - {id: m55, what: 'comparison = read as <> in: CASE WHEN o.verdict = ''ok'' AND EXISTS (', old: ict = 'ok, new: ict <> 'ok}
-  - {id: m56, what: 'comparison = read as <> in: SELECT 1 FROM reach a JOIN own x ON x.detector = a.u WHERE a.d = o.detector AND x.verdict ', old: tor = a.u, new: tor <> a.u}
-  - {id: m57, what: 'comparison = read as <> in: SELECT 1 FROM reach a JOIN own x ON x.detector = a.u WHERE a.d = o.detector AND x.verdict ', old: a.d = o.d, new: a.d <> o.d}
-  - {id: m58, what: 'comparison <> read as = in: SELECT 1 FROM reach a JOIN own x ON x.detector = a.u WHERE a.d = o.detector AND x.verdict ', old: ' <> ', new: ' = '}
-  - {id: m59, what: 'comparison > read as >= in: SELECT NULL, NULL FROM g WHERE g.bad_register + g.bad_upstream + g.cycle + g.bad_signal + ', old: 'lls > 0
+  - {id: m39, what: 'comparison < read as <= in: OR NOT isfinite(threshold) OR counter_floor < 0 OR counter_floor > 1', old: oor < 0 O, new: oor <= 0 O}
+  - {id: m40, what: 'comparison > read as >= in: OR NOT isfinite(threshold) OR counter_floor < 0 OR counter_floor > 1', old: "oor > 1\n ", new: "oor >= 1\n "}
+  - {id: m41, what: 'comparison < read as <= in: OR drill_min < 1 OR drill_recall_min <= 0 OR drill_recall_min > 1) AS bad_register,', old: min < 1 O, new: min <= 1 O}
+  - {id: m42, what: 'comparison <= read as < in: OR drill_min < 1 OR drill_recall_min <= 0 OR drill_recall_min > 1) AS bad_register,', old: min <= 0 O, new: min < 0 O}
+  - {id: m43, what: 'comparison > read as >= in: OR drill_min < 1 OR drill_recall_min <= 0 OR drill_recall_min > 1) AS bad_register,', old: 'min > 1) ', new: 'min >= 1) '}
+  - {id: m44, what: 'comparison = read as <> in: (SELECT count(*) FROM reach WHERE d = u) AS cycle,', old: 'E d = u) ', new: 'E d <> u) '}
+  - {id: m45, what: 'comparison < read as <= in: + (SELECT count(*) FROM w WHERE detector IS NULL OR NOT isfinite(primary_value) OR counter', old: lue < 0 O, new: lue <= 0 O}
+  - {id: m46, what: 'comparison > read as >= in: + (SELECT count(*) FROM w WHERE detector IS NULL OR NOT isfinite(primary_value) OR counter', old: 'lue > 1)
+
+    ', new: 'lue >= 1)
+
+    '}
+  - {id: m47, what: 'comparison > read as >= in: + (SELECT count(*) FROM (SELECT detector, day FROM w GROUP BY ALL HAVING count(*) > 1)) AS', old: (*) > 1)), new: (*) >= 1))}
+  - {id: m48, what: 'comparison < read as <= in: OR detected < 0 OR detected > injected) AS bad_drills', old: ted < 0 O, new: ted <= 0 O}
+  - {id: m49, what: 'comparison > read as >= in: OR detected < 0 OR detected > injected) AS bad_drills', old: ted > inj, new: ted >= inj}
+  - {id: m50, what: 'comparison > read as >= in: round(avg(w.primary_value) FILTER (WHERE w.day > {today} - {half_days}), 9) AS p_late,', old: 'ary_value) FILTER (WHERE w.day > {today} - {half_days}), 9) AS ', new: 'ary_value) FILTER (WHERE w.day >= {today} - {half_days}), 9) AS '}
+  - {id: m51, what: 'comparison <= read as < in: avg(w.counter_value) FILTER (WHERE w.day <= {today} - {half_days}) AS c_early,', old: '_value) FILTER (WHERE w.day <= {today} - {half_days}) AS c', new: '_value) FILTER (WHERE w.day < {today} - {half_days}) AS c'}
+  - {id: m52, what: 'comparison > read as >= in: round(avg(w.counter_value) FILTER (WHERE w.day > {today} - {half_days}), 9) AS c_late', old: 'ter_value) FILTER (WHERE w.day > {today} - {half_days}), 9) AS ', new: 'ter_value) FILTER (WHERE w.day >= {today} - {half_days}), 9) AS '}
+  - {id: m53, what: 'comparison = read as <> in: FROM {register} r LEFT JOIN w ON w.detector = r.detector', old: "N w.detector = r.detector\n ", new: "N w.detector <> r.detector\n "}
+  - {id: m54, what: 'comparison = read as <> in: FROM {register} r LEFT JOIN dw d ON d.detector = r.detector', old: "N d.detector = r.detector\n ", new: "N d.detector <> r.detector\n "}
+  - {id: m55, what: 'comparison < read as <= in: WHEN dr.inj < s.drill_min THEN ''undrilled''', old: EN dr.inj < s.drill_m, new: EN dr.inj <= s.drill_m}
+  - {id: m56, what: 'comparison < read as <= in: WHEN s.p_late < round(s.p_early - {eps_primary}, 9) AND s.c_late < round(s.c_early - {eps_', old: p_late < round(, new: p_late <= round(}
+  - {id: m57, what: 'comparison < read as <= in: WHEN s.p_late < round(s.p_early - {eps_primary}, 9) AND s.c_late < round(s.c_early - {eps_', old: c_late < round(, new: c_late <= round(}
+  - {id: m58, what: 'comparison = read as <> in: FROM s JOIN dr ON dr.detector = s.detector', old: tor = s.d, new: tor <> s.d}
+  - {id: m59, what: 'comparison = read as <> in: CASE WHEN o.verdict = ''ok'' AND EXISTS (', old: ict = 'ok, new: ict <> 'ok}
+  - {id: m60, what: 'comparison = read as <> in: SELECT 1 FROM reach a JOIN own x ON x.detector = a.u WHERE a.d = o.detector AND x.verdict ', old: tor = a.u, new: tor <> a.u}
+  - {id: m61, what: 'comparison = read as <> in: SELECT 1 FROM reach a JOIN own x ON x.detector = a.u WHERE a.d = o.detector AND x.verdict ', old: a.d = o.d, new: a.d <> o.d}
+  - {id: m62, what: 'comparison <> read as = in: SELECT 1 FROM reach a JOIN own x ON x.detector = a.u WHERE a.d = o.detector AND x.verdict ', old: ' <> ', new: ' = '}
+  - {id: m63, what: 'comparison > read as >= in: SELECT NULL, NULL FROM g WHERE g.bad_register + g.bad_upstream + g.cycle + g.bad_signal + ', old: 'lls > 0
 
     )', new: 'lls >= 0
 
     )'}
-  - {id: m60, what: 'comparison > read as >= in: WHEN g.bad_register > 0 THEN error(''malformed register: NULL field, duplicate detector, dr', old: ter > 0 T, new: ter >= 0 T}
-  - {id: m61, what: 'comparison > read as >= in: WHEN g.bad_upstream > 0 THEN error(''malformed register: upstream names an unregistered det', old: eam > 0 T, new: eam >= 0 T}
-  - {id: m62, what: 'comparison > read as >= in: WHEN g.cycle > 0 THEN error(''malformed register: upstream cycle'')', old: cle > 0 T, new: cle >= 0 T}
-  - {id: m63, what: 'comparison > read as >= in: WHEN g.bad_signal > 0 THEN error(''malformed signal: NULL key, non-finite value or duplicat', old: nal > 0 T, new: nal >= 0 T}
-  - {id: m64, what: 'comparison > read as >= in: WHEN g.bad_drills > 0 THEN error(''malformed drill: NULL field, negative count, detected ab', old: lls > 0 T, new: lls >= 0 T}
-  - {id: m65, what: 'clause dropped: AND day <= {today}', old: '_days} AND day <= {today}),
+  - {id: m64, what: 'comparison > read as >= in: WHEN g.bad_register > 0 THEN error(''malformed register: NULL field, duplicate detector, dr', old: ter > 0 T, new: ter >= 0 T}
+  - {id: m65, what: 'comparison > read as >= in: WHEN g.bad_upstream > 0 THEN error(''malformed register: upstream names an unregistered det', old: eam > 0 T, new: eam >= 0 T}
+  - {id: m66, what: 'comparison > read as >= in: WHEN g.cycle > 0 THEN error(''malformed register: upstream cycle'')', old: cle > 0 T, new: cle >= 0 T}
+  - {id: m67, what: 'comparison > read as >= in: WHEN g.bad_signal > 0 THEN error(''malformed signal: NULL key, non-finite value, counter ou', old: nal > 0 T, new: nal >= 0 T}
+  - {id: m68, what: 'comparison > read as >= in: WHEN g.bad_drills > 0 THEN error(''malformed drill: NULL field, negative count or detected ', old: lls > 0 T, new: lls >= 0 T}
+  - {id: m69, what: 'clause dropped: AND day <= {today}', old: '_days} AND day <= {today}),
 
     g A', new: '_days}),
 
     g A'}
-  - {id: m66, what: 'clause dropped: OR counter_floor IS NULL', old: ' OR counter_floor IS NULL', new: ''}
-  - {id: m67, what: 'clause dropped: OR drill_min IS NULL', old: "\n         OR drill_min IS NULL", new: ''}
-  - {id: m68, what: 'clause dropped: OR upstream IS NULL', old: ' OR upstream IS NULL', new: ''}
-  - {id: m69, what: 'clause dropped: OR NOT isfinite(threshold)', old: "\n         OR NOT isfinite(threshold)", new: ''}
-  - {id: m70, what: 'clause dropped: OR NOT isfinite(counter_floor)', old: ' OR NOT isfinite(counter_floor)', new: ''}
-  - {id: m71, what: 'clause dropped: OR drill_min < 1', old: "\n         OR drill_min < 1", new: ''}
-  - {id: m72, what: 'clause dropped: OR drill_recall_min <= 0', old: ' OR drill_recall_min <= 0', new: ''}
-  - {id: m73, what: 'clause dropped: OR drill_recall_min > 1', old: ' OR drill_recall_min > 1', new: ''}
-  - {id: m74, what: 'clause dropped: OR u NOT IN (SELECT detector FROM {register})', old: ' OR u NOT IN (SELECT detector FROM {register})', new: ''}
-  - {id: m75, what: 'clause dropped: OR NOT isfinite(primary_value)', old: ' OR NOT isfinite(primary_value)', new: ''}
-  - {id: m76, what: 'clause dropped: OR NOT isfinite(counter_value)', old: ' OR NOT isfinite(counter_value)', new: ''}
-  - {id: m77, what: 'clause dropped: OR detected IS NULL', old: ' OR detected IS NULL', new: ''}
-  - {id: m78, what: 'clause dropped: OR detected < 0', old: "\n         OR detected < 0", new: ''}
-  - {id: m79, what: 'clause dropped: OR detected > injected', old: ' OR detected > injected', new: ''}
-  - {id: m80, what: "clause dropped: AND EXISTS (\n           SELECT 1 FROM reach a JOIN", old: " AND EXISTS (\n           SELECT 1 FROM reach a JOIN own x ON x.detector = a.u WHERE a.d = o.detector AND x.verdict <> 'ok')", new: ''}
-  - {id: m81, what: 'clause dropped: AND detector NOT IN (SELECT detector FROM {registe', old: ' AND detector NOT IN (SELECT detector FROM {register})', new: ''}
-  - {id: m82, what: 'rounding removed: avg(w.primary_value) FILTER (WHERE w.day', old: 'round(avg(w.primary_value) FILTER (WHERE w.day > {today} - {half_days}), 9)', new: 'avg(w.primary_value) FILTER (WHERE w.day > {today} - {half_days})'}
-  - {id: m83, what: 'rounding removed: avg(w.counter_value) FILTER (WHERE w.day', old: 'round(avg(w.counter_value) FILTER (WHERE w.day > {today} - {half_days}), 9)', new: 'avg(w.counter_value) FILTER (WHERE w.day > {today} - {half_days})'}
-  - {id: m84, what: 'rounding removed: s.p_early - {eps_primary}', old: 'round(s.p_early - {eps_primary}, 9)', new: 's.p_early - {eps_primary}'}
-  - {id: m85, what: 'rounding removed: s.c_early - {eps_counter}', old: 'round(s.c_early - {eps_counter}, 9)', new: 's.c_early - {eps_counter}'}
-  - {id: m86, what: 'branch dropped: WHEN s.p_last IS NULL THEN ''dark''', old: "\n      WHEN s.p_last IS NULL THEN 'dark'", new: ''}
-  - {id: m87, what: 'branch dropped: WHEN s.p_last > s.threshold THEN ''breach''', old: "\n      WHEN s.p_last > s.threshold THEN 'breach'", new: ''}
-  - {id: m88, what: 'branch dropped: WHEN s.c_last IS NULL THEN ''counter_dark''', old: "\n      WHEN s.c_last IS NULL THEN 'counter_dark'", new: ''}
-  - {id: m89, what: 'branch dropped: WHEN s.c_last < s.counter_floor THEN ''counter_low''', old: "\n      WHEN s.c_last < s.counter_floor THEN 'counter_low'", new: ''}
-  - {id: m90, what: 'branch dropped: WHEN dr.inj < s.drill_min THEN ''undrilled''', old: "\n      WHEN dr.inj < s.drill_min THEN 'undrilled'", new: ''}
-  - {id: m91, what: 'branch dropped: WHEN dr.det::DOUBLE / dr.inj < s.drill_recall_min', old: "\n      WHEN dr.det::DOUBLE / dr.inj < s.drill_recall_min THEN 'blind'", new: ''}
-  - {id: m92, what: 'branch dropped: WHEN s.p_late < round(s.p_early - {eps_primary}, 9', old: "\n      WHEN s.p_late < round(s.p_early - {eps_primary}, 9) AND s.c_late < round(s.c_early - {eps_counter}, 9) THEN 'diverging'", new: ''}
-  - {id: m93, what: 'branch dropped: WHEN g.bad_register > 0 THEN error(''malformed regi', old: "\n    WHEN g.bad_register > 0 THEN error('malformed register: NULL field, duplicate detector, drill_min below 1, recall outside (0, 1] or non-finite threshold or floor')", new: ''}
-  - {id: m94, what: 'branch dropped: WHEN g.bad_upstream > 0 THEN error(''malformed regi', old: "\n    WHEN g.bad_upstream > 0 THEN error('malformed register: upstream names an unregistered detector')", new: ''}
-  - {id: m95, what: 'branch dropped: WHEN g.cycle > 0 THEN error(''malformed register: u', old: "\n    WHEN g.cycle > 0 THEN error('malformed register: upstream cycle')", new: ''}
-  - {id: m96, what: 'branch dropped: WHEN g.bad_signal > 0 THEN error(''malformed signal', old: "\n    WHEN g.bad_signal > 0 THEN error('malformed signal: NULL key, non-finite value or duplicate detector day')", new: ''}
-  - {id: m97, what: 'branch dropped: WHEN g.bad_drills > 0 THEN error(''malformed drill:', old: "\n    WHEN g.bad_drills > 0 THEN error('malformed drill: NULL field, negative count, detected above injected or unregistered detector')", new: ''}
-  - {id: m98, what: 'guard term dropped: + (SELECT count(*) FROM {register} WHERE threshold', old: "\n    + (SELECT count(*) FROM {register} WHERE threshold IS NULL OR counter_floor IS NULL\n         OR drill_min IS NULL OR drill_recall_min IS NULL OR upstream IS NULL\n         OR NOT isfinite(threshold) OR NOT isfinite(counter_floor)\n         OR drill_min < 1 OR drill_recall_min <= 0 OR drill_recall_min > 1)", new: ''}
-  - {id: m99, what: 'guard term dropped: + (SELECT count(*) FROM w WHERE detector IS NULL O', old: "\n    + (SELECT count(*) FROM w WHERE detector IS NULL OR NOT isfinite(primary_value) OR NOT isfinite(counter_value))", new: ''}
-  - {id: m100, what: 'guard term dropped: + (SELECT count(*) FROM (SELECT detector, day FROM', old: "\n    + (SELECT count(*) FROM (SELECT detector, day FROM w GROUP BY ALL HAVING count(*) > 1))", new: ''}
-  - {id: m101, what: 'guard term dropped: + (SELECT count(*) FROM dw WHERE detector IS NULL', old: "\n    + (SELECT count(*) FROM dw WHERE detector IS NULL OR injected IS NULL OR detected IS NULL\n         OR detected < 0 OR detected > injected\n         OR detector NOT IN (SELECT detector FROM {register}))", new: ''}
-  - {id: m102, what: unregistered rows not deduplicated (one row per day), old: 'SELECT DISTINCT detector, ''unregistered''', new: 'SELECT detector, ''unregistered'''}
-  - {id: m103, what: upstream reach capped at one hop, old: 'WHERE r.depth < (SELECT count(*) FROM {register})', new: WHERE r.depth < 2}
-  - {id: m104, what: a diverging upstream does not propagate (staged k1 (i)), old: x.verdict <> 'ok', new: 'x.verdict NOT IN (''ok'', ''diverging'')'}
-  - {id: m105, what: signal window has no lower bound, old: '{signal} WHERE day > {today} - {window_days} AND day', new: '{signal} WHERE day'}
-  - {id: m106, what: drill window has no lower bound, old: '{drills} WHERE day > {today} - {window_days} AND day', new: '{drills} WHERE day'}
-  - {id: m107, what: NULL-detector signal row in the window accepted, old: 'FROM w WHERE detector IS NULL OR ', new: 'FROM w WHERE '}
-  - {id: m108, what: NULL-detector drill row in the window accepted, old: 'FROM dw WHERE detector IS NULL OR ', new: 'FROM dw WHERE '}
-  - {id: m109, what: duplicate signal days checked over all history, old: 'FROM (SELECT detector, day FROM w GROUP BY ALL', new: 'FROM (SELECT detector, day FROM {signal} GROUP BY ALL'}
-  - {id: m110, what: signal value guard reads all history, old: FROM w WHERE detector IS NULL OR NOT, new: 'FROM {signal} WHERE detector IS NULL OR NOT'}
-  - {id: m111, what: drill guard reads all history, old: FROM dw WHERE detector IS NULL OR injected, new: 'FROM {drills} WHERE detector IS NULL OR injected'}
-  - {id: m112, what: no eps on the counter, old: 's.c_late < round(s.c_early - {eps_counter}, 9)', new: s.c_late < s.c_early}
+  - {id: m70, what: 'clause dropped: OR counter_floor IS NULL', old: ' OR counter_floor IS NULL', new: ''}
+  - {id: m71, what: 'clause dropped: OR drill_min IS NULL', old: "\n         OR drill_min IS NULL", new: ''}
+  - {id: m72, what: 'clause dropped: OR upstream IS NULL', old: ' OR upstream IS NULL', new: ''}
+  - {id: m73, what: 'clause dropped: OR NOT isfinite(threshold)', old: "\n         OR NOT isfinite(threshold)", new: ''}
+  - {id: m74, what: 'clause dropped: OR counter_floor < 0', old: ' OR counter_floor < 0', new: ''}
+  - {id: m75, what: 'clause dropped: OR counter_floor > 1', old: ' OR counter_floor > 1', new: ''}
+  - {id: m76, what: 'clause dropped: OR drill_min < 1', old: "\n         OR drill_min < 1", new: ''}
+  - {id: m77, what: 'clause dropped: OR drill_recall_min <= 0', old: ' OR drill_recall_min <= 0', new: ''}
+  - {id: m78, what: 'clause dropped: OR drill_recall_min > 1', old: ' OR drill_recall_min > 1', new: ''}
+  - {id: m79, what: 'clause dropped: OR u NOT IN (SELECT detector FROM {register})', old: ' OR u NOT IN (SELECT detector FROM {register})', new: ''}
+  - {id: m80, what: 'clause dropped: OR NOT isfinite(primary_value)', old: ' OR NOT isfinite(primary_value)', new: ''}
+  - {id: m81, what: 'clause dropped: OR counter_value < 0', old: ' OR counter_value < 0', new: ''}
+  - {id: m82, what: 'clause dropped: OR counter_value > 1', old: ' OR counter_value > 1', new: ''}
+  - {id: m83, what: 'clause dropped: OR detected IS NULL', old: ' OR detected IS NULL', new: ''}
+  - {id: m84, what: 'clause dropped: OR detected < 0', old: "\n         OR detected < 0", new: ''}
+  - {id: m85, what: 'clause dropped: OR detected > injected', old: ' OR detected > injected', new: ''}
+  - {id: m86, what: "clause dropped: AND EXISTS (\n           SELECT 1 FROM reach a JOIN", old: " AND EXISTS (\n           SELECT 1 FROM reach a JOIN own x ON x.detector = a.u WHERE a.d = o.detector AND x.verdict <> 'ok')", new: ''}
+  - {id: m87, what: 'clause dropped: AND detector NOT IN (SELECT detector FROM {registe', old: ' AND detector NOT IN (SELECT detector FROM {register})', new: ''}
+  - {id: m88, what: 'rounding removed: avg(w.primary_value) FILTER (WHERE w.day', old: 'round(avg(w.primary_value) FILTER (WHERE w.day > {today} - {half_days}), 9)', new: 'avg(w.primary_value) FILTER (WHERE w.day > {today} - {half_days})'}
+  - {id: m89, what: 'rounding removed: avg(w.counter_value) FILTER (WHERE w.day', old: 'round(avg(w.counter_value) FILTER (WHERE w.day > {today} - {half_days}), 9)', new: 'avg(w.counter_value) FILTER (WHERE w.day > {today} - {half_days})'}
+  - {id: m90, what: 'rounding removed: s.p_early - {eps_primary}', old: 'round(s.p_early - {eps_primary}, 9)', new: 's.p_early - {eps_primary}'}
+  - {id: m91, what: 'rounding removed: s.c_early - {eps_counter}', old: 'round(s.c_early - {eps_counter}, 9)', new: 's.c_early - {eps_counter}'}
+  - {id: m92, what: 'branch dropped: WHEN s.p_last IS NULL THEN ''dark''', old: "\n      WHEN s.p_last IS NULL THEN 'dark'", new: ''}
+  - {id: m93, what: 'branch dropped: WHEN s.p_last > s.threshold THEN ''breach''', old: "\n      WHEN s.p_last > s.threshold THEN 'breach'", new: ''}
+  - {id: m94, what: 'branch dropped: WHEN s.c_last IS NULL THEN ''counter_dark''', old: "\n      WHEN s.c_last IS NULL THEN 'counter_dark'", new: ''}
+  - {id: m95, what: 'branch dropped: WHEN s.c_last < s.counter_floor THEN ''counter_low''', old: "\n      WHEN s.c_last < s.counter_floor THEN 'counter_low'", new: ''}
+  - {id: m96, what: 'branch dropped: WHEN dr.inj < s.drill_min THEN ''undrilled''', old: "\n      WHEN dr.inj < s.drill_min THEN 'undrilled'", new: ''}
+  - {id: m97, what: 'branch dropped: WHEN dr.det::DOUBLE / dr.inj < s.drill_recall_min', old: "\n      WHEN dr.det::DOUBLE / dr.inj < s.drill_recall_min THEN 'blind'", new: ''}
+  - {id: m98, what: 'branch dropped: WHEN s.p_late < round(s.p_early - {eps_primary}, 9', old: "\n      WHEN s.p_late < round(s.p_early - {eps_primary}, 9) AND s.c_late < round(s.c_early - {eps_counter}, 9) THEN 'diverging'", new: ''}
+  - {id: m99, what: 'branch dropped: WHEN g.bad_register > 0 THEN error(''malformed regi', old: "\n    WHEN g.bad_register > 0 THEN error('malformed register: NULL field, duplicate detector, drill_min below 1, recall outside (0, 1], non-finite threshold or floor, or floor outside [0, 1]')", new: ''}
+  - {id: m100, what: 'branch dropped: WHEN g.bad_upstream > 0 THEN error(''malformed regi', old: "\n    WHEN g.bad_upstream > 0 THEN error('malformed register: upstream names an unregistered detector')", new: ''}
+  - {id: m101, what: 'branch dropped: WHEN g.cycle > 0 THEN error(''malformed register: u', old: "\n    WHEN g.cycle > 0 THEN error('malformed register: upstream cycle')", new: ''}
+  - {id: m102, what: 'branch dropped: WHEN g.bad_signal > 0 THEN error(''malformed signal', old: "\n    WHEN g.bad_signal > 0 THEN error('malformed signal: NULL key, non-finite value, counter outside [0, 1] or duplicate detector day')", new: ''}
+  - {id: m103, what: 'branch dropped: WHEN g.bad_drills > 0 THEN error(''malformed drill:', old: "\n    WHEN g.bad_drills > 0 THEN error('malformed drill: NULL field, negative count or detected above injected')", new: ''}
+  - {id: m104, what: 'guard term dropped: + (SELECT count(*) FROM {register} WHERE threshold', old: "\n    + (SELECT count(*) FROM {register} WHERE threshold IS NULL OR counter_floor IS NULL\n         OR drill_min IS NULL OR drill_recall_min IS NULL OR upstream IS NULL\n         OR NOT isfinite(threshold) OR counter_floor < 0 OR counter_floor > 1\n         OR drill_min < 1 OR drill_recall_min <= 0 OR drill_recall_min > 1)", new: ''}
+  - {id: m105, what: 'guard term dropped: + (SELECT count(*) FROM w WHERE detector IS NULL O', old: "\n    + (SELECT count(*) FROM w WHERE detector IS NULL OR NOT isfinite(primary_value) OR counter_value < 0 OR counter_value > 1)", new: ''}
+  - {id: m106, what: 'guard term dropped: + (SELECT count(*) FROM (SELECT detector, day FROM', old: "\n    + (SELECT count(*) FROM (SELECT detector, day FROM w GROUP BY ALL HAVING count(*) > 1))", new: ''}
+  - {id: m107, what: 'guard term dropped: + (SELECT count(*) FROM dw WHERE detector IS NULL', old: "\n    + (SELECT count(*) FROM dw WHERE detector IS NULL OR injected IS NULL OR detected IS NULL\n         OR detected < 0 OR detected > injected)", new: ''}
+  - {id: m108, what: unregistered rows not deduplicated (one row per day), old: 'SELECT DISTINCT detector, ''unregistered''', new: 'SELECT detector, ''unregistered'''}
+  - {id: m109, what: upstream reach capped at one hop, old: 'WHERE r.depth < (SELECT count(*) FROM {register})', new: WHERE r.depth < 2}
+  - {id: m110, what: a diverging upstream does not propagate (staged k1 (i)), old: x.verdict <> 'ok', new: 'x.verdict NOT IN (''ok'', ''diverging'')'}
+  - {id: m111, what: signal window has no lower bound, old: '{signal} WHERE day > {today} - {window_days} AND day', new: '{signal} WHERE day'}
+  - {id: m112, what: drill window has no lower bound, old: '{drills} WHERE day > {today} - {window_days} AND day', new: '{drills} WHERE day'}
+  - {id: m113, what: NULL-detector signal row in the window accepted, old: 'FROM w WHERE detector IS NULL OR ', new: 'FROM w WHERE '}
+  - {id: m114, what: NULL-detector drill row in the window accepted, old: 'FROM dw WHERE detector IS NULL OR ', new: 'FROM dw WHERE '}
+  - {id: m115, what: duplicate signal days checked over all history, old: 'FROM (SELECT detector, day FROM w GROUP BY ALL', new: 'FROM (SELECT detector, day FROM {signal} GROUP BY ALL'}
+  - {id: m116, what: signal value guard reads all history, old: FROM w WHERE detector IS NULL OR NOT, new: 'FROM {signal} WHERE detector IS NULL OR NOT'}
+  - {id: m117, what: drill guard reads all history, old: FROM dw WHERE detector IS NULL OR injected, new: 'FROM {drills} WHERE detector IS NULL OR injected'}
+  - {id: m118, what: no eps on the counter, old: 's.c_late < round(s.c_early - {eps_counter}, 9)', new: s.c_late < s.c_early}
+  - {id: m119, what: tolerance s.p_last > s.threshold + 0.000001, old: s.p_last > s.threshold, new: s.p_last > s.threshold + 0.000001}
+  - {id: m120, what: tolerance s.p_last > s.threshold - 0.000001, old: s.p_last > s.threshold, new: s.p_last > s.threshold - 0.000001}
+  - {id: m121, what: tolerance s.p_last > s.threshold + 0.001, old: s.p_last > s.threshold, new: s.p_last > s.threshold + 0.001}
+  - {id: m122, what: tolerance s.p_last > s.threshold - 0.001, old: s.p_last > s.threshold, new: s.p_last > s.threshold - 0.001}
+  - {id: m123, what: tolerance s.c_last < s.counter_floor + 0.000001, old: s.c_last < s.counter_floor, new: s.c_last < s.counter_floor + 0.000001}
+  - {id: m124, what: tolerance s.c_last < s.counter_floor - 0.000001, old: s.c_last < s.counter_floor, new: s.c_last < s.counter_floor - 0.000001}
+  - {id: m125, what: tolerance s.c_last < s.counter_floor + 0.001, old: s.c_last < s.counter_floor, new: s.c_last < s.counter_floor + 0.001}
+  - {id: m126, what: tolerance s.c_last < s.counter_floor - 0.001, old: s.c_last < s.counter_floor, new: s.c_last < s.counter_floor - 0.001}
+  - {id: m127, what: 'tolerance dr.det::DOUBLE / dr.inj < s.drill_recall_min + 0.000001', old: 'dr.det::DOUBLE / dr.inj < s.drill_recall_min', new: 'dr.det::DOUBLE / dr.inj < s.drill_recall_min + 0.000001'}
+  - {id: m128, what: 'tolerance dr.det::DOUBLE / dr.inj < s.drill_recall_min - 0.000001', old: 'dr.det::DOUBLE / dr.inj < s.drill_recall_min', new: 'dr.det::DOUBLE / dr.inj < s.drill_recall_min - 0.000001'}
+  - {id: m129, what: 'tolerance dr.det::DOUBLE / dr.inj < s.drill_recall_min + 0.001', old: 'dr.det::DOUBLE / dr.inj < s.drill_recall_min', new: 'dr.det::DOUBLE / dr.inj < s.drill_recall_min + 0.001'}
+  - {id: m130, what: 'tolerance dr.det::DOUBLE / dr.inj < s.drill_recall_min - 0.001', old: 'dr.det::DOUBLE / dr.inj < s.drill_recall_min', new: 'dr.det::DOUBLE / dr.inj < s.drill_recall_min - 0.001'}
+  - {id: m131, what: 'tolerance round(s.p_early - {eps_primary}, 9) + 0.000001', old: 'round(s.p_early - {eps_primary}, 9)', new: 'round(s.p_early - {eps_primary} + 0.000001, 9)'}
+  - {id: m132, what: 'tolerance round(s.p_early - {eps_primary}, 9) - 0.000001', old: 'round(s.p_early - {eps_primary}, 9)', new: 'round(s.p_early - {eps_primary} - 0.000001, 9)'}
+  - {id: m133, what: 'tolerance round(s.p_early - {eps_primary}, 9) + 0.001', old: 'round(s.p_early - {eps_primary}, 9)', new: 'round(s.p_early - {eps_primary} + 0.001, 9)'}
+  - {id: m134, what: 'tolerance round(s.p_early - {eps_primary}, 9) - 0.001', old: 'round(s.p_early - {eps_primary}, 9)', new: 'round(s.p_early - {eps_primary} - 0.001, 9)'}
+  - {id: m135, what: 'tolerance round(s.c_early - {eps_counter}, 9) + 0.000001', old: 'round(s.c_early - {eps_counter}, 9)', new: 'round(s.c_early - {eps_counter} + 0.000001, 9)'}
+  - {id: m136, what: 'tolerance round(s.c_early - {eps_counter}, 9) - 0.000001', old: 'round(s.c_early - {eps_counter}, 9)', new: 'round(s.c_early - {eps_counter} - 0.000001, 9)'}
+  - {id: m137, what: 'tolerance round(s.c_early - {eps_counter}, 9) + 0.001', old: 'round(s.c_early - {eps_counter}, 9)', new: 'round(s.c_early - {eps_counter} + 0.001, 9)'}
+  - {id: m138, what: 'tolerance round(s.c_early - {eps_counter}, 9) - 0.001', old: 'round(s.c_early - {eps_counter}, 9)', new: 'round(s.c_early - {eps_counter} - 0.001, 9)'}
+  - {id: m139, what: tolerance OR drill_recall_min <= 0 + 0.000001, old: OR drill_recall_min <= 0, new: OR drill_recall_min <= 0 + 0.000001}
+  - {id: m140, what: tolerance OR drill_recall_min <= 0 - 0.000001, old: OR drill_recall_min <= 0, new: OR drill_recall_min <= 0 - 0.000001}
+  - {id: m141, what: tolerance OR drill_recall_min <= 0 + 0.001, old: OR drill_recall_min <= 0, new: OR drill_recall_min <= 0 + 0.001}
+  - {id: m142, what: tolerance OR drill_recall_min <= 0 - 0.001, old: OR drill_recall_min <= 0, new: OR drill_recall_min <= 0 - 0.001}
+  - {id: m143, what: tolerance OR drill_recall_min > 1 + 0.000001, old: OR drill_recall_min > 1, new: OR drill_recall_min > 1 + 0.000001}
+  - {id: m144, what: tolerance OR drill_recall_min > 1 - 0.000001, old: OR drill_recall_min > 1, new: OR drill_recall_min > 1 - 0.000001}
+  - {id: m145, what: tolerance OR drill_recall_min > 1 + 0.001, old: OR drill_recall_min > 1, new: OR drill_recall_min > 1 + 0.001}
+  - {id: m146, what: tolerance OR drill_recall_min > 1 - 0.001, old: OR drill_recall_min > 1, new: OR drill_recall_min > 1 - 0.001}
+  - {id: m147, what: tolerance OR counter_floor < 0 + 0.000001, old: OR counter_floor < 0, new: OR counter_floor < 0 + 0.000001}
+  - {id: m148, what: tolerance OR counter_floor < 0 - 0.000001, old: OR counter_floor < 0, new: OR counter_floor < 0 - 0.000001}
+  - {id: m149, what: tolerance OR counter_floor < 0 + 0.001, old: OR counter_floor < 0, new: OR counter_floor < 0 + 0.001}
+  - {id: m150, what: tolerance OR counter_floor < 0 - 0.001, old: OR counter_floor < 0, new: OR counter_floor < 0 - 0.001}
+  - {id: m151, what: tolerance OR counter_floor > 1 + 0.000001, old: OR counter_floor > 1, new: OR counter_floor > 1 + 0.000001}
+  - {id: m152, what: tolerance OR counter_floor > 1 - 0.000001, old: OR counter_floor > 1, new: OR counter_floor > 1 - 0.000001}
+  - {id: m153, what: tolerance OR counter_floor > 1 + 0.001, old: OR counter_floor > 1, new: OR counter_floor > 1 + 0.001}
+  - {id: m154, what: tolerance OR counter_floor > 1 - 0.001, old: OR counter_floor > 1, new: OR counter_floor > 1 - 0.001}
+  - {id: m155, what: tolerance OR counter_value < 0 + 0.000001, old: OR counter_value < 0, new: OR counter_value < 0 + 0.000001}
+  - {id: m156, what: tolerance OR counter_value < 0 - 0.000001, old: OR counter_value < 0, new: OR counter_value < 0 - 0.000001}
+  - {id: m157, what: tolerance OR counter_value < 0 + 0.001, old: OR counter_value < 0, new: OR counter_value < 0 + 0.001}
+  - {id: m158, what: tolerance OR counter_value < 0 - 0.001, old: OR counter_value < 0, new: OR counter_value < 0 - 0.001}
+  - {id: m159, what: tolerance OR counter_value > 1 + 0.000001, old: OR counter_value > 1, new: OR counter_value > 1 + 0.000001}
+  - {id: m160, what: tolerance OR counter_value > 1 - 0.000001, old: OR counter_value > 1, new: OR counter_value > 1 - 0.000001}
+  - {id: m161, what: tolerance OR counter_value > 1 + 0.001, old: OR counter_value > 1, new: OR counter_value > 1 + 0.001}
+  - {id: m162, what: tolerance OR counter_value > 1 - 0.001, old: OR counter_value > 1, new: OR counter_value > 1 - 0.001}
+  - {id: m163, what: 'precision 2: avg(w.primary_value) FILTER (WHERE w.day > {today}', old: 'round(avg(w.primary_value) FILTER (WHERE w.day > {today} - {half_days}), 9)', new: 'round(avg(w.primary_value) FILTER (WHERE w.day > {today} - {half_days}), 2)'}
+  - {id: m164, what: 'precision 4: avg(w.primary_value) FILTER (WHERE w.day > {today}', old: 'round(avg(w.primary_value) FILTER (WHERE w.day > {today} - {half_days}), 9)', new: 'round(avg(w.primary_value) FILTER (WHERE w.day > {today} - {half_days}), 4)'}
+  - {id: m165, what: 'precision 6: avg(w.primary_value) FILTER (WHERE w.day > {today}', old: 'round(avg(w.primary_value) FILTER (WHERE w.day > {today} - {half_days}), 9)', new: 'round(avg(w.primary_value) FILTER (WHERE w.day > {today} - {half_days}), 6)'}
+  - {id: m166, what: 'precision 12: avg(w.primary_value) FILTER (WHERE w.day > {today}', old: 'round(avg(w.primary_value) FILTER (WHERE w.day > {today} - {half_days}), 9)', new: 'round(avg(w.primary_value) FILTER (WHERE w.day > {today} - {half_days}), 12)'}
+  - {id: m167, what: 'precision 2: avg(w.counter_value) FILTER (WHERE w.day > {today}', old: 'round(avg(w.counter_value) FILTER (WHERE w.day > {today} - {half_days}), 9)', new: 'round(avg(w.counter_value) FILTER (WHERE w.day > {today} - {half_days}), 2)'}
+  - {id: m168, what: 'precision 4: avg(w.counter_value) FILTER (WHERE w.day > {today}', old: 'round(avg(w.counter_value) FILTER (WHERE w.day > {today} - {half_days}), 9)', new: 'round(avg(w.counter_value) FILTER (WHERE w.day > {today} - {half_days}), 4)'}
+  - {id: m169, what: 'precision 6: avg(w.counter_value) FILTER (WHERE w.day > {today}', old: 'round(avg(w.counter_value) FILTER (WHERE w.day > {today} - {half_days}), 9)', new: 'round(avg(w.counter_value) FILTER (WHERE w.day > {today} - {half_days}), 6)'}
+  - {id: m170, what: 'precision 12: avg(w.counter_value) FILTER (WHERE w.day > {today}', old: 'round(avg(w.counter_value) FILTER (WHERE w.day > {today} - {half_days}), 9)', new: 'round(avg(w.counter_value) FILTER (WHERE w.day > {today} - {half_days}), 12)'}
+  - {id: m171, what: 'precision 2: s.p_early - {eps_primary}', old: 'round(s.p_early - {eps_primary}, 9)', new: 'round(s.p_early - {eps_primary}, 2)'}
+  - {id: m172, what: 'precision 4: s.p_early - {eps_primary}', old: 'round(s.p_early - {eps_primary}, 9)', new: 'round(s.p_early - {eps_primary}, 4)'}
+  - {id: m173, what: 'precision 6: s.p_early - {eps_primary}', old: 'round(s.p_early - {eps_primary}, 9)', new: 'round(s.p_early - {eps_primary}, 6)'}
+  - {id: m174, what: 'precision 12: s.p_early - {eps_primary}', old: 'round(s.p_early - {eps_primary}, 9)', new: 'round(s.p_early - {eps_primary}, 12)'}
+  - {id: m175, what: 'precision 2: s.c_early - {eps_counter}', old: 'round(s.c_early - {eps_counter}, 9)', new: 'round(s.c_early - {eps_counter}, 2)'}
+  - {id: m176, what: 'precision 4: s.c_early - {eps_counter}', old: 'round(s.c_early - {eps_counter}, 9)', new: 'round(s.c_early - {eps_counter}, 4)'}
+  - {id: m177, what: 'precision 6: s.c_early - {eps_counter}', old: 'round(s.c_early - {eps_counter}, 9)', new: 'round(s.c_early - {eps_counter}, 6)'}
+  - {id: m178, what: 'precision 12: s.c_early - {eps_counter}', old: 'round(s.c_early - {eps_counter}, 9)', new: 'round(s.c_early - {eps_counter}, 12)'}
+  - {id: m179, what: 'aggregate arg_max(w.primary_value, w.day) -> arg_min(w.primary_value, w.day)', old: 'arg_max(w.primary_value, w.day) AS p_last', new: 'arg_min(w.primary_value, w.day) AS p_last'}
+  - {id: m180, what: 'aggregate arg_max(w.primary_value, w.day) -> max(w.primary_value)', old: 'arg_max(w.primary_value, w.day) AS p_last', new: max(w.primary_value) AS p_last}
+  - {id: m181, what: 'aggregate arg_max(w.primary_value, w.day) -> min(w.primary_value)', old: 'arg_max(w.primary_value, w.day) AS p_last', new: min(w.primary_value) AS p_last}
+  - {id: m182, what: 'aggregate arg_max(w.counter_value, w.day) -> arg_min(w.counter_value, w.day)', old: 'arg_max(w.counter_value, w.day) AS c_last', new: 'arg_min(w.counter_value, w.day) AS c_last'}
+  - {id: m183, what: 'aggregate arg_max(w.counter_value, w.day) -> max(w.counter_value)', old: 'arg_max(w.counter_value, w.day) AS c_last', new: max(w.counter_value) AS c_last}
+  - {id: m184, what: 'aggregate arg_max(w.counter_value, w.day) -> min(w.counter_value)', old: 'arg_max(w.counter_value, w.day) AS c_last', new: min(w.counter_value) AS c_last}
+  - {id: m185, what: aggregate avg -> min on w.primary_value <=, old: 'avg(w.primary_value) FILTER (WHERE w.day <= {today} - {half_days})', new: 'min(w.primary_value) FILTER (WHERE w.day <= {today} - {half_days})'}
+  - {id: m186, what: aggregate avg -> max on w.primary_value <=, old: 'avg(w.primary_value) FILTER (WHERE w.day <= {today} - {half_days})', new: 'max(w.primary_value) FILTER (WHERE w.day <= {today} - {half_days})'}
+  - {id: m187, what: aggregate avg -> median on w.primary_value <=, old: 'avg(w.primary_value) FILTER (WHERE w.day <= {today} - {half_days})', new: 'median(w.primary_value) FILTER (WHERE w.day <= {today} - {half_days})'}
+  - {id: m188, what: aggregate avg -> min on w.primary_value >, old: 'avg(w.primary_value) FILTER (WHERE w.day > {today} - {half_days})', new: 'min(w.primary_value) FILTER (WHERE w.day > {today} - {half_days})'}
+  - {id: m189, what: aggregate avg -> max on w.primary_value >, old: 'avg(w.primary_value) FILTER (WHERE w.day > {today} - {half_days})', new: 'max(w.primary_value) FILTER (WHERE w.day > {today} - {half_days})'}
+  - {id: m190, what: aggregate avg -> median on w.primary_value >, old: 'avg(w.primary_value) FILTER (WHERE w.day > {today} - {half_days})', new: 'median(w.primary_value) FILTER (WHERE w.day > {today} - {half_days})'}
+  - {id: m191, what: aggregate avg -> min on w.counter_value <=, old: 'avg(w.counter_value) FILTER (WHERE w.day <= {today} - {half_days})', new: 'min(w.counter_value) FILTER (WHERE w.day <= {today} - {half_days})'}
+  - {id: m192, what: aggregate avg -> max on w.counter_value <=, old: 'avg(w.counter_value) FILTER (WHERE w.day <= {today} - {half_days})', new: 'max(w.counter_value) FILTER (WHERE w.day <= {today} - {half_days})'}
+  - {id: m193, what: aggregate avg -> median on w.counter_value <=, old: 'avg(w.counter_value) FILTER (WHERE w.day <= {today} - {half_days})', new: 'median(w.counter_value) FILTER (WHERE w.day <= {today} - {half_days})'}
+  - {id: m194, what: aggregate avg -> min on w.counter_value >, old: 'avg(w.counter_value) FILTER (WHERE w.day > {today} - {half_days})', new: 'min(w.counter_value) FILTER (WHERE w.day > {today} - {half_days})'}
+  - {id: m195, what: aggregate avg -> max on w.counter_value >, old: 'avg(w.counter_value) FILTER (WHERE w.day > {today} - {half_days})', new: 'max(w.counter_value) FILTER (WHERE w.day > {today} - {half_days})'}
+  - {id: m196, what: aggregate avg -> median on w.counter_value >, old: 'avg(w.counter_value) FILTER (WHERE w.day > {today} - {half_days})', new: 'median(w.counter_value) FILTER (WHERE w.day > {today} - {half_days})'}
+  - {id: m197, what: 'aggregate coalesce(sum(d.injected), 0) AS inj -> coalesce(max(d.injected), 0) AS inj', old: 'coalesce(sum(d.injected), 0) AS inj', new: 'coalesce(max(d.injected), 0) AS inj'}
+  - {id: m198, what: 'aggregate coalesce(sum(d.injected), 0) AS inj -> coalesce(min(d.injected), 0) AS inj', old: 'coalesce(sum(d.injected), 0) AS inj', new: 'coalesce(min(d.injected), 0) AS inj'}
+  - {id: m199, what: 'aggregate coalesce(sum(d.detected), 0) AS det -> coalesce(max(d.detected), 0) AS det', old: 'coalesce(sum(d.detected), 0) AS det', new: 'coalesce(max(d.detected), 0) AS det'}
+  - {id: m200, what: 'aggregate coalesce(sum(d.detected), 0) AS det -> coalesce(min(d.detected), 0) AS det', old: 'coalesce(sum(d.detected), 0) AS det', new: 'coalesce(min(d.detected), 0) AS det'}
+  - {id: m201, what: 'arithmetic s.p_early - {eps_primary} -> s.p_early + {eps_primary}', old: 's.p_early - {eps_primary}', new: 's.p_early + {eps_primary}'}
+  - {id: m202, what: 'arithmetic s.c_early - {eps_counter} -> s.c_early + {eps_counter}', old: 's.c_early - {eps_counter}', new: 's.c_early + {eps_counter}'}
+  - {id: m203, what: 'arithmetic dr.det::DOUBLE / dr.inj -> dr.det // dr.inj', old: 'dr.det::DOUBLE / dr.inj', new: dr.det // dr.inj}
+  - {id: m204, what: arithmetic r.depth + 1 -> r.depth + 2, old: r.depth + 1, new: r.depth + 2}
 equivalent:
   - {id: q01, what: 'reach depth bound read inclusively; the recursion only runs one step further, so no path or cycle changes', old: pth < (SE, new: pth <= (SE}
 ```
@@ -709,27 +872,27 @@ equivalent:
 | mutant | killed by |
 |---|---|
 | m01 breach on equality | v05 |
-| m02 counter floor read as strict | v08 |
+| m02 counter floor read as strict | v08, v65 |
 | m03 recall floor read as strict | v12, v30, v34, v57 |
 | m04 drill window opened one day early | v13 |
 | m05 no upstream propagation | v20, v21, v48, v49 |
 | m06 direct upstream only | v21, v49 |
-| m07 unregistered series dropped | v24, v33, v50 |
+| m07 unregistered series dropped | v24, v33, v50, v60, v61, v62 |
 | m08 duplicate register rows allowed | e01, e34 |
 | m09 no cycle guard | e07, e08, e25 |
 | m10 no sentinel row | e13, e24, e34 |
 | m11 only today's value read | v26, v41 |
-| m12 divergence on the primary alone | v16, v45, v53, v54 |
-| m13 divergence on the counter alone | v17, v36, v51, v52 |
+| m12 divergence on the primary alone | v16, v45, v53, v54, v75, v82, v86, v89 |
+| m13 divergence on the counter alone | v17, v36, v51, v52, v72, v74, v81, v85, v87 |
 | m14 future signal rows read | v25, v31 |
 | m15 no drill_min | v09 |
 | m16 detected above injected allowed | e11 |
 | m17 upstream overrides a detector's own verdict | v23 |
 | m18 drills read without a window | v13, v25, v39, v40, v44 |
 | m19 counter checked before breach | v27 |
-| m20 no drill-recall bounds | e03, e04, e32 |
-| m21 drills for unregistered detectors accepted | e13 |
-| m22 unregistered branch reads all history | v31, v32 |
+| m20 no drill-recall bounds | e03, e04, e32, e40 |
+| m21 in-window drill rows of an unregistered detector not read as unregistered | v60, v62 |
+| m22 unregistered branch reads all history | v31, v32, v39, v40 |
 | m23 signal NULL day accepted | e16 |
 | m24 drill NULL day accepted | e17 |
 | m25 drill NULL injected accepted | e18 |
@@ -739,88 +902,180 @@ equivalent:
 | m29 NULL drill_min accepted | e22 |
 | m30 NULL drill_recall_min accepted | e23 |
 | m31 sentinel ignores a malformed signal | e24 |
-| m32 no eps on the primary | v36, v51, v52 |
+| m32 no eps on the primary | v36, v51, v52, v74, v81, v85, v87 |
 | m33 early half drops its last day | v37 |
 | m34 recall floor read by multiplication | v34 |
 | m35 comparison = read as <> in: SELECT r.d, e.u, r.depth + 1 FROM reach r JOIN edge e ON e.d = r.u | v21, e07, v49 |
 | m36 comparison > read as >= in: w AS (SELECT * FROM {signal} WHERE day > {today} - {window_days} AND day <= {today}), | v02 |
-| m37 comparison <= read as < in: w AS (SELECT * FROM {signal} WHERE day > {today} - {window_days} AND day <= {today}), | v04, v07, v24, e09, e10, e24, e26, e27, e28, e29 |
-| m38 comparison <= read as < in: dw AS (SELECT * FROM {drills} WHERE day > {today} - {window_days} AND day <= {today}), | v55 |
-| m39 comparison < read as <= in: OR drill_min < 1 OR drill_recall_min <= 0 OR drill_recall_min > 1) AS bad_register, | v56 |
-| m40 comparison <= read as < in: OR drill_min < 1 OR drill_recall_min <= 0 OR drill_recall_min > 1) AS bad_register, | e04 |
-| m41 comparison > read as >= in: OR drill_min < 1 OR drill_recall_min <= 0 OR drill_recall_min > 1) AS bad_register, | v57 |
-| m42 comparison = read as <> in: (SELECT count(*) FROM reach WHERE d = u) AS cycle, | v20, v21, v22, v23, e08, v48, v49 |
-| m43 comparison > read as >= in: + (SELECT count(*) FROM (SELECT detector, day FROM w GROUP BY ALL HAVING count(*) > 1)) AS | v01, v03, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v20, v21, v22, v23, v24, v25, v26, v27, v28, v29, v30, e11, e12, e15, v31, v32, v33, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59, e17, e18, e19, e35 |
-| m44 comparison < read as <= in: OR detected < 0 OR detected > injected | v58, v59 |
-| m45 comparison > read as >= in: OR detected < 0 OR detected > injected | v01, v02, v03, v04, v05, v06, v07, v08, v09, v14, v15, v16, v17, v18, v19, v20, v21, v22, v23, v24, v25, v26, v27, v29, v31, v32, v33, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58 |
-| m46 comparison > read as >= in: round(avg(w.primary_value) FILTER (WHERE w.day > {today} - {half_days}), 9) AS p_late, | v37 |
-| m47 comparison <= read as < in: avg(w.counter_value) FILTER (WHERE w.day <= {today} - {half_days}) AS c_early, | v46 |
-| m48 comparison > read as >= in: round(avg(w.counter_value) FILTER (WHERE w.day > {today} - {half_days}), 9) AS c_late | v46, v47 |
-| m49 comparison = read as <> in: FROM {register} r LEFT JOIN w ON w.detector = r.detector | v01, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v21, v23, v25, v26, v27, v28, v29, v30, v31, v32, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v51, v52, v53, v54, v55, v56, v57, v58, v59 |
-| m50 comparison = read as <> in: FROM {register} r LEFT JOIN dw d ON d.detector = r.detector | v01, v05, v08, v11, v12, v14, v15, v16, v17, v18, v19, v20, v23, v24, v25, v30, v31, v32, v33, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59 |
-| m51 comparison < read as <= in: WHEN dr.inj < s.drill_min THEN 'undrilled' | v01, v05, v08, v11, v12, v14, v15, v16, v17, v18, v19, v20, v21, v22, v23, v24, v25, v29, v30, v31, v32, v33, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59 |
-| m52 comparison < read as <= in: WHEN s.p_late < round(s.p_early - {eps_primary}, 9) AND s.c_late < round(s.c_early - {eps_ | v51, v52 |
-| m53 comparison < read as <= in: WHEN s.p_late < round(s.p_early - {eps_primary}, 9) AND s.c_late < round(s.c_early - {eps_ | v53, v54 |
-| m54 comparison = read as <> in: FROM s JOIN dr ON dr.detector = s.detector | v01, v02, v03, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v20, v21, v23, v24, v25, v26, v27, v28, v30, v31, v32, v33, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59 |
-| m55 comparison = read as <> in: CASE WHEN o.verdict = 'ok' AND EXISTS ( | v20, v21, v23, v48, v49 |
-| m56 comparison = read as <> in: SELECT 1 FROM reach a JOIN own x ON x.detector = a.u WHERE a.d = o.detector AND x.verdict  | v20, v21, v48, v49 |
-| m57 comparison = read as <> in: SELECT 1 FROM reach a JOIN own x ON x.detector = a.u WHERE a.d = o.detector AND x.verdict  | v20, v48 |
-| m58 comparison <> read as = in: SELECT 1 FROM reach a JOIN own x ON x.detector = a.u WHERE a.d = o.detector AND x.verdict  | v20, v21, v22, v48, v49 |
-| m59 comparison > read as >= in: SELECT NULL, NULL FROM g WHERE g.bad_register + g.bad_upstream + g.cycle + g.bad_signal +  | v01, v02, v03, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v20, v21, v22, v23, v24, v25, v26, v27, v28, v29, v30, v31, v32, v33, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59 |
-| m60 comparison > read as >= in: WHEN g.bad_register > 0 THEN error('malformed register: NULL field, duplicate detector, dr | v01, v02, v03, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v20, v21, v22, v23, v24, v25, v26, v27, v28, v29, v30, e06, e07, e08, e09, e10, e11, e12, e13, e15, v31, v32, v33, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59, e16, e17, e18, e19, e20, e24, e25, e26, e27, e28, e29, e35 |
-| m61 comparison > read as >= in: WHEN g.bad_upstream > 0 THEN error('malformed register: upstream names an unregistered det | v01, v02, v03, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v20, v21, v22, v23, v24, v25, v26, v27, v28, v29, v30, e07, e08, e09, e10, e11, e12, e15, v31, v32, v33, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59, e16, e17, e18, e19, e24, e25, e26, e27, e28, e29, e35 |
-| m62 comparison > read as >= in: WHEN g.cycle > 0 THEN error('malformed register: upstream cycle') | v01, v02, v03, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v20, v21, v22, v23, v24, v25, v26, v27, v28, v29, v30, e09, e10, e11, e12, e13, e15, v31, v32, v33, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59, e16, e17, e18, e19, e24, e26, e27, e28, e29, e35 |
-| m63 comparison > read as >= in: WHEN g.bad_signal > 0 THEN error('malformed signal: NULL key, non-finite value or duplicat | v01, v02, v03, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v20, v21, v22, v23, v24, v25, v26, v27, v28, v29, v30, e11, e12, e13, e15, v31, v32, v33, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59, e17, e18, e19, e35 |
-| m64 comparison > read as >= in: WHEN g.bad_drills > 0 THEN error('malformed drill: NULL field, negative count, detected ab | v01, v02, v03, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v20, v21, v22, v23, v24, v25, v26, v27, v28, v29, v30, v31, v32, v33, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59 |
-| m65 clause dropped: AND day <= {today} | v25, v40 |
-| m66 clause dropped: OR counter_floor IS NULL | e21 |
-| m67 clause dropped: OR drill_min IS NULL | e22 |
-| m68 clause dropped: OR upstream IS NULL | e14 |
-| m69 clause dropped: OR NOT isfinite(threshold) | e30 |
-| m70 clause dropped: OR NOT isfinite(counter_floor) | e31 |
-| m71 clause dropped: OR drill_min < 1 | e02 |
-| m72 clause dropped: OR drill_recall_min <= 0 | e04 |
-| m73 clause dropped: OR drill_recall_min > 1 | e03, e32 |
-| m74 clause dropped: OR u NOT IN (SELECT detector FROM {register}) | e06 |
-| m75 clause dropped: OR NOT isfinite(primary_value) | e27, e29 |
-| m76 clause dropped: OR NOT isfinite(counter_value) | e26, e28 |
-| m77 clause dropped: OR detected IS NULL | e15 |
-| m78 clause dropped: OR detected < 0 | e12, e19 |
-| m79 clause dropped: OR detected > injected | e11 |
-| m80 clause dropped: AND EXISTS (
-           SELECT 1 FROM reach a JOIN | v01, v05, v08, v12, v14, v16, v17, v18, v19, v22, v24, v25, v29, v30, v31, v32, v33, v34, v35, v36, v38, v39, v40, v41, v42, v43, v44, v45, v50, v51, v52, v53, v54, v55, v56, v57, v58 |
-| m81 clause dropped: AND detector NOT IN (SELECT detector FROM {registe | v01, v03, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v20, v21, v22, v23, v24, v25, v26, v27, v28, v29, v30, v31, v32, v33, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59 |
-| m82 rounding removed: avg(w.primary_value) FILTER (WHERE w.day | v51 |
-| m83 rounding removed: avg(w.counter_value) FILTER (WHERE w.day | v53 |
-| m84 rounding removed: s.p_early - {eps_primary} | v52 |
-| m85 rounding removed: s.c_early - {eps_counter} | v54 |
-| m86 branch dropped: WHEN s.p_last IS NULL THEN 'dark' | v02, v03, v21, v49 |
-| m87 branch dropped: WHEN s.p_last > s.threshold THEN 'breach' | v04, v23, v26, v27 |
-| m88 branch dropped: WHEN s.c_last IS NULL THEN 'counter_dark' | v06 |
-| m89 branch dropped: WHEN s.c_last < s.counter_floor THEN 'counter_low' | v07, v28, v29 |
-| m90 branch dropped: WHEN dr.inj < s.drill_min THEN 'undrilled' | v09, v10, v13 |
-| m91 branch dropped: WHEN dr.det::DOUBLE / dr.inj < s.drill_recall_min | v11, v20, v23, v59 |
-| m92 branch dropped: WHEN s.p_late < round(s.p_early - {eps_primary}, 9 | v15, v37, v46, v47, v48 |
-| m93 branch dropped: WHEN g.bad_register > 0 THEN error('malformed regi | e01, e02, e03, e04, e05, e14, e21, e22, e23, e30, e31, e32, e33, e34 |
-| m94 branch dropped: WHEN g.bad_upstream > 0 THEN error('malformed regi | e06, e20 |
-| m95 branch dropped: WHEN g.cycle > 0 THEN error('malformed register: u | e07, e08, e25 |
-| m96 branch dropped: WHEN g.bad_signal > 0 THEN error('malformed signal | e09, e10, e16, e24, e26, e27, e28, e29 |
-| m97 branch dropped: WHEN g.bad_drills > 0 THEN error('malformed drill: | e11, e12, e13, e15, e17, e18, e19, e35 |
-| m98 guard term dropped: + (SELECT count(*) FROM {register} WHERE threshold | e02, e03, e04, e05, e14, e21, e22, e23, e30, e31, e32, e33 |
-| m99 guard term dropped: + (SELECT count(*) FROM w WHERE detector IS NULL O | e10, e24, e26, e27, e28, e29 |
-| m100 guard term dropped: + (SELECT count(*) FROM (SELECT detector, day FROM | e09 |
-| m101 guard term dropped: + (SELECT count(*) FROM dw WHERE detector IS NULL | e11, e12, e13, e15, e18, e19, e35 |
-| m102 unregistered rows not deduplicated (one row per day) | v50 |
-| m103 upstream reach capped at one hop | v49, e25 |
-| m104 a diverging upstream does not propagate (staged k1 (i)) | v48 |
-| m105 signal window has no lower bound | v02, v32, v42, v43 |
-| m106 drill window has no lower bound | v13, v39, v44 |
-| m107 NULL-detector signal row in the window accepted | e10, e24 |
-| m108 NULL-detector drill row in the window accepted | e35 |
-| m109 duplicate signal days checked over all history | v43 |
-| m110 signal value guard reads all history | v42 |
-| m111 drill guard reads all history | v39, v40, v44 |
-| m112 no eps on the counter | v45, v53, v54 |
+| m37 comparison <= read as < in: w AS (SELECT * FROM {signal} WHERE day > {today} - {window_days} AND day <= {today}), | v04, v07, v24, e09, e10, v64, v66, v67, e24, e26, e27, e28, e29, e36, e37, e43, e44 |
+| m38 comparison <= read as < in: dw AS (SELECT * FROM {drills} WHERE day > {today} - {window_days} AND day <= {today}), | v55, v62 |
+| m39 comparison < read as <= in: OR NOT isfinite(threshold) OR counter_floor < 0 OR counter_floor > 1 | v51, v52, v53, v54, v65 |
+| m40 comparison > read as >= in: OR NOT isfinite(threshold) OR counter_floor < 0 OR counter_floor > 1 | v65 |
+| m41 comparison < read as <= in: OR drill_min < 1 OR drill_recall_min <= 0 OR drill_recall_min > 1) AS bad_register, | v56 |
+| m42 comparison <= read as < in: OR drill_min < 1 OR drill_recall_min <= 0 OR drill_recall_min > 1) AS bad_register, | e04 |
+| m43 comparison > read as >= in: OR drill_min < 1 OR drill_recall_min <= 0 OR drill_recall_min > 1) AS bad_register, | v57 |
+| m44 comparison = read as <> in: (SELECT count(*) FROM reach WHERE d = u) AS cycle, | v20, v21, v22, v23, e08, v48, v49 |
+| m45 comparison < read as <= in: + (SELECT count(*) FROM w WHERE detector IS NULL OR NOT isfinite(primary_value) OR counter | v64 |
+| m46 comparison > read as >= in: + (SELECT count(*) FROM w WHERE detector IS NULL OR NOT isfinite(primary_value) OR counter | v01, v03, v04, v05, v07, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v20, v21, v22, v23, v24, v25, v26, v29, v30, e11, e12, e15, v31, v32, v33, v34, v36, v37, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v55, v56, v57, v58, v59, v60, v61, v62, v63, v64, v65, v66, v67, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v79, v80, v81, v82, v83, v85, v87, v88, v89, e17, e18, e19, e35 |
+| m47 comparison > read as >= in: + (SELECT count(*) FROM (SELECT detector, day FROM w GROUP BY ALL HAVING count(*) > 1)) AS | v01, v03, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v20, v21, v22, v23, v24, v25, v26, v27, v28, v29, v30, e11, e12, e15, v31, v32, v33, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59, v60, v61, v62, v63, v64, v65, v66, v67, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v78, v79, v80, v81, v82, v83, v84, v85, v86, v87, v88, v89, e17, e18, e19, e35 |
+| m48 comparison < read as <= in: OR detected < 0 OR detected > injected) AS bad_drills | v58, v59 |
+| m49 comparison > read as >= in: OR detected < 0 OR detected > injected) AS bad_drills | v01, v02, v03, v04, v05, v06, v07, v08, v09, v14, v15, v16, v17, v18, v19, v20, v21, v22, v23, v24, v25, v26, v27, v29, v31, v32, v33, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v60, v61, v62, v63, v64, v65, v66, v67, v69, v70, v71, v72, v73, v74, v75, v76, v77, v78, v80, v81, v82, v83, v84, v85, v86, v87, v88, v89 |
+| m50 comparison > read as >= in: round(avg(w.primary_value) FILTER (WHERE w.day > {today} - {half_days}), 9) AS p_late, | v37, v69, v71, v77, v83 |
+| m51 comparison <= read as < in: avg(w.counter_value) FILTER (WHERE w.day <= {today} - {half_days}) AS c_early, | v46 |
+| m52 comparison > read as >= in: round(avg(w.counter_value) FILTER (WHERE w.day > {today} - {half_days}), 9) AS c_late | v46, v47, v70, v78, v84 |
+| m53 comparison = read as <> in: FROM {register} r LEFT JOIN w ON w.detector = r.detector | v01, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v21, v23, v25, v26, v27, v28, v29, v30, v31, v32, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v51, v52, v53, v54, v55, v56, v57, v58, v59, v60, v62, v63, v64, v65, v66, v67, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v78, v79, v80, v81, v82, v83, v84, v85, v86, v87, v88, v89 |
+| m54 comparison = read as <> in: FROM {register} r LEFT JOIN dw d ON d.detector = r.detector | v01, v05, v08, v11, v12, v14, v15, v16, v17, v18, v19, v20, v23, v24, v25, v30, v31, v32, v33, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59, v61, v63, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v78, v79, v80, v81, v82, v83, v84, v85, v86, v87, v88, v89 |
+| m55 comparison < read as <= in: WHEN dr.inj < s.drill_min THEN 'undrilled' | v01, v05, v08, v11, v12, v14, v15, v16, v17, v18, v19, v20, v21, v22, v23, v24, v25, v29, v30, v31, v32, v33, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59, v60, v61, v62, v63, v65, v69, v70, v71, v72, v73, v74, v75, v76, v77, v78, v80, v81, v82, v83, v84, v85, v86, v87, v88, v89 |
+| m56 comparison < read as <= in: WHEN s.p_late < round(s.p_early - {eps_primary}, 9) AND s.c_late < round(s.c_early - {eps_ | v51, v52, v81, v85 |
+| m57 comparison < read as <= in: WHEN s.p_late < round(s.p_early - {eps_primary}, 9) AND s.c_late < round(s.c_early - {eps_ | v53, v54, v82, v86 |
+| m58 comparison = read as <> in: FROM s JOIN dr ON dr.detector = s.detector | v01, v02, v03, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v20, v21, v23, v24, v25, v26, v27, v28, v30, v31, v32, v33, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59, v60, v61, v62, v63, v64, v66, v67, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v78, v79, v80, v81, v82, v83, v84, v85, v86, v87, v88, v89 |
+| m59 comparison = read as <> in: CASE WHEN o.verdict = 'ok' AND EXISTS ( | v20, v21, v23, v48, v49 |
+| m60 comparison = read as <> in: SELECT 1 FROM reach a JOIN own x ON x.detector = a.u WHERE a.d = o.detector AND x.verdict  | v20, v21, v48, v49 |
+| m61 comparison = read as <> in: SELECT 1 FROM reach a JOIN own x ON x.detector = a.u WHERE a.d = o.detector AND x.verdict  | v20, v48 |
+| m62 comparison <> read as = in: SELECT 1 FROM reach a JOIN own x ON x.detector = a.u WHERE a.d = o.detector AND x.verdict  | v20, v21, v22, v48, v49 |
+| m63 comparison > read as >= in: SELECT NULL, NULL FROM g WHERE g.bad_register + g.bad_upstream + g.cycle + g.bad_signal +  | v01, v02, v03, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v20, v21, v22, v23, v24, v25, v26, v27, v28, v29, v30, v31, v32, v33, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59, v60, v61, v62, v63, v64, v65, v66, v67, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v78, v79, v80, v81, v82, v83, v84, v85, v86, v87, v88, v89 |
+| m64 comparison > read as >= in: WHEN g.bad_register > 0 THEN error('malformed register: NULL field, duplicate detector, dr | v01, v02, v03, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v20, v21, v22, v23, v24, v25, v26, v27, v28, v29, v30, e06, e07, e08, e09, e10, e11, e12, e13, e15, v31, v32, v33, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59, v60, v61, v62, v63, v64, v65, v66, v67, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v78, v79, v80, v81, v82, v83, v84, v85, v86, v87, v88, v89, e16, e17, e18, e19, e20, e24, e25, e26, e27, e28, e29, e35, e36, e37, e43, e44 |
+| m65 comparison > read as >= in: WHEN g.bad_upstream > 0 THEN error('malformed register: upstream names an unregistered det | v01, v02, v03, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v20, v21, v22, v23, v24, v25, v26, v27, v28, v29, v30, e07, e08, e09, e10, e11, e12, e13, e15, v31, v32, v33, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59, v60, v61, v62, v63, v64, v65, v66, v67, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v78, v79, v80, v81, v82, v83, v84, v85, v86, v87, v88, v89, e16, e17, e18, e19, e24, e25, e26, e27, e28, e29, e35, e36, e37, e43, e44 |
+| m66 comparison > read as >= in: WHEN g.cycle > 0 THEN error('malformed register: upstream cycle') | v01, v02, v03, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v20, v21, v22, v23, v24, v25, v26, v27, v28, v29, v30, e09, e10, e11, e12, e13, e15, v31, v32, v33, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59, v60, v61, v62, v63, v64, v65, v66, v67, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v78, v79, v80, v81, v82, v83, v84, v85, v86, v87, v88, v89, e16, e17, e18, e19, e24, e26, e27, e28, e29, e35, e36, e37, e43, e44 |
+| m67 comparison > read as >= in: WHEN g.bad_signal > 0 THEN error('malformed signal: NULL key, non-finite value, counter ou | v01, v02, v03, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v20, v21, v22, v23, v24, v25, v26, v27, v28, v29, v30, e11, e12, e13, e15, v31, v32, v33, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59, v60, v61, v62, v63, v64, v65, v66, v67, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v78, v79, v80, v81, v82, v83, v84, v85, v86, v87, v88, v89, e17, e18, e19, e35 |
+| m68 comparison > read as >= in: WHEN g.bad_drills > 0 THEN error('malformed drill: NULL field, negative count or detected  | v01, v02, v03, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v20, v21, v22, v23, v24, v25, v26, v27, v28, v29, v30, v31, v32, v33, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59, v60, v61, v62, v63, v64, v65, v66, v67, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v78, v79, v80, v81, v82, v83, v84, v85, v86, v87, v88, v89 |
+| m69 clause dropped: AND day <= {today} | v25, v40 |
+| m70 clause dropped: OR counter_floor IS NULL | e21 |
+| m71 clause dropped: OR drill_min IS NULL | e22 |
+| m72 clause dropped: OR upstream IS NULL | e14 |
+| m73 clause dropped: OR NOT isfinite(threshold) | e30 |
+| m74 clause dropped: OR counter_floor < 0 | e31, e39, e41 |
+| m75 clause dropped: OR counter_floor > 1 | e38, e42 |
+| m76 clause dropped: OR drill_min < 1 | e02 |
+| m77 clause dropped: OR drill_recall_min <= 0 | e04 |
+| m78 clause dropped: OR drill_recall_min > 1 | e03, e32, e40 |
+| m79 clause dropped: OR u NOT IN (SELECT detector FROM {register}) | e06 |
+| m80 clause dropped: OR NOT isfinite(primary_value) | e27, e29 |
+| m81 clause dropped: OR counter_value < 0 | e37, e43 |
+| m82 clause dropped: OR counter_value > 1 | e26, e28, e36, e44 |
+| m83 clause dropped: OR detected IS NULL | e15 |
+| m84 clause dropped: OR detected < 0 | e12, e19 |
+| m85 clause dropped: OR detected > injected | e11 |
+| m86 clause dropped: AND EXISTS (
+           SELECT 1 FROM reach a JOIN | v01, v05, v08, v12, v14, v16, v17, v18, v19, v22, v24, v25, v29, v30, v31, v32, v33, v34, v35, v36, v38, v39, v40, v41, v42, v43, v44, v45, v50, v51, v52, v53, v54, v55, v56, v57, v58, v60, v61, v62, v63, v65, v72, v74, v75, v76, v80, v81, v82, v85, v86, v87, v89 |
+| m87 clause dropped: AND detector NOT IN (SELECT detector FROM {registe | v01, v02, v03, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v19, v20, v21, v22, v23, v24, v25, v26, v27, v28, v29, v30, v31, v32, v33, v34, v35, v36, v37, v38, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v51, v52, v53, v54, v55, v56, v57, v58, v59, v60, v61, v62, v63, v64, v65, v66, v67, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v78, v79, v80, v81, v82, v83, v84, v85, v86, v87, v88, v89 |
+| m88 rounding removed: avg(w.primary_value) FILTER (WHERE w.day | v51, v81 |
+| m89 rounding removed: avg(w.counter_value) FILTER (WHERE w.day | v53, v82 |
+| m90 rounding removed: s.p_early - {eps_primary} | v52, v85 |
+| m91 rounding removed: s.c_early - {eps_counter} | v54, v86 |
+| m92 branch dropped: WHEN s.p_last IS NULL THEN 'dark' | v02, v03, v21, v49 |
+| m93 branch dropped: WHEN s.p_last > s.threshold THEN 'breach' | v04, v23, v26, v27, v66 |
+| m94 branch dropped: WHEN s.c_last IS NULL THEN 'counter_dark' | v06 |
+| m95 branch dropped: WHEN s.c_last < s.counter_floor THEN 'counter_low' | v07, v28, v29, v64, v67 |
+| m96 branch dropped: WHEN dr.inj < s.drill_min THEN 'undrilled' | v09, v10, v13 |
+| m97 branch dropped: WHEN dr.det::DOUBLE / dr.inj < s.drill_recall_min | v11, v20, v23, v59, v68, v79 |
+| m98 branch dropped: WHEN s.p_late < round(s.p_early - {eps_primary}, 9 | v15, v37, v46, v47, v48, v69, v70, v71, v73, v77, v78, v83, v84, v88 |
+| m99 branch dropped: WHEN g.bad_register > 0 THEN error('malformed regi | e01, e02, e03, e04, e05, e14, e21, e22, e23, e30, e31, e32, e33, e34, e38, e39, e40, e41, e42 |
+| m100 branch dropped: WHEN g.bad_upstream > 0 THEN error('malformed regi | e06, e20 |
+| m101 branch dropped: WHEN g.cycle > 0 THEN error('malformed register: u | e07, e08, e25 |
+| m102 branch dropped: WHEN g.bad_signal > 0 THEN error('malformed signal | e09, e10, e16, e24, e26, e27, e28, e29, e36, e37, e43, e44 |
+| m103 branch dropped: WHEN g.bad_drills > 0 THEN error('malformed drill: | e11, e12, e13, e15, e17, e18, e19, e35 |
+| m104 guard term dropped: + (SELECT count(*) FROM {register} WHERE threshold | e02, e03, e04, e05, e14, e21, e22, e23, e30, e31, e32, e33, e38, e39, e40, e41, e42 |
+| m105 guard term dropped: + (SELECT count(*) FROM w WHERE detector IS NULL O | e10, e24, e26, e27, e28, e29, e36, e37, e43, e44 |
+| m106 guard term dropped: + (SELECT count(*) FROM (SELECT detector, day FROM | e09 |
+| m107 guard term dropped: + (SELECT count(*) FROM dw WHERE detector IS NULL | e11, e12, e13, e15, e18, e19, e35 |
+| m108 unregistered rows not deduplicated (one row per day) | v50, v61 |
+| m109 upstream reach capped at one hop | v49, e25 |
+| m110 a diverging upstream does not propagate (staged k1 (i)) | v48 |
+| m111 signal window has no lower bound | v02, v32, v42, v43 |
+| m112 drill window has no lower bound | v13, v39, v44 |
+| m113 NULL-detector signal row in the window accepted | e10, e24 |
+| m114 NULL-detector drill row in the window accepted | e13, e35 |
+| m115 duplicate signal days checked over all history | v43 |
+| m116 signal value guard reads all history | v42 |
+| m117 drill guard reads all history | v44 |
+| m118 no eps on the counter | v45, v53, v54, v75, v82, v86, v89 |
+| m119 tolerance s.p_last > s.threshold + 0.000001 | v66 |
+| m120 tolerance s.p_last > s.threshold - 0.000001 | v05 |
+| m121 tolerance s.p_last > s.threshold + 0.001 | v66 |
+| m122 tolerance s.p_last > s.threshold - 0.001 | v05 |
+| m123 tolerance s.c_last < s.counter_floor + 0.000001 | v08, v65 |
+| m124 tolerance s.c_last < s.counter_floor - 0.000001 | v67 |
+| m125 tolerance s.c_last < s.counter_floor + 0.001 | v08, v65 |
+| m126 tolerance s.c_last < s.counter_floor - 0.001 | v67 |
+| m127 tolerance dr.det::DOUBLE / dr.inj < s.drill_recall_min + 0.000001 | v12, v30, v34, v57 |
+| m128 tolerance dr.det::DOUBLE / dr.inj < s.drill_recall_min - 0.000001 | v79 |
+| m129 tolerance dr.det::DOUBLE / dr.inj < s.drill_recall_min + 0.001 | v12, v30, v34, v57 |
+| m130 tolerance dr.det::DOUBLE / dr.inj < s.drill_recall_min - 0.001 | v68, v79 |
+| m131 tolerance round(s.p_early - {eps_primary}, 9) + 0.000001 | v51, v52, v81, v85 |
+| m132 tolerance round(s.p_early - {eps_primary}, 9) - 0.000001 | v69, v83 |
+| m133 tolerance round(s.p_early - {eps_primary}, 9) + 0.001 | v51, v52, v81, v85, v87 |
+| m134 tolerance round(s.p_early - {eps_primary}, 9) - 0.001 | v69, v71, v77, v83 |
+| m135 tolerance round(s.c_early - {eps_counter}, 9) + 0.000001 | v53, v54, v82, v86 |
+| m136 tolerance round(s.c_early - {eps_counter}, 9) - 0.000001 | v70, v84 |
+| m137 tolerance round(s.c_early - {eps_counter}, 9) + 0.001 | v53, v54, v82, v86 |
+| m138 tolerance round(s.c_early - {eps_counter}, 9) - 0.001 | v47, v70, v78, v84 |
+| m139 tolerance OR drill_recall_min <= 0 + 0.000001 | v80 |
+| m140 tolerance OR drill_recall_min <= 0 - 0.000001 | e04 |
+| m141 tolerance OR drill_recall_min <= 0 + 0.001 | v80 |
+| m142 tolerance OR drill_recall_min <= 0 - 0.001 | e04 |
+| m143 tolerance OR drill_recall_min > 1 + 0.000001 | e40 |
+| m144 tolerance OR drill_recall_min > 1 - 0.000001 | v57 |
+| m145 tolerance OR drill_recall_min > 1 + 0.001 | e40 |
+| m146 tolerance OR drill_recall_min > 1 - 0.001 | v57 |
+| m147 tolerance OR counter_floor < 0 + 0.000001 | v51, v52, v53, v54, v65 |
+| m148 tolerance OR counter_floor < 0 - 0.000001 | e41 |
+| m149 tolerance OR counter_floor < 0 + 0.001 | v51, v52, v53, v54, v65 |
+| m150 tolerance OR counter_floor < 0 - 0.001 | e41 |
+| m151 tolerance OR counter_floor > 1 + 0.000001 | e42 |
+| m152 tolerance OR counter_floor > 1 - 0.000001 | v65 |
+| m153 tolerance OR counter_floor > 1 + 0.001 | e42 |
+| m154 tolerance OR counter_floor > 1 - 0.001 | v65 |
+| m155 tolerance OR counter_value < 0 + 0.000001 | v64 |
+| m156 tolerance OR counter_value < 0 - 0.000001 | e43 |
+| m157 tolerance OR counter_value < 0 + 0.001 | v64 |
+| m158 tolerance OR counter_value < 0 - 0.001 | e43 |
+| m159 tolerance OR counter_value > 1 + 0.000001 | e44 |
+| m160 tolerance OR counter_value > 1 - 0.000001 | v01, v03, v04, v05, v07, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v20, v21, v22, v23, v24, v25, v26, v29, v30, e11, e12, e15, v31, v32, v33, v34, v36, v37, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v55, v56, v57, v58, v59, v60, v61, v62, v63, v64, v65, v66, v67, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v79, v80, v81, v82, v83, v85, v87, v88, v89, e17, e18, e19, e35 |
+| m161 tolerance OR counter_value > 1 + 0.001 | e44 |
+| m162 tolerance OR counter_value > 1 - 0.001 | v01, v03, v04, v05, v07, v09, v10, v11, v12, v13, v14, v15, v16, v17, v18, v20, v21, v22, v23, v24, v25, v26, v29, v30, e11, e12, e15, v31, v32, v33, v34, v36, v37, v39, v40, v41, v42, v43, v44, v45, v46, v47, v48, v49, v50, v55, v56, v57, v58, v59, v60, v61, v62, v63, v64, v65, v66, v67, v68, v69, v70, v71, v72, v73, v74, v75, v76, v77, v79, v80, v81, v82, v83, v85, v87, v88, v89, e17, e18, e19, e35 |
+| m163 precision 2: avg(w.primary_value) FILTER (WHERE w.day > {today} | v69, v71, v87, v88 |
+| m164 precision 4: avg(w.primary_value) FILTER (WHERE w.day > {today} | v69 |
+| m165 precision 6: avg(w.primary_value) FILTER (WHERE w.day > {today} | v69 |
+| m166 precision 12: avg(w.primary_value) FILTER (WHERE w.day > {today} | v81 |
+| m167 precision 2: avg(w.counter_value) FILTER (WHERE w.day > {today} | v47, v70 |
+| m168 precision 4: avg(w.counter_value) FILTER (WHERE w.day > {today} | v70 |
+| m169 precision 6: avg(w.counter_value) FILTER (WHERE w.day > {today} | v70 |
+| m170 precision 12: avg(w.counter_value) FILTER (WHERE w.day > {today} | v82 |
+| m171 precision 2: s.p_early - {eps_primary} | v77, v83 |
+| m172 precision 4: s.p_early - {eps_primary} | v77, v83 |
+| m173 precision 6: s.p_early - {eps_primary} | v83 |
+| m174 precision 12: s.p_early - {eps_primary} | v85 |
+| m175 precision 2: s.c_early - {eps_counter} | v46, v78, v84 |
+| m176 precision 4: s.c_early - {eps_counter} | v78, v84 |
+| m177 precision 6: s.c_early - {eps_counter} | v84 |
+| m178 precision 12: s.c_early - {eps_counter} | v86 |
+| m179 aggregate arg_max(w.primary_value, w.day) -> arg_min(w.primary_value, w.day) | v04, v26, v66, v87 |
+| m180 aggregate arg_max(w.primary_value, w.day) -> max(w.primary_value) | v37, v76, v87 |
+| m181 aggregate arg_max(w.primary_value, w.day) -> min(w.primary_value) | v04, v26, v66 |
+| m182 aggregate arg_max(w.counter_value, w.day) -> arg_min(w.counter_value, w.day) | v07, v64, v67 |
+| m183 aggregate arg_max(w.counter_value, w.day) -> max(w.counter_value) | v07, v64, v67 |
+| m184 aggregate arg_max(w.counter_value, w.day) -> min(w.counter_value) | v72 |
+| m185 aggregate avg -> min on w.primary_value <= | v37 |
+| m186 aggregate avg -> max on w.primary_value <= | v87 |
+| m187 aggregate avg -> median on w.primary_value <= | v37 |
+| m188 aggregate avg -> min on w.primary_value > | v74 |
+| m189 aggregate avg -> max on w.primary_value > | v88 |
+| m190 aggregate avg -> median on w.primary_value > | v88 |
+| m191 aggregate avg -> min on w.counter_value <= | v46 |
+| m192 aggregate avg -> max on w.counter_value <= | v75 |
+| m193 aggregate avg -> median on w.counter_value <= | v46 |
+| m194 aggregate avg -> min on w.counter_value > | v89 |
+| m195 aggregate avg -> max on w.counter_value > | v73 |
+| m196 aggregate avg -> median on w.counter_value > | v73 |
+| m197 aggregate coalesce(sum(d.injected), 0) AS inj -> coalesce(max(d.injected), 0) AS inj | v30 |
+| m198 aggregate coalesce(sum(d.injected), 0) AS inj -> coalesce(min(d.injected), 0) AS inj | v30, v58 |
+| m199 aggregate coalesce(sum(d.detected), 0) AS det -> coalesce(max(d.detected), 0) AS det | v30 |
+| m200 aggregate coalesce(sum(d.detected), 0) AS det -> coalesce(min(d.detected), 0) AS det | v30, v58 |
+| m201 arithmetic s.p_early - {eps_primary} -> s.p_early + {eps_primary} | v17, v36, v51, v52, v72, v74, v81, v85, v87 |
+| m202 arithmetic s.c_early - {eps_counter} -> s.c_early + {eps_counter} | v16, v45, v53, v54, v75, v82, v86, v89 |
+| m203 arithmetic dr.det::DOUBLE / dr.inj -> dr.det // dr.inj | v12, v30, v34 |
+| m204 arithmetic r.depth + 1 -> r.depth + 2 | e25 |
 
 ## 3. Settled / contested / risk / open
 
@@ -851,9 +1106,12 @@ equivalent:
   before upstream, which decides the single verdict a detector with several faults reports, and so which
   action fires. (iii) What the ladder does with an unregistered row, which has no rung of its own to
   demote: staged, the ladder ignores rows whose detector is a dated drill- series (the register's own
-  drill, as unsound_reads does) and blocks every promotion while any other unregistered row exists; the
-  alternative is to treat it as a register defect for the operator and block nothing. All three stay as
-  staged until k1 is answered. Consequence to weigh: capture's counter needs its q1 out-of-band denominator, which
+  drill, as unsound_reads does) and blocks every promotion while any other unregistered row exists, so a
+  retired detector freezes promotion for 27 days (v61); the alternative is to treat it as a register defect
+  for the operator and block nothing. (iv) Staleness: staged, the latest defined value anywhere in the
+  window decides p_last and c_last (v41), which fails open on a counter that stops arriving (v63); the
+  alternative is a freshness bound (for example counter_dark when no counter arrived in the last 2 days),
+  which needs a per-detector cadence. All four stay as staged until k1 is answered. Consequence to weigh: capture's counter needs its q1 out-of-band denominator, which
   does not exist, so under (a) or (b) capture reads counter_dark from day one and every detector downstream
   reads upstream_unsound until it lands (risk R6).
 - **k2 (asked). How drills run.** (a) Live: seeded rows written through the real producers under a
@@ -866,7 +1124,10 @@ equivalent:
   out-of-band count. The ladder's reviewer drill (known-wrong outputs in the review sample) is a choice about
   the operator's own review stream and sits inside this fork. So does how the register's own drill stays
   live: staged, one dated drill- series a day read over the 28-day window (section 2.4); the alternative is a
-  today-only unregistered read.
+  today-only unregistered read. So does retirement and onboarding: staged, in-window signal and drill rows of
+  a detector with no register row both read unregistered, so neither halts the run (v60-v62); the
+  alternatives are a retired_on marker on the register row, so in-window history still resolves, or a halt
+  with a stated 28-day retirement procedure.
 - **k3 (asked). Where counters and drills are declared.** (a) In this item's register rows only (staged).
   (b) Two new FailureSignal fields, counter and drill, on every pilot item, with the evaluator requiring them
   (a pilot-schema change, the evaluator owner's, O1). (c) In each item's prose. Recommended (a) now and (b) at
@@ -886,9 +1147,9 @@ equivalent:
   (a) for the pilot: it is one comparison and fails toward review, and (b) once denominators are recorded.
   (c) misses slow drift above the floor (v15 is above its floor). Under (a) the boundary arithmetic is
   staged exact to 9 decimal places (recall by division, 9-place rounding, section 2.4); the alternative is to
-  state both rules as approximate. Staleness belongs here too: staged, the latest defined value anywhere in
-  the 28-day window decides (v41); the alternative is a freshness bound (for example dark when nothing
-  arrived in the last 2 days), which needs a per-detector cadence.
+  state both rules as approximate. Recall is pooled over the window (v30: drills sum across it); the
+  alternative is a per-run recall floor, which R5's small counts make noisier. Staleness moved to k1 (iv):
+  it decides p_last and c_last, not the divergence rule.
 
 ### Risks
 
