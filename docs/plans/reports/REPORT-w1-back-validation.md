@@ -491,7 +491,7 @@ fixture):
   sessions with a post-fix sample fixed before it is read. This is a measured constraint on every option
   of k4, not a choice among them.
 
-Contested (evidence on both sides, options listed; k1-k3 in the fixture; all parked, see
+Contested (evidence on both sides, options listed; k1-k3 in the fixture, k4-k5 report-only; all parked, see
 /mnt/project-files/gates/w1-c6-parked-forks.md):
 
 - k1 A verdict evaluated after the merge, and how a fix reaches an open rec.
