@@ -224,8 +224,10 @@ register:
 
 Each scenario is a small deterministic world (DuckDB, `range()` only, no randomness) built from the
 detector's own definition of its primary metric. It is evaluated three ways: the baseline (`cheap=0,
-better=0`); the cheap path (`cheap=1`), sized to hide half of the failures the detector sees; and a real
-improvement (`better=1`) that halves the true failure rate and leaves detection alone. Where seeded drill
+better=0`); the cheap path (`cheap=1`), which in five rows hides half of the failures the detector sees and in
+three applies the stated change (a min_sessions of 8 instead of 3 for rec filing and back-validation; the
+canary seeded only into denied columns); and a real improvement (`better=1`) that halves the true failure
+rate (for the canary, one of two leaking columns fixed) and leaves detection alone. Where seeded drill
 rows appear (`drill`), they are excluded from the primary, as a build must exclude them (k2). The
 claim is not the numbers, which are constructed: it is the direction of each counter under each world.
 
@@ -519,8 +521,8 @@ mutants:
 ### Settled (fixture s1-s3)
 
 - **s1.** Every pilot item carries exactly one failure_signal, and that signal is where its Goodhart
-  question is answered. Precedent: the pilot model makes failure_signal required and unique per item
-  (merged code, CD.45 W0, operator-approved 2026-10-02); Decision 196 clause 7 asks the same question of
+  question is answered. Precedent: the pilot model requires a failure_signal and the evaluator's L1 keeps
+  it unique per item (merged code, CD.45 W0, operator-approved 2026-10-02); Decision 196 clause 7 asks the same question of
   Tier A decisions and is used only by analogy. Data plane only: the register reads the customer's own
   telemetry and review rows (Decision 209 clause 2(a)); whether any verdict crosses is #1399's k1.
 - **s2.** Measured: in 8 of 8 W1 items a stated cheap path lowers the failure_signal at least as far as a
@@ -531,8 +533,7 @@ mutants:
 ### Contested (k1-k3 in the fixture; k4-k6 report-only, the fixture's contested list is capped at 3)
 
 - **k1 (asked). What a non-ok verdict does on the ladder.** (a) It blocks promotion and demotes one rung,
-  as #1398's staged dark-signal leg does (its k7 (a)); upstream_unsound demotes no further than the
-  upstream's own rung. (b) It blocks promotion only; the rung holds. (c) Advisory: logged beside the
+  as #1398's staged dark-signal leg does (its k7 (a)). (b) It blocks promotion only; the rung holds. (c) Advisory: logged beside the
   transition record, nothing gates. Recommended (a) for blind, undrilled, counter_dark, counter_low and
   unregistered, and (b) for diverging and upstream_unsound, which are weaker evidence. #1398 measured that
   a half-blind monitor also lets more errors escape below the top rung (2.09% on its worst seed), so
@@ -572,7 +573,7 @@ mutants:
 
 - **R1 Teaching to the drill.** A rule set, a model or a person that can tell drill rows from real ones
   can pass every drill and still miss real faults. Drills must be drawn from the real distribution and
-  rotated, and nothing a detector reads may name a row as a drill (the exclusion happens after detection).
+  rotated, and no detector rule may branch on the drill marker (the exclusion happens after detection).
 - **R2 Counters can be gamed too.** A counter computed from the same rows by the same code as the primary
   shares its blind spot (a second-order Goodhart). Each row's counter source is chosen to be independent of
   the primary's numerator; the build's c2 replay checks the counter moves, not that it is independent.
