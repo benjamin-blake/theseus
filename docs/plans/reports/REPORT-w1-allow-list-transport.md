@@ -43,13 +43,14 @@ closed-enum values) with a row count, finite sums of allow-listed numbers, count
 withheld count per guarded column; it refuses the batch on an unclassified source column, a malformed or
 NULL tenancy id, a NULL day basis, or an allow-list entry whose class may not cross. On the canary probe it
 leaks 0 of 73 string columns and counts 240 of 240 injected out-of-vocabulary enum values as withheld (VP 5).
-It passes 21/21 vectors, nine by refusing (VP 4), and each of 16 hand-run mutants fails at least one named
+It passes 22/22 vectors, ten by refusing (VP 4), and each of 17 hand-run mutants fails at least one named
 vector (section 2.5). The staged membership crosses 42 of 133 columns: 12 guarded enums, 28 numbers and 2
 booleans; tenant_id and project_id are the key and session_started_at only as a UTC day.
 
 What is settled is narrow and rests on Decisions: the allow-list shape and where it runs (Decision 209
 clause 2(a)-(b)), and that the egress is a named reader verb over derived-at-read state, not caller SQL
-(Decision 199 clause 1; Decision 84 I-3), plus the measured facts above. The membership (k1), identifier
+(Decision 199 clause 1; Decision 84 I-3, whose local-adapter carrier in a customer plane is T4.23), plus the
+measured facts above. The membership (k1), identifier
 treatment (k2), transport (k3) and grain (k4) are always-ask (security or IAM) and are parked with a
 recommendation, never decided. The allow-list's home (k5) and the fixture's edge home (k6) weigh credible
 alternatives with no admissible precedent and are parked as asked.
@@ -513,6 +514,12 @@ vectors:
       rows: [{event_kind: point, tenant_id: ZZZZZZZZZZZZZZZZZZZZZZZZZZ}]
       expected: error
       raises: 'malformed tenancy id: tenant_id'
+    - id: e10
+      why: a valid tenant_id with a trailing space refuses the batch; the guard never trims, so padding cannot split one tenant into two fleet groups
+      table: telemetry_observations
+      rows: [{event_kind: point, tenant_id: '01ARZ3NDEKTSV4RRFFQ69G5FAV '}]
+      expected: error
+      raises: 'malformed tenancy id: tenant_id'
 ```
 
 ### 2.5 Mutants (hand-run once, reported, not a VP step)
@@ -525,7 +532,7 @@ vectors and no mutant survives.
 | m01 | `dim` passes the raw value (no vocabulary guard) | v02 |
 | m02 | enum `withheld_` counts NULLs instead of out-of-vocabulary values | v02, v03 |
 | m03 | `sum_` keeps NaN and infinity | v04 |
-| m04 | tenancy pattern accepts any non-empty single line | e01, e06, e07, e09 |
+| m04 | tenancy pattern accepts any non-empty single line | e01, e06, e07, e09, e10 |
 | m05 | tenancy guard written as `WHEN NOT match THEN error ELSE col` (a NULL passes) | e02 |
 | m06 | tenancy pattern case-insensitive | e06 |
 | m07 | structural guard made vacuous | e03 |
@@ -535,9 +542,10 @@ vectors and no mutant survives.
 | m11 | project_id dropped from the key | v08, v09, e02, e08 |
 | m12 | boolean counts NULL as true | v05 |
 | m13 | number `withheld_` counts NULLs | v04 |
-| m14 | tenant_id dropped from the key | v07, v09, e01, e06, e07, e09 |
-| m15 | tenancy guard a substring match (`regexp_matches`), so a valid id with a suffix crosses verbatim (verification r1 x4) | e07, e08 |
+| m14 | tenant_id dropped from the key | v07, v09, e01, e06, e07, e09, e10 |
+| m15 | tenancy guard a substring match (`regexp_matches`), so a valid id with a suffix crosses verbatim (verification r1 x4) | e07, e08, e10 |
 | m16 | tenancy pattern drops the first-character bound (`[0-9A-HJKMNP-TV-Z]{26}`) | e09 |
+| m17 | tenancy guard matches `trim(col)` but emits `col` verbatim (verification r2 x7) | e10 |
 
 ### 2.6 Canary probe (VP 5)
 
@@ -554,7 +562,7 @@ canary on odd rows, every DOUBLE holding NaN on every tenth row. It then runs tw
 
 A derived id counted as a leak here is a ULID-shaped string, not text; section 1.3 is why it is still one.
 The probe seeds tenant_id and project_id only with valid ids, so it cannot see the key columns: their text
-barrier is the full-match guard, pinned by e01, e02 and e06-e09 (verification r1 showed a substring match
+barrier is the full-match guard, pinned by e01, e02 and e06-e10 (verification r1 showed a substring match
 survives the canary). The production canary has the same blind spot; criterion c1 carries those vectors.
 
 ```yaml
@@ -623,9 +631,11 @@ an IAM policy. Both rows touch IAM and the control plane's attack surface, so th
 
 ### Risks
 
-- **R1 numbers are a channel.** A producer can encode anything in a number. The egress protects against
-  accidental leakage by a well-behaved data plane, not against a customer deliberately sending its own data;
-  the data plane is the customer's, so that is outside the threat model.
+- **R1 numbers are a channel.** A writer inside the data plane can encode anything in a number: a customer, or a
+  prompt-injected or compromised agent writing lines_added, files_changed or a duration. Day aggregation bounds
+  the bandwidth, but a one-session project-day carries the raw value (R2). The egress defends against
+  accidental text leakage only, not against a deliberate in-plane encoder. Whether that encoder is in scope is
+  part of k1 for the operator; no Decision sets the egress threat model (plan-critique r1 A1).
 - **R2 small cells.** A day aggregate over one session is that session (k4 inside (a)).
 - **R3 silent vocabulary drift.** With enforced: false, a producer that starts emitting a new enum value is
   visible only as a rising withheld count; the failure_signal reads it.
