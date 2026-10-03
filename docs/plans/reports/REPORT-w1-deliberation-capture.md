@@ -282,7 +282,7 @@ Settled (consistent with a Decision, a contract, an operator choice or measured;
   W1-1's runner (#1384, unmerged) writes per-table batches, but rec-4024 item (1) specifies one transaction
   per producer turn-flush, under which cl.2(a) would hold for one producer (section 5).
 
-Contested (evidence on both sides, options listed; k1-k3 in the fixture; parked for the operator):
+Contested (evidence on both sides; k1-k3 in the fixture, k4 report-only; parked for the operator):
 
 - k1 Claude thinking text. Claude Code stores empty signed blocks by default, so deliberation text never
   reaches telemetry from the only live producer. Options: (a) counts only, no settings change; (b) set
@@ -307,6 +307,12 @@ Contested (evidence on both sides, options listed; k1-k3 in the fixture; parked 
   88); (c) LLM labels over CoT (spends; would mirror rec-4032's materialization trigger). Recommended:
   (a). No consumer has named a need, and DeepSeek reasoning can exceed 64 KiB and spill to the blob
   port, so every read is a blob fetch.
+- k4 Read-side arms for the three writer rules other than NULL visibility (an out-of-set value; `none`
+  with reasoning_tokens > 0; reasoning_tokens > tokens_output). Options: (a) writer only, with the build
+  waiting for all four rules (taken here); (b) also add `visibility_unknown` and `none_with_reasoning`
+  arms as drift, one vector each. Recommended: (a); (b) is a cheap add at build time if the read must
+  stand without the writer. rec-4028's LiteLLM mapping makes `none` with tokens > 0 unreachable for a
+  correct producer. Not in the fixture (its contested list holds three rows); parked for the operator.
 
 Risk (known loss modes, not choices). R1-R6 and R9 are this report's ids; a rule of the event envelope
 (telemetry-event-envelope.yaml) is always written env R<n>:
