@@ -31,9 +31,10 @@ Fixture rows: `pwi-deliberation-capture` in `docs/work-item-pilot/telemetry-feed
   disagreement is this item's failure signal. It is a cross-table rule whose truth depends on the
   arrival order of two independent producers (R6), so Decision 210 cl.2(b) makes it a DQ monitor plus
   the read verb, never a write check. The row-local invariants, including that a classifying
-  parser_version always writes a visibility, go to the writer (cl.1, cl.4); rows written before a
-  producer classified are a coverage count, not drift. One SQL statement, grouped by producer,
-  parser_version, model and visibility, passes 14 of 14 vectors (VP 4).
+  parser_version always writes a visibility, go to the writer (cl.1, cl.4), and the build waits for that
+  enforcement; the read also counts a missing visibility after cutover as drift, so the rule does not rest
+  on the writer alone. Rows written before a producer classified are a coverage count, not drift. One SQL
+  statement, grouped by producer, parser_version, model and visibility, passes 15 of 15 vectors (VP 4).
 - One item fits the clause-3 grain (kind task; three criteria; part_of T3.20, depends_on T2.36 and
   T4.2). The verb and the monitor share one failure mode and one SQL, so a split would spend the cap
   on rows with one failure signal.
@@ -49,7 +50,7 @@ Fixture rows: `pwi-deliberation-capture` in `docs/work-item-pilot/telemetry-feed
 | e5 | `provider` is never set by the claude_code producer, and its vocabulary is the retired copilot set (rec-4135 tracks the vocabulary) [VP 1, VP 2] | docs/contracts/telemetry_observations.yaml:307; src/turn_capture/observations.py:56 |
 | e6 | Tier 1 still names `deepseek/deepseek-chat` and `deepseek/deepseek-reasoner` [VP 2], and its note says the aliases "remap to deepseek-v4-flash post-2026-07-24" | docs/contracts/inference-provider.yaml:355-357 |
 | e7 | thinking is an accepted transcript purpose, owned by the model_call [VP 2] | docs/contracts/telemetry_transcripts.yaml:85, :131 |
-| e8 | R5(c) collapses one model_call seen by two producers to claude_code's row; transcript rows are not collapsed; R8: a non-replayable producer emits no open marker | docs/contracts/telemetry-event-envelope.yaml:344-347, :359 |
+| e8 | env R5(c) collapses one model_call seen by two producers to claude_code's row; transcript rows are not collapsed; env R8: a non-replayable producer emits no open marker | docs/contracts/telemetry-event-envelope.yaml:344-347, :359 |
 | e9 | A transcript-less producer (LiteLLM) receives session_started_at from another producer of the tree, else defers | docs/contracts/telemetry-event-envelope.yaml:115-121 |
 | e10 | Decision 209 cl.2(a): agent transcripts never leave the data plane; (b) only an allow-list crosses | docs/DECISIONS.md:75 |
 | e11 | Decision 210 cl.1 row-local rules at the writer; cl.2 cross-row rules the write cannot decide are DQ monitors, alarm-not-gate | docs/DECISIONS.md:22-23 |
@@ -99,16 +100,17 @@ Measured (local only; no production catalog read, no provider call):
   DeepSeek guide the second case is a 400 on a tools request and the first silently blanks the chain.
   `supports_reasoning` is False for `deepseek-chat` and True for `deepseek-flash` in this version's
   bundled model map.
-- The SQL in section 2 passes 14 of 14 vectors on DuckDB 1.5.4 (VP 4). Nine mutants were run once by hand
-  and each is caught: counting thinking rows instead of their existence (13/14), counting any transcript
-  purpose (13/14), treating redacted as text-bearing (13/14), treating summarized as text-free (12/14),
-  summing output tokens of calls with no reported count (11/14), an inner join (6/14), dropping the
-  legacy arm (12/14), counting a legacy row with no text as text_missing (13/14), and dropping
-  parser_version from the grain (13/14).
+- The SQL in section 2 passes 15 of 15 vectors on DuckDB 1.5.4 (VP 4). Twelve mutants were run once by
+  hand and each is caught: counting thinking rows instead of their existence (14/15), counting any
+  transcript purpose (14/15), treating redacted as text-bearing (14/15), treating summarized as text-free
+  (13/15), summing output tokens of calls with no reported count (12/15), an inner join (6/15), dropping
+  the legacy arm (13/15), counting a NULL row with no text as text_missing (13/15), classing every NULL as
+  legacy (14/15), legacy ignoring the parser_version (14/15) or the producer (14/15), and dropping
+  parser_version from the grain (14/15).
 
 ## 2. Design (what this item stages)
 
-Inputs, both after the shared R4/R5 dedupe the reader-verbs item stages (W1-2, its report section 2), so
+Inputs, both after the shared env R4/R5 dedupe the reader-verbs item stages (W1-2, its report section 2), so
 partition binding, generation retirement and the model_call collapse are inherited, not restated:
 `{calls}` is one session's model_call rows (observation_id, producer, parser_version, model,
 tokens_output, reasoning_tokens, reasoning_visibility, as 2a-1 lands them). The monitor binds the same
@@ -124,7 +126,8 @@ WITH t AS (
 c AS (
   SELECT m.*, t.observation_id IS NOT NULL AS has_text,
          CASE
-           WHEN m.reasoning_visibility IS NULL THEN 'legacy'
+           WHEN m.reasoning_visibility IS NULL AND m.producer = 'claude_code' AND m.parser_version < 2 THEN 'legacy'
+           WHEN m.reasoning_visibility IS NULL THEN 'visibility_missing'
            WHEN m.reasoning_visibility IN ('full', 'summarized') AND t.observation_id IS NULL THEN 'text_missing'
            WHEN m.reasoning_visibility NOT IN ('full', 'summarized') AND t.observation_id IS NOT NULL THEN 'text_unexpected'
          END AS call_class
@@ -138,90 +141,112 @@ SELECT producer, parser_version, model, reasoning_visibility,
        coalesce(sum(tokens_output) FILTER (WHERE reasoning_tokens IS NOT NULL), 0) AS counted_output_tokens,
        count(*) FILTER (WHERE has_text) AS text_calls,
        count(*) FILTER (WHERE call_class = 'text_missing') AS text_missing,
-       count(*) FILTER (WHERE call_class = 'text_unexpected') AS text_unexpected
+       count(*) FILTER (WHERE call_class = 'text_unexpected') AS text_unexpected,
+       count(*) FILTER (WHERE call_class = 'visibility_missing') AS visibility_missing
 FROM c GROUP BY producer, parser_version, model, reasoning_visibility
 ```
 
 Response (Decision 88; Decision 209 cl.2a): the rows above and the drift counts; never text. The
 deliberation share is a consumer's division, `reasoning_tokens / counted_output_tokens`, over calls whose
 count was reported (a NULL count is never estimated; rec-4028 forbids LiteLLM's local token counter).
-deliberation_drift_share is `(text_missing + text_unexpected) / (calls - legacy_calls)`, over classified
-calls only, and undefined (never 0) when no call is classified: a legacy-only session yields no drift
-verdict at all, so the monitor emits nothing for it rather than "clean". `legacy_calls` counts rows written before their producer classified (claude_code below the
-2a-1 parser_version): a coverage figure, never drift, and excluded from every maturity trigger (v07,
-v14). It should fall to zero for sessions captured after 2a-1 and for trees the bump re-parses (R7
-replay); what stays is history whose transcript is gone (inferred, not measured).
+
+deliberation_drift_share is `(text_missing + text_unexpected + visibility_missing) / (calls -
+legacy_calls)`, per producer and parser_version: sum each numerator and the denominator across model and
+visibility first, then divide; never average per-row shares (an omitted row can only show
+text_unexpected). It is undefined (never 0) when no call is classified. The monitor's run record carries
+`classified_calls` (calls - legacy_calls) and a verdict of drift, clean or none; a legacy-only run reports
+`none`, never `clean` (v07, v14; c2's third test node).
+
+`legacy_calls` counts only rows written before their producer classified: claude_code below parser_version
+2, the 2a-1 version rec-4028 names (the literal 2 is a placeholder until q1 confirms it). It is a coverage
+figure, never drift, and excluded from every maturity trigger. It should fall to zero for sessions
+captured after 2a-1 and for trees the bump re-parses (env R7 replay); what stays is history whose
+transcript is gone (inferred, not measured). Any other NULL visibility (litellm at any version, claude_code
+from 2a-1 on) is `visibility_missing` and counts as drift (v15).
 
 Writer-side, not here (Decision 210 cl.1 and cl.4, rec-4024 slice 2a; the rules are the 2a-1 contract's):
 reasoning_visibility in its accepted set; reasoning_visibility NOT NULL on model_call rows at a
 classifying parser_version (litellm: every version; claude_code: from the 2a-1 version), which is
 conditional requiredness and never demoted to DQ; reasoning_tokens <= tokens_output; and reasoning_tokens
-zero or NULL when visibility is none. Those are row-local, so a violating row is rejected at write and the
-read never re-checks them. A NULL visibility the read sees is therefore always a legacy row.
+zero or NULL when visibility is none. Decision 210 records that no telemetry required_when rule is
+enforced at write today (docs/DECISIONS.md:19), so the build of this verb waits for that enforcement (plan
+constraint), and the read does not rely on it alone: `visibility_missing` is the defence in depth that
+makes a producer which stops writing visibility read as drift, not as legacy.
 
 Vectors (hand-written for this report; VP 4 runs every one). `calls` rows are `[observation_id,
 producer, parser_version, model, tokens_output, reasoning_tokens, reasoning_visibility]` (claude_code 1 is
-pre-2a-1, 2 is the 2a-1 version rec-4028 names), `thinking` rows are
-`[observation_id, purpose]`, and `expected` rows follow the SELECT column order:
+pre-2a-1, 2 is the 2a-1 version rec-4028 names), `thinking` rows are `[observation_id, purpose]`, and
+`expected` rows follow the SELECT column order. The vectors are post-dedupe input: the env R4/R5 dedupe
+itself is pinned by W1-2's own vectors, not re-proved here.
 
 ```yaml
 vectors:
   - id: v01-omitted-claude-code-counts-only
     calls: [[m1, claude_code, 2, claude-opus-5-5, 371, 52, omitted], [m2, claude_code, 2, claude-opus-5-5, 112, 0, none]]
     thinking: []
-    expected: [[claude_code, 2, claude-opus-5-5, omitted, 1, 0, 1, 52, 371, 0, 0, 0], [claude_code, 2, claude-opus-5-5, none, 1, 0, 0, 0, 112, 0, 0, 0]]
+    expected:
+      - [claude_code, 2, claude-opus-5-5, omitted, 1, 0, 1, 52, 371, 0, 0, 0, 0]
+      - [claude_code, 2, claude-opus-5-5, none, 1, 0, 0, 0, 112, 0, 0, 0, 0]
   - id: v02-summarized-with-text
     calls: [[m1, claude_code, 2, claude-opus-4-6, 300, 120, summarized]]
     thinking: [[m1, thinking]]
-    expected: [[claude_code, 2, claude-opus-4-6, summarized, 1, 0, 1, 120, 300, 1, 0, 0]]
+    expected: [[claude_code, 2, claude-opus-4-6, summarized, 1, 0, 1, 120, 300, 1, 0, 0, 0]]
   - id: v03-deepseek-full-with-text
     calls: [[d1, litellm, 1, deepseek-flash, 40, 31, full]]
     thinking: [[d1, thinking]]
-    expected: [[litellm, 1, deepseek-flash, full, 1, 0, 1, 31, 40, 1, 0, 0]]
+    expected: [[litellm, 1, deepseek-flash, full, 1, 0, 1, 31, 40, 1, 0, 0, 0]]
   - id: v04-full-text-lost
     calls: [[d1, litellm, 1, deepseek-flash, 40, 31, full]]
     thinking: []
-    expected: [[litellm, 1, deepseek-flash, full, 1, 0, 1, 31, 40, 0, 1, 0]]
+    expected: [[litellm, 1, deepseek-flash, full, 1, 0, 1, 31, 40, 0, 1, 0, 0]]
   - id: v05-two-thinking-rows-count-once
     calls: [[d1, litellm, 1, deepseek-flash, 40, 31, full]]
     thinking: [[d1, thinking], [d1, thinking]]
-    expected: [[litellm, 1, deepseek-flash, full, 1, 0, 1, 31, 40, 1, 0, 0]]
+    expected: [[litellm, 1, deepseek-flash, full, 1, 0, 1, 31, 40, 1, 0, 0, 0]]
   - id: v06-omitted-but-text-stored
     calls: [[m1, claude_code, 2, claude-opus-5-5, 371, 52, omitted]]
     thinking: [[m1, thinking]]
-    expected: [[claude_code, 2, claude-opus-5-5, omitted, 1, 0, 1, 52, 371, 1, 0, 1]]
+    expected: [[claude_code, 2, claude-opus-5-5, omitted, 1, 0, 1, 52, 371, 1, 0, 1, 0]]
   - id: v07-legacy-row-is-coverage-not-drift
     calls: [[m1, claude_code, 1, claude-opus-5-5, 371, null, null]]
     thinking: []
-    expected: [[claude_code, 1, claude-opus-5-5, null, 1, 1, 0, 0, 0, 0, 0, 0]]
+    expected: [[claude_code, 1, claude-opus-5-5, null, 1, 1, 0, 0, 0, 0, 0, 0, 0]]
   - id: v08-response-row-is-not-thinking
     calls: [[m1, claude_code, 2, claude-opus-4-6, 300, 120, summarized]]
     thinking: [[m1, response]]
-    expected: [[claude_code, 2, claude-opus-4-6, summarized, 1, 0, 1, 120, 300, 0, 1, 0]]
+    expected: [[claude_code, 2, claude-opus-4-6, summarized, 1, 0, 1, 120, 300, 0, 1, 0, 0]]
   - id: v09-orphan-thinking-row-ignored
     calls: [[m1, claude_code, 2, claude-opus-5-5, 112, 0, none]]
     thinking: [[zz, thinking]]
-    expected: [[claude_code, 2, claude-opus-5-5, none, 1, 0, 0, 0, 112, 0, 0, 0]]
+    expected: [[claude_code, 2, claude-opus-5-5, none, 1, 0, 0, 0, 112, 0, 0, 0, 0]]
   - id: v10-deepseek-thinking-disabled
     calls: [[d1, litellm, 1, deepseek-flash, 25, 0, none]]
     thinking: []
-    expected: [[litellm, 1, deepseek-flash, none, 1, 0, 0, 0, 25, 0, 0, 0]]
+    expected: [[litellm, 1, deepseek-flash, none, 1, 0, 0, 0, 25, 0, 0, 0, 0]]
   - id: v11-redacted-holds-no-text
     calls: [[m1, litellm, 1, claude-sonnet-5, 200, 64, redacted]]
     thinking: []
-    expected: [[litellm, 1, claude-sonnet-5, redacted, 1, 0, 1, 64, 200, 0, 0, 0]]
+    expected: [[litellm, 1, claude-sonnet-5, redacted, 1, 0, 1, 64, 200, 0, 0, 0, 0]]
   - id: v12-full-with-unreported-count
     calls: [[d1, litellm, 1, deepseek-flash, 40, null, full], [d2, litellm, 1, deepseek-flash, 50, 20, full]]
     thinking: [[d1, thinking], [d2, thinking]]
-    expected: [[litellm, 1, deepseek-flash, full, 2, 0, 1, 20, 50, 2, 0, 0]]
+    expected: [[litellm, 1, deepseek-flash, full, 2, 0, 1, 20, 50, 2, 0, 0, 0]]
   - id: v13-parser-versions-group-apart
     calls: [[d1, litellm, 1, deepseek-flash, 40, 31, full], [d2, litellm, 2, deepseek-flash, 40, 31, full]]
     thinking: [[d1, thinking]]
-    expected: [[litellm, 1, deepseek-flash, full, 1, 0, 1, 31, 40, 1, 0, 0], [litellm, 2, deepseek-flash, full, 1, 0, 1, 31, 40, 0, 1, 0]]
+    expected:
+      - [litellm, 1, deepseek-flash, full, 1, 0, 1, 31, 40, 1, 0, 0, 0]
+      - [litellm, 2, deepseek-flash, full, 1, 0, 1, 31, 40, 0, 1, 0, 0]
   - id: v14-legacy-row-with-text-is-not-drift
     calls: [[m1, claude_code, 1, claude-opus-4-6, 300, null, null]]
     thinking: [[m1, thinking]]
-    expected: [[claude_code, 1, claude-opus-4-6, null, 1, 1, 0, 0, 0, 1, 0, 0]]
+    expected: [[claude_code, 1, claude-opus-4-6, null, 1, 1, 0, 0, 0, 1, 0, 0, 0]]
+  - id: v15-missing-visibility-after-cutover-is-drift
+    calls: [[d1, litellm, 1, deepseek-flash, 40, 31, null], [m1, claude_code, 2, claude-opus-5-5, 371, 52, null]]
+    thinking: []
+    expected:
+      - [litellm, 1, deepseek-flash, null, 1, 0, 1, 31, 40, 0, 0, 0, 1]
+      - [claude_code, 2, claude-opus-5-5, null, 1, 0, 1, 52, 371, 0, 0, 0, 1]
 ```
 
 ## 3. Settled / contested / risk / open
@@ -236,14 +261,14 @@ Settled (consistent with a Decision, a contract, an operator choice or measured;
 - s2 Data plane only. Thinking text is agent transcript (Decision 209 cl.2a). The verb reads visibility,
   counts and transcript purpose, never content, so only derived counts are candidates for rec-4141's
   allow-list; the visibility vocabulary and the counts are a closed set, the model ids are not.
-- s3 The drift rule is cross-table and fails Decision 210 cl.2(b): one call can carry thinking rows from
-  two independent producers (R6), so whether a call "has text" depends on which producer's rows have
-  arrived. That makes it a DQ monitor, alarm-not-gate, with T3.20 c3's observation-to-transcript join
-  check as its home; the verb runs the same SQL. Its row-local half (a classifying parser_version writes
-  a visibility) is the writer's (cl.1, cl.4), so the monitor counts only text_missing and
-  text_unexpected over classified calls. 14/14 vectors (VP 4). The batching premise is not relied on:
-  W1-1's runner (#1384, unmerged) writes per-table batches, but rec-4024 item (1) specifies one
-  transaction per producer turn-flush, under which cl.2(a) would hold for one producer (section 5).
+- s3 The drift rule is cross-table and fails Decision 210 cl.2(b): one call can carry thinking rows from two
+  independent producers (R6), so whether a call "has text" depends on which producer's rows have arrived.
+  That makes it a DQ monitor, alarm-not-gate, with T3.20 c3's observation-to-transcript join check as its
+  home; the verb runs the same SQL. Its row-local half (a classifying parser_version writes a visibility) is
+  the writer's (cl.1, cl.4); the read counts its breach as visibility_missing, drift over classified calls
+  beside text_missing and text_unexpected. 15/15 vectors (VP 4). The batching premise is not relied on:
+  W1-1's runner (#1384, unmerged) writes per-table batches, but rec-4024 item (1) specifies one transaction
+  per producer turn-flush, under which cl.2(a) would hold for one producer (section 5).
 
 Contested (evidence on both sides, options listed; k1-k3 in the fixture; parked for the operator):
 
@@ -260,8 +285,8 @@ Contested (evidence on both sides, options listed; k1-k3 in the fixture; parked 
 - k2 LiteLLM-lane durability. DeepSeek's chain of thought exists in the live response and in the
   persona's own message history, which a tools request must carry anyway (the 400 rule above). A
   callback producer that fails to write loses it; Decision 84 I-4 bars an outbox. Options: (a) make the
-  LiteLLM producer replayable (R7) from the persona's durable checkpoint (CD.27), with an open marker;
-  (b) keep it non-replayable (R8) and count each lost write in the producer's diagnostics, as rec-4028
+  LiteLLM producer replayable (env R7) from the persona's durable checkpoint (CD.27), with an open marker;
+  (b) keep it non-replayable (env R8) and count each lost write in the producer's diagnostics, as rec-4028
   item (4) already does for a stream cut mid-flight; (c) an outbox, barred. Recommended: (b) now, and
   (a) as a T4.2 design input once the checkpoint exists. A design choice for rec-4028 and T4.2; no
   precedent.
@@ -271,8 +296,8 @@ Contested (evidence on both sides, options listed; k1-k3 in the fixture; parked 
   (a). No consumer has named a need, and DeepSeek reasoning can exceed 64 KiB and spill to the blob
   port, so every read is a blob fetch.
 
-Risk (known loss modes, not choices; R1-R6 and R9 are this report's ids, and R7/R8 always mean the event
-envelope's replayable and non-replayable producer rules):
+Risk (known loss modes, not choices). R1-R6 and R9 are this report's ids; a rule of the event envelope
+(telemetry-event-envelope.yaml) is always written env R<n>:
 
 - R1 2a-1 absent. Until it lands the claude_code rows carry no visibility and keep thinking_tokens in an
   undocumented metadata key, so every row is a legacy row (v07): the verb reports counts as coverage
@@ -294,7 +319,7 @@ envelope's replayable and non-replayable producer rules):
 - R5 Grouping key. `provider` is NULL on claude_code rows (e5), so the verb groups by producer and model.
   A Claude Code session pointed at DeepSeek's Anthropic-format endpoint would land under claude_code
   with a DeepSeek model id; grouping by model keeps it apart.
-- R6 One call, two producers. R5(c) keeps claude_code's model_call row, but both producers' thinking rows
+- R6 One call, two producers. env R5(c) keeps claude_code's model_call row, but both producers' thinking rows
   survive; the verb tests existence per observation_id (v05). This is also why the drift rule cannot be
   a write check (s3): neither producer's write can see the other's rows.
 - R9 `display: "updates"` (for the 2a-1 and rec-4028 owners, not this item's; named, not filed). The
@@ -302,12 +327,13 @@ envelope's replayable and non-replayable producer rules):
   progress-update blocks carry text. Under rec-4028's "summarized when any thinking block has text",
   those calls would read summarized although the text is not a summary. The visibility vocabulary
   needs a value or a rule for it before any producer enables that beta.
-- Goodhart. deliberation share is the obvious efficiency lever, and lowering effort lowers it while
-  making outcomes worse. It is diagnostic only: no consumer ranks, alarms or files a rec on it alone,
-  and T3.3 reads it only beside an outcome (acceptance_passed, cost per verified merge). The drift share
-  cannot be gamed by a wildcard the way a rule set can. A producer that stops writing visibility is
-  rejected at write (cl.1), not counted; its remaining lever is a producer that misclassifies
-  consistently, which section 4 assigns to the producer conformance tests and c3's review.
+- Goodhart. deliberation share is the obvious efficiency lever, and lowering effort lowers it while making
+  outcomes worse. It is diagnostic only: no consumer ranks, alarms or files a rec on it alone, and T3.3
+  reads it only beside an outcome (acceptance_passed, cost per verified merge). The drift share cannot be
+  gamed by a wildcard the way a rule set can. A producer that stops writing visibility is rejected at write
+  (cl.1) and, until that enforcement exists or if it regresses, read as visibility_missing drift; its
+  remaining lever is a producer that misclassifies consistently, which section 4 assigns to the producer
+  conformance tests and c3's review.
 
 Open (q1-q3 in the fixture; none is answerable from the repository):
 
@@ -325,30 +351,37 @@ Open (q1-q3 in the fixture; none is answerable from the repository):
 ## 4. Consideration register (as authored in the fixture)
 
 - planes: data_plane.
-- failure_signal: stored visibility disagrees with stored text (full or summarized with no thinking row;
-  a thinking row where none was declared). Metric `deliberation_drift_share` over classified calls,
-  per producer and parser_version (both in the SQL's grain; legacy rows excluded). Source: the verb's
-  response and the T3.20 c3 monitor. Why this and not a count or latency: every way capture breaks here
-  is silent (a display default flips, logging is switched off, a stream is cut, a mapping regresses),
-  and each shows up as a disagreement between the producer's own classification and what it stored.
-  What it cannot see: a producer that misclassifies and stores consistently (omitted with no text when
-  text was available). That is the producer conformance tests' job (rec-4028's acceptance node
-  `test_reasoning_visibility_matrix` and 2a-1's), and c3's review.
-- maturity: starts at read_all, meaning the operator reviews every drift row. Every trigger counts
-  classified work only, so legacy-only history (every session today, R1) cannot promote a rung on absent
-  evidence. read_all -> sampled at >= 20 consecutive reviewed sessions with >= 1 classified model_call and
-  zero drift rows; sampled -> spot_check at 0 drift rows across the last 200 sampled classified
-  model_calls; spot_check -> anomaly_triggered at >= 30 consecutive days with deliberation_drift_share
-  defined and <= 0.01 per producer at one parser_version. A parser_version bump (2a-1 is
-  one) is a rung event for the maturity-ladder controller. Seed values for that component to challenge.
+- failure_signal: stored visibility disagrees with stored text (full or summarized with no thinking row; a
+  thinking row where none was declared) or is missing after the producer's cutover. Metric
+  `deliberation_drift_share` over classified calls, per producer and parser_version (both in the SQL's
+  grain; legacy rows excluded). Source: the verb's response and the T3.20 c3 monitor. Why this and not a
+  count or latency: every way capture breaks here is silent (a display default flips, logging is switched
+  off, a stream is cut, a mapping regresses), and each shows up as a disagreement between the producer's own
+  classification and what it stored. What it cannot see: a producer that misclassifies and stores
+  consistently (omitted with no text when text was available). That is the producer conformance tests' job
+  (rec-4028's acceptance node `test_reasoning_visibility_matrix` and 2a-1's), and c3's review.
+- maturity: starts at read_all, meaning the operator reviews every drift row. The ladder is kept per
+  producer, so the claude_code lane (which under k1 (a) can show text_unexpected but never text_missing)
+  cannot promote the LiteLLM lane. Every trigger counts that producer's classified work only, so
+  legacy-only history (every session today, R1) cannot promote a rung on absent evidence. read_all ->
+  sampled at >= 20 consecutive reviewed sessions with >= 1 classified model_call and zero drift rows;
+  sampled -> spot_check at 0 drift rows across a full window of the last 200 sampled classified
+  model_calls (fewer than 200 never promotes); spot_check -> anomaly_triggered at >= 30 consecutive days
+  with deliberation_drift_share defined and <= 0.01 at one parser_version. Rung events that return a
+  producer to read_all: a new producer, a parser_version bump (2a-1 is one), and a change in its
+  visibility mix (k1 flipping to summarized). Seed values for the maturity-ladder component to challenge.
 - verification: c1 (the verb on DuckLake passes every vector and selects no content column), c2 (the
-  monitor flags each drift kind and stays silent on clean vectors), c3 (the operator's read_all review
-  before T3.3 or T3.4 reads the metrics). Each execution command names two distinct test node ids, so
-  one thin test cannot satisfy it (pytest exits non-zero on a missing node id). All open.
+  monitor flags each drift kind, text_missing, text_unexpected and visibility_missing, stays silent on
+  clean vectors, and reports verdict none with classified_calls 0 on a legacy-only run, never clean), c3
+  (the operator's read_all review before T3.3 or T3.4 reads the metrics). Each execution command names at
+  least two distinct test node ids (c2 three), so one thin test cannot satisfy it (pytest exits non-zero
+  on a missing node id). All open.
 - rollback: drop the verb and the monitor; nothing is stored, so every metric re-derives on the next
   read.
 - edges: part_of T3.20 (its c3 join check is the monitor's home and its turn-grain rows carry the
-  Claude Code facts); depends_on T2.36 (the reader mechanism and the writer's row-local rules); depends_on
+  Claude Code facts); depends_on T2.36 (the DuckLake write and read path the verb runs on; it does not
+  own row-local rule enforcement, which is rec-4024 slice 2a and a plan build gate, not an edge, since no
+  tier id owns it); depends_on
   T4.2 (the LiteLLM lane, rec-4028 "lands with/after T4.2's LiteLLM transport").
 
 ## 5. Boundary notes for W2 synthesis
@@ -358,7 +391,7 @@ Open (q1-q3 in the fixture; none is answerable from the repository):
   half rides W1-1's own rows. On merge W2 should add `pwi-deliberation-capture depends_on
   pwi-capture-producer-wiring`; the evaluator's L4 refuses an edge to a pilot item absent from this
   branch's fixture, so it is not added here. A parser_version bump for 2a-1 re-parses every tree under
-  W1-1's runner (R7), so its warm-pass cost (W1-1 k1) applies once per tree at the bump.
+  W1-1's runner (env R7), so its warm-pass cost (W1-1 k1) applies once per tree at the bump.
 - Reader verbs (W1-2, #1390): this verb composes on its shared dedupe and needs its multi-table binding
   (calls plus transcripts). W2 should add `depends_on pwi-telemetry-reader-verbs`.
 - Friction classifier (W1-3, #1394): reasoning text is content, like W1-3's k3 signatures. If W2 adopts
