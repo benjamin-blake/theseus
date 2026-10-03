@@ -11,7 +11,9 @@ read for content or written while preparing it (Decision 67). Every rec operatio
   a deterministic VERDICT per filer rec, not a dashboard: given the fix sha and the telemetry before and
   after it, it returns one of Decision 201's verdicts (holds, fails, unmeasurable) or pending. One SQL
   statement does it and passes 28 of 28 hand-written vectors on DuckDB (VP 2), four of them by raising on
-  malformed input. Twenty-five mutants were run once by hand; each fails a named vector.
+  malformed input. Twenty-five mutants were run once by hand; each fails a named vector. The rule is
+  staged and recommended, not settled: which test, which error trade-off and which windows are a parked
+  fork (k4), and so is the premise every option shares, a verdict evaluated after the merge (k1).
 - The obvious rule is wrong, and the evidence is measured, not argued. A filer files when a count crosses
   a floor, so the filing window is selected on a high value. Read "the count fell after the fix" as proof
   and a fix that changed nothing is proven 44% to 79% of the time, depending on the base rate (VP 3: a
@@ -37,9 +39,10 @@ read for content or written while preparing it (Decision 67). Every rec operatio
   the fix sha whatever its `source`, and refuses an unmeasurable one (VP 1, e3). What is missing is the
   ROUTE. Today a filer rec's acceptance command is classified probeable and routed to the static
   sandbox (no network), where any command that must read telemetry exits non-zero and resolves `fails`
-  at the closing commit; no arm can say "not yet" (VP 1, e4-e6). So the design needs a third verdict
-  source beside static and junit, evaluated later and keyed to the fix sha. That is a change to Decision
-  201's layer, so it is parked (k1) with a candidate decision staged for W3, not decided.
+  at the closing commit; no arm can say "not yet" (VP 1, e4-e6). Any telemetry proof is evaluated after
+  the merge, while Decision 201 judges the oracle at the closing commit and keys the record to the closing
+  sha. So every way of wiring this component amends Decision 201: that is the premise of k1, parked with a
+  candidate decision staged for W3, not decided.
 - The existing back-validation (ci_rca, T1.13 c12(iii)) reads recurrence only: a closed ci_rca rec on a
   file plus a new open one on the same file. Its inputs are the rec cache, a window and a clock (VP 1),
   so "no recurrence" reads the same whether the fix worked or the work stopped. It stays as is; this
@@ -99,6 +102,20 @@ Measured (no rec content read or written):
   selects a peak and the naive rule proves 79% of no-op fixes; at higher rates it is still a coin flip.
   Rare frictions are honestly unprovable: at p0 0.02 the staged rule returns unmeasurable for most
   findings, real fix or not, because the sample needed exceeds 28 days of sessions.
+
+  The other side of the error profile, from the same run [VP 3]. fails carries no significance test: any
+  post-fix rate above half the baseline is fails. So a real 75% reduction reads fails 0.2%, 5.3%, 7.0%
+  and 6.0% of the time (p0 0.02 to 0.2), and smaller real effects are mostly refuted:
+
+  | p0 | true reduction | holds | fails | unmeasurable |
+  |---|---|---|---|---|
+  | 0.1 | 50% | 0.415 | 0.433 | 0.152 |
+  | 0.1 | 30% | 0.154 | 0.759 | 0.087 |
+  | 0.2 | 50% | 0.502 | 0.488 | 0.010 |
+  | 0.2 | 30% | 0.180 | 0.815 | 0.005 |
+
+  holds tests "no change" and applies the 50% bar to the point estimate, so a real 30% drop is still
+  proven 15% to 18% of the time. These trade-offs are why the rule is k4, not a settled row.
 - Session volume: no friction or telemetry session rows exist in production until W1-1's wiring lands
   (rec-filing q3). The nearest proxy is merges to main, a lower bound on sessions: 168 commits over the
   14 full days 2026-09-19 to 2026-10-02, mean 12 a day, median 11.5, range 0 to 31 (git log on
@@ -258,7 +275,7 @@ FROM v
 | verdict | reason | when | action (described only) |
 |---|---|---|---|
 | pending | waiting | the post-fix sample has not reached n_req and the deadline (fix day + settle + max_wait_days) has not passed (v04, v06, v10, v18) | none |
-| holds | proven | one-sided Fisher exact p <= alpha AND the post-fix rate is at most (1 - min_reduction) of the baseline rate (v01, v11, v12, v13, v16, v19, v26) | close the rec through update_rec with the verdict record (Decision 103 deterministic satisfaction, Decision 201 record; its sha keying for a late close is k1); close_proposed instead when chain_len >= chronic_from (v17; rec-filing k6 (a)) |
+| holds | proven | one-sided Fisher exact p <= alpha AND the post-fix rate is at most (1 - min_reduction) of the baseline rate (v01, v11, v12, v13, v16, v19, v26) | the proof close through update_rec with the verdict record; under k1's recommendation it is executed as close_proposed until the anomaly_triggered rung, and its sha keying is k1. close_proposed in any case when chain_len >= chronic_from (v17; k5, inheriting rec-filing k6 (a)) |
 | fails | no_reduction | the post-fix rate is above (1 - min_reduction) of the baseline rate, significant or not (v02, v25) | record the verdict on the fix attempt; the rec stays open with its fix attempt marked fails |
 | unmeasurable | baseline | fewer than min_pre_exposed exposed or min_pre_affected affected baseline sessions, including a subject the classifier no longer labels (v07, v08, v21) | record; disposition is k2 |
 | unmeasurable | too_rare | n_req > max_post_exposed (v09, v13b, v14) | record; disposition is k2 |
@@ -425,7 +442,7 @@ simulation:
   warm_days: 60
   filing_window_days: 7
   filing_min_sessions: 3
-  scenarios: [[0.02, 0.0], [0.02, 0.75], [0.05, 0.0], [0.05, 0.75], [0.1, 0.0], [0.1, 0.75], [0.2, 0.0], [0.2, 0.75]]
+  scenarios: [[0.02, 0.0], [0.02, 0.75], [0.05, 0.0], [0.05, 0.75], [0.1, 0.0], [0.1, 0.75], [0.2, 0.0], [0.2, 0.75], [0.1, 0.5], [0.1, 0.3], [0.2, 0.5], [0.2, 0.3]]
 ```
 
 ```sql
@@ -462,27 +479,29 @@ production false-proof rate, which the failure signal measures (section 4).
 
 ## 3. Settled / contested / risk / open
 
-Settled (consistent with a Decision, a contract or measured; s1-s3 in the fixture):
+Settled (a Decision or contract precedent, or a measured fact every option must meet; s1-s2 in the
+fixture):
 
 - s1 The verdict vocabulary is Decision 201's (holds, fails, unmeasurable), recorded in Decision 201's
-  record shape {rec_id, sha, acceptance_sha256, verdict, source, arm}, and a proof close goes through
-  update_rec with that record. Precedent: Decision 103 (deterministic satisfaction with a recorded proof)
-  and Decision 201 (the record and its single enforcement site), which already admits it (VP 1). pending
-  is not a verdict; it is the absence of one. Which sha the record carries is settled only for the
-  trailer path, where the closing sha is the fix merge commit; for a verdict written days later it is
-  k1, not this row.
-- s2 One SQL statement decides per rec: exposed sessions only, the baseline's stratum, a post-fix sample
-  sized from the baseline before it is read, a one-sided Fisher exact test and a minimum reduction. It
-  passes 28/28 vectors; in the simulation it proves at most 3.0% of no-op fixes where the naive delta
-  proves 44% to 79% (VP 2, VP 3).
-- s3 The fix day, the fix's own sessions and other producer strata are on neither side, and both windows
-  come from one verb call at one classifier_version, so a classifier edit cannot prove a fix (v08, v12,
-  v13, v16, v22). Precedent: the rec-filing window boundary (#1396) and the friction report's R5 (#1394).
+  record shape {rec_id, sha, acceptance_sha256, verdict, source, arm}, which update_rec's single
+  enforcement site already admits (VP 1). pending is not a verdict; it is the absence of one. Precedent:
+  Decision 201. Which sha the record carries, when it is evaluated and whether a holds closes directly
+  are not settled here: they are k1.
+- s2 A naive post-fix drop proves 44% to 79% of no-op fixes (VP 3), so any rule must hold alpha on exposed
+  sessions with a post-fix sample fixed before it is read. This is a measured constraint on every option
+  of k4, not a choice among them.
 
 Contested (evidence on both sides, options listed; k1-k3 in the fixture; all parked, see
 /mnt/project-files/gates/w1-c6-parked-forks.md):
 
-- k1 How a fix reaches an open rec, and who emits the late verdict.
+- k1 A verdict evaluated after the merge, and how a fix reaches an open rec.
+  Premise shared by every option: a telemetry verdict exists only after post-fix sessions accumulate, so
+  it is evaluated days after the merge and keyed to the fix sha. Decision 201 points 1-2 judge the oracle
+  at the closing commit and key the record to the closing sha, so the premise amends Decision 201
+  whichever plumbing is chosen. Its second half is whether a holds, which is an inference with a designed
+  false-proof rate (VP 3) rather than Decision 103's exact "probe passes; target present", may ever close a
+  rec directly, or always goes close_proposed. Recommended for that half: close_proposed up to the
+  spot_check rung, a direct close only from anomaly_triggered (section 4). The options differ in plumbing:
   - (a) The fix PR names the rec in its `Resolves:` trailer as today. The trailer census routes an
     acceptance carrying the back-validation `--assert-holds` contract to a NEW `telemetry` verdict source
     (beside static and junit, e6), which at merge records a fix attempt {sha, effective day} on the open
@@ -491,14 +510,14 @@ Contested (evidence on both sides, options listed; k1-k3 in the fixture; all par
   - (b) A separate trailer for fixes that need telemetry proof, processed by its own job.
   - (c) No automation: an operator stamps the fix attempt by hand.
   For (a): one trailer, one census, one enforcement site; the record shape already passes (VP 1). Against
-  (a): a verdict evaluated days after the merge, keyed to the fix sha rather than the evaluating
-  commit, is a new kind of source under Decision 201, and today the same command resolves `fails` at
-  merge (e4, e5). Two build constraints ride with (a): the late closer passes update_rec a closing sha
+  (a): it adds a third source kind to Decision 201's gate, and today the same command resolves `fails`
+  at merge (e4, e5). (b) and (c) need the same amendment with more machinery or more toil. Two build
+  constraints ride with any option: the late closer passes update_rec a closing sha
   taken from the fix-attempt stamp on the rec, never from the verdict record (reading it back out of
   the record makes the sha check a self-comparison, closure_gate.py:330-365); and it is a non-trailer
   update_rec caller, the fail-open Decision 201 cl.3 leaves to rec-3999, so it must always supply a
-  record. Recommended: (a). It amends a Decision's layer, so it is parked, with candidate decision text
-  staged in section 5 for W3.
+  record. Recommended: (a). Its premise amends a Decision under every option, so it is parked, with
+  candidate decision text staged in section 5 for W3.
 - k2 What happens to an unmeasurable verdict at the deadline (the fallback the rec-filing k4 recommendation
   names).
   - (a) The rec stays open and is listed for triage with its reason.
@@ -520,12 +539,39 @@ Contested (evidence on both sides, options listed; k1-k3 in the fixture; all par
   Against (b): with few subjects per detector the control is noisy and costs power; it also needs a
   second verb call per candidate. Recommended: (a) until the sampled rung, then decide (b) on the
   recorded controls. A weighed choice with no precedent, so it is parked.
+- k4 (report-only: the fixture's contested list is capped at 3) The decision rule and its windows. Decision
+  55 settles that the decision is code; it settles neither the test, nor the error trade-off, nor the
+  windows. Options:
+  - (a) The staged rule (section 2): exposed non-fix sessions in the baseline's dominant (producer,
+    parser_version) stratum, the fix day on neither side, a post-fix sample sized from the baseline,
+    holds on one-sided Fisher p <= alpha AND a point estimate at most half the baseline, fails on the
+    point estimate alone. Evidence: 28/28 vectors, 25 mutants, the simulation (VP 2, VP 3).
+  - (b) Test the reduction itself: holds only when a one-sided test rejects "post-fix rate >= half the
+    baseline" (a rate-ratio null of 0.5), so a real 30% drop is never proven by luck of the point
+    estimate; costs power at the bar.
+  - (c) A symmetric fails: fails only when a test rejects "the drop is at least half", otherwise
+    inconclusive (unmeasurable), so a real 75% fix is refuted far less often than 5-7%; more recs end
+    unmeasurable and k2 decides them.
+  - (d) Pool every matched (producer, parser_version) stratum with a stratified test (Mantel-Haenszel)
+    instead of keeping only the dominant one, which recovers power where it is lowest (p0 0.02 reads 87%
+    unmeasurable) at the cost of a model of stratum shift.
+  For (a): simplest, measured, and its asymmetry is deliberate: a false fails leaves the rec open and
+  shows in the overturned-verdict count (section 4), while a false holds closes it. Against (a): the
+  error profile in section 1, and the asymmetry is a judgement. Recommended: (a), with (c) the first
+  revisit if overturned fails dominate at read_all. No precedent decides between them, so it is parked.
+- k5 (report-only) The chronic close. The SQL's chronic_from arm turns a proof close into close_proposed
+  from the third chain record, which encodes rec-filing k6 (a) (#1396). That fork is parked there, as is
+  the verdict record's home (rec-filing q4). Options follow k6: (a) close_proposed from the third record
+  (staged, v17); (b) no chronic arm, if k6 (b) stops filing at 3, which leaves the arm dead; (c) no cap.
+  Recommended: whatever k6 decides; this item takes chronic_from as k6's parameter. Parked with k6.
 
 Risk (known loss modes, not choices):
 
-- R1 Association, not causation. holds means the subject's exposure-normalised rate fell by at least half
-  after this fix, beyond chance. A concurrent global change can produce that (k3). The claim the verdict
-  makes is exactly that, and the run record says which other fixes landed in the same windows.
+- R1 Association, not causation, and not effect size. holds means the subject's exposure-normalised rate
+  after this fix is lower than before beyond chance (one-sided Fisher against no change) and its point
+  estimate is at most half the baseline. It does not mean the true drop is at least half: a real 30% drop
+  is proven 15% to 18% of the time (section 1). A concurrent global change can also produce a holds (k3).
+  The run record says which other fixes landed in the same windows.
 - R2 Late rows. Telemetry is an append-only journal and a producer can write a session's rows after the
   fact; a re-derivation days later could see a different sample. The verdict record stores the counts
   and the stop day, the acceptance command reads the record (TAP rule), and the build should decide only
@@ -548,7 +594,8 @@ Risk (known loss modes, not choices):
   way, so it changes nothing here; k1 (a) must classify the back-validation contract before that arm.
 - R8 Repeated fails. A rec whose fixes keep failing accumulates fix attempts while its chain stays one
   record long, so rec-filing k6's chronic tag (chain records) never fires on it. The run record should
-  count attempts per rec; whether a second fails verdict escalates is left to W2.
+  count attempts per rec; whether a second fails verdict escalates is left to W2, which should weigh that a real 75% fix reads
+  fails 5-7% of the time (section 1).
 
 Open (q1-q3 in the fixture; none is answerable from the repository):
 
@@ -576,7 +623,9 @@ Open (q1-q3 in the fixture; none is answerable from the repository):
   max_wait_days of the close. Starvation is verdicts that stay unmeasurable, so no filer rec ever
   closes on proof. Metric: `false_proof_rate` (regressions within 28 days of a proof close, over proof
   closes) beside `unmeasurable_share`, per 90 days. Source: verdict records joined to the filer's
-  regression action; per-reason verdict counts.
+  regression action; per-reason verdict counts. False refutation (a real fix read fails, 5-7% of real 75%
+  fixes in the simulation) is not in that metric; it is read through the overturned-verdict count the
+  maturity ladder already keeps, which counts an overturned fails like an overturned holds.
 - Goodhart guard: the cheap ways to a low false_proof_rate are to prove nothing (every verdict
   unmeasurable or fails) or to prove only fixes for frictions that were fading anyway. The first shows as
   unmeasurable_share and the fails share in every run record, read beside false_proof_rate. The second
@@ -586,11 +635,12 @@ Open (q1-q3 in the fixture; none is answerable from the repository):
   nothing; the operator confirms each holds close and each fails (c3). read_all -> sampled at >= 20
   consecutive verdicts the operator confirmed unchanged; sampled -> spot_check at 0 overturned verdicts
   across the last 50 sampled; spot_check -> anomaly_triggered at false_proof_rate <= 0.05 over the last
-  90 days with at least 20 proof closes. A params_version change is a new rule set; the maturity-ladder
+  90 days with at least 20 proof closes. Until anomaly_triggered a holds is proposed, never closed
+  directly (k1's second half). A params_version change is a new rule set; the maturity-ladder
   controller decides whether it restarts the ladder.
-- verification: c1 (the verdict passes these vectors on DuckDB), c2 (a telemetry verdict record keyed to
-  the fix sha closes a filer rec through update_rec, and a pending candidate stays open), c3 (the
-  operator's read_all verdict review). All open.
+- verification: c1 (the verdict passes these vectors on DuckDB), c2 (the close path k1 picks, with the
+  closing sha taken from the recorded fix attempt and a pending candidate left open), c3 (the operator's
+  read_all verdict review). All open; c2's test is written once k1 is decided.
 - rollback: stop the back-validation schedule. Verdict records stay as history; pending recs stay open
   for a human close; recs it closed are ordinary closed recs whose recurrence files a regression.
 - edges: part_of T3.4 (its last link is this item); depends_on T2.36 (the verdict reads telemetry through
@@ -624,5 +674,8 @@ Open (q1-q3 in the fixture; none is answerable from the repository):
   Decision 201's layer. It claims a rec whose acceptance carries the back-validation assert contract. At
   merge it records a fix attempt and supplies no verdict, so the rec stays open; later it supplies a
   verdict record keyed to the fix sha, produced by a decision rule declared in a contract with its
-  vectors. Amends Decision 201 (a third source with delayed evaluation) and leaves Decision 103's
-  oracle rule intact: the rec's acceptance reads the record."
+  vectors. Amends Decision 201 points 1-2 (a verdict evaluated after the closing commit and keyed to the
+  fix sha), which any wiring of telemetry proof needs, and leaves Decision 103's oracle rule intact: the
+  rec's acceptance reads the record. The late closer takes update_rec's closing sha from the recorded
+  fix attempt, never from the verdict record, and always supplies a record (it is a non-trailer caller).
+  A holds is proposed for confirmation until the item reaches its last maturity rung."

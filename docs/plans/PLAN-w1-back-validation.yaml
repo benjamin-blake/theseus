@@ -48,8 +48,8 @@ acceptance_criteria:
     every vector on DuckDB across four verdicts, seven reasons and four actions, four by raising (VP step 2).
   - >-
     The seeded null-effect simulation in report section 2, decided by the same SQL, shows the naive delta
-    proving 44% to 79% of no-op fixes and the staged rule at most 3.0%, with its power on a 75% reduction
-    (VP step 3).
+    proving 44% to 79% of no-op fixes and the staged rule at most 3.0%, with its power on a 75% reduction,
+    its fails share on real fixes and its verdicts on real 50% and 30% reductions (VP step 3).
   - >-
     telemetry_sessions carries no commit column but carries branch and rec_ids; the trailer gate declares only
     static and junit verdict sources; fixed_by_sha is stamped only on close; no telemetry verdict source is
@@ -118,24 +118,26 @@ verification_plan:
       bin/venv-python -c "import re,functools,duckdb,yaml; F=chr(96)*3; T=open('docs/plans/reports/REPORT-w1-back-validation.md',encoding='utf-8').read(); S=re.findall(F+'sql\n(.*?)'+F,T,re.S); Y=[yaml.safe_load(b) for b in re.findall(F+'yaml\n(.*?)'+F,T,re.S)]; P,Z=Y[0],Y[2]['simulation'];
       R=lambda s,d: functools.reduce(lambda a,k: a.replace('{'+k+'}',str(d[k])),[k for k in d if k not in ('params_version','scenarios')],s); q=R(S[0],P).replace('{candidates}','sim_candidates').replace('{sessions}','sim_sessions');
       G=lambda c,p,r: (c.execute(R(R(S[1],dict(Z,p0=p,r=r)),P)), c.execute('SELECT n.naive_holds, v.verdict FROM sim_naive n JOIN ('+q+') v USING (rec_id)').fetchall())[1];
-      O={(p,r): G(duckdb.connect(),p,r) for p,r in Z['scenarios']}; B=sorted({p for p,r in Z['scenarios']}); A=lambda p,r,f: '%.3f' % (sum(map(f,O[(p,r)]))/len(O[(p,r)]));
-      print('scenarios=%d filed_min=%d naive_null=%s staged_null=%s staged_fix=%s unmeasurable_fix=%s' % (len(O), min(map(len,O.values())), '/'.join(A(p,0.0,lambda x: x[0]) for p in B), '/'.join(A(p,0.0,lambda x: x[1]=='holds') for p in B), '/'.join(A(p,0.75,lambda x: x[1]=='holds') for p in B), '/'.join(A(p,0.75,lambda x: x[1]=='unmeasurable') for p in B)))"
+      O={(p,r): G(duckdb.connect(),p,r) for p,r in Z['scenarios']}; B=sorted({p for p,r in Z['scenarios'] if r==0.75}); M=[(p,r) for p,r in Z['scenarios'] if r not in (0.0,0.75)]; A=lambda p,r,f: '%.3f' % (sum(map(f,O[(p,r)]))/len(O[(p,r)]));
+      print('scenarios=%d filed_min=%d naive_null=%s staged_null=%s staged_fix=%s unmeasurable_fix=%s fails_fix=%s partial=%s' % (len(O), min(map(len,O.values())), '/'.join(A(p,0.0,lambda x: x[0]) for p in B), '/'.join(A(p,0.0,lambda x: x[1]=='holds') for p in B), '/'.join(A(p,0.75,lambda x: x[1]=='holds') for p in B), '/'.join(A(p,0.75,lambda x: x[1]=='unmeasurable') for p in B), '/'.join(A(p,0.75,lambda x: x[1]=='fails') for p in B), ','.join('p%sr%s:%s/%s/%s' % (p,r,A(p,r,lambda x: x[1]=='holds'),A(p,r,lambda x: x[1]=='fails'),A(p,r,lambda x: x[1]=='unmeasurable')) for p,r in M)))"
     expected: >-
-      One line over eight scenarios (base rates 0.02, 0.05, 0.1 and 0.2, each with no fix effect and with a
-      75% reduction, at least 999 filed findings each): the naive delta proves 0.791, 0.472, 0.442 and 0.464 of
-      no-op fixes; the staged rule proves 0.022, 0.025, 0.030 and 0.025 of them; it proves 0.132, 0.699, 0.866
-      and 0.932 of real reductions and returns unmeasurable on 0.866, 0.248, 0.064 and 0.008 of them. Draws
-      are md5 over the seed, so the line is identical on every run.
+      One line over twelve scenarios (base rates 0.02, 0.05, 0.1 and 0.2, each with no fix effect and with a
+      75% reduction, plus 50% and 30% reductions at 0.1 and 0.2; at least 999 filed findings each): the naive
+      delta proves 0.791, 0.472, 0.442 and 0.464 of no-op fixes; the staged rule proves 0.022, 0.025, 0.030 and
+      0.025 of them; on a real 75% reduction it proves 0.132, 0.699, 0.866 and 0.932, returns unmeasurable on
+      0.866, 0.248, 0.064 and 0.008 and fails 0.002, 0.053, 0.070 and 0.060; partial lists holds/fails/
+      unmeasurable for the 50% and 30% reductions. Draws are md5 over the seed, so the line is identical on
+      every run.
     fix_if: >-
       Different numbers with unchanged SQL and simulation blocks mean DuckDB changed md5, lgamma or window
-      semantics: re-run, update section 1's table, s2 and the fixture rows. A staged_null above 0.05 means the
+      semantics: re-run, update section 1's tables, s2, k4 and the fixture rows. A staged_null above 0.05 means the
       rule no longer holds alpha: fix the rule before anything else.
     hermetic: true
     graduation: waive
     graduation_waiver_reason: >-
-      Design evidence for s2 under stated simplifications; the production signal is false_proof_rate
+      Design evidence for s2 and k4 under stated simplifications; the production signal is false_proof_rate
       (failure_signal), not a simulation.
-    expected_literals: ["scenarios=8 filed_min=999 naive_null=0.791/0.472/0.442/0.464 staged_null=0.022/0.025/0.030/0.025 staged_fix=0.132/0.699/0.866/0.932 unmeasurable_fix=0.866/0.248/0.064/0.008"]
+    expected_literals: ["scenarios=12 filed_min=999 naive_null=0.791/0.472/0.442/0.464 staged_null=0.022/0.025/0.030/0.025 staged_fix=0.132/0.699/0.866/0.932 unmeasurable_fix=0.866/0.248/0.064/0.008 fails_fix=0.002/0.053/0.070/0.060 partial=p0.1r0.5:0.415/0.433/0.152,p0.1r0.3:0.154/0.759/0.087,p0.2r0.5:0.502/0.488/0.010,p0.2r0.3:0.180/0.815/0.005"]
   - step: 4
     phase: pre-deploy
     action: Re-derive the session, trailer-source, stamping and waiver facts the design depends on
@@ -245,15 +247,15 @@ context:
     Measurement (report section 1): merges to main per day from git log on origin/main (counts only), as a
     lower bound on session volume. The twenty-five-mutant check of the verdict SQL was run once by hand and
     is reported, not a VP step.
-  - "fork: one item vs split verdict/route/record | chosen: one task item | class: consistency-only | precedent: CD.45 item-count cap 12 across about ten components; Decision 197 cl.3 grain; components 1-5 precedent | precedent_kind: contract | reversible: yes | persisted: fixture"
-  - "fork: edge home | chosen: part_of T3.4, depends_on T2.36 | class: consistency-only | precedent: T3.4's exit criterion ends at telemetry delta proves fix; validate_work_item_pilot L4 (edge targets are tier ids) | precedent_kind: roadmap | reversible: yes | persisted: fixture"
-  - "fork: verdict vocabulary and record keying | chosen: Decision 201 values, record keyed to rec, acceptance sha256 and fix sha | class: consistency-only | precedent: Decision 201 and Decision 103 deterministic satisfaction | precedent_kind: decision | reversible: yes | persisted: report s1, fixture s1"
-  - "fork: decision rule (exposed sessions, baseline stratum, fixed post sample, Fisher plus min reduction) | chosen: as staged | class: consistency-only | precedent: measured (VP 2 vectors, VP 3 simulation); Decision 55 decisions in code | precedent_kind: decision | reversible: yes | persisted: report s2, fixture s2"
-  - "fork: window boundary and exclusions | chosen: fix day, fix sessions and other strata on neither side; one classifier_version per call | class: consistency-only | precedent: rec-filing window boundary (#1396 v08, v13, v30) and friction R5 (#1394) | precedent_kind: contract | reversible: yes | persisted: report s3, fixture s3"
-  - "fork: fix link and late verdict source (k1) | chosen: none; (a) telemetry verdict source on the Resolves trailer recommended | class: asked | precedent: none (amends Decision 201's layer) | precedent_kind: none | reversible: yes | persisted: report k1, staged CD text section 5, /mnt/project-files/gates/w1-c6-parked-forks.md, PARKED"
+  - "fork: one item vs split verdict/route/record | chosen: one task item | class: consistency-only | precedent: Decision 197 cl.3 grain; CD.45 item-count cap 12 (operator-answered: CD.45 binds while pending) | precedent_kind: decision | reversible: yes | persisted: fixture"
+  - "fork: edge home | chosen: part_of T3.4, depends_on T2.36 | class: consistency-only | precedent: T3.4's exit criterion ends at telemetry delta proves fix; validate_work_item_pilot L4 (edge targets are tier ids) | precedent_kind: contract | reversible: yes | persisted: fixture"
+  - "fork: verdict vocabulary and record shape | chosen: Decision 201 values and record fields {rec_id, sha, acceptance_sha256, verdict, source, arm} | class: consistency-only | precedent: Decision 201 points 1-2 (vocabulary, record, single enforcement site) | precedent_kind: decision | reversible: yes | persisted: report s1, fixture s1"
+  - "fork: delayed evaluation keyed to the fix sha, and whether an inferential holds direct-closes under Decision 103 past read_all (k1 premise) | chosen: none; amendment needed under every k1 option; close_proposed until anomaly_triggered recommended | class: asked | precedent: contrary (Decision 201 points 1-2: oracle at the closing commit, record keyed to the closing sha) | precedent_kind: decision | reversible: yes | persisted: report k1, staged CD text section 5, /mnt/project-files/gates/w1-c6-parked-forks.md, PARKED"
+  - "fork: fix link plumbing (k1 options) | chosen: none; (a) telemetry verdict source on the Resolves trailer recommended | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: report k1, /mnt/project-files/gates/w1-c6-parked-forks.md, PARKED"
+  - "fork: decision rule and windows (k4) | chosen: none; (a) staged rule recommended (exposed non-fix sessions, dominant stratum, baseline-sized sample, Fisher plus point-estimate bar, fails on point estimate) over rate-ratio null, symmetric fails and Mantel-Haenszel pooling | class: asked | precedent: none (Decision 55 settles only that the decision is code) | precedent_kind: none | reversible: yes | persisted: report k4 (report-only), /mnt/project-files/gates/w1-c6-parked-forks.md, PARKED"
   - "fork: unmeasurable at the deadline (k2) | chosen: none; (b) close_proposed recommended | class: asked | precedent: none (Decision 103 covers semantic verdicts, not unmeasurable) | precedent_kind: none | reversible: yes | persisted: report k2, /mnt/project-files/gates/w1-c6-parked-forks.md, PARKED"
   - "fork: confound control (k3) | chosen: none; (a) single-subject test with an advisory control recommended | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: report k3, /mnt/project-files/gates/w1-c6-parked-forks.md, PARKED"
-  - "fork: chronic close and verdict record home | chosen: inherited, not decided here (rec-filing k6 sets chronic_from; rec-filing q4 sets the record home) | class: consistency-only | precedent: #1396 parked forks | precedent_kind: contract | reversible: yes | persisted: report sections 2, 3"
+  - "fork: chronic close and verdict record home (k5) | chosen: none; inherits rec-filing k6 (chronic_from) and q4 (record home) | class: asked | precedent: none (inherits #1396 k6 and q4, both parked) | precedent_kind: none | reversible: yes | persisted: report k5 (report-only), q4, /mnt/project-files/gates/w1-c6-parked-forks.md, PARKED"
   - >-
     gates (reports in /mnt/project-files/gates/): zero-context verification r1
     (w1-back-validation-zero-context-verification-r1-7d3a0c58) REVISE on b8570842: M1 rows counted, not
@@ -261,7 +263,11 @@ context:
     (duplicate session_id), vector v27 and its mutant. S1 s1 no longer settles the late-close sha keying
     (k1 owns it); S2 the late closer's closing sha comes from the fix-attempt stamp, and it is a non-trailer
     update_rec caller (k1 text, c2). N1 upper-tail mutant relabelled and a doubled-p mutant added; N2, N3,
-    N5 folded in text.
+    N5 folded in text. plan-critique r1 (w1-back-validation-plan-critique-r1-4c8e2b71) REVISE on f164bf17: M1
+    the fix-sha keying and direct-close question are the asked premise of k1 under every option (fixture
+    title, how and c2 made option-neutral); M2 decision rule and windows parked as k4, chronic close as k5,
+    fixture s2 cut to the measured constraint and s3 dropped; S1 the fails side measured (VP 3 extended) and
+    R1 restated; S2 grammar labels fixed.
   - >-
     check_accounting: no registered check is added or removed; the hygiene stream's baseline is untouched.
 pre_implementation_checklist:
