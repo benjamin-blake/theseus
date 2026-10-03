@@ -172,15 +172,20 @@ this PR's). Every read-derived telemetry metric is declared in its Class A contr
 {timing: read, derived_by: reader_verb:..., realized: false}` (telemetry_observations.yaml:290,
 telemetry_sessions.yaml:219-252). The build declares, before or with the verb: `deliberation_class` on
 telemetry_observations, a model_call-grain read-derived field (legacy, text_missing, text_unexpected,
-visibility_missing or NULL for clean) with `derived_by: reader_verb:session_deliberation_rollup`; and
-session-grain totals on telemetry_sessions with the same derived_by (classified_calls, legacy_calls,
-deliberation_drift_calls, reasoning_tokens_total, counted_output_tokens_total). The model_call field rides
-with 2a-1's telemetry_observations amendment; the session fields ride with the verb's build plan. The
-per-(producer, parser_version, model, visibility) roll-up is multi-row per session and fits no single Class
-A field; where its shape is declared is q4. Decision 210 cl.3 also binds the SQL's literals to these
-sources: the text-bearing set (full, summarized) is read from the 2a-1 contract's visibility vocabulary and
-the cutover from parser_versions.yaml, never restated. A new value such as R9's would read
-text_unexpected (loud) until the vocabulary classes it.
+visibility_missing or NULL for clean), which is the SQL's per-call `call_class`; and session-grain totals on
+telemetry_sessions with `derived_by: reader_verb:session_deliberation_rollup`, named per that contract's
+`*_total` roll-up convention (classified_calls_total, legacy_calls_total, deliberation_drift_calls_total,
+reasoning_tokens_total, counted_output_tokens_total) and added to its roll-up reconciliation note. The
+roll-up verb returns grouped rows, not a per-call class, so `deliberation_class` names a per-call verb (or
+a per-call projection of the roll-up verb) as its derived_by, as `model_call_cost_estimate` does for cost;
+the build records that choice beside q4. The model_call field rides with 2a-1's telemetry_observations
+amendment; the session fields ride with the verb's build plan. The per-(producer, parser_version, model,
+visibility) roll-up is multi-row per session and fits no single Class A field; where its shape is declared
+is q4. Decision 210 cl.3 also binds the SQL's literals to these sources: the text-bearing set (full,
+summarized) is read from the 2a-1 contract's visibility vocabulary and the cutover from
+parser_versions.yaml, never restated. A new value such as R9's would read text_unexpected only if it
+stored a thinking row, and clean otherwise; the writer's accepted-set rule (cl.4, in the build gate) is
+what stops it, as the writer-side paragraph below says.
 
 Writer-side, not here (Decision 210 cl.1 and cl.4, rec-4024 slice 2a; the rules are the 2a-1 contract's):
 reasoning_visibility in its accepted set; reasoning_visibility NOT NULL on model_call rows at a
