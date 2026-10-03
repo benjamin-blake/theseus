@@ -11,8 +11,8 @@ rec was written while preparing it (Decision 67). Every rec operation below is a
   must file anomaly recs and T3.4 needs "rec filed -> ... -> telemetry delta proves fix"
   (ROADMAP-PLATFORM.yaml:6579, :6593), yet nothing turns a telemetry or friction finding into a rec.
   The design stages one SQL statement that, per finding, picks one of ten actions (file, update,
-  unchanged, regression, drop, covered, suppressed, unresolved, deferred, hold) and passes 21 of 21
-  hand-written vectors on DuckDB (VP 2). Thirteen mutants were run once by hand; each fails a named vector.
+  unchanged, regression, drop, covered, suppressed, unresolved, over_budget, hold) and passes 25 of 25
+  hand-written vectors on DuckDB (VP 2). Seventeen mutants were run once by hand; each fails a named vector.
 - The repo already has four dedupe mechanisms, and none fits as is (VP 1, VP 3, VP 4):
   - `rec_episode.run_episode`, the shared monitor primitive, keys on SOURCE alone. Over live code, a
     second subject on the same source updates the first subject's rec; a declined head is invisible
@@ -20,8 +20,9 @@ rec was written while preparing it (Decision 67). Every rec operation below is a
     open rec with no proof (VP 1).
   - The relevance evaluator's open_duplicate signal is title Jaccard >= 0.7, composed queue-wide by
     backlog_health. Two templated filer titles for DIFFERENT findings score 0.82 and read as duplicates,
-    while a paraphrased human rec for the SAME problem scores 0.00 (VP 3). Title similarity is wrong in
-    both directions for a templated filer.
+    while a paraphrased title for the SAME problem scores 0.00 (VP 3; that title is constructed for the
+    probe, and the nearest live open rec on the same hook, rec-4118, scores 0.03). Title similarity is wrong
+    in both directions for a templated filer.
   - backlog_health files one aggregate rec per detector with the finding ids in context_v2_json
     (rec-3702 carries 221 ids). One rec cannot be closed by one fix, so T3.4's per-subject "delta proves
     fix" cannot read it.
@@ -34,7 +35,7 @@ rec was written while preparing it (Decision 67). Every rec operation below is a
   to a covering rec from another source, a hold below the filing floor, and a per-run filing budget.
 - Dedupe against OTHER sources' open recs cannot be decided from content without an LLM or a similarity
   score, and both are rejected above (Decision 55: dedup decisions in code; rec-2591's Haiku judge is
-  deferred and spends). The design makes the cross-source link explicit and typed: the operator marks a
+  put off until evidence justifies it, and it spends). The design makes the cross-source link explicit and typed: the operator marks a
   filer rec `superseded` with `covered_by: rec-N`, and the filer follows that pointer (action covered
   while rec-N is open, regression or drop by the time rule once rec-N closes). Where the link lives is
   contested and parked (k1). This is also where the retired transcript-review prompt's missing-gotcha
@@ -64,21 +65,23 @@ rec was written while preparing it (Decision 67). Every rec operation below is a
 | e12 | No telemetry filer source is registered; transcript-review (the retired friction prompt's source) still is [VP 4] | config/agent/data_quality/source_registry.yaml:43 |
 | e13 | Decision 103: semantic verdicts (duplicate, superseded) produce close_proposed for human or policy confirmation, never a direct close | docs/DECISIONS.md:6739-6741 |
 | e14 | Non-automatable open-rec soft cap is 250 [VP 4] | scripts/preflight/_common.py:25 |
-| e15 | rec-2952 (open): a machine filer (reconcile_starved) calls file_rec unconditionally and "would file N recs" during one outage; rec-2591 (open, deferred): a Haiku dedup judge on fingerprint collision; rec-3702 (open): backlog_health's aggregate rec over 221 ids | rec_by_id reads (status open) |
+| e15 | rec-2952 (open): a machine filer (reconcile_starved) calls file_rec unconditionally and "would file N recs" during one outage; rec-2591 (open; its context puts it off until evidence justifies it): a Haiku dedup judge on fingerprint collision; rec-3702 (open): backlog_health's aggregate rec over 221 ids | rec_by_id reads (status open) |
 
 Measured (live reads, counts only; no rec content is reproduced and nothing was written):
 
-- Decision table: the SQL in section 2 passes 21 of 21 vectors, and DuckDB's `sha256` over the salted,
+- Decision table: the SQL in section 2 passes 25 of 25 vectors, and DuckDB's `sha256` over the salted,
   NUL-joined key equals Python's `hashlib.sha256` (fingerprint parity, so the in-code key and the SQL
-  key agree) [VP 2]. Thirteen mutants were run once by hand, not as a VP step; each fails the vectors
+  key agree) [VP 2]. Seventeen mutants were run once by hand, not as a VP step; each fails the vectors
   named: a string-sorted chain head (v17), no window idempotence (v05), an unknown close time dropping
-  instead of failing closed (v09), detector_version folded into the fingerprint (v18, and every vector
-  with a head, since the harness hashes without a version), no detector_id in the fingerprint (v19),
-  updates counted against the budget (v21), regressions exempt from the budget (v21), a dangling cover
-  suppressed instead of unresolved (v15), a declined or bare-superseded head re-filing as rec_episode
-  does (v10, v14), the two floors joined by OR (v01, v02), a closed covering rec still read as covered
-  (v12, v13), the budget keeping the smallest findings (v20, v21) and any head status updating (ten
-  vectors, v07-v15 and v21).
+  instead of failing closed (v09), detector_version folded into the fingerprint (v18 alone when heads are
+  hashed at the filing version, per verification r1; every vector with a head when they are hashed
+  without one), no detector_id in the fingerprint (v19), the cover pointer returned for a closed head
+  (v22), no collapse of one fingerprint's findings within a run (v25), a deferred head suppressed (v23), a
+  deferred cover unresolved (v24), updates counted against the budget (v21), regressions exempt from the
+  budget (v21), a dangling cover suppressed instead of unresolved (v15), a declined or bare-superseded
+  head re-filing as rec_episode does (v10, v14), the two floors joined by OR (v01, v02), a closed covering
+  rec still read as covered (v12, v13), the budget keeping the smallest findings (v20, v21) and any head
+  status updating (twelve vectors, v07-v15, v21, v22 and v24).
 - Queue state (named reads `count_by_status` and `open_recs`, 2026-10-03 about 07:35Z): 1419 open,
   1188 closed, 183 superseded, 72 declined; of the open, 1244 non-automatable and 175 automatable.
   That is 4.98 times the soft cap (e14). rec-3702's own monitor counts 196 open recs that are premise-dead
@@ -118,13 +121,18 @@ file_budget: 3
 The decision, verified against the vectors below (VP 2). `{findings}` is one run's findings;
 `{heads}` is the filer source's recs projected to rec_id, fingerprint, status, covered_by, closed_at (the
 closing update's time), last_seen_end and created; `{targets}` is one `rec_by_id` read per distinct
-covered_by id, projected to rec_id, status and closed_at. Placeholders render from the params block:
+covered_by id, projected to rec_id, status and closed_at. Placeholders render from the params block.
+Precondition handled in `f`: one finding per fingerprint per run; a catch-up run that yields two windows
+for one fingerprint keeps the latest (v25), so one run can never file twice. A rec_id with no trailing
+digits makes the chain-order CAST raise; that is deliberate (fail loud, Decision 55) and the build keeps
+it so:
 
 ```sql
 WITH f AS (
   SELECT *, sha256('{salt}' || chr(0) || detector_id || chr(0) || subject_key) AS fingerprint,
          sessions >= {min_sessions} AND events >= {min_events} AS fileable
   FROM {findings}
+  QUALIFY row_number() OVER (PARTITION BY fingerprint ORDER BY window_end DESC, window_start DESC, sessions DESC) = 1
 ),
 head AS (
   SELECT * FROM (
@@ -144,13 +152,13 @@ d AS (
     CASE
       WHEN NOT fileable THEN 'hold'
       WHEN head_id IS NULL THEN 'file'
-      WHEN head_status IN ('open', 'in_progress') THEN
+      WHEN head_status IN ('open', 'in_progress', 'deferred') THEN
         CASE WHEN last_seen_end IS NULL OR window_end > last_seen_end THEN 'update' ELSE 'unchanged' END
       WHEN head_status = 'closed' THEN
         CASE WHEN head_closed_at IS NULL OR window_start > head_closed_at THEN 'regression' ELSE 'drop' END
       WHEN head_status = 'superseded' AND covered_by IS NOT NULL THEN
         CASE
-          WHEN target_status IN ('open', 'in_progress') THEN 'covered'
+          WHEN target_status IN ('open', 'in_progress', 'deferred') THEN 'covered'
           WHEN target_status = 'closed' THEN
             CASE WHEN target_closed_at IS NULL OR window_start > target_closed_at THEN 'regression' ELSE 'drop' END
           WHEN target_status = 'declined' THEN 'suppressed'
@@ -167,10 +175,10 @@ r AS (
   FROM d
 )
 SELECT detector_id, subject_key,
-       CASE WHEN nth > {file_budget} THEN 'deferred' ELSE action END AS action,
+       CASE WHEN nth > {file_budget} THEN 'over_budget' ELSE action END AS action,
        CASE
          WHEN action IN ('hold', 'file') OR nth > {file_budget} THEN NULL
-         WHEN covered_by IS NOT NULL AND action IN ('covered', 'regression', 'drop', 'unresolved') THEN covered_by
+         WHEN head_status = 'superseded' AND covered_by IS NOT NULL AND action IN ('covered', 'regression', 'drop', 'unresolved') THEN covered_by
          ELSE head_id
        END AS ref
 FROM r
@@ -182,17 +190,17 @@ What each action does, as the build would wire it (none of it runs here):
 |---|---|---|---|
 | hold | below either floor | none | - |
 | file | fileable, no chain head | file_rec: templated title and context, context_v2_json identity, source priority | - |
-| update | open or in_progress head, window advanced | update_rec on the head: occurrence_count + 1, last_seen_end, detector_version, latest counts | head |
+| update | open, in_progress or deferred head, window advanced (a deferred rec is parked, not resolved: v23) | update_rec on the head: occurrence_count + 1, last_seen_end, detector_version, latest counts | head |
 | unchanged | same head, window not advanced (re-run) | none | head |
-| regression | closed head (or covering rec) and the window starts after its close, or the close time is unknown (fail closed) | file_rec: "REGRESSION: " prefix, regression_of = ref, priority one step up | head or cover |
-| drop | the window still includes sessions from before that close | none; logged | head or cover |
-| covered | superseded head whose covered_by rec is open or in_progress | none | cover |
+| regression | closed head, or a superseded head's closed cover, and the window starts after that close, or the close time is unknown (fail closed) | file_rec: "REGRESSION: " prefix, regression_of = ref, priority one step up | the rec whose close decided it: head when the head is closed (even if it still carries covered_by, v22), cover only for a superseded head |
+| drop | the window still includes sessions from before that close | none; logged | as for regression |
+| covered | superseded head whose covered_by rec is open, in_progress or deferred (v24) | none | cover |
 | suppressed | declined head, superseded head with no cover, or a declined cover | none; counted with its sessions | head |
 | unresolved | covered_by names a rec the read cannot resolve or that is itself superseded | none; listed for triage | cover |
-| deferred | a file or regression past the run's file_budget, smallest sessions first | none; refiles next run if still fileable | - |
+| over_budget | a file or regression past the run's file_budget, smallest sessions first (named apart from the rec status deferred) | none; refiles next run if still fileable | - |
 
 Every run writes one run record (counts per action, params_version, the detector versions, and the
-fingerprints with sessions per suppressed, unresolved and deferred finding), so nothing the filer declines
+fingerprints with sessions per suppressed, unresolved and over_budget finding), so nothing the filer declines
 to file is silent (Decision 55: dedup never swallows a finding). The filer never calls update_rec to close:
 a filer rec closes only through back-validation's proof (T3.4) or a human. A concurrent second run is
 prevented by a schedule concurrency group and caught by the generalised write-time backstop (R2).
@@ -304,21 +312,43 @@ vectors:
     findings: [[friction, 1, 'tool_error:Bash', 1, 7, 9, 20], [friction, 1, 'tool_error:Edit', 1, 7, 3, 6], [friction, 1, 'tool_blocked:Edit', 1, 7, 7, 9], [friction, 1, 'scope_creep', 1, 7, 5, 5]]
     heads: []
     targets: []
-    expected: [[friction, 'tool_error:Bash', file, null], [friction, 'tool_blocked:Edit', file, null], [friction, 'scope_creep', file, null], [friction, 'tool_error:Edit', deferred, null]]
+    expected: [[friction, 'tool_error:Bash', file, null], [friction, 'tool_blocked:Edit', file, null], [friction, 'scope_creep', file, null], [friction, 'tool_error:Edit', over_budget, null]]
   - id: v21-regressions-share-the-budget-updates-do-not
     findings: [[friction, 1, 'tool_error:Bash', 11, 17, 3, 9], [friction, 1, 'tool_error:Edit', 11, 17, 8, 9], [friction, 1, 'scope_creep', 11, 17, 6, 9], [friction, 1, 'hook_fault', 11, 17, 4, 9], [friction, 1, 'tool_blocked:Edit', 11, 17, 9, 9]]
     heads: [[rec-100, friction, 'tool_error:Bash', closed, null, 10, 7, 1], [rec-101, friction, 'hook_fault', open, null, null, 10, 1]]
     targets: []
-    expected: [[friction, 'tool_blocked:Edit', file, null], [friction, 'tool_error:Edit', file, null], [friction, 'scope_creep', file, null], [friction, 'tool_error:Bash', deferred, null], [friction, 'hook_fault', update, rec-101]]
+    expected: [[friction, 'tool_blocked:Edit', file, null], [friction, 'tool_error:Edit', file, null], [friction, 'scope_creep', file, null], [friction, 'tool_error:Bash', over_budget, null], [friction, 'hook_fault', update, rec-101]]
+  - id: v22-closed-head-keeps-its-own-regression-pointer
+    findings: [[friction, 1, 'tool_error:Bash', 11, 17, 4, 9]]
+    heads: [[rec-100, friction, 'tool_error:Bash', closed, rec-50, 10, 7, 1]]
+    targets: [[rec-50, open, null]]
+    expected: [[friction, 'tool_error:Bash', regression, rec-100]]
+  - id: v23-deferred-head-updates
+    findings: [[friction, 1, 'tool_error:Bash', 8, 14, 4, 9]]
+    heads: [[rec-100, friction, 'tool_error:Bash', deferred, null, null, 7, 1]]
+    targets: []
+    expected: [[friction, 'tool_error:Bash', update, rec-100]]
+  - id: v24-deferred-cover-is-covered
+    findings: [[friction, 1, 'unmapped_block:PreToolUse.Bash', 8, 14, 4, 9]]
+    heads: [[rec-100, friction, 'unmapped_block:PreToolUse.Bash', superseded, rec-50, 6, 7, 1]]
+    targets: [[rec-50, deferred, null]]
+    expected: [[friction, 'unmapped_block:PreToolUse.Bash', covered, rec-50]]
+  - id: v25-one-finding-per-fingerprint-per-run
+    findings: [[friction, 1, 'tool_error:Bash', 1, 7, 3, 5], [friction, 1, 'tool_error:Bash', 8, 14, 4, 9]]
+    heads: []
+    targets: []
+    expected: [[friction, 'tool_error:Bash', file, null]]
 ```
 
 v19 uses `tool_error:Bash` as a deliberation subject only to show that the detector, not the subject text,
 separates identities; the real deliberation subjects are drift classes per producer (W1-4).
 
 Rec content (described only). Title and context are filled from a fixed template per detector, never
-LLM-authored (Decision 55), with get_rec_write_guidance() read at build time (Decision 66). The title
-leads with the subject, not the detector boilerplate, so two subjects of one detector do not share most
-of their tokens (R1). Context is derived counts only: sessions, events, window, detector_version and the
+LLM-authored (Decision 55), with get_rec_write_guidance() read at build time (Decision 66). Word order in
+the title does not matter to the duplicate signal (a token-set Jaccard): two titles of n tokens that
+differ in one subject token score (n-1)/(n+1), which reaches 0.7 at n >= 6. The only title-side lever is a
+template of at most five tokens, which leaves no room for what a title must say, so R1's evaluator fix
+is the real mitigation. Context is derived counts only: sessions, events, window, detector_version and the
 response stamps of the verb that produced the finding (classifier_version, registry_version,
 parser_version: the friction report's R5). It carries no raw signature, stderr or path. The acceptance
 probe is open (q1).
@@ -333,7 +363,7 @@ Settled (consistent with a Decision, a contract or measured; s1-s3 in the fixtur
   one fix), and it is not rec_episode's source-only key (VP 1: a second subject updates the first
   subject's rec).
 - s2 The filing decision is one SQL statement over the filer's own source plus one read per covering
-  rec. It passes 21/21 vectors across ten actions; every non-filing outcome is counted in the run record
+  rec. It passes 25/25 vectors across ten actions; every non-filing outcome is counted in the run record
   (VP 2).
 - s3 The filer never closes. Below the floor is hold. Closure needs a recorded proof (Decision 103, e13),
   which belongs to back-validation (T3.4). VP 1 shows that rec_episode's truth table would close an open
@@ -378,8 +408,8 @@ Risk (known loss modes, not choices):
 
 - R1 Templated titles trip backlog_health. Two filer recs for distinct findings share most title tokens
   (VP 3: 0.82). backlog_health's monitor then lists them as near-duplicates and a close_proposed follows.
-  Two mitigations. The title template leads with the subject, which narrows the overlap but does not
-  remove it. The real fix is in the relevance evaluator: skip a pair whose context_v2_json fingerprints
+  Reordering the title does nothing, because the score ignores word order (a subject-first template also
+  scores 0.82). The fix is in the relevance evaluator: skip a pair whose context_v2_json fingerprints
   differ. That is named for the owners of rec_relevance and backlog_health (rec-3702's monitor); no rec
   is filed.
 - R2 Race. Two concurrent filer runs can both choose `file` (DuckLake enforces no uniqueness; rec-4063).
@@ -387,8 +417,8 @@ Risk (known loss modes, not choices):
   whose context_v2_json carries a fingerprint, adds a schedule concurrency group, and c2's guard alarms
   on a second open rec per fingerprint.
 - R3 Version floods. A new classifier_version can surface many labels at once (friction R5). The budget
-  defers past 3 per run, smallest first (v20, v21), so the queue sees at most 3 new recs per run, and the
-  deferred fingerprints are listed.
+  holds back everything past 3 per run as over_budget, smallest first (v20, v21), so the queue sees at most
+  3 new recs per run, and the over_budget fingerprints are listed.
 - R4 Egress. One scoped `current_state` read per run plus one `rec_by_id` per distinct cover. Never the
   open_recs bulk read: it is unscoped and lacks source and context_v2_json (e11). The registered
   validate_episode_lookup_projection guard exists because of that defect class.
@@ -421,7 +451,7 @@ Open (q1-q3 in the fixture; none is answerable from the repository):
   graded on dedupe rate merges everything into one rec. rejected_share is also the T3.3 false-positive
   rate that audit F-035 found undefined, so W3 can stage it as that criterion's formula.
 - Goodhart guard: the cheap way to a low rejected_share is to file nothing, or to absorb everything into
-  a few open recs. Filing nothing shows as the hold, suppressed and deferred counts in every run record,
+  a few open recs. Filing nothing shows as the hold, suppressed and over_budget counts in every run record,
   read beside rejected_share. Over-absorption is blocked by construction: an update is an exact
   fingerprint match (no similarity, no wildcard), and one open rec per fingerprint is c2's guard. A cover
   link is written only by the operator and is one hop.
