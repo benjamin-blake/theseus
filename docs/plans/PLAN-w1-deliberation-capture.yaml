@@ -136,9 +136,9 @@ verification_plan:
     action: Run the report's SQL over every vector in the report on DuckDB
     command: >-
       bin/venv-python -c "import re,duckdb,yaml; F=chr(96)*3; T=open('docs/plans/reports/REPORT-w1-deliberation-capture.md',encoding='utf-8').read(); S=re.findall(F+'sql\n(.*?)'+F,T,re.S); V=[yaml.safe_load(b) for b in re.findall(F+'yaml\n(.*?)'+F,T,re.S) if 'vectors:' in b][0]['vectors']; c=duckdb.connect(); q=S[0].replace('{calls}','calls').replace('{thinking}','thinking');
-      L=lambda v: [c.execute('CREATE OR REPLACE TABLE calls (observation_id VARCHAR, producer VARCHAR, model VARCHAR, tokens_output BIGINT, reasoning_tokens BIGINT, reasoning_visibility VARCHAR)'), c.execute('CREATE OR REPLACE TABLE thinking (observation_id VARCHAR, purpose VARCHAR)')]+[c.execute('INSERT INTO calls VALUES (?,?,?,?,?,?)',r) for r in v['calls']]+[c.execute('INSERT INTO thinking VALUES (?,?)',r) for r in v['thinking']];
+      L=lambda v: [c.execute('CREATE OR REPLACE TABLE calls (observation_id VARCHAR, producer VARCHAR, parser_version INTEGER, model VARCHAR, tokens_output BIGINT, reasoning_tokens BIGINT, reasoning_visibility VARCHAR)'), c.execute('CREATE OR REPLACE TABLE thinking (observation_id VARCHAR, purpose VARCHAR)')]+[c.execute('INSERT INTO calls VALUES (?,?,?,?,?,?,?)',r) for r in v['calls']]+[c.execute('INSERT INTO thinking VALUES (?,?)',r) for r in v['thinking']];
       P=[(L(v), sorted(tuple(map(str,x)) for x in c.execute(q).fetchall())==sorted(tuple(map(str,e)) for e in v['expected']))[1] for v in V]; print('sql_blocks=%d vectors=%d pass=%d/%d' % (len(S),len(V),sum(P),len(V)))"
-    expected: One line reporting one SQL block and 12 vectors, 12 of 12 passing.
+    expected: One line reporting one SQL block and 14 vectors, 14 of 14 passing.
     fix_if: >-
       A lower pass count means the sketch diverges from the rule stated in report section 2: fix the sketch or
       the vector that encodes the wrong intent, and say which in the report.
@@ -147,7 +147,7 @@ verification_plan:
     graduation_waiver_reason: >-
       Design evidence for settled row s3; the production verb and monitor carry their own vector tests
       (criteria c1 and c2), which are the standing guard.
-    expected_literals: ["sql_blocks=1 vectors=12 pass=12/12"]
+    expected_literals: ["sql_blocks=1 vectors=14 pass=14/14"]
   - step: 5
     phase: pre-deploy
     action: Prove the fixture carries this component's one item and the pilot evaluator passes
@@ -201,7 +201,7 @@ constraints:
     fixture's three criteria are pilot rows with status open, never roadmap criteria.
   - >-
     No recommendation filed, updated or closed (Decision 67). rec-4024, rec-4026, rec-4028, rec-4029, rec-4135
-    and rec-4141 are named as owners only; R3 and R4 are named for T4.2 and rec-4028, not filed.
+    and rec-4141 are named as owners only; R3, R4 and R7 are named for T4.2, rec-4028 and 2a-1, not filed.
   - >-
     No contract edit: the reasoning fields belong to the operator-chosen 2a-1 plan (rec-4028 context,
     2026-09-29), and the stale tier 1 ids are T4.2's contract edit (Decision 173 cl.2). docs/DECISIONS.md and
@@ -245,7 +245,8 @@ context:
     VP 3 now asserts the mock host.
   - "fork: one item vs split verb/monitor | chosen: one task item | class: consistency-only | precedent: CD.45 item-count cap 12 across about ten components; Decision 197 cl.3 grain; components 1-3 precedent | precedent_kind: contract | reversible: yes | persisted: fixture"
   - "fork: producer fields (typed visibility and tokens vs metadata key) | chosen: none here; builds on the operator's 2026-09-29 choice | class: consistency-only | precedent: rec-4028 context, 2026-09-29 entries (2a-1 + rec-4028) | precedent_kind: answered-fork | reversible: yes | persisted: report s1"
-  - "fork: drift rule as write check vs monitor | chosen: DQ monitor plus read verb | class: consistency-only | precedent: Decision 210 cl.2 (cross-row rules the write cannot decide are DQ monitors); T3.20 c3 | precedent_kind: decision | reversible: yes | persisted: report s3, fixture c2"
+  - "fork: drift rule as write check vs monitor | chosen: DQ monitor plus read verb | class: consistency-only | precedent: Decision 210 cl.2(b) (a rule whose truth depends on the arrival order of independent producers is a DQ monitor; R6); T3.20 c3 | precedent_kind: decision | reversible: yes | persisted: report s3, fixture c2"
+  - "fork: missing reasoning_visibility as drift vs writer rule | chosen: writer rule at a classifying parser_version; pre-classifying rows a legacy coverage count, not drift | class: consistency-only | precedent: Decision 210 cl.1 (conditional requiredness is writer-owned) and cl.4 (never demote to DQ) | precedent_kind: decision | reversible: yes | persisted: report section 2 and s3, fixture failure_signal and c2"
   - "fork: edges part_of T3.20, depends_on T2.36 and T4.2 | chosen: as listed | class: consistency-only | precedent: validate_work_item_pilot L4 (edges id-only into ROADMAP-PLATFORM or the same fixture); rec-4028 lands with T4.2 | precedent_kind: contract | reversible: yes | persisted: fixture"
   - "fork: Claude thinking text (k1) | chosen: none; option (a) recommended | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: report k1, /mnt/project-files/gates/w1-c4-parked-forks.md, PARKED for the operator"
   - "fork: LiteLLM-lane durability (k2) | chosen: none; option (b) recommended | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: report k2, /mnt/project-files/gates/w1-c4-parked-forks.md, PARKED for the operator"
@@ -254,6 +255,7 @@ context:
     The phase names the LiteLLM-transport item by role, not id: this plan only records a depends_on edge to
     it and forms no CD.27 substrate verdict, which validate_fallback_reevaluation would otherwise require
     of a plan whose phase names a CD.27-gated id. The fixture edge and the report name it as T4.2.
+  - "Verification r1 (6c2a8f15, REVISE on 9d3f074e): M1, M2 (v13, v14), m3, m4, n1 (R7) addressed; q1 parked."
   - >-
     check_accounting: no registered check is added or removed; the hygiene stream's baseline is untouched.
 pre_implementation_checklist:
