@@ -127,18 +127,18 @@ c AS (
            WHEN m.reasoning_visibility IS NULL THEN 'legacy'
            WHEN m.reasoning_visibility IN ('full', 'summarized') AND t.observation_id IS NULL THEN 'text_missing'
            WHEN m.reasoning_visibility NOT IN ('full', 'summarized') AND t.observation_id IS NOT NULL THEN 'text_unexpected'
-         END AS drift
+         END AS call_class
   FROM {calls} m LEFT JOIN t USING (observation_id)
 )
 SELECT producer, parser_version, model, reasoning_visibility,
        count(*) AS calls,
-       count(*) FILTER (WHERE drift = 'legacy') AS legacy_calls,
+       count(*) FILTER (WHERE call_class = 'legacy') AS legacy_calls,
        count(*) FILTER (WHERE reasoning_tokens > 0) AS reasoning_calls,
        coalesce(sum(reasoning_tokens), 0) AS reasoning_tokens,
        coalesce(sum(tokens_output) FILTER (WHERE reasoning_tokens IS NOT NULL), 0) AS counted_output_tokens,
        count(*) FILTER (WHERE has_text) AS text_calls,
-       count(*) FILTER (WHERE drift = 'text_missing') AS text_missing,
-       count(*) FILTER (WHERE drift = 'text_unexpected') AS text_unexpected
+       count(*) FILTER (WHERE call_class = 'text_missing') AS text_missing,
+       count(*) FILTER (WHERE call_class = 'text_unexpected') AS text_unexpected
 FROM c GROUP BY producer, parser_version, model, reasoning_visibility
 ```
 
@@ -146,7 +146,8 @@ Response (Decision 88; Decision 209 cl.2a): the rows above and the drift counts;
 deliberation share is a consumer's division, `reasoning_tokens / counted_output_tokens`, over calls whose
 count was reported (a NULL count is never estimated; rec-4028 forbids LiteLLM's local token counter).
 deliberation_drift_share is `(text_missing + text_unexpected) / (calls - legacy_calls)`, over classified
-calls only. `legacy_calls` counts rows written before their producer classified (claude_code below the
+calls only, and undefined (never 0) when no call is classified: a legacy-only session yields no drift
+verdict at all, so the monitor emits nothing for it rather than "clean". `legacy_calls` counts rows written before their producer classified (claude_code below the
 2a-1 parser_version): a coverage figure, never drift, and excluded from every maturity trigger (v07,
 v14). It should fall to zero for sessions captured after 2a-1 and for trees the bump re-parses (R7
 replay); what stays is history whose transcript is gone (inferred, not measured).
@@ -270,7 +271,8 @@ Contested (evidence on both sides, options listed; k1-k3 in the fixture; parked 
   (a). No consumer has named a need, and DeepSeek reasoning can exceed 64 KiB and spill to the blob
   port, so every read is a blob fetch.
 
-Risk (known loss modes, not choices):
+Risk (known loss modes, not choices; R1-R6 and R9 are this report's ids, and R7/R8 always mean the event
+envelope's replayable and non-replayable producer rules):
 
 - R1 2a-1 absent. Until it lands the claude_code rows carry no visibility and keep thinking_tokens in an
   undocumented metadata key, so every row is a legacy row (v07): the verb reports counts as coverage
@@ -295,7 +297,7 @@ Risk (known loss modes, not choices):
 - R6 One call, two producers. R5(c) keeps claude_code's model_call row, but both producers' thinking rows
   survive; the verb tests existence per observation_id (v05). This is also why the drift rule cannot be
   a write check (s3): neither producer's write can see the other's rows.
-- R7 `display: "updates"` (for the 2a-1 and rec-4028 owners, not this item's; named, not filed). The
+- R9 `display: "updates"` (for the 2a-1 and rec-4028 owners, not this item's; named, not filed). The
   Anthropic thinking page documents a beta in which reasoning blocks come back empty and separate
   progress-update blocks carry text. Under rec-4028's "summarized when any thinking block has text",
   those calls would read summarized although the text is not a summary. The visibility vocabulary
@@ -332,10 +334,12 @@ Open (q1-q3 in the fixture; none is answerable from the repository):
   What it cannot see: a producer that misclassifies and stores consistently (omitted with no text when
   text was available). That is the producer conformance tests' job (rec-4028's acceptance node
   `test_reasoning_visibility_matrix` and 2a-1's), and c3's review.
-- maturity: starts at read_all, meaning the operator reviews every drift row. read_all -> sampled at >= 20
-  consecutive reviewed sessions with zero drift rows; sampled -> spot_check at 0 drift rows across the
-  last 200 sampled model_calls; spot_check -> anomaly_triggered at >= 30 consecutive days with
-  deliberation_drift_share <= 0.01 per producer at one parser_version. A parser_version bump (2a-1 is
+- maturity: starts at read_all, meaning the operator reviews every drift row. Every trigger counts
+  classified work only, so legacy-only history (every session today, R1) cannot promote a rung on absent
+  evidence. read_all -> sampled at >= 20 consecutive reviewed sessions with >= 1 classified model_call and
+  zero drift rows; sampled -> spot_check at 0 drift rows across the last 200 sampled classified
+  model_calls; spot_check -> anomaly_triggered at >= 30 consecutive days with deliberation_drift_share
+  defined and <= 0.01 per producer at one parser_version. A parser_version bump (2a-1 is
   one) is a rung event for the maturity-ladder controller. Seed values for that component to challenge.
 - verification: c1 (the verb on DuckLake passes every vector and selects no content column), c2 (the
   monitor flags each drift kind and stays silent on clean vectors), c3 (the operator's read_all review

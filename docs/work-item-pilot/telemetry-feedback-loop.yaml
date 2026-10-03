@@ -23,10 +23,10 @@ work_items:
         maturity:
           rung: read_all
           transitions:
-            - {from: read_all, to: sampled, trigger: {metric: consecutive reviewed sessions with zero drift rows, comparator: '>=', threshold: 20}}
-            - {from: sampled, to: spot_check, trigger: {metric: drift rows across the last 200 sampled model_calls, comparator: ==, threshold: 0}}
-            - {from: spot_check, to: anomaly_triggered, trigger: {metric: consecutive days with deliberation_drift_share <= 0.01 per producer at one parser_version, comparator: '>=', threshold: 30}}
-        failure_signal: {signal: 'Stored visibility disagrees with stored text: full or summarized with no thinking row, or a thinking row where none was declared', metric: 'deliberation_drift_share: drifted over classified model_calls (legacy rows excluded), per producer and parser_version', source: session_deliberation_rollup response and the T3.20 c3 DQ monitor (alarm-not-gate)}
+            - {from: read_all, to: sampled, trigger: {metric: consecutive reviewed sessions with >= 1 classified model_call and zero drift rows, comparator: '>=', threshold: 20}}
+            - {from: sampled, to: spot_check, trigger: {metric: drift rows across the last 200 sampled classified model_calls, comparator: ==, threshold: 0}}
+            - {from: spot_check, to: anomaly_triggered, trigger: {metric: consecutive days with deliberation_drift_share defined and <= 0.01 per producer at one parser_version, comparator: '>=', threshold: 30}}
+        failure_signal: {signal: 'Stored visibility disagrees with stored text: full or summarized with no thinking row, or a thinking row where none was declared', metric: 'deliberation_drift_share: drifted/classified model_calls, undefined (never 0) if none; per producer, parser_version', source: session_deliberation_rollup response and the T3.20 c3 DQ monitor (alarm-not-gate)}
         verification: [c1, c2, c3]
         rollback: Drop the verb and the monitor; nothing is stored, so every metric re-derives on the next read. The producer fields stay wherever the 2a-1 plan and rec-4028 land them.
         evidence:
@@ -48,7 +48,7 @@ work_items:
           - {id: q3, text: 'A litellm-only persona tree has no sessions open row (R8 bars the marker), so W1-2 session verbs cannot see it: does the executor loop emit lifecycle rows?'}
 work_item_criteria:
   - {work_item: pwi-deliberation-capture, criterion_id: c1, text: 'session_deliberation_rollup on DuckLake passes every report vector over the shared R4/R5 dedupe, groups by producer, parser_version, model and visibility, and selects no content column.', method: {kind: execution, check: null, command: 'bin/venv-python -m pytest tests/telemetry/test_deliberation_rollup_ducklake.py::test_report_vectors tests/telemetry/test_deliberation_rollup_ducklake.py::test_selects_no_content -m integration'}, status: open}
-  - {work_item: pwi-deliberation-capture, criterion_id: c2, text: 'A DQ monitor in the T3.20 c3 home flags each drift kind (text_missing, text_unexpected) on its own vector, counts legacy rows as coverage not drift, and stays silent on clean vectors; alarm, never gate.', method: {kind: execution, check: null, command: 'bin/venv-python -m pytest tests/telemetry/test_deliberation_drift_check.py::test_flags_each_drift_kind tests/telemetry/test_deliberation_drift_check.py::test_silent_on_clean'}, status: open}
+  - {work_item: pwi-deliberation-capture, criterion_id: c2, text: 'A DQ monitor in the T3.20 c3 home flags each drift kind (text_missing, text_unexpected) on its own vector, counts legacy rows as coverage, gives no verdict on a legacy-only session, and is silent on clean vectors; alarm, not gate.', method: {kind: execution, check: null, command: 'bin/venv-python -m pytest tests/telemetry/test_deliberation_drift_check.py::test_flags_each_drift_kind tests/telemetry/test_deliberation_drift_check.py::test_silent_on_clean'}, status: open}
   - {work_item: pwi-deliberation-capture, criterion_id: c3, text: 'Before T3.3 or T3.4 reads deliberation metrics, the operator reviews every drift row of the first sessions at read_all and confirms each producer mapping.', method: {kind: review, resolver: operator at the first deliberation-consumer review (T3.3 or T3.4), evidence_requirement: 'drift rows per session at read_all: kind, producer, parser_version and the verdict on each'}, status: open}
 work_item_edges:
   - {from: pwi-deliberation-capture, to: T3.20, kind: part_of}
