@@ -15,29 +15,33 @@ reads a rung (VP 1, VP 2). Two consequences are measured, not argued:
 - A clearance count with no return leg measures patience, not quality. "20 consecutive clean reviews" is
   reached after about 36 reviews at a 5% error rate and about 72 at 10%, and once passed nothing brings the
   component back (VP 2). In a seeded one-year simulation run through the controller SQL below, the declared
-  triggers let a 20%-error component ship 10.7-12.0% of its outputs wrong and unreviewed (VP 4).
+  triggers let a 20%-error component ship 10.5-12.0% of its outputs wrong and unreviewed (VP 5).
 - A blinder monitor promotes faster. At a 5% error rate, 95% of components whose failure_signal sees half
-  the errors reach anomaly_triggered under the declared triggers, against 40% of those whose monitor sees
-  all of them (VP 4). The spot_check -> anomaly_triggered trigger is read off the same signal the top rung
+  the errors reach anomaly_triggered under the declared triggers, against 50% at recall 0.9 and 40% at
+  recall 1.0 (VP 5). The spot_check -> anomaly_triggered trigger is read off the same signal the top rung
   then relies on, so a weaker signal is rewarded.
 
 The staged controller is one deterministic SQL per daily run (Decision 55). It reads a review log, the
 component's failure_signal series, monitor drills and operator approvals. For each component it returns
-promote, propose_promote, hold, demote or restart, with one of 11 reasons. It passes 45/45 vectors (VP 3),
-eight of them by raising on malformed input, and each of 32 hand-run mutants fails at least one vector.
+promote, propose_promote, hold, demote or restart, with one of 11 reasons and the version the component
+holds next. It passes 53/53 vectors (VP 4), twelve of them by raising on malformed input or params, and
+each of 40 hand-run mutants fails at least one vector.
 It is a multi-level continuous sampling plan in the Dodge (CSP-1) and Lieberman-Solomon family: a
 clearance count per rung, a return leg on any wrong output found above read_all, a restart on a version
-change, a demotion on a breaching or dark failure_signal, and an injected-fault drill before the top rung.
-In the same simulation, escaped-wrong share stays at or below 1.6% at every error rate tested (the
-closed-form CSP-1 bound for the first level is 1.76%), and no half-blind monitor ever reaches
-anomaly_triggered. That is paid for in review load: a 2%-error component is reviewed on 20% of its outputs
-instead of 3.5% (VP 4, section 2.6).
+change, a demotion on a breaching or dark failure_signal, and a windowed injected-fault drill before the
+top rung. Its outgoing-quality bound is simulated, not closed-form: CSP-1's closed form (1.76% at
+clearance 40, f 0.2) bounds only the first sampling level. Over a grid that spans the peak (error rates
+0.005 to 0.2, recall 1.0, 0.9 and 0.5), the staged rule's escaped-wrong share peaks at 1.91% (p=0.04,
+recall 0.5) and stays at or under 1.83% with recall 0.9 or better. A 90%-recall monitor reaches the top rung
+like a perfect one (1.00 at p <= 0.01), while a half-blind one reaches it in 1 of 180 components. That is
+paid for in review load: a 2%-error component is reviewed on 18-22% of its outputs instead of 3.3-4.1%
+(VP 5, section 2.6).
 
 What is settled is narrow: the four rungs and their order (evaluator code), a deterministic decision
 (Decision 55), and the measured facts above. The return leg, the version-change rule and promotion
 authority are forks with credible alternatives and no admissible precedent (T3.4 and T4.4 call for per-gate
 rollback, but that is roadmap text, not a Decision or contract), so they are parked (k1-k3). The decision
-rule's family and seeds (k4) and the drill (k5) are parked report-only. Both #1396 and #1397 defer one
+rule's family and seeds (k4), the drill (k5) and the fixture's edge home (k6) are parked report-only. Both #1396 and #1397 defer one
 question to this component: whether a params_version change restarts the ladder. That is k2, and its
 recommendation is restart at read_all.
 
@@ -48,7 +52,7 @@ recommendation is restart at read_all.
 | e1 | Rungs are a closed Literal of four, and `Maturity.transitions` must be exactly the three upward adjacent pairs in order; a downward pair is refused and no other maturity field exists [VP 1] | scripts/checks/roadmap/_work_item_pilot_model.py:48, :151-158 |
 | e2 | `Trigger.metric` is free text (3-120 printable characters); "anything at all" validates, so no trigger names a computable series [VP 1] | scripts/checks/roadmap/_work_item_pilot_model.py:131-133 |
 | e3 | No file under src/ or scripts/ outside the pilot model and its evaluator mentions anomaly_triggered or spot_check: nothing at runtime reads or writes a rung [VP 1] | repository grep |
-| e4 | The six open W1 items declare 18 transitions, 18 upward and 0 downward. First-rung clearances are 20 (five items) or 50 consecutive clean reviews; second-rung clearances are zero failures in the last 30, 50 or 200 sampled; five of six third-rung triggers are 30 days of a failure_signal at or under a threshold [VP 2; fidelity against the branch heads, VP 2b] | section 1.1 |
+| e4 | The six open W1 items declare 18 transitions, 18 upward and 0 downward. First-rung clearances are 20 (five items) or 50 consecutive clean reviews; second-rung clearances are zero failures in the last 30, 50 or 200 sampled; five of six third-rung triggers are 30 days of a failure_signal at or under a threshold [VP 2; fidelity against the branch heads, VP 3] | section 1.1 |
 | e5 | Zero failures in n reviews bounds the error rate at 95% only to 1 - 0.05^(1/n): 13.9% at n=20, 5.8% at n=50, 1.5% at n=200 [VP 2] | section 1.2 |
 | e6 | With no return leg, a consecutive-n trigger fires eventually at any error rate; the expected number of reviews before 20 consecutive clean ones is 36 at p=0.05, 72 at p=0.1 and 429 at p=0.2 [VP 2] | section 1.2 |
 | e7 | CSP-1 (Dodge 1943): 100% review until i consecutive clean outputs, then a fraction f, back to 100% on any defect found. Its average outgoing quality limit at f=0.2 is 3.44% for i=20 and 1.76% for i=40 [VP 2] | section 1.2 |
@@ -56,7 +60,7 @@ recommendation is restart at read_all.
 | e9 | Both #1396 and #1397 end their maturity text with the same deferral: "A params_version change is a new rule set; the maturity-ladder controller decides whether it restarts the ladder" | REPORT-w1-rec-filing-dedupe.md section 4; REPORT-w1-back-validation.md section 4 (unmerged) |
 | e10 | Decision 73 halt check: the reader's named verb ci_rca_open returned [] at 2026-10-03T12:07:41Z | Step 0 |
 
-### 1.1 Trigger inventory (copied from the six branch heads; VP 2b re-reads them)
+### 1.1 Trigger inventory (copied from the six branch heads; VP 3 re-reads them)
 
 `kind` and `n` are this report's classification of each trigger; `transitions` is copied byte for byte.
 
@@ -146,7 +150,9 @@ unreviewed.
 CSP-1 is the textbook fix for exactly this ladder. Its clearance number is the same consecutive count, and
 its guarantee (the AOQL) holds only because a defect found while sampling returns to 100% review. At f=0.2
 the AOQL is 3.44% for i=20 and 1.76% for i=40 (VP 2; AOQ(p) = p(1 - f)q^i / (f + (1 - f)q^i), maximised
-over p). The declared triggers keep CSP-1's clearance and drop its return leg.
+over p). The declared triggers keep CSP-1's clearance and drop its return leg. These closed forms describe
+a single sampling level. The staged controller adds two more levels (f^2, f^3) and leaves the top only on a
+found wrong output or a signal breach, so its own bound is simulated (section 2.6), not closed-form.
 
 ## 2. Controller design (what this item stages)
 
@@ -172,7 +178,8 @@ component's rule-set stamp: classifier_version, parser_version or params_version
 `{reviews}`: one row per selected output: component, output_id, day, version, rung (at production), outcome
 (correct, wrong or unsure; NULL while pending). `{signal}`: one row per component per day: the
 failure_signal value, NULL when undefined (deliberation's "undefined, never 0" maps here). `{drills}`: one
-row per injected-fault run: component, day, injected, detected. `{approvals}`: one row per operator
+row per injected-fault run: component, day, injected, detected; only runs in the last drill_window_days of
+the stint count, so one old miss does not block the top rung for good (v39). `{approvals}`: one row per operator
 approval: component, to_rung, day. `{today}` is the run's day. All five are build-time objects (q2).
 
 Params are data, stamped as params_version on every transition record (seed values, unmeasured, q3):
@@ -185,7 +192,9 @@ clear_spot_check: 20
 review_sla_days: 3
 dark_days: 2
 signal_window_days: 30
-drill_min: 10
+drill_min: 20
+drill_window_days: 20
+drill_recall_min: 0.9
 on_wrong: read_all
 signal_demotes: true
 signal_gates_promotion: true
@@ -198,16 +207,22 @@ f_anomaly_triggered: 0.008
 
 ### 2.3 The decision
 
-Six malformed inputs raise instead of deciding (fail loud, Decision 55): an unknown rung, a NULL state field
-or a duplicate component (e01, e07, e08); a review row with a NULL key (e04); a duplicate output_id (e02); an
-outcome outside the vocabulary (e03); a duplicate failure_signal day (e05); a NULL key in signal or drills,
-or a drill that detected more than it injected (e06). Each raise vector matches its error message, not any
-DuckDB error. The guards are aggregates read by the final CASE, so no optimiser can skip them.
+Malformed inputs and params raise instead of deciding (fail loud, Decision 55): an unknown rung, a NULL
+state field or a duplicate component (e01, e07, e08); an on_wrong or promotion_authority outside its
+vocabulary (e12); a review row with a NULL component (e09) or another NULL key (e04); a duplicate output_id
+(e02); an outcome outside the vocabulary (e03); a duplicate failure_signal day (e05); a signal row with a
+NULL day (e10); a drill row with a NULL count (e11) or more detected than injected (e06). Each raise vector
+matches its error message, not any DuckDB error. The guards are aggregates read by the final CASE, so no optimiser can skip them.
 
 Clearance counts correct reviews at the current rung and version since the last breaker. A breaker is a
 wrong or unsure review, or a selected output still unreviewed after review_sla_days. A pending review
 inside the SLA neither counts nor breaks (v07, v36). An unreviewed sample therefore resets the count:
 skipping the hard cases cannot buy a promotion (Goodhart).
+
+Every output row carries to_version, the version the component holds after the decision. On a restart it
+is the newest foreign version in the stint, by (day, output_id) (v41); otherwise it is the state's. The
+caller writes it back with the rung and entered_day, so the next run at the new version holds instead of
+restarting again (v40).
 
 ```sql
 WITH st AS (
@@ -240,7 +255,8 @@ rv AS (
   WHERE r.day >= s.entered_day AND r.day <= {today}
 ),
 vc AS (
-  SELECT s.component, count(rv.component) FILTER (WHERE rv.version <> s.version) > 0 AS changed
+  SELECT s.component, count(rv.component) FILTER (WHERE rv.version <> s.version) > 0 AS changed,
+         arg_max(rv.version, {'day': rv.day, 'output_id': rv.output_id}) FILTER (WHERE rv.version <> s.version) AS new_version
   FROM st s LEFT JOIN rv ON rv.component = s.component
   GROUP BY s.component
 ),
@@ -271,6 +287,7 @@ sg AS (
 dr AS (
   SELECT s.component, coalesce(sum(d.injected), 0) AS inj, coalesce(sum(d.detected), 0) AS det
   FROM st s LEFT JOIN {drills} d ON d.component = s.component AND d.day >= s.entered_day AND d.day <= {today}
+       AND d.day > {today} - {drill_window_days}
   GROUP BY s.component
 ),
 ap AS (
@@ -280,10 +297,12 @@ ap AS (
   GROUP BY s.component
 ),
 d AS (
-  SELECT s.component, s.ri,
+  SELECT s.component, s.ri, CASE WHEN {version_restart} AND vc.changed THEN vc.new_version ELSE s.version END AS to_version,
     CASE
       WHEN s.ri IS NULL OR s.entered_day IS NULL OR s.version IS NULL OR s.signal_threshold IS NULL OR s.n_state > 1
       THEN error('malformed ladder state: unknown rung, NULL field or duplicate component')
+      WHEN '{on_wrong}' NOT IN ('read_all', 'one_down', 'none') OR '{promotion_authority}' NOT IN ('operator', 'auto')
+      THEN error('malformed ladder params: on_wrong or promotion_authority outside its vocabulary')
       WHEN gz.bad > 0 THEN error('malformed ladder input: NULL key or detected > injected')
       WHEN g.has_null THEN error('malformed review row: NULL output_id, day, version or rung')
       WHEN g.dup THEN error('duplicate output_id: one review row per output')
@@ -298,7 +317,7 @@ d AS (
       WHEN cl.clearance < [{clear_read_all}, {clear_sampled}, {clear_spot_check}][s.ri + 1] THEN 'hold:clearing'
       WHEN {signal_gates_promotion} AND (sg.v_today IS NULL OR sg.v_today > s.signal_threshold) THEN 'hold:signal_not_clean'
       WHEN s.ri = 2 AND sg.clean_days < {signal_window_days} THEN 'hold:signal_window'
-      WHEN s.ri = 2 AND {drill_min} > 0 AND (dr.inj < {drill_min} OR dr.det < dr.inj) THEN 'hold:awaiting_drill'
+      WHEN s.ri = 2 AND {drill_min} > 0 AND (dr.inj < {drill_min} OR dr.det < {drill_recall_min} * dr.inj) THEN 'hold:awaiting_drill'
       WHEN '{promotion_authority}' = 'auto' OR ap.approved THEN 'promote:cleared'
       ELSE 'propose_promote:cleared'
     END AS ar
@@ -321,13 +340,14 @@ SELECT DISTINCT component,
          WHEN 'hold' THEN ['read_all', 'sampled', 'spot_check', 'anomaly_triggered'][ri + 1]
          ELSE ['sampled', 'spot_check', 'anomaly_triggered'][ri + 1]
        END AS to_rung,
-       split_part(ar, ':', 2) AS reason
+       split_part(ar, ':', 2) AS reason,
+       to_version
 FROM d
 ```
 
 | action | reason | when (precedence top-down) | vectors |
 |---|---|---|---|
-| restart | version_change | a review in the stint carries a version other than the state's, when version_restart (k2) | v18, v19, v25 |
+| restart | version_change | a review in the stint carries a version other than the state's, when version_restart (k2); to_version is the newest foreign one | v18, v19, v25, v41 |
 | demote | wrong_found | a wrong review at the current rung above read_all; to read_all or one rung down per on_wrong (k1); never at read_all | v08, v09, v26, v30, v31 |
 | demote | signal_breach | above read_all, today's failure_signal exceeds the threshold (strictly), when signal_demotes; one rung down | v11 |
 | demote | signal_dark | above read_all, no defined failure_signal value in the last dark_days days; one rung down | v12, v32 |
@@ -336,57 +356,61 @@ FROM d
 | hold | clearing | clearance below the rung's clear_* | v03, v04, v05, v29, v36 |
 | hold | signal_not_clean | today's failure_signal undefined or above threshold, when signal_gates_promotion | v20, v21, v22 |
 | hold | signal_window | at spot_check, fewer than signal_window_days clean days inside the stint | v15 |
-| hold | awaiting_drill | at spot_check, fewer than drill_min injected faults or any missed (when drill_min > 0) | v16, v17 |
+| hold | awaiting_drill | at spot_check, when drill_min > 0: fewer than drill_min faults injected in the last drill_window_days of the stint, or fewer than drill_recall_min of them detected | v16, v17 |
 | promote | cleared | an approval for the next rung dated inside the stint, or promotion_authority auto (k3) | v02, v27 |
-| propose_promote | cleared | otherwise | v01, v07, v10, v14, v23, v24, v28, v33, v34, v35, v37 |
+| propose_promote | cleared | otherwise | v01, v07, v10, v14, v23, v24, v28, v33, v34, v35, v37, v38, v39, v40 |
 
 Rows outside the stint (before entered_day, after today) and rows recorded at another rung are ignored
 (v28, v29, v37). Several components decide independently in one run (v30).
 
-### 2.4 Vectors (VP 3)
+### 2.4 Vectors (VP 4)
 
 `reviews` rows expand to n outputs on one day; `signal` rows cover a day range with one value.
 `expected: error` vectors carry the message substring they must raise.
 
 ```yaml
 vectors:
-  - {id: v01, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, read_all, correct]], signal: [[a, 49, 50, 0.0]], expected: [[a, propose_promote, sampled, cleared]]}
-  - {id: v02, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, read_all, correct]], signal: [[a, 49, 50, 0.0]], approvals: [[a, sampled, 50]], expected: [[a, promote, sampled, cleared]]}
-  - {id: v03, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 39, v1, read_all, correct]], signal: [[a, 49, 50, 0.0]], expected: [[a, hold, read_all, clearing]]}
-  - {id: v04, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 20, v1, read_all, correct], [a, 21, 1, v1, read_all, wrong], [a, 22, 39, v1, read_all, correct]], signal: [[a, 49, 50, 0.0]], expected: [[a, hold, read_all, clearing]]}
-  - {id: v05, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, read_all, correct], [a, 21, 1, v1, read_all, unsure]], signal: [[a, 49, 50, 0.0]], expected: [[a, hold, read_all, clearing]]}
-  - {id: v06, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, read_all, correct], [a, 46, 1, v1, read_all, null]], signal: [[a, 49, 50, 0.0]], expected: [[a, hold, read_all, review_overdue]]}
-  - {id: v07, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, read_all, correct], [a, 47, 1, v1, read_all, null]], signal: [[a, 49, 50, 0.0]], expected: [[a, propose_promote, sampled, cleared]]}
-  - {id: v08, today: 50, state: [[a, spot_check, 10, v1, 0.05]], reviews: [[a, 20, 30, v1, spot_check, correct], [a, 21, 1, v1, spot_check, wrong]], signal: [[a, 10, 50, 0.0]], expected: [[a, demote, read_all, wrong_found]]}
-  - {id: v09, today: 50, params: {on_wrong: one_down}, state: [[a, spot_check, 10, v1, 0.05]], reviews: [[a, 20, 30, v1, spot_check, correct], [a, 21, 1, v1, spot_check, wrong]], signal: [[a, 10, 50, 0.0]], expected: [[a, demote, sampled, wrong_found]]}
-  - {id: v10, today: 50, params: {on_wrong: none}, state: [[a, sampled, 10, v1, 0.05]], reviews: [[a, 20, 1, v1, sampled, wrong], [a, 21, 40, v1, sampled, correct]], signal: [[a, 49, 50, 0.0]], expected: [[a, propose_promote, spot_check, cleared]]}
-  - {id: v11, today: 50, state: [[a, spot_check, 10, v1, 0.05]], reviews: [[a, 20, 30, v1, spot_check, correct]], signal: [[a, 10, 49, 0.0], [a, 50, 50, 0.08]], expected: [[a, demote, sampled, signal_breach]]}
-  - {id: v12, today: 50, state: [[a, anomaly_triggered, 10, v1, 0.05]], signal: [[a, 10, 48, 0.0]], expected: [[a, demote, spot_check, signal_dark]]}
-  - {id: v13, today: 50, state: [[a, anomaly_triggered, 10, v1, 0.05]], reviews: [[a, 30, 2, v1, anomaly_triggered, correct]], signal: [[a, 10, 50, 0.01]], expected: [[a, hold, anomaly_triggered, top]]}
-  - {id: v14, today: 50, state: [[a, spot_check, 10, v1, 0.05]], reviews: [[a, 20, 20, v1, spot_check, correct]], signal: [[a, 10, 50, 0.01]], drills: [[a, 30, 10, 10]], expected: [[a, propose_promote, anomaly_triggered, cleared]]}
-  - {id: v15, today: 50, state: [[a, spot_check, 22, v1, 0.05]], reviews: [[a, 30, 20, v1, spot_check, correct]], signal: [[a, 1, 50, 0.01]], drills: [[a, 30, 10, 10]], expected: [[a, hold, spot_check, signal_window]]}
-  - {id: v16, today: 50, state: [[a, spot_check, 10, v1, 0.05]], reviews: [[a, 20, 20, v1, spot_check, correct]], signal: [[a, 10, 50, 0.01]], drills: [[a, 30, 10, 9]], expected: [[a, hold, spot_check, awaiting_drill]]}
-  - {id: v17, today: 50, state: [[a, spot_check, 10, v1, 0.05]], reviews: [[a, 20, 20, v1, spot_check, correct]], signal: [[a, 10, 50, 0.01]], drills: [[a, 30, 9, 9]], expected: [[a, hold, spot_check, awaiting_drill]]}
-  - {id: v18, today: 50, state: [[a, sampled, 10, v1, 0.05]], reviews: [[a, 20, 30, v1, sampled, correct], [a, 40, 1, v2, sampled, correct]], signal: [[a, 10, 50, 0.0]], expected: [[a, restart, read_all, version_change]]}
-  - {id: v19, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, read_all, correct], [a, 41, 1, v2, read_all, correct]], signal: [[a, 49, 50, 0.0]], expected: [[a, restart, read_all, version_change]]}
-  - {id: v20, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, read_all, correct]], signal: [[a, 40, 49, 0.0]], expected: [[a, hold, read_all, signal_not_clean]]}
-  - {id: v21, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, read_all, correct]], signal: [[a, 40, 50, 0.2]], expected: [[a, hold, read_all, signal_not_clean]]}
-  - {id: v22, today: 50, params: {signal_demotes: false}, state: [[a, sampled, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, sampled, correct]], signal: [[a, 40, 50, 0.2]], expected: [[a, hold, sampled, signal_not_clean]]}
-  - {id: v23, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, read_all, correct]], signal: [[a, 49, 50, 0.0]], approvals: [[a, spot_check, 50]], expected: [[a, propose_promote, sampled, cleared]]}
-  - {id: v24, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, read_all, correct]], signal: [[a, 49, 50, 0.0]], approvals: [[a, sampled, 9]], expected: [[a, propose_promote, sampled, cleared]]}
-  - {id: v25, today: 50, state: [[a, sampled, 10, v1, 0.05]], reviews: [[a, 20, 1, v1, sampled, wrong], [a, 40, 1, v2, sampled, correct]], signal: [[a, 10, 50, 0.0]], expected: [[a, restart, read_all, version_change]]}
-  - {id: v26, today: 50, params: {on_wrong: one_down}, state: [[a, spot_check, 10, v1, 0.05]], reviews: [[a, 20, 1, v1, spot_check, wrong]], signal: [[a, 10, 49, 0.0], [a, 50, 50, 0.3]], expected: [[a, demote, sampled, wrong_found]]}
-  - {id: v27, today: 50, params: {promotion_authority: auto}, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, read_all, correct]], signal: [[a, 49, 50, 0.0]], expected: [[a, promote, sampled, cleared]]}
-  - {id: v28, today: 50, state: [[a, sampled, 30, v1, 0.05]], reviews: [[a, 20, 3, v1, read_all, wrong], [a, 25, 1, v0, read_all, correct], [a, 31, 40, v1, sampled, correct]], signal: [[a, 30, 50, 0.0]], expected: [[a, propose_promote, spot_check, cleared]]}
-  - {id: v29, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 39, v1, read_all, correct], [a, 51, 5, v1, read_all, correct], [a, 52, 1, v2, read_all, wrong]], signal: [[a, 49, 50, 0.0]], expected: [[a, hold, read_all, clearing]]}
-  - {id: v30, today: 50, state: [[a, read_all, 10, v1, 0.05], [b, sampled, 10, w1, 0.1]], reviews: [[a, 20, 40, v1, read_all, correct], [b, 20, 5, w1, sampled, correct], [b, 21, 1, w1, sampled, wrong]], signal: [[a, 49, 50, 0.0], [b, 49, 50, 0.0]], expected: [[a, propose_promote, sampled, cleared], [b, demote, read_all, wrong_found]]}
-  - {id: v31, today: 50, state: [[a, anomaly_triggered, 10, v1, 0.05]], reviews: [[a, 30, 1, v1, anomaly_triggered, wrong]], signal: [[a, 10, 50, 0.0]], expected: [[a, demote, read_all, wrong_found]]}
-  - {id: v32, today: 50, state: [[a, anomaly_triggered, 10, v1, 0.05]], signal: [[a, 10, 48, 0.0], [a, 49, 50, null]], expected: [[a, demote, spot_check, signal_dark]]}
-  - {id: v33, today: 50, state: [[a, sampled, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, sampled, correct]], signal: [[a, 10, 50, 0.05]], expected: [[a, propose_promote, spot_check, cleared]]}
-  - {id: v34, today: 50, params: {signal_gates_promotion: false}, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, read_all, correct]], signal: [[a, 40, 50, 0.2]], expected: [[a, propose_promote, sampled, cleared]]}
-  - {id: v35, today: 50, params: {drill_min: 0}, state: [[a, spot_check, 10, v1, 0.05]], reviews: [[a, 20, 20, v1, spot_check, correct]], signal: [[a, 10, 50, 0.01]], drills: [[a, 30, 4, 1]], expected: [[a, propose_promote, anomaly_triggered, cleared]]}
-  - {id: v36, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 39, v1, read_all, correct], [a, 48, 1, v1, read_all, null]], signal: [[a, 49, 50, 0.0]], expected: [[a, hold, read_all, clearing]]}
-  - {id: v37, today: 50, state: [[a, sampled, 10, v1, 0.05]], reviews: [[a, 12, 1, v1, read_all, wrong], [a, 20, 40, v1, sampled, correct]], signal: [[a, 10, 50, 0.0]], expected: [[a, propose_promote, spot_check, cleared]]}
+  - {id: v01, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, read_all, correct]], signal: [[a, 49, 50, 0.0]], expected: [[a, propose_promote, sampled, cleared, v1]]}
+  - {id: v02, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, read_all, correct]], signal: [[a, 49, 50, 0.0]], approvals: [[a, sampled, 50]], expected: [[a, promote, sampled, cleared, v1]]}
+  - {id: v03, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 39, v1, read_all, correct]], signal: [[a, 49, 50, 0.0]], expected: [[a, hold, read_all, clearing, v1]]}
+  - {id: v04, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 20, v1, read_all, correct], [a, 21, 1, v1, read_all, wrong], [a, 22, 39, v1, read_all, correct]], signal: [[a, 49, 50, 0.0]], expected: [[a, hold, read_all, clearing, v1]]}
+  - {id: v05, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, read_all, correct], [a, 21, 1, v1, read_all, unsure]], signal: [[a, 49, 50, 0.0]], expected: [[a, hold, read_all, clearing, v1]]}
+  - {id: v06, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, read_all, correct], [a, 46, 1, v1, read_all, null]], signal: [[a, 49, 50, 0.0]], expected: [[a, hold, read_all, review_overdue, v1]]}
+  - {id: v07, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, read_all, correct], [a, 47, 1, v1, read_all, null]], signal: [[a, 49, 50, 0.0]], expected: [[a, propose_promote, sampled, cleared, v1]]}
+  - {id: v08, today: 50, state: [[a, spot_check, 10, v1, 0.05]], reviews: [[a, 20, 30, v1, spot_check, correct], [a, 21, 1, v1, spot_check, wrong]], signal: [[a, 10, 50, 0.0]], expected: [[a, demote, read_all, wrong_found, v1]]}
+  - {id: v09, today: 50, params: {on_wrong: one_down}, state: [[a, spot_check, 10, v1, 0.05]], reviews: [[a, 20, 30, v1, spot_check, correct], [a, 21, 1, v1, spot_check, wrong]], signal: [[a, 10, 50, 0.0]], expected: [[a, demote, sampled, wrong_found, v1]]}
+  - {id: v10, today: 50, params: {on_wrong: none}, state: [[a, sampled, 10, v1, 0.05]], reviews: [[a, 20, 1, v1, sampled, wrong], [a, 21, 40, v1, sampled, correct]], signal: [[a, 49, 50, 0.0]], expected: [[a, propose_promote, spot_check, cleared, v1]]}
+  - {id: v11, today: 50, state: [[a, spot_check, 10, v1, 0.05]], reviews: [[a, 20, 30, v1, spot_check, correct]], signal: [[a, 10, 49, 0.0], [a, 50, 50, 0.08]], expected: [[a, demote, sampled, signal_breach, v1]]}
+  - {id: v12, today: 50, state: [[a, anomaly_triggered, 10, v1, 0.05]], signal: [[a, 10, 48, 0.0]], expected: [[a, demote, spot_check, signal_dark, v1]]}
+  - {id: v13, today: 50, state: [[a, anomaly_triggered, 10, v1, 0.05]], reviews: [[a, 30, 2, v1, anomaly_triggered, correct]], signal: [[a, 10, 50, 0.01]], expected: [[a, hold, anomaly_triggered, top, v1]]}
+  - {id: v14, today: 50, state: [[a, spot_check, 10, v1, 0.05]], reviews: [[a, 20, 20, v1, spot_check, correct]], signal: [[a, 10, 50, 0.01]], drills: [[a, 45, 20, 20]], expected: [[a, propose_promote, anomaly_triggered, cleared, v1]]}
+  - {id: v15, today: 50, state: [[a, spot_check, 22, v1, 0.05]], reviews: [[a, 30, 20, v1, spot_check, correct]], signal: [[a, 1, 50, 0.01]], drills: [[a, 45, 20, 20]], expected: [[a, hold, spot_check, signal_window, v1]]}
+  - {id: v16, today: 50, state: [[a, spot_check, 10, v1, 0.05]], reviews: [[a, 20, 20, v1, spot_check, correct]], signal: [[a, 10, 50, 0.01]], drills: [[a, 45, 20, 17]], expected: [[a, hold, spot_check, awaiting_drill, v1]]}
+  - {id: v17, today: 50, state: [[a, spot_check, 10, v1, 0.05]], reviews: [[a, 20, 20, v1, spot_check, correct]], signal: [[a, 10, 50, 0.01]], drills: [[a, 45, 19, 19]], expected: [[a, hold, spot_check, awaiting_drill, v1]]}
+  - {id: v18, today: 50, state: [[a, sampled, 10, v1, 0.05]], reviews: [[a, 20, 30, v1, sampled, correct], [a, 40, 1, v2, sampled, correct]], signal: [[a, 10, 50, 0.0]], expected: [[a, restart, read_all, version_change, v2]]}
+  - {id: v19, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, read_all, correct], [a, 41, 1, v2, read_all, correct]], signal: [[a, 49, 50, 0.0]], expected: [[a, restart, read_all, version_change, v2]]}
+  - {id: v20, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, read_all, correct]], signal: [[a, 40, 49, 0.0]], expected: [[a, hold, read_all, signal_not_clean, v1]]}
+  - {id: v21, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, read_all, correct]], signal: [[a, 40, 50, 0.2]], expected: [[a, hold, read_all, signal_not_clean, v1]]}
+  - {id: v22, today: 50, params: {signal_demotes: false}, state: [[a, sampled, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, sampled, correct]], signal: [[a, 40, 50, 0.2]], expected: [[a, hold, sampled, signal_not_clean, v1]]}
+  - {id: v23, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, read_all, correct]], signal: [[a, 49, 50, 0.0]], approvals: [[a, spot_check, 50]], expected: [[a, propose_promote, sampled, cleared, v1]]}
+  - {id: v24, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, read_all, correct]], signal: [[a, 49, 50, 0.0]], approvals: [[a, sampled, 9]], expected: [[a, propose_promote, sampled, cleared, v1]]}
+  - {id: v25, today: 50, state: [[a, sampled, 10, v1, 0.05]], reviews: [[a, 20, 1, v1, sampled, wrong], [a, 40, 1, v2, sampled, correct]], signal: [[a, 10, 50, 0.0]], expected: [[a, restart, read_all, version_change, v2]]}
+  - {id: v26, today: 50, params: {on_wrong: one_down}, state: [[a, spot_check, 10, v1, 0.05]], reviews: [[a, 20, 1, v1, spot_check, wrong]], signal: [[a, 10, 49, 0.0], [a, 50, 50, 0.3]], expected: [[a, demote, sampled, wrong_found, v1]]}
+  - {id: v27, today: 50, params: {promotion_authority: auto}, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, read_all, correct]], signal: [[a, 49, 50, 0.0]], expected: [[a, promote, sampled, cleared, v1]]}
+  - {id: v28, today: 50, state: [[a, sampled, 30, v1, 0.05]], reviews: [[a, 20, 3, v1, read_all, wrong], [a, 25, 1, v0, read_all, correct], [a, 31, 40, v1, sampled, correct]], signal: [[a, 30, 50, 0.0]], expected: [[a, propose_promote, spot_check, cleared, v1]]}
+  - {id: v29, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 39, v1, read_all, correct], [a, 51, 5, v1, read_all, correct], [a, 52, 1, v2, read_all, wrong]], signal: [[a, 49, 50, 0.0]], expected: [[a, hold, read_all, clearing, v1]]}
+  - {id: v30, today: 50, state: [[a, read_all, 10, v1, 0.05], [b, sampled, 10, w1, 0.1]], reviews: [[a, 20, 40, v1, read_all, correct], [b, 20, 5, w1, sampled, correct], [b, 21, 1, w1, sampled, wrong]], signal: [[a, 49, 50, 0.0], [b, 49, 50, 0.0]], expected: [[a, propose_promote, sampled, cleared, v1], [b, demote, read_all, wrong_found, w1]]}
+  - {id: v31, today: 50, state: [[a, anomaly_triggered, 10, v1, 0.05]], reviews: [[a, 30, 1, v1, anomaly_triggered, wrong]], signal: [[a, 10, 50, 0.0]], expected: [[a, demote, read_all, wrong_found, v1]]}
+  - {id: v32, today: 50, state: [[a, anomaly_triggered, 10, v1, 0.05]], signal: [[a, 10, 48, 0.0], [a, 49, 50, null]], expected: [[a, demote, spot_check, signal_dark, v1]]}
+  - {id: v33, today: 50, state: [[a, sampled, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, sampled, correct]], signal: [[a, 10, 50, 0.05]], expected: [[a, propose_promote, spot_check, cleared, v1]]}
+  - {id: v34, today: 50, params: {signal_gates_promotion: false}, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, read_all, correct]], signal: [[a, 40, 50, 0.2]], expected: [[a, propose_promote, sampled, cleared, v1]]}
+  - {id: v35, today: 50, params: {drill_min: 0}, state: [[a, spot_check, 10, v1, 0.05]], reviews: [[a, 20, 20, v1, spot_check, correct]], signal: [[a, 10, 50, 0.01]], drills: [[a, 45, 4, 1]], expected: [[a, propose_promote, anomaly_triggered, cleared, v1]]}
+  - {id: v36, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 39, v1, read_all, correct], [a, 48, 1, v1, read_all, null]], signal: [[a, 49, 50, 0.0]], expected: [[a, hold, read_all, clearing, v1]]}
+  - {id: v37, today: 50, state: [[a, sampled, 10, v1, 0.05]], reviews: [[a, 12, 1, v1, read_all, wrong], [a, 20, 40, v1, sampled, correct]], signal: [[a, 10, 50, 0.0]], expected: [[a, propose_promote, spot_check, cleared, v1]]}
+  - {id: v38, today: 50, state: [[a, spot_check, 10, v1, 0.05]], reviews: [[a, 20, 20, v1, spot_check, correct]], signal: [[a, 10, 50, 0.01]], drills: [[a, 45, 20, 18]], expected: [[a, propose_promote, anomaly_triggered, cleared, v1]]}
+  - {id: v39, today: 50, state: [[a, spot_check, 10, v1, 0.05]], reviews: [[a, 20, 20, v1, spot_check, correct]], signal: [[a, 10, 50, 0.01]], drills: [[a, 20, 5, 0], [a, 45, 20, 20]], expected: [[a, propose_promote, anomaly_triggered, cleared, v1]]}
+  - {id: v40, today: 60, state: [[a, read_all, 51, v2, 0.05]], reviews: [[a, 40, 3, v1, read_all, correct], [a, 52, 40, v2, read_all, correct]], signal: [[a, 50, 60, 0.0]], expected: [[a, propose_promote, sampled, cleared, v2]]}
+  - {id: v41, today: 50, state: [[a, sampled, 10, v1, 0.05]], reviews: [[a, 20, 30, v1, sampled, correct], [a, 30, 1, v2, sampled, correct], [a, 40, 1, v3, sampled, correct]], signal: [[a, 10, 50, 0.0]], expected: [[a, restart, read_all, version_change, v3]]}
   - {id: e01, today: 50, raises: 'malformed ladder state', state: [[a, audit, 10, v1, 0.05]], expected: error}
   - {id: e02, today: 50, raises: 'duplicate output_id', dup_review: true, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 2, v1, read_all, correct]], signal: [[a, 49, 50, 0.0]], expected: error}
   - {id: e03, today: 50, raises: 'review outcome outside', state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 1, v1, read_all, maybe]], signal: [[a, 49, 50, 0.0]], expected: error}
@@ -395,6 +419,10 @@ vectors:
   - {id: e06, today: 50, raises: 'detected > injected', state: [[a, spot_check, 10, v1, 0.05]], signal: [[a, 49, 50, 0.0]], drills: [[a, 30, 2, 3]], expected: error}
   - {id: e07, today: 50, raises: 'malformed ladder state', state: [[a, read_all, 10, v1, 0.05], [a, sampled, 10, v1, 0.05]], expected: error}
   - {id: e08, today: 50, raises: 'malformed ladder state', state: [[a, read_all, null, v1, 0.05]], signal: [[a, 49, 50, 0.0]], expected: error}
+  - {id: e09, today: 50, raises: 'malformed ladder input', state: [[a, read_all, 10, v1, 0.05]], reviews: [[null, 20, 1, v1, read_all, correct]], signal: [[a, 49, 50, 0.0]], expected: error}
+  - {id: e10, today: 50, raises: 'malformed ladder input', state: [[a, read_all, 10, v1, 0.05]], signal: [[a, 49, 50, 0.0]], extra_signal: [[a, null, 0.0]], expected: error}
+  - {id: e11, today: 50, raises: 'malformed ladder input', state: [[a, spot_check, 10, v1, 0.05]], signal: [[a, 49, 50, 0.0]], drills: [[a, 45, null, 0]], expected: error}
+  - {id: e12, today: 50, raises: 'malformed ladder params', params: {on_wrong: readall}, state: [[a, read_all, 10, v1, 0.05]], signal: [[a, 49, 50, 0.0]], expected: error}
 ```
 
 ### 2.5 Mutants (hand-run once, reported, not a VP step)
@@ -408,7 +436,7 @@ Each mutant is one textual edit of the SQL above; every one fails at least one v
 | m03 | a pending review inside the SLA breaks clearance | v07 |
 | m04 | SLA boundary < becomes <= | v07 |
 | m05 | unsure is not a breaker | v05 |
-| m06 | rows before entered_day read | v28 |
+| m06 | rows before entered_day read | v28, v40 |
 | m07 | rows after today read | v29 |
 | m08 | wrong_found checked before version_change | v25 |
 | m09 | a demotion targets the current rung | v09, v11, v12, v26, v32 |
@@ -417,7 +445,7 @@ Each mutant is one textual edit of the SQL above; every one fails at least one v
 | m12 | signal window counts days before the stint | v15 |
 | m13 | an approval for any rung promotes | v23 |
 | m14 | an approval from before the stint promotes | v24 |
-| m15 | a drill with a missed fault passes | v16 |
+| m15 | the drill recall floor ignored (any injection count passes) | v16 |
 | m16 | the drill applies when drill_min is 0 | v35 |
 | m17 | duplicate output_id guard removed | e02 |
 | m18 | outcome vocabulary guard removed | e03 |
@@ -432,22 +460,32 @@ Each mutant is one textual edit of the SQL above; every one fails at least one v
 | m27 | rows recorded at another rung count | v37 |
 | m28 | hold top checked before the demotions | v12, v31, v32 |
 | m29 | promotion_authority auto ignored | v27 |
-| m30 | one clearance (clear_read_all) for every rung | v14, v15, v16, v17, v35 |
+| m30 | one clearance (clear_read_all) for every rung | v14, v15, v16, v17, v35, v38, v39 |
 | m31 | signal window check removed | v15 |
 | m32 | signal_dark demotion removed | v12, v32 |
+| m33 | the restart version not returned (to_version stays current) | v18, v19, v25, v41 |
+| m34 | the drill window ignored | v39 |
+| m35 | zero-miss drill instead of the recall floor | v38 |
+| m36 | on_wrong and promotion_authority vocabulary guard removed | e12 |
+| m37 | NULL component review guard removed | e09 |
+| m38 | NULL signal day guard removed | e10 |
+| m39 | NULL drill count guard removed | e11 |
+| m40 | the oldest foreign version returned on a restart | v41 |
 
-### 2.6 Simulation (VP 4)
+### 2.6 Simulation (VP 5)
 
 One year, 12 outputs a day per component (the order of magnitude #1397 measured for sessions), 20
-replicate components per (error rate p, monitor recall r) cell, error rates 0.005 to 0.2, recall 1.0 or
-0.5. The failure_signal is the 7-day share of outputs that are wrong and seen by the monitor; threshold
+replicate components per (error rate p, monitor recall r) cell. The error rates are 0.005, 0.01, 0.02,
+0.03, 0.035, 0.04, 0.05, 0.1 and 0.2; the band 0.02-0.05 is where a multi-level plan's outgoing quality
+peaks. Monitor recall is 1.0, 0.9 or 0.5. The failure_signal is the 7-day share of outputs that are wrong and seen by the monitor; threshold
 0.05. A drill injects one fault per spot_check day, detected with probability r. The reviewer is perfect
 and immediate, errors are independent at a constant p, and every proposal is approved (the most permissive
 operator). Draws are md5 over the seed, the component, the day and the output, so the result is identical
 on every run. Both rules use the staged review fractions, because no declared item states one (e1).
 
 The `declared` rule is the controller with the declared shape: clearance 20 then 50, a 30-day clean signal
-window to the top, no return leg, no signal demotion, no version restart, no drill. `staged` is the params
+window to the top, no return leg, no signal demotion, no version restart, no drill. The simulation never
+changes a version, so k2 is exercised by vectors only. `staged` is the params
 block. Each simulated day runs the controller SQL above, unchanged, over every component.
 
 ```yaml
@@ -458,8 +496,8 @@ simulation:
   signal_days: 7
   signal_threshold: 0.05
   reps: 20
-  p: [0.005, 0.02, 0.05, 0.1, 0.2]
-  recall: [1.0, 0.5]
+  p: [0.005, 0.01, 0.02, 0.03, 0.035, 0.04, 0.05, 0.1, 0.2]
+  recall: [1.0, 0.9, 0.5]
   rules:
     declared: {clear_read_all: 20, clear_sampled: 50, clear_spot_check: 0, on_wrong: none, signal_demotes: false, signal_gates_promotion: false, version_restart: false, drill_min: 0, promotion_authority: auto}
     staged: {promotion_authority: auto}
@@ -498,7 +536,7 @@ INSERT INTO sim_dr
               THEN 1 ELSE 0 END
   FROM sim_state WHERE rung = 'spot_check';
 CREATE OR REPLACE TABLE sim_act AS {controller};
-UPDATE sim_state SET rung = a.to_rung, entered_day = {day} + 1
+UPDATE sim_state SET rung = a.to_rung, entered_day = {day} + 1, version = a.to_version
   FROM sim_act a WHERE a.component = sim_state.component AND a.action IN ('promote', 'demote', 'restart');
 DELETE FROM sim_rv USING sim_state s WHERE sim_rv.component = s.component AND sim_rv.day < s.entered_day
 ```
@@ -513,27 +551,48 @@ FROM sim_out o JOIN sim_state s USING (component)
 GROUP BY s.p, s.recall ORDER BY s.p, s.recall
 ```
 
-Result (VP 4; aoq is wrong outputs that escaped review per output; afi the share reviewed; reached_top the
+Result (VP 5; aoq is wrong outputs that escaped review per output; afi the share reviewed; reached_top the
 share of components that ever reached anomaly_triggered):
 
 | p | recall | declared aoq | declared afi | declared reached_top | staged aoq | staged afi | staged reached_top |
 |---|---|---|---|---|---|---|---|
 | 0.005 | 0.5 | 0.0049 | 0.029 | 1.00 | 0.0046 | 0.080 | 0.00 |
+| 0.005 | 0.9 | 0.0047 | 0.029 | 1.00 | 0.0046 | 0.040 | 1.00 |
 | 0.005 | 1.0 | 0.0047 | 0.032 | 1.00 | 0.0047 | 0.041 | 1.00 |
+| 0.01 | 0.5 | 0.0100 | 0.031 | 1.00 | 0.0089 | 0.120 | 0.05 |
+| 0.01 | 0.9 | 0.0097 | 0.031 | 1.00 | 0.0094 | 0.064 | 1.00 |
+| 0.01 | 1.0 | 0.0100 | 0.032 | 1.00 | 0.0097 | 0.067 | 1.00 |
 | 0.02 | 0.5 | 0.0182 | 0.041 | 1.00 | 0.0149 | 0.218 | 0.00 |
+| 0.02 | 0.9 | 0.0189 | 0.033 | 1.00 | 0.0160 | 0.181 | 0.95 |
 | 0.02 | 1.0 | 0.0192 | 0.035 | 1.00 | 0.0156 | 0.204 | 0.95 |
+| 0.03 | 0.5 | 0.0279 | 0.052 | 1.00 | 0.0180 | 0.377 | 0.00 |
+| 0.03 | 0.9 | 0.0285 | 0.041 | 1.00 | 0.0168 | 0.421 | 0.60 |
+| 0.03 | 1.0 | 0.0285 | 0.051 | 1.00 | 0.0157 | 0.478 | 0.45 |
+| 0.035 | 0.5 | 0.0337 | 0.043 | 1.00 | 0.0185 | 0.455 | 0.00 |
+| 0.035 | 0.9 | 0.0333 | 0.062 | 1.00 | 0.0183 | 0.512 | 0.40 |
+| 0.035 | 1.0 | 0.0337 | 0.051 | 1.00 | 0.0157 | 0.561 | 0.05 |
+| 0.04 | 0.5 | 0.0368 | 0.056 | 1.00 | 0.0191 | 0.511 | 0.00 |
+| 0.04 | 0.9 | 0.0385 | 0.061 | 0.95 | 0.0143 | 0.653 | 0.10 |
+| 0.04 | 1.0 | 0.0364 | 0.071 | 0.90 | 0.0155 | 0.614 | 0.05 |
 | 0.05 | 0.5 | 0.0460 | 0.068 | 0.95 | 0.0160 | 0.678 | 0.00 |
+| 0.05 | 0.9 | 0.0456 | 0.092 | 0.50 | 0.0119 | 0.762 | 0.00 |
 | 0.05 | 1.0 | 0.0456 | 0.079 | 0.40 | 0.0110 | 0.775 | 0.00 |
 | 0.1 | 0.5 | 0.0822 | 0.196 | 0.15 | 0.0025 | 0.974 | 0.00 |
+| 0.1 | 0.9 | 0.0812 | 0.203 | 0.00 | 0.0019 | 0.984 | 0.00 |
 | 0.1 | 1.0 | 0.0820 | 0.190 | 0.00 | 0.0011 | 0.989 | 0.00 |
 | 0.2 | 0.5 | 0.1199 | 0.400 | 0.00 | 0.0001 | 0.999 | 0.00 |
+| 0.2 | 0.9 | 0.1054 | 0.473 | 0.00 | 0.0000 | 1.000 | 0.00 |
 | 0.2 | 1.0 | 0.1070 | 0.461 | 0.00 | 0.0000 | 1.000 | 0.00 |
 
-Read across: the declared rule's escape rate tracks p (0.107-0.120 at p=0.2); the staged rule's never
-exceeds 0.016, because a bad component keeps returning to read_all (afi near 1). A half-blind monitor
-helps a component up the declared ladder (p=0.05: 0.95 against 0.40) and never gets one to the staged
-top. The price is review load on middling components: at p=0.02 the staged rule reviews 20-22% of outputs
-against 3.5-4.1%, for an escape rate of 1.5-1.6% against 1.8-1.9%. Whether that trade is worth it is the
+Read across: the declared rule's escape rate tracks p (0.105-0.120 at p=0.2). The staged rule's peaks in
+the 0.03-0.04 band: 1.91% at p=0.04 with recall 0.5, and at most 1.83% with recall 0.9 or 1.0. That is
+above CSP-1's first-level 1.76%, which is why section 1.2's closed form is not this rule's bound. The
+observed peak is a finite-sample estimate (20 components per cell). Past the band, a bad component keeps
+returning to read_all (afi near 1) and escapes fall toward 0. A half-blind monitor helps a component up the
+declared ladder (p=0.05: 0.95 against 0.40 at recall 1.0). Under the staged rule it reaches the top in 1 of
+180 components (p=0.01; the windowed drill passes by chance), while a 90%-recall monitor tracks a perfect
+one. The price is review load on middling components: at p=0.02 the staged rule reviews 18-22% of outputs
+against 3.3-4.1%, for an escape rate of 1.5-1.6% against 1.8-1.9%. Whether that trade is worth it is the
 AOQL target, a seed (q3). Simplifications that matter: a real reviewer errs (R3), errors cluster after a
 change (which version_restart addresses and the simulation does not exercise), and harm per escaped
 output differs by component (R6).
@@ -547,22 +606,25 @@ output differs by component (R6).
 - s2 Measured: the 18 declared triggers are upward-only free text and no item states a review rate, so no
   controller can evaluate them as written (VP 1, VP 2).
 - s3 Measured: without a return leg the declared triggers let escaped-wrong share track the error rate
-  (0.12 at p=0.2) and promote half-blind monitors faster (VP 4). Any rule must bound outgoing quality and
+  (0.12 at p=0.2) and promote half-blind monitors faster (VP 5). Any rule must bound outgoing quality and
   must not reward a weaker monitor; which rule does so is k1, k4 and k5.
 
-### Contested (k1-k3 in the fixture; k4, k5 report-only, the fixture's contested list is capped at 3)
+### Contested (k1-k3 in the fixture; k4-k6 report-only, the fixture's contested list is capped at 3)
 
 - k1 The return leg.
   - (a) Any wrong output found above read_all returns the component to read_all (CSP-1; v08).
   - (b) One rung down (multi-level plans; on_wrong one_down, v09).
   - (c) None, as the six items declare (on_wrong none, v10).
-  Recommended: (a). It is the only option with a closed-form outgoing-quality bound, and the cost is review
-  load on a component that just proved it errs. (c) is measured in VP 4. Precedent: none admissible; T3.4
+  Recommended: (a). It is the strictest return, and in the simulation it keeps escaped-wrong share at or
+  under 1.91% across the grid (VP 5). The bound is simulated, not closed-form: CSP-1's 1.76% covers its
+  first level only. The cost is review load on a component that just proved it errs. (c) is measured in
+  VP 5, and (b) is not simulated. Precedent: none admissible; T3.4
   criterion 2 and T4.4 call for per-gate rollback (e8), but they are roadmap criteria, and the pilot schema
   today forbids a downward pair (e1). Class asked.
 - k2 A version change (classifier_version, parser_version or params_version), the question #1396 and
   #1397 both defer here (e9).
-  - (a) Restart at read_all with the new version (v18, v19).
+  - (a) Restart at read_all with the new version, which the controller returns as to_version (v18, v19,
+    v40, v41).
   - (b) Drop one rung and keep counting.
   - (c) Keep the rung; the change rides on the existing sample.
   Recommended: (a). A rule-set change is a new process, and a clearance earned by the old rules says
@@ -582,20 +644,33 @@ output differs by component (R6).
   decides on all reviews, not runs, with stated error rates at two quality levels. (c) A fixed-sample
   bound: promote when the 95% upper bound on the error rate since rung entry is under a target. Also inside
   k4: unsure counts as a breaker (v05), an overdue sample is a breaker (v06), and a promotion needs a clean
-  signal today (signal_gates_promotion, v20-v22). Recommended: (a) for the pilot, because its bound is
-  closed-form and it matches what the siblings already wrote; revisit (b) if review volume is the
+  signal today (signal_gates_promotion, v20-v22). Recommended: (a) for the pilot, because its first level
+  has a closed-form bound, its whole-ladder bound is simulated (VP 5), and it matches what the siblings
+  already wrote; revisit (b) if review volume is the
   constraint. Measurement is not precedent. Class asked.
-- k5 (report-only) Monitor validation before anomaly_triggered. (a) A drill: drill_min injected faults
-  during the spot_check stint, every one detected (v14, v16, v17). (b) Historical recall: the share of
-  reviewer-found wrong outputs on whose day the signal breached, over at least m findings. (c) None, as
-  declared. Recommended: (a). (b) cannot be computed for a component that rarely errs, and (c) is the
-  half-blind result in VP 4. The drill for back-validation already exists in kind: #1397's VP 3 feeds known
+- k5 (report-only) Monitor validation before anomaly_triggered. (a) A windowed drill: at least drill_min
+  faults injected in the last drill_window_days of the spot_check stint, with at least drill_recall_min of
+  them detected (v14, v16, v17, v38, v39). (b) Historical recall: the share of reviewer-found wrong outputs
+  on whose day the signal breached, over at least m findings. (c) None, as declared. Recommended: (a),
+  with its costs stated. The bar is a recall floor, not perfection: at 0.9 of 20, a 90%-recall monitor
+  reaches the top like a perfect one (VP 5). Because the window re-reads daily, a half-blind monitor can
+  pass it by chance (1 of 180 components in VP 5). A zero-miss rule over the whole stint closes that, but
+  blocks a 90%-recall monitor almost entirely, and one miss holds it until a demotion (verification r1
+  probe). (b) cannot be computed for a component that rarely errs, and (c) is the half-blind result in
+  VP 5. The drill for back-validation already exists in kind: #1397's VP 3 feeds known
   no-op fixes through the verdict SQL. No precedent. Class asked.
+- k6 (report-only) The fixture item's edge home. (a) part_of T3.4, whose exit criterion 2 asks for maturity
+  gates with a per-gate rollback criterion. (b) part_of T4.4, which owns rollback automation but depends on
+  the frozen executor (T4.2, Decision 67). (c) part_of T3.3 or T3.20, the parents of the components the
+  ladder governs. The fixture carries (a), with depends_on T2.36, as a reversible pilot row
+  (edges_disposition pilot_only). (a)'s premise rests on roadmap text, which is not admissible precedent,
+  and it is tied to q1: if this ladder is separate from T3.4's A0-A3, the criterion-2 reading weakens. No
+  precedent. Class asked.
 
 ### Risks
 
 - R1 Review load. At read_all the operator reviews every output: at 12 a day for each of six components,
-  about 72 reviews a day, and a component that keeps returning stays there (VP 4 afi near 1 at p >= 0.1).
+  about 72 reviews a day, and a component that keeps returning stays there (VP 5 afi near 1 at p >= 0.1).
   Unreviewed samples hold the ladder by construction (review_overdue), so an absent operator freezes
   promotion rather than loosening review.
 - R2 Predictable sampling. md5 selection over a known salt lets anyone who knows the salt see which
@@ -622,7 +697,8 @@ output differs by component (R6).
 - q2 Where review records, transition records and the current rung live. Nothing reads a rung today (e3).
   Shares rec-filing q4 (Decision 199 journal recommended there) and back-validation q4.
 - q3 Seeds are unmeasured: AOQL target (2% assumed), clearances 40/40/20, fractions 0.2/0.04/0.008,
-  review_sla_days 3, dark_days 2, a 30-day window, 10 drill faults; operator review capacity at read_all.
+  review_sla_days 3, dark_days 2, a 30-day window, a drill of 20 faults in 20 days at recall 0.9; operator
+  review capacity at read_all.
 - q4 (report-only) Is a failure_signal breach at sampled a demotion or only a hold? The staged rule
   demotes one rung (v11). A component whose signal and reviews disagree needs a reviewer's look either way.
 
@@ -638,29 +714,37 @@ output differs by component (R6).
 ## 4. Consideration register (as authored in the fixture)
 
 - why: the six items' 18 triggers are upward-only free text with no review rate (VP 1, VP 2), so promotion
-  measures patience, and a blinder monitor promotes faster (VP 4).
+  measures patience, and a blinder monitor promotes faster (VP 5).
 - how: one SQL per daily run over the review log, failure_signal series, drills and approvals per component
-  returns promote, propose_promote, hold, demote or restart with a reason; the rule's legs are k1-k5.
+  returns promote, propose_promote, hold, demote or restart with a reason and the version held next; the
+  rule's legs are k1-k5.
 - planes: data_plane (it runs over the customer's own review and telemetry rows; rung and transition
   counts are candidates for the rec-4141 allow-list, not decided here).
 - maturity: the controller is itself a component. read_all means every transition is a proposal the
   operator re-derives before any rung moves (c3). read_all -> sampled at >= 40 controller decisions the
   operator re-derived unchanged since the last overturned one; sampled -> spot_check at >= 40 more on a
   1-in-5 sample; spot_check -> anomaly_triggered at >= 30 consecutive days with stale_rung_days 0 and
-  escaped_wrong_share at or under the AOQL target (q3). These are clearance counts; their return leg is k1,
+  the escaped-share estimate at or under the AOQL target (q3). These are clearance counts; their return leg is k1,
   which the schema cannot yet express (O1).
-- failure_signal: a component sits at a rung its own evidence contradicts. Metric: escaped_wrong_share
-  (wrong outputs found by the audit floor or a breach review, per output, at rungs above read_all) beside
-  stale_rung_days (days a demote condition held with no transition recorded). Source: the review log and
-  the transition log (q2).
-- verification: c1 (the SQL passes these vectors over the build's tables, each transition record carrying
-  reason, counts and params_version), c2 (a seeded simulation through the controller keeps escaped-wrong
-  share at or under the AOQL target at every error rate and never promotes a component whose drill misses),
+- failure_signal: a component sits at a rung its own evidence contradicts. Metric: est_escaped_share, an
+  estimator with a stated denominator and window. Per component above read_all, over a rolling 30-day
+  window: (wrong among audited samples / audited samples) x (unreviewed outputs / all outputs). Beside it,
+  stale_rung_days (days a demote condition held with no transition recorded). Counting only the wrong
+  outputs review found would read about f x p (0.0008 at the top rung for p = 0.1) and stay green while 10%
+  escape; the estimator scales the audited error rate up to the unreviewed share instead. At the top rung
+  the audited sample is small (about 3 a month at 12 outputs a day), so the estimate is noisy and is read
+  beside the component's own failure_signal, never instead of it. Source: the review log (audited samples
+  and unreviewed counts) and the transition log (q2).
+- verification: c1 (the SQL passes these vectors over the build's tables; each transition record carries
+  reason, counts, to_version and params_version, and the caller writes to_version back), c2 (a seeded
+  simulation through the controller, over a grid spanning the AOQ peak band (p 0.005-0.2, recall 1.0, 0.9
+  and 0.5), keeps escaped-wrong share at or under the AOQL target and lets no low-recall monitor through
+  more than by chance),
   c3 (the operator's read_all review of every transition). All open.
 - rollback: stop the schedule and set every component to read_all; the transition log stays as history and
   review returns to 100% until a controller resumes. Failing safe means more review, never less.
-- edges: part_of T3.4 (exit criterion 2: gates with a per-gate rollback criterion); depends_on T2.36 (the
-  inputs are telemetry reader rows on DuckLake, like every sibling).
+- edges: part_of T3.4 (exit criterion 2: gates with a per-gate rollback criterion; the home is parked as
+  k6); depends_on T2.36 (the inputs are telemetry reader rows on DuckLake, like every sibling).
 
 ## 5. Boundary notes for W2 synthesis
 
@@ -671,7 +755,9 @@ output differs by component (R6).
 - Back-validation (W1-6, #1397): "close_proposed until anomaly_triggered" makes this controller the gate for
   direct proof closes. Under k5 (a) its drill is its own VP 3 simulation run on known no-op fixes: a holds
   on a drill fix is a missed detection. Its spot_check -> anomaly_triggered trigger (false_proof_rate over 90
-  days with at least 20 proof closes) is a signal window in this vocabulary. Same k2 answer.
+  days with at least 20 proof closes) maps to a signal window only if the producer emits the 90-day rate
+  as its daily value, or the window becomes per component; signal_window_days is one global 30 today. Same
+  k2 answer.
 - Friction classifier (W1-3, #1394): its version stamp is classifier_version, and every rules edit bumps
   it; under k2 (a) that restarts the ladder, which is why k2 suggests a cosmetic class. Its precision comes
   only from label review (its q2), so its review log is the controller's main input.
@@ -695,5 +781,5 @@ output differs by component (R6).
 upward transition is paired with a return leg: a wrong output found above read_all returns the component
 to read_all, a failure_signal that breaches or goes dark demotes it, and a rule-set version change
 restarts it at read_all. Promotion needs operator approval; demotion and restart apply on the run that
-finds them. The top rung needs a passed monitor drill. Thresholds are stated with their denominator,
+finds them. The top rung needs a passed monitor drill with a stated recall floor. Thresholds are stated with their denominator,
 window and source."
