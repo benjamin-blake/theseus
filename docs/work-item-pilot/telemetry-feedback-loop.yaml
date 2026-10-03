@@ -11,6 +11,44 @@ fixture:
     first_of: [{criterion_met: 'T4.23:c6'}, {review_on: '2027-01-31'}]
     outcome: lift rows into the store, or restructure (rehome or reshape) per the operator's review; never delete
   edges_disposition: pilot_only -- re-authored by the implementation merge on lift (Decision 197 clause 5), never lifted as-is
-work_items: []
-work_item_criteria: []
-work_item_edges: []
+work_items:
+  - id: pwi-goodhart-register
+    kind: task
+    title: 'Goodhart register: a counter series and a seeded drill per failure_signal, read daily as a soundness verdict'
+    extension:
+      consideration_register:
+        why: All 8 W1 failure_signals are lower-is-better, and a cheap path lowers each as far as halving real failures (VP 3); 4 name a companion, 1 a seeded positive, 0 a recall check (VP 1).
+        how: One register row per detector (metric, cheap path, counter, drill, upstreams) and one daily SQL returning ok or one of nine unsound verdicts per detector, upstreams included; the ladder reads it (k1).
+        planes: [data_plane]
+        maturity:
+          rung: read_all
+          transitions:
+            - {from: read_all, to: sampled, trigger: {metric: 'provisional: verdicts the operator re-derived unchanged since the last overturned one', comparator: '>=', threshold: 40}}
+            - {from: sampled, to: spot_check, trigger: {metric: 'provisional: 1-in-5 sampled verdicts re-derived unchanged since the last overturned one', comparator: '>=', threshold: 40}}
+            - {from: spot_check, to: anomaly_triggered, trigger: {metric: 'provisional: consecutive days on which the injected unregistered series reads unregistered', comparator: '>=', threshold: 30}}
+        failure_signal: {signal: 'A detector reads sound while it is not: a series reaches the ladder with no register row, or a counter that cannot fall under its own cheap path', metric: 'unsound_reads: unregistered series reaching the ladder + rows whose counter held in its cheap-path replay; must be 0', source: verdict log (unregistered rows) and the c2 cheap-path replay run on every register version}
+        verification: [c1, c2, c3]
+        rollback: Stop the verdict schedule; the ladder reads its other inputs as before. Register rows and drill logs stay as history; nothing else is written, so a resume re-derives every verdict.
+        evidence:
+          - {kind: file_line, ref: 'scripts/checks/roadmap/_work_item_pilot_model.py:162'}
+          - {kind: file_line, ref: 'src/turn_capture/observations.py:311'}
+          - {kind: decision, ref: '196'}
+          - {kind: roadmap, ref: T3.4}
+        settled:
+          - {id: s1, text: 'One failure_signal per item (pilot model: required, unique); D196 cl.7''s Goodhart question applies by analogy. Data plane only (D209 cl.2a).'}
+          - {id: s2, text: 'Measured: in 8 of 8 W1 items a stated cheap path lowers the failure_signal as far as halving real failures; the staged counter splits the two in 8 of 8 (VP 3).'}
+          - {id: s3, text: 'Measured: 4 of 8 signals name a companion, 1 a seeded positive, 0 a recall check on the top trigger; computable companions catch 1 of 2 cheap paths (VP 1, 3).'}
+        contested:
+          - {id: k1, text: 'On the ladder: (a) block promotion and demote a rung, as a dark signal does; (b) block promotion only; (c) advisory. Rec (a); (b) for diverging, upstream.'}
+          - {id: k2, text: 'Drills: (a) live rows under a drill project_id kept out of totals; (b) offline replay of each detector SQL; (c) operator samples. Rec (b); (a) capture, canary.'}
+          - {id: k3, text: 'Declared where: (a) this item''s register rows; (b) counter and drill fields on FailureSignal, evaluator-required; (c) item prose. Rec (a) now, (b) at lift.'}
+        open_questions:
+          - {id: q1, text: 'Where the out-of-band counts and drill logs live: capture q1 denominator, rec-4025 shadow mode (#1390 q2), friction label review, the verdict log.'}
+          - {id: q2, text: 'Seeds unmeasured: counter floor 0.99, drill_min 20 per 28 days at recall 0.9, eps 0.01 on 14-day halves. Who sets per-detector values, from what?'}
+          - {id: q3, text: 'Is the verdict one input to #1398''s controller, replacing its top-rung drill with one at every rung (its k5 (a3)), or read beside it?'}
+work_item_criteria:
+  - {work_item: pwi-goodhart-register, criterion_id: c1, text: 'The verdict SQL applies the versioned params over the build''s register, signal and drill tables and passes every report vector on DuckDB, each raise matching its message.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_goodhart_register.py -k vectors}, status: open}
+  - {work_item: pwi-goodhart-register, criterion_id: c2, text: 'For every register row the build replays its cheap path on the detector''s real metric: the primary improves and the counter falls under its floor; on a real improvement the counter holds.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_goodhart_register.py -k cheap_path_replay}, status: open}
+  - {work_item: pwi-goodhart-register, criterion_id: c3, text: 'Before the ladder reads any detector above read_all, the operator approves its register row, and approves every later change to a row, each with that row''s c2 replay result.', method: {kind: review, resolver: 'operator, before the ladder reads a detector above read_all and on every register change', evidence_requirement: 'register diff per row: metric, cheap path, counter, floor, drill, upstreams, plus its c2 replay line'}, status: open}
+work_item_edges:
+  - {from: pwi-goodhart-register, to: T2.36, kind: depends_on}
