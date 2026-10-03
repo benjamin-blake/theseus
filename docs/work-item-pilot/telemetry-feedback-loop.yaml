@@ -11,6 +11,44 @@ fixture:
     first_of: [{criterion_met: 'T4.23:c6'}, {review_on: '2027-01-31'}]
     outcome: lift rows into the store, or restructure (rehome or reshape) per the operator's review; never delete
   edges_disposition: pilot_only -- re-authored by the implementation merge on lift (Decision 197 clause 5), never lifted as-is
-work_items: []
-work_item_criteria: []
-work_item_edges: []
+work_items:
+  - id: pwi-allow-list-transport
+    kind: task
+    title: 'Plane egress: a data-plane verb applies the operator-approved allow-list before telemetry metadata crosses'
+    extension:
+      consideration_register:
+        why: 'Decision 209 cl.2(b) wants an allow-list and cl.5(i) leaves it open: 58 of 133 telemetry columns hold caller strings, 0 of 12 vocabularies are enforced, and nothing reads a plane (VP 1-2).'
+        how: 'A named data-plane reader verb, assembled from a per-column allow-list, emits only what the list names (staged: k1(a) day aggregates of guarded enums, sums, booleans); drift or a bad id refuses. k1-k3.'
+        planes: [data_plane, control_plane]
+        maturity:
+          rung: read_all
+          transitions:
+            - {from: read_all, to: sampled, trigger: {metric: 'provisional: egress batches the operator diffed against the allow-list with canary_leaks 0 since the last leak', comparator: '>=', threshold: 30}}
+            - {from: sampled, to: spot_check, trigger: {metric: 'provisional: 1-in-5 sampled egress batches diffed clean since the last leak', comparator: '>=', threshold: 60}}
+            - {from: spot_check, to: anomaly_triggered, trigger: {metric: 'provisional: consecutive days with canary_leaks 0 and no unclassified column', comparator: '>=', threshold: 90}}
+        failure_signal: {signal: 'Tenant text crosses to the control plane, or classification drifts: an unclassified column refuses, or a withheld share rises', metric: 'canary_leaks: tokens of the seeded per-run canary row found in the egress batch; must be 0', source: egress batch and seeded canary row (data plane); withheld_<col> share per column beside it}
+        verification: [c1, c2, c3]
+        rollback: Stop the egress schedule and nothing further crosses; the control plane holds only aggregates already sent, deletable per tenant, and the data plane is untouched. Failing safe means no fleet view.
+        evidence:
+          - {kind: decision, ref: '209'}
+          - {kind: file_line, ref: 'docs/contracts/telemetry-event-envelope.yaml:316'}
+          - {kind: file_line, ref: 'scripts/checks/roadmap/_work_item_pilot_model.py:50'}
+          - {kind: roadmap, ref: T2.36}
+        settled:
+          - {id: s1, text: Only an explicit allow-list of metadata crosses; transcripts and tenant data never do; the filter runs in the data plane first (Decision 209 cl.2(a)-(b)).}
+          - {id: s2, text: 'The egress is a named reader verb over derived-at-read state, never caller SQL (Decision 199 cl.1; Decision 84 I-3).'}
+          - {id: s3, text: 'Measured: a 12-column deny-list leaks 61 of 73 string columns; the staged allow-list leaks 0 (VP 5); ids plus tenancy ids confirm refs (VP 6).'}
+        contested:
+          - {id: k1, text: 'Membership (always-ask): (a) tenancy key, guarded enums, finite numbers, booleans at day grain; (b) plus open-vocabulary strings; (c) envelope as-is. Rec (a).'}
+          - {id: k2, text: 'Ids (always-ask): (a) no derived id crosses; (b) HMAC re-key under a data-plane key; (c) as-is, which VP 6 rules out. Rec (a).'}
+          - {id: k3, text: 'Transport (always-ask, IAM): (a) data plane pushes; (b) control plane pulls via a customer-granted role; (c) both by adapter. Rec (a).'}
+        open_questions:
+          - {id: q1, text: 'Who owns each closed vocabulary and flips enforced to true? Until then model, producer and other open-vocabulary columns cannot cross.'}
+          - {id: q2, text: 'No consumer exists: which aggregates does the first paid fleet dashboard need (Decision 209 cl.1)? Membership should follow it.'}
+          - {id: q3, text: 'Where the canary row, egress log and withheld counts live in the data plane; shares rec-filing q4.'}
+work_item_criteria:
+  - {work_item: pwi-allow-list-transport, criterion_id: c1, text: 'The egress verb, assembled from the operator-approved allow-list, passes the report vectors of the operator-chosen options (staged: k1(a) withhold, k4(a)), incl. refusal on drift and any tenancy id not exactly one ULID.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_egress_allow_list.py -k vectors}, status: open}
+  - {work_item: pwi-allow-list-transport, criterion_id: c2, text: 'A canary token seeded in every string column of all four telemetry tables appears nowhere in the egress output, and every out-of-vocabulary enum value is counted as withheld.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_egress_allow_list.py -k canary}, status: open}
+  - {work_item: pwi-allow-list-transport, criterion_id: c3, text: 'The operator approves the allow-list before the first batch crosses and approves every later change to it, each with the canary result on that head.', method: {kind: review, resolver: 'operator, before the first batch crosses and on every allow-list change', evidence_requirement: 'allow-list diff naming each added column, its class, vocabulary and consumer, plus the canary probe line'}, status: open}
+work_item_edges:
+  - {from: pwi-allow-list-transport, to: T2.36, kind: depends_on}
