@@ -11,6 +11,45 @@ fixture:
     first_of: [{criterion_met: 'T4.23:c6'}, {review_on: '2027-01-31'}]
     outcome: lift rows into the store, or restructure (rehome or reshape) per the operator's review; never delete
   edges_disposition: pilot_only -- re-authored by the implementation merge on lift (Decision 197 clause 5), never lifted as-is
-work_items: []
-work_item_criteria: []
-work_item_edges: []
+work_items:
+  - id: pwi-deliberation-capture
+    kind: task
+    title: 'Deliberation capture: read-time reasoning metrics and a visibility-vs-text drift check over model_call and thinking rows'
+    extension:
+      consideration_register:
+        why: Deliberation is most of the output (64% of output tokens in one measured session) and the best RCA evidence, yet providers return it differently, capture can lose it silently, and nothing derives or checks it.
+        how: A read verb over deduped model_call rows (reasoning_visibility, reasoning_tokens) and thinking-row presence giving per producer, parser_version and model counts, share inputs and drift; the same SQL runs as a T3.20 c3 DQ monitor.
+        planes: [data_plane]
+        maturity:
+          rung: read_all
+          transitions:
+            - {from: read_all, to: sampled, trigger: {metric: reviewed sessions in a row per producer with >= 1 classified model_call and zero drift rows, comparator: '>=', threshold: 20}}
+            - {from: sampled, to: spot_check, trigger: {metric: drift rows per producer in a full window of the last 200 sampled classified model_calls, comparator: ==, threshold: 0}}
+            - {from: spot_check, to: anomaly_triggered, trigger: {metric: days in a row per producer with deliberation_drift_share defined and <= 0.01 for every parser_version present, comparator: '>=', threshold: 30}}
+        failure_signal: {signal: Stored visibility disagrees with stored text (full or summarized with no thinking row; a thinking row where none was declared) or is missing after cutover, metric: 'deliberation_drift_share: drifted/classified model_calls, undefined (never 0) if none; per producer, parser_version', source: session_deliberation_rollup response and the T3.20 c3 DQ monitor (alarm-not-gate)}
+        verification: [c1, c2, c3]
+        rollback: Drop the verb and the monitor; nothing is stored, so every metric re-derives on the next read. The producer fields stay wherever the 2a-1 plan and rec-4028 land them.
+        evidence:
+          - {kind: file_line, ref: 'src/turn_capture/observations.py:246'}
+          - {kind: file_line, ref: 'src/turn_capture/transcripts.py:196'}
+          - {kind: file_line, ref: 'docs/contracts/telemetry_observations.yaml:408'}
+          - {kind: file_line, ref: 'docs/contracts/inference-provider.yaml:355'}
+        settled:
+          - {id: s1, text: 'Producer facts were chosen 2026-09-29 (rec-4028): model_call reasoning_visibility and reasoning_tokens; claude_code via the 2a-1 plan, LiteLLM via rec-4028.'}
+          - {id: s2, text: 'Data plane only (D209 cl.2a): thinking text is agent transcript; the verb reads visibility, counts and transcript purpose, never content.'}
+          - {id: s3, text: 'Writer owns row-local rules, incl. visibility NOT NULL once a producer classifies (D210 cl.1, cl.4); text drift spans two producers (cl.2(b)): a monitor. 16/16.'}
+        contested:
+          - {id: k1, text: 'Claude thinking text: CC stores empty signed blocks by default (0 text rows here). (a) counts only; (b) showThinkingSummaries repo-wide; (c) RCA only. Rec (a).'}
+          - {id: k2, text: 'LiteLLM CoT lives only in the response and persona history: (a) replay from persona checkpoint (env R7); (b) non-replayable (env R8), loss counted. Rec (b).'}
+          - {id: k3, text: 'Who reads CoT text: (a) metrics only, text kept for forensic reads; (b) a per-call text verb (egress per read); (c) LLM labels (spends). Rec (a).'}
+        open_questions:
+          - {id: q1, text: 'Where is the 2a-1 plan rec-4028 names? No plan, branch, recent PR or contract field carries reasoning_visibility; claude_code still writes metadata.'}
+          - {id: q2, text: 'Does deliberation predict outcome? 64% of output tokens here were thinking (54 of 83 calls); no outcome join exists, so T3.3 must not alarm on share.'}
+          - {id: q3, text: 'A litellm-only persona tree has no sessions open row (env R8 bars it), so W1-2 session verbs cannot see it: does the executor loop emit lifecycle rows?'}
+work_item_criteria:
+  - {work_item: pwi-deliberation-capture, criterion_id: c1, text: 'session_deliberation_rollup on DuckLake passes every report vector over the shared env R4/R5 dedupe, groups by producer, parser_version, model and visibility, and selects no content column; fails, never skips, without DuckLake.', method: {kind: execution, check: null, command: 'bin/venv-python -m pytest tests/telemetry/test_deliberation_rollup_ducklake.py::test_report_vectors tests/telemetry/test_deliberation_rollup_ducklake.py::test_selects_no_content'}, status: open}
+  - {work_item: pwi-deliberation-capture, criterion_id: c2, text: 'A DQ monitor in the T3.20 c3 home flags each drift kind (text_missing, text_unexpected, visibility_missing), is silent on clean vectors, and reports verdict none on a legacy-only run; alarm, not gate.', method: {kind: execution, check: null, command: 'bin/venv-python -m pytest tests/telemetry/test_cot_drift.py::test_flags_each_drift_kind tests/telemetry/test_cot_drift.py::test_silent_on_clean tests/telemetry/test_cot_drift.py::test_none_on_legacy'}, status: open}
+  - {work_item: pwi-deliberation-capture, criterion_id: c3, text: 'Before T3.3 or T3.4 reads deliberation metrics, the operator reviews every drift row of the first sessions at read_all and confirms each producer mapping present.', method: {kind: review, resolver: operator at the first deliberation-consumer review (T3.3 or T3.4), evidence_requirement: 'drift rows per session at read_all: kind, producer, parser_version and the verdict on each'}, status: open}
+work_item_edges:
+  - {from: pwi-deliberation-capture, to: T3.20, kind: part_of}
+  - {from: pwi-deliberation-capture, to: T2.36, kind: depends_on}
