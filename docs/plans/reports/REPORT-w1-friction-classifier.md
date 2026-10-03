@@ -56,9 +56,9 @@ Fixture rows: `pwi-friction-classifier` in `docs/work-item-pilot/telemetry-feedb
 | e9 | telemetry_observations rows carry no content column (no edit text, path, tool input or Bash output); content lives in telemetry_transcripts, spilled to the blob port above 65536 bytes [VP 4]. One exception: a process_event's `metadata` JSON carries the scrubbed hook `command` and `stderr_head`, the first 512 characters of hook stderr | src/turn_capture/observations.py:32-64, :331-332; docs/contracts/telemetry_transcripts.yaml:172 |
 | e10 | Of the 13 registered repo hooks, 12 resolve to a script signature; the quoted `handoff_evidence_gate.sh` command does not, and falls back to the shared hookName signature `hook:PreToolUse.Bash` [VP 4] | .claude/settings.json; src/turn_capture/observations.py:293-299 |
 | e11 | Decision 209 cl.2(b): only an explicit allow-list of metadata fields crosses to a control plane; free text (titles, paths, error messages) can leak tenant data | docs/DECISIONS.md:75 |
+| e12 | The `attempt` column ("a key rework signal") is never populated by the claude_code producer [VP 1] | docs/contracts/telemetry_observations.yaml:297-298; src/turn_capture/observations.py:32-64 |
 | e13 | The operator's 2026-09-24 ruling: "the MVP derives friction classification AT READ with a rules-based reader verb over observed facts (hook blocks, gate failures, tool errors stored as process_event rows with stable name signatures)" | rec-4032 context (rec_by_id) |
 | e14 | Slice 3a's recorded deviation: "tool errors are stored once, as the tool_call close outcome, not duplicated as process_events (the outcome is observed once and stored on the row that observes it)" | docs/plans/PLAN-telemetry-turn-capture-core.yaml:636-638 |
-| e12 | The `attempt` column ("a key rework signal") is never populated by the claude_code producer [VP 1] | docs/contracts/telemetry_observations.yaml:297-298; src/turn_capture/observations.py:32-64 |
 
 Measured (local only; no production catalog read):
 
@@ -67,7 +67,7 @@ Measured (local only; no production catalog read):
   were run once by hand and each is caught: dropping the hook-absorbs-tool-block guard (12/14), letting
   any hook severity absorb a block (13/14), letting a repeat run cross turns (13/14) or tools (13/14),
   threshold 2 (12/14), dropping the one-label-per-fact rank (11/14), generic rules ranked before specific
-  ones (11/14), and the run label in the wrong class (11/14). Three survive by design, because the rules'
+  ones (11/14), and a run class hard-coded in the SQL instead of read from run_rule (11/14). Three survive by design, because the rules'
   disposition column, not the fact filter, is the guard: adding `info` or `interrupted` to the fact
   filter, or dropping its `event_kind = 'close'` term (open rows carry no outcome), changes nothing while
   no rule has those dispositions. v01, v12 and v14 pin that.
@@ -117,7 +117,8 @@ rules:
 
 The verb body, verified against the vectors below (VP 2). `{obs}` is one session's rows AFTER the
 shared R4/R5 dedupe the reader-verbs item stages (W1-2, report section 2), so the partition bound and
-the generation rule are inherited, not restated; `{rules}` is the rule set rendered server-side:
+the generation rule are inherited, not restated; `{rules}` is the rule set and `{run_label}`,
+`{run_class}` and `{repeat_threshold}` the run rule, all rendered server-side from the rules block:
 
 ```sql
 WITH f AS (
@@ -145,7 +146,7 @@ seq AS (
 )
 SELECT ref, label, class FROM labelled WHERE rk = 1
 UNION ALL
-SELECT min_by(observation_id, pos), 'repeated_tool_failure', 'rework' FROM seq
+SELECT min_by(observation_id, pos), '{run_label}', '{run_class}' FROM seq
 WHERE outcome = 'error' GROUP BY parent_observation_id, name, run HAVING count(*) >= {repeat_threshold}
 ```
 
@@ -297,8 +298,10 @@ Risk (known loss modes, not choices):
   block or repeat run, so those count zero forever. Either k2 option closes it, (a) in the formula and (b)
   in the producer. Covered by v03, v06-v09, v13.
 - R3 Unstable signature. A hook whose command quotes its script path (handoff_evidence_gate.sh here)
-  falls back to the shared hookName signature, so its blocks land as `hook:PreToolUse.Bash` and can only
-  ever map to `unmapped_block` (e10, VP 4). The fix is a producer rule (hook_name should strip quotes),
+  falls back to its attachment's hookName, `PreToolUse:<tool>`, so its blocks land as
+  `hook:PreToolUse.<tool>` (for example `.Bash`, or `.mcp__github__create_pull_request`, since its matcher
+  also covers Monitor and four GitHub write tools; inferred from the matcher and hook_name, VP 4 shows the
+  Bash case) and can only ever map to `unmapped_block` (e10). The fix is a producer rule (hook_name should strip quotes),
   rec-4026's slice 3b with a PARSER_VERSION bump. Named here for that owner; no rec is filed. The gap is
   wider than quoting: any hook whose command has no script token falls back the same way. This session's
   `hook:PostToolUse.Bash` came from a hook the repo does not register (it has no PostToolUse hook), so
