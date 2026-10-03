@@ -15,27 +15,35 @@ reads a rung (VP 1, VP 2). Two consequences are measured, not argued:
 - A clearance count with no return leg measures patience, not quality. "20 consecutive clean reviews" is
   reached after about 36 reviews at a 5% error rate and about 72 at 10%, and once passed nothing brings the
   component back (VP 2). In a seeded one-year simulation run through the controller SQL below, the declared
-  triggers let a 20%-error component ship 10.5-12.0% of its outputs wrong and unreviewed (VP 5).
-- A blinder monitor promotes faster. At a 5% error rate, 95% of components whose failure_signal sees half
-  the errors reach anomaly_triggered under the declared triggers, against 50% at recall 0.9 and 40% at
-  recall 1.0 (VP 5). The spot_check -> anomaly_triggered trigger is read off the same signal the top rung
-  then relies on, so a weaker signal is rewarded.
+  triggers let a 20%-error component ship 11.1-12.6% of its outputs wrong and unreviewed, 13.3% on the
+  worst seed (VP 5).
+- A blinder monitor promotes faster. At a 5% error rate, 58 of 60 components whose failure_signal sees half
+  the errors reach anomaly_triggered under the declared triggers, against 38 of 60 at recall 0.9 and 25 of
+  60 at recall 1.0 (VP 5). The spot_check -> anomaly_triggered trigger is read off the same signal the top
+  rung then relies on, so a weaker signal is rewarded.
 
 The staged controller is one deterministic SQL per daily run (Decision 55). It reads a review log, the
 component's failure_signal series, monitor drills and operator approvals. For each component it returns
 promote, propose_promote, hold, demote or restart, with one of 11 reasons and the version the component
-holds next. It passes 53/53 vectors (VP 4), twelve of them by raising on malformed input or params, and
-each of 40 hand-run mutants fails at least one vector.
+holds next. It passes 62/62 vectors (VP 4), sixteen of them by raising on malformed input or params, and
+each of 46 hand-run mutants fails at least one vector. A version restart is monotonic on an ordered stamp.
 It is a multi-level continuous sampling plan in the Dodge (CSP-1) and Lieberman-Solomon family: a
 clearance count per rung, a return leg on any wrong output found above read_all, a restart on a version
 change, a demotion on a breaching or dark failure_signal, and a windowed injected-fault drill before the
 top rung. Its outgoing-quality bound is simulated, not closed-form: CSP-1's closed form (1.76% at
-clearance 40, f 0.2) bounds only the first sampling level. Over a grid that spans the peak (error rates
-0.005 to 0.2, recall 1.0, 0.9 and 0.5), the staged rule's escaped-wrong share peaks at 1.91% (p=0.04,
-recall 0.5) and stays at or under 1.83% with recall 0.9 or better. A 90%-recall monitor reaches the top rung
-like a perfect one (1.00 at p <= 0.01), while a half-blind one reaches it in 1 of 180 components. That is
-paid for in review load: a 2%-error component is reviewed on 18-22% of its outputs instead of 3.3-4.1%
-(VP 5, section 2.6).
+clearance 40, f 0.2) bounds only the first sampling level. The simulation spans the peak (error rates
+0.005 to 0.2, recall 1.0, 0.9 and 0.5) on three seeds of 20 components per cell, and the bound depends on
+monitor recall:
+- With recall at or above the drill floor (0.9), escaped-wrong share peaks at 1.73% averaged over the
+  seeds and 1.85% on the worst seed (p=0.03, recall 0.9). That is under the assumed 2% AOQL target (q3).
+- With a half-blind monitor it peaks at 1.99% averaged and 2.09% on the worst seed (p=0.035), so the
+  2% target is not met. A weaker monitor breaches less, so the signal demotes less.
+- The drill keeps a half-blind monitor off the top rung except by chance (2 of 600 components). It does not
+  remove the weaker-monitor advantage inside the 0.03-0.045 band: there a 90%-recall monitor reaches the
+  top in 64 of 240 components against 37 of 240 for a perfect one. Below p=0.02 the two match (60 of 60).
+  Cures are named under k5, not claimed.
+That is paid for in review load: a 2%-error component is reviewed on 20-21% of its outputs instead of
+3.7-3.9% (VP 5, section 2.6).
 
 What is settled is narrow: the four rungs and their order (evaluator code), a deterministic decision
 (Decision 55), and the measured facts above. The return leg, the version-change rule and promotion
@@ -174,7 +182,8 @@ business; the controller decides only the rung.
 ### 2.2 Inputs
 
 `{state}`: one row per component: component, rung, entered_day (first day at this rung), version (the
-component's rule-set stamp: classifier_version, parser_version or params_version), signal_threshold.
+component's rule-set stamp: classifier_version, parser_version or params_version; stamps sort in deploy
+order, so a rollback is minted as a new, higher stamp), signal_threshold.
 `{reviews}`: one row per selected output: component, output_id, day, version, rung (at production), outcome
 (correct, wrong or unsure; NULL while pending). `{signal}`: one row per component per day: the
 failure_signal value, NULL when undefined (deliberation's "undefined, never 0" maps here). `{drills}`: one
@@ -209,9 +218,10 @@ f_anomaly_triggered: 0.008
 
 Malformed inputs and params raise instead of deciding (fail loud, Decision 55): an unknown rung, a NULL
 state field or a duplicate component (e01, e07, e08); an on_wrong or promotion_authority outside its
-vocabulary (e12); a review row with a NULL component (e09) or another NULL key (e04); a duplicate output_id
+vocabulary (e12, e13); a review row with a NULL component (e09) or another NULL key (e04); a duplicate output_id
 (e02); an outcome outside the vocabulary (e03); a duplicate failure_signal day (e05); a signal row with a
-NULL day (e10); a drill row with a NULL count (e11) or more detected than injected (e06). Each raise vector
+NULL component (e14) or day (e10); a drill row with a NULL component (e15), day (e16) or count (e11), or
+more detected than injected (e06). Each raise vector
 matches its error message, not any DuckDB error. The guards are aggregates read by the final CASE, so no optimiser can skip them.
 
 Clearance counts correct reviews at the current rung and version since the last breaker. A breaker is a
@@ -220,9 +230,13 @@ inside the SLA neither counts nor breaks (v07, v36). An unreviewed sample theref
 skipping the hard cases cannot buy a promotion (Goodhart).
 
 Every output row carries to_version, the version the component holds after the decision. On a restart it
-is the newest foreign version in the stint, by (day, output_id) (v41); otherwise it is the state's. The
-caller writes it back with the rung and entered_day, so the next run at the new version holds instead of
-restarting again (v40).
+is the highest stamp above the state's seen in the stint (v41, v44); otherwise it is the state's. Because
+stamps are ordered, a restart is monotonic: a late or overlapping output from an older stamp neither
+restarts the component nor rolls its stamp back (v42), and while two stamps both produce, only the current
+one's reviews count toward clearance (v43). The caller writes to_version back with the rung and
+entered_day, so the next run at the new version holds instead of restarting again (v40). The ordering is a
+contract on the stamp (a zero-padded counter or a timestamp sorts as text); its alternatives are k2's
+sub-question.
 
 ```sql
 WITH st AS (
@@ -255,8 +269,8 @@ rv AS (
   WHERE r.day >= s.entered_day AND r.day <= {today}
 ),
 vc AS (
-  SELECT s.component, count(rv.component) FILTER (WHERE rv.version <> s.version) > 0 AS changed,
-         arg_max(rv.version, {'day': rv.day, 'output_id': rv.output_id}) FILTER (WHERE rv.version <> s.version) AS new_version
+  SELECT s.component, count(rv.component) FILTER (WHERE rv.version > s.version) > 0 AS changed,
+         max(rv.version) FILTER (WHERE rv.version > s.version) AS new_version
   FROM st s LEFT JOIN rv ON rv.component = s.component
   GROUP BY s.component
 ),
@@ -347,7 +361,7 @@ FROM d
 
 | action | reason | when (precedence top-down) | vectors |
 |---|---|---|---|
-| restart | version_change | a review in the stint carries a version other than the state's, when version_restart (k2); to_version is the newest foreign one | v18, v19, v25, v41 |
+| restart | version_change | a review in the stint carries a stamp above the state's, when version_restart (k2); to_version is the highest such stamp | v18, v19, v25, v41, v44 |
 | demote | wrong_found | a wrong review at the current rung above read_all; to read_all or one rung down per on_wrong (k1); never at read_all | v08, v09, v26, v30, v31 |
 | demote | signal_breach | above read_all, today's failure_signal exceeds the threshold (strictly), when signal_demotes; one rung down | v11 |
 | demote | signal_dark | above read_all, no defined failure_signal value in the last dark_days days; one rung down | v12, v32 |
@@ -411,6 +425,11 @@ vectors:
   - {id: v39, today: 50, state: [[a, spot_check, 10, v1, 0.05]], reviews: [[a, 20, 20, v1, spot_check, correct]], signal: [[a, 10, 50, 0.01]], drills: [[a, 20, 5, 0], [a, 45, 20, 20]], expected: [[a, propose_promote, anomaly_triggered, cleared, v1]]}
   - {id: v40, today: 60, state: [[a, read_all, 51, v2, 0.05]], reviews: [[a, 40, 3, v1, read_all, correct], [a, 52, 40, v2, read_all, correct]], signal: [[a, 50, 60, 0.0]], expected: [[a, propose_promote, sampled, cleared, v2]]}
   - {id: v41, today: 50, state: [[a, sampled, 10, v1, 0.05]], reviews: [[a, 20, 30, v1, sampled, correct], [a, 30, 1, v2, sampled, correct], [a, 40, 1, v3, sampled, correct]], signal: [[a, 10, 50, 0.0]], expected: [[a, restart, read_all, version_change, v3]]}
+  - {id: v42, today: 60, state: [[a, read_all, 51, v2, 0.05]], reviews: [[a, 52, 40, v2, read_all, correct], [a, 53, 1, v1, read_all, correct]], signal: [[a, 50, 60, 0.0]], expected: [[a, propose_promote, sampled, cleared, v2]]}
+  - {id: v43, today: 60, state: [[a, read_all, 51, v2, 0.05]], reviews: [[a, 52, 1, v1, read_all, correct], [a, 52, 20, v2, read_all, correct], [a, 55, 1, v1, read_all, wrong], [a, 55, 20, v2, read_all, correct]], signal: [[a, 50, 60, 0.0]], expected: [[a, propose_promote, sampled, cleared, v2]]}
+  - {id: v44, today: 50, state: [[a, sampled, 10, v1, 0.05]], reviews: [[a, 20, 30, v1, sampled, correct], [a, 40, 1, v3, sampled, correct], [a, 40, 1, v2, sampled, correct]], signal: [[a, 10, 50, 0.0]], expected: [[a, restart, read_all, version_change, v3]]}
+  - {id: v45, today: 45, state: [[a, spot_check, 10, v1, 0.05]], reviews: [[a, 20, 20, v1, spot_check, correct]], signal: [[a, 10, 45, 0.01]], drills: [[a, 25, 1, 1], [a, 26, 19, 19]], expected: [[a, hold, spot_check, awaiting_drill, v1]]}
+  - {id: v46, today: 50, state: [[a, sampled, 30, v1, 0.05]], reviews: [[a, 20, 1, v1, sampled, wrong], [a, 31, 40, v1, sampled, correct]], signal: [[a, 30, 50, 0.0]], expected: [[a, propose_promote, spot_check, cleared, v1]]}
   - {id: e01, today: 50, raises: 'malformed ladder state', state: [[a, audit, 10, v1, 0.05]], expected: error}
   - {id: e02, today: 50, raises: 'duplicate output_id', dup_review: true, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 2, v1, read_all, correct]], signal: [[a, 49, 50, 0.0]], expected: error}
   - {id: e03, today: 50, raises: 'review outcome outside', state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 1, v1, read_all, maybe]], signal: [[a, 49, 50, 0.0]], expected: error}
@@ -423,6 +442,10 @@ vectors:
   - {id: e10, today: 50, raises: 'malformed ladder input', state: [[a, read_all, 10, v1, 0.05]], signal: [[a, 49, 50, 0.0]], extra_signal: [[a, null, 0.0]], expected: error}
   - {id: e11, today: 50, raises: 'malformed ladder input', state: [[a, spot_check, 10, v1, 0.05]], signal: [[a, 49, 50, 0.0]], drills: [[a, 45, null, 0]], expected: error}
   - {id: e12, today: 50, raises: 'malformed ladder params', params: {on_wrong: readall}, state: [[a, read_all, 10, v1, 0.05]], signal: [[a, 49, 50, 0.0]], expected: error}
+  - {id: e13, today: 50, raises: 'malformed ladder params', params: {promotion_authority: Operator}, state: [[a, read_all, 10, v1, 0.05]], signal: [[a, 49, 50, 0.0]], expected: error}
+  - {id: e14, today: 50, raises: 'malformed ladder input', state: [[a, read_all, 10, v1, 0.05]], signal: [[a, 49, 50, 0.0]], extra_signal: [[null, 50, 0.0]], expected: error}
+  - {id: e15, today: 50, raises: 'malformed ladder input', state: [[a, spot_check, 10, v1, 0.05]], signal: [[a, 49, 50, 0.0]], drills: [[null, 45, 1, 0]], expected: error}
+  - {id: e16, today: 50, raises: 'malformed ladder input', state: [[a, spot_check, 10, v1, 0.05]], signal: [[a, 49, 50, 0.0]], drills: [[a, null, 1, 0]], expected: error}
 ```
 
 ### 2.5 Mutants (hand-run once, reported, not a VP step)
@@ -436,7 +459,7 @@ Each mutant is one textual edit of the SQL above; every one fails at least one v
 | m03 | a pending review inside the SLA breaks clearance | v07 |
 | m04 | SLA boundary < becomes <= | v07 |
 | m05 | unsure is not a breaker | v05 |
-| m06 | rows before entered_day read | v28, v40 |
+| m06 | rows before entered_day read | v46 |
 | m07 | rows after today read | v29 |
 | m08 | wrong_found checked before version_change | v25 |
 | m09 | a demotion targets the current rung | v09, v11, v12, v26, v32 |
@@ -460,28 +483,34 @@ Each mutant is one textual edit of the SQL above; every one fails at least one v
 | m27 | rows recorded at another rung count | v37 |
 | m28 | hold top checked before the demotions | v12, v31, v32 |
 | m29 | promotion_authority auto ignored | v27 |
-| m30 | one clearance (clear_read_all) for every rung | v14, v15, v16, v17, v35, v38, v39 |
+| m30 | one clearance (clear_read_all) for every rung | v14, v15, v16, v17, v35, v38, v39, v45 |
 | m31 | signal window check removed | v15 |
 | m32 | signal_dark demotion removed | v12, v32 |
-| m33 | the restart version not returned (to_version stays current) | v18, v19, v25, v41 |
-| m34 | the drill window ignored | v39 |
+| m33 | the restart version not returned (to_version stays current) | v18, v19, v25, v41, v44 |
+| m34 | the drill window ignored | v39, v45 |
 | m35 | zero-miss drill instead of the recall floor | v38 |
-| m36 | on_wrong and promotion_authority vocabulary guard removed | e12 |
+| m36 | on_wrong and promotion_authority vocabulary guard removed | e12, e13 |
 | m37 | NULL component review guard removed | e09 |
 | m38 | NULL signal day guard removed | e10 |
 | m39 | NULL drill count guard removed | e11 |
-| m40 | the oldest foreign version returned on a restart | v41 |
+| m40 | the lowest stamp above the state's returned on a restart | v41, v44 |
+| m41 | promotion_authority vocabulary guard leg removed | e13 |
+| m42 | restart on any foreign stamp (rollback and overlap restart) | v42, v43 |
+| m43 | NULL component signal guard removed | e14 |
+| m44 | NULL component drill guard removed | e15 |
+| m45 | NULL drill day guard removed | e16 |
+| m46 | drill window boundary > becomes >= | v45 |
 
 ### 2.6 Simulation (VP 5)
 
 One year, 12 outputs a day per component (the order of magnitude #1397 measured for sessions), 20
-replicate components per (error rate p, monitor recall r) cell. The error rates are 0.005, 0.01, 0.02,
-0.03, 0.035, 0.04, 0.05, 0.1 and 0.2; the band 0.02-0.05 is where a multi-level plan's outgoing quality
-peaks. Monitor recall is 1.0, 0.9 or 0.5. The failure_signal is the 7-day share of outputs that are wrong and seen by the monitor; threshold
+replicate components per (error rate p, monitor recall r) cell on each of three seeds, so 60 per cell. The
+error rates are 0.005, 0.01, 0.02, 0.03, 0.035, 0.04, 0.045, 0.05, 0.1 and 0.2; the band 0.02-0.05 is where
+a multi-level plan's outgoing quality peaks. Monitor recall is 1.0, 0.9 or 0.5. The failure_signal is the 7-day share of outputs that are wrong and seen by the monitor; threshold
 0.05. A drill injects one fault per spot_check day, detected with probability r. The reviewer is perfect
 and immediate, errors are independent at a constant p, and every proposal is approved (the most permissive
 operator). Draws are md5 over the seed, the component, the day and the output, so the result is identical
-on every run. Both rules use the staged review fractions, because no declared item states one (e1).
+on every run; the seed only re-draws, so seed-to-seed spread is sampling noise, not a rule change. Both rules use the staged review fractions, because no declared item states one (e1).
 
 The `declared` rule is the controller with the declared shape: clearance 20 then 50, a 30-day clean signal
 window to the top, no return leg, no signal demotion, no version restart, no drill. The simulation never
@@ -490,13 +519,13 @@ block. Each simulated day runs the controller SQL above, unchanged, over every c
 
 ```yaml
 simulation:
-  seed: w1-c7
+  seeds: [w1-c7, w1-c7-b, w1-c7-c]
   days: 365
   n_per_day: 12
   signal_days: 7
   signal_threshold: 0.05
   reps: 20
-  p: [0.005, 0.01, 0.02, 0.03, 0.035, 0.04, 0.05, 0.1, 0.2]
+  p: [0.005, 0.01, 0.02, 0.03, 0.035, 0.04, 0.045, 0.05, 0.1, 0.2]
   recall: [1.0, 0.9, 0.5]
   rules:
     declared: {clear_read_all: 20, clear_sampled: 50, clear_spot_check: 0, on_wrong: none, signal_demotes: false, signal_gates_promotion: false, version_restart: false, drill_min: 0, promotion_authority: auto}
@@ -505,9 +534,11 @@ simulation:
 
 ```sql
 CREATE TABLE sim_state AS
-  SELECT 'c:' || p || ':' || r || ':' || i AS component, 'read_all' AS rung, CAST(1 AS BIGINT) AS entered_day, 'v1' AS version,
+  SELECT sd || '/c:' || p || ':' || r || ':' || i AS component, 'c:' || p || ':' || r || ':' || i AS draw_key, sd AS seed,
+         'read_all' AS rung, CAST(1 AS BIGINT) AS entered_day, 'v1' AS version,
          CAST({signal_threshold} AS DOUBLE) AS signal_threshold, p, r AS recall
-  FROM (SELECT unnest({p}) AS p) CROSS JOIN (SELECT unnest({recall}) AS r) CROSS JOIN range({reps}) t(i);
+  FROM (SELECT unnest({seeds}) AS sd) CROSS JOIN (SELECT unnest({p}) AS p) CROSS JOIN (SELECT unnest({recall}) AS r)
+       CROSS JOIN range({reps}) t(i);
 CREATE TABLE sim_out (component VARCHAR, day BIGINT, k BIGINT, wrong BOOLEAN, selected BOOLEAN, seen BOOLEAN, rung VARCHAR);
 CREATE TABLE sim_rv (component VARCHAR, output_id VARCHAR, day BIGINT, version VARCHAR, rung VARCHAR, outcome VARCHAR);
 CREATE TABLE sim_sg (component VARCHAR, day BIGINT, value DOUBLE);
@@ -520,9 +551,9 @@ INSERT INTO sim_out
   SELECT component, {day}, k, u_w < p, rung = 'read_all' OR u_s < CASE rung WHEN 'sampled' THEN {f_sampled}
          WHEN 'spot_check' THEN {f_spot_check} ELSE {f_anomaly_triggered} END, u_d < recall, rung
   FROM (SELECT s.*, t.k,
-               CAST('0x' || substr(md5(concat_ws(':', '{seed}', s.component, {day}, t.k, 'w')), 1, 8) AS UBIGINT) / 4294967296.0 AS u_w,
-               CAST('0x' || substr(md5(concat_ws(':', '{seed}', s.component, {day}, t.k, 's')), 1, 8) AS UBIGINT) / 4294967296.0 AS u_s,
-               CAST('0x' || substr(md5(concat_ws(':', '{seed}', s.component, {day}, t.k, 'd')), 1, 8) AS UBIGINT) / 4294967296.0 AS u_d
+               CAST('0x' || substr(md5(concat_ws(':', s.seed, s.draw_key, {day}, t.k, 'w')), 1, 8) AS UBIGINT) / 4294967296.0 AS u_w,
+               CAST('0x' || substr(md5(concat_ws(':', s.seed, s.draw_key, {day}, t.k, 's')), 1, 8) AS UBIGINT) / 4294967296.0 AS u_s,
+               CAST('0x' || substr(md5(concat_ws(':', s.seed, s.draw_key, {day}, t.k, 'd')), 1, 8) AS UBIGINT) / 4294967296.0 AS u_d
         FROM sim_state s CROSS JOIN range({n_per_day}) t(k));
 INSERT INTO sim_rv
   SELECT component, component || ':' || day || ':' || k, day, 'v1', rung, CASE WHEN wrong THEN 'wrong' ELSE 'correct' END
@@ -532,7 +563,7 @@ INSERT INTO sim_sg
   FROM sim_out WHERE day > {day} - {signal_days} AND day <= {day} GROUP BY component;
 INSERT INTO sim_dr
   SELECT component, {day}, 1,
-         CASE WHEN CAST('0x' || substr(md5(concat_ws(':', '{seed}', component, {day}, 'drill')), 1, 8) AS UBIGINT) / 4294967296.0 < recall
+         CASE WHEN CAST('0x' || substr(md5(concat_ws(':', seed, draw_key, {day}, 'drill')), 1, 8) AS UBIGINT) / 4294967296.0 < recall
               THEN 1 ELSE 0 END
   FROM sim_state WHERE rung = 'spot_check';
 CREATE OR REPLACE TABLE sim_act AS {controller};
@@ -542,57 +573,74 @@ DELETE FROM sim_rv USING sim_state s WHERE sim_rv.component = s.component AND si
 ```
 
 ```sql
+WITH per_seed AS (
+  SELECT s.seed, s.p, s.recall, count(*) FILTER (WHERE o.wrong AND NOT o.selected) / count(*) AS aoq
+  FROM sim_out o JOIN sim_state s USING (component)
+  GROUP BY s.seed, s.p, s.recall
+)
 SELECT s.p, s.recall,
        count(*) FILTER (WHERE o.wrong AND NOT o.selected) / count(*) AS aoq,
+       (SELECT max(x.aoq) FROM per_seed x WHERE x.p = s.p AND x.recall = s.recall) AS aoq_worst_seed,
        count(*) FILTER (WHERE o.selected) / count(*) AS afi,
        count(*) FILTER (WHERE o.rung = 'anomaly_triggered') / count(*) AS top_share,
-       count(DISTINCT o.component) FILTER (WHERE o.rung = 'anomaly_triggered') / count(DISTINCT o.component) AS reached_top
+       count(DISTINCT o.component) FILTER (WHERE o.rung = 'anomaly_triggered') AS reached_top_n,
+       count(DISTINCT o.component) AS components
 FROM sim_out o JOIN sim_state s USING (component)
 GROUP BY s.p, s.recall ORDER BY s.p, s.recall
 ```
 
-Result (VP 5; aoq is wrong outputs that escaped review per output; afi the share reviewed; reached_top the
-share of components that ever reached anomaly_triggered):
+Result (VP 5; aoq is wrong outputs that escaped review per output, over all 60 components, and worst is
+the highest single-seed aoq; afi the share reviewed; top the components of 60 that ever reached
+anomaly_triggered):
 
-| p | recall | declared aoq | declared afi | declared reached_top | staged aoq | staged afi | staged reached_top |
-|---|---|---|---|---|---|---|---|
-| 0.005 | 0.5 | 0.0049 | 0.029 | 1.00 | 0.0046 | 0.080 | 0.00 |
-| 0.005 | 0.9 | 0.0047 | 0.029 | 1.00 | 0.0046 | 0.040 | 1.00 |
-| 0.005 | 1.0 | 0.0047 | 0.032 | 1.00 | 0.0047 | 0.041 | 1.00 |
-| 0.01 | 0.5 | 0.0100 | 0.031 | 1.00 | 0.0089 | 0.120 | 0.05 |
-| 0.01 | 0.9 | 0.0097 | 0.031 | 1.00 | 0.0094 | 0.064 | 1.00 |
-| 0.01 | 1.0 | 0.0100 | 0.032 | 1.00 | 0.0097 | 0.067 | 1.00 |
-| 0.02 | 0.5 | 0.0182 | 0.041 | 1.00 | 0.0149 | 0.218 | 0.00 |
-| 0.02 | 0.9 | 0.0189 | 0.033 | 1.00 | 0.0160 | 0.181 | 0.95 |
-| 0.02 | 1.0 | 0.0192 | 0.035 | 1.00 | 0.0156 | 0.204 | 0.95 |
-| 0.03 | 0.5 | 0.0279 | 0.052 | 1.00 | 0.0180 | 0.377 | 0.00 |
-| 0.03 | 0.9 | 0.0285 | 0.041 | 1.00 | 0.0168 | 0.421 | 0.60 |
-| 0.03 | 1.0 | 0.0285 | 0.051 | 1.00 | 0.0157 | 0.478 | 0.45 |
-| 0.035 | 0.5 | 0.0337 | 0.043 | 1.00 | 0.0185 | 0.455 | 0.00 |
-| 0.035 | 0.9 | 0.0333 | 0.062 | 1.00 | 0.0183 | 0.512 | 0.40 |
-| 0.035 | 1.0 | 0.0337 | 0.051 | 1.00 | 0.0157 | 0.561 | 0.05 |
-| 0.04 | 0.5 | 0.0368 | 0.056 | 1.00 | 0.0191 | 0.511 | 0.00 |
-| 0.04 | 0.9 | 0.0385 | 0.061 | 0.95 | 0.0143 | 0.653 | 0.10 |
-| 0.04 | 1.0 | 0.0364 | 0.071 | 0.90 | 0.0155 | 0.614 | 0.05 |
-| 0.05 | 0.5 | 0.0460 | 0.068 | 0.95 | 0.0160 | 0.678 | 0.00 |
-| 0.05 | 0.9 | 0.0456 | 0.092 | 0.50 | 0.0119 | 0.762 | 0.00 |
-| 0.05 | 1.0 | 0.0456 | 0.079 | 0.40 | 0.0110 | 0.775 | 0.00 |
-| 0.1 | 0.5 | 0.0822 | 0.196 | 0.15 | 0.0025 | 0.974 | 0.00 |
-| 0.1 | 0.9 | 0.0812 | 0.203 | 0.00 | 0.0019 | 0.984 | 0.00 |
-| 0.1 | 1.0 | 0.0820 | 0.190 | 0.00 | 0.0011 | 0.989 | 0.00 |
-| 0.2 | 0.5 | 0.1199 | 0.400 | 0.00 | 0.0001 | 0.999 | 0.00 |
-| 0.2 | 0.9 | 0.1054 | 0.473 | 0.00 | 0.0000 | 1.000 | 0.00 |
-| 0.2 | 1.0 | 0.1070 | 0.461 | 0.00 | 0.0000 | 1.000 | 0.00 |
+| p | recall | declared aoq | declared worst | declared afi | declared top | staged aoq | staged worst | staged afi | staged top |
+|---|---|---|---|---|---|---|---|---|---|
+| 0.005 | 0.5 | 0.0049 | 0.0050 | 0.030 | 60 | 0.0046 | 0.0048 | 0.081 | 1 |
+| 0.005 | 0.9 | 0.0048 | 0.0049 | 0.029 | 60 | 0.0047 | 0.0049 | 0.042 | 60 |
+| 0.005 | 1.0 | 0.0049 | 0.0053 | 0.030 | 60 | 0.0049 | 0.0052 | 0.043 | 60 |
+| 0.01 | 0.5 | 0.0098 | 0.0100 | 0.030 | 60 | 0.0091 | 0.0093 | 0.108 | 1 |
+| 0.01 | 0.9 | 0.0096 | 0.0097 | 0.032 | 60 | 0.0092 | 0.0094 | 0.071 | 60 |
+| 0.01 | 1.0 | 0.0096 | 0.0100 | 0.032 | 60 | 0.0093 | 0.0097 | 0.064 | 60 |
+| 0.02 | 0.5 | 0.0188 | 0.0193 | 0.039 | 60 | 0.0155 | 0.0166 | 0.209 | 0 |
+| 0.02 | 0.9 | 0.0193 | 0.0203 | 0.037 | 60 | 0.0161 | 0.0166 | 0.197 | 57 |
+| 0.02 | 1.0 | 0.0192 | 0.0195 | 0.037 | 60 | 0.0157 | 0.0159 | 0.213 | 58 |
+| 0.03 | 0.5 | 0.0284 | 0.0289 | 0.050 | 60 | 0.0193 | 0.0203 | 0.357 | 0 |
+| 0.03 | 0.9 | 0.0284 | 0.0286 | 0.042 | 60 | 0.0173 | 0.0185 | 0.413 | 37 |
+| 0.03 | 1.0 | 0.0286 | 0.0291 | 0.051 | 60 | 0.0159 | 0.0164 | 0.470 | 23 |
+| 0.035 | 0.5 | 0.0337 | 0.0349 | 0.046 | 60 | 0.0199 | 0.0209 | 0.428 | 0 |
+| 0.035 | 0.9 | 0.0324 | 0.0333 | 0.062 | 59 | 0.0167 | 0.0183 | 0.521 | 20 |
+| 0.035 | 1.0 | 0.0332 | 0.0337 | 0.057 | 60 | 0.0158 | 0.0160 | 0.554 | 10 |
+| 0.04 | 0.5 | 0.0370 | 0.0371 | 0.059 | 60 | 0.0190 | 0.0195 | 0.513 | 0 |
+| 0.04 | 0.9 | 0.0375 | 0.0385 | 0.065 | 56 | 0.0146 | 0.0148 | 0.632 | 5 |
+| 0.04 | 1.0 | 0.0373 | 0.0381 | 0.067 | 55 | 0.0146 | 0.0155 | 0.632 | 3 |
+| 0.045 | 0.5 | 0.0425 | 0.0426 | 0.070 | 59 | 0.0186 | 0.0201 | 0.595 | 0 |
+| 0.045 | 0.9 | 0.0412 | 0.0418 | 0.081 | 51 | 0.0139 | 0.0143 | 0.695 | 2 |
+| 0.045 | 1.0 | 0.0417 | 0.0422 | 0.077 | 45 | 0.0123 | 0.0124 | 0.723 | 1 |
+| 0.05 | 0.5 | 0.0458 | 0.0463 | 0.078 | 58 | 0.0163 | 0.0171 | 0.673 | 0 |
+| 0.05 | 0.9 | 0.0458 | 0.0461 | 0.091 | 38 | 0.0114 | 0.0119 | 0.772 | 0 |
+| 0.05 | 1.0 | 0.0454 | 0.0462 | 0.092 | 25 | 0.0106 | 0.0110 | 0.785 | 0 |
+| 0.1 | 0.5 | 0.0806 | 0.0822 | 0.197 | 5 | 0.0028 | 0.0033 | 0.973 | 0 |
+| 0.1 | 0.9 | 0.0805 | 0.0820 | 0.200 | 0 | 0.0017 | 0.0019 | 0.983 | 0 |
+| 0.1 | 1.0 | 0.0811 | 0.0820 | 0.192 | 0 | 0.0014 | 0.0016 | 0.987 | 0 |
+| 0.2 | 0.5 | 0.1264 | 0.1326 | 0.367 | 0 | 0.0001 | 0.0001 | 1.000 | 0 |
+| 0.2 | 0.9 | 0.1110 | 0.1194 | 0.443 | 0 | 0.0000 | 0.0000 | 1.000 | 0 |
+| 0.2 | 1.0 | 0.1108 | 0.1166 | 0.443 | 0 | 0.0000 | 0.0000 | 1.000 | 0 |
 
-Read across: the declared rule's escape rate tracks p (0.105-0.120 at p=0.2). The staged rule's peaks in
-the 0.03-0.04 band: 1.91% at p=0.04 with recall 0.5, and at most 1.83% with recall 0.9 or 1.0. That is
-above CSP-1's first-level 1.76%, which is why section 1.2's closed form is not this rule's bound. The
-observed peak is a finite-sample estimate (20 components per cell). Past the band, a bad component keeps
-returning to read_all (afi near 1) and escapes fall toward 0. A half-blind monitor helps a component up the
-declared ladder (p=0.05: 0.95 against 0.40 at recall 1.0). Under the staged rule it reaches the top in 1 of
-180 components (p=0.01; the windowed drill passes by chance), while a 90%-recall monitor tracks a perfect
-one. The price is review load on middling components: at p=0.02 the staged rule reviews 18-22% of outputs
-against 3.3-4.1%, for an escape rate of 1.5-1.6% against 1.8-1.9%. Whether that trade is worth it is the
+Read across: the declared rule's escape rate tracks p (0.111-0.126 at p=0.2, 0.133 on the worst seed).
+The staged rule's peaks in the 0.03-0.045 band, and the peak depends on monitor recall. With recall 0.9 or
+1.0 it is 1.73% averaged and 1.85% on the worst seed (p=0.03, recall 0.9). With recall 0.5 it is 1.99%
+averaged and 2.09% on the worst seed (p=0.035), above the assumed 2% target on two of three seeds. Both exceed
+CSP-1's first-level 1.76% on at least one seed, which is why section 1.2's closed form is not this rule's bound.
+The mechanism is the signal. It is the share of outputs that are wrong and seen, so a monitor that sees
+less breaches less often and demotes less often. That raises escapes for a weak monitor, and in the
+band where p times recall sits just under the 0.05 threshold it lets a 90%-recall monitor reach the top
+more often than a perfect one: 64 of 240 components against 37 of 240 over p 0.03-0.045, the declared
+rule's pattern, damped. Below p=0.02 both reach the top in every component. A half-blind monitor reaches
+it in 2 of 600 (p <= 0.01, a chance pass of the windowed drill). Past the band, a bad component keeps
+returning to read_all (afi near 1) and escapes fall toward 0. Under the declared ladder a half-blind
+monitor helps (p=0.05: 58 of 60 against 25 of 60 at recall 1.0). The price of the staged rule is review
+load on middling components: at p=0.02 it reviews 20-21% of outputs against 3.7-3.9%, for an escape rate
+of 1.55-1.61% against 1.88-1.93%. Whether that trade is worth it is the
 AOQL target, a seed (q3). Simplifications that matter: a real reviewer errs (R3), errors cluster after a
 change (which version_restart addresses and the simulation does not exercise), and harm per escaped
 output differs by component (R6).
@@ -606,8 +654,10 @@ output differs by component (R6).
 - s2 Measured: the 18 declared triggers are upward-only free text and no item states a review rate, so no
   controller can evaluate them as written (VP 1, VP 2).
 - s3 Measured: without a return leg the declared triggers let escaped-wrong share track the error rate
-  (0.12 at p=0.2) and promote half-blind monitors faster (VP 5). Any rule must bound outgoing quality and
-  must not reward a weaker monitor; which rule does so is k1, k4 and k5.
+  (0.11-0.13 at p=0.2) and promote half-blind monitors faster (VP 5). Any rule must bound outgoing quality
+  and must not reward a weaker monitor; which rule does so is k1, k4 and k5. The staged rule does both only
+  in part: its bound holds for recall at or above the drill floor, and a damped weaker-monitor advantage
+  remains in the peak band (section 2.6).
 
 ### Contested (k1-k3 in the fixture; k4-k6 report-only, the fixture's contested list is capped at 3)
 
@@ -615,8 +665,9 @@ output differs by component (R6).
   - (a) Any wrong output found above read_all returns the component to read_all (CSP-1; v08).
   - (b) One rung down (multi-level plans; on_wrong one_down, v09).
   - (c) None, as the six items declare (on_wrong none, v10).
-  Recommended: (a). It is the strictest return, and in the simulation it keeps escaped-wrong share at or
-  under 1.91% across the grid (VP 5). The bound is simulated, not closed-form: CSP-1's 1.76% covers its
+  Recommended: (a). It is the strictest return. In the simulation it keeps escaped-wrong share at or under
+  1.85% on every seed when monitor recall is at or above the drill floor, but a half-blind monitor reaches
+  2.09% on the worst seed (VP 5), so the bound is conditional on recall. The bound is simulated, not closed-form: CSP-1's 1.76% covers its
   first level only. The cost is review load on a component that just proved it errs. (c) is measured in
   VP 5, and (b) is not simulated. Precedent: none admissible; T3.4
   criterion 2 and T4.4 call for per-gate rollback (e8), but they are roadmap criteria, and the pilot schema
@@ -624,13 +675,24 @@ output differs by component (R6).
 - k2 A version change (classifier_version, parser_version or params_version), the question #1396 and
   #1397 both defer here (e9).
   - (a) Restart at read_all with the new version, which the controller returns as to_version (v18, v19,
-    v40, v41).
+    v40-v44).
   - (b) Drop one rung and keep counting.
   - (c) Keep the rung; the change rides on the existing sample.
   Recommended: (a). A rule-set change is a new process, and a clearance earned by the old rules says
   nothing about the new ones (the acceptance-sampling convention for a process change). Its cost falls on
   frequent small edits, so the build may want a declared cosmetic class (for example a rules-file comment)
   that does not bump the stamp. No precedent. Class asked.
+  Inside (a), how a newer version is recognised. Verification r2 showed that "newest by date" rolls the
+  stamp back on a late old-version output and restarts on every run while two versions overlap.
+  - (a1) An ordered stamp: restart only on a stamp above the current one, to the highest seen (staged;
+    v42-v44). One comparison, no history needed; a rollback must mint a new, higher stamp.
+  - (a2) First-seen order: newer means first seen later in the review log. No stamp format is imposed,
+    but every version's first appearance must be retained (q2).
+  - (a3) Ladder state per (component, version), so overlapping versions each climb on their own reviews.
+    Under (a1) a wrong output from a still-live older version counts toward nothing (v43); (a3) would let
+    it demote that version.
+  Recommended: (a1), and (a3) if versions overlap for long (#1395's trigger reads "for every
+  parser_version present").
 - k3 Who moves a component.
   - (a) The operator approves every promotion (propose_promote until an approval exists, v01/v02);
     demotions and restarts apply automatically.
@@ -652,11 +714,18 @@ output differs by component (R6).
   faults injected in the last drill_window_days of the spot_check stint, with at least drill_recall_min of
   them detected (v14, v16, v17, v38, v39). (b) Historical recall: the share of reviewer-found wrong outputs
   on whose day the signal breached, over at least m findings. (c) None, as declared. Recommended: (a),
-  with its costs stated. The bar is a recall floor, not perfection: at 0.9 of 20, a 90%-recall monitor
-  reaches the top like a perfect one (VP 5). Because the window re-reads daily, a half-blind monitor can
-  pass it by chance (1 of 180 components in VP 5). A zero-miss rule over the whole stint closes that, but
-  blocks a 90%-recall monitor almost entirely, and one miss holds it until a demotion (verification r1
-  probe). (b) cannot be computed for a component that rarely errs, and (c) is the half-blind result in
+  with its costs stated. The bar is a recall floor, not perfection: at 18 of 20, a 90%-recall monitor
+  passes on about 68% of reads, and at p <= 0.01 it reaches the top in all 60 components, as a
+  perfect one does (VP 5). Because the window
+  re-reads daily, a half-blind monitor can pass it by chance (2 of 600 components). A zero-miss rule over
+  the whole stint closes that, but blocks a 90%-recall monitor almost entirely, and one miss holds it until
+  a demotion (verification r1 probe). The drill gates the top rung only; it does not correct the signal.
+  In the 0.03-0.045 band a 90%-recall monitor still reaches the top more often than a perfect one (64 of
+  240 against 37 of 240), and a half-blind one lets more errors escape below the top (2.09% worst seed),
+  because a signal that sees less breaches less (verification r2). Candidate cures, not adopted or
+  simulated: (a1) divide the signal by the drill-measured recall before comparing it to the threshold;
+  (a2) a drill floor nearer 1.0 over a longer window; (a3) a drill at sampled and spot_check too, so a weak
+  monitor is caught before the top. (b) cannot be computed for a component that rarely errs, and (c) is the half-blind result in
   VP 5. The drill for back-validation already exists in kind: #1397's VP 3 feeds known
   no-op fixes through the verdict SQL. No precedent. Class asked.
 - k6 (report-only) The fixture item's edge home. (a) part_of T3.4, whose exit criterion 2 asks for maturity
@@ -696,7 +765,8 @@ output differs by component (R6).
   T4.4's numeric pinning (threshold, denominator, window, source) applied to both.
 - q2 Where review records, transition records and the current rung live. Nothing reads a rung today (e3).
   Shares rec-filing q4 (Decision 199 journal recommended there) and back-validation q4.
-- q3 Seeds are unmeasured: AOQL target (2% assumed), clearances 40/40/20, fractions 0.2/0.04/0.008,
+- q3 Seeds are unmeasured: AOQL target (2% assumed; the staged rule meets it on every seed only with
+  monitor recall at or above the drill floor), clearances 40/40/20, fractions 0.2/0.04/0.008,
   review_sla_days 3, dark_days 2, a 30-day window, a drill of 20 faults in 20 days at recall 0.9; operator
   review capacity at read_all.
 - q4 (report-only) Is a failure_signal breach at sampled a demotion or only a hold? The staged rule
@@ -738,8 +808,9 @@ output differs by component (R6).
 - verification: c1 (the SQL passes these vectors over the build's tables; each transition record carries
   reason, counts, to_version and params_version, and the caller writes to_version back), c2 (a seeded
   simulation through the controller, over a grid spanning the AOQ peak band (p 0.005-0.2, recall 1.0, 0.9
-  and 0.5), keeps escaped-wrong share at or under the AOQL target and lets no low-recall monitor through
-  more than by chance),
+  and 0.5) on at least three seeds, keeps escaped-wrong share at or under the AOQL target on every seed in
+  every cell whose monitor recall meets the drill floor, reports the mean and worst-seed share for the
+  cells below it, and lets no low-recall monitor reach the top more than by chance),
   c3 (the operator's read_all review of every transition). All open.
 - rollback: stop the schedule and set every component to read_all; the transition log stays as history and
   review returns to 100% until a controller resumes. Failing safe means more review, never less.

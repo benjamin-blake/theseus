@@ -50,12 +50,13 @@ acceptance_criteria:
   - >-
     The controller SQL and the params and vectors blocks in report section 2, read from the report itself, pass
     every vector on DuckDB across five actions and eleven reasons, including the version each component holds
-    next, twelve by raising with the stated message (VP step 4).
+    next, sixteen by raising with the stated message (VP step 4).
   - >-
     The seeded one-year simulation in report section 2.6, driven day by day through the same controller SQL,
     reproduces the section 2.6 table: the declared shape's escaped-wrong share tracks the error rate and a
-    half-blind monitor reaches the top rung more often, while the staged rule's peaks at or under 0.0191 across
-    the AOQ peak band and a half-blind monitor reaches the top only by chance (VP step 5).
+    half-blind monitor reaches the top rung more often, while the staged rule's stays at or under 0.0185 on
+    every seed with recall at or above the drill floor, reaches 0.0209 on the worst seed with a half-blind
+    monitor, and lets a half-blind monitor reach the top only by chance (VP step 5).
   - >-
     The pilot fixture carries exactly one item for this component and validate_work_item_pilot passes all six
     legs (VP step 6).
@@ -138,8 +139,8 @@ verification_plan:
       R=[G(v,duckdb.connect()) for v in V]; O=[e for v in V if v['expected']!='error' for e in v['expected']];
       print('sql_blocks=%d vectors=%d pass=%d/%d raises=%d actions=%d reasons=%d' % (len(S),len(V),sum(R),len(V),sum(v['expected']=='error' for v in V),len({e[1] for e in O}),len({e[3] for e in O})))"
     expected: >-
-      One line: four SQL blocks (the controller and the three simulation blocks), 53 vectors, 53 of 53 passing on
-      component, action, to_rung, reason and to_version (twelve of them, e01-e12, by raising with their stated
+      One line: four SQL blocks (the controller and the three simulation blocks), 62 vectors, 62 of 62 passing on
+      component, action, to_rung, reason and to_version (sixteen of them, e01-e16, by raising with their stated
       message), five
       actions and eleven reasons exercised. A raise vector that does not raise, or raises another message, aborts
       the run.
@@ -151,7 +152,7 @@ verification_plan:
     graduation_waiver_reason: >-
       Design evidence for the staged rule; the production controller carries its own vector test (criterion c1),
       which is the standing guard.
-    expected_literals: ["sql_blocks=4 vectors=53 pass=53/53 raises=12 actions=5 reasons=11"]
+    expected_literals: ["sql_blocks=4 vectors=62 pass=62/62 raises=16 actions=5 reasons=11"]
   - step: 5
     phase: pre-deploy
     action: Run the report's seeded one-year simulation day by day through the same controller SQL
@@ -161,25 +162,27 @@ verification_plan:
       C=lambda q: functools.reduce(lambda a,k: a.replace('{'+k+'}',N[k]),N,q);
       K=lambda o: (lambda c,p: ([c.execute(x) for x in B(S[1],Z).split(';\n')],[c.execute(x.replace('{day}',str(d)).replace('{today}',str(d))) for d in range(1,Z['days']+1) for x in B(S[2].replace('{controller}',C(S[0])),dict(Z,**p)).split(';\n')],c.execute(S[3]).fetchall())[-1])(duckdb.connect(),dict(P,**o));
       O={r: K(o) for r,o in Z['rules'].items()}; J=lambda r,v,i,f: '/'.join(f % x[i] for x in O[r] if float(x[1])==v);
-      print('cells=%d components=%d days=%d' % (len(O['staged']),Z['reps']*len(O['staged']),Z['days']), ' '.join('%s_%s_r%s=%s' % (r,m,v,J(r,v,i,f)) for r in O for m,i,f in (('aoq',2,'%.4f'),('afi',3,'%.3f'),('top',5,'%.2f')) for v in (1.0,0.9,0.5)))"
+      print('cells=%d seeds=%d components=%d days=%d' % (len(O['staged']),len(Z['seeds']),sum(x[7] for x in O['staged']),Z['days']), ' '.join('%s_%s_r%s=%s' % (r,m,v,J(r,v,i,f)) for r in O for m,i,f in (('aoq',2,'%.4f'),('worst',3,'%.4f'),('afi',4,'%.3f'),('top',6,'%d')) for v in (1.0,0.9,0.5)))"
     expected: >-
-      One line over 27 (error rate, recall) cells of 20 components (540) for 365 days, each rule's escaped-wrong
-      share (aoq), reviewed share (afi) and share of components that reached anomaly_triggered (top) at error
-      rates 0.005, 0.01, 0.02, 0.03, 0.035, 0.04, 0.05, 0.1 and 0.2 (spanning the AOQ peak band), for monitor
-      recall 1.0, 0.9 and 0.5. Draws are md5 over the seed, so the line is identical on every run. Takes about
-      two minutes.
+      One line over 30 (error rate, recall) cells of 20 components on each of three seeds (1800 per rule) for
+      365 days: each rule's escaped-wrong share pooled over the seeds (aoq) and on the worst seed (worst),
+      reviewed share (afi) and the count of components of 60 that reached anomaly_triggered (top), at error
+      rates 0.005, 0.01, 0.02, 0.03, 0.035, 0.04, 0.045, 0.05, 0.1 and 0.2 (spanning the AOQ peak band), for
+      monitor recall 1.0, 0.9 and 0.5. Draws are md5 over the seed, so the line is identical on every run.
+      Takes about six minutes.
     fix_if: >-
       Different numbers with unchanged SQL and simulation blocks mean DuckDB changed md5, UPDATE ... FROM or list
-      indexing semantics: re-run and update section 2.6's table, the verdict, s3 and k1. The staged rule's
-      whole-ladder bound is this simulation, not CSP-1's first-level 1.76%: a staged aoq above 0.0191 in any
-      cell, or a recall-0.5 top above 0.05, means the rule or the simulation changed and k1, k4 and k5 must be
-      re-argued before anything else.
+      indexing semantics: re-run and update section 2.6's table, the verdict, s3, k1 and k5. The staged rule's
+      whole-ladder bound is this simulation, not CSP-1's first-level 1.76%, and it is a sampling estimate:
+      adding or changing seeds moves it, so a changed seed list means re-reporting the mean and worst seed,
+      not a rule change. A staged worst-seed aoq above 0.02 in a cell with recall at or above the drill floor
+      means c2 as staged is not met, and k1, k4 and k5 must be re-argued before anything else.
     hermetic: true
     graduation: waive
     graduation_waiver_reason: >-
       Design evidence for s3, k1, k4 and k5 under stated simplifications; the production signal is
       est_escaped_share (failure_signal), and criterion c2 carries the build's simulation test.
-    expected_literals: ["cells=27 components=540 days=365 declared_aoq_r1.0=0.0047/0.0100/0.0192/0.0285/0.0337/0.0364/0.0456/0.0820/0.1070 declared_aoq_r0.9=0.0047/0.0097/0.0189/0.0285/0.0333/0.0385/0.0456/0.0812/0.1054 declared_aoq_r0.5=0.0049/0.0100/0.0182/0.0279/0.0337/0.0368/0.0460/0.0822/0.1199 declared_afi_r1.0=0.032/0.032/0.035/0.051/0.051/0.071/0.079/0.190/0.461 declared_afi_r0.9=0.029/0.031/0.033/0.041/0.062/0.061/0.092/0.203/0.473 declared_afi_r0.5=0.029/0.031/0.041/0.052/0.043/0.056/0.068/0.196/0.400 declared_top_r1.0=1.00/1.00/1.00/1.00/1.00/0.90/0.40/0.00/0.00 declared_top_r0.9=1.00/1.00/1.00/1.00/1.00/0.95/0.50/0.00/0.00 declared_top_r0.5=1.00/1.00/1.00/1.00/1.00/1.00/0.95/0.15/0.00 staged_aoq_r1.0=0.0047/0.0097/0.0156/0.0157/0.0157/0.0155/0.0110/0.0011/0.0000 staged_aoq_r0.9=0.0046/0.0094/0.0160/0.0168/0.0183/0.0143/0.0119/0.0019/0.0000 staged_aoq_r0.5=0.0046/0.0089/0.0149/0.0180/0.0185/0.0191/0.0160/0.0025/0.0001 staged_afi_r1.0=0.041/0.067/0.204/0.478/0.561/0.614/0.775/0.989/1.000 staged_afi_r0.9=0.040/0.064/0.181/0.421/0.512/0.653/0.762/0.984/1.000 staged_afi_r0.5=0.080/0.120/0.218/0.377/0.455/0.511/0.678/0.974/0.999 staged_top_r1.0=1.00/1.00/0.95/0.45/0.05/0.05/0.00/0.00/0.00 staged_top_r0.9=1.00/1.00/0.95/0.60/0.40/0.10/0.00/0.00/0.00 staged_top_r0.5=0.00/0.05/0.00/0.00/0.00/0.00/0.00/0.00/0.00"]
+    expected_literals: ["cells=30 seeds=3 components=1800 days=365 declared_aoq_r1.0=0.0049/0.0096/0.0192/0.0286/0.0332/0.0373/0.0417/0.0454/0.0811/0.1108 declared_aoq_r0.9=0.0048/0.0096/0.0193/0.0284/0.0324/0.0375/0.0412/0.0458/0.0805/0.1110 declared_aoq_r0.5=0.0049/0.0098/0.0188/0.0284/0.0337/0.0370/0.0425/0.0458/0.0806/0.1264 declared_worst_r1.0=0.0053/0.0100/0.0195/0.0291/0.0337/0.0381/0.0422/0.0462/0.0820/0.1166 declared_worst_r0.9=0.0049/0.0097/0.0203/0.0286/0.0333/0.0385/0.0418/0.0461/0.0820/0.1194 declared_worst_r0.5=0.0050/0.0100/0.0193/0.0289/0.0349/0.0371/0.0426/0.0463/0.0822/0.1326 declared_afi_r1.0=0.030/0.032/0.037/0.051/0.057/0.067/0.077/0.092/0.192/0.443 declared_afi_r0.9=0.029/0.032/0.037/0.042/0.062/0.065/0.081/0.091/0.200/0.443 declared_afi_r0.5=0.030/0.030/0.039/0.050/0.046/0.059/0.070/0.078/0.197/0.367 declared_top_r1.0=60/60/60/60/60/55/45/25/0/0 declared_top_r0.9=60/60/60/60/59/56/51/38/0/0 declared_top_r0.5=60/60/60/60/60/60/59/58/5/0 staged_aoq_r1.0=0.0049/0.0093/0.0157/0.0159/0.0158/0.0146/0.0123/0.0106/0.0014/0.0000 staged_aoq_r0.9=0.0047/0.0092/0.0161/0.0173/0.0167/0.0146/0.0139/0.0114/0.0017/0.0000 staged_aoq_r0.5=0.0046/0.0091/0.0155/0.0193/0.0199/0.0190/0.0186/0.0163/0.0028/0.0001 staged_worst_r1.0=0.0052/0.0097/0.0159/0.0164/0.0160/0.0155/0.0124/0.0110/0.0016/0.0000 staged_worst_r0.9=0.0049/0.0094/0.0166/0.0185/0.0183/0.0148/0.0143/0.0119/0.0019/0.0000 staged_worst_r0.5=0.0048/0.0093/0.0166/0.0203/0.0209/0.0195/0.0201/0.0171/0.0033/0.0001 staged_afi_r1.0=0.043/0.064/0.213/0.470/0.554/0.632/0.723/0.785/0.987/1.000 staged_afi_r0.9=0.042/0.071/0.197/0.413/0.521/0.632/0.695/0.772/0.983/1.000 staged_afi_r0.5=0.081/0.108/0.209/0.357/0.428/0.513/0.595/0.673/0.973/1.000 staged_top_r1.0=60/60/58/23/10/3/1/0/0/0 staged_top_r0.9=60/60/57/37/20/5/2/0/0/0 staged_top_r0.5=1/1/0/0/0/0/0/0/0/0"]
   - step: 6
     phase: pre-deploy
     action: Prove the fixture carries this component's one item and the pilot evaluator passes
@@ -265,7 +268,7 @@ context:
   - >-
     Industry practice applied: continuous sampling plans for a stream of outputs (Dodge's CSP-1; multi-level
     plans after Lieberman and Solomon; the MIL-STD-1235 family) and the acceptance-sampling convention that a
-    process change restarts screening. The 40-mutant check of the controller SQL was run once by hand and is
+    process change restarts screening. The 46-mutant check of the controller SQL was run once by hand and is
     reported, not a VP step.
   - "fork: one item vs split controller/log/drill | chosen: one task item | class: consistency-only | precedent: Decision 197 cl.3 grain; CD.45 item-count cap 12 (operator-answered: CD.45 binds while pending) | precedent_kind: decision | reversible: yes | persisted: fixture"
   - "fork: edge home (k6) | chosen: none; (a) part_of T3.4 recommended over T4.4 and the governed components' parents, carried provisionally in the fixture as a pilot row with depends_on T2.36 | class: asked | precedent: none (T3.4 exit criterion 2 is roadmap text; validate_work_item_pilot L4 only requires a tier id) | precedent_kind: none | reversible: yes | persisted: report k6 (report-only), fixture edges, /mnt/project-files/gates/w1-c7-parked-forks.md, PARKED"
@@ -285,6 +288,15 @@ context:
     the three nits: F5 (VP numbering in the report and fixture now matches the plan), F6 (the NULL component,
     signal day and drill count guard legs each have an error vector, e09-e11) and F8 (on_wrong and
     promotion_authority are guarded against their vocabularies, e12).
+  - >-
+    Gate: zero-context verification r2 (w1-maturity-ladder-zero-context-verification-r2-8a4c1d37) on 1b469704
+    returned REVISE. Folded: G1 (the simulation runs three seeds and reports the pooled and worst-seed escape;
+    the bound is stated as conditional on monitor recall, and c2 now applies the AOQL target to cells whose
+    recall meets the drill floor and reports the rest), G2 (the "like a perfect one" claim is corrected to the
+    measured weaker-monitor advantage in the 0.03-0.045 band, with its mechanism and candidate cures under k5),
+    G3 (a version restart is monotonic on an ordered stamp, with vectors v42-v44 and the recognition rule as a
+    k2 sub-question), N1 (fixture q3's drill seed), N2 (guard-leg vectors e13-e16) and N3 (drill-window
+    boundary vector v45). v46 restores a kill for the stint-filter mutant that the ordered stamp removed.
   - >-
     check_accounting: no registered check is added or removed; the hygiene stream's baseline is untouched.
 pre_implementation_checklist:
