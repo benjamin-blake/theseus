@@ -22,11 +22,12 @@ reads a rung (VP 1, VP 2). Two consequences are measured, not argued:
   60 at recall 1.0 (VP 5). The spot_check -> anomaly_triggered trigger is read off the same signal the top
   rung then relies on, so a weaker signal is rewarded.
 
-The staged controller is one deterministic SQL per daily run (Decision 55). It reads a review log, the
+The staged controller is one deterministic SQL per daily run (the charter's measurable transition triggers;
+Decision 55 by analogy). It reads a review log, the
 component's failure_signal series, monitor drills and operator approvals. For each component it returns
 promote, propose_promote, hold, demote or restart, with one of 11 reasons and the version the component
-holds next. It passes 70/70 vectors (VP 4), eighteen of them by raising on malformed input or params, and
-each of 54 hand-run mutants fails at least one vector. A version restart is monotonic on an integer stamp
+holds next. It passes 74/74 vectors (VP 4), eighteen of them by raising on malformed input or params, and
+each of 56 hand-run mutants fails at least one vector. A version restart is monotonic on an integer stamp
 compared numerically, a stamp that is not a canonical integer raises, and a wrong output under any stamp
 still triggers the return leg.
 It is a multi-level continuous sampling plan in the Dodge (CSP-1) and Lieberman-Solomon family: a
@@ -48,10 +49,13 @@ That is paid for in review load: a 2%-error component is reviewed on 20-21% of i
 3.7-3.9% (VP 5, section 2.6).
 
 What is settled is narrow: the four rungs and their order (evaluator code), a deterministic decision
-(Decision 55), and the measured facts above. The return leg, the version-change rule and promotion
+(the charter's measurable transition triggers), and the measured facts above. Whether outgoing quality must
+be bounded at all, and at what price, is not settled: it is the premise of k1, k4 and k5 and the AOQL target
+of q3. The return leg, the version-change rule and promotion
 authority are forks with credible alternatives and no admissible precedent (T3.4 and T4.4 call for per-gate
 rollback, but that is roadmap text, not a Decision or contract), so they are parked (k1-k3). The decision
-rule's family and seeds (k4), the drill (k5) and the fixture's edge home (k6) are parked report-only. Both #1396 and #1397 defer one
+rule's family and seeds (k4), the drill (k5), the fixture's edge home (k6) and signal demotion (k7) are
+parked report-only. Both #1396 and #1397 defer one
 question to this component: whether a params_version change restarts the ladder. That is k2, and its
 recommendation is restart at read_all.
 
@@ -186,8 +190,9 @@ business; the controller decides only the rung.
 `{state}`: one row per component: component, rung, entered_day (first day at this rung), version (the
 component's rule-set stamp: classifier_version, parser_version or params_version, each an unpadded
 integer in the sibling reports (#1394 classifier_version 1, #1395 parser_version 2, #1396 params_version 1);
-the controller compares stamps as integers and a rollback is minted as a new, higher stamp),
-signal_threshold.
+the controller compares stamps as integers and a rollback is minted as a new, higher stamp; a rollback
+redeployed under an old stamp fails safe but silently: its outputs never count toward clearance, so the
+component holds at read_all with reason clearing until a new stamp is minted), signal_threshold.
 `{reviews}`: one row per selected output: component, output_id, day, version, rung (at production), outcome
 (correct, wrong or unsure; NULL while pending). `{signal}`: one row per component per day: the
 failure_signal value, NULL when undefined (deliberation's "undefined, never 0" maps here). `{drills}`: one
@@ -379,8 +384,8 @@ FROM d
 |---|---|---|---|
 | restart | version_change | a review in the stint carries a stamp numerically above the state's, when version_restart (k2); to_version is the highest such stamp | v18, v19, v25, v41, v44, v47 |
 | demote | wrong_found | a wrong review at the current rung above read_all, under any stamp in the stint; to read_all or one rung down per on_wrong (k1); never at read_all | v08, v09, v26, v30, v31, v48 |
-| demote | signal_breach | above read_all, today's failure_signal exceeds the threshold (strictly), when signal_demotes; one rung down | v11 |
-| demote | signal_dark | above read_all, no defined failure_signal value in the last dark_days days; one rung down | v12, v32 |
+| demote | signal_breach | above read_all, today's failure_signal exceeds the threshold (strictly), when signal_demotes; one rung down (k7) | v11 |
+| demote | signal_dark | above read_all, no defined failure_signal value in the last dark_days days; one rung down (k7; no traffic reads as dark) | v12, v32 |
 | hold | top | at anomaly_triggered with nothing to demote | v13 |
 | hold | review_overdue | a selected output in the stint is past the SLA unreviewed | v06 |
 | hold | clearing | clearance below the rung's clear_* | v03, v04, v05, v29, v36 |
@@ -452,6 +457,10 @@ vectors:
   - {id: v50, today: 55, params: {signal_window_days: 10}, state: [[a, spot_check, 40, '1', 0.05]], reviews: [[a, 41, 20, '1', spot_check, correct]], signal: [[a, 30, 55, 0.01]], drills: [[a, 56, 20, 20]], expected: [[a, hold, spot_check, awaiting_drill, '1']]}
   - {id: v51, today: 50, state: [[a, spot_check, 25, '1', 0.05]], reviews: [[a, 30, 20, '1', spot_check, correct]], signal: [[a, 25, 60, 0.01]], drills: [[a, 45, 20, 20]], expected: [[a, hold, spot_check, signal_window, '1']]}
   - {id: v52, today: 50, state: [[a, sampled, 10, '1', 0.05]], reviews: [[a, 20, 40, '1', sampled, correct], [a, 45, 1, '1', read_all, wrong]], signal: [[a, 10, 50, 0.0]], expected: [[a, propose_promote, spot_check, cleared, '1']]}
+  - {id: v53, today: 50, params: {version_restart: false}, state: [[a, read_all, 10, '1', 0.05]], reviews: [[a, 20, 40, '2', read_all, correct]], signal: [[a, 49, 50, 0.0]], expected: [[a, hold, read_all, clearing, '1']]}
+  - {id: v54, today: 50, state: [[a, sampled, 10, '1', 0.05]], reviews: [[a, 20, 40, '1', sampled, correct], [a, 45, 1, '1', sampled, unsure]], signal: [[a, 10, 50, 0.0]], expected: [[a, hold, sampled, clearing, '1']]}
+  - {id: v55, today: 50, state: [[a, sampled, 10, '8', 0.05]], reviews: [[a, 20, 30, '8', sampled, correct], [a, 40, 1, '9', sampled, correct], [a, 41, 1, '10', sampled, correct]], signal: [[a, 10, 50, 0.0]], expected: [[a, restart, read_all, version_change, '10']]}
+  - {id: v56, today: 50, state: [[a, sampled, 10, '3000000000', 0.05]], reviews: [[a, 20, 30, '3000000000', sampled, correct], [a, 40, 1, '3000000001', sampled, correct]], signal: [[a, 10, 50, 0.0]], expected: [[a, restart, read_all, version_change, '3000000001']]}
   - {id: e01, today: 50, raises: 'malformed ladder state', state: [[a, audit, 10, '1', 0.05]], expected: error}
   - {id: e02, today: 50, raises: 'duplicate output_id', dup_review: true, state: [[a, read_all, 10, '1', 0.05]], reviews: [[a, 20, 2, '1', read_all, correct]], signal: [[a, 49, 50, 0.0]], expected: error}
   - {id: e03, today: 50, raises: 'review outcome outside', state: [[a, read_all, 10, '1', 0.05]], reviews: [[a, 20, 1, '1', read_all, maybe]], signal: [[a, 49, 50, 0.0]], expected: error}
@@ -482,7 +491,7 @@ Each mutant is one textual edit of the SQL above; every one fails at least one v
 | m02 | a pending review counts toward clearance | v36 |
 | m03 | a pending review inside the SLA breaks clearance | v07 |
 | m04 | SLA boundary < becomes <= | v07 |
-| m05 | unsure is not a breaker | v05 |
+| m05 | unsure is not a breaker | v05, v54 |
 | m06 | rows before entered_day read | v46 |
 | m07 | rows after today read | v29 |
 | m08 | wrong_found checked before version_change | v25, v47 |
@@ -510,21 +519,21 @@ Each mutant is one textual edit of the SQL above; every one fails at least one v
 | m30 | one clearance (clear_read_all) for every rung | v14, v15, v16, v17, v35, v38, v39, v45, v49, v50, v51 |
 | m31 | signal window check removed | v15, v51 |
 | m32 | signal_dark demotion removed | v12, v32 |
-| m33 | the restart version not returned (to_version stays current) | v18, v19, v25, v41, v44, v47 |
+| m33 | the restart version not returned (to_version stays current) | v18, v19, v25, v41, v44, v47, v55, v56 |
 | m34 | the drill window ignored | v39, v45 |
 | m35 | zero-miss drill instead of the recall floor | v38 |
 | m36 | on_wrong and promotion_authority vocabulary guard removed | e12, e13 |
 | m37 | NULL component review guard removed | e09 |
 | m38 | NULL signal day guard removed | e10 |
 | m39 | NULL drill count guard removed | e11 |
-| m40 | the lowest stamp above the state's returned on a restart | v41, v44 |
+| m40 | the lowest stamp above the state's returned on a restart | v41, v44, v55 |
 | m41 | promotion_authority vocabulary guard leg removed | e13 |
 | m42 | restart on any other stamp (rollback and overlap restart) | v42, v43, v48 |
 | m43 | NULL component signal guard removed | e14 |
 | m44 | NULL component drill guard removed | e15 |
 | m45 | NULL drill day guard removed | e16 |
 | m46 | drill window boundary > becomes >= | v45 |
-| m47 | stamps compared as text (9 to 10 does not restart) | v47 |
+| m47 | stamps compared as text (9 to 10 does not restart) | v47, v55 |
 | m48 | only current-stamp wrong outputs trigger the return leg | v48 |
 | m49 | state stamp format guard removed | e17 |
 | m50 | review stamp format guard removed | e18 |
@@ -532,6 +541,8 @@ Each mutant is one textual edit of the SQL above; every one fails at least one v
 | m52 | drills after today count | v50 |
 | m53 | failure_signal days after today read | v51 |
 | m54 | wrong outputs recorded at another rung trigger the return leg | v37, v52 |
+| m55 | version_restart off ignored (restart regardless) | v53 |
+| m56 | an unsure review triggers the return leg | v54 |
 
 ### 2.6 Simulation (VP 5)
 
@@ -682,16 +693,19 @@ output differs by component (R6).
 ### Settled (fixture s1-s3)
 
 - s1 The rungs are read_all, sampled, spot_check and anomaly_triggered in that order (pilot model code, e1),
-  and the transition decision is deterministic code over recorded reviews, never an LLM (Decision 55).
+  and the transition decision is deterministic code over recorded reviews, never an LLM (the charter's
+  "transition triggers measurable"; Decision 55, which retires LLM recovery judgement in the executor,
+  only by analogy).
 - s2 Measured: the 18 declared triggers are upward-only free text and no item states a review rate, so no
   controller can evaluate them as written (VP 1, VP 2).
 - s3 Measured: without a return leg the declared triggers let escaped-wrong share track the error rate
-  (0.11-0.13 at p=0.2) and promote half-blind monitors faster (VP 5). Any rule must bound outgoing quality
-  and must not reward a weaker monitor; which rule does so is k1, k4 and k5. The staged rule does both only
-  in part: its bound holds for recall at or above the drill floor, and a damped weaker-monitor advantage
-  remains in the peak band (section 2.6).
+  (0.11-0.13 at p=0.2) and promote half-blind monitors faster (VP 5). This row records measurements only;
+  whether a rule must bound outgoing quality and not reward a weaker monitor is the premise of k1, k4 and
+  k5 and the target of q3, all class asked. The staged rule does both only in part: its bound holds for
+  recall at or above the drill floor, and a damped weaker-monitor advantage remains in the peak band
+  (section 2.6).
 
-### Contested (k1-k3 in the fixture; k4-k6 report-only, the fixture's contested list is capped at 3)
+### Contested (k1-k3 in the fixture; k4-k7 report-only, the fixture's contested list is capped at 3)
 
 - k1 The return leg.
   - (a) Any wrong output found above read_all returns the component to read_all (CSP-1; v08).
@@ -728,7 +742,12 @@ output differs by component (R6).
     Under (a1) a wrong output from a still-live older version demotes the component as a whole (v48);
     (a3) would demote only that version.
   Recommended: (a1), and (a3) if versions overlap for long (#1395's trigger reads "for every
-  parser_version present").
+  parser_version present"). Under (a1) a live older stamp that keeps erring makes the component oscillate
+  between read_all and sampled, and each cycle asks the operator for an approval; the transition record
+  should name the triggering stamp (a reason detail for q2's log) so the operator sees why.
+  The version_restart param is a kill switch for (a), not an encoding of (b) or (c): with it off, clearance
+  still counts only the current stamp and to_version never advances, so after the first bump the component
+  holds at clearing until its state is rewritten (v53). (b) and (c) need SQL changes, not a param flip.
 - k3 Who moves a component.
   - (a) The operator approves every promotion (propose_promote until an approval exists, v01/v02);
     demotions and restarts apply automatically.
@@ -736,7 +755,10 @@ output differs by component (R6).
   - (c) The operator ratifies both, with only the record automatic (T4.4's last exit criterion reads this
     way for A-gates).
   Recommended: (a). A promotion loosens oversight and is rare; a demotion tightens it and must not wait for
-  a human who may be away. No Decision or contract decides it. Class asked.
+  a human who may be away. No Decision or contract decides it. Class asked. The same split governs the
+  controller's own first rung (fixture c3): while the controller is at read_all its promotions are
+  proposals the operator re-derives first, and its demotions and restarts apply at once and are re-derived
+  from the transition log after the fact. Under (c) c3 would gate demotions too.
 - k4 (report-only) The rule family and its seeds. (a) The staged multi-level CSP: consecutive clearance per
   rung with k1's return leg (as above). (b) A sequential probability ratio test per rung (Wald), which
   decides on all reviews, not runs, with stated error rates at two quality levels. (c) A fixed-sample
@@ -772,6 +794,17 @@ output differs by component (R6).
   and it is tied to q1: if this ladder is separate from T3.4's A0-A3, the criterion-2 reading weakens. No
   precedent. Class asked.
 
+- k7 (report-only) Signal demotion, the legs demote:signal_breach and demote:signal_dark (signal_demotes,
+  dark_days). (a) Demote one rung on a breach, and one rung when no defined value arrived in dark_days days
+  (staged; v11, v12, v32). (b) Hold instead of demote. (c) A breach returns to read_all, as a wrong output
+  does under k1 (a). (d) Treat dark as a hold, or stage an output-count input so "no outputs" is told apart
+  from "monitor dark". Recommended: (a) for a breach, and (d) with an output-count input for dark. The
+  staged dark leg has an unmeasured cost: a clean component above read_all whose producer emits nothing
+  for two days (a quiet weekend, an unattended week) is demoted, because no traffic and a dead monitor both
+  read as undefined (plan-critique probe P-c). The simulation never exercises it (12 outputs every day).
+  Precedent: none; T4.4's rollback text is roadmap and #1395's "undefined, never 0" is an unmerged
+  sibling. q4 is folded here. Class asked.
+
 ### Risks
 
 - R1 Review load. At read_all the operator reviews every output: at 12 a day for each of six components,
@@ -798,15 +831,17 @@ output differs by component (R6).
 - q1 Is this ladder T3.4's A0-A3 (executor autonomy gates) or a separate per-component review ladder that
   shares the controller? T3.4 and T4.4 describe autonomy of the executor; these rungs describe how much of
   a loop component's output a human reviews. Recommended reading: separate ladders, one controller, and
-  T4.4's numeric pinning (threshold, denominator, window, source) applied to both.
+  T4.4's numeric pinning (threshold, denominator, window, source) applied to both. For context, Decision
+  55 retired Decision 46's graduated autonomy gates as complex and untested; T3.4 and T4.4 reintroduce
+  gates for the executor in roadmap text only.
 - q2 Where review records, transition records and the current rung live. Nothing reads a rung today (e3).
   Shares rec-filing q4 (Decision 199 journal recommended there) and back-validation q4.
 - q3 Seeds are unmeasured: AOQL target (2% assumed; the staged rule meets it on every seed only with
   monitor recall at or above the drill floor), clearances 40/40/20, fractions 0.2/0.04/0.008,
   review_sla_days 3, dark_days 2, a 30-day window, a drill of 20 faults in 20 days at recall 0.9; operator
-  review capacity at read_all.
-- q4 (report-only) Is a failure_signal breach at sampled a demotion or only a hold? The staged rule
-  demotes one rung (v11). A component whose signal and reviews disagree needs a reviewer's look either way.
+  review capacity at read_all; and before any of these, whether outgoing quality must be bounded at all
+  (k1 (c) and k5 (c) say it need not).
+- q4 (report-only) Folded into k7, widened to every rung and to the dark leg.
 
 ### Named for owners, not filed (Decision 67)
 
@@ -823,11 +858,12 @@ output differs by component (R6).
   measures patience, and a blinder monitor promotes faster (VP 5).
 - how: one SQL per daily run over the review log, failure_signal series, drills and approvals per component
   returns promote, propose_promote, hold, demote or restart with a reason and the version held next; the
-  rule's legs are k1-k5.
+  rule's legs are k1-k5 and k7.
 - planes: data_plane (it runs over the customer's own review and telemetry rows; rung and transition
   counts are candidates for the rec-4141 allow-list, not decided here).
-- maturity: the controller is itself a component. read_all means every transition is a proposal the
-  operator re-derives before any rung moves (c3). read_all -> sampled at >= 40 controller decisions the
+- maturity: the controller is itself a component. At its read_all every promotion is a proposal the
+  operator re-derives before the rung moves, and every demotion and restart applies at once and is
+  re-derived after the fact (c3, k3 (a)). read_all -> sampled at >= 40 controller decisions the
   operator re-derived unchanged since the last overturned one; sampled -> spot_check at >= 40 more on a
   1-in-5 sample; spot_check -> anomaly_triggered at >= 30 consecutive days with stale_rung_days 0 and
   the escaped-share estimate at or under the AOQL target (q3). These are clearance counts; their return leg is k1,
@@ -847,7 +883,7 @@ output differs by component (R6).
   and 0.5) on at least three seeds, keeps escaped-wrong share at or under the AOQL target on every seed in
   every cell whose monitor recall meets the drill floor, reports the mean and worst-seed share for the
   cells below it, and lets no low-recall monitor reach the top more than by chance),
-  c3 (the operator's read_all review of every transition). All open.
+  c3 (the operator's read_all review: promotions before they apply, demotions and restarts after). All open.
 - rollback: stop the schedule and set every component to read_all; the transition log stays as history and
   review returns to 100% until a controller resumes. Failing safe means more review, never less.
 - edges: part_of T3.4 (exit criterion 2: gates with a per-gate rollback criterion; the home is parked as
@@ -883,6 +919,9 @@ output differs by component (R6).
   six dialects.
 
 ## 6. Staged candidate decision text (for W3; not filed)
+
+This text presumes the recommended options of parked forks: k1 (a), k2 (a) with (a1), k3 (a), k5 (a) and
+k7 (a). It is not settled; a W3 stager restates it after the operator answers them.
 
 "A loop component's review rung moves only by a deterministic controller over recorded reviews. Every
 upward transition is paired with a return leg: a wrong output found above read_all returns the component
