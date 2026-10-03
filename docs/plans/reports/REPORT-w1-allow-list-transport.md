@@ -43,7 +43,7 @@ closed-enum values) with a row count, finite sums of allow-listed numbers, count
 withheld count per guarded column; it refuses the batch on an unclassified source column, a malformed or
 NULL tenancy id, a NULL day basis, or an allow-list entry whose class may not cross. On the canary probe it
 leaks 0 of 73 string columns and counts 240 of 240 injected out-of-vocabulary enum values as withheld (VP 5).
-It passes 18/18 vectors, six by refusing (VP 4), and each of 14 hand-run mutants fails at least one named
+It passes 21/21 vectors, nine by refusing (VP 4), and each of 16 hand-run mutants fails at least one named
 vector (section 2.5). The staged membership crosses 42 of 133 columns: 12 guarded enums, 28 numbers and 2
 booleans; tenant_id and project_id are the key and session_started_at only as a UTC day.
 
@@ -336,7 +336,7 @@ egress:
     SELECT error('unclassified column: {table}.' || column_name) FROM information_schema.columns
     WHERE table_name = '{table}' AND column_name NOT IN ({classified})
   key: >-
-    CASE WHEN regexp_full_match({c}, '[0-9A-HJKMNP-TV-Z]{26}') THEN {c} ELSE error('malformed tenancy id: {c}') END AS {c}
+    CASE WHEN regexp_full_match({c}, '[0-7][0-9A-HJKMNP-TV-Z]{25}') THEN {c} ELSE error('malformed tenancy id: {c}') END AS {c}
   day: >-
     CASE WHEN {c} IS NULL THEN error('null day basis') ELSE CAST(timezone('UTC', {c}) AS DATE) END AS day
   dim: >-
@@ -363,7 +363,7 @@ Action and guard table:
 | number, finite | added to `sum_<col>` |
 | number, NaN or infinite | left out of the sum; `withheld_<col>` counts it |
 | boolean | `true_<col>` counts true; false and NULL are not counted |
-| tenant_id or project_id not a canonical upper-case ULID, or NULL | the batch is refused (`malformed tenancy id: <col>`) |
+| tenant_id or project_id not exactly one canonical upper-case ULID (a full match: a valid id with a suffix, a trailing newline or a first character above 7 is refused), or NULL | the batch is refused (`malformed tenancy id: <col>`) |
 | session_started_at NULL | the batch is refused (`null day basis`) |
 | source column not in the inventory | the batch is refused (`unclassified column: <table>.<col>`) |
 | allow-list entry whose class is not crossing | refused before any SQL is built |
@@ -495,6 +495,24 @@ vectors:
       rows: [{event_kind: point, tenant_id: 01arz3ndektsv4rrffq69g5fav}]
       expected: error
       raises: 'malformed tenancy id: tenant_id'
+    - id: e07
+      why: a valid tenant_id followed by text refuses the batch; the guard is a full match, so tenant text cannot ride on the only string key that crosses
+      table: telemetry_observations
+      rows: [{event_kind: point, tenant_id: 01ARZ3NDEKTSV4RRFFQ69G5FAV CNRY payroll}]
+      expected: error
+      raises: 'malformed tenancy id: tenant_id'
+    - id: e08
+      why: a valid project_id with a trailing newline refuses the batch
+      table: telemetry_observations
+      rows: [{event_kind: point, project_id: "01BRZ3NDEKTSV4RRFFQ69G5FBW\n"}]
+      expected: error
+      raises: 'malformed tenancy id: project_id'
+    - id: e09
+      why: a 26-character Crockford string whose first character is above 7 overflows 128 bits, is not a ULID, and refuses the batch
+      table: telemetry_observations
+      rows: [{event_kind: point, tenant_id: ZZZZZZZZZZZZZZZZZZZZZZZZZZ}]
+      expected: error
+      raises: 'malformed tenancy id: tenant_id'
 ```
 
 ### 2.5 Mutants (hand-run once, reported, not a VP step)
@@ -507,17 +525,19 @@ vectors and no mutant survives.
 | m01 | `dim` passes the raw value (no vocabulary guard) | v02 |
 | m02 | enum `withheld_` counts NULLs instead of out-of-vocabulary values | v02, v03 |
 | m03 | `sum_` keeps NaN and infinity | v04 |
-| m04 | tenancy pattern accepts any non-empty string | e01, e06 |
+| m04 | tenancy pattern accepts any non-empty single line | e01, e06, e07, e09 |
 | m05 | tenancy guard written as `WHEN NOT match THEN error ELSE col` (a NULL passes) | e02 |
 | m06 | tenancy pattern case-insensitive | e06 |
 | m07 | structural guard made vacuous | e03 |
 | m08 | day cast in the session time zone, not UTC | v06 |
 | m09 | NULL day basis passes | e04 |
 | m10 | crossing-class check removed from the assembly | e05 |
-| m11 | project_id dropped from the key | v08, v09, e02 |
+| m11 | project_id dropped from the key | v08, v09, e02, e08 |
 | m12 | boolean counts NULL as true | v05 |
 | m13 | number `withheld_` counts NULLs | v04 |
-| m14 | tenant_id dropped from the key | v07, v09, e01, e06 |
+| m14 | tenant_id dropped from the key | v07, v09, e01, e06, e07, e09 |
+| m15 | tenancy guard a substring match (`regexp_matches`), so a valid id with a suffix crosses verbatim (verification r1 x4) | e07, e08 |
+| m16 | tenancy pattern drops the first-character bound (`[0-9A-HJKMNP-TV-Z]{26}`) | e09 |
 
 ### 2.6 Canary probe (VP 5)
 
@@ -533,6 +553,9 @@ canary on odd rows, every DOUBLE holding NaN on every tenth row. It then runs tw
   total 240, exactly the 240 out-of-vocabulary enum values injected (20 odd rows x 12 enum columns).
 
 A derived id counted as a leak here is a ULID-shaped string, not text; section 1.3 is why it is still one.
+The probe seeds tenant_id and project_id only with valid ids, so it cannot see the key columns: their text
+barrier is the full-match guard, pinned by e01, e02 and e06-e09 (verification r1 showed a substring match
+survives the canary). The production canary has the same blind spot; criterion c1 carries those vectors.
 
 ```yaml
 probe:
@@ -633,10 +656,11 @@ an IAM policy. Both rows touch IAM and the control plane's attack surface, so th
 
 - why: Decision 209 clause 2(b) wants an allow-list and clause 5(i) leaves it open; 58 of 133 columns hold
   caller strings, 0 of 12 vocabularies are enforced, and nothing reads a plane.
-- how: a named data-plane verb assembled from a per-column allow-list emits day aggregates and refuses on
-  drift; legs k1-k3.
+- how: a named data-plane verb assembled from the operator-approved per-column allow-list emits only what the
+  list names (staged: k1 (a), k4 (a) day aggregates) and refuses on drift or a bad tenancy id; legs k1-k3.
 - planes: data_plane, control_plane (the first W1 item to declare both).
-- maturity: read_all (the operator diffs every batch against the allow-list) to sampled after 30 clean
+- maturity (thresholds are provisional seeds, no measurement behind them; plan fork line): read_all (the
+  operator diffs every batch against the allow-list) to sampled after 30 clean
   batches since the last leak, to spot_check after 60 clean sampled batches, to anomaly_triggered after 90
   consecutive days with canary_leaks 0 and no unclassified column. The return leg and version rule are the
   maturity-ladder controller's k1 and k2 (#1398).

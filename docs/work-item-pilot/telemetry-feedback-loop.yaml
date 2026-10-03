@@ -1,3 +1,6 @@
+# CD.45 pilot fixture (provisional_v0). NOT A ROADMAP: never read by /orient, preflight or a pick surface (Decision 108).
+# Grain: Decision 197 clause 3. Register: clause 4 extension block. Keys, identity and columns stay clause 8's (T4.23 c13/c14).
+# Evaluator: validate_work_item_pilot (scripts/checks/roadmap/). Schema, caps and sunset are frozen in code; this header repeats them.
 fixture:
   id: telemetry-feedback-loop
   status: provisional_v0
@@ -11,16 +14,16 @@ fixture:
 work_items:
   - id: pwi-allow-list-transport
     kind: task
-    title: 'Plane egress: an explicit allow-list verb turns telemetry metadata into day aggregates for the control plane'
+    title: 'Plane egress: a data-plane verb applies the operator-approved allow-list before telemetry metadata crosses'
     extension:
       consideration_register:
         why: 'Decision 209 cl.2(b) wants an allow-list and cl.5(i) leaves it open: 58 of 133 telemetry columns hold caller strings, 0 of 12 vocabularies are enforced, and nothing reads a plane (VP 1-2).'
-        how: A named data-plane reader verb, assembled from a per-column allow-list, emits counts and finite sums per tenant, project, UTC day and guarded enum; drift or a malformed id refuses the batch. Legs k1-k3.
+        how: 'A named data-plane reader verb, assembled from a per-column allow-list, emits only what the list names (staged: k1(a) day aggregates of guarded enums, sums, booleans); drift or a bad id refuses. k1-k3.'
         planes: [data_plane, control_plane]
         maturity:
           rung: read_all
           transitions:
-            - {from: read_all, to: sampled, trigger: {metric: 'egress batches the operator diffed against the allow-list with canary_leaks 0, since the last leak', comparator: '>=', threshold: 30}}
+            - {from: read_all, to: sampled, trigger: {metric: 'provisional: egress batches the operator diffed against the allow-list with canary_leaks 0 since the last leak', comparator: '>=', threshold: 30}}
             - {from: sampled, to: spot_check, trigger: {metric: 1-in-5 sampled egress batches diffed clean since the last leak, comparator: '>=', threshold: 60}}
             - {from: spot_check, to: anomaly_triggered, trigger: {metric: consecutive days with canary_leaks 0 and no unclassified column, comparator: '>=', threshold: 90}}
         failure_signal: {signal: 'Tenant text crosses to the control plane, or classification drifts: an unclassified column refuses, or a withheld share rises', metric: 'canary_leaks: tokens of the seeded per-run canary row found in the egress batch; must be 0', source: egress batch and seeded canary row (data plane); withheld_<col> share per column beside it}
@@ -44,7 +47,7 @@ work_items:
           - {id: q2, text: 'No consumer exists: which aggregates does the first paid fleet dashboard need (Decision 209 cl.1)? Membership should follow it.'}
           - {id: q3, text: 'Where the canary row, egress log and withheld counts live in the data plane; shares rec-filing q4.'}
 work_item_criteria:
-  - {work_item: pwi-allow-list-transport, criterion_id: c1, text: 'The egress verb, assembled from the per-column allow-list, passes every report vector on DuckDB: guarded enums, finite sums, UTC day, tenant and project separation, and refusal on drift or malformed ids.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_egress_allow_list.py -k vectors}, status: open}
+  - {work_item: pwi-allow-list-transport, criterion_id: c1, text: 'The egress verb, assembled from the operator-approved allow-list, passes every report vector on DuckDB (staged grain k1(a)/k4(a)), incl. refusal on drift and on any tenancy id that is not exactly one ULID.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_egress_allow_list.py -k vectors}, status: open}
   - {work_item: pwi-allow-list-transport, criterion_id: c2, text: 'A canary token seeded in every string column of all four telemetry tables appears nowhere in the egress output, and every out-of-vocabulary enum value is counted as withheld.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_egress_allow_list.py -k canary}, status: open}
   - {work_item: pwi-allow-list-transport, criterion_id: c3, text: 'The operator approves the allow-list before the first batch crosses and approves every later change to it, each with the canary result on that head.', method: {kind: review, resolver: 'operator, before the first batch crosses and on every allow-list change', evidence_requirement: 'allow-list diff naming each added column, its class, vocabulary and consumer, plus the canary probe line'}, status: open}
 work_item_edges:
