@@ -229,7 +229,7 @@ What each action does, as the build would wire it (none of it runs here):
 | file | fileable, no chain head | file_rec: templated title and context, context_v2_json identity, source priority | - |
 | update | open, in_progress or deferred head, window advanced (a deferred rec is parked, not resolved: v23) | update_rec on the head: occurrence_count + 1, last_seen_end, detector_version, latest counts | head |
 | unchanged | same head, window not advanced (re-run) | none | head |
-| regression | closed head, or a superseded head's closed cover, and the window starts after that close, or the close time is unknown (fail closed) | file_rec: "REGRESSION: " prefix, regression_of = ref, priority one step above the filer source's own priority (measured from the source, never from the previous head, so it cannot ratchet); from the third record in a chain, tagged chronic (below) | the rec whose close decided it: head when the head is closed (even if it still carries covered_by, v22), cover only for a superseded head |
+| regression | closed head, or a superseded head's closed cover, and the window starts after that close, or the close time is unknown (fail closed) | file_rec: "REGRESSION: " prefix, regression_of = ref, priority one step above the filer source's own priority (measured from the source, never from the previous head, so it cannot ratchet); from the third record in a chain, tagged chronic if k6 (a) is taken | the rec whose close decided it: head when the head is closed (even if it still carries covered_by, v22), cover only for a superseded head |
 | drop | the window still includes sessions from before that close | none; logged | as for regression |
 | covered | superseded head whose covered_by rec is open, in_progress or deferred (v24) | none | cover |
 | suppressed | declined head, superseded head with no cover, or a declined cover | none; counted with its sessions | head |
@@ -249,22 +249,24 @@ Run record and failure path (its storage home is open, q4):
 - Written on every run, failed runs included: status (ok, quarantined or failed), params_version, detector
   versions, per-action counts per detector, the fingerprints with sessions behind every non-filing
   action, and on failure the error and the detector_id it is attributable to.
-- Blast radius, chosen: a validation stage runs before the decision. A detector with any malformed
-  finding (a NULL subject_key, window_start or window_end) is quarantined whole: its findings are recorded
-  and not decided, the other detectors decide normally, and the run still exits non-zero. A NULL
-  detector_id cannot be attributed, so it aborts the whole run. The SQL's error() guard (v33) stays as the
-  last line behind that stage. Reason: identity includes detector_id, so detectors are independent, and
-  one broken detector must not blind the rest; but nothing malformed is ever filed or held quietly.
-- The schedule is a governed loop like any other, so the loop_liveness_stale sensor's cadence leg (did it
-  run) and success leg (did it exit 0) alarm on a missing or failing filer
-  (scripts/convergence_health/sensor_liveness_episodes.py:43-48). A filer outage therefore reads as a
-  liveness alarm, never as a quiet queue.
-- Chain length (ci_rca's flake_escalation, adapted, not dropped). ci_rca quarantines a fingerprint whose
-  chain reaches 3 records instead of filing again. Here a regression is filed only after someone or
-  something closed the previous head, so a chain grows one close at a time. From the third record in a
-  chain the regression is still filed (a fix that keeps failing must stay visible) but tagged chronic, and
-  back-validation may not close a chronic rec on proof alone; a human closes it. That stops an automatic
-  close-and-regress loop once back-validation can close.
+- Settled across every option: a malformed finding (a NULL detector_id, subject_key, window_start or
+  window_end, or an empty or NUL-bearing subject_key, which the build validates on the same route) never
+  files, is recorded, and the run exits non-zero. The SQL's error() guard (v33) is the last line.
+- How far a malformed finding reaches is parked as k5 (blast radius). Recommended default: a validation
+  stage before the decision quarantines that detector's findings whole, the other detectors decide
+  normally, and a NULL detector_id (unattributable) aborts the run.
+- The filer runs as its own scheduled workflow, so the loop_liveness_stale sensor covers it like every
+  other schedule: its peer set is derived from every `.github/workflows/*.yml` with a `schedule:` block
+  (scripts/convergence_health/sensor_liveness.py:8-9), with a cadence leg (did it run) and a success leg
+  (did it exit 0). A filer outage therefore reads as a liveness alarm, never as a quiet queue. Latency: the
+  success leg alarms only after its derived threshold (about 48 hours for a daily cron), so the failed
+  run record is the same-day signal and the liveness leg is the backstop.
+- What happens as a fingerprint's chain grows is parked as k6. ci_rca stops filing at 3 records and
+  quarantines the fingerprint (flake_escalation). Recommended default here: from the third record the
+  regression is still filed (a fix that keeps failing must stay visible) but tagged chronic, and
+  back-validation may not close a chronic rec on proof alone. The chain counts filer recs of the
+  fingerprint only (the heads input already carries them), so a regression the filer files against a
+  covering rec counts, and the covering rec itself does not.
 
 Vectors (hand-written for this report; VP 2 runs every one). findings rows are `[detector_id,
 detector_version, subject_key, window_start, window_end, sessions, events]`; heads rows are `[rec_id,
@@ -471,10 +473,10 @@ Settled (consistent with a Decision, a contract or measured; s1-s3 in the fixtur
 - s2 The filing decision is one SQL statement over the filer's own source plus one read per covering
   rec. It passes 34/34 vectors across ten actions plus the collapsed listing; every non-filing outcome is counted in the run record
   (VP 2).
-- s3 A malformed finding never files and is never silent. A NULL identity or window column cannot be
-  deduped (its fingerprint is NULL and never matches again), so it is quarantined by detector, recorded,
-  and the run exits non-zero; the SQL raises as the last guard (v33). Precedent: Decision 55 (dedup never
-  swallows a finding) and the fail-loud rec_id cast (S4).
+- s3 A malformed finding never files: it is recorded and the run exits non-zero. A NULL identity or
+  window column cannot be deduped (its fingerprint is NULL and never matches again); the SQL raises as the
+  last guard (v33). How far the failure reaches is k5. Precedent: Decision 55 (dedup never swallows a
+  finding) and the fail-loud rec_id cast (S4).
 
 Contested (evidence on both sides, options listed; k1-k3 in the fixture; all parked, see
 /mnt/project-files/gates/w1-c5-parked-forks.md):
@@ -522,6 +524,16 @@ Contested (evidence on both sides, options listed; k1-k3 in the fixture; all par
   (k3). Recommended: (a) until back-validation exists, then revisit (b) as its fallback. Two contract
   precedents disagree (ci_rca closes on inactivity; loop_liveness_stale never auto-closes), so it is
   parked.
+- k5 (report-only) Blast radius of a malformed finding. (a) Quarantine the offending detector's findings
+  whole, let the rest decide, exit non-zero; a NULL detector_id aborts. (b) Abort the whole run on any
+  malformed finding. For (a): identity includes detector_id, so detectors are independent, and one broken
+  detector should not blind the rest for as long as it stays broken. For (b): simpler, and a failed run is
+  louder. Recommended: (a). The choice was weighed, not forced by a precedent, so it is parked.
+- k6 (report-only) Chain length. (a) From the third record in a chain, still file the regression but tag
+  it chronic, and forbid a proof-only close of a chronic rec. (b) ci_rca's own rule: stop filing at 3 and
+  quarantine the fingerprint. (c) No cap. Against (b): it hides a fix that keeps failing, which is the
+  signal T3.4 exists to catch. Against (a): it inverts ci_rca's precedent and constrains back-validation
+  before it is designed. Recommended: (a). Parked.
 
 Risk (known loss modes, not choices):
 
@@ -540,8 +552,9 @@ Risk (known loss modes, not choices):
   3 new recs per run, and the over_budget fingerprints are listed. The ranking is global: a flood of N
   labels from one detector delays a smaller detector's new findings by about N/3 runs. Filed fingerprints
   move to update, which the budget does not count, so the delay is bounded. Ranking per detector is the
-  build's alternative if that delay matters. The build also rejects a subject_key that is empty or holds
-  NUL (the key separator).
+  build's alternative if that delay matters. An empty or NUL-bearing subject_key (NUL is the key
+  separator) is malformed and takes the malformed-finding route (recorded, run exits non-zero, k5), never a
+  silent drop.
 - R4 Egress. One scoped `current_state` read per run plus one `rec_by_id` per distinct cover. Never the
   open_recs bulk read: it is unscoped and lacks source and context_v2_json (e11). The registered
   validate_episode_lookup_projection guard exists because of that defect class.
@@ -592,7 +605,9 @@ Open (q1-q3 in the fixture; none is answerable from the repository):
 - verification: c1 (the decision passes these vectors over the filer's projection, with per-action counts
   and params_version in each run record), c2 (the guard: one open rec per fingerprint, the identity keys
   present on every filer rec, a backstop refusing a second open insert), c3 (the operator's read_all
-  proposal review). All open.
+  proposal review). All open. Once k5 and k6 are decided, c1's build test adds two vectors: a mixed-detector run
+  in which the clean detector decides while the malformed one is handled per k5, and a third-chain-record
+  regression handled per k6. c1 should also match the error message, not any DuckDB error.
 - rollback: stop the filer's schedule. Filed recs remain ordinary recs the operator can decline, close or
   mark covered. The decision is stateless over its projection, so a params revert re-derives on the next
   run.
@@ -612,8 +627,9 @@ Open (q1-q3 in the fixture; none is answerable from the repository):
   through T2.36 here and through the pilot item at W2.
 - Back-validation (next W1 component): it owns the close-with-proof step, the acceptance probe (q1), and
   the post-fix delta that this design's `regression` action mirrors. The two must agree on the window
-  rule: a window that spans the fix is neither proof nor regression (v08, v13). It must also honour the
-  chronic tag (no proof-only close from the third chain record), and k4 (b) is its candidate fallback.
+  rule: a window that spans the fix is neither proof nor regression (v08, v13). If k6 (a) is taken, it
+  must honour the chronic tag (no proof-only close from the third chain record); k4 (b) is its candidate
+  fallback.
 - Two chain resolvers: ci_rca_lifecycle.resolve_chain orders by last_updated_timestamp, this SQL by
   created. W2 or the build decides whether to generalise resolve_chain by source or keep both on purpose.
 - Maturity-ladder controller and Goodhart register: this item's rungs and its rejected_share and
