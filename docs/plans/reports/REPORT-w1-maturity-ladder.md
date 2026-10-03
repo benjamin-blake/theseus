@@ -25,8 +25,10 @@ reads a rung (VP 1, VP 2). Two consequences are measured, not argued:
 The staged controller is one deterministic SQL per daily run (Decision 55). It reads a review log, the
 component's failure_signal series, monitor drills and operator approvals. For each component it returns
 promote, propose_promote, hold, demote or restart, with one of 11 reasons and the version the component
-holds next. It passes 62/62 vectors (VP 4), sixteen of them by raising on malformed input or params, and
-each of 46 hand-run mutants fails at least one vector. A version restart is monotonic on an ordered stamp.
+holds next. It passes 70/70 vectors (VP 4), eighteen of them by raising on malformed input or params, and
+each of 54 hand-run mutants fails at least one vector. A version restart is monotonic on an integer stamp
+compared numerically, a stamp that is not a canonical integer raises, and a wrong output under any stamp
+still triggers the return leg.
 It is a multi-level continuous sampling plan in the Dodge (CSP-1) and Lieberman-Solomon family: a
 clearance count per rung, a return leg on any wrong output found above read_all, a restart on a version
 change, a demotion on a breaching or dark failure_signal, and a windowed injected-fault drill before the
@@ -182,8 +184,10 @@ business; the controller decides only the rung.
 ### 2.2 Inputs
 
 `{state}`: one row per component: component, rung, entered_day (first day at this rung), version (the
-component's rule-set stamp: classifier_version, parser_version or params_version; stamps sort in deploy
-order, so a rollback is minted as a new, higher stamp), signal_threshold.
+component's rule-set stamp: classifier_version, parser_version or params_version, each an unpadded
+integer in the sibling reports (#1394 classifier_version 1, #1395 parser_version 2, #1396 params_version 1);
+the controller compares stamps as integers and a rollback is minted as a new, higher stamp),
+signal_threshold.
 `{reviews}`: one row per selected output: component, output_id, day, version, rung (at production), outcome
 (correct, wrong or unsure; NULL while pending). `{signal}`: one row per component per day: the
 failure_signal value, NULL when undefined (deliberation's "undefined, never 0" maps here). `{drills}`: one
@@ -221,7 +225,9 @@ state field or a duplicate component (e01, e07, e08); an on_wrong or promotion_a
 vocabulary (e12, e13); a review row with a NULL component (e09) or another NULL key (e04); a duplicate output_id
 (e02); an outcome outside the vocabulary (e03); a duplicate failure_signal day (e05); a signal row with a
 NULL component (e14) or day (e10); a drill row with a NULL component (e15), day (e16) or count (e11), or
-more detected than injected (e06). Each raise vector
+more detected than injected (e06); a version stamp, in the state (e17) or a review (e18), that is not a
+canonical non-negative integer (no sign, no leading zero), so a stamp that breaks the ordering contract
+raises instead of being misordered. Each raise vector
 matches its error message, not any DuckDB error. The guards are aggregates read by the final CASE, so no optimiser can skip them.
 
 Clearance counts correct reviews at the current rung and version since the last breaker. A breaker is a
@@ -230,17 +236,19 @@ inside the SLA neither counts nor breaks (v07, v36). An unreviewed sample theref
 skipping the hard cases cannot buy a promotion (Goodhart).
 
 Every output row carries to_version, the version the component holds after the decision. On a restart it
-is the highest stamp above the state's seen in the stint (v41, v44); otherwise it is the state's. Because
-stamps are ordered, a restart is monotonic: a late or overlapping output from an older stamp neither
-restarts the component nor rolls its stamp back (v42), and while two stamps both produce, only the current
-one's reviews count toward clearance (v43). The caller writes to_version back with the rung and
-entered_day, so the next run at the new version holds instead of restarting again (v40). The ordering is a
-contract on the stamp (a zero-padded counter or a timestamp sorts as text); its alternatives are k2's
+is the highest stamp above the state's seen in the stint, compared as integers (v41, v44; 9 to 10 restarts,
+v47); otherwise it is the state's. Because stamps are ordered, a restart is monotonic: a late or
+overlapping output from an older stamp neither restarts the component nor rolls its stamp back (v42), and
+while two stamps both produce, only the current one's reviews count toward clearance (v43). The return leg
+reads every stamp: a wrong output found at the current rung under any stamp in the stint demotes, so an
+older stamp still producing (an overlap, or a rollback redeployed without a new stamp) fails safe toward
+more review (v48). The caller writes to_version back with the rung and entered_day, so the next run at the
+new version holds instead of restarting again (v40). The alternatives to integer ordering are k2's
 sub-question.
 
 ```sql
 WITH st AS (
-  SELECT component, rung, entered_day, version, signal_threshold,
+  SELECT component, rung, entered_day, version, TRY_CAST(version AS UBIGINT) AS vn, signal_threshold,
          CASE rung WHEN 'read_all' THEN 0 WHEN 'sampled' THEN 1 WHEN 'spot_check' THEN 2 WHEN 'anomaly_triggered' THEN 3 END AS ri,
          count(*) OVER (PARTITION BY component) AS n_state
   FROM {state}
@@ -254,7 +262,8 @@ g AS (
   SELECT s.component,
          count(r.component) FILTER (WHERE r.output_id IS NULL OR r.day IS NULL OR r.version IS NULL OR r.rung IS NULL) > 0 AS has_null,
          count(r.component) > count(DISTINCT r.output_id) AS dup,
-         count(r.component) FILTER (WHERE r.outcome NOT IN ('correct', 'wrong', 'unsure')) > 0 AS bad_outcome
+         count(r.component) FILTER (WHERE r.outcome NOT IN ('correct', 'wrong', 'unsure')) > 0 AS bad_outcome,
+         count(r.component) FILTER (WHERE NOT regexp_full_match(r.version, '0|[1-9][0-9]{0,17}')) > 0 AS bad_stamp
   FROM st s LEFT JOIN {reviews} r ON r.component = s.component
   GROUP BY s.component
 ),
@@ -264,13 +273,13 @@ gs AS (
   GROUP BY s.component
 ),
 rv AS (
-  SELECT r.component, r.output_id, r.day, r.version, r.rung, r.outcome
+  SELECT r.component, r.output_id, r.day, r.version, TRY_CAST(r.version AS UBIGINT) AS vn, r.rung, r.outcome
   FROM {reviews} r JOIN st s ON s.component = r.component
   WHERE r.day >= s.entered_day AND r.day <= {today}
 ),
 vc AS (
-  SELECT s.component, count(rv.component) FILTER (WHERE rv.version > s.version) > 0 AS changed,
-         max(rv.version) FILTER (WHERE rv.version > s.version) AS new_version
+  SELECT s.component, count(rv.component) FILTER (WHERE rv.vn > s.vn) > 0 AS changed,
+         arg_max(rv.version, rv.vn) FILTER (WHERE rv.vn > s.vn) AS new_version
   FROM st s LEFT JOIN rv ON rv.component = s.component
   GROUP BY s.component
 ),
@@ -280,11 +289,15 @@ cur AS (
          (rv.outcome IN ('wrong', 'unsure') OR (rv.outcome IS NULL AND rv.day < {today} - {review_sla_days})) AS breaker
   FROM rv JOIN st s ON s.component = rv.component AND rv.rung = s.rung AND rv.version = s.version
 ),
+wa AS (
+  SELECT s.component, count(rv.component) FILTER (WHERE rv.outcome = 'wrong') AS wrong_any
+  FROM st s LEFT JOIN rv ON rv.component = s.component AND rv.rung = s.rung
+  GROUP BY s.component
+),
 lb AS (SELECT component, max(pos) FILTER (WHERE breaker) AS last_break FROM cur GROUP BY component),
 cl AS (
   SELECT s.component,
          count(c.component) FILTER (WHERE c.outcome = 'correct' AND c.pos > coalesce(lb.last_break, 0)) AS clearance,
-         count(c.component) FILTER (WHERE c.outcome = 'wrong') AS wrong_n,
          count(c.component) FILTER (WHERE c.outcome IS NULL AND c.day < {today} - {review_sla_days}) AS overdue_n
   FROM st s LEFT JOIN cur c ON c.component = s.component LEFT JOIN lb ON lb.component = s.component
   GROUP BY s.component
@@ -319,11 +332,13 @@ d AS (
       THEN error('malformed ladder params: on_wrong or promotion_authority outside its vocabulary')
       WHEN gz.bad > 0 THEN error('malformed ladder input: NULL key or detected > injected')
       WHEN g.has_null THEN error('malformed review row: NULL output_id, day, version or rung')
+      WHEN NOT regexp_full_match(s.version, '0|[1-9][0-9]{0,17}') OR g.bad_stamp
+      THEN error('malformed version stamp: not a canonical non-negative integer')
       WHEN g.dup THEN error('duplicate output_id: one review row per output')
       WHEN g.bad_outcome THEN error('review outcome outside correct, wrong, unsure')
       WHEN gs.dup_day THEN error('duplicate failure_signal day: one value per component per day')
       WHEN {version_restart} AND vc.changed THEN 'restart:version_change'
-      WHEN s.ri > 0 AND '{on_wrong}' <> 'none' AND cl.wrong_n > 0 THEN 'demote:wrong_found'
+      WHEN s.ri > 0 AND '{on_wrong}' <> 'none' AND wa.wrong_any > 0 THEN 'demote:wrong_found'
       WHEN s.ri > 0 AND {signal_demotes} AND sg.v_today > s.signal_threshold THEN 'demote:signal_breach'
       WHEN s.ri > 0 AND {signal_demotes} AND sg.defined_recent = 0 THEN 'demote:signal_dark'
       WHEN s.ri = 3 THEN 'hold:top'
@@ -341,6 +356,7 @@ d AS (
   JOIN gs ON gs.component = s.component
   JOIN vc ON vc.component = s.component
   JOIN cl ON cl.component = s.component
+  JOIN wa ON wa.component = s.component
   JOIN sg ON sg.component = s.component
   JOIN dr ON dr.component = s.component
   JOIN ap ON ap.component = s.component
@@ -361,8 +377,8 @@ FROM d
 
 | action | reason | when (precedence top-down) | vectors |
 |---|---|---|---|
-| restart | version_change | a review in the stint carries a stamp above the state's, when version_restart (k2); to_version is the highest such stamp | v18, v19, v25, v41, v44 |
-| demote | wrong_found | a wrong review at the current rung above read_all; to read_all or one rung down per on_wrong (k1); never at read_all | v08, v09, v26, v30, v31 |
+| restart | version_change | a review in the stint carries a stamp numerically above the state's, when version_restart (k2); to_version is the highest such stamp | v18, v19, v25, v41, v44, v47 |
+| demote | wrong_found | a wrong review at the current rung above read_all, under any stamp in the stint; to read_all or one rung down per on_wrong (k1); never at read_all | v08, v09, v26, v30, v31, v48 |
 | demote | signal_breach | above read_all, today's failure_signal exceeds the threshold (strictly), when signal_demotes; one rung down | v11 |
 | demote | signal_dark | above read_all, no defined failure_signal value in the last dark_days days; one rung down | v12, v32 |
 | hold | top | at anomaly_triggered with nothing to demote | v13 |
@@ -374,8 +390,8 @@ FROM d
 | promote | cleared | an approval for the next rung dated inside the stint, or promotion_authority auto (k3) | v02, v27 |
 | propose_promote | cleared | otherwise | v01, v07, v10, v14, v23, v24, v28, v33, v34, v35, v37, v38, v39, v40 |
 
-Rows outside the stint (before entered_day, after today) and rows recorded at another rung are ignored
-(v28, v29, v37). Several components decide independently in one run (v30).
+Rows outside the stint (before entered_day, after today) and rows recorded at another rung are ignored:
+reviews (v28, v29, v37, v46, v52), drills (v49, v50) and failure_signal days (v51). Several components decide independently in one run (v30).
 
 ### 2.4 Vectors (VP 4)
 
@@ -384,68 +400,76 @@ Rows outside the stint (before entered_day, after today) and rows recorded at an
 
 ```yaml
 vectors:
-  - {id: v01, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, read_all, correct]], signal: [[a, 49, 50, 0.0]], expected: [[a, propose_promote, sampled, cleared, v1]]}
-  - {id: v02, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, read_all, correct]], signal: [[a, 49, 50, 0.0]], approvals: [[a, sampled, 50]], expected: [[a, promote, sampled, cleared, v1]]}
-  - {id: v03, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 39, v1, read_all, correct]], signal: [[a, 49, 50, 0.0]], expected: [[a, hold, read_all, clearing, v1]]}
-  - {id: v04, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 20, v1, read_all, correct], [a, 21, 1, v1, read_all, wrong], [a, 22, 39, v1, read_all, correct]], signal: [[a, 49, 50, 0.0]], expected: [[a, hold, read_all, clearing, v1]]}
-  - {id: v05, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, read_all, correct], [a, 21, 1, v1, read_all, unsure]], signal: [[a, 49, 50, 0.0]], expected: [[a, hold, read_all, clearing, v1]]}
-  - {id: v06, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, read_all, correct], [a, 46, 1, v1, read_all, null]], signal: [[a, 49, 50, 0.0]], expected: [[a, hold, read_all, review_overdue, v1]]}
-  - {id: v07, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, read_all, correct], [a, 47, 1, v1, read_all, null]], signal: [[a, 49, 50, 0.0]], expected: [[a, propose_promote, sampled, cleared, v1]]}
-  - {id: v08, today: 50, state: [[a, spot_check, 10, v1, 0.05]], reviews: [[a, 20, 30, v1, spot_check, correct], [a, 21, 1, v1, spot_check, wrong]], signal: [[a, 10, 50, 0.0]], expected: [[a, demote, read_all, wrong_found, v1]]}
-  - {id: v09, today: 50, params: {on_wrong: one_down}, state: [[a, spot_check, 10, v1, 0.05]], reviews: [[a, 20, 30, v1, spot_check, correct], [a, 21, 1, v1, spot_check, wrong]], signal: [[a, 10, 50, 0.0]], expected: [[a, demote, sampled, wrong_found, v1]]}
-  - {id: v10, today: 50, params: {on_wrong: none}, state: [[a, sampled, 10, v1, 0.05]], reviews: [[a, 20, 1, v1, sampled, wrong], [a, 21, 40, v1, sampled, correct]], signal: [[a, 49, 50, 0.0]], expected: [[a, propose_promote, spot_check, cleared, v1]]}
-  - {id: v11, today: 50, state: [[a, spot_check, 10, v1, 0.05]], reviews: [[a, 20, 30, v1, spot_check, correct]], signal: [[a, 10, 49, 0.0], [a, 50, 50, 0.08]], expected: [[a, demote, sampled, signal_breach, v1]]}
-  - {id: v12, today: 50, state: [[a, anomaly_triggered, 10, v1, 0.05]], signal: [[a, 10, 48, 0.0]], expected: [[a, demote, spot_check, signal_dark, v1]]}
-  - {id: v13, today: 50, state: [[a, anomaly_triggered, 10, v1, 0.05]], reviews: [[a, 30, 2, v1, anomaly_triggered, correct]], signal: [[a, 10, 50, 0.01]], expected: [[a, hold, anomaly_triggered, top, v1]]}
-  - {id: v14, today: 50, state: [[a, spot_check, 10, v1, 0.05]], reviews: [[a, 20, 20, v1, spot_check, correct]], signal: [[a, 10, 50, 0.01]], drills: [[a, 45, 20, 20]], expected: [[a, propose_promote, anomaly_triggered, cleared, v1]]}
-  - {id: v15, today: 50, state: [[a, spot_check, 22, v1, 0.05]], reviews: [[a, 30, 20, v1, spot_check, correct]], signal: [[a, 1, 50, 0.01]], drills: [[a, 45, 20, 20]], expected: [[a, hold, spot_check, signal_window, v1]]}
-  - {id: v16, today: 50, state: [[a, spot_check, 10, v1, 0.05]], reviews: [[a, 20, 20, v1, spot_check, correct]], signal: [[a, 10, 50, 0.01]], drills: [[a, 45, 20, 17]], expected: [[a, hold, spot_check, awaiting_drill, v1]]}
-  - {id: v17, today: 50, state: [[a, spot_check, 10, v1, 0.05]], reviews: [[a, 20, 20, v1, spot_check, correct]], signal: [[a, 10, 50, 0.01]], drills: [[a, 45, 19, 19]], expected: [[a, hold, spot_check, awaiting_drill, v1]]}
-  - {id: v18, today: 50, state: [[a, sampled, 10, v1, 0.05]], reviews: [[a, 20, 30, v1, sampled, correct], [a, 40, 1, v2, sampled, correct]], signal: [[a, 10, 50, 0.0]], expected: [[a, restart, read_all, version_change, v2]]}
-  - {id: v19, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, read_all, correct], [a, 41, 1, v2, read_all, correct]], signal: [[a, 49, 50, 0.0]], expected: [[a, restart, read_all, version_change, v2]]}
-  - {id: v20, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, read_all, correct]], signal: [[a, 40, 49, 0.0]], expected: [[a, hold, read_all, signal_not_clean, v1]]}
-  - {id: v21, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, read_all, correct]], signal: [[a, 40, 50, 0.2]], expected: [[a, hold, read_all, signal_not_clean, v1]]}
-  - {id: v22, today: 50, params: {signal_demotes: false}, state: [[a, sampled, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, sampled, correct]], signal: [[a, 40, 50, 0.2]], expected: [[a, hold, sampled, signal_not_clean, v1]]}
-  - {id: v23, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, read_all, correct]], signal: [[a, 49, 50, 0.0]], approvals: [[a, spot_check, 50]], expected: [[a, propose_promote, sampled, cleared, v1]]}
-  - {id: v24, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, read_all, correct]], signal: [[a, 49, 50, 0.0]], approvals: [[a, sampled, 9]], expected: [[a, propose_promote, sampled, cleared, v1]]}
-  - {id: v25, today: 50, state: [[a, sampled, 10, v1, 0.05]], reviews: [[a, 20, 1, v1, sampled, wrong], [a, 40, 1, v2, sampled, correct]], signal: [[a, 10, 50, 0.0]], expected: [[a, restart, read_all, version_change, v2]]}
-  - {id: v26, today: 50, params: {on_wrong: one_down}, state: [[a, spot_check, 10, v1, 0.05]], reviews: [[a, 20, 1, v1, spot_check, wrong]], signal: [[a, 10, 49, 0.0], [a, 50, 50, 0.3]], expected: [[a, demote, sampled, wrong_found, v1]]}
-  - {id: v27, today: 50, params: {promotion_authority: auto}, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, read_all, correct]], signal: [[a, 49, 50, 0.0]], expected: [[a, promote, sampled, cleared, v1]]}
-  - {id: v28, today: 50, state: [[a, sampled, 30, v1, 0.05]], reviews: [[a, 20, 3, v1, read_all, wrong], [a, 25, 1, v0, read_all, correct], [a, 31, 40, v1, sampled, correct]], signal: [[a, 30, 50, 0.0]], expected: [[a, propose_promote, spot_check, cleared, v1]]}
-  - {id: v29, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 39, v1, read_all, correct], [a, 51, 5, v1, read_all, correct], [a, 52, 1, v2, read_all, wrong]], signal: [[a, 49, 50, 0.0]], expected: [[a, hold, read_all, clearing, v1]]}
-  - {id: v30, today: 50, state: [[a, read_all, 10, v1, 0.05], [b, sampled, 10, w1, 0.1]], reviews: [[a, 20, 40, v1, read_all, correct], [b, 20, 5, w1, sampled, correct], [b, 21, 1, w1, sampled, wrong]], signal: [[a, 49, 50, 0.0], [b, 49, 50, 0.0]], expected: [[a, propose_promote, sampled, cleared, v1], [b, demote, read_all, wrong_found, w1]]}
-  - {id: v31, today: 50, state: [[a, anomaly_triggered, 10, v1, 0.05]], reviews: [[a, 30, 1, v1, anomaly_triggered, wrong]], signal: [[a, 10, 50, 0.0]], expected: [[a, demote, read_all, wrong_found, v1]]}
-  - {id: v32, today: 50, state: [[a, anomaly_triggered, 10, v1, 0.05]], signal: [[a, 10, 48, 0.0], [a, 49, 50, null]], expected: [[a, demote, spot_check, signal_dark, v1]]}
-  - {id: v33, today: 50, state: [[a, sampled, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, sampled, correct]], signal: [[a, 10, 50, 0.05]], expected: [[a, propose_promote, spot_check, cleared, v1]]}
-  - {id: v34, today: 50, params: {signal_gates_promotion: false}, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 40, v1, read_all, correct]], signal: [[a, 40, 50, 0.2]], expected: [[a, propose_promote, sampled, cleared, v1]]}
-  - {id: v35, today: 50, params: {drill_min: 0}, state: [[a, spot_check, 10, v1, 0.05]], reviews: [[a, 20, 20, v1, spot_check, correct]], signal: [[a, 10, 50, 0.01]], drills: [[a, 45, 4, 1]], expected: [[a, propose_promote, anomaly_triggered, cleared, v1]]}
-  - {id: v36, today: 50, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 39, v1, read_all, correct], [a, 48, 1, v1, read_all, null]], signal: [[a, 49, 50, 0.0]], expected: [[a, hold, read_all, clearing, v1]]}
-  - {id: v37, today: 50, state: [[a, sampled, 10, v1, 0.05]], reviews: [[a, 12, 1, v1, read_all, wrong], [a, 20, 40, v1, sampled, correct]], signal: [[a, 10, 50, 0.0]], expected: [[a, propose_promote, spot_check, cleared, v1]]}
-  - {id: v38, today: 50, state: [[a, spot_check, 10, v1, 0.05]], reviews: [[a, 20, 20, v1, spot_check, correct]], signal: [[a, 10, 50, 0.01]], drills: [[a, 45, 20, 18]], expected: [[a, propose_promote, anomaly_triggered, cleared, v1]]}
-  - {id: v39, today: 50, state: [[a, spot_check, 10, v1, 0.05]], reviews: [[a, 20, 20, v1, spot_check, correct]], signal: [[a, 10, 50, 0.01]], drills: [[a, 20, 5, 0], [a, 45, 20, 20]], expected: [[a, propose_promote, anomaly_triggered, cleared, v1]]}
-  - {id: v40, today: 60, state: [[a, read_all, 51, v2, 0.05]], reviews: [[a, 40, 3, v1, read_all, correct], [a, 52, 40, v2, read_all, correct]], signal: [[a, 50, 60, 0.0]], expected: [[a, propose_promote, sampled, cleared, v2]]}
-  - {id: v41, today: 50, state: [[a, sampled, 10, v1, 0.05]], reviews: [[a, 20, 30, v1, sampled, correct], [a, 30, 1, v2, sampled, correct], [a, 40, 1, v3, sampled, correct]], signal: [[a, 10, 50, 0.0]], expected: [[a, restart, read_all, version_change, v3]]}
-  - {id: v42, today: 60, state: [[a, read_all, 51, v2, 0.05]], reviews: [[a, 52, 40, v2, read_all, correct], [a, 53, 1, v1, read_all, correct]], signal: [[a, 50, 60, 0.0]], expected: [[a, propose_promote, sampled, cleared, v2]]}
-  - {id: v43, today: 60, state: [[a, read_all, 51, v2, 0.05]], reviews: [[a, 52, 1, v1, read_all, correct], [a, 52, 20, v2, read_all, correct], [a, 55, 1, v1, read_all, wrong], [a, 55, 20, v2, read_all, correct]], signal: [[a, 50, 60, 0.0]], expected: [[a, propose_promote, sampled, cleared, v2]]}
-  - {id: v44, today: 50, state: [[a, sampled, 10, v1, 0.05]], reviews: [[a, 20, 30, v1, sampled, correct], [a, 40, 1, v3, sampled, correct], [a, 40, 1, v2, sampled, correct]], signal: [[a, 10, 50, 0.0]], expected: [[a, restart, read_all, version_change, v3]]}
-  - {id: v45, today: 45, state: [[a, spot_check, 10, v1, 0.05]], reviews: [[a, 20, 20, v1, spot_check, correct]], signal: [[a, 10, 45, 0.01]], drills: [[a, 25, 1, 1], [a, 26, 19, 19]], expected: [[a, hold, spot_check, awaiting_drill, v1]]}
-  - {id: v46, today: 50, state: [[a, sampled, 30, v1, 0.05]], reviews: [[a, 20, 1, v1, sampled, wrong], [a, 31, 40, v1, sampled, correct]], signal: [[a, 30, 50, 0.0]], expected: [[a, propose_promote, spot_check, cleared, v1]]}
-  - {id: e01, today: 50, raises: 'malformed ladder state', state: [[a, audit, 10, v1, 0.05]], expected: error}
-  - {id: e02, today: 50, raises: 'duplicate output_id', dup_review: true, state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 2, v1, read_all, correct]], signal: [[a, 49, 50, 0.0]], expected: error}
-  - {id: e03, today: 50, raises: 'review outcome outside', state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 1, v1, read_all, maybe]], signal: [[a, 49, 50, 0.0]], expected: error}
-  - {id: e04, today: 50, raises: 'malformed review row', state: [[a, read_all, 10, v1, 0.05]], reviews: [[a, 20, 1, null, read_all, correct]], signal: [[a, 49, 50, 0.0]], expected: error}
-  - {id: e05, today: 50, raises: 'duplicate failure_signal day', state: [[a, read_all, 10, v1, 0.05]], signal: [[a, 49, 50, 0.0], [a, 50, 50, 0.0]], expected: error}
-  - {id: e06, today: 50, raises: 'detected > injected', state: [[a, spot_check, 10, v1, 0.05]], signal: [[a, 49, 50, 0.0]], drills: [[a, 30, 2, 3]], expected: error}
-  - {id: e07, today: 50, raises: 'malformed ladder state', state: [[a, read_all, 10, v1, 0.05], [a, sampled, 10, v1, 0.05]], expected: error}
-  - {id: e08, today: 50, raises: 'malformed ladder state', state: [[a, read_all, null, v1, 0.05]], signal: [[a, 49, 50, 0.0]], expected: error}
-  - {id: e09, today: 50, raises: 'malformed ladder input', state: [[a, read_all, 10, v1, 0.05]], reviews: [[null, 20, 1, v1, read_all, correct]], signal: [[a, 49, 50, 0.0]], expected: error}
-  - {id: e10, today: 50, raises: 'malformed ladder input', state: [[a, read_all, 10, v1, 0.05]], signal: [[a, 49, 50, 0.0]], extra_signal: [[a, null, 0.0]], expected: error}
-  - {id: e11, today: 50, raises: 'malformed ladder input', state: [[a, spot_check, 10, v1, 0.05]], signal: [[a, 49, 50, 0.0]], drills: [[a, 45, null, 0]], expected: error}
-  - {id: e12, today: 50, raises: 'malformed ladder params', params: {on_wrong: readall}, state: [[a, read_all, 10, v1, 0.05]], signal: [[a, 49, 50, 0.0]], expected: error}
-  - {id: e13, today: 50, raises: 'malformed ladder params', params: {promotion_authority: Operator}, state: [[a, read_all, 10, v1, 0.05]], signal: [[a, 49, 50, 0.0]], expected: error}
-  - {id: e14, today: 50, raises: 'malformed ladder input', state: [[a, read_all, 10, v1, 0.05]], signal: [[a, 49, 50, 0.0]], extra_signal: [[null, 50, 0.0]], expected: error}
-  - {id: e15, today: 50, raises: 'malformed ladder input', state: [[a, spot_check, 10, v1, 0.05]], signal: [[a, 49, 50, 0.0]], drills: [[null, 45, 1, 0]], expected: error}
-  - {id: e16, today: 50, raises: 'malformed ladder input', state: [[a, spot_check, 10, v1, 0.05]], signal: [[a, 49, 50, 0.0]], drills: [[a, null, 1, 0]], expected: error}
+  - {id: v01, today: 50, state: [[a, read_all, 10, '1', 0.05]], reviews: [[a, 20, 40, '1', read_all, correct]], signal: [[a, 49, 50, 0.0]], expected: [[a, propose_promote, sampled, cleared, '1']]}
+  - {id: v02, today: 50, state: [[a, read_all, 10, '1', 0.05]], reviews: [[a, 20, 40, '1', read_all, correct]], signal: [[a, 49, 50, 0.0]], approvals: [[a, sampled, 50]], expected: [[a, promote, sampled, cleared, '1']]}
+  - {id: v03, today: 50, state: [[a, read_all, 10, '1', 0.05]], reviews: [[a, 20, 39, '1', read_all, correct]], signal: [[a, 49, 50, 0.0]], expected: [[a, hold, read_all, clearing, '1']]}
+  - {id: v04, today: 50, state: [[a, read_all, 10, '1', 0.05]], reviews: [[a, 20, 20, '1', read_all, correct], [a, 21, 1, '1', read_all, wrong], [a, 22, 39, '1', read_all, correct]], signal: [[a, 49, 50, 0.0]], expected: [[a, hold, read_all, clearing, '1']]}
+  - {id: v05, today: 50, state: [[a, read_all, 10, '1', 0.05]], reviews: [[a, 20, 40, '1', read_all, correct], [a, 21, 1, '1', read_all, unsure]], signal: [[a, 49, 50, 0.0]], expected: [[a, hold, read_all, clearing, '1']]}
+  - {id: v06, today: 50, state: [[a, read_all, 10, '1', 0.05]], reviews: [[a, 20, 40, '1', read_all, correct], [a, 46, 1, '1', read_all, null]], signal: [[a, 49, 50, 0.0]], expected: [[a, hold, read_all, review_overdue, '1']]}
+  - {id: v07, today: 50, state: [[a, read_all, 10, '1', 0.05]], reviews: [[a, 20, 40, '1', read_all, correct], [a, 47, 1, '1', read_all, null]], signal: [[a, 49, 50, 0.0]], expected: [[a, propose_promote, sampled, cleared, '1']]}
+  - {id: v08, today: 50, state: [[a, spot_check, 10, '1', 0.05]], reviews: [[a, 20, 30, '1', spot_check, correct], [a, 21, 1, '1', spot_check, wrong]], signal: [[a, 10, 50, 0.0]], expected: [[a, demote, read_all, wrong_found, '1']]}
+  - {id: v09, today: 50, params: {on_wrong: one_down}, state: [[a, spot_check, 10, '1', 0.05]], reviews: [[a, 20, 30, '1', spot_check, correct], [a, 21, 1, '1', spot_check, wrong]], signal: [[a, 10, 50, 0.0]], expected: [[a, demote, sampled, wrong_found, '1']]}
+  - {id: v10, today: 50, params: {on_wrong: none}, state: [[a, sampled, 10, '1', 0.05]], reviews: [[a, 20, 1, '1', sampled, wrong], [a, 21, 40, '1', sampled, correct]], signal: [[a, 49, 50, 0.0]], expected: [[a, propose_promote, spot_check, cleared, '1']]}
+  - {id: v11, today: 50, state: [[a, spot_check, 10, '1', 0.05]], reviews: [[a, 20, 30, '1', spot_check, correct]], signal: [[a, 10, 49, 0.0], [a, 50, 50, 0.08]], expected: [[a, demote, sampled, signal_breach, '1']]}
+  - {id: v12, today: 50, state: [[a, anomaly_triggered, 10, '1', 0.05]], signal: [[a, 10, 48, 0.0]], expected: [[a, demote, spot_check, signal_dark, '1']]}
+  - {id: v13, today: 50, state: [[a, anomaly_triggered, 10, '1', 0.05]], reviews: [[a, 30, 2, '1', anomaly_triggered, correct]], signal: [[a, 10, 50, 0.01]], expected: [[a, hold, anomaly_triggered, top, '1']]}
+  - {id: v14, today: 50, state: [[a, spot_check, 10, '1', 0.05]], reviews: [[a, 20, 20, '1', spot_check, correct]], signal: [[a, 10, 50, 0.01]], drills: [[a, 45, 20, 20]], expected: [[a, propose_promote, anomaly_triggered, cleared, '1']]}
+  - {id: v15, today: 50, state: [[a, spot_check, 22, '1', 0.05]], reviews: [[a, 30, 20, '1', spot_check, correct]], signal: [[a, 1, 50, 0.01]], drills: [[a, 45, 20, 20]], expected: [[a, hold, spot_check, signal_window, '1']]}
+  - {id: v16, today: 50, state: [[a, spot_check, 10, '1', 0.05]], reviews: [[a, 20, 20, '1', spot_check, correct]], signal: [[a, 10, 50, 0.01]], drills: [[a, 45, 20, 17]], expected: [[a, hold, spot_check, awaiting_drill, '1']]}
+  - {id: v17, today: 50, state: [[a, spot_check, 10, '1', 0.05]], reviews: [[a, 20, 20, '1', spot_check, correct]], signal: [[a, 10, 50, 0.01]], drills: [[a, 45, 19, 19]], expected: [[a, hold, spot_check, awaiting_drill, '1']]}
+  - {id: v18, today: 50, state: [[a, sampled, 10, '1', 0.05]], reviews: [[a, 20, 30, '1', sampled, correct], [a, 40, 1, '2', sampled, correct]], signal: [[a, 10, 50, 0.0]], expected: [[a, restart, read_all, version_change, '2']]}
+  - {id: v19, today: 50, state: [[a, read_all, 10, '1', 0.05]], reviews: [[a, 20, 40, '1', read_all, correct], [a, 41, 1, '2', read_all, correct]], signal: [[a, 49, 50, 0.0]], expected: [[a, restart, read_all, version_change, '2']]}
+  - {id: v20, today: 50, state: [[a, read_all, 10, '1', 0.05]], reviews: [[a, 20, 40, '1', read_all, correct]], signal: [[a, 40, 49, 0.0]], expected: [[a, hold, read_all, signal_not_clean, '1']]}
+  - {id: v21, today: 50, state: [[a, read_all, 10, '1', 0.05]], reviews: [[a, 20, 40, '1', read_all, correct]], signal: [[a, 40, 50, 0.2]], expected: [[a, hold, read_all, signal_not_clean, '1']]}
+  - {id: v22, today: 50, params: {signal_demotes: false}, state: [[a, sampled, 10, '1', 0.05]], reviews: [[a, 20, 40, '1', sampled, correct]], signal: [[a, 40, 50, 0.2]], expected: [[a, hold, sampled, signal_not_clean, '1']]}
+  - {id: v23, today: 50, state: [[a, read_all, 10, '1', 0.05]], reviews: [[a, 20, 40, '1', read_all, correct]], signal: [[a, 49, 50, 0.0]], approvals: [[a, spot_check, 50]], expected: [[a, propose_promote, sampled, cleared, '1']]}
+  - {id: v24, today: 50, state: [[a, read_all, 10, '1', 0.05]], reviews: [[a, 20, 40, '1', read_all, correct]], signal: [[a, 49, 50, 0.0]], approvals: [[a, sampled, 9]], expected: [[a, propose_promote, sampled, cleared, '1']]}
+  - {id: v25, today: 50, state: [[a, sampled, 10, '1', 0.05]], reviews: [[a, 20, 1, '1', sampled, wrong], [a, 40, 1, '2', sampled, correct]], signal: [[a, 10, 50, 0.0]], expected: [[a, restart, read_all, version_change, '2']]}
+  - {id: v26, today: 50, params: {on_wrong: one_down}, state: [[a, spot_check, 10, '1', 0.05]], reviews: [[a, 20, 1, '1', spot_check, wrong]], signal: [[a, 10, 49, 0.0], [a, 50, 50, 0.3]], expected: [[a, demote, sampled, wrong_found, '1']]}
+  - {id: v27, today: 50, params: {promotion_authority: auto}, state: [[a, read_all, 10, '1', 0.05]], reviews: [[a, 20, 40, '1', read_all, correct]], signal: [[a, 49, 50, 0.0]], expected: [[a, promote, sampled, cleared, '1']]}
+  - {id: v28, today: 50, state: [[a, sampled, 30, '1', 0.05]], reviews: [[a, 20, 3, '1', read_all, wrong], [a, 25, 1, '0', read_all, correct], [a, 31, 40, '1', sampled, correct]], signal: [[a, 30, 50, 0.0]], expected: [[a, propose_promote, spot_check, cleared, '1']]}
+  - {id: v29, today: 50, state: [[a, read_all, 10, '1', 0.05]], reviews: [[a, 20, 39, '1', read_all, correct], [a, 51, 5, '1', read_all, correct], [a, 52, 1, '2', read_all, wrong]], signal: [[a, 49, 50, 0.0]], expected: [[a, hold, read_all, clearing, '1']]}
+  - {id: v30, today: 50, state: [[a, read_all, 10, '1', 0.05], [b, sampled, 10, '7', 0.1]], reviews: [[a, 20, 40, '1', read_all, correct], [b, 20, 5, '7', sampled, correct], [b, 21, 1, '7', sampled, wrong]], signal: [[a, 49, 50, 0.0], [b, 49, 50, 0.0]], expected: [[a, propose_promote, sampled, cleared, '1'], [b, demote, read_all, wrong_found, '7']]}
+  - {id: v31, today: 50, state: [[a, anomaly_triggered, 10, '1', 0.05]], reviews: [[a, 30, 1, '1', anomaly_triggered, wrong]], signal: [[a, 10, 50, 0.0]], expected: [[a, demote, read_all, wrong_found, '1']]}
+  - {id: v32, today: 50, state: [[a, anomaly_triggered, 10, '1', 0.05]], signal: [[a, 10, 48, 0.0], [a, 49, 50, null]], expected: [[a, demote, spot_check, signal_dark, '1']]}
+  - {id: v33, today: 50, state: [[a, sampled, 10, '1', 0.05]], reviews: [[a, 20, 40, '1', sampled, correct]], signal: [[a, 10, 50, 0.05]], expected: [[a, propose_promote, spot_check, cleared, '1']]}
+  - {id: v34, today: 50, params: {signal_gates_promotion: false}, state: [[a, read_all, 10, '1', 0.05]], reviews: [[a, 20, 40, '1', read_all, correct]], signal: [[a, 40, 50, 0.2]], expected: [[a, propose_promote, sampled, cleared, '1']]}
+  - {id: v35, today: 50, params: {drill_min: 0}, state: [[a, spot_check, 10, '1', 0.05]], reviews: [[a, 20, 20, '1', spot_check, correct]], signal: [[a, 10, 50, 0.01]], drills: [[a, 45, 4, 1]], expected: [[a, propose_promote, anomaly_triggered, cleared, '1']]}
+  - {id: v36, today: 50, state: [[a, read_all, 10, '1', 0.05]], reviews: [[a, 20, 39, '1', read_all, correct], [a, 48, 1, '1', read_all, null]], signal: [[a, 49, 50, 0.0]], expected: [[a, hold, read_all, clearing, '1']]}
+  - {id: v37, today: 50, state: [[a, sampled, 10, '1', 0.05]], reviews: [[a, 12, 1, '1', read_all, wrong], [a, 20, 40, '1', sampled, correct]], signal: [[a, 10, 50, 0.0]], expected: [[a, propose_promote, spot_check, cleared, '1']]}
+  - {id: v38, today: 50, state: [[a, spot_check, 10, '1', 0.05]], reviews: [[a, 20, 20, '1', spot_check, correct]], signal: [[a, 10, 50, 0.01]], drills: [[a, 45, 20, 18]], expected: [[a, propose_promote, anomaly_triggered, cleared, '1']]}
+  - {id: v39, today: 50, state: [[a, spot_check, 10, '1', 0.05]], reviews: [[a, 20, 20, '1', spot_check, correct]], signal: [[a, 10, 50, 0.01]], drills: [[a, 20, 5, 0], [a, 45, 20, 20]], expected: [[a, propose_promote, anomaly_triggered, cleared, '1']]}
+  - {id: v40, today: 60, state: [[a, read_all, 51, '2', 0.05]], reviews: [[a, 40, 3, '1', read_all, correct], [a, 52, 40, '2', read_all, correct]], signal: [[a, 50, 60, 0.0]], expected: [[a, propose_promote, sampled, cleared, '2']]}
+  - {id: v41, today: 50, state: [[a, sampled, 10, '1', 0.05]], reviews: [[a, 20, 30, '1', sampled, correct], [a, 30, 1, '2', sampled, correct], [a, 40, 1, '3', sampled, correct]], signal: [[a, 10, 50, 0.0]], expected: [[a, restart, read_all, version_change, '3']]}
+  - {id: v42, today: 60, state: [[a, read_all, 51, '2', 0.05]], reviews: [[a, 52, 40, '2', read_all, correct], [a, 53, 1, '1', read_all, correct]], signal: [[a, 50, 60, 0.0]], expected: [[a, propose_promote, sampled, cleared, '2']]}
+  - {id: v43, today: 60, state: [[a, read_all, 51, '2', 0.05]], reviews: [[a, 52, 1, '1', read_all, correct], [a, 52, 20, '2', read_all, correct], [a, 55, 1, '1', read_all, wrong], [a, 55, 20, '2', read_all, correct]], signal: [[a, 50, 60, 0.0]], expected: [[a, propose_promote, sampled, cleared, '2']]}
+  - {id: v44, today: 50, state: [[a, sampled, 10, '1', 0.05]], reviews: [[a, 20, 30, '1', sampled, correct], [a, 40, 1, '3', sampled, correct], [a, 40, 1, '2', sampled, correct]], signal: [[a, 10, 50, 0.0]], expected: [[a, restart, read_all, version_change, '3']]}
+  - {id: v45, today: 45, state: [[a, spot_check, 10, '1', 0.05]], reviews: [[a, 20, 20, '1', spot_check, correct]], signal: [[a, 10, 45, 0.01]], drills: [[a, 25, 1, 1], [a, 26, 19, 19]], expected: [[a, hold, spot_check, awaiting_drill, '1']]}
+  - {id: v46, today: 50, state: [[a, sampled, 30, '1', 0.05]], reviews: [[a, 20, 1, '1', sampled, wrong], [a, 31, 40, '1', sampled, correct]], signal: [[a, 30, 50, 0.0]], expected: [[a, propose_promote, spot_check, cleared, '1']]}
+  - {id: v47, today: 50, state: [[a, anomaly_triggered, 10, '9', 0.05]], reviews: [[a, 20, 3, '10', anomaly_triggered, wrong]], signal: [[a, 10, 50, 0.0]], expected: [[a, restart, read_all, version_change, '10']]}
+  - {id: v48, today: 50, state: [[a, anomaly_triggered, 30, '2', 0.05]], reviews: [[a, 40, 1, '1', anomaly_triggered, wrong], [a, 41, 5, '2', anomaly_triggered, correct]], signal: [[a, 10, 50, 0.0]], expected: [[a, demote, read_all, wrong_found, '2']]}
+  - {id: v49, today: 55, params: {signal_window_days: 10}, state: [[a, spot_check, 40, '1', 0.05]], reviews: [[a, 41, 20, '1', spot_check, correct]], signal: [[a, 30, 55, 0.01]], drills: [[a, 38, 20, 20]], expected: [[a, hold, spot_check, awaiting_drill, '1']]}
+  - {id: v50, today: 55, params: {signal_window_days: 10}, state: [[a, spot_check, 40, '1', 0.05]], reviews: [[a, 41, 20, '1', spot_check, correct]], signal: [[a, 30, 55, 0.01]], drills: [[a, 56, 20, 20]], expected: [[a, hold, spot_check, awaiting_drill, '1']]}
+  - {id: v51, today: 50, state: [[a, spot_check, 25, '1', 0.05]], reviews: [[a, 30, 20, '1', spot_check, correct]], signal: [[a, 25, 60, 0.01]], drills: [[a, 45, 20, 20]], expected: [[a, hold, spot_check, signal_window, '1']]}
+  - {id: v52, today: 50, state: [[a, sampled, 10, '1', 0.05]], reviews: [[a, 20, 40, '1', sampled, correct], [a, 45, 1, '1', read_all, wrong]], signal: [[a, 10, 50, 0.0]], expected: [[a, propose_promote, spot_check, cleared, '1']]}
+  - {id: e01, today: 50, raises: 'malformed ladder state', state: [[a, audit, 10, '1', 0.05]], expected: error}
+  - {id: e02, today: 50, raises: 'duplicate output_id', dup_review: true, state: [[a, read_all, 10, '1', 0.05]], reviews: [[a, 20, 2, '1', read_all, correct]], signal: [[a, 49, 50, 0.0]], expected: error}
+  - {id: e03, today: 50, raises: 'review outcome outside', state: [[a, read_all, 10, '1', 0.05]], reviews: [[a, 20, 1, '1', read_all, maybe]], signal: [[a, 49, 50, 0.0]], expected: error}
+  - {id: e04, today: 50, raises: 'malformed review row', state: [[a, read_all, 10, '1', 0.05]], reviews: [[a, 20, 1, null, read_all, correct]], signal: [[a, 49, 50, 0.0]], expected: error}
+  - {id: e05, today: 50, raises: 'duplicate failure_signal day', state: [[a, read_all, 10, '1', 0.05]], signal: [[a, 49, 50, 0.0], [a, 50, 50, 0.0]], expected: error}
+  - {id: e06, today: 50, raises: 'detected > injected', state: [[a, spot_check, 10, '1', 0.05]], signal: [[a, 49, 50, 0.0]], drills: [[a, 30, 2, 3]], expected: error}
+  - {id: e07, today: 50, raises: 'malformed ladder state', state: [[a, read_all, 10, '1', 0.05], [a, sampled, 10, '1', 0.05]], expected: error}
+  - {id: e08, today: 50, raises: 'malformed ladder state', state: [[a, read_all, null, '1', 0.05]], signal: [[a, 49, 50, 0.0]], expected: error}
+  - {id: e09, today: 50, raises: 'malformed ladder input', state: [[a, read_all, 10, '1', 0.05]], reviews: [[null, 20, 1, '1', read_all, correct]], signal: [[a, 49, 50, 0.0]], expected: error}
+  - {id: e10, today: 50, raises: 'malformed ladder input', state: [[a, read_all, 10, '1', 0.05]], signal: [[a, 49, 50, 0.0]], extra_signal: [[a, null, 0.0]], expected: error}
+  - {id: e11, today: 50, raises: 'malformed ladder input', state: [[a, spot_check, 10, '1', 0.05]], signal: [[a, 49, 50, 0.0]], drills: [[a, 45, null, 0]], expected: error}
+  - {id: e12, today: 50, raises: 'malformed ladder params', params: {on_wrong: readall}, state: [[a, read_all, 10, '1', 0.05]], signal: [[a, 49, 50, 0.0]], expected: error}
+  - {id: e13, today: 50, raises: 'malformed ladder params', params: {promotion_authority: Operator}, state: [[a, read_all, 10, '1', 0.05]], signal: [[a, 49, 50, 0.0]], expected: error}
+  - {id: e14, today: 50, raises: 'malformed ladder input', state: [[a, read_all, 10, '1', 0.05]], signal: [[a, 49, 50, 0.0]], extra_signal: [[null, 50, 0.0]], expected: error}
+  - {id: e15, today: 50, raises: 'malformed ladder input', state: [[a, spot_check, 10, '1', 0.05]], signal: [[a, 49, 50, 0.0]], drills: [[null, 45, 1, 0]], expected: error}
+  - {id: e16, today: 50, raises: 'malformed ladder input', state: [[a, spot_check, 10, '1', 0.05]], signal: [[a, 49, 50, 0.0]], drills: [[a, null, 1, 0]], expected: error}
+  - {id: e17, today: 50, raises: 'malformed version stamp', state: [[a, read_all, 10, v2, 0.05]], signal: [[a, 49, 50, 0.0]], expected: error}
+  - {id: e18, today: 50, raises: 'malformed version stamp', state: [[a, read_all, 10, '1', 0.05]], reviews: [[a, 20, 1, '010', read_all, correct]], signal: [[a, 49, 50, 0.0]], expected: error}
 ```
 
 ### 2.5 Mutants (hand-run once, reported, not a VP step)
@@ -461,7 +485,7 @@ Each mutant is one textual edit of the SQL above; every one fails at least one v
 | m05 | unsure is not a breaker | v05 |
 | m06 | rows before entered_day read | v46 |
 | m07 | rows after today read | v29 |
-| m08 | wrong_found checked before version_change | v25 |
+| m08 | wrong_found checked before version_change | v25, v47 |
 | m09 | a demotion targets the current rung | v09, v11, v12, v26, v32 |
 | m10 | dark window boundary > becomes >= | v12, v32 |
 | m11 | a NULL signal value counts as defined | v32 |
@@ -479,14 +503,14 @@ Each mutant is one textual edit of the SQL above; every one fails at least one v
 | m23 | breach comparator > becomes >= | v33 |
 | m24 | signal_demotes ignored | v22 |
 | m25 | signal_gates_promotion ignored | v34 |
-| m26 | a wrong review demotes at read_all | v04 |
-| m27 | rows recorded at another rung count | v37 |
-| m28 | hold top checked before the demotions | v12, v31, v32 |
+| m26 | a wrong review demotes at read_all | v04, v43 |
+| m27 | rows recorded at another rung count | v52 |
+| m28 | hold top checked before the demotions | v12, v31, v32, v47, v48 |
 | m29 | promotion_authority auto ignored | v27 |
-| m30 | one clearance (clear_read_all) for every rung | v14, v15, v16, v17, v35, v38, v39, v45 |
-| m31 | signal window check removed | v15 |
+| m30 | one clearance (clear_read_all) for every rung | v14, v15, v16, v17, v35, v38, v39, v45, v49, v50, v51 |
+| m31 | signal window check removed | v15, v51 |
 | m32 | signal_dark demotion removed | v12, v32 |
-| m33 | the restart version not returned (to_version stays current) | v18, v19, v25, v41, v44 |
+| m33 | the restart version not returned (to_version stays current) | v18, v19, v25, v41, v44, v47 |
 | m34 | the drill window ignored | v39, v45 |
 | m35 | zero-miss drill instead of the recall floor | v38 |
 | m36 | on_wrong and promotion_authority vocabulary guard removed | e12, e13 |
@@ -495,11 +519,19 @@ Each mutant is one textual edit of the SQL above; every one fails at least one v
 | m39 | NULL drill count guard removed | e11 |
 | m40 | the lowest stamp above the state's returned on a restart | v41, v44 |
 | m41 | promotion_authority vocabulary guard leg removed | e13 |
-| m42 | restart on any foreign stamp (rollback and overlap restart) | v42, v43 |
+| m42 | restart on any other stamp (rollback and overlap restart) | v42, v43, v48 |
 | m43 | NULL component signal guard removed | e14 |
 | m44 | NULL component drill guard removed | e15 |
 | m45 | NULL drill day guard removed | e16 |
 | m46 | drill window boundary > becomes >= | v45 |
+| m47 | stamps compared as text (9 to 10 does not restart) | v47 |
+| m48 | only current-stamp wrong outputs trigger the return leg | v48 |
+| m49 | state stamp format guard removed | e17 |
+| m50 | review stamp format guard removed | e18 |
+| m51 | drills before entered_day count | v49 |
+| m52 | drills after today count | v50 |
+| m53 | failure_signal days after today read | v51 |
+| m54 | wrong outputs recorded at another rung trigger the return leg | v37, v52 |
 
 ### 2.6 Simulation (VP 5)
 
@@ -535,7 +567,7 @@ simulation:
 ```sql
 CREATE TABLE sim_state AS
   SELECT sd || '/c:' || p || ':' || r || ':' || i AS component, 'c:' || p || ':' || r || ':' || i AS draw_key, sd AS seed,
-         'read_all' AS rung, CAST(1 AS BIGINT) AS entered_day, 'v1' AS version,
+         'read_all' AS rung, CAST(1 AS BIGINT) AS entered_day, '1' AS version,
          CAST({signal_threshold} AS DOUBLE) AS signal_threshold, p, r AS recall
   FROM (SELECT unnest({seeds}) AS sd) CROSS JOIN (SELECT unnest({p}) AS p) CROSS JOIN (SELECT unnest({recall}) AS r)
        CROSS JOIN range({reps}) t(i);
@@ -556,7 +588,7 @@ INSERT INTO sim_out
                CAST('0x' || substr(md5(concat_ws(':', s.seed, s.draw_key, {day}, t.k, 'd')), 1, 8) AS UBIGINT) / 4294967296.0 AS u_d
         FROM sim_state s CROSS JOIN range({n_per_day}) t(k));
 INSERT INTO sim_rv
-  SELECT component, component || ':' || day || ':' || k, day, 'v1', rung, CASE WHEN wrong THEN 'wrong' ELSE 'correct' END
+  SELECT component, component || ':' || day || ':' || k, day, '1', rung, CASE WHEN wrong THEN 'wrong' ELSE 'correct' END
   FROM sim_out WHERE day = {day} AND selected;
 INSERT INTO sim_sg
   SELECT component, {day}, count(*) FILTER (WHERE wrong AND seen) / count(*)
@@ -684,13 +716,17 @@ output differs by component (R6).
   that does not bump the stamp. No precedent. Class asked.
   Inside (a), how a newer version is recognised. Verification r2 showed that "newest by date" rolls the
   stamp back on a late old-version output and restarts on every run while two versions overlap.
-  - (a1) An ordered stamp: restart only on a stamp above the current one, to the highest seen (staged;
-    v42-v44). One comparison, no history needed; a rollback must mint a new, higher stamp.
+  - (a1) An ordered integer stamp: restart only on a stamp numerically above the current one, to the
+    highest seen (staged; v42-v44, v47). One comparison, no history needed; a rollback must mint a new,
+    higher stamp. Verification r3 showed that comparing as text misorders the siblings' unpadded integers
+    (9 to 10 did not restart, and the new stamp's wrong outputs were ignored at the top rung), so the
+    staged rule compares numerically, raises on a non-integer stamp (e17, e18), and lets a wrong output
+    under any stamp demote (v48). Under-stamp outputs still never count toward clearance.
   - (a2) First-seen order: newer means first seen later in the review log. No stamp format is imposed,
     but every version's first appearance must be retained (q2).
   - (a3) Ladder state per (component, version), so overlapping versions each climb on their own reviews.
-    Under (a1) a wrong output from a still-live older version counts toward nothing (v43); (a3) would let
-    it demote that version.
+    Under (a1) a wrong output from a still-live older version demotes the component as a whole (v48);
+    (a3) would demote only that version.
   Recommended: (a1), and (a3) if versions overlap for long (#1395's trigger reads "for every
   parser_version present").
 - k3 Who moves a component.
