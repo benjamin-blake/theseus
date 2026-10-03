@@ -11,6 +11,45 @@ fixture:
     first_of: [{criterion_met: 'T4.23:c6'}, {review_on: '2027-01-31'}]
     outcome: lift rows into the store, or restructure (rehome or reshape) per the operator's review; never delete
   edges_disposition: pilot_only -- re-authored by the implementation merge on lift (Decision 197 clause 5), never lifted as-is
-work_items: []
-work_item_criteria: []
-work_item_edges: []
+work_items:
+  - id: pwi-rec-filing-dedupe
+    kind: task
+    title: 'Rec filing with dedupe: one fingerprinted rec per finding, filed, updated or held against its chain and covering recs'
+    extension:
+      consideration_register:
+        why: T3.3 files anomaly recs and T3.4 needs a filed rec whose telemetry delta proves the fix, yet nothing turns findings into recs; the repo dedupe keys on source or title and re-files, merges or auto-closes.
+        how: One rec per sha256(salt, detector, subject) in context_v2_json under one filer source; one SQL picks file, update, regression, covered, suppressed, hold or deferred; never closes; budgeted per run.
+        planes: [data_plane]
+        maturity:
+          rung: read_all
+          transitions:
+            - {from: read_all, to: sampled, trigger: {metric: consecutive reviewed proposals the operator accepted unchanged, comparator: '>=', threshold: 20}}
+            - {from: sampled, to: spot_check, trigger: {metric: rejected filings across the last 50 sampled filer recs, comparator: ==, threshold: 0}}
+            - {from: spot_check, to: anomaly_triggered, trigger: {metric: consecutive days with rejected_share <= 0.05 and no duplicate open fingerprint, comparator: '>=', threshold: 30}}
+        failure_signal: {signal: 'Queue noise or silent loss: a known issue re-filed, distinct findings merged, a declined or covered finding re-filed, or a recurring one never filed', metric: 'rejected_share: filer proposals or recs the operator marks covered, duplicate or reject, per 30 days per detector', source: 'operator verdicts plus the run record per-action counts (hold, suppressed, deferred read beside it)'}
+        verification: [c1, c2, c3]
+        rollback: Stop the filer schedule; filed recs stay ordinary recs the operator can decline, close or mark covered; the decision is stateless, so a params revert re-derives on the next run.
+        evidence:
+          - {kind: file_line, ref: 'scripts/rec_episode.py:97'}
+          - {kind: file_line, ref: 'scripts/rec_relevance.py:166'}
+          - {kind: file_line, ref: 'docs/contracts/ci-rca-lifecycle.yaml:157'}
+          - {kind: file_line, ref: 'scripts/ops_data_portal.py:315'}
+        settled:
+          - {id: s1, text: 'Identity is one rec per fingerprint in context_v2_json under one source, newest head (Decision 142); not an aggregate rec, not a source-only key (VP 1).'}
+          - {id: s2, text: 'The decision is one SQL over the filer source plus one read per cover, passing 21/21 vectors over ten actions; every non-filing outcome is counted.'}
+          - {id: s3, text: 'The filer never closes: below the floor is hold; closure needs proof (Decision 103), owned by back-validation; rec_episode would auto-close (VP 1).'}
+        contested:
+          - {id: k1, text: 'Cross-source link: (a) operator-set covered_by on the filer rec, followed one hop; (b) title Jaccard (VP 3 errs both ways); (c) LLM judge. Rec (a).'}
+          - {id: k2, text: 'Declined head: (a) suppressed until the operator acts, sessions still counted; (b) snooze N days; (c) re-file on k-fold growth. Rec (a).'}
+          - {id: k3, text: 'Queue over soft cap (1244 vs 250): (a) per-run budget only; (b) no new filing while over cap, never files today; (c) file as Low. Rec (a).'}
+        open_questions:
+          - {id: q1, text: 'What acceptance probe does a filer rec carry? file_rec needs a discriminating probe; the delta verb is back-validation''s and does not exist.'}
+          - {id: q2, text: 'Where does a read_all covered_by verdict persist when nothing is filed: an operator sheet, or a rec filed straight into superseded?'}
+          - {id: q3, text: 'Seeds min_sessions 3, min_events 5, window 7 days, budget 3 are unmeasured; no friction rows exist until W1-1 lands.'}
+work_item_criteria:
+  - {work_item: pwi-rec-filing-dedupe, criterion_id: c1, text: The filer decision applies the versioned params over its own-source projection and passes every report vector on DuckDB; each run record carries per-action counts and params_version., method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_rec_filing_decision.py -k vectors}, status: open}
+  - {work_item: pwi-rec-filing-dedupe, criterion_id: c2, text: 'Guard: at most one open filer rec per fingerprint; every filer rec carries detector_id, subject_key and fingerprint; the write-time backstop refuses a second open insert.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_rec_filing_guard.py -k one_open_per_fingerprint}, status: open}
+  - {work_item: pwi-rec-filing-dedupe, criterion_id: c3, text: 'Before the filer files any rec, the operator reviews every proposal at read_all and records a verdict: file, covered_by a named rec, or reject.', method: {kind: review, resolver: operator at each read_all proposal review, evidence_requirement: 'proposal sheet per run: fingerprint, action, verdict, covering rec id, rejected_share'}, status: open}
+work_item_edges:
+  - {from: pwi-rec-filing-dedupe, to: T3.3, kind: part_of}
+  - {from: pwi-rec-filing-dedupe, to: T2.36, kind: depends_on}
