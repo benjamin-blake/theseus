@@ -50,16 +50,18 @@ Staged, not decided: one register row per detector (section 2.2) and one determi
 returns one verdict per detector: ok, dark, breach, counter_dark, counter_low, undrilled, blind,
 diverging, upstream_unsound or unregistered. A detector is ok only when its own signal, counter and drill
 are sound and so is every detector upstream of it; a series with no register row reads unregistered. It
-passes 45/45 vectors, fifteen by raising on malformed input (VP 4), and each of 21 mutants fails at least
-one named vector (VP 4). The maturity-ladder controller would read the verdict as an input; what a non-ok
+passes 62/62 vectors, 24 by raising on malformed input, each of 35 mutants fails at least one named
+vector, and it misreads none of 520 exact recall boundaries or 9,604 exact-eps moves (VP 4).
+The maturity-ladder controller would read the verdict as an input; what a non-ok
 verdict does to a rung is k1.
 
 What is settled is narrow: a failure_signal per item and its Goodhart reading (pilot model code; Decision 196
 clause 7 by analogy, section 3), the register's place in the data plane (Decision 209 clause 2(a)), and the
 measured facts above. How a verdict acts on the ladder (k1), how drills run (k2), where counters are
 declared (k3), harm weights (k4), the fixture's edge home (k5) and the divergence rule (k6) all weigh
-credible alternatives with no admissible precedent: they are parked as asked. None touches IAM, security,
-spend or a governed deploy.
+credible alternatives with no admissible precedent: they are parked as asked. None touches IAM, security
+or a governed deploy, and none decides spend: k2 (a) and the reviewer drill carry recurring cost, which the
+cost/egress component owns (R4).
 
 ## 1. Evidence (each row re-derivable; VP step in brackets)
 
@@ -71,8 +73,8 @@ spend or a governed deploy.
 | e4 | The pilot FailureSignal model is three free-text fields (signal, metric, source): no counter, drill or recall field exists | scripts/checks/roadmap/_work_item_pilot_model.py:162 |
 | e5 | No file under src/ or scripts/ other than the pilot model and its evaluator names failure_signal or goodhart; the six telemetry contracts carry 0 synthetic or drill markers [VP 2] | repository grep |
 | e6 | In the per-detector model, each cheap path lowers the primary (8/8) by at least as much as a real halving of the failure rate (8/8 within 0.001); each counter falls under its floor on the cheap path (8/8) and holds on the real improvement (8/8); 2 declared companions are computable and 1 of them moves [VP 3] | section 2.3 |
-| e7 | The staged verdict SQL passes 45 vectors, 15 by raising with the stated message [VP 4] | section 2.5 |
-| e8 | Each of 21 mutants of the verdict SQL replaces one unique site and fails at least one named vector [VP 4] | section 2.6 |
+| e7 | The staged verdict SQL passes 62 vectors, 24 by raising with the stated message, and misreads none of 520 exact recall boundaries or 9,604 exact-eps moves [VP 4] | sections 2.4, 2.5 |
+| e8 | Each of 35 mutants of the verdict SQL replaces one unique site and fails at least one named vector [VP 4] | section 2.6 |
 | e9 | #1398 (unmerged) measured that a half-blind monitor reaches the top rung in 58 of 60 components at a 5% error rate, against 25 of 60 at recall 1.0, and named reviewer error (R3) and unequal harm (R6) for this register | REPORT-w1-maturity-ladder.md section 0 and Risks, at f6183430 |
 | e10 | Four sibling reports carry a Goodhart paragraph naming a cheap path and a guard (#1394, #1395, #1396, #1397); #1384 section 4 names its own blind spot; five (#1394-#1398) name what they hand to this register | sibling reports at the pinned heads |
 | e11 | The producer writes a hook row's severity from its exit code: 2 is error, 0 or a missing code is info, anything else warning; an info row is outside unmapped_failure_share's denominator | src/turn_capture/observations.py:311 |
@@ -339,10 +341,10 @@ verdict:
              any_value(r.drill_min) AS drill_min, any_value(r.drill_recall_min) AS drill_recall_min,
              arg_max(w.primary_value, w.day) FILTER (WHERE w.primary_value IS NOT NULL) AS p_last,
              arg_max(w.counter_value, w.day) FILTER (WHERE w.counter_value IS NOT NULL) AS c_last,
-             avg(w.primary_value) FILTER (WHERE w.day <= {today} - {half_days}) AS p_early,
-             avg(w.primary_value) FILTER (WHERE w.day > {today} - {half_days}) AS p_late,
-             avg(w.counter_value) FILTER (WHERE w.day <= {today} - {half_days}) AS c_early,
-             avg(w.counter_value) FILTER (WHERE w.day > {today} - {half_days}) AS c_late
+             round(avg(w.primary_value) FILTER (WHERE w.day <= {today} - {half_days}), 9) AS p_early,
+             round(avg(w.primary_value) FILTER (WHERE w.day > {today} - {half_days}), 9) AS p_late,
+             round(avg(w.counter_value) FILTER (WHERE w.day <= {today} - {half_days}), 9) AS c_early,
+             round(avg(w.counter_value) FILTER (WHERE w.day > {today} - {half_days}), 9) AS c_late
       FROM {register} r LEFT JOIN w ON w.detector = r.detector
       GROUP BY r.detector
     ),
@@ -359,8 +361,8 @@ verdict:
           WHEN s.c_last IS NULL THEN 'counter_dark'
           WHEN s.c_last < s.counter_floor THEN 'counter_low'
           WHEN dr.inj < s.drill_min THEN 'undrilled'
-          WHEN dr.det < s.drill_recall_min * dr.inj THEN 'blind'
-          WHEN s.p_late < s.p_early - {eps_primary} AND s.c_late < s.c_early - {eps_counter} THEN 'diverging'
+          WHEN dr.det::DOUBLE / dr.inj < s.drill_recall_min THEN 'blind'
+          WHEN s.p_late < round(s.p_early - {eps_primary}, 9) AND s.c_late < round(s.c_early - {eps_counter}, 9) THEN 'diverging'
           ELSE 'ok'
         END AS verdict,
         s.p_last, s.c_last, dr.inj, dr.det
@@ -373,7 +375,7 @@ verdict:
              THEN 'upstream_unsound' ELSE o.verdict END AS verdict
       FROM own o
       UNION ALL
-      SELECT DISTINCT detector, 'unregistered' FROM {signal}
+      SELECT DISTINCT detector, 'unregistered' FROM w
       WHERE detector IS NOT NULL AND detector NOT IN (SELECT detector FROM {register})
       UNION ALL
       SELECT NULL, NULL FROM g WHERE g.bad_register + g.bad_upstream + g.cycle + g.bad_signal + g.bad_drills > 0
@@ -397,13 +399,27 @@ verdict:
 | counter_dark | no defined counter in the window | v06 |
 | counter_low | the latest defined counter is under its floor (strictly) | v07, v28, v29 |
 | undrilled | fewer than drill_min faults injected in the window | v09, v10, v13 |
-| blind | detected below drill_recall_min x injected in the window | v11, v20, v23 |
-| diverging | the primary's late-half mean fell by more than eps AND the counter's fell by more than eps | v15 |
+| blind | detected / injected in the window below drill_recall_min | v11, v20, v23, v34 |
+| diverging | the primary's late-half mean fell by more than eps AND the counter's fell by more than eps | v15, v37 |
 | upstream_unsound | own verdict ok, and some upstream, at any depth, is not ok | v20, v21 |
-| unregistered | a signal series whose detector has no register row | v24 |
-| ok | otherwise | v01, v05, v08, v12, v14, v16-v19, v22, v25, v30 |
+| unregistered | a signal series in the window whose detector has no register row | v24, v33 |
+| ok | otherwise | v01, v05, v08, v12, v14, v16-v19, v22, v25, v30-v32, v34-v36, v38 |
 
-Rows after today and before the window are ignored (v02, v13, v25). A detector's own non-ok verdict
+Rows after today and before the window are ignored, for the unregistered read too (v02, v13, v25, v31,
+v32): a retired detector's history does not read unregistered forever.
+
+Boundaries are exact. Recall is read as detected / injected against the floor, so 7 of 25 at 0.28 meets it
+(v34). Half-means and each eps-shifted bound are rounded to 9 places before they are compared, so a move of
+exactly eps is not diverging (v35, v38); without the rounding, an average of equal doubles or the bound
+itself lands a few ulps off. VP 4 checks both rules on grids: every (recall_min, injected) pair from
+0.01-1.00 and 1-100 whose detected count is a whole number (520 pairs, 0 read blind; the unrounded
+multiplication form reads 13 blind), and every exact-eps fall on both series from 0.02-0.99 (9,604
+detectors, 0 read diverging; the unrounded form reads 1,450).
+
+The register's own drill injects one series a day whose name carries that day's date (drill-YYYY-MM-DD).
+A day's drill passes only when that day's name reads unregistered. An earlier day's series still reads
+unregistered inside the window (v33), so a fixed name would pass every day after the first, whether or not
+the injection ran. The dated drill- series are excluded from the item's unsound_reads count. A detector's own non-ok verdict
 outranks upstream_unsound (v23). breach outranks the counter (v27): a breach is evidence the detector sees.
 A low counter outranks a missing drill (v28). Several detectors decide independently (v29).
 
@@ -460,18 +476,37 @@ vectors:
     - {id: e13, register: [], signal: [], drills: [{detector: Q, day: -1, injected: 20, detected: 20}], expected: error, raises: unregistered detector}
     - {id: e14, register: [{detector: A, upstream: null}], signal: [], drills: [], expected: error, raises: 'malformed register: NULL field'}
     - {id: e15, register: [{detector: A}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: null}], expected: error, raises: 'malformed drill: NULL field'}
+    - {id: v31, note: a series dated after today is not read as unregistered (verifier o04), register: [{detector: A}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}, {detector: X, from: 5, to: 5, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: ok}}
+    - {id: v32, note: a retired detector's history before the window is not read as unregistered (verifier o05), register: [{detector: A}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}, {detector: X, from: -200, to: -200, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: ok}}
+    - {id: v33, note: 'yesterday''s dated drill series still reads unregistered and today''s is absent, so the day''s drill reads failed', register: [{detector: A}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}, {detector: drill-2026-09-30, from: -1, to: -1, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: ok, drill-2026-09-30: unregistered}}
+    - {id: v34, note: detected exactly at recall_min x injected meets the floor (7 of 25 at 0.28; verifier f01), register: [{detector: A, drill_recall_min: 0.28}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 25, detected: 7}], expected: {A: ok}}
+    - {id: v35, note: half-means that move by exactly eps on both series are not diverging (verifier o18), register: [{detector: A, counter_floor: 0.9}], signal: [{detector: A, from: -27, to: -14, primary: 0.05, counter: 0.96}, {detector: A, from: -13, to: 0, primary: 0.04, counter: 0.95}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: ok}}
+    - {id: v36, note: a primary fall under eps is not diverging even when the counter falls (verifier k12), register: [{detector: A, counter_floor: 0.9}], signal: [{detector: A, from: -27, to: -14, primary: 0.04, counter: 1.0}, {detector: A, from: -13, to: 0, primary: 0.035, counter: 0.95}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: ok}}
+    - {id: v37, note: the day the late half starts minus one belongs to the early half (verifier k13b), register: [{detector: A, counter_floor: 0.9}], signal: [{detector: A, from: -27, to: -15, primary: 0.02, counter: 1.0}, {detector: A, from: -14, to: -14, primary: 0.3, counter: 1.0}, {detector: A, from: -13, to: 0, primary: 0.02, counter: 0.95}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: diverging}}
+    - {id: v38, note: an exact-eps move whose unrounded bound sits above the late mean on both series is not diverging, register: [{detector: A, threshold: 0.1, counter_floor: 0.1}], signal: [{detector: A, from: -27, to: -14, primary: 0.07, counter: 0.13}, {detector: A, from: -13, to: 0, primary: 0.06, counter: 0.12}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: {A: ok}}
+    - {id: e16, note: a signal row with a NULL day raises (verifier k01), register: [{detector: A}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}, {detector: A, from: null, to: null, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: error, raises: 'malformed signal: NULL key'}
+    - {id: e17, note: a drill row with a NULL day raises (verifier k02), register: [{detector: A}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}, {detector: A, day: null, injected: 20, detected: 20}], expected: error, raises: 'malformed drill: NULL field'}
+    - {id: e18, note: a drill row with a NULL injected raises (verifier k03), register: [{detector: A}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}, {detector: A, day: -2, injected: null, detected: 0}], expected: error, raises: 'malformed drill: NULL field'}
+    - {id: e19, note: a negative detected count raises (verifier k04), register: [{detector: A}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}, {detector: A, day: -2, injected: 5, detected: -1}], expected: error, raises: negative count}
+    - {id: e20, note: a NULL upstream entry raises (verifier k06), register: [{detector: A}, {detector: B, upstream: [null]}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}, {detector: B, from: -27, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}, {detector: B, day: -1, injected: 20, detected: 20}], expected: error, raises: upstream names an unregistered detector}
+    - {id: e21, note: a NULL counter_floor raises (verifier k08), register: [{detector: A, counter_floor: null}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: error, raises: 'malformed register: NULL field'}
+    - {id: e22, note: a NULL drill_min raises (verifier k09), register: [{detector: A, drill_min: null}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: error, raises: 'malformed register: NULL field'}
+    - {id: e23, note: a NULL drill_recall_min raises (verifier k10), register: [{detector: A, drill_recall_min: null}], signal: [{detector: A, from: -27, to: 0, primary: 0.02, counter: 1.0}], drills: [{detector: A, day: -1, injected: 20, detected: 20}], expected: error, raises: 'malformed register: NULL field'}
+    - {id: e24, note: an empty register with a NULL-detector signal row still raises through the sentinel (verifier k21), register: [], signal: [{detector: null, from: 0, to: 0, primary: 0.02, counter: 1.0}], drills: [], expected: error, raises: 'malformed signal: NULL key'}
 ```
 
 ### 2.6 Mutants (VP 4)
 
 Each mutant replaces one exact substring of the verdict SQL (it must occur exactly once) and must fail at
-least one vector. VP 4 counts the kills and the unique sites; the table lists the killing vectors.
+least one vector. m22-m35 and their killing vectors v31-v38 and e16-e24 were added after zero-context
+verification round 1, which found that 11 guard and boundary mutants survived the first 45 vectors.
+VP 4 counts the kills and the unique sites; the table lists the killing vectors.
 
 ```yaml
 mutants:
   - {id: m01, what: breach on equality, old: "WHEN s.p_last > s.threshold", new: "WHEN s.p_last >= s.threshold"}
   - {id: m02, what: counter floor read as strict, old: "WHEN s.c_last < s.counter_floor", new: "WHEN s.c_last <= s.counter_floor"}
-  - {id: m03, what: recall floor read as strict, old: "WHEN dr.det < s.drill_recall_min * dr.inj", new: "WHEN dr.det <= s.drill_recall_min * dr.inj"}
+  - {id: m03, what: recall floor read as strict, old: "WHEN dr.det::DOUBLE / dr.inj < s.drill_recall_min", new: "WHEN dr.det::DOUBLE / dr.inj <= s.drill_recall_min"}
   - {id: m04, what: drill window opened one day early, old: "d.day > {today} - {window_days} AND d.day <= {today}", new: "d.day >= {today} - {window_days} AND d.day <= {today}"}
   - {id: m05, what: no upstream propagation, old: "o.verdict = 'ok' AND EXISTS", new: "o.verdict = 'ok' AND FALSE AND EXISTS"}
   - {id: m06, what: direct upstream only, old: "JOIN own x ON x.detector = a.u WHERE a.d = o.detector", new: "JOIN own x ON x.detector = a.u WHERE a.d = o.detector AND a.depth = 1"}
@@ -480,8 +515,8 @@ mutants:
   - {id: m09, what: no cycle guard, old: "WHEN g.cycle > 0 THEN", new: "WHEN FALSE THEN"}
   - {id: m10, what: no sentinel row, so a malformed input with no detector row returns empty, old: "SELECT NULL, NULL FROM g WHERE", new: "SELECT NULL, NULL FROM g WHERE FALSE AND"}
   - {id: m11, what: only today's value read, old: "arg_max(w.primary_value, w.day) FILTER (WHERE w.primary_value IS NOT NULL)", new: "max(w.primary_value) FILTER (WHERE w.day = {today})"}
-  - {id: m12, what: divergence on the primary alone, old: "s.p_late < s.p_early - {eps_primary} AND s.c_late < s.c_early - {eps_counter}", new: "s.p_late < s.p_early - {eps_primary}"}
-  - {id: m13, what: divergence on the counter alone, old: "s.p_late < s.p_early - {eps_primary} AND s.c_late < s.c_early - {eps_counter}", new: "s.c_late < s.c_early - {eps_counter}"}
+  - {id: m12, what: divergence on the primary alone, old: "s.p_late < round(s.p_early - {eps_primary}, 9) AND s.c_late < round(s.c_early - {eps_counter}, 9)", new: "s.p_late < round(s.p_early - {eps_primary}, 9)"}
+  - {id: m13, what: divergence on the counter alone, old: "s.p_late < round(s.p_early - {eps_primary}, 9) AND s.c_late < round(s.c_early - {eps_counter}, 9)", new: "s.c_late < round(s.c_early - {eps_counter}, 9)"}
   - {id: m14, what: future signal rows read, old: "WHERE day > {today} - {window_days} AND day <= {today}", new: "WHERE day > {today} - {window_days}"}
   - {id: m15, what: no drill_min, old: "WHEN dr.inj < s.drill_min THEN", new: "WHEN dr.inj < 1 THEN"}
   - {id: m16, what: detected above injected allowed, old: "OR detected > injected", new: ""}
@@ -490,24 +525,38 @@ mutants:
   - {id: m19, what: counter checked before breach, old: "WHEN s.p_last > s.threshold THEN 'breach'\n      WHEN s.c_last IS NULL THEN 'counter_dark'\n      WHEN s.c_last < s.counter_floor THEN 'counter_low'", new: "WHEN s.c_last IS NULL THEN 'counter_dark'\n      WHEN s.c_last < s.counter_floor THEN 'counter_low'\n      WHEN s.p_last > s.threshold THEN 'breach'"}
   - {id: m20, what: no drill-recall bounds, old: "OR drill_min < 1 OR drill_recall_min <= 0 OR drill_recall_min > 1", new: "OR drill_min < 1"}
   - {id: m21, what: drills for unregistered detectors accepted, old: "\n         OR detector NOT IN (SELECT detector FROM {register})) AS bad_drills", new: ") AS bad_drills"}
+  - {id: m22, what: unregistered branch reads all history, old: "'unregistered' FROM w\n", new: "'unregistered' FROM {signal}\n"}
+  - {id: m23, what: signal NULL day accepted, old: "FROM {signal} WHERE detector IS NULL OR day IS NULL)", new: "FROM {signal} WHERE detector IS NULL)"}
+  - {id: m24, what: drill NULL day accepted, old: "FROM {drills} WHERE detector IS NULL OR day IS NULL", new: "FROM {drills} WHERE detector IS NULL"}
+  - {id: m25, what: drill NULL injected accepted, old: "OR injected IS NULL OR detected IS NULL", new: "OR detected IS NULL"}
+  - {id: m26, what: negative detected accepted, old: "OR injected < 0 OR detected < 0 OR", new: "OR injected < 0 OR"}
+  - {id: m27, what: NULL upstream entry accepted, old: "WHERE u IS NULL OR u NOT IN", new: "WHERE u NOT IN"}
+  - {id: m28, what: NULL counter_floor accepted, old: "OR counter_floor IS NULL", new: ""}
+  - {id: m29, what: NULL drill_min accepted, old: "OR drill_min IS NULL OR drill_recall_min IS NULL", new: "OR drill_recall_min IS NULL"}
+  - {id: m30, what: NULL drill_recall_min accepted, old: "OR drill_recall_min IS NULL OR upstream IS NULL", new: "OR upstream IS NULL"}
+  - {id: m31, what: sentinel ignores a malformed signal, old: "g.cycle + g.bad_signal + g.bad_drills", new: "g.cycle + g.bad_drills"}
+  - {id: m32, what: no eps on the primary, old: "s.p_late < round(s.p_early - {eps_primary}, 9)", new: "s.p_late < s.p_early"}
+  - {id: m33, what: early half drops its last day, old: "WHERE w.day <= {today} - {half_days}), 9) AS p_early", new: "WHERE w.day < {today} - {half_days}), 9) AS p_early"}
+  - {id: m34, what: recall floor read by multiplication, old: "WHEN dr.det::DOUBLE / dr.inj < s.drill_recall_min", new: "WHEN dr.det < s.drill_recall_min * dr.inj"}
+  - {id: m35, what: eps bound not rounded, old: "s.p_late < round(s.p_early - {eps_primary}, 9) AND s.c_late < round(s.c_early - {eps_counter}, 9)", new: "s.p_late < s.p_early - {eps_primary} AND s.c_late < s.c_early - {eps_counter}"}
 ```
 
 | mutant | killed by |
 |---|---|
 | m01 breach on equality | v05 |
 | m02 counter floor read as strict | v08 |
-| m03 recall floor read as strict | v12, v30 |
+| m03 recall floor read as strict | v12, v30, v34 |
 | m04 drill window opened one day early | v13 |
 | m05 no upstream propagation | v20, v21 |
 | m06 direct upstream only | v21 |
-| m07 unregistered series dropped | v24 |
+| m07 unregistered series dropped | v24, v33 |
 | m08 duplicate register rows allowed | e01 |
 | m09 no cycle guard | e07, e08 |
-| m10 no sentinel row | e13 |
+| m10 no sentinel row | e13, e24 |
 | m11 only today's value read | v26 |
-| m12 divergence on the primary alone | v16, v18 |
-| m13 divergence on the counter alone | v17 |
-| m14 future signal rows read | v25 |
+| m12 divergence on the primary alone | v16 |
+| m13 divergence on the counter alone | v17, v36 |
+| m14 future signal rows read | v25, v31 |
 | m15 no drill_min | v09 |
 | m16 detected above injected allowed | e11 |
 | m17 upstream overrides a detector's own verdict | v23 |
@@ -515,6 +564,20 @@ mutants:
 | m19 counter checked before breach | v27 |
 | m20 no drill-recall bounds | e03, e04 |
 | m21 drills for unregistered detectors accepted | e13 |
+| m22 unregistered branch reads all history | v31, v32 |
+| m23 signal NULL day accepted | e16 |
+| m24 drill NULL day accepted | e17 |
+| m25 drill NULL injected accepted | e18 |
+| m26 negative detected accepted | e19 |
+| m27 NULL upstream entry accepted | e20 |
+| m28 NULL counter_floor accepted | e21 |
+| m29 NULL drill_min accepted | e22 |
+| m30 NULL drill_recall_min accepted | e23 |
+| m31 sentinel ignores a malformed signal | e24 |
+| m32 no eps on the primary | v36 |
+| m33 early half drops its last day | v37 |
+| m34 recall floor read by multiplication | v34 |
+| m35 eps bound not rounded | v38 |
 
 ## 3. Settled / contested / risk / open
 
@@ -538,7 +601,12 @@ mutants:
   unregistered, and (b) for diverging and upstream_unsound, which are weaker evidence. #1398 measured that
   a half-blind monitor also lets more errors escape below the top rung (2.09% on its worst seed), so
   blocking promotion alone leaves that. No Decision or contract decides it; #1398 is unmerged and its own
-  k1 and k7 are parked. Consequence to weigh: capture's counter needs its q1 out-of-band denominator, which
+  k1 and k7 are parked. Two choices inside the staged SQL belong to this fork and are not decided:
+  (i) propagation strength: any non-ok upstream, diverging included, propagates upstream_unsound at full
+  strength, where the alternatives are to propagate only the strong verdicts or to carry a weaker grade;
+  (ii) precedence: breach before the counter, counter_low before undrilled, and a detector's own verdict
+  before upstream, which decides the single verdict a detector with several faults reports, and so which
+  action fires. Both stay as staged until k1 is answered. Consequence to weigh: capture's counter needs its q1 out-of-band denominator, which
   does not exist, so under (a) or (b) capture reads counter_dark from day one and every detector downstream
   reads upstream_unsound until it lands (risk R6).
 - **k2 (asked). How drills run.** (a) Live: seeded rows written through the real producers under a
@@ -549,7 +617,9 @@ mutants:
   pipeline, not in the SQL. (a) needs every consumer to exclude the drill project_id (no contract field marks
   a drill row today, e5); (b) cannot see a live-pipeline loss, which is why capture's counter is an
   out-of-band count. The ladder's reviewer drill (known-wrong outputs in the review sample) is a choice about
-  the operator's own review stream and sits inside this fork.
+  the operator's own review stream and sits inside this fork. So does how the register's own drill stays
+  live: staged, one dated drill- series a day read over the 28-day window (section 2.4); the alternative is a
+  today-only unregistered read.
 - **k3 (asked). Where counters and drills are declared.** (a) In this item's register rows only (staged).
   (b) Two new FailureSignal fields, counter and drill, on every pilot item, with the evaluator requiring them
   (a pilot-schema change, the evaluator owner's, O1). (c) In each item's prose. Recommended (a) now and (b) at
@@ -567,7 +637,9 @@ mutants:
   (staged; v15-v19). (b) A per-row statistical test on both series (for example a two-proportion test at a
   stated alpha), which needs per-day denominators. (c) No divergence leg; the counter floor alone. Recommended
   (a) for the pilot: it is one comparison and fails toward review, and (b) once denominators are recorded.
-  (c) misses slow drift above the floor (v15 is above its floor).
+  (c) misses slow drift above the floor (v15 is above its floor). Under (a) the boundary arithmetic is
+  staged exact (recall by division, 9-place rounding, section 2.4); the alternative is to state both rules as
+  approximate.
 
 ### Risks
 
@@ -579,8 +651,8 @@ mutants:
   the primary's numerator; the build's c2 replay checks the counter moves, not that it is independent.
 - **R3 Drill rows in the warehouse.** Under k2 (a), a consumer that forgets the drill project_id counts
   seeded failures as real. No contract field marks a drill row (e5).
-- **R4 Cost.** Drills are runs, and the reviewer drill adds review items. Both belong to the cost/egress
-  component.
+- **R4 Cost.** Drills are runs, and the reviewer drill adds review items. Both are recurring cost, owned by
+  the cost/egress component; no fork here decides spend.
 - **R5 Small counts.** drill_min 20 per 28 days is under one fault a day; a recall floor of 0.9 over 20
   faults passes a 90%-recall detector only about two times in three (#1398 measured 68%). Seeds, q2.
 - **R6 A dark root freezes the loop.** Propagation is fail-safe by design: when capture is not ok, nothing
@@ -619,12 +691,12 @@ mutants:
 - maturity (thresholds are provisional seeds; plan fork line): read_all, the operator re-derives every
   verdict; to sampled after 40 verdicts re-derived unchanged since the last overturned one; to spot_check
   after 40 more on a 1-in-5 sample; to anomaly_triggered after 30 consecutive days in which the register's
-  own drill (one injected unregistered series a day) reads unregistered. The return leg and version rule are
+  own drill (one injected unregistered series a day, named for that day) reads unregistered. The return leg and version rule are
   #1398's k1 and k2.
 - failure_signal: a detector reads sound while it is not. Metric unsound_reads: series that reached the
   ladder with no register row, plus register rows whose counter held over its floor in their own cheap-path
-  replay; must be 0. Source: the verdict log (unregistered rows) and the c2 replay run on every register
-  version.
+  replay; must be 0. Source: the verdict log (unregistered rows other than the dated drill- series) and the
+  c2 replay run on every register version.
 - verification: c1 vectors, c2 cheap-path replay per row, c3 operator review of every register row.
 - rollback: stop the verdict schedule; the ladder reads its other inputs as before; register rows and drill
   logs stay as history.
