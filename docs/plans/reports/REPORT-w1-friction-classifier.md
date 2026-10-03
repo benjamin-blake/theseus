@@ -24,9 +24,9 @@ Fixture rows: `pwi-friction-classifier` in `docs/work-item-pilot/telemetry-feedb
     stores tool errors once, as the tool_call close `outcome`, never as process_events (observations.py:5;
     PLAN-telemetry-turn-capture-core.yaml:636-638). So over today's rows the formula never sees a tool
     error.
-  Over section 2's vectors the literal formula disagrees with the intended count on 8 of 14 (VP 2): 1
-  hook pass (v01), 6 tool facts it cannot see (v03, v06-v09, v13) and 1 unmapped signature that this
-  design counts through its generic rule (v04). Whether the contract follows the producer or the producer
+  Over section 2's vectors the literal formula disagrees with the intended count on 11 of 17 (VP 2): 1
+  hook pass (v01), 7 tool facts it cannot see (v03, v06-v09, v13, v17) and 3 rows that this design
+  counts through a generic rule (v04, v15, v16). Whether the contract follows the producer or the producer
   follows the ruling is k2; both have a precedent.
 - Of the five patterns in the retired transcript-review prompt (repeated-tool-failure, scope-creep,
   context-confusion, workaround, missing-gotcha; VP 3), only repeated-tool-failure is fully derivable
@@ -62,17 +62,20 @@ Fixture rows: `pwi-friction-classifier` in `docs/work-item-pilot/telemetry-feedb
 
 Measured (local only; no production catalog read):
 
-- Rules in SQL: the sketch in section 2 passes 14 of 14 hand-written vectors on DuckDB 1.5.4, comparing
-  ref, label and class, with zero wildcard signatures among the 4 specific rules [VP 2]. Eight mutants
-  were run once by hand and each is caught: dropping the hook-absorbs-tool-block guard (12/14), letting
-  any hook severity absorb a block (13/14), letting a repeat run cross turns (13/14) or tools (13/14),
-  threshold 2 (12/14), dropping the one-label-per-fact rank (11/14), generic rules ranked before specific
-  ones (11/14), and a run class hard-coded in the SQL instead of read from run_rule (11/14). Three survive by design, because the rules'
+- Rules in SQL: the sketch in section 2 passes 17 of 17 hand-written vectors on DuckDB 1.5.4, comparing
+  ref, label and class, with zero wildcard signatures among the 4 specific rules [VP 2]. Eleven mutants
+  were run once by hand and each is caught, failing the vectors named: dropping the hook-absorbs-tool-block
+  guard (v02, v10), letting any hook severity absorb a block (v14), dropping the absorb test's tool_call
+  guard so a hook also absorbs a parent process_event (v16), letting a repeat run cross turns (v08) or
+  tools (v09), letting a block fall out of the run sequence (v17), threshold 2 (v07, v08, v17), dropping
+  the one-label-per-fact rank or ranking generic rules first (v02, v10, v11, v16 each), dropping
+  `critical` from the fact filter (v15), and a run class hard-coded in the SQL instead of read from
+  run_rule (v06, v09, v13). Three survive by design, because the rules'
   disposition column, not the fact filter, is the guard: adding `info` or `interrupted` to the fact
   filter, or dropping its `event_kind = 'close'` term (open rows carry no outcome), changes nothing while
   no rule has those dispositions. v01, v12 and v14 pin that.
 - The literal contract formula (count process_event rows whose name matches a rule signature, severity
-  ignored, tool closes unread) disagrees with the intended label count on 8 of 14 vectors [VP 2]. Two
+  ignored, tool closes unread) disagrees with the intended label count on 11 of 17 vectors [VP 2]. Two
   more agree by count only: v05 and v14, where it counts a pass or a non-blocking error under a block's
   label.
 - One real transcript (this session's own CC-web transcript, run through record_turn locally; counts
@@ -88,8 +91,10 @@ Measured (local only; no production catalog read):
 
 ## 2. Classifier design (what this item stages)
 
-Facts (k2 (a)'s model: stored once, by today's producer): a process_event with severity error (a blocking hook) or warning (a
-hook that itself failed), and a tool_call close with outcome error or blocked. A hook pass (info), a
+Facts (k2 (a)'s model: stored once, by today's producer): a process_event with severity error (a
+blocking hook), warning (a hook that itself failed) or critical (in the contract's open severity set,
+telemetry_observations.yaml:204-205; no producer emits it today), and a tool_call close with outcome
+error or blocked. A hook pass (info), a
 user or synthetic interrupt and every open row are not friction facts (q1 on interrupts).
 
 Rules are DATA: one row per rule, an exact signature or NULL (the generic fallback), the disposition it
@@ -97,7 +102,8 @@ matches (severity for a process_event, outcome for a tool_call), a label and one
 classes. One label per fact: an exact-signature rule beats the generic one. A blocked tool_call whose
 own hook block is already a fact is not counted twice. Rework is the run rule: at least
 `repeat_threshold` consecutive error closes of the same tool inside one turn (other tools between them
-do not break the run) count once. A tool error inside such a run still counts as one exception: rework
+do not break the run) count once. A same-tool `blocked` close does break it: a block is a refusal,
+not a failed attempt, so the agent's next call starts a new run (v17). A tool error inside such a run still counts as one exception: rework
 counts runs, exception counts events. The seed rule set:
 
 ```yaml
@@ -113,6 +119,7 @@ rules:
   - {rule_id: r91, observation_type: process_event, signature: null, disposition: warning, label: hook_fault, class: exception}
   - {rule_id: r92, observation_type: tool_call, signature: null, disposition: error, label: tool_error, class: exception}
   - {rule_id: r93, observation_type: tool_call, signature: null, disposition: blocked, label: tool_blocked, class: exception}
+  - {rule_id: r94, observation_type: process_event, signature: null, disposition: critical, label: unmapped_block, class: exception}
 ```
 
 The verb body, verified against the vectors below (VP 2). `{obs}` is one session's rows AFTER the
@@ -123,7 +130,7 @@ the generation rule are inherited, not restated; `{rules}` is the rule set and `
 ```sql
 WITH f AS (
   SELECT * FROM {obs}
-  WHERE (observation_type = 'process_event' AND severity IN ('error', 'warning'))
+  WHERE (observation_type = 'process_event' AND severity IN ('error', 'warning', 'critical'))
      OR (observation_type = 'tool_call' AND event_kind = 'close' AND outcome IN ('error', 'blocked'))
 ),
 labelled AS (
@@ -133,7 +140,7 @@ labelled AS (
     ON r.observation_type = f.observation_type
    AND r.disposition = coalesce(f.severity, f.outcome)
    AND (r.signature IS NULL OR r.signature = f.name)
-  WHERE NOT (f.outcome = 'blocked' AND EXISTS (
+  WHERE NOT (f.observation_type = 'tool_call' AND f.outcome = 'blocked' AND EXISTS (
     SELECT 1 FROM f h
     WHERE h.observation_type = 'process_event' AND h.severity = 'error' AND h.parent_observation_id = f.observation_id))
 ),
@@ -204,6 +211,15 @@ vectors:
   - id: v14-only-a-blocking-hook-absorbs-a-block
     rows: [[h1, process_event, point, 'hook:never_on_main', info, null, t1, 1], [h2, process_event, point, 'hook:fresh_branch_base', warning, null, t1, 2], [t1, tool_call, close, Edit, null, blocked, A, 3]]
     expected: [[h2, hook_fault], [t1, tool_blocked]]
+  - id: v15-critical-severity-is-a-fact
+    rows: [[h1, process_event, point, 'hook:custom_check', critical, null, A, 1]]
+    expected: [[h1, unmapped_block]]
+  - id: v16-a-hook-under-a-process-event-drops-neither
+    rows: [[g1, process_event, point, 'gate:validate_scope_boundary', error, null, A, 1], [h1, process_event, point, 'hook:custom_check', error, null, g1, 2]]
+    expected: [[g1, scope_creep], [h1, unmapped_block]]
+  - id: v17-a-block-breaks-the-run
+    rows: [[t1, tool_call, close, Bash, null, error, A, 1], [t2, tool_call, close, Bash, null, error, A, 2], [t3, tool_call, close, Bash, null, blocked, A, 3], [t4, tool_call, close, Bash, null, error, A, 4]]
+    expected: [[t1, tool_error], [t2, tool_error], [t3, tool_blocked], [t4, tool_error]]
 ```
 
 The five retired patterns against this design:
@@ -224,7 +240,7 @@ Settled (consistent with a Decision, a contract or measured; s1-s3 in the fixtur
   mechanism and dedupe are rec-4024's (W1-2), and the durable labels table is rec-4032's, built only at
   its own trigger behind the same verb signature. Decision 199 cl.1 (derived at read), the operator's
   2026-09-24 ruling in rec-4032.
-- s2 The rules are one SQL statement over deduped facts: 14/14 vectors pass on ref, label and class,
+- s2 The rules are one SQL statement over deduped facts: 17/17 vectors pass on ref, label and class,
   including a hook pass not counted, only a blocking hook absorbing its tool's block, and repeat runs
   bounded by turn and tool (VP 2).
 - s3 Of the five retired patterns, repeated-tool-failure is fully derivable from stored facts, scope-creep
@@ -312,8 +328,11 @@ Risk (known loss modes, not choices):
   (rec-4026's UNPINNED list), so a harness permission denial is a plain tool error today, never blocked.
   `tool_blocked` undercounts until those prefixes are pinned from real transcripts.
 - R5 Version drift in deltas. Back-validation compares friction before and after a fix. A rule edit
-  between the two windows moves the totals with no change in behaviour, so a delta is valid only at one
-  `classifier_version`; the response stamp is load-bearing (as registry_version is for W1-2).
+  between the two windows moves the totals with no change in behaviour, and so does a producer change:
+  pinning R4's denial prefixes (a PARSER_VERSION bump) turns tool errors into blocks, which moves
+  `tool_blocked` and, through v17, `repeated_tool_failure`. A delta is valid only at one
+  `classifier_version`, one registry_version and one parser_version per producer; the response stamps are
+  load-bearing (as registry_version is for W1-2).
 
 Open (q1-q3 in the fixture; none is answerable from the repository):
 
@@ -337,13 +356,17 @@ Open (q1-q3 in the fixture; none is answerable from the repository):
   response never returns them.
 - failure_signal: friction totals that move for a reason other than the friction they name: a pass
   counted, a new hook or gate whose blocks fall to the generic rule, or unrelated errors merged into one
-  run. Metric `unmapped_failure_share`: the share of error- or warning-severity process_events that only
-  the generic rule labels, per classifier_version. Source: the verb's response stamp; precision only from
+  run. Metric `unmapped_failure_share`: the share of non-info process_events (error, warning or
+  critical) that only a generic rule (r90, r91, r94) labels, per classifier_version. Source: the verb's response stamp; precision only from
   the c3 review (q2). Why not latency or a count: a wrong friction count is silent and skews T3.4's
   "telemetry delta proves fix" and rec filing at once, while a slow verb is loud.
 - Goodhart guard: the obvious way to drive unmapped_failure_share to zero is a wildcard rule. A specific
   rule must name one exact signature (no `*`, `%`, `?` or `[`), and every specific signature must belong
-  to a registered hook script or a registered check (criterion c2), so a dead or catch-all rule fails CI.
+  to a registered hook script or a registered check (criterion c2), so an unregistered or catch-all rule
+  fails CI. A registered but never-emitted signature does not: r04 (`gate:validate_scope_boundary`) names
+  a registered check, yet no producer emits a `gate:` signature until k3 resolves (VP 1), so r04 is
+  pending k3 and dead today. Catching dead rules would need c2 to check signatures against a set the
+  current PARSER_VERSION declares it emits, which no producer publishes yet.
 - maturity: starts at read_all, meaning the operator reviews every label of the first sessions. read_all
   -> sampled at >= 20 consecutive reviewed sessions with zero mislabels; sampled -> spot_check at 0
   mislabels across the last 200 sampled labels; spot_check -> anomaly_triggered at >= 30 consecutive days
@@ -374,14 +397,17 @@ Open (q1-q3 in the fixture; none is answerable from the repository):
 - Rec filing with dedupe: missing-gotcha is not a classifier label; it is that component's question of
   whether a friction pattern is already known. That component should file on label counts per
   classifier_version, never on raw signatures.
-- Back-validation (T3.4): a delta is meaningful only at one classifier_version and one registry_version
-  (R5); a fix that adds a rule is a classifier change, not evidence of a behaviour change.
+- Back-validation (T3.4): a delta is meaningful only at one classifier_version, one registry_version
+  and one parser_version per producer (R5); a fix that adds a rule is a classifier change, not evidence of a behaviour change.
 - Maturity-ladder controller: this item's rungs need a human label review (q2) that no other component
   supplies; the controller should treat a classifier_version change as a rung event.
 - Goodhart register: the wildcard ban and the registered-signature check (c2) are this item's entry.
 - Cost/egress: the rules read typed fact rows only (a few hundred per session); k3 (b) would move the
   read onto transcript content and blobs. rec-4032's own trigger (a Decision 88 measurement showing
-  read-time egress) is the measured switch to materialization.
+  read-time egress) is the measured switch to materialization. W2 should reconcile it with T2.52:
+  Decision 199's reversal condition routes materialization to T2.52 c1, and T2.52 c3's serving-leaf rule
+  means the R4/R5 dedupe is inlined shared SQL, not a verb call. rec-4032's silver table and T2.52's
+  materialization mode need one owner.
 - Allow-list transport (rec-4141): the closed vocabulary (classes, generic labels, classifier_version) is
   the candidate set to cross; signatures and repo-specific labels are not.
 
