@@ -11,6 +11,45 @@ fixture:
     first_of: [{criterion_met: 'T4.23:c6'}, {review_on: '2027-01-31'}]
     outcome: lift rows into the store, or restructure (rehome or reshape) per the operator's review; never delete
   edges_disposition: pilot_only -- re-authored by the implementation merge on lift (Decision 197 clause 5), never lifted as-is
-work_items: []
-work_item_criteria: []
-work_item_edges: []
+work_items:
+  - id: pwi-maturity-ladder-controller
+    kind: task
+    title: 'Maturity ladder controller: a daily deterministic promote, hold, demote or restart per loop component'
+    extension:
+      consideration_register:
+        why: 'The six W1 items declare 18 upward-only free-text triggers with no review rate (VP 1-2): promotion measures patience, and a blinder failure_signal promotes faster (VP 4).'
+        how: One SQL per daily run over the review log, failure_signal series, drills and approvals returns promote, propose_promote, hold, demote or restart with a reason; legs are k1-k3 (report k4-k5).
+        planes: [data_plane]
+        maturity:
+          rung: read_all
+          transitions:
+            - {from: read_all, to: sampled, trigger: {metric: 'controller decisions the operator re-derived unchanged since the last overturned one (return leg: k1)', comparator: '>=', threshold: 40}}
+            - {from: sampled, to: spot_check, trigger: {metric: 1-in-5 sampled controller decisions re-derived unchanged since the last overturned one, comparator: '>=', threshold: 40}}
+            - {from: spot_check, to: anomaly_triggered, trigger: {metric: consecutive days with stale_rung_days 0 and escaped_wrong_share <= the AOQL target (q3), comparator: '>=', threshold: 30}}
+        failure_signal: {signal: 'A component sits at a rung its own evidence contradicts: wrong outputs escape above read_all, or a demote condition holds with no transition', metric: escaped_wrong_share (audit-floor or breach-review wrong outputs per output above read_all) beside stale_rung_days, source: 'review log and transition log (home: q2); per-component failure_signal series and drills'}
+        verification: [c1, c2, c3]
+        rollback: Stop the schedule and set every component to read_all; the transition log stays as history and review returns to 100% until a controller resumes. Failing safe means more review.
+        evidence:
+          - {kind: file_line, ref: 'scripts/checks/roadmap/_work_item_pilot_model.py:151'}
+          - {kind: file_line, ref: 'scripts/checks/roadmap/_work_item_pilot_model.py:132'}
+          - {kind: roadmap, ref: T3.4}
+          - {kind: decision, ref: '55'}
+        settled:
+          - {id: s1, text: 'Rungs read_all, sampled, spot_check, anomaly_triggered in that order (pilot model); the transition decision is deterministic code, never an LLM (Decision 55).'}
+          - {id: s2, text: 'Measured: 18 of 18 declared triggers are upward-only free text and no item states a review rate, so none can be evaluated as written (VP 1-2).'}
+          - {id: s3, text: 'Measured: with no return leg, escaped-wrong share tracks the error rate (0.12 at p=0.2) and a half-blind monitor promotes faster (VP 4). A rule must bound both.'}
+        contested:
+          - {id: k1, text: 'Return leg on a wrong output found above read_all: (a) back to read_all (CSP-1); (b) one rung down; (c) none, as declared. Rec (a).'}
+          - {id: k2, text: 'Version change (classifier, parser or params): (a) restart at read_all; (b) one rung down; (c) keep the rung. #1396 and #1397 defer here. Rec (a).'}
+          - {id: k3, text: 'Who moves a component: (a) operator approves promotions, demotions automatic; (b) both automatic; (c) operator ratifies both. Rec (a).'}
+        open_questions:
+          - {id: q1, text: 'Is this ladder T3.4''s A0-A3 executor autonomy gates, or a separate review ladder sharing one controller? Report reads separate.'}
+          - {id: q2, text: 'Where the review log, transition log and current rung live; nothing reads a rung today (VP 1). Shares rec-filing q4.'}
+          - {id: q3, text: 'Seeds unmeasured: AOQL target 2%, clearances 40/40/20, fractions 0.2/0.04/0.008, 10 drill faults; operator review capacity.'}
+work_item_criteria:
+  - {work_item: pwi-maturity-ladder-controller, criterion_id: c1, text: 'The controller SQL applies the versioned params over the build''s review, signal, drill and approval tables and passes every report vector on DuckDB, raising on each malformed input.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_maturity_ladder_controller.py -k vectors}, status: open}
+  - {work_item: pwi-maturity-ladder-controller, criterion_id: c2, text: A seeded simulation through the controller keeps escaped-wrong share at or under the AOQL target at every tested error rate and never promotes a component whose drill misses., method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_maturity_ladder_controller.py -k simulation}, status: open}
+  - {work_item: pwi-maturity-ladder-controller, criterion_id: c3, text: 'At read_all every transition is a proposal: the operator re-derives each promotion, demotion and restart from the review log before any component''s rung changes.', method: {kind: review, resolver: operator at each read_all ladder review, evidence_requirement: 'transition sheet per run: component, from, to, reason, clearance, signal, params_version, decision'}, status: open}
+work_item_edges:
+  - {from: pwi-maturity-ladder-controller, to: T3.4, kind: part_of}
+  - {from: pwi-maturity-ladder-controller, to: T2.36, kind: depends_on}
