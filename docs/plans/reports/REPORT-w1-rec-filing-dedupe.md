@@ -12,8 +12,8 @@ rec was written while preparing it (Decision 67). Every rec operation below is a
   (ROADMAP-PLATFORM.yaml:6579, :6593), yet nothing turns a telemetry or friction finding into a rec.
   The design stages one SQL statement that, per finding, picks one of ten actions (file, update,
   unchanged, regression, drop, covered, suppressed, unresolved, over_budget, hold), lists any earlier
-  window it collapsed (an eleventh output, collapsed), and passes 32 of 32 hand-written vectors on DuckDB
-  (VP 2). Twenty-four mutants were run once by hand; each fails a named vector.
+  window it collapsed (an eleventh output, collapsed), raises on a malformed finding, and passes 34 of 34
+  hand-written vectors on DuckDB (VP 2). Twenty-six mutants were run once by hand; each fails a named vector.
 - The repo already has four dedupe mechanisms, and none fits as is (VP 1, VP 3, VP 4):
   - `rec_episode.run_episode`, the shared monitor primitive, keys on SOURCE alone. Over live code, a
     second subject on the same source updates the first subject's rec; a declined head is invisible
@@ -70,23 +70,24 @@ rec was written while preparing it (Decision 67). Every rec operation below is a
 
 Measured (live reads, counts only; no rec content is reproduced and nothing was written):
 
-- Decision table: the SQL in section 2 passes 32 of 32 vectors, and DuckDB's `sha256` over the salted,
+- Decision table: the SQL in section 2 passes 34 of 34 vectors, and DuckDB's `sha256` over the salted,
   NUL-joined key equals Python's `hashlib.sha256` (fingerprint parity, so the in-code key and the SQL
-  key agree) [VP 2]. Twenty-four mutants were run once by hand, not as a VP step; each fails the vectors
+  key agree) [VP 2]. Twenty-six mutants were run once by hand, not as a VP step; each fails the vectors
   named: a string-sorted chain head (v17), no window idempotence (v05), an unknown close time dropping
   instead of failing closed (v09), detector_version folded into the fingerprint (v18 alone when heads are
   hashed at the filing version, per verification r1; every vector with a head when they are hashed
   without one), no detector_id in the fingerprint (v19), the cover pointer returned for a closed head
   (v22), no collapse of one fingerprint's findings within a run (v25, v27), a collapsed window left out of
-  the output (v25, v27), a NULL count failing open to file (v26), an unknown cover close time dropping (v28),
+  the output (v25, v27), a NULL count failing open to file (v26), a NULL identity column filing instead of raising (v33), the
+  cover-side close day read as after it (v34), an unknown cover close time dropping (v28),
   a declined cover read as unresolved (v29), a window starting on the close day read as after it (v30), a
   never-updated open head read as unchanged (v31), an in_progress cover read as unresolved (v32), a
   deferred head suppressed (v23), a
   deferred cover unresolved (v24), updates counted against the budget (v21), regressions exempt from the
   budget (v21), a dangling cover suppressed instead of unresolved (v15), a declined or bare-superseded
   head re-filing as rec_episode does (v10, v14), the two floors joined by OR (v01, v02, v26), a closed
-  covering rec still read as covered (v12, v13, v28), the budget keeping the smallest findings (v20, v21)
-  and any head status updating (sixteen vectors, v07-v15, v21, v22, v24, v28-v30 and v32).
+  covering rec still read as covered (v12, v13, v28, v34), the budget keeping the smallest findings (v20, v21)
+  and any head status updating (seventeen vectors, v07-v15, v21, v22, v24, v28-v30, v32 and v34).
 - Queue state (named reads `count_by_status` and `open_recs`, 2026-10-03 about 07:35Z): 1419 open,
   1188 closed, 183 superseded, 72 declined; of the open, 1244 non-automatable and 175 automatable.
   That is 4.98 times the soft cap (e14). rec-3702's own monitor counts 196 open recs that are premise-dead
@@ -132,7 +133,11 @@ that yields two windows for one fingerprint decides on the latest window only, s
 twice (v25), and every earlier window is returned as `collapsed` so it reaches the run record (v25, v27). The
 latest window governs even when an earlier one was fileable (v27): the finding is below the floor now, so it
 holds. A NULL count (a detector SUM over zero rows) never files: the hold test is `fileable IS NOT TRUE`
-(v26). The chain head is the newest by `created`, where ci_rca's resolve_chain orders by
+(v26). A NULL detector_id, subject_key, window_start or window_end is a detector bug, not a finding: it
+would give a NULL fingerprint that no later run can match, so the same finding would file every run. The
+fingerprint expression raises on it instead (fail loud, Decision 55; v33). A `label:tool` subject must
+therefore be built with an explicit placeholder for a missing tool, never a bare concatenation, which is
+NULL in DuckDB. The chain head is the newest by `created`, where ci_rca's resolve_chain orders by
 last_updated_timestamp: an annotation on an old closed rec must not make it the head and trigger a
 spurious regression. A rec_id with no trailing
 digits makes the chain-order CAST raise; that is deliberate (fail loud, Decision 55) and the build keeps
@@ -140,7 +145,11 @@ it so:
 
 ```sql
 WITH f0 AS (
-  SELECT *, sha256('{salt}' || chr(0) || detector_id || chr(0) || subject_key) AS fingerprint,
+  SELECT *, CASE
+           WHEN detector_id IS NULL OR subject_key IS NULL OR window_start IS NULL OR window_end IS NULL
+           THEN error('malformed finding: NULL identity or window column')
+           ELSE sha256('{salt}' || chr(0) || detector_id || chr(0) || subject_key)
+         END AS fingerprint,
          sessions >= {min_sessions} AND events >= {min_events} AS fileable
   FROM {findings}
 ),
@@ -219,7 +228,9 @@ What each action does, as the build would wire it (none of it runs here):
 
 Every run writes one run record (counts per action, params_version, the detector versions, and the
 fingerprints with sessions per suppressed, unresolved, over_budget and collapsed finding), so nothing the filer declines
-to file is silent (Decision 55: dedup never swallows a finding). The filer never calls update_rec to close:
+to file is silent (Decision 55: dedup never swallows a finding). The sketch returns detector_id,
+subject_key, action and ref only; the build projects fingerprint and sessions too, so the run record
+never re-derives them. The filer never calls update_rec to close:
 a filer rec closes only through back-validation's proof (T3.4) or a human. A concurrent second run is
 prevented by a schedule concurrency group and caught by the generalised write-time backstop (R2).
 
@@ -391,6 +402,16 @@ vectors:
     heads: [[rec-100, friction, 'unmapped_block:PreToolUse.Bash', superseded, rec-50, 6, 7, 1]]
     targets: [[rec-50, in_progress, null]]
     expected: [[friction, 'unmapped_block:PreToolUse.Bash', covered, rec-50]]
+  - id: v33-null-identity-fails-loud
+    findings: [[friction, 1, null, 1, 7, 9, 9]]
+    heads: []
+    targets: []
+    expected: error
+  - id: v34-window-starting-on-the-cover-close-day-drops
+    findings: [[friction, 1, 'unmapped_block:PreToolUse.Bash', 10, 16, 4, 9]]
+    heads: [[rec-100, friction, 'unmapped_block:PreToolUse.Bash', superseded, rec-50, 6, 7, 1]]
+    targets: [[rec-50, closed, 10]]
+    expected: [[friction, 'unmapped_block:PreToolUse.Bash', drop, rec-50]]
 ```
 
 v19 uses `tool_error:Bash` as a deliberation subject only to show that the detector, not the subject text,
@@ -416,7 +437,7 @@ Settled (consistent with a Decision, a contract or measured; s1-s3 in the fixtur
   one fix), and it is not rec_episode's source-only key (VP 1: a second subject updates the first
   subject's rec).
 - s2 The filing decision is one SQL statement over the filer's own source plus one read per covering
-  rec. It passes 32/32 vectors across ten actions plus the collapsed listing; every non-filing outcome is counted in the run record
+  rec. It passes 34/34 vectors across ten actions plus the collapsed listing; every non-filing outcome is counted in the run record
   (VP 2).
 - s3 The filer never closes. Below the floor is hold. Closure needs a recorded proof (Decision 103, e13),
   which belongs to back-validation (T3.4). VP 1 shows that rec_episode's truth table would close an open
