@@ -139,7 +139,9 @@ detector is no sounder than its inputs.
 Counter floors are seed values (q2), the same 0.99 for every row. Each row's breach threshold is the one its
 own item's top-rung trigger already names (0.05 for capture, friction, rec filing and back-validation;
 0.01 for deliberation; 0 for reader verbs and the canary; the AOQL target for the ladder, its q3); the
-register reads those, it does not set them.
+register reads those, it does not set them. That is staged, not settled: the thresholds sit in eight unmerged
+PRs, one is provisional and one is an open question, and whether breach belongs in a soundness verdict at
+all is k1 (v).
 
 ```yaml
 register:
@@ -1238,8 +1240,11 @@ equivalent:
 
 - **k1 (asked). What a non-ok verdict does on the ladder.** (a) It blocks promotion and demotes one rung,
   as #1398's staged dark-signal leg does (its k7 (a)). (b) It blocks promotion only; the rung holds. (c) Advisory: logged beside the
-  transition record, nothing gates. Recommended (a) for blind, undrilled, counter_dark, counter_low and
-  unregistered, and (b) for diverging and upstream_unsound, which are weaker evidence. #1398 measured that
+  transition record, nothing gates. Recommended (a) for dark, blind, undrilled, counter_dark, counter_low
+  and unregistered, and (b) for diverging and upstream_unsound, which are weaker evidence. For dark, (a) is
+  the action #1398's own dark-signal leg already takes, so the register adds a reading, not a second
+  demotion. For breach, the recommendation is to drop the leg (v below); while it stays, (b) for the
+  breaching detector only. #1398 measured that
   a half-blind monitor also lets more errors escape below the top rung (2.09% on its worst seed), so
   blocking promotion alone leaves that. No Decision or contract decides it; #1398 is unmerged and its own
   k1 and k7 are parked. Two choices inside the staged SQL belong to this fork and are not decided:
@@ -1254,7 +1259,18 @@ equivalent:
   for the operator and block nothing. (iv) Staleness: staged, the latest defined value anywhere in the
   window decides p_last and c_last (v41), which fails open on a counter that stops arriving (v63); the
   alternative is a freshness bound (for example counter_dark when no counter arrived in the last 2 days),
-  which needs a per-detector cadence. All four stay as staged until k1 is answered. Consequence to weigh: capture's counter needs its q1 out-of-band denominator, which
+  which needs a per-detector cadence. (v) The breach leg. Staged: each row's threshold is borrowed from
+  its item's own top-rung trigger (section 2.2), so it rests on eight unmerged PRs, one marked provisional
+  and one, #1398's AOQL target, its open q3; a latest primary above it reads breach, a non-ok verdict that
+  propagates downstream at full strength (v90). As staged, the ladder's row cannot be loaded until #1398 q3
+  is answered, and loaded with a NULL threshold it raises the whole run (plan-critique r1, S1). One capture
+  reading of 0.06 on every day makes 7 of the 8 detectors read unsound although capture's counter and drill
+  are sound (S3). A breach is component health, not a Goodhart unsoundness. Alternatives: (a) a
+  register-owned threshold the operator sets per row; (b) no breach leg, so the register reads soundness
+  only and component health stays with each item's own top-rung trigger; (c) keep the leg but do not
+  propagate breach. Recommended (b): it removes the #1398 q3 dependency and the S3 fan-out, and the ladder
+  already reads each item's own trigger. All five stay as staged until k1 is answered. Consequence to
+  weigh: capture's counter needs its q1 out-of-band denominator, which
   does not exist, so under (a) or (b) capture reads counter_dark from day one and every detector downstream
   reads upstream_unsound until it lands (risk R6).
 - **k2 (asked). How drills run.** (a) Live: seeded rows written through the real producers under a
@@ -1267,7 +1283,10 @@ equivalent:
   out-of-band count. The ladder's reviewer drill (known-wrong outputs in the review sample) is a choice about
   the operator's own review stream and sits inside this fork. So does how the register's own drill stays
   live: staged, one dated drill- series a day read over the 28-day window (section 2.4); the alternative is a
-  today-only unregistered read. So does retirement and onboarding: staged, in-window signal and drill rows of
+  today-only unregistered read. Build note: the ladder and unsound_reads should ignore only the run's own
+  exact drill-YYYY-MM-DD, not every name with the drill- prefix, or a register row named drill-% should
+  raise, so no real detector can hide in that namespace (plan-critique r1 N1). So does retirement and
+  onboarding: staged, in-window signal and drill rows of
   a detector with no register row both read unregistered, so neither halts the run (v60-v62); the
   alternatives are a retired_on marker on the register row, so in-window history still resolves, or a halt
   with a stated 28-day retirement procedure. So does the blast radius of malformed input: staged, any guard
@@ -1314,7 +1333,9 @@ equivalent:
 - **R5 Small counts.** drill_min 20 per 28 days is under one fault a day; a recall floor of 0.9 over 20
   faults passes a 90%-recall detector only about two times in three (#1398 measured 68%). Seeds, q2.
 - **R6 A dark root freezes the loop.** Propagation is fail-safe by design: when capture is not ok, nothing
-  downstream promotes. Until capture's q1 denominator exists that is every day (k1).
+  downstream promotes. Until capture's q1 denominator exists that is every day (k1). A breaching root does
+  the same on an ordinary bad day for a working detector: one capture reading of 0.06 freezes 7 of 8 (k1
+  (v)).
 - **R7 The model is a model.** Section 2.3's worlds are deterministic and built from each sibling's own
   definitions; they show directions, not rates. The build's c2 replays each cheap path on the real metric.
 
@@ -1394,6 +1415,8 @@ This text presumes the recommended options of parked forks k1, k2 and k3. It is 
 > automated transition carries a register row naming the cheapest way its metric improves without the work
 > improving, a counter series from a source independent of the metric's numerator, and a seeded drill
 > that measures its recall. A daily deterministic verdict reads the register, the series and the drill
-> log; a detector is sound only when its signal, counter and drill are sound and so are its upstream
-> detectors. An unsound verdict blocks promotion and demotes one rung; a series without a register row is
-> unsound by definition."
+> log; a detector is sound only when its signal is present, its counter and drill are sound, and so are its
+> upstream detectors. An unsound verdict blocks promotion; a dark, blind, undrilled, counter_dark,
+> counter_low or unregistered verdict also demotes one rung, while diverging and upstream_unsound only
+> block. A series without a register row is unsound by definition. Whether a detector breached its own
+> threshold is the ladder's concern, read from that item's own trigger, not the register's."
