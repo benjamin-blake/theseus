@@ -28,7 +28,7 @@ Three findings change what the operator decides next:
    first-rung counts, five different second-rung windows and two different top-rung day counts (VP 2). Section 3 stages one rule family with
    per-component seeds and one coupling rule (a component's rung is capped by the lowest rung among its data
    upstreams) so that no reader can sit above the producer it reads.
-3. Nineteen cross-component contradictions remain, six points are settled. Of the nineteen, four are the
+3. Twenty cross-component contradictions remain, five points are settled. Of the twenty, four are the
    same question asked by six items (where do the loop's records live, who owns the review load, how the
    register verdict drives the ladder, and the fixture's edge cap against three data upstreams). Each gets
    one staged resolution in section 4 so that W3 writes one Decision, not six.
@@ -109,7 +109,7 @@ edge says. Thirteen of the fourteen data edges cross from an earlier wave to a l
 ```yaml
 prerequisites:
   - {id: P1, what: "T2.36 writer verb, tables and project registration", owner: "T2.36 / rec-4024", blocks: "every item (all ten reach T2.36 by edge)"}
-  - {id: P2, what: "2a-1 write-conformance plan merged (claude_code to parser_version 2)", owner: "Telemetry project", blocks: "deliberation cutover, friction producer markers, the one PARSER_VERSION bump (S5)"}
+  - {id: P2, what: "2a-1 write-conformance plan merged (claude_code to parser_version 2)", owner: "Telemetry project", blocks: "deliberation cutover (its fields arrive with 2a-1 itself and rec-4028); friction's producer markers, whose sequencing after 2a-1 is the operator's unanswered call 3 of 2026-10-04 (X20)"}
   - {id: P3, what: "ownership split for hooks (telemetry 3b vs #1384)", owner: "operator", blocks: "wave 1 capture"}
   - {id: P4, what: "ownership split for reader verbs and the ducklake_scd2_schema.py Decision 128 split (telemetry 2b vs #1390)", owner: "operator", blocks: "wave 1 reader"}
   - {id: P5, what: "capture q1 out-of-band session denominator chosen", owner: operator, blocks: "every promotion above read_all (X13)"}
@@ -128,7 +128,7 @@ Decision, and the pilot carries them as id-only edges or as open questions.
 build_order:
   - {wave: 0, items: [], gates: [P1, P2, P3, P4], note: "external; the loop builds nothing here"}
   - {wave: 1, items: [pwi-capture-producer-wiring, pwi-telemetry-reader-verbs], gates: [], note: "parallel; capture smoke-first (T3.20 c8) before the hooks go broad; reader vectors before the serving leaf"}
-  - {wave: 2, items: [pwi-friction-classifier, pwi-deliberation-capture], gates: [P2], note: "one PARSER_VERSION bump carries both producer changes (S5); both are reader verbs over wave-1 rows"}
+  - {wave: 2, items: [pwi-friction-classifier, pwi-deliberation-capture], gates: [P2], note: "both are reader verbs over wave-1 rows; pairing them is a recommendation that rests on the parked call 3 (X20): friction's producer changes ride after 2a-1, deliberation's fields arrive with 2a-1 itself"}
   - {wave: 3, items: [pwi-goodhart-register, pwi-loop-cost-egress-budget, pwi-rec-filing-dedupe], gates: [P6], note: "the register rows and the budget lines go live as soon as wave-2 series exist; the filer is the first writer of recs (Decision 67 boundary, S6)"}
   - {wave: 4, items: [pwi-back-validation, pwi-maturity-ladder-controller, pwi-allow-list-transport], gates: [P7, P8], note: "proof closes need P8; ladder rules need P7 and the register verdict; the allow-list crosses nothing until its k1-k4 are answered and a consumer exists (#1399 q2)"}
 ```
@@ -138,9 +138,12 @@ Why this order and not another:
 - Capture and the reader verbs come first because every other item is a reader verb or reads one, and
   because both are the items whose ownership is parked (P3, P4). Putting them alone in wave 1 means the
   operator's ownership answer changes who builds the wave, not what the later waves are.
-- Friction and deliberation are the two producer-touching readers. Both reports (#1394 R5, #1395 build
-  gate) say their producer changes land after 2a-1 as one PARSER_VERSION bump; building them together is
-  how that bump stays single.
+- Friction and deliberation are the two readers whose inputs change with 2a-1. Deliberation's fields
+  arrive with 2a-1 itself and rec-4028 (#1395 e1), so it has no producer change of its own to bump;
+  friction's producer markers land after 2a-1 as one combined version bump only if the operator answers
+  the coordinator's third ownership call of 2026-10-04 08:13Z that way (X20, parked). Building the two
+  together is the recommendation that keeps that bump single if the call goes that way; the wave
+  placement itself does not depend on the answer.
 - The register and the budget are observers. They need series to observe (wave 2) but nothing reads
   them except the ladder, so they go live before the filer and stand guard over it: the register's R6
   and the budget's dark_line_days are the two checks that catch a filer running on dark inputs.
@@ -270,7 +273,7 @@ ladder_family:
   demotion:
     overturned_output: "back to read_all (evidence of a wrong output; CSP-1 reset)"
     signal_breach: "one rung down when the component's own failure_signal breaches its bound while it sits above read_all (#1398 k7 (a)); hold there until the bound holds again for D consecutive days"
-    verdict_not_ok: "one rung down, then hold, with a dead-man alert while it holds (absence of evidence: dark, blind, undrilled, counter_dark, counter_low, unregistered)"
+    verdict_not_ok: "one rung down, then hold, with an output-count input so that no outputs is told apart from monitor dark (#1398 k7 (d)) and a dead-man alert while it holds (absence of evidence: dark, blind, undrilled, counter_dark, counter_low, unregistered)"
     ceiling_breach: "down to the new ceiling the same day the upstream moves"
     version_change: "restart at read_all on an integer version stamp bump (classifier_version, parser_version, register version, allow-list classification version)"
   authority: "the operator approves every promotion; every demotion is automatic and logged"
@@ -285,13 +288,16 @@ What this changes against the items as written:
   drill; the other nine read their own signal, which is exactly the series the register exists to
   distrust.
 - The demotion legs are split by evidence. #1398 k1 (return to read_all on an overturned output) and
-  #1398 k7 ((a) one rung down when the component's own failure_signal breaches its bound, (d) one rung
-  down when it goes dark) were read together with the Fable consult of 2026-10-03 (reset for wrong
-  outputs; demote once and hold with a dead-man alert for dark signals). The family keeps all three
-  because they answer different evidence: a wrong output is proof the rung is too high; a breaching
-  signal is the component's own alarm and demotes one rung (k7 (a), kept as signal_breach); a dark
-  signal is proof of nothing except that nobody is looking and demotes one rung, then holds. The breach
-  leg lives here in the controller, not in the register verdict (X8).
+  #1398 k7 ((a) one rung down on a breach of the component's own failure_signal and one rung down when
+  it goes dark; (d) treat dark as a hold, or stage an output-count input so that "no outputs" is told
+  apart from "monitor dark", which #1398 recommends for dark) were read together with the Fable consult
+  of 2026-10-03 (reset for wrong outputs; demote once and hold with a dead-man alert for dark signals).
+  The family keeps all three because they answer different evidence: a wrong output is proof the rung is
+  too high; a breaching signal is the component's own alarm and demotes one rung (k7 (a)'s breach half,
+  kept as signal_breach); a dark signal is proof of nothing except that nobody is looking and demotes one
+  rung, then holds (k7 (a)'s dark half, with the consult's dead-man alert). The output-count input of
+  k7 (d) is part of the staged family: without it the dark leg demotes a quiet weekend, which #1398
+  flags as unmeasured. The breach leg lives here in the controller, not in the register verdict (X8).
 - The ceiling rule is new. No item states it, and without it the dialects allow a reader at sampled over a
   producer at read_all, which means one in five of the reader's outputs are reviewed while every row it
   read is still suspect. Fork F1.
@@ -361,15 +367,14 @@ contradictions:
   - {id: S2, status: settled, items: all, point: "every item reaches T2.36 by edge, so nothing builds before the writer verb (P1)"}
   - {id: S3, status: settled, items: all, point: "every rollback is additive, removes a hook, a schedule or a config block, and deletes no row"}
   - {id: S4, status: settled, items: all, point: "every failure_signal is lower-is-better and its own metric (register VP 1 at fc298254, 8 of 8 then; the two later items follow the same form)"}
-  - {id: S5, status: settled, items: [pwi-friction-classifier, pwi-deliberation-capture], point: "producer changes land after 2a-1 as one PARSER_VERSION bump (Telemetry answer of 2026-10-04 folded at 427eeced and 4f49c55f); capture's own producer changes sit inside the parked P3 split and are not counted here"}
-  - {id: S6, status: settled, items: [pwi-deliberation-capture], point: "the visibility cutover binds to 2a-1 (q1 answered; location folded at 4f49c55f)"}
+  - {id: S5, status: settled, items: [pwi-deliberation-capture], point: "the visibility cutover binds to 2a-1 (q1 answered; location folded at 4f49c55f)"}
   - {id: X1, status: contested, items: [pwi-friction-classifier, pwi-capture-producer-wiring], point: "gate and pre-commit signatures producer-side (#1394 k3 (a)) vs read-side regex on tool_result (#1384 P1)", resolution: "producer-side, narrowed to structured markers, riding the single S5 bump (consult of 2026-10-03)", park: '#1394 k3'}
   - {id: X2, status: contested, items: [pwi-capture-producer-wiring, pwi-deliberation-capture], point: "capture sends byte-chunked per-table batches data-first; 2a-2 wants one transaction per request with sessions last", resolution: "the writer owner (T2.36) decides the request shape and capture adapts; Decision 207 no-op resends make either order safe to replay", park: F12}
   - {id: X3, status: contested, items: [pwi-telemetry-reader-verbs, pwi-rec-filing-dedupe], point: "sessions_window built in the reader (#1390 k2 (a)) vs in T2.52 (b); the filer and back-validation both read it", resolution: "(a), with one Decision 199 clause 1 reading stated once wherever it is built", park: '#1390 k2'}
   - {id: X4, status: contested, items: [pwi-maturity-ladder-controller, pwi-goodhart-register], point: "the ladder drills at its top rung only (20 in 20 days at 0.9); the register demands a drill at every rung (drill_min 20 per 28 days)", resolution: "the register owns drills and the verdict; the controller drops its own drill clause and reads verdict ok at every rung (section 3.2)", park: F3}
   - {id: X5, status: contested, items: [pwi-maturity-ladder-controller, pwi-loop-cost-egress-budget], point: "review load as the ladder's control (#1398 R1) vs a budget line (#1401 q3); 72 a day modelled against 30 a day seeded", resolution: "budget owns the line and alarm, ladder owns the schedule, waves are the lever (section 3.4)", park: F4}
   - {id: X6, status: contested, items: all, point: "eight trigger dialects across ten maturity blocks (section 3.1)", resolution: "one rule family with per-component seeds (section 3.2)", park: F2}
-  - {id: X7, status: contested, items: [pwi-goodhart-register, pwi-maturity-ladder-controller], point: "a not-ok verdict blocks and demotes (#1400 k1 (a)) vs the controller's own demotion legs, one rung down on an own-signal breach (#1398 k7 (a)) or on a dark signal (k7 (d))", resolution: "split by evidence; wrong output resets to read_all, an own-signal breach demotes one rung (k7 (a) kept as signal_breach), absent evidence demotes one rung and holds with a dead-man alert (section 3.2)", park: F2}
+  - {id: X7, status: contested, items: [pwi-goodhart-register, pwi-maturity-ladder-controller], point: "a not-ok verdict blocks and demotes (#1400 k1 (a)) vs the controller's own demotion leg, one rung down on an own-signal breach and on dark (#1398 k7 (a)), with k7 (d)'s output-count input recommended for dark", resolution: "split by evidence; wrong output resets to read_all, an own-signal breach demotes one rung (k7 (a) kept as signal_breach), absent evidence demotes one rung and holds with the output-count input and a dead-man alert (section 3.2)", park: F2}
   - {id: X8, status: contested, items: all, point: "the register's breach leg (#1400 k1 (v)) borrows every item's top-rung threshold, so one capture reading of 0.06 makes 7 of 8 detectors unsound", resolution: "no breach leg in the register; it reads soundness only, each item's own top rung reads its bound for promotion, and the controller's signal_breach leg (section 3.2) demotes on a breach", park: '#1400 k1 (v)'}
   - {id: X9, status: contested, items: [pwi-maturity-ladder-controller, pwi-rec-filing-dedupe, pwi-back-validation], point: "the filer and back-validation defer their version rule to the ladder (#1398 k2), and the pilot schema cannot express a return leg, a review fraction or a version rule (#1398 O1)", resolution: "P7 schema change before any rule is enforced; until then the family in section 3.2 is prose", park: '#1398 k2'}
   - {id: X10, status: contested, items: [pwi-back-validation, pwi-rec-filing-dedupe], point: "who closes a rec; a late verdict keyed to the fix sha amends Decision 201 (#1397 k1), close_proposed at the deadline (#1397 k2) and the filer's self-close (#1396 k4) are three closers", resolution: "one numbered amending Decision (P8) that names back-validation as the only proposer and keeps every close a Decision 201 verdict-layer event; the filer self-closes nothing", park: '#1397 k1'}
@@ -380,7 +385,8 @@ contradictions:
   - {id: X15, status: contested, items: [pwi-capture-producer-wiring, pwi-telemetry-reader-verbs], point: "ownership of hooks and reader verbs between this stream and the Telemetry project (3b, 2b)", resolution: "none here; wave 1 is built by whoever the operator names, and the later waves do not change", park: "operator (P3, P4)"}
   - {id: X16, status: contested, items: [pwi-goodhart-register, pwi-maturity-ladder-controller], point: "the verdict as one input to the controller vs read beside it (#1400 q3)", resolution: "input; it is the only way the verdict-ok precondition of section 3.2 is enforced rather than advised, and it is the ladder's one staged depends_on edge to a pilot item", park: F7}
   - {id: X17, status: contested, items: [pwi-friction-classifier], point: "the friction formula reads tool_call close outcomes with no severity, so hook passes count; the producer owners' 2026-10-04 confirmation firms k2 (a), but either choice sets the operator's 2026-09-24 ruling against the slice-3a deviation (a ratified Class A semantic change)", resolution: "none here; (a) ratify the producer's outcome store, as the producer owners recommend, stays parked for the operator", park: '#1394 k2'}
-  - {id: X18, status: contested, items: [pwi-rec-filing-dedupe, pwi-loop-cost-egress-budget, pwi-back-validation], point: "who writes recs: the filer files (#1396); the budget's recommended breach action (#1401 k1 (a)) files one rec per breaching line through the cost reconciliation path; the filer's self-close (#1396 k4) would be a third writer", resolution: "the filer is the loop's one rec writer; the budget's breach rec routes through the filer as a detector source so dedupe and the Decision 67 boundary apply once; no component self-closes (X10)", park: '#1401 k1'}
+  - {id: X18, status: contested, items: [pwi-rec-filing-dedupe, pwi-loop-cost-egress-budget, pwi-back-validation], point: "who writes recs: the filer files (#1396); the budget's recommended breach action (#1401 k1 (a)) files one rec per breaching line through the cost reconciliation path; the filer's self-close (#1396 k4) would be a third writer", resolution: "the filer is the loop's one rec writer; the budget's breach rec routes through the filer as a detector source so dedupe and the Decision 67 boundary apply once (an amendment to #1401 k1 (a), staged as F13 (b)); no component self-closes (X10)", park: F13}
+  - {id: X20, status: contested, items: [pwi-friction-classifier, pwi-capture-producer-wiring, pwi-deliberation-capture], point: "whether friction's and capture's producer changes land after the 2a-1 plan as one combined version bump is the coordinator's third ownership call to the operator of 2026-10-04 08:13Z, unanswered; #1394 carries it only as the producer owners' sequencing recommendation, and deliberation has no producer change of its own (its fields arrive with 2a-1 and rec-4028)", resolution: "none here; the wave-2 pairing and P2 are written as a recommendation resting on that call, and the wave placement holds either way", park: "operator (2026-10-04 call 3, beside P3 and P4)"}
   - {id: X19, status: contested, items: [pwi-goodhart-register, pwi-loop-cost-egress-budget], point: "the register at fc298254 has eight detector rows and none for the budget or for the register itself, so under the family's verdict-ok precondition both read unregistered and can never promote", resolution: "add the two rows at the register's build (the budget's line is the one #1401 says belongs there; the register's own row reads its dated drill series), so every component the ladder moves has a row", park: F11}
 ```
 
@@ -459,6 +465,12 @@ reading the operator asked for on 2026-10-03 applied in its recommendation. The 
   writer accepts them; (c) 2a-2's one transaction per request with sessions last binds capture.
   Recommendation (a): Decision 207 no-op resends make either order safe to replay, so the owner of the
   boundary owns the shape; the answer rides the P3 ownership split.
+- F13 (asked) Route of the budget's breach recommendation (X18). (a) #1401 k1 (a) as written, one rec
+  per breaching line through the cost reconciliation's rec path; (b) the same breach routed through the
+  filer as a detector source, so dedupe and the Decision 67 boundary apply once (an amendment to k1 (a));
+  (c) #1401 k1 (b), the owning component degrades its cadence and no rec is filed. Recommendation (b):
+  two rec writers in one loop is the duplicate-filing failure the filer exists to prevent, and (c) gives a
+  cost line authority over a component's cadence (the F4 objection).
 
 Forks held by W1 items and not re-opened here: every k row of the ten items stays parked where it is; the
 resolutions in section 4 cite them but do not decide them.
@@ -503,5 +515,5 @@ block and re-read when they settle.
 | eight dialects as tuples: 4 first-rung counts, 5 second windows, 2 readings, 2 day counts + 1 rate | section 3.1 | VP 2 |
 | 13 of 14 data edges run to a later wave, one stays inside wave 1; every item once; every item reaches T2.36 through staged edges | sections 2.1, 2.3, 2.4 | VP 3 |
 | the merged fixture passes the evaluator with 25 staged edges and 405 of 420 lines | section 2.4 | VP 4 |
-| 6 settled and 19 contested rows, every contested row parked | section 4 | VP 5 |
+| 5 settled and 20 contested rows, every contested row parked | section 4 | VP 5 |
 | the plan validates; the branch is plan and report only; the fast tier passes | plan | VP 6, 7, 8 |
