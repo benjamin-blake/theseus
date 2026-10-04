@@ -53,11 +53,11 @@ Measured, not argued:
   reports nothing on a day needs no attribution for it. Beside the one label per line it emits two
   independent flags, dark_flag and unattributed_flag, so a line that is breaching cannot hide that it
   stopped reporting or that nobody owns its value; the failure_signal and the top maturity trigger read the
-  flags, never the label. It passes 145/145 vectors (37 by raising with the
-  stated message), 60 of them written by independent verifiers over three rounds; each of 267 single-site
-  mutants (52 named, 215 from a rule sweep over guards and their arms, comparisons, windows, boundaries,
+  flags, never the label. It passes 146/146 vectors (37 by raising with the
+  stated message), 61 of them written by independent verifiers over four rounds; each of 276 single-site
+  mutants (52 named, 224 from a rule sweep over guards and their arms, comparisons, windows, boundaries,
   rounding, aggregates, dispatch, joins, calendar, operands, params, DISTINCT, flags and WHEN order) is
-  killed, and 34 more are equivalent and listed apart with their reasons (VP 4).
+  killed, and 32 more are equivalent and listed apart with their reasons (VP 4).
 
 Staged, not decided: ten register lines (section 2.2) in bytes, counts, GB-seconds and tokens, each with an
 owner (a sibling item or shared), a cadence (daily or event), a measure (flow or stock), a seed monthly
@@ -86,8 +86,8 @@ the model's, not a measurement's (q1).
 | e8 | In the model, touched-files catalog egress per month is 1,576,200,000 bytes at 5 sessions a day (detector share 0.834), 5,779,200,000 at 20 and 96,595,200,000 at 100; whole-catalog egress is 27,621,000,000, 71,136,000,000 and 371,616,000,000; 20 sessions at one merge window a day reads 18,544,800,000 [VP 3] | section 2.3 |
 | e9 | Against the seed envelopes, 3 lines are over at 5 sessions (catalog_egress_bytes, s3_requests, review_items), 5 at 20 (plus writer_requests, lambda_gb_seconds) and 7 at 100 (all but reader_requests); review_items is over at every scale (2,160 a month against 900) [VP 3] | section 2.3 |
 | e10 | At list prices (eu-west-2, external, not re-verified) the loop's Lambda, S3 request and S3 storage lines cost about 0.90, 3.54 and 23.33 USD a month at 5, 20 and 100 sessions a day, before any free tier and excluding egress, which has no unit price in the repository [VP 3] | section 2.3; O5 |
-| e11 | The staged verdict SQL passes 145 vectors (60 of them written by the verification rounds), 37 by raising 'loop_budget: <rule>' with the first failing rule by name; every flag pinned matches [VP 4] | sections 2.4, 2.5 |
-| e12 | Each of 267 mutants of the verdict SQL (52 named, 215 from the rule sweep) replaces one unique site and fails at least one vector; 34 equivalent mutants are listed apart and pass every vector [VP 4] | section 2.6 |
+| e11 | The staged verdict SQL passes 146 vectors (61 of them written by the verification rounds), 37 by raising 'loop_budget: <rule>' with the first failing rule by name; every flag pinned matches [VP 4] | sections 2.4, 2.5 |
+| e12 | Each of 276 mutants of the verdict SQL (52 named, 224 from the rule sweep) replaces one unique site and fails at least one vector; 32 equivalent mutants are listed apart and pass every vector [VP 4] | section 2.6 |
 | e13 | Decision 88 clause 1 ranks catalog egress beside compute and storage, with four access-pattern invariants; clause 2 names catalog_stats as the measurement path and defers the figure to a post-deploy measurement; clause 3 cut the DR dump to weekly for egress reasons | docs/DECISIONS.md, Decision 88 |
 | e14 | Decision 199 derives state, friction and cost at read (its title); rec-4031's price table is the read-time price source; Decision 206 clause 7 budgets turns and wall-clock, "no dollars", before MVP | docs/DECISIONS.md, Decisions 199 and 206 |
 | e15 | #1384 measured about 52 KB of wire and 55 rows per turn, and a 100-turn cold catch-up of 3.2 MB transcripts plus 2.1 MB observations; #1398 counted about 72 reviews a day at read_all across six components; #1397 R5 reads one verb call per pending candidate per run | sibling reports at the pinned heads |
@@ -389,8 +389,11 @@ Per line, in order of precedence (v13-v16):
   (s06). On the last day of the month nothing is projected (v21); the days remaining are the calendar's
   (r06 February, r07 a 30-day month).
 - dark: a daily-cadence line with no ledger row today (v05, v39); dark_flag says the same whatever the
-  label (v13, y01, n01). An event line is never dark (v06, v41), and an unregistered line's flags are false
-  (v08, v33). Dark outranks projection because a meter that stopped is not evidence that spend stopped.
+  label (v13, y01, n01). An event line is never dark (v06, v41). An unregistered line's dark_flag is false,
+  and its unattributed_flag reads its parts if it has any (v08, v33, x16): a value nobody registered and
+  nobody explains still resets the top trigger's counter, which verification r4 judged the conservative
+  reading for a failure_signal; the alternative, gating the flag on registration, is recorded under the
+  precedence fork. Dark outranks projection because a meter that stopped is not evidence that spend stopped.
 - projected_breach: for a flow, month-to-date plus the mean daily value over the last 7 days times the
   days remaining in the month exceeds the envelope (v03, v20, v42, n16, n17). The mean is over calendar
   days for an event line, whose days without a row are days with nothing to report (p01-p05: one 100-byte
@@ -526,11 +529,12 @@ e7), stock lines (s01-s09), event-line projection over calendar days (p01-p05) a
 the zero-value shared day (z01-z03), stale and last-month stock readings (r03, r04), the calendar (r06,
 r07), the event fraction (r05), the duplicate outside the window (r02), and each guard with its
 first-failing-rule order and its NULL arm (e01-e21, g01-g11, r01, r08), the flags under every label
-(y01-y04, x03, with flags pinned on v01, v05, v08, v09, v13, v15, v33, v41, s05, z01, n01, x01), equal
+(y01-y04, x03, x16, with flags pinned on v01, v02, v05, v08, v09, v13, v15, v33, v41, s05, z01, n01, x01, so
+ok, warn, projected_breach, breach, dark, unattributed and unregistered each carry a pinned flag pair), equal
 parts (x05), non-default rate windows (x06, x15) and the event line with orphan attribution (x01). n01-n35
 are the 33 vectors zero-context verification round 1 wrote against the first draft, r01-r07 and g01-g11
-the 18 round 2 wrote, and y01, y02, x01, x03-x06 and x15 the 8 round 3 wrote; all pass on the staged SQL
-(r01 now by raising since round 2's F7, x04 now ok since the zero-day test is rounded).
+the 18 round 2 wrote, y01, y02, x01, x03-x06 and x15 the 8 round 3 wrote, and x16 round 4; all pass on the
+staged SQL (r01 now by raising since round 2's F7, x04 now ok since the zero-day test is rounded).
 
 ```yaml
 vectors:
@@ -552,6 +556,8 @@ vectors:
     ledger:
     - {from: -6, line: catalog_egress_bytes, to: 0, value: 40}
     expected: {catalog_egress_bytes: warn}
+    flags:
+      catalog_egress_bytes: [false, false]
   - id: v03-projected-breach
     budget:
     - {}
@@ -1578,6 +1584,18 @@ vectors:
     expected: {loop_llm_tokens: ok}
     flags:
       loop_llm_tokens: [false, false]
+  - id: x16-unregistered-line-misattributed
+    budget:
+    - {}
+    ledger:
+    - {line: catalog_egress_bytes, from: -6, to: 0, value: 10}
+    - {line: ghost_line, from: 0, to: 0, value: 10}
+    attribution:
+    - {line: ghost_line, day: 0, component: a, value: 3}
+    expected: {catalog_egress_bytes: ok, ghost_line: unregistered}
+    flags:
+      catalog_egress_bytes: [false, false]
+      ghost_line: [false, true]
 ```
 
 ### 2.6 Mutants (VP 4)
@@ -1603,8 +1621,9 @@ rows instead of the flag). The sweep is generated by class, after verification r
   envelope or the attributed sum, or signed; days remaining off by one; an epsilon added to breach and
   projection; warn read on month-to-date and breach on the projection; month start a day early; the rate
   window a day longer or shorter;
-- s-round-*: each of the six rounding sites at 6, 8, 10 and 12 places, and floor, ceil and trunc at each
-  of the five comparison sites, and the warn comparison unrounded on both sides;
+- s-round-*: each of the seven rounding sites (the zero-day test included) at 6, 8, 10 and 12 places, and
+  floor, ceil and trunc at each of the six comparison sites, and the warn comparison unrounded on both
+  sides;
 - s-agg-*: each aggregate swapped (month-to-date sum as max, avg, min; the daily rate as sum, max, min,
   median, any_value; the event rate as avg, max, min; the level as the smallest reading; the attributed
   sum as max, avg, min), each coalesce that changes a verdict dropped (today's rows, parts), the line list
@@ -1632,7 +1651,7 @@ rows instead of the flag). The sweep is generated by class, after verification r
 - s-group-*, s-blank-*, s-flag-*: attribution grouped by component, the blank arm without trim, and each
   flag read from the label instead of its condition.
 
-Thirty-four mutants are equivalent and listed apart with their reasons: `parts > 0` as `parts >= 0` (the
+Thirty-two mutants are equivalent and listed apart with their reasons: `parts > 0` as `parts >= 0` (the
 attributed sum is NULL when parts is 0); any aggregate of today's value, and count(value) for today's
 rows and parts (the duplicate and value guards leave one non-NULL value); count(DISTINCT component) for
 parts (the component guard rejects NULL and blank components, so DISTINCT counts what count(*) counts; a
@@ -1642,14 +1661,17 @@ event and daily rates), and a missing daily rate read as 1 (a daily line with no
 no row today and reads dark first); min(rule) for the ordered first rule; the unregistered arm moved
 anywhere before unattributed (every arm before it compares NULL when envelope and cadence are NULL); the
 stock and dark dispatches read as not-flow and not-event (the measure and cadence guards admit only two
-values); the attribution join on the budget's line (NULL only for an unregistered line); the warn_share
+values); the warn_share
 NOT isfinite arm (DuckDB orders NaN above every value, so the bounds arms catch it); `//` for the event
 rate (true division for DOUBLE operands in DuckDB 1.5.4, engine-specific); the parts > 0 conjunct dropped
 (the same NULL argument as parts >= 0); dark keyed on today_value IS NULL and unregistered keyed on
 cadence IS NULL (the guards leave one non-NULL value per row and both fields per budget row); today's rows
-as count(DISTINCT day) and m joined on the budget's line; the blank arm as a replace of spaces (trim strips
-spaces only); and month start and days remaining computed by date arithmetic instead of date_trunc and
-last_day. Verification r3 fuzzed the earlier 27 over 600 random worlds with no diffs. Two mutant kinds the verifier called
+as count(DISTINCT day); the blank arm as a replace of spaces (trim strips spaces only); and month start and
+days remaining computed by date arithmetic instead of date_trunc and last_day. Verification r3 fuzzed the
+earlier 27 over 600 random worlds with no diffs, and r4 fuzzed 34 against label and flags: the two join-key
+rewrites (m or the attribution joined on the budget's line) stopped being equivalent once the flags were
+emitted, because an unregistered line's unattributed_flag reads its parts; both now sit in the mutants
+block, killed by x16. Two mutant kinds the verifier called
 immaterial are not generated: rounding the envelope side of breach and projection (only an envelope with
 a fraction below 1e-9 tells them apart, and every register envelope is an integer) and round-half-even
 (only an exact binary tie at the tenth place). VP 4 counts the kills and the unique sites and checks that
@@ -1823,6 +1845,13 @@ mutants:
 - {id: s-round-tolprod-8, what: rounding at 8 places instead of 9 (tolprod), old: '* today_value, 9))', new: '* today_value, 8))'}
 - {id: s-round-tolprod-10, what: rounding at 10 places instead of 9 (tolprod), old: '* today_value, 9))', new: '* today_value, 10))'}
 - {id: s-round-tolprod-12, what: rounding at 12 places instead of 9 (tolprod), old: '* today_value, 9))', new: '* today_value, 12))'}
+- {id: s-round-zeroday-6, what: rounding at 6 places instead of 9 (zeroday), old: 'round(today_value, 9) > 0)', new: 'round(today_value, 6) > 0)'}
+- {id: s-round-zeroday-8, what: rounding at 8 places instead of 9 (zeroday), old: 'round(today_value, 9) > 0)', new: 'round(today_value, 8) > 0)'}
+- {id: s-round-zeroday-10, what: rounding at 10 places instead of 9 (zeroday), old: 'round(today_value, 9) > 0)', new: 'round(today_value, 10) > 0)'}
+- {id: s-round-zeroday-12, what: rounding at 12 places instead of 9 (zeroday), old: 'round(today_value, 9) > 0)', new: 'round(today_value, 12) > 0)'}
+- {id: s-round-zeroday-floor, what: floor instead of round (zeroday), old: 'round(today_value, 9) > 0)', new: floor(today_value) > 0)}
+- {id: s-round-zeroday-ceil, what: ceil instead of round (zeroday), old: 'round(today_value, 9) > 0)', new: ceil(today_value) > 0)}
+- {id: s-round-zeroday-trunc, what: trunc instead of round (zeroday), old: 'round(today_value, 9) > 0)', new: trunc(today_value) > 0)}
 - {id: s-round-warn-unrounded-both, what: warn comparison unrounded on both sides, old: 'round(projected, 9) > round(warn_share * envelope, 9)', new: projected > warn_share * envelope}
 - {id: s-agg-mtd-sum-max, what: month-to-date sum read as max, old: 'coalesce(sum(value) FILTER (WHERE day >= (SELECT month_start FROM p)), 0)', new: 'coalesce(max(value) FILTER (WHERE day >= (SELECT month_start FROM p)), 0)'}
 - {id: s-agg-mtd-sum-avg, what: month-to-date sum read as avg, old: 'coalesce(sum(value) FILTER (WHERE day >= (SELECT month_start FROM p)), 0)', new: 'coalesce(avg(value) FILTER (WHERE day >= (SELECT month_start FROM p)), 0)'}
@@ -1905,6 +1934,7 @@ mutants:
 - {id: s-distinct-mtd, what: month-to-date sum over DISTINCT values, old: 'coalesce(sum(value) FILTER (WHERE day >= (SELECT month_start FROM p)), 0) AS mtd', new: 'coalesce(sum(DISTINCT value) FILTER (WHERE day >= (SELECT month_start FROM p)), 0) AS mtd'}
 - {id: s-distinct-day-rate, what: daily rate over DISTINCT values, old: avg(value) FILTER (WHERE day > (SELECT today FROM p) - (SELECT window_days FROM p)) AS day_rate, new: avg(DISTINCT value) FILTER (WHERE day > (SELECT today FROM p) - (SELECT window_days FROM p)) AS day_rate}
 - {id: s-distinct-event-rate, what: event rate over DISTINCT values, old: 'coalesce(sum(value) FILTER (WHERE day > (SELECT today FROM p) - (SELECT window_days FROM p)), 0) / (SELECT window_days FROM p) AS event_rate', new: 'coalesce(sum(DISTINCT value) FILTER (WHERE day > (SELECT today FROM p) - (SELECT window_days FROM p)), 0) / (SELECT window_days FROM p) AS event_rate'}
+- {id: s-join-m-on-budget-line, what: 'm joined on b.line: the label still reads unregistered, but a misattributed unregistered line loses its unattributed_flag', old: LEFT JOIN m ON m.line = x.line, new: LEFT JOIN m ON m.line = b.line}
 - {id: s-group-attribution-by-component, what: 'attribution grouped by line and component, so a line reports once per part', old: count(*) AS parts FROM a WHERE day = (SELECT today FROM p) GROUP BY line, new: 'count(*) AS parts FROM a WHERE day = (SELECT today FROM p) GROUP BY line, component'}
 - {id: s-blank-component-without-trim, what: component blank arm without trim, old: component IS NULL OR trim(component) = '', new: component IS NULL OR component = ''}
 - {id: s-flag-unattributed-from-label, what: unattributed_flag read from the label instead of the condition, old: '       dark_flag, unattributed_flag
@@ -1929,6 +1959,7 @@ mutants:
 - {id: s-join-budget-inner, what: 'budget joined inner, dropping unregistered lines', old: FROM lines x LEFT JOIN b ON, new: FROM lines x JOIN b ON}
 - {id: s-lines-drop-attribution, what: line list ignores attribution-only lines, old: UNION SELECT line FROM l UNION SELECT line FROM a), new: UNION SELECT line FROM l)}
 - {id: s-lines-drop-ledger, what: line list ignores ledger-only lines, old: SELECT line FROM b UNION SELECT line FROM l UNION, new: SELECT line FROM b UNION}
+- {id: s-join-attribution-on-budget-line, what: 'attribution joined on b.line instead of x.line: the label still reads unregistered, but a misattributed unregistered line loses its unattributed_flag', old: LEFT JOIN ab ON ab.line = x.line, new: LEFT JOIN ab ON ab.line = b.line}
 - {id: s-event-rate-cast-bigint, what: event rate cast to BIGINT, old: 'coalesce(sum(value) FILTER (WHERE day > (SELECT today FROM p) - (SELECT window_days FROM p)), 0) / (SELECT window_days FROM p) AS event_rate', new: 'CAST(coalesce(sum(value) FILTER (WHERE day > (SELECT today FROM p) - (SELECT window_days FROM p)), 0) / (SELECT window_days FROM p) AS BIGINT) AS event_rate'}
 - {id: s-day-rate-rounded, what: daily rate rounded to an integer, old: avg(value) FILTER (WHERE day > (SELECT today FROM p) - (SELECT window_days FROM p)) AS day_rate, new: round(avg(value) FILTER (WHERE day > (SELECT today FROM p) - (SELECT window_days FROM p))) AS day_rate}
 - {id: s-calendar-thirty-day-month, what: days remaining as 30 minus the day of month, old: 'last_day({today}) - {today} AS days_remaining', new: '30 - day({today}) AS days_remaining'}
@@ -1971,13 +2002,11 @@ equivalent:
 - {id: q-operand-dark-on-today-value-null, what: 'dark keyed on today_value IS NULL: duplicate_ledger and ledger_value leave one non-NULL value whenever a row exists', old: 'coalesce(cadence = ''daily'' AND today_rows = 0, false) AS dark_flag', new: 'coalesce(cadence = ''daily'' AND today_value IS NULL, false) AS dark_flag'}
 - {id: q-operand-unregistered-on-cadence, what: 'unregistered keyed on cadence IS NULL: a budget row has both by guard, and no budget row has neither', old: WHEN envelope IS NULL THEN 'unregistered', new: WHEN cadence IS NULL THEN 'unregistered'}
 - {id: q-distinct-today-rows, what: 'today_rows as count(DISTINCT day): duplicate_ledger leaves one row per line per day', old: count(*) FILTER (WHERE day = (SELECT today FROM p)) AS today_rows, new: count(DISTINCT day) FILTER (WHERE day = (SELECT today FROM p)) AS today_rows}
-- {id: q-join-m-on-budget-line, what: 'm joined on b.line: b.line is NULL only for an unregistered line, which reads unregistered first', old: LEFT JOIN m ON m.line = x.line, new: LEFT JOIN m ON m.line = b.line}
 - {id: q-blank-component-replace-spaces, what: 'component blank arm as replace of spaces: DuckDB trim strips spaces only, so the two agree', old: component IS NULL OR trim(component) = '', new: 'component IS NULL OR replace(component, '' '', '''') = '''''}
 - {id: q-calendar-month-start-arithmetic, what: 'month start as today minus (day - 1): the same date', old: 'CAST(date_trunc(''month'', {today}) AS DATE) AS month_start', new: '{today} - CAST(day({today}) - 1 AS INTEGER) AS month_start'}
 - {id: q-calendar-days-remaining-datediff, what: 'days remaining via datediff: the same integer', old: 'last_day({today}) - {today} AS days_remaining', new: 'datediff(''day'', {today}, last_day({today})) AS days_remaining'}
 - {id: q-dispatch-stock-as-not-flow, what: 'stock dispatch read as measure <> ''flow'': the measure guard admits only flow and stock, and NULL for an unregistered line either way', old: 'CASE WHEN b.measure = ''stock'' THEN coalesce(m.level, 0) ELSE coalesce(m.mtd, 0) END AS mtd', new: 'CASE WHEN b.measure <> ''flow'' THEN coalesce(m.level, 0) ELSE coalesce(m.mtd, 0) END AS mtd'}
 - {id: q-dispatch-dark-as-not-event, what: 'dark read as cadence <> ''event'': the cadence guard admits only daily and event, and NULL for an unregistered line either way', old: 'coalesce(cadence = ''daily'' AND today_rows = 0, false) AS dark_flag', new: 'coalesce(cadence <> ''event'' AND today_rows = 0, false) AS dark_flag'}
-- {id: q-join-attribution-on-budget-line, what: 'attribution joined on b.line instead of x.line: b.line is NULL only for an unregistered line, which reads unregistered first', old: LEFT JOIN ab ON ab.line = x.line, new: LEFT JOIN ab ON ab.line = b.line}
 - {id: q-event-rate-floor-division, what: 'event rate with // : DuckDB 1.5.4 returns true division for DOUBLE operands (100.0 // 7 = 14.2857); engine-specific, pinned by r05 on an engine that floors', old: ', 0) / (SELECT window_days FROM p) AS event_rate', new: ', 0) // (SELECT window_days FROM p) AS event_rate'}
 - {id: q-unattributed-drops-parts-clause, what: 'the parts > 0 conjunct dropped: when parts is 0 the attributed sum is NULL and the comparison is NULL, as for q-parts-ge-zero', old: OR (parts > 0 AND abs(, new: OR (abs(}
 ```
@@ -2155,8 +2184,8 @@ equivalent:
   unattributed_flag on any line and the last monthly invoice residual inside tolerance. The return leg and version rule
   are #1398's k1 and k2.
 - failure_signal: loop spend or egress nobody reads: a daily cost line with no ledger row, a day with no
-  component attribution, or an invoice the ledger cannot explain. Metric dark_line_days: daily lines with
-  dark_flag that day; must be 0, read beside the monthly invoice-vs-ledger residual. Source: the daily
+  component attribution, or an invoice the ledger cannot explain. Metric dark_line_days: lines with
+  dark_flag or unattributed_flag that day; must be 0, read beside the monthly invoice-vs-ledger residual. Source: the daily
   verdict log's dark_flag and unattributed_flag per line, and the monthly cost reconciliation discrepancy
   leg.
 - verification: c1 vectors, c2 ledger coverage over a month of runs from sources that need no Terraform
