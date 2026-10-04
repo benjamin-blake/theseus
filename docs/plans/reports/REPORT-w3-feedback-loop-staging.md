@@ -17,9 +17,13 @@ Three things are staged and one thing is settled by the staging itself.
    (F-035) because the false-positive threshold had no formula and no home, gets both: the formula is
    the filer's rejected_share per detector per trailing 30 days as #1396 defines it, the denominator is
    filer proposals (read_all) or filed recs (later rungs), the source is the operator's verdicts joined to
-   the filer run record in the loop journal, read beside run liveness, and the home is the
-   pwi-rec-filing-dedupe item's failure_signal bound and that detector's register row. The number stays
-   the operator's (0.05 is the filer's provisional seed, unmeasured). T3.3 c1 is re-grounded from "an
+   the filer run record in the loop journal, read beside run liveness, and the home is the filer's
+   versioned rule set with that detector's register row as its monitor (the pilot item ids are provenance
+   only; the fixture is not a roadmap and its ids are re-pointed at lift). The number stays the operator's
+   (0.05 is the filer's provisional seed, unmeasured). The gap is adjudicable at read_all only: above
+   read_all the operator marks just the reviewed fraction, so the share falls with the review fraction
+   rather than with quality, and a detector that files nothing reads as passing; that measure question is
+   parked as W3-6, so F-035 is narrowed, not closed. T3.3 c1 is re-grounded from "an
    agent files recs via log-rec" to the loop's own shape (daily detector runs, one filer, the portal
    path). T3.4 c1 is re-grounded step by step onto the pilot items it is realized by, ending in
    back-validation's verdict keyed to the fix sha under the Decision 201 amendment. T3.4 c2 keeps its
@@ -127,13 +131,22 @@ staged_criteria:
       proposals or filed recs in the window; numerator: those marked covered, duplicate or reject.
       Source: the operator verdicts joined to the filer run record (one row per filer run, loop record
       journal), read beside run liveness (runs scheduled vs run records written, the loop_liveness_stale
-      legs) so an outage never reads as a quiet queue. Home: the bound on the pwi-rec-filing-dedupe
-      item's failure_signal and that detector's row in the Goodhart register. Number: the operator's; provisional seed 0.05 (the
-      filer's own top-rung bound), unmeasured until friction rows exist. Adjudicable once the formula,
-      denominator, window, source and home above are applied (closes audit F-035 as written). Tracking
-      surface: the operator's, rec-curator as today or the register row's daily verdict once it exists
-      (#1400 k5 (c)).
-    basis: "#1396 section 4 (failure_signal rejected_share, 'the T3.3 false-positive rate that audit F-035 found undefined, so W3 can stage it as that criterion's formula'); synthesis section 2.5 and section 6; #1400 k5 (c) names the F-035 threshold as one register row; #1401 k2 for the register home"
+      legs) so an outage never reads as a quiet queue. Home: the filer's versioned rule set (its
+      params_version stamped on every filer run record), with that detector's row in the Goodhart
+      register as its monitor; as designed in pwi-rec-filing-dedupe and pwi-goodhart-register, whose ids
+      are provenance only (the pilot fixture is not a roadmap, CD.45, and its ids are re-pointed at
+      lift). Number: the operator's; provisional seed 0.05 (the filer's own top-rung bound), unmeasured
+      until friction rows exist. Adjudicable at read_all once the formula, denominator, window, source
+      and home above are applied. OPEN above read_all (parked as W3-6): the operator marks only the
+      reviewed fraction (sampled 0.2, spot_check 0.04, anomaly_triggered 0.008 as seeded), so an
+      unreviewed rec reads as not rejected and the share falls with the review fraction rather than with
+      quality; a detector with no proposals in the window reads 0/0 and must read unmeasurable, never
+      below the threshold (the cheap way to a low rejected_share is to file nothing, #1396's own guard);
+      covered and duplicate are dedupe misses, not false positives, so the measure is a noise share, not
+      a false-positive rate in the FP/(FP+TN) sense. Until W3-6 is answered the F-035 gap is narrowed, not
+      closed. Tracking surface: the operator's, rec-curator as today or the register row's daily verdict
+      once it exists (#1400 k5 (c)).
+    basis: "#1396 section 4 (failure_signal rejected_share, 'the T3.3 false-positive rate that audit F-035 found undefined, so W3 can stage it as that criterion's formula'); synthesis section 2.5 and section 6; #1400 k5 (c) names the F-035 threshold as one register row (the home's monitor); the filer's params_version stamp (#1396 section 2) is the home"
     consult: "#1396 rows stay or refine (k1-k6); no consult row contests rejected_share as the metric. The 2026-10-03 consult's open question 2 (review capacity) and 4 (loss asymmetry on a proof) bear on the number, not the formula."
   - item: T3.3
     criterion: c1
@@ -144,17 +157,21 @@ staged_criteria:
     text_staged: >-
       Each loop detector (friction classifier, deliberation drift, Goodhart register, cost and egress
       budget) runs daily as a scheduled, deterministic read over the telemetry journal and writes its
-      findings or verdict to the loop record journal; the loop's one rec writer, the filer
-      (pwi-rec-filing-dedupe), files anomaly recs through scripts.ops_data_portal file_rec and
-      update_rec with fingerprint dedupe against open recs ("log-rec" read as that portal path, Decision
-      84; Decision 67 boundary unchanged). Realized by the pilot items pwi-friction-classifier,
+      findings or verdict to the loop record journal; anomaly recs are filed through
+      scripts.ops_data_portal file_rec and update_rec by the filer (pwi-rec-filing-dedupe) with
+      fingerprint dedupe against open recs, and the budget's breach recommendation files by the route
+      CD.49 / F13 picks ("log-rec" read as that portal path, Decision 84; Decision 67 boundary
+      unchanged). Realized by the pilot items pwi-friction-classifier,
       pwi-deliberation-capture, pwi-goodhart-register, pwi-loop-cost-egress-budget and
       pwi-rec-filing-dedupe at their build, not by a bespoke telemetry_analysis_agent Lambda; the
       intent's "scheduled Step Functions execution in T4 per CD.27" is the schedule's home, decided at
-      the build plan. Met when every detector above has run daily for its first-rung window at read_all
-      and the filer has filed at least one rec that traversed the queue.
-    basis: "synthesis sections 2.3 (waves 2 and 3), 3.4 (review units), 4 X18 (the filer as the one rec writer; parked F13); #1396 section 2 (file_rec and update_rec through the portal); T3.3 files_in_scope names src/lambdas/telemetry_analysis_agent/ and a scheduled workflow, which the designs replace with the detectors; files_in_scope is a build-plan edit and is not staged here"
-    consult: "no consult row addresses T3.3 c1; the c10 consult's k1 shadow-month refinement (verdicts logged, nothing filed for the first measured month) would delay the 'at least one rec' clause by a month and is carried in CD.50's options"
+      the build plan. Met when every detector above has run daily for its first-rung window (daily
+      meaning no loop_liveness_stale leg fired in the window) with the detectors at read_all, and the
+      filer, at sampled or above (read_all is propose-only, #1396 section 4), has filed at least one rec
+      that traversed the queue. The filer's leaving read_all waits on the capture session denominator
+      (section 4 row 1 and F9), so this clause cannot be met until that answer lands.
+    basis: "synthesis sections 2.3 (waves 2 and 3), 3.4 (review units), 4 X18 (the rec-writing route, parked F13); #1396 section 4 (read_all is propose-only); #1396 section 2 (file_rec and update_rec through the portal); T3.3 files_in_scope names src/lambdas/telemetry_analysis_agent/ and a scheduled workflow, which the designs replace with the detectors; files_in_scope is a build-plan edit and is not staged here"
+    consult: "the c10 consult's F13 row differs (file the budget's breach rec through the cost reconciliation path, not the filer) and this text presumes neither route (F13-F14, row 14); the c10 consult's k1 shadow-month refinement (verdicts logged, nothing filed for the first measured month) would delay the 'at least one rec' clause by a month and is carried in CD.50's options"
   - item: T3.4
     criterion: c1
     gap: none (chain re-grounded onto the pilot items)
@@ -163,19 +180,23 @@ staged_criteria:
     text_today: "Anomaly detected → rec filed → priority queued → /plan or executor → fix → telemetry delta proves fix"
     text_staged: >-
       Anomaly detected (a detector finding with a fingerprint: detector_id, subject key, classifier or
-      parser version) -> rec filed by the loop filer with dedupe (pwi-rec-filing-dedupe; the filer is the
-      loop's one rec writer) -> priority queued (the existing ops_priority_queue; Decision 67 boundary)
+      parser version) -> rec filed by the loop filer with dedupe (pwi-rec-filing-dedupe; a budget breach
+      rec files by the route CD.49 / F13 picks) -> priority queued (the existing ops_priority_queue; Decision 67 boundary)
       -> /plan or executor -> fix (the fix PR names the rec in its Resolves: trailer; the telemetry
       verdict source stamps a fix attempt {fix sha, effective day} on the open rec at merge and supplies
       no verdict, so the rec stays open) -> telemetry delta proves fix (pwi-back-validation: exposed
       sessions in the matched baseline before the fix day against a post-fix sample at one
-      classifier_version, registry_version and parser_version; holds on one-sided Fisher p <= 0.05 and a
-      point estimate at most half the baseline; the verdict record is keyed to the fix sha and written
-      days after the merge under the Decision 201 amendment staged as CD.48; a holds is proposed for
-      confirmation until the component reaches anomaly_triggered). Met when one real rec traverses the
-      whole chain end to end at read_all with every step's record in the loop record journal.
+      classifier_version, registry_version and parser_version; holds under the back-validation decision
+      rule declared in its contract, whose parameters (#1397 k4) live in that contract, not here; the
+      verdict record is keyed to the fix sha and written days after the merge under the Decision 201
+      amendment staged as CD.48; a holds is proposed for confirmation until the component reaches
+      anomaly_triggered). Met when one real rec traverses the whole chain end to end, with
+      back-validation at read_all and the filer at sampled or above (read_all is propose-only), ending in
+      a holds verdict the operator confirms, with every step's record in the loop record journal. The
+      filer's leaving read_all waits on the capture session denominator (section 4 row 1 and F9), so this
+      clause cannot be met until that answer lands.
     basis: "synthesis section 2.3 (waves 3 and 4) and X10, X18; #1396 section 2; #1397 sections 2 and 5 (k1 plumbing (a), k4 decision rule (a)); CD.47 and CD.48 below"
-    consult: "#1397 k1 stays (high on the amendment, medium on (a) vs (b)); k4 refined (add a partial reason; revisit (c) if overturned fails dominate); k2 refined (close_proposed only once the filer has also gone quiet). The chain text presumes k1 (a) and k4 (a); under k1 (b) the trailer clause changes to a separate trailer and job."
+    consult: "#1397 k1 stays (high on the amendment, medium on (a) vs (b)); k4 refined (add a partial reason; revisit (c) if overturned fails dominate); k2 refined (close_proposed only once the filer has also gone quiet). The chain text presumes k1 (a) and k4 (a); under k1 (b) the trailer clause changes to a separate trailer and job. The rec-filing step presumes neither F13 route (F13-F14, row 14; the c10 consult prefers the cost reconciliation path)."
   - item: T3.4
     criterion: c2
     gap: none (relationship to the review ladder stated; stale anchor flagged)
@@ -425,11 +446,15 @@ cd_routing:
   - {id: CD.46, significance: numbered_decision, rejected_home: "a governance note on the pilot fixture (docs/work-item-pilot/) or on data-modeling-standard.yaml: the family binds ten components and a controller across two roadmap items, which no single contract owns; the pilot schema change (P7) is evaluator code and cannot carry the rule", amendment_forms: "none applies: no prior Decision owns a review ladder (T3.4 c2 is roadmap text; Decision 92 is not the anchor it is cited as)", settles: [X4, X5, X6, X7, X8, X16, X19], presumes: ["F1 (a)+(d)", "F2 (a)", "F3 (a)", "F4 (a)", "F7 (a)", "F11 (a)", "#1398 k1 (a)", "#1398 k2 (a)(a1)", "#1398 k3 (a)", "#1398 k5 (a)", "#1398 k7 (a)+(d)", "#1400 k1 (a)/(b)", "#1400 k1 (v) (b)"], consult: "F4 differs (consult: the ladder owns the review-items envelope; synthesis: the budget owns the line, the ladder the schedule); #1398 k3 refined (standing approval rule); #1400 k1 (iv), k2 retirement/onboarding, k2 malformed-input and k3-at-lift differ (section 5)"}
   - {id: CD.47, significance: numbered_decision, rejected_home: "a governance note on data-modeling-standard.yaml (owns HOW a table is designed, not WHERE six components' records live) or a new Class C loop-journal contract (F8 (c): a contract class with one occupant, Decision 86's anti-pattern)", amendment_forms: "a dated annotation on Decision 199 was considered and rejected: Decision 199 governs telemetry events, and applying its model to loop records is a new commitment, not a reading of it", settles: [X11], presumes: ["F8 (a)"], consult: "converged: both consults asked the register and the budget for a faults list; #1396 q4 stays (journal, medium-low) and its producer-tag exclusion, with the c10 k2 contract-entry note, are named in the row as refinements the operator keeps or strips, not adopted"}
   - {id: CD.48, significance: numbered_decision, rejected_home: "docs/contracts/git-ops.yaml trailer_acceptance_gate governance note (owns the trailer path's instruction surfaces, not a new verdict source with its own closer and enforcement site)", amendment_forms: "a dated annotation on Decision 201 was considered and rejected: the change adds a third source, a late closer and a non-trailer update_rec caller, which binds every verdict-supplying path (Decision 201's own significance justification), so it clears the bar on its own terms; the consult rates the need for a numbered amending Decision high", settles: [X10], presumes: ["#1397 k1 (a)", "#1397 k2 (b)", "#1397 k4 (a)", "#1396 k4 (a)"], consult: "#1397 k1 stays (high on the amendment, medium on (a) vs (b)); its two additions (trailer-reconstructable attempts; a distinct stamp key) and the k2 'filer gone quiet' refinement are named in the row as refinements the operator keeps or strips, not adopted; #1396 k4 differs (consult: self-close by rung with close_proposed interim; design: never, until back-validation exists)"}
-  - {id: CD.49, significance: numbered_decision, rejected_home: "a filer lifecycle contract (which #1396 k1 needs anyway for covered_by) was considered and rejected as the sole home: the commitment binds the budget and back-validation as well as the filer, and bounds who may write under Decision 67", amendment_forms: "a dated annotation on Decision 67 was considered and rejected: Decision 67 defers STRATEGIC plan execution; the one-writer rule is a new boundary, not a reading", settles: ["X18 and X21 only once F13 and F14 are answered; the row itself settles neither"], presumes: ["F13", "F14", "#1396 k4 (a)", "#1401 k1 (a)"], consult: "F13 differs (consult: file through the cost reconciliation path; synthesis: route through the filer); the row carries both as its options and the operator answers F13 and F14 together"}
+  - {id: CD.49, significance: numbered_decision, rejected_home: "a filer lifecycle contract (which #1396 k1 needs anyway for covered_by) was considered and rejected as the sole home: the commitment binds the budget and back-validation as well as the filer, and bounds who may write under Decision 67", amendment_forms: "conditional on F13: under (b) a numbered row, because one writer for the loop is a new boundary that no dated annotation on Decision 67 (which defers STRATEGIC plan execution) could carry; under (a) there is no new boundary, the breach rec uses the existing cost reconciliation path, and this row folds into CD.50's alarm-not-gate clause with no separate number", settles: ["X18 and X21 only once F13 and F14 are answered; the row itself settles neither"], presumes: ["F13", "F14", "#1396 k4 (a)", "#1401 k1 (a)"], consult: "F13 differs (consult: file through the cost reconciliation path; synthesis: route through the filer); the row carries both as its options and the operator answers F13 and F14 together"}
   - {id: CD.50, significance: numbered_decision, rejected_home: "a governance note in config/agent/cost_reconciliation.yaml (the register's home under #1401 k2 (a), but a config file holds thresholds, not the unit, attribution and alarm-not-gate commitments) or Decision 88's own text (the egress line only)", amendment_forms: "a dated annotation on Decision 88 was considered and rejected: Decision 88 budgets one line; this row binds ten lines, a price table and an attribution rule", settles: [X5], presumes: ["#1401 k1 (a)", "#1401 k2 (a)+(c)", "#1401 k3 (a)+(c)", "#1401 k4 (a)", "#1401 k5 (a)", "#1401 k7 (a)", "#1401 k8 (a)", "#1401 k9 (a)", "#1401 seeds"], consult: "all nine #1401 rows stay or refine; the refinements (shadow month, effective-dated prices, unknown component, typed lines, days-to-envelope, the catalog egress seed from the Neon plan's included egress) are named in the row as refinements the operator keeps or strips at filing, not as rule text; the projected_breach filing and per-line monthly dedupe live in CD.49 option (a); k9's review_items owner follows CD.46's F4 choice"}
   - {id: CD.51, significance: numbered_decision, rejected_home: "a per-field egress key in each telemetry Class A contract (#1399 k5 (a)) is the MECHANISM and is kept; it cannot carry the boundary rule, which Decision 209 clause 2(b) and 5(i) own", amendment_forms: "a dated annotation on Decision 209 was considered and rejected: clause 5(i) names rec-4141 as the vehicle and its reversal condition allow-list-transport says 'amend clause 5(i)', which is an amending entry, and the content (membership, grain, identifiers, transport) is a security boundary with reversal-relevant consequences", settles: [], presumes: ["#1399 k5 (a)", "k1-k4 left blank (always-ask; design and consult positions shown side by side)"], consult: "all six #1399 rows stay or refine; the alignment consult's hybrid (allow-list on structure, deny-by-value inside allowed columns, ingest-side second check) is shown beside the design's option in each blank, not adopted; the #1399 k4 minimum-cell refinement likewise; k1-k4 are always-ask and the row is filed only after the operator answers them"}
   - {id: CD.52, significance: field_semantics, rejected_home: "none rejected: a dated amendment_forms annotation on Decision 199 clause 1 IS the recommended home (decision-entry.yaml amendment_forms); the row is listed as a CD only so the operator sees the T2.52 reactivation half beside it", amendment_forms: "recommended; a numbered entry only if the operator also reactivates T2.52 (#1390 k2 (b)), which is a tier-item status change under Decision 93", settles: [X3], presumes: ["#1390 k2 (a)"], consult: "#1390 k2 stays (build sessions_window in the reader; record the cl.1 reading as a Decision 199 update note; 'lands' = T2.36 c2; medium-high); the operator's reading of 'lands' decides the T2.52 half (consult open question 7)"}
 ```
+
+X5 (the review-load line) is settled jointly: CD.46 carries the schedule and CD.50 the line and alarm
+(F4 (a)), so filing either row alone leaves X5 half-settled; the operator files both or takes the
+consult's F4 reading, under which the line moves into CD.46.
 
 Not candidate decisions, and why. The ratified Class A contract amendments the designs need are
 field_semantics by decision-entry's routing (the meaning of a field or a derivation) and go to the
@@ -459,6 +484,10 @@ fork row of the eleven parked-forks files, and every open question their prose n
 covered by one, and that every row of the
 two consults' recommendation tables maps to a row here (the mapping is the consult_rows block that
 follows the list).
+
+Two warnings for whoever decides. Approving the synthesis en bloc is unsafe: F5 (a) and F13 (b) cannot
+both hold under MAX_EDGES_FROM_ITEM 3 (row 14). Only F5 and F10 (rows 6 and 11) gate the first merge;
+every row above them binds a promotion or a read_all run, which comes later.
 
 Columns: source is the fork's own id in its parked-forks file; class is asked or always-ask; design is
 the recommending report's option; consult is the consult's verdict against that recommendation (stays,
@@ -521,7 +550,7 @@ parked_questions:
   - {rank: 52, id: register-k3, group: wave_3, binds_at: build, source: "#1400 k3", class: asked, question: "Where counters and drills are declared", options: "(a) the register's rows (staged); (b) two new FailureSignal fields the evaluator requires on every item (a pilot-schema change, O1); (c) each item's prose", design: "(a) now, (b) at lift", consult: "differs at lift (medium-high): (a) now; at lift a required register_row reference with an evaluator check, not inline counter and drill fields", unblocks: "the register's build; the lift's evaluator change"}
   - {rank: 53, id: budget-k1-precedence, group: wave_3, binds_at: build, source: "#1401 k1 (precedence and windows)", class: asked, question: "Choices inside the budget verdict's SQL (precedence unregistered > breach > dark > projected_breach > unattributed > warn > ok; dark_flag and unattributed_flag beside the label; 31-day window with a NULL day raising; 7-day rate window; 9-place comparisons; blank names raise; orphan attribution on an event line ignored; an unregistered line's unattributed_flag reads its parts; a zero envelope legal)", options: "as staged; keep one label and re-source the signal from the ledger directly; read a missing event-line row as 0; gate the flag on registration", design: "as staged until k1 is answered", consult: "refined (medium-high): as staged; a faults list beside the two flags at build (CD.47); orphan attribution as a counted data-quality warning", unblocks: "the budget's SQL at build"}
   - {rank: 54, id: budget-k1-projection, group: wave_3, binds_at: build, source: "#1401 k1 (event-line projection)", class: asked, question: "Event-line projection (calendar-day mean for event lines, reporting-day mean for daily lines)", options: "as staged; one mean for both cadences; no projection for event lines", design: "as staged", consult: "stays (high); one sentence that the 7-day window reaches into the previous month early in a month", unblocks: "the budget's SQL at build"}
-  - {rank: 55, id: budget-k2, group: wave_3, binds_at: build, source: "#1401 k2", class: asked, question: "Where the budget register lives", options: "(a) a loop_budget block in config/agent/cost_reconciliation.yaml (a loader schema change); (b) a new Class C contract with the ledger and attribution tables as Class A entries; (c) the pilot item's register rows only", design: "(a) plus (c); (b) once the ledger is a warehouse table", consult: "refined (medium-high): (a) plus (c); the ledger and attribution schemas go to contracts the day the tables exist (T2.36), the other half of the same build; version the register and stamp it on every verdict; whether cost_reconciliation.yaml stays the monthly monitor's file alone is the operator's", unblocks: "CD.50's home clause; the T3.3 c2 staged text's home moves with it"}
+  - {rank: 55, id: budget-k2, group: wave_3, binds_at: build, source: "#1401 k2", class: asked, question: "Where the budget register lives", options: "(a) a loop_budget block in config/agent/cost_reconciliation.yaml (a loader schema change); (b) a new Class C contract with the ledger and attribution tables as Class A entries; (c) the pilot item's register rows only", design: "(a) plus (c); (b) once the ledger is a warehouse table", consult: "refined (medium-high): (a) plus (c); the ledger and attribution schemas go to contracts the day the tables exist (T2.36), the other half of the same build; version the register and stamp it on every verdict; whether cost_reconciliation.yaml stays the monthly monitor's file alone is the operator's", unblocks: "CD.50's home clause (the T3.3 c2 threshold's home is the filer's rule set with its Goodhart register row as monitor, not the budget register)"}
   - {rank: 56, id: budget-k3, group: wave_3, binds_at: build, source: "#1401 k3", class: asked, question: "The unit the budget is kept in", options: "(a) physical units per line, priced at read; (b) invoice dollars per line from the monthly snapshot; (c) shares of the bill, as the five existing triggers use", design: "(a), with (c) as the monthly reconciliation leg", consult: "refined (high): (a) with (c); the price table effective-dated (SCD2), never re-pricing a closed month", unblocks: "CD.50's unit clause; the price table (rec-4031)"}
   - {rank: 57, id: budget-k4, group: wave_3, binds_at: build, source: "#1401 k4", class: asked, question: "How catalog egress is measured", options: "(a) a proxy: catalog_stats bytes per read times reads per day (Decision 88 clause 2's path), bracketed 17x apart by the model's two cases; (b) the Neon consumption API (a new credential in the data plane, always-ask, never chosen here); (c) the monthly Neon invoice, a month late", design: "(a) now, calibrated once against (c); (b) only if they disagree beyond tolerance", consult: "stays (medium); (b) named as the best-practice lift target once a read-only Neon key is approved, never autonomously; the plan's included egress is the real envelope (the operator's)", unblocks: "the budget's first line (Decision 88); P6; rows 27 and 61"}
   - {rank: 58, id: budget-k5, group: wave_3, binds_at: build, source: "#1401 k5", class: asked, question: "How shared lines are attributed to components", options: "(a) per-call stamps (Decision 199's producer field; a caller tag on the Lambda log line), which changes writer and reader Lambda code shipped through the governed code-deploy channel (always-ask step); (b) proportional split by request share; (c) unattributed by design for Lambda lines", design: "(a)", consult: "refined (high): (a), the stamp mandatory at the write boundary with a reserved canonical component unknown; the governed deploy named, not recommended autonomously", unblocks: "CD.50's attribution clause; the two largest priced lines' owners"}
@@ -701,7 +730,10 @@ already approved. None is decided by the Step 6b stand-in. The asked rows are al
   text-only re-ground of a criterion is not a flip; but c1's re-ground cites #1396 and c2's fill cites
   #1396, #1400 and #1401 (all unmerged) for the loop's shape, source and home | precedent_kind:
   operator ruling and unmerged_plan | reversible: yes (a staged edit the operator may decline) |
-  persisted: section 2 rows 1-2, w3-parked-forks.md". W3-2.
+  persisted: section 2 rows 1-2, w3-parked-forks.md". W3-2, which also carries the reverse-reference
+  question: the staged text names pilot item ids (pwi-...) that exist on no roadmap, in a fixture CD.45
+  calls not a roadmap and sunsets, so the operator says whether roadmap text may cite them as provenance
+  with the mechanism named first (the staged form) or must wait for the lift's re-pointing.
 - "fork: add a new criterion to T3.4 for the loop's review ladder, or carry the ladder inside c2's
   staged text | chosen: no new criterion; c2 carries one sentence and the ladder is CD.46 | class:
   consistency-only | precedent: brief (nothing is ratified; no status or criterion flips) and T1.17
@@ -740,6 +772,14 @@ already approved. None is decided by the Step 6b stand-in. The asked rows are al
   unmerged) | precedent_kind: none | reversible: yes | persisted: section 3 CD.49 and CD.50,
   w3-parked-forks.md". W3-5: the operator says whether X18 and the budget register are Decisions now or
   wait for their items' merges.
+- "fork: the F-035 measure above read_all | chosen: none; the gap is stated in the T3.3 c2 row and the
+  fill is marked adjudicable at read_all only | class: asked | precedent: none (#1396's rejected_share
+  and its spot_check -> anomaly_triggered trigger carry the same review-fraction bias; amending them
+  amends an unmerged design) | precedent_kind: none | reversible: yes | persisted: section 2 row 1,
+  w3-parked-forks.md". W3-6: the operator says whether the denominator becomes operator-reviewed
+  outputs in the window (or a sampling-weighted estimate), whether a minimum reviewed count per
+  detector applies, that 0/0 reads unmeasurable, and whether reject is split from covered and
+  duplicate.
 
 ## 7. Boundary
 
@@ -763,3 +803,4 @@ sentence above that cites them is pinned to the inputs block and is re-read when
 | ninety-six parked rows, unique ids, capture-q1 first, F1-F14 next with F13 and F14 as one row, three calls, groups and binds_at in order, every parked-forks fork, every prose open question and every consult table cell mapped | section 4 | VP 4 |
 | the six consult differs rows and the three synthesis departures are present, each naming a section 4 row | section 5 | VP 5 |
 | the plan validates; the branch is plan and report only; the fast tier passes | plan | VP 6, 7, 8 |
+| no staged criterion or CD rule text carries a contested resolution phrase outside a sentence that names the fork, an option or a consult position | sections 2, 3 | VP 9 |
