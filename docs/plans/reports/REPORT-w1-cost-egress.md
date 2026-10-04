@@ -80,7 +80,7 @@ the model's, not a measurement's (q1).
 | e2 | 1 of 9 sibling failure_signals or maturity triggers names egress (#1399); 2 of 9 items carry a criterion naming egress (#1390 c3, #1399 c1 and c2); 0 of 9 items names a budget, an envelope or a price; 8 of 9 are data-plane only (#1399 is data and control) [VP 1] | sibling fixtures |
 | e3 | The roadmap cost_projection block says "Not a budget; an architectural cost sanity-check"; its 5 reevaluation_triggers name DeepSeek, the Anthropic pool, S3 share, the runner and Step Functions share, none egress, Neon, Lambda, catalog, review or telemetry; its neon_catalog_egress line begins "TBD" [VP 2] | docs/ROADMAP-PLATFORM.yaml cost_projection |
 | e4 | config/agent/cost_reconciliation.yaml has 6 thresholds mirroring those 5 triggers plus invoice_vs_telemetry_discrepancy_pct 5.0; none names egress, Neon, Lambda or catalog [VP 2] | config/agent/cost_reconciliation.yaml:14 |
-| e5 | load_telemetry_cost('2026-09') returns None: the telemetry leg of the monthly reconciliation is a stub "until T2.36 lands est_cost_usd"; no contract under docs/contracts names est_cost_usd, while 2 name cost_usd [VP 2] | scripts/cost_reconciliation.py:149 |
+| e5 | load_telemetry_cost('2026-09') returns None: the telemetry leg of the monthly reconciliation is a stub "until T2.36 lands est_cost_usd"; no contract under docs/contracts names est_cost_usd, while 2 name cost_usd, which telemetry_observations derives at read (reader_verb:model_call_cost_estimate, no stored column) beside the stored cost_usd_reported [VP 2] | scripts/cost_reconciliation.py:149, docs/contracts/telemetry_observations.yaml:290 |
 | e6 | 0 Terraform files declare an AWS budget or cost-anomaly resource, and 0 declare an S3 bucket metrics configuration, inventory or Storage Lens; 0 non-comment Terraform lines name catalog_stats, so the Decision 88 clause 2 measurement path has no schedule; the reconciliation workflow runs monthly ("0 6 4 * *") [VP 2] | terraform/personal, .github/workflows/cost-reconciliation.yml:11 |
 | e7 | .claude/settings.json wires 2 hook events (SessionStart, PreToolUse) and no Stop or SessionEnd hook, so no capture producer writes today and the ledger's writer lines read 0 until #1384 lands [VP 2] | .claude/settings.json |
 | e8 | In the model, touched-files catalog egress per month is 1,576,200,000 bytes at 5 sessions a day (detector share 0.834), 5,779,200,000 at 20 and 96,595,200,000 at 100; whole-catalog egress is 27,621,000,000, 71,136,000,000 and 371,616,000,000; 20 sessions at one merge window a day reads 18,544,800,000 [VP 3] | section 2.3 |
@@ -149,7 +149,11 @@ Lambda and S3, none yet for Neon egress) applied to the day's quantity, as Decis
 tokens and Decision 206 clause 7 budgets turns and wall-clock rather than dollars. That keeps the public
 repository free of measured dollar figures (Decision 101; the reconciliation's public_summary rule), lets a
 price change re-price the whole ledger without a rewrite, and makes the free tier's lines (local adapter,
-no bill) meaningful as quantities even where no price applies (q2).
+no bill) meaningful as quantities even where no price applies (q2). Pricing at read honours billing_shape
+(Decision 206; docs/contracts/telemetry_observations.yaml cost_usd derivation): a row under a
+fixed_non_rollover_allowance derives no dollars, so the token line stays in tokens there, and a token line
+counts all four classes the contract records (input, output, cache read, cache creation), since on Claude
+input excludes cache reads and cache creation is billed at a premium.
 
 A line is also a flow or a stock (its measure). A flow is consumed and summed: bytes read, requests made,
 items reviewed; the month-to-date sum is what the envelope bounds. A stock is a level that is read, not
@@ -181,10 +185,10 @@ register:
   - {line: reader_requests, unit: count, owner: shared, cadence: daily, measure: flow, envelope_month: 30000, warn_share: 0.8, source: 'CloudWatch Invocations on the reader Lambda, emitted free, read with GetMetricStatistics', price_at_read: 'Lambda request list price'}
   - {line: lambda_gb_seconds, unit: GB-s, owner: shared, cadence: daily, measure: flow, envelope_month: 100000, warn_share: 0.8, source: 'CloudWatch Duration times configured memory per function (writer 3008 MB, reader 1024 MB, maintenance 1536 MB), emitted free, read with GetMetricStatistics', price_at_read: 'Lambda duration list price'}
   - {line: s3_requests, unit: count, owner: shared, cadence: daily, measure: flow, envelope_month: 300000, warn_share: 0.8, source: 'PUTs counted by the writer Lambda per call (files written) and GETs counted at the httpfs layer per reader query (several range GETs per Parquet file: the footer and each column chunk, so files scanned would under-count by a structural factor), each on the Lambda log line (k8); S3 request metrics and access logs are Terraform plus spend and are not used', price_at_read: 'S3 request list prices, PUT and GET apart'}
-  - {line: s3_storage_bytes, unit: bytes, owner: pwi-capture-producer-wiring, cadence: daily, measure: stock, envelope_month: 21474836480, warn_share: 0.8, source: 'sum of data_file_size_bytes over ducklake_list_files for the four telemetry tables, one catalog read a day charged to catalog_egress_bytes (k8); bucket-wide BucketSizeBytes read as the ceiling, since it has no prefix dimension', price_at_read: 'S3 storage list price'}
+  - {line: s3_storage_bytes, unit: bytes, owner: pwi-capture-producer-wiring, cadence: daily, measure: stock, envelope_month: 21474836480, warn_share: 0.8, source: 'sum of data_file_size_bytes over ducklake_list_files for the four telemetry tables, one catalog read a day charged to catalog_egress_bytes (k8), plus the blob port prefix for transcripts over 64 KiB, which the telemetry stream places outside every DuckLake data path (Decision 199 cl.5; relayed design, unmerged) and the catalog sum therefore misses; bucket-wide BucketSizeBytes read as the ceiling, since it has no prefix dimension', price_at_read: 'S3 storage list price'}
   - {line: review_items, unit: count, owner: pwi-maturity-ladder-controller, cadence: daily, measure: flow, envelope_month: 900, warn_share: 0.8, source: 'rows of the ladder review table per day (#1398; about 72 a day at read_all across six components)', price_at_read: 'operator time; never priced in dollars (q3)'}
   - {line: plane_egress_bytes, unit: bytes, owner: pwi-allow-list-transport, cadence: event, measure: flow, envelope_month: 0, warn_share: 0.8, source: 'bytes of each egress batch, logged in the data plane before sending (#1399 section 2.7 audit row)', price_at_read: 'unpriced; a zero envelope reads any byte as breach until #1399 k1 is answered'}
-  - {line: loop_llm_tokens, unit: tokens, owner: shared, cadence: event, measure: flow, envelope_month: 0, warn_share: 0.8, source: 'telemetry_observations tokens_input plus tokens_output for loop-owned producers (reasoning tokens are inside tokens_output, #1395; never add them twice)', price_at_read: 'rec-4031 price table at read (Decision 199)'}
+  - {line: loop_llm_tokens, unit: tokens, owner: shared, cadence: event, measure: flow, envelope_month: 0, warn_share: 0.8, source: 'telemetry_observations tokens_input, tokens_output, tokens_cache_read and tokens_cache_creation for loop-owned producers (all four classes: on Claude input excludes cache reads and cache creation is billed at a premium; reasoning tokens are inside tokens_output, #1395; never add them twice)', price_at_read: 'cost_usd as the contract derives it at read (reader_verb:model_call_cost_estimate, Decision 199): NULL for a billing_shape of fixed_non_rollover_allowance (Decision 206), else cost_usd_reported or the static price table over the four token classes'}
 ```
 
 Why these ten. The first seven are the meters the deployed shapes expose: the Neon catalog (Decision 88's
@@ -2158,8 +2162,10 @@ equivalent:
 ### Open questions (q1-q3 in the fixture)
 
 - **q1.** No measured egress exists. Who runs catalog_stats against the live catalog (Decision 88 clause
-  2, never scheduled, e6), and are the seed envelopes set from that reading or from the model here? Until
-  then every envelope in section 2.2 is a seed.
+  2, never scheduled, e6), and are the seed envelopes set from that reading or from the model here? The
+  telemetry stream says (relayed) its pre-production steps measure egress and no standing schedule is
+  planned, so the answer may be "that measurement, once", with this register reading the proxy after.
+  Until then every envelope in section 2.2 is a seed.
 - **q2.** On the free tier (local adapter, no cloud account, Decision 184 clause 2) there is no Lambda, no
   Neon and no bill. Which lines exist there (review_items, loop_llm_tokens, local bytes?), and does a
   budget in bytes and seconds mean anything with no price to apply at read?
@@ -2169,14 +2175,17 @@ equivalent:
 
 ### Named for owners, not filed (Decision 67)
 
-- **O1** scripts/cost_reconciliation.py names the telemetry cost column est_cost_usd (e5), while the
-  contracts that name a cost column name cost_usd; whichever lands with T2.36, the stub and the contract
-  should agree (cost reconciliation owner).
+- **O1** scripts/cost_reconciliation.py names est_cost_usd and TelemetryModelCalls (e5), both
+  pre-Decision-199 names; the contract has cost_usd, derived at read through
+  reader_verb:model_call_cost_estimate with no stored column, and cost_usd_reported, stored. The stub
+  should read the derived verb when T2.36 lands (cost reconciliation owner).
 - **O2** The roadmap's ducklake_catalog_neon line still reads "$0 (Neon serverless Postgres free tier ...)"
   while Decision 88 records the forced paid-plan upgrade of 2026-06-15 (roadmap cost_projection owner; a
   staged roadmap edit, Decisions 79 and 125, not made here).
 - **O3** catalog_stats, Decision 88 clause 2's measurement path, has never been scheduled, and the clause 2
-  figure is still TBD in the roadmap (e3, e6; maintenance owner).
+  figure is still TBD in the roadmap (e3, e6). The telemetry stream reports (relayed, unmerged) that no
+  standing schedule is planned and that its own pre-production steps measure catalog egress; the first
+  reading this register needs would come from there (maintenance and telemetry owners).
 - **O4** The monthly reconciliation's telemetry leg is a stub with no owning line (e5); the ledger staged
   here is a candidate source for it (cost reconciliation owner; T2.36).
 - **O5** No Neon egress unit price exists in the repository, so the one line Decision 88 ranks beside
@@ -2238,7 +2247,9 @@ equivalent:
   for (section 2.3); Decision 88 clause 4's GC gate (rec-2113's restore drill) is therefore a cost
   dependency of the loop, and the maintenance Lambda is a reader of the same catalog. The maintenance
   module's ducklake_list_files size sum is the staged s3_storage_bytes source (k8), so the stock line is
-  one more read of that catalog. W2 should place T2.19 and T2.26 beside the loop's items.
+  one more read of that catalog; transcripts over 64 KiB live in the blob port outside the catalog's data
+  path, so the line adds the blob prefix by the same rule. W2 should place T2.19 and T2.26 beside the
+  loop's items.
 - **Monthly reconciliation (CD.28).** This register is its daily, per-line front end and its telemetry
   leg's source (k3 (c), O4); it is not a second reconciliation. k2 (a) puts the register in the same file.
 
