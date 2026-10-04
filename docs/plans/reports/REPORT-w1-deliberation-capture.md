@@ -12,16 +12,16 @@ Fixture rows: `pwi-deliberation-capture` in `docs/work-item-pilot/telemetry-feed
   and `reasoning_tokens` (<= tokens_output; zero or NULL when visibility is none) on model_call rows;
   the "2a-1 plan" moves the claude_code producer's mapping to parser_version 2; rec-4028 owns the
   LiteLLM mapping (DeepSeek `reasoning_content` -> full, thinking from the RESPONSE only, never from
-  request messages). What no artefact holds is the read side: which metrics derive from those facts,
-  and how a silent capture loss would be seen.
-- The 2a-1 plan is not on main (VP 2). It lives in the telemetry project (q1, answered 2026-10-04):
-  `docs/plans/PLAN-telemetry-write-conformance.yaml` on branch `claude/project-thread-vmix09` at 77e56482,
-  no PR yet, its critique still pending. Read there: it adds `reasoning_visibility` (full, summarized,
-  omitted, redacted, none; required on model_call points) and `reasoning_tokens` (provider-reported, NULL
-  when unreported, at_most tokens_output, NULL or 0 when none), moves claude_code to parser_version 2, and
-  stops writing metadata.thinking_tokens. Its mapping matches the one this report assumes (omitted = empty
-  thinking blocks, or reported tokens > 0 with no text). Until it merges, the live producer stores Claude
-  thinking tokens only under that undocumented metadata key (VP 1, VP 2).
+  request messages). Slice 2a-1 landed it for claude_code on 2026-10-04 (#1405, 2553d69a). What no
+  artefact holds is the read side: which metrics derive from those facts, and how a silent capture loss
+  would be seen.
+- 2a-1 is merged (#1405, 2553d69a; q1 closed). The contract now carries `reasoning_visibility` (the five
+  values, required on model_call points) and `reasoning_tokens` (provider-reported, NULL when unreported,
+  at_most tokens_output, NULL or 0 when none), and a write-time row-rule kernel projects all four rules and
+  checks them before any SQL (src/telemetry/rules.py; VP 2). claude_code is at parser_version 2 and no longer
+  writes metadata.thinking_tokens. Its mapping is the one this report assumed (VP 1): an empty signed block
+  reads omitted, text reads summarized, redacted_thinking reads redacted, no reasoning reads none. 2a-1 is
+  deploy-inert: the writer verb that applies the kernel to stored rows is slice 2a-2.
 - On Claude Code the deliberation TEXT is not available by default; the token COUNT is. In this
   session's own transcript every thinking block (54 model_calls with thinking tokens) is empty and
   signed, so the producer writes zero thinking rows while 64% of output tokens were thinking (section 1).
@@ -48,12 +48,12 @@ Fixture rows: `pwi-deliberation-capture` in `docs/work-item-pilot/telemetry-feed
 | id | fact | anchor |
 |---|---|---|
 | e1 | Operator choice 2026-09-29: reasoning_visibility and reasoning_tokens on telemetry_observations (2a-1), claude_code mapping at parser_version 2 (2a-1), LiteLLM mapping and response-only capture (rec-4028); rec-4028 status open | rec-4028 context, 2026-09-29 entries (rec_by_id) |
-| e2 | The claude_code producer reads `usage.output_tokens_details.thinking_tokens` into model_call `metadata`; no typed column holds it [VP 1] | src/turn_capture/observations.py:243-269 |
-| e3 | A thinking block becomes a purpose=thinking row owned by the model_call only when its text is non-empty; a `redacted_thinking` block is a diagnostic only [VP 1] | src/turn_capture/transcripts.py:190-210 |
-| e4 | The contract has four token columns and no reasoning field; the MODEL_CALL metadata list (purpose_detail, prompt_hash, error) does not name thinking_tokens [VP 2] | docs/contracts/telemetry_observations.yaml:222-265, :408 |
-| e5 | `provider` is never set by the claude_code producer, and its vocabulary is the retired copilot set (rec-4135 tracks the vocabulary) [VP 1, VP 2] | docs/contracts/telemetry_observations.yaml:307; src/turn_capture/observations.py:56 |
+| e2 | The claude_code producer (parser_version 2) sets reasoning_visibility by block shape and stores the reported thinking_tokens as reasoning_tokens; metadata no longer holds it [VP 1] | src/turn_capture/observations.py:175-183, :290-314 |
+| e3 | A thinking block becomes a purpose=thinking row owned by the model_call only when its text is non-empty; a `redacted_thinking` block is a diagnostic only [VP 1] | src/turn_capture/transcripts.py:284-300 |
+| e4 | The contract has four token columns plus reasoning_visibility and reasoning_tokens with required_when, accepted_values, at_most and null_or_zero_when; the row-rule kernel projects all four [VP 2] | docs/contracts/telemetry_observations.yaml:222-265, :419-434; src/telemetry/rules.py:213-241 |
+| e5 | `provider` is never set by the claude_code producer, and its vocabulary is the retired copilot set (rec-4135 tracks the vocabulary) [VP 1, VP 2] | docs/contracts/telemetry_observations.yaml:307; src/turn_capture/observations.py:59 |
 | e6 | Tier 1 still names `deepseek/deepseek-chat` and `deepseek/deepseek-reasoner` [VP 2], and its note says the aliases "remap to deepseek-v4-flash post-2026-07-24" | docs/contracts/inference-provider.yaml:355-357 |
-| e7 | thinking is an accepted transcript purpose, owned by the model_call [VP 2] | docs/contracts/telemetry_transcripts.yaml:85, :131 |
+| e7 | thinking is an accepted transcript purpose, owned by the model_call [VP 2] | docs/contracts/telemetry_transcripts.yaml:85, :134 |
 | e8 | env R5(c) collapses one model_call seen by two producers to claude_code's row; transcript rows are not collapsed; env R8: a non-replayable producer emits no open marker | docs/contracts/telemetry-event-envelope.yaml:344-347, :359 |
 | e9 | A transcript-less producer (LiteLLM) receives session_started_at from another producer of the tree, else defers | docs/contracts/telemetry-event-envelope.yaml:115-121 |
 | e10 | Decision 209 cl.2(a): agent transcripts never leave the data plane; (b) only an allow-list crosses | docs/DECISIONS.md:75 |
@@ -162,12 +162,12 @@ text_unexpected). It is undefined (never 0) when no call is classified. The moni
 `none`, never `clean` (v07, v14; c2's third test node).
 
 `legacy_calls` counts only rows written before their producer classified: claude_code below parser_version
-2, the 2a-1 version (PLAN-telemetry-write-conformance sets 2, unmerged at 77e56482; the build binds
-the cutover to 2a-1's entry in config/telemetry/parser_versions.yaml, never a literal, per Decision 210
-cl.3: a cutover set too high is silent, one set too low is loud). It is a coverage
-figure, never drift, and excluded from every maturity trigger. It should fall to zero for sessions
-captured after 2a-1 and for trees the bump re-parses (env R7 replay); what stays is history whose
-transcript is gone (inferred, not measured). Any other NULL visibility (litellm at any version, claude_code
+2, the 2a-1 version (config/telemetry/parser_versions.yaml, merged in #1405; the build binds the cutover to
+that history entry, never a literal, per Decision 210 cl.3: a cutover set too high is silent, one set too
+low is loud). It is a coverage figure, never drift, and excluded from every maturity trigger. 2a-1's
+required_when admits no NULL visibility on any model_call point, and no telemetry writer was live before it
+(the contracts' TARGET-STATE notes), so no legacy row is expected in the store; the arm stays as defence
+(inferred, not measured). Any other NULL visibility (litellm at any version, claude_code
 from 2a-1 on) is `visibility_missing` and counts as drift (v15).
 
 Contract declaration (data-modeling-standard.yaml rule derived-state, Decision 199; the build's edit, not
@@ -181,12 +181,12 @@ telemetry_sessions with `derived_by: reader_verb:session_deliberation_rollup`, n
 reasoning_tokens_total, counted_output_tokens_total) and added to its roll-up reconciliation note. The
 roll-up verb returns grouped rows, not a per-call class, so `deliberation_class` names a per-call verb (or
 a per-call projection of the roll-up verb) as its derived_by, as `model_call_cost_estimate` does for cost;
-the build records that choice beside q4. The model_call field rides with 2a-1's telemetry_observations
-amendment; the session fields ride with the verb's build plan. The per-(producer, parser_version, model,
+the build records that choice beside q4. 2a-1 merged without these fields, so both the model_call field
+and the session fields ride with the verb's build plan. The per-(producer, parser_version, model,
 visibility) roll-up is multi-row per session and fits no single Class A field; where its shape is declared
 is q4. Decision 210 cl.3 also binds the SQL's literals to these sources: the text-bearing set (full,
 summarized) is read from the 2a-1 contract's visibility vocabulary and the cutover from
-parser_versions.yaml, never restated. A new value such as R9's would read text_unexpected only if it
+parser_versions.yaml, never restated. A value outside the vocabulary would read text_unexpected only if it
 stored a thinking row, and clean otherwise; the writer's accepted-set rule (cl.4, in the build gate) is
 what stops it, as the writer-side paragraph below says.
 
@@ -194,11 +194,13 @@ Writer-side, not here (Decision 210 cl.1 and cl.4, rec-4024 slice 2a; the rules 
 reasoning_visibility in its accepted set; reasoning_visibility NOT NULL on model_call rows at a
 classifying parser_version (litellm: every version; claude_code: from the 2a-1 version), which is
 conditional requiredness and never demoted to DQ; reasoning_tokens <= tokens_output; and reasoning_tokens
-zero or NULL when visibility is none. Decision 210 records that no telemetry value set or required_when
-rule is enforced at write today (docs/DECISIONS.md:19), and the read relies on all four: without them an
-out-of-set value (`Full`, `summarised`, empty), `none` with reasoning_tokens > 0 (a producer that saw
-reasoning and dropped it) and reasoning_tokens > tokens_output all read clean. So the build of this verb
-waits for the writer to enforce all four rules (plan constraint). For the NULL case only, the read adds
+zero or NULL when visibility is none. 2a-1 (#1405) put all four in the contract and in the write-time
+row-rule kernel (src/telemetry/rules.py; VP 2); its required_when is unconditional on model_call points, so
+the classifying-version condition above is stricter than needed and harmless. The read relies on all four:
+without them an out-of-set value (`Full`, `summarised`, empty), `none` with reasoning_tokens > 0 (a
+producer that saw reasoning and dropped it) and reasoning_tokens > tokens_output all read clean. 2a-1 is
+deploy-inert, so the build of this verb waits for the writer verb (slice 2a-2) to apply the kernel to every
+write (plan constraint). For the NULL case only, the read adds
 defence in depth: `visibility_missing` makes a producer which stops writing visibility read as drift, not
 as legacy. The other three have no read-side arm; read-side arms for them are a fork for the operator, not
 taken here.
@@ -289,11 +291,11 @@ vectors:
 
 Settled (consistent with a Decision, a contract, an operator choice or measured; s1-s3 in the fixture):
 
-- s1 The producer facts are decided (e1): reasoning_visibility and reasoning_tokens on model_call, the
-  claude_code mapping in 2a-1, the LiteLLM mapping in rec-4028. This item checks them against the
-  primary docs and the measurement above and finds them consistent: both providers report reasoning
-  tokens as a subset of output tokens, Claude Code's empty signed blocks read omitted, and capture from
-  the response only avoids LiteLLM's placeholder (VP 3).
+- s1 The producer facts are decided (e1) and, for claude_code, merged (#1405): reasoning_visibility and
+  reasoning_tokens on model_call, the claude_code mapping in 2a-1, the LiteLLM mapping in rec-4028. This
+  item checks them against the primary docs and the measurement above and finds them consistent: both
+  providers report reasoning tokens as a subset of output tokens, Claude Code's empty signed blocks read
+  omitted, and capture from the response only avoids LiteLLM's placeholder (VP 3).
 - s2 Data plane only. Thinking text is agent transcript (Decision 209 cl.2a). The verb reads visibility,
   counts and transcript purpose, never content, so only derived counts are candidates for rec-4141's
   allow-list; the visibility vocabulary and the counts are a closed set, the model ids are not.
@@ -343,10 +345,10 @@ Contested (evidence on both sides; k1-k3 in the fixture, k4 report-only; parked 
 Risk (known loss modes, not choices). R1-R6 and R9 are this report's ids; a rule of the event envelope
 (telemetry-event-envelope.yaml) is always written env R<n>:
 
-- R1 2a-1 unmerged. Until PLAN-telemetry-write-conformance merges and ships, claude_code rows carry no
-  visibility and keep thinking_tokens in an undocumented metadata key, so every row is a legacy row (v07):
-  the verb reports counts as coverage only, and the drift share has no classified calls to read. Owner:
-  the telemetry project (rec-4024 slice 2a-1).
+- R1 2a-1 merged, not live. 2a-1 (#1405) is deploy-inert: until slice 2a-2's writer verb ships, no
+  telemetry row is stored, so the verb has nothing to read and the drift share is undefined. Once it ships,
+  every claude_code row is parser_version 2 and classified. Owner: the telemetry project (rec-4024 slice
+  2a-2).
 - R2 Bytes are not deliberation. Claude text is empty or a summary by another model, so any metric over
   thinking-row `content_bytes` measures the summarizer. Only reasoning_tokens measures deliberation;
   the verb sums no bytes.
@@ -375,11 +377,11 @@ Risk (known loss modes, not choices). R1-R6 and R9 are this report's ids; a rule
   reads clean and claude_code's lost copy is hidden on that call (it still shows as text_missing on
   claude_code's single-producer calls). Carrying producer in the thinking projection would close it for
   the monitor; not staged here.
-- R9 `display: "updates"` (for the 2a-1 and rec-4028 owners, not this item's; named, not filed). The
-  Anthropic thinking page documents a beta in which reasoning blocks come back empty and separate
-  progress-update blocks carry text. Under rec-4028's "summarized when any thinking block has text",
-  those calls would read summarized although the text is not a summary. The visibility vocabulary
-  needs a value or a rule for it before any producer enables that beta.
+- R9 `display: "updates"`, settled by 2a-1. The Anthropic thinking page documents a beta in which
+  reasoning blocks come back empty and separate progress-update blocks carry text. The 2a-1 contract's
+  semantics now class that text as summarized ("Claude thinking text, which can include user-facing
+  progress updates"), so the drift rule needs no new value; a share over summarized calls then mixes
+  summaries and progress text, which matters only if k1 opts into summaries.
 - Goodhart. deliberation share is the obvious efficiency lever, and lowering effort lowers it while making
   outcomes worse. It is diagnostic only: no consumer ranks, alarms or files a rec on it alone, and T3.3
   reads it only beside an outcome (acceptance_passed, cost per verified merge). The drift share cannot be
@@ -389,11 +391,10 @@ Risk (known loss modes, not choices). R1-R6 and R9 are this report's ids; a rule
   rest on the writer, which the build gate waits for. The remaining lever is a producer that misclassifies
   consistently, which section 4 assigns to the producer conformance tests and c3's review.
 
-Open (q1-q3 in the fixture, q4 report-only; q1 answered by the telemetry project, the rest open):
+Open (q1-q3 in the fixture, q4 report-only; q1 closed by the 2a-1 merge, the rest open):
 
-- q1 Where is the 2a-1 plan? Answered 2026-10-04 by the telemetry project: PLAN-telemetry-write-conformance
-  on `claude/project-thread-vmix09` at 77e56482 (no PR; critique pending), read and matching s1. What stays
-  open is timing: the build binds the cutover and the visibility vocabulary only after it merges.
+- q1 Where is the 2a-1 plan? Closed: it merged on 2026-10-04 (#1405, 2553d69a), and VP 1-2 now read the
+  merged producer, contract and kernel.
 - q2 Does deliberation predict outcome? One session spent 64% of output tokens thinking; nothing joins
   that to an outcome yet, so T3.3 must not alarm on a deliberation share until a measurement shows it
   means something.
@@ -480,8 +481,8 @@ Open (q1-q3 in the fixture, q4 report-only; q1 answered by the telemetry project
 ## 6. Not done here (and why)
 
 - No verb, monitor, test, contract or producer code: REPORT-ONLY by brief.
-- No telemetry_observations amendment: the fields are 2a-1's, already chosen; the stale tier ids (R4) are
-  T4.2's contract edit.
+- No telemetry_observations amendment: the fields are 2a-1's, already merged (#1405); the stale tier ids
+  (R4) are T4.2's contract edit.
 - No `.claude/settings.json` change for k1, and no LiteLLM or DeepSeek call: a live call spends.
 - No rec filed, updated or closed (Decision 67). rec-4024, rec-4026, rec-4028, rec-4029, rec-4135 and
   rec-4141 are named as owners only.
