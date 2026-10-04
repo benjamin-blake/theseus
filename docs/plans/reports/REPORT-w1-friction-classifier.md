@@ -287,8 +287,11 @@ Contested (evidence on both sides, options listed; k1-k3 in the fixture):
   Section 2's SQL and vectors are written to (a)'s fact model. Under (b), the fact filter reads
   `tool:` process_events instead of tool_call closes, and the vectors' tool rows become process_event
   rows; the label and run logic is unchanged. For (a): each fact is stored once, as observed. For (b):
-  the operator's own model and a single fact surface. Recommended: (a), weakly; (b) is equally workable.
-  The choice is between the operator's ruling and the slice-3a deviation, so it is not made here. A
+  the operator's own model and a single fact surface. Recommended: (a). Correction (2026-10-04): the
+  telemetry producer's owners confirm the slice-3a deviation is deliberate and recommend that the
+  classifier read tool_call close outcomes directly; (b) would double-record each tool error and force a
+  PARSER_VERSION bump. That firms the earlier weak recommendation. The choice still sets the operator's
+  ruling against the deviation, so it is not made here. A
   ratified Class A semantic change either way; parked.
 - k3 Content-bearing patterns: gate and pre-commit failures (only in Bash output), workaround edits, file
   re-reads. Options: (a) the producer extracts a small closed set of signatures at write in slice 3b:
@@ -393,7 +396,11 @@ Open (q1-q3 in the fixture; none is answerable from the repository):
   should add `pwi-friction-classifier depends_on pwi-capture-producer-wiring`. Contradiction for W2: W1-1's
   P1 recommends gate/precommit signatures on the read side over tool_result rows; this report's k3
   recommends producer-side signatures. R3 (quoted hook paths) and R4 (empty denial prefixes) are
-  producer rules in the same slice.
+  producer rules in the same slice. Sequencing (from the producer's owners): any src/turn_capture/
+  change named here (k3 (a), R3, R4, and k2 (b) if chosen) lands after their next producer plan (2a-1),
+  as one PARSER_VERSION bump.
+- Telemetry contracts: they define the friction classes rework and exception only, with no label below
+  class (telemetry_observations.yaml:429), so this item's labels duplicate nothing there.
 - Rec filing with dedupe: missing-gotcha is not a classifier label; it is that component's question of
   whether a friction pattern is already known. That component should file on label counts per
   classifier_version, never on raw signatures.
