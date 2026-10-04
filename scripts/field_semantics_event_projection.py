@@ -23,8 +23,7 @@ import re
 from pathlib import Path
 from typing import Any, Callable
 
-import yaml
-
+from scripts.contract_rules import check_rule_keys, read_intents
 from src.common.ducklake_partition_spec import PartitionSpecError, parse_partition_by, validate_partition_spec
 from src.telemetry.identity import KEY_PLANS
 
@@ -106,92 +105,18 @@ def _validate_partition_by(table_id: str, partition_by: str | None, columns: dic
     return history_spec
 
 
-def _load_yaml(path: Path) -> dict[str, Any]:
-    try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except OSError as exc:
-        raise ValueError(f"cannot read contract file {path}: {exc}") from exc
-    if not isinstance(data, dict):
-        raise ValueError(f"contract {path} must be a YAML mapping")
-    return data
-
-
-def _split_ref(ref: str) -> tuple[str, str]:
-    file_part, _, fragment = ref.partition("#")
-    return Path(file_part).name, fragment.rstrip("/").rsplit("/", 1)[-1]
-
-
-def _layer_rules(table_id: str, name: str, inherited: dict[str, Any], local: dict[str, Any]) -> dict[str, Any]:
-    """Layer a $ref field's local dq_intent over its raw target's: a local key may add a rule or tighten not_null, never
-    drop an inherited rule, and a rule key both declare with different values fails closed. (scripts/contracts.py's
-    resolver replaces the whole block, which would silently drop the envelope's row rules.)"""
-    merged = dict(inherited)
-    for key, value in local.items():
-        if key == "not_null":
-            enforced = bool((value or {}).get("enforced")) or bool((inherited.get("not_null") or {}).get("enforced"))
-            merged["not_null"] = {"enforced": enforced}
-        elif key in inherited and inherited[key] != value:
-            raise ValueError(f"{table_id}.{name}: dq_intent_local changes the inherited rule {key!r}")
-        else:
-            merged[key] = value
-    return merged
-
-
-def _registry_values(root: Path, target_doc: dict[str, Any]) -> list[str]:
-    allowed = target_doc.get("allowed_values") or {}
-    registry, key = allowed.get("registry"), allowed.get("key")
-    if not registry or not key:
-        raise ValueError("source-lineage allowed_values must name a registry and a key")
-    entries = _load_yaml(root / registry).get("entries") or []
-    values = [entry[key] for entry in entries]
-    if not values or len(set(values)) != len(values):
-        raise ValueError(f"registry {registry} yields no values or duplicate {key} values")
-    return values
-
-
 def _effective_intents(table_id: str, resolved_fields: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Each field's row-rule dq_intent: the raw contract read again, with $ref targets layered under local blocks.
-
-    A contract that is not in the contracts directory (a test fixture, never a registered table) has no raw $ref
-    targets to read, so its resolved view is used as is.
-    """
-    path = _CONTRACTS_DIR / f"{table_id}.yaml"
-    if not path.is_file():
-        return {name: dict(_field_value(spec, "dq_intent") or {}) for name, spec in resolved_fields.items()}
-    raw = _load_yaml(path)
-    out: dict[str, dict[str, Any]] = {}
-    for name, spec in (raw.get("fields") or {}).items():
-        ref = spec.get("$ref")
-        if ref is None:
-            out[name] = dict(spec.get("dq_intent") or {})
-            continue
-        target_file, target_field = _split_ref(ref)
-        target_doc = _load_yaml(_CONTRACTS_DIR / target_file)
-        target_spec = (target_doc.get("fields") or {}).get(target_field)
-        if target_spec is None:
-            raise ValueError(f"{table_id}.{name}: $ref target {ref!r} not found")
-        intent = _layer_rules(
-            table_id, name, dict(target_spec.get("dq_intent") or {}), dict(spec.get("dq_intent_local") or {})
-        )
-        if (target_file, target_field) == _REGISTRY_KEY_REF:
-            if "accepted_values" in intent:
-                raise ValueError(f"{table_id}.{name}: a registry-sourced field declares no accepted_values of its own")
-            intent["accepted_values"] = {"values": _registry_values(_REPO_ROOT, target_doc)}
-        out[name] = intent
-    return out
-
-
-def _field_value(spec: Any, name: str) -> Any:
-    return getattr(spec, name) if hasattr(spec, name) else spec.get(name)
+    return read_intents(
+        table_id,
+        resolved_fields,
+        contracts_dir=_CONTRACTS_DIR,
+        repo_root=_REPO_ROOT,
+        registry_key_ref=_REGISTRY_KEY_REF,
+    )
 
 
 def _check_rule_keys(table_id: str, name: str, intent: dict[str, Any]) -> None:
-    unknown = set(intent) - _KNOWN_DQ_KEYS
-    if unknown:
-        raise ValueError(f"{table_id}.{name}: unknown dq_intent rule key(s) {sorted(unknown)} -- fail closed")
-    accepted = intent.get("accepted_values")
-    if accepted is not None and not (isinstance(accepted, dict) and isinstance(accepted.get("values"), list)):
-        raise ValueError(f"{table_id}.{name}: accepted_values must carry a values list")
+    check_rule_keys(table_id, name, intent, _KNOWN_DQ_KEYS)
 
 
 def _column_rules(table_id: str, name: str, intent: dict[str, Any]) -> dict[str, Any]:
