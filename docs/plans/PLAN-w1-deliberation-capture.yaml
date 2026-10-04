@@ -40,14 +40,14 @@ followon_recs: []
 infrastructure_dependencies: []
 acceptance_criteria:
   - >-
-    The live producer's deliberation facts are shown on a synthetic transcript: thinking token counts land
-    only in model_call metadata (empty, summarized and redacted blocks alike), only a non-empty thinking
-    block becomes a thinking row, a redacted_thinking block is a diagnostic only, and provider is unset
-    (VP step 1).
+    The merged parser_version 2 producer's deliberation facts are shown on a synthetic transcript: each
+    model_call carries reasoning_visibility by block shape (omitted, summarized, redacted, none) and the reported
+    count as reasoning_tokens, metadata no longer holds thinking_tokens, only a non-empty thinking block becomes
+    a thinking row, a redacted_thinking block is a diagnostic only, and provider is unset (VP step 1).
   - >-
-    The contracts carry no reasoning field and do not name thinking_tokens, thinking is an accepted
-    transcript purpose, tier 1 still names the retired DeepSeek ids, the repo does not opt into thinking
-    summaries, and no file outside this change names reasoning_visibility (VP step 2).
+    The contract carries reasoning_visibility and reasoning_tokens and the write-time row-rule kernel projects
+    all four of their rules, claude_code is at parser_version 2, thinking is an accepted transcript purpose,
+    tier 1 still names the retired DeepSeek ids, and the repo does not opt into thinking summaries (VP step 2).
   - >-
     Against a mocked transport, LiteLLM 1.102.1 surfaces reasoning_content and reasoning_tokens, echoes
     returned reasoning back, injects a single-space placeholder only when thinking is passed explicitly,
@@ -65,48 +65,49 @@ acceptance_criteria:
 verification_plan:
   - step: 1
     phase: pre-deploy
-    action: Show which deliberation facts the live producer stores, on a synthetic transcript built from the committed corpus helpers
+    action: Show which deliberation facts the merged parser_version 2 producer stores, on a synthetic transcript built from the committed corpus helpers
     command: >-
-      bin/venv-python -c "import json; from collections import Counter; from src.turn_capture.observations import build_observations as B, OBSERVATION_COLUMNS as O; from src.turn_capture.transcripts import build_transcripts as T, Sidecars as S; from tests.fixtures.turn_capture_corpus import prompt as P, assistant as A, thinking_block as K, text_block as X, parse_records as PR, make_ctx as C, mem_tree as M, make_files as F;
+      bin/venv-python -c "import json; from collections import Counter; from src.turn_capture.observations import build_observations as B; from src.turn_capture.transcripts import build_transcripts as T, Sidecars as S; from src.turn_capture.record_turn import PARSER_VERSION as V; from tests.fixtures.turn_capture_corpus import prompt as P, assistant as A, thinking_block as K, text_block as X, parse_records as PR, make_ctx as C, mem_tree as M, make_files as F;
       u=lambda n: {'input_tokens':10,'output_tokens':90,'output_tokens_details':{'thinking_tokens':n}};
-      R=[P('u1',1,'p1','go'),A('a1',2,'m1',[K(''),X('one')],usage=u(52)),A('a2',3,'m2',[K('a summary'),X('two')],usage=u(40)),A('a3',4,'m3',[{'type':'redacted_thinking','data':'enc'},X('three')],usage=u(31)),P('u2',5,'p2','next')];
-      d=Counter(); o=B(PR(R),C(),d); t=T(PR(R),C(),S(M(F(R)),None),d);
-      print('model_call_thinking_tokens=%s provider=%s thinking_rows=%s diag=%s reasoning_columns=%s' % ([json.loads(r['metadata']).get('thinking_tokens') for r in o if r['observation_type']=='model_call'],sorted({str(r.get('provider')) for r in o if r['observation_type']=='model_call'}),[(r['observation_ref'],r['origin'],r['content_bytes']) for r in t if r['purpose']=='thinking'],dict(d),[c for c in O if 'reason' in c or 'think' in c]))"
+      R=[P('u1',1,'p1','go'),A('a1',2,'m1',[K(''),X('one')],usage=u(52)),A('a2',3,'m2',[K('a summary'),X('two')],usage=u(40)),A('a3',4,'m3',[{'type':'redacted_thinking','data':'enc'},X('three')],usage=u(31)),A('a4',5,'m4',[X('four')]),P('u2',6,'p2','next')];
+      d=Counter(); o=B(PR(R),C(),d,S(M(F(R)),None)); t=T(PR(R),C(),S(M(F(R)),None),d); mc=[r for r in o if r['observation_type']=='model_call'];
+      print('parser_version=%d visibility=%s reasoning_tokens=%s metadata_thinking=%s provider=%s thinking_rows=%s diag=%s' % (V,[r.get('reasoning_visibility') for r in mc],[r.get('reasoning_tokens') for r in mc],[json.loads(r.get('metadata') or '{}').get('thinking_tokens') for r in mc],sorted({str(r.get('provider')) for r in mc}),[(r['observation_ref'],r['origin'],r['content_bytes']) for r in t if r['purpose']=='thinking'],dict(d)))"
     expected: >-
-      One line: thinking tokens 52, 40 and 31 in model_call metadata; provider unset on every model_call;
-      one thinking row (m2, origin agent, 9 bytes) for the summarized block only; one
-      unknown_block_type:redacted_thinking diagnostic; no reasoning or thinking column.
+      One line: parser_version 2; visibility omitted (empty signed block), summarized (text), redacted
+      (redacted_thinking) and none (no reasoning); reasoning_tokens 52, 40, 31 and NULL; no thinking_tokens left
+      in metadata; provider unset; one thinking row (m2, origin agent, 9 bytes) for the summarized block only; one
+      unknown_block_type:redacted_thinking diagnostic.
     fix_if: >-
-      A reasoning column, a set provider, or a thinking row for the empty block means the 2a-1 plan (or
-      rec-4026) changed the producer: re-read observations.py and transcripts.py and update e2, e3, e5, R1 and
-      q1 (a landed 2a-1 answers q1 and retires R1).
+      A different visibility or token value means the claude_code mapping moved after 2a-1 (#1405): re-read
+      observations.py and update e2, s1 and the vectors' claude_code rows. A thinking row for the empty block
+      means k1 was decided or the transcript builder changed: update k1 and e3.
     hermetic: true
     graduation: waive
     graduation_waiver_reason: >-
-      Red-before evidence for the 2a-1 change, true only until it lands; a standing guard would block the
-      sanctioned producer bump.
-    expected_literals: ["model_call_thinking_tokens=[52, 40, 31] provider=['None'] thinking_rows=[('m2', 'agent', 9)] diag={'unknown_block_type:redacted_thinking': 1} reasoning_columns=[]"]
+      Characterises the producer at one parser_version for this design; the producer's own golden corpus and
+      parser-version registry (config/telemetry/parser_versions.yaml) are the standing guard.
+    expected_literals: ["parser_version=2 visibility=['omitted', 'summarized', 'redacted', 'none'] reasoning_tokens=[52, 40, 31, None] metadata_thinking=[None, None, None, None] provider=['None'] thinking_rows=[('m2', 'agent', 9)] diag={'unknown_block_type:redacted_thinking': 1}"]
   - step: 2
     phase: pre-deploy
-    action: Re-derive the contract, settings and repository facts the report rests on
+    action: Re-derive the contract, row-rule kernel, settings and registry facts the report rests on
     command: >-
-      bin/venv-python -c "import json,subprocess,yaml; L=lambda p: yaml.safe_load(open('docs/contracts/'+p,encoding='utf-8')); o=L('telemetry_observations.yaml')['fields']; t=L('telemetry_transcripts.yaml')['fields']; i=L('inference-provider.yaml'); s=json.load(open('.claude/settings.json',encoding='utf-8'));
-      g=subprocess.run(['git','grep','-l','reasoning_visibility','--','docs','src','scripts','tests',':!docs/plans/PLAN-w1-deliberation-capture.yaml',':!docs/plans/reports/REPORT-w1-deliberation-capture.md',':!docs/work-item-pilot/telemetry-feedback-loop.yaml'],capture_output=True,text=True).stdout.split();
-      print('token_columns=%s reasoning_fields=%s metadata_names_thinking=%s thinking_purpose=%s tier_1=%s show_thinking_summaries=%s reasoning_visibility_files=%d' % (sorted(k for k in o if k.startswith('tokens_')), sorted(k for k in o if 'reason' in k or 'think' in k), 'thinking' in o['metadata']['semantics'], 'thinking' in t['purpose']['dq_intent']['accepted_values']['values'], i['model_id_formats']['litellm_tier_models']['tier_1']['models'], s.get('showThinkingSummaries'), len(g)))"
+      bin/venv-python -c "import json,yaml; from tests.fixtures.turn_capture_ducklake import load_specs; L=lambda p: yaml.safe_load(open('docs/contracts/'+p,encoding='utf-8')); o=L('telemetry_observations.yaml')['fields']; t=L('telemetry_transcripts.yaml')['fields']; i=L('inference-provider.yaml'); s=json.load(open('.claude/settings.json',encoding='utf-8')); v=yaml.safe_load(open('config/telemetry/parser_versions.yaml',encoding='utf-8')); r=load_specs()['telemetry_observations'].rules;
+      print('token_columns=%s reasoning_fields=%s kernel_accepted=%s kernel_required_when=%s kernel_at_most=%s kernel_null_or_zero_when=%s claude_code_parser_version=%s metadata_names_thinking=%s thinking_purpose=%s tier_1=%s show_thinking_summaries=%s' % (sorted(k for k in o if k.startswith('tokens_')), sorted(k for k in o if 'reason' in k or 'think' in k), sorted(r.accepted_values['reasoning_visibility']), {k: sorted(x) for k, x in sorted(r.required_when['reasoning_visibility'].items())}, r.at_most['reasoning_tokens'], {k: sorted(x) for k, x in r.null_or_zero_when['reasoning_tokens'].items()}, v['producers']['claude_code']['current'], 'thinking' in o['metadata']['semantics'], 'thinking' in t['purpose']['dq_intent']['accepted_values']['values'], i['model_id_formats']['litellm_tier_models']['tier_1']['models'], s.get('showThinkingSummaries')))"
     expected: >-
-      One line: the four token columns and no reasoning field; the metadata semantics do not name thinking;
-      thinking is an accepted purpose; tier 1 lists deepseek-chat and deepseek-reasoner; no thinking-summaries
-      setting; zero other files naming reasoning_visibility.
+      One line: the four token columns plus reasoning_tokens and reasoning_visibility; the row-rule kernel holds
+      the five accepted values, required on model_call points, reasoning_tokens at most tokens_output and NULL or
+      zero when none; claude_code at parser_version 2; the metadata semantics do not name thinking; thinking is
+      an accepted purpose; tier 1 lists deepseek-chat and deepseek-reasoner; no thinking-summaries setting.
     fix_if: >-
-      A reasoning field or a non-zero file count means 2a-1 landed: re-read it and update s1, R1 and q1. A
-      changed tier 1 means T4.2 refreshed the ids: drop R4. A thinking-summaries setting means k1 was decided:
-      update k1 and the vectors' expectations.
+      A changed kernel rule or accepted set means the 2a-1 contract moved: update the writer-side paragraph, k4
+      and the build gate. A changed tier 1 means T4.2 refreshed the ids: drop R4. A thinking-summaries setting
+      means k1 was decided: update k1 and the vectors' expectations.
     hermetic: true
     graduation: waive
     graduation_waiver_reason: >-
-      True only until 2a-1 lands, T4.2 refreshes tier 1 or k1 is decided; a standing guard would block each
-      sanctioned change.
-    expected_literals: ["token_columns=['tokens_cache_creation', 'tokens_cache_read', 'tokens_input', 'tokens_output'] reasoning_fields=[] metadata_names_thinking=False thinking_purpose=True tier_1=['deepseek/deepseek-chat', 'deepseek/deepseek-reasoner'] show_thinking_summaries=None reasoning_visibility_files=0"]
+      True only until T4.2 refreshes tier 1 or k1 is decided; the kernel's own tests (tests/telemetry/test_rules.py)
+      guard the rules, and a standing guard here would block each sanctioned change.
+    expected_literals: ["token_columns=['tokens_cache_creation', 'tokens_cache_read', 'tokens_input', 'tokens_output'] reasoning_fields=['reasoning_tokens', 'reasoning_visibility'] kernel_accepted=['full', 'none', 'omitted', 'redacted', 'summarized'] kernel_required_when={'event_kind': ['point'], 'observation_type': ['model_call']} kernel_at_most=tokens_output kernel_null_or_zero_when={'reasoning_visibility': ['none']} claude_code_parser_version=2 metadata_names_thinking=False thinking_purpose=True tier_1=['deepseek/deepseek-chat', 'deepseek/deepseek-reasoner'] show_thinking_summaries=None"]
   - step: 3
     phase: pre-deploy
     action: Show how LiteLLM 1.102.1 surfaces and re-sends DeepSeek reasoning, against a mocked transport that refuses any other host
@@ -201,7 +202,7 @@ constraints:
     fixture's three criteria are pilot rows with status open, never roadmap criteria.
   - >-
     No recommendation filed, updated or closed (Decision 67). rec-4024, rec-4026, rec-4028, rec-4029, rec-4135
-    and rec-4141 are named as owners only; R3, R4 and R9 are named for T4.2, rec-4028 and 2a-1, not filed.
+    and rec-4141 are named as owners only; R3 and R4 are named for T4.2 and rec-4028, not filed; R9 is settled by the 2a-1 contract (#1405).
   - >-
     No contract edit: the reasoning fields belong to the operator-chosen 2a-1 plan (rec-4028 context,
     2026-09-29), and the stale tier 1 ids are T4.2's contract edit (Decision 173 cl.2). docs/DECISIONS.md and
@@ -216,10 +217,10 @@ constraints:
     CD.45 binds while pending: one fixture only, sized by item count (this component spends 1 of 12), edges
     id-only into ROADMAP-PLATFORM, never read by /orient, preflight or a pick surface (Decision 108).
   - >-
-    The verb and monitor (report section 2) are not to be built by a delegate before 2a-1 lands the fields
-    (q1), the writer enforces the 2a-1 contract's four row-local rules for the reasoning fields (accepted
-    set, conditional requiredness, reasoning_tokens <= tokens_output, none implies zero or NULL; Decision 210
-    cl.1, rec-4024 slice 2a; DECISIONS.md:19 records none is enforced today), the Class A contracts declare
+    The verb and monitor (report section 2) are not to be built by a delegate before the telemetry writer
+    verb (rec-4024 slice 2a-2) applies the 2a-1 row-rule kernel to every write (src/telemetry/rules.py, merged
+    in #1405, which projects all four reasoning-field rules: accepted set, conditional requiredness,
+    reasoning_tokens <= tokens_output, none implies zero or NULL; Decision 210 cl.1), the Class A contracts declare
     the derived fields with derivation.timing read and a derived_by verb that returns each (report section 2:
     deliberation_class on telemetry_observations via a per-call verb, *_total session fields on
     telemetry_sessions via reader_verb:session_deliberation_rollup, the multi-row roll-up's home per q4), the reader-verb mechanism exists (W1-2's item, rec-4024), and c3
@@ -258,7 +259,7 @@ context:
   - "fork: LiteLLM-lane durability (k2) | chosen: none; option (b) recommended | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: report k2, /mnt/project-files/gates/w1-c4-parked-forks.md, PARKED for the operator"
   - "fork: read-side arms for the other three writer rules (k4) | chosen: none; option (a) recommended | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: report k4, /mnt/project-files/gates/w1-c4-parked-forks.md, PARKED for the operator"
   - "fork: who reads chain-of-thought text (k3) | chosen: none; option (a) recommended | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: report k3, /mnt/project-files/gates/w1-c4-parked-forks.md, PARKED for the operator"
-  - "Verification r1-r4 REVISE, r5 PROCEED; plan-critique r1 REVISE, r2 PROCEED. q1 answered: 2a-1 is PLAN-telemetry-write-conformance (claude/project-thread-vmix09 77e56482, unmerged)."
+  - "Verification r1-r4 REVISE, r5 PROCEED; plan-critique r1 REVISE, r2 PROCEED. q1 closed: 2a-1 merged as #1405 (2553d69a); VP 1-2 re-pointed to the merged producer and kernel."
   - >-
     check_accounting: no registered check is added or removed; the hygiene stream's baseline is untouched.
 pre_implementation_checklist:
