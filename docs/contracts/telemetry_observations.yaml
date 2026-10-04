@@ -384,6 +384,54 @@ fields:
     dq_intent: {not_null: {enforced: false}}
     amendment_log:
       - {date: "2026-09-24", semantic_break: true, change_class: governance_note_add, summary: "PLAN-telemetry-event-journal-contracts (Decision 199): distinguished this raw observed fact from the now-derived friction classification (retired `tier` column); field's own value unchanged."}
+  output_capture:
+    type: str
+    iceberg_type: string
+    nullable: true
+    description: "How a tool call's output was captured: not_persisted | captured | omitted_oversize | unavailable | no_result."
+    semantics: "On a tool_call close. captured = the harness persisted it and a tool_output transcript row holds it; omitted_oversize = persisted above the cap (an omission row); unavailable = persisted but unreadable; no_result = the synthetic interrupted close."
+    populated_by: the producer, at the tool_call close.
+    dq_intent: {not_null: {enforced: false}, required_when: {event_kind: [close], observation_type: [tool_call]}, accepted_values: {values: [not_persisted, captured, omitted_oversize, unavailable, no_result], enforced: false}}
+  output_bytes:
+    type: int
+    iceberg_type: bigint
+    nullable: true
+    description: "Byte length of the tool's RAW full output (the sidecar bytes when persisted, else the model-visible text's UTF-8 bytes)."
+    semantics: "Streamed, never decoded. Set whenever output_capture is not_persisted, captured or omitted_oversize."
+    populated_by: the producer, at the tool_call close.
+    dq_intent: {not_null: {enforced: false}, required_when: {output_capture: [not_persisted, captured, omitted_oversize]}}
+  output_sha256:
+    type: str
+    iceberg_type: string
+    nullable: true
+    description: "SHA-256 (lowercase hex) of the tool's RAW full output; identifies unscrubbed bytes."
+    semantics: "Streamed, never decoded. Set whenever output_capture is not_persisted, captured or omitted_oversize."
+    populated_by: the producer, at the tool_call close.
+    dq_intent: {not_null: {enforced: false}, pattern: "^[0-9a-f]{64}$", required_when: {output_capture: [not_persisted, captured, omitted_oversize]}}
+  output_lines:
+    type: int
+    iceberg_type: bigint
+    nullable: true
+    description: "Line count of the tool's RAW full output: LF bytes plus one when the last byte is not LF and the output is non-empty."
+    semantics: "Streamed. Set whenever output_capture is not_persisted, captured or omitted_oversize."
+    populated_by: the producer, at the tool_call close.
+    dq_intent: {not_null: {enforced: false}, required_when: {output_capture: [not_persisted, captured, omitted_oversize]}}
+  reasoning_visibility:
+    type: str
+    iceberg_type: string
+    nullable: true
+    description: "Form in which the provider exposed a model_call's reasoning: full | summarized | omitted | redacted | none."
+    semantics: "full = raw reasoning; summarized = a provider-written summary (Claude thinking text, which can include user-facing progress updates); omitted = reasoned but the text withheld; redacted = only encrypted blocks; none = no reasoning. One value per call, the first that applies in that order of full, summarized, redacted, omitted, none."
+    populated_by: the producer, at the model_call point event.
+    dq_intent: {not_null: {enforced: false}, required_when: {event_kind: [point], observation_type: [model_call]}, accepted_values: {values: [full, summarized, omitted, redacted, none], enforced: false}}
+  reasoning_tokens:
+    type: int
+    iceberg_type: bigint
+    nullable: true
+    description: "Provider-reported reasoning token count of a model_call: a subset of tokens_output, never a fifth billing class."
+    semantics: "NULL when the provider did not report it; never a local estimate."
+    populated_by: the producer, at the model_call point event.
+    dq_intent: {not_null: {enforced: false}, at_most: tokens_output, null_or_zero_when: {reasoning_visibility: [none]}}
   rec_id:
     type: str
     iceberg_type: string
@@ -439,55 +487,11 @@ governance_notes: >-
   REPORT-ONLY: target-state, not implemented. KNOWN GAPS: rec-4024 (writer/reader verbs), rec-4032
   (the friction-classification labels table), rec-4031 (the cost_usd static price-mapping reader).
 amendment_log:
-  - date: "2026-09-26"
-    semantic_break: false
-    change_class: prose_improvement
-    summary: >-
-      PLAN-telemetry-kernel-identity-append implement-time deviation (rec-4073): governance.partition_by
-      respelled from the bare calendar-day triple to the role-prefixed
-      "history=year(session_started_at), month(session_started_at), day(session_started_at)" -- main's
-      src/common/ducklake_partition_spec.parse_partition_by (the shared ops grammar,
-      PLAN-ducklake-calendar-day-partition) requires a role= prefix per segment
-      ('history=...; current=...'); an append-only event table declares only the history role, no
-      current=. scripts/field_semantics_event_projection.py now delegates to parse_partition_by +
-      validate_partition_spec for this field instead of its own regex, closing rec-4073. The resolved
-      (unprefixed) spec is still what the generator's ops_tables.<table>.partition.history projection
-      carries -- only this raw contract field gained the role prefix.
-    migration_story: No live telemetry writer exists (TARGET-STATE only); no runtime migration is required.
-  - date: "2026-09-25"
-    semantic_break: false
-    change_class: prose_improvement
-    summary: >-
-      PLAN-telemetry-kernel-identity-append (rec-4065): governance.partition_by respelled from the
-      bare day(session_started_at) to the calendar-day triple year(session_started_at),
-      month(session_started_at), day(session_started_at) -- DuckLake evaluates a bare day() as
-      DAY-OF-MONTH, not calendar day. Decision 199 always meant a calendar day; no table exists yet.
-    migration_story: No live telemetry writer exists (TARGET-STATE only); no runtime migration is required.
-  - date: "2026-09-24"
-    semantic_break: false
-    change_class: prose_improvement
-    summary: >-
-      PLAN-telemetry-event-journal-contracts (Decision 199): contract.description re-grounded from
-      a mutate-in-place open/close pair to an event-journal shape (event_kind open|close|point)
-      with the shared telemetry-event-envelope.yaml fields. The per-field shape changes (turn/
-      tool_call extension, the new token/cost fields, retired tier/classifier_version/ingested_at)
-      are recorded on their own fields' amendment_log entries; this entry covers the
-      contract-level description text.
-    migration_story: >-
-      No live telemetry writer exists (this contract stays TARGET-STATE, dq_INTENT only); the
-      Phase 4 rebuild (T2.36) and rec-4024/rec-4032 build directly to this contract_version 2 shape.
-  - date: "2026-08-26"
-    semantic_break: false
-    change_class: prose_improvement
-    summary: >-
-      Platform cleanse: references to the removed trading-product surfaces and the retired
-      pre-DuckLake query-engine estate were removed or reworded.
-    migration_story: >-
-      The repository became platform-only. Product surfaces (broker credentials, the product
-      roadmap, the market-data pipeline) and the retired legacy query-engine path (staging
-      outbox, ops compaction, legacy workgroup IAM) were deleted, and this contract's
-      references to them were removed in the same change. No live DuckLake field or verb
-      semantics changed.
+  - {date: "2026-10-04", semantic_break: false, change_class: field_add, summary: "PLAN-telemetry-write-conformance (slice 2a-1): six typed columns -- tool_call close output_capture/output_bytes/output_sha256/output_lines and model_call reasoning_visibility/reasoning_tokens -- with their required_when, pattern, at_most and null_or_zero_when rules (operator-approved 2026-09-29)."}
+  - {date: "2026-09-26", semantic_break: false, change_class: prose_improvement, summary: "PLAN-telemetry-kernel-identity-append (rec-4073, rec-4065): governance.partition_by respelled to the role-prefixed form of the calendar-day triple 'history=year(session_started_at), month(session_started_at), day(session_started_at)' (the shared ops grammar; DuckLake's bare day() is day-of-month); the generator projection delegates to parse_partition_by. No runtime migration: no live telemetry writer."}
+  - {date: "2026-09-25", semantic_break: false, change_class: prose_improvement, summary: "PLAN-telemetry-kernel-identity-append (rec-4065): governance.partition_by respelled from the bare day(session_started_at) to the calendar-day triple year(), month(), day(); DuckLake evaluates a bare day() as day-of-month. No table exists yet."}
+  - {date: "2026-09-24", semantic_break: false, change_class: prose_improvement, summary: "PLAN-telemetry-event-journal-contracts (Decision 199): contract.description re-grounded to the event-journal shape with the shared envelope; per-field changes are on their own fields' logs. No live writer: Phase 4 (T2.36) builds to contract_version 2."}
+  - {date: "2026-08-26", semantic_break: false, change_class: prose_improvement, summary: "Platform cleanse: references to the removed trading-product surfaces and the retired pre-DuckLake query-engine estate were removed or reworded; no live DuckLake field or verb semantics changed."}
 previous_versions:
   - contract_version: 1
     ratified_at: "2026-06-24"
