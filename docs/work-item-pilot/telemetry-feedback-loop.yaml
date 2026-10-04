@@ -46,6 +46,107 @@ work_items:
           - {id: q1, text: 'Is an interrupt friction? A human stop and the producer''s synthetic close for an unanswered tool_use share outcome interrupted; v12 counts neither.'}
           - {id: q2, text: 'Who supplies precision at read_all: an operator label sheet or rec-4025''s harness widened to real sessions? unmapped share measures coverage only.'}
           - {id: q3, text: 'Repeat key and threshold: name-only merges unrelated Bash errors (87% of calls here); a command hash needs a producer field; threshold 3 is unmeasured.'}
+  - id: pwi-deliberation-capture
+    kind: task
+    title: 'Deliberation capture: read-time reasoning metrics and a visibility-vs-text drift check over model_call and thinking rows'
+    extension:
+      consideration_register:
+        why: Deliberation is most of the output (64% of output tokens in one measured session) and the best RCA evidence, yet providers return it differently, capture can lose it silently, and nothing derives or checks it.
+        how: A read verb over deduped model_call rows (reasoning_visibility, reasoning_tokens) and thinking-row presence giving per producer, parser_version and model counts, share inputs and drift; the same SQL runs as a T3.20 c3 DQ monitor.
+        planes: [data_plane]
+        maturity:
+          rung: read_all
+          transitions:
+            - {from: read_all, to: sampled, trigger: {metric: reviewed sessions in a row per producer with >= 1 classified model_call and zero drift rows, comparator: '>=', threshold: 20}}
+            - {from: sampled, to: spot_check, trigger: {metric: drift rows per producer in a full window of the last 200 sampled classified model_calls, comparator: ==, threshold: 0}}
+            - {from: spot_check, to: anomaly_triggered, trigger: {metric: days in a row per producer with deliberation_drift_share defined and <= 0.01 for every parser_version present, comparator: '>=', threshold: 30}}
+        failure_signal: {signal: Stored visibility disagrees with stored text (full or summarized with no thinking row; a thinking row where none was declared) or is missing after cutover, metric: 'deliberation_drift_share: drifted/classified model_calls, undefined (never 0) if none; per producer, parser_version', source: session_deliberation_rollup response and the T3.20 c3 DQ monitor (alarm-not-gate)}
+        verification: [c1, c2, c3]
+        rollback: Drop the verb and the monitor; nothing is stored, so every metric re-derives on the next read. The producer fields stay wherever the 2a-1 plan and rec-4028 land them.
+        evidence:
+          - {kind: file_line, ref: 'src/turn_capture/observations.py:246'}
+          - {kind: file_line, ref: 'src/turn_capture/transcripts.py:196'}
+          - {kind: file_line, ref: 'docs/contracts/telemetry_observations.yaml:408'}
+          - {kind: file_line, ref: 'docs/contracts/inference-provider.yaml:355'}
+        settled:
+          - {id: s1, text: 'Producer facts were chosen 2026-09-29 (rec-4028): model_call reasoning_visibility and reasoning_tokens; claude_code via the 2a-1 plan, LiteLLM via rec-4028.'}
+          - {id: s2, text: 'Data plane only (D209 cl.2a): thinking text is agent transcript; the verb reads visibility, counts and transcript purpose, never content.'}
+          - {id: s3, text: 'Writer owns row-local rules, incl. visibility NOT NULL once a producer classifies (D210 cl.1, cl.4); text drift spans two producers (cl.2(b)): a monitor. 16/16.'}
+        contested:
+          - {id: k1, text: 'Claude thinking text: CC stores empty signed blocks by default (0 text rows here). (a) counts only; (b) showThinkingSummaries repo-wide; (c) RCA only. Rec (a).'}
+          - {id: k2, text: 'LiteLLM CoT lives only in the response and persona history: (a) replay from persona checkpoint (env R7); (b) non-replayable (env R8), loss counted. Rec (b).'}
+          - {id: k3, text: 'Who reads CoT text: (a) metrics only, text kept for forensic reads; (b) a per-call text verb (egress per read); (c) LLM labels (spends). Rec (a).'}
+        open_questions:
+          - {id: q1, text: '2a-1 is PLAN-telemetry-write-conformance (unmerged): visibility required on model_call, claude_code to parser_version 2. Bind the cutover once it merges?'}
+          - {id: q2, text: 'Does deliberation predict outcome? 64% of output tokens here were thinking (54 of 83 calls); no outcome join exists, so T3.3 must not alarm on share.'}
+          - {id: q3, text: 'A litellm-only persona tree has no sessions open row (env R8 bars it), so W1-2 session verbs cannot see it: does the executor loop emit lifecycle rows?'}
+  - id: pwi-rec-filing-dedupe
+    kind: task
+    title: 'Rec filing with dedupe: one fingerprinted rec per finding, filed, updated or held against its chain and covering recs'
+    extension:
+      consideration_register:
+        why: T3.3 files anomaly recs and T3.4 needs a filed rec whose telemetry delta proves the fix, yet nothing turns findings into recs; the repo dedupe keys on source or title and re-files, merges or auto-closes.
+        how: 'One rec per sha256(salt, detector, subject) in context_v2_json, one source; one SQL: file, update, unchanged, regression, drop, covered, suppressed, unresolved, over_budget or hold; closes nothing (k4); budgeted.'
+        planes: [data_plane]
+        maturity:
+          rung: read_all
+          transitions:
+            - {from: read_all, to: sampled, trigger: {metric: consecutive reviewed proposals the operator accepted unchanged, comparator: '>=', threshold: 20}}
+            - {from: sampled, to: spot_check, trigger: {metric: rejected filings across the last 50 sampled filer recs, comparator: ==, threshold: 0}}
+            - {from: spot_check, to: anomaly_triggered, trigger: {metric: consecutive days with rejected_share <= 0.05 and no duplicate open fingerprint, comparator: '>=', threshold: 30}}
+        failure_signal: {signal: 'Queue noise or silent loss: a known issue re-filed, distinct findings merged, a declined or covered finding re-filed, or a recurring one never filed', metric: 'rejected_share (operator marks covered, duplicate or reject) per 30 days per detector, beside run liveness', source: operator verdicts; run record per-action counts; loop_liveness_stale cadence and success legs}
+        verification: [c1, c2, c3]
+        rollback: Stop the filer schedule; filed recs stay ordinary recs the operator can decline, close or mark covered; the decision is stateless, so a params revert re-derives on the next run.
+        evidence:
+          - {kind: file_line, ref: 'scripts/rec_episode.py:97'}
+          - {kind: file_line, ref: 'scripts/rec_relevance.py:166'}
+          - {kind: file_line, ref: 'docs/contracts/ci-rca-lifecycle.yaml:157'}
+          - {kind: file_line, ref: 'scripts/ops_data_portal.py:315'}
+        settled:
+          - {id: s1, text: 'Identity is one rec per fingerprint in context_v2_json under one source, newest head (Decision 142); not an aggregate rec, not a source-only key (VP 1).'}
+          - {id: s2, text: 'The decision is one SQL over the filer source plus one read per cover, passing 34/34 vectors over ten actions; every non-filing outcome is counted.'}
+          - {id: s3, text: 'A malformed finding (NULL identity or window column) never files: it is recorded and the run exits non-zero; the SQL raises as last guard (v33).'}
+        contested:
+          - {id: k1, text: 'Cross-source link: (a) operator-set covered_by on the filer rec, followed one hop; (b) title Jaccard (VP 3 errs both ways); (c) LLM judge. Rec (a).'}
+          - {id: k2, text: 'Declined head: (a) suppressed until the operator acts, sessions still counted; (b) snooze N days; (c) re-file on k-fold growth. Rec (a).'}
+          - {id: k3, text: 'Queue over soft cap (1244 vs 250): (a) per-run budget only; (b) no new filing while over cap, never files today; (c) file as Low. Rec (a).'}
+        open_questions:
+          - {id: q1, text: 'What acceptance probe does a filer rec carry? file_rec needs a discriminating probe; the delta verb is back-validation''s and does not exist.'}
+          - {id: q2, text: 'Where does a read_all covered_by verdict persist when nothing is filed: an operator sheet, or a rec filed straight into superseded?'}
+          - {id: q3, text: 'Seeds min_sessions 3, min_events 5, window 7 days, budget 3 are unmeasured; no friction rows exist until W1-1 lands.'}
+  - id: pwi-back-validation
+    kind: task
+    title: 'Back-validation: a telemetry verdict on the fix attempt proves or refutes a fix before a filer rec closes'
+    extension:
+      consideration_register:
+        why: T3.4 ends at "telemetry delta proves fix", yet the only back-validation (ci_rca) reads recurrence without exposure, and a naive post-fix drop proves 44-79% of no-op fixes (VP 3).
+        how: One SQL per pending rec over exposed sessions before and after the fix attempt returns a Decision 201 verdict (holds, fails, unmeasurable) or pending; the rule and windows are k4 (report).
+        planes: [data_plane]
+        maturity:
+          rung: read_all
+          transitions:
+            - {from: read_all, to: sampled, trigger: {metric: consecutive verdicts the operator confirmed unchanged, comparator: '>=', threshold: 20}}
+            - {from: sampled, to: spot_check, trigger: {metric: overturned verdicts across the last 50 sampled verdicts, comparator: ==, threshold: 0}}
+            - {from: spot_check, to: anomaly_triggered, trigger: {metric: 'false_proof_rate over the last 90 days, with at least 20 proof closes', comparator: <=, threshold: 0.05}}
+        failure_signal: {signal: 'False proof or proof starvation: a fix closed on a holds verdict regresses, or verdicts stay unmeasurable so no filer rec ever closes on proof', metric: 'false_proof_rate (regressions within 28 days of a proof close / proof closes) beside unmeasurable_share, per 90 days', source: verdict records joined to the filer regression action (regression_of); per-reason verdict counts}
+        verification: [c1, c2, c3]
+        rollback: Stop the back-validation schedule; verdict records stay as history, pending recs stay open for a human close, and recs it closed are ordinary closed recs whose recurrence files a regression.
+        evidence:
+          - {kind: file_line, ref: 'scripts/ops_portal/closure_gate.py:330'}
+          - {kind: file_line, ref: 'scripts/backlog_health/probe.py:130'}
+          - {kind: file_line, ref: 'scripts/ci_rca/back_validation.py:107'}
+          - {kind: decision, ref: '201'}
+        settled:
+          - {id: s1, text: 'Verdicts are Decision 201 holds, fails or unmeasurable in its record shape; update_rec already admits such a holds record (VP 1). Sha keying and timing are k1.'}
+          - {id: s2, text: A naive post-fix drop proves 44-79% of no-op fixes (VP 3); any rule must hold alpha on exposed sessions with a post-fix sample fixed before it is read.}
+        contested:
+          - {id: k1, text: 'Late verdict keyed to the fix sha amends D201 under any option; plumbing: (a) Resolves trailer to a telemetry source, (b) own trailer, (c) manual. Rec (a).'}
+          - {id: k2, text: 'Unmeasurable at the deadline: (a) stays open, listed; (b) close_proposed with reason and counts; (c) stale_no_recurrence close. Rec (b).'}
+          - {id: k3, text: 'Confounds: (a) single-subject test, control ratio advisory; (b) difference-in-differences gate; (c) suspend across change windows. Rec (a) now.'}
+        open_questions:
+          - {id: q1, text: 'Who declares exposure? Each detector must return exposed and affected per session for a subject; no verb returns either today.'}
+          - {id: q2, text: 'Effective day of a fix not live at merge (a Lambda behind a governed deploy, a model or harness change); sessions carry no commit (VP 4).'}
+          - {id: q3, text: 'Seeds alpha 0.05, 50% drop, 10 expected, baseline and wait 28 days are unmeasured; under about 3% of exposed sessions is unprovable in 28 days.'}
   - id: pwi-capture-producer-wiring
     kind: task
     title: 'Capture producer wiring: run record_turn from session hooks into the telemetry writer (rec-4026 slice 3b)'
@@ -83,11 +184,26 @@ work_item_criteria:
   - {work_item: pwi-friction-classifier, criterion_id: c1, text: 'session_friction_rollup applies the versioned rules over the shared R4/R5 dedupe on DuckLake and passes every report vector; responses carry per-label counts, unmapped count and classifier_version.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_friction_rollup_ducklake.py -m integration -k vectors}, status: open}
   - {work_item: pwi-friction-classifier, criterion_id: c2, text: 'Rules-file guard: a specific rule names one exact signature (no wildcard) of a registered hook script or check; generic labels count as unmapped; two rules never tie on one fact.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_friction_rules.py -k guard}, status: open}
   - {work_item: pwi-friction-classifier, criterion_id: c3, text: 'Before T3.4 back-validation or rec filing reads friction totals, the operator reviews every label of the first sessions at one classifier_version (read_all rung).', method: {kind: review, resolver: operator at the first friction-consumer review, evidence_requirement: 'label review sheet per session: labels, mislabels, unmapped_failure_share, classifier_version'}, status: open}
+  - {work_item: pwi-deliberation-capture, criterion_id: c1, text: 'session_deliberation_rollup on DuckLake passes every report vector over the shared env R4/R5 dedupe, groups by producer, parser_version, model and visibility, and selects no content column; fails, never skips, without DuckLake.', method: {kind: execution, check: null, command: 'bin/venv-python -m pytest tests/telemetry/test_deliberation_rollup_ducklake.py::test_report_vectors tests/telemetry/test_deliberation_rollup_ducklake.py::test_selects_no_content'}, status: open}
+  - {work_item: pwi-deliberation-capture, criterion_id: c2, text: 'A DQ monitor in the T3.20 c3 home flags each drift kind (text_missing, text_unexpected, visibility_missing), is silent on clean vectors, and reports verdict none on a legacy-only run; alarm, not gate.', method: {kind: execution, check: null, command: 'bin/venv-python -m pytest tests/telemetry/test_cot_drift.py::test_flags_each_drift_kind tests/telemetry/test_cot_drift.py::test_silent_on_clean tests/telemetry/test_cot_drift.py::test_none_on_legacy'}, status: open}
+  - {work_item: pwi-deliberation-capture, criterion_id: c3, text: 'Before T3.3 or T3.4 reads deliberation metrics, the operator reviews every drift row of the first sessions at read_all and confirms each producer mapping present.', method: {kind: review, resolver: operator at the first deliberation-consumer review (T3.3 or T3.4), evidence_requirement: 'drift rows per session at read_all: kind, producer, parser_version and the verdict on each'}, status: open}
+  - {work_item: pwi-rec-filing-dedupe, criterion_id: c1, text: The filer decision applies the versioned params over its own-source projection and passes every report vector on DuckDB; each run record carries per-action counts and params_version., method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_rec_filing_decision.py -k vectors}, status: open}
+  - {work_item: pwi-rec-filing-dedupe, criterion_id: c2, text: 'Guard: at most one open filer rec per fingerprint; every filer rec carries detector_id, subject_key and fingerprint; the write-time backstop refuses a second open insert.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_rec_filing_guard.py -k one_open_per_fingerprint}, status: open}
+  - {work_item: pwi-rec-filing-dedupe, criterion_id: c3, text: 'Before the filer files any rec, the operator reviews every proposal at read_all and records a verdict: file, covered_by a named rec, or reject.', method: {kind: review, resolver: operator at each read_all proposal review, evidence_requirement: 'proposal sheet per run: fingerprint, action, verdict, covering rec id, rejected_share'}, status: open}
+  - {work_item: pwi-back-validation, criterion_id: c1, text: 'The verdict SQL applies the versioned params to one verb call per candidate and passes every report vector on DuckDB; each verdict record carries the counts, stop day, p and params_version.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_back_validation_verdict.py -k vectors}, status: open}
+  - {work_item: pwi-back-validation, criterion_id: c2, text: 'Under the close path k1 picks, a holds verdict record moves a filer rec through update_rec with its closing sha from the recorded fix attempt; a pending rec stays open.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_back_validation_close.py -k fix_attempt_close}, status: open}
+  - {work_item: pwi-back-validation, criterion_id: c3, text: 'At read_all the job closes nothing: the operator reviews every verdict, confirming or overturning each holds close and each fails, before any rec moves.', method: {kind: review, resolver: operator at each read_all verdict review, evidence_requirement: 'verdict sheet per run: rec, fix sha, verdict, reason, counts, p, operator decision'}, status: open}
   - {work_item: pwi-capture-producer-wiring, criterion_id: c1, text: 'Stop, SessionStart catch-up and SessionEnd hooks run record_turn; batches go data-first, byte-chunked, cursor after all acks; SessionEnd waits for the lock and emits a per-finalization close row; SessionEnd timeout set; never exit 2.', method: {kind: execution, check: null, command: P="bin/venv-python -m pytest tests/turn_capture/test_capture_runner.py -qk";$P hooks&&$P data_first&&$P chunks&&$P ack_cursor&&$P close_row&&$P lock_wait&&$P no_exit_2&&$P end_timeout}, status: open}
   - {work_item: pwi-capture-producer-wiring, criterion_id: c2, text: 'Failed or killed passes replay as writer no-ops; a lost cursor re-derives pins or defers; at finalize a runner-side check proves incremental equals one full parse, resume-after-finalize included.', method: {kind: execution, check: null, command: P="bin/venv-python -m pytest tests/turn_capture/test_capture_runner.py -qk";$P replay_noop&&$P lost_cursor_pins&&$P resume_boundary_conformance}, status: open}
   - {work_item: pwi-capture-producer-wiring, criterion_id: c3, text: 'Smoke-first (T3.20 c8): one live-catalog turn lands through the writer boundary and the rec-4101 orphan monitor runs on it before the hooks are enabled broadly.', method: {kind: review, resolver: operator at the T3.20 c8 smoke gate, evidence_requirement: smoke invocation output plus a rec-4101 monitor run over the smoke rows}, status: open}
 work_item_edges:
   - {from: pwi-friction-classifier, to: T3.20, kind: part_of}
   - {from: pwi-friction-classifier, to: T2.36, kind: depends_on}
+  - {from: pwi-deliberation-capture, to: T3.20, kind: part_of}
+  - {from: pwi-deliberation-capture, to: T2.36, kind: depends_on}
+  - {from: pwi-rec-filing-dedupe, to: T3.3, kind: part_of}
+  - {from: pwi-rec-filing-dedupe, to: T2.36, kind: depends_on}
+  - {from: pwi-back-validation, to: T3.4, kind: part_of}
+  - {from: pwi-back-validation, to: T2.36, kind: depends_on}
   - {from: pwi-capture-producer-wiring, to: T3.20, kind: part_of}
   - {from: pwi-capture-producer-wiring, to: T2.36, kind: depends_on}
