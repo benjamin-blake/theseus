@@ -114,6 +114,39 @@ work_items:
           - {id: q1, text: 'What acceptance probe does a filer rec carry? file_rec needs a discriminating probe; the delta verb is back-validation''s and does not exist.'}
           - {id: q2, text: 'Where does a read_all covered_by verdict persist when nothing is filed: an operator sheet, or a rec filed straight into superseded?'}
           - {id: q3, text: 'Seeds min_sessions 3, min_events 5, window 7 days, budget 3 are unmeasured; no friction rows exist until W1-1 lands.'}
+  - id: pwi-back-validation
+    kind: task
+    title: 'Back-validation: a telemetry verdict on the fix attempt proves or refutes a fix before a filer rec closes'
+    extension:
+      consideration_register:
+        why: T3.4 ends at "telemetry delta proves fix", yet the only back-validation (ci_rca) reads recurrence without exposure, and a naive post-fix drop proves 44-79% of no-op fixes (VP 3).
+        how: One SQL per pending rec over exposed sessions before and after the fix attempt returns a Decision 201 verdict (holds, fails, unmeasurable) or pending; the rule and windows are k4 (report).
+        planes: [data_plane]
+        maturity:
+          rung: read_all
+          transitions:
+            - {from: read_all, to: sampled, trigger: {metric: consecutive verdicts the operator confirmed unchanged, comparator: '>=', threshold: 20}}
+            - {from: sampled, to: spot_check, trigger: {metric: overturned verdicts across the last 50 sampled verdicts, comparator: ==, threshold: 0}}
+            - {from: spot_check, to: anomaly_triggered, trigger: {metric: 'false_proof_rate over the last 90 days, with at least 20 proof closes', comparator: <=, threshold: 0.05}}
+        failure_signal: {signal: 'False proof or proof starvation: a fix closed on a holds verdict regresses, or verdicts stay unmeasurable so no filer rec ever closes on proof', metric: 'false_proof_rate (regressions within 28 days of a proof close / proof closes) beside unmeasurable_share, per 90 days', source: verdict records joined to the filer regression action (regression_of); per-reason verdict counts}
+        verification: [c1, c2, c3]
+        rollback: Stop the back-validation schedule; verdict records stay as history, pending recs stay open for a human close, and recs it closed are ordinary closed recs whose recurrence files a regression.
+        evidence:
+          - {kind: file_line, ref: 'scripts/ops_portal/closure_gate.py:330'}
+          - {kind: file_line, ref: 'scripts/backlog_health/probe.py:130'}
+          - {kind: file_line, ref: 'scripts/ci_rca/back_validation.py:107'}
+          - {kind: decision, ref: '201'}
+        settled:
+          - {id: s1, text: 'Verdicts are Decision 201 holds, fails or unmeasurable in its record shape; update_rec already admits such a holds record (VP 1). Sha keying and timing are k1.'}
+          - {id: s2, text: A naive post-fix drop proves 44-79% of no-op fixes (VP 3); any rule must hold alpha on exposed sessions with a post-fix sample fixed before it is read.}
+        contested:
+          - {id: k1, text: 'Late verdict keyed to the fix sha amends D201 under any option; plumbing: (a) Resolves trailer to a telemetry source, (b) own trailer, (c) manual. Rec (a).'}
+          - {id: k2, text: 'Unmeasurable at the deadline: (a) stays open, listed; (b) close_proposed with reason and counts; (c) stale_no_recurrence close. Rec (b).'}
+          - {id: k3, text: 'Confounds: (a) single-subject test, control ratio advisory; (b) difference-in-differences gate; (c) suspend across change windows. Rec (a) now.'}
+        open_questions:
+          - {id: q1, text: 'Who declares exposure? Each detector must return exposed and affected per session for a subject; no verb returns either today.'}
+          - {id: q2, text: 'Effective day of a fix not live at merge (a Lambda behind a governed deploy, a model or harness change); sessions carry no commit (VP 4).'}
+          - {id: q3, text: 'Seeds alpha 0.05, 50% drop, 10 expected, baseline and wait 28 days are unmeasured; under about 3% of exposed sessions is unprovable in 28 days.'}
 work_item_criteria:
   - {work_item: pwi-friction-classifier, criterion_id: c1, text: 'session_friction_rollup applies the versioned rules over the shared R4/R5 dedupe on DuckLake and passes every report vector; responses carry per-label counts, unmapped count and classifier_version.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_friction_rollup_ducklake.py -m integration -k vectors}, status: open}
   - {work_item: pwi-friction-classifier, criterion_id: c2, text: 'Rules-file guard: a specific rule names one exact signature (no wildcard) of a registered hook script or check; generic labels count as unmapped; two rules never tie on one fact.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_friction_rules.py -k guard}, status: open}
@@ -124,6 +157,9 @@ work_item_criteria:
   - {work_item: pwi-rec-filing-dedupe, criterion_id: c1, text: The filer decision applies the versioned params over its own-source projection and passes every report vector on DuckDB; each run record carries per-action counts and params_version., method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_rec_filing_decision.py -k vectors}, status: open}
   - {work_item: pwi-rec-filing-dedupe, criterion_id: c2, text: 'Guard: at most one open filer rec per fingerprint; every filer rec carries detector_id, subject_key and fingerprint; the write-time backstop refuses a second open insert.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_rec_filing_guard.py -k one_open_per_fingerprint}, status: open}
   - {work_item: pwi-rec-filing-dedupe, criterion_id: c3, text: 'Before the filer files any rec, the operator reviews every proposal at read_all and records a verdict: file, covered_by a named rec, or reject.', method: {kind: review, resolver: operator at each read_all proposal review, evidence_requirement: 'proposal sheet per run: fingerprint, action, verdict, covering rec id, rejected_share'}, status: open}
+  - {work_item: pwi-back-validation, criterion_id: c1, text: 'The verdict SQL applies the versioned params to one verb call per candidate and passes every report vector on DuckDB; each verdict record carries the counts, stop day, p and params_version.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_back_validation_verdict.py -k vectors}, status: open}
+  - {work_item: pwi-back-validation, criterion_id: c2, text: 'Under the close path k1 picks, a holds verdict record moves a filer rec through update_rec with its closing sha from the recorded fix attempt; a pending rec stays open.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_back_validation_close.py -k fix_attempt_close}, status: open}
+  - {work_item: pwi-back-validation, criterion_id: c3, text: 'At read_all the job closes nothing: the operator reviews every verdict, confirming or overturning each holds close and each fails, before any rec moves.', method: {kind: review, resolver: operator at each read_all verdict review, evidence_requirement: 'verdict sheet per run: rec, fix sha, verdict, reason, counts, p, operator decision'}, status: open}
 work_item_edges:
   - {from: pwi-friction-classifier, to: T3.20, kind: part_of}
   - {from: pwi-friction-classifier, to: T2.36, kind: depends_on}
@@ -131,3 +167,5 @@ work_item_edges:
   - {from: pwi-deliberation-capture, to: T2.36, kind: depends_on}
   - {from: pwi-rec-filing-dedupe, to: T3.3, kind: part_of}
   - {from: pwi-rec-filing-dedupe, to: T2.36, kind: depends_on}
+  - {from: pwi-back-validation, to: T3.4, kind: part_of}
+  - {from: pwi-back-validation, to: T2.36, kind: depends_on}
