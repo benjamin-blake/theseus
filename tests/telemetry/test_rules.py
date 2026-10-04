@@ -215,19 +215,25 @@ def test_from_projection_fails_closed_on_malformed_input() -> None:
         project({"c": {"nullable": True, "not_before": "ghost"}})
     with pytest.raises(RuleProjectionError, match="at_most"):
         project({"c": {"nullable": True, "at_most": 3}})
+
+
+def test_content_rule_projection_fails_closed_on_malformed_input() -> None:
+    def project(table_rules):
+        return RowRules.from_projection(COLUMNS, table_rules)
+
     base = TABLE_RULES["payload"]
     with pytest.raises(RuleProjectionError, match="unknown content rule key"):
-        project(table_rules={"payload": {**base, "extra": 1}})
+        project({"payload": {**base, "extra": 1}})
     with pytest.raises(RuleProjectionError, match="names an unknown column"):
-        project(table_rules={"payload": {**base, "sha": "ghost"}})
+        project({"payload": {**base, "sha": "ghost"}})
     with pytest.raises(RuleProjectionError, match="integers"):
-        project(table_rules={"payload": {**base, "threshold": "10"}})
+        project({"payload": {**base, "threshold": "10"}})
     with pytest.raises(RuleProjectionError, match="integers"):
-        project(table_rules={"payload": {**base, "cap": 1.5}})
+        project({"payload": {**base, "cap": 1.5}})
     with pytest.raises(RuleProjectionError, match="below the threshold"):
-        project(table_rules={"payload": {**base, "cap": 5}})
-    assert project().content is None or project(table_rules={}).content is None
-    assert project().representation_only == {"inline", "uri"}
+        project({"payload": {**base, "cap": 5}})
+    assert project({}).content is None
+    assert RowRules.from_projection(COLUMNS).representation_only == {"inline", "uri"}
 
 
 def test_rules_module_holds_no_table_literal() -> None:

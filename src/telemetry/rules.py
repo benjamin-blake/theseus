@@ -115,18 +115,10 @@ class RowRules:
             if "at_most" in spec:
                 at_most[name] = _column_ref(name, "at_most", spec["at_most"], columns)
             if "max_after_write_seconds" in spec:
-                seconds = spec["max_after_write_seconds"]
-                if type(seconds) is not int or seconds < 0:
-                    raise RuleProjectionError(f"{name}: max_after_write_seconds must be a non-negative integer")
-                skew[name] = seconds
+                skew[name] = _seconds(name, spec["max_after_write_seconds"])
             if "representation_of" in spec:
                 representation_only.add(name)
-            for leg, why in (spec.get("write_time_exemptions") or {}).items():
-                if leg not in EXEMPTABLE_LEGS or leg in exemptions:
-                    raise RuleProjectionError(f"{name}: write_time_exemptions names unknown or duplicate leg {leg!r}")
-                if not (isinstance(why, Mapping) and why.get("reason") and why.get("owner")):
-                    raise RuleProjectionError(f"{name}: exemption {leg!r} needs a reason and an owner")
-                exemptions[leg] = (str(why["reason"]), str(why["owner"]))
+            _collect_exemptions(name, spec, exemptions)
         groups = tuple(tuple(group) for group in table_rules.get("exactly_one_of", ()))
         for group in groups:
             missing = [c for c in group if c not in columns]
@@ -147,6 +139,21 @@ class RowRules:
             exemptions=exemptions,
             representation_only=frozenset(representation_only),
         )
+
+
+def _seconds(column: str, seconds: Any) -> int:
+    if type(seconds) is not int or seconds < 0:
+        raise RuleProjectionError(f"{column}: max_after_write_seconds must be a non-negative integer")
+    return seconds
+
+
+def _collect_exemptions(column: str, spec: Mapping[str, Any], exemptions: dict[str, tuple[str, str]]) -> None:
+    for leg, why in (spec.get("write_time_exemptions") or {}).items():
+        if leg not in EXEMPTABLE_LEGS or leg in exemptions:
+            raise RuleProjectionError(f"{column}: write_time_exemptions names unknown or duplicate leg {leg!r}")
+        if not (isinstance(why, Mapping) and why.get("reason") and why.get("owner")):
+            raise RuleProjectionError(f"{column}: exemption {leg!r} needs a reason and an owner")
+        exemptions[leg] = (str(why["reason"]), str(why["owner"]))
 
 
 def _condition(column: str, rule: str, raw: Any) -> dict[str, frozenset[str]]:
@@ -197,6 +204,13 @@ def _matches(row: Mapping[str, Any], condition: Mapping[str, frozenset[str]]) ->
 
 def check_row(table: str, row: Mapping[str, Any], rules: RowRules, created_timestamp: datetime) -> None:
     """Raise RowRuleError on the first rule *row* breaks; a passing row passes again against any later created_timestamp."""
+    _check_presence(table, row, rules)
+    if rules.content is not None:
+        _check_content(table, row, rules)
+    _check_relations(table, row, rules, created_timestamp)
+
+
+def _check_presence(table: str, row: Mapping[str, Any], rules: RowRules) -> None:
     for column in sorted(rules.not_null):
         if row.get(column) is None:
             raise RowRuleError(table, "not_null", column)
@@ -214,8 +228,9 @@ def check_row(table: str, row: Mapping[str, Any], rules: RowRules, created_times
         value = row.get(column)
         if value is not None and re.fullmatch(pattern, value) is None:
             raise RowRuleError(table, "pattern", column)
-    if rules.content is not None:
-        _check_content(table, row, rules)
+
+
+def _check_relations(table: str, row: Mapping[str, Any], rules: RowRules, created_timestamp: datetime) -> None:
     for column, other in rules.not_before.items():
         value, bound = row.get(column), row.get(other)
         if value is not None and bound is not None and value < bound:
