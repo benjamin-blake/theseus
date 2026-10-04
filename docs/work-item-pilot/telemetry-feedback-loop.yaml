@@ -181,6 +181,74 @@ work_items:
           - {id: q1, text: 'Is this ladder T3.4''s A0-A3 executor autonomy gates, or a separate review ladder sharing one controller? Report reads separate.'}
           - {id: q2, text: 'Where the review log, transition log and current rung live; nothing reads a rung today (VP 1). Shares rec-filing q4.'}
           - {id: q3, text: 'Seeds unmeasured: AOQL target 2% (met only at recall >= drill floor), clearances 40/40/20, fractions 0.2/0.04/0.008, drill 20/20 days at 0.9; review capacity.'}
+  - id: pwi-allow-list-transport
+    kind: task
+    title: 'Plane egress: a data-plane verb applies the operator-approved allow-list before telemetry metadata crosses'
+    extension:
+      consideration_register:
+        why: 'Decision 209 cl.2(b) wants an allow-list and cl.5(i) leaves it open: 62 of 140 telemetry columns hold caller strings, 0 of 15 vocabularies are enforced, and nothing reads a plane (VP 1-2).'
+        how: 'A named data-plane reader verb, assembled from a per-column allow-list, emits only what the list names (staged: k1(a) day aggregates of guarded enums, sums, booleans); drift or a bad id refuses. k1-k3.'
+        planes: [data_plane, control_plane]
+        maturity:
+          rung: read_all
+          transitions:
+            - {from: read_all, to: sampled, trigger: {metric: 'provisional: egress batches the operator diffed against the allow-list with canary_leaks 0 since the last leak', comparator: '>=', threshold: 30}}
+            - {from: sampled, to: spot_check, trigger: {metric: 'provisional: 1-in-5 sampled egress batches diffed clean since the last leak', comparator: '>=', threshold: 60}}
+            - {from: spot_check, to: anomaly_triggered, trigger: {metric: 'provisional: consecutive days with canary_leaks 0 and no unclassified column', comparator: '>=', threshold: 90}}
+        failure_signal: {signal: 'Tenant text crosses to the control plane, or classification drifts: an unclassified column refuses, or a withheld share rises', metric: 'canary_leaks: tokens of the seeded per-run canary row found in the egress batch; must be 0', source: egress batch and seeded canary row (data plane); withheld_<col> share per column beside it}
+        verification: [c1, c2, c3]
+        rollback: Stop the egress schedule and nothing further crosses; the control plane holds only aggregates already sent, deletable per tenant, and the data plane is untouched. Failing safe means no fleet view.
+        evidence:
+          - {kind: decision, ref: '209'}
+          - {kind: file_line, ref: 'docs/contracts/telemetry-event-envelope.yaml:316'}
+          - {kind: file_line, ref: 'scripts/checks/roadmap/_work_item_pilot_model.py:50'}
+          - {kind: roadmap, ref: T2.36}
+        settled:
+          - {id: s1, text: Only an explicit allow-list of metadata crosses; transcripts and tenant data never do; the filter runs in the data plane first (Decision 209 cl.2(a)-(b)).}
+          - {id: s2, text: 'The egress is a named reader verb over derived-at-read state, never caller SQL (Decision 199 cl.1; Decision 84 I-3).'}
+          - {id: s3, text: 'Measured: a 12-column deny-list leaks 65 of 77 string columns; the staged allow-list leaks 0 (VP 5); ids plus tenancy ids confirm refs (VP 6).'}
+        contested:
+          - {id: k1, text: 'Membership (always-ask): (a) tenancy key, guarded enums, finite numbers, booleans at day grain; (b) plus open-vocabulary strings; (c) envelope as-is. Rec (a).'}
+          - {id: k2, text: 'Ids (always-ask): (a) no derived id crosses; (b) HMAC re-key under a data-plane key; (c) as-is, which VP 6 rules out. Rec (a).'}
+          - {id: k3, text: 'Transport (always-ask, IAM): (a) data plane pushes; (b) control plane pulls via a customer-granted role; (c) both by adapter. Rec (a).'}
+        open_questions:
+          - {id: q1, text: 'Who owns each closed vocabulary and flips enforced to true? Until then model, producer and other open-vocabulary columns cannot cross.'}
+          - {id: q2, text: 'No consumer exists: which aggregates does the first paid fleet dashboard need (Decision 209 cl.1)? Membership should follow it.'}
+          - {id: q3, text: 'Where the canary row, egress log and withheld counts live in the data plane; shares rec-filing q4.'}
+  - id: pwi-goodhart-register
+    kind: task
+    title: 'Goodhart register: a counter series and a seeded drill per failure_signal, read daily as a soundness verdict'
+    extension:
+      consideration_register:
+        why: All 8 W1 failure_signals are lower-is-better, and a cheap path lowers each as far as halving real failures (VP 3); 4 name a companion, 1 a seeded positive, 0 a recall check (VP 1).
+        how: One register row per detector (metric, cheap path, counter, drill, upstreams) and one daily SQL returning ok or one of nine unsound verdicts per detector, upstreams included; the ladder reads it (k1).
+        planes: [data_plane]
+        maturity:
+          rung: read_all
+          transitions:
+            - {from: read_all, to: sampled, trigger: {metric: 'provisional: verdicts the operator re-derived unchanged since the last overturned one', comparator: '>=', threshold: 40}}
+            - {from: sampled, to: spot_check, trigger: {metric: 'provisional: 1-in-5 sampled verdicts re-derived unchanged since the last overturned one', comparator: '>=', threshold: 40}}
+            - {from: spot_check, to: anomaly_triggered, trigger: {metric: 'provisional: consecutive days on which that day''s dated drill series reads unregistered', comparator: '>=', threshold: 30}}
+        failure_signal: {signal: 'A detector reads sound while it is not: a series reaches the ladder with no register row, or a counter that cannot fall under its own cheap path', metric: 'unsound_reads: unregistered series reaching the ladder + rows whose counter held in its cheap-path replay; must be 0', source: verdict log (unregistered rows less the dated drill- series) and the c2 replay on every register version}
+        verification: [c1, c2, c3]
+        rollback: Stop the verdict schedule; the ladder reads its other inputs as before. Register rows and drill logs stay as history; nothing else is written, so a resume re-derives every verdict.
+        evidence:
+          - {kind: file_line, ref: 'scripts/checks/roadmap/_work_item_pilot_model.py:162'}
+          - {kind: file_line, ref: 'src/turn_capture/observations.py:361'}
+          - {kind: decision, ref: '196'}
+          - {kind: roadmap, ref: T3.4}
+        settled:
+          - {id: s1, text: 'One failure_signal per item (pilot model: required, unique); D196 cl.7''s Goodhart question applies by analogy. Data plane only (D209 cl.2a).'}
+          - {id: s2, text: 'Measured: in 8 of 8 W1 items a stated cheap path lowers the failure_signal as far as halving real failures; the staged counter splits the two in 8 of 8 (VP 3).'}
+          - {id: s3, text: 'Measured: 4 of 8 signals name a companion, 1 a seeded positive, 0 a recall check on the top trigger; computable companions catch 1 of 2 cheap paths (VP 1, 3).'}
+        contested:
+          - {id: k1, text: 'Ladder: (a) block, demote; (b) block; (c) advisory. Rec (a) incl. dark; (b) diverging, upstream; no breach leg. Open: propagation, order, drill rows, staleness.'}
+          - {id: k2, text: 'Drills: (a) live rows under a drill project_id kept out of totals; (b) offline replay of each detector SQL; (c) operator samples. Rec (b); (a) capture, canary.'}
+          - {id: k3, text: 'Declared where: (a) this item''s register rows; (b) counter and drill fields on FailureSignal, evaluator-required; (c) item prose. Rec (a) now, (b) at lift.'}
+        open_questions:
+          - {id: q1, text: 'Where the out-of-band counts and drill logs live: capture q1 denominator, rec-4025 shadow mode (#1390 q2), friction label review, the verdict log.'}
+          - {id: q2, text: 'Seeds unmeasured: counter floor 0.99, drill_min 20 per 28 days at recall 0.9, eps 0.01 on 14-day halves. Who sets per-detector values, from what?'}
+          - {id: q3, text: 'Is the verdict one input to #1398''s controller, replacing its top-rung drill with one at every rung (its k5 (a3)), or read beside it?'}
   - id: pwi-capture-producer-wiring
     kind: task
     title: 'Capture producer wiring: run record_turn from session hooks into the telemetry writer (rec-4026 slice 3b)'
@@ -230,6 +298,12 @@ work_item_criteria:
   - {work_item: pwi-maturity-ladder-controller, criterion_id: c1, text: 'The controller SQL applies the versioned params over the build''s review, signal, drill and approval tables, passes every report vector on DuckDB including the returned to_version, and raises on each malformed input.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_maturity_ladder_controller.py -k vectors}, status: open}
   - {work_item: pwi-maturity-ladder-controller, criterion_id: c2, text: 'Seeded simulation via the controller over p 0.005-0.2, recall 1.0/0.9/0.5 and 3+ seeds: escaped-wrong share <= the AOQL target on every seed where recall meets the drill floor, the rest reported; no low-recall monitor tops beyond chance.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_maturity_ladder_controller.py -k simulation}, status: open}
   - {work_item: pwi-maturity-ladder-controller, criterion_id: c3, text: At read_all every promotion is a proposal the operator re-derives before the rung changes; demotions and restarts apply at once and are re-derived after the fact from the transition log., method: {kind: review, resolver: operator at each read_all ladder review, evidence_requirement: 'transition sheet per run: component, from, to, reason, clearance, signal, params_version, decision'}, status: open}
+  - {work_item: pwi-allow-list-transport, criterion_id: c1, text: 'The egress verb, assembled from the operator-approved allow-list, passes the report vectors of the operator-chosen options (staged: k1(a) withhold, k4(a)), incl. refusal on drift and any tenancy id not exactly one ULID.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_egress_allow_list.py -k vectors}, status: open}
+  - {work_item: pwi-allow-list-transport, criterion_id: c2, text: 'A canary token seeded in every string column of all four telemetry tables appears nowhere in the egress output, and every out-of-vocabulary enum value is counted as withheld.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_egress_allow_list.py -k canary}, status: open}
+  - {work_item: pwi-allow-list-transport, criterion_id: c3, text: 'The operator approves the allow-list before the first batch crosses and approves every later change to it, each with the canary result on that head.', method: {kind: review, resolver: 'operator, before the first batch crosses and on every allow-list change', evidence_requirement: 'allow-list diff naming each added column, its class, vocabulary and consumer, plus the canary probe line'}, status: open}
+  - {work_item: pwi-goodhart-register, criterion_id: c1, text: 'The verdict SQL applies the versioned params over the build''s register, signal and drill tables and passes every report vector on DuckDB, each raise matching its message.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_goodhart_register.py -k vectors}, status: open}
+  - {work_item: pwi-goodhart-register, criterion_id: c2, text: 'For every register row the build replays its cheap path on the detector''s real metric: the primary improves and the counter falls under its floor; on a real improvement the counter holds.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_goodhart_register.py -k cheap_path_replay}, status: open}
+  - {work_item: pwi-goodhart-register, criterion_id: c3, text: 'Before the ladder reads any detector above read_all, the operator approves its register row, and approves every later change to a row, each with that row''s c2 replay result.', method: {kind: review, resolver: 'operator, before the ladder reads a detector above read_all and on every register change', evidence_requirement: 'register diff per row: metric, cheap path, counter, floor, drill, upstreams, plus its c2 replay line'}, status: open}
   - {work_item: pwi-capture-producer-wiring, criterion_id: c1, text: 'Stop, SessionStart catch-up and SessionEnd hooks run record_turn; batches go data-first, byte-chunked, cursor after all acks; SessionEnd waits for the lock and emits a per-finalization close row; SessionEnd timeout set; never exit 2.', method: {kind: execution, check: null, command: P="bin/venv-python -m pytest tests/turn_capture/test_capture_runner.py -qk";$P hooks&&$P data_first&&$P chunks&&$P ack_cursor&&$P close_row&&$P lock_wait&&$P no_exit_2&&$P end_timeout}, status: open}
   - {work_item: pwi-capture-producer-wiring, criterion_id: c2, text: 'Failed or killed passes replay as writer no-ops; a lost cursor re-derives pins or defers; at finalize a runner-side check proves incremental equals one full parse, resume-after-finalize included.', method: {kind: execution, check: null, command: P="bin/venv-python -m pytest tests/turn_capture/test_capture_runner.py -qk";$P replay_noop&&$P lost_cursor_pins&&$P resume_boundary_conformance}, status: open}
   - {work_item: pwi-capture-producer-wiring, criterion_id: c3, text: 'Smoke-first (T3.20 c8): one live-catalog turn lands through the writer boundary and the rec-4101 orphan monitor runs on it before the hooks are enabled broadly.', method: {kind: review, resolver: operator at the T3.20 c8 smoke gate, evidence_requirement: smoke invocation output plus a rec-4101 monitor run over the smoke rows}, status: open}
@@ -244,5 +318,7 @@ work_item_edges:
   - {from: pwi-back-validation, to: T2.36, kind: depends_on}
   - {from: pwi-maturity-ladder-controller, to: T3.4, kind: part_of}
   - {from: pwi-maturity-ladder-controller, to: T2.36, kind: depends_on}
+  - {from: pwi-allow-list-transport, to: T2.36, kind: depends_on}
+  - {from: pwi-goodhart-register, to: T2.36, kind: depends_on}
   - {from: pwi-capture-producer-wiring, to: T3.20, kind: part_of}
   - {from: pwi-capture-producer-wiring, to: T2.36, kind: depends_on}
