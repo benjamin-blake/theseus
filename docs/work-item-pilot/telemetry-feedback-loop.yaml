@@ -147,6 +147,40 @@ work_items:
           - {id: q1, text: 'Who declares exposure? Each detector must return exposed and affected per session for a subject; no verb returns either today.'}
           - {id: q2, text: 'Effective day of a fix not live at merge (a Lambda behind a governed deploy, a model or harness change); sessions carry no commit (VP 4).'}
           - {id: q3, text: 'Seeds alpha 0.05, 50% drop, 10 expected, baseline and wait 28 days are unmeasured; under about 3% of exposed sessions is unprovable in 28 days.'}
+  - id: pwi-maturity-ladder-controller
+    kind: task
+    title: 'Maturity ladder controller: a daily deterministic promote, hold, demote or restart per loop component'
+    extension:
+      consideration_register:
+        why: 'The six W1 items declare 18 upward-only free-text triggers with no review rate (VP 1-2): promotion measures patience, and a blinder failure_signal promotes faster (VP 5).'
+        how: One SQL per daily run over the review log, failure_signal series, drills and approvals returns promote, propose_promote, hold, demote or restart with a reason and the version held next; legs are k1-k3 (report k4, k5, k7).
+        planes: [data_plane]
+        maturity:
+          rung: read_all
+          transitions:
+            - {from: read_all, to: sampled, trigger: {metric: 'controller decisions the operator re-derived unchanged since the last overturned one (return leg: k1)', comparator: '>=', threshold: 40}}
+            - {from: sampled, to: spot_check, trigger: {metric: 1-in-5 sampled controller decisions re-derived unchanged since the last overturned one, comparator: '>=', threshold: 40}}
+            - {from: spot_check, to: anomaly_triggered, trigger: {metric: consecutive days with stale_rung_days 0 and est_escaped_share <= the AOQL target (q3), comparator: '>=', threshold: 30}}
+        failure_signal: {signal: 'A component sits at a rung its own evidence contradicts: wrong outputs escape above read_all, or a demote condition holds with no transition', metric: 'est_escaped_share: audited wrong share x unreviewed share, rolling 30 days, per component above read_all', source: 'review log (audited samples, unreviewed counts) and transition log (home: q2); stale_rung_days beside it'}
+        verification: [c1, c2, c3]
+        rollback: Stop the schedule and set every component to read_all; the transition log stays as history and review returns to 100% until a controller resumes. Failing safe means more review.
+        evidence:
+          - {kind: file_line, ref: 'scripts/checks/roadmap/_work_item_pilot_model.py:151'}
+          - {kind: file_line, ref: 'scripts/checks/roadmap/_work_item_pilot_model.py:132'}
+          - {kind: roadmap, ref: T3.4}
+          - {kind: decision, ref: '55'}
+        settled:
+          - {id: s1, text: 'Rungs read_all, sampled, spot_check, anomaly_triggered in order (pilot model); the decision is deterministic code, never an LLM (charter: measurable triggers).'}
+          - {id: s2, text: 'Measured: 18 of 18 declared triggers are upward-only free text and no item states a review rate, so none can be evaluated as written (VP 1-2).'}
+          - {id: s3, text: 'Measured: with no return leg, escaped-wrong share tracks the error rate (0.11-0.13 at p=0.2) and a half-blind monitor promotes faster (VP 5). Facts only.'}
+        contested:
+          - {id: k1, text: 'Return leg on a wrong output found above read_all: (a) back to read_all (CSP-1); (b) one rung down; (c) none, as declared. Rec (a).'}
+          - {id: k2, text: 'Version change: (a) restart at read_all, monotonic on an integer stamp; (b) one rung down; (c) keep the rung. #1396 and #1397 defer here. Rec (a).'}
+          - {id: k3, text: 'Who moves a component: (a) operator approves promotions, demotions automatic; (b) both automatic; (c) operator ratifies both. Rec (a).'}
+        open_questions:
+          - {id: q1, text: 'Is this ladder T3.4''s A0-A3 executor autonomy gates, or a separate review ladder sharing one controller? Report reads separate.'}
+          - {id: q2, text: 'Where the review log, transition log and current rung live; nothing reads a rung today (VP 1). Shares rec-filing q4.'}
+          - {id: q3, text: 'Seeds unmeasured: AOQL target 2% (met only at recall >= drill floor), clearances 40/40/20, fractions 0.2/0.04/0.008, drill 20/20 days at 0.9; review capacity.'}
 work_item_criteria:
   - {work_item: pwi-friction-classifier, criterion_id: c1, text: 'session_friction_rollup applies the versioned rules over the shared R4/R5 dedupe on DuckLake and passes every report vector; responses carry per-label counts, unmapped count and classifier_version.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_friction_rollup_ducklake.py -m integration -k vectors}, status: open}
   - {work_item: pwi-friction-classifier, criterion_id: c2, text: 'Rules-file guard: a specific rule names one exact signature (no wildcard) of a registered hook script or check; generic labels count as unmapped; two rules never tie on one fact.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_friction_rules.py -k guard}, status: open}
@@ -160,6 +194,9 @@ work_item_criteria:
   - {work_item: pwi-back-validation, criterion_id: c1, text: 'The verdict SQL applies the versioned params to one verb call per candidate and passes every report vector on DuckDB; each verdict record carries the counts, stop day, p and params_version.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_back_validation_verdict.py -k vectors}, status: open}
   - {work_item: pwi-back-validation, criterion_id: c2, text: 'Under the close path k1 picks, a holds verdict record moves a filer rec through update_rec with its closing sha from the recorded fix attempt; a pending rec stays open.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_back_validation_close.py -k fix_attempt_close}, status: open}
   - {work_item: pwi-back-validation, criterion_id: c3, text: 'At read_all the job closes nothing: the operator reviews every verdict, confirming or overturning each holds close and each fails, before any rec moves.', method: {kind: review, resolver: operator at each read_all verdict review, evidence_requirement: 'verdict sheet per run: rec, fix sha, verdict, reason, counts, p, operator decision'}, status: open}
+  - {work_item: pwi-maturity-ladder-controller, criterion_id: c1, text: 'The controller SQL applies the versioned params over the build''s review, signal, drill and approval tables, passes every report vector on DuckDB including the returned to_version, and raises on each malformed input.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_maturity_ladder_controller.py -k vectors}, status: open}
+  - {work_item: pwi-maturity-ladder-controller, criterion_id: c2, text: 'Seeded simulation via the controller over p 0.005-0.2, recall 1.0/0.9/0.5 and 3+ seeds: escaped-wrong share <= the AOQL target on every seed where recall meets the drill floor, the rest reported; no low-recall monitor tops beyond chance.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_maturity_ladder_controller.py -k simulation}, status: open}
+  - {work_item: pwi-maturity-ladder-controller, criterion_id: c3, text: At read_all every promotion is a proposal the operator re-derives before the rung changes; demotions and restarts apply at once and are re-derived after the fact from the transition log., method: {kind: review, resolver: operator at each read_all ladder review, evidence_requirement: 'transition sheet per run: component, from, to, reason, clearance, signal, params_version, decision'}, status: open}
 work_item_edges:
   - {from: pwi-friction-classifier, to: T3.20, kind: part_of}
   - {from: pwi-friction-classifier, to: T2.36, kind: depends_on}
@@ -169,3 +206,5 @@ work_item_edges:
   - {from: pwi-rec-filing-dedupe, to: T2.36, kind: depends_on}
   - {from: pwi-back-validation, to: T3.4, kind: part_of}
   - {from: pwi-back-validation, to: T2.36, kind: depends_on}
+  - {from: pwi-maturity-ladder-controller, to: T3.4, kind: part_of}
+  - {from: pwi-maturity-ladder-controller, to: T2.36, kind: depends_on}
