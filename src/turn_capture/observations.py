@@ -3,11 +3,14 @@
 Turn open/close, model_call (one per response, owned by its last record), tool_call open/close (a tool_use
 with no in-span result gets ONE synthetic interrupted close anchored on the tool_use record itself) and one
 process_event per hook attachment. Tool errors are the tool_call close outcome, never process_events.
-Rows of a turn are built only once the turn is closed; a row outside any turn is built at once.
+Rows of a turn are built only once the turn is closed; a row outside any turn is built at once. A tool_call close
+carries output_capture and the raw output identity (output_bytes/sha256/lines); a model_call carries
+reasoning_visibility and the provider-reported reasoning_tokens.
 """
 
 from __future__ import annotations
 
+import hashlib
 import posixpath
 import re
 from collections import Counter
@@ -27,7 +30,7 @@ from src.turn_capture.streams import (
     block_base,
     emitting_streams,
 )
-from src.turn_capture.transcripts import Ctx, canonical_json, text_of
+from src.turn_capture.transcripts import Ctx, Sidecars, canonical_json, line_count, persisted_output, text_of
 
 OBSERVATION_COLUMNS = (
     "event_kind",
@@ -59,6 +62,12 @@ OBSERVATION_COLUMNS = (
     "acceptance_passed",
     "exit_code",
     "time_lost_seconds",
+    "output_capture",
+    "output_bytes",
+    "output_sha256",
+    "output_lines",
+    "reasoning_visibility",
+    "reasoning_tokens",
     "rec_id",
     "metadata",
 )
@@ -125,11 +134,11 @@ def outcome_of(res: Result, stream: Stream) -> str:
 
 def _result_meta(res: Result) -> str:
     info = res.use_result if isinstance(res.use_result, dict) else {}
-    path = info.get("persistedOutputPath")
+    persisted = persisted_output(res)
     return _meta(
         is_error=res.body.get("is_error") is True,
         interrupted=info.get("interrupted") if isinstance(info.get("interrupted"), bool) else None,
-        persisted_output=posixpath.basename(path.replace("\\", "/")) if isinstance(path, str) else None,
+        persisted_output=persisted.name if persisted is not None else None,
         persisted_output_size=info.get("persistedOutputSize") if type(info.get("persistedOutputSize")) is int else None,
         agent_id=info.get("agentId") if isinstance(info.get("agentId"), str) else None,
         is_async=info.get("isAsync") if isinstance(info.get("isAsync"), bool) else None,
@@ -137,7 +146,44 @@ def _result_meta(res: Result) -> str:
     )
 
 
-def _tool_rows(ctx: Ctx, stream: Stream, turn: Turn, tref: str, use: ToolUse) -> list[dict[str, Any]]:
+def _identity(capture: str, data: bytes) -> dict[str, Any]:
+    return {
+        "output_capture": capture,
+        "output_bytes": len(data),
+        "output_sha256": hashlib.sha256(data).hexdigest(),
+        "output_lines": line_count(data.count(b"\n"), len(data), data.endswith(b"\n")),
+    }
+
+
+def _output_cols(ctx: Ctx, res: Result, sidecars: Sidecars) -> dict[str, Any]:
+    """output_capture and the RAW output identity: the sidecar bytes when persisted, else the model-visible text."""
+    persisted = persisted_output(res)
+    if persisted is None:
+        return _identity("not_persisted", text_of(res.body.get("content")).encode("utf-8", "replace"))
+    out = sidecars.output(persisted.name, ctx.full_output_cap_bytes)
+    if out is None:
+        return {"output_capture": "unavailable"}
+    digest = out.digest
+    return {
+        "output_capture": "captured" if out.text is not None else "omitted_oversize",
+        "output_bytes": digest.size,
+        "output_sha256": digest.sha256,
+        "output_lines": digest.lines,
+    }
+
+
+def _reasoning(resp: Any, tokens: int | None) -> str:
+    """full > summarized > redacted > omitted > none; this producer never sees raw reasoning, so never full."""
+    blocks = [b for r in resp.recs for b in r.data["message"]["content"] if isinstance(b, dict)]
+    thinking = [b for b in blocks if b.get("type") == "thinking"]
+    if any(isinstance(b.get("thinking"), str) and b["thinking"] != "" for b in thinking):
+        return "summarized"
+    if any(b.get("type") == "redacted_thinking" for b in blocks):
+        return "redacted"
+    return "omitted" if thinking or (tokens is not None and tokens > 0) else "none"
+
+
+def _tool_rows(ctx: Ctx, stream: Stream, turn: Turn, tref: str, use: ToolUse, sidecars: Sidecars) -> list[dict[str, Any]]:
     rec, block = use.rec, use.block_body
     caller = block.get("caller")
     tid = use.tool_id
@@ -179,6 +225,7 @@ def _tool_rows(ctx: Ctx, stream: Stream, turn: Turn, tref: str, use: ToolUse) ->
                 sequence=use.ordinal,
                 outcome=outcome_of(res, stream),
                 metadata=_result_meta(res),
+                **_output_cols(ctx, res, sidecars),
             )
         )
     else:
@@ -195,13 +242,14 @@ def _tool_rows(ctx: Ctx, stream: Stream, turn: Turn, tref: str, use: ToolUse) ->
                 name=name,
                 sequence=use.ordinal,
                 outcome="interrupted",
+                output_capture="no_result",
                 metadata=_meta(synthetic=True),
             )
         )
     return rows
 
 
-def _turn_rows(ctx: Ctx, stream: Stream, turn: Turn, diag: Counter[str]) -> list[dict[str, Any]]:
+def _turn_rows(ctx: Ctx, stream: Stream, turn: Turn, diag: Counter[str], sidecars: Sidecars) -> list[dict[str, Any]]:
     tref = turn_entity_ref(stream.session_ref, turn.prompt_id)
     first = turn.first
     rows = [
@@ -262,16 +310,17 @@ def _turn_rows(ctx: Ctx, stream: Stream, turn: Turn, diag: Counter[str]) -> list
                 model=_model(owner),
                 billing_shape=ctx.billing_shape,
                 **tokens,
+                reasoning_visibility=_reasoning(resp, thinking),
+                reasoning_tokens=thinking,
                 metadata=_meta(
                     request_id=owner.data.get("requestId") if isinstance(owner.data.get("requestId"), str) else None,
                     stop_reason=message.get("stop_reason") if isinstance(message.get("stop_reason"), str) else None,
                     block_count=sum(len(r.data["message"]["content"]) for r in resp.recs),
-                    thinking_tokens=thinking,
                 ),
             )
         )
     for use in turn.tool_uses:
-        rows += _tool_rows(ctx, stream, turn, tref, use)
+        rows += _tool_rows(ctx, stream, turn, tref, use, sidecars)
     for res in turn.orphan_results:
         rows.append(
             _row(
@@ -285,6 +334,7 @@ def _turn_rows(ctx: Ctx, stream: Stream, turn: Turn, diag: Counter[str]) -> list
                 tref,
                 outcome=outcome_of(res, stream),
                 metadata=_result_meta(res),
+                **_output_cols(ctx, res, sidecars),
             )
         )
     return rows
@@ -334,11 +384,11 @@ def _hook_row(ctx: Ctx, stream: Stream, rec: Rec) -> dict[str, Any]:
     )
 
 
-def build_observations(parsed: ParsedTree, ctx: Ctx, diag: Counter[str]) -> list[dict[str, Any]]:
+def build_observations(parsed: ParsedTree, ctx: Ctx, diag: Counter[str], sidecars: Sidecars) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for stream in emitting_streams(parsed):
         for turn in stream.turns:
             if turn.closed:
-                rows += _turn_rows(ctx, stream, turn, diag)
+                rows += _turn_rows(ctx, stream, turn, diag, sidecars)
         rows += [_hook_row(ctx, stream, rec) for rec in stream.hooks if rec.turn is None or rec.turn.closed]
     return rows

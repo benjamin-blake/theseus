@@ -11,8 +11,15 @@ whose content differs (every stored column except created_timestamp and producer
 loudly (grain enforced at the write boundary); an identical or producer_version-only re-send is a
 no-op; the writer never updates or deletes -- a rejection writes nothing from the batch.
 
-Out of scope (rec-4024, the writer verb): OCC retry, row caps, the event_timestamp-skew check,
-project_ref/tenant resolution, and parent_observation_id existence checking (contract risk R3).
+Every row-local rule the contract declares (not-null, accepted values, required_when, exactly-one-of, ordering,
+bounds, content integrity/threshold/cap, the write-time skew) is projected into the spec's RowRules and enforced
+by src/telemetry/rules.py before any SQL (Decision 210). prepare_batch is the pure half (gate, rules, derivation,
+intra-batch collapse); execute_prepared runs the one MERGE inside a transaction the CALLER owns, so a writer can
+put several tables in one transaction; append_events is the one-table facade over both.
+
+Out of scope (rec-4024, the writer verb): OCC retry, row caps, project_ref/tenant resolution, the writer-edge
+decoding of timestamp strings (timestamps.parse_wire_timestamp), and parent_observation_id existence checking,
+which is not a write-time check under the amended R3 contract.
 duckdb is imported only under TYPE_CHECKING (plane-neutral rule, Decision 184 cl.2) -- this module
 is reachable without duckdb installed; only calling append_events() needs a live connection.
 """
@@ -26,12 +33,15 @@ from typing import TYPE_CHECKING, Any
 
 from src.telemetry.gate import (
     AppendError,
+    GateError,
+    GrainConflictError,
     check_and_normalize_value,
     check_not_null,
     collapse_or_reject_duplicates,
     reject_unknown_or_derived_columns,
 )
 from src.telemetry.identity import KEY_PLANS, derive_entity_key, derive_event_id
+from src.telemetry.rules import RowRuleError, RowRules, check_row
 
 if TYPE_CHECKING:
     import duckdb
@@ -40,7 +50,7 @@ _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _STRUCTURAL_NOT_NULL = frozenset({"producer", "event_id", "parser_version", "session_started_at", "created_timestamp"})
 _ALWAYS_DERIVED = frozenset({"event_id", "created_timestamp", "tenant_id", "project_id"})
 _GRAIN_KEY = ("producer", "event_id", "parser_version")
-_COMPARE_EXCLUDED = frozenset({"created_timestamp", "producer_version"})
+_STRUCTURAL_EXCLUDED = frozenset({"created_timestamp", "producer_version"})
 _CONFLICT_TOKEN = "TELEMETRY_GRAIN_CONFLICT"
 
 
@@ -51,6 +61,8 @@ class EventTableSpec:
     table: str
     columns: dict[str, str] = field(default_factory=dict)  # column -> sql_type, declaration order
     not_null: frozenset[str] = field(default_factory=frozenset)
+    rules: RowRules = field(default_factory=RowRules)
+    compare_excluded: frozenset[str] = _STRUCTURAL_EXCLUDED
 
     @property
     def key_plans(self) -> dict[str, Any]:
@@ -71,7 +83,7 @@ class EventTableSpec:
         """Build a spec from scripts/field_semantics_event_projection.py's output shape.
 
         Rejects (AppendError): merge_key/current_table present, write_mode != append_only,
-        dedupe_key != [event_id, parser_version], partition_column != session_started_at, a
+        dedupe_key != [producer, event_id, parser_version], partition_column != session_started_at, a
         history partition that is not the calendar-day triple over session_started_at, a missing
         event_id/parser_version/session_started_at/created_timestamp column, or a derived-role set
         that differs from {event_id, created_timestamp, tenant_id, project_id} plus this table's
@@ -109,7 +121,14 @@ class EventTableSpec:
 
         columns = {name: spec["sql_type"] for name, spec in columns_raw.items()}
         not_null = frozenset(_STRUCTURAL_NOT_NULL) | frozenset(col for col, plan in key_plans.items() if plan.required)
-        return cls(table=table, columns=columns, not_null=not_null)
+        try:
+            rules = RowRules.from_projection(columns_raw, entry.get("table_rules"))
+        except ValueError as exc:
+            raise AppendError(f"{table}: {exc}") from exc
+        compare_excluded = _STRUCTURAL_EXCLUDED | rules.representation_only
+        if not compare_excluded.isdisjoint(_GRAIN_KEY):
+            raise AppendError(f"{table}: a grain-key column cannot be excluded from the compared content")
+        return cls(table=table, columns=columns, not_null=not_null, rules=rules, compare_excluded=compare_excluded)
 
 
 @dataclass(frozen=True)
@@ -154,13 +173,13 @@ def _derive_row(
 
     session_started_at = typed.get("session_started_at")
     if not isinstance(session_started_at, datetime):
-        raise AppendError("session_started_at is required and must be a datetime")
+        raise GateError("session_started_at is required and must be a datetime")
 
     for column, plan in table_spec.key_plans.items():
         ref = raw_row.get(plan.ref_field)
         if ref is None:
             if plan.required:
-                raise AppendError(f"{table_spec.table}: required ref field {plan.ref_field!r} is missing")
+                raise GateError(f"{table_spec.table}: required ref field {plan.ref_field!r} is missing")
             typed[column] = None
             continue
         typed[column] = derive_entity_key(plan.domain_tag, tenant_id, project_id, ref, session_started_at)
@@ -168,7 +187,7 @@ def _derive_row(
     external_ref = typed.get("external_ref")
     event_timestamp = typed.get("event_timestamp")
     if not isinstance(external_ref, str) or not isinstance(event_timestamp, datetime):
-        raise AppendError(f"{table_spec.table}: external_ref and event_timestamp are required to derive event_id")
+        raise GateError(f"{table_spec.table}: external_ref and event_timestamp are required to derive event_id")
     typed["event_id"] = derive_event_id(table_spec.table, tenant_id, project_id, external_ref, event_timestamp)
 
     typed["tenant_id"] = tenant_id
@@ -176,6 +195,10 @@ def _derive_row(
     typed["created_timestamp"] = created_timestamp
 
     check_not_null(typed, table_spec.not_null)
+    try:
+        check_row(table_spec.table, typed, table_spec.rules, created_timestamp)
+    except RowRuleError as exc:
+        raise GateError(str(exc)) from exc
     return typed
 
 
@@ -186,14 +209,16 @@ def _day_bounds(session_started_at_values: list[datetime]) -> tuple[datetime, da
     return lower, upper
 
 
-def _build_merge_sql(catalog: str, table: str, ordered_columns: list[tuple[str, str]], row_count: int) -> str:
+def _build_merge_sql(
+    catalog: str, table: str, ordered_columns: list[tuple[str, str]], row_count: int, compare_excluded: frozenset[str]
+) -> str:
     columns = [c for c, _ in ordered_columns]
     col_list = ", ".join(columns)
     one_row = "(" + ", ".join(f"CAST(? AS {sql_type})" for _, sql_type in ordered_columns) + ")"
     values_clause = ", ".join([one_row] * row_count)
     insert_values = ", ".join(f"s.{c}" for c in columns)
     on_clause = " AND ".join(f"t.{c} = s.{c}" for c in _GRAIN_KEY)
-    compare_columns = [c for c in columns if c not in _COMPARE_EXCLUDED]
+    compare_columns = [c for c in columns if c not in compare_excluded]
     t_tuple = ", ".join(f"t.{c}" for c in compare_columns)
     s_tuple = ", ".join(f"s.{c}" for c in compare_columns)
     return (
@@ -204,6 +229,74 @@ def _build_merge_sql(catalog: str, table: str, ordered_columns: list[tuple[str, 
         f"THEN ERROR ('{_CONFLICT_TOKEN}: conflicting row for event_id=' || s.event_id) "
         f"WHEN NOT MATCHED THEN INSERT ({col_list}) VALUES ({insert_values})"
     )
+
+
+@dataclass(frozen=True)
+class PreparedBatch:
+    """The pure half's output: derived, rule-checked, intra-batch-collapsed rows ready for execute_prepared."""
+
+    table_spec: EventTableSpec
+    rows: list[dict[str, Any]]
+    submitted: int
+    collapsed: int
+
+
+def prepare_batch(
+    table_spec: EventTableSpec,
+    rows: list[dict[str, Any]],
+    *,
+    tenant_id: str,
+    project_id: str,
+    now: datetime | None = None,
+) -> PreparedBatch:
+    """Derive keys, run the gate and every contract row rule, collapse intra-batch duplicates. No SQL.
+
+    Raises GateError (a row rule or type rejection) or GrainConflictError (a differing row under one grain key).
+    created_timestamp is minted once per call; a retry is judged against a later one, so a row that passed once
+    passes again (the skew rule is monotone).
+    """
+    _validate_identifier(table_spec.table, "table")
+    for col in table_spec.columns:
+        _validate_identifier(col, "column")
+    moment = now or datetime.now(timezone.utc)
+    if moment.utcoffset() is None:
+        raise AppendError("now must be a tz-aware datetime")
+    moment = moment.astimezone(timezone.utc)
+    created_timestamp = moment.replace(microsecond=(moment.microsecond // 1000) * 1000)
+    derived_rows = [
+        _derive_row(table_spec, raw_row, tenant_id=tenant_id, project_id=project_id, created_timestamp=created_timestamp)
+        for raw_row in rows
+    ]
+    deduped_rows, collapsed = collapse_or_reject_duplicates(derived_rows, _GRAIN_KEY, table_spec.compare_excluded)
+    return PreparedBatch(table_spec=table_spec, rows=deduped_rows, submitted=len(rows), collapsed=collapsed)
+
+
+def execute_prepared(con: duckdb.DuckDBPyConnection, prepared: PreparedBatch, *, catalog: str) -> AppendResult:
+    """Run the one insert-only MERGE for *prepared*. Opens and commits NOTHING: the caller owns the transaction.
+
+    A stored row that differs under the same grain key raises GrainConflictError; nothing is written for the batch.
+    """
+    _require_utc_connection(con)
+    _validate_identifier(catalog, "catalog")
+    table_spec = prepared.table_spec
+    if not prepared.rows:
+        return AppendResult(submitted=prepared.submitted, collapsed=prepared.collapsed, inserted=0)
+    ordered_columns = list(table_spec.columns.items())
+    lower, upper = _day_bounds([r["session_started_at"] for r in prepared.rows])
+    sql = _build_merge_sql(catalog, table_spec.table, ordered_columns, len(prepared.rows), table_spec.compare_excluded)
+    params: list[Any] = []
+    for row in prepared.rows:
+        params.extend(row.get(col) for col, _ in ordered_columns)
+    params.extend([lower, upper])
+    try:
+        result_row = con.execute(sql, params).fetchone()
+    except Exception as exc:
+        if _CONFLICT_TOKEN in str(exc):
+            raise GrainConflictError(str(exc)) from exc
+        raise
+    assert result_row is not None
+    (inserted,) = result_row
+    return AppendResult(submitted=prepared.submitted, collapsed=prepared.collapsed, inserted=inserted)
 
 
 def append_events(
@@ -231,43 +324,15 @@ def append_events(
     if not rows:
         return AppendResult(submitted=0, collapsed=0, inserted=0)
 
-    submitted = len(rows)
-    moment = now or datetime.now(timezone.utc)
-    if moment.utcoffset() is None:
-        raise AppendError("now must be a tz-aware datetime")
-    moment = moment.astimezone(timezone.utc)
-    created_timestamp = moment.replace(microsecond=(moment.microsecond // 1000) * 1000)
-
-    derived_rows = [
-        _derive_row(table_spec, raw_row, tenant_id=tenant_id, project_id=project_id, created_timestamp=created_timestamp)
-        for raw_row in rows
-    ]
-
-    deduped_rows, collapsed = collapse_or_reject_duplicates(derived_rows, _GRAIN_KEY)
-
-    ordered_columns = list(table_spec.columns.items())
-    lower, upper = _day_bounds([r["session_started_at"] for r in deduped_rows])
-
-    sql = _build_merge_sql(catalog, table_spec.table, ordered_columns, len(deduped_rows))
-    params: list[Any] = []
-    for row in deduped_rows:
-        params.extend(row.get(col) for col, _ in ordered_columns)
-    params.extend([lower, upper])
-
+    prepared = prepare_batch(table_spec, rows, tenant_id=tenant_id, project_id=project_id, now=now)
     con.execute("BEGIN")
     try:
-        result = con.execute(sql, params)
-        result_row = result.fetchone()
-        assert result_row is not None
-        (inserted,) = result_row
+        result = execute_prepared(con, prepared, catalog=catalog)
         con.execute("COMMIT")
-    except Exception as exc:
+    except Exception:
         con.execute("ROLLBACK")
-        if _CONFLICT_TOKEN in str(exc):
-            raise AppendError(str(exc)) from exc
         raise
+    return result
 
-    return AppendResult(submitted=submitted, collapsed=collapsed, inserted=inserted)
 
-
-__all__ = ["AppendResult", "EventTableSpec", "append_events"]
+__all__ = ["AppendResult", "EventTableSpec", "PreparedBatch", "append_events", "execute_prepared", "prepare_batch"]
