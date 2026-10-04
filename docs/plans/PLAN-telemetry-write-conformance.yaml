@@ -39,10 +39,14 @@ scope:
     (event_timestamp later than created_timestamp by more than 300 s is rejected -- the skew bound the field already
     declared without a value). (3) governance_notes: every timestamp column carries its full millisecond value at the
     writer edge (exactly three fraction digits in the wire form), extending the session_started_at every-hop obligation
-    to all timestamp columns because event_id's 48-bit prefix depends on event_timestamp the same way. Field- and
-    contract-level amendment_log entries (semantic_break true, CD.25 category 6); the pin change's migration_story
-    states it re-keys any session whose earliest timestamp is not its first record in file order, and is safe only
-    because no v1 row and no persisted cursor exists anywhere. Stays <= 500 effective lines (389 today).
+    to all timestamp columns because event_id's 48-bit prefix depends on event_timestamp the same way. (4)
+    parser_version's R1 text gains one clause: a change to a registry-recorded producer input constant
+    (full_output_cap_bytes in config/telemetry/parser_versions.yaml) is an output change and bumps even when the golden
+    digest repeats, because it changes the output for inputs the goldens do not hold; field-level amendment_log entry,
+    semantic_break true. Field- and contract-level amendment_log entries (semantic_break true, CD.25 category 6); the
+    pin change's migration_story states it re-keys any session whose earliest timestamp is not its first record in file
+    order, and is safe only because no v1 row and no persisted cursor exists anywhere. Stays <= 500 effective lines (389
+    today).
 - file: docs/contracts/telemetry_transcripts.yaml
   action: Modify
   purpose: >-
@@ -113,9 +117,10 @@ scope:
 - file: docs/contracts/telemetry-lexicon.yaml
   action: Modify
   purpose: >-
-    Term-level only (Decision 95) -- add tool_output, output_capture, payload omission and reasoning visibility terms;
-    the purpose term's value list gains tool_output; the transcript term's content line points at the model-visible
-    rule. amendment_log entry.
+    Term-level only (Decision 95) -- add tool_output, output_capture, payload omission and reasoning visibility terms
+    (the last notes that summarized can include Claude's user-facing progress-update thinking blocks, which carry no
+    type difference); the purpose term's value list gains tool_output; the transcript term's content line points at the
+    model-visible rule. amendment_log entry.
 - file: docs/contracts/data-modeling-standard.yaml
   action: Modify
   purpose: >-
@@ -123,8 +128,10 @@ scope:
     a table name: declared REPRESENTATION-ONLY columns -- columns whose value is a pure function of compared
     payload-identity columns, declared by dq_intent representation_of -- are excluded from the compared content, because
     the identity they represent is compared instead; still an equality compare that rejects loudly, never a tiebreak.
-    amendment_log entry; version and updated_* per the file's convention. Merges after the write-time enforcement
-    Decision's implementation (which adds rule write-time-enforcement to this file) -- see the pre-implementation gate.
+    The amended statement cites no Decision number before 'Decision 207' (test_grain_enforced_at_write_rule_declared
+    reads the first citation). amendment_log entry; version and updated_* per the file's convention. Merges after the
+    write-time enforcement Decision's implementation (which adds rule write-time-enforcement to this file) -- see the
+    pre-implementation gate.
 - file: docs/DECISIONS.md
   action: Modify
   purpose: >-
@@ -199,8 +206,15 @@ scope:
     fixture_events test contract patches) -- no edit to scripts/schema_to_field_semantics.py; a field whose $ref is
     'source-lineage.yaml#/contract/fields/registry_key' (telemetry_agents.agent_type) gets accepted_values = the
     canonical_id set of the registry named by source-lineage.yaml's top-level allowed_values.registry
-    (config/agent/data_quality/source_registry.yaml), read at generation time -- no new file. Fail closed on an unknown
-    rule key, a malformed rule, or an exemption without reason and owner.
+    (config/agent/data_quality/source_registry.yaml), read at generation time -- no new file. Envelope rule inheritance:
+    scripts/contracts.py _layer_overrides replaces a $ref field's dq_intent WHOLESALE with its dq_intent_local, and
+    every Class A contract declares dq_intent_local {not_null: {enforced: true}} on event_timestamp, so the resolved
+    spec drops the envelope's new not_before and max_after_write_seconds on all four tables (critique round 5 confirmed
+    it by simulation). The projection therefore reads each $ref field's RAW target (the envelope field) and layers the
+    target's row-rule keys under the local block: the local block may add a key or tighten not_null, never drop an
+    inherited rule, and a rule key both declare with different values fails closed. No edit to scripts/contracts.py or
+    to any Class A contract. Fail closed on an unknown rule key, a malformed rule, or an exemption without reason and
+    owner.
 - file: src/turn_capture/transcript.py
   action: Modify
   purpose: >-
@@ -242,20 +256,25 @@ scope:
   action: Modify
   purpose: >-
     PARSER_VERSION 2 and a new PRODUCER_VERSION; a root record whose timestamp is earlier than the persisted cursor pin
-    re-pins when the cursor's consumed prefix (lines_consumed, finalized) builds zero rows -- nothing was emitted under
-    the old pin -- and otherwise raises PinOrderError (a CursorError subclass, so existing pin-change handling and tests
-    keep their meaning; the producer halt: never re-pinned, never emitted -- recovery is a rec-4026 slice-3b residual,
-    since R7 reuses the pin across resets); any other pin mismatch stays a plain CursorError; FULL_OUTPUT_CAP_BYTES =
-    8388608, equal to the registry value and <= the contract's cap (asserted by test), read at each record_turn call and
-    passed to transcripts through Ctx (Ctx gains full_output_cap_bytes), so a test override of
-    record_turn.FULL_OUTPUT_CAP_BYTES reaches every consumer.
+    re-pins when the PERSISTED cursor's consumed prefix (its lines_consumed and finalized as loaded, before any
+    parser_version reset(), whose base has empty lines_consumed and would wrongly re-pin and re-key the tree after a
+    bump) builds zero rows -- nothing was emitted under the old pin -- and otherwise raises PinOrderError (a CursorError
+    subclass, so existing pin-change handling and tests keep their meaning; the producer halt: never re-pinned, never
+    emitted -- recovery is a rec-4026 slice-3b residual, since R7 reuses the pin across resets); any other pin mismatch
+    stays a plain CursorError; nothing in this slice catches PinOrderError (record_turn has no caller until rec-4026's
+    hook, which halts on it); _build_all passes the shared Sidecars to build_observations, and Sidecars caches one
+    streamed (size, sha256, line count) digest per sidecar per pass, so a sidecar is streamed once per pass however many
+    builders read it; FULL_OUTPUT_CAP_BYTES = 8388608, equal to the registry value and <= the contract's cap (asserted
+    by test), read at each record_turn call and passed to transcripts through Ctx (Ctx gains full_output_cap_bytes), so
+    a test override of record_turn.FULL_OUTPUT_CAP_BYTES reaches every consumer.
 - file: config/telemetry/parser_versions.yaml
   action: Modify
   purpose: >-
     claude_code current 2 with a history entry (date, golden_digest of the regenerated corpus, reason naming this plan,
     full_output_cap_bytes 8388608). Every history entry records the cap in force (v1's entry gains nothing -- a missing
     cap reads as 'no cap'), so a later cap change is visible drift: the registry check accepts a bump whose digest
-    repeats iff its cap differs.
+    repeats iff its cap differs (the envelope's amended R1 clause). The v2 golden_digest line carries the '# pragma:
+    allowlist secret' marker the v1 line carries.
 - file: tests/fixtures/turn_capture/golden/index.json
   action: Modify
   purpose: >-
@@ -353,13 +372,13 @@ scope:
 - file: tests/fixtures/turn_capture_corpus.py
   action: Modify
   purpose: >-
-    A context manager case_cap(name) patches record_turn.FULL_OUTPUT_CAP_BYTES to a case's optional
-    full_output_cap_bytes for the duration of the block, and EVERY corpus consumer wraps its record_turn calls in it --
-    golden equality, the line-cut walks, the registry's _live_digests and the local-DuckLake integration (load_case
-    alone applies no override, since consumers call record_turn after it returns); output_sha256 joins _SIDE_EFFECT_KEYS
-    (64-hex values never land in committed goldens, the detect-secrets problem) with a separate assertion that it equals
-    the recomputed raw-output sha256; builders for an MCP-overflow tool_result, a hooks-before-first-record case and the
-    reasoning-forms responses.
+    make_ctx passes full_output_cap_bytes (Ctx is built positionally there). A context manager case_cap(name) patches
+    record_turn.FULL_OUTPUT_CAP_BYTES to a case's optional full_output_cap_bytes for the duration of the block, and
+    EVERY corpus consumer wraps its record_turn calls in it -- golden equality, the line-cut walks, the registry's
+    _live_digests and the local-DuckLake integration (load_case alone applies no override, since consumers call
+    record_turn after it returns); output_sha256 joins _SIDE_EFFECT_KEYS (64-hex values never land in committed goldens,
+    the detect-secrets problem) with a separate assertion that it equals the recomputed raw-output sha256; builders for
+    an MCP-overflow tool_result, a hooks-before-first-record case and the reasoning-forms responses.
 - file: tests/fixtures/turn_capture_ducklake.py
   action: Modify
   purpose: Specs built through the rules-bearing projection (load_specs) so the local-DuckLake integration tests exercise every rule.
@@ -398,11 +417,11 @@ scope:
 - file: tests/telemetry/test_contract_amendments.py
   action: Modify
   purpose: >-
-    Guards for the envelope, transcripts, observations (output_* and the model_call reasoning fields), sessions and
-    data-modeling-standard amendments and the two Decision annotations, plus
-    test_write_time_decision_cited_by_its_merged_number: resolves N from the '## Decision N:' header matching
-    data-modeling-standard's write-time-enforcement rule citation (never hard-coded) and fails if any 'Decision 210'
-    placeholder this plan's changes add names a different entry.
+    Guards for the envelope (including test_parser_version_bumps_on_recorded_input_constant for the R1 clause),
+    transcripts, observations (output_* and the model_call reasoning fields), sessions and data-modeling-standard
+    amendments and the two Decision annotations, plus test_write_time_decision_cited_by_its_merged_number: resolves N
+    from the '## Decision N:' header matching data-modeling-standard's write-time-enforcement rule citation (never
+    hard-coded) and fails if any 'Decision 210' placeholder this plan's changes add names a different entry.
 - file: tests/checks/contracts/test_telemetry_event_journal_contracts.py
   action: Modify
   purpose: >-
@@ -419,7 +438,9 @@ scope:
   purpose: >-
     Rule projection (accepted values incl. the registry-sourced agent_type set, required_when, not_before,
     max_after_write_seconds, at_most, null_or_zero_when, exactly_one_of, content rules, compare exclusions) and
-    fail-closed on unknown rule keys.
+    fail-closed on unknown rule keys; test_row_rules_projected_from_contracts asserts not_before session_started_at and
+    max_after_write_seconds 300 on event_timestamp for ALL FOUR tables, telemetry_agents included (the inherited
+    envelope rules), and a test asserts a local block that changes an inherited rule's value fails closed.
 - file: tests/turn_capture/test_transcript.py
   action: Modify
   purpose: >-
@@ -430,9 +451,10 @@ scope:
   action: Modify
   purpose: >-
     Model-visible tool_result, tool_output row, omission over cap with raw identity, MCP overflow, unavailable sidecar,
-    streaming never materialises an over-cap sidecar; test_sidecar_or_truncated_and_pins and
-    test_sidecar_pins_are_honoured_and_contradictions_raise inverted to the new semantics (guards replaced, never
-    deleted).
+    streaming never materialises an over-cap sidecar; test_decode_growth_over_cap_is_omitted (raw size within the cap,
+    decoded and scrubbed text over it); test_unmatched_string_tool_use_result_is_counted;
+    test_sidecar_or_truncated_and_pins and test_sidecar_pins_are_honoured_and_contradictions_raise inverted to the new
+    semantics (guards replaced, never deleted).
 - file: tests/turn_capture/test_observations.py
   action: Modify
   purpose: >-
@@ -480,9 +502,10 @@ acceptance_criteria:
   agent_type set, required_when, exactly-one-of, event_timestamp not_before session_started_at, the 300 s write-time
   skew, content integrity and the pattern on content_sha256/output_sha256, the cap leg 'content or content_uri set
   implies content_bytes <= cap' (omission rows are raw identity and not cap-bound), and the 'content_uri implies >
-  threshold' leg) is projected by the generator and rejected by the kernel before any SQL with a GateError naming table,
-  rule and column; the one exempted leg ('inline content <= 64 KiB') is declared beside its rule with reason and owner
-  (Decision 210 cl.3) and projected as an exemption.
+  threshold' leg) is projected by the generator (envelope rules inherited through each table's $ref, never dropped by a
+  local override) and rejected by the kernel before any SQL with a GateError naming table, rule and column; the one
+  exempted leg ('inline content <= 64 KiB') is declared beside its rule with reason and owner (Decision 210 cl.3) and
+  projected as an exemption.
 - >-
   rules.py holds no telemetry column name or value (AST scan); _COMPARE_EXCLUDED and _COLLAPSE_IGNORED_COLUMNS are gone,
   replaced by spec.compare_excluded from the projection; _STRUCTURAL_NOT_NULL, _GRAIN_KEY and _ALWAYS_DERIVED remain
@@ -627,6 +650,7 @@ verification_plan:
     tests/telemetry/test_contract_amendments.py::test_tool_result_capture_policy_declared
     tests/telemetry/test_contract_amendments.py::test_tool_call_output_fields_declared
     tests/telemetry/test_contract_amendments.py::test_model_call_reasoning_fields_declared
+    tests/telemetry/test_contract_amendments.py::test_parser_version_bumps_on_recorded_input_constant
     tests/checks/contracts/test_telemetry_event_journal_contracts.py::TestTranscriptsContentModel::test_transcripts_content_model
     tests/telemetry/test_contract_amendments.py::test_representation_only_columns_excluded_from_grain_compare
     tests/telemetry/test_contract_amendments.py::test_decision_annotations_for_hash_compare_and_omission
@@ -635,8 +659,9 @@ verification_plan:
     tests/telemetry/test_contract_amendments.py::test_lexicon_names_tool_output_and_omission -q && ! grep -n
     'dedupe_key != \[event_id, parser_version\]' src/telemetry/append.py && grep -q 'dedupe_key != \[producer, event_id,
     parser_version\]' src/telemetry/append.py && ! grep -nE '_COMPARE_EXCLUDED|_COLLAPSE_IGNORED_COLUMNS'
-    src/telemetry/append.py src/telemetry/gate.py && echo ACCEPTANCE_OK
-  expected: Exit 0, the index is fresh, 10 passed and the success marker printed.
+    src/telemetry/append.py src/telemetry/gate.py && ! grep -n 'thinking_tokens=' src/turn_capture/observations.py && echo
+    ACCEPTANCE_OK
+  expected: Exit 0, the index is fresh, 11 passed and the success marker printed.
   fix_if: A failing assertion names the missing contract text or a stale Decision number -- fix the document, not the test.
   hermetic: true
   graduation: waive
@@ -679,7 +704,10 @@ verification_plan:
     A real shape the rules reject -> fix the producer; a rule the real data shows is wrong -> STOP and return to /plan
     (Decision 210 cl.4: fix the definition at the source, never demote).
   hermetic: false
-  graduation: not-applicable
+  graduation: waive
+  graduation_waiver_reason: >-
+    Depends on the implementing machine's private real transcripts, which CI does not have and which are never committed
+    (Decision 101); the synthetic golden corpus carries the same invariants in the graduated steps 5 and 6.
 - step: 11
   phase: pre-deploy
   action: Full validation tier before handoff.
@@ -790,6 +818,11 @@ test_obligations:
   verification_step: 7
   test_selector: tests/telemetry/test_contract_amendments.py::test_session_pin_is_earliest_timestamp
   red_green_expectation: red before (old wording), green after
+- source: docs/contracts/telemetry-event-envelope.yaml
+  behavior: R1 says a change to a registry-recorded producer input constant bumps parser_version even when the golden digest repeats.
+  verification_step: 7
+  test_selector: tests/telemetry/test_contract_amendments.py::test_parser_version_bumps_on_recorded_input_constant
+  red_green_expectation: red before (R1 has no such clause), green after
 - source: docs/contracts/telemetry_transcripts.yaml
   behavior: Model-visible content, tool_output purpose, raw-identity omission, exactly-one-of widening, threshold legs and exemption, cap, representation_of.
   verification_step: 7
@@ -854,8 +887,9 @@ context:
   207, 199, 177, 96, 95, 184, 181, 118, 166, 79. Decisions triaged: 162 of 162; Roadmap items intersected: 6; CONFLICT:
   0; RELATED: 5.
 - >-
-  gates: decision-scout=FLAGS_FOUND (all resolved); plan-critique=REVISE r1 (11 findings), r2 (4 findings + 5 notes) and
-  r4 (6 changes + 1 optional + 3 notes; r3 was interrupted by an operator pause before reporting), all fixed
+  gates: decision-scout=FLAGS_FOUND (all resolved); plan-critique=REVISE r1 (11 findings), r2 (4 findings + 5 notes), r4
+  (6 changes + 1 optional + 3 notes; r3 was interrupted by an operator pause before reporting) and r5 (3 changes + 7
+  notes), all fixed
 - >-
   WRITE-TIME ENFORCEMENT DECISION: landed as Decision 210 (#1329, e360d987) while this plan was in critique, so its
   "Decision 210" citations are real. The pre_implementation gate still re-resolves N from the header and VP step 7's
@@ -893,7 +927,10 @@ context:
   producer), and the persisted fact lives on output_capture. (b) The pin halt is narrowed: a cursor that has emitted no
   row re-pins, because no row carries the old value, so the graduated line-cut R7 check stays unchanged and green on the
   new hooks case; the halt keeps its meaning once a row exists. (c) The MCP-overflow tool_result row is origin harness,
-  so the golden does not lock in tool.
+  so the golden does not lock in tool. Round 5: the envelope's new rules reach each table only through the projection's
+  $ref inheritance (the shared resolver drops them); R1 names registry-recorded input constants as output changes;
+  sessions.py's open-row source_ordinal stays the first record in file order (an ordering aid, not the pin), so a golden
+  open row may point at a different record than the pin's.
 - >-
   Residuals (Decision 181 cl.2): harness denial/interrupt sentinels stay unpinned (rec-4026); PinOrderError recovery and
   the hook-side halt are slice 3b (rec-4026); cross-row rules stay DQ (rec-4063, rec-4101); the writer-edge application
