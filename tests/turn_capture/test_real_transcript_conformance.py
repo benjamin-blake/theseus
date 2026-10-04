@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import time
 from collections import Counter
@@ -20,8 +21,9 @@ from typing import Any
 
 import pytest
 
+from src.telemetry.append import prepare_batch
 from src.telemetry.identity import canonical_ref
-from src.telemetry.timestamps import TimestampError, parse_iso8601_utc
+from src.telemetry.timestamps import TimestampError, epoch_ms, parse_iso8601_utc
 from src.turn_capture.record_turn import record_turn
 from src.turn_capture.scrub import scrub_text
 from src.turn_capture.transcript import ROOT, FsTree
@@ -286,31 +288,90 @@ def test_rows_are_unique_valid_and_scrubbed(runs: list[dict[str, Any]]) -> None:
                         )
                         generic.update(["long_token"] * len([w for w in value.split() if len(w) >= 40 and w.isalnum()]))
         for r in result.transcripts:
-            assert r["content_bytes"] == len(r["content"].encode()), f"{tag}: content_bytes disagrees"
+            if "content" in r:
+                assert r["content_bytes"] == len(r["content"].encode()), f"{tag}: content_bytes disagrees"
+            else:
+                assert r["content_omitted_reason"] == "oversize" and "content_uri" not in r, f"{tag}: a payload-less row"
     print(f"\nconformance: generic long alphanumeric tokens in stored text (count only): {sum(generic.values())}")
 
 
-def test_sidecars_resolve_untruncated(runs: list[dict[str, Any]]) -> None:
-    checked = 0
+def _stream_closed(run: dict[str, Any], record: dict[str, Any]) -> bool:
+    """A tool_result emits a row only once its turn is closed; the final pass closes every turn but an orphan's."""
+    return run["result"].observations != [] and any(
+        r["external_ref"].startswith(f"{record.get('uuid')}#") for r in run["result"].observations
+    )
+
+
+_SAVED = re.compile(r"Output has been saved to (\S+)")
+
+
+def _persisted_name(info: Any) -> tuple[str, bool]:
+    """(sidecar basename, via the MCP-overflow string) from an independent reading of the raw toolUseResult."""
+    if isinstance(info, dict):
+        return os.path.basename(str(info.get("persistedOutputPath") or "").replace("\\", "/")), False
+    match = _SAVED.search(info) if isinstance(info, str) else None
+    return (os.path.basename(match.group(1).replace("\\", "/")), True) if match else ("", False)
+
+
+def test_persisted_outputs_have_one_full_row_and_results_store_the_visible_text(runs: list[dict[str, Any]]) -> None:
+    checked = mcp = unmatched = 0
     for run in _live(runs):
         tag = _hash(run["sid"])
         rows = {r["external_ref"]: r for r in run["result"].transcripts}
         for path in _stream_files(run["root"]).values():
             for _, d in raw_lines(path)[0]:
                 info = d.get("toolUseResult")
-                name = (
-                    os.path.basename(str(info.get("persistedOutputPath") or "").replace("\\", "/"))
-                    if isinstance(info, dict)
-                    else ""
-                )
-                if not name or not (run["root"].parent / run["sid"] / "tool-results" / name).is_file():
-                    continue
+                name, via_string = _persisted_name(info)
+                unmatched += isinstance(info, str) and not name
+                readable = bool(name) and (run["root"].parent / run["sid"] / "tool-results" / name).is_file()
                 for k, block in enumerate(_blocks(d)):
-                    row = rows.get(f"{d.get('uuid')}#{k}")
-                    if isinstance(block, dict) and block.get("type") == "tool_result" and row is not None:
+                    if not (isinstance(block, dict) and block.get("type") == "tool_result"):
+                        continue
+                    visible, full = rows.get(f"{d.get('uuid')}#{k}"), rows.get(f"{d.get('uuid')}#{k}/full")
+                    if visible is not None:
+                        assert visible["content_truncated"] is False, f"{tag}: a tool_result row marked truncated"
+                    elif isinstance(block.get("content"), str) and block["content"] and _stream_closed(run, d):
+                        raise AssertionError(f"{tag}: a tool_result with in-transcript text has no tool_result row")
+                    if readable and (run["root"].parent / run["sid"] / "tool-results" / name).stat().st_size > 0:
                         checked += 1
-                        assert row["content_truncated"] is False, f"{tag}: a resolvable sidecar was stored truncated"
-    print(f"\nconformance: {checked} resolvable sidecar tool_results stored untruncated")
+                        mcp += via_string
+                        assert full is not None, f"{tag}: a readable persisted output has no tool_output or omission row"
+                        assert full["purpose"] == "tool_output" and full["origin"] == "tool"
+                        if via_string and visible is not None:
+                            assert visible["origin"] == "harness", f"{tag}: an MCP-overflow result is harness text"
+                    else:
+                        assert full is None, f"{tag}: a tool_output row without a readable persisted output"
+    print(
+        f"\nconformance: {checked} readable persisted outputs ({mcp} MCP overflow) each have one full row; "
+        f"{unmatched} unmatched string toolUseResult"
+    )
+
+
+def test_pin_is_the_minimum_raw_timestamp_and_every_row_passes_the_kernel_rules(runs: list[dict[str, Any]]) -> None:
+    from tests.fixtures.turn_capture_corpus import PROJECT, TENANT  # noqa: PLC0415
+
+    specs = load_specs()
+    for run in _live(runs):
+        tag = _hash(run["sid"])
+        stamps = [
+            parse_iso8601_utc(d["timestamp"])
+            for _, d in raw_lines(run["root"])[0]
+            if isinstance(d.get("timestamp"), str) and _stamp(d)
+        ]
+        assert run["result"].next_cursor.session_started_at_ms == epoch_ms(min(stamps)), (
+            f"{tag}: the pin is not the earliest timestamp"
+        )
+        for (table, rows), _ in zip(run["result"].batches, range(4), strict=True):
+            if rows:
+                prepare_batch(specs[table], rows, tenant_id=TENANT, project_id=PROJECT)
+
+
+def _stamp(d: dict[str, Any]) -> bool:
+    try:
+        parse_iso8601_utc(d["timestamp"])
+        return True
+    except (TimestampError, KeyError, TypeError):
+        return False
 
 
 def test_cross_tree_uniqueness(runs: list[dict[str, Any]]) -> None:
@@ -392,7 +453,7 @@ def test_loads_into_local_ducklake_with_every_fk_resolving(
         rows = []
         for run in live:
             for r in run["result"].batches[position][1]:
-                if table == "telemetry_transcripts" and len(r["content"].encode()) > 65536:
+                if table == "telemetry_transcripts" and "content" in r and len(r["content"].encode()) > 65536:
                     skipped += 1
                     continue
                 rows.append(r)
