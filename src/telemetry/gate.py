@@ -20,6 +20,14 @@ class AppendError(ValueError):
     """Raised by every rejection this module (and src/telemetry/append.py) performs."""
 
 
+class GateError(AppendError):
+    """A row is rejected before any SQL: unknown or derived column, type, NOT NULL or a contract row rule."""
+
+
+class GrainConflictError(AppendError):
+    """Two different rows under one grain key: within the batch or against a stored row."""
+
+
 def reject_unknown_or_derived_columns(
     row: dict[str, Any],
     known_columns: frozenset[str],
@@ -33,16 +41,16 @@ def reject_unknown_or_derived_columns(
     """
     for key in row:
         if key in derived_columns:
-            raise AppendError(f"column {key!r} is derived by the write boundary and must not be caller-supplied")
+            raise GateError(f"column {key!r} is derived by the write boundary and must not be caller-supplied")
         if key not in known_columns:
-            raise AppendError(f"unknown column {key!r} is not declared on this table's spec")
+            raise GateError(f"unknown column {key!r} is not declared on this table's spec")
 
 
 def check_not_null(row: dict[str, Any], not_null_columns: frozenset[str]) -> None:
     """Raise on the first NOT NULL column that is missing or explicitly None in *row*."""
     for col in not_null_columns:
         if row.get(col) is None:
-            raise AppendError(f"column {col!r} is NOT NULL but missing or None")
+            raise GateError(f"column {col!r} is NOT NULL but missing or None")
 
 
 def check_and_normalize_value(column: str, value: Any, sql_type: str) -> Any:
@@ -54,55 +62,47 @@ def check_and_normalize_value(column: str, value: Any, sql_type: str) -> Any:
     """
     if sql_type == "VARCHAR":
         if not isinstance(value, str):
-            raise AppendError(f"column {column!r}: VARCHAR requires str, got {type(value).__name__}")
+            raise GateError(f"column {column!r}: VARCHAR requires str, got {type(value).__name__}")
         return value
     if sql_type == "BIGINT":
         if isinstance(value, bool) or not isinstance(value, int):
-            raise AppendError(f"column {column!r}: BIGINT requires int (not bool), got {type(value).__name__}")
+            raise GateError(f"column {column!r}: BIGINT requires int (not bool), got {type(value).__name__}")
         if not (-(2**63) <= value <= 2**63 - 1):
-            raise AppendError(f"column {column!r}: BIGINT value {value} is out of int64 range")
+            raise GateError(f"column {column!r}: BIGINT value {value} is out of int64 range")
         return value
     if sql_type == "DOUBLE":
         if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise AppendError(f"column {column!r}: DOUBLE requires int or float (not bool), got {type(value).__name__}")
+            raise GateError(f"column {column!r}: DOUBLE requires int or float (not bool), got {type(value).__name__}")
         as_float = float(value)
         if not math.isfinite(as_float):
-            raise AppendError(f"column {column!r}: DOUBLE requires a finite value, got {as_float}")
+            raise GateError(f"column {column!r}: DOUBLE requires a finite value, got {as_float}")
         return as_float
     if sql_type == "BOOLEAN":
         if not isinstance(value, bool):
-            raise AppendError(f"column {column!r}: BOOLEAN requires bool, got {type(value).__name__}")
+            raise GateError(f"column {column!r}: BOOLEAN requires bool, got {type(value).__name__}")
         return value
     if sql_type == "VARCHAR[]":
         if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-            raise AppendError(f"column {column!r}: VARCHAR[] requires list[str]")
+            raise GateError(f"column {column!r}: VARCHAR[] requires list[str]")
         return value
     if sql_type == "TIMESTAMP WITH TIME ZONE":
         if not isinstance(value, datetime):
-            raise AppendError(f"column {column!r}: TIMESTAMP WITH TIME ZONE requires a datetime, got {type(value).__name__}")
+            raise GateError(f"column {column!r}: TIMESTAMP WITH TIME ZONE requires a datetime, got {type(value).__name__}")
         offset = value.utcoffset()
         if offset is None:
-            raise AppendError(f"column {column!r}: naive datetime is not accepted (a timezone is required)")
+            raise GateError(f"column {column!r}: naive datetime is not accepted (a timezone is required)")
         utc_value = value.astimezone(timezone.utc)
         floored_micro = (utc_value.microsecond // 1000) * 1000
         return utc_value.replace(microsecond=floored_micro)
-    raise AppendError(f"column {column!r}: unsupported sql_type {sql_type!r}")
+    raise GateError(f"column {column!r}: unsupported sql_type {sql_type!r}")
 
 
-_COLLAPSE_IGNORED_COLUMNS = frozenset({"created_timestamp", "producer_version"})
-
-
-def differing_columns(
-    a: dict[str, Any],
-    b: dict[str, Any],
-    *,
-    ignore: frozenset[str] = _COLLAPSE_IGNORED_COLUMNS,
-) -> list[str]:
+def differing_columns(a: dict[str, Any], b: dict[str, Any], *, ignore: frozenset[str]) -> list[str]:
     """Return the sorted column names where *a* and *b* differ, excluding *ignore*.
 
-    *ignore* excludes the write-time stamp (created_timestamp) and declared provenance-only
-    columns (producer_version) -- the grain-enforced-at-write compared-content definition
-    (Decision-cited in data-modeling-standard.yaml's grain-enforced-at-write rule).
+    *ignore* is the table spec's compare_excluded set: the write-time stamp and provenance-only columns plus every
+    declared representation-only column -- the grain-enforced-at-write compared-content definition (Decision 207,
+    data-modeling-standard.yaml).
     """
     keys = (set(a) | set(b)) - ignore
     return sorted(k for k in keys if a.get(k) != b.get(k))
@@ -111,11 +111,12 @@ def differing_columns(
 def collapse_or_reject_duplicates(
     rows: list[dict[str, Any]],
     dedupe_key: tuple[str, ...],
+    compare_excluded: frozenset[str],
 ) -> tuple[list[dict[str, Any]], int]:
-    """Collapse intra-batch rows sharing *dedupe_key* whose content is identical outside the
-    ignored columns; reject conflicting ones. Rejects a NULL in any grain-key column.
+    """Collapse intra-batch rows sharing *dedupe_key* whose content is identical outside *compare_excluded*;
+    reject conflicting ones. Rejects a NULL in any grain-key column.
 
-    Returns (deduped_rows, collapsed_count). Preserves first-seen order. Raises AppendError
+    Returns (deduped_rows, collapsed_count). Preserves first-seen order. Raises GrainConflictError
     naming the event_id (never first-wins) when two rows share the dedupe key but differ in any
     other stored column.
     """
@@ -125,18 +126,18 @@ def collapse_or_reject_duplicates(
     for row in rows:
         for col in dedupe_key:
             if row.get(col) is None:
-                raise AppendError(f"grain-key column {col!r} is NULL (grain key={dedupe_key})")
+                raise GateError(f"grain-key column {col!r} is NULL (grain key={dedupe_key})")
         key = tuple(row[k] for k in dedupe_key)
         prior = seen.get(key)
         if prior is None:
             seen[key] = row
             deduped.append(row)
             continue
-        diff = differing_columns(prior, row)
+        diff = differing_columns(prior, row, ignore=compare_excluded)
         if not diff:
             collapsed += 1
             continue
-        raise AppendError(
+        raise GrainConflictError(
             f"conflicting duplicate rows for event_id={row.get('event_id')!r} "
             f"(dedupe_key={dedupe_key}): differing columns {diff}"
         )

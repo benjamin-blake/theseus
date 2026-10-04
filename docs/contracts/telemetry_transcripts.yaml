@@ -47,12 +47,12 @@ fields:
   external_ref:
     $ref: telemetry-event-envelope.yaml#/contract/fields/external_ref
     dq_intent_local: {not_null: {enforced: true}}
-    governance_notes_local: Grammar '<source_record_id>#<block_index>'; the hash input for both event_id and this row's own transcript_id.
+    governance_notes_local: Grammar '<source_record_id>#<block_index>', or '<source_record_id>#<block_index>/full' for the tool_output row of a persisted tool result; the hash input for both event_id and this row's own transcript_id.
   entity_ref:
     $ref: telemetry-event-envelope.yaml#/contract/fields/entity_ref
     dq_intent_local: {not_null: {enforced: true}}
     governance_notes_local: >-
-      Equals external_ref for a transcript row (its own entity/FK key input). observation_ref (the
+      Equals external_ref for a transcript row (its own entity/FK key input; a tool_output row's ends in '/full'). observation_ref (the
       turn for prompt/system content, the model_call for thinking/response/tool_input, the tool_call
       for tool_result) is the SEPARATE reference this row's observation_id FK derives from.
   producer:
@@ -119,16 +119,19 @@ fields:
     type: str
     iceberg_type: string
     nullable: false
-    description: "What the blob is: prompt | response | thinking | tool_input | tool_result | system."
+    description: "What the blob is: prompt | response | thinking | tool_input | tool_result | tool_output | system."
     semantics: >-
       Required kind discriminator. Extended (Decision 199) from the contract_version 1 set
       (prompt | response | transcript) to the per-block vocabulary a turn-shaped trace produces;
       "transcript" (a whole-session dump) is retired as a purpose value -- a session's transcript IS
-      the set of its rows, not a single blob.
+      the set of its rows, not a single blob. tool_output is the FULL persisted output of a tool call as its
+      own row (external_ref '<source_record_id>#<block_index>/full', same observation_ref as the tool_result
+      row, origin tool), emitted only when the harness persisted the output and the sidecar is readable; a
+      tool_result row holds only what the model saw.
     populated_by: the write boundary (purpose=...).
     dq_intent:
       not_null: {enforced: true}
-      accepted_values: {values: [prompt, response, thinking, tool_input, tool_result, system], enforced: false}
+      accepted_values: {values: [prompt, response, thinking, tool_input, tool_result, tool_output, system], enforced: false}
     amendment_log:
       - date: "2026-09-24"
         semantic_break: true
@@ -139,6 +142,13 @@ fields:
           tool_result | system); "transcript" retired as a value. semantic_break=true: the
           accepted-value set changed, not merely the prose.
         migration_story: No live populator existed; rec-4024 builds directly to this vocabulary.
+      - date: "2026-10-04"
+        semantic_break: true
+        change_class: accepted_values_extend
+        summary: >-
+          PLAN-telemetry-write-conformance (slice 2a-1, operator-approved tool-result policy 2026-09-29): purpose gains
+          tool_output, the full persisted tool output as its own bounded row.
+        migration_story: No v1 row and no persisted cursor exists anywhere; the producer emits the value from parser_version 2.
   origin:
     type: str
     iceberg_type: string
@@ -160,17 +170,26 @@ fields:
     description: >-
       The payload as the model received/produced it, AFTER credential scrub (CD.40), stored INLINE
       when its size is <= the content_inline_threshold_bytes below. NULL when the payload was
-      spilled to the blob port instead (content_uri set).
+      spilled to the blob port (content_uri set) or omitted as oversize (content_omitted_reason set).
     semantics: >-
-      Exactly one of content / content_uri is ever set (a dq expression, not a not-null rule on
-      either alone). When the harness persisted a sidecar (e.g. large tool-results) the STORED
-      payload is the full sidecar content and any in-transcript preview is not stored separately;
-      when the sidecar is unavailable, the preview is stored here and content_truncated is true.
+      Exactly one of content / content_uri / content_omitted_reason is ever set. content is the payload AS THE
+      MODEL SAW IT: for a tool_result, the in-context text (including a harness preview and note when the harness
+      persisted the output), never the sidecar -- the full output is the tool_output row. A full output above
+      full_output_cap_bytes is stored nowhere (content_omitted_reason). Write-enforced: content_sha256/content_bytes equal
+      the sha256 and UTF-8 length of an inline content; content_uri set implies content_bytes > the threshold; content
+      or content_uri set implies content_bytes <= full_output_cap_bytes. The leg 'inline content <= the threshold' is
+      exempt until slice 2a-2's blob route lands (write_time_exemptions). content and content_uri are
+      representation-only columns: the identity they carry is compared (content_sha256, content_bytes), not them.
     populated_by: the write boundary, after credential scrub, when size <= threshold.
     dq_intent:
       not_null: {enforced: false}
       content_inline_threshold_bytes: 65536
-      exactly_one_of: {fields: [content, content_uri], enforced: false}
+      full_output_cap_bytes: 8388608
+      integrity: true
+      exactly_one_of: {fields: [content, content_uri, content_omitted_reason], enforced: false}
+      representation_of: [content_sha256, content_bytes]
+      write_time_exemptions:
+        inline_within_threshold: {reason: "the blob route that makes a payload above the threshold storable lands in slice 2a-2", owner: rec-4024}
     amendment_log:
       - date: "2026-09-24"
         semantic_break: true
@@ -181,6 +200,14 @@ fields:
           content model. semantic_break=true: the field's own presence is now conditional on a size
           threshold, not unconditional.
         migration_story: No live populator existed; rec-4024/rec-4026 build directly to this shape.
+      - date: "2026-10-04"
+        semantic_break: true
+        change_class: governance_note_add
+        summary: >-
+          PLAN-telemetry-write-conformance (slice 2a-1): content is the model-visible payload (a tool_result's in-context
+          text, never the sidecar); exactly-one-of widens to content_omitted_reason; the threshold, cap and integrity rules
+          are write-enforced (the inline-size leg exempt until slice 2a-2); content is a representation-only column.
+        migration_story: No v1 row and no persisted cursor exists anywhere; parser_version 2 emits the new semantics.
   content_uri:
     type: str
     iceberg_type: string
@@ -193,17 +220,33 @@ fields:
       Replaces the retired local_path/s3_key pointer pair (contract_version 1): one port-relative
       key resolved by whichever adapter is configured, instead of two substrate-specific columns.
     populated_by: the write boundary, after a blob-port put, when size > threshold.
-    dq_intent: {not_null: {enforced: false}}
+    dq_intent: {not_null: {enforced: false}, representation_of: [content_sha256, content_bytes]}
+  content_omitted_reason:
+    type: str
+    iceberg_type: string
+    nullable: true
+    description: Why a payload is stored nowhere. oversize = the storable payload would exceed full_output_cap_bytes.
+    semantics: >-
+      Set, with content and content_uri both NULL, on a typed omission row. content_sha256/content_bytes are then
+      the RAW source bytes' identity, streamed, never decoded or scrubbed (nothing is stored), and are not cap-bound; the
+      reason can hold even when the raw size is within the cap, because decoding and scrubbing a non-UTF-8 source grows it.
+    populated_by: the producer, when a persisted tool output is above the cap.
+    dq_intent: {not_null: {enforced: false}, accepted_values: {values: [oversize], enforced: false}}
+    amendment_log:
+      - {date: "2026-10-04", semantic_break: false, change_class: field_add, summary: "PLAN-telemetry-write-conformance (slice 2a-1): new field naming a typed omission."}
   content_sha256:
     type: str
     iceberg_type: string
     nullable: false
-    description: SHA-256 of the ONE stored payload (whichever of content/content_uri is set), hex-encoded.
+    description: SHA-256 of the ONE stored payload (whichever of content/content_uri is set), hex-encoded; of the raw source bytes on an omission row.
     semantics: >-
       Required regardless of tier: the content-addressing key for a spilled blob's content_uri, and
-      an integrity check for an inline payload.
+      an integrity check for an inline payload. On an omission row (content_omitted_reason set) it identifies the raw
+      source bytes, which can confirm an exact guess of a short output; accepted, the rows stay in the customer-owned data plane.
     populated_by: the write boundary, computed over the payload before storing it.
-    dq_intent: {not_null: {enforced: true}}
+    dq_intent: {not_null: {enforced: true}, pattern: "^[0-9a-f]{64}$"}
+    amendment_log:
+      - {date: "2026-10-04", semantic_break: true, change_class: governance_note_add, summary: "PLAN-telemetry-write-conformance (slice 2a-1): an omission row's digest identifies the raw source bytes; the lowercase 64-hex pattern is write-enforced.", migration_story: "No v1 row exists; parser_version 2 emits the new semantics."}
   content_bytes:
     type: int
     iceberg_type: bigint
@@ -217,13 +260,17 @@ fields:
     iceberg_type: boolean
     nullable: false
     description: >-
-      True iff the STORED payload is a truncated preview rather than the full content -- the case
-      where a harness-persisted sidecar was unavailable and the writer fell back to an
-      in-transcript preview. False when the stored payload (inline or blob-port) is the full
-      content.
-    semantics: NEW field (Decision 199). Computed over the ONE stored payload, never over a preview that was never stored.
+      True iff the stored payload is known to be an incomplete copy of the payload this row claims to hold (a damaged
+      or partially readable source). Never set because the harness showed the model a preview or a pointer (that
+      preview IS the complete model-visible payload), nor on a tool_output row (it holds the full output), nor on an
+      omission row (content_omitted_reason says so).
+    semantics: >-
+      A defect detector: a healthy producer writes false on every row and DQ alerts on any true. Whether the harness
+      persisted a tool's output is telemetry_observations.output_capture on the tool_call close.
     populated_by: the write boundary.
     dq_intent: {not_null: {enforced: true}}
+    amendment_log:
+      - {date: "2026-10-04", semantic_break: true, change_class: governance_note_add, summary: "PLAN-telemetry-write-conformance (slice 2a-1): redefined from 'stored payload is a preview' to a defect detector, per the adopted tool-result consult; the persisted fact moved to output_capture.", migration_story: "No v1 row exists; parser_version 2 writes false on every row."}
   token_count:
     type: int
     iceberg_type: bigint
@@ -275,6 +322,17 @@ governance_notes: >-
   ordering), rec-4026 (turn-capture producer), rec-4029 (PII scrubbing/erasure -- the blob port
   makes erasure of large payloads an object delete), rec-4033 (blob orphan sweep).
 amendment_log:
+  - date: "2026-10-04"
+    semantic_break: true
+    change_class: governance_note_add
+    summary: >-
+      PLAN-telemetry-write-conformance (slice 2a-1, operator-approved tool-result policy 2026-09-29): content is the
+      model-visible payload; purpose gains tool_output (the full persisted output as its own bounded row); new field
+      content_omitted_reason (a typed omission above the 8 MiB cap, with raw-source-identity digest and size);
+      content_truncated is a defect detector; the threshold, cap and integrity rules are write-enforced (the inline-size
+      leg exempt until slice 2a-2) and content/content_uri are representation-only columns. Field-level entries sit on
+      purpose, content, content_truncated and content_sha256.
+    migration_story: No v1 row and no persisted cursor exists anywhere; the producer emits the policy from parser_version 2.
   - date: "2026-09-26"
     semantic_break: false
     change_class: prose_improvement

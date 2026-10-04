@@ -12,6 +12,40 @@ fixture:
     outcome: lift rows into the store, or restructure (rehome or reshape) per the operator's review; never delete
   edges_disposition: pilot_only -- re-authored by the implementation merge on lift (Decision 197 clause 5), never lifted as-is
 work_items:
+  - id: pwi-friction-classifier
+    kind: task
+    title: 'Friction classifier: read-time rules mapping stored hook, gate and tool facts to rework and exception labels'
+    extension:
+      consideration_register:
+        why: Decision 199 derives friction at read, and T3.4 back-validation, rec filing and T3.3 read its totals, yet no rule says which stored facts count; the literal formula miscounts.
+        how: Versioned rules as data (exact signature or generic fallback, disposition, label, class) applied by session_friction_rollup over W1-2's deduped rows; one label per fact; repeat runs per turn and tool.
+        planes: [data_plane]
+        maturity:
+          rung: read_all
+          transitions:
+            - {from: read_all, to: sampled, trigger: {metric: consecutive reviewed sessions whose every label the operator judged correct, comparator: '>=', threshold: 20}}
+            - {from: sampled, to: spot_check, trigger: {metric: mislabels across the last 200 sampled labels, comparator: ==, threshold: 0}}
+            - {from: spot_check, to: anomaly_triggered, trigger: {metric: consecutive days with unmapped_failure_share <= 0.05 at one classifier_version, comparator: '>=', threshold: 30}}
+        failure_signal: {signal: 'friction totals move for a reason other than the friction named: a hook pass counted, a new hook or gate left unmapped, unrelated errors merged into one run', metric: 'unmapped_failure_share: non-info process_events labelled only by a generic rule, per classifier_version', source: session_friction_rollup response stamp; precision only from the c3 label review (q2)}
+        verification: [c1, c2, c3]
+        rollback: Revert the rules file to the previous classifier_version or drop the verb from the registry; nothing is stored, so every total re-derives on the next read.
+        evidence:
+          - {kind: file_line, ref: 'docs/contracts/telemetry_sessions.yaml:232'}
+          - {kind: file_line, ref: 'src/turn_capture/observations.py:311'}
+          - {kind: file_line, ref: 'src/turn_capture/observations.py:5'}
+          - {kind: file_line, ref: 'docs/contracts/telemetry_observations.yaml:153'}
+        settled:
+          - {id: s1, text: 'Read-side rules only: facts are rec-4026''s producer rows (W1-1), verb and dedupe rec-4024''s (W1-2); rec-4032''s labels table waits for its own trigger.'}
+          - {id: s2, text: 'The rules are one SQL over deduped facts passing 17/17 vectors: hook passes not counted, only a blocking hook absorbs a block, runs bound by turn and tool.'}
+          - {id: s3, text: 'Of the five retired patterns only repeated-tool-failure, and scope-creep via a scope hook or gate, derive from stored facts; three need content (VP 3, VP 4).'}
+        contested:
+          - {id: k1, text: 'Rules home: (a) versioned rules file in the reader registry; (b) a DuckLake rules table; (c) inline CASE. The contract cites rec-4032''s later table. Rec (a).'}
+          - {id: k2, text: 'Formula reads no severity, so hook passes count. Tool errors: 09-24 ruling says process_events, producer stores outcomes. (a) ratify producer, (b) align it.'}
+          - {id: k3, text: 'Gate, pre-commit, suppression facts: (a) producer signatures in slice 3b; (b) read-side regex on tool_result (W1-1 P1); (c) drop. Rec (a).'}
+        open_questions:
+          - {id: q1, text: 'Is an interrupt friction? A human stop and the producer''s synthetic close for an unanswered tool_use share outcome interrupted; v12 counts neither.'}
+          - {id: q2, text: 'Who supplies precision at read_all: an operator label sheet or rec-4025''s harness widened to real sessions? unmapped share measures coverage only.'}
+          - {id: q3, text: 'Repeat key and threshold: name-only merges unrelated Bash errors (87% of calls here); a command hash needs a producer field; threshold 3 is unmeasured.'}
   - id: pwi-deliberation-capture
     kind: task
     title: 'Deliberation capture: read-time reasoning metrics and a visibility-vs-text drift check over model_call and thinking rows'
@@ -47,9 +81,14 @@ work_items:
           - {id: q2, text: 'Does deliberation predict outcome? 64% of output tokens here were thinking (54 of 83 calls); no outcome join exists, so T3.3 must not alarm on share.'}
           - {id: q3, text: 'A litellm-only persona tree has no sessions open row (env R8 bars it), so W1-2 session verbs cannot see it: does the executor loop emit lifecycle rows?'}
 work_item_criteria:
+  - {work_item: pwi-friction-classifier, criterion_id: c1, text: 'session_friction_rollup applies the versioned rules over the shared R4/R5 dedupe on DuckLake and passes every report vector; responses carry per-label counts, unmapped count and classifier_version.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_friction_rollup_ducklake.py -m integration -k vectors}, status: open}
+  - {work_item: pwi-friction-classifier, criterion_id: c2, text: 'Rules-file guard: a specific rule names one exact signature (no wildcard) of a registered hook script or check; generic labels count as unmapped; two rules never tie on one fact.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_friction_rules.py -k guard}, status: open}
+  - {work_item: pwi-friction-classifier, criterion_id: c3, text: 'Before T3.4 back-validation or rec filing reads friction totals, the operator reviews every label of the first sessions at one classifier_version (read_all rung).', method: {kind: review, resolver: operator at the first friction-consumer review, evidence_requirement: 'label review sheet per session: labels, mislabels, unmapped_failure_share, classifier_version'}, status: open}
   - {work_item: pwi-deliberation-capture, criterion_id: c1, text: 'session_deliberation_rollup on DuckLake passes every report vector over the shared env R4/R5 dedupe, groups by producer, parser_version, model and visibility, and selects no content column; fails, never skips, without DuckLake.', method: {kind: execution, check: null, command: 'bin/venv-python -m pytest tests/telemetry/test_deliberation_rollup_ducklake.py::test_report_vectors tests/telemetry/test_deliberation_rollup_ducklake.py::test_selects_no_content'}, status: open}
   - {work_item: pwi-deliberation-capture, criterion_id: c2, text: 'A DQ monitor in the T3.20 c3 home flags each drift kind (text_missing, text_unexpected, visibility_missing), is silent on clean vectors, and reports verdict none on a legacy-only run; alarm, not gate.', method: {kind: execution, check: null, command: 'bin/venv-python -m pytest tests/telemetry/test_cot_drift.py::test_flags_each_drift_kind tests/telemetry/test_cot_drift.py::test_silent_on_clean tests/telemetry/test_cot_drift.py::test_none_on_legacy'}, status: open}
   - {work_item: pwi-deliberation-capture, criterion_id: c3, text: 'Before T3.3 or T3.4 reads deliberation metrics, the operator reviews every drift row of the first sessions at read_all and confirms each producer mapping present.', method: {kind: review, resolver: operator at the first deliberation-consumer review (T3.3 or T3.4), evidence_requirement: 'drift rows per session at read_all: kind, producer, parser_version and the verdict on each'}, status: open}
 work_item_edges:
+  - {from: pwi-friction-classifier, to: T3.20, kind: part_of}
+  - {from: pwi-friction-classifier, to: T2.36, kind: depends_on}
   - {from: pwi-deliberation-capture, to: T3.20, kind: part_of}
   - {from: pwi-deliberation-capture, to: T2.36, kind: depends_on}
