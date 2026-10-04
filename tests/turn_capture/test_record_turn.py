@@ -7,26 +7,37 @@ import json
 
 import pytest
 
+from src.telemetry.append import prepare_batch
+from src.turn_capture import record_turn as record_turn_module
 from src.turn_capture.cursor import CaptureCursor, CursorError, SourceMutated
-from src.turn_capture.record_turn import PARSER_VERSION, PRODUCER, TABLES, record_turn
+from src.turn_capture.record_turn import FULL_OUTPUT_CAP_BYTES, PARSER_VERSION, PRODUCER, TABLES, PinOrderError, record_turn
 from src.turn_capture.render import render_rows_json
 from src.turn_capture.scrub import scrub_text
 from src.turn_capture.streams import ROOT, parse_tree
 from src.turn_capture.transcript import MemTree
 from tests.fixtures.turn_capture_corpus import (
+    PROJECT,
     PROJECT_REF,
     SID,
+    TENANT,
     assert_content_hashes,
+    assert_output_identities,
     assistant,
     build_secret,
+    case_cap,
+    case_full_output_cap,
     case_names,
     child,
+    full_output_omitted_over_cap_files,
     hook,
+    hooks_before_first_record_files,
     jsonl,
     load_case,
     make_files,
+    mcp_overflow_files,
     normalise,
     prompt,
+    reasoning_forms_files,
     text_block,
     tool_result,
     tool_use_block,
@@ -49,15 +60,18 @@ def test_golden_cases_match_expected_rows() -> None:
     assert len(names) == len(set(names))
     for name in names:
         files, expected = load_case(name)
-        result = capture(files, final=True)
+        with case_cap(name):
+            result = capture(files, final=True)
         assert_content_hashes(result.batches)
+        assert_output_identities(files, result.batches)
         assert normalise(result.batches) == expected, name
 
 
 def test_no_secret_shaped_value_emitted() -> None:
     for name in case_names():
         files, _ = load_case(name)
-        wire = render_rows_json([row for _, rows in capture(files, final=True).batches for row in rows])
+        with case_cap(name):
+            wire = render_rows_json([row for _, rows in capture(files, final=True).batches for row in rows])
         assert scrub_text(wire).counts == {}, name
         for kind in SECRET_KINDS:
             assert build_secret(kind) not in wire, (name, kind)
@@ -67,7 +81,9 @@ def test_rows_use_only_caller_known_columns() -> None:
     specs = load_specs()
     for name in case_names():
         files, _ = load_case(name)
-        for table, rows in capture(files, final=True).batches:
+        with case_cap(name):
+            batches = capture(files, final=True).batches
+        for table, rows in batches:
             spec = specs[table]
             caller_not_null = {c for c in spec.not_null if c in spec.caller_known_columns}
             for row in rows:
@@ -135,18 +151,19 @@ def _paths(files):
 def test_incremental_equals_full_at_every_line_cut() -> None:
     for name in case_names():
         files, _ = load_case(name)
-        full_rows = keyed(capture(files, final=True))
-        for path in _paths(files):
-            cursor, seen = None, {}
-            for index, cut in enumerate(path):
-                last = index == len(path) - 1
-                result = capture(_cut(files, cut), cursor, final=last)
-                cursor = result.next_cursor
-                for key, row in keyed(result).items():
-                    assert key not in seen, (name, cut, key)
-                    assert row == full_rows[key], (name, cut, key)
-                    seen[key] = row
-            assert set(seen) == set(full_rows), (name, set(full_rows) ^ set(seen))
+        with case_cap(name):
+            full_rows = keyed(capture(files, final=True))
+            for path in _paths(files):
+                cursor, seen = None, {}
+                for index, cut in enumerate(path):
+                    last = index == len(path) - 1
+                    result = capture(_cut(files, cut), cursor, final=last)
+                    cursor = result.next_cursor
+                    for key, row in keyed(result).items():
+                        assert key not in seen, (name, cut, key)
+                        assert row == full_rows[key], (name, cut, key)
+                        seen[key] = row
+                assert set(seen) == set(full_rows), (name, set(full_rows) ^ set(seen))
 
 
 def test_finalize_equals_virtual_prompt_at_eof() -> None:
@@ -155,7 +172,8 @@ def test_finalize_equals_virtual_prompt_at_eof() -> None:
         if name in skipped:
             continue
         files, _ = load_case(name)
-        final_rows = keyed(capture(files, final=True))
+        with case_cap(name):
+            final_rows = keyed(capture(files, final=True))
         virtual = dict(files)
         for rel in files:
             if rel.endswith(".jsonl"):
@@ -164,7 +182,8 @@ def test_finalize_equals_virtual_prompt_at_eof() -> None:
                 virtual[rel] = (
                     files[rel] + ("\n" if not files[rel].endswith("\n") else "") + jsonl([child(rec, agent) if agent else rec])
                 )
-        live_rows = {k: v for k, v in keyed(capture(virtual, final=False)).items() if not k[1].startswith("zz-")}
+        with case_cap(name):
+            live_rows = {k: v for k, v in keyed(capture(virtual, final=False)).items() if not k[1].startswith("zz-")}
         assert live_rows == final_rows, name
 
 
@@ -270,3 +289,60 @@ def test_duplicate_source_refs_are_counted_and_first_wins() -> None:
     result = capture(files, final=True)
     assert result.diagnostics["duplicate_refs"] >= 1
     assert [r["content"] for r in result.transcripts if r["external_ref"] == "a1#0"] == ["first"]
+
+
+def test_every_emitted_row_passes_kernel_rules() -> None:
+    specs = load_specs()
+    for name in case_names():
+        files, _ = load_case(name)
+        with case_cap(name):
+            batches = capture(files, final=True).batches
+        for table, rows in batches:
+            prepare_batch(specs[table], rows, tenant_id=TENANT, project_id=PROJECT)
+
+
+def test_full_output_cap_constant_and_case_override() -> None:
+    assert FULL_OUTPUT_CAP_BYTES == 8388608 and case_full_output_cap("sidecar_present.json") is None
+    cap = case_full_output_cap("full_output_omitted_over_cap.json")
+    assert cap is not None and cap < 43
+    with case_cap("full_output_omitted_over_cap.json"):
+        assert record_turn_module.FULL_OUTPUT_CAP_BYTES == cap
+    assert record_turn_module.FULL_OUTPUT_CAP_BYTES == 8388608
+
+
+def test_new_cases_are_built_from_their_builders() -> None:
+    builders = {
+        "hooks_before_first_record.json": hooks_before_first_record_files,
+        "mcp_overflow_saved_output.json": mcp_overflow_files,
+        "full_output_omitted_over_cap.json": full_output_omitted_over_cap_files,
+        "reasoning_visibility_forms.json": reasoning_forms_files,
+    }
+    for name, builder in builders.items():
+        assert load_case(name)[0] == builder(), name
+
+
+def test_repin_while_nothing_emitted() -> None:
+    files = hooks_before_first_record_files()
+    only_queue_op = _cut(files, {ROOT: 1})
+    first = capture(only_queue_op)
+    assert first.next_cursor is not None and not any(rows for _, rows in first.batches)
+    held = first.next_cursor.session_started_at_ms
+    second = capture(files, first.next_cursor, final=True)
+    assert second.next_cursor.session_started_at_ms < held
+    full = capture(files, None, final=True)
+    assert keyed(second) == keyed(full) and second.next_cursor.session_started_at_ms == full.next_cursor.session_started_at_ms
+    assert {r["session_started_at"] for _, rows in second.batches for r in rows} == {full.sessions[0]["session_started_at"]}
+
+
+def test_earlier_record_after_pin_halts() -> None:
+    root = [prompt("u1", 5, "p1", "go"), assistant("a1", 6, "m1", [text_block("hi")]), prompt("u2", 8, "p2", "next")]
+    first = capture(make_files(root))
+    assert first.observations and first.next_cursor is not None
+    grown = make_files(root + [hook("hk", 1, "SessionStart:startup")])
+    with pytest.raises(PinOrderError):
+        capture(grown, first.next_cursor)
+    assert issubclass(PinOrderError, CursorError)
+    later = make_files(root[1:])
+    with pytest.raises(CursorError) as raised:
+        capture(later, first.next_cursor)
+    assert not isinstance(raised.value, PinOrderError)
