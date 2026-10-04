@@ -344,3 +344,13 @@ def test_regex_subset_helper_scans_escapes_and_classes() -> None:
     assert "backreference" in check_mod._regex_subset_error(r"^(a)\1$")
     assert "lookaround" in check_mod._regex_subset_error("^(?<!a)b$")
     assert "lookaround" in check_mod._regex_subset_error("^(?P<n>a)(?P=n)$")
+
+
+def test_retired_expression_write_time_tests_are_ignored(tmp_path: Path) -> None:
+    root = _make_root(tmp_path)
+    _edit(
+        root,
+        "config/agent/data_quality/ops.yaml",
+        lambda d: d["tables"]["ops_recommendations"]["columns"]["title"]["tests"].append({"expression": {"write_time": True}}),
+    )
+    assert _run(root) == []
