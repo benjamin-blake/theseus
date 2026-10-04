@@ -5,11 +5,12 @@ ever written here -- secret-shaped strings are assembled at runtime by build_sec
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from src.telemetry.identity import KEY_PLANS, derive_entity_key, derive_event_id
 from src.turn_capture.render import render_datetime
@@ -21,7 +22,7 @@ PROJECT = "01BX5ZZKBKACTAV9WEVGEMMVRY"
 PROJECT_REF = "example/project"
 GOLDEN_DIR = Path(__file__).parent / "turn_capture" / "golden"
 _EPOCH = datetime(2026, 1, 1, tzinfo=timezone.utc)
-_SIDE_EFFECT_KEYS = ("created_timestamp", "producer_version", "content_sha256")
+_SIDE_EFFECT_KEYS = ("created_timestamp", "producer_version", "content_sha256", "output_sha256")
 
 
 def ts(seconds: float) -> str:
@@ -175,6 +176,82 @@ def build_secret(kind: str) -> str:
     return head + tail
 
 
+MCP_OVERFLOW_TEXT = (
+    "Error: result (15 characters) exceeds maximum allowed tokens. "
+    "Output has been saved to /elsewhere/tool-results/mcp-overflow.txt\nFormat: JSON array"
+)
+
+
+def mcp_overflow_files() -> dict[str, str]:
+    """An MCP tool_result whose toolUseResult is the plain string naming the saved output file."""
+    records = [
+        prompt("u1", 1, "p1", "call the mcp tool"),
+        assistant("a1", 2, "m1", [tool_use_block("tu1", "mcp__srv__big", {"q": 1})]),
+        tool_result("r1", 3, "tu1", MCP_OVERFLOW_TEXT, pid="p1", is_error=True, tur=MCP_OVERFLOW_TEXT),
+        prompt("u2", 5, "p2", "thanks"),
+    ]
+    return make_files(records, sidecars={"mcp-overflow.txt": '[{"rows": 15}]\n'})
+
+
+def hooks_before_first_record_files() -> dict[str, str]:
+    """SessionStart hook records written AFTER a queue-operation but timestamped earlier (the probed shape): the first
+    hook carries the earliest timestamp and the hooks ascend among themselves."""
+    records = [
+        queue_op(5, uuid="q0"),
+        hook("hk1", 1, "SessionStart:startup", exit_code=0),
+        hook("hk2", 2, "SessionStart:startup", exit_code=0),
+        prompt("u1", 6, "p1", "go"),
+        assistant("a1", 7, "m1", [text_block("done")]),
+        prompt("u2", 9, "p2", "next"),
+    ]
+    return make_files(records)
+
+
+def reasoning_forms_files() -> dict[str, str]:
+    """One response per reasoning form: summarized, summarized (precedence), redacted, omitted (tokens only), none with
+    zero tokens reported, none with none reported."""
+    redacted = {"type": "redacted_thinking", "data": "ZW5j"}
+
+    def use(thinking: int | None) -> dict[str, Any]:
+        details = {} if thinking is None else {"output_tokens_details": {"thinking_tokens": thinking}}
+        return {
+            "input_tokens": 10,
+            "output_tokens": 20,
+            "cache_read_input_tokens": 30,
+            "cache_creation_input_tokens": 40,
+            **details,
+        }
+
+    records = [
+        prompt("u1", 1, "p1", "think"),
+        assistant("a1", 2, "ms1", [thinking_block("plan"), text_block("one")], usage=use(7)),
+        assistant("a2", 3, "ms2", [thinking_block("plan"), redacted, text_block("two")], usage=use(None)),
+        assistant("a3", 4, "mr1", [redacted, text_block("three")], usage=use(3)),
+        assistant("a4", 5, "mo1", [text_block("four")], usage=use(5)),
+        assistant("a5", 6, "mn1", [text_block("five")], usage=use(0)),
+        assistant("a6", 7, "mn2", [text_block("six")], usage=use(None)),
+        prompt("u2", 9, "p2", "next"),
+    ]  # fmt: skip
+    return make_files(records)
+
+
+OVER_CAP_TEST_CAP = 16
+
+
+def full_output_omitted_over_cap_files() -> dict[str, str]:
+    """A persisted output larger than the case's own test-only cap (OVER_CAP_TEST_CAP): a tool_output omission row."""
+    records = [
+        prompt("u1", 1, "p1", "dump"),
+        assistant("a1", 2, "m1", [tool_use_block("tu1", "Bash", {"command": "dump"})]),
+        tool_result(
+            "r1", 3, "tu1", "preview of the dump", pid="p1",
+            tur={"persistedOutputPath": "/elsewhere/tool-results/dump.txt", "persistedOutputSize": 43},
+        ),
+        prompt("u2", 5, "p2", "ok"),
+    ]  # fmt: skip
+    return make_files(records, sidecars={"dump.txt": "0123456789\nabcdefghij\n0123456789\nabcdefghij"})
+
+
 def case_names() -> list[str]:
     return list(json.loads((GOLDEN_DIR / "index.json").read_text(encoding="utf-8"))["cases"])
 
@@ -182,6 +259,33 @@ def case_names() -> list[str]:
 def load_case(name: str) -> tuple[dict[str, str], list[dict[str, Any]]]:
     body = json.loads((GOLDEN_DIR / name).read_text(encoding="utf-8"))
     return (secrets_files() if name == "secrets.json" else body["files"]), body["expected_rows"]
+
+
+def case_full_output_cap(name: str) -> int | None:
+    """The case's own test-only full_output_cap_bytes override (None when the case carries none)."""
+    cap = json.loads((GOLDEN_DIR / name).read_text(encoding="utf-8")).get("full_output_cap_bytes")
+    return cap if type(cap) is int else None
+
+
+@contextlib.contextmanager
+def case_cap(name: str) -> Iterator[None]:
+    """Patch record_turn.FULL_OUTPUT_CAP_BYTES to the case's override for the duration of the block.
+
+    Every corpus consumer wraps its record_turn calls in it (load_case alone applies nothing, because consumers call
+    record_turn after it returns).
+    """
+    from src.turn_capture import record_turn as module  # noqa: PLC0415
+
+    cap = case_full_output_cap(name)
+    if cap is None:
+        yield
+        return
+    saved = module.FULL_OUTPUT_CAP_BYTES
+    module.FULL_OUTPUT_CAP_BYTES = cap
+    try:
+        yield
+    finally:
+        module.FULL_OUTPUT_CAP_BYTES = saved
 
 
 def mem_tree(files: dict[str, str]) -> MemTree:
@@ -202,6 +306,25 @@ def assert_content_hashes(batches: list[tuple[str, list[dict[str, Any]]]]) -> No
                 data = row["content"].encode("utf-8")
                 assert row["content_sha256"] == hashlib.sha256(data).hexdigest(), row["external_ref"]
                 assert row["content_bytes"] == len(data), row["external_ref"]
+
+
+def assert_output_identities(files: dict[str, str], batches: list[tuple[str, list[dict[str, Any]]]]) -> None:
+    """output_sha256/output_bytes/output_lines of a tool_call close describe the RAW output: the named sidecar's bytes
+    when the harness persisted it, else the model-visible text. The digest is dropped from the committed goldens
+    (64-hex values trip detect-secrets), so it is recomputed here for every close row that carries one."""
+    for table, rows in batches:
+        if table != "telemetry_observations":
+            continue
+        for row in rows:
+            if row.get("output_capture") not in ("captured", "omitted_oversize"):
+                continue
+            name = json.loads(row["metadata"])["persisted_output"]
+            data = files[f"{SID}/tool-results/{name}"].encode("utf-8")
+            assert row["output_sha256"] == hashlib.sha256(data).hexdigest(), row["external_ref"]
+            assert row["output_bytes"] == len(data), row["external_ref"]
+            assert row["output_lines"] == data.count(b"\n") + (1 if data and not data.endswith(b"\n") else 0), row[
+                "external_ref"
+            ]
 
 
 def normalise(batches: list[tuple[str, list[dict[str, Any]]]]) -> list[dict[str, Any]]:
@@ -255,7 +378,7 @@ def secrets_files() -> dict[str, str]:
 def make_ctx(billing_shape: str = "fixed_non_rollover_allowance"):
     from src.turn_capture.transcripts import Ctx  # noqa: PLC0415
 
-    return Ctx("claude_code", "test-build", 1, _EPOCH, billing_shape)
+    return Ctx("claude_code", "test-build", 1, _EPOCH, billing_shape, 8388608)
 
 
 def parse_records(root, children=None, final=True):

@@ -5,6 +5,7 @@ from __future__ import annotations
 ROLE_SESSION = ("open", "resume", "compact")
 ROLE_OBSERVATION = ("turn_open", "turn_close", "tool_call_open", "tool_call_close", "process_event")
 ROLE_AGENT = ("agent_open", "agent_close")
+ROLE_TRANSCRIPT = ("full",)
 
 
 def root_session_ref(session_id: str) -> str:
@@ -25,6 +26,10 @@ def role_ref(source_record_id: str, block_index: int, role: str) -> str:
 
 def transcript_ref(source_record_id: str, block_index: int) -> str:
     return f"{source_record_id}#{block_index}"
+
+
+def full_output_ref(source_record_id: str, block_index: int) -> str:
+    return role_ref(source_record_id, block_index, "full")
 
 
 def model_call_ref(message_id: str) -> str:

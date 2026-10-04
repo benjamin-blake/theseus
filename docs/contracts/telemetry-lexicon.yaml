@@ -23,6 +23,13 @@ contract:
     check: validate_telemetry_lexicon_tables
 
 amendment_log:
+  - date: "2026-10-04"
+    semantic_break: false
+    change_class: governance_note_add
+    summary: >-
+      PLAN-telemetry-write-conformance (slice 2a-1): terms added for tool_output, output_capture, payload
+      omission and reasoning visibility; the purpose value list gains tool_output; the transcript term's
+      content line points at the model-visible rule. Term-level only (Decision 95).
   - date: "2026-09-26"
     semantic_break: false
     change_class: prose_improvement
@@ -61,7 +68,7 @@ amendment_log:
       targets name a canonical table. No change to the vocabulary/model body itself.
 
 version: 2
-last_updated: "2026-09-24"
+last_updated: "2026-10-04"
 decisions_cited: [Decision-95, Decision-96, Decision-97, Decision-199, Decision-200, Decision-67, Decision-84, CD.25, CD.9]
 
 lexicon:
@@ -148,18 +155,48 @@ lexicon:
 
     - term: transcript
       definition: >-
-        A large text payload (prompt | response | thinking | tool_input | tool_result | system) stored in
-        telemetry_transcripts, linked by FK to its observation_id (and session_id). Kept OUT of
+        A large text payload (prompt | response | thinking | tool_input | tool_result | tool_output | system)
+        stored in telemetry_transcripts, linked by FK to its observation_id (and session_id). Kept OUT of
         telemetry_observations so the node table stays small and hot. Hybrid content tier (Decision 199):
-        inline for payloads <= 64 KiB, else spilled to the content blob port.
-      see_also: [transcript_id, telemetry_transcripts, observation, blob port, purpose, origin]
+        inline for payloads <= 64 KiB, else spilled to the content blob port. content is the payload AS THE
+        MODEL SAW IT (a tool_result's in-context text, never the sidecar).
+      see_also: [transcript_id, telemetry_transcripts, observation, blob port, purpose, origin, tool_output, payload omission]
 
     - term: purpose
       definition: >-
         telemetry_transcripts' kind discriminator for a blob: prompt | response | thinking | tool_input |
-        tool_result | system. "transcript" (a whole-session dump) is retired -- a session's transcript IS
-        the set of its rows, not a single blob.
+        tool_result | tool_output | system. "transcript" (a whole-session dump) is retired -- a session's
+        transcript IS the set of its rows, not a single blob.
       see_also: [transcript]
+
+    - term: tool_output
+      definition: >-
+        A purpose value: the FULL persisted output of a tool call as its own telemetry_transcripts row
+        (external_ref '<source_record_id>#<block_index>/full'), emitted only when the harness persisted the
+        output and the sidecar is readable. The tool_result row beside it holds only what the model saw.
+      see_also: [purpose, output_capture, payload omission]
+
+    - term: output_capture
+      definition: >-
+        telemetry_observations' tool_call close column recording whether and how the tool's output was
+        captured: not_persisted | captured | omitted_oversize | unavailable | no_result, beside the raw
+        output_bytes, output_sha256 and output_lines.
+      see_also: [tool_call, tool_output]
+
+    - term: payload omission
+      definition: >-
+        A telemetry_transcripts row with content_omitted_reason set and content and content_uri both NULL:
+        the payload (a tool_output above the 8 MiB cap) is stored nowhere, and content_sha256/content_bytes
+        identify the raw source bytes.
+      see_also: [tool_output]
+
+    - term: reasoning visibility
+      definition: >-
+        telemetry_observations' model_call column reasoning_visibility: the form in which the provider exposed the
+        call's reasoning -- full | summarized | omitted | redacted | none -- so withheld reasoning is never read as
+        absent. summarized can include Claude's user-facing progress-update thinking blocks, which carry no type
+        difference. reasoning_tokens is the provider-reported count, a subset of tokens_output.
+      see_also: [observation_type]
 
     - term: origin
       definition: >-

@@ -10,11 +10,16 @@ import pytest
 
 from src.telemetry.gate import (
     AppendError,
+    GateError,
+    GrainConflictError,
     check_and_normalize_value,
     check_not_null,
     collapse_or_reject_duplicates,
+    differing_columns,
     reject_unknown_or_derived_columns,
 )
+
+STRUCTURAL = frozenset({"created_timestamp", "producer_version"})
 
 
 class TestRejectUnknownOrDerivedColumns:
@@ -120,13 +125,13 @@ class TestCheckAndNormalizeValue:
 class TestCollapseOrRejectDuplicates:
     def test_no_duplicates_passthrough(self) -> None:
         rows = [{"event_id": "a", "parser_version": 1, "x": 1}, {"event_id": "b", "parser_version": 1, "x": 2}]
-        deduped, collapsed = collapse_or_reject_duplicates(rows, ("event_id", "parser_version"))
+        deduped, collapsed = collapse_or_reject_duplicates(rows, ("event_id", "parser_version"), STRUCTURAL)
         assert deduped == rows
         assert collapsed == 0
 
     def test_identical_duplicates_collapse(self) -> None:
         row = {"event_id": "a", "parser_version": 1, "x": 1}
-        deduped, collapsed = collapse_or_reject_duplicates([row, dict(row)], ("event_id", "parser_version"))
+        deduped, collapsed = collapse_or_reject_duplicates([row, dict(row)], ("event_id", "parser_version"), STRUCTURAL)
         assert deduped == [row]
         assert collapsed == 1
 
@@ -136,14 +141,14 @@ class TestCollapseOrRejectDuplicates:
             {"event_id": "a", "parser_version": 1, "x": 2},
         ]
         with pytest.raises(AppendError):
-            collapse_or_reject_duplicates(rows, ("event_id", "parser_version"))
+            collapse_or_reject_duplicates(rows, ("event_id", "parser_version"), STRUCTURAL)
 
     def test_differing_parser_version_is_not_a_duplicate(self) -> None:
         rows = [
             {"event_id": "a", "parser_version": 1, "x": 1},
             {"event_id": "a", "parser_version": 2, "x": 1},
         ]
-        deduped, collapsed = collapse_or_reject_duplicates(rows, ("event_id", "parser_version"))
+        deduped, collapsed = collapse_or_reject_duplicates(rows, ("event_id", "parser_version"), STRUCTURAL)
         assert len(deduped) == 2
         assert collapsed == 0
 
@@ -159,7 +164,7 @@ def test_grain_key_includes_producer() -> None:
         {"producer": "claude_code", "event_id": "a", "parser_version": 1, "producer_version": "1.0", "x": 1},
         {"producer": "litellm", "event_id": "a", "parser_version": 1, "producer_version": "2.0", "x": 1},
     ]
-    deduped, collapsed = collapse_or_reject_duplicates(rows, grain)
+    deduped, collapsed = collapse_or_reject_duplicates(rows, grain, STRUCTURAL)
     assert len(deduped) == 2
     assert collapsed == 0
 
@@ -167,7 +172,7 @@ def test_grain_key_includes_producer() -> None:
         {"producer": "claude_code", "event_id": "a", "parser_version": 1, "producer_version": "1.0", "x": 1},
         {"producer": "claude_code", "event_id": "a", "parser_version": 1, "producer_version": "1.1", "x": 1},
     ]
-    deduped2, collapsed2 = collapse_or_reject_duplicates(same_producer, grain)
+    deduped2, collapsed2 = collapse_or_reject_duplicates(same_producer, grain, STRUCTURAL)
     assert len(deduped2) == 1
     assert collapsed2 == 1
 
@@ -176,10 +181,42 @@ def test_grain_key_includes_producer() -> None:
         {"producer": "claude_code", "event_id": "a", "parser_version": 1, "x": 2},
     ]
     with pytest.raises(AppendError):
-        collapse_or_reject_duplicates(conflicting, grain)
+        collapse_or_reject_duplicates(conflicting, grain, STRUCTURAL)
 
 
 def test_grain_key_null_column_rejected() -> None:
     rows = [{"producer": None, "event_id": "a", "parser_version": 1, "x": 1}]
     with pytest.raises(AppendError):
-        collapse_or_reject_duplicates(rows, ("producer", "event_id", "parser_version"))
+        collapse_or_reject_duplicates(rows, ("producer", "event_id", "parser_version"), STRUCTURAL)
+
+
+def test_gate_errors_are_typed() -> None:
+    assert issubclass(GateError, AppendError) and issubclass(GrainConflictError, AppendError)
+    assert not issubclass(GateError, GrainConflictError) and not issubclass(GrainConflictError, GateError)
+    with pytest.raises(GateError):
+        reject_unknown_or_derived_columns({"z": 1}, frozenset({"a"}), frozenset())
+    with pytest.raises(GateError):
+        reject_unknown_or_derived_columns({"d": 1}, frozenset({"d"}), frozenset({"d"}))
+    with pytest.raises(GateError):
+        check_not_null({"a": None}, frozenset({"a"}))
+    with pytest.raises(GateError):
+        check_and_normalize_value("c", 1.5, "VARCHAR")
+    with pytest.raises(GateError):
+        check_and_normalize_value("c", 1, "JSON")
+    with pytest.raises(GateError):
+        collapse_or_reject_duplicates([{"k": None}], ("k",), STRUCTURAL)
+    with pytest.raises(GrainConflictError):
+        collapse_or_reject_duplicates([{"k": 1, "x": 1}, {"k": 1, "x": 2}], ("k",), STRUCTURAL)
+
+
+def test_within_batch_compare_honours_the_specs_exclusions() -> None:
+    first = {"k": 1, "content": "a", "content_sha256": "s", "producer_version": "1"}
+    second = {"k": 1, "content": "b", "content_sha256": "s", "producer_version": "2"}
+    assert differing_columns(first, second, ignore=STRUCTURAL) == ["content"]
+    excluded = STRUCTURAL | {"content"}
+    deduped, collapsed = collapse_or_reject_duplicates([first, second], ("k",), excluded)
+    assert deduped == [first] and collapsed == 1
+    with pytest.raises(GrainConflictError, match="content_sha256"):
+        collapse_or_reject_duplicates([first, {**second, "content_sha256": "t"}], ("k",), excluded)
+    with pytest.raises(GrainConflictError, match="content"):
+        collapse_or_reject_duplicates([first, second], ("k",), STRUCTURAL)

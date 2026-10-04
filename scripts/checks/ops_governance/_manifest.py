@@ -138,6 +138,7 @@ ENTRIES: tuple[Entry, ...] = (
             "src/schemas/**",
             "scripts/schema_to_field_semantics.py",
             "scripts/field_semantics_event_projection.py",
+            "scripts/contract_rules.py",
             "src/telemetry/**",
             "scripts/contracts.py",
             "scripts/contracts_schema.py",
