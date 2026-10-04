@@ -235,6 +235,8 @@ OUT OF SCOPE: Type-1 current projections (derived, rebuildable from history, Dec
 
 **Related:** Decision 81 cl.3 and cl.8 (dated annotation added), Decision 84 I-2 (dated annotation added), Decision 88 cl.1 (egress budget), Decision 100 (native-primitive spirit; reversal trigger), Decision 191 cl.1 (write_mode scoping), Decision 199 cl.1-2 (telemetry physical grain refines this), T2.52 c1 (derived materializations out of scope); rec-4061, rec-4062 (bundled), rec-4121, rec-4122, rec-4063, rec-4024, rec-4025 (coverage owners).
 
+> **Update (2026-10-04):** representation-only columns (dq_intent representation_of) are excluded from an insert-grain table's compared content, because the payload identity they represent is compared instead -- a class term, never a table name, and still an equality compare that rejects loudly, not the content-hash tiebreak this entry rejects. Detail: data-modeling-standard.yaml rule grain-enforced-at-write (PLAN-telemetry-write-conformance).
+
 ---
 
 ## Decision 206: User-owned CLI persona backend -- one end user's own Claude subscription drives personas through the unmodified Claude Code CLI behind run_persona on user-owned substrate, at outcome parity under one persona contract; post-MVP (amends Decision 164) (Decided)
@@ -722,6 +724,8 @@ conditions:
 > **Update (2026-09-25):** clause 2's day(session_started_at) always meant the UTC calendar day, which DuckLake spells year(session_started_at), month(session_started_at), day(session_started_at) together, because its day() alone is day-of-month (rec-4065).
 
 > **Update (2026-09-28):** Decision 206 adds persona_backend (litellm | claude_cli) and billing_shape (metered_marginal | fixed_non_rollover_allowance) to telemetry_observations' model_call rows; cost_usd derives only for metered_marginal, and cost-per-verified-merge derives at read per (persona, backend). The field semantics live in the contract.
+
+> **Update (2026-10-04):** clause 5's content is the model-visible payload, the full persisted tool output is its own bounded tool_output row, and a full output above the 8 MiB cap is a typed omission row (content_omitted_reason). Detail: telemetry_transcripts.yaml (PLAN-telemetry-write-conformance). This is the last clause-5 annotation: a further change to the content tier goes to a numbered Decision (decision-entry.yaml intent_accretion_note).
 
 ---
 
