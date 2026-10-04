@@ -345,7 +345,10 @@ Open (q1-q2 in the fixture; none is answerable from the repository):
 - Friction classifier (rec-4032): owns the labels table and its form. session_friction_rollup is built
   on this item's dedupe and binding; whether the labels are a DuckLake table joined in the verb or
   bundled registry config is the classifier's call, and it decides whether that verb reads one table
-  or two.
+  or two. Component 3 (#1394, merged) chose rules data rendered into the verb (its k1 (a)), so
+  session_friction_rollup reads one telemetry table. Both items are now in one fixture; the edge
+  `pwi-friction-classifier depends_on pwi-telemetry-reader-verbs` is left for W2, since it changes
+  component 3's item.
 - Back-validation (T3.4): "telemetry delta proves fix" is a before/after comparison over windows, so it
   needs sessions_window (k2 (b) via T2.52, or k2 (a)). Deltas must be read at one registry_version; a version bump between the
   windows makes the delta meaningless, so the response stamp is load-bearing.
