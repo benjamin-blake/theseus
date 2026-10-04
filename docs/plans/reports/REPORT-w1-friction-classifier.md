@@ -13,8 +13,8 @@ Fixture rows: `pwi-friction-classifier` in `docs/work-item-pilot/telemetry-feedb
   in which of the contract's two classes (rework, exception). No file, table or verb holds it today.
 - The ratified formula and today's producer disagree, and a literal build over today's rows counts the
   wrong things (risks R1, R2). rework_total and exception_total count `process_event` rows whose `name`
-  matches a signature, with inputs `name` and `observation_type` only (telemetry_sessions.yaml:232,
-  :243). Two separate gaps:
+  matches a signature, with inputs `name` and `observation_type` only (telemetry_sessions.yaml:228,
+  :239). Two separate gaps:
   - Hook passes. The producer writes one process_event per hook ATTACHMENT, passes included, with the
     same name for a pass and a block; only `severity` tells them apart (VP 1). The formula reads no
     severity, so it counts passes. Nothing in the ruling below covers this half.
@@ -45,13 +45,13 @@ Fixture rows: `pwi-friction-classifier` in `docs/work-item-pilot/telemetry-feedb
 
 | id | fact | anchor |
 |---|---|---|
-| e1 | rework_total and exception_total: "count of telemetry_observations process_event rows whose name matches a rework (exception) signature (rec-4032 labels table)"; inputs name and observation_type only [VP 5] | docs/contracts/telemetry_sessions.yaml:232, :243 |
+| e1 | rework_total and exception_total: "count of telemetry_observations process_event rows whose name matches a rework (exception) signature (rec-4032 labels table)"; inputs name and observation_type only [VP 5] | docs/contracts/telemetry_sessions.yaml:228, :239 |
 | e2 | process_event name grammar `<source>:<signature>` is "the stable signature a friction-classification reader pattern-matches against (rec-4032's labels table)" | docs/contracts/telemetry_observations.yaml:151-153 |
 | e3 | The producer emits one process_event per hook attachment (every `hook_*` attachment type), with severity error for exit 2, info for exit 0 or none, warning otherwise; the name comes from the hook script's basename, else the hookName [VP 1] | src/turn_capture/streams.py:201-202; src/turn_capture/observations.py:343-361 |
 | e4 | Tool errors are the tool_call close outcome (success, error, blocked, interrupted), never process_events; a tool_use with no result gets one synthetic interrupted close [VP 1] | src/turn_capture/observations.py:1-5, :113-123 |
 | e5 | No `gate:` or `precommit:` process_event is emitted; those signatures were handed on to slice 3b "or a read-side classifier over tool_result rows (rec-4032)" [VP 1] | docs/plans/PLAN-telemetry-turn-capture-core.yaml:636-642 |
 | e6 | rec-4032 (status open, read through rec_by_id): silver table telemetry_friction_labels, grain (observation_id, classifier_id, classifier_version), materialized by a scheduled job; LLM classification "must never run on the read path"; same reader-verb signature as the MVP rules verb; trigger: first LLM classifier or a Decision 88 egress measurement. Its acceptance file is absent [VP 5] | rec-4032 context and acceptance (rec_by_id) |
-| e7 | rec-4024 item (6) lists `friction_events rules-based` among the reader verbs; the contracts name it session_friction_rollup | rec-4024 context (rec_by_id); telemetry_sessions.yaml:232 |
+| e7 | rec-4024 item (6) lists `friction_events rules-based` among the reader verbs; the contracts name it session_friction_rollup | rec-4024 context (rec_by_id); telemetry_sessions.yaml:228 |
 | e8 | The retired transcript-review prompt's five patterns, deleted with the scheduled prompt in #969 [VP 3] | git show 7b67e21d^:.github/prompts/scheduled/transcript-review.prompt.md |
 | e9 | telemetry_observations rows carry no content column (no edit text, path, tool input or Bash output); content lives in telemetry_transcripts, spilled to the blob port above 65536 bytes [VP 4]. One exception: a process_event's `metadata` JSON carries the scrubbed hook `command` and `stderr_head`, the first 512 characters of hook stderr | src/turn_capture/observations.py:32-64, :331-332; docs/contracts/telemetry_transcripts.yaml:172 |
 | e10 | Of the 13 registered repo hooks, 12 resolve to a script signature; the quoted `handoff_evidence_gate.sh` command does not, and falls back to the shared hookName signature `hook:PreToolUse.Bash` [VP 4] | .claude/settings.json; src/turn_capture/observations.py:293-299 |
