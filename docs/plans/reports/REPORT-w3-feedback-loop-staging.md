@@ -269,18 +269,21 @@ staged_candidate_decisions:
       Every loop component's operational record (filer run, back-validation verdict, ladder transition and current rung,
       allow-list canary and egress log with withheld counts, register verdict, budget line verdict and attribution)
       lives in one append-only loop record journal in the data plane, modelled on Decision 199 (append-only lifecycle
-      rows, write-boundary-derived identity, derived-at-read state), one table per record kind, each table a Class A
-      contract entry when the table is created (T2.36), never a new contract class and never one table per item chosen
-      by each owner. Every component reads and writes its own kind only; a run's record carries the producer tag and
-      is excluded from the detectors it feeds. Every daily verdict record (the register's and the budget's) carries a
+      rows, write-boundary-derived identity, derived-at-read state), one table per record kind, never a new contract
+      class (F8 (c)) and never one table per item chosen by each owner (F8 (b)). Every component reads and writes its
+      own kind only. Every daily verdict record (the register's and the budget's) carries a
       faults list naming each leg that fired that day, with the register's leg names (dark, blind, undrilled,
       counter_dark, counter_low, unregistered, diverging, upstream_unsound, malformed) and the budget's per-line labels
       (warn, projected_breach, breach, dark, unattributed, unregistered, with dark_flag and unattributed_flag beside
-      them) as the vocabulary; the invoice residual is the budget's monthly leg and not a daily fault. Grain first:
-      one row per (component, run or verdict, day), per the data-modeling default; a verdict record stamps the
-      register or budget version it read. Answers #1396 q4, #1397 q4, #1398 q2, #1399 q3, #1400 q1 and #1401 k2's
-      record half; the budget's register values keep #1401 k2's home. Presumes F8 (a). The record kinds are the
-      synthesis's list (section 6); the schemas are the build's.
+      them) as the vocabulary; the invoice residual is the budget's monthly leg and not a daily fault. A verdict
+      record stamps the register or budget version it read (#1401 section 2.4). Grain, stated by this staging per
+      the data-modeling default and confirmed at build: one row per (component, run or verdict, day). Answers #1396
+      q4, #1397 q4, #1398 q2, #1399 q3, #1400 q1 and #1401 k2's record half; the budget's register values keep
+      #1401 k2's home. CONSULT REFINEMENTS, named here beside the design's text and not adopted as rule text; the
+      operator keeps or strips each at filing: a run's record carries the producer tag and is excluded from the
+      detectors it feeds (#1396 q4); each table's schema is recorded as a Class A contract entry the day the table
+      exists (c10 k2). Presumes F8 (a). The record kinds are the synthesis's list (section 6); the schemas are the
+      build's.
     gates: []
     affects: [T2.36, T3.3, T3.4]
     state: pending
@@ -294,8 +297,7 @@ staged_candidate_decisions:
       own behaviour). A scheduled job later runs the back-validation decision rule, declared in a contract with its
       vectors, and writes the verdict record keyed to the fix sha. Points 1 and 2 are amended for the
       telemetry source only: the verdict is evaluated after the closing commit and keyed to the fix sha. Decision 103's
-      oracle rule is untouched (the rec's acceptance reads the record); point 3 and the static evaluator are untouched.
-      The late closer takes update_rec's closing sha from the recorded fix attempt, never from the verdict record, and
+      oracle rule is untouched (the rec's acceptance reads the record). The late closer takes update_rec's closing sha from the recorded fix attempt, never from the verdict record, and
       always supplies a record (a non-trailer caller, rec-3999's fail-open). A holds is proposed for confirmation
       (close_proposed) until the component reaches anomaly_triggered; whether a statistical holds (designed 5 percent
       false-proof rate) may ever close directly, even at the top rung, is the operator's and if never the direct-close
@@ -320,7 +322,7 @@ staged_candidate_decisions:
       together and the row is re-drafted to the answer before filing; it carries no default. Option (a): as #1401 k1
       (a) wrote it, one rec per breaching line through the cost reconciliation's existing rec path (its
       build_rec_fields and find_open_cost_rec_for dedupe one rec per trigger; the 2026-10-04 consult's preference,
-      filed at projected_breach and updated at breach, after a shadow month); the loop then has two rec writers,
+      filed at projected_breach and updated at breach, one rec per line per month, after a shadow month); the loop then has two rec writers,
       each with its own dedupe, and the Decision 67 boundary applies to each. Option (b): through the filer
       (pwi-rec-filing-dedupe) as a detector source (the synthesis's F13 (b)), whose rationale is one rec writer for
       the loop, so fingerprint dedupe and the Decision 67 boundary apply once and no component closes a rec on its
@@ -340,29 +342,32 @@ staged_candidate_decisions:
     detail: |
       Every meter the loop turns is a budget line with an owner (the ten lines of #1401 section 2.2, k9 (a)). A
       line is kept in the unit its meter counts (bytes, requests, GB-seconds, tokens, review items), never in
-      dollars; dollars are derived when read from a price table and never stored or published. Each line has a
+      dollars; dollars are derived when read from a versioned price table and never stored or published. Each line has a
       cadence, a measure (a flow summed over the month, or a stock read at its latest level), a monthly envelope and
       a warn share; a shared line's daily value is attributed per call to the components that caused it (Decision
-      199's producer field; a caller tag on the Lambda log line) within a stated tolerance. A line's meter is read from what
-      the loop's own code and catalog already know; a meter that needs a billed metric, an infrastructure change or a
-      new credential is a decision of its own and never-list for an autonomous thread (Neon consumption API key,
-      S3 request metrics, access logs, Inventory, Storage Lens, a dedicated telemetry bucket; the governed Lambda
-      deploy behind self-counting is named, not taken). A daily deterministic verdict reads the register, the ledger
+      199's producer field; a caller tag on the Lambda log line, k5 (a)) within a stated tolerance. A line's meter is
+      read from what the loop's own code and catalog already know; a meter that needs a billed metric or an
+      infrastructure change is a decision of its own (the options #1401 k4 (b) and k8 (b)-(d) name, a Neon
+      consumption API key, S3 request metrics, access logs, Inventory, Storage Lens and a dedicated telemetry bucket,
+      are never-list for an autonomous thread under the project's instructions). A meter counted by the loop's own
+      Lambdas ships through the governed code-deploy channel like any other Lambda change (always-ask at build, k5).
+      A daily deterministic verdict reads the register, the ledger
       and the attribution and reports ok, warn, projected_breach, breach, dark, unattributed or unregistered per
       line with dark_flag and unattributed_flag beside the label and a faults list (CD.47); a breach files a
       recommendation (CD.49) and gates nothing; a line that reports nothing on a day it should is a failure of the
       loop, not a saving. The register lives beside the monthly reconciliation's thresholds (a loop_budget block in
-      config/agent/cost_reconciliation.yaml, a loader schema change) with its values carried by the pilot item until
-      then, versioned and stamped on every verdict; the monthly discrepancy leg reconciles the priced ledger against
-      the invoice and records an uncounted residual. Decision 88's catalog egress line is the first line, its
-      envelope set from the Neon plan's actual included egress, never a planning-time guess; the review-items line
-      is owned per CD.46 (F4). CONSULT REFINEMENTS, named here beside the design's text and not adopted as rule
-      text; the operator keeps or strips each at filing: lines typed budget, diagnostic or tripwire (k9); the
-      price table effective-dated, a closed month never re-priced (k3); days-to-envelope as a derived read on a
-      stock line after seven readings (k7); a reserved canonical component "unknown" for a missing attribution
-      stamp (k5); the first measured month in shadow mode, verdicts logged and nothing filed, re-seeding the
-      envelopes (k1 and seeds). Presumes #1401 k1 (a), k2 (a)+(c), k3 (a), k4 (a), k5 (a), k7 (a), k8 (a), k9 (a)
-      and the seeds as provisional.
+      config/agent/cost_reconciliation.yaml, k2 (a)) with its values carried by the pilot item until then (k2 (c)),
+      versioned and stamped on every verdict record; the monthly discrepancy leg (k3 (c)) reconciles the priced
+      ledger against the invoice and records the residual. Decision 88's catalog egress line is the first line, and
+      its envelope is set from a measured reading, never a planning-time guess: the seeds are provisional until the
+      first measured month replaces them; the review-items line is owned per CD.46 (F4). CONSULT REFINEMENTS, named
+      here beside the design's text and not adopted as rule text; the operator keeps or strips each at filing:
+      lines typed budget, diagnostic or tripwire (k9); the price table effective-dated, a closed month never
+      re-priced (k3); days-to-envelope as a derived read on a stock line after seven readings (k7); a reserved
+      canonical component "unknown" for a missing attribution stamp (k5); the first measured month in shadow mode,
+      verdicts logged and nothing filed, re-seeding the envelopes (k1 and seeds); the catalog egress envelope seeded
+      from the Neon plan's actual included egress rather than 1 GiB (seeds). Presumes #1401 k1 (a), k2 (a)+(c),
+      k3 (a)+(c), k4 (a), k5 (a), k7 (a), k8 (a), k9 (a) and the seeds as provisional.
     gates: []
     affects: [T2.36, T2.19, T2.26, T2.52]
     state: pending
@@ -370,15 +375,16 @@ staged_candidate_decisions:
     title: Metadata allow-list and plane transport -- a per-column allow-list over the telemetry Class A contracts applied in the data plane, with membership, identifiers, transport and grain left blank for the operator (amends Decision 209 clause 5(i); a shell gated on four always-ask forks)
     detail: |
       The metadata allow-list is a per-column list of crossing columns over the telemetry Class A contracts, each field
-      carrying an egress class with a completeness check that makes an unclassified field a CI error (#1399 k5 (a)),
-      applied in the data plane by a named reader verb before anything crosses; a written threat model accompanies
-      the list; deny-list membership at the boundary is excluded by Decision 209 clause 2(b) and by measurement
-      (#1399 VP 5). FOUR BLANKS, each an always-ask security or IAM fork the operator fills; nothing below chooses
+      carrying an egress class with a completeness check (#1399 k5 (a)), applied in the data plane by a named reader
+      verb before anything crosses; an unclassified source column or a malformed tenancy id refuses the batch;
+      deny-list membership at the boundary is excluded by Decision 209 clause 2(b) and by measurement (#1399 VP 5).
+      FOUR BLANKS, each an always-ask security or IAM fork the operator fills; nothing below chooses
       one, and the design's option and the consult's position are shown side by side. k1 MEMBERSHIP: design (a)
       tenancy ids as the key, guarded closed enums, finite numbers and booleans (42 of 133 columns), with an
       out-of-vocabulary value withheld and counted; (b) also open-vocabulary strings matched against a control-plane
       vocabulary; (c) the Decision 199 envelope as written; consult refinement of (a): value-guard enums against
-      their vocabulary and refuse the batch on a structural surprise. k2 IDENTIFIERS: design (a) no derived id
+      their vocabulary, refuse the batch on a structural surprise, and write the egress threat model the design
+      leaves to the operator as part of k1. k2 IDENTIFIERS: design (a) no derived id
       crosses, tenant_id and project_id only; (b) re-key each crossing id with an HMAC under a data-plane key; (c)
       ids as written (a confirmation oracle, #1399 VP 6); consult refinement: (b) is the precondition of any later
       row grain. k3 TRANSPORT: design (a) the data plane pushes to a tenant-scoped ingest endpoint under a
@@ -415,10 +421,10 @@ staged_candidate_decisions:
 ```yaml
 cd_routing:
   - {id: CD.46, significance: numbered_decision, rejected_home: "a governance note on the pilot fixture (docs/work-item-pilot/) or on data-modeling-standard.yaml: the family binds ten components and a controller across two roadmap items, which no single contract owns; the pilot schema change (P7) is evaluator code and cannot carry the rule", amendment_forms: "none applies: no prior Decision owns a review ladder (T3.4 c2 is roadmap text; Decision 92 is not the anchor it is cited as)", settles: [X4, X5, X6, X7, X8, X16, X19], presumes: ["F1 (a)+(d)", "F2 (a)", "F3 (a)", "F4 (a)", "F7 (a)", "F11 (a)", "#1398 k1 (a)", "#1398 k2 (a)(a1)", "#1398 k3 (a)", "#1398 k5 (a)", "#1398 k7 (a)+(d)", "#1400 k1 (a)/(b)", "#1400 k1 (v) (b)"], consult: "F4 differs (consult: the ladder owns the review-items envelope; synthesis: the budget owns the line, the ladder the schedule); #1398 k3 refined (standing approval rule); #1400 k1 (iv), k2 retirement/onboarding, k2 malformed-input and k3-at-lift differ (section 5)"}
-  - {id: CD.47, significance: numbered_decision, rejected_home: "a governance note on data-modeling-standard.yaml (owns HOW a table is designed, not WHERE six components' records live) or a new Class C loop-journal contract (F8 (c): a contract class with one occupant, Decision 86's anti-pattern)", amendment_forms: "a dated annotation on Decision 199 was considered and rejected: Decision 199 governs telemetry events, and applying its model to loop records is a new commitment, not a reading of it", settles: [X11], presumes: ["F8 (a)"], consult: "converged: both consults asked the register and the budget for a faults list; #1396 q4 stays (journal with producer tag excluded from detectors, medium-low)"}
+  - {id: CD.47, significance: numbered_decision, rejected_home: "a governance note on data-modeling-standard.yaml (owns HOW a table is designed, not WHERE six components' records live) or a new Class C loop-journal contract (F8 (c): a contract class with one occupant, Decision 86's anti-pattern)", amendment_forms: "a dated annotation on Decision 199 was considered and rejected: Decision 199 governs telemetry events, and applying its model to loop records is a new commitment, not a reading of it", settles: [X11], presumes: ["F8 (a)"], consult: "converged: both consults asked the register and the budget for a faults list; #1396 q4 stays (journal, medium-low) and its producer-tag exclusion, with the c10 k2 contract-entry note, are named in the row as refinements the operator keeps or strips, not adopted"}
   - {id: CD.48, significance: numbered_decision, rejected_home: "docs/contracts/git-ops.yaml trailer_acceptance_gate governance note (owns the trailer path's instruction surfaces, not a new verdict source with its own closer and enforcement site)", amendment_forms: "a dated annotation on Decision 201 was considered and rejected: the change adds a third source, a late closer and a non-trailer update_rec caller, which binds every verdict-supplying path (Decision 201's own significance justification), so it clears the bar on its own terms; the consult rates the need for a numbered amending Decision high", settles: [X10], presumes: ["#1397 k1 (a)", "#1397 k2 (b)", "#1397 k4 (a)", "#1396 k4 (a)"], consult: "#1397 k1 stays (high on the amendment, medium on (a) vs (b)); its two additions (trailer-reconstructable attempts; a distinct stamp key) and the k2 'filer gone quiet' refinement are named in the row as refinements the operator keeps or strips, not adopted; #1396 k4 differs (consult: self-close by rung with close_proposed interim; design: never, until back-validation exists)"}
   - {id: CD.49, significance: numbered_decision, rejected_home: "a filer lifecycle contract (which #1396 k1 needs anyway for covered_by) was considered and rejected as the sole home: the commitment binds the budget and back-validation as well as the filer, and bounds who may write under Decision 67", amendment_forms: "a dated annotation on Decision 67 was considered and rejected: Decision 67 defers STRATEGIC plan execution; the one-writer rule is a new boundary, not a reading", settles: ["X18 and X21 only once F13 and F14 are answered; the row itself settles neither"], presumes: ["F13", "F14", "#1396 k4 (a)", "#1401 k1 (a)"], consult: "F13 differs (consult: file through the cost reconciliation path; synthesis: route through the filer); the row carries both as its options and the operator answers F13 and F14 together"}
-  - {id: CD.50, significance: numbered_decision, rejected_home: "a governance note in config/agent/cost_reconciliation.yaml (the register's home under #1401 k2 (a), but a config file holds thresholds, not the unit, attribution and alarm-not-gate commitments) or Decision 88's own text (the egress line only)", amendment_forms: "a dated annotation on Decision 88 was considered and rejected: Decision 88 budgets one line; this row binds ten lines, a price table and an attribution rule", settles: [X5], presumes: ["#1401 k1 (a)", "#1401 k2 (a)+(c)", "#1401 k3 (a)+(c)", "#1401 k4 (a)", "#1401 k5 (a)", "#1401 k7 (a)", "#1401 k8 (a)", "#1401 k9 (a)", "#1401 seeds"], consult: "all nine #1401 rows stay or refine; the refinements (shadow month, effective-dated prices, unknown component, typed lines, days-to-envelope) are named in the row as refinements the operator keeps or strips at filing, not as rule text; the projected_breach filing and per-line monthly dedupe live in CD.49 option (a); k9's review_items owner follows CD.46's F4 choice"}
+  - {id: CD.50, significance: numbered_decision, rejected_home: "a governance note in config/agent/cost_reconciliation.yaml (the register's home under #1401 k2 (a), but a config file holds thresholds, not the unit, attribution and alarm-not-gate commitments) or Decision 88's own text (the egress line only)", amendment_forms: "a dated annotation on Decision 88 was considered and rejected: Decision 88 budgets one line; this row binds ten lines, a price table and an attribution rule", settles: [X5], presumes: ["#1401 k1 (a)", "#1401 k2 (a)+(c)", "#1401 k3 (a)+(c)", "#1401 k4 (a)", "#1401 k5 (a)", "#1401 k7 (a)", "#1401 k8 (a)", "#1401 k9 (a)", "#1401 seeds"], consult: "all nine #1401 rows stay or refine; the refinements (shadow month, effective-dated prices, unknown component, typed lines, days-to-envelope, the catalog egress seed from the Neon plan's included egress) are named in the row as refinements the operator keeps or strips at filing, not as rule text; the projected_breach filing and per-line monthly dedupe live in CD.49 option (a); k9's review_items owner follows CD.46's F4 choice"}
   - {id: CD.51, significance: numbered_decision, rejected_home: "a per-field egress key in each telemetry Class A contract (#1399 k5 (a)) is the MECHANISM and is kept; it cannot carry the boundary rule, which Decision 209 clause 2(b) and 5(i) own", amendment_forms: "a dated annotation on Decision 209 was considered and rejected: clause 5(i) names rec-4141 as the vehicle and its reversal condition allow-list-transport says 'amend clause 5(i)', which is an amending entry, and the content (membership, grain, identifiers, transport) is a security boundary with reversal-relevant consequences", settles: [], presumes: ["#1399 k5 (a)", "k1-k4 left blank (always-ask; design and consult positions shown side by side)"], consult: "all six #1399 rows stay or refine; the alignment consult's hybrid (allow-list on structure, deny-by-value inside allowed columns, ingest-side second check) is shown beside the design's option in each blank, not adopted; the #1399 k4 minimum-cell refinement likewise; k1-k4 are always-ask and the row is filed only after the operator answers them"}
   - {id: CD.52, significance: field_semantics, rejected_home: "none rejected: a dated amendment_forms annotation on Decision 199 clause 1 IS the recommended home (decision-entry.yaml amendment_forms); the row is listed as a CD only so the operator sees the T2.52 reactivation half beside it", amendment_forms: "recommended; a numbered entry only if the operator also reactivates T2.52 (#1390 k2 (b)), which is a tier-item status change under Decision 93", settles: [X3], presumes: ["#1390 k2 (a)"], consult: "#1390 k2 stays (build sessions_window in the reader; record the cl.1 reading as a Decision 199 update note; 'lands' = T2.36 c2; medium-high); the operator's reading of 'lands' decides the T2.52 half (consult open question 7)"}
 ```
