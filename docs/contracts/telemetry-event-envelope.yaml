@@ -84,21 +84,35 @@ fields:
       The event-time column: the timestamp of the ORIGINATING record (source-derived), never the
       write time. UTC, tz-aware, parsed and truncated (not rounded) to millisecond precision.
     semantics: >-
-      The writer rejects an implausible event_timestamp (later than created_timestamp plus a
-      configured skew bound) -- the rule is declared here; the write-time validator itself is
-      rec-4024's. Distinct from created_timestamp (write time) and from session_started_at (the
-      partition basis, the ROOT session's own event_timestamp).
+      Write-enforced (Decision 210 cl.1): the writer rejects an event_timestamp earlier than the
+      row's own session_started_at (in-row ordering; a producer whose event_timestamp and
+      session_started_at come from different clocks, e.g. a transcript-less producer, declares a
+      skew allowance when it lands, never an exact comparison) and one later than created_timestamp
+      by more than 300 s (the skew bound this field always declared). Distinct from created_timestamp
+      (write time) and from session_started_at (the partition basis, the ROOT session's own pin).
     populated_by: the emitting producer, decoded from its own source record.
     dq_intent:
       not_null:
         enforced: false
+      not_before: session_started_at
+      max_after_write_seconds: 300
+    amendment_log:
+      - date: "2026-10-04"
+        semantic_break: true
+        change_class: governance_note_add
+        summary: >-
+          PLAN-telemetry-write-conformance (slice 2a-1, Decision 210): the skew bound declared here gained its
+          value (300 s) and a write-time enforcer, and the in-row ordering rule not_before session_started_at is
+          declared with its cross-clock-domain allowance.
+        migration_story: No live populator exists; the kernel enforces both rules before any SQL from this slice.
   session_started_at:
     type: datetime
     iceberg_type: timestamptz
     nullable: true
     description: >-
-      The ROOT session's start time: source-derived from the FIRST timestamped record in the root
-      transcript, UTC, truncated to ms -- never a warehouse lookup, never re-derived downstream.
+      The ROOT session's start time: source-derived from the EARLIEST parseable record timestamp in the
+      root transcript at pin time (the first capture pass), UTC, truncated to ms -- never a warehouse
+      lookup, never re-derived downstream.
       Every row of a root session AND all its sub-agent sessions carries this SAME value, so a
       whole trace tree lands in one calendar-day partition regardless of how deep the sub-agent
       nesting goes or how much wall-clock time a long-running root session spans.
@@ -123,10 +137,16 @@ fields:
       clause 4). Separately, one obligation spans EVERY hop, producer-to-writer included:
       session_started_at always carries its full millisecond value (e.g. an RFC 3339 string with a
       3-digit fraction at the writer edge) -- the pinned RFC 3339 profile accepts a fraction-less
-      value and would silently pad it to .000, losing precision the identity hash depends on; any
-      writer-side rejection of a fraction-less value is rec-4024's to build (the event_timestamp
-      "rule declared here, validator is rec-4024's" pattern).
-    populated_by: the emitting producer, pinned once per session at the root transcript's first record.
+      value and would silently pad it to .000, losing precision the identity hash depends on;
+      timestamps.parse_wire_timestamp rejects every width but three digits, and applying it at the
+      writer edge is rec-4024's to build. The pin is the EARLIEST timestamp, never the first record
+      in file order: SessionStart hook records are written after an earlier queue-operation record yet
+      carry earlier timestamps (probe: up to 9.87 s earlier). It is pinned once per tree; a record
+      appended later with a timestamp earlier than the persisted pin RE-PINS only while the cursor
+      has emitted no row under that pin (its consumed prefix builds zero rows, so no row carries the
+      old value); once any row is emitted under the pin, such a record is a producer HALT, never
+      re-pinned and never emitted.
+    populated_by: the emitting producer, pinned once per session at the earliest root-transcript timestamp.
     dq_intent:
       not_null:
         enforced: false
@@ -146,6 +166,16 @@ fields:
         migration_story: >-
           No live populator exists yet (population is future-state, rec-4024), so no runtime
           migration is required.
+      - date: "2026-10-04"
+        semantic_break: true
+        change_class: governance_note_add
+        summary: >-
+          PLAN-telemetry-write-conformance (slice 2a-1): the pin is the EARLIEST parseable record timestamp, not the
+          first record in file order, with the re-pin-while-nothing-emitted carve-out and the producer halt after
+          a row is emitted.
+        migration_story: >-
+          Re-keys any session whose earliest timestamp is not its first record in file order; safe only because no
+          v1 row and no persisted cursor exists anywhere.
       - date: "2026-09-25"
         semantic_break: false
         change_class: prose_improvement
@@ -260,7 +290,10 @@ fields:
       all four tables (R1). It increments iff the producer's normalised output (event_ids, entity
       keys, every stored column except created_timestamp and producer_version) for any golden
       input differs from the previous version; never for identical output or a build change alone;
-      never decrements, never reused -- a revert ships as a NEW higher number. Part of the
+      never decrements, never reused -- a revert ships as a NEW higher number. A change to a
+      registry-recorded producer input constant (full_output_cap_bytes in
+      config/telemetry/parser_versions.yaml) is an output change and bumps even when the golden
+      digest repeats, because it changes the output for inputs the goldens do not hold. Part of the
       telemetry grain key (producer, event_id, parser_version), enforced at write (Decision 207).
       Comparable only between rows sharing producer (R2). An identity-spec change, or a change to
       ANY session entity_ref grammar (root or sub-agent), bumps EVERY producer and requires a
@@ -288,6 +321,13 @@ fields:
           policy, the per-producer comparability scope, the never-reused/revert-is-new-version
           rule, the identity-spec/session-grammar Decision-R10 clause, and the R7
           replayable-producer write-order and cursor-reuse obligations.
+      - date: "2026-10-04"
+        semantic_break: true
+        change_class: governance_note_add
+        summary: >-
+          PLAN-telemetry-write-conformance (slice 2a-1): R1 gains a clause -- a change to a registry-recorded producer
+          input constant is an output change and bumps parser_version even when the golden digest repeats.
+        migration_story: No live populator exists; the registry check accepts such a bump from this slice.
   created_timestamp:
     type: datetime
     iceberg_type: timestamptz
@@ -350,7 +390,9 @@ governance_notes: >-
   R7 producer obligations: a producer never emits two different rows under one grain key (a
   model_call is emitted only once its source record carries final usage); every emitted column is
   a pure function of the source records plus the inputs pinned with the cursor, and incremental
-  emission equals a full re-parse for every row already emitted; a replayable producer on a bump
+  emission equals a full re-parse for every row already emitted (with one carve-out: a record
+  appended later with a timestamp earlier than the persisted session_started_at pin re-pins only while
+  the cursor has emitted no row under that pin, and is otherwise a producer halt); a replayable producer on a bump
   re-parses the whole root tree from the start, writes data rows first and ONE telemetry_sessions
   batch of every tree session's rows LAST, binds its cursor to parser_version and resets it on
   mismatch, never emits v for a session after a v+1 marker for it, and REUSES the pinned
@@ -365,12 +407,24 @@ governance_notes: >-
   it does not amend Decision 81: state/friction/cost are derived at read (data-modeling-standard.yaml's
   derived-state rule), but every derivation is bounded to a session's single calendar-day
   partition, so it is never the unprunable full scan clause 8 exists to avoid.
+  TIMESTAMP PRECISION (Decision 96 cl.4): every timestamp column carries its full millisecond value at
+  the writer edge (exactly three fraction digits in the wire form), extending session_started_at's
+  every-hop obligation to all of them, because event_id's 48-bit prefix depends on event_timestamp
+  the same way the entity keys depend on session_started_at.
   CONFORMANCE VECTORS: tests/telemetry/fixtures/identity_vectors.yaml is the committed golden-vector
   file for this identity spec. Its POSITIVE vectors are the normative inputs -> exact-ids pins of
   the identity spec above; its NEGATIVE vectors pin the slice-1 kernel's own input policy (ref
   length/control-character rules, the closed domain-tag registry), which is implementation policy
   of src/telemetry/identity.py, not part of the ratified spec itself.
 amendment_log:
+  - date: "2026-10-04"
+    semantic_break: true
+    change_class: governance_note_add
+    summary: >-
+      PLAN-telemetry-write-conformance (slice 2a-1): governance_notes R7 gains the re-pin carve-out and a
+      TIMESTAMP PRECISION rule (three fraction digits on every timestamp column). Field-level changes
+      (the earliest-timestamp pin, event_timestamp's write-enforced rules, the R1 input-constant clause) are
+      recorded on their own fields' amendment_log entries. contract_version stays 1.
   - date: "2026-09-28"
     semantic_break: true
     change_class: governance_note_add

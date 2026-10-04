@@ -41,14 +41,14 @@ Fixture rows: `pwi-telemetry-reader-verbs` in `docs/work-item-pilot/telemetry-fe
 | id | fact | anchor |
 |---|---|---|
 | e1 | No NAMED_READS verb targets a telemetry table, and none of the four telemetry tables is registered (resolve_table_spec raises unknown ops table). NamedRead's fields are verb, table, sql, params, description, paginable: one bound table, no partition field. `{hist}` already renders an append_only history table [VP 1] | src/common/ducklake_scd2_schema.py:202 (the raise), :333-342 (NamedRead); src/common/ducklake_reads.py:139-141 (the substitution) |
-| e2 | Session state rule: "absent a close row, the session is running; present, its outcome IS the session's terminal state". A resumed session "reuses session_id ... and appends a resume event" | docs/contracts/telemetry_sessions.yaml:192, 261-262 |
-| e3 | Session duration formula: close.event_timestamp minus session_started_at [VP 4] | docs/contracts/telemetry_sessions.yaml:252 |
-| e4 | session_started_at is the ROOT's start, carried by every row of the root AND all its sub-agent sessions [VP 4] | docs/contracts/telemetry-event-envelope.yaml:100-104 |
+| e2 | Session state rule: "absent a close row, the session is running; present, its outcome IS the session's terminal state". A resumed session "reuses session_id ... and appends a resume event" | docs/contracts/telemetry_sessions.yaml:188, 257-258 |
+| e3 | Session duration formula: close.event_timestamp minus session_started_at [VP 4] | docs/contracts/telemetry_sessions.yaml:248 |
+| e4 | session_started_at is the ROOT's start, carried by every row of the root AND all its sub-agent sessions [VP 4] | docs/contracts/telemetry-event-envelope.yaml:113-118 |
 | e5 | Agent-run duration is paired open/close on agent_run_id, the envelope's span rule; session duration is not. The agent-run open is stamped with the spawn record's time and the close with the tool result's | docs/contracts/telemetry_agents.yaml:221; docs/contracts/telemetry-event-envelope.yaml:72; src/turn_capture/sessions.py:175-212 |
 | e12 | The open row's event_timestamp "EQUALS session_started_at" (the root start), and the producer writes every open row, sub-agents included, at ctx.started with source_ordinal 0 for a child [VP 4]. Component 1 emits ONE root close per finalization, never one per session, with close ranked LAST on an (event_timestamp, source_ordinal) tie | docs/contracts/telemetry_sessions.yaml:71; src/turn_capture/sessions.py:144-146; #1384 report section 2 step 7 (head 18194019) |
-| e6 | Read-side dedupe R4/R5 (generation retire, event collapse, model_call entity collapse); the conflict report is normative output | docs/contracts/telemetry-event-envelope.yaml:335-347 |
+| e6 | Read-side dedupe R4/R5 (generation retire, event collapse, model_call entity collapse); the conflict report is normative output | docs/contracts/telemetry-event-envelope.yaml:375-387 |
 | e7 | The reader verbs must pass tests/telemetry/fixtures/dedupe_vectors.yaml independently of the stdlib oracle [VP 2] | tests/telemetry/fixtures/dedupe_vectors.yaml:5 |
-| e8 | Every derivation is bounded to one session's calendar-day partition (answers Decision 81 cl.8); falsifier `derived-read-too-costly` pulls materialization forward from T2.52 c1 | Decision 199 cl.1 and reversal conditions (docs/DECISIONS.md:697, 715-717) |
+| e8 | Every derivation is bounded to one session's calendar-day partition (answers Decision 81 cl.8); falsifier `derived-read-too-costly` pulls materialization forward from T2.52 c1 | Decision 199 cl.1 and reversal conditions (docs/DECISIONS.md:699, 717-719) |
 | e9 | A held session_id decodes to the root session_started_at (decode_time_prefix) [VP 3] | src/telemetry/identity.py:214 |
 | e10 | T2.52 is the analytical-aggregate verb class (c3) with a measured response-size ceiling (c7) and the D88 egress budget (c5) | docs/ROADMAP-PLATFORM.yaml T2.52 |
 | e11 | rec-4024 item (6): session_state with as_of/idle threshold -> running/abandoned/terminal; item (2)'s "max parser_version per (session_id, producer)" reader rule predates and is superseded by Decision 207's R4/R5 | rec-4024 context (rec_by_id); Decision 207 |
@@ -184,7 +184,7 @@ Contested (evidence on both sides, options listed; k1-k3 in the fixture):
   open/close pair (agent_run_state_and_duration). (b) keep the text and forbid resume after close (a
   resumed session becomes a new session with execution_attempt + 1). This contradicts the ratified
   contract itself, where a resumed session reuses session_id and appends a resume event
-  (telemetry_sessions.yaml:261-262), as well as component 1's per-finalization close. (c) keep the text
+  (telemetry_sessions.yaml:257-258), as well as component 1's per-finalization close. (c) keep the text
   and document the child gap: child duration is NULL and child state is running forever. (d) give
   children their own start and close: amend telemetry_sessions.yaml:71 so a child's open row carries
   the child's first event time, and emit child close rows. This needs a record_turn rule change with a
@@ -283,7 +283,7 @@ Risk (known loss modes, not choices):
   event.
 - R2 Resume-after-close state. A literal build of e2 reads finalized-then-resumed sessions as terminal,
   although the contract itself appends a resume event under the same session_id
-  (telemetry_sessions.yaml:261-262). The same ambiguity component 1 hit in its failure_signal (its G1);
+  (telemetry_sessions.yaml:257-258). The same ambiguity component 1 hit in its failure_signal (its G1);
   covered by k1 and c2.
 - R3 Production cost unknown. Decision 199's own falsifier is a consumer latency bound, and no consumer
   has named one. c3 makes the measurement a precondition of any consumer depending on a verb.

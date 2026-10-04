@@ -12,6 +12,40 @@ fixture:
     outcome: lift rows into the store, or restructure (rehome or reshape) per the operator's review; never delete
   edges_disposition: pilot_only -- re-authored by the implementation merge on lift (Decision 197 clause 5), never lifted as-is
 work_items:
+  - id: pwi-friction-classifier
+    kind: task
+    title: 'Friction classifier: read-time rules mapping stored hook, gate and tool facts to rework and exception labels'
+    extension:
+      consideration_register:
+        why: Decision 199 derives friction at read, and T3.4 back-validation, rec filing and T3.3 read its totals, yet no rule says which stored facts count; the literal formula miscounts.
+        how: Versioned rules as data (exact signature or generic fallback, disposition, label, class) applied by session_friction_rollup over W1-2's deduped rows; one label per fact; repeat runs per turn and tool.
+        planes: [data_plane]
+        maturity:
+          rung: read_all
+          transitions:
+            - {from: read_all, to: sampled, trigger: {metric: consecutive reviewed sessions whose every label the operator judged correct, comparator: '>=', threshold: 20}}
+            - {from: sampled, to: spot_check, trigger: {metric: mislabels across the last 200 sampled labels, comparator: ==, threshold: 0}}
+            - {from: spot_check, to: anomaly_triggered, trigger: {metric: consecutive days with unmapped_failure_share <= 0.05 at one classifier_version, comparator: '>=', threshold: 30}}
+        failure_signal: {signal: 'friction totals move for a reason other than the friction named: a hook pass counted, a new hook or gate left unmapped, unrelated errors merged into one run', metric: 'unmapped_failure_share: non-info process_events labelled only by a generic rule, per classifier_version', source: session_friction_rollup response stamp; precision only from the c3 label review (q2)}
+        verification: [c1, c2, c3]
+        rollback: Revert the rules file to the previous classifier_version or drop the verb from the registry; nothing is stored, so every total re-derives on the next read.
+        evidence:
+          - {kind: file_line, ref: 'docs/contracts/telemetry_sessions.yaml:232'}
+          - {kind: file_line, ref: 'src/turn_capture/observations.py:311'}
+          - {kind: file_line, ref: 'src/turn_capture/observations.py:5'}
+          - {kind: file_line, ref: 'docs/contracts/telemetry_observations.yaml:153'}
+        settled:
+          - {id: s1, text: 'Read-side rules only: facts are rec-4026''s producer rows (W1-1), verb and dedupe rec-4024''s (W1-2); rec-4032''s labels table waits for its own trigger.'}
+          - {id: s2, text: 'The rules are one SQL over deduped facts passing 17/17 vectors: hook passes not counted, only a blocking hook absorbs a block, runs bound by turn and tool.'}
+          - {id: s3, text: 'Of the five retired patterns only repeated-tool-failure, and scope-creep via a scope hook or gate, derive from stored facts; three need content (VP 3, VP 4).'}
+        contested:
+          - {id: k1, text: 'Rules home: (a) versioned rules file in the reader registry; (b) a DuckLake rules table; (c) inline CASE. The contract cites rec-4032''s later table. Rec (a).'}
+          - {id: k2, text: 'Formula reads no severity, so hook passes count. Tool errors: 09-24 ruling says process_events, producer stores outcomes. (a) ratify producer, (b) align it.'}
+          - {id: k3, text: 'Gate, pre-commit, suppression facts: (a) producer signatures in slice 3b; (b) read-side regex on tool_result (W1-1 P1); (c) drop. Rec (a).'}
+        open_questions:
+          - {id: q1, text: 'Is an interrupt friction? A human stop and the producer''s synthetic close for an unanswered tool_use share outcome interrupted; v12 counts neither.'}
+          - {id: q2, text: 'Who supplies precision at read_all: an operator label sheet or rec-4025''s harness widened to real sessions? unmapped share measures coverage only.'}
+          - {id: q3, text: 'Repeat key and threshold: name-only merges unrelated Bash errors (87% of calls here); a command hash needs a producer field; threshold 3 is unmeasured.'}
   - id: pwi-telemetry-reader-verbs
     kind: task
     title: 'Telemetry reader verbs: partition-bound, generation-aware derived-state reads over the event journal (rec-4024)'
@@ -31,9 +65,9 @@ work_items:
         rollback: Remove the telemetry verbs from NAMED_READS and bump the registry version; reads have no side effects and stored rows are untouched.
         evidence:
           - {kind: file_line, ref: 'src/common/ducklake_scd2_schema.py:333'}
-          - {kind: file_line, ref: 'docs/contracts/telemetry_sessions.yaml:192'}
-          - {kind: file_line, ref: 'docs/contracts/telemetry_sessions.yaml:252'}
-          - {kind: file_line, ref: 'docs/contracts/telemetry-event-envelope.yaml:337'}
+          - {kind: file_line, ref: 'docs/contracts/telemetry_sessions.yaml:188'}
+          - {kind: file_line, ref: 'docs/contracts/telemetry_sessions.yaml:248'}
+          - {kind: file_line, ref: 'docs/contracts/telemetry-event-envelope.yaml:377'}
         settled:
           - {id: s1, text: 'Read side only: D199 derived-at-read verbs; the writer and tables are T2.36, labels rec-4032 and prices rec-4031 compose on this mechanism.'}
           - {id: s2, text: 'Registry needs an event-journal form: tables unregistered, a NamedRead''s table binding covers one table but R4 needs two, no forced partition (VP 1).'}
@@ -46,8 +80,13 @@ work_items:
           - {id: q1, text: 'Which consumer latency bound tests D199''s derived-read-too-costly falsifier? Per-verb Neon latency and catalog egress are unmeasured.'}
           - {id: q2, text: 'Is rec-4025''s harness the shadow re-derivation source for the failure_signal, or does the reader own a production raw-rows path?'}
 work_item_criteria:
+  - {work_item: pwi-friction-classifier, criterion_id: c1, text: 'session_friction_rollup applies the versioned rules over the shared R4/R5 dedupe on DuckLake and passes every report vector; responses carry per-label counts, unmapped count and classifier_version.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_friction_rollup_ducklake.py -m integration -k vectors}, status: open}
+  - {work_item: pwi-friction-classifier, criterion_id: c2, text: 'Rules-file guard: a specific rule names one exact signature (no wildcard) of a registered hook script or check; generic labels count as unmapped; two rules never tie on one fact.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_friction_rules.py -k guard}, status: open}
+  - {work_item: pwi-friction-classifier, criterion_id: c3, text: 'Before T3.4 back-validation or rec filing reads friction totals, the operator reviews every label of the first sessions at one classifier_version (read_all rung).', method: {kind: review, resolver: operator at the first friction-consumer review, evidence_requirement: 'label review sheet per session: labels, mislabels, unmapped_failure_share, classifier_version'}, status: open}
   - {work_item: pwi-telemetry-reader-verbs, criterion_id: c1, text: 'Verbs bind the append-only tables through an event-journal registry form with a server-decoded partition; the shared R4/R5 dedupe passes every vector on DuckLake, survivors compared by (event_id, parser_version), with conflicts.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_reader_verbs_ducklake.py -m integration -k dedupe_vectors}, status: open}
   - {work_item: pwi-telemetry-reader-verbs, criterion_id: c2, text: 'Derivation verbs match golden fixtures under the operator''s k1/k3 resolution ((a): latest row, close last on ties; sub-agents from agent-run pairs, an async child included), resume-after-close included; rewritten if (a) is not chosen.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_reader_verbs.py -k derivation}, status: open}
   - {work_item: pwi-telemetry-reader-verbs, criterion_id: c3, text: 'Before any consumer depends on a verb, its p95 latency and per-call catalog egress are measured on the production catalog against a named consumer bound (D199 falsifier, D88).', method: {kind: review, resolver: operator at the first telemetry-verb deploy review, evidence_requirement: 'per-verb p95 latency, response bytes and Neon catalog egress, compared with the named consumer bound'}, status: open}
 work_item_edges:
+  - {from: pwi-friction-classifier, to: T3.20, kind: part_of}
+  - {from: pwi-friction-classifier, to: T2.36, kind: depends_on}
   - {from: pwi-telemetry-reader-verbs, to: T2.36, kind: part_of}
