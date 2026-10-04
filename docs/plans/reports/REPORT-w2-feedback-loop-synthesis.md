@@ -24,11 +24,11 @@ Three findings change what the operator decides next:
 1. The ten items merge into one fixture as written: 10 of 12 items, 30 criteria, 405 of 420 effective
    lines with the staged edge list, and every evaluator leg passes on the simulated merge (VP 4). The
    mechanical merge is safe in any order; the design order is what section 2 fixes.
-2. The ten maturity blocks speak six trigger dialects with four different first-rung counts, five different
-   second-rung windows and two different top-rung day counts (VP 2). Section 3 stages one rule family with
+2. The ten maturity blocks carry eight distinct trigger dialects in two readings, with four different
+   first-rung counts, five different second-rung windows and two different top-rung day counts (VP 2). Section 3 stages one rule family with
    per-component seeds and one coupling rule (a component's rung is capped by the lowest rung among its data
    upstreams) so that no reader can sit above the producer it reads.
-3. Sixteen cross-component contradictions remain, eight points are settled. Of the sixteen, four are the
+3. Nineteen cross-component contradictions remain, six points are settled. Of the nineteen, four are the
    same question asked by six items (where do the loop's records live, who owns the review load, how the
    register verdict drives the ladder, and the fixture's edge cap against three data upstreams). Each gets
    one staged resolution in section 4 so that W3 writes one Decision, not six.
@@ -74,7 +74,9 @@ splits and does not pick an owner.
 
 The register in #1400 declares, for every detector, which other detectors' rows it reads. Those lists are
 the loop's data graph; the item-level edges below restate them one per pair (VP 3 checks that every edge
-runs from an earlier build wave to a later one).
+runs from an earlier build wave to a later one). Eleven of the fourteen edges are the register's upstream
+lists verbatim; the register-to-reader, budget-to-reader and ladder-to-register edges are this report's
+additions (the register lists the ladder with no upstream), and the last of them is contested (X16).
 
 ```yaml
 data_edges:
@@ -161,15 +163,17 @@ The ten PRs each replace the fixture's three empty lists, so the mechanical merg
 each of the rest merge main into the branch, append the item, criteria and edges, re-render with
 model.render and re-run validate_work_item_pilot. The recommended merge order is the build order (wave 1
 first), so that each later item's depends_on edge to an earlier item resolves at merge time (the evaluator
-accepts an item-to-item edge only when both items are in the fixture, L4). Edges to a later wave cannot be
-authored until that item lands; the ladder's edge to the register is the only such case and it rides the
-register's merge in wave 3.
+accepts an item-to-item edge only when both items are in the fixture, L4). Every staged edge points at an item in the same or an earlier wave
+(the ladder's edge to the register points from wave 4 to wave 3), so in wave order no edge ever waits for
+a later item; within wave 1 capture merges before the reader so the reader's edge resolves.
 
 The edge list below is what the fixture should carry once all ten items coexist. It obeys
-MAX_EDGES_FROM_ITEM 3 by dropping the direct depends_on T2.36 edge from every item that has a data upstream
-inside the pilot (T2.36 is then reached transitively through that upstream, and T2.36 remains the sole
-external root: VP 3 checks that every item still reaches it). That dropping is a change to five items as
-authored and is parked as fork F5; the alternative is an evaluator cap change, which is W0 code.
+MAX_EDGES_FROM_ITEM 3 by dropping the direct depends_on T2.36 edge from the four items whose part_of edge
+plus data upstreams would otherwise exceed it (friction, deliberation, the filer and back-validation; T2.36
+is then reached transitively through an upstream, and T2.36 remains the sole external root: VP 3 checks
+that every item still reaches it), and by leaving out the filer's direct data edge to the reader, which
+the filer reaches through friction. The ladder keeps its three edges as authored. Those drops change four
+items as authored and are parked as fork F5; the alternative is an evaluator cap change, which is W0 code.
 
 ```yaml
 pilot_edges_staged:
@@ -219,7 +223,7 @@ section 3.5), sharing a controller at most.
 
 ## 3. One cross-component maturity ladder
 
-### 3.1 The six dialects as written
+### 3.1 The ten maturity blocks as written
 
 Read from the ten maturity blocks at the pinned heads (VP 2). first_n is the first-rung count, second_window
 the second-rung sample window, second_comparator how it is read, third_days the top-rung day count or
@@ -241,7 +245,9 @@ dialects:
 
 Four distinct first-rung counts (20, 30, 40, 50), five distinct second-rung windows (30, 40, 50, 60, 200),
 two second-rung readings (six items read zero defects across the last M sampled; four read M confirmed
-since the last overturned one), and two top-rung day counts (30 and 90) plus one rate. The six items
+since the last overturned one), and two top-rung day counts (30 and 90) plus one rate. Taken as whole
+tuples (first count, second window, second reading, top-rung value), the ten blocks fall into eight
+distinct dialects: friction equals deliberation and the ladder equals the register (VP 2). The six items
 authored before #1398 use the "zero defects in a window" reading; the four authored after it use its
 "since the last overturned" reading. Neither is wrong; they are the same acceptance-sampling idea
 written twice, and the second form has the property the first lacks (one overturned output restarts the
@@ -263,6 +269,7 @@ ladder_family:
   ceiling: "rung(component) <= min(rung(upstream)) over its data upstreams (section 2.1); no upstream, no ceiling"
   demotion:
     overturned_output: "back to read_all (evidence of a wrong output; CSP-1 reset)"
+    signal_breach: "one rung down when the component's own failure_signal breaches its bound while it sits above read_all (#1398 k7 (a)); hold there until the bound holds again for D consecutive days"
     verdict_not_ok: "one rung down, then hold, with a dead-man alert while it holds (absence of evidence: dark, blind, undrilled, counter_dark, counter_low, unregistered)"
     ceiling_breach: "down to the new ceiling the same day the upstream moves"
     version_change: "restart at read_all on an integer version stamp bump (classifier_version, parser_version, register version, allow-list classification version)"
@@ -277,21 +284,27 @@ What this changes against the items as written:
 - Every top rung gains the verdict-ok precondition. Today only the register's own top rung reads its
   drill; the other nine read their own signal, which is exactly the series the register exists to
   distrust.
-- The demotion legs are split. #1398 k1 (return to read_all) and #1398 k7 (a quiet signal demotes) were
-  read as one question and the Fable consult of 2026-10-03 answered them differently (reset for wrong
-  outputs; demote once and hold with a dead-man alert for dark signals). The family keeps both answers
-  because they answer different evidence: a wrong output is proof the rung is too high; a dark signal is
-  proof of nothing except that nobody is looking.
+- The demotion legs are split by evidence. #1398 k1 (return to read_all on an overturned output) and
+  #1398 k7 ((a) one rung down when the component's own failure_signal breaches its bound, (d) one rung
+  down when it goes dark) were read together with the Fable consult of 2026-10-03 (reset for wrong
+  outputs; demote once and hold with a dead-man alert for dark signals). The family keeps all three
+  because they answer different evidence: a wrong output is proof the rung is too high; a breaching
+  signal is the component's own alarm and demotes one rung (k7 (a), kept as signal_breach); a dark
+  signal is proof of nothing except that nobody is looking and demotes one rung, then holds. The breach
+  leg lives here in the controller, not in the register verdict (X8).
 - The ceiling rule is new. No item states it, and without it the dialects allow a reader at sampled over a
   producer at read_all, which means one in five of the reader's outputs are reviewed while every row it
   read is still suspect. Fork F1.
 
 ### 3.3 Per-component seeds and the ceiling today
 
-The seeds are the items' own values re-expressed in the family; none is re-derived here and all stay
+The seeds are the items' own values carried into the family; none is re-derived here and all stay
 provisional (every item marks them so or lists them as an open question). f1 and f2 are #1398's 0.2 and
 0.04 everywhere; its anomaly_triggered floor of 0.008 is the one the consult asked to raise and is parked
-under #1398 q3.
+under #1398 q3. Two rows are not pure re-expressions and say so: back-validation's top rung is a 90-day
+window read of a rate, not 90 consecutive days, so its D is the window and its bound the rate; the
+register's bound is its own failure_signal (unsound_reads 0), while its item's top rung reads the daily
+drill, which the family folds into the verdict-ok precondition.
 
 ```yaml
 ladder_seeds:
@@ -300,10 +313,10 @@ ladder_seeds:
   - {item: pwi-friction-classifier, N: 20, M: 200, D: 30, bound: "unmapped_failure_share <= 0.05", upstreams: [pwi-capture-producer-wiring, pwi-telemetry-reader-verbs], ceiling_today: "read_all"}
   - {item: pwi-deliberation-capture, N: 20, M: 200, D: 30, bound: "deliberation_drift_share <= 0.01", upstreams: [pwi-capture-producer-wiring, pwi-telemetry-reader-verbs], ceiling_today: "read_all"}
   - {item: pwi-rec-filing-dedupe, N: 20, M: 50, D: 30, bound: "rejected_share <= 0.05 and no duplicate open fingerprint", upstreams: [pwi-telemetry-reader-verbs, pwi-friction-classifier, pwi-deliberation-capture], ceiling_today: "read_all"}
-  - {item: pwi-back-validation, N: 20, M: 50, D: 90, bound: "false_proof_rate <= 0.05 with at least 20 proof closes", upstreams: [pwi-rec-filing-dedupe, pwi-friction-classifier], ceiling_today: "read_all"}
+  - {item: pwi-back-validation, N: 20, M: 50, D: 90, bound: "false_proof_rate <= 0.05 over the trailing 90 days with at least 20 proof closes (a window read, not consecutive days)", upstreams: [pwi-rec-filing-dedupe, pwi-friction-classifier], ceiling_today: "read_all"}
   - {item: pwi-maturity-ladder-controller, N: 40, M: 40, D: 30, bound: "stale_rung_days 0 and est_escaped_share <= AOQL target", upstreams: [pwi-goodhart-register], ceiling_today: "read_all"}
   - {item: pwi-allow-list-transport, N: 30, M: 60, D: 90, bound: "canary_leaks 0 and no unclassified column", upstreams: [pwi-telemetry-reader-verbs], ceiling_today: "read_all"}
-  - {item: pwi-goodhart-register, N: 40, M: 40, D: 30, bound: "that day's dated drill series reads unregistered", upstreams: [pwi-telemetry-reader-verbs], ceiling_today: "read_all"}
+  - {item: pwi-goodhart-register, N: 40, M: 40, D: 30, bound: "unsound_reads 0 (its item's top rung reads the dated drill series instead; folded into verdict ok)", upstreams: [pwi-telemetry-reader-verbs], ceiling_today: "read_all"}
   - {item: pwi-loop-cost-egress-budget, N: 30, M: 30, D: 30, bound: "no dark_flag or unattributed_flag and invoice residual in tolerance", upstreams: [pwi-telemetry-reader-verbs], ceiling_today: "read_all"}
 ```
 
@@ -348,32 +361,37 @@ contradictions:
   - {id: S2, status: settled, items: all, point: "every item reaches T2.36 by edge, so nothing builds before the writer verb (P1)"}
   - {id: S3, status: settled, items: all, point: "every rollback is additive, removes a hook, a schedule or a config block, and deletes no row"}
   - {id: S4, status: settled, items: all, point: "every failure_signal is lower-is-better and its own metric (register VP 1 at fc298254, 8 of 8 then; the two later items follow the same form)"}
-  - {id: S5, status: settled, items: [pwi-friction-classifier, pwi-deliberation-capture, pwi-capture-producer-wiring], point: "producer changes land after 2a-1 as one PARSER_VERSION bump (Telemetry answer of 2026-10-04 folded at 427eeced and 4f49c55f)"}
-  - {id: S6, status: settled, items: [pwi-rec-filing-dedupe, pwi-back-validation], point: "exactly one component files recs and exactly one proposes closes; every other item alarms and files nothing (Decision 67 boundary)"}
-  - {id: S7, status: settled, items: [pwi-friction-classifier], point: "the friction formula reads tool_call close outcomes and emits no duplicate process_event (Telemetry correction, k2 (a) with the producer owner's confirmation)"}
-  - {id: S8, status: settled, items: [pwi-deliberation-capture], point: "the visibility cutover binds to 2a-1 (q1 answered; location folded at 4f49c55f)"}
+  - {id: S5, status: settled, items: [pwi-friction-classifier, pwi-deliberation-capture], point: "producer changes land after 2a-1 as one PARSER_VERSION bump (Telemetry answer of 2026-10-04 folded at 427eeced and 4f49c55f); capture's own producer changes sit inside the parked P3 split and are not counted here"}
+  - {id: S6, status: settled, items: [pwi-deliberation-capture], point: "the visibility cutover binds to 2a-1 (q1 answered; location folded at 4f49c55f)"}
   - {id: X1, status: contested, items: [pwi-friction-classifier, pwi-capture-producer-wiring], point: "gate and pre-commit signatures producer-side (#1394 k3 (a)) vs read-side regex on tool_result (#1384 P1)", resolution: "producer-side, narrowed to structured markers, riding the single S5 bump (consult of 2026-10-03)", park: '#1394 k3'}
-  - {id: X2, status: contested, items: [pwi-capture-producer-wiring, pwi-deliberation-capture], point: "capture sends byte-chunked per-table batches data-first; 2a-2 wants one transaction per request with sessions last", resolution: "the writer owner (T2.36) decides the request shape and capture adapts; Decision 207 no-op resends make either order safe to replay", park: '#1384 k1'}
+  - {id: X2, status: contested, items: [pwi-capture-producer-wiring, pwi-deliberation-capture], point: "capture sends byte-chunked per-table batches data-first; 2a-2 wants one transaction per request with sessions last", resolution: "the writer owner (T2.36) decides the request shape and capture adapts; Decision 207 no-op resends make either order safe to replay", park: F12}
   - {id: X3, status: contested, items: [pwi-telemetry-reader-verbs, pwi-rec-filing-dedupe], point: "sessions_window built in the reader (#1390 k2 (a)) vs in T2.52 (b); the filer and back-validation both read it", resolution: "(a), with one Decision 199 clause 1 reading stated once wherever it is built", park: '#1390 k2'}
   - {id: X4, status: contested, items: [pwi-maturity-ladder-controller, pwi-goodhart-register], point: "the ladder drills at its top rung only (20 in 20 days at 0.9); the register demands a drill at every rung (drill_min 20 per 28 days)", resolution: "the register owns drills and the verdict; the controller drops its own drill clause and reads verdict ok at every rung (section 3.2)", park: F3}
   - {id: X5, status: contested, items: [pwi-maturity-ladder-controller, pwi-loop-cost-egress-budget], point: "review load as the ladder's control (#1398 R1) vs a budget line (#1401 q3); 72 a day modelled against 30 a day seeded", resolution: "budget owns the line and alarm, ladder owns the schedule, waves are the lever (section 3.4)", park: F4}
-  - {id: X6, status: contested, items: all, point: "six trigger dialects across ten maturity blocks (section 3.1)", resolution: "one rule family with per-component seeds (section 3.2)", park: F2}
-  - {id: X7, status: contested, items: [pwi-goodhart-register, pwi-maturity-ladder-controller], point: "a not-ok verdict blocks and demotes (#1400 k1 (a)) vs a quiet signal demotes a quiet component (#1398 k7)", resolution: "split by evidence; wrong output resets to read_all, absent evidence demotes one rung and holds with a dead-man alert (section 3.2)", park: F2}
-  - {id: X8, status: contested, items: all, point: "the register's breach leg (#1400 k1 (v)) borrows every item's top-rung threshold, so one capture reading of 0.06 makes 7 of 8 detectors unsound", resolution: "no breach leg; the register reads soundness only and each item's own top rung reads its bound", park: '#1400 k1 (v)'}
+  - {id: X6, status: contested, items: all, point: "eight trigger dialects across ten maturity blocks (section 3.1)", resolution: "one rule family with per-component seeds (section 3.2)", park: F2}
+  - {id: X7, status: contested, items: [pwi-goodhart-register, pwi-maturity-ladder-controller], point: "a not-ok verdict blocks and demotes (#1400 k1 (a)) vs the controller's own demotion legs, one rung down on an own-signal breach (#1398 k7 (a)) or on a dark signal (k7 (d))", resolution: "split by evidence; wrong output resets to read_all, an own-signal breach demotes one rung (k7 (a) kept as signal_breach), absent evidence demotes one rung and holds with a dead-man alert (section 3.2)", park: F2}
+  - {id: X8, status: contested, items: all, point: "the register's breach leg (#1400 k1 (v)) borrows every item's top-rung threshold, so one capture reading of 0.06 makes 7 of 8 detectors unsound", resolution: "no breach leg in the register; it reads soundness only, each item's own top rung reads its bound for promotion, and the controller's signal_breach leg (section 3.2) demotes on a breach", park: '#1400 k1 (v)'}
   - {id: X9, status: contested, items: [pwi-maturity-ladder-controller, pwi-rec-filing-dedupe, pwi-back-validation], point: "the filer and back-validation defer their version rule to the ladder (#1398 k2), and the pilot schema cannot express a return leg, a review fraction or a version rule (#1398 O1)", resolution: "P7 schema change before any rule is enforced; until then the family in section 3.2 is prose", park: '#1398 k2'}
   - {id: X10, status: contested, items: [pwi-back-validation, pwi-rec-filing-dedupe], point: "who closes a rec; a late verdict keyed to the fix sha amends Decision 201 (#1397 k1), close_proposed at the deadline (#1397 k2) and the filer's self-close (#1396 k4) are three closers", resolution: "one numbered amending Decision (P8) that names back-validation as the only proposer and keeps every close a Decision 201 verdict-layer event; the filer self-closes nothing", park: '#1397 k1'}
   - {id: X11, status: contested, items: [pwi-rec-filing-dedupe, pwi-back-validation, pwi-maturity-ladder-controller, pwi-allow-list-transport, pwi-goodhart-register, pwi-loop-cost-egress-budget], point: "six items ask where their run, verdict, transition, canary or budget record lives (#1396 q4, #1397 q4, #1398 q2, #1399 q3, #1400 q1, #1401 k2)", resolution: "one append-only loop journal in the data plane on the Decision 199 model, one table per record kind, no new contract class", park: F8}
-  - {id: X12, status: contested, items: [pwi-maturity-ladder-controller, pwi-allow-list-transport, pwi-goodhart-register, pwi-loop-cost-egress-budget], point: "four items carry depends_on T2.36 only and ask for a part_of home (#1398 k6, #1399 k6, #1400 k5, #1401 k6)", resolution: "ladder part_of T3.4 (its exit criterion 2 asks for gates with rollback); the other three stay depends_on only until W3 and are never lifted as-is (fixture header)", park: F6}
+  - {id: X12, status: contested, items: [pwi-allow-list-transport, pwi-goodhart-register, pwi-loop-cost-egress-budget, pwi-maturity-ladder-controller], point: "three items carry depends_on T2.36 only and ask for a part_of home (#1399 k6, #1400 k5, #1401 k6); the ladder already carries part_of T3.4 at f6183430 with its home still parked (#1398 k6)", resolution: "the three stay depends_on only until W3 and are never lifted as-is (fixture header); the ladder's T3.4 home is re-read with #1398 q1, since section 3.5 reads this ladder as separate from T3.4's A0-A3 gates", park: F6}
   - {id: X13, status: contested, items: [pwi-capture-producer-wiring, pwi-goodhart-register, pwi-maturity-ladder-controller], point: "until capture q1 has a denominator the register reads capture counter_dark and everything downstream upstream_unsound, so under the ceiling rule nothing promotes", resolution: "accept it as the honest state and make P5 the first operator decision; the SessionStart hook's own invocation count is the staged candidate denominator", park: F9}
-  - {id: X14, status: contested, items: [pwi-friction-classifier, pwi-deliberation-capture, pwi-rec-filing-dedupe, pwi-back-validation, pwi-maturity-ladder-controller], point: "MAX_EDGES_FROM_ITEM 3 against a part_of edge, a T2.36 edge and up to three data upstreams", resolution: "drop the direct T2.36 edge where a pilot upstream carries it (section 2.4)", park: F5}
+  - {id: X14, status: contested, items: [pwi-friction-classifier, pwi-deliberation-capture, pwi-rec-filing-dedupe, pwi-back-validation], point: "MAX_EDGES_FROM_ITEM 3 against a part_of edge, a T2.36 edge and up to three data upstreams", resolution: "drop the direct T2.36 edge where a pilot upstream carries it, and the filer's direct edge to the reader (reached through friction); four items change (section 2.4)", park: F5}
   - {id: X15, status: contested, items: [pwi-capture-producer-wiring, pwi-telemetry-reader-verbs], point: "ownership of hooks and reader verbs between this stream and the Telemetry project (3b, 2b)", resolution: "none here; wave 1 is built by whoever the operator names, and the later waves do not change", park: "operator (P3, P4)"}
   - {id: X16, status: contested, items: [pwi-goodhart-register, pwi-maturity-ladder-controller], point: "the verdict as one input to the controller vs read beside it (#1400 q3)", resolution: "input; it is the only way the verdict-ok precondition of section 3.2 is enforced rather than advised, and it is the ladder's one staged depends_on edge to a pilot item", park: F7}
+  - {id: X17, status: contested, items: [pwi-friction-classifier], point: "the friction formula reads tool_call close outcomes with no severity, so hook passes count; the producer owners' 2026-10-04 confirmation firms k2 (a), but either choice sets the operator's 2026-09-24 ruling against the slice-3a deviation (a ratified Class A semantic change)", resolution: "none here; (a) ratify the producer's outcome store, as the producer owners recommend, stays parked for the operator", park: '#1394 k2'}
+  - {id: X18, status: contested, items: [pwi-rec-filing-dedupe, pwi-loop-cost-egress-budget, pwi-back-validation], point: "who writes recs: the filer files (#1396); the budget's recommended breach action (#1401 k1 (a)) files one rec per breaching line through the cost reconciliation path; the filer's self-close (#1396 k4) would be a third writer", resolution: "the filer is the loop's one rec writer; the budget's breach rec routes through the filer as a detector source so dedupe and the Decision 67 boundary apply once; no component self-closes (X10)", park: '#1401 k1'}
+  - {id: X19, status: contested, items: [pwi-goodhart-register, pwi-loop-cost-egress-budget], point: "the register at fc298254 has eight detector rows and none for the budget or for the register itself, so under the family's verdict-ok precondition both read unregistered and can never promote", resolution: "add the two rows at the register's build (the budget's line is the one #1401 says belongs there; the register's own row reads its dated drill series), so every component the ladder moves has a row", park: F11}
 ```
 
 Notes on the rows that are not self-explanatory:
 
-- X1 and X2 both sit inside #1384, which is not final. If its gating changes P1 or its batch shape, the
-  resolutions stand (they constrain the producer side) but the park references move.
+- X1 sits inside #1384, which is not final; if its gating changes P1 the resolution stands (it constrains
+  the producer side) but the park reference moves. X2 reconciles #1384's batch shape with the 2a-2 shape
+  that reached the stream through #1395; no W1 fork holds it (#1384 k1 is the sync-versus-detached hook
+  question), so it is this report's F12.
+- X17 and X18 were settled rows in the first draft. X17 rests on a producer team's confirmation, which is
+  not an operator answer to #1394 k2; X18 was contradicted by the budget's own recommended breach action.
 - X8 is already resolved inside #1400 (its own recommendation is to drop the leg); it is listed here
   because it is the one contradiction that reaches every other item, and because the staged family in
   section 3.2 depends on it being dropped: with the leg, the verdict would double-count every item's own
@@ -407,13 +425,16 @@ reading the operator asked for on 2026-10-03 applied in its recommendation. The 
   demote (#1401 k1 (b) at lift). Recommendation (a): (c) gives a cost line authority over a trust level,
   which is a Goodhart path of its own.
 - F5 (asked) Staged edge list under the cap. (a) drop direct depends_on T2.36 where a pilot upstream
-  carries it (five items change); (b) raise MAX_EDGES_FROM_ITEM (W0 evaluator code, a frozen cap);
+  carries it, and the filer's direct edge to the reader (four items change: friction, deliberation, the
+  filer, back-validation); (b) raise MAX_EDGES_FROM_ITEM (W0 evaluator code, a frozen cap);
   (c) keep T2.36 and drop the second data upstream. Recommendation (a): T2.36 stays the single external
   root (VP 3 proves reachability) and the cap stays frozen.
-- F6 (asked) Edge homes for the four depends_on-only items. (a) ladder part_of T3.4 now, the other three
-  wait for W3; (b) all four part_of T3.4; (c) register and budget part_of T3.3 (the false-positive
-  threshold owner), allow-list part_of T4.24. Recommendation (a): only the ladder's home has a roadmap
-  criterion that names it (T3.4 exit criterion 2); the rest would be guesses stamped into a fixture.
+- F6 (asked) Edge homes for the three depends_on-only items (allow-list, register, budget). (a) all three
+  stay depends_on T2.36 only until W3; (b) all three part_of T3.4 beside the ladder; (c) register and
+  budget part_of T3.3 (the false-positive threshold owner), allow-list part_of T4.24. Recommendation (a):
+  no roadmap criterion names any of the three, so a part_of now would be a guess stamped into a fixture.
+  The ladder's own part_of T3.4 (carried at f6183430, home parked under #1398 k6) is re-read with
+  #1398 q1, since section 3.5 reads this ladder as separate from T3.4's A0-A3 gates.
 - F7 (asked) Verdict as controller input. (a) input, with the staged depends_on edge; (b) beside, as an
   operator read. Recommendation (a), as X16 says.
 - F8 (asked) Record home. (a) one append-only loop journal in the data plane on the Decision 199 model,
@@ -429,6 +450,15 @@ reading the operator asked for on 2026-10-03 applied in its recommendation. The 
 - F10 (asked) Merge order equals build order. (a) merge the ten PRs in wave order so item edges resolve at
   merge time; (b) merge in PR number order and author item edges in one later PR; (c) merge in any order
   with all item edges authored by W3. Recommendation (a). Precedent: none (all ten are unmerged).
+- F11 (asked) Register rows for the two observers (X19). (a) the register's build adds a row for the budget
+  and one for itself; (b) exempt the observers from the verdict-ok precondition; (c) the observers never
+  leave read_all. Recommendation (a): (b) makes the two components that watch the loop the only ones
+  nobody watches, and (c) is (a) delayed.
+- F12 (asked) Batch shape between capture and the writer (X2). (a) the T2.36 writer owner fixes the request
+  shape and capture adapts; (b) capture's per-table data-first batches are fixed in slice 3b and the
+  writer accepts them; (c) 2a-2's one transaction per request with sessions last binds capture.
+  Recommendation (a): Decision 207 no-op resends make either order safe to replay, so the owner of the
+  boundary owns the shape; the answer rides the P3 ownership split.
 
 Forks held by W1 items and not re-opened here: every k row of the ten items stays parked where it is; the
 resolutions in section 4 cite them but do not decide them.
@@ -470,8 +500,8 @@ block and re-read when they settle.
 | claim | where | proof |
 | --- | --- | --- |
 | ten inputs at pinned heads, two not final, nine data-plane-only, all reaching T2.36 | sections 1, 4 S1, S2 | VP 1 |
-| six dialects: 4 first-rung counts, 5 second windows, 2 readings, 2 day counts + 1 rate | section 3.1 | VP 2 |
+| eight dialects as tuples: 4 first-rung counts, 5 second windows, 2 readings, 2 day counts + 1 rate | section 3.1 | VP 2 |
 | 13 of 14 data edges run to a later wave, one stays inside wave 1; every item once; every item reaches T2.36 through staged edges | sections 2.1, 2.3, 2.4 | VP 3 |
 | the merged fixture passes the evaluator with 25 staged edges and 405 of 420 lines | section 2.4 | VP 4 |
-| 8 settled and 16 contested rows, every contested row parked | section 4 | VP 5 |
+| 6 settled and 19 contested rows, every contested row parked | section 4 | VP 5 |
 | the plan validates; the branch is plan and report only; the fast tier passes | plan | VP 6, 7, 8 |
