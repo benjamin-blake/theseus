@@ -43,7 +43,7 @@ Measured (synthetic trees, no real transcript read; VP 3 reproduces the warm leg
 
 Each turn is a prompt, 10 Bash tool calls with 2 KB results, and a final text block. A warm pass costs
 about 0.4 ms per line of the WHOLE tree to emit one turn's 55 rows: it parses the full tree and the
-cursor-truncated tree (record_turn.py:96-102). Wire size (render_rows_json) is about 52 KB per such
+cursor-truncated tree (record_turn.py:130-136). Wire size (render_rows_json) is about 52 KB per such
 turn; a 100-turn cold catch-up is 3.2 MB of transcript rows plus 2.1 MB of observations, so batches
 must be byte-chunked under the writer's request limit (AWS documents 6 MB for a synchronous Function
 URL request; external, not re-verified here).
@@ -80,7 +80,7 @@ URL request; external, not re-verified here).
    record_turn emits none today: a finalized tree yields only open/resume/compact rows (VP 7). Adding it
    is a record_turn rule change, so it carries a PARSER_VERSION bump. The failure_signal depends on it.
    Identity: ONE close row per finalization, never one per session. Its ref is a role_ref of the last
-   root-stream record with a uuid at that finalize ('<uuid>#0/close', refs.py:22); trailing ignored or
+   root-stream record with a uuid at that finalize ('<uuid>#0/close', refs.py:23); trailing ignored or
    uuid-less records (streams.py:20, :174) never anchor it. Its event_timestamp and source_ordinal are
    that anchoring record's, and readers order lifecycle rows by (event_timestamp, source_ordinal) with
    close ranked LAST on a tie: a session resumed and ended with no new prompt anchors its close on the
@@ -95,7 +95,7 @@ URL request; external, not re-verified here).
    D207 rejects loudly, and step 8's transcript-only re-derivation could not reproduce it (plan-critique
    r1, M1). Owner: this rule and the R2 fix are both src/turn_capture rule changes owned by rec-4026; the
    close-row rule ships in slice 3b's PR (plan-critique r1, M7). A session-level ref would
-   already sit in the prior set after the first finalize (record_turn.py:98-104), so a resumed and
+   already sit in the prior set after the first finalize (record_turn.py:132-138), so a resumed and
    re-finalized session would emit no second close row and read as unfinalized (verification r2, G1,
    scenario E).
 8. Runner-side conformance: at finalize the runner holds the whole transcript, so it re-derives from
@@ -174,9 +174,9 @@ Risk (a known loss mode, not a choice; carried in the fixture as q2 and as the f
   close row makes it observable; SessionStart catch-up on resume recovers it only if the transcript is
   restored whole (q2).
 
-- R2 Sticky finalized flag (a merged 3a defect, found by verification r2 G2). record_turn.py:115 keeps
+- R2 Sticky finalized flag (a merged 3a defect, found by verification r2 G2). record_turn.py:149 keeps
   `finalized` true forever once a pass finalizes. Later passes then evaluate the cursor-truncated
-  prior tree as finalized (record_turn.py:101), where finalize is a virtual prompt at EOF, so that
+  prior tree as finalized (record_turn.py:135), where finalize is a virtual prompt at EOF, so that
   prefix's open last turn counts as already emitted though it never was. Result: in a session that is
   finalized, resumed, then passed by Stop before SessionEnd (the NORMAL flow under runner step 1), the
   resumed segment's last turn is never emitted, even though SessionEnd succeeds and the close row lands.
@@ -201,7 +201,7 @@ Open (q1-q3 in the fixture; none is answerable from the repository):
   row at the SessionStart pass. The second is a record_turn rule change against the generation-marker
   rule (the open row is the generation commit marker, D207 R3; sessions.py:3-4), so it belongs to the
   operator. For runner exit-1s specifically, the other candidate is the hook rows'
-  exit_code (observations.py:328) once any later pass succeeds. The second candidate cannot cover the
+  exit_code (observations.py:378) once any later pass succeeds. The second candidate cannot cover the
   SessionEnd run itself: a record appended after a successful finalize is withheld from every later
   non-final pass (the finalized prefix treats its open last turn as closed), so the SessionEnd hook's
   own row lands only if the session is resumed and re-finalized (verification r3, H4).
@@ -249,7 +249,7 @@ Open (q1-q3 in the fixture; none is answerable from the repository):
 - Rejected in verification round 1 (w1-capture-producer-wiring-zero-context-verification-r1-4d1a8e63,
   F1): turn_coverage_gap (capture-hook process_events minus turn_close rows). A hook attachment joins
   its turn (streams.py:266-269), so its row and the turn_close row are emitted together or not at all
-  (observations.py:341-343). The gap never opens on a lost final turn, and a clean session with
+  (observations.py:391-393). The gap never opens on a lost final turn, and a clean session with
   SessionStart and SessionEnd runner rows breaches falsely.
 - maturity: starts at read_all, meaning every finalized session is checked by the runner-side
   conformance check (runner step 8, verified by c2). read_all -> sampled at >= 20 consecutive finalized sessions with
@@ -284,7 +284,7 @@ Open (q1-q3 in the fixture; none is answerable from the repository):
   likely registration home for the unfinalized_session_share alarm and for step 8's conformance
   counter (plan-critique r1, M8).
 - T3.20 c1's launch criterion (a pre-write credential scrub) is already met inside record_turn
-  (transcripts.py:129, observations.py:331-332, sessions.py:222). The runner owes nothing there, and
+  (transcripts.py:213, observations.py:381-382, sessions.py:222). The runner owes nothing there, and
   the fixture's c1 does not drop it.
 - Reader-verb owner (rec-4024): the contract's derived-state rule ("absent a close row, the session is
   running", telemetry_sessions.yaml:186-193) has the same resume-after-close ambiguity as G1. The
