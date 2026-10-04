@@ -49,11 +49,12 @@ Measured, not argued:
 - The staged verdict SQL reads the register, the ledger and the attribution rows and returns one of ok,
   warn, projected_breach, breach, dark, unattributed or unregistered per line, raising on malformed input.
   A line is a flow (summed over the month) or a stock (its latest reading is the level), and an event line
-  projects from its mean over calendar days, not over the days it happened to report. It passes 113/113
-  vectors (24 by raising with the stated message), 33 of them written by an independent verifier; each of
-  192 single-site mutants (44 named, 148 from a rule sweep over guards, comparisons, windows, boundaries,
-  rounding, aggregates and WHEN order) is killed, and 21 more are equivalent and listed apart with their
-  reasons (VP 4).
+  projects from its mean over calendar days, not over the days it happened to report; a shared line that
+  reports nothing on a day needs no attribution for it. It passes 135/135 vectors (37 by raising with the
+  stated message), 52 of them written by independent verifiers over two rounds; each of 248 single-site
+  mutants (47 named, 201 from a rule sweep over guards and their arms, comparisons, windows, boundaries,
+  rounding, aggregates, dispatch, joins, calendar and WHEN order) is killed, and 27 more are equivalent and
+  listed apart with their reasons (VP 4).
 
 Staged, not decided: ten register lines (section 2.2) in bytes, counts, GB-seconds and tokens, each with an
 owner (a sibling item or shared), a cadence (daily or event), a measure (flow or stock), a seed monthly
@@ -62,9 +63,10 @@ and attribution rows per component for shared lines; and one daily deterministic
 whose breach action is k1 (recommended: an alarm filed through the existing cost reconciliation path,
 Decisions 55 and 62's alarm-not-gate shape, never a stop). Where the budget lives (k2), what unit it is kept
 in (k3), how egress is measured (k4), how shared Lambdas are attributed (k5), the item's edge home (k6), how
-a stock line is read (k7) and which meter feeds the two S3 lines (k8) are parked as asked. Two meter sources
-a first draft named, S3 request metrics and a per-prefix storage figure, need a Terraform change and a billed
-metric, so they are named always-ask inside k8 and not chosen. Nothing is ratified; the seed envelopes are
+a stock line is read (k7), which meter feeds the two S3 lines (k8) and the line roster itself (k9) are parked
+as asked. Two meter sources a first draft named, S3 request metrics and a per-prefix storage figure, need a
+Terraform change and a billed metric, so they are named always-ask inside k8 and not chosen, as is a LIST over
+the prefix (priced per request). Nothing is ratified; the seed envelopes are
 the model's, not a measurement's (q1).
 
 ## 1. Evidence (each row re-derivable; VP step in brackets)
@@ -81,8 +83,8 @@ the model's, not a measurement's (q1).
 | e8 | In the model, touched-files catalog egress per month is 1,576,200,000 bytes at 5 sessions a day (detector share 0.834), 5,779,200,000 at 20 and 96,595,200,000 at 100; whole-catalog egress is 27,621,000,000, 71,136,000,000 and 371,616,000,000; 20 sessions at one merge window a day reads 18,544,800,000 [VP 3] | section 2.3 |
 | e9 | Against the seed envelopes, 3 lines are over at 5 sessions (catalog_egress_bytes, s3_requests, review_items), 5 at 20 (plus writer_requests, lambda_gb_seconds) and 7 at 100 (all but reader_requests); review_items is over at every scale (2,160 a month against 900) [VP 3] | section 2.3 |
 | e10 | At list prices (eu-west-2, external, not re-verified) the loop's Lambda, S3 request and S3 storage lines cost about 0.90, 3.54 and 23.33 USD a month at 5, 20 and 100 sessions a day, before any free tier and excluding egress, which has no unit price in the repository [VP 3] | section 2.3; O5 |
-| e11 | The staged verdict SQL passes 113 vectors (33 of them the verifier's), 24 by raising 'loop_budget: <rule>' with the first failing rule by name [VP 4] | sections 2.4, 2.5 |
-| e12 | Each of 192 mutants of the verdict SQL (44 named, 148 from the rule sweep) replaces one unique site and fails at least one vector; 21 equivalent mutants are listed apart and pass every vector [VP 4] | section 2.6 |
+| e11 | The staged verdict SQL passes 135 vectors (52 of them written by the verification rounds), 37 by raising 'loop_budget: <rule>' with the first failing rule by name [VP 4] | sections 2.4, 2.5 |
+| e12 | Each of 248 mutants of the verdict SQL (47 named, 201 from the rule sweep) replaces one unique site and fails at least one vector; 27 equivalent mutants are listed apart and pass every vector [VP 4] | section 2.6 |
 | e13 | Decision 88 clause 1 ranks catalog egress beside compute and storage, with four access-pattern invariants; clause 2 names catalog_stats as the measurement path and defers the figure to a post-deploy measurement; clause 3 cut the DR dump to weekly for egress reasons | docs/DECISIONS.md, Decision 88 |
 | e14 | Decision 199 derives state, friction and cost at read (its title); rec-4031's price table is the read-time price source; Decision 206 clause 7 budgets turns and wall-clock, "no dollars", before MVP | docs/DECISIONS.md, Decisions 199 and 206 |
 | e15 | #1384 measured about 52 KB of wire and 55 rows per turn, and a 100-turn cold catch-up of 3.2 MB transcripts plus 2.1 MB observations; #1398 counted about 72 reviews a day at read_all across six components; #1397 R5 reads one verb call per pending candidate per run | sibling reports at the pinned heads |
@@ -155,7 +157,10 @@ against 20 GiB read breach by the 30th).
 
 Attribution answers "who pays" for a shared line: the writer and reader Lambdas serve every component, so a
 shared line's daily value must be explained by attribution rows, one per component, whose sum matches the
-day's value within tolerance; a shared line with no attribution reads unattributed (k5).
+day's value within tolerance; a shared line with a value and no attribution reads unattributed (k5). A day on
+which a shared line reports 0 has nothing to explain and needs no rows: under k5's per-call stamps a day
+with no calls writes none, and it reads ok (z01). Component names are keys: a NULL or blank one raises
+(r01, r08), and the build's stamp vocabulary should be canonical, since 'X' and 'x' are two components.
 
 ### 2.2 The line register
 
@@ -167,12 +172,12 @@ egress batches are the loop's own tables. The two S3 sources a first draft named
 
 ```yaml
 register:
-  - {line: catalog_egress_bytes, unit: bytes, owner: shared, cadence: daily, measure: flow, envelope_month: 1073741824, warn_share: 0.8, source: 'catalog_stats bytes per read times reads per day (a proxy, Decision 88 cl.2), or the Neon consumption API (k4)', price_at_read: 'none in this repository (O5); the line stays in bytes'}
-  - {line: writer_requests, unit: count, owner: shared, cadence: daily, measure: flow, envelope_month: 30000, warn_share: 0.8, source: 'CloudWatch Invocations on the writer Lambda (emitted free; the dev role reads metrics since Decision 192)', price_at_read: 'Lambda request list price'}
+  - {line: catalog_egress_bytes, unit: bytes, owner: shared, cadence: daily, measure: flow, envelope_month: 1073741824, warn_share: 0.8, source: 'catalog_stats bytes per read times reads per day (a proxy, Decision 88 cl.2; the Neon consumption API is k4 (b), always-ask, not chosen)', price_at_read: 'none in this repository (O5); the line stays in bytes'}
+  - {line: writer_requests, unit: count, owner: shared, cadence: daily, measure: flow, envelope_month: 30000, warn_share: 0.8, source: 'CloudWatch Invocations on the writer Lambda, emitted free and read with GetMetricStatistics (inside the CloudWatch API free tier; GetMetricData is billed per metric), which the dev role holds since Decision 192', price_at_read: 'Lambda request list price'}
   - {line: writer_bytes, unit: bytes, owner: pwi-capture-producer-wiring, cadence: daily, measure: flow, envelope_month: 2147483648, warn_share: 0.8, source: 'request bytes per writer call summed per day (#1384 measured about 52 KB per turn)', price_at_read: 'unpriced; a volume line that explains writer_requests and s3_storage_bytes'}
-  - {line: reader_requests, unit: count, owner: shared, cadence: daily, measure: flow, envelope_month: 30000, warn_share: 0.8, source: 'CloudWatch Invocations on the reader Lambda (emitted free)', price_at_read: 'Lambda request list price'}
-  - {line: lambda_gb_seconds, unit: GB-s, owner: shared, cadence: daily, measure: flow, envelope_month: 100000, warn_share: 0.8, source: 'CloudWatch Duration times configured memory per function (writer 3008 MB, reader 1024 MB, maintenance 1536 MB; emitted free)', price_at_read: 'Lambda duration list price'}
-  - {line: s3_requests, unit: count, owner: shared, cadence: daily, measure: flow, envelope_month: 300000, warn_share: 0.8, source: 'PUTs counted by the writer Lambda per call (files written) and GETs counted per reader query from the files its plan scanned, each on the Lambda log line (k8); S3 request metrics and access logs are Terraform plus spend and are not used', price_at_read: 'S3 request list prices, PUT and GET apart'}
+  - {line: reader_requests, unit: count, owner: shared, cadence: daily, measure: flow, envelope_month: 30000, warn_share: 0.8, source: 'CloudWatch Invocations on the reader Lambda, emitted free, read with GetMetricStatistics', price_at_read: 'Lambda request list price'}
+  - {line: lambda_gb_seconds, unit: GB-s, owner: shared, cadence: daily, measure: flow, envelope_month: 100000, warn_share: 0.8, source: 'CloudWatch Duration times configured memory per function (writer 3008 MB, reader 1024 MB, maintenance 1536 MB), emitted free, read with GetMetricStatistics', price_at_read: 'Lambda duration list price'}
+  - {line: s3_requests, unit: count, owner: shared, cadence: daily, measure: flow, envelope_month: 300000, warn_share: 0.8, source: 'PUTs counted by the writer Lambda per call (files written) and GETs counted at the httpfs layer per reader query (several range GETs per Parquet file: the footer and each column chunk, so files scanned would under-count by a structural factor), each on the Lambda log line (k8); S3 request metrics and access logs are Terraform plus spend and are not used', price_at_read: 'S3 request list prices, PUT and GET apart'}
   - {line: s3_storage_bytes, unit: bytes, owner: pwi-capture-producer-wiring, cadence: daily, measure: stock, envelope_month: 21474836480, warn_share: 0.8, source: 'sum of data_file_size_bytes over ducklake_list_files for the four telemetry tables, one catalog read a day charged to catalog_egress_bytes (k8); bucket-wide BucketSizeBytes read as the ceiling, since it has no prefix dimension', price_at_read: 'S3 storage list price'}
   - {line: review_items, unit: count, owner: pwi-maturity-ladder-controller, cadence: daily, measure: flow, envelope_month: 900, warn_share: 0.8, source: 'rows of the ladder review table per day (#1398; about 72 a day at read_all across six components)', price_at_read: 'operator time; never priced in dollars (q3)'}
   - {line: plane_egress_bytes, unit: bytes, owner: pwi-allow-list-transport, cadence: event, measure: flow, envelope_month: 0, warn_share: 0.8, source: 'bytes of each egress batch, logged in the data plane before sending (#1399 section 2.7 audit row)', price_at_read: 'unpriced; a zero envelope reads any byte as breach until #1399 k1 is answered'}
@@ -196,9 +201,13 @@ sits in the shared data_lake bucket, so a per-prefix figure needs S3 Inventory o
 plus spend) or LIST calls (spend) (e17). Both options are named always-ask under k8 and not chosen. The
 staged sources count what the loop's own code already knows: the writer knows how many files it put, a
 reader query's plan knows which files it scanned, and the catalog knows every live file's size
-(ducklake_list_files, already used by the maintenance module). They under-count what the loop's own code
-does not do (a LIST, a retry inside the S3 client, a file the catalog no longer references), which the
-monthly invoice line calibrates (k3 (c)).
+(ducklake_list_files, already used by the maintenance module). GETs are counted where they are issued, at
+the httpfs layer, because a reader query issues several range GETs per Parquet file (the footer, then each
+column chunk), so "files scanned" would under-count by a structural factor every month. The staged sources
+still under-count what the loop's own code does not do (a LIST, a retry inside the S3 client, a file the
+catalog no longer references), which the monthly invoice line calibrates (k3 (c)). The Lambda metrics are
+read with GetMetricStatistics, which sits inside the CloudWatch API free tier; GetMetricData is billed per
+metric and is not the read path, so c2's "no billed metric" covers the read as well as the meter.
 
 What is not a line. DeepSeek and Anthropic inference for the executor, the self-hosted runner, DynamoDB
 and the rest of CD.28's bill stay with the monthly reconciliation; this register covers the loop's own
@@ -367,8 +376,10 @@ Per line, in order of precedence (v13-v16):
   meter that starts reporting before its register row exists is the finding, not an error.
 - breach: the line's level exceeds the envelope (v04). For a flow the level is the month-to-date sum,
   rounded to 9 places, starting on the first of the calendar month (v17, v22, n02, n15); for a stock it is
-  the latest reading in the window (s02, s03, s09), never a sum (s06). On the last day of the month nothing
-  is projected (v21).
+  the latest reading anywhere in the 31-day window (s02, s03, s09, r03, r04: a stale reading over the
+  envelope breaches before it reads dark, and a reading from last month is still the level), never a sum
+  (s06). On the last day of the month nothing is projected (v21); the days remaining are the calendar's
+  (r06 February, r07 a 30-day month).
 - dark: a daily-cadence line with no ledger row today (v05, v39). An event line is never dark (v06, v41).
   Dark outranks projection because a meter that stopped is not evidence that spend stopped.
 - projected_breach: for a flow, month-to-date plus the mean daily value over the last 7 days times the
@@ -377,10 +388,13 @@ Per line, in order of precedence (v13-v16):
   event projects 100/7 a day, not 100 a day), and over the days that reported for a daily line, whose
   missing days are dark, not zero (d01). A line with no rows in the window projects its month-to-date alone
   (v31, p03). A stock never projects: its level is its projection (s01, s06).
-- unattributed: the line has a row today and either it is shared with no attribution parts (v09, s08), or
-  its parts' sum differs from today's value by more than tolerance times today's value (v11, v12, v26,
-  v27, n11, n12, n26, n27, t01). An owned line needs no attribution (v40); attribution on another day does
-  not count (v28, v43).
+- unattributed: either the line is shared, reports a value above 0 today and has no attribution parts
+  (v09, s08, z03), or its parts' sum differs from today's value by more than tolerance times today's value
+  (v11, v12, v26, v27, n11, n12, n26, n27, t01, z02). A line with no row today has no today's value, so
+  neither clause can fire (an earlier draft said so with a redundant conjunct; verification r2's F6 made
+  it so by construction). A shared line that reports 0 with no parts is ok: there is nothing to explain,
+  and under k5's stamps a day without calls writes no rows (z01). An owned line needs no attribution (v40);
+  attribution on another day does not count (v28, v43).
 - warn: the projection (for a stock, the level) exceeds warn_share times the envelope (v02, v25, v34, s04,
   n19, n24).
 - ok otherwise (v01, v10, v30, v32, s01).
@@ -392,13 +406,16 @@ does not breach, and one unit in the ninth place does.
 Malformed input raises instead of deciding (fail loud, Decision 55 by analogy): a blank or duplicate
 budget line, an envelope that is NULL, non-finite or negative, a warn share outside (0, 1], a cadence other
 than daily or event, a measure other than flow or stock (e19), a NULL day anywhere (e18, n05), a blank or
-NULL line name in the ledger or the attribution (e20, e21), a ledger or attribution value that is NULL,
-non-finite or negative, a duplicate (line, day) in the ledger or (line, day, component) in the
-attribution, a rate window outside 1-31 days (n07-n09), a tolerance outside [0, 1) (n10, n11). The message
+NULL line name in the ledger or the attribution (e20, e21, g06, g08), a NULL or blank component (r01,
+r08), a ledger or attribution value that is NULL, non-finite or negative (g07, g09-g11), a duplicate
+(line, day) in the ledger or (line, day, component) in the attribution, a rate window outside 1-31 days
+(n07-n09), a tolerance outside [0, 1) (n10, n11). Each guard's NULL arm is pinned on its own (g01-g11), and
+a duplicate outside the window is not a duplicate (r02). The message
 names the first failing rule in alphabetical order (e17), so a run with several defects is repaired in a
 stable order. A zero envelope is legal (v07): it is how an event line says "nothing may happen here yet".
 A line name that differs only by whitespace is a different line (n30); the build's register loader should
-trim names before they reach the table.
+trim names before they reach the table. The event rate divides with true division; DuckDB's `//` happens
+to agree for DOUBLE operands, and r05 pins the fraction for an engine where it would not.
 
 What the verdict does not do: it gates nothing. A breach on a line is a reading; what follows is k1. The
 verdict reads quantities only; pricing is a separate read over the same ledger, and a price change changes
@@ -427,6 +444,7 @@ verdict:
       UNION ALL SELECT 'ledger_value', count(*) FROM l WHERE value IS NULL OR NOT isfinite(value) OR value < 0
       UNION ALL SELECT 'duplicate_ledger', count(*) - count(DISTINCT (line, day)) FROM l
       UNION ALL SELECT 'attribution_line', count(*) FROM a WHERE line IS NULL OR trim(line) = ''
+      UNION ALL SELECT 'attribution_component', count(*) FROM a WHERE component IS NULL OR trim(component) = ''
       UNION ALL SELECT 'attribution_value', count(*) FROM a WHERE value IS NULL OR NOT isfinite(value) OR value < 0
       UNION ALL SELECT 'duplicate_attribution', count(*) - count(DISTINCT (line, day, component)) FROM a
       UNION ALL SELECT 'window_days', CASE WHEN (SELECT window_days FROM p) BETWEEN 1 AND 31 THEN 0 ELSE 1 END
@@ -462,10 +480,8 @@ verdict:
              WHEN round(mtd, 9) > envelope THEN 'breach'
              WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'
              WHEN round(projected, 9) > envelope THEN 'projected_breach'
-             WHEN today_rows > 0 AND (
-                    (owner = 'shared' AND parts = 0)
-                    OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))
-                  ) THEN 'unattributed'
+             WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)
+                    OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'
              WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'
              ELSE 'ok'
            END AS verdict
@@ -484,8 +500,11 @@ history and windows (v17-v22, v31, v42, n02-n06, n15-n17), strict boundaries (v2
 lines (v30), the empty world (v32), a registered line that never reported (n01, the build's day-one state,
 e7), stock lines (s01-s09), event-line projection over calendar days (p01-p05) against a daily line's gap
 (d01), rounding to exactly 9 places (v35-v38, n13, n19-n24, n28, n29, n31-n35, t01), param edges (n07-n12),
-and each guard with its first-failing-rule order (e01-e21). n01-n35 are the 33 vectors zero-context
-verification round 1 wrote against the first draft; all pass unchanged on the staged SQL.
+the zero-value shared day (z01-z03), stale and last-month stock readings (r03, r04), the calendar (r06,
+r07), the event fraction (r05), the duplicate outside the window (r02), and each guard with its
+first-failing-rule order and its NULL arm (e01-e21, g01-g11, r01, r08). n01-n35 are the 33 vectors
+zero-context verification round 1 wrote against the first draft, and r01-r07 and g01-g11 the 18 round 2
+wrote; all pass on the staged SQL (r01 now by raising, since round 2's F7 added the component guard).
 
 ```yaml
 vectors:
@@ -1273,20 +1292,175 @@ vectors:
     attribution:
     - {line: catalog_egress_bytes, day: 0, component: x, value: 1.0000000026}
     expected: {catalog_egress_bytes: ok}
+  - budget:
+    - {envelope: 100000, owner: shared}
+    expected: {catalog_egress_bytes: ok}
+    id: z01-shared-zero-day-needs-no-attribution
+    ledger:
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 0}
+  - attribution:
+    - {component: null, day: 0, line: catalog_egress_bytes, value: 10}
+    budget:
+    - {envelope: 100000, owner: shared}
+    expected: error
+    id: r01-null-component-raises
+    ledger:
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 10}
+    raises: 'loop_budget: attribution_component'
+  - budget:
+    - {}
+    expected: {catalog_egress_bytes: ok}
+    id: r02-duplicate-ledger-outside-window-ignored
+    ledger:
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 10}
+    - {from: -40, line: catalog_egress_bytes, to: -40, value: 1}
+    - {from: -40, line: catalog_egress_bytes, to: -40, value: 1}
+  - budget:
+    - {envelope: 20, line: s3_storage_bytes, measure: stock}
+    expected: {s3_storage_bytes: breach}
+    id: r03-stock-stale-reading-breaches-before-dark
+    ledger:
+    - {from: -10, line: s3_storage_bytes, to: -10, value: 25}
+  - budget:
+    - {cadence: event, envelope: 20, line: s3_storage_bytes, measure: stock}
+    expected: {s3_storage_bytes: warn}
+    id: r04-stock-reading-from-last-month-is-the-level
+    ledger:
+    - {from: -2, line: s3_storage_bytes, to: -2, value: 17}
+    params: {today: '2026-10-02'}
+  - budget:
+    - {cadence: event, envelope: 2.3, line: plane_egress_bytes}
+    expected: {plane_egress_bytes: projected_breach}
+    id: r05-event-rate-keeps-its-fraction
+    ledger:
+    - {from: 0, line: plane_egress_bytes, to: 0, value: 1}
+  - budget:
+    - {envelope: 280}
+    expected: {catalog_egress_bytes: warn}
+    id: r06-february-days-remaining
+    ledger:
+    - {from: -26, line: catalog_egress_bytes, to: 0, value: 10}
+    params: {today: '2027-02-27'}
+  - budget:
+    - {envelope: 300}
+    expected: {catalog_egress_bytes: warn}
+    id: r07-thirty-day-month-days-remaining
+    ledger:
+    - {from: -28, line: catalog_egress_bytes, to: 0, value: 10}
+    params: {today: '2026-11-29'}
+  - budget:
+    - {line: null}
+    expected: error
+    id: g01-null-budget-line-raises
+    raises: 'loop_budget: budget_line'
+  - budget:
+    - {envelope: null}
+    expected: error
+    id: g02-null-envelope-raises
+    raises: 'loop_budget: envelope'
+  - budget:
+    - {warn_share: null}
+    expected: error
+    id: g03-null-warn-share-raises
+    raises: 'loop_budget: warn_share'
+  - budget:
+    - {cadence: null}
+    expected: error
+    id: g04-null-cadence-raises
+    raises: 'loop_budget: cadence'
+  - budget:
+    - {measure: null}
+    expected: error
+    id: g05-null-measure-raises
+    raises: 'loop_budget: measure'
+  - budget:
+    - {}
+    expected: error
+    id: g06-blank-ledger-line-raises
+    ledger:
+    - {from: 0, line: ' ', to: 0, value: 1}
+    raises: 'loop_budget: ledger_line'
+  - budget:
+    - {}
+    expected: error
+    id: g07-null-ledger-value-raises
+    ledger:
+    - {from: 0, line: catalog_egress_bytes, to: 0, value: null}
+    raises: 'loop_budget: ledger_value'
+  - attribution:
+    - {component: x, day: 0, line: null, value: 1}
+    budget:
+    - {}
+    expected: error
+    id: g08-null-attribution-line-raises
+    ledger:
+    - {from: 0, line: catalog_egress_bytes, to: 0, value: 1}
+    raises: 'loop_budget: attribution_line'
+  - attribution:
+    - {component: x, day: 0, line: catalog_egress_bytes, value: null}
+    budget:
+    - {}
+    expected: error
+    id: g09-null-attribution-value-raises
+    ledger:
+    - {from: 0, line: catalog_egress_bytes, to: 0, value: 1}
+    raises: 'loop_budget: attribution_value'
+  - attribution:
+    - {component: x, day: 0, line: catalog_egress_bytes, value: .inf}
+    budget:
+    - {}
+    expected: error
+    id: g10-infinite-attribution-value-raises
+    ledger:
+    - {from: 0, line: catalog_egress_bytes, to: 0, value: 1}
+    raises: 'loop_budget: attribution_value'
+  - attribution:
+    - {component: x, day: 0, line: catalog_egress_bytes, value: .nan}
+    budget:
+    - {}
+    expected: error
+    id: g11-nan-attribution-value-raises
+    ledger:
+    - {from: 0, line: catalog_egress_bytes, to: 0, value: 1}
+    raises: 'loop_budget: attribution_value'
+  - attribution:
+    - {component: x, day: 0, line: catalog_egress_bytes, value: 1}
+    budget:
+    - {envelope: 100000, owner: shared}
+    expected: {catalog_egress_bytes: unattributed}
+    id: z02-shared-zero-day-with-parts-still-checked
+    ledger:
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 0}
+  - budget:
+    - {envelope: 100000, owner: shared}
+    expected: {catalog_egress_bytes: unattributed}
+    id: z03-shared-tiny-value-needs-attribution
+    ledger:
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 1.0e-09}
+  - attribution:
+    - {component: '  ', day: 0, line: catalog_egress_bytes, value: 10}
+    budget:
+    - {envelope: 100000, owner: shared}
+    expected: error
+    id: r08-blank-component-raises
+    ledger:
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 10}
+    raises: 'loop_budget: attribution_component'
 ```
 
 ### 2.6 Mutants (VP 4)
 
 Each mutant replaces one exact substring of the verdict SQL (it must occur exactly once) and must fail at
-least one vector. m01-m45 are named (m10 moved to the equivalents): each verdict comparison made
+least one vector. m01-m48 are named (m10 moved to the equivalents): each verdict comparison made
 inclusive, each precedence pair swapped, each window and guard widened or dropped, the attribution rule
 relaxed in each direction, each rounding removed, the first-failing-rule order reversed, and the stock and
 event legs undone (a stock summed, a stock projected, an event rate over rows, the level read as the
-earliest or the largest reading, the event divisor fixed at 7, the measure guard loosened). The sweep is
-generated by class, after verification round 1 found 47 killable survivors in classes the first draft did
-not sweep:
+earliest or the largest reading, the event divisor fixed at 7, the measure guard loosened), the zero-day
+rule dropped or made inclusive and the component guard narrowed to NULL. The sweep is generated by class,
+after verification rounds 1 and 2 found 47 and 17 killable survivors in classes earlier drafts did not
+sweep:
 
-- s-guard-*: each of the fifteen guards dropped (always 0);
+- s-guard-*: each of the sixteen guards dropped (always 0);
 - s-case-*: every comparison in the verdict CASE flipped to its neighbours;
 - s-window-*: each of the six history reads widened by a day (month-to-date, both rate windows, today's
   rows, today's value, today's attribution);
@@ -1304,16 +1478,36 @@ not sweep:
   kept with duplicates, the duplicate-budget check trimmed, the last failing rule reported instead of the
   first;
 - s-when-*: each WHEN arm moved to each other position of the verdict CASE (the adjacent swaps are the named
-  m25-m28).
+  m25-m28);
+- s-guard-arm-*: each OR arm of each guard dropped alone (the NULL arms, the blank arms, the non-finite
+  arms, each bound);
+- s-plumb-*: the guard filter removed, a raise only above one failure, the duplicate check run before the
+  window;
+- s-dispatch-*: the event rate applied to daily lines or dispatched on measure, the shared literal mis-cased
+  or negated;
+- s-level-*: the stock level read from this month, today or the rate window only, or as a window or month
+  mean;
+- s-join-* and s-lines-*: the budget joined inner, the ledger-only or attribution-only lines dropped;
+- s-calendar-* and arithmetic: days remaining as 30 or 31 minus the day, month start as today minus 30, a
+  28-day history, the event rate cast to an integer, the daily rate rounded;
+- s-today-* and the rest: today's rows counted over the rate window, today's value read as the month sum,
+  warn skipped on stock lines, the event rate summed over the month, event lines never projecting, dark on
+  every daily line, the attribution window closed before today.
 
-Twenty-one mutants are equivalent and listed apart with their reasons: `parts > 0` as `parts >= 0` (the
+Twenty-seven mutants are equivalent and listed apart with their reasons: `parts > 0` as `parts >= 0` (the
 attributed sum is NULL when parts is 0); any aggregate of today's value, and count(value) for today's
 rows and parts (the duplicate and value guards leave one non-NULL value); count(DISTINCT component) for
-parts (the duplicate-attribution guard); each coalesce whose NULL compares NULL and so never breaches, warns
-or projects (month-to-date in m and in v, the stock level, the event and daily rates), and a missing daily
-rate read as 1 (a daily line with no row in the rate window has no row today and reads dark first);
-min(rule) for the ordered first rule; and the unregistered arm moved anywhere before unattributed (every
-arm before it compares NULL when envelope and cadence are NULL). Two mutant kinds the verifier called
+parts (the component guard rejects NULL and blank components, so DISTINCT counts what count(*) counts; a
+NULL component was the one counterexample before round 2's F7 added that guard); each coalesce whose NULL
+compares NULL and so never breaches, warns or projects (month-to-date in m and in v, the stock level, the
+event and daily rates), and a missing daily rate read as 1 (a daily line with no row in the rate window has
+no row today and reads dark first); min(rule) for the ordered first rule; the unregistered arm moved
+anywhere before unattributed (every arm before it compares NULL when envelope and cadence are NULL); the
+stock and dark dispatches read as not-flow and not-event (the measure and cadence guards admit only two
+values); the attribution join on the budget's line (NULL only for an unregistered line); the warn_share
+NOT isfinite arm (DuckDB orders NaN above every value, so the bounds arms catch it); `//` for the event
+rate (true division for DOUBLE operands in DuckDB 1.5.4, engine-specific); and the parts > 0 conjunct
+dropped (the same NULL argument as parts >= 0). Two mutant kinds the verifier called
 immaterial are not generated: rounding the envelope side of breach and projection (only an envelope with
 a fraction below 1e-9 tells them apart, and every register envelope is an integer) and round-half-even
 (only an exact binary tie at the tenth place). VP 4 counts the kills and the unique sites and checks that
@@ -1324,7 +1518,7 @@ mutants:
 - {id: m01-breach-inclusive, old: 'round(mtd, 9) > envelope', new: 'round(mtd, 9) >= envelope'}
 - {id: m02-dark-ignores-cadence, old: WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark', new: WHEN today_rows = 0 THEN 'dark'}
 - {id: m03-projection-inclusive, old: 'round(projected, 9) > envelope', new: 'round(projected, 9) >= envelope'}
-- {id: m04-attribution-required-everywhere, old: (owner = 'shared' AND parts = 0), new: (parts = 0)}
+- {id: m04-attribution-required-everywhere, old: (owner = 'shared' AND parts = 0 AND today_value > 0), new: (parts = 0 AND today_value > 0)}
 - {id: m05-tolerance-inclusive, old: 'abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)', new: 'abs(round(attributed - today_value, 9)) >= round((SELECT tolerance FROM p) * today_value, 9)'}
 - {id: m06-warn-inclusive, old: 'round(projected, 9) > round(warn_share * envelope, 9)', new: 'round(projected, 9) >= round(warn_share * envelope, 9)'}
 - {id: m07-mtd-ignores-month-start, old: FILTER (WHERE day >= (SELECT month_start FROM p)), new: FILTER (WHERE day <= (SELECT today FROM p))}
@@ -1346,8 +1540,8 @@ mutants:
 - {id: m24-attribution-lines-not-listed, old: UNION SELECT line FROM a), new: UNION SELECT line FROM l)}
 - {id: m25-dark-before-breach, old: "WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'", new: "WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(mtd, 9) > envelope THEN 'breach'"}
 - {id: m26-projection-before-dark, old: "WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'", new: "WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'"}
-- {id: m27-unattributed-before-projection, old: "WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN today_rows > 0 AND (", new: "WHEN today_rows > 0 AND round(projected, 9) > envelope AND false THEN 'never'\n         WHEN round(projected, 9) > envelope AND today_rows = 0 THEN 'projected_breach'\n         WHEN today_rows > 0 AND ("}
-- {id: m28-warn-before-unattributed, old: "              ) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "              ) AND NOT round(projected, 9) > round(warn_share * envelope, 9) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
+- {id: m27-unattributed-before-projection, new: "         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'", old: "         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'"}
+- {id: m28-warn-before-unattributed, new: "         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'", old: "         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
 - {id: m29-attribution-any-day, old: FROM a WHERE day = (SELECT today FROM p) GROUP BY line, new: FROM a GROUP BY line}
 - {id: m30-window-days-guard-admits-zero, old: BETWEEN 1 AND 31 THEN 0, new: BETWEEN 0 AND 31 THEN 0}
 - {id: m31-tolerance-guard-admits-one, old: (SELECT tolerance FROM p) < 1 THEN 0, new: (SELECT tolerance FROM p) <= 1 THEN 0}
@@ -1357,7 +1551,7 @@ mutants:
 - {id: m35-attribution-difference-unrounded, old: 'abs(round(attributed - today_value, 9))', new: abs(attributed - today_value)}
 - {id: m36-tolerance-product-unrounded, old: 'round((SELECT tolerance FROM p) * today_value, 9)', new: (SELECT tolerance FROM p) * today_value}
 - {id: m37-dark-when-rows-today, old: cadence = 'daily' AND today_rows = 0 THEN 'dark', new: cadence = 'daily' AND today_rows > 0 THEN 'dark'}
-- {id: m38-shared-attribution-not-required, old: "(owner = 'shared' AND parts = 0)\n                OR ", new: ''}
+- {id: m38-shared-attribution-not-required, old: "(owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR ", new: ''}
 - {id: m39-stock-reads-month-sum, old: 'CASE WHEN b.measure = ''stock'' THEN coalesce(m.level, 0) ELSE coalesce(m.mtd, 0) END AS mtd', new: 'coalesce(m.mtd, 0) AS mtd'}
 - {id: m40-stock-projects-like-a-flow, old: "CASE WHEN b.measure = 'stock' THEN coalesce(m.level, 0)\n              ELSE coalesce(m.mtd, 0) +", new: "CASE WHEN b.measure = 'never' THEN coalesce(m.level, 0)\n              ELSE coalesce(m.mtd, 0) +"}
 - {id: m41-event-rate-over-rows-present, old: 'CASE WHEN b.cadence = ''event'' THEN coalesce(m.event_rate, 0) ELSE coalesce(m.day_rate, 0) END', new: 'coalesce(m.day_rate, 0)'}
@@ -1365,6 +1559,9 @@ mutants:
 - {id: m43-level-reads-largest, old: 'arg_max(value, day) AS level', new: max(value) AS level}
 - {id: m44-event-rate-divides-by-seven, old: / (SELECT window_days FROM p) AS event_rate, new: / 7 AS event_rate}
 - {id: m45-measure-guard-accepts-anything, old: 'measure NOT IN (''flow'', ''stock'')', new: 'measure NOT IN (''flow'', ''stock'', ''level'')'}
+- {id: m46-zero-day-rule-dropped, old: (owner = 'shared' AND parts = 0 AND today_value > 0), new: (owner = 'shared' AND parts = 0)}
+- {id: m47-zero-day-rule-inclusive, old: (owner = 'shared' AND parts = 0 AND today_value > 0), new: (owner = 'shared' AND parts = 0 AND today_value >= 0)}
+- {id: m48-component-guard-null-only, old: WHERE component IS NULL OR trim(component) = '', new: WHERE component IS NULL}
 - {id: s-guard-budget-line, what: guard budget_line dropped (always 0), old: 'SELECT ''budget_line'' AS rule, count(*) AS n FROM b WHERE line IS NULL OR trim(line) = ''''', new: 'SELECT ''budget_line'' AS rule, 0'}
 - {id: s-guard-duplicate-budget, what: guard duplicate_budget dropped (always 0), old: 'SELECT ''duplicate_budget'', count(*) - count(DISTINCT line) FROM b', new: 'SELECT ''duplicate_budget'', 0'}
 - {id: s-guard-envelope, what: guard envelope dropped (always 0), old: 'SELECT ''envelope'', count(*) FROM b WHERE envelope IS NULL OR NOT isfinite(envelope) OR envelope < 0', new: 'SELECT ''envelope'', 0'}
@@ -1376,6 +1573,7 @@ mutants:
 - {id: s-guard-ledger-value, what: guard ledger_value dropped (always 0), old: 'SELECT ''ledger_value'', count(*) FROM l WHERE value IS NULL OR NOT isfinite(value) OR value < 0', new: 'SELECT ''ledger_value'', 0'}
 - {id: s-guard-duplicate-ledger, what: guard duplicate_ledger dropped (always 0), old: 'SELECT ''duplicate_ledger'', count(*) - count(DISTINCT (line, day)) FROM l', new: 'SELECT ''duplicate_ledger'', 0'}
 - {id: s-guard-attribution-line, what: guard attribution_line dropped (always 0), old: 'SELECT ''attribution_line'', count(*) FROM a WHERE line IS NULL OR trim(line) = ''''', new: 'SELECT ''attribution_line'', 0'}
+- {id: s-guard-attribution-component, what: guard attribution_component dropped (always 0), old: 'SELECT ''attribution_component'', count(*) FROM a WHERE component IS NULL OR trim(component) = ''''', new: 'SELECT ''attribution_component'', 0'}
 - {id: s-guard-attribution-value, what: guard attribution_value dropped (always 0), old: 'SELECT ''attribution_value'', count(*) FROM a WHERE value IS NULL OR NOT isfinite(value) OR value < 0', new: 'SELECT ''attribution_value'', 0'}
 - {id: s-guard-duplicate-attribution, what: guard duplicate_attribution dropped (always 0), old: 'SELECT ''duplicate_attribution'', count(*) - count(DISTINCT (line, day, component)) FROM a', new: 'SELECT ''duplicate_attribution'', 0'}
 - {id: s-guard-window-days, what: guard window_days dropped (always 0), old: 'SELECT ''window_days'', CASE WHEN (SELECT window_days FROM p) BETWEEN 1 AND 31 THEN 0 ELSE 1 END', new: 'SELECT ''window_days'', 0'}
@@ -1384,17 +1582,17 @@ mutants:
 - {id: s-case-02, what: verdict comparison '>' read as '<' at CASE offset 91, old: "nregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cad", new: "nregistered'\n         WHEN round(mtd, 9) < envelope THEN 'breach'\n         WHEN cad"}
 - {id: s-case-03, what: verdict comparison '>' read as '>=' at CASE offset 213, old: "'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n       ", new: "'dark'\n         WHEN round(projected, 9) >= envelope THEN 'projected_breach'\n       "}
 - {id: s-case-04, what: verdict comparison '>' read as '<' at CASE offset 213, old: "'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n       ", new: "'dark'\n         WHEN round(projected, 9) < envelope THEN 'projected_breach'\n       "}
-- {id: s-case-05, what: verdict comparison '>' read as '>=' at CASE offset 273, old: "ojected_breach'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared", new: "ojected_breach'\n         WHEN today_rows >= 0 AND (\n                (owner = 'shared"}
-- {id: s-case-06, what: verdict comparison '>' read as '<' at CASE offset 273, old: "ojected_breach'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared", new: "ojected_breach'\n         WHEN today_rows < 0 AND (\n                (owner = 'shared"}
-- {id: s-case-08, what: verdict comparison '>' read as '<' at CASE offset 358, old: "AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value", new: "AND parts = 0)\n                OR (parts < 0 AND abs(round(attributed - today_value"}
-- {id: s-case-09, what: verdict comparison '>' read as '>=' at CASE offset 406, old: ' abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_', new: ' abs(round(attributed - today_value, 9)) >= round((SELECT tolerance FROM p) * today_'}
-- {id: s-case-10, what: verdict comparison '>' read as '<' at CASE offset 406, old: ' abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_', new: ' abs(round(attributed - today_value, 9)) < round((SELECT tolerance FROM p) * today_'}
-- {id: s-case-11, what: verdict comparison '>' read as '>=' at CASE offset 529, old: "buted'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'wa", new: "buted'\n         WHEN round(projected, 9) >= round(warn_share * envelope, 9) THEN 'wa"}
-- {id: s-case-12, what: verdict comparison '>' read as '<' at CASE offset 529, old: "buted'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'wa", new: "buted'\n         WHEN round(projected, 9) < round(warn_share * envelope, 9) THEN 'wa"}
+- {id: s-case-05, what: verdict comparison '>' read as '>=' at CASE offset 310, old: "= 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs", new: "= 'shared' AND parts = 0 AND today_value >= 0)\n                OR (parts > 0 AND abs"}
+- {id: s-case-06, what: verdict comparison '>' read as '<' at CASE offset 310, old: "= 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs", new: "= 'shared' AND parts = 0 AND today_value < 0)\n                OR (parts > 0 AND abs"}
+- {id: s-case-08, what: verdict comparison '>' read as '<' at CASE offset 341, old: "day_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value", new: "day_value > 0)\n                OR (parts < 0 AND abs(round(attributed - today_value"}
+- {id: s-case-09, what: verdict comparison '>' read as '>=' at CASE offset 389, old: ' abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_', new: ' abs(round(attributed - today_value, 9)) >= round((SELECT tolerance FROM p) * today_'}
+- {id: s-case-10, what: verdict comparison '>' read as '<' at CASE offset 389, old: ' abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_', new: ' abs(round(attributed - today_value, 9)) < round((SELECT tolerance FROM p) * today_'}
+- {id: s-case-11, what: verdict comparison '>' read as '>=' at CASE offset 496, old: "buted'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'wa", new: "buted'\n         WHEN round(projected, 9) >= round(warn_share * envelope, 9) THEN 'wa"}
+- {id: s-case-12, what: verdict comparison '>' read as '<' at CASE offset 496, old: "buted'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'wa", new: "buted'\n         WHEN round(projected, 9) < round(warn_share * envelope, 9) THEN 'wa"}
 - {id: s-case-13, what: verdict comparison '=' read as '<>' at CASE offset 138, old: "lope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n ", new: "lope THEN 'breach'\n         WHEN cadence <> 'daily' AND today_rows = 0 THEN 'dark'\n "}
 - {id: s-case-14, what: verdict comparison '=' read as '<>' at CASE offset 163, old: "   WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projec", new: "   WHEN cadence = 'daily' AND today_rows <> 0 THEN 'dark'\n         WHEN round(projec"}
-- {id: s-case-15, what: verdict comparison '=' read as '<>' at CASE offset 306, old: "ay_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                ", new: "ay_rows > 0 AND (\n                (owner <> 'shared' AND parts = 0)\n                "}
-- {id: s-case-16, what: verdict comparison '=' read as '<>' at CASE offset 327, old: "             (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs", new: "             (owner = 'shared' AND parts <> 0)\n                OR (parts > 0 AND abs"}
+- {id: s-case-15, what: verdict comparison '=' read as '<>' at CASE offset 269, old: " 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value >", new: " 'projected_breach'\n         WHEN (owner <> 'shared' AND parts = 0 AND today_value >"}
+- {id: s-case-16, what: verdict comparison '=' read as '<>' at CASE offset 290, old: "        WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                O", new: "        WHEN (owner = 'shared' AND parts <> 0 AND today_value > 0)\n                O"}
 - {id: s-window-01, what: month-to-date excludes the first of the month, old: day >= (SELECT month_start FROM p), new: day > (SELECT month_start FROM p)}
 - {id: s-window-02, what: daily rate window one day wider, old: avg(value) FILTER (WHERE day > (SELECT today FROM p) - (SELECT window_days FROM p)), new: avg(value) FILTER (WHERE day >= (SELECT today FROM p) - (SELECT window_days FROM p))}
 - {id: s-window-03, what: event rate window one day wider, old: 'sum(value) FILTER (WHERE day > (SELECT today FROM p) - (SELECT window_days FROM p)), 0)', new: 'sum(value) FILTER (WHERE day >= (SELECT today FROM p) - (SELECT window_days FROM p)), 0)'}
@@ -1495,61 +1693,115 @@ mutants:
 - {id: s-agg-lines-union-all, what: 'line list keeps duplicates, so a line reports more than once', old: SELECT line FROM b UNION SELECT line FROM l UNION SELECT line FROM a, new: SELECT line FROM b UNION ALL SELECT line FROM l UNION ALL SELECT line FROM a}
 - {id: s-agg-dup-budget-trim, what: duplicate budget check trims the line name, old: count(*) - count(DISTINCT line) FROM b, new: count(*) - count(DISTINCT trim(line)) FROM b}
 - {id: s-agg-first-rule-max, what: the last failing rule by name is reported instead of the first, old: (SELECT rule FROM g WHERE n > 0 ORDER BY rule LIMIT 1), new: (SELECT max(rule) FROM g WHERE n > 0)}
-- {id: s-when-unregistered-to-5, what: WHEN arm unregistered moved to position 5, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value,\
-    \ 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
-- {id: s-when-unregistered-to-6, what: WHEN arm unregistered moved to position 6, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value,\
-    \ 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'\n         WHEN envelope IS NULL THEN 'unregistered'"}
-- {id: s-when-breach-to-3, what: WHEN arm breach moved to position 3, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts\
-    \ > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
-- {id: s-when-breach-to-4, what: WHEN arm breach moved to position 4, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts\
-    \ > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
-- {id: s-when-breach-to-5, what: WHEN arm breach moved to position 5, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) >\
-    \ round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
-- {id: s-when-breach-to-6, what: WHEN arm breach moved to position 6, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) >\
-    \ round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'\n         WHEN round(mtd, 9) > envelope THEN 'breach'"}
-- {id: s-when-dark-to-1, what: WHEN arm dark moved to position 1, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts\
-    \ > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
-- {id: s-when-dark-to-4, what: WHEN arm dark moved to position 4, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts\
-    \ > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
-- {id: s-when-dark-to-5, what: WHEN arm dark moved to position 5, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT\
-    \ tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
-- {id: s-when-dark-to-6, what: WHEN arm dark moved to position 6, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT\
-    \ tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'"}
-- {id: s-when-projected-breach-to-1, what: WHEN arm projected_breach moved to position 1, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n\
-    \                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
-- {id: s-when-projected-breach-to-2, what: WHEN arm projected_breach moved to position 2, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n\
-    \                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
-- {id: s-when-projected-breach-to-5, what: WHEN arm projected_breach moved to position 5, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9))\
-    \ > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
-- {id: s-when-projected-breach-to-6, what: WHEN arm projected_breach moved to position 6, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9))\
-    \ > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'"}
-- {id: s-when-unattributed-to-1, what: WHEN arm unattributed moved to position 1, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope\
-    \ THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
-- {id: s-when-unattributed-to-2, what: WHEN arm unattributed moved to position 2, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN round(mtd, 9) > envelope\
-    \ THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
-- {id: s-when-unattributed-to-3, what: WHEN arm unattributed moved to position 3, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              )\
-    \ THEN 'unattributed'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
-- {id: s-when-unattributed-to-6, what: WHEN arm unattributed moved to position 6, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'\n         WHEN\
-    \ today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'"}
-- {id: s-when-warn-to-1, what: WHEN arm warn moved to position 1, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'\n         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN today_rows > 0 AND\
-    \ (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'"}
-- {id: s-when-warn-to-2, what: WHEN arm warn moved to position 2, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN today_rows > 0 AND\
-    \ (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'"}
-- {id: s-when-warn-to-3, what: WHEN arm warn moved to position 3, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN today_rows > 0 AND\
-    \ (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'"}
-- {id: s-when-warn-to-4, what: WHEN arm warn moved to position 4, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN today_rows > 0 AND\
-    \ (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'"}
+- {id: s-when-unregistered-to-5, what: WHEN arm unregistered moved to position 5, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value,\
+    \ 9)) THEN 'unattributed'\n         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
+- {id: s-when-unregistered-to-6, what: WHEN arm unregistered moved to position 6, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value,\
+    \ 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'\n         WHEN envelope IS NULL THEN 'unregistered'"}
+- {id: s-when-breach-to-3, what: WHEN arm breach moved to position 3, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9))\
+    \ > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
+- {id: s-when-breach-to-4, what: WHEN arm breach moved to position 4, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9))\
+    \ > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
+- {id: s-when-breach-to-5, what: WHEN arm breach moved to position 5, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN\
+    \ 'unattributed'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
+- {id: s-when-breach-to-6, what: WHEN arm breach moved to position 6, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN\
+    \ 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'\n         WHEN round(mtd, 9) > envelope THEN 'breach'"}
+- {id: s-when-dark-to-1, what: WHEN arm dark moved to position 1, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT\
+    \ tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
+- {id: s-when-dark-to-4, what: WHEN arm dark moved to position 4, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT\
+    \ tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
+- {id: s-when-dark-to-5, what: WHEN arm dark moved to position 5, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n\
+    \         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
+- {id: s-when-dark-to-6, what: WHEN arm dark moved to position 6, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n\
+    \         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'"}
+- {id: s-when-projected-breach-to-1, what: WHEN arm projected_breach moved to position 1, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed\
+    \ - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
+- {id: s-when-projected-breach-to-2, what: WHEN arm projected_breach moved to position 2, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed\
+    \ - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
+- {id: s-when-projected-breach-to-5, what: WHEN arm projected_breach moved to position 5, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\
+    \ THEN 'unattributed'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
+- {id: s-when-projected-breach-to-6, what: WHEN arm projected_breach moved to position 6, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\
+    \ THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'"}
+- {id: s-when-unattributed-to-1, what: WHEN arm unattributed moved to position 1, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows =\
+    \ 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
+- {id: s-when-unattributed-to-2, what: WHEN arm unattributed moved to position 2, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows =\
+    \ 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
+- {id: s-when-unattributed-to-3, what: WHEN arm unattributed moved to position 3, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN cadence = 'daily' AND today_rows =\
+    \ 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
+- {id: s-when-unattributed-to-6, what: WHEN arm unattributed moved to position 6, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'\n         WHEN (owner = 'shared' AND parts = 0 AND\
+    \ today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'"}
+- {id: s-when-warn-to-1, what: WHEN arm warn moved to position 1, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'\n         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n\
+    \                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'"}
+- {id: s-when-warn-to-2, what: WHEN arm warn moved to position 2, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n\
+    \                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'"}
+- {id: s-when-warn-to-3, what: WHEN arm warn moved to position 3, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n\
+    \                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'"}
+- {id: s-when-warn-to-4, what: WHEN arm warn moved to position 4, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n\
+    \                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'"}
+- {id: s-guard-arm-budget-line-1, what: 'guard budget_line: arm ''line IS NULL'' dropped', old: '  SELECT ''budget_line'' AS rule, count(*) AS n FROM b WHERE line IS NULL OR trim(line) = ''''', new: '  SELECT ''budget_line'' AS rule, count(*) AS n FROM b WHERE trim(line) = '''''}
+- {id: s-guard-arm-budget-line-2, what: 'guard budget_line: arm ''trim(line) = '''''' dropped', old: '  SELECT ''budget_line'' AS rule, count(*) AS n FROM b WHERE line IS NULL OR trim(line) = ''''', new: '  SELECT ''budget_line'' AS rule, count(*) AS n FROM b WHERE line IS NULL'}
+- {id: s-guard-arm-envelope-1, what: 'guard envelope: arm ''envelope IS NULL'' dropped', old: '  UNION ALL SELECT ''envelope'', count(*) FROM b WHERE envelope IS NULL OR NOT isfinite(envelope) OR envelope < 0', new: '  UNION ALL SELECT ''envelope'', count(*) FROM b WHERE NOT isfinite(envelope) OR envelope < 0'}
+- {id: s-guard-arm-envelope-2, what: 'guard envelope: arm ''NOT isfinite(envelope)'' dropped', old: '  UNION ALL SELECT ''envelope'', count(*) FROM b WHERE envelope IS NULL OR NOT isfinite(envelope) OR envelope < 0', new: '  UNION ALL SELECT ''envelope'', count(*) FROM b WHERE envelope IS NULL OR envelope < 0'}
+- {id: s-guard-arm-envelope-3, what: 'guard envelope: arm ''envelope < 0'' dropped', old: '  UNION ALL SELECT ''envelope'', count(*) FROM b WHERE envelope IS NULL OR NOT isfinite(envelope) OR envelope < 0', new: '  UNION ALL SELECT ''envelope'', count(*) FROM b WHERE envelope IS NULL OR NOT isfinite(envelope)'}
+- {id: s-guard-arm-warn-share-1, what: 'guard warn_share: arm ''warn_share IS NULL'' dropped', old: '  UNION ALL SELECT ''warn_share'', count(*) FROM b WHERE warn_share IS NULL OR NOT isfinite(warn_share) OR warn_share <= 0 OR warn_share > 1', new: '  UNION ALL SELECT ''warn_share'', count(*) FROM b WHERE NOT isfinite(warn_share) OR warn_share <= 0 OR warn_share > 1'}
+- {id: s-guard-arm-warn-share-3, what: 'guard warn_share: arm ''warn_share <= 0'' dropped', old: '  UNION ALL SELECT ''warn_share'', count(*) FROM b WHERE warn_share IS NULL OR NOT isfinite(warn_share) OR warn_share <= 0 OR warn_share > 1', new: '  UNION ALL SELECT ''warn_share'', count(*) FROM b WHERE warn_share IS NULL OR NOT isfinite(warn_share) OR warn_share > 1'}
+- {id: s-guard-arm-warn-share-4, what: 'guard warn_share: arm ''warn_share > 1'' dropped', old: '  UNION ALL SELECT ''warn_share'', count(*) FROM b WHERE warn_share IS NULL OR NOT isfinite(warn_share) OR warn_share <= 0 OR warn_share > 1', new: '  UNION ALL SELECT ''warn_share'', count(*) FROM b WHERE warn_share IS NULL OR NOT isfinite(warn_share) OR warn_share <= 0'}
+- {id: s-guard-arm-cadence-1, what: 'guard cadence: arm ''cadence IS NULL'' dropped', old: '  UNION ALL SELECT ''cadence'', count(*) FROM b WHERE cadence IS NULL OR cadence NOT IN (''daily'', ''event'')', new: '  UNION ALL SELECT ''cadence'', count(*) FROM b WHERE cadence NOT IN (''daily'', ''event'')'}
+- {id: s-guard-arm-cadence-2, what: 'guard cadence: arm ''cadence NOT IN (''daily'', ''event'')'' dropped', old: '  UNION ALL SELECT ''cadence'', count(*) FROM b WHERE cadence IS NULL OR cadence NOT IN (''daily'', ''event'')', new: '  UNION ALL SELECT ''cadence'', count(*) FROM b WHERE cadence IS NULL'}
+- {id: s-guard-arm-measure-1, what: 'guard measure: arm ''measure IS NULL'' dropped', old: '  UNION ALL SELECT ''measure'', count(*) FROM b WHERE measure IS NULL OR measure NOT IN (''flow'', ''stock'')', new: '  UNION ALL SELECT ''measure'', count(*) FROM b WHERE measure NOT IN (''flow'', ''stock'')'}
+- {id: s-guard-arm-measure-2, what: 'guard measure: arm ''measure NOT IN (''flow'', ''stock'')'' dropped', old: '  UNION ALL SELECT ''measure'', count(*) FROM b WHERE measure IS NULL OR measure NOT IN (''flow'', ''stock'')', new: '  UNION ALL SELECT ''measure'', count(*) FROM b WHERE measure IS NULL'}
+- {id: s-guard-arm-ledger-line-1, what: 'guard ledger_line: arm ''line IS NULL'' dropped', old: '  UNION ALL SELECT ''ledger_line'', count(*) FROM l WHERE line IS NULL OR trim(line) = ''''', new: '  UNION ALL SELECT ''ledger_line'', count(*) FROM l WHERE trim(line) = '''''}
+- {id: s-guard-arm-ledger-line-2, what: 'guard ledger_line: arm ''trim(line) = '''''' dropped', old: '  UNION ALL SELECT ''ledger_line'', count(*) FROM l WHERE line IS NULL OR trim(line) = ''''', new: '  UNION ALL SELECT ''ledger_line'', count(*) FROM l WHERE line IS NULL'}
+- {id: s-guard-arm-ledger-value-1, what: 'guard ledger_value: arm ''value IS NULL'' dropped', old: '  UNION ALL SELECT ''ledger_value'', count(*) FROM l WHERE value IS NULL OR NOT isfinite(value) OR value < 0', new: '  UNION ALL SELECT ''ledger_value'', count(*) FROM l WHERE NOT isfinite(value) OR value < 0'}
+- {id: s-guard-arm-ledger-value-2, what: 'guard ledger_value: arm ''NOT isfinite(value)'' dropped', old: '  UNION ALL SELECT ''ledger_value'', count(*) FROM l WHERE value IS NULL OR NOT isfinite(value) OR value < 0', new: '  UNION ALL SELECT ''ledger_value'', count(*) FROM l WHERE value IS NULL OR value < 0'}
+- {id: s-guard-arm-ledger-value-3, what: 'guard ledger_value: arm ''value < 0'' dropped', old: '  UNION ALL SELECT ''ledger_value'', count(*) FROM l WHERE value IS NULL OR NOT isfinite(value) OR value < 0', new: '  UNION ALL SELECT ''ledger_value'', count(*) FROM l WHERE value IS NULL OR NOT isfinite(value)'}
+- {id: s-guard-arm-attribution-line-1, what: 'guard attribution_line: arm ''line IS NULL'' dropped', old: '  UNION ALL SELECT ''attribution_line'', count(*) FROM a WHERE line IS NULL OR trim(line) = ''''', new: '  UNION ALL SELECT ''attribution_line'', count(*) FROM a WHERE trim(line) = '''''}
+- {id: s-guard-arm-attribution-line-2, what: 'guard attribution_line: arm ''trim(line) = '''''' dropped', old: '  UNION ALL SELECT ''attribution_line'', count(*) FROM a WHERE line IS NULL OR trim(line) = ''''', new: '  UNION ALL SELECT ''attribution_line'', count(*) FROM a WHERE line IS NULL'}
+- {id: s-guard-arm-attribution-component-1, what: 'guard attribution_component: arm ''component IS NULL'' dropped', old: '  UNION ALL SELECT ''attribution_component'', count(*) FROM a WHERE component IS NULL OR trim(component) = ''''', new: '  UNION ALL SELECT ''attribution_component'', count(*) FROM a WHERE trim(component) = '''''}
+- {id: s-guard-arm-attribution-component-2, what: 'guard attribution_component: arm ''trim(component) = '''''' dropped', old: '  UNION ALL SELECT ''attribution_component'', count(*) FROM a WHERE component IS NULL OR trim(component) = ''''', new: '  UNION ALL SELECT ''attribution_component'', count(*) FROM a WHERE component IS NULL'}
+- {id: s-guard-arm-attribution-value-1, what: 'guard attribution_value: arm ''value IS NULL'' dropped', old: '  UNION ALL SELECT ''attribution_value'', count(*) FROM a WHERE value IS NULL OR NOT isfinite(value) OR value < 0', new: '  UNION ALL SELECT ''attribution_value'', count(*) FROM a WHERE NOT isfinite(value) OR value < 0'}
+- {id: s-guard-arm-attribution-value-2, what: 'guard attribution_value: arm ''NOT isfinite(value)'' dropped', old: '  UNION ALL SELECT ''attribution_value'', count(*) FROM a WHERE value IS NULL OR NOT isfinite(value) OR value < 0', new: '  UNION ALL SELECT ''attribution_value'', count(*) FROM a WHERE value IS NULL OR value < 0'}
+- {id: s-guard-arm-attribution-value-3, what: 'guard attribution_value: arm ''value < 0'' dropped', old: '  UNION ALL SELECT ''attribution_value'', count(*) FROM a WHERE value IS NULL OR NOT isfinite(value) OR value < 0', new: '  UNION ALL SELECT ''attribution_value'', count(*) FROM a WHERE value IS NULL OR NOT isfinite(value)'}
+- {id: s-plumb-guard-filter-removed, what: the guard filter on the final SELECT removed, old: 'WHERE (SELECT guard FROM chk) IS NULL
+
+    ', new: ''}
+- {id: s-plumb-raise-only-above-one, what: the run raises only when a rule fails more than once, old: WHERE n > 0) THEN error, new: WHERE n > 1) THEN error}
+- {id: s-plumb-dup-ledger-pre-window, what: 'duplicate_ledger counted over the raw ledger, not the window', old: 'count(*) - count(DISTINCT (line, day)) FROM l', new: 'count(*) - count(DISTINCT (line, day)) FROM {ledger}'}
+- {id: s-dispatch-event-rate-on-daily, what: event rate applied to daily lines, old: 'WHEN b.cadence = ''event'' THEN coalesce(m.event_rate, 0)', new: 'WHEN b.cadence = ''daily'' THEN coalesce(m.event_rate, 0)'}
+- {id: s-dispatch-event-rate-on-measure, what: event rate dispatched on measure instead of cadence, old: 'WHEN b.cadence = ''event'' THEN coalesce(m.event_rate, 0)', new: 'WHEN b.measure = ''flow'' THEN coalesce(m.event_rate, 0)'}
+- {id: s-dispatch-shared-literal-case, what: the shared owner literal mis-cased, old: (owner = 'shared' AND parts = 0 AND today_value > 0), new: (owner = 'Shared' AND parts = 0 AND today_value > 0)}
+- {id: s-dispatch-shared-negated, what: the shared test negated, old: (owner = 'shared' AND parts = 0 AND today_value > 0), new: (owner <> 'shared' AND parts = 0 AND today_value > 0)}
+- {id: s-level-this-month-only, what: stock level read from this month only, old: 'arg_max(value, day) AS level', new: 'arg_max(value, day) FILTER (WHERE day >= (SELECT month_start FROM p)) AS level'}
+- {id: s-level-today-only, what: stock level read from today only, old: 'arg_max(value, day) AS level', new: max(value) FILTER (WHERE day = (SELECT today FROM p)) AS level}
+- {id: s-level-rate-window-only, what: stock level read from the rate window only, old: 'arg_max(value, day) AS level', new: 'arg_max(value, day) FILTER (WHERE day > (SELECT today FROM p) - (SELECT window_days FROM p)) AS level'}
+- {id: s-level-window-mean, what: stock level read as the window mean, old: 'arg_max(value, day) AS level', new: avg(value) AS level}
+- {id: s-level-month-mean, what: stock level read as the month mean, old: 'arg_max(value, day) AS level', new: avg(value) FILTER (WHERE day >= (SELECT month_start FROM p)) AS level}
+- {id: s-join-budget-inner, what: 'budget joined inner, dropping unregistered lines', old: FROM lines x LEFT JOIN b ON, new: FROM lines x JOIN b ON}
+- {id: s-lines-drop-attribution, what: line list ignores attribution-only lines, old: UNION SELECT line FROM l UNION SELECT line FROM a), new: UNION SELECT line FROM l)}
+- {id: s-lines-drop-ledger, what: line list ignores ledger-only lines, old: SELECT line FROM b UNION SELECT line FROM l UNION, new: SELECT line FROM b UNION}
+- {id: s-event-rate-cast-bigint, what: event rate cast to BIGINT, old: 'coalesce(sum(value) FILTER (WHERE day > (SELECT today FROM p) - (SELECT window_days FROM p)), 0) / (SELECT window_days FROM p) AS event_rate', new: 'CAST(coalesce(sum(value) FILTER (WHERE day > (SELECT today FROM p) - (SELECT window_days FROM p)), 0) / (SELECT window_days FROM p) AS BIGINT) AS event_rate'}
+- {id: s-day-rate-rounded, what: daily rate rounded to an integer, old: avg(value) FILTER (WHERE day > (SELECT today FROM p) - (SELECT window_days FROM p)) AS day_rate, new: round(avg(value) FILTER (WHERE day > (SELECT today FROM p) - (SELECT window_days FROM p))) AS day_rate}
+- {id: s-calendar-thirty-day-month, what: days remaining as 30 minus the day of month, old: 'last_day({today}) - {today} AS days_remaining', new: '30 - day({today}) AS days_remaining'}
+- {id: s-calendar-thirty-one-day-month, what: days remaining as 31 minus the day of month, old: 'last_day({today}) - {today} AS days_remaining', new: '31 - day({today}) AS days_remaining'}
+- {id: s-calendar-month-start-today-minus-30, what: month start as today minus 30, old: 'CAST(date_trunc(''month'', {today}) AS DATE) AS month_start', new: '{today} - 30 AS month_start'}
+- {id: s-calendar-history-28-days, what: history window 28 days, old: 'FROM {ledger} WHERE day IS NULL OR (day > (SELECT today FROM p) - 31', new: 'FROM {ledger} WHERE day IS NULL OR (day > (SELECT today FROM p) - 28'}
+- {id: s-today-rows-over-rate-window, what: today_rows counted over the rate window, old: count(*) FILTER (WHERE day = (SELECT today FROM p)) AS today_rows, new: count(*) FILTER (WHERE day > (SELECT today FROM p) - (SELECT window_days FROM p)) AS today_rows}
+- {id: s-today-value-from-mtd, what: today_value read as the month-to-date sum, old: max(value) FILTER (WHERE day = (SELECT today FROM p)) AS today_value, new: sum(value) FILTER (WHERE day >= (SELECT month_start FROM p)) AS today_value}
+- {id: s-warn-skips-stock, what: warn skipped when level equals projection (stock lines), old: 'WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN ''warn''', new: 'WHEN round(projected, 9) > round(warn_share * envelope, 9) AND mtd <> projected THEN ''warn'''}
+- {id: s-event-rate-over-month, what: event rate summed over the month instead of the rate window, old: 'coalesce(sum(value) FILTER (WHERE day > (SELECT today FROM p) - (SELECT window_days FROM p)), 0) / (SELECT window_days FROM p) AS event_rate', new: 'coalesce(sum(value) FILTER (WHERE day >= (SELECT month_start FROM p)), 0) / (SELECT window_days FROM p) AS event_rate'}
+- {id: s-event-never-projects, what: event lines never project, old: 'THEN coalesce(m.event_rate, 0) ELSE', new: THEN 0 ELSE}
+- {id: s-dark-drops-today-rows, what: dark fires on every daily line, old: WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark', new: WHEN cadence = 'daily' THEN 'dark'}
+- {id: s-attribution-window-excludes-today, what: attribution window excludes today, old: 'FROM {attribution} WHERE day IS NULL OR (day > (SELECT today FROM p) - 31 AND day <= (SELECT today FROM p))', new: 'FROM {attribution} WHERE day IS NULL OR (day > (SELECT today FROM p) - 31 AND day < (SELECT today FROM p))'}
 ```
 
 ```yaml
 equivalent:
-- {id: q-parts-ge-zero, what: 'parts > 0 read as parts >= 0 in the tolerance clause: when parts is 0 the attributed sum is NULL, so the comparison is NULL and the branch cannot fire either way', old: "AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value", new: "AND parts = 0)\n                OR (parts >= 0 AND abs(round(attributed - today_value"}
+- {id: q-parts-ge-zero, what: 'parts > 0 read as parts >= 0 in the tolerance clause: when parts is 0 the attributed sum is NULL, so the comparison is NULL and the branch cannot fire either way', old: "day_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value", new: "day_value > 0)\n                OR (parts >= 0 AND abs(round(attributed - today_value"}
 - {id: q-today-value-min, what: 'today_value max read as min: duplicate_ledger guarantees one row per line per day, so every aggregate of one value is that value', old: max(value) FILTER (WHERE day = (SELECT today FROM p)) AS today_value, new: min(value) FILTER (WHERE day = (SELECT today FROM p)) AS today_value}
 - {id: q-today-value-sum, what: 'today_value max read as sum: duplicate_ledger guarantees one row per line per day, so every aggregate of one value is that value', old: max(value) FILTER (WHERE day = (SELECT today FROM p)) AS today_value, new: sum(value) FILTER (WHERE day = (SELECT today FROM p)) AS today_value}
 - {id: q-today-value-avg, what: 'today_value max read as avg: duplicate_ledger guarantees one row per line per day, so every aggregate of one value is that value', old: max(value) FILTER (WHERE day = (SELECT today FROM p)) AS today_value, new: avg(value) FILTER (WHERE day = (SELECT today FROM p)) AS today_value}
 - {id: q-today-value-any_value, what: 'today_value max read as any_value: duplicate_ledger guarantees one row per line per day, so every aggregate of one value is that value', old: max(value) FILTER (WHERE day = (SELECT today FROM p)) AS today_value, new: any_value(value) FILTER (WHERE day = (SELECT today FROM p)) AS today_value}
 - {id: q-today-rows-count-value, what: 'today_rows count(*) read as count(value): a NULL value raises ledger_value first', old: count(*) FILTER (WHERE day = (SELECT today FROM p)) AS today_rows, new: count(value) FILTER (WHERE day = (SELECT today FROM p)) AS today_rows}
-- {id: q-parts-distinct-component, what: 'parts count(*) read as count(DISTINCT component): duplicate_attribution guarantees distinct components per line and day', old: count(*) AS parts, new: count(DISTINCT component) AS parts}
+- {id: q-parts-distinct-component, what: 'parts count(*) read as count(DISTINCT component): the attribution_component guard rejects NULL and blank components and duplicate_attribution guarantees distinct ones per line and day', old: count(*) AS parts, new: count(DISTINCT component) AS parts}
 - {id: q-parts-count-value, what: 'parts count(*) read as count(value): a NULL value raises attribution_value first', old: count(*) AS parts, new: count(value) AS parts}
 - {id: q-mtd-coalesce-m, what: 'coalesce dropped on the month-to-date sum in m: v coalesces it again', old: 'coalesce(sum(value) FILTER (WHERE day >= (SELECT month_start FROM p)), 0) AS mtd', new: sum(value) FILTER (WHERE day >= (SELECT month_start FROM p)) AS mtd}
 - {id: q-mtd-coalesce-v, what: 'coalesce dropped on mtd in v: a NULL month-to-date compares NULL, which never breaches, and dark or ok follow as for 0', old: 'ELSE coalesce(m.mtd, 0) END AS mtd', new: ELSE m.mtd END AS mtd}
@@ -1561,12 +1813,18 @@ equivalent:
 - {id: q-day-rate-missing-read-as-one, what: 'a missing daily rate read as 1: a daily line with no row in the rate window has no row today and reads dark first', old: 'coalesce(m.day_rate, 0) END *', new: 'coalesce(m.day_rate, 1) END *'}
 - {id: q-day-rate-coalesce-v, what: 'coalesce dropped on day_rate in v: a daily line with month rows but none in the rate window has no row today and reads dark first', old: 'ELSE coalesce(m.day_rate, 0) END *', new: ELSE m.day_rate END *}
 - {id: q-first-rule-min, what: 'min(rule) instead of ORDER BY rule LIMIT 1: the same rule', old: (SELECT rule FROM g WHERE n > 0 ORDER BY rule LIMIT 1), new: (SELECT min(rule) FROM g WHERE n > 0)}
-- {id: q-when-unregistered-to-2, what: 'unregistered arm moved to position 2: every arm before unattributed is NULL when envelope and cadence are NULL, so an unregistered line still reads unregistered', old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope\
-    \ THEN 'projected_breach'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
-- {id: q-when-unregistered-to-3, what: 'unregistered arm moved to position 3: every arm before unattributed is NULL when envelope and cadence are NULL, so an unregistered line still reads unregistered', old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(projected, 9) > envelope\
-    \ THEN 'projected_breach'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
-- {id: q-when-unregistered-to-4, what: 'unregistered arm moved to position 4: every arm before unattributed is NULL when envelope and cadence are NULL, so an unregistered line still reads unregistered', old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN envelope IS\
-    \ NULL THEN 'unregistered'\n         WHEN today_rows > 0 AND (\n                (owner = 'shared' AND parts = 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\n              ) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
+- {id: q-when-unregistered-to-2, what: 'unregistered arm moved to position 2: every arm before unattributed is NULL when envelope and cadence are NULL, so an unregistered line still reads unregistered', old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n        \
+    \ WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
+- {id: q-when-unregistered-to-3, what: 'unregistered arm moved to position 3: every arm before unattributed is NULL when envelope and cadence are NULL, so an unregistered line still reads unregistered', old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n        \
+    \ WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
+- {id: q-when-unregistered-to-4, what: 'unregistered arm moved to position 4: every arm before unattributed is NULL when envelope and cadence are NULL, so an unregistered line still reads unregistered', old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN envelope IS NULL THEN 'unregistered'\n        \
+    \ WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
+- {id: q-guard-arm-warn-share-2, what: 'guard warn_share: the NOT isfinite arm dropped; DuckDB orders NaN above every value, so NaN > 1 and the infinities hit the bounds arms', old: '  UNION ALL SELECT ''warn_share'', count(*) FROM b WHERE warn_share IS NULL OR NOT isfinite(warn_share) OR warn_share <= 0 OR warn_share > 1', new: '  UNION ALL SELECT ''warn_share'', count(*) FROM b WHERE warn_share IS NULL OR warn_share <= 0 OR warn_share > 1'}
+- {id: q-dispatch-stock-as-not-flow, what: 'stock dispatch read as measure <> ''flow'': the measure guard admits only flow and stock, and NULL for an unregistered line either way', old: 'CASE WHEN b.measure = ''stock'' THEN coalesce(m.level, 0) ELSE coalesce(m.mtd, 0) END AS mtd', new: 'CASE WHEN b.measure <> ''flow'' THEN coalesce(m.level, 0) ELSE coalesce(m.mtd, 0) END AS mtd'}
+- {id: q-dispatch-dark-as-not-event, what: 'dark read as cadence <> ''event'': the cadence guard admits only daily and event, and NULL for an unregistered line either way', old: WHEN cadence = 'daily' AND today_rows = 0, new: WHEN cadence <> 'event' AND today_rows = 0}
+- {id: q-join-attribution-on-budget-line, what: 'attribution joined on b.line instead of x.line: b.line is NULL only for an unregistered line, which reads unregistered first', old: LEFT JOIN ab ON ab.line = x.line, new: LEFT JOIN ab ON ab.line = b.line}
+- {id: q-event-rate-floor-division, what: 'event rate with // : DuckDB 1.5.4 returns true division for DOUBLE operands (100.0 // 7 = 14.2857); engine-specific, pinned by r05 on an engine that floors', old: ', 0) / (SELECT window_days FROM p) AS event_rate', new: ', 0) // (SELECT window_days FROM p) AS event_rate'}
+- {id: q-unattributed-drops-parts-clause, what: 'the parts > 0 conjunct dropped: when parts is 0 the attributed sum is NULL and the comparison is NULL, as for q-parts-ge-zero', old: OR (parts > 0 AND abs(, new: OR (abs(}
 ```
 
 ## 3. Settled / contested / risk / open
@@ -1628,7 +1886,10 @@ equivalent:
   shared line is split by each component's share of requests. (c) Unattributed by design for Lambda lines,
   attributed only for the lines with one owner. Recommended (a): it is what the verdict's tolerance rule
   assumes (v10-v12) and it costs one field per call; (b) hides a component whose calls are few and heavy
-  (the detectors, e8); (c) leaves the two biggest lines unowned. No precedent.
+  (the detectors, e8); (c) leaves the two biggest lines unowned. No precedent. Two choices inside the staged
+  SQL belong here: a shared line that reports 0 on a day needs no attribution rows (z01; under (a) a day with
+  no calls writes none), and a NULL or blank component raises (r01, r08), so the build's stamp vocabulary
+  must be canonical (case included: 'X' and 'x' are two components).
 - **k6 (asked; report-only). The fixture item's edge home.** (a) depends_on T2.36 only (carried
   provisionally): the ledger is a telemetry-side table and the reconciliation's telemetry leg is stubbed
   "until T2.36 lands". (b) part_of T2.52, whose exit criterion already says aggregate verbs "honour the
@@ -1649,12 +1910,23 @@ equivalent:
   s3_storage_bytes: (a) the catalog's own data_file_size_bytes over ducklake_list_files for the four tables,
   one read a day charged to catalog_egress_bytes (staged; src/common/ducklake_maintenance.py:133 already
   sums it); (b) S3 Inventory or Storage Lens on the prefix, Terraform plus spend: always-ask, not chosen;
-  (c) a LIST over the prefix, priced per request and slow at scale; (d) bucket-wide BucketSizeBytes, free
+  (c) a LIST over the prefix, priced per request (spend: always-ask, not chosen) and slow at scale; (d)
+  bucket-wide BucketSizeBytes, free
   and readable today but with no prefix dimension, so a ceiling only. Recommended (a) for both, with the
   invoice as the monthly calibration (k3 (c)) and (d) as the storage ceiling. Criterion c2 depends on this
   fork: it is written so that every daily line's source needs no Terraform change and no billed metric.
   No fork here makes a Terraform or spend change; the two always-ask options are named so nobody stages
   them by accident (verification r1 F3).
+- **k9 (asked; report-only). The line roster.** Which lines the register carries, and each one's owner,
+  cadence and measure, is a choice with no precedent. (a) The ten lines of section 2.2 (staged): every
+  meter the deployed shapes expose plus the human line and two zero-envelope event lines. (b) Fewer:
+  only the lines with a cap or a price (catalog egress, Lambda, S3), leaving review items to the ladder
+  and the event lines until something happens. (c) More: one line per telemetry table, or per component,
+  so attribution rows become lines of their own. (d) The invoice's own line items, so the ledger mirrors
+  the bill. Recommended (a) for the pilot: it is the smallest roster on which every sibling's hand-off
+  lands somewhere, and (c) is what attribution rows already provide without multiplying envelopes. The
+  owners are the sibling items named in section 2.2 and "shared" where one Lambda serves all; the cadences
+  follow whether the meter runs every day; the one stock is storage.
 
 ### Risks
 
@@ -1679,8 +1951,10 @@ equivalent:
   Lambda and S3.
 - **R7 Self-counted meters under-count.** The staged S3 sources (k8 (a)) count what the loop's own code
   does; a LIST, a retry inside the S3 client or a file the catalog no longer references is not counted.
-  The monthly invoice line is the correction, and a residual above tolerance on either S3 line is the
-  signal to revisit k8, not to add the billed metric silently.
+  GETs are counted at the httpfs layer for that reason: a reader query issues several range GETs per
+  Parquet file (the footer and each column chunk), so counting files scanned would miss a structural
+  factor every month, not just retries. The monthly invoice line is the correction, and a residual above
+  tolerance on either S3 line is the signal to revisit k8, not to add the billed metric silently.
 
 ### Open questions (q1-q3 in the fixture)
 
