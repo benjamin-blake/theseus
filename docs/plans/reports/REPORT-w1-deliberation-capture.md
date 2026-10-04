@@ -14,11 +14,14 @@ Fixture rows: `pwi-deliberation-capture` in `docs/work-item-pilot/telemetry-feed
   LiteLLM mapping (DeepSeek `reasoning_content` -> full, thinking from the RESPONSE only, never from
   request messages). What no artefact holds is the read side: which metrics derive from those facts,
   and how a silent capture loss would be seen.
-- The 2a-1 plan is not in this repository (VP 2): no contract field, no `docs/plans` file, no remote
-  branch and no title among the last 100 PRs names `reasoning_visibility`, and rec-4028's evidence file
-  (`/mnt/project-files/telemetry-reasoning/`) is not in this project's shared folder. Until it lands,
-  the live producer stores Claude thinking tokens only under an undocumented metadata key (VP 1, VP 2).
-  Where 2a-1 lives is q1, for the operator.
+- The 2a-1 plan is not on main (VP 2). It lives in the telemetry project (q1, answered 2026-10-04):
+  `docs/plans/PLAN-telemetry-write-conformance.yaml` on branch `claude/project-thread-vmix09` at 77e56482,
+  no PR yet, its critique still pending. Read there: it adds `reasoning_visibility` (full, summarized,
+  omitted, redacted, none; required on model_call points) and `reasoning_tokens` (provider-reported, NULL
+  when unreported, at_most tokens_output, NULL or 0 when none), moves claude_code to parser_version 2, and
+  stops writing metadata.thinking_tokens. Its mapping matches the one this report assumes (omitted = empty
+  thinking blocks, or reported tokens > 0 with no text). Until it merges, the live producer stores Claude
+  thinking tokens only under that undocumented metadata key (VP 1, VP 2).
 - On Claude Code the deliberation TEXT is not available by default; the token COUNT is. In this
   session's own transcript every thinking block (54 model_calls with thinking tokens) is empty and
   signed, so the producer writes zero thinking rows while 64% of output tokens were thinking (section 1).
@@ -159,7 +162,7 @@ text_unexpected). It is undefined (never 0) when no call is classified. The moni
 `none`, never `clean` (v07, v14; c2's third test node).
 
 `legacy_calls` counts only rows written before their producer classified: claude_code below parser_version
-2, the 2a-1 version rec-4028 names (the literal 2 is a placeholder until q1 confirms it; the build binds
+2, the 2a-1 version (PLAN-telemetry-write-conformance sets 2, unmerged at 77e56482; the build binds
 the cutover to 2a-1's entry in config/telemetry/parser_versions.yaml, never a literal, per Decision 210
 cl.3: a cutover set too high is silent, one set too low is loud). It is a coverage
 figure, never drift, and excluded from every maturity trigger. It should fall to zero for sessions
@@ -300,8 +303,10 @@ Settled (consistent with a Decision, a contract, an operator choice or measured;
   home; the verb runs the same SQL. Its row-local half (a classifying parser_version writes a visibility) is
   the writer's (cl.1, cl.4); the read counts its breach as visibility_missing, drift over classified calls
   beside text_missing and text_unexpected. 16/16 vectors (VP 4). The batching premise is not relied on:
-  W1-1's runner (#1384, unmerged) writes per-table batches, but rec-4024 item (1) specifies one transaction
-  per producer turn-flush, under which cl.2(a) would hold for one producer (section 5).
+  W1-1's runner (#1384, unmerged) writes per-table batches, and the telemetry project reports that slice
+  2a-2 writes one transaction per request with the sessions batch last (env R7; relayed 2026-10-04, not in
+  the 2a-1 plan read here); within one producer's request cl.2(a) could hold, never across producers
+  (section 5).
 
 Contested (evidence on both sides; k1-k3 in the fixture, k4 report-only; parked for the operator):
 
@@ -338,9 +343,10 @@ Contested (evidence on both sides; k1-k3 in the fixture, k4 report-only; parked 
 Risk (known loss modes, not choices). R1-R6 and R9 are this report's ids; a rule of the event envelope
 (telemetry-event-envelope.yaml) is always written env R<n>:
 
-- R1 2a-1 absent. Until it lands the claude_code rows carry no visibility and keep thinking_tokens in an
-  undocumented metadata key, so every row is a legacy row (v07): the verb reports counts as coverage
-  only, and the drift share has no classified calls to read. Owner: whoever holds 2a-1 (q1).
+- R1 2a-1 unmerged. Until PLAN-telemetry-write-conformance merges and ships, claude_code rows carry no
+  visibility and keep thinking_tokens in an undocumented metadata key, so every row is a legacy row (v07):
+  the verb reports counts as coverage only, and the drift share has no classified calls to read. Owner:
+  the telemetry project (rec-4024 slice 2a-1).
 - R2 Bytes are not deliberation. Claude text is empty or a summary by another model, so any metric over
   thinking-row `content_bytes` measures the summarizer. Only reasoning_tokens measures deliberation;
   the verb sums no bytes.
@@ -383,11 +389,11 @@ Risk (known loss modes, not choices). R1-R6 and R9 are this report's ids; a rule
   rest on the writer, which the build gate waits for. The remaining lever is a producer that misclassifies
   consistently, which section 4 assigns to the producer conformance tests and c3's review.
 
-Open (q1-q3 in the fixture, q4 report-only; none is answerable from the repository):
+Open (q1-q3 in the fixture, q4 report-only; q1 answered by the telemetry project, the rest open):
 
-- q1 Where is the 2a-1 plan? rec-4028 says it was accepted on 2026-09-29 and owns the contract fields and
-  the claude_code parser_version 2 mapping. Checked: contract, `docs/plans`, remote branch names, the
-  titles of the last 100 PRs, open recs (only rec-4028 names it), and this project's shared folder.
+- q1 Where is the 2a-1 plan? Answered 2026-10-04 by the telemetry project: PLAN-telemetry-write-conformance
+  on `claude/project-thread-vmix09` at 77e56482 (no PR; critique pending), read and matching s1. What stays
+  open is timing: the build binds the cutover and the visibility vocabulary only after it merges.
 - q2 Does deliberation predict outcome? One session spent 64% of output tokens thinking; nothing joins
   that to an outcome yet, so T3.3 must not alarm on a deliberation share until a measurement shows it
   means something.
@@ -459,9 +465,11 @@ Open (q1-q3 in the fixture, q4 report-only; none is answerable from the reposito
   (k3 (a)).
 - Back-validation (T3.4): a delta in deliberation share across a fix is valid only at one parser_version
   and one model; a model change moves it with no behaviour change.
-- Batching (W1-1 runner vs rec-4024): W1-1 step 3 writes per-table batches; rec-4024 item (1) specifies
-  one transaction per producer turn-flush across tables. W2 picks one. Either way the drift rule stays a
-  monitor (s3 rests on cl.2(b), R6); only the single-producer case would become write-decidable.
+- Batching (W1-1 runner vs rec-4024 slice 2a-2): W1-1 step 3 writes per-table batches; the telemetry
+  project reports that 2a-2 writes one transaction per request with the sessions batch last (env R7),
+  replacing rec-4024 item (1)'s per-turn-flush wording. W2 reconciles W1-1 with it. Either way the drift
+  rule stays a monitor (s3 rests on cl.2(b), R6); only the single-producer case would become
+  write-decidable.
 - Cost/egress: reasoning tokens are already inside tokens_output and are never priced separately (both
   providers' docs, section 1), so the cost verb must not add them twice. The verb reads two narrow
   column sets; the CoT bytes it skips are the egress k3 (b) would add.
