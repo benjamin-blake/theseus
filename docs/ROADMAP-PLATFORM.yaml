@@ -261,7 +261,7 @@ north_star:
       detail: Documentation, configuration, and tooling are optimised for agent consumption. Narrative prose is a side effect, not an output.
     - id: NS.5
       principle: Self-describing typed tools over HTTPS, schema-as-code.
-      detail: "Agent surface is verbs (log, update, query, describe) exposed via Lambda Function URLs with AWS_IAM auth. Schema is Pydantic; YAML is generated where needed. [Amendment 2026-09-04, Decision 184 clause 2 -- the Function URL and AWS_IAM transport is the cloud-tier adapter; the free tier reaches the same named verbs in-process. The typed-verb surface and schema-as-code are what both tiers keep.]"
+      detail: "Agent surface is verbs (log, update, query, describe) exposed via Lambda Function URLs with AWS_IAM auth. Schema is Pydantic; YAML is generated where needed. [Amendment 2026-09-04, Decision 184 clause 2 -- the Function URL and AWS_IAM transport is the cloud-tier adapter; the free tier reaches the same named verbs in-process. The typed-verb surface and schema-as-code are what both tiers keep.] [Amendment 2026-10-04, rec-4158, Decision 210 cl.3 -- schema and write-time rules live in the owning Class A contract (Decisions 118 and 199); field_semantics.yaml is generated from it and Pydantic models are consumer projections. Schema-as-code stands, with the contract as the code.]"
 
 cost_projection:
   # Inlined from the retired INTENT-compute-and-account-topology so the projection
@@ -709,6 +709,10 @@ candidate_decisions:
       Stateful invariants (uniqueness, FK, status-transition) run inside the Lambda handler against the
       DuckDB read path pre-commit and return typed 4xx on failure. No post-write
       self-assertion (per Decision 70 — dirty rows are expensive to fix).
+      [Amendment 2026-10-04, rec-4158 / Decision 210 cl.3 -- for the ops tables the owning Class A contract displaces three
+      statements above: Pydantic as the only place schema lives, the Dq marker vocabulary as the rule vocabulary, and the
+      YAML-vs-Pydantic drift detector as a source guard (it stays a DQ-side check until T1.6 c7). Not displaced: alarm-not-gate,
+      the handler invariants, DqDeleted. Ratification reconciles with this.]
     gates: [T0.12, T1.6]
     state: pending
     supersedes_intents: [dq-enforcement]
@@ -2947,7 +2951,7 @@ tier_items:
     note: Strategic plan required before implementation. Decompose into phase-per-plan plus import-site sweep plan(s). CD.18 ratification required before this tier item moves to in_progress.
   - id: T1.6
     tier: T1
-    name: "DQ runner reshape -- alarm-not-gate (live-reader checks -> scheduled canary; hermetic structural checks stay on the gate) + reads Annotated metadata"
+    name: "DQ runner reshape -- alarm-not-gate (live-reader checks -> scheduled canary; hermetic structural checks stay on the gate) + reads the Class A contracts' declared rules"
     intent: |
       Reshape the DQ runner from a de-facto merge-gate that queries the live DuckLake reader into a
       SCHEDULED MONITOR that files recs on drift, per CD.12 (candidate, state: pending -- "runner = alarm
@@ -2996,8 +3000,8 @@ tier_items:
         This phase INTRODUCES the dq_check verb family (Decision 84 I-3) -- the read path the monitor uses
         -- which closes T2.28's open tail (the DQ harness is the last raw query_ops / reader.query() caller).
 
-      Deferred phase (this is what the T1.5 gate is for): the runner reads Pydantic Annotated metadata via
-      introspection (no YAML) and retires config/agent/data_quality/*.yaml (path corrected 2026-06-09,
+      Deferred phase (this is what the T1.5 gate is for): the runner reads the Class A contracts' declared rules
+      (docs/contracts/*.yaml via scripts/contract_rules.py; rec-4158, Decision 210 cl.3) and retires config/agent/data_quality/*.yaml (path corrected 2026-06-09,
       audit F-015). This intersects ops_decisions graduation, hence T1.5.
 
       Decision-62 posture (honest -- this REVISITS, it does not reinterpret): Decision 62 ("No Separate DQ
@@ -3015,7 +3019,7 @@ tier_items:
       atomic_plans:
         - "Gate->monitor placement + reliance on structural write-path enforcement + per-verifier fail-fast / circuit-breaker + persistent-unavailability alarm (AUTHORABLE ahead of T1.5; needs only T0.12 + PLAN-dq-gate-infra-resilience [landed] + the existing write-side enforcement T0.7a / T2.28 / Decision 81 cl.3+cl.8; does NOT itself need ops_decisions graduation -- but T1.6 stays not-complete until the deferred phase lands)"
         - "Introduce the dq_check verb family, closing T2.28's open tail (the DQ harness's raw query_ops retires; Decision 84 I-3; V3 if src/lambdas/ducklake_reader changes, Decision 79)"
-        - "Runner reads Annotated metadata via introspection; config/agent/data_quality/*.yaml retired (this is the phase the T1.5 gate is for -- it intersects ops_decisions graduation)"
+        - "Runner reads the Class A contracts' declared rules via scripts/contract_rules.py; config/agent/data_quality/*.yaml retired (this is the phase the T1.5 gate is for -- it intersects ops_decisions graduation)"
       rationale: |
         The gate->monitor move is urgent (the structural fix for the ~30-min CI wall-clock + the DQ-reader
         merge-gate flapping) and does NOT itself need the Annotated-metadata rewrite or ops_decisions
@@ -3036,7 +3040,7 @@ tier_items:
       - "Per-verifier timeout + circuit-breaker bound the DQ verifier wall-clock; a slow / unavailable reader cannot push the merge path past the Decision 73 fast-tier budget"
       - "Persistent DQ unavailability files a rec and alarms (never a silent pass); closes the deferred 'alerting on PERSISTENT DQ unavailability' follow-up from PLAN-dq-gate-infra-resilience"
       - "The dq_check verb family is introduced by this phase (the doer), closing T2.28's open tail; raw query_ops / reader.query() over scripts/ no longer includes the DQ harness (Decision 84 I-3)"
-      - "[Deferred phase] Runner reads Annotated metadata; YAML no longer loaded; config/agent/data_quality/ retired and grep returns no remaining references (requires T1.5)"
+      - "[Deferred phase] Runner reads the Class A contracts' declared rules (scripts/contract_rules.py); config/agent/data_quality YAML no longer loaded; config/agent/data_quality/ retired and grep returns no remaining references (requires T1.5)"
       - "validate.py presubmit no longer auto-invokes the live-reader runner (it is scheduled); the Decision-62 ensure_fresh_dq_results auto-invoke is replaced by the scheduled monitor"
     related_intents: [dq-enforcement]
     related_candidate_decisions: [CD.12, CD.29]
@@ -5015,17 +5019,18 @@ tier_items:
       -- the title column carries only a not_null test and _load_write_time_validators has no min_length
       branch. Add a NEW min_length validator-type handler (a registry-mechanism extension, not just config)
       and correct the false ops.yaml claim;
-      (5) repoint get_rec_write_guidance() at the new SSOT (rec.py Annotated / Class A contract) so Tier A
+      (5) repoint get_rec_write_guidance() at the new SSOT (the ops_recommendations Class A contract, rec-4158 / Decision 210 cl.3) so Tier A
       precision-context injection no longer sources from the retiring ops.yaml (Decision 66);
       (6) MIGRATE the write-time validator registry: _load_write_time_validators (ops_data_portal.py:372) is a
       LIVE runtime ops.yaml consumer that BUILDS enforcement from tests[].write_time -- moving semantics off
       ops.yaml while the portal still reads it for enforcement is exactly the drift this work warns against.
-      Repoint it to the Annotated SSOT, or explicitly designate it the last ops.yaml runtime reader with T1.6
+      Repoint it to the Class A contract's declared rules (rec-4158 plan C), or explicitly designate it the last ops.yaml runtime reader with T1.6
       as retirement owner;
       (7) reconcile config/lambda/ducklake/field_semantics.yaml so risk + automatable are marked derived, not
       role:input.
-      New/changed field semantics land in src/schemas/rec.py Annotated (the future SSOT), NOT in ops.yaml
-      (retiring via T1.6); the T0.12 drift detector covers the coexistence window. V3 only if a ducklake
+      New/changed field semantics land in docs/contracts/ops_recommendations.yaml (the Class A contract, the SSOT per rec-4158 /
+      Decision 210 cl.3), NOT in ops.yaml (retiring via T1.6) or src/schemas/rec.py (a consumer projection); validate_ops_rule_source
+      covers the coexistence window. V3 only if a ducklake
       writer/reader artifact changes (per Decision 79); otherwise V2.
     depends_on: [T0.12, T0.12.5, T2.19]
     files_in_scope:
@@ -5042,9 +5047,9 @@ tier_items:
       - "priority casing normalized at the portal: the live production file_rec calls in validate.py (_file_budget_breach_rec/_file_budget_bypass_rec) emit lowercase 'medium'/'low' that violate the Critical/High/Medium/Low enum -- this resolves the existing open rec-2156 and must land BEFORE the T2.30 enum-to-int conversion or those writes break"
       - "automatable recompute job re-derives stored values on a capabilities.yaml maturity_ceiling change, with a one-off backfill; meaning unchanged vs Decision 44 (no merge-mode extension, Decision 73 cl.6)"
       - "risk AND automatable no longer persist silent degraded values when radon/coverage.xml are unavailable -- both loud-fail or mark the row for recompute (they share _compute_risk_score); covered by a test simulating the missing-tool path for each"
-      - "NEW min_length write-time validator-type handler added to the validator registry; title min-length enforced at the portal (a short title is rejected); the false ops.yaml 'min 10 chars' title-semantics claim corrected -- all three landed in #1007 (write_validators.py::_build_min_length_validator, dispatched from _WRITE_TIME_VALIDATOR_BUILDERS, plus title min_length: 10 in ops.yaml). NO exclude_before grandfathering is required, and none was built: the short-title population was REPAIRED in a prior backlog session (stale recs updated or repointed) rather than gated, so the retro-fail risk this clause was written to mitigate has no rows left to affect. Re-grounded from the original '~889 existing short-title rows' estimate, which was stale by ~3 orders of magnitude -- measured 2026-09-01 after #1007 merged: 0 of 843 open recs carry a title under 10 stripped characters, and the single historical short-title row (rec-002) is superseded, not open"
-      - "write-time validator registry (_load_write_time_validators) repointed to the Annotated SSOT, OR explicitly designated the last ops.yaml runtime reader with T1.6 as retirement owner -- no silent ops.yaml/Annotated enforcement drift"
-      - "get_rec_write_guidance() sources semantics from the Annotated SSOT / Class A contract, not ops.yaml (Decision 66 Tier A preserved)"
+      - "NEW min_length write-time validator-type handler added to the validator registry; title min-length enforced at the portal (a short title is rejected); the false ops.yaml 'min 10 chars' title-semantics claim corrected -- all three landed in #1007 (write_validators.py::_build_min_length_validator, dispatched from _WRITE_TIME_VALIDATOR_BUILDERS, plus title min_length: 10 in ops.yaml). NO exclude_before grandfathering is required, and none was built: the short-title population was REPAIRED in a prior backlog session (stale recs updated or repointed) rather than gated, so the retro-fail risk this clause was written to mitigate has no rows left to affect. Re-grounded from the original '~889 existing short-title rows' estimate, which was stale by ~3 orders of magnitude -- measured 2026-09-01 after #1007 merged: 0 of 843 open recs carry a title under 10 stripped characters, and the single historical short-title row (rec-002) is superseded, not open. [Amendment 2026-10-04, rec-4158: measured 2026-09-29, one current row of any status, created before 2026-09-01, has a title under 10 stripped characters, so the Class A contract's title min_length rule carries exclude_before 2026-09-01; the no-grandfathering statement above is superseded for that row.]"
+      - "write-time validator registry (_load_write_time_validators) repointed to the ops_recommendations Class A contract's declared rules (rec-4158 plan C), OR explicitly designated the last ops.yaml runtime reader with T1.6 as retirement owner -- no silent ops.yaml/contract enforcement drift"
+      - "get_rec_write_guidance() sources semantics from the Class A contract (docs/contracts/ops_recommendations.yaml), not ops.yaml (Decision 66 Tier A preserved)"
       - "In docs/contracts/ops_recommendations.yaml, risk + automatable derivation blocks are updated to realized: true; the T2.33 generator (scripts/schema_to_field_semantics.py) then emits role: derived for these fields in field_semantics.yaml -- no direct field_semantics.yaml edit is required (T2.33 generator owns the projection)"
       - "If a ducklake_writer/reader artifact changes: per-Lambda build + deploy + smoke-test (V3 per Decision 79)"
     related_candidate_decisions: [CD.12, CD.33]
