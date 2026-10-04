@@ -44,6 +44,13 @@ conditions:
 
 **Related:** Decision 207, 81 cl.5 and cl.8 (amended), 84 I-2, 103, 55, 199, 184 cl.2, 100, 181 cl.2, 163, 70, T1.6; CD.12 refined, not amended -- its ops single-source choice is deferred to rec-4158, telemetry's source is its Class A contract (already so under Decision 199), and its FK-pre-commit discipline is narrowed to write-decidable references (references across independent producers stay DQ, already so under Decision 199 / R3); CD.12's ratification reconciles with this Decision.
 
+[Amendment 2026-10-04, rec-4158: cl.3's ops choice is made -- for the ops tables the single source is the owning Class A
+contract (docs/contracts/ops_recommendations.yaml), field_semantics.yaml its generated projection; ops.yaml and the CD.12
+Pydantic models are DQ-side artefacts, never a write-time rule source. Older rows: a rule binds rows created on or after its
+exclude_before and any column a write changes; no date moves later. An exemption names its owning rec, except a
+repository_state rule, which no write can ever decide, names the producer that enforces it. Detail:
+data-modeling-standard.yaml, rule write-time-enforcement.]
+
 ---
 
 ## Decision 209: Open-core paywall on organisational scale, never capability -- a multi-tenant, metadata-only control plane over a customer-owned data plane, and three monorepos placed by platform-vs-product and visibility (amends Decision 184 clause 1, Decision 178 and Decision 101 point (f)) (Decided)
@@ -8816,6 +8823,12 @@ state authority.
 > `current`, so the owning contract and the live corpus disagree with no recorded resolution;
 > routed to the operator as a possible unrecorded supersession, not resolved here.
 
+> **Update (2026-10-04):** (rec-4158, Decision 210 cl.3) for ops_recommendations the canonical field-semantic and write-time
+> rule authority is the owning Class A contract (docs/contracts/ops_recommendations.yaml). `config/agent/data_quality/ops.yaml`'s
+> write_time flags are a transitional, parity-checked copy (validate_ops_rule_source) until rec-4158 plan C retires them; its DQ
+> checks stay until T1.6 c7 retires the file, and the description/semantics text Decision 66 guidance reads moves to the contract
+> under T2.29 c7.
+
 ## Decision 64: Bootstrap Cohort Anchor for ops_recommendations is 2026-05-01 (Decided)
 
 The bootstrap cohort for ops_recommendations consists of all records created before 2026-05-01
@@ -8824,6 +8837,10 @@ The bootstrap cohort for ops_recommendations consists of all records created bef
 this table use `exclude_before: '2026-05-01'`. This anchor is fixed and must not be changed
 retroactively. Bootstrap records are not corrupt -- they predate the rules. They age out of the
 _current view as recommendations are closed or superseded.
+
+> **Update (2026-10-04):** (rec-4158, Decision 210 cl.3) 2026-05-01 is also the floor for every write-time rule's
+> `exclude_before` on ops_recommendations. A rule introduced later carries its own later date -- a rule-effective date, never a
+> moved anchor -- and no date moves later or is removed once declared (validate_ops_rule_source's ratchet enforces this).
 
 ## Decision 63: Execution Fields Excluded from ops_recommendations DQ Scope (Decided)
 
