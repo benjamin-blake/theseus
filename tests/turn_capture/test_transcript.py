@@ -7,7 +7,15 @@ from pathlib import Path
 import pytest
 
 from src.turn_capture.record_turn import record_turn
-from src.turn_capture.transcript import ROOT, FsTree, MemTree, read_lines, record_time, session_pin
+from src.turn_capture.transcript import (
+    ROOT,
+    SIDECAR_CHUNK_BYTES,
+    FsTree,
+    MemTree,
+    read_lines,
+    record_time,
+    session_pin,
+)
 from tests.fixtures.turn_capture_corpus import (
     PROJECT_REF,
     SID,
@@ -24,11 +32,31 @@ from tests.fixtures.turn_capture_corpus import (
 )
 
 
-def test_pin_is_first_parseable_timestamp_in_root_file_order() -> None:
+def test_pin_is_earliest_parseable_timestamp() -> None:
     body = jsonl([{"type": "last-prompt"}, {"type": "x", "timestamp": "not a time"}, queue_op(5), prompt("u1", 1, "p1", "hi")])
     pin = session_pin(read_lines(body.encode()))
-    assert pin is not None and pin.isoformat().startswith("2026-01-01T00:00:05")
+    assert pin is not None and pin.isoformat().startswith("2026-01-01T00:00:01")
+    hooks_after = jsonl([queue_op(5), prompt("h1", 1.5, "p1", "hook"), prompt("h2", 2, "p1", "hook")])
+    pin = session_pin(read_lines(hooks_after.encode()))
+    assert pin is not None and pin.isoformat().startswith("2026-01-01T00:00:01.500")
     assert session_pin(read_lines(b'[1]\n{"timestamp": "2026-01-01T00:00:09Z"}\n')) is not None
+
+
+def test_sidecar_size_and_chunks(tmp_path: Path) -> None:
+    body = "a" * (SIDECAR_CHUNK_BYTES * 2 + 5)
+    files = make_files([prompt("u1", 1, "p1", "hi")], sidecars={"big.txt": body, "empty.txt": ""})
+    mem = MemTree(files)
+    for rel, text in files.items():
+        target = tmp_path / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    fs = FsTree(tmp_path / f"{SID}.jsonl")
+    for tree in (mem, fs):
+        assert tree.sidecar_size("big.txt") == len(body) and tree.sidecar_size("empty.txt") == 0
+        assert tree.sidecar_size("nope.txt") is None and list(tree.sidecar_chunks("nope.txt")) == []
+        chunks = list(tree.sidecar_chunks("big.txt"))
+        assert [len(c) for c in chunks] == [SIDECAR_CHUNK_BYTES, SIDECAR_CHUNK_BYTES, 5]
+        assert b"".join(chunks) == body.encode() and list(tree.sidecar_chunks("empty.txt")) == []
 
 
 def test_no_timestamp_defers() -> None:

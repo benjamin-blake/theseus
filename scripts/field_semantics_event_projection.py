@@ -20,7 +20,10 @@ append-only event table).
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Any, Callable
+
+import yaml
 
 from src.common.ducklake_partition_spec import PartitionSpecError, parse_partition_by, validate_partition_spec
 from src.telemetry.identity import KEY_PLANS
@@ -37,6 +40,23 @@ _ENVELOPE_REQUIRED_FIELDS = (
     "tenant_id",
     "project_id",
 )
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_CONTRACTS_DIR = _REPO_ROOT / "docs" / "contracts"
+_REGISTRY_KEY_REF = ("source-lineage.yaml", "registry_key")
+
+_COLUMN_RULE_KEYS = (
+    "required_when",
+    "not_before",
+    "max_after_write_seconds",
+    "at_most",
+    "null_or_zero_when",
+    "representation_of",
+    "pattern",
+    "write_time_exemptions",
+)
+_TABLE_RULE_KEYS = ("exactly_one_of", "content_inline_threshold_bytes", "full_output_cap_bytes", "integrity")
+_KNOWN_DQ_KEYS = frozenset({"not_null", "accepted_values", *_COLUMN_RULE_KEYS, *_TABLE_RULE_KEYS})
 
 _DAY_GRAIN_TRIPLE_RE = re.compile(r"^year\((?P<col>\w+)\), month\((?P=col)\), day\((?P=col)\)$")
 
@@ -86,6 +106,147 @@ def _validate_partition_by(table_id: str, partition_by: str | None, columns: dic
     return history_spec
 
 
+def _load_yaml(path: Path) -> dict[str, Any]:
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ValueError(f"cannot read contract file {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"contract {path} must be a YAML mapping")
+    return data
+
+
+def _split_ref(ref: str) -> tuple[str, str]:
+    file_part, _, fragment = ref.partition("#")
+    return Path(file_part).name, fragment.rstrip("/").rsplit("/", 1)[-1]
+
+
+def _layer_rules(table_id: str, name: str, inherited: dict[str, Any], local: dict[str, Any]) -> dict[str, Any]:
+    """Layer a $ref field's local dq_intent over its raw target's: a local key may add a rule or tighten not_null, never
+    drop an inherited rule, and a rule key both declare with different values fails closed. (scripts/contracts.py's
+    resolver replaces the whole block, which would silently drop the envelope's row rules.)"""
+    merged = dict(inherited)
+    for key, value in local.items():
+        if key == "not_null":
+            enforced = bool((value or {}).get("enforced")) or bool((inherited.get("not_null") or {}).get("enforced"))
+            merged["not_null"] = {"enforced": enforced}
+        elif key in inherited and inherited[key] != value:
+            raise ValueError(f"{table_id}.{name}: dq_intent_local changes the inherited rule {key!r}")
+        else:
+            merged[key] = value
+    return merged
+
+
+def _registry_values(root: Path, target_doc: dict[str, Any]) -> list[str]:
+    allowed = target_doc.get("allowed_values") or {}
+    registry, key = allowed.get("registry"), allowed.get("key")
+    if not registry or not key:
+        raise ValueError("source-lineage allowed_values must name a registry and a key")
+    entries = _load_yaml(root / registry).get("entries") or []
+    values = [entry[key] for entry in entries]
+    if not values or len(set(values)) != len(values):
+        raise ValueError(f"registry {registry} yields no values or duplicate {key} values")
+    return values
+
+
+def _effective_intents(table_id: str, resolved_fields: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Each field's row-rule dq_intent: the raw contract read again, with $ref targets layered under local blocks.
+
+    A contract that is not in the contracts directory (a test fixture, never a registered table) has no raw $ref
+    targets to read, so its resolved view is used as is.
+    """
+    path = _CONTRACTS_DIR / f"{table_id}.yaml"
+    if not path.is_file():
+        return {name: dict(_field_value(spec, "dq_intent") or {}) for name, spec in resolved_fields.items()}
+    raw = _load_yaml(path)
+    out: dict[str, dict[str, Any]] = {}
+    for name, spec in (raw.get("fields") or {}).items():
+        ref = spec.get("$ref")
+        if ref is None:
+            out[name] = dict(spec.get("dq_intent") or {})
+            continue
+        target_file, target_field = _split_ref(ref)
+        target_doc = _load_yaml(_CONTRACTS_DIR / target_file)
+        target_spec = (target_doc.get("fields") or {}).get(target_field)
+        if target_spec is None:
+            raise ValueError(f"{table_id}.{name}: $ref target {ref!r} not found")
+        intent = _layer_rules(
+            table_id, name, dict(target_spec.get("dq_intent") or {}), dict(spec.get("dq_intent_local") or {})
+        )
+        if (target_file, target_field) == _REGISTRY_KEY_REF:
+            if "accepted_values" in intent:
+                raise ValueError(f"{table_id}.{name}: a registry-sourced field declares no accepted_values of its own")
+            intent["accepted_values"] = {"values": _registry_values(_REPO_ROOT, target_doc)}
+        out[name] = intent
+    return out
+
+
+def _field_value(spec: Any, name: str) -> Any:
+    return getattr(spec, name) if hasattr(spec, name) else spec.get(name)
+
+
+def _check_rule_keys(table_id: str, name: str, intent: dict[str, Any]) -> None:
+    unknown = set(intent) - _KNOWN_DQ_KEYS
+    if unknown:
+        raise ValueError(f"{table_id}.{name}: unknown dq_intent rule key(s) {sorted(unknown)} -- fail closed")
+    accepted = intent.get("accepted_values")
+    if accepted is not None and not (isinstance(accepted, dict) and isinstance(accepted.get("values"), list)):
+        raise ValueError(f"{table_id}.{name}: accepted_values must carry a values list")
+
+
+def _column_rules(table_id: str, name: str, intent: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    if "accepted_values" in intent:
+        out["accepted_values"] = list(intent["accepted_values"]["values"])
+    for key in _COLUMN_RULE_KEYS:
+        if key in intent:
+            out[key] = intent[key]
+    return out
+
+
+def _table_rules(table_id: str, intents: dict[str, dict[str, Any]], columns: dict[str, Any]) -> dict[str, Any]:
+    rules: dict[str, Any] = {}
+    groups = []
+    for name, intent in intents.items():
+        group = intent.get("exactly_one_of")
+        if group is not None:
+            fields = group.get("fields") if isinstance(group, dict) else None
+            if not fields or name not in fields:
+                raise ValueError(f"{table_id}.{name}: exactly_one_of must list fields including itself")
+            groups.append(list(fields))
+    if groups:
+        rules["exactly_one_of"] = groups
+    sized = [n for n, i in intents.items() if "content_inline_threshold_bytes" in i]
+    stray = [n for n, i in intents.items() if n not in sized and ("full_output_cap_bytes" in i or "integrity" in i)]
+    if stray:
+        raise ValueError(f"{table_id}: full_output_cap_bytes/integrity on {stray} without content_inline_threshold_bytes")
+    if len(sized) > 1:
+        raise ValueError(f"{table_id}: more than one content_inline_threshold_bytes field {sized}")
+    if sized:
+        rules["payload"] = _content_rule(table_id, sized[0], intents, columns)
+    return rules
+
+
+def _content_rule(table_id: str, inline: str, intents: dict[str, dict[str, Any]], columns: dict[str, Any]) -> dict[str, Any]:
+    intent = intents[inline]
+    represented = intent.get("representation_of")
+    siblings = [n for n, i in intents.items() if n != inline and i.get("representation_of") == represented]
+    if not represented or len(siblings) != 1:
+        raise ValueError(f"{table_id}.{inline}: a sized payload needs exactly one sibling with the same representation_of")
+    kinds = {columns[c]["sql_type"]: c for c in represented if c in columns}
+    if sorted(kinds) != ["BIGINT", "VARCHAR"] or len(represented) != 2:
+        raise ValueError(f"{table_id}.{inline}: representation_of must name one VARCHAR digest and one BIGINT size column")
+    return {
+        "inline": inline,
+        "uri": siblings[0],
+        "sha": kinds["VARCHAR"],
+        "size": kinds["BIGINT"],
+        "threshold": intent["content_inline_threshold_bytes"],
+        "cap": intent.get("full_output_cap_bytes"),
+        "integrity": bool(intent.get("integrity")),
+    }
+
+
 def _event_role(name: str, derived_columns: frozenset[str]) -> str:
     return "derived" if name in derived_columns else "input"
 
@@ -116,6 +277,9 @@ def project_event_table(
             raise ValueError(f"{table_id}: missing required envelope column {required!r}")
 
     entity_key = _entity_key_column(table_id)
+    intents = _effective_intents(table_id, resolved_fields)
+    for fname in resolved_fields:
+        _check_rule_keys(table_id, fname, intents.get(fname) or {})
     derived_columns = frozenset({"event_id", "created_timestamp", "tenant_id", "project_id"}) | frozenset(KEY_PLANS[table_id])
 
     columns: dict[str, Any] = {}
@@ -131,14 +295,14 @@ def project_event_table(
         nullable = fspec.nullable if hasattr(fspec, "nullable") else fspec.get("nullable")
         dq_intent = fspec.dq_intent if hasattr(fspec, "dq_intent") else fspec.get("dq_intent")
 
-        is_not_null, required_when = _is_not_null(dq_intent, nullable)
+        intent = intents.get(fname) or {}
+        is_not_null, required_when = _is_not_null(intent or dq_intent, nullable)
         col: dict[str, Any] = {
             "role": _event_role(fname, derived_columns),
             "sql_type": sql_type,
             "nullable": not is_not_null,
         }
-        if required_when:
-            col["required_when"] = required_when
+        col.update(_column_rules(table_id, fname, intent))
         if include_prose:
             desc = fspec.description if hasattr(fspec, "description") else fspec.get("description")
             sem = fspec.semantics if hasattr(fspec, "semantics") else fspec.get("semantics")
@@ -149,8 +313,9 @@ def project_event_table(
         columns[fname] = col
 
     history_spec = _validate_partition_by(table_id, partition_by, columns)
+    table_rules = _table_rules(table_id, {n: intents.get(n) or {} for n in columns}, columns)
 
-    return {
+    entry = {
         "status": ops_config.get("status", "target"),
         "write_mode": "append_only",
         "history_table": table_id,
@@ -160,6 +325,9 @@ def project_event_table(
         "entity_key": entity_key,
         "columns": columns,
     }
+    if table_rules:
+        entry["table_rules"] = table_rules
+    return entry
 
 
 __all__ = ["project_event_table"]
