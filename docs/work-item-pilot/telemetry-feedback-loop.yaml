@@ -30,8 +30,8 @@ work_items:
         verification: [c1, c2, c3]
         rollback: Revert the rules file to the previous classifier_version or drop the verb from the registry; nothing is stored, so every total re-derives on the next read.
         evidence:
-          - {kind: file_line, ref: 'docs/contracts/telemetry_sessions.yaml:232'}
-          - {kind: file_line, ref: 'src/turn_capture/observations.py:311'}
+          - {kind: file_line, ref: 'docs/contracts/telemetry_sessions.yaml:228'}
+          - {kind: file_line, ref: 'src/turn_capture/observations.py:361'}
           - {kind: file_line, ref: 'src/turn_capture/observations.py:5'}
           - {kind: file_line, ref: 'docs/contracts/telemetry_observations.yaml:153'}
         settled:
@@ -64,12 +64,12 @@ work_items:
         verification: [c1, c2, c3]
         rollback: Drop the verb and the monitor; nothing is stored, so every metric re-derives on the next read. The producer fields stay wherever the 2a-1 plan and rec-4028 land them.
         evidence:
-          - {kind: file_line, ref: 'src/turn_capture/observations.py:246'}
-          - {kind: file_line, ref: 'src/turn_capture/transcripts.py:196'}
-          - {kind: file_line, ref: 'docs/contracts/telemetry_observations.yaml:408'}
+          - {kind: file_line, ref: 'src/turn_capture/observations.py:183'}
+          - {kind: file_line, ref: 'src/turn_capture/transcripts.py:290'}
+          - {kind: file_line, ref: 'docs/contracts/telemetry_observations.yaml:419'}
           - {kind: file_line, ref: 'docs/contracts/inference-provider.yaml:355'}
         settled:
-          - {id: s1, text: 'Producer facts were chosen 2026-09-29 (rec-4028): model_call reasoning_visibility and reasoning_tokens; claude_code via the 2a-1 plan, LiteLLM via rec-4028.'}
+          - {id: s1, text: 'Producer facts chosen 2026-09-29 (rec-4028) and merged for claude_code in 2a-1 (#1405, parser_version 2); the LiteLLM mapping stays with rec-4028.'}
           - {id: s2, text: 'Data plane only (D209 cl.2a): thinking text is agent transcript; the verb reads visibility, counts and transcript purpose, never content.'}
           - {id: s3, text: 'Writer owns row-local rules, incl. visibility NOT NULL once a producer classifies (D210 cl.1, cl.4); text drift spans two producers (cl.2(b)): a monitor. 16/16.'}
         contested:
@@ -77,7 +77,7 @@ work_items:
           - {id: k2, text: 'LiteLLM CoT lives only in the response and persona history: (a) replay from persona checkpoint (env R7); (b) non-replayable (env R8), loss counted. Rec (b).'}
           - {id: k3, text: 'Who reads CoT text: (a) metrics only, text kept for forensic reads; (b) a per-call text verb (egress per read); (c) LLM labels (spends). Rec (a).'}
         open_questions:
-          - {id: q1, text: '2a-1 is PLAN-telemetry-write-conformance (unmerged): visibility required on model_call, claude_code to parser_version 2. Bind the cutover once it merges?'}
+          - {id: q1, text: '2a-1 merged (#1405) but is deploy-inert: which slice 2a-2 release first stores model_call rows through the row-rule kernel for the verb to read?'}
           - {id: q2, text: 'Does deliberation predict outcome? 64% of output tokens here were thinking (54 of 83 calls); no outcome join exists, so T3.3 must not alarm on share.'}
           - {id: q3, text: 'A litellm-only persona tree has no sessions open row (env R8 bars it), so W1-2 session verbs cannot see it: does the executor loop emit lifecycle rows?'}
   - id: pwi-rec-filing-dedupe
@@ -147,6 +147,40 @@ work_items:
           - {id: q1, text: 'Who declares exposure? Each detector must return exposed and affected per session for a subject; no verb returns either today.'}
           - {id: q2, text: 'Effective day of a fix not live at merge (a Lambda behind a governed deploy, a model or harness change); sessions carry no commit (VP 4).'}
           - {id: q3, text: 'Seeds alpha 0.05, 50% drop, 10 expected, baseline and wait 28 days are unmeasured; under about 3% of exposed sessions is unprovable in 28 days.'}
+  - id: pwi-maturity-ladder-controller
+    kind: task
+    title: 'Maturity ladder controller: a daily deterministic promote, hold, demote or restart per loop component'
+    extension:
+      consideration_register:
+        why: 'The six W1 items declare 18 upward-only free-text triggers with no review rate (VP 1-2): promotion measures patience, and a blinder failure_signal promotes faster (VP 5).'
+        how: One SQL per daily run over the review log, failure_signal series, drills and approvals returns promote, propose_promote, hold, demote or restart with a reason and the version held next; legs are k1-k3 (report k4, k5, k7).
+        planes: [data_plane]
+        maturity:
+          rung: read_all
+          transitions:
+            - {from: read_all, to: sampled, trigger: {metric: 'controller decisions the operator re-derived unchanged since the last overturned one (return leg: k1)', comparator: '>=', threshold: 40}}
+            - {from: sampled, to: spot_check, trigger: {metric: 1-in-5 sampled controller decisions re-derived unchanged since the last overturned one, comparator: '>=', threshold: 40}}
+            - {from: spot_check, to: anomaly_triggered, trigger: {metric: consecutive days with stale_rung_days 0 and est_escaped_share <= the AOQL target (q3), comparator: '>=', threshold: 30}}
+        failure_signal: {signal: 'A component sits at a rung its own evidence contradicts: wrong outputs escape above read_all, or a demote condition holds with no transition', metric: 'est_escaped_share: audited wrong share x unreviewed share, rolling 30 days, per component above read_all', source: 'review log (audited samples, unreviewed counts) and transition log (home: q2); stale_rung_days beside it'}
+        verification: [c1, c2, c3]
+        rollback: Stop the schedule and set every component to read_all; the transition log stays as history and review returns to 100% until a controller resumes. Failing safe means more review.
+        evidence:
+          - {kind: file_line, ref: 'scripts/checks/roadmap/_work_item_pilot_model.py:151'}
+          - {kind: file_line, ref: 'scripts/checks/roadmap/_work_item_pilot_model.py:132'}
+          - {kind: roadmap, ref: T3.4}
+          - {kind: decision, ref: '55'}
+        settled:
+          - {id: s1, text: 'Rungs read_all, sampled, spot_check, anomaly_triggered in order (pilot model); the decision is deterministic code, never an LLM (charter: measurable triggers).'}
+          - {id: s2, text: 'Measured: 18 of 18 declared triggers are upward-only free text and no item states a review rate, so none can be evaluated as written (VP 1-2).'}
+          - {id: s3, text: 'Measured: with no return leg, escaped-wrong share tracks the error rate (0.11-0.13 at p=0.2) and a half-blind monitor promotes faster (VP 5). Facts only.'}
+        contested:
+          - {id: k1, text: 'Return leg on a wrong output found above read_all: (a) back to read_all (CSP-1); (b) one rung down; (c) none, as declared. Rec (a).'}
+          - {id: k2, text: 'Version change: (a) restart at read_all, monotonic on an integer stamp; (b) one rung down; (c) keep the rung. #1396 and #1397 defer here. Rec (a).'}
+          - {id: k3, text: 'Who moves a component: (a) operator approves promotions, demotions automatic; (b) both automatic; (c) operator ratifies both. Rec (a).'}
+        open_questions:
+          - {id: q1, text: 'Is this ladder T3.4''s A0-A3 executor autonomy gates, or a separate review ladder sharing one controller? Report reads separate.'}
+          - {id: q2, text: 'Where the review log, transition log and current rung live; nothing reads a rung today (VP 1). Shares rec-filing q4.'}
+          - {id: q3, text: 'Seeds unmeasured: AOQL target 2% (met only at recall >= drill floor), clearances 40/40/20, fractions 0.2/0.04/0.008, drill 20/20 days at 0.9; review capacity.'}
   - id: pwi-allow-list-transport
     kind: task
     title: 'Plane egress: a data-plane verb applies the operator-approved allow-list before telemetry metadata crosses'
@@ -194,6 +228,9 @@ work_item_criteria:
   - {work_item: pwi-back-validation, criterion_id: c1, text: 'The verdict SQL applies the versioned params to one verb call per candidate and passes every report vector on DuckDB; each verdict record carries the counts, stop day, p and params_version.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_back_validation_verdict.py -k vectors}, status: open}
   - {work_item: pwi-back-validation, criterion_id: c2, text: 'Under the close path k1 picks, a holds verdict record moves a filer rec through update_rec with its closing sha from the recorded fix attempt; a pending rec stays open.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_back_validation_close.py -k fix_attempt_close}, status: open}
   - {work_item: pwi-back-validation, criterion_id: c3, text: 'At read_all the job closes nothing: the operator reviews every verdict, confirming or overturning each holds close and each fails, before any rec moves.', method: {kind: review, resolver: operator at each read_all verdict review, evidence_requirement: 'verdict sheet per run: rec, fix sha, verdict, reason, counts, p, operator decision'}, status: open}
+  - {work_item: pwi-maturity-ladder-controller, criterion_id: c1, text: 'The controller SQL applies the versioned params over the build''s review, signal, drill and approval tables, passes every report vector on DuckDB including the returned to_version, and raises on each malformed input.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_maturity_ladder_controller.py -k vectors}, status: open}
+  - {work_item: pwi-maturity-ladder-controller, criterion_id: c2, text: 'Seeded simulation via the controller over p 0.005-0.2, recall 1.0/0.9/0.5 and 3+ seeds: escaped-wrong share <= the AOQL target on every seed where recall meets the drill floor, the rest reported; no low-recall monitor tops beyond chance.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_maturity_ladder_controller.py -k simulation}, status: open}
+  - {work_item: pwi-maturity-ladder-controller, criterion_id: c3, text: At read_all every promotion is a proposal the operator re-derives before the rung changes; demotions and restarts apply at once and are re-derived after the fact from the transition log., method: {kind: review, resolver: operator at each read_all ladder review, evidence_requirement: 'transition sheet per run: component, from, to, reason, clearance, signal, params_version, decision'}, status: open}
   - {work_item: pwi-allow-list-transport, criterion_id: c1, text: 'The egress verb, assembled from the operator-approved allow-list, passes the report vectors of the operator-chosen options (staged: k1(a) withhold, k4(a)), incl. refusal on drift and any tenancy id not exactly one ULID.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_egress_allow_list.py -k vectors}, status: open}
   - {work_item: pwi-allow-list-transport, criterion_id: c2, text: 'A canary token seeded in every string column of all four telemetry tables appears nowhere in the egress output, and every out-of-vocabulary enum value is counted as withheld.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_egress_allow_list.py -k canary}, status: open}
   - {work_item: pwi-allow-list-transport, criterion_id: c3, text: 'The operator approves the allow-list before the first batch crosses and approves every later change to it, each with the canary result on that head.', method: {kind: review, resolver: 'operator, before the first batch crosses and on every allow-list change', evidence_requirement: 'allow-list diff naming each added column, its class, vocabulary and consumer, plus the canary probe line'}, status: open}
@@ -206,4 +243,6 @@ work_item_edges:
   - {from: pwi-rec-filing-dedupe, to: T2.36, kind: depends_on}
   - {from: pwi-back-validation, to: T3.4, kind: part_of}
   - {from: pwi-back-validation, to: T2.36, kind: depends_on}
+  - {from: pwi-maturity-ladder-controller, to: T3.4, kind: part_of}
+  - {from: pwi-maturity-ladder-controller, to: T2.36, kind: depends_on}
   - {from: pwi-allow-list-transport, to: T2.36, kind: depends_on}
