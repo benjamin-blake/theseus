@@ -4,8 +4,8 @@
 # Authored against the live DuckLake column inventory in
 # config/lambda/ducklake/field_semantics.yaml (25 columns + _contract_version = 26 total).
 #
-# Decision 65: this contract + src/schemas/rec.py Annotated model are the canonical
-# field-semantic authority. ops.yaml (config/agent/data_quality/ops.yaml) retires via T1.6.
+# Decision 65 and Decision 210 cl.3 (rec-4158): this contract is the ONE declared source of every field-semantic and
+# write-time data rule; ops.yaml and the Pydantic models are consumer projections. ops.yaml retires via T1.6.
 # Decision 84: sole backend is DuckLake-on-Neon. id is writer/file_ops-allocated (I-2).
 # Decision 63: execution_* fields (5) are DQ-EXCLUDED -- documented but not DQ-enforced.
 contract:
@@ -36,9 +36,7 @@ fields:
       via python-ulid monotonic generation.
     populated_by: >-
       ducklake_runtime._derive_fields() -- minted once at op-start; NEVER caller-supplied.
-    dq_intent:
-      not_null:
-        enforced: true
+    dq_intent: {not_null: {enforced: true}}
     derivation:
       formula: python-ulid monotonic generation; minted once at op-start by ducklake_runtime._derive_fields()
       inputs: []
@@ -55,9 +53,7 @@ fields:
       Partitioned as bucket(8, id) on the current table for efficient point lookups.
     populated_by: >-
       ducklake_writer/file_ops allocates atomically in-transaction. update_rec/write_ops require caller to supply an existing id.
-    dq_intent:
-      not_null:
-        enforced: true
+    dq_intent: {not_null: {enforced: true}, pattern: '^(rec-[0-9]+|agent-[0-9]+|test-[a-z0-9-]+)$'}
 
   title:
     type: str
@@ -69,12 +65,7 @@ fields:
       check (rec-3310), through both file_rec and update_rec. Empty or null titles are accepted by the schema
       gate but are flagged by DQ enforcement.
     populated_by: Caller-supplied on file_rec/write_ops payload.
-    dq_intent:
-      not_null:
-        enforced: true
-      min_length:
-        value: 10
-        enforced: true
+    dq_intent: {not_null: {enforced: true}, min_length: {value: 10, exclude_before: "2026-09-01"}}
     amendment_log:
       - date: "2026-09-01"
         semantic_break: false
@@ -84,11 +75,7 @@ fields:
 
   source:
     $ref: "docs/contracts/source-lineage.yaml#/contract/fields/registry_key"
-    dq_intent_local:
-      not_null:
-        enforced: true
-        write_time: true
-        exclude_before: "2026-05-01"
+    dq_intent_local: {not_null: {enforced: true, exclude_before: "2026-05-01"}}
 
   effort:
     type: str
@@ -101,9 +88,7 @@ fields:
       DERIVED field (target-state). Currently stored as caller-supplied string; derivation
       is deferred to T2.31. The derivation block documents the target-state formula.
     populated_by: Caller-supplied until T2.31; derivation rewrites on T2.31 release.
-    dq_intent:
-      not_null:
-        enforced: false
+    dq_intent: {not_null: {enforced: true, exclude_before: "2026-05-01"}, accepted_values: {values: [XS, S, M, L, XL], exclude_before: "2026-05-01"}}
     derivation:
       formula: >-
         LOC-weighted integer encoding. Target: estimate_effort(file, lines_of_code)
@@ -130,9 +115,7 @@ fields:
       derivation block documents the source_priority_map for all 30 registered sources.
       Full derivation realization deferred to T2.30.
     populated_by: Caller-supplied until T2.30; derivation rewrites on T2.30 release.
-    dq_intent:
-      not_null:
-        enforced: false
+    dq_intent: {not_null: {enforced: true, exclude_before: "2026-05-01"}, accepted_values: {values: [Critical, High, Medium, Low], exclude_before: "2026-05-01"}}
     derivation:
       realized: false
       formula: >-
@@ -180,16 +163,19 @@ fields:
     iceberg_type: string
     nullable: false
     description: >-
-      Recommendation lifecycle status. Valid values: open, closed, in_progress, deferred,
-      superseded, declined.
+      Recommendation lifecycle status. Valid values: open, closed, failed, declined, superseded.
     semantics: >-
-      Status controls eligibility for the executor queue. Only "open" and "in_progress"
-      recs are eligible for execution. Closed recs retain their full history in the
-      SCD2 history table. Closure via lifecycle state, not deletion (Decision 70).
+      Status controls eligibility for the executor queue. Only "open" recs are eligible for
+      execution. Closed recs retain their full history in the SCD2 history table. Closure via
+      lifecycle state, not deletion (Decision 70).
     populated_by: Caller-supplied on file_rec (default=open); updated via update_rec.
-    dq_intent:
-      not_null:
-        enforced: true
+    dq_intent: {not_null: {enforced: true}, accepted_values: {values: [open, closed, failed, declined, superseded]}}
+    amendment_log:
+      - date: "2026-10-04"
+        semantic_break: false
+        change_class: prose_improvement
+        summary: status description and semantics name the five enforced values and drop the in_progress/deferred executor eligibility (rec-4158).
+        migration_story: Prose correction only; the portal and the writer have enforced exactly these five values throughout.
 
   automatable:
     type: bool
@@ -203,9 +189,7 @@ fields:
       DERIVED field (target-state). Recomputed when capabilities.yaml maturity_ceiling
       changes (Decision 44/73 boundary file). Currently caller-supplied.
     populated_by: Caller-supplied until derivation is live at T2.31.
-    dq_intent:
-      not_null:
-        enforced: false
+    dq_intent: {not_null: {enforced: true, exclude_before: "2026-05-01"}}
     derivation:
       formula: >-
         True if all risk/effort/dependency gates pass and executor capability covers the
@@ -232,9 +216,7 @@ fields:
       DERIVED field (target-state). Currently caller-supplied string. The derivation block
       documents the target-state formula using radon and coverage.xml data.
     populated_by: Caller-supplied until T2.31.
-    dq_intent:
-      not_null:
-        enforced: false
+    dq_intent: {not_null: {enforced: true, exclude_before: "2026-05-01"}, accepted_values: {values: [low, medium, high], exclude_before: "2026-05-01"}}
     derivation:
       formula: >-
         estimate_risk(file, radon_complexity, coverage_pct) returning 'low'|'medium'|'high'.
@@ -256,11 +238,15 @@ fields:
     description: Primary target file path (relative to repo root) for this recommendation.
     semantics: >-
       The executor reads this field to determine which file to modify. Used as the dedup
-      gate key in the scoping step. Null for cross-cutting recs without a single primary file.
+      gate key in the scoping step. Required (non-null, repo-relative) since 2026-05-01.
     populated_by: Caller-supplied on file_rec.
-    dq_intent:
-      not_null:
-        enforced: false
+    dq_intent: {not_null: {enforced: true, exclude_before: "2026-05-01"}, min_length: {value: 1, exclude_before: "2026-05-01"}, pattern: {value: '^([^/\\A-Za-z][^\\]*|[A-Za-z]([^:\\][^\\]*)?|[A-Za-z]:([^/\\][^\\]*)?)$', exclude_before: "2026-05-01"}}
+    amendment_log:
+      - date: "2026-10-04"
+        semantic_break: false
+        change_class: prose_improvement
+        summary: file semantics drops "Null for cross-cutting recs" (rec-4158).
+        migration_story: Prose correction only; file has been required since 2026-05-01.
 
   context:
     type: str
@@ -275,9 +261,7 @@ fields:
       failure on first attempt.
     populated_by: >-
       Caller-supplied on file_rec, and on update_rec for a context-changing update. Both write paths enforce the >=80-stripped-char gate via write_validators.py::_validate_context_length (Decision 66 Tier-B write-time rejection); rec_write_guidance.py is the Tier-A pre-write guidance surface, not the enforcement point.
-    dq_intent:
-      not_null:
-        enforced: false
+    dq_intent: {not_null: {enforced: true, exclude_before: "2026-05-01"}, min_length: {value: 80, exclude_before: "2026-05-01"}}
     amendment_log:
       - date: "2026-09-01"
         semantic_break: false
@@ -300,9 +284,7 @@ fields:
       list[dict] at T0.12.5. Full typed-check dispatch by type deferred to T3.6. file_rec
       requires a discriminating probe shape (require_discrimination=True); not retroactive.
     populated_by: Caller-supplied on file_rec.
-    dq_intent:
-      not_null:
-        enforced: false
+    dq_intent: {not_null: {enforced: true, exclude_before: "2026-05-01"}, min_length: {value: 1, exclude_before: "2026-05-01"}, acceptance_lint: {require_discrimination: true}, write_time_exemptions: {acceptance_lint: {class: repository_state, reason: "the lint reads the repository tree, which no row-local evaluator can", owner: scripts/ops_portal/write_validators.py}}}
     amendment_log:
       - date: "2026-06-20"
         semantic_break: false
@@ -333,9 +315,7 @@ fields:
       Human-readable verification plan consumed by the executor to confirm end-to-end
       correctness beyond the acceptance command. Null for recs with no explicit VP step.
     populated_by: Caller-supplied on file_rec.
-    dq_intent:
-      not_null:
-        enforced: false
+    dq_intent: {not_null: {enforced: false}}
 
   verification_tier:
     type: str
@@ -349,9 +329,7 @@ fields:
       V2 requires functional end-to-end test. V1 requires only static/format checks.
       Null implies V1 (advisory default). Validated against the implement skill's VP protocol.
     populated_by: Caller-supplied on file_rec.
-    dq_intent:
-      not_null:
-        enforced: false
+    dq_intent: {not_null: {enforced: false}}
 
   dependencies:
     type: "list[str]"
@@ -361,14 +339,7 @@ fields:
     semantics: >-
       Dependency gate: the executor checks that all listed rec-IDs are in status=closed before scheduling this rec. Each element must also reference an existing rec of any status (open, closed, or superseded alike) -- enforced write-time via array_element_reference through both file_rec and update_rec. Null or empty list means no gate.
     populated_by: Caller-supplied on file_rec.
-    dq_intent:
-      not_null:
-        enforced: false
-      array_element_format:
-        pattern: "^rec-[0-9]+$"
-        enforced: true
-      array_element_reference:
-        enforced: true
+    dq_intent: {not_null: {enforced: false}, array_element_format: {pattern: '^rec-[0-9]+$', enforced: true}, array_element_reference: {enforced: true}, write_time_exemptions: {array_element_reference: {class: cross_row, reason: "an existence lookup outside the batch partitions (Decision 210 cl.2(a))", owner: rec-4166}}}
     amendment_log:
       - date: "2026-09-08"
         semantic_break: true
@@ -384,12 +355,7 @@ fields:
     semantics: >-
       Unstructured categorization signal with no registered consumer (no NAMED_READS verb, absent from src/schemas/rec.py, no skill/workflow/check reads it). No canonical vocabulary. DQ-enforced at the structural level only: each element must match ^[a-z][a-z0-9-]*$ (kebab-case) at write time via array_element_format, through both file_rec and update_rec.
     populated_by: Caller-supplied on file_rec.
-    dq_intent:
-      not_null:
-        enforced: false
-      array_element_format:
-        pattern: "^[a-z][a-z0-9-]*$"
-        enforced: true
+    dq_intent: {not_null: {enforced: false}, array_element_format: {pattern: '^[a-z][a-z0-9-]*$', enforced: true, exclude_before: "2026-09-08"}}
     amendment_log:
       - date: "2026-09-08"
         semantic_break: true
@@ -409,9 +375,7 @@ fields:
       resolution on closed/declined/superseded recs is a data-quality warning (not an error).
     populated_by: >-
       Caller-supplied on update_rec at close time (Decision 70 closure-via-lifecycle-state).
-    dq_intent:
-      not_null:
-        enforced: false
+    dq_intent: {not_null: {enforced: false}}
 
   execution_result:
     type: str
@@ -427,9 +391,7 @@ fields:
       Decision 63 DQ-exclusion: execution_* fields are executor-internal write-only fields
       that the DQ runner does not enforce. They are NOT derived fields.
     populated_by: execute_recommendation.py writes this after run completion.
-    dq_intent:
-      not_null:
-        enforced: false
+    dq_intent: {not_null: {enforced: false}}
 
   execution_date:
     type: str
@@ -441,9 +403,7 @@ fields:
       not enforced or derived. See execution_result semantics.
     governance_notes: Decision 63 DQ-exclusion. See execution_result governance_notes.
     populated_by: execute_recommendation.py writes this after run completion.
-    dq_intent:
-      not_null:
-        enforced: false
+    dq_intent: {not_null: {enforced: false}}
 
   execution_branch:
     type: str
@@ -455,9 +415,7 @@ fields:
       not enforced or derived. See execution_result semantics.
     governance_notes: Decision 63 DQ-exclusion. See execution_result governance_notes.
     populated_by: execute_recommendation.py writes this after run completion.
-    dq_intent:
-      not_null:
-        enforced: false
+    dq_intent: {not_null: {enforced: false}}
 
   execution_pr_url:
     type: str
@@ -469,9 +427,7 @@ fields:
       not enforced or derived. See execution_result semantics.
     governance_notes: Decision 63 DQ-exclusion. See execution_result governance_notes.
     populated_by: execute_recommendation.py writes this after run completion.
-    dq_intent:
-      not_null:
-        enforced: false
+    dq_intent: {not_null: {enforced: false}}
 
   execution_steps:
     type: int
@@ -485,9 +441,7 @@ fields:
       not enforced or derived. See execution_result semantics.
     governance_notes: Decision 63 DQ-exclusion. See execution_result governance_notes.
     populated_by: execute_recommendation.py writes this after run completion.
-    dq_intent:
-      not_null:
-        enforced: false
+    dq_intent: {not_null: {enforced: false}}
 
   created_timestamp:
     type: datetime
@@ -498,9 +452,7 @@ fields:
       UPDATEs to preserve original creation time across SCD2 versions.
     semantics: "SCD2 envelope field. Minted once at op-start by ducklake_runtime, OUTSIDE the OCC-retry loop. For UPDATE: the existing value from the current projection is carried; it is NEVER re-stamped. Partitions the history table via year(created_timestamp), month(created_timestamp), day(created_timestamp)."
     populated_by: ducklake_runtime._derive_fields() -- NOT caller-supplied.
-    dq_intent:
-      not_null:
-        enforced: true
+    dq_intent: {not_null: {enforced: true}}
     derivation:
       formula: high-precision now() minted ONCE at op-start by ducklake_runtime._derive_fields(); carried unchanged on UPDATE
       inputs: []
@@ -523,9 +475,7 @@ fields:
       OCC-retry loop. Stable across all retry iterations of the same write attempt.
       Together with ulid, serves as the tiebreak for selecting the latest SCD2 version.
     populated_by: ducklake_runtime._derive_fields() -- NOT caller-supplied.
-    dq_intent:
-      not_null:
-        enforced: true
+    dq_intent: {not_null: {enforced: true}, not_before: created_timestamp}
     derivation:
       formula: high-precision now() minted ONCE at op-start by ducklake_runtime._derive_fields(); stable across OCC retries
       inputs: []
@@ -543,9 +493,7 @@ fields:
       preferentially reads this over the free-text context field. Schema is unvalidated at
       T0.12.5; validated shape is deferred to the context-v2 graduation milestone.
     populated_by: Caller-supplied on file_rec/write_ops for recs that populate v2 context.
-    dq_intent:
-      not_null:
-        enforced: false
+    dq_intent: {not_null: {enforced: false}}
 
   _contract_version:
     type: str
@@ -560,9 +508,7 @@ fields:
     populated_by: >-
       ducklake_writer Lambda handler.py stamps record['_contract_version'] = record.get('_contract_version', '1')
       before rt.write_scd2 / rt.file_scd2. NOT on the smoke-table action_write path.
-    dq_intent:
-      not_null:
-        enforced: false
+    dq_intent: {not_null: {enforced: false}}
 
 governance:
   table_class: SCD2
@@ -578,7 +524,7 @@ governance:
   merge_key: id
 
 governance_notes: >-
-  Decision 65: this contract + src/schemas/rec.py are the canonical field-semantic authority for ops_recommendations; ops.yaml retires via T1.6 and is not authoritative post-ratification. Decision 84: sole backend is DuckLake-on-Neon, no second read/write path, no OPS_STORAGE_BACKEND env var; reads transit the closed ducklake_reader boundary (NAMED VERBS only, no caller SQL). Decision 63: execution_* fields (execution_result/date/branch/pr_url/steps) are DQ-EXCLUDED -- documented here, not enforced or derived. Decision 44: step_runner.py and acceptance_lint.py are executor boundary files; modifications require human-driven /implement only. _contract_version: nullable Lambda-handler sentinel; NULL pre-T0.12.5, "1" after.
+  Decision 65 and Decision 210 cl.3 (rec-4158): this contract is the ONE declared source of every field-semantic and write-time data rule for ops_recommendations (read by scripts/contract_rules.py); the Pydantic models are a consumer projection, and ops.yaml (a transitional, parity-checked copy until rec-4158 plan C) retires via T1.6. Decision 84: sole backend is DuckLake-on-Neon, no second read/write path, no OPS_STORAGE_BACKEND env var; reads transit the closed ducklake_reader boundary (NAMED VERBS only, no caller SQL). Decision 63: execution_* fields (execution_result/date/branch/pr_url/steps) are DQ-EXCLUDED -- documented here, not enforced or derived. Decision 44: step_runner.py and acceptance_lint.py are executor boundary files; modifications require human-driven /implement only. _contract_version: nullable Lambda-handler sentinel; NULL pre-T0.12.5, "1" after.
 
 amendment_log:
   - date: "2026-06-21"
@@ -588,4 +534,11 @@ amendment_log:
       CD.25 additive amendment (T2.33): add contract.projects_to, governance.merge_key=id, and realized markers on envelope/deferred-derivation fields. No column added or removed.
     migration_story: >-
       Adds contract.projects_to (field_semantics.yaml generator pointer) and governance.merge_key=id; realized=true on the SCD2 envelope fields (ulid/created_timestamp/last_updated_timestamp); realized=false on effort/priority/automatable/risk (forward-pointers to T2.29/T2.30/T2.31). Schema gate, DDL, MERGE unchanged.
+  - date: "2026-10-04"
+    semantic_break: true
+    change_class: accepted_values_narrow
+    summary: >-
+      Declared every row-local write-time rule here, field by field, with its effective date (PLAN-ops-rule-source, rec-4158 plan A, Decision 210 cl.3): the contract is the one rule source; ops.yaml and src/schemas/rec.py are projections.
+    migration_story: >-
+      Declarations only; no writer or portal behaviour changes in this amendment. Dated legs bind rows created on or after their exclude_before; validate_ops_rule_source ratchets every date and census-proves the declarations against the warehouse.
 previous_versions: []
