@@ -5,6 +5,7 @@ pytest.importorskip at MODULE level: the fast tier installs no duckdb (requireme
 
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timezone
 from typing import Any
 
@@ -12,8 +13,15 @@ import pytest
 
 duckdb = pytest.importorskip("duckdb")
 
-from src.telemetry.append import AppendResult, EventTableSpec, append_events  # noqa: E402
-from src.telemetry.gate import AppendError  # noqa: E402
+from src.telemetry.append import (  # noqa: E402
+    AppendResult,
+    EventTableSpec,
+    PreparedBatch,
+    append_events,
+    execute_prepared,
+    prepare_batch,
+)
+from src.telemetry.gate import AppendError, GateError, GrainConflictError  # noqa: E402
 
 TENANT = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
 PROJECT = "01BRZ3NDEKTSV4RRFFQ69G5FBW"
@@ -389,3 +397,141 @@ def test_from_projection_rejects_two_column_dedupe_key() -> None:
     entry["dedupe_key"] = ["event_id", "parser_version"]
     with pytest.raises(AppendError):
         EventTableSpec.from_projection("telemetry_sessions", entry)
+
+
+def _count(con: Any) -> int:
+    return con.execute("SELECT count(*) FROM telemetry_sessions").fetchone()[0]
+
+
+def test_prepare_then_execute_equals_append_events(con: Any) -> None:
+    now = datetime(2026, 9, 25, 12, 0, 0, tzinfo=timezone.utc)
+    rows = [_row(), _row(external_ref="src#1/open", entity_ref="sess-ref-2"), _row()]
+    prepared = prepare_batch(_spec(), rows, tenant_id=TENANT, project_id=PROJECT, now=now)
+    assert isinstance(prepared, PreparedBatch) and (prepared.submitted, prepared.collapsed, len(prepared.rows)) == (3, 1, 2)
+    con.execute("BEGIN")
+    result = execute_prepared(con, prepared, catalog="memory")
+    assert _count(con) == 2
+    con.execute("ROLLBACK")
+    assert _count(con) == 0 and result == AppendResult(submitted=3, collapsed=1, inserted=2)
+    facade = append_events(con, _spec(), rows, tenant_id=TENANT, project_id=PROJECT, catalog="memory", now=now)
+    assert facade == result and _count(con) == 2
+    empty = prepare_batch(_spec(), [], tenant_id=TENANT, project_id=PROJECT)
+    assert execute_prepared(con, empty, catalog="memory") == AppendResult(submitted=0, collapsed=0, inserted=0)
+    with pytest.raises(AppendError, match="safe SQL identifier"):
+        execute_prepared(con, prepared, catalog="bad catalog")
+
+
+def test_grain_conflict_is_typed(con: Any) -> None:
+    with pytest.raises(GrainConflictError):
+        append_events(
+            con, _spec(), [_row(workflow="a"), _row(workflow="b")], tenant_id=TENANT, project_id=PROJECT, catalog="memory"
+        )
+    prepared = prepare_batch(_spec(), [_row()], tenant_id=TENANT, project_id=PROJECT)
+    execute_prepared(con, prepared, catalog="memory")
+    conflicting = prepare_batch(_spec(), [_row(workflow="plan")], tenant_id=TENANT, project_id=PROJECT)
+    with pytest.raises(GrainConflictError, match="TELEMETRY_GRAIN_CONFLICT"):
+        execute_prepared(con, conflicting, catalog="memory")
+    with pytest.raises(GateError):
+        append_events(con, _spec(), [_row(parser_version=True)], tenant_id=TENANT, project_id=PROJECT, catalog="memory")
+    assert _count(con) == 1
+
+
+def test_execute_prepared_leaves_a_failing_batch_to_the_callers_transaction(con: Any) -> None:
+    bad = EventTableSpec(table="telemetry_sessions", columns={**_COLUMNS, "absent": "VARCHAR"}, not_null=_NOT_NULL)
+    prepared = prepare_batch(bad, [_row()], tenant_id=TENANT, project_id=PROJECT)
+    con.execute("BEGIN")
+    with pytest.raises(Exception) as raised:
+        execute_prepared(con, prepared, catalog="memory")
+    assert not isinstance(raised.value, AppendError)
+    con.execute("ROLLBACK")
+
+
+def _transcript_spec() -> EventTableSpec:
+    from tests.fixtures.turn_capture_ducklake import load_specs
+
+    return load_specs()["telemetry_transcripts"]
+
+
+def _transcript(payload: str, *, spilled: bool = False, ref: str = "u1#0", **over: Any) -> dict[str, Any]:
+    digest = hashlib.sha256(payload.encode()).hexdigest()
+    row: dict[str, Any] = {
+        "event_kind": "point",
+        "event_timestamp": datetime(2026, 9, 25, 10, 0, 5, tzinfo=timezone.utc),
+        "session_started_at": datetime(2026, 9, 25, 10, 0, 0, tzinfo=timezone.utc),
+        "external_ref": ref,
+        "entity_ref": ref,
+        "session_ref": "sess",
+        "observation_ref": "turn",
+        "producer": "claude_code",
+        "producer_version": "t",
+        "parser_version": 2,
+        "purpose": "prompt",
+        "origin": "human",
+        "content_sha256": digest,
+        "content_bytes": len(payload.encode()),
+        "content_truncated": False,
+    }
+    row["content_uri" if spilled else "content"] = f"t/p/s/{digest}" if spilled else payload
+    row.update(over)
+    return row
+
+
+@pytest.fixture
+def transcripts_con() -> Any:
+    spec = _transcript_spec()
+    connection = duckdb.connect()
+    connection.execute("SET TimeZone='UTC'")
+    connection.execute(f"CREATE TABLE telemetry_transcripts ({', '.join(f'{c} {t}' for c, t in spec.columns.items())})")
+    return connection
+
+
+def test_transcript_representation_change_is_not_a_conflict(transcripts_con: Any) -> None:
+    spec = _transcript_spec()
+    now = datetime(2026, 9, 25, 10, 1, tzinfo=timezone.utc)
+    payload = "p" * 70_000
+    kwargs = {"tenant_id": TENANT, "project_id": PROJECT, "catalog": "memory", "now": now}
+    first = append_events(transcripts_con, spec, [_transcript(payload)], **kwargs)
+    again = append_events(transcripts_con, spec, [_transcript(payload, spilled=True)], **kwargs)
+    assert (first.inserted, again.inserted) == (1, 0)
+    other = _transcript("q" * 70_000, spilled=True)
+    with pytest.raises(GrainConflictError, match="TELEMETRY_GRAIN_CONFLICT"):
+        append_events(transcripts_con, spec, [other], **kwargs)
+    row = transcripts_con.execute("SELECT count(*), count(content), count(content_uri) FROM telemetry_transcripts").fetchone()
+    assert row == (1, 1, 0)
+    omitted = _transcript("x", ref="u2#0", content_sha256="a" * 64, content_bytes=9_000_000)
+    omitted.pop("content")
+    omitted["content_omitted_reason"] = "oversize"
+    assert append_events(transcripts_con, spec, [omitted], **kwargs).inserted == 1
+    assert append_events(transcripts_con, spec, [omitted], **kwargs).inserted == 0
+
+
+def test_rule_rejection_leaves_no_row_and_no_transaction(transcripts_con: Any) -> None:
+    spec = _transcript_spec()
+    bad = _transcript("hi", event_timestamp=datetime(2025, 1, 1, tzinfo=timezone.utc))
+    with pytest.raises(GateError, match="not_before"):
+        append_events(transcripts_con, spec, [bad], tenant_id=TENANT, project_id=PROJECT, catalog="memory")
+    assert transcripts_con.execute("SELECT count(*) FROM telemetry_transcripts").fetchone()[0] == 0
+
+
+class TestFromProjectionRules:
+    def test_rules_and_compare_exclusions_come_from_the_projection(self) -> None:
+        entry = TestEventTableSpecFromProjection()._base_entry()
+        entry["columns"]["workflow"] = {
+            "role": "input", "sql_type": "VARCHAR", "nullable": True, "accepted_values": ["implement"],
+            "representation_of": ["parser_version"],
+        }  # fmt: skip
+        spec = EventTableSpec.from_projection("telemetry_sessions", entry)
+        assert spec.rules.accepted_values == {"workflow": frozenset({"implement"})}
+        assert spec.compare_excluded == frozenset({"created_timestamp", "producer_version", "workflow"})
+
+    def test_malformed_rule_projection_is_an_append_error(self) -> None:
+        entry = TestEventTableSpecFromProjection()._base_entry()
+        entry["columns"]["workflow"] = {"role": "input", "sql_type": "VARCHAR", "nullable": True, "mystery": 1}
+        with pytest.raises(AppendError, match="telemetry_sessions: workflow: unknown rule key"):
+            EventTableSpec.from_projection("telemetry_sessions", entry)
+
+    def test_a_grain_key_column_cannot_be_representation_only(self) -> None:
+        entry = TestEventTableSpecFromProjection()._base_entry()
+        entry["columns"]["producer"]["representation_of"] = ["parser_version"]
+        with pytest.raises(AppendError, match="grain-key column"):
+            EventTableSpec.from_projection("telemetry_sessions", entry)

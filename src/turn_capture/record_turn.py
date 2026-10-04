@@ -5,16 +5,21 @@ over the tree truncated to the cursor's per-file lines_consumed with the cursor'
 finalized tree that later grows (a resumed session) re-emits nothing already emitted, and incremental capture
 equals one full parse. Data batches first, ONE telemetry_sessions batch LAST. No file writes, no network, no
 writer call: the caller persists next_cursor only after every batch was written.
+
+The session pin is the EARLIEST record timestamp. A record appended later with a timestamp earlier than the
+persisted pin re-pins only while the persisted cursor's consumed prefix built no row (nothing was emitted under the
+old pin); once a row was emitted it raises PinOrderError, the producer halt: never re-pinned, never emitted.
 """
 
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from src.telemetry.timestamps import epoch_ms
-from src.turn_capture.cursor import CaptureCursor
+from src.turn_capture.cursor import CaptureCursor, CursorError
 from src.turn_capture.observations import build_observations
 from src.turn_capture.sessions import build_agents, build_sessions
 from src.turn_capture.streams import ParsedTree, parse_tree
@@ -22,10 +27,15 @@ from src.turn_capture.transcript import ROOT, TranscriptTree, read_lines, sessio
 from src.turn_capture.transcripts import Ctx, Sidecars, build_transcripts
 
 PRODUCER = "claude_code"
-PARSER_VERSION = 1
-PRODUCER_VERSION = "turn-capture-3a"
+PARSER_VERSION = 2
+PRODUCER_VERSION = "turn-capture-2a1"
+FULL_OUTPUT_CAP_BYTES = 8388608
 BILLING_SHAPES = ("metered_marginal", "fixed_non_rollover_allowance")
 TABLES = ("telemetry_observations", "telemetry_transcripts", "telemetry_agents", "telemetry_sessions")
+
+
+class PinOrderError(CursorError):
+    """A record earlier than the persisted session pin appeared after a row was emitted under that pin: a producer halt."""
 
 
 @dataclass(frozen=True)
@@ -45,7 +55,7 @@ class CaptureResult:
 
 def _build_all(parsed: ParsedTree, ctx: Ctx, sidecars: Sidecars, diag: Counter[str]) -> dict[str, list[dict[str, Any]]]:
     built = {
-        "telemetry_observations": build_observations(parsed, ctx, diag),
+        "telemetry_observations": build_observations(parsed, ctx, diag, sidecars),
         "telemetry_transcripts": build_transcripts(parsed, ctx, sidecars, diag),
         "telemetry_agents": build_agents(parsed, ctx),
         "telemetry_sessions": build_sessions(parsed, ctx),
@@ -61,6 +71,27 @@ def _build_all(parsed: ParsedTree, ctx: Ctx, sidecars: Sidecars, diag: Counter[s
             unique.append(row)
         built[table] = unique
     return built
+
+
+def _pin_moment(session_started_at_ms: int) -> datetime:
+    return datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(milliseconds=session_started_at_ms)
+
+
+def _repin(tree: TranscriptTree, cursor: CaptureCursor, started_ms: int, cap: int) -> CaptureCursor:
+    """Re-pin *cursor* to an earlier record only if its consumed prefix, as persisted, built no row."""
+    ctx = Ctx(
+        cursor.producer,
+        PRODUCER_VERSION,
+        cursor.parser_version,
+        _pin_moment(cursor.session_started_at_ms),
+        cursor.billing_shape,
+        cap,
+    )
+    prefix = parse_tree(tree, cursor.lines_consumed, cursor.finalized)
+    built = _build_all(prefix, ctx, Sidecars(tree, cursor), Counter())
+    if any(built.values()):
+        raise PinOrderError("a record earlier than the persisted session pin appeared after a row was emitted under it")
+    return replace(cursor, session_started_at_ms=started_ms)
 
 
 def record_turn(
@@ -80,8 +111,11 @@ def record_turn(
     if pin is None:
         return CaptureResult([], [], [], [], None, {})
     started_ms = epoch_ms(pin)
+    cap = FULL_OUTPUT_CAP_BYTES
     base = None
     if cursor is not None:
+        if started_ms < cursor.session_started_at_ms:
+            cursor = _repin(tree, cursor, started_ms, cap)
         cursor.check_pins(
             root_session_ref=tree.session_id,
             project_ref=project_ref,
@@ -91,7 +125,7 @@ def record_turn(
         base = (
             cursor if (cursor.producer, cursor.parser_version) == (PRODUCER, PARSER_VERSION) else cursor.reset(PARSER_VERSION)
         )
-    ctx = Ctx(PRODUCER, PRODUCER_VERSION, PARSER_VERSION, pin, billing_shape)
+    ctx = Ctx(PRODUCER, PRODUCER_VERSION, PARSER_VERSION, pin, billing_shape, cap)
     diag: Counter[str] = Counter()
     parsed = parse_tree(tree, None, session_final)
     sidecars = Sidecars(tree, base)

@@ -3,7 +3,8 @@
 Tree layout: <sessionId>.jsonl, <sessionId>/subagents/agent-<agentId>.jsonl,
 <sessionId>/tool-results/<basename>. A line is a record iff newline-terminated and json.loads yields a dict;
 a trailing partial line is NOT consumed; a terminated non-object line is malformed (counted, consumed, never
-a row source). Sidecars resolve only as <session dir>/tool-results/<basename(persistedOutputPath)>.
+a row source). Sidecars resolve only as <session dir>/tool-results/<basename(persistedOutputPath)> and are read
+either whole (sidecar) or as 64 KiB chunks (sidecar_chunks), so a sidecar above the cap is never materialised.
 """
 
 from __future__ import annotations
@@ -12,11 +13,12 @@ import json
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Iterator, Protocol
 
 from src.telemetry.timestamps import TimestampError, parse_iso8601_utc
 
 ROOT = "root"
+SIDECAR_CHUNK_BYTES = 65536
 
 
 class TranscriptTree(Protocol):
@@ -27,6 +29,10 @@ class TranscriptTree(Protocol):
     def read(self, key: str) -> bytes | None: ...
 
     def sidecar(self, basename: str) -> bytes | None: ...
+
+    def sidecar_size(self, basename: str) -> int | None: ...
+
+    def sidecar_chunks(self, basename: str) -> Iterator[bytes]: ...
 
 
 class FsTree:
@@ -46,6 +52,18 @@ class FsTree:
     def sidecar(self, basename: str) -> bytes | None:
         path = self._dir / "tool-results" / basename
         return path.read_bytes() if path.is_file() else None
+
+    def sidecar_size(self, basename: str) -> int | None:
+        path = self._dir / "tool-results" / basename
+        return path.stat().st_size if path.is_file() else None
+
+    def sidecar_chunks(self, basename: str) -> Iterator[bytes]:
+        path = self._dir / "tool-results" / basename
+        if not path.is_file():
+            return
+        with path.open("rb") as handle:
+            while chunk := handle.read(SIDECAR_CHUNK_BYTES):
+                yield chunk
 
 
 class MemTree:
@@ -67,9 +85,21 @@ class MemTree:
         body = self.files.get(rel)
         return None if body is None else body.encode("utf-8")
 
-    def sidecar(self, basename: str) -> bytes | None:
+    def _sidecar_bytes(self, basename: str) -> bytes | None:
         body = self.files.get(f"{self.session_id}/tool-results/{basename}")
         return None if body is None else body.encode("utf-8")
+
+    def sidecar(self, basename: str) -> bytes | None:
+        return self._sidecar_bytes(basename)
+
+    def sidecar_size(self, basename: str) -> int | None:
+        data = self._sidecar_bytes(basename)
+        return None if data is None else len(data)
+
+    def sidecar_chunks(self, basename: str) -> Iterator[bytes]:
+        data = self._sidecar_bytes(basename) or b""
+        for start in range(0, len(data), SIDECAR_CHUNK_BYTES):
+            yield data[start : start + SIDECAR_CHUNK_BYTES]
 
 
 @dataclass(frozen=True)
@@ -103,8 +133,10 @@ def record_time(data: dict) -> datetime | None:
 
 
 def session_pin(lines: list[RawLine]) -> datetime | None:
-    """The first record in root file order, of any type, whose timestamp parses; None defers capture."""
-    for item in lines:
-        if item.data is not None and (when := record_time(item.data)) is not None:
-            return when
-    return None
+    """The EARLIEST parseable record timestamp among the root file's lines, of any type; None defers capture.
+
+    Not the first record in file order: SessionStart hook records are written after an earlier queue-operation record
+    yet carry earlier timestamps.
+    """
+    times = [when for item in lines if item.data is not None and (when := record_time(item.data)) is not None]
+    return min(times) if times else None
