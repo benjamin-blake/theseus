@@ -2,8 +2,8 @@ schema_version: 5
 slug: "w1-cost-egress"
 intent: >-
   Stage, for the operator, the design of telemetry-feedback-loop W1 component 10 (the cost and egress budget:
-  a register of cost lines in physical units with an owner, a cadence and a seed envelope each, a daily
-  ledger with per-component attribution, and a daily verdict priced at read) without building, provisioning
+  a register of cost lines in physical units with an owner, a cadence, a measure (flow or stock) and a seed
+  envelope each, a daily ledger with per-component attribution, and a daily verdict priced at read) without building, provisioning
   or paying for anything: prove with executable evidence what the nine sibling components hand to this
   component and that none of them declares an envelope or a price; prove that the repository's cost surface
   (the roadmap projection, the monthly reconciliation's triggers and thresholds, its telemetry leg, Terraform,
@@ -51,16 +51,20 @@ acceptance_criteria:
     and the reconciliation's 6 thresholds name no egress, Neon, Lambda, catalog or review line; the telemetry
     cost leg returns None; no contract names est_cost_usd; the roadmap block says "Not a budget" and its Neon
     egress line is TBD; Terraform declares no budget or cost-anomaly resource and no catalog_stats schedule;
-    the reconciliation runs monthly; the hooks file wires no Stop or SessionEnd hook (VP step 2).
+    the reconciliation runs monthly; Terraform declares no S3 bucket metrics configuration, inventory or Storage
+    Lens, so neither S3 line has a free per-prefix meter; the hooks file wires no Stop or SessionEnd hook (VP
+    step 2).
   - >-
     The cost model assembled from the report's block runs on DuckDB and reproduces the seven scenario lines
     of report section 2.3: catalog egress 1,576,200,000 bytes a month at 5 sessions a day under the touched
     model and 27,621,000,000 under whole_catalog; 3, 5 and 7 lines over their seed envelopes at 5, 20 and
     100 sessions; 18,544,800,000 at 20 sessions with one merge window a day (VP step 3).
   - >-
-    The verdict SQL assembled from the report passes all 61 vectors on DuckDB with one row per line, 18 by
-    raising with the stated message; each of 70 mutants (38 named plus a rule sweep) replaces exactly one site
-    and fails at least one vector; the one equivalent mutant passes every vector (VP step 4).
+    The verdict SQL assembled from the report passes all 113 vectors on DuckDB with one row per line (33 of
+    them written by verification round 1), 24 by raising with the stated message; each of 192 mutants (44 named
+    plus a rule sweep over guards, comparisons, windows, boundaries, rounding, aggregates and WHEN order)
+    replaces exactly one site and fails at least one vector; each of the 21 equivalent mutants passes every
+    vector (VP step 4).
   - >-
     The pilot fixture carries exactly one item for this component, keeps its three-line CD.45 header, and
     validate_work_item_pilot passes all six legs (VP step 5).
@@ -98,12 +102,12 @@ verification_plan:
     action: Probe the repository's cost surface for any line that budgets the loop
     command: >-
       bin/venv-python -c "import json,pathlib,re,yaml; from scripts.cost_reconciliation import load_telemetry_cost as L; R=yaml.safe_load(open('docs/ROADMAP-PLATFORM.yaml',encoding='utf-8'))['cost_projection']; T=R['reevaluation_triggers']; C=yaml.safe_load(open('config/agent/cost_reconciliation.yaml',encoding='utf-8'))['thresholds']; X=re.compile('egress|neon|lambda|catalog|review|telemetry',re.I); F=[p for p in pathlib.Path('terraform').rglob('*.tf')]; K=list(pathlib.Path('docs/contracts').glob('*.yaml')); J=json.dumps(R);
-      print('triggers=%d triggers_on_loop_lines=%d thresholds=%d thresholds_on_loop_lines=%d telemetry_cost_leg=%s contracts_est_cost_usd=%d contracts_cost_usd=%d roadmap_not_a_budget=%s neon_egress_tbd=%s tf_budget_resources=%d tf_catalog_stats_lines=%d reconciliation_cron=%s hook_events=%s' % (len(T),sum(bool(X.search(t)) for t in T),len(C),sum(bool(re.search('egress|neon|lambda|catalog|review',k)) for k in C),L('2026-09'),sum('est_cost_usd' in p.read_text(encoding='utf-8') for p in K),sum('cost_usd' in p.read_text(encoding='utf-8') for p in K),'Not a budget' in R['notes'],bool(re.search(r'\"neon_catalog_egress\": \"TBD',J)),sum(len(re.findall('aws_budgets_budget|aws_ce_anomaly',p.read_text(encoding='utf-8'))) for p in F),sum(1 for p in F for l in p.read_text(encoding='utf-8').splitlines() if 'catalog_stats' in l and not l.strip().startswith('#')),re.findall(r'cron: \"([^\"]+)\"',open('.github/workflows/cost-reconciliation.yml',encoding='utf-8').read()),sorted(json.load(open('.claude/settings.json',encoding='utf-8'))['hooks'])))"
+      print('triggers=%d triggers_on_loop_lines=%d thresholds=%d thresholds_on_loop_lines=%d telemetry_cost_leg=%s contracts_est_cost_usd=%d contracts_cost_usd=%d roadmap_not_a_budget=%s neon_egress_tbd=%s tf_budget_resources=%d tf_s3_metric_or_inventory=%d tf_catalog_stats_lines=%d reconciliation_cron=%s hook_events=%s' % (len(T),sum(bool(X.search(t)) for t in T),len(C),sum(bool(re.search('egress|neon|lambda|catalog|review',k)) for k in C),L('2026-09'),sum('est_cost_usd' in p.read_text(encoding='utf-8') for p in K),sum('cost_usd' in p.read_text(encoding='utf-8') for p in K),'Not a budget' in R['notes'],bool(re.search(r'\"neon_catalog_egress\": \"TBD',J)),sum(len(re.findall('aws_budgets_budget|aws_ce_anomaly',p.read_text(encoding='utf-8'))) for p in F),sum(len(re.findall('aws_s3_bucket_metric|aws_s3_bucket_inventory|storage_lens',p.read_text(encoding='utf-8'))) for p in F),sum(1 for p in F for l in p.read_text(encoding='utf-8').splitlines() if 'catalog_stats' in l and not l.strip().startswith('#')),re.findall(r'cron: \"([^\"]+)\"',open('.github/workflows/cost-reconciliation.yml',encoding='utf-8').read()),sorted(json.load(open('.claude/settings.json',encoding='utf-8'))['hooks'])))"
     expected: >-
       One line: five triggers and six thresholds, none naming a loop line; the telemetry cost leg None; no
       contract naming est_cost_usd and two naming cost_usd; the roadmap block "Not a budget" with its Neon
-      egress line TBD; no Terraform budget resource and no catalog_stats schedule line; a monthly cron; two hook
-      events, neither Stop nor SessionEnd.
+      egress line TBD; no Terraform budget resource, no S3 bucket metrics configuration, inventory or Storage
+      Lens, and no catalog_stats schedule line; a monthly cron; two hook events, neither Stop nor SessionEnd.
     fix_if: >-
       A trigger or threshold above 0 means a loop line was budgeted elsewhere: read it and update e3, e4, s3, k2
       and the verdict. A telemetry leg other than None means T2.36's cost column landed: update e5, O1 and O4.
@@ -113,7 +117,7 @@ verification_plan:
     graduation_waiver_reason: >-
       Red-before evidence for the build; true only until a loop line is budgeted or measured, so a standing guard
       would pin the gap the design asks to close.
-    expected_literals: ["triggers=5 triggers_on_loop_lines=0 thresholds=6 thresholds_on_loop_lines=0 telemetry_cost_leg=None contracts_est_cost_usd=0 contracts_cost_usd=2 roadmap_not_a_budget=True neon_egress_tbd=True tf_budget_resources=0 tf_catalog_stats_lines=0 reconciliation_cron=['0 6 4 * *'] hook_events=['PreToolUse', 'SessionStart']"]
+    expected_literals: ["triggers=5 triggers_on_loop_lines=0 thresholds=6 thresholds_on_loop_lines=0 telemetry_cost_leg=None contracts_est_cost_usd=0 contracts_cost_usd=2 roadmap_not_a_budget=True neon_egress_tbd=True tf_budget_resources=0 tf_s3_metric_or_inventory=0 tf_catalog_stats_lines=0 reconciliation_cron=['0 6 4 * *'] hook_events=['PreToolUse', 'SessionStart']"]
   - step: 3
     phase: pre-deploy
     action: Run the cost model from the report's block on DuckDB at three scales under both egress models
@@ -151,8 +155,8 @@ verification_plan:
         return q
       def G(v,q):
         t=D.date.fromisoformat(v['params']['today']) if 'today' in v.get('params',{}) else t0; N=lambda o: None if o is None else t+D.timedelta(o)
-        c=duckdb.connect(); c.execute('CREATE TABLE budget (line VARCHAR, unit VARCHAR, owner VARCHAR, cadence VARCHAR, envelope DOUBLE, warn_share DOUBLE)'); c.execute('CREATE TABLE ledger (line VARCHAR, day DATE, value DOUBLE)'); c.execute('CREATE TABLE attribution (line VARCHAR, day DATE, component VARCHAR, value DOUBLE)')
-        [c.execute('INSERT INTO budget VALUES (?,?,?,?,?,?)',[r[k] for k in ('line','unit','owner','cadence','envelope','warn_share')]) for r in (dict(V['defaults']['budget_row'],**x) for x in v.get('budget',[]))]
+        c=duckdb.connect(); c.execute('CREATE TABLE budget (line VARCHAR, unit VARCHAR, owner VARCHAR, cadence VARCHAR, measure VARCHAR, envelope DOUBLE, warn_share DOUBLE)'); c.execute('CREATE TABLE ledger (line VARCHAR, day DATE, value DOUBLE)'); c.execute('CREATE TABLE attribution (line VARCHAR, day DATE, component VARCHAR, value DOUBLE)')
+        [c.execute('INSERT INTO budget VALUES (?,?,?,?,?,?,?)',[r[k] for k in ('line','unit','owner','cadence','measure','envelope','warn_share')]) for r in (dict(V['defaults']['budget_row'],**x) for x in v.get('budget',[]))]
         [c.execute('INSERT INTO ledger VALUES (?,?,?)',[s['line'],N(o),s['value']]) for s in v.get('ledger',[]) for o in (range(s['from'],s['to']+1) if s.get('from') is not None else [None])]
         [c.execute('INSERT INTO attribution VALUES (?,?,?,?)',[a['line'],N(a['day']),a['component'],a['value']]) for a in v.get('attribution',[])]
         try: rows=c.execute(A(q,{k:x for k,x in v.get('params',{}).items() if k!='today'},t)).fetchall(); g=dict(rows)
@@ -162,12 +166,12 @@ verification_plan:
       M=Y['mutants']; K=[any(not G(v,Q['sql'].replace(m['old'],m['new'])) for v in V['cases']) for m in M]
       print('mutants=%d unique_site=%d killed=%d survivors=%s equivalent=%d equivalent_pass_all=%d' % (len(M),sum(Q['sql'].count(m['old'])==1 for m in M),sum(K),[m['id'] for m,k in zip(M,K) if not k],len(Y['equivalent']),sum(Q['sql'].count(m['old'])==1 and all(G(v,Q['sql'].replace(m['old'],m['new'])) for v in V['cases']) for m in Y['equivalent'])))"
     expected: >-
-      Two lines: 61 vectors, 61 of 61 passing (18, e01-e18, by raising with their stated message), each
-      returning one row per line under its own params override if it carries one, and an empty failed list;
-      then 70 mutants (38 named, 32 from the rule sweep of report section 2.6), each replacing exactly one site
-      of the SQL, all 70 killed, no survivors, and the one equivalent mutant replacing one site and passing
-      every vector. A refusal with another message, or a repeated line row, counts as a failure. Takes about
-      a minute.
+      Two lines: 113 vectors, 113 of 113 passing (24, e01-e21, n05, n08, n10, by raising with their stated
+      message), each returning one row per line under its own params override if it carries one, and an empty
+      failed list; then 192 mutants (44 named, 148 from the rule sweep of report section 2.6), each replacing
+      exactly one site of the SQL, all 192 killed, no survivors, and the 21 equivalent mutants each replacing
+      one site and passing every vector. A refusal with another message, or a repeated line row, counts as a
+      failure. Takes 8-12 minutes on 4 cores.
     fix_if: >-
       A failing vector means the SQL and the verdict rules in report section 2.4 disagree: fix the one that
       encodes the wrong intent and say which in the report. A survivor means a vector is missing: add one that
@@ -177,7 +181,7 @@ verification_plan:
     graduation: waive
     graduation_waiver_reason: >-
       Design evidence for the staged verdict; the production SQL carries its own vector test (criterion c1).
-    expected_literals: ["vectors=61 pass=61/61 raises=18 failed=[]", "mutants=70 unique_site=70 killed=70 survivors=[] equivalent=1 equivalent_pass_all=1"]
+    expected_literals: ["vectors=113 pass=113/113 raises=24 failed=[]", "mutants=192 unique_site=192 killed=192 survivors=[] equivalent=21 equivalent_pass_all=21"]
   - step: 5
     phase: pre-deploy
     action: Prove the fixture carries this component's one item and the pilot evaluator passes
@@ -242,10 +246,13 @@ constraints:
     docs/DECISIONS.md and its archive untouched; the candidate text in report section 6 is staged for W3, not
     filed; the roadmap's stale Neon line (O2) is named, not edited.
   - >-
-    k1-k6 weigh credible alternatives with no admissible precedent: parked as asked, never decided by this
+    k1-k8 weigh credible alternatives with no admissible precedent: parked as asked, never decided by this
     thread or the Step 6b stand-in. k4 (b) would need a Neon API credential in the data plane and is named as
-    always-ask if ever proposed; it is not proposed. None decides spend: the model's list prices are external,
-    unverified and never stored as measured dollars (Decision 101).
+    always-ask if ever proposed; it is not proposed. k8 (b) and (c) for either S3 line (S3 request metrics,
+    access logs, Inventory or Storage Lens) need a Terraform change and a billed metric or stored logs: named
+    always-ask, not chosen, not staged; the staged sources count what the loop's own code and catalog already
+    know. None decides spend: the model's list prices are external, unverified and never stored as measured
+    dollars (Decision 101).
   - >-
     CD.45 binds while pending: one fixture only, sized by item count (this component spends 1 of 12), edges id-only
     into ROADMAP-PLATFORM, never read by /orient, preflight or a pick surface (Decision 108).
@@ -260,15 +267,15 @@ context:
     #1400, cited as unmerged evidence, not precedent. The brief applies the SUBAGENT CONTEXT header of
     docs/contracts/overseer-dispatch.yaml#subagent_detection, so gates are GATE_REQUESTed, never run inline.
     Gates: zero-context verification first; the PR waits for the operator. Step 0: ci_rca_open read through the
-    reader's named verb returned 0 rows at the start of the thread.
+    reader's named verb returned 0 rows at the start of the thread. Zero-context verification r1
+    (w1-cost-egress-zero-context-verification-r1-6a1d3f85) returned REVISE with F1 (a stock summed as a flow),
+    F2 (event projection over rows, not days), F3 (two S3 meter sources needing Terraform and spend) and 33
+    vectors plus four mutation classes; all folded here.
   - >-
-    Inputs read: Decisions 55, 62, 67, 86, 88, 101, 184 (clause 2), 192, 197, 199, 205 (clause 3), 206 (clause
-    7), 209; CD.28, CD.34, CD.45; the nine W1 fixtures and reports at their pinned heads (sections 0, 3, 5 and
-    every cost or egress paragraph); scripts/cost_reconciliation.py; config/agent/cost_reconciliation.yaml;
-    .github/workflows/cost-reconciliation.yml; the roadmap cost_projection block, T2.36, T2.52 and T3.20;
-    terraform/personal (read-only: Lambda memory and timeouts, the merge_ops and DR schedules, the absence of
-    budget resources); .claude/settings.json; the telemetry contracts (grep only); the pilot model and
-    evaluator.
+    Inputs read: Decisions 55, 62, 67, 86, 88, 101, 184 cl.2, 192, 197, 199, 205 cl.3, 206 cl.7, 209; CD.28,
+    CD.34, CD.45; the nine W1 fixtures and reports at their pinned heads; scripts/cost_reconciliation.py and its
+    config and workflow; the roadmap cost_projection block, T2.36, T2.52, T3.20; terraform/personal (read-only);
+    .claude/settings.json; the telemetry contracts (grep only); the pilot model and evaluator.
   - >-
     Industry practice applied: FinOps allocation before optimisation (every line has an owner; shared lines
     carry attribution); budgets kept in the meter's unit and priced at read, so a price change re-prices
@@ -284,7 +291,10 @@ context:
   - "fork: how catalog egress is measured (k4) | chosen: none; (a) catalog_stats proxy calibrated against the invoice recommended; (b) Neon consumption API (a new credential: always-ask if proposed); (c) invoice only | class: asked | precedent: none (Decision 88 clause 2 names the path, not the proxy; measurement is not precedent) | precedent_kind: none | reversible: yes | persisted: report k4 (report-only), R5, /mnt/project-files/gates/w1-c10-parked-forks.md, PARKED"
   - "fork: how shared lines are attributed (k5) | chosen: none; (a) per-call component stamps recommended; (b) proportional split; (c) unattributed by design | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: report k5 (report-only), R2, verdict unattributed rule, /mnt/project-files/gates/w1-c10-parked-forks.md, PARKED"
   - "fork: edge home (k6) | chosen: none; (a) depends_on T2.36 only carried provisionally; (b) part_of T2.52; (c) edges to unmerged sibling items, refused by L4 | class: asked | precedent: none (T2.52's criterion text is roadmap, not a Decision) | precedent_kind: none | reversible: yes | persisted: report k6 (report-only), fixture edges, /mnt/project-files/gates/w1-c10-parked-forks.md, PARKED"
-  - "fork: verdict precedence and windows | chosen: none; staged unregistered > breach > dark > projected_breach > unattributed > warn > ok, a 31-day history window with a NULL day raising anywhere, a 7-day rate window, 9-place rounding and strict comparisons, the first failing guard by name | class: asked | precedent: none (choices inside the staged SQL) | precedent_kind: none | reversible: yes | persisted: report 2.4, vectors v13-v26 and e17, /mnt/project-files/gates/w1-c10-parked-forks.md, PARKED under k1"
+  - "fork: how a stock line is read (k7, verification r1 F1) | chosen: none; (a) latest reading is the level, nothing projected, staged and recommended for the pilot; (b) month mean (the GB-month billing basis); (c) latest plus a 7-day growth trend; (d) redefine as a flow of bytes added | class: asked | precedent: none (the first draft summed a stock and read a flat 1 GiB against 20 GiB as breach) | precedent_kind: none | reversible: yes | persisted: report 2.1, 2.4 and k7, vectors s01-s09, register measure column, /mnt/project-files/gates/w1-c10-parked-forks.md, PARKED"
+  - "fork: which meter feeds the two S3 lines (k8, verification r1 F3) | chosen: none; staged and recommended (a) self-counted PUTs and GETs on the Lambda log line and the catalog's data_file_size_bytes over ducklake_list_files; (b) S3 request metrics, access logs, Inventory or Storage Lens are Terraform plus spend and named always-ask, not chosen; (d) invoice or bucket-wide BucketSizeBytes as calibration and ceiling | class: asked; (b)/(c) always-ask | precedent: none (BucketSizeBytes has no prefix dimension; the prefix lives in the shared data_lake bucket) | precedent_kind: none | reversible: yes | persisted: report 2.2, k8, R7 and e17, fixture c2, /mnt/project-files/gates/w1-c10-parked-forks.md, PARKED"
+  - "fork: event-line projection (verification r1 F2) | chosen: none; staged the mean over calendar days for an event line (sum over the rate window divided by window_days) and the mean over reporting days for a daily line (missing days are dark, not zero) | class: asked | precedent: none (report 2.1's no-row-is-not-dark rule, by consistency) | precedent_kind: none | reversible: yes | persisted: report 2.4, vectors p01-p05 and d01, /mnt/project-files/gates/w1-c10-parked-forks.md, PARKED under k1"
+  - "fork: verdict precedence and windows | chosen: none; staged unregistered > breach > dark > projected_breach > unattributed > warn > ok, a 31-day history window with a NULL day raising anywhere, a 7-day rate window, 9-place rounding and strict comparisons, the first failing guard by name, a blank or NULL line name raising | class: asked | precedent: none (choices inside the staged SQL) | precedent_kind: none | reversible: yes | persisted: report 2.4, vectors v13-v26, e17 and e20-e21, /mnt/project-files/gates/w1-c10-parked-forks.md, PARKED under k1"
   - "fork: seeds (envelopes in section 2.2, warn share 0.8, tolerance 0.01, rate window 7 days, maturity 30/30/30) | chosen: none; carried as provisional seeds from the model | class: asked | precedent: none (no measurement, no Decision) | precedent_kind: none | reversible: yes | persisted: report q1, fixture q1 and maturity (every trigger marked provisional)"
   - >-
     check_accounting: no registered check is added or removed; the hygiene stream's baseline is untouched.
