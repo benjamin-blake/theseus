@@ -44,6 +44,13 @@ conditions:
 
 **Related:** Decision 207, 81 cl.5 and cl.8 (amended), 84 I-2, 103, 55, 199, 184 cl.2, 100, 181 cl.2, 163, 70, T1.6; CD.12 refined, not amended -- its ops single-source choice is deferred to rec-4158, telemetry's source is its Class A contract (already so under Decision 199), and its FK-pre-commit discipline is narrowed to write-decidable references (references across independent producers stay DQ, already so under Decision 199 / R3); CD.12's ratification reconciles with this Decision.
 
+[Amendment 2026-10-04, rec-4158: cl.3's ops choice is made -- for the ops tables the single source is the owning Class A
+contract (docs/contracts/ops_recommendations.yaml), field_semantics.yaml its generated projection; ops.yaml and the CD.12
+Pydantic models are DQ-side artefacts, never a write-time rule source. Older rows: a rule binds rows created on or after its
+exclude_before and any column a write changes; no date moves later. An exemption names its owning rec, except a
+repository_state rule, which no write can ever decide, names the producer that enforces it. Detail:
+data-modeling-standard.yaml, rule write-time-enforcement.]
+
 ---
 
 ## Decision 209: Open-core paywall on organisational scale, never capability -- a multi-tenant, metadata-only control plane over a customer-owned data plane, and three monorepos placed by platform-vs-product and visibility (amends Decision 184 clause 1, Decision 178 and Decision 101 point (f)) (Decided)
@@ -234,6 +241,8 @@ OUT OF SCOPE: Type-1 current projections (derived, rebuildable from history, Dec
 **Reversal conditions:** if DuckLake ships engine-enforced unique keys (Decision 100), adopt them and retire the application-level MERGE ... THEN ERROR primitive in favor of the engine constraint; the loud-reject semantics and reader conflict-reporting rule survive unchanged.
 
 **Related:** Decision 81 cl.3 and cl.8 (dated annotation added), Decision 84 I-2 (dated annotation added), Decision 88 cl.1 (egress budget), Decision 100 (native-primitive spirit; reversal trigger), Decision 191 cl.1 (write_mode scoping), Decision 199 cl.1-2 (telemetry physical grain refines this), T2.52 c1 (derived materializations out of scope); rec-4061, rec-4062 (bundled), rec-4121, rec-4122, rec-4063, rec-4024, rec-4025 (coverage owners).
+
+> **Update (2026-10-04):** representation-only columns (dq_intent representation_of) are excluded from an insert-grain table's compared content, because the payload identity they represent is compared instead -- a class term, never a table name, and still an equality compare that rejects loudly, not the content-hash tiebreak this entry rejects. Detail: data-modeling-standard.yaml rule grain-enforced-at-write (PLAN-telemetry-write-conformance).
 
 ---
 
@@ -722,6 +731,8 @@ conditions:
 > **Update (2026-09-25):** clause 2's day(session_started_at) always meant the UTC calendar day, which DuckLake spells year(session_started_at), month(session_started_at), day(session_started_at) together, because its day() alone is day-of-month (rec-4065).
 
 > **Update (2026-09-28):** Decision 206 adds persona_backend (litellm | claude_cli) and billing_shape (metered_marginal | fixed_non_rollover_allowance) to telemetry_observations' model_call rows; cost_usd derives only for metered_marginal, and cost-per-verified-merge derives at read per (persona, backend). The field semantics live in the contract.
+
+> **Update (2026-10-04):** clause 5's content is the model-visible payload, the full persisted tool output is its own bounded tool_output row, and a full output above the 8 MiB cap is a typed omission row (content_omitted_reason). Detail: telemetry_transcripts.yaml (PLAN-telemetry-write-conformance). This is the last clause-5 annotation: a further change to the content tier goes to a numbered Decision (decision-entry.yaml intent_accretion_note).
 
 ---
 
@@ -8812,6 +8823,12 @@ state authority.
 > `current`, so the owning contract and the live corpus disagree with no recorded resolution;
 > routed to the operator as a possible unrecorded supersession, not resolved here.
 
+> **Update (2026-10-04):** (rec-4158, Decision 210 cl.3) for ops_recommendations the canonical field-semantic and write-time
+> rule authority is the owning Class A contract (docs/contracts/ops_recommendations.yaml). `config/agent/data_quality/ops.yaml`'s
+> write_time flags are a transitional, parity-checked copy (validate_ops_rule_source) until rec-4158 plan C retires them; its DQ
+> checks stay until T1.6 c7 retires the file, and the description/semantics text Decision 66 guidance reads moves to the contract
+> under T2.29 c7.
+
 ## Decision 64: Bootstrap Cohort Anchor for ops_recommendations is 2026-05-01 (Decided)
 
 The bootstrap cohort for ops_recommendations consists of all records created before 2026-05-01
@@ -8820,6 +8837,10 @@ The bootstrap cohort for ops_recommendations consists of all records created bef
 this table use `exclude_before: '2026-05-01'`. This anchor is fixed and must not be changed
 retroactively. Bootstrap records are not corrupt -- they predate the rules. They age out of the
 _current view as recommendations are closed or superseded.
+
+> **Update (2026-10-04):** (rec-4158, Decision 210 cl.3) 2026-05-01 is also the floor for every write-time rule's
+> `exclude_before` on ops_recommendations. A rule introduced later carries its own later date -- a rule-effective date, never a
+> moved anchor -- and no date moves later or is removed once declared (validate_ops_rule_source's ratchet enforces this).
 
 ## Decision 63: Execution Fields Excluded from ops_recommendations DQ Scope (Decided)
 
