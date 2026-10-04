@@ -19,8 +19,10 @@ honest synthesis is that the loop is built to run entirely at read_all until the
 q1. That pin has a cost the first draft did not state: under the recommended rung ceiling (F1), review-load
 lever (F4) and acceptance of the pin (F9), the review line is already at its warning level after wave 1
 (two components at read_all, about 24 reviews a day against a seed of 30 and a warning line of 24), so
-wave 2's read_all period waits for capture q1 or for an operator capacity decision of about 48 reviews a
-day (section 3.4). Capture q1 therefore gates building from wave 2 on, not only promotion. The one
+wave 2's read_all period waits for capture q1 or for an operator capacity decision (an envelope of about
+60 reviews a day, so that wave 2's 48 sit under the 0.8 warning line; section 3.4). Capture q1 therefore
+gates the read_all run of every wave from wave 2 on (waves 3 and 4 inherit the wait by sequence), not only
+promotion. The one
 alternative that frees that capacity, checking monitor soundness at the top rung only, is named under F9
 and not chosen.
 
@@ -120,7 +122,7 @@ prerequisites:
   - {id: P2, what: "2a-1 write-conformance plan merged (claude_code to parser_version 2)", owner: "Telemetry project", blocks: "deliberation cutover (its fields arrive with 2a-1 itself and rec-4028); friction's producer markers, whose sequencing after 2a-1 is the operator's unanswered call 3 of 2026-10-04 (X20)"}
   - {id: P3, what: "ownership split for hooks (telemetry 3b vs #1384)", owner: "operator", blocks: "wave 1 capture"}
   - {id: P4, what: "ownership split for reader verbs and the ducklake_scd2_schema.py Decision 128 split (telemetry 2b vs #1390)", owner: "operator", blocks: "wave 1 reader"}
-  - {id: P5, what: "capture q1 out-of-band session denominator chosen", owner: operator, blocks: "every promotion above read_all (X13); under F1 (a), F4 (a) and F9 (a) also wave 2's read_all period, unless the operator adds review capacity of about 48 a day (section 3.4, X22)"}
+  - {id: P5, what: "capture q1 out-of-band session denominator chosen", owner: operator, blocks: "every promotion above read_all (X13); under F1 (a), F4 (a) and F9 (a) also wave 2's read_all period, and by sequence every later wave's, unless the operator funds an envelope of about 60 reviews a day (section 3.4, X22)"}
   - {id: P6, what: "catalog_stats baseline on the live catalog (Decision 88 clause 2)", owner: "operator (reads the live catalog)", blocks: "budget seed envelopes (#1401 q1), not the build"}
   - {id: P7, what: "pilot schema change for return leg, review fraction and version rule (#1398 O1)", owner: "evaluator owner (W0 code)", blocks: "wave 4 ladder rules, not the ladder's read_all operation"}
   - {id: P8, what: "numbered Decision amending Decision 201 for the late verdict keyed to the fix sha (#1397 k1)", owner: "W3 / operator", blocks: "any proof close in wave 4"}
@@ -129,8 +131,10 @@ prerequisites:
 P1 to P4 are build gates on the first wave. P5 gates promotion, and under the recommended F1, F4 and F9 it
 also gates wave 2's read_all period through the review-load line (section 0, section 3.4). P6 to P8 are
 capability gates, not build gates: P6 for the budget's seed envelopes in wave 3, P7 and P8 for the ladder
-rules and the proof closes in wave 4; the items build and run at read_all without them. The build_order
-block keeps the two kinds apart. None of them is a pilot item: each is a roadmap item, a Telemetry-project plan, an evaluator change or a
+rules and the proof closes in wave 4; the items build and run at read_all without them. P5 is the one
+exception to that definition: it is listed as a capability gate on wave 2 because the items build without
+it, but under F1 (a), F4 (a) and F9 (a) their read_all run waits for it, and waves 3 and 4 inherit the
+wait by sequence. The build_order block keeps the two kinds apart. None of them is a pilot item: each is a roadmap item, a Telemetry-project plan, an evaluator change or a
 Decision, and the pilot carries them as id-only edges or as open questions.
 
 ### 2.3 Build order
@@ -290,7 +294,7 @@ ladder_family:
     version_change: "restart at read_all on an integer version stamp bump (classifier_version, parser_version, register version, allow-list classification version)"
   authority: "the operator approves every promotion; every demotion is automatic and logged"
   drills: "owned by the register (one drill log, one verdict); the controller consumes verdict ok and has no drill clause of its own"
-  faults: "every daily verdict record (the register's and the budget's) carries a faults list naming each leg that fired that day (register: dark, blind, undrilled, counter_dark, counter_low, unregistered, diverging, upstream_unsound, malformed; budget: dark_flag, unattributed_flag, projected breach, invoice residual), so the controller's verdict_not_ok leg and the operator read the reasons, not only the verdict (both consults asked for it; section 3.6)"
+  faults: "every daily verdict record (the register's and the budget's) carries a faults list naming each leg that fired that day (register: dark, blind, undrilled, counter_dark, counter_low, unregistered, diverging, upstream_unsound, malformed; budget: the per-line labels warn, projected_breach, breach, dark, unattributed and unregistered, with dark_flag and unattributed_flag beside them, as #1401 labels its lines; the invoice residual is the monthly reconciliation leg and stays out of the daily list), so the controller's verdict_not_ok leg and the operator read the reasons, not only the verdict (the 2026-10-03 consult asked it of the register, the 2026-10-04 consult of the budget and of this synthesis to converge the two; section 3.6)"
 ```
 
 What this changes against the items as written:
@@ -314,7 +318,7 @@ What this changes against the items as written:
   recovers. That is F1 (d), recommended beside F1 (a), and parked with it.
 - Deliberation keeps its lane. Its triggers are per producer and per parser_version, and its report names
   three restart events (a new producer, a parser_version bump, a change in the visibility mix); the family
-  carries the first two as lane restarts and the version bump as the general rule. Its edge to capture
+  carries the first and third as lane restarts and the version bump as the general rule. Its edge to capture
   binds only the claude_code lane; the LiteLLM lane arrives with rec-4028 and T4.2 and is moot while the
   executor is frozen (Decision 67).
 - The demotion legs are split by evidence. #1398 k1 (return to read_all on an overturned output) and
@@ -375,7 +379,9 @@ friction and deliberation for about 48 a day, 1.6 times the envelope; waves 3 an
 F4 (a) a wave starts its read_all period only when the line has headroom, and headroom comes only from a
 promotion or from added capacity. With the verdict-ok precondition at every rung and the ceiling (F1 (a),
 F9 (a)) nothing promotes before P5, so wave 2's read_all period waits for P5 or for the operator to fund
-about 48 reviews a day. That is the joint consequence section 0 states (X22).
+the capacity: headroom under F4 (a) means room below the warning line at 0.8 of the envelope, so for
+wave 2's 48 a day to sit under it the envelope would be about 60 reviews a day (1,800 a month), twice the
+seed. That is the joint consequence section 0 states (X22).
 
 Staged resolution (X5, fork F4): the budget item owns the review-load line and its alarm, because it is a
 cost line like the other nine and the budget is where cost lines are read; the ladder owns the schedule,
@@ -393,10 +399,13 @@ and the authority rule above are the review ladder's only.
 
 ### 3.6 The faults list
 
-Both consults (2026-10-03 for #1400, 2026-10-04 for #1401) asked the register and the budget to carry, on
-every daily verdict record, the list of every leg that fired that day, and asked the synthesis to converge
-the two. The family's faults key stages it: one list per verdict record, in the loop journal (F8), with
-the register's and the budget's leg names as the vocabulary. The controller's verdict_not_ok leg reads
+The 2026-10-03 consult asked the register (#1400) to carry, on every daily verdict record, the list of
+every leg that fired that day; the 2026-10-04 consult asked the same of the budget (#1401) and asked this
+synthesis to converge the two. The family's faults key stages it: one list per verdict record, in the loop
+journal (F8), with the register's leg names (dark, blind, undrilled, counter_dark, counter_low,
+unregistered, diverging, upstream_unsound, malformed) and the budget's per-line labels (warn,
+projected_breach, breach, dark, unattributed, unregistered, with dark_flag and unattributed_flag beside
+them) as the vocabulary; the invoice residual is the budget's monthly leg and is not a daily fault. The controller's verdict_not_ok leg reads
 the list to tell "dark" from "diverging" when it decides whether to hold or demote, and the operator
 reads it instead of re-deriving the verdict. It is staged text under the journal Decision in section 6.
 
@@ -501,7 +510,8 @@ reading the operator asked for on 2026-10-03 applied in its recommendation. The 
   question. Precedent: none (Decision 199 governs telemetry events, not loop records; applying it is an
   analogy until W3 writes it down).
 - F9 (asked) The read_all pin until P5. (a) accept; nothing promotes until capture q1 is answered, and
-  under F1 (a) and F4 (a) wave 2's read_all period waits for P5 or for about 48 reviews a day of capacity;
+  under F1 (a) and F4 (a) wave 2's read_all period waits for P5 or for an envelope of about 60 reviews a day
+  (so that wave 2's 48 sit under the 0.8 warning line);
   (b) exempt capture's counter_dark from upstream propagation while every component is at read_all
   anyway; (c) seed the denominator from the SessionStart hook's own invocation count and let promotion
   follow, noting what #1384 q1 already records: an open row at the SessionStart pass is a record_turn rule
@@ -529,12 +539,15 @@ reading the operator asked for on 2026-10-03 applied in its recommendation. The 
 - F13 (asked) Route of the budget's breach recommendation (X18). (a) #1401 k1 (a) as written, one rec
   per breaching line through the cost reconciliation's rec path; (b) the same breach routed through the
   filer as a detector source, so dedupe and the Decision 67 boundary apply once (an amendment to k1 (a));
-  (c) #1401 k1 (b), the owning component degrades its cadence and no rec is filed. Recommendation (b):
-  two rec writers in one loop is the duplicate-filing failure the filer exists to prevent, and (c) gives a
-  cost line authority over a component's cadence (the F4 objection). Interaction (X21): (b) makes the
-  budget a filer source, which by this report's convention is a data edge, so the filer would carry four
-  staged edges and the evaluator rejects the merge (VP 4 variant). F5 (a) and F13 (b) are therefore
-  jointly unsatisfiable without F14; (a) and (c) add no edge. The consult of 2026-10-04 preferred (a).
+  (c) #1401 k1 (b), the owning component degrades its cadence and no rec is filed. Recommendation: (b)
+  only together with an answer to F14, otherwise (a), which the consult of 2026-10-04 preferred. The case
+  for (b): two rec writers in one loop is the duplicate-filing failure the filer exists to prevent, and (c)
+  gives a cost line authority over a component's cadence (the F4 objection). Interaction (X21): (b) makes
+  the budget a filer source, which by this report's convention is a data edge, so the filer would carry
+  four staged edges and the evaluator rejects the merge (VP 4 variant). F5 (a) and F13 (b) are therefore
+  jointly unsatisfiable without F14; (a) and (c) add no edge. F13 and F14 are one question for the
+  operator: approving this report's recommendations en bloc would otherwise approve F5 (a) and F13 (b)
+  together, which the report itself shows cannot both hold.
 - F14 (asked) The filer's fourth edge under F13 (b) (X21). (a) choose F13 (a) or (c), so no edge is added;
   (b) carry the budget as a filer source in the register's upstream list and the ladder seeds only, not as
   a pilot edge (hides a real dependency from the fixture, though the ceiling rule reads the seeds);
