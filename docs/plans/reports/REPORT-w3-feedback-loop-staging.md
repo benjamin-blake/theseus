@@ -276,7 +276,8 @@ staged_candidate_decisions:
       counter_dark, counter_low, unregistered, diverging, upstream_unsound, malformed) and the budget's per-line labels
       (warn, projected_breach, breach, dark, unattributed, unregistered, with dark_flag and unattributed_flag beside
       them) as the vocabulary; the invoice residual is the budget's monthly leg and not a daily fault. A verdict
-      record stamps the register or budget version it read (#1401 section 2.4). Grain, stated by this staging per
+      record stamps the register or budget version it read (#1400's register version, report section 4; #1401
+      section 2.4; synthesis 3.2's version_change list). Grain, stated by this staging per
       the data-modeling default and confirmed at build: one row per (component, run or verdict, day). Answers #1396
       q4, #1397 q4, #1398 q2, #1399 q3, #1400 q1 and #1401 k2's record half; the budget's register values keep
       #1401 k2's home. CONSULT REFINEMENTS, named here beside the design's text and not adopted as rule text; the
@@ -347,9 +348,9 @@ staged_candidate_decisions:
       a warn share; a shared line's daily value is attributed per call to the components that caused it (Decision
       199's producer field; a caller tag on the Lambda log line, k5 (a)) within a stated tolerance. A line's meter is
       read from what the loop's own code and catalog already know; a meter that needs a billed metric or an
-      infrastructure change is a decision of its own (the options #1401 k4 (b) and k8 (b)-(d) name, a Neon
-      consumption API key, S3 request metrics, access logs, Inventory, Storage Lens and a dedicated telemetry bucket,
-      are never-list for an autonomous thread under the project's instructions). A meter counted by the loop's own
+      infrastructure change is a decision of its own (the options #1401 k4 (b) and k8 (b)/(c) name, a Neon
+      consumption API key, S3 request metrics, access logs, Inventory and Storage Lens, and the c10 consult's
+      dedicated telemetry bucket, are never-list for an autonomous thread under the project's instructions). A meter counted by the loop's own
       Lambdas ships through the governed code-deploy channel like any other Lambda change (always-ask at build, k5).
       A daily deterministic verdict reads the register, the ledger
       and the attribution and reports ok, warn, projected_breach, breach, dark, unattributed or unregistered per
@@ -406,9 +407,10 @@ staged_candidate_decisions:
       sessions (sessions_window: one derived row per root session, at most 7 days, paginable) satisfies the clause as
       a bounded window of per-session derivations, each reading only its own partition; the reading is stated once
       wherever the verb is built and the verb stamps its registry_version so a delta across a bump is never read as
-      a change. The verb is built in the reader (#1390 k2 (a), shaped to T2.52 c3 for later adoption) unless the
-      operator reads "telemetry lands on DuckLake" as reactivating T2.52 (k2 (b); a tier-item status change,
-      operator-only); the consult reads "lands" as T2.36 c2. ROUTING: this is a reading of one clause at one call
+      a change. Two independent questions stay the operator's: where the verb is built (#1390 k2: (a) the reader,
+      shaped to T2.52 c3 for later adoption, or (b) T2.52 c3 as the ownership route) and whether "telemetry lands
+      on DuckLake" reactivates T2.52 (the "lands" reading, which follows under either k2 option; a tier-item status
+      change, operator-only); the consult reads "lands" as T2.36 c2. ROUTING: this is a reading of one clause at one call
       site, so a dated amendment_forms annotation on Decision 199 (decision-entry.yaml) carries it at zero header cost;
       it is listed here so the operator sees it beside the other rows and files it as a number only if the T2.52
       reactivation half is taken, which independently clears the significance bar (a tier-item lifecycle change with
