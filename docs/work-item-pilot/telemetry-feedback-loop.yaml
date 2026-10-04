@@ -12,12 +12,46 @@ fixture:
     outcome: lift rows into the store, or restructure (rehome or reshape) per the operator's review; never delete
   edges_disposition: pilot_only -- re-authored by the implementation merge on lift (Decision 197 clause 5), never lifted as-is
 work_items:
+  - id: pwi-friction-classifier
+    kind: task
+    title: 'Friction classifier: read-time rules mapping stored hook, gate and tool facts to rework and exception labels'
+    extension:
+      consideration_register:
+        why: Decision 199 derives friction at read, and T3.4 back-validation, rec filing and T3.3 read its totals, yet no rule says which stored facts count; the literal formula miscounts.
+        how: Versioned rules as data (exact signature or generic fallback, disposition, label, class) applied by session_friction_rollup over W1-2's deduped rows; one label per fact; repeat runs per turn and tool.
+        planes: [data_plane]
+        maturity:
+          rung: read_all
+          transitions:
+            - {from: read_all, to: sampled, trigger: {metric: consecutive reviewed sessions whose every label the operator judged correct, comparator: '>=', threshold: 20}}
+            - {from: sampled, to: spot_check, trigger: {metric: mislabels across the last 200 sampled labels, comparator: ==, threshold: 0}}
+            - {from: spot_check, to: anomaly_triggered, trigger: {metric: consecutive days with unmapped_failure_share <= 0.05 at one classifier_version, comparator: '>=', threshold: 30}}
+        failure_signal: {signal: 'friction totals move for a reason other than the friction named: a hook pass counted, a new hook or gate left unmapped, unrelated errors merged into one run', metric: 'unmapped_failure_share: non-info process_events labelled only by a generic rule, per classifier_version', source: session_friction_rollup response stamp; precision only from the c3 label review (q2)}
+        verification: [c1, c2, c3]
+        rollback: Revert the rules file to the previous classifier_version or drop the verb from the registry; nothing is stored, so every total re-derives on the next read.
+        evidence:
+          - {kind: file_line, ref: 'docs/contracts/telemetry_sessions.yaml:232'}
+          - {kind: file_line, ref: 'src/turn_capture/observations.py:311'}
+          - {kind: file_line, ref: 'src/turn_capture/observations.py:5'}
+          - {kind: file_line, ref: 'docs/contracts/telemetry_observations.yaml:153'}
+        settled:
+          - {id: s1, text: 'Read-side rules only: facts are rec-4026''s producer rows (W1-1), verb and dedupe rec-4024''s (W1-2); rec-4032''s labels table waits for its own trigger.'}
+          - {id: s2, text: 'The rules are one SQL over deduped facts passing 17/17 vectors: hook passes not counted, only a blocking hook absorbs a block, runs bound by turn and tool.'}
+          - {id: s3, text: 'Of the five retired patterns only repeated-tool-failure, and scope-creep via a scope hook or gate, derive from stored facts; three need content (VP 3, VP 4).'}
+        contested:
+          - {id: k1, text: 'Rules home: (a) versioned rules file in the reader registry; (b) a DuckLake rules table; (c) inline CASE. The contract cites rec-4032''s later table. Rec (a).'}
+          - {id: k2, text: 'Formula reads no severity, so hook passes count. Tool errors: 09-24 ruling says process_events, producer stores outcomes. (a) ratify producer, (b) align it.'}
+          - {id: k3, text: 'Gate, pre-commit, suppression facts: (a) producer signatures in slice 3b; (b) read-side regex on tool_result (W1-1 P1); (c) drop. Rec (a).'}
+        open_questions:
+          - {id: q1, text: 'Is an interrupt friction? A human stop and the producer''s synthetic close for an unanswered tool_use share outcome interrupted; v12 counts neither.'}
+          - {id: q2, text: 'Who supplies precision at read_all: an operator label sheet or rec-4025''s harness widened to real sessions? unmapped share measures coverage only.'}
+          - {id: q3, text: 'Repeat key and threshold: name-only merges unrelated Bash errors (87% of calls here); a command hash needs a producer field; threshold 3 is unmeasured.'}
   - id: pwi-allow-list-transport
     kind: task
     title: 'Plane egress: a data-plane verb applies the operator-approved allow-list before telemetry metadata crosses'
     extension:
       consideration_register:
-        why: 'Decision 209 cl.2(b) wants an allow-list and cl.5(i) leaves it open: 58 of 133 telemetry columns hold caller strings, 0 of 12 vocabularies are enforced, and nothing reads a plane (VP 1-2).'
+        why: 'Decision 209 cl.2(b) wants an allow-list and cl.5(i) leaves it open: 62 of 140 telemetry columns hold caller strings, 0 of 15 vocabularies are enforced, and nothing reads a plane (VP 1-2).'
         how: 'A named data-plane reader verb, assembled from a per-column allow-list, emits only what the list names (staged: k1(a) day aggregates of guarded enums, sums, booleans); drift or a bad id refuses. k1-k3.'
         planes: [data_plane, control_plane]
         maturity:
@@ -37,7 +71,7 @@ work_items:
         settled:
           - {id: s1, text: Only an explicit allow-list of metadata crosses; transcripts and tenant data never do; the filter runs in the data plane first (Decision 209 cl.2(a)-(b)).}
           - {id: s2, text: 'The egress is a named reader verb over derived-at-read state, never caller SQL (Decision 199 cl.1; Decision 84 I-3).'}
-          - {id: s3, text: 'Measured: a 12-column deny-list leaks 61 of 73 string columns; the staged allow-list leaks 0 (VP 5); ids plus tenancy ids confirm refs (VP 6).'}
+          - {id: s3, text: 'Measured: a 12-column deny-list leaks 65 of 77 string columns; the staged allow-list leaks 0 (VP 5); ids plus tenancy ids confirm refs (VP 6).'}
         contested:
           - {id: k1, text: 'Membership (always-ask): (a) tenancy key, guarded enums, finite numbers, booleans at day grain; (b) plus open-vocabulary strings; (c) envelope as-is. Rec (a).'}
           - {id: k2, text: 'Ids (always-ask): (a) no derived id crosses; (b) HMAC re-key under a data-plane key; (c) as-is, which VP 6 rules out. Rec (a).'}
@@ -47,8 +81,13 @@ work_items:
           - {id: q2, text: 'No consumer exists: which aggregates does the first paid fleet dashboard need (Decision 209 cl.1)? Membership should follow it.'}
           - {id: q3, text: 'Where the canary row, egress log and withheld counts live in the data plane; shares rec-filing q4.'}
 work_item_criteria:
+  - {work_item: pwi-friction-classifier, criterion_id: c1, text: 'session_friction_rollup applies the versioned rules over the shared R4/R5 dedupe on DuckLake and passes every report vector; responses carry per-label counts, unmapped count and classifier_version.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_friction_rollup_ducklake.py -m integration -k vectors}, status: open}
+  - {work_item: pwi-friction-classifier, criterion_id: c2, text: 'Rules-file guard: a specific rule names one exact signature (no wildcard) of a registered hook script or check; generic labels count as unmapped; two rules never tie on one fact.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_friction_rules.py -k guard}, status: open}
+  - {work_item: pwi-friction-classifier, criterion_id: c3, text: 'Before T3.4 back-validation or rec filing reads friction totals, the operator reviews every label of the first sessions at one classifier_version (read_all rung).', method: {kind: review, resolver: operator at the first friction-consumer review, evidence_requirement: 'label review sheet per session: labels, mislabels, unmapped_failure_share, classifier_version'}, status: open}
   - {work_item: pwi-allow-list-transport, criterion_id: c1, text: 'The egress verb, assembled from the operator-approved allow-list, passes the report vectors of the operator-chosen options (staged: k1(a) withhold, k4(a)), incl. refusal on drift and any tenancy id not exactly one ULID.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_egress_allow_list.py -k vectors}, status: open}
   - {work_item: pwi-allow-list-transport, criterion_id: c2, text: 'A canary token seeded in every string column of all four telemetry tables appears nowhere in the egress output, and every out-of-vocabulary enum value is counted as withheld.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_egress_allow_list.py -k canary}, status: open}
   - {work_item: pwi-allow-list-transport, criterion_id: c3, text: 'The operator approves the allow-list before the first batch crosses and approves every later change to it, each with the canary result on that head.', method: {kind: review, resolver: 'operator, before the first batch crosses and on every allow-list change', evidence_requirement: 'allow-list diff naming each added column, its class, vocabulary and consumer, plus the canary probe line'}, status: open}
 work_item_edges:
+  - {from: pwi-friction-classifier, to: T3.20, kind: part_of}
+  - {from: pwi-friction-classifier, to: T2.36, kind: depends_on}
   - {from: pwi-allow-list-transport, to: T2.36, kind: depends_on}

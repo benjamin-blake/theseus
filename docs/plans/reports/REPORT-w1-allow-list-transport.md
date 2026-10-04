@@ -18,14 +18,14 @@ security or IAM fork (the charter's always-ask list).
 
 Measured, not argued:
 
-- The four telemetry Class A contracts declare 133 columns. 58 of them hold caller-controlled strings: 30
+- The four telemetry Class A contracts declare 140 columns. 62 of them hold caller-controlled strings: 30
   free text, 15 open-vocabulary strings (model, producer, provider, workflow, agent_type and the like, with
-  examples but no accepted_values) and 12 closed enums plus one content hash (VP 2). The 12 closed enums
-  are closed on paper only: all 12 accepted_values blocks are `enforced: false`, so at the write boundary
+  examples but no accepted_values), 15 closed enums and two content hashes (VP 2). The 15 closed enums
+  are closed on paper only: all 15 accepted_values blocks are `enforced: false`, so at the write boundary
   an enum column is a free string (VP 1).
 - A deny-list fails as Decision 209 predicts. A deliberately generous deny-list of the 12 columns that name
-  titles, labels, paths, URLs, messages, reasons or payloads leaves 61 of 73 non-tenancy string columns
-  leaking a seeded canary token: 18 free-text, 15 open-vocabulary, 12 closed-enum, 15 derived-id and 1
+  titles, labels, paths, URLs, messages, reasons or payloads leaves 65 of 77 non-tenancy string columns
+  leaking a seeded canary token: 18 free-text, 15 open-vocabulary, 15 closed-enum, 15 derived-id and 2
   content-hash columns (VP 5).
 - Derived ids are not opaque to a party that holds the tenancy ids. Every entity key and event_id is
   sha256 over (domain tag, tenant_id, project_id, ref) with no secret, and its first 48 bits are the event
@@ -42,9 +42,9 @@ Staged, not decided: one deterministic egress, assembled mechanically from a per
 closed-enum values) with a row count, finite sums of allow-listed numbers, counts of true booleans and a
 withheld count per guarded column; it refuses the batch on an unclassified source column, a malformed or
 NULL tenancy id, a NULL day basis, or an allow-list entry whose class may not cross. On the canary probe it
-leaks 0 of 73 string columns and counts 240 of 240 injected out-of-vocabulary enum values as withheld (VP 5).
+leaks 0 of 77 string columns and counts 300 of 300 injected out-of-vocabulary enum values as withheld (VP 5).
 It passes 22/22 vectors, ten by refusing (VP 4), and each of 17 hand-run mutants fails at least one named
-vector (section 2.5). The staged membership crosses 42 of 133 columns: 12 guarded enums, 28 numbers and 2
+vector (section 2.5). The staged membership crosses 48 of 140 columns: 15 guarded enums, 31 numbers and 2
 booleans; tenant_id and project_id are the key and session_started_at only as a UTC day.
 
 What is settled is narrow and rests on Decisions: the allow-list shape and where it runs (Decision 209
@@ -60,11 +60,11 @@ alternatives with no admissible precedent and are parked as asked.
 | id | fact | anchor |
 |---|---|---|
 | e1 | The pilot `Plane` literal is data_plane, control_plane; no file under src/ or scripts/ other than the pilot model names control_plane, so nothing reads or enforces a plane today [VP 1] | scripts/checks/roadmap/_work_item_pilot_model.py:50, :181 |
-| e2 | The four telemetry contracts carry 12 accepted_values blocks and 0 of them are enforced [VP 1] | docs/contracts/telemetry_*.yaml |
-| e3 | The inventory in section 1.1 covers all 133 contract columns (sessions 38, observations 37, agents 32, transcripts 26) with their contract types; the closed_enum class equals the columns with accepted_values and their values; derived_id equals event_id plus every identity KEY_PLANS column; tenancy_id is tenant_id and project_id [VP 2] | section 1.1; src/telemetry/identity.py KEY_PLANS |
-| e4 | Class counts: number 38, free_text 30, derived_id 15, open_vocab 15, closed_enum 12, timestamp 12, tenancy_id 8, boolean 2, content_hash 1 [VP 2] | section 1.1 |
+| e2 | The four telemetry contracts carry 15 accepted_values blocks and 0 of them are enforced [VP 1] | docs/contracts/telemetry_*.yaml |
+| e3 | The inventory in section 1.1 covers all 140 contract columns (sessions 38, observations 43, agents 32, transcripts 27) with their contract types; the closed_enum class equals the columns with accepted_values and their values; derived_id equals event_id plus every identity KEY_PLANS column; tenancy_id is tenant_id and project_id [VP 2] | section 1.1; src/telemetry/identity.py KEY_PLANS |
+| e4 | Class counts: number 41, free_text 30, derived_id 15, closed_enum 15, open_vocab 15, timestamp 12, tenancy_id 8, boolean 2, content_hash 2 [VP 2] | section 1.1 |
 | e5 | All seven open W1 items (#1384, #1390, #1394, #1395, #1396, #1397, #1398) declare planes [data_plane] [VP 3] | the siblings block below (pinned heads) |
-| e6 | A 12-column deny-list leaks canaries through 61 of 73 non-tenancy string columns; the staged allow-list leaks through 0 [VP 5] | section 2.6 |
+| e6 | A 12-column deny-list leaks canaries through 65 of 77 non-tenancy string columns; the staged allow-list leaks through 0 [VP 5] | section 2.6 |
 | e7 | Identity hash: sha256 over [domain tag, tenant_id, project_id, ref], no secret; the id's 48-bit prefix is the event time in ms, decodable by `decode_time_prefix` [VP 6] | docs/contracts/telemetry-event-envelope.yaml:316; src/telemetry/identity.py |
 | e8 | Given tenant_id, project_id and one event_id, a 100,000-candidate ref space yields exactly the producing ref [VP 6] | section 1.3 |
 | e9 | Decision 209 clause 1 names "fleet telemetry dashboards over allow-listed Decision 199 metadata" as paid capability; no such dashboard, consumer or exporter exists in this repository (inferred from e1 and a repository grep for egress code under src/telemetry) | docs/DECISIONS.md, Decision 209 |
@@ -84,6 +84,13 @@ siblings:
 ```
 
 ### 1.1 Field inventory (from the four Class A contracts; VP 2 re-derives the mechanical classes)
+
+Re-derived after merging main at 3ee985e9: the telemetry write-conformance slice (#1405) added six
+observation columns (output_capture, output_bytes, output_lines, output_sha256, reasoning_visibility,
+reasoning_tokens) and one transcript column (content_omitted_reason), and widened transcripts' purpose
+vocabulary with tool_output. The staged structural guard would have refused every batch until those columns
+were classified, which is the designed behavior; they are classified here, and the four enums and three
+numbers among them join the staged allow-list under k1 (a)'s rule. output_sha256 is a content hash.
 
 Each column is `[DuckDB type, class]`, plus the vocabulary for a closed enum. Classes: `tenancy_id` (writer-minted
 ULID, Decision 200), `derived_id` (identity-hash ULID, Decision 199 clause 3), `closed_enum` (has
@@ -171,6 +178,12 @@ inventory:
     acceptance_passed: [BOOLEAN, boolean]
     exit_code: [BIGINT, number]
     time_lost_seconds: [BIGINT, number]
+    output_capture: [VARCHAR, closed_enum, [not_persisted, captured, omitted_oversize, unavailable, no_result]]
+    output_bytes: [BIGINT, number]
+    output_sha256: [VARCHAR, content_hash]
+    output_lines: [BIGINT, number]
+    reasoning_visibility: [VARCHAR, closed_enum, [full, summarized, omitted, redacted, none]]
+    reasoning_tokens: [BIGINT, number]
     rec_id: [VARCHAR, free_text]
     metadata: [VARCHAR, free_text]
   telemetry_agents:
@@ -223,10 +236,11 @@ inventory:
     observation_id: [VARCHAR, derived_id]
     session_id: [VARCHAR, derived_id]
     transcript_id: [VARCHAR, derived_id]
-    purpose: [VARCHAR, closed_enum, [prompt, response, thinking, tool_input, tool_result, system]]
+    purpose: [VARCHAR, closed_enum, [prompt, response, thinking, tool_input, tool_result, tool_output, system]]
     origin: [VARCHAR, closed_enum, [human, harness, agent, tool]]
     content: [VARCHAR, free_text]
     content_uri: [VARCHAR, free_text]
+    content_omitted_reason: [VARCHAR, closed_enum, [oversize]]
     content_sha256: [VARCHAR, content_hash]
     content_bytes: [BIGINT, number]
     content_truncated: [BOOLEAN, boolean]
@@ -247,11 +261,11 @@ inventory:
   `agent_type`, `trigger`, `severity`, `ci_outcome` and `model_primary` are described by examples ("e.g.
   claude_code, litellm, ci_annotate"). A customer's self-hosted model name or a custom producer id is tenant
   data, and nothing bounds them.
-- **Closed enums are closed only once enforced.** All 12 accepted_values blocks say `enforced: false` (VP 1),
+- **Closed enums are closed only once enforced.** All 15 accepted_values blocks say `enforced: false` (VP 1),
   so the egress cannot trust a column's class; it has to check every value against the vocabulary itself
   (section 2.3, the `dim` guard).
-- **Numbers are the bulk of what a fleet dashboard needs.** 38 number columns cover tokens, cost, durations,
-  counts, diff sizes and coverage. Ten of them (`source_ordinal` and `parser_version` in all four tables,
+- **Numbers are the bulk of what a fleet dashboard needs.** 41 number columns cover tokens, cost, durations,
+  counts, diff sizes, coverage and captured-output sizes. Ten of them (`source_ordinal` and `parser_version` in all four tables,
   `sequence` and `exit_code` in observations) are ordering keys or categories whose sums mean nothing, so
   the staged membership leaves them out.
 
@@ -316,9 +330,9 @@ allow_list:
   day_from: session_started_at
   tables:
     telemetry_sessions: [event_kind, outcome, process_event_total, rework_total, exception_total, duration_seconds, execution_attempt, files_changed, lines_added, lines_removed, steps_total, steps_completed_total, coverage_before, coverage_after]
-    telemetry_observations: [event_kind, observation_type, outcome, persona_backend, billing_shape, tokens_input, tokens_output, tokens_cache_read, tokens_cache_creation, cost_usd_reported, cost_usd, attempt, acceptance_passed, time_lost_seconds]
+    telemetry_observations: [event_kind, observation_type, outcome, tokens_input, tokens_output, tokens_cache_read, tokens_cache_creation, cost_usd_reported, cost_usd, attempt, persona_backend, billing_shape, acceptance_passed, time_lost_seconds, output_capture, output_bytes, output_lines, reasoning_visibility, reasoning_tokens]
     telemetry_agents: [event_kind, outcome, tokens_input_total, tokens_output_total, duration_seconds, findings_count, recs_created, queue_entries_written]
-    telemetry_transcripts: [event_kind, purpose, origin, content_bytes, content_truncated, token_count]
+    telemetry_transcripts: [event_kind, purpose, origin, content_omitted_reason, content_bytes, content_truncated, token_count]
 ```
 
 ### 2.3 The egress (templates and the assembly rule)
@@ -437,7 +451,7 @@ vectors:
       why: the egress columns are exactly the key, the day, the guarded enums and the measures; no free-text, open-vocabulary, id or timestamp column appears
       table: telemetry_observations
       rows: [{event_kind: point, name: CNRY step title, metadata: '{"path": "CNRY/src/app.py"}', external_ref: 'CNRY-rec#0/point', model: CNRY-model, producer: CNRY-producer, observation_id: 01CNRY0000000000000000000A}]
-      columns: [tenant_id, project_id, day, event_kind, observation_type, outcome, persona_backend, billing_shape, n_rows, withheld_event_kind, withheld_observation_type, withheld_outcome, withheld_persona_backend, withheld_billing_shape, sum_tokens_input, withheld_tokens_input, sum_tokens_output, withheld_tokens_output, sum_tokens_cache_read, withheld_tokens_cache_read, sum_tokens_cache_creation, withheld_tokens_cache_creation, sum_cost_usd_reported, withheld_cost_usd_reported, sum_cost_usd, withheld_cost_usd, sum_attempt, withheld_attempt, true_acceptance_passed, sum_time_lost_seconds, withheld_time_lost_seconds]
+      columns: [tenant_id, project_id, day, event_kind, observation_type, outcome, persona_backend, billing_shape, output_capture, reasoning_visibility, n_rows, withheld_event_kind, withheld_observation_type, withheld_outcome, sum_tokens_input, withheld_tokens_input, sum_tokens_output, withheld_tokens_output, sum_tokens_cache_read, withheld_tokens_cache_read, sum_tokens_cache_creation, withheld_tokens_cache_creation, sum_cost_usd_reported, withheld_cost_usd_reported, sum_cost_usd, withheld_cost_usd, sum_attempt, withheld_attempt, withheld_persona_backend, withheld_billing_shape, true_acceptance_passed, sum_time_lost_seconds, withheld_time_lost_seconds, withheld_output_capture, sum_output_bytes, withheld_output_bytes, sum_output_lines, withheld_output_lines, withheld_reasoning_visibility, sum_reasoning_tokens, withheld_reasoning_tokens]
       select: [event_kind, n_rows]
       expected: [[point, 1]]
     - id: v10
@@ -555,10 +569,10 @@ token `CNRY:<table>:<column>:<row>`, every closed enum holding an in-vocabulary 
 canary on odd rows, every DOUBLE holding NaN on every tenth row. It then runs two projections:
 
 - **Deny-list** (`SELECT * EXCLUDE (deny_list)`): the 12 columns whose contract text names a title, label,
-  path, URL, message, reason, JSON or payload. 61 of 73 non-tenancy string columns leak: 18 free text, 15
-  open vocabulary, 12 closed enum, 15 derived id, 1 content hash. Only the 12 denied columns do not.
-- **Staged allow-list** (sections 2.2-2.3): 0 columns leak, the output is 33 rows, and the withheld counters
-  total 240, exactly the 240 out-of-vocabulary enum values injected (20 odd rows x 12 enum columns).
+  path, URL, message, reason, JSON or payload. 65 of 77 non-tenancy string columns leak: 18 free text, 15
+  open vocabulary, 15 closed enum, 15 derived id, 2 content hash. Only the 12 denied columns do not.
+- **Staged allow-list** (sections 2.2-2.3): 0 columns leak, the output is 55 rows, and the withheld counters
+  total 300, exactly the 300 out-of-vocabulary enum values injected (20 odd rows x 15 enum columns).
 
 A derived id counted as a leak here is a ULID-shaped string, not text; section 1.3 is why it is still one.
 The probe seeds tenant_id and project_id only with valid ids, so it cannot see the key columns: their text
@@ -596,14 +610,14 @@ an IAM policy. Both rows touch IAM and the control plane's attack surface, so th
   runs in the data plane before anything crosses. Precedent: Decision 209 clause 2(a)-(b) (decision).
 - **s2.** The egress is a named reader verb over derived-at-read state, never caller SQL. Precedent: Decision
   199 clause 1 and Decision 84 I-3 (decision).
-- **s3.** Measured facts only: 58 of 133 columns hold caller-controlled strings; 0 of 12 vocabularies are
-  enforced; a 12-column deny-list leaks 61 of 73 string columns; the staged allow-list leaks 0 and counts
-  240 of 240 withheld values; derived ids plus tenancy ids confirm guessed refs (VP 1, 2, 5, 6).
+- **s3.** Measured facts only: 62 of 140 columns hold caller-controlled strings; 0 of 15 vocabularies are
+  enforced; a 12-column deny-list leaks 65 of 77 string columns; the staged allow-list leaks 0 and counts
+  300 of 300 withheld values; derived ids plus tenancy ids confirm guessed refs (VP 1, 2, 5, 6).
 
 ### Contested (k1-k3 in the fixture; k4-k6 report-only, the fixture's contested list is capped at 3)
 
 - **k1 (always-ask: security). Membership.** (a) Tenancy ids as the key, guarded closed enums, finite numbers
-  and booleans, at UTC-day grain: the staged list, 42 of 133 columns. Open-vocabulary columns cross only
+  and booleans, at UTC-day grain: the staged list, 48 of 140 columns. Open-vocabulary columns cross only
   after their contract enforces a vocabulary, at which point they are closed enums. (b) Also open-vocabulary
   strings matched against a vocabulary the control plane publishes (model names, producers). (c) The
   Decision 199 envelope as written ("metadata" read as every envelope field). Recommended (a): VP 5 shows
@@ -664,8 +678,8 @@ an IAM policy. Both rows touch IAM and the control plane's attack surface, so th
 
 ## 4. Consideration register (as authored in the fixture)
 
-- why: Decision 209 clause 2(b) wants an allow-list and clause 5(i) leaves it open; 58 of 133 columns hold
-  caller strings, 0 of 12 vocabularies are enforced, and nothing reads a plane.
+- why: Decision 209 clause 2(b) wants an allow-list and clause 5(i) leaves it open; 62 of 140 columns hold
+  caller strings, 0 of 15 vocabularies are enforced, and nothing reads a plane.
 - how: a named data-plane verb assembled from the operator-approved per-column allow-list emits only what the
   list names (staged: k1 (a), k4 (a) day aggregates) and refuses on drift or a bad tenancy id; legs k1-k3.
 - planes: data_plane, control_plane (the first W1 item to declare both).

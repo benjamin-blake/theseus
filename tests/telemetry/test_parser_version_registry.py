@@ -15,10 +15,11 @@ from pathlib import Path
 import pytest
 import yaml
 
-from src.turn_capture.record_turn import PARSER_VERSION, PRODUCER, record_turn
+from src.turn_capture.record_turn import FULL_OUTPUT_CAP_BYTES, PARSER_VERSION, PRODUCER, record_turn
 from tests.fixtures.turn_capture_corpus import (
     GOLDEN_DIR,
     PROJECT_REF,
+    case_cap,
     case_names,
     golden_digest,
     load_case,
@@ -50,7 +51,16 @@ CASES = (
     "large_tool_result_over_64k.json",
     "observed_real_shapes.json",
     "secrets.json",
+    "hooks_before_first_record.json",
+    "mcp_overflow_saved_output.json",
+    "full_output_omitted_over_cap.json",
+    "reasoning_visibility_forms.json",
 )
+
+
+def _cap_of(entry: dict) -> int | None:
+    """The producer input cap recorded in force for a history entry; a missing key reads as 'no cap'."""
+    return entry.get("full_output_cap_bytes")
 
 
 def registry_problems(registry: dict, producer: str, code_version: int, recomputed: str, expected: str) -> list[str]:
@@ -68,7 +78,7 @@ def registry_problems(registry: dict, producer: str, code_version: int, recomput
     if history[-1]["golden_digest"] != expected:
         problems.append("expected files edited without a bump: the committed expected_rows digest differs from the registry")
     for before, after in zip(history, history[1:]):
-        if before["golden_digest"] == after["golden_digest"]:
+        if before["golden_digest"] == after["golden_digest"] and _cap_of(before) == _cap_of(after):
             problems.append(f"bump without drift: v{after['version']} repeats v{before['version']}'s digest")
     return problems
 
@@ -166,7 +176,10 @@ def _live_digests() -> tuple[str, str]:
     committed: dict[str, list] = {}
     for name in names:
         files, expected = load_case(name)
-        recomputed[name] = normalise(record_turn(mem_tree(files), None, project_ref=PROJECT_REF, session_final=True).batches)
+        with case_cap(name):
+            recomputed[name] = normalise(
+                record_turn(mem_tree(files), None, project_ref=PROJECT_REF, session_final=True).batches
+            )
         committed[name] = expected
     return golden_digest(recomputed, names), golden_digest(committed, names)
 
@@ -177,8 +190,10 @@ def test_registry_matches_producer() -> None:
     assert PARSER_VERSION == entry["current"] == entry["history"][-1]["version"]
     recomputed, committed = _live_digests()
     assert recomputed == committed == entry["history"][-1]["golden_digest"]
-    digests = [h["golden_digest"] for h in entry["history"]]
-    assert all(a != b for a, b in zip(digests, digests[1:])), "a history entry repeats its predecessor's digest"
+    history = entry["history"]
+    assert all(a["golden_digest"] != b["golden_digest"] or _cap_of(a) != _cap_of(b) for a, b in zip(history, history[1:])), (
+        "a history entry repeats its predecessor's digest without a different producer input cap"
+    )
     assert registry_problems(registry, PRODUCER, PARSER_VERSION, recomputed, committed) == []
 
 
@@ -188,3 +203,20 @@ def test_cases_match_index() -> None:
     on_disk = sorted(p.name for p in GOLDEN_DIR.glob("*.json") if p.name != "index.json")
     assert on_disk == sorted(CASES)
     assert len(set(CASES)) == len(CASES)
+
+
+def test_digest_repeating_bump_is_accepted_iff_the_cap_differs() -> None:
+    registry = copy.deepcopy(_synthetic())
+    registry["producers"]["p"]["history"][1]["golden_digest"] = "d1"
+    assert len(registry_problems(registry, "p", 2, "d1", "d1")) == 1
+    registry["producers"]["p"]["history"][1]["full_output_cap_bytes"] = 1024
+    assert registry_problems(registry, "p", 2, "d1", "d1") == []
+    registry["producers"]["p"]["history"][0]["full_output_cap_bytes"] = 1024
+    assert len(registry_problems(registry, "p", 2, "d1", "d1")) == 1
+
+
+def test_full_output_cap_agrees_with_contract() -> None:
+    entry = _live_registry()["producers"][PRODUCER]["history"][-1]
+    contract = yaml.safe_load((ROOT / "docs/contracts/telemetry_transcripts.yaml").read_text(encoding="utf-8"))
+    ceiling = contract["fields"]["content"]["dq_intent"]["full_output_cap_bytes"]
+    assert entry["full_output_cap_bytes"] == FULL_OUTPUT_CAP_BYTES <= ceiling

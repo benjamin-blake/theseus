@@ -4,7 +4,7 @@ intent: >-
   Stage, for the operator, the design of telemetry-feedback-loop W1 component 8 (allow-list transport: what
   telemetry metadata may cross from the customer-owned data plane to the control plane, and how; Decision 209
   clause 5(i), carried by rec-4141) without building or writing anything: prove with executable evidence that
-  58 of the 133 telemetry contract columns hold caller-controlled strings and none of the 12 vocabularies is
+  62 of the 140 telemetry contract columns hold caller-controlled strings and none of the 15 vocabularies is
   enforced, that a deny-list leaks where an explicit allow-list does not, and that derived ids plus tenancy ids
   confirm guessable refs; stage a deterministic egress assembled from a per-column allow-list; split the design
   into settled, contested and open rows; and author the component's one CD.45 pilot item in the Decision 197
@@ -38,7 +38,7 @@ followon_recs: []
 infrastructure_dependencies: []
 acceptance_criteria:
   - >-
-    On live code, the pilot Plane literal is data_plane and control_plane, the four telemetry contracts carry 12
+    On live code, the pilot Plane literal is data_plane and control_plane, the four telemetry contracts carry 15
     accepted_values blocks of which none is enforced, and no file under src/ or scripts/ other than the pilot
     model names control_plane (VP step 1).
   - >-
@@ -52,7 +52,7 @@ acceptance_criteria:
     section 2.4 on DuckDB, ten of them by refusing with the stated message, including a valid tenancy id carrying a
     suffix, a trailing newline, a trailing space or a first character above 7 (VP step 4).
   - >-
-    On the canary probe, the 12-column deny-list leaks 61 of 73 non-tenancy string columns, the staged allow-list
+    On the canary probe, the 12-column deny-list leaks 65 of 77 non-tenancy string columns, the staged allow-list
     leaks none, and the withheld counters equal the injected out-of-vocabulary values (VP step 5).
   - >-
     Given tenant_id, project_id and one derived event_id, the identity kernel recovers the producing ref from a
@@ -75,7 +75,7 @@ verification_plan:
       R=sorted(str(p) for d in ('src','scripts') for p in pathlib.Path(d).rglob('*.py') if p.name!='_work_item_pilot_model.py' and 'control_plane' in p.read_text(encoding='utf-8',errors='replace'));
       print('planes=%s telemetry_vocabularies=%d enforced=%d control_plane_readers=%d' % (','.join(typing.get_args(M.Plane)),len(V),sum(bool(v.get('enforced')) for v in V),len(R)))"
     expected: >-
-      One line: the two planes; 12 telemetry vocabularies, 0 enforced; no runtime file names control_plane.
+      One line: the two planes; 15 telemetry vocabularies, 0 enforced; no runtime file names control_plane.
     fix_if: >-
       An enforced count above 0 means a contract closed an enum at write: update e2, O1 and k1's open-vocabulary
       note. control_plane_readers above 0 means an egress or plane reader landed: read it and update e1, s2 and
@@ -85,7 +85,7 @@ verification_plan:
     graduation_waiver_reason: >-
       Red-before evidence for the build: true only until a vocabulary is enforced or a plane reader lands; a
       standing guard would pin the gap the design asks to close.
-    expected_literals: ["planes=data_plane,control_plane telemetry_vocabularies=12 enforced=0 control_plane_readers=0"]
+    expected_literals: ["planes=data_plane,control_plane telemetry_vocabularies=15 enforced=0 control_plane_readers=0"]
   - step: 2
     phase: pre-deploy
     action: Re-derive the report's field inventory from the four telemetry contracts and count its classes
@@ -93,12 +93,12 @@ verification_plan:
       bin/venv-python -c "import re,yaml,collections; from src.telemetry.identity import KEY_PLANS; F=chr(96)*3; T=open('docs/plans/reports/REPORT-w1-allow-list-transport.md',encoding='utf-8').read(); I={k:v for b in re.findall(F+'yaml\n(.*?)'+F,T,re.S) for k,v in yaml.safe_load(b).items()}['inventory'];
       L=lambda n: yaml.safe_load(open('docs/contracts/'+n,encoding='utf-8')); Z=lambda f: (lambda r: dict(Z(L(r[0])['fields'][r[1].split('/')[-1]]),**{k:v for k,v in f.items() if k!='\$ref'}))(f['\$ref'].split('#')) if '\$ref' in f else f;
       AV=lambda r: next((r[d]['accepted_values']['values'] for d in ('dq_intent_local','dq_intent') if (r.get(d) or {}).get('accepted_values')),None); TY={'str':'VARCHAR','int':'BIGINT','float':'DOUBLE','datetime':'TIMESTAMPTZ','bool':'BOOLEAN','list[str]':'VARCHAR[]'};
-      M=lambda t,k,r,v: v[0]==TY[r['type']] and (v[1]=='closed_enum')==(AV(r) is not None) and (AV(r) is None or v[2]==AV(r)) and (v[1]=='derived_id')==(k=='event_id' or k in KEY_PLANS[t]) and (v[1]=='tenancy_id')==(k in ('tenant_id','project_id')) and (v[1]=='timestamp')==(r['type']=='datetime') and (v[1]=='number')==(r['type'] in ('int','float')) and (v[1]=='boolean')==(r['type']=='bool') and (v[1]=='open_vocab')==(k in OV) and (v[1]=='content_hash')==(k=='content_sha256') and (v[1]!='free_text' or r['type'] in ('str','list[str]')); OV={'producer','workflow','severity','provider','model','model_primary','agent_type','trigger','ci_outcome'};
+      M=lambda t,k,r,v: v[0]==TY[r['type']] and (v[1]=='closed_enum')==(AV(r) is not None) and (AV(r) is None or v[2]==AV(r)) and (v[1]=='derived_id')==(k=='event_id' or k in KEY_PLANS[t]) and (v[1]=='tenancy_id')==(k in ('tenant_id','project_id')) and (v[1]=='timestamp')==(r['type']=='datetime') and (v[1]=='number')==(r['type'] in ('int','float')) and (v[1]=='boolean')==(r['type']=='bool') and (v[1]=='open_vocab')==(k in OV) and (v[1]=='content_hash')==(k in ('content_sha256','output_sha256')) and (v[1]!='free_text' or r['type'] in ('str','list[str]')); OV={'producer','workflow','severity','provider','model','model_primary','agent_type','trigger','ci_outcome'};
       C={t:{k:Z(f) for k,f in L(t+'.yaml')['fields'].items()} for t in I}; ok=sum(list(C[t])==list(I[t]) for t in I); fid=sum(M(t,k,C[t][k],v) for t in I for k,v in I[t].items() if k in C[t]); K=collections.Counter(v[1] for t in I for v in I[t].values());
       print('tables=%d columns=%d per_table=%s order_match=%d/4 fidelity=%d/%d classes=%s caller_strings=%d' % (len(I),sum(map(len,I.values())),'/'.join(str(len(I[t])) for t in I),ok,fid,sum(map(len,I.values())),','.join('%s:%d' % kv for kv in K.most_common()),K['free_text']+K['open_vocab']+K['closed_enum']+K['content_hash']))"
     expected: >-
-      One line: four tables, 133 columns (38/37/32/26), column order matching 4 of 4, all 133 classifications
-      consistent with the contracts, the nine class counts, and 58 caller-controlled string columns.
+      One line: four tables, 140 columns (38/43/32/27), column order matching 4 of 4, all 140 classifications
+      consistent with the contracts, the nine class counts, and 62 caller-controlled string columns.
     fix_if: >-
       A fidelity or order shortfall means a contract changed or the block was mis-copied: re-copy the changed
       columns and update section 1.2, the verdict, s3 and the allow-list if a crossing column moved class.
@@ -107,7 +107,7 @@ verification_plan:
     graduation_waiver_reason: >-
       Design evidence over a frozen copy of four contracts; the build's allow-list check (criterion c1 and k5)
       is the standing guard.
-    expected_literals: ["tables=4 columns=133 per_table=38/37/32/26 order_match=4/4 fidelity=133/133 classes=number:38,free_text:30,derived_id:15,open_vocab:15,closed_enum:12,timestamp:12,tenancy_id:8,boolean:2,content_hash:1 caller_strings=58"]
+    expected_literals: ["tables=4 columns=140 per_table=38/43/32/27 order_match=4/4 fidelity=140/140 classes=number:41,free_text:30,derived_id:15,closed_enum:15,open_vocab:15,timestamp:12,tenancy_id:8,boolean:2,content_hash:2 caller_strings=62"]
   - step: 3
     phase: pre-deploy
     action: Read the planes of the seven open W1 items at their pinned branch heads
@@ -164,9 +164,9 @@ verification_plan:
       J=sum(P['rows_per_table']//2*sum(I[t][k][1]=='closed_enum' for k in A['tables'][t]) for t in I); S=sum(v[0].startswith('VARCHAR') and v[1]!='tenancy_id' for K in I.values() for v in K.values()); C=collections.Counter(I[t][k][1] for t,k in D);
       print('string_columns=%d denied=%d leaked_deny=%d by_class=%s leaked_allow=%d egress_rows=%d withheld_enum=%d/%d crossing_columns=%d' % (S,sum(k in P['deny_list'] for K in I.values() for k in K),len(D),','.join('%s:%d' % kv for kv in sorted(C.items())),len(Z),N,H,J,sum(map(len,A['tables'].values()))))"
     expected: >-
-      One line: 73 non-tenancy string columns, 12 denied, 61 leaking through the deny-list by class, 0 through
-      the staged allow-list, 33 egress rows, 240 of 240 injected out-of-vocabulary values counted as withheld,
-      42 crossing columns.
+      One line: 77 non-tenancy string columns, 12 denied, 65 leaking through the deny-list by class, 0 through
+      the staged allow-list, 55 egress rows, 300 of 300 injected out-of-vocabulary values counted as withheld,
+      48 crossing columns.
     fix_if: >-
       leaked_allow above 0 means a guard or the membership lets text cross: find the column, fix the template or
       the allow-list, and re-run VP 4. A changed deny-list count means the inventory changed: re-run VP 2 first.
@@ -175,7 +175,7 @@ verification_plan:
     graduation_waiver_reason: >-
       Design evidence for s3 and k1; the production canary is the failure_signal and criterion c2 carries the
       build's test.
-    expected_literals: ["string_columns=73 denied=12 leaked_deny=61 by_class=closed_enum:12,content_hash:1,derived_id:15,free_text:18,open_vocab:15 leaked_allow=0 egress_rows=33 withheld_enum=240/240 crossing_columns=42"]
+    expected_literals: ["string_columns=77 denied=12 leaked_deny=65 by_class=closed_enum:15,content_hash:2,derived_id:15,free_text:18,open_vocab:15 leaked_allow=0 egress_rows=55 withheld_enum=300/300 crossing_columns=48"]
   - step: 6
     phase: pre-deploy
     action: Use the identity kernel to recover a low-entropy ref from one derived event_id and the tenancy ids
