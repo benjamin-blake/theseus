@@ -50,11 +50,14 @@ Measured, not argued:
   warn, projected_breach, breach, dark, unattributed or unregistered per line, raising on malformed input.
   A line is a flow (summed over the month) or a stock (its latest reading is the level), and an event line
   projects from its mean over calendar days, not over the days it happened to report; a shared line that
-  reports nothing on a day needs no attribution for it. It passes 135/135 vectors (37 by raising with the
-  stated message), 52 of them written by independent verifiers over two rounds; each of 248 single-site
-  mutants (47 named, 201 from a rule sweep over guards and their arms, comparisons, windows, boundaries,
-  rounding, aggregates, dispatch, joins, calendar and WHEN order) is killed, and 27 more are equivalent and
-  listed apart with their reasons (VP 4).
+  reports nothing on a day needs no attribution for it. Beside the one label per line it emits two
+  independent flags, dark_flag and unattributed_flag, so a line that is breaching cannot hide that it
+  stopped reporting or that nobody owns its value; the failure_signal and the top maturity trigger read the
+  flags, never the label. It passes 145/145 vectors (37 by raising with the
+  stated message), 60 of them written by independent verifiers over three rounds; each of 267 single-site
+  mutants (52 named, 215 from a rule sweep over guards and their arms, comparisons, windows, boundaries,
+  rounding, aggregates, dispatch, joins, calendar, operands, params, DISTINCT, flags and WHEN order) is
+  killed, and 34 more are equivalent and listed apart with their reasons (VP 4).
 
 Staged, not decided: ten register lines (section 2.2) in bytes, counts, GB-seconds and tokens, each with an
 owner (a sibling item or shared), a cadence (daily or event), a measure (flow or stock), a seed monthly
@@ -83,8 +86,8 @@ the model's, not a measurement's (q1).
 | e8 | In the model, touched-files catalog egress per month is 1,576,200,000 bytes at 5 sessions a day (detector share 0.834), 5,779,200,000 at 20 and 96,595,200,000 at 100; whole-catalog egress is 27,621,000,000, 71,136,000,000 and 371,616,000,000; 20 sessions at one merge window a day reads 18,544,800,000 [VP 3] | section 2.3 |
 | e9 | Against the seed envelopes, 3 lines are over at 5 sessions (catalog_egress_bytes, s3_requests, review_items), 5 at 20 (plus writer_requests, lambda_gb_seconds) and 7 at 100 (all but reader_requests); review_items is over at every scale (2,160 a month against 900) [VP 3] | section 2.3 |
 | e10 | At list prices (eu-west-2, external, not re-verified) the loop's Lambda, S3 request and S3 storage lines cost about 0.90, 3.54 and 23.33 USD a month at 5, 20 and 100 sessions a day, before any free tier and excluding egress, which has no unit price in the repository [VP 3] | section 2.3; O5 |
-| e11 | The staged verdict SQL passes 135 vectors (52 of them written by the verification rounds), 37 by raising 'loop_budget: <rule>' with the first failing rule by name [VP 4] | sections 2.4, 2.5 |
-| e12 | Each of 248 mutants of the verdict SQL (47 named, 201 from the rule sweep) replaces one unique site and fails at least one vector; 27 equivalent mutants are listed apart and pass every vector [VP 4] | section 2.6 |
+| e11 | The staged verdict SQL passes 145 vectors (60 of them written by the verification rounds), 37 by raising 'loop_budget: <rule>' with the first failing rule by name; every flag pinned matches [VP 4] | sections 2.4, 2.5 |
+| e12 | Each of 267 mutants of the verdict SQL (52 named, 215 from the rule sweep) replaces one unique site and fails at least one vector; 34 equivalent mutants are listed apart and pass every vector [VP 4] | section 2.6 |
 | e13 | Decision 88 clause 1 ranks catalog egress beside compute and storage, with four access-pattern invariants; clause 2 names catalog_stats as the measurement path and defers the figure to a post-deploy measurement; clause 3 cut the DR dump to weekly for egress reasons | docs/DECISIONS.md, Decision 88 |
 | e14 | Decision 199 derives state, friction and cost at read (its title); rec-4031's price table is the read-time price source; Decision 206 clause 7 budgets turns and wall-clock, "no dollars", before MVP | docs/DECISIONS.md, Decisions 199 and 206 |
 | e15 | #1384 measured about 52 KB of wire and 55 rows per turn, and a 100-turn cold catch-up of 3.2 MB transcripts plus 2.1 MB observations; #1398 counted about 72 reviews a day at read_all across six components; #1397 R5 reads one verb call per pending candidate per run | sibling reports at the pinned heads |
@@ -363,7 +366,12 @@ unit, owner, cadence, measure, envelope, warn_share) with envelope the month's e
 `{attribution}`, one row per line per day per component (line, day, component, value). Params are data,
 stamped on every verdict record: a rate window of 7 days for the projection and a tolerance of 0.01 for
 attribution. The output is one row per line that appears in any of the three tables (VP 4 fails a
-repeated row).
+repeated row): the line, one verdict label, and two independent flags, dark_flag and unattributed_flag.
+The label carries precedence (one action per line, k1); the flags carry the two facts the failure_signal
+counts, so a line in breach still shows that it went dark (y01, y03) or that nobody owns its value (y02,
+x03), and a fully attributed breach shows neither (y04). Verification r3 found the first draft's single
+label hid exactly those two facts on the loop's largest line, which the model puts over its seed at every
+scale. The failure_signal source and the spot_check -> anomaly_triggered trigger read the flags.
 
 One rule governs history: the ledger and attribution are read through a 31-day window (after today minus
 31 days, up to and including today), guards included, so rows dated after today or older than the window
@@ -380,17 +388,19 @@ Per line, in order of precedence (v13-v16):
   envelope breaches before it reads dark, and a reading from last month is still the level), never a sum
   (s06). On the last day of the month nothing is projected (v21); the days remaining are the calendar's
   (r06 February, r07 a 30-day month).
-- dark: a daily-cadence line with no ledger row today (v05, v39). An event line is never dark (v06, v41).
-  Dark outranks projection because a meter that stopped is not evidence that spend stopped.
+- dark: a daily-cadence line with no ledger row today (v05, v39); dark_flag says the same whatever the
+  label (v13, y01, n01). An event line is never dark (v06, v41), and an unregistered line's flags are false
+  (v08, v33). Dark outranks projection because a meter that stopped is not evidence that spend stopped.
 - projected_breach: for a flow, month-to-date plus the mean daily value over the last 7 days times the
   days remaining in the month exceeds the envelope (v03, v20, v42, n16, n17). The mean is over calendar
   days for an event line, whose days without a row are days with nothing to report (p01-p05: one 100-byte
   event projects 100/7 a day, not 100 a day), and over the days that reported for a daily line, whose
   missing days are dark, not zero (d01). A line with no rows in the window projects its month-to-date alone
   (v31, p03). A stock never projects: its level is its projection (s01, s06).
-- unattributed: either the line is shared, reports a value above 0 today and has no attribution parts
-  (v09, s08, z03), or its parts' sum differs from today's value by more than tolerance times today's value
-  (v11, v12, v26, v27, n11, n12, n26, n27, t01, z02). A line with no row today has no today's value, so
+- unattributed: either the line is shared, reports a value above 0 at 9 places today and has no
+  attribution parts (v09, s08, z03; x04 at 4e-10 is 0), or its parts' sum differs from today's value by
+  more than tolerance times today's value (v11, v12, v26, v27, n11, n12, n26, n27, t01, z02, x05);
+  unattributed_flag says the same whatever the label (v15, y02, x03). A line with no row today has no today's value, so
   neither clause can fire (an earlier draft said so with a redundant conjunct; verification r2's F6 made
   it so by construction). A shared line that reports 0 with no parts is ok: there is nothing to explain,
   and under k5's stamps a day without calls writes no rows (z01). An owned line needs no attribution (v40);
@@ -400,8 +410,9 @@ Per line, in order of precedence (v13-v16):
 - ok otherwise (v01, v10, v30, v32, s01).
 
 Every comparison is strict and read at exactly 9 decimal places (v23-v26, v35-v38, n13, n20-n23, n28-n35,
-t01), so an envelope met exactly is ok, a sum that differs from its envelope only in floating-point noise
-does not breach, and one unit in the ninth place does.
+t01, x04), so an envelope met exactly is ok, a sum that differs from its envelope only in floating-point
+noise does not breach, and one unit in the ninth place does. The rate window and tolerance are read from
+the params at every use (x06, x15, p05), never hard-coded.
 
 Malformed input raises instead of deciding (fail loud, Decision 55 by analogy): a blank or duplicate
 budget line, an envelope that is NULL, non-finite or negative, a warn share outside (0, 1], a cadence other
@@ -413,8 +424,12 @@ r08), a ledger or attribution value that is NULL, non-finite or negative (g07, g
 a duplicate outside the window is not a duplicate (r02). The message
 names the first failing rule in alphabetical order (e17), so a run with several defects is repaired in a
 stable order. A zero envelope is legal (v07): it is how an event line says "nothing may happen here yet".
-A line name that differs only by whitespace is a different line (n30); the build's register loader should
-trim names before they reach the table. The event rate divides with true division; DuckDB's `//` happens
+A line name that differs only by space characters is a different line (n30), and "blank" means NULL or
+spaces only (DuckDB's trim strips spaces, not tabs); the build's register loader should normalise names
+and components before they reach the table. On an event line, attribution rows on a day with no ledger
+row are ignored (x01: 1000 tokens attributed against no row read ok), because a missing row has no value to
+explain; the alternative, reading the missing row as 0 for event lines, is recorded under the precedence
+fork, and the risk is low because both tables come from the same stamps under k5 (a). The event rate divides with true division; DuckDB's `//` happens
 to agree for DOUBLE operands, and r05 pins the fraction for an engine where it would not.
 
 What the verdict does not do: it gates nothing. A breach on a line is a reading; what follows is k1. The
@@ -473,19 +488,26 @@ verdict:
              m.today_value,
              ab.attributed, coalesce(ab.parts, 0) AS parts
       FROM lines x LEFT JOIN b ON b.line = x.line LEFT JOIN m ON m.line = x.line LEFT JOIN ab ON ab.line = x.line
+    ),
+    w AS (
+      SELECT *,
+             coalesce(cadence = 'daily' AND today_rows = 0, false) AS dark_flag,
+             coalesce((owner = 'shared' AND parts = 0 AND round(today_value, 9) > 0)
+                    OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)), false) AS unattributed_flag
+      FROM v
     )
     SELECT line,
            CASE
              WHEN envelope IS NULL THEN 'unregistered'
              WHEN round(mtd, 9) > envelope THEN 'breach'
-             WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'
+             WHEN dark_flag THEN 'dark'
              WHEN round(projected, 9) > envelope THEN 'projected_breach'
-             WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)
-                    OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'
+             WHEN unattributed_flag THEN 'unattributed'
              WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'
              ELSE 'ok'
-           END AS verdict
-    FROM v
+           END AS verdict,
+           dark_flag, unattributed_flag
+    FROM w
     WHERE (SELECT guard FROM chk) IS NULL
     ORDER BY line
 ```
@@ -494,7 +516,8 @@ verdict:
 
 Each vector builds the three tables from day offsets relative to its today (2026-10-15 unless the vector
 sets one), applies the params (a vector may override window_days or tolerance), runs the SQL and compares
-the full {line: verdict} map, or the raise message. 89 pass with a verdict and 24 by raising. Groups: the
+the full {line: verdict} map (and, where the vector carries flags, the {line: [dark_flag,
+unattributed_flag]} map), or the raise message. 108 pass with a verdict and 37 by raising. Groups: the
 seven verdicts (v01-v09), attribution (v10-v12, v27-v29, v40, v43, t01), precedence (v13-v16, n18),
 history and windows (v17-v22, v31, v42, n02-n06, n15-n17), strict boundaries (v23-v26), independence of
 lines (v30), the empty world (v32), a registered line that never reported (n01, the build's day-one state,
@@ -502,9 +525,12 @@ e7), stock lines (s01-s09), event-line projection over calendar days (p01-p05) a
 (d01), rounding to exactly 9 places (v35-v38, n13, n19-n24, n28, n29, n31-n35, t01), param edges (n07-n12),
 the zero-value shared day (z01-z03), stale and last-month stock readings (r03, r04), the calendar (r06,
 r07), the event fraction (r05), the duplicate outside the window (r02), and each guard with its
-first-failing-rule order and its NULL arm (e01-e21, g01-g11, r01, r08). n01-n35 are the 33 vectors
-zero-context verification round 1 wrote against the first draft, and r01-r07 and g01-g11 the 18 round 2
-wrote; all pass on the staged SQL (r01 now by raising, since round 2's F7 added the component guard).
+first-failing-rule order and its NULL arm (e01-e21, g01-g11, r01, r08), the flags under every label
+(y01-y04, x03, with flags pinned on v01, v05, v08, v09, v13, v15, v33, v41, s05, z01, n01, x01), equal
+parts (x05), non-default rate windows (x06, x15) and the event line with orphan attribution (x01). n01-n35
+are the 33 vectors zero-context verification round 1 wrote against the first draft, r01-r07 and g01-g11
+the 18 round 2 wrote, and y01, y02, x01, x03-x06 and x15 the 8 round 3 wrote; all pass on the staged SQL
+(r01 now by raising since round 2's F7, x04 now ok since the zero-day test is rounded).
 
 ```yaml
 vectors:
@@ -516,210 +542,223 @@ vectors:
     budget:
     - {}
     ledger:
-    - {line: catalog_egress_bytes, from: -6, to: 0, value: 10}
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 10}
     expected: {catalog_egress_bytes: ok}
+    flags:
+      catalog_egress_bytes: [false, false]
   - id: v02-warn-on-projection
     budget:
     - {}
     ledger:
-    - {line: catalog_egress_bytes, from: -6, to: 0, value: 40}
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 40}
     expected: {catalog_egress_bytes: warn}
   - id: v03-projected-breach
     budget:
     - {}
     ledger:
-    - {line: catalog_egress_bytes, from: -6, to: 0, value: 50}
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 50}
     expected: {catalog_egress_bytes: projected_breach}
   - id: v04-breach-month-to-date
     budget:
     - {}
     ledger:
-    - {line: catalog_egress_bytes, from: -6, to: 0, value: 200}
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 200}
     expected: {catalog_egress_bytes: breach}
   - id: v05-dark-daily-line-no-row-today
     budget:
     - {}
     ledger:
-    - {line: catalog_egress_bytes, from: -6, to: -1, value: 10}
+    - {from: -6, line: catalog_egress_bytes, to: -1, value: 10}
     expected: {catalog_egress_bytes: dark}
+    flags:
+      catalog_egress_bytes: [true, false]
   - id: v06-event-line-no-rows-is-ok
     budget:
-    - {line: plane_egress_bytes, cadence: event, envelope: 0}
+    - {cadence: event, envelope: 0, line: plane_egress_bytes}
     expected: {plane_egress_bytes: ok}
   - id: v07-event-line-zero-envelope-any-value-breaches
     budget:
-    - {line: plane_egress_bytes, cadence: event, envelope: 0}
+    - {cadence: event, envelope: 0, line: plane_egress_bytes}
     ledger:
-    - {line: plane_egress_bytes, from: 0, to: 0, value: 1}
+    - {from: 0, line: plane_egress_bytes, to: 0, value: 1}
     expected: {plane_egress_bytes: breach}
   - id: v08-unregistered-ledger-line
     budget:
     - {}
     ledger:
-    - {line: catalog_egress_bytes, from: -6, to: 0, value: 10}
-    - {line: mystery_line, from: 0, to: 0, value: 1}
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 10}
+    - {from: 0, line: mystery_line, to: 0, value: 1}
     expected: {catalog_egress_bytes: ok, mystery_line: unregistered}
+    flags:
+      catalog_egress_bytes: [false, false]
+      mystery_line: [false, false]
   - id: v09-shared-line-needs-attribution
     budget:
-    - {line: reader_requests, unit: requests, owner: shared}
+    - {line: reader_requests, owner: shared, unit: requests}
     ledger:
-    - {line: reader_requests, from: -6, to: 0, value: 10}
+    - {from: -6, line: reader_requests, to: 0, value: 10}
     expected: {reader_requests: unattributed}
+    flags:
+      reader_requests: [false, true]
   - id: v10-shared-line-fully-attributed
     budget:
-    - {line: reader_requests, unit: requests, owner: shared}
+    - {line: reader_requests, owner: shared, unit: requests}
     ledger:
-    - {line: reader_requests, from: -6, to: 0, value: 10}
+    - {from: -6, line: reader_requests, to: 0, value: 10}
     attribution:
-    - {line: reader_requests, day: 0, component: pwi-telemetry-reader-verbs, value: 6}
-    - {line: reader_requests, day: 0, component: pwi-back-validation, value: 4}
+    - {component: pwi-telemetry-reader-verbs, day: 0, line: reader_requests, value: 6}
+    - {component: pwi-back-validation, day: 0, line: reader_requests, value: 4}
     expected: {reader_requests: ok}
   - id: v11-attribution-off-beyond-tolerance
     budget:
     - {envelope: 100000}
     ledger:
-    - {line: catalog_egress_bytes, from: -6, to: 0, value: 100}
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 100}
     attribution:
-    - {line: catalog_egress_bytes, day: 0, component: pwi-telemetry-reader-verbs, value: 90}
+    - {component: pwi-telemetry-reader-verbs, day: 0, line: catalog_egress_bytes, value: 90}
     expected: {catalog_egress_bytes: unattributed}
   - id: v12-attribution-within-tolerance
     budget:
     - {envelope: 100000}
     ledger:
-    - {line: catalog_egress_bytes, from: -6, to: 0, value: 100}
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 100}
     attribution:
-    - {line: catalog_egress_bytes, day: 0, component: pwi-telemetry-reader-verbs, value: 99.5}
+    - {component: pwi-telemetry-reader-verbs, day: 0, line: catalog_egress_bytes, value: 99.5}
     expected: {catalog_egress_bytes: ok}
   - id: v13-breach-before-dark
     budget:
     - {}
     ledger:
-    - {line: catalog_egress_bytes, from: -6, to: -1, value: 200}
+    - {from: -6, line: catalog_egress_bytes, to: -1, value: 200}
     expected: {catalog_egress_bytes: breach}
+    flags:
+      catalog_egress_bytes: [true, false]
   - id: v14-dark-before-projected-breach
     budget:
     - {}
     ledger:
-    - {line: catalog_egress_bytes, from: -6, to: -1, value: 100}
+    - {from: -6, line: catalog_egress_bytes, to: -1, value: 100}
     expected: {catalog_egress_bytes: dark}
   - id: v15-projected-breach-before-unattributed
     budget:
     - {owner: shared}
     ledger:
-    - {line: catalog_egress_bytes, from: -6, to: 0, value: 50}
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 50}
     expected: {catalog_egress_bytes: projected_breach}
+    flags:
+      catalog_egress_bytes: [false, true]
   - id: v16-unattributed-before-warn
     budget:
     - {owner: shared}
     ledger:
-    - {line: catalog_egress_bytes, from: -6, to: 0, value: 40}
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 40}
     expected: {catalog_egress_bytes: unattributed}
   - id: v17-month-to-date-starts-on-the-first
     budget:
     - {envelope: 200}
     ledger:
-    - {line: catalog_egress_bytes, from: -20, to: 0, value: 10}
+    - {from: -20, line: catalog_egress_bytes, to: 0, value: 10}
     expected: {catalog_egress_bytes: projected_breach}
   - id: v18-future-rows-ignored
     budget:
     - {}
     ledger:
-    - {line: catalog_egress_bytes, from: -6, to: 0, value: 10}
-    - {line: catalog_egress_bytes, from: 1, to: 5, value: 1000}
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 10}
+    - {from: 1, line: catalog_egress_bytes, to: 5, value: 1000}
     expected: {catalog_egress_bytes: ok}
   - id: v19-malformed-row-before-the-guard-window-ignored
     budget:
     - {}
     ledger:
-    - {line: catalog_egress_bytes, from: -6, to: 0, value: 10}
-    - {line: catalog_egress_bytes, from: -40, to: -35, value: -5}
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 10}
+    - {from: -40, line: catalog_egress_bytes, to: -35, value: -5}
     expected: {catalog_egress_bytes: ok}
   - id: v20-rate-reads-the-window-only
     budget:
     - {envelope: 8000}
     ledger:
-    - {line: catalog_egress_bytes, from: -14, to: -8, value: 1000}
-    - {line: catalog_egress_bytes, from: -6, to: 0, value: 10}
+    - {from: -14, line: catalog_egress_bytes, to: -8, value: 1000}
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 10}
     expected: {catalog_egress_bytes: warn}
   - id: v21-last-day-of-month-projects-nothing
     params: {today: '2026-10-31'}
     budget:
     - {envelope: 750}
     ledger:
-    - {line: catalog_egress_bytes, from: -6, to: 0, value: 100}
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 100}
     expected: {catalog_egress_bytes: warn}
   - id: v22-first-day-of-month
     params: {today: '2026-10-01'}
     budget:
     - {envelope: 320}
     ledger:
-    - {line: catalog_egress_bytes, from: -6, to: 0, value: 10}
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 10}
     expected: {catalog_egress_bytes: warn}
   - id: v23-breach-boundary-is-strict
     params: {today: '2026-10-31'}
     budget:
     - {envelope: 700}
     ledger:
-    - {line: catalog_egress_bytes, from: -6, to: 0, value: 100}
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 100}
     expected: {catalog_egress_bytes: warn}
   - id: v24-projection-boundary-is-strict
     budget:
     - {envelope: 230}
     ledger:
-    - {line: catalog_egress_bytes, from: -6, to: 0, value: 10}
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 10}
     expected: {catalog_egress_bytes: warn}
   - id: v25-warn-boundary-is-strict
     budget:
     - {envelope: 287.5}
     ledger:
-    - {line: catalog_egress_bytes, from: -6, to: 0, value: 10}
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 10}
     expected: {catalog_egress_bytes: ok}
   - id: v26-tolerance-boundary-is-strict
     budget:
     - {envelope: 100000}
     ledger:
-    - {line: catalog_egress_bytes, from: -6, to: 0, value: 100}
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 100}
     attribution:
-    - {line: catalog_egress_bytes, day: 0, component: pwi-telemetry-reader-verbs, value: 99}
+    - {component: pwi-telemetry-reader-verbs, day: 0, line: catalog_egress_bytes, value: 99}
     expected: {catalog_egress_bytes: ok}
   - id: v27-attribution-parts-sum
     budget:
     - {envelope: 100000, owner: shared}
     ledger:
-    - {line: catalog_egress_bytes, from: -6, to: 0, value: 100}
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 100}
     attribution:
-    - {line: catalog_egress_bytes, day: 0, component: pwi-telemetry-reader-verbs, value: 60}
-    - {line: catalog_egress_bytes, day: 0, component: pwi-back-validation, value: 40}
+    - {component: pwi-telemetry-reader-verbs, day: 0, line: catalog_egress_bytes, value: 60}
+    - {component: pwi-back-validation, day: 0, line: catalog_egress_bytes, value: 40}
     expected: {catalog_egress_bytes: ok}
   - id: v28-attribution-on-another-day-does-not-count
     budget:
     - {owner: shared}
     ledger:
-    - {line: catalog_egress_bytes, from: -6, to: 0, value: 10}
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 10}
     attribution:
-    - {line: catalog_egress_bytes, day: -1, component: pwi-telemetry-reader-verbs, value: 10}
+    - {component: pwi-telemetry-reader-verbs, day: -1, line: catalog_egress_bytes, value: 10}
     expected: {catalog_egress_bytes: unattributed}
   - id: v29-zero-value-attributed-nonzero
     budget:
     - {}
     ledger:
-    - {line: catalog_egress_bytes, from: -6, to: 0, value: 0}
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 0}
     attribution:
-    - {line: catalog_egress_bytes, day: 0, component: pwi-telemetry-reader-verbs, value: 0.001}
+    - {component: pwi-telemetry-reader-verbs, day: 0, line: catalog_egress_bytes, value: 0.001}
     expected: {catalog_egress_bytes: unattributed}
   - id: v30-two-lines-independent
     budget:
     - {}
-    - {line: writer_bytes, envelope: 100}
+    - {envelope: 100, line: writer_bytes}
     ledger:
-    - {line: catalog_egress_bytes, from: -6, to: 0, value: 10}
-    - {line: writer_bytes, from: -6, to: 0, value: 50}
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 10}
+    - {from: -6, line: writer_bytes, to: 0, value: 50}
     expected: {catalog_egress_bytes: ok, writer_bytes: breach}
   - id: v31-event-line-mtd-with-no-window-rows
     budget:
-    - {line: plane_egress_bytes, cadence: event, envelope: 310}
+    - {cadence: event, envelope: 310, line: plane_egress_bytes}
     ledger:
-    - {line: plane_egress_bytes, from: -10, to: -8, value: 100}
+    - {from: -10, line: plane_egress_bytes, to: -8, value: 100}
     expected: {plane_egress_bytes: warn}
   - id: v32-empty-world
     expected: {}
@@ -727,81 +766,86 @@ vectors:
     budget:
     - {}
     ledger:
-    - {line: catalog_egress_bytes, from: -6, to: 0, value: 10}
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 10}
     attribution:
-    - {line: ghost_line, day: 0, component: pwi-back-validation, value: 1}
+    - {component: pwi-back-validation, day: 0, line: ghost_line, value: 1}
     expected: {catalog_egress_bytes: ok, ghost_line: unregistered}
+    flags:
+      catalog_egress_bytes: [false, false]
+      ghost_line: [false, false]
   - id: v34-warn-share-one
     budget:
     - {envelope: 230, warn_share: 1.0}
     ledger:
-    - {line: catalog_egress_bytes, from: -6, to: 0, value: 10}
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 10}
     expected: {catalog_egress_bytes: ok}
   - id: v35-breach-exact-to-nine-places
     params: {today: '2026-10-31'}
     budget:
     - {envelope: 0.3}
     ledger:
-    - {line: catalog_egress_bytes, from: -1, to: -1, value: 0.1}
-    - {line: catalog_egress_bytes, from: 0, to: 0, value: 0.2}
+    - {from: -1, line: catalog_egress_bytes, to: -1, value: 0.1}
+    - {from: 0, line: catalog_egress_bytes, to: 0, value: 0.2}
     expected: {catalog_egress_bytes: warn}
   - id: v36-projection-exact-to-nine-places
     budget:
     - {envelope: 2.7}
     ledger:
-    - {line: catalog_egress_bytes, from: -1, to: -1, value: 0.1}
-    - {line: catalog_egress_bytes, from: 0, to: 0, value: 0.2}
+    - {from: -1, line: catalog_egress_bytes, to: -1, value: 0.1}
+    - {from: 0, line: catalog_egress_bytes, to: 0, value: 0.2}
     expected: {catalog_egress_bytes: warn}
   - id: v37-attribution-exact-to-nine-places
     params: {tolerance: 0}
     budget:
     - {envelope: 100000}
     ledger:
-    - {line: catalog_egress_bytes, from: -6, to: 0, value: 0.3}
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 0.3}
     attribution:
-    - {line: catalog_egress_bytes, day: 0, component: pwi-telemetry-reader-verbs, value: 0.1}
-    - {line: catalog_egress_bytes, day: 0, component: pwi-back-validation, value: 0.2}
+    - {component: pwi-telemetry-reader-verbs, day: 0, line: catalog_egress_bytes, value: 0.1}
+    - {component: pwi-back-validation, day: 0, line: catalog_egress_bytes, value: 0.2}
     expected: {catalog_egress_bytes: ok}
   - id: v38-tolerance-product-exact-to-nine-places
     budget:
     - {envelope: 100000}
     ledger:
-    - {line: catalog_egress_bytes, from: -6, to: 0, value: 0.7}
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 0.7}
     attribution:
-    - {line: catalog_egress_bytes, day: 0, component: pwi-telemetry-reader-verbs, value: 0.693}
+    - {component: pwi-telemetry-reader-verbs, day: 0, line: catalog_egress_bytes, value: 0.693}
     expected: {catalog_egress_bytes: ok}
   - id: v39-dark-even-when-month-to-date-known
     budget:
     - {envelope: 100000}
     ledger:
-    - {line: catalog_egress_bytes, from: -14, to: -1, value: 10}
+    - {from: -14, line: catalog_egress_bytes, to: -1, value: 10}
     expected: {catalog_egress_bytes: dark}
   - id: v40-owned-line-no-attribution-is-fine
     budget:
     - {envelope: 100000}
     ledger:
-    - {line: catalog_egress_bytes, from: -6, to: 0, value: 100}
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 100}
     expected: {catalog_egress_bytes: ok}
   - id: v41-shared-event-line-no-rows-is-ok
     budget:
-    - {line: plane_egress_bytes, cadence: event, owner: shared, envelope: 0}
+    - {cadence: event, envelope: 0, line: plane_egress_bytes, owner: shared}
     expected: {plane_egress_bytes: ok}
+    flags:
+      plane_egress_bytes: [false, false]
   - id: v42-rate-window-edge-is-exclusive
     budget:
     - {envelope: 1500}
     ledger:
-    - {line: catalog_egress_bytes, from: -7, to: -7, value: 1000}
-    - {line: catalog_egress_bytes, from: -6, to: 0, value: 10}
+    - {from: -7, line: catalog_egress_bytes, to: -7, value: 1000}
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 10}
     expected: {catalog_egress_bytes: warn}
   - id: v43-attribution-compares-todays-value-only
     budget:
     - {envelope: 100000}
     ledger:
-    - {line: catalog_egress_bytes, from: -6, to: -2, value: 10}
-    - {line: catalog_egress_bytes, from: -1, to: -1, value: 100}
-    - {line: catalog_egress_bytes, from: 0, to: 0, value: 10}
+    - {from: -6, line: catalog_egress_bytes, to: -2, value: 10}
+    - {from: -1, line: catalog_egress_bytes, to: -1, value: 100}
+    - {from: 0, line: catalog_egress_bytes, to: 0, value: 10}
     attribution:
-    - {line: catalog_egress_bytes, day: 0, component: pwi-telemetry-reader-verbs, value: 10}
+    - {component: pwi-telemetry-reader-verbs, day: 0, line: catalog_egress_bytes, value: 10}
     expected: {catalog_egress_bytes: ok}
   - id: e01-envelope-negative
     budget:
@@ -832,57 +876,57 @@ vectors:
     budget:
     - {}
     ledger:
-    - {line: catalog_egress_bytes, from: 0, to: 0, value: -0.5}
+    - {from: 0, line: catalog_egress_bytes, to: 0, value: -0.5}
     expected: error
     raises: 'loop_budget: ledger_value'
   - id: e07-ledger-value-infinite
     budget:
     - {}
     ledger:
-    - {line: catalog_egress_bytes, from: 0, to: 0, value: .inf}
+    - {from: 0, line: catalog_egress_bytes, to: 0, value: .inf}
     expected: error
     raises: 'loop_budget: ledger_value'
   - id: e08-duplicate-ledger-day
     budget:
     - {}
     ledger:
-    - {line: catalog_egress_bytes, from: 0, to: 0, value: 1}
-    - {line: catalog_egress_bytes, from: 0, to: 0, value: 2}
+    - {from: 0, line: catalog_egress_bytes, to: 0, value: 1}
+    - {from: 0, line: catalog_egress_bytes, to: 0, value: 2}
     expected: error
     raises: 'loop_budget: duplicate_ledger'
   - id: e09-null-day-in-ledger
     budget:
     - {}
     ledger:
-    - {line: catalog_egress_bytes, from: null, to: null, value: 1}
+    - {from: null, line: catalog_egress_bytes, to: null, value: 1}
     expected: error
     raises: 'loop_budget: null_day'
   - id: e10-null-day-in-attribution
     budget:
     - {}
     ledger:
-    - {line: catalog_egress_bytes, from: 0, to: 0, value: 1}
+    - {from: 0, line: catalog_egress_bytes, to: 0, value: 1}
     attribution:
-    - {line: catalog_egress_bytes, day: null, component: pwi-back-validation, value: 1}
+    - {component: pwi-back-validation, day: null, line: catalog_egress_bytes, value: 1}
     expected: error
     raises: 'loop_budget: null_day'
   - id: e11-attribution-value-negative
     budget:
     - {}
     ledger:
-    - {line: catalog_egress_bytes, from: 0, to: 0, value: 1}
+    - {from: 0, line: catalog_egress_bytes, to: 0, value: 1}
     attribution:
-    - {line: catalog_egress_bytes, day: 0, component: pwi-back-validation, value: -0.5}
+    - {component: pwi-back-validation, day: 0, line: catalog_egress_bytes, value: -0.5}
     expected: error
     raises: 'loop_budget: attribution_value'
   - id: e12-duplicate-attribution
     budget:
     - {}
     ledger:
-    - {line: catalog_egress_bytes, from: 0, to: 0, value: 1}
+    - {from: 0, line: catalog_egress_bytes, to: 0, value: 1}
     attribution:
-    - {line: catalog_egress_bytes, day: 0, component: pwi-back-validation, value: 0.5}
-    - {line: catalog_egress_bytes, day: 0, component: pwi-back-validation, value: 0.6}
+    - {component: pwi-back-validation, day: 0, line: catalog_egress_bytes, value: 0.5}
+    - {component: pwi-back-validation, day: 0, line: catalog_egress_bytes, value: 0.6}
     expected: error
     raises: 'loop_budget: duplicate_attribution'
   - id: e13-duplicate-budget-line
@@ -912,113 +956,115 @@ vectors:
     budget:
     - {envelope: -1}
     ledger:
-    - {line: catalog_egress_bytes, from: 0, to: 0, value: 1}
+    - {from: 0, line: catalog_egress_bytes, to: 0, value: 1}
     attribution:
-    - {line: catalog_egress_bytes, day: 0, component: pwi-back-validation, value: -1}
+    - {component: pwi-back-validation, day: 0, line: catalog_egress_bytes, value: -1}
     expected: error
     raises: 'loop_budget: attribution_value'
   - id: e18-null-day-raises-even-outside-window
     budget:
     - {}
     ledger:
-    - {line: catalog_egress_bytes, from: -6, to: 0, value: 10}
-    - {line: catalog_egress_bytes, from: null, to: null, value: 1}
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 10}
+    - {from: null, line: catalog_egress_bytes, to: null, value: 1}
     expected: error
     raises: 'loop_budget: null_day'
   - id: s01-stock-flat-level-is-ok
     params: {today: '2026-10-30'}
     budget:
-    - {line: s3_storage_bytes, measure: stock, envelope: 20}
+    - {envelope: 20, line: s3_storage_bytes, measure: stock}
     ledger:
-    - {line: s3_storage_bytes, from: -29, to: 0, value: 1}
+    - {from: -29, line: s3_storage_bytes, to: 0, value: 1}
     expected: {s3_storage_bytes: ok}
   - id: s02-stock-level-over-envelope-breaches
     budget:
-    - {line: s3_storage_bytes, measure: stock, envelope: 20}
+    - {envelope: 20, line: s3_storage_bytes, measure: stock}
     ledger:
-    - {line: s3_storage_bytes, from: -6, to: 0, value: 25}
+    - {from: -6, line: s3_storage_bytes, to: 0, value: 25}
     expected: {s3_storage_bytes: breach}
   - id: s03-stock-latest-reading-decides
     budget:
-    - {line: s3_storage_bytes, measure: stock, envelope: 20}
+    - {envelope: 20, line: s3_storage_bytes, measure: stock}
     ledger:
-    - {line: s3_storage_bytes, from: -6, to: -1, value: 25}
-    - {line: s3_storage_bytes, from: 0, to: 0, value: 10}
+    - {from: -6, line: s3_storage_bytes, to: -1, value: 25}
+    - {from: 0, line: s3_storage_bytes, to: 0, value: 10}
     expected: {s3_storage_bytes: ok}
   - id: s04-stock-warn-on-level
     budget:
-    - {line: s3_storage_bytes, measure: stock, envelope: 20}
+    - {envelope: 20, line: s3_storage_bytes, measure: stock}
     ledger:
-    - {line: s3_storage_bytes, from: -6, to: 0, value: 17}
+    - {from: -6, line: s3_storage_bytes, to: 0, value: 17}
     expected: {s3_storage_bytes: warn}
   - id: s05-stock-no-row-today-is-dark
     budget:
-    - {line: s3_storage_bytes, measure: stock, envelope: 20}
+    - {envelope: 20, line: s3_storage_bytes, measure: stock}
     ledger:
-    - {line: s3_storage_bytes, from: -6, to: -1, value: 1}
+    - {from: -6, line: s3_storage_bytes, to: -1, value: 1}
     expected: {s3_storage_bytes: dark}
+    flags:
+      s3_storage_bytes: [true, false]
   - id: s06-stock-never-projects-or-sums
     budget:
-    - {line: s3_storage_bytes, measure: stock, envelope: 20}
+    - {envelope: 20, line: s3_storage_bytes, measure: stock}
     ledger:
-    - {line: s3_storage_bytes, from: -6, to: -6, value: 4}
-    - {line: s3_storage_bytes, from: -5, to: -5, value: 5}
-    - {line: s3_storage_bytes, from: -4, to: -4, value: 6}
-    - {line: s3_storage_bytes, from: -3, to: -3, value: 7}
-    - {line: s3_storage_bytes, from: -2, to: -2, value: 8}
-    - {line: s3_storage_bytes, from: -1, to: -1, value: 9}
-    - {line: s3_storage_bytes, from: 0, to: 0, value: 10}
+    - {from: -6, line: s3_storage_bytes, to: -6, value: 4}
+    - {from: -5, line: s3_storage_bytes, to: -5, value: 5}
+    - {from: -4, line: s3_storage_bytes, to: -4, value: 6}
+    - {from: -3, line: s3_storage_bytes, to: -3, value: 7}
+    - {from: -2, line: s3_storage_bytes, to: -2, value: 8}
+    - {from: -1, line: s3_storage_bytes, to: -1, value: 9}
+    - {from: 0, line: s3_storage_bytes, to: 0, value: 10}
     expected: {s3_storage_bytes: ok}
   - id: s07-stock-level-outranks-attribution
     budget:
-    - {line: s3_storage_bytes, measure: stock, owner: shared, envelope: 20}
+    - {envelope: 20, line: s3_storage_bytes, measure: stock, owner: shared}
     ledger:
-    - {line: s3_storage_bytes, from: -6, to: 0, value: 25}
+    - {from: -6, line: s3_storage_bytes, to: 0, value: 25}
     expected: {s3_storage_bytes: breach}
   - id: s08-stock-shared-level-needs-attribution
     budget:
-    - {line: s3_storage_bytes, measure: stock, owner: shared, envelope: 20}
+    - {envelope: 20, line: s3_storage_bytes, measure: stock, owner: shared}
     ledger:
-    - {line: s3_storage_bytes, from: -6, to: 0, value: 1}
+    - {from: -6, line: s3_storage_bytes, to: 0, value: 1}
     expected: {s3_storage_bytes: unattributed}
   - id: p01-event-projection-per-calendar-day
     budget:
-    - {line: plane_egress_bytes, cadence: event, envelope: 400}
+    - {cadence: event, envelope: 400, line: plane_egress_bytes}
     ledger:
-    - {line: plane_egress_bytes, from: 0, to: 0, value: 100}
+    - {from: 0, line: plane_egress_bytes, to: 0, value: 100}
     expected: {plane_egress_bytes: warn}
   - id: p02-event-six-days-ago-still-in-rate-window
     budget:
-    - {line: plane_egress_bytes, cadence: event, envelope: 400}
+    - {cadence: event, envelope: 400, line: plane_egress_bytes}
     ledger:
-    - {line: plane_egress_bytes, from: -6, to: -6, value: 100}
+    - {from: -6, line: plane_egress_bytes, to: -6, value: 100}
     expected: {plane_egress_bytes: warn}
   - id: p03-event-seven-days-ago-outside-rate-window
     budget:
-    - {line: plane_egress_bytes, cadence: event, envelope: 400}
+    - {cadence: event, envelope: 400, line: plane_egress_bytes}
     ledger:
-    - {line: plane_egress_bytes, from: -7, to: -7, value: 100}
+    - {from: -7, line: plane_egress_bytes, to: -7, value: 100}
     expected: {plane_egress_bytes: ok}
   - id: p04-event-rate-sums-the-window
     budget:
-    - {line: plane_egress_bytes, cadence: event, envelope: 700}
+    - {cadence: event, envelope: 700, line: plane_egress_bytes}
     ledger:
-    - {line: plane_egress_bytes, from: -3, to: -3, value: 100}
-    - {line: plane_egress_bytes, from: 0, to: 0, value: 100}
+    - {from: -3, line: plane_egress_bytes, to: -3, value: 100}
+    - {from: 0, line: plane_egress_bytes, to: 0, value: 100}
     expected: {plane_egress_bytes: warn}
   - id: p05-event-rate-divides-by-the-window-days-param
     params: {window_days: 2}
     budget:
-    - {line: plane_egress_bytes, cadence: event, envelope: 1000}
+    - {cadence: event, envelope: 1000, line: plane_egress_bytes}
     ledger:
-    - {line: plane_egress_bytes, from: 0, to: 0, value: 100}
+    - {from: 0, line: plane_egress_bytes, to: 0, value: 100}
     expected: {plane_egress_bytes: warn}
   - id: d01-daily-gap-rate-is-mean-of-present-rows
     budget:
     - {envelope: 2000}
     ledger:
-    - {line: catalog_egress_bytes, from: -6, to: -6, value: 100}
-    - {line: catalog_egress_bytes, from: -3, to: 0, value: 100}
+    - {from: -6, line: catalog_egress_bytes, to: -6, value: 100}
+    - {from: -3, line: catalog_egress_bytes, to: 0, value: 100}
     expected: {catalog_egress_bytes: projected_breach}
   - id: e19-measure-unknown
     budget:
@@ -1029,436 +1075,523 @@ vectors:
     budget:
     - {}
     ledger:
-    - {line: null, from: 0, to: 0, value: 1}
+    - {from: 0, line: null, to: 0, value: 1}
     expected: error
     raises: 'loop_budget: ledger_line'
   - id: e21-blank-attribution-line
     budget:
     - {}
     ledger:
-    - {line: catalog_egress_bytes, from: -6, to: 0, value: 10}
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 10}
     attribution:
-    - {line: ' ', day: 0, component: x, value: 1}
+    - {component: x, day: 0, line: ' ', value: 1}
     expected: error
     raises: 'loop_budget: attribution_line'
-  - budget:
+  - id: n01-daily-line-never-reported-is-dark
+    budget:
     - {}
     expected: {catalog_egress_bytes: dark}
-    id: n01-daily-line-never-reported-is-dark
-  - budget:
+    flags:
+      catalog_egress_bytes: [true, false]
+  - id: n02-month-start-on-31st-reads-day-minus-30
+    params: {today: '2026-10-31'}
+    budget:
     - {envelope: 305}
-    expected: {catalog_egress_bytes: breach}
-    id: n02-month-start-on-31st-reads-day-minus-30
     ledger:
     - {from: -30, line: catalog_egress_bytes, to: 0, value: 10}
-    params: {today: '2026-10-31'}
-  - budget:
+    expected: {catalog_egress_bytes: breach}
+  - id: n03-malformed-ledger-row-at-day-minus-31-ignored
+    budget:
     - {}
-    expected: {catalog_egress_bytes: ok}
-    id: n03-malformed-ledger-row-at-day-minus-31-ignored
     ledger:
     - {from: -6, line: catalog_egress_bytes, to: 0, value: 10}
     - {from: -31, line: catalog_egress_bytes, to: -31, value: -1}
-  - attribution:
+    expected: {catalog_egress_bytes: ok}
+  - id: n04-malformed-attribution-row-at-day-minus-31-ignored
+    budget:
+    - {}
+    ledger:
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 10}
+    attribution:
     - {component: x, day: -31, line: catalog_egress_bytes, value: -1}
+    expected: {catalog_egress_bytes: ok}
+  - id: n05-malformed-attribution-row-at-day-minus-30-raises
     budget:
     - {}
-    expected: {catalog_egress_bytes: ok}
-    id: n04-malformed-attribution-row-at-day-minus-31-ignored
     ledger:
     - {from: -6, line: catalog_egress_bytes, to: 0, value: 10}
-  - attribution:
+    attribution:
     - {component: x, day: -30, line: catalog_egress_bytes, value: -1}
-    budget:
-    - {}
     expected: error
-    id: n05-malformed-attribution-row-at-day-minus-30-raises
-    ledger:
-    - {from: -6, line: catalog_egress_bytes, to: 0, value: 10}
     raises: 'loop_budget: attribution_value'
-  - attribution:
-    - {component: x, day: 1, line: catalog_egress_bytes, value: -1}
+  - id: n06-future-malformed-attribution-ignored
     budget:
     - {}
-    expected: {catalog_egress_bytes: ok}
-    id: n06-future-malformed-attribution-ignored
     ledger:
     - {from: -6, line: catalog_egress_bytes, to: 0, value: 10}
-  - budget:
-    - {}
+    attribution:
+    - {component: x, day: 1, line: catalog_egress_bytes, value: -1}
     expected: {catalog_egress_bytes: ok}
-    id: n07-window-days-31-legal
-    ledger:
-    - {from: -6, line: catalog_egress_bytes, to: 0, value: 10}
+  - id: n07-window-days-31-legal
     params: {window_days: 31}
-  - budget:
+    budget:
     - {}
-    expected: error
-    id: n08-window-days-32-raises
-    params: {window_days: 32}
-    raises: 'loop_budget: window_days'
-  - budget:
-    - {}
-    expected: {catalog_egress_bytes: ok}
-    id: n09-window-days-1-legal
     ledger:
     - {from: -6, line: catalog_egress_bytes, to: 0, value: 10}
-    params: {window_days: 1}
-  - budget:
+    expected: {catalog_egress_bytes: ok}
+  - id: n08-window-days-32-raises
+    params: {window_days: 32}
+    budget:
     - {}
     expected: error
-    id: n10-tolerance-negative-raises
+    raises: 'loop_budget: window_days'
+  - id: n09-window-days-1-legal
+    params: {window_days: 1}
+    budget:
+    - {}
+    ledger:
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 10}
+    expected: {catalog_egress_bytes: ok}
+  - id: n10-tolerance-negative-raises
     params: {tolerance: -0.01}
+    budget:
+    - {}
+    expected: error
     raises: 'loop_budget: tolerance'
-  - attribution:
-    - {component: x, day: 0, line: catalog_egress_bytes, value: 50}
+  - id: n11-tolerance-0.9-legal
+    params: {tolerance: 0.9}
     budget:
     - {envelope: 100000}
-    expected: {catalog_egress_bytes: ok}
-    id: n11-tolerance-0.9-legal
     ledger:
     - {from: -6, line: catalog_egress_bytes, to: 0, value: 100}
-    params: {tolerance: 0.9}
-  - attribution:
-    - {component: x, day: 0, line: catalog_egress_bytes, value: 10}
-    - {component: y, day: 0, line: catalog_egress_bytes, value: 0}
+    attribution:
+    - {component: x, day: 0, line: catalog_egress_bytes, value: 50}
+    expected: {catalog_egress_bytes: ok}
+  - id: n12-zero-attribution-part-legal
     budget:
     - {envelope: 100000, owner: shared}
-    expected: {catalog_egress_bytes: ok}
-    id: n12-zero-attribution-part-legal
     ledger:
     - {from: -6, line: catalog_egress_bytes, to: 0, value: 10}
-  - budget:
+    attribution:
+    - {component: x, day: 0, line: catalog_egress_bytes, value: 10}
+    - {component: y, day: 0, line: catalog_egress_bytes, value: 0}
+    expected: {catalog_egress_bytes: ok}
+  - id: n13-breach-by-one-unit-in-ninth-place
+    params: {today: '2026-10-31'}
+    budget:
     - {envelope: 1}
-    expected: {catalog_egress_bytes: breach}
-    id: n13-breach-by-one-unit-in-ninth-place
     ledger:
     - {from: 0, line: catalog_egress_bytes, to: 0, value: 1.000000001}
-    params: {today: '2026-10-31'}
-  - budget:
+    expected: {catalog_egress_bytes: breach}
+  - id: n15-month-start-excludes-last-of-previous-month
+    params: {today: '2026-10-01'}
+    budget:
     - {envelope: 315}
-    expected: {catalog_egress_bytes: warn}
-    id: n15-month-start-excludes-last-of-previous-month
     ledger:
     - {from: -6, line: catalog_egress_bytes, to: 0, value: 10}
-    params: {today: '2026-10-01'}
-  - budget:
-    - {envelope: 1000}
     expected: {catalog_egress_bytes: warn}
-    id: n16-rate-window-includes-day-minus-6
+  - id: n16-rate-window-includes-day-minus-6
+    budget:
+    - {envelope: 1000}
     ledger:
     - {from: -6, line: catalog_egress_bytes, to: -6, value: 300}
     - {from: -5, line: catalog_egress_bytes, to: 0, value: 0}
-  - budget:
-    - {envelope: 1000}
     expected: {catalog_egress_bytes: warn}
-    id: n17-rate-is-mean-not-median
+  - id: n17-rate-is-mean-not-median
+    budget:
+    - {envelope: 1000}
     ledger:
     - {from: -6, line: catalog_egress_bytes, to: -1, value: 0}
     - {from: 0, line: catalog_egress_bytes, to: 0, value: 280}
-  - attribution:
-    - {component: x, day: 0, line: mystery_line, value: 5}
+    expected: {catalog_egress_bytes: warn}
+  - id: n18-unregistered-outranks-attribution-mismatch
     budget:
     - {}
-    expected: {catalog_egress_bytes: ok, mystery_line: unregistered}
-    id: n18-unregistered-outranks-attribution-mismatch
     ledger:
     - {from: -6, line: catalog_egress_bytes, to: 0, value: 10}
     - {from: 0, line: mystery_line, to: 0, value: 10}
-  - budget:
+    attribution:
+    - {component: x, day: 0, line: mystery_line, value: 5}
+    expected: {catalog_egress_bytes: ok, mystery_line: unregistered}
+  - id: n19-warn-rounding-both-sides
+    params: {today: '2026-10-31'}
+    budget:
     - {envelope: 0.5, warn_share: 0.6}
-    expected: {catalog_egress_bytes: ok}
-    id: n19-warn-rounding-both-sides
     ledger:
     - {from: -1, line: catalog_egress_bytes, to: -1, value: 0.1}
     - {from: 0, line: catalog_egress_bytes, to: 0, value: 0.2}
+    expected: {catalog_egress_bytes: ok}
+  - id: n20-rounding-at-nine-not-eight-breach
     params: {today: '2026-10-31'}
-  - budget:
+    budget:
     - {envelope: 1}
-    expected: {catalog_egress_bytes: breach}
-    id: n20-rounding-at-nine-not-eight-breach
     ledger:
     - {from: 0, line: catalog_egress_bytes, to: 0, value: 1.000000004}
+    expected: {catalog_egress_bytes: breach}
+  - id: n21-rounding-at-nine-not-ten-breach
     params: {today: '2026-10-31'}
-  - budget:
+    budget:
     - {envelope: 1}
-    expected: {catalog_egress_bytes: warn}
-    id: n21-rounding-at-nine-not-ten-breach
     ledger:
     - {from: 0, line: catalog_egress_bytes, to: 0, value: 1.0000000004}
-    params: {today: '2026-10-31'}
-  - budget:
+    expected: {catalog_egress_bytes: warn}
+  - id: n22-rounding-at-nine-not-eight-projection
+    budget:
     - {envelope: 17.000000004}
-    expected: {catalog_egress_bytes: projected_breach}
-    id: n22-rounding-at-nine-not-eight-projection
     ledger:
     - {from: 0, line: catalog_egress_bytes, to: 0, value: 1.0000000003}
-  - budget:
+    expected: {catalog_egress_bytes: projected_breach}
+  - id: n23-rounding-at-nine-not-ten-projection
+    budget:
     - {envelope: 17}
-    expected: {catalog_egress_bytes: warn}
-    id: n23-rounding-at-nine-not-ten-projection
     ledger:
     - {from: 0, line: catalog_egress_bytes, to: 0, value: 1.00000000002}
-  - budget:
+    expected: {catalog_egress_bytes: warn}
+  - id: n24-warn-rhs-nine-places
+    budget:
     - {envelope: 1000, warn_share: 0.0170000000004}
-    expected: {catalog_egress_bytes: ok}
-    id: n24-warn-rhs-nine-places
     ledger:
     - {from: 0, line: catalog_egress_bytes, to: 0, value: 1}
-  - budget:
-    - {envelope: 2}
-    expected: {catalog_egress_bytes: projected_breach}
-    id: n31-projection-nine-not-eight
-    ledger:
-    - {from: 0, line: catalog_egress_bytes, to: 0, value: 1.000000002}
-    params: {today: '2026-10-30'}
-  - budget:
-    - {envelope: 4, warn_share: 0.5}
-    expected: {catalog_egress_bytes: warn}
-    id: n32-warn-lhs-nine-not-eight
-    ledger:
-    - {from: 0, line: catalog_egress_bytes, to: 0, value: 1.000000002}
-    params: {today: '2026-10-30'}
-  - budget:
-    - {envelope: 4, warn_share: 0.5}
     expected: {catalog_egress_bytes: ok}
-    id: n33-warn-lhs-nine-not-ten
+  - id: n31-projection-nine-not-eight
+    params: {today: '2026-10-30'}
+    budget:
+    - {envelope: 2}
+    ledger:
+    - {from: 0, line: catalog_egress_bytes, to: 0, value: 1.000000002}
+    expected: {catalog_egress_bytes: projected_breach}
+  - id: n32-warn-lhs-nine-not-eight
+    params: {today: '2026-10-30'}
+    budget:
+    - {envelope: 4, warn_share: 0.5}
+    ledger:
+    - {from: 0, line: catalog_egress_bytes, to: 0, value: 1.000000002}
+    expected: {catalog_egress_bytes: warn}
+  - id: n33-warn-lhs-nine-not-ten
+    params: {today: '2026-10-30'}
+    budget:
+    - {envelope: 4, warn_share: 0.5}
     ledger:
     - {from: 0, line: catalog_egress_bytes, to: 0, value: 1.0000000002}
+    expected: {catalog_egress_bytes: ok}
+  - id: n34-warn-rhs-nine-not-ten
     params: {today: '2026-10-30'}
-  - budget:
+    budget:
     - {envelope: 4, warn_share: 0.4999999999}
-    expected: {catalog_egress_bytes: ok}
-    id: n34-warn-rhs-nine-not-ten
     ledger:
     - {from: 0, line: catalog_egress_bytes, to: 0, value: 1}
+    expected: {catalog_egress_bytes: ok}
+  - id: n35-warn-rhs-nine-not-eight
     params: {today: '2026-10-30'}
-  - budget:
+    budget:
     - {envelope: 4, warn_share: 0.499999999}
+    ledger:
+    - {from: 0, line: catalog_egress_bytes, to: 0, value: 1}
     expected: {catalog_egress_bytes: warn}
-    id: n35-warn-rhs-nine-not-eight
+  - id: n26-diff-nine-places
+    params: {tolerance: 0}
+    budget:
+    - {envelope: 100000}
     ledger:
     - {from: 0, line: catalog_egress_bytes, to: 0, value: 1}
-    params: {today: '2026-10-30'}
-  - attribution:
+    attribution:
     - {component: x, day: 0, line: catalog_egress_bytes, value: 1.0000000004}
-    budget:
-    - {envelope: 100000}
     expected: {catalog_egress_bytes: ok}
-    id: n26-diff-nine-places
-    ledger:
-    - {from: 0, line: catalog_egress_bytes, to: 0, value: 1}
+  - id: n27-diff-nine-places-hi
     params: {tolerance: 0}
-  - attribution:
-    - {component: x, day: 0, line: catalog_egress_bytes, value: 1.000000004}
     budget:
     - {envelope: 100000}
-    expected: {catalog_egress_bytes: unattributed}
-    id: n27-diff-nine-places-hi
     ledger:
     - {from: 0, line: catalog_egress_bytes, to: 0, value: 1}
-    params: {tolerance: 0}
-  - budget:
+    attribution:
+    - {component: x, day: 0, line: catalog_egress_bytes, value: 1.000000004}
+    expected: {catalog_egress_bytes: unattributed}
+  - id: n28-fractional-overage-integer-envelope
+    params: {today: '2026-10-31'}
+    budget:
     - {envelope: 1000}
-    expected: {catalog_egress_bytes: breach}
-    id: n28-fractional-overage-integer-envelope
     ledger:
     - {from: 0, line: catalog_egress_bytes, to: 0, value: 1000.5}
-    params: {today: '2026-10-31'}
-  - budget:
+    expected: {catalog_egress_bytes: breach}
+  - id: n29-fractional-projection-integer-envelope
+    budget:
     - {envelope: 17}
-    expected: {catalog_egress_bytes: projected_breach}
-    id: n29-fractional-projection-integer-envelope
     ledger:
     - {from: 0, line: catalog_egress_bytes, to: 0, value: 1.01}
-  - budget:
+    expected: {catalog_egress_bytes: projected_breach}
+  - id: n30-budget-lines-differing-by-trailing-space
+    budget:
     - {}
     - {line: 'catalog_egress_bytes '}
     expected: {catalog_egress_bytes: dark, 'catalog_egress_bytes ': dark}
-    id: n30-budget-lines-differing-by-trailing-space
   - id: s09-stock-latest-high-reading-breaches
     budget:
-    - {line: s3_storage_bytes, measure: stock, envelope: 20}
+    - {envelope: 20, line: s3_storage_bytes, measure: stock}
     ledger:
-    - {line: s3_storage_bytes, from: -6, to: -1, value: 10}
-    - {line: s3_storage_bytes, from: 0, to: 0, value: 25}
+    - {from: -6, line: s3_storage_bytes, to: -1, value: 10}
+    - {from: 0, line: s3_storage_bytes, to: 0, value: 25}
     expected: {s3_storage_bytes: breach}
   - id: t01-tolerance-product-rounded-to-nine-places
     params: {tolerance: 2.94e-09}
     budget:
     - {envelope: 100000}
     ledger:
-    - {line: catalog_egress_bytes, from: 0, to: 0, value: 1}
+    - {from: 0, line: catalog_egress_bytes, to: 0, value: 1}
     attribution:
-    - {line: catalog_egress_bytes, day: 0, component: x, value: 1.0000000026}
+    - {component: x, day: 0, line: catalog_egress_bytes, value: 1.0000000026}
     expected: {catalog_egress_bytes: ok}
-  - budget:
-    - {envelope: 100000, owner: shared}
-    expected: {catalog_egress_bytes: ok}
-    id: z01-shared-zero-day-needs-no-attribution
-    ledger:
-    - {from: -6, line: catalog_egress_bytes, to: 0, value: 0}
-  - attribution:
-    - {component: null, day: 0, line: catalog_egress_bytes, value: 10}
+  - id: z01-shared-zero-day-needs-no-attribution
     budget:
     - {envelope: 100000, owner: shared}
-    expected: error
-    id: r01-null-component-raises
     ledger:
-    - {from: -6, line: catalog_egress_bytes, to: 0, value: 10}
-    raises: 'loop_budget: attribution_component'
-  - budget:
-    - {}
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 0}
     expected: {catalog_egress_bytes: ok}
-    id: r02-duplicate-ledger-outside-window-ignored
+    flags:
+      catalog_egress_bytes: [false, false]
+  - id: r01-null-component-raises
+    budget:
+    - {envelope: 100000, owner: shared}
+    ledger:
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 10}
+    attribution:
+    - {component: null, day: 0, line: catalog_egress_bytes, value: 10}
+    expected: error
+    raises: 'loop_budget: attribution_component'
+  - id: r02-duplicate-ledger-outside-window-ignored
+    budget:
+    - {}
     ledger:
     - {from: -6, line: catalog_egress_bytes, to: 0, value: 10}
     - {from: -40, line: catalog_egress_bytes, to: -40, value: 1}
     - {from: -40, line: catalog_egress_bytes, to: -40, value: 1}
-  - budget:
+    expected: {catalog_egress_bytes: ok}
+  - id: r03-stock-stale-reading-breaches-before-dark
+    budget:
     - {envelope: 20, line: s3_storage_bytes, measure: stock}
-    expected: {s3_storage_bytes: breach}
-    id: r03-stock-stale-reading-breaches-before-dark
     ledger:
     - {from: -10, line: s3_storage_bytes, to: -10, value: 25}
-  - budget:
+    expected: {s3_storage_bytes: breach}
+  - id: r04-stock-reading-from-last-month-is-the-level
+    params: {today: '2026-10-02'}
+    budget:
     - {cadence: event, envelope: 20, line: s3_storage_bytes, measure: stock}
-    expected: {s3_storage_bytes: warn}
-    id: r04-stock-reading-from-last-month-is-the-level
     ledger:
     - {from: -2, line: s3_storage_bytes, to: -2, value: 17}
-    params: {today: '2026-10-02'}
-  - budget:
+    expected: {s3_storage_bytes: warn}
+  - id: r05-event-rate-keeps-its-fraction
+    budget:
     - {cadence: event, envelope: 2.3, line: plane_egress_bytes}
-    expected: {plane_egress_bytes: projected_breach}
-    id: r05-event-rate-keeps-its-fraction
     ledger:
     - {from: 0, line: plane_egress_bytes, to: 0, value: 1}
-  - budget:
+    expected: {plane_egress_bytes: projected_breach}
+  - id: r06-february-days-remaining
+    params: {today: '2027-02-27'}
+    budget:
     - {envelope: 280}
-    expected: {catalog_egress_bytes: warn}
-    id: r06-february-days-remaining
     ledger:
     - {from: -26, line: catalog_egress_bytes, to: 0, value: 10}
-    params: {today: '2027-02-27'}
-  - budget:
-    - {envelope: 300}
     expected: {catalog_egress_bytes: warn}
-    id: r07-thirty-day-month-days-remaining
+  - id: r07-thirty-day-month-days-remaining
+    params: {today: '2026-11-29'}
+    budget:
+    - {envelope: 300}
     ledger:
     - {from: -28, line: catalog_egress_bytes, to: 0, value: 10}
-    params: {today: '2026-11-29'}
-  - budget:
+    expected: {catalog_egress_bytes: warn}
+  - id: g01-null-budget-line-raises
+    budget:
     - {line: null}
     expected: error
-    id: g01-null-budget-line-raises
     raises: 'loop_budget: budget_line'
-  - budget:
+  - id: g02-null-envelope-raises
+    budget:
     - {envelope: null}
     expected: error
-    id: g02-null-envelope-raises
     raises: 'loop_budget: envelope'
-  - budget:
+  - id: g03-null-warn-share-raises
+    budget:
     - {warn_share: null}
     expected: error
-    id: g03-null-warn-share-raises
     raises: 'loop_budget: warn_share'
-  - budget:
+  - id: g04-null-cadence-raises
+    budget:
     - {cadence: null}
     expected: error
-    id: g04-null-cadence-raises
     raises: 'loop_budget: cadence'
-  - budget:
+  - id: g05-null-measure-raises
+    budget:
     - {measure: null}
     expected: error
-    id: g05-null-measure-raises
     raises: 'loop_budget: measure'
-  - budget:
+  - id: g06-blank-ledger-line-raises
+    budget:
     - {}
-    expected: error
-    id: g06-blank-ledger-line-raises
     ledger:
     - {from: 0, line: ' ', to: 0, value: 1}
-    raises: 'loop_budget: ledger_line'
-  - budget:
-    - {}
     expected: error
-    id: g07-null-ledger-value-raises
+    raises: 'loop_budget: ledger_line'
+  - id: g07-null-ledger-value-raises
+    budget:
+    - {}
     ledger:
     - {from: 0, line: catalog_egress_bytes, to: 0, value: null}
+    expected: error
     raises: 'loop_budget: ledger_value'
-  - attribution:
+  - id: g08-null-attribution-line-raises
+    budget:
+    - {}
+    ledger:
+    - {from: 0, line: catalog_egress_bytes, to: 0, value: 1}
+    attribution:
     - {component: x, day: 0, line: null, value: 1}
-    budget:
-    - {}
     expected: error
-    id: g08-null-attribution-line-raises
-    ledger:
-    - {from: 0, line: catalog_egress_bytes, to: 0, value: 1}
     raises: 'loop_budget: attribution_line'
-  - attribution:
+  - id: g09-null-attribution-value-raises
+    budget:
+    - {}
+    ledger:
+    - {from: 0, line: catalog_egress_bytes, to: 0, value: 1}
+    attribution:
     - {component: x, day: 0, line: catalog_egress_bytes, value: null}
+    expected: error
+    raises: 'loop_budget: attribution_value'
+  - id: g10-infinite-attribution-value-raises
     budget:
     - {}
-    expected: error
-    id: g09-null-attribution-value-raises
     ledger:
     - {from: 0, line: catalog_egress_bytes, to: 0, value: 1}
-    raises: 'loop_budget: attribution_value'
-  - attribution:
+    attribution:
     - {component: x, day: 0, line: catalog_egress_bytes, value: .inf}
+    expected: error
+    raises: 'loop_budget: attribution_value'
+  - id: g11-nan-attribution-value-raises
     budget:
     - {}
-    expected: error
-    id: g10-infinite-attribution-value-raises
     ledger:
     - {from: 0, line: catalog_egress_bytes, to: 0, value: 1}
-    raises: 'loop_budget: attribution_value'
-  - attribution:
+    attribution:
     - {component: x, day: 0, line: catalog_egress_bytes, value: .nan}
-    budget:
-    - {}
     expected: error
-    id: g11-nan-attribution-value-raises
-    ledger:
-    - {from: 0, line: catalog_egress_bytes, to: 0, value: 1}
     raises: 'loop_budget: attribution_value'
-  - attribution:
-    - {component: x, day: 0, line: catalog_egress_bytes, value: 1}
+  - id: z02-shared-zero-day-with-parts-still-checked
     budget:
     - {envelope: 100000, owner: shared}
-    expected: {catalog_egress_bytes: unattributed}
-    id: z02-shared-zero-day-with-parts-still-checked
     ledger:
     - {from: -6, line: catalog_egress_bytes, to: 0, value: 0}
-  - budget:
-    - {envelope: 100000, owner: shared}
+    attribution:
+    - {component: x, day: 0, line: catalog_egress_bytes, value: 1}
     expected: {catalog_egress_bytes: unattributed}
-    id: z03-shared-tiny-value-needs-attribution
-    ledger:
-    - {from: -6, line: catalog_egress_bytes, to: 0, value: 1.0e-09}
-  - attribution:
-    - {component: '  ', day: 0, line: catalog_egress_bytes, value: 10}
+  - id: z03-shared-tiny-value-needs-attribution
     budget:
     - {envelope: 100000, owner: shared}
-    expected: error
-    id: r08-blank-component-raises
+    ledger:
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 1.0e-09}
+    expected: {catalog_egress_bytes: unattributed}
+  - id: r08-blank-component-raises
+    budget:
+    - {envelope: 100000, owner: shared}
     ledger:
     - {from: -6, line: catalog_egress_bytes, to: 0, value: 10}
+    attribution:
+    - {component: '  ', day: 0, line: catalog_egress_bytes, value: 10}
+    expected: error
     raises: 'loop_budget: attribution_component'
+  - id: y01-breach-then-silent-daily-flags-dark
+    budget:
+    - {envelope: 100}
+    ledger:
+    - {from: -14, line: catalog_egress_bytes, to: -5, value: 20}
+    expected: {catalog_egress_bytes: breach}
+    flags:
+      catalog_egress_bytes: [true, false]
+  - id: y02-shared-breach-flags-unattributed
+    budget:
+    - {envelope: 100, owner: shared}
+    ledger:
+    - {from: -14, line: catalog_egress_bytes, to: 0, value: 20}
+    expected: {catalog_egress_bytes: breach}
+    flags:
+      catalog_egress_bytes: [false, true]
+  - id: x03-projected-breach-flags-unattributed
+    budget:
+    - {envelope: 100, owner: shared}
+    ledger:
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 10}
+    expected: {catalog_egress_bytes: projected_breach}
+    flags:
+      catalog_egress_bytes: [false, true]
+  - id: y03-shared-breach-then-silent-flags-both
+    budget:
+    - {envelope: 100, owner: shared}
+    ledger:
+    - {from: -14, line: catalog_egress_bytes, to: -5, value: 20}
+    expected: {catalog_egress_bytes: breach}
+    flags:
+      catalog_egress_bytes: [true, false]
+  - id: y04-shared-breach-attributed-flags-clear
+    budget:
+    - {envelope: 100, owner: shared}
+    ledger:
+    - {from: -14, line: catalog_egress_bytes, to: 0, value: 20}
+    attribution:
+    - {component: x, day: 0, line: catalog_egress_bytes, value: 20}
+    expected: {catalog_egress_bytes: breach}
+    flags:
+      catalog_egress_bytes: [false, false]
+  - id: x04-sub-ninth-place-value-is-zero
+    budget:
+    - {envelope: 100000, owner: shared}
+    ledger:
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 4.0e-10}
+    expected: {catalog_egress_bytes: ok}
+    flags:
+      catalog_egress_bytes: [false, false]
+  - id: x05-two-equal-parts
+    budget:
+    - {envelope: 100000, owner: shared}
+    ledger:
+    - {from: -6, line: catalog_egress_bytes, to: 0, value: 10}
+    attribution:
+    - {component: a, day: 0, line: catalog_egress_bytes, value: 5}
+    - {component: b, day: 0, line: catalog_egress_bytes, value: 5}
+    expected: {catalog_egress_bytes: ok}
+  - id: x06-window-3-daily-rate
+    params: {window_days: 3}
+    budget:
+    - {envelope: 350}
+    ledger:
+    - {from: -14, line: catalog_egress_bytes, to: -3, value: 1}
+    - {from: -2, line: catalog_egress_bytes, to: 0, value: 20}
+    expected: {catalog_egress_bytes: projected_breach}
+  - id: x15-event-window-2-ignores-day-minus-4
+    params: {window_days: 2}
+    budget:
+    - {cadence: event, envelope: 1000, line: plane_egress_bytes}
+    ledger:
+    - {from: -4, line: plane_egress_bytes, to: -4, value: 100}
+    expected: {plane_egress_bytes: ok}
+  - id: x01-event-orphan-attribution-zero-envelope
+    budget:
+    - {cadence: event, envelope: 0, line: loop_llm_tokens, owner: shared}
+    attribution:
+    - {component: pwi-friction-classifier, day: 0, line: loop_llm_tokens, value: 1000}
+    expected: {loop_llm_tokens: ok}
+    flags:
+      loop_llm_tokens: [false, false]
 ```
 
 ### 2.6 Mutants (VP 4)
 
 Each mutant replaces one exact substring of the verdict SQL (it must occur exactly once) and must fail at
-least one vector. m01-m48 are named (m10 moved to the equivalents): each verdict comparison made
+least one vector. m01-m53 are named (m10 moved to the equivalents): each verdict comparison made
 inclusive, each precedence pair swapped, each window and guard widened or dropped, the attribution rule
 relaxed in each direction, each rounding removed, the first-failing-rule order reversed, and the stock and
 event legs undone (a stock summed, a stock projected, an event rate over rows, the level read as the
 earliest or the largest reading, the event divisor fixed at 7, the measure guard loosened), the zero-day
-rule dropped or made inclusive and the component guard narrowed to NULL. The sweep is generated by class,
-after verification rounds 1 and 2 found 47 and 17 killable survivors in classes earlier drafts did not
-sweep:
+rule dropped, made inclusive or left unrounded, the component guard narrowed to NULL, and the flags undone
+(unattributed_flag forced false, the flags swapped, the dark coalesce dropped, the dark label read from
+rows instead of the flag). The sweep is generated by class, after verification rounds 1, 2 and 3 found 47,
+17 and 4 killable survivors in classes earlier drafts did not sweep:
 
 - s-guard-*: each of the sixteen guards dropped (always 0);
 - s-case-*: every comparison in the verdict CASE flipped to its neighbours;
@@ -1492,9 +1625,14 @@ sweep:
   28-day history, the event rate cast to an integer, the daily rate rounded;
 - s-today-* and the rest: today's rows counted over the rate window, today's value read as the month sum,
   warn skipped on stock lines, the event rate summed over the month, event lines never projecting, dark on
-  every daily line, the attribution window closed before today.
+  every daily line, the attribution window closed before today;
+- s-operand-*, s-param-*, s-distinct-*: the zero-day rule keyed on rows, the tolerance difference against
+  month-to-date, the shared test on owner IS NOT NULL, each rate window and the tolerance hard-coded at
+  its use site, and each sum or mean over DISTINCT values (two components with equal counts);
+- s-group-*, s-blank-*, s-flag-*: attribution grouped by component, the blank arm without trim, and each
+  flag read from the label instead of its condition.
 
-Twenty-seven mutants are equivalent and listed apart with their reasons: `parts > 0` as `parts >= 0` (the
+Thirty-four mutants are equivalent and listed apart with their reasons: `parts > 0` as `parts >= 0` (the
 attributed sum is NULL when parts is 0); any aggregate of today's value, and count(value) for today's
 rows and parts (the duplicate and value guards leave one non-NULL value); count(DISTINCT component) for
 parts (the component guard rejects NULL and blank components, so DISTINCT counts what count(*) counts; a
@@ -1506,8 +1644,12 @@ anywhere before unattributed (every arm before it compares NULL when envelope an
 stock and dark dispatches read as not-flow and not-event (the measure and cadence guards admit only two
 values); the attribution join on the budget's line (NULL only for an unregistered line); the warn_share
 NOT isfinite arm (DuckDB orders NaN above every value, so the bounds arms catch it); `//` for the event
-rate (true division for DOUBLE operands in DuckDB 1.5.4, engine-specific); and the parts > 0 conjunct
-dropped (the same NULL argument as parts >= 0). Two mutant kinds the verifier called
+rate (true division for DOUBLE operands in DuckDB 1.5.4, engine-specific); the parts > 0 conjunct dropped
+(the same NULL argument as parts >= 0); dark keyed on today_value IS NULL and unregistered keyed on
+cadence IS NULL (the guards leave one non-NULL value per row and both fields per budget row); today's rows
+as count(DISTINCT day) and m joined on the budget's line; the blank arm as a replace of spaces (trim strips
+spaces only); and month start and days remaining computed by date arithmetic instead of date_trunc and
+last_day. Verification r3 fuzzed the earlier 27 over 600 random worlds with no diffs. Two mutant kinds the verifier called
 immaterial are not generated: rounding the envelope side of breach and projection (only an envelope with
 a fraction below 1e-9 tells them apart, and every register envelope is an integer) and round-half-even
 (only an exact binary tie at the tenth place). VP 4 counts the kills and the unique sites and checks that
@@ -1516,9 +1658,9 @@ every equivalent mutant replaces one site and passes every vector.
 ```yaml
 mutants:
 - {id: m01-breach-inclusive, old: 'round(mtd, 9) > envelope', new: 'round(mtd, 9) >= envelope'}
-- {id: m02-dark-ignores-cadence, old: WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark', new: WHEN today_rows = 0 THEN 'dark'}
+- {id: m02-dark-ignores-cadence, new: 'coalesce(today_rows = 0, false) AS dark_flag', old: 'coalesce(cadence = ''daily'' AND today_rows = 0, false) AS dark_flag'}
 - {id: m03-projection-inclusive, old: 'round(projected, 9) > envelope', new: 'round(projected, 9) >= envelope'}
-- {id: m04-attribution-required-everywhere, old: (owner = 'shared' AND parts = 0 AND today_value > 0), new: (parts = 0 AND today_value > 0)}
+- {id: m04-attribution-required-everywhere, new: '(parts = 0 AND round(today_value, 9) > 0)', old: '(owner = ''shared'' AND parts = 0 AND round(today_value, 9) > 0)'}
 - {id: m05-tolerance-inclusive, old: 'abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)', new: 'abs(round(attributed - today_value, 9)) >= round((SELECT tolerance FROM p) * today_value, 9)'}
 - {id: m06-warn-inclusive, old: 'round(projected, 9) > round(warn_share * envelope, 9)', new: 'round(projected, 9) >= round(warn_share * envelope, 9)'}
 - {id: m07-mtd-ignores-month-start, old: FILTER (WHERE day >= (SELECT month_start FROM p)), new: FILTER (WHERE day <= (SELECT today FROM p))}
@@ -1538,10 +1680,10 @@ mutants:
 - {id: m22-null-day-guard-skips-attribution, old: UNION ALL SELECT day FROM a) WHERE day IS NULL, new: UNION ALL SELECT day FROM l) WHERE day IS NULL}
 - {id: m23-unregistered-reads-ok, old: WHEN envelope IS NULL THEN 'unregistered', new: WHEN envelope IS NULL THEN 'ok'}
 - {id: m24-attribution-lines-not-listed, old: UNION SELECT line FROM a), new: UNION SELECT line FROM l)}
-- {id: m25-dark-before-breach, old: "WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'", new: "WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(mtd, 9) > envelope THEN 'breach'"}
-- {id: m26-projection-before-dark, old: "WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'", new: "WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'"}
-- {id: m27-unattributed-before-projection, new: "         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'", old: "         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'"}
-- {id: m28-warn-before-unattributed, new: "         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'", old: "         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
+- {id: m25-dark-before-breach, new: "         WHEN dark_flag THEN 'dark'\n         WHEN round(mtd, 9) > envelope THEN 'breach'", old: "         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dark_flag THEN 'dark'"}
+- {id: m26-projection-before-dark, new: "         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN dark_flag THEN 'dark'", old: "         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'"}
+- {id: m27-unattributed-before-projection, new: "         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'", old: "         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN unattributed_flag THEN 'unattributed'"}
+- {id: m28-warn-before-unattributed, new: "         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'\n         WHEN unattributed_flag THEN 'unattributed'", old: "         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
 - {id: m29-attribution-any-day, old: FROM a WHERE day = (SELECT today FROM p) GROUP BY line, new: FROM a GROUP BY line}
 - {id: m30-window-days-guard-admits-zero, old: BETWEEN 1 AND 31 THEN 0, new: BETWEEN 0 AND 31 THEN 0}
 - {id: m31-tolerance-guard-admits-one, old: (SELECT tolerance FROM p) < 1 THEN 0, new: (SELECT tolerance FROM p) <= 1 THEN 0}
@@ -1550,8 +1692,8 @@ mutants:
 - {id: m34-projection-unrounded, old: 'WHEN round(projected, 9) > envelope', new: WHEN projected > envelope}
 - {id: m35-attribution-difference-unrounded, old: 'abs(round(attributed - today_value, 9))', new: abs(attributed - today_value)}
 - {id: m36-tolerance-product-unrounded, old: 'round((SELECT tolerance FROM p) * today_value, 9)', new: (SELECT tolerance FROM p) * today_value}
-- {id: m37-dark-when-rows-today, old: cadence = 'daily' AND today_rows = 0 THEN 'dark', new: cadence = 'daily' AND today_rows > 0 THEN 'dark'}
-- {id: m38-shared-attribution-not-required, old: "(owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR ", new: ''}
+- {id: m37-dark-when-rows-today, new: 'cadence = ''daily'' AND today_rows > 0, false) AS dark_flag', old: 'cadence = ''daily'' AND today_rows = 0, false) AS dark_flag'}
+- {id: m38-shared-attribution-not-required, new: '', old: "(owner = 'shared' AND parts = 0 AND round(today_value, 9) > 0)\n                OR "}
 - {id: m39-stock-reads-month-sum, old: 'CASE WHEN b.measure = ''stock'' THEN coalesce(m.level, 0) ELSE coalesce(m.mtd, 0) END AS mtd', new: 'coalesce(m.mtd, 0) AS mtd'}
 - {id: m40-stock-projects-like-a-flow, old: "CASE WHEN b.measure = 'stock' THEN coalesce(m.level, 0)\n              ELSE coalesce(m.mtd, 0) +", new: "CASE WHEN b.measure = 'never' THEN coalesce(m.level, 0)\n              ELSE coalesce(m.mtd, 0) +"}
 - {id: m41-event-rate-over-rows-present, old: 'CASE WHEN b.cadence = ''event'' THEN coalesce(m.event_rate, 0) ELSE coalesce(m.day_rate, 0) END', new: 'coalesce(m.day_rate, 0)'}
@@ -1559,9 +1701,18 @@ mutants:
 - {id: m43-level-reads-largest, old: 'arg_max(value, day) AS level', new: max(value) AS level}
 - {id: m44-event-rate-divides-by-seven, old: / (SELECT window_days FROM p) AS event_rate, new: / 7 AS event_rate}
 - {id: m45-measure-guard-accepts-anything, old: 'measure NOT IN (''flow'', ''stock'')', new: 'measure NOT IN (''flow'', ''stock'', ''level'')'}
-- {id: m46-zero-day-rule-dropped, old: (owner = 'shared' AND parts = 0 AND today_value > 0), new: (owner = 'shared' AND parts = 0)}
-- {id: m47-zero-day-rule-inclusive, old: (owner = 'shared' AND parts = 0 AND today_value > 0), new: (owner = 'shared' AND parts = 0 AND today_value >= 0)}
+- {id: m46-zero-day-rule-dropped, new: (owner = 'shared' AND parts = 0), old: '(owner = ''shared'' AND parts = 0 AND round(today_value, 9) > 0)'}
+- {id: m47-zero-day-rule-inclusive, new: '(owner = ''shared'' AND parts = 0 AND round(today_value, 9) >= 0)', old: '(owner = ''shared'' AND parts = 0 AND round(today_value, 9) > 0)'}
 - {id: m48-component-guard-null-only, old: WHERE component IS NULL OR trim(component) = '', new: WHERE component IS NULL}
+- {id: m49-unattributed-flag-always-false, new: ', false) AND false AS unattributed_flag', old: ', false) AS unattributed_flag'}
+- {id: m50-flags-swapped-in-output, new: '       unattributed_flag, dark_flag
+
+    FROM w', old: '       dark_flag, unattributed_flag
+
+    FROM w'}
+- {id: m51-dark-flag-coalesce-dropped, new: (cadence = 'daily' AND today_rows = 0) AS dark_flag, old: 'coalesce(cadence = ''daily'' AND today_rows = 0, false) AS dark_flag'}
+- {id: m52-dark-label-not-from-flag, new: WHEN today_rows = 0 THEN 'dark', old: WHEN dark_flag THEN 'dark'}
+- {id: m53-zero-day-test-unrounded, new: AND parts = 0 AND today_value > 0), old: 'AND parts = 0 AND round(today_value, 9) > 0)'}
 - {id: s-guard-budget-line, what: guard budget_line dropped (always 0), old: 'SELECT ''budget_line'' AS rule, count(*) AS n FROM b WHERE line IS NULL OR trim(line) = ''''', new: 'SELECT ''budget_line'' AS rule, 0'}
 - {id: s-guard-duplicate-budget, what: guard duplicate_budget dropped (always 0), old: 'SELECT ''duplicate_budget'', count(*) - count(DISTINCT line) FROM b', new: 'SELECT ''duplicate_budget'', 0'}
 - {id: s-guard-envelope, what: guard envelope dropped (always 0), old: 'SELECT ''envelope'', count(*) FROM b WHERE envelope IS NULL OR NOT isfinite(envelope) OR envelope < 0', new: 'SELECT ''envelope'', 0'}
@@ -1578,21 +1729,21 @@ mutants:
 - {id: s-guard-duplicate-attribution, what: guard duplicate_attribution dropped (always 0), old: 'SELECT ''duplicate_attribution'', count(*) - count(DISTINCT (line, day, component)) FROM a', new: 'SELECT ''duplicate_attribution'', 0'}
 - {id: s-guard-window-days, what: guard window_days dropped (always 0), old: 'SELECT ''window_days'', CASE WHEN (SELECT window_days FROM p) BETWEEN 1 AND 31 THEN 0 ELSE 1 END', new: 'SELECT ''window_days'', 0'}
 - {id: s-guard-tolerance, what: guard tolerance dropped (always 0), old: 'SELECT ''tolerance'', CASE WHEN (SELECT tolerance FROM p) >= 0 AND (SELECT tolerance FROM p) < 1 THEN 0 ELSE 1 END', new: 'SELECT ''tolerance'', 0'}
-- {id: s-case-01, what: verdict comparison '>' read as '>=' at CASE offset 91, old: "nregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cad", new: "nregistered'\n         WHEN round(mtd, 9) >= envelope THEN 'breach'\n         WHEN cad"}
-- {id: s-case-02, what: verdict comparison '>' read as '<' at CASE offset 91, old: "nregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cad", new: "nregistered'\n         WHEN round(mtd, 9) < envelope THEN 'breach'\n         WHEN cad"}
-- {id: s-case-03, what: verdict comparison '>' read as '>=' at CASE offset 213, old: "'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n       ", new: "'dark'\n         WHEN round(projected, 9) >= envelope THEN 'projected_breach'\n       "}
-- {id: s-case-04, what: verdict comparison '>' read as '<' at CASE offset 213, old: "'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n       ", new: "'dark'\n         WHEN round(projected, 9) < envelope THEN 'projected_breach'\n       "}
-- {id: s-case-05, what: verdict comparison '>' read as '>=' at CASE offset 310, old: "= 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs", new: "= 'shared' AND parts = 0 AND today_value >= 0)\n                OR (parts > 0 AND abs"}
-- {id: s-case-06, what: verdict comparison '>' read as '<' at CASE offset 310, old: "= 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs", new: "= 'shared' AND parts = 0 AND today_value < 0)\n                OR (parts > 0 AND abs"}
-- {id: s-case-08, what: verdict comparison '>' read as '<' at CASE offset 341, old: "day_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value", new: "day_value > 0)\n                OR (parts < 0 AND abs(round(attributed - today_value"}
-- {id: s-case-09, what: verdict comparison '>' read as '>=' at CASE offset 389, old: ' abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_', new: ' abs(round(attributed - today_value, 9)) >= round((SELECT tolerance FROM p) * today_'}
-- {id: s-case-10, what: verdict comparison '>' read as '<' at CASE offset 389, old: ' abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_', new: ' abs(round(attributed - today_value, 9)) < round((SELECT tolerance FROM p) * today_'}
-- {id: s-case-11, what: verdict comparison '>' read as '>=' at CASE offset 496, old: "buted'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'wa", new: "buted'\n         WHEN round(projected, 9) >= round(warn_share * envelope, 9) THEN 'wa"}
-- {id: s-case-12, what: verdict comparison '>' read as '<' at CASE offset 496, old: "buted'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'wa", new: "buted'\n         WHEN round(projected, 9) < round(warn_share * envelope, 9) THEN 'wa"}
-- {id: s-case-13, what: verdict comparison '=' read as '<>' at CASE offset 138, old: "lope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n ", new: "lope THEN 'breach'\n         WHEN cadence <> 'daily' AND today_rows = 0 THEN 'dark'\n "}
-- {id: s-case-14, what: verdict comparison '=' read as '<>' at CASE offset 163, old: "   WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projec", new: "   WHEN cadence = 'daily' AND today_rows <> 0 THEN 'dark'\n         WHEN round(projec"}
-- {id: s-case-15, what: verdict comparison '=' read as '<>' at CASE offset 269, old: " 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value >", new: " 'projected_breach'\n         WHEN (owner <> 'shared' AND parts = 0 AND today_value >"}
-- {id: s-case-16, what: verdict comparison '=' read as '<>' at CASE offset 290, old: "        WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                O", new: "        WHEN (owner = 'shared' AND parts <> 0 AND today_value > 0)\n                O"}
+- {id: s-case-01, what: verdict comparison '>' read as '>=' at CASE offset 171, old: " AND parts = 0 AND round(today_value, 9) > 0)\n                OR (parts > 0 AND abs", new: " AND parts = 0 AND round(today_value, 9) >= 0)\n                OR (parts > 0 AND abs"}
+- {id: s-case-02, what: verdict comparison '>' read as '<' at CASE offset 171, old: " AND parts = 0 AND round(today_value, 9) > 0)\n                OR (parts > 0 AND abs", new: " AND parts = 0 AND round(today_value, 9) < 0)\n                OR (parts > 0 AND abs"}
+- {id: s-case-04, what: verdict comparison '>' read as '<' at CASE offset 202, old: "value, 9) > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value", new: "value, 9) > 0)\n                OR (parts < 0 AND abs(round(attributed - today_value"}
+- {id: s-case-05, what: verdict comparison '>' read as '>=' at CASE offset 250, old: ' abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_', new: ' abs(round(attributed - today_value, 9)) >= round((SELECT tolerance FROM p) * today_'}
+- {id: s-case-06, what: verdict comparison '>' read as '<' at CASE offset 250, old: ' abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_', new: ' abs(round(attributed - today_value, 9)) < round((SELECT tolerance FROM p) * today_'}
+- {id: s-case-07, what: verdict comparison '>' read as '>=' at CASE offset 447, old: "nregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dar", new: "nregistered'\n         WHEN round(mtd, 9) >= envelope THEN 'breach'\n         WHEN dar"}
+- {id: s-case-08, what: verdict comparison '>' read as '<' at CASE offset 447, old: "nregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dar", new: "nregistered'\n         WHEN round(mtd, 9) < envelope THEN 'breach'\n         WHEN dar"}
+- {id: s-case-09, what: verdict comparison '>' read as '>=' at CASE offset 542, old: "'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n       ", new: "'dark'\n         WHEN round(projected, 9) >= envelope THEN 'projected_breach'\n       "}
+- {id: s-case-10, what: verdict comparison '>' read as '<' at CASE offset 542, old: "'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n       ", new: "'dark'\n         WHEN round(projected, 9) < envelope THEN 'projected_breach'\n       "}
+- {id: s-case-11, what: verdict comparison '>' read as '>=' at CASE offset 663, old: "buted'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'wa", new: "buted'\n         WHEN round(projected, 9) >= round(warn_share * envelope, 9) THEN 'wa"}
+- {id: s-case-12, what: verdict comparison '>' read as '<' at CASE offset 663, old: "buted'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'wa", new: "buted'\n         WHEN round(projected, 9) < round(warn_share * envelope, 9) THEN 'wa"}
+- {id: s-case-13, what: verdict comparison '=' read as '<>' at CASE offset 44, old: " (\n  SELECT *,\n         coalesce(cadence = 'daily' AND today_rows = 0, false) AS da", new: " (\n  SELECT *,\n         coalesce(cadence <> 'daily' AND today_rows = 0, false) AS da"}
+- {id: s-case-14, what: verdict comparison '=' read as '<>' at CASE offset 69, old: "oalesce(cadence = 'daily' AND today_rows = 0, false) AS dark_flag,\n         coalesc", new: "oalesce(cadence = 'daily' AND today_rows <> 0, false) AS dark_flag,\n         coalesc"}
+- {id: s-case-15, what: verdict comparison '=' read as '<>' at CASE offset 120, old: ") AS dark_flag,\n         coalesce((owner = 'shared' AND parts = 0 AND round(today_v", new: ") AS dark_flag,\n         coalesce((owner <> 'shared' AND parts = 0 AND round(today_v"}
+- {id: s-case-16, what: verdict comparison '=' read as '<>' at CASE offset 141, old: "    coalesce((owner = 'shared' AND parts = 0 AND round(today_value, 9) > 0)\n       ", new: "    coalesce((owner = 'shared' AND parts <> 0 AND round(today_value, 9) > 0)\n       "}
 - {id: s-window-01, what: month-to-date excludes the first of the month, old: day >= (SELECT month_start FROM p), new: day > (SELECT month_start FROM p)}
 - {id: s-window-02, what: daily rate window one day wider, old: avg(value) FILTER (WHERE day > (SELECT today FROM p) - (SELECT window_days FROM p)), new: avg(value) FILTER (WHERE day >= (SELECT today FROM p) - (SELECT window_days FROM p))}
 - {id: s-window-03, what: event rate window one day wider, old: 'sum(value) FILTER (WHERE day > (SELECT today FROM p) - (SELECT window_days FROM p)), 0)', new: 'sum(value) FILTER (WHERE day >= (SELECT today FROM p) - (SELECT window_days FROM p)), 0)'}
@@ -1693,50 +1844,28 @@ mutants:
 - {id: s-agg-lines-union-all, what: 'line list keeps duplicates, so a line reports more than once', old: SELECT line FROM b UNION SELECT line FROM l UNION SELECT line FROM a, new: SELECT line FROM b UNION ALL SELECT line FROM l UNION ALL SELECT line FROM a}
 - {id: s-agg-dup-budget-trim, what: duplicate budget check trims the line name, old: count(*) - count(DISTINCT line) FROM b, new: count(*) - count(DISTINCT trim(line)) FROM b}
 - {id: s-agg-first-rule-max, what: the last failing rule by name is reported instead of the first, old: (SELECT rule FROM g WHERE n > 0 ORDER BY rule LIMIT 1), new: (SELECT max(rule) FROM g WHERE n > 0)}
-- {id: s-when-unregistered-to-5, what: WHEN arm unregistered moved to position 5, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value,\
-    \ 9)) THEN 'unattributed'\n         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
-- {id: s-when-unregistered-to-6, what: WHEN arm unregistered moved to position 6, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value,\
-    \ 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'\n         WHEN envelope IS NULL THEN 'unregistered'"}
-- {id: s-when-breach-to-3, what: WHEN arm breach moved to position 3, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9))\
-    \ > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
-- {id: s-when-breach-to-4, what: WHEN arm breach moved to position 4, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9))\
-    \ > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
-- {id: s-when-breach-to-5, what: WHEN arm breach moved to position 5, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN\
-    \ 'unattributed'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
-- {id: s-when-breach-to-6, what: WHEN arm breach moved to position 6, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN\
-    \ 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'\n         WHEN round(mtd, 9) > envelope THEN 'breach'"}
-- {id: s-when-dark-to-1, what: WHEN arm dark moved to position 1, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT\
-    \ tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
-- {id: s-when-dark-to-4, what: WHEN arm dark moved to position 4, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT\
-    \ tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
-- {id: s-when-dark-to-5, what: WHEN arm dark moved to position 5, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n\
-    \         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
-- {id: s-when-dark-to-6, what: WHEN arm dark moved to position 6, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n\
-    \         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'"}
-- {id: s-when-projected-breach-to-1, what: WHEN arm projected_breach moved to position 1, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed\
-    \ - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
-- {id: s-when-projected-breach-to-2, what: WHEN arm projected_breach moved to position 2, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed\
-    \ - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
-- {id: s-when-projected-breach-to-5, what: WHEN arm projected_breach moved to position 5, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\
-    \ THEN 'unattributed'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
-- {id: s-when-projected-breach-to-6, what: WHEN arm projected_breach moved to position 6, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9))\
-    \ THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'"}
-- {id: s-when-unattributed-to-1, what: WHEN arm unattributed moved to position 1, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows =\
-    \ 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
-- {id: s-when-unattributed-to-2, what: WHEN arm unattributed moved to position 2, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows =\
-    \ 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
-- {id: s-when-unattributed-to-3, what: WHEN arm unattributed moved to position 3, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN cadence = 'daily' AND today_rows =\
-    \ 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
-- {id: s-when-unattributed-to-6, what: WHEN arm unattributed moved to position 6, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'\n         WHEN (owner = 'shared' AND parts = 0 AND\
-    \ today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'"}
-- {id: s-when-warn-to-1, what: WHEN arm warn moved to position 1, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'\n         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n\
-    \                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'"}
-- {id: s-when-warn-to-2, what: WHEN arm warn moved to position 2, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n\
-    \                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'"}
-- {id: s-when-warn-to-3, what: WHEN arm warn moved to position 3, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n\
-    \                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'"}
-- {id: s-when-warn-to-4, what: WHEN arm warn moved to position 4, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n\
-    \                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'"}
+- {id: s-when-unregistered-to-5, what: WHEN arm unregistered moved to position 5, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
+- {id: s-when-unregistered-to-6, what: WHEN arm unregistered moved to position 6, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'\n         WHEN envelope IS NULL THEN 'unregistered'"}
+- {id: s-when-breach-to-3, what: WHEN arm breach moved to position 3, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
+- {id: s-when-breach-to-4, what: WHEN arm breach moved to position 4, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
+- {id: s-when-breach-to-5, what: WHEN arm breach moved to position 5, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
+- {id: s-when-breach-to-6, what: WHEN arm breach moved to position 6, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'\n         WHEN round(mtd, 9) > envelope THEN 'breach'"}
+- {id: s-when-dark-to-1, what: WHEN arm dark moved to position 1, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN dark_flag THEN 'dark'\n         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
+- {id: s-when-dark-to-4, what: WHEN arm dark moved to position 4, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN dark_flag THEN 'dark'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
+- {id: s-when-dark-to-5, what: WHEN arm dark moved to position 5, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
+- {id: s-when-dark-to-6, what: WHEN arm dark moved to position 6, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'\n         WHEN dark_flag THEN 'dark'"}
+- {id: s-when-projected-breach-to-1, what: WHEN arm projected_breach moved to position 1, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dark_flag THEN 'dark'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
+- {id: s-when-projected-breach-to-2, what: WHEN arm projected_breach moved to position 2, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dark_flag THEN 'dark'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
+- {id: s-when-projected-breach-to-5, what: WHEN arm projected_breach moved to position 5, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dark_flag THEN 'dark'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
+- {id: s-when-projected-breach-to-6, what: WHEN arm projected_breach moved to position 6, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dark_flag THEN 'dark'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'"}
+- {id: s-when-unattributed-to-1, what: WHEN arm unattributed moved to position 1, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN unattributed_flag THEN 'unattributed'\n         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
+- {id: s-when-unattributed-to-2, what: WHEN arm unattributed moved to position 2, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
+- {id: s-when-unattributed-to-3, what: WHEN arm unattributed moved to position 3, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
+- {id: s-when-unattributed-to-6, what: WHEN arm unattributed moved to position 6, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'\n         WHEN unattributed_flag THEN 'unattributed'"}
+- {id: s-when-warn-to-1, what: WHEN arm warn moved to position 1, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'\n         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN unattributed_flag THEN 'unattributed'"}
+- {id: s-when-warn-to-2, what: WHEN arm warn moved to position 2, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN unattributed_flag THEN 'unattributed'"}
+- {id: s-when-warn-to-3, what: WHEN arm warn moved to position 3, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN unattributed_flag THEN 'unattributed'"}
+- {id: s-when-warn-to-4, what: WHEN arm warn moved to position 4, old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN unattributed_flag THEN 'unattributed'"}
 - {id: s-guard-arm-budget-line-1, what: 'guard budget_line: arm ''line IS NULL'' dropped', old: '  SELECT ''budget_line'' AS rule, count(*) AS n FROM b WHERE line IS NULL OR trim(line) = ''''', new: '  SELECT ''budget_line'' AS rule, count(*) AS n FROM b WHERE trim(line) = '''''}
 - {id: s-guard-arm-budget-line-2, what: 'guard budget_line: arm ''trim(line) = '''''' dropped', old: '  SELECT ''budget_line'' AS rule, count(*) AS n FROM b WHERE line IS NULL OR trim(line) = ''''', new: '  SELECT ''budget_line'' AS rule, count(*) AS n FROM b WHERE line IS NULL'}
 - {id: s-guard-arm-envelope-1, what: 'guard envelope: arm ''envelope IS NULL'' dropped', old: '  UNION ALL SELECT ''envelope'', count(*) FROM b WHERE envelope IS NULL OR NOT isfinite(envelope) OR envelope < 0', new: '  UNION ALL SELECT ''envelope'', count(*) FROM b WHERE NOT isfinite(envelope) OR envelope < 0'}
@@ -1766,10 +1895,32 @@ mutants:
     ', new: ''}
 - {id: s-plumb-raise-only-above-one, what: the run raises only when a rule fails more than once, old: WHERE n > 0) THEN error, new: WHERE n > 1) THEN error}
 - {id: s-plumb-dup-ledger-pre-window, what: 'duplicate_ledger counted over the raw ledger, not the window', old: 'count(*) - count(DISTINCT (line, day)) FROM l', new: 'count(*) - count(DISTINCT (line, day)) FROM {ledger}'}
+- {id: s-operand-zero-day-on-rows, what: zero-day rule keyed on today's rows instead of its value, old: 'AND parts = 0 AND round(today_value, 9) > 0)', new: AND parts = 0 AND today_rows > 0)}
+- {id: s-operand-diff-against-mtd, what: tolerance difference taken against month-to-date, old: 'abs(round(attributed - today_value, 9))', new: 'abs(round(attributed - mtd, 9))'}
+- {id: s-operand-shared-on-owner-not-null, what: shared test read as owner IS NOT NULL, old: (owner = 'shared' AND parts = 0, new: (owner IS NOT NULL AND parts = 0}
+- {id: s-param-day-rate-window-seven, what: daily rate window hard-coded to 7, old: avg(value) FILTER (WHERE day > (SELECT today FROM p) - (SELECT window_days FROM p)), new: avg(value) FILTER (WHERE day > (SELECT today FROM p) - 7)}
+- {id: s-param-event-rate-window-seven, what: event rate window hard-coded to 7, old: 'coalesce(sum(value) FILTER (WHERE day > (SELECT today FROM p) - (SELECT window_days FROM p)), 0) /', new: 'coalesce(sum(value) FILTER (WHERE day > (SELECT today FROM p) - 7), 0) /'}
+- {id: s-param-tolerance-hard-coded, what: tolerance hard-coded to 0.01, old: 'round((SELECT tolerance FROM p) * today_value, 9)', new: 'round(0.01 * today_value, 9)'}
+- {id: s-distinct-attributed, what: attributed sum over DISTINCT values, old: sum(value) AS attributed, new: sum(DISTINCT value) AS attributed}
+- {id: s-distinct-mtd, what: month-to-date sum over DISTINCT values, old: 'coalesce(sum(value) FILTER (WHERE day >= (SELECT month_start FROM p)), 0) AS mtd', new: 'coalesce(sum(DISTINCT value) FILTER (WHERE day >= (SELECT month_start FROM p)), 0) AS mtd'}
+- {id: s-distinct-day-rate, what: daily rate over DISTINCT values, old: avg(value) FILTER (WHERE day > (SELECT today FROM p) - (SELECT window_days FROM p)) AS day_rate, new: avg(DISTINCT value) FILTER (WHERE day > (SELECT today FROM p) - (SELECT window_days FROM p)) AS day_rate}
+- {id: s-distinct-event-rate, what: event rate over DISTINCT values, old: 'coalesce(sum(value) FILTER (WHERE day > (SELECT today FROM p) - (SELECT window_days FROM p)), 0) / (SELECT window_days FROM p) AS event_rate', new: 'coalesce(sum(DISTINCT value) FILTER (WHERE day > (SELECT today FROM p) - (SELECT window_days FROM p)), 0) / (SELECT window_days FROM p) AS event_rate'}
+- {id: s-group-attribution-by-component, what: 'attribution grouped by line and component, so a line reports once per part', old: count(*) AS parts FROM a WHERE day = (SELECT today FROM p) GROUP BY line, new: 'count(*) AS parts FROM a WHERE day = (SELECT today FROM p) GROUP BY line, component'}
+- {id: s-blank-component-without-trim, what: component blank arm without trim, old: component IS NULL OR trim(component) = '', new: component IS NULL OR component = ''}
+- {id: s-flag-unattributed-from-label, what: unattributed_flag read from the label instead of the condition, old: '       dark_flag, unattributed_flag
+
+    FROM w', new: '       dark_flag, verdict = ''unattributed'' AS unattributed_flag
+
+    FROM w'}
+- {id: s-flag-dark-from-label, what: dark_flag read from the label instead of the condition, old: '       dark_flag, unattributed_flag
+
+    FROM w', new: '       verdict = ''dark'' AS dark_flag, unattributed_flag
+
+    FROM w'}
 - {id: s-dispatch-event-rate-on-daily, what: event rate applied to daily lines, old: 'WHEN b.cadence = ''event'' THEN coalesce(m.event_rate, 0)', new: 'WHEN b.cadence = ''daily'' THEN coalesce(m.event_rate, 0)'}
 - {id: s-dispatch-event-rate-on-measure, what: event rate dispatched on measure instead of cadence, old: 'WHEN b.cadence = ''event'' THEN coalesce(m.event_rate, 0)', new: 'WHEN b.measure = ''flow'' THEN coalesce(m.event_rate, 0)'}
-- {id: s-dispatch-shared-literal-case, what: the shared owner literal mis-cased, old: (owner = 'shared' AND parts = 0 AND today_value > 0), new: (owner = 'Shared' AND parts = 0 AND today_value > 0)}
-- {id: s-dispatch-shared-negated, what: the shared test negated, old: (owner = 'shared' AND parts = 0 AND today_value > 0), new: (owner <> 'shared' AND parts = 0 AND today_value > 0)}
+- {id: s-dispatch-shared-literal-case, what: the shared owner literal mis-cased, old: '(owner = ''shared'' AND parts = 0 AND round(today_value, 9) > 0)', new: '(owner = ''Shared'' AND parts = 0 AND round(today_value, 9) > 0)'}
+- {id: s-dispatch-shared-negated, what: the shared test negated, old: '(owner = ''shared'' AND parts = 0 AND round(today_value, 9) > 0)', new: '(owner <> ''shared'' AND parts = 0 AND round(today_value, 9) > 0)'}
 - {id: s-level-this-month-only, what: stock level read from this month only, old: 'arg_max(value, day) AS level', new: 'arg_max(value, day) FILTER (WHERE day >= (SELECT month_start FROM p)) AS level'}
 - {id: s-level-today-only, what: stock level read from today only, old: 'arg_max(value, day) AS level', new: max(value) FILTER (WHERE day = (SELECT today FROM p)) AS level}
 - {id: s-level-rate-window-only, what: stock level read from the rate window only, old: 'arg_max(value, day) AS level', new: 'arg_max(value, day) FILTER (WHERE day > (SELECT today FROM p) - (SELECT window_days FROM p)) AS level'}
@@ -1789,13 +1940,13 @@ mutants:
 - {id: s-warn-skips-stock, what: warn skipped when level equals projection (stock lines), old: 'WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN ''warn''', new: 'WHEN round(projected, 9) > round(warn_share * envelope, 9) AND mtd <> projected THEN ''warn'''}
 - {id: s-event-rate-over-month, what: event rate summed over the month instead of the rate window, old: 'coalesce(sum(value) FILTER (WHERE day > (SELECT today FROM p) - (SELECT window_days FROM p)), 0) / (SELECT window_days FROM p) AS event_rate', new: 'coalesce(sum(value) FILTER (WHERE day >= (SELECT month_start FROM p)), 0) / (SELECT window_days FROM p) AS event_rate'}
 - {id: s-event-never-projects, what: event lines never project, old: 'THEN coalesce(m.event_rate, 0) ELSE', new: THEN 0 ELSE}
-- {id: s-dark-drops-today-rows, what: dark fires on every daily line, old: WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark', new: WHEN cadence = 'daily' THEN 'dark'}
+- {id: s-dark-drops-today-rows, what: dark fires on every daily line, old: 'coalesce(cadence = ''daily'' AND today_rows = 0, false) AS dark_flag', new: 'coalesce(cadence = ''daily'', false) AS dark_flag'}
 - {id: s-attribution-window-excludes-today, what: attribution window excludes today, old: 'FROM {attribution} WHERE day IS NULL OR (day > (SELECT today FROM p) - 31 AND day <= (SELECT today FROM p))', new: 'FROM {attribution} WHERE day IS NULL OR (day > (SELECT today FROM p) - 31 AND day < (SELECT today FROM p))'}
 ```
 
 ```yaml
 equivalent:
-- {id: q-parts-ge-zero, what: 'parts > 0 read as parts >= 0 in the tolerance clause: when parts is 0 the attributed sum is NULL, so the comparison is NULL and the branch cannot fire either way', old: "day_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value", new: "day_value > 0)\n                OR (parts >= 0 AND abs(round(attributed - today_value"}
+- {id: q-parts-ge-zero, what: 'parts > 0 read as parts >= 0 in the tolerance clause: when parts is 0 the attributed sum is NULL, so the comparison is NULL and the branch cannot fire either way', old: "value, 9) > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value", new: "value, 9) > 0)\n                OR (parts >= 0 AND abs(round(attributed - today_value"}
 - {id: q-today-value-min, what: 'today_value max read as min: duplicate_ledger guarantees one row per line per day, so every aggregate of one value is that value', old: max(value) FILTER (WHERE day = (SELECT today FROM p)) AS today_value, new: min(value) FILTER (WHERE day = (SELECT today FROM p)) AS today_value}
 - {id: q-today-value-sum, what: 'today_value max read as sum: duplicate_ledger guarantees one row per line per day, so every aggregate of one value is that value', old: max(value) FILTER (WHERE day = (SELECT today FROM p)) AS today_value, new: sum(value) FILTER (WHERE day = (SELECT today FROM p)) AS today_value}
 - {id: q-today-value-avg, what: 'today_value max read as avg: duplicate_ledger guarantees one row per line per day, so every aggregate of one value is that value', old: max(value) FILTER (WHERE day = (SELECT today FROM p)) AS today_value, new: avg(value) FILTER (WHERE day = (SELECT today FROM p)) AS today_value}
@@ -1813,15 +1964,19 @@ equivalent:
 - {id: q-day-rate-missing-read-as-one, what: 'a missing daily rate read as 1: a daily line with no row in the rate window has no row today and reads dark first', old: 'coalesce(m.day_rate, 0) END *', new: 'coalesce(m.day_rate, 1) END *'}
 - {id: q-day-rate-coalesce-v, what: 'coalesce dropped on day_rate in v: a daily line with month rows but none in the rate window has no row today and reads dark first', old: 'ELSE coalesce(m.day_rate, 0) END *', new: ELSE m.day_rate END *}
 - {id: q-first-rule-min, what: 'min(rule) instead of ORDER BY rule LIMIT 1: the same rule', old: (SELECT rule FROM g WHERE n > 0 ORDER BY rule LIMIT 1), new: (SELECT min(rule) FROM g WHERE n > 0)}
-- {id: q-when-unregistered-to-2, what: 'unregistered arm moved to position 2: every arm before unattributed is NULL when envelope and cadence are NULL, so an unregistered line still reads unregistered', old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n        \
-    \ WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
-- {id: q-when-unregistered-to-3, what: 'unregistered arm moved to position 3: every arm before unattributed is NULL when envelope and cadence are NULL, so an unregistered line still reads unregistered', old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n        \
-    \ WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
-- {id: q-when-unregistered-to-4, what: 'unregistered arm moved to position 4: every arm before unattributed is NULL when envelope and cadence are NULL, so an unregistered line still reads unregistered', old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN cadence = 'daily' AND today_rows = 0 THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN envelope IS NULL THEN 'unregistered'\n        \
-    \ WHEN (owner = 'shared' AND parts = 0 AND today_value > 0)\n                OR (parts > 0 AND abs(round(attributed - today_value, 9)) > round((SELECT tolerance FROM p) * today_value, 9)) THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
+- {id: q-when-unregistered-to-2, what: 'unregistered arm moved to position 2: every arm before unattributed is NULL when envelope and cadence are NULL, so an unregistered line still reads unregistered', old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
+- {id: q-when-unregistered-to-3, what: 'unregistered arm moved to position 3: every arm before unattributed is NULL when envelope and cadence are NULL, so an unregistered line still reads unregistered', old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dark_flag THEN 'dark'\n         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
+- {id: q-when-unregistered-to-4, what: 'unregistered arm moved to position 4: every arm before unattributed is NULL when envelope and cadence are NULL, so an unregistered line still reads unregistered', old: "         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'", new: "         WHEN round(mtd, 9) > envelope THEN 'breach'\n         WHEN dark_flag THEN 'dark'\n         WHEN round(projected, 9) > envelope THEN 'projected_breach'\n         WHEN envelope IS NULL THEN 'unregistered'\n         WHEN unattributed_flag THEN 'unattributed'\n         WHEN round(projected, 9) > round(warn_share * envelope, 9) THEN 'warn'"}
 - {id: q-guard-arm-warn-share-2, what: 'guard warn_share: the NOT isfinite arm dropped; DuckDB orders NaN above every value, so NaN > 1 and the infinities hit the bounds arms', old: '  UNION ALL SELECT ''warn_share'', count(*) FROM b WHERE warn_share IS NULL OR NOT isfinite(warn_share) OR warn_share <= 0 OR warn_share > 1', new: '  UNION ALL SELECT ''warn_share'', count(*) FROM b WHERE warn_share IS NULL OR warn_share <= 0 OR warn_share > 1'}
+- {id: q-operand-dark-on-today-value-null, what: 'dark keyed on today_value IS NULL: duplicate_ledger and ledger_value leave one non-NULL value whenever a row exists', old: 'coalesce(cadence = ''daily'' AND today_rows = 0, false) AS dark_flag', new: 'coalesce(cadence = ''daily'' AND today_value IS NULL, false) AS dark_flag'}
+- {id: q-operand-unregistered-on-cadence, what: 'unregistered keyed on cadence IS NULL: a budget row has both by guard, and no budget row has neither', old: WHEN envelope IS NULL THEN 'unregistered', new: WHEN cadence IS NULL THEN 'unregistered'}
+- {id: q-distinct-today-rows, what: 'today_rows as count(DISTINCT day): duplicate_ledger leaves one row per line per day', old: count(*) FILTER (WHERE day = (SELECT today FROM p)) AS today_rows, new: count(DISTINCT day) FILTER (WHERE day = (SELECT today FROM p)) AS today_rows}
+- {id: q-join-m-on-budget-line, what: 'm joined on b.line: b.line is NULL only for an unregistered line, which reads unregistered first', old: LEFT JOIN m ON m.line = x.line, new: LEFT JOIN m ON m.line = b.line}
+- {id: q-blank-component-replace-spaces, what: 'component blank arm as replace of spaces: DuckDB trim strips spaces only, so the two agree', old: component IS NULL OR trim(component) = '', new: 'component IS NULL OR replace(component, '' '', '''') = '''''}
+- {id: q-calendar-month-start-arithmetic, what: 'month start as today minus (day - 1): the same date', old: 'CAST(date_trunc(''month'', {today}) AS DATE) AS month_start', new: '{today} - CAST(day({today}) - 1 AS INTEGER) AS month_start'}
+- {id: q-calendar-days-remaining-datediff, what: 'days remaining via datediff: the same integer', old: 'last_day({today}) - {today} AS days_remaining', new: 'datediff(''day'', {today}, last_day({today})) AS days_remaining'}
 - {id: q-dispatch-stock-as-not-flow, what: 'stock dispatch read as measure <> ''flow'': the measure guard admits only flow and stock, and NULL for an unregistered line either way', old: 'CASE WHEN b.measure = ''stock'' THEN coalesce(m.level, 0) ELSE coalesce(m.mtd, 0) END AS mtd', new: 'CASE WHEN b.measure <> ''flow'' THEN coalesce(m.level, 0) ELSE coalesce(m.mtd, 0) END AS mtd'}
-- {id: q-dispatch-dark-as-not-event, what: 'dark read as cadence <> ''event'': the cadence guard admits only daily and event, and NULL for an unregistered line either way', old: WHEN cadence = 'daily' AND today_rows = 0, new: WHEN cadence <> 'event' AND today_rows = 0}
+- {id: q-dispatch-dark-as-not-event, what: 'dark read as cadence <> ''event'': the cadence guard admits only daily and event, and NULL for an unregistered line either way', old: 'coalesce(cadence = ''daily'' AND today_rows = 0, false) AS dark_flag', new: 'coalesce(cadence <> ''event'' AND today_rows = 0, false) AS dark_flag'}
 - {id: q-join-attribution-on-budget-line, what: 'attribution joined on b.line instead of x.line: b.line is NULL only for an unregistered line, which reads unregistered first', old: LEFT JOIN ab ON ab.line = x.line, new: LEFT JOIN ab ON ab.line = b.line}
 - {id: q-event-rate-floor-division, what: 'event rate with // : DuckDB 1.5.4 returns true division for DOUBLE operands (100.0 // 7 = 14.2857); engine-specific, pinned by r05 on an engine that floors', old: ', 0) / (SELECT window_days FROM p) AS event_rate', new: ', 0) // (SELECT window_days FROM p) AS event_rate'}
 - {id: q-unattributed-drops-parts-clause, what: 'the parts > 0 conjunct dropped: when parts is 0 the attributed sum is NULL and the comparison is NULL, as for q-parts-ge-zero', old: OR (parts > 0 AND abs(, new: OR (abs(}
@@ -1844,7 +1999,7 @@ equivalent:
   review line; the telemetry leg of the monthly reconciliation returns None; the Decision 88 clause 2
   figure is still TBD; no Terraform budget or cost alarm exists and catalog_stats has no schedule (VP 2).
 
-### Contested (k1-k3 in the fixture; k4-k8 report-only, the fixture's contested list is capped at 3)
+### Contested (k1-k3 in the fixture; k4-k9 report-only, the fixture's contested list is capped at 3)
 
 - **k1 (asked). What a breach does.** (a) Alarm: the daily verdict files one recommendation per breaching
   line through the cost reconciliation's existing rec path (build_rec_fields, find_open_cost_rec_for), so
@@ -1870,9 +2025,11 @@ equivalent:
   triggers use. Recommended (a), with (c) as the monthly leg: the daily verdict reads quantities, and the
   reconciliation's discrepancy leg compares the priced ledger with the invoice once a month (its
   invoice_vs_telemetry_discrepancy_pct is the right threshold, and its telemetry leg is the stub e5 names).
-  (b) is a month late and cannot split a Lambda between components; (c) cannot see a cap. Consequence to
-  weigh: (a) needs a price table per line, and Neon egress has none (O5), so that line stays in bytes until
-  one exists.
+  (b) is a month late and cannot split a Lambda between components; (c) cannot see a cap. s1's "never
+  stored" rests on Decision 199 for the ledger's rows (quantities priced at read) and on Decision 101 for
+  publication; it does not decide the unit an envelope is kept in, but it does exclude (b) as a stored
+  dollar figure, so the live choice is (a) against (c). Consequence to weigh: (a) needs a price table per
+  line, and Neon egress has none (O5), so that line stays in bytes until one exists.
 - **k4 (asked; report-only). How catalog egress is measured.** (a) A proxy: catalog_stats bytes per read
   times reads per day, which the data plane can compute from its own metadata (Decision 88 clause 2's
   supported path) and which the model's "touched" and "whole_catalog" cases bracket. (b) The Neon
@@ -1994,13 +2151,14 @@ equivalent:
 - planes: data_plane.
 - maturity (thresholds are provisional seeds; plan fork line): read_all, the operator re-derives every
   verdict run; to sampled after 30 runs re-derived unchanged since the last overturned one; to spot_check
-  after 30 more on a 1-in-5 sample; to anomaly_triggered after 30 consecutive days with no dark or
-  unattributed line and the last monthly invoice residual inside tolerance. The return leg and version rule
+  after 30 more on a 1-in-5 sample; to anomaly_triggered after 30 consecutive days with no dark_flag or
+  unattributed_flag on any line and the last monthly invoice residual inside tolerance. The return leg and version rule
   are #1398's k1 and k2.
 - failure_signal: loop spend or egress nobody reads: a daily cost line with no ledger row, a day with no
   component attribution, or an invoice the ledger cannot explain. Metric dark_line_days: daily lines with
-  no ledger row that day; must be 0, read beside the monthly invoice-vs-ledger residual. Source: the daily
-  verdict log (dark and unattributed rows) and the monthly cost reconciliation discrepancy leg.
+  dark_flag that day; must be 0, read beside the monthly invoice-vs-ledger residual. Source: the daily
+  verdict log's dark_flag and unattributed_flag per line, and the monthly cost reconciliation discrepancy
+  leg.
 - verification: c1 vectors, c2 ledger coverage over a month of runs from sources that need no Terraform
   change or billed metric (k8), c3 operator review of the register with the prior month's residual.
 - rollback: stop the daily verdict schedule and drop the loop_budget block; monthly cost reconciliation
@@ -2031,7 +2189,8 @@ equivalent:
   sending) under transport (a); under (b) the control plane pays and the line belongs to the control
   plane's own budget, outside this fixture. Its k1 decides whether any verdict here may cross.
 - **Goodhart register (#1400).** dark_line_days is this item's failure_signal and belongs in that register
-  with a counter (the monthly residual) and a drill (a day withheld from one line should read dark).
+  with a counter (the monthly residual) and a drill (a day withheld from one line should raise its
+  dark_flag, whatever its label; the flags exist so that drill works on a line already in breach).
   Drills and the reviewer drill are review_items and reader_requests here.
 - **Maintenance and GC.** Merge cadence and snapshot expiry decide the file count every catalog read pays
   for (section 2.3); Decision 88 clause 4's GC gate (rec-2113's restore drill) is therefore a cost
