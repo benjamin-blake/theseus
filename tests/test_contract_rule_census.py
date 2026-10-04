@@ -78,9 +78,8 @@ def _stub(monkeypatch: pytest.MonkeyPatch, verdicts: list[tuple[str, int]], *, r
     return list(rules)
 
 
-@pytest.mark.parametrize(
-    ("verdicts", "expected"),
-    [
+def test_exit_codes(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    cases = [
         ([("PASS", 0), ("PASS", 0)], 0),
         ([("PASS", 0), ("FAIL", 3)], 1),
         ([("PASS", 0), ("WARN", 2)], 1),
@@ -88,14 +87,13 @@ def _stub(monkeypatch: pytest.MonkeyPatch, verdicts: list[tuple[str, int]], *, r
         ([("PASS", 0), ("SKIP", 0)], 2),
         ([("PASS", 0), ("UNAVAILABLE", 0)], 2),
         ([("ERROR", 0)], 2),
-    ],
-)
-def test_exit_codes(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], verdicts, expected) -> None:
-    _stub(monkeypatch, verdicts)
-    assert census.main(["--table", "ops_recommendations"]) == expected
-    out = capsys.readouterr().out
-    assert "SUMMARY compiled=" in out
-    assert f"violators={verdicts[-1][1]}" in out
+    ]
+    for verdicts, expected in cases:
+        _stub(monkeypatch, verdicts)
+        assert census.main(["--table", "ops_recommendations"]) == expected, verdicts
+        out = capsys.readouterr().out
+        assert "SUMMARY compiled=" in out
+        assert f"violators={verdicts[-1][1]}" in out
 
 
 def test_exit_two_on_an_empty_set_or_a_count_mismatch(

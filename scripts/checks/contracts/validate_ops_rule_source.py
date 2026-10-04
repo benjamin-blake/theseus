@@ -201,6 +201,51 @@ def _blank_rejecting(intent: dict[str, Any]) -> bool:
     return "accepted_values" in intent
 
 
+def _parity_not_null(where: str, column: str, intent: dict[str, Any], raw_fields: dict[str, Any], params: dict) -> list[str]:
+    errors = []
+    nn = intent.get("not_null")
+    if not (isinstance(nn, dict) and nn.get("enforced")):
+        errors.append(f"{where}: no equal not_null rule in the contract")
+    is_string = (raw_fields.get(column) or {}).get("iceberg_type", "string") == "string"
+    if is_string and not _blank_rejecting(intent):
+        errors.append(f"{where}: a VARCHAR column needs a blank-rejecting rule (min_length >= 1, accepted values)")
+    return errors
+
+
+def _parity_accepted_values(where: str, intent: dict[str, Any], params: dict) -> list[str]:
+    declared = (intent.get("accepted_values") or {}).get("values")
+    if declared is None or set(declared) != set(params.get("values") or []):
+        return [f"{where}: values differ from the contract's accepted_values"]
+    return []
+
+
+def _parity_scalar(where: str, intent: dict[str, Any], name: str, key: str, params: dict) -> list[str]:
+    declared = (intent.get(name) or {}).get(key)
+    if declared != params.get(key if name != "min_length" else "value"):
+        return [f"{where}: {key} differs from the contract's {name} ({declared!r})"]
+    return []
+
+
+def _parity_test(
+    where: str, column: str, name: str, params: dict, intent: dict[str, Any], raw_fields: dict[str, Any]
+) -> list[str]:
+    if name == "not_null":
+        return _parity_not_null(where, column, intent, raw_fields, params)
+    if name == "accepted_values":
+        return _parity_accepted_values(where, intent, params)
+    if name == "min_length":
+        return _parity_scalar(where, intent, "min_length", "value", params)
+    if name == "array_element_format":
+        return _parity_scalar(where, intent, "array_element_format", "pattern", params)
+    if name == "path_syntax":
+        return [] if "pattern" in intent else [f"{where}: no equal pattern rule in the contract"]
+    if name in PRODUCER_SIDE_KINDS:
+        return [] if name in intent else [f"{where}: no declared {name} in the contract"]
+    if name != "expression":
+        return [f"{where}: write_time test kind {name!r} has no contract mapping"]
+    return []
+
+
 def _parity_errors(root: Path, raw_fields: dict[str, Any], intents: dict[str, dict[str, Any]]) -> list[str]:
     errors: list[str] = []
     for column, tests in _ops_yaml_tests(root).items():
@@ -209,34 +254,7 @@ def _parity_errors(root: Path, raw_fields: dict[str, Any], intents: dict[str, di
             errors.append(f"ops.yaml {column}: write_time test on a column the contract does not declare")
             continue
         for name, params in tests:
-            where = f"ops.yaml {column}.{name}"
-            if name == "not_null":
-                nn = intent.get("not_null")
-                if not (isinstance(nn, dict) and nn.get("enforced")):
-                    errors.append(f"{where}: no equal not_null rule in the contract")
-                is_string = (raw_fields.get(column) or {}).get("iceberg_type", "string") == "string"
-                if is_string and not _blank_rejecting(intent):
-                    errors.append(f"{where}: a VARCHAR column needs a blank-rejecting rule (min_length >= 1, accepted values)")
-            elif name == "accepted_values":
-                declared = (intent.get("accepted_values") or {}).get("values")
-                if declared is None or set(declared) != set(params.get("values") or []):
-                    errors.append(f"{where}: values differ from the contract's accepted_values")
-            elif name == "min_length":
-                declared = (intent.get("min_length") or {}).get("value")
-                if declared != params.get("value"):
-                    errors.append(f"{where}: value {params.get('value')!r} differs from the contract's {declared!r}")
-            elif name == "array_element_format":
-                declared = (intent.get("array_element_format") or {}).get("pattern")
-                if declared != params.get("pattern"):
-                    errors.append(f"{where}: pattern differs from the contract's array_element_format")
-            elif name == "path_syntax":
-                if "pattern" not in intent:
-                    errors.append(f"{where}: no equal pattern rule in the contract")
-            elif name in PRODUCER_SIDE_KINDS:
-                if name not in intent:
-                    errors.append(f"{where}: no declared {name} in the contract")
-            elif name != "expression":
-                errors.append(f"{where}: write_time test kind {name!r} has no contract mapping")
+            errors.extend(_parity_test(f"ops.yaml {column}.{name}", column, name, params, intent, raw_fields))
     return errors
 
 

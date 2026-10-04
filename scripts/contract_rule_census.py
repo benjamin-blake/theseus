@@ -127,7 +127,7 @@ def census(tables: tuple[str, ...], *, dry_run: bool = False) -> tuple[int, list
     rows: list[dict[str, Any]] = []
     for plan in plans:
         for rule in plan.exempt:
-            lines.append(f"EXEMPT  {rule.table}.{rule.column} {rule.kind} class={rule.exemption['class']}")
+            lines.append(f"EXEMPT  {rule.table}.{rule.column} {rule.kind} class={(rule.exemption or {}).get('class')}")
     if dry_run:
         for plan in plans:
             lines.extend(f"-- {c.table}.{c.column} {c.test_type}\n{c.sql}" for c in plan.checks)
