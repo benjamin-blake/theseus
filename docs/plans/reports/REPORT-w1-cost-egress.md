@@ -414,8 +414,13 @@ Per line, in order of precedence (v13-v16):
 
 Every comparison is strict and read at exactly 9 decimal places (v23-v26, v35-v38, n13, n20-n23, n28-n35,
 t01, x04), so an envelope met exactly is ok, a sum that differs from its envelope only in floating-point
-noise does not breach, and one unit in the ninth place does. The rate window and tolerance are read from
-the params at every use (x06, x15, p05), never hard-coded.
+noise does not breach, and one unit in the ninth place does. That holds while values stay under about 4e6
+in the line's unit, where 9 places sit above DOUBLE resolution; the seed lines are integer bytes and
+counts or Lambda GB-seconds near 1e5, so none is affected, and the build should keep integer units or
+DECIMAL for any line that is not (plan-critique r1 N3). The rate window and tolerance are read from the
+params at every use (x06, x15, p05), never hard-coded. `{today}` is the last closed UTC day, never the
+running one: CloudWatch datapoints and per-day sums are incomplete until a day closes, so a run over the
+running day would read every daily line as dark or partial (N6).
 
 Malformed input raises instead of deciding (fail loud, Decision 55 by analogy): a blank or duplicate
 budget line, an envelope that is NULL, non-finite or negative, a warn share outside (0, 1], a cadence other
@@ -2019,8 +2024,9 @@ equivalent:
   obligation (Decision 88 clauses 1 and 2; decision). Cost is derived at read from quantities, never stored
   as dollars (Decision 199; Decision 206 clause 7's "no dollars" budgets by analogy). The ledger is the
   customer's own usage and stays in the data plane (Decision 209 clause 2(a)); whether any verdict crosses
-  is #1399's k1. Measured dollars never appear in the public repository (Decision 101; the reconciliation's
-  public_summary rule).
+  is #1399's k1. Measured dollars never appear in the public repository: Decision 101 bounds what is
+  published, and the reconciliation's public_summary rule applies it to cost figures
+  (scripts/cost_reconciliation.py:11) while keeping absolute dollars in a private sink.
 - **s2.** Measured: 7 of 9 sibling reports hand cost or egress to this component; 1 of 9 names egress in
   its failure_signal or triggers; 2 of 9 carry a criterion naming egress; 0 of 9 declares a budget line, an
   envelope or a price (VP 1).
@@ -2056,8 +2062,9 @@ equivalent:
   invoice_vs_telemetry_discrepancy_pct is the right threshold, and its telemetry leg is the stub e5 names).
   (b) is a month late and cannot split a Lambda between components; (c) cannot see a cap. s1's "never
   stored" rests on Decision 199 for the ledger's rows (quantities priced at read) and on Decision 101 for
-  publication; it does not decide the unit an envelope is kept in, but it does exclude (b) as a stored
-  dollar figure, so the live choice is (a) against (c). Consequence to weigh: (a) needs a price table per
+  publication; neither decides the unit an envelope is kept in, and Decision 101 does not bar a private
+  table from holding invoice dollars. (b) is therefore disfavoured by Decision 199's derived-at-read rule
+  by extension, not excluded: the operator sees all three. Consequence to weigh: (a) needs a price table per
   line, and Neon egress has none (O5), so that line stays in bytes until one exists.
 - **k4 (asked; report-only). How catalog egress is measured.** (a) A proxy: catalog_stats bytes per read
   times reads per day, which the data plane can compute from its own metadata (Decision 88 clause 2's
@@ -2072,8 +2079,11 @@ equivalent:
   shared line is split by each component's share of requests. (c) Unattributed by design for Lambda lines,
   attributed only for the lines with one owner. Recommended (a): it is what the verdict's tolerance rule
   assumes (v10-v12) and it costs one field per call; (b) hides a component whose calls are few and heavy
-  (the detectors, e8); (c) leaves the two biggest lines unowned. No precedent. Two choices inside the staged
-  SQL belong here: a shared line that reports 0 on a day needs no attribution rows (z01; under (a) a day with
+  (the detectors, e8); (c) leaves the two biggest lines unowned. No precedent. (a) changes writer and
+  reader Lambda code, which ships through the governed code-deploy channel
+  (.github/workflows/deploy-ducklake-lambdas.yml); a governed deploy is on the charter's always-ask list, so
+  the build step behind (a) is always-ask even though it needs no Terraform, credential or billed metric.
+  Two choices inside the staged SQL belong here: a shared line that reports 0 on a day needs no attribution rows (z01; under (a) a day with
   no calls writes none), and a NULL or blank component raises (r01, r08), so the build's stamp vocabulary
   must be canonical (case included: 'X' and 'x' are two components).
 - **k6 (asked; report-only). The fixture item's edge home.** (a) depends_on T2.36 only (carried
@@ -2101,8 +2111,11 @@ equivalent:
   and readable today but with no prefix dimension, so a ceiling only. Recommended (a) for both, with the
   invoice as the monthly calibration (k3 (c)) and (d) as the storage ceiling. Criterion c2 depends on this
   fork: it is written so that every daily line's source needs no Terraform change and no billed metric.
-  No fork here makes a Terraform or spend change; the two always-ask options are named so nobody stages
-  them by accident (verification r1 F3).
+  (a) is not free either: counting PUTs and GETs on the Lambda log line changes writer and reader Lambda
+  code, which ships through the governed code-deploy channel, and a governed deploy is always-ask; what
+  separates (a) from (b) and (c) is that it adds no Terraform, no credential and no billed metric. No fork
+  here makes a Terraform, deploy or spend change; the always-ask options and steps are named so nobody
+  stages them by accident (verification r1 F3, plan-critique r1 N1).
 - **k9 (asked; report-only). The line roster.** Which lines the register carries, and each one's owner,
   cadence and measure, is a choice with no precedent. (a) The ten lines of section 2.2 (staged): every
   meter the deployed shapes expose plus the human line and two zero-envelope event lines. (b) Fewer:
@@ -2190,9 +2203,9 @@ equivalent:
   leg.
 - verification: c1 vectors, c2 ledger coverage over a month of runs from sources that need no Terraform
   change or billed metric (k8), c3 operator review of the register with the prior month's residual.
-- rollback: stop the daily verdict schedule and drop the loop_budget block; monthly cost reconciliation
-  runs as before with its five triggers. Ledger and attribution rows stay as history; no envelope gates
-  anything, so stopping unblocks nothing.
+- rollback: stop the daily verdict schedule and drop the register wherever k2 places it; monthly cost
+  reconciliation runs as before with its five triggers. Ledger and attribution rows stay as history; no
+  envelope gates anything, so stopping unblocks nothing.
 
 ## 5. Boundary notes for W2 synthesis
 
@@ -2244,5 +2257,6 @@ This text presumes the recommended options of parked forks k1, k2 and k3. It is 
 > unregistered per line; a breach files a recommendation through the cost reconciliation path and gates
 > nothing. A line that reports nothing on a day it should is a failure of the loop, not a saving. The
 > register lives beside the monthly reconciliation's thresholds, and the monthly discrepancy leg
-> reconciles the priced ledger against the invoice. Decision 88's catalog egress line is the first line of
+> reconciles the priced ledger against the invoice. A meter counted by the loop's own Lambdas ships
+> through the governed code-deploy channel like any other Lambda change. Decision 88's catalog egress line is the first line of
 > the register, and its envelope is set from a measured reading, never a planning-time guess."
