@@ -335,10 +335,13 @@ Open (q1-q2 in the fixture; none is answerable from the repository):
 - Component 1 (capture producer wiring): its failure_signal source is the sessions_window verb (k2,
   wherever it lands) with the latest-lifecycle-row state rule and close-last tie (k1), which both
   components now state identically; its unfinalized_session_share is the abandoned
-  share under k3 (a) with a 24 h threshold, so the two definitions should be one. On merge of both PRs,
-  W2 should add an edge `pwi-capture-producer-wiring depends_on pwi-telemetry-reader-verbs`. It is not
-  added here: the evaluator's L4 accepts an edge only to a pilot item in the same fixture or a
-  ROADMAP-PLATFORM tier or candidate-decision id, and the capture item is not in this branch's fixture.
+  share under k3 (a) with a 24 h threshold, so the two definitions should be one. W2 (#1402, merged) staged the pilot edge the
+  other way, `pwi-telemetry-reader-verbs depends_on pwi-capture-producer-wiring` (the verbs read the rows
+  capture lands), and its edge set supersedes the reverse edge this report suggested earlier. No edge is
+  added here.
+- Ownership overlap: W2 parks P4 for the operator, the split of the reader verbs and the
+  ducklake_scd2_schema.py Decision 128 decomposition between the Telemetry project's slice 2b and this
+  item. This report stages the design either owner would build; it does not decide P4.
 - Merge order: #1384 and this PR both replace the fixture's empty `work_items`, `work_item_criteria` and
   `work_item_edges` lines. The second to merge hits a textual conflict: merge main, re-render with
   render(parsed) and re-run validate_work_item_pilot (L1-L6).

@@ -249,6 +249,40 @@ work_items:
           - {id: q1, text: 'Where the out-of-band counts and drill logs live: capture q1 denominator, rec-4025 shadow mode (#1390 q2), friction label review, the verdict log.'}
           - {id: q2, text: 'Seeds unmeasured: counter floor 0.99, drill_min 20 per 28 days at recall 0.9, eps 0.01 on 14-day halves. Who sets per-detector values, from what?'}
           - {id: q3, text: 'Is the verdict one input to #1398''s controller, replacing its top-rung drill with one at every rung (its k5 (a3)), or read beside it?'}
+  - id: pwi-loop-cost-egress-budget
+    kind: task
+    title: 'Cost and egress budget: a line register in physical units, a daily attributed ledger and a daily verdict priced at read'
+    extension:
+      consideration_register:
+        why: 'Nothing budgets the loop: the roadmap cost block is ''not a budget'', its 5 triggers watch no egress, Lambda or review line, the telemetry cost leg returns None, D88 cl.2 is TBD (VP 2); 7 of 9 siblings hand cost here (VP 1).'
+        how: One register row per cost line (unit, owner, cadence, flow or stock, envelope, warn share, source), one ledger row per line per day plus attribution rows per component, and one daily SQL with seven verdicts per line; dollars at read.
+        planes: [data_plane]
+        maturity:
+          rung: read_all
+          transitions:
+            - {from: read_all, to: sampled, trigger: {metric: 'provisional: daily verdict runs the operator re-derived unchanged since the last overturned one', comparator: '>=', threshold: 30}}
+            - {from: sampled, to: spot_check, trigger: {metric: 'provisional: 1-in-5 sampled verdict runs re-derived unchanged since the last overturned one', comparator: '>=', threshold: 30}}
+            - {from: spot_check, to: anomaly_triggered, trigger: {metric: 'provisional: consecutive days with no dark_flag or unattributed_flag and the last invoice residual in tolerance', comparator: '>=', threshold: 30}}
+        failure_signal: {signal: 'Loop spend or egress nobody reads: a daily cost line with no ledger row, a day with no component attribution, or an invoice the ledger cannot explain', metric: 'dark_line_days: lines with dark_flag or unattributed_flag that day; must be 0, read beside the monthly invoice residual', source: 'the daily verdict log, dark_flag and unattributed_flag per line, and the monthly cost reconciliation discrepancy leg'}
+        verification: [c1, c2, c3]
+        rollback: Stop the daily verdict schedule and drop the register wherever k2 places it; monthly cost reconciliation runs as before with its five triggers. Ledger and attribution rows stay as history; no envelope gates anything.
+        evidence:
+          - {kind: file_line, ref: 'scripts/cost_reconciliation.py:149'}
+          - {kind: file_line, ref: 'config/agent/cost_reconciliation.yaml:14'}
+          - {kind: decision, ref: '88'}
+          - {kind: roadmap, ref: T2.36}
+        settled:
+          - {id: s1, text: 'Catalog egress is a first-class budget with a measurement obligation (D88 cl.1-2); cost is derived at read, never stored (D199). Data plane only (D209 cl.2a).'}
+          - {id: s2, text: 'Measured: 7 of 9 sibling reports hand cost or egress here; 1 of 9 names egress in its failure_signal; 1 of 9 names a budget of its own, 0 a price (VP 1).'}
+          - {id: s3, text: 'Measured: 5 cost triggers, none on egress, Lambda or review load; the telemetry cost leg returns None; D88 cl.2 still TBD; no Terraform budget (VP 2).'}
+        contested:
+          - {id: k1, text: 'Breach action: (a) alarm, a rec via the cost reconciliation path; (b) the owning component degrades cadence; (c) stop its schedule. Rec (a) now, (b) at lift.'}
+          - {id: k2, text: 'Budget home: (a) a loop_budget block in config/agent/cost_reconciliation.yaml; (b) a new Class C contract; (c) this item''s register rows. Rec (a) plus (c).'}
+          - {id: k3, text: 'Unit: (a) physical units per line, priced at read; (b) invoice dollars per line; (c) bill shares as the five triggers use. Rec (a), with (c) as the monthly leg.'}
+        open_questions:
+          - {id: q1, text: 'No measured egress exists: who runs catalog_stats on the live catalog (D88 cl.2), and are the seed envelopes set from that reading or from the model here?'}
+          - {id: q2, text: 'Free tier (local adapter, no cloud bill): which lines exist there, and does a budget in bytes and seconds mean anything without a price to apply at read?'}
+          - {id: q3, text: 'Review load: the model reads 72 items a day at read_all against a seed of 30 a day (900 a month); is this line a budget here or the ladder''s control (#1398 R1)?'}
   - id: pwi-telemetry-reader-verbs
     kind: task
     title: 'Telemetry reader verbs: partition-bound, generation-aware derived-state reads over the event journal (rec-4024)'
@@ -304,6 +338,9 @@ work_item_criteria:
   - {work_item: pwi-goodhart-register, criterion_id: c1, text: 'The verdict SQL applies the versioned params over the build''s register, signal and drill tables and passes every report vector on DuckDB, each raise matching its message.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_goodhart_register.py -k vectors}, status: open}
   - {work_item: pwi-goodhart-register, criterion_id: c2, text: 'For every register row the build replays its cheap path on the detector''s real metric: the primary improves and the counter falls under its floor; on a real improvement the counter holds.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_goodhart_register.py -k cheap_path_replay}, status: open}
   - {work_item: pwi-goodhart-register, criterion_id: c3, text: 'Before the ladder reads any detector above read_all, the operator approves its register row, and approves every later change to a row, each with that row''s c2 replay result.', method: {kind: review, resolver: 'operator, before the ladder reads a detector above read_all and on every register change', evidence_requirement: 'register diff per row: metric, cheap path, counter, floor, drill, upstreams, plus its c2 replay line'}, status: open}
+  - {work_item: pwi-loop-cost-egress-budget, criterion_id: c1, text: 'The verdict SQL applies the versioned params over the build''s budget, ledger and attribution tables and passes every report vector on DuckDB, each raise matching its message.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_loop_budget_verdict.py -k vectors}, status: open}
+  - {work_item: pwi-loop-cost-egress-budget, criterion_id: c2, text: 'Over a month, every daily-cadence line lands one ledger row per day from a source needing no Terraform change or billed metric (k8; Lambda counters ship by governed deploy), and every shared line carries attribution in tolerance.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_loop_budget_verdict.py -k ledger_coverage}, status: open}
+  - {work_item: pwi-loop-cost-egress-budget, criterion_id: c3, text: 'Before the first verdict acts, and on every register, envelope or price change, the operator approves the register with the prior month''s reconciliation residual beside it.', method: {kind: review, resolver: 'operator, before the first acting verdict and on every register, envelope or price change', evidence_requirement: 'register diff per line: unit, owner, cadence, envelope, warn share, source, plus the prior month''s invoice-vs-ledger residual'}, status: open}
   - {work_item: pwi-telemetry-reader-verbs, criterion_id: c1, text: 'Verbs bind the append-only tables through an event-journal registry form with a server-decoded partition; the shared R4/R5 dedupe passes every vector on DuckLake, survivors compared by (event_id, parser_version), with conflicts.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_reader_verbs_ducklake.py -m integration -k dedupe_vectors}, status: open}
   - {work_item: pwi-telemetry-reader-verbs, criterion_id: c2, text: 'Derivation verbs match golden fixtures under the operator''s k1/k3 resolution ((a): latest row, close last on ties; sub-agents from agent-run pairs, an async child included), resume-after-close included; rewritten if (a) is not chosen.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_reader_verbs.py -k derivation}, status: open}
   - {work_item: pwi-telemetry-reader-verbs, criterion_id: c3, text: 'Before any consumer depends on a verb, its p95 latency and per-call catalog egress are measured on the production catalog against a named consumer bound (D199 falsifier, D88).', method: {kind: review, resolver: operator at the first telemetry-verb deploy review, evidence_requirement: 'per-verb p95 latency, response bytes and Neon catalog egress, compared with the named consumer bound'}, status: open}
@@ -320,4 +357,5 @@ work_item_edges:
   - {from: pwi-maturity-ladder-controller, to: T2.36, kind: depends_on}
   - {from: pwi-allow-list-transport, to: T2.36, kind: depends_on}
   - {from: pwi-goodhart-register, to: T2.36, kind: depends_on}
+  - {from: pwi-loop-cost-egress-budget, to: T2.36, kind: depends_on}
   - {from: pwi-telemetry-reader-verbs, to: T2.36, kind: part_of}
