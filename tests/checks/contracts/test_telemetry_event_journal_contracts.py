@@ -153,7 +153,7 @@ class TestTranscriptsContentModel:
             assert doc.fields[required_field].dq_intent["not_null"]["enforced"] is True
 
         purpose_values = set(doc.fields["purpose"].dq_intent["accepted_values"]["values"])
-        assert purpose_values == {"prompt", "response", "thinking", "tool_input", "tool_result", "system"}
+        assert purpose_values == {"prompt", "response", "thinking", "tool_input", "tool_result", "tool_output", "system"}
         assert "transcript" not in purpose_values
 
         origin_values = set(doc.fields["origin"].dq_intent["accepted_values"]["values"])
