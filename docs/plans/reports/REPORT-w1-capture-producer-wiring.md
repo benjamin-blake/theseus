@@ -276,8 +276,11 @@ Open (q1-q3 in the fixture; none is answerable from the repository):
 
 - Deliberation capture (DeepSeek reasoning_content) is a transcript-less producer: it must RECEIVE the
   root's project_ref and session_started_at (epoch-ms or a decoded held key, telemetry-event-envelope.yaml
-  session_started_at handoff rule). This item is that handoff's source; the deliberation item should
-  carry `depends_on: pwi-capture-producer-wiring`.
+  session_started_at handoff rule). This item is that handoff's source. The deliberation item is now on
+  main as pwi-deliberation-capture with no edge to this item, because this item was not on main when it
+  merged and L4 fails closed on an absent target. W2 synthesis should add the edge
+  `pwi-deliberation-capture depends_on pwi-capture-producer-wiring`. This PR does not edit another
+  component's rows.
 - Reader verbs (rec-4024 item 6) are this item's failure_signal source; back-validation (T3.4) and the
   friction classifier both read only rows this item writes.
 - T3.20 c3 (an orphan/coverage DQ check in config/agent/data_quality/ops.yaml, alarm-not-gate) is the
