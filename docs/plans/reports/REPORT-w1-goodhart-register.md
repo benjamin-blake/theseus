@@ -74,13 +74,13 @@ cost/egress component owns (R4).
 | e2 | 4 of 8 failure_signals name a companion read "beside" them (#1396, #1397, #1398, #1399); 1 of 8 names a seeded, canary, drill or injected known-positive (#1399) [VP 1] | sibling fixtures |
 | e3 | In 7 of 8 items the spot_check -> anomaly_triggered trigger names the item's own failure_signal metric (#1390 reads "zero mismatches"); 0 of 8 such triggers names a recall or a drill [VP 1] | sibling fixtures |
 | e4 | The pilot FailureSignal model is three free-text fields (signal, metric, source): no counter, drill or recall field exists | scripts/checks/roadmap/_work_item_pilot_model.py:162 |
-| e5 | No file under src/ or scripts/ other than the pilot model and its evaluator names failure_signal or goodhart; the six telemetry contracts carry 0 synthetic or drill markers [VP 2] | repository grep |
+| e5 | No file under src/ or scripts/ other than the pilot model and its evaluator names failure_signal or goodhart; none of the six telemetry contracts has a field named for a synthetic, seeded or drill row (field keys; a prose mention is not a marker) [VP 2] | repository grep |
 | e6 | In the per-detector model, each cheap path lowers the primary (8/8) by at least as much as a real halving of the failure rate (8/8 within 0.001); each counter falls under its floor on the cheap path (8/8) and holds on the real improvement (8/8); 2 declared companions are computable and 1 of them moves [VP 3] | section 2.3 |
 | e7 | The staged verdict SQL passes 159 vectors with one row per detector, 49 by raising with the stated message, and reads both sides of 520 exact recall boundaries and 9,800 exact-eps moves correctly [VP 4] | sections 2.4, 2.5 |
 | e8 | Each of 246 mutants of the verdict SQL (34 named, 212 from the rule sweep) replaces one unique site and fails at least one vector; three further mutants are equivalent and listed apart [VP 4] | section 2.6 |
 | e9 | #1398 (unmerged) measured that a half-blind monitor reaches the top rung in 58 of 60 components at a 5% error rate, against 25 of 60 at recall 1.0, and named reviewer error (R3) and unequal harm (R6) for this register | REPORT-w1-maturity-ladder.md section 0 and Risks, at f6183430 |
 | e10 | Four sibling reports carry a Goodhart paragraph naming a cheap path and a guard (#1394, #1395, #1396, #1397); #1384 section 4 names its own blind spot; five (#1394-#1398) name what they hand to this register | sibling reports at the pinned heads |
-| e11 | The producer writes a hook row's severity from its exit code: 2 is error, 0 or a missing code is info, anything else warning; an info row is outside unmapped_failure_share's denominator | src/turn_capture/observations.py:311 |
+| e11 | The producer writes a hook row's severity from its exit code: 2 is error, 0 or a missing code is info, anything else warning; an info row is outside unmapped_failure_share's denominator | src/turn_capture/observations.py:361 |
 | e12 | Decision 73 halt check: the reader's named verb ci_rca_open returned [] at 2026-10-03T17:44:32Z | Step 0 |
 
 Sibling heads read by VP 1 (pinned by sha, so a later push to a sibling branch does not change the reading):
