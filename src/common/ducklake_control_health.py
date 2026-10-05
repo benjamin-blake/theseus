@@ -121,7 +121,7 @@ def control_health(
                 continue  # already recorded as a row-count violation above
             spec = resolve_table_spec(owning_table)
             current_value = int(counter_by_name[owning_table])
-            if load_field_semantics()["ops_tables"][owning_table].get("id_scheme") == "ulid":
+            if spec.id_scheme == "ulid":
                 count_row = con.execute(f"SELECT count(*) FROM {catalog}.{spec.current_table}").fetchone()
                 registered = int(count_row[0]) if count_row and count_row[0] is not None else 0
                 if current_value < registered:

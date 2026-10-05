@@ -178,6 +178,7 @@ class ScdTableSpec:
     entity_id_prefix: str | None = None  # canonical id shape <prefix>NNN (None = no canonical keyspace)
     id_keyspace: str = "caller"  # "writer" => file_ops allocates + write_ops advances the counter (Decision 84 I-2)
     write_mode: str = "scd2"  # "scd2" | "append_only"; append_only skips the current write-through projection
+    id_scheme: str = "serial"  # "serial" | "ulid": how a writer-keyspace id is minted (counter semantics, control_health)
 
 
 def _order_columns(fields: dict[str, Any], merge_key: str) -> tuple[tuple[str, str], ...]:
@@ -270,6 +271,7 @@ def resolve_table_spec(table: str | None = None, semantics: dict[str, Any] | Non
         entity_id_prefix=spec.get("entity_id_prefix"),
         id_keyspace=spec.get("id_keyspace", "caller"),
         write_mode=write_mode,
+        id_scheme=spec.get("id_scheme") or "serial",
     )
 
 

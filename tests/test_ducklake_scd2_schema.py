@@ -654,13 +654,10 @@ def test_is_event_table_is_marker_based_not_write_mode_based():
     assert schema.is_event_table("telemetry_agents")
 
 
-def test_scd_spec_is_not_widened_and_registry_carries_id_scheme():
-    """id_scheme is read from the registry entry (control_health), never a new ScdTableSpec field."""
-    import dataclasses
-
-    assert "id_scheme" not in {f.name for f in dataclasses.fields(schema.ScdTableSpec)}
-    tables = schema.load_field_semantics()["ops_tables"]
-    assert tables["ops_tenants"]["id_scheme"] == "ulid" and not tables["ops_recommendations"].get("id_scheme")
+def test_scd_spec_id_scheme_defaults_to_serial_and_reads_ulid():
+    assert schema.resolve_table_spec("ops_recommendations").id_scheme == "serial"  # null in the registry -> serial
+    assert schema.resolve_table_spec("ops_tenants").id_scheme == "ulid"
+    assert schema.resolve_table_spec(None).id_scheme == "serial"
 
 
 # ---------------------------------------------------------------------------
