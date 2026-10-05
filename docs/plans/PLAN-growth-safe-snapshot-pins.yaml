@@ -24,13 +24,16 @@ scope:
     declares 'SCD2'): no contract file -> no rules (dormant, smoke); event -> excluded, because the event projection owns
     those keys; anything else -> expected keys from scripts.contract_rules.declared_rules. That covers SCD2 and control.
     The generator's control branch never calls project_row_rules, so the first projectable rule a control contract declares
-    fails test_other_tables_project_no_rule_key. That is intended teeth (Decision 210: a declared rule is enforced at write
-    or it is a gap), and the module docstring says so, so nobody 'fixes' it by excluding control. A rule key is any column
+    fails test_other_tables_project_no_rule_key, as does a control contract's exempted rule and a contract authored for
+    a still-dormant sidecar table. That is intended teeth (Decision 210: a declared rule is enforced at write or it is a
+    gap). The module docstring names the remedy - wire the projection or register the table, never exclude it. A rule key is any column
     key outside the base column shape the SCD2 projection emits (role, sql_type, nullable, description, semantics); this
     replaces the literal _RULE_KEYS set, so an unknown key also fails the per-table comparison.
     The oracle's logic uses only DeclaredRule attributes and nullable read from the identity-projected 'plain' doc, never
     the projection module - an exempt leg -> write_time_exemptions; a non-exempt not_null on a nullable:false column ->
-    nothing; any other leg -> its kind, plus exclude_before when dated. The rule reader is an oracle parameter, defaulting
+    nothing; any other leg -> its kind, plus exclude_before when dated. The oracle's expected set and every comparison built
+    on it are sets of (column, key) pairs per table, never a per-table set of key names, so an undeclared key of a kind
+    declared on another column still fails. The rule reader is an oracle parameter, defaulting
     to declared_rules. Rule tables are the non-event tables with a non-empty expected set. ops_decisions declares six not_null
     rules on nullable:false columns and projects none, so 'declares any rule' is the wrong test. Every derived set is computed
     inside a test function, never at module scope or collection. The existing node names stay, because live registry rows
@@ -42,8 +45,9 @@ scope:
     and smoke entries join. test_exemptions_and_unknown_kinds is unchanged. Two new nodes. test_rule_invariants_follow_a_new_rule_table
     patches projection.declared_rules and passes the same patched reader to the oracle, appending DeclaredRule('ops_decisions',
     'title', 'min_length', {'value': 3}). The invariants pass, and ops_decisions joins the rule tables. test_rule_invariants_catch_undeclared_and_dropped_rules
-    covers two wrappers around project_row_rules. One adds an undeclared pattern key to an ops_decisions column. The other
-    returns ops_recommendations' columns unprojected, simulating a dropped dispatch. Each makes the invariants raise AssertionError.
+    covers three wrappers around project_row_rules. One adds an undeclared pattern key to an ops_decisions column. One adds
+    pattern to ops_recommendations.title, a kind that table declares on another column. The third returns ops_recommendations'
+    columns unprojected, simulating a dropped dispatch. Each makes the invariants raise AssertionError.
     The module docstring names every SCD2 contract, not only ops_recommendations. About 190 SLOC after.
 - file: tests/test_ducklake_control_tables.py
   action: Modify
@@ -61,7 +65,7 @@ scope:
     builds standalone fixtures with dataclasses.make_dataclass from the baseline (no subclassing of the frozen class). The
     guard admits the baseline itself and the baseline plus a defaulted id_scheme. It rejects (AssertionError) each of these:
     a baseline field dropped; an unrostered defaulted field; history_table re-annotated 'str | None'; two baseline fields
-    swapped; a non-frozen copy; and a rostered field added kw_only without a default. Pinning every annotation is a tightening:
+    of the same default status swapped (history_table and current_table, so the fixture still builds); a non-frozen copy; and a rostered field added kw_only without a default. Pinning every annotation is a tightening:
     a non-widening refinement (for example dict[str, Any] to Mapping[str, Any]) edits the baseline in the same PR, a deliberate
     review point.
 - file: tests/telemetry/test_contract_amendments.py
@@ -95,7 +99,8 @@ acceptance_criteria:
   ops_decisions and ops_entity_counters anchors survive as floors.
 - >-
   test_rule_invariants_follow_a_new_rule_table passes with ops_decisions given one extra declared rule. test_rule_invariants_catch_undeclared_and_dropped_rules
-  shows that an undeclared projected key and a dropped dispatch both fail the invariants.
+  shows that an undeclared key on a rule-less table, an undeclared key of an already-declared kind on another column of
+  a rule table, and a dropped dispatch each fail the invariants.
 - >-
   The ScdTableSpec guard pins all eleven baseline fields' order, annotation and default status, requires frozen, and admits
   only rostered, defaulted additions (id_scheme seeded). test_spec_shape_guard_admits_only_approved_defaulted_growth proves
@@ -125,7 +130,7 @@ verification_plan:
   fix_if: >-
     A growth node fails: an invariant still reads a literal table list, field list or [0] index; derive it per the scope
     row. A teeth node fails: the derivation became permissive or reads the generator's dispatch; it must compare each table's
-    full projected key set against the contract-derived set, the full baseline tuple, and exactly one lookup match. Never
+    projected (column, key) pairs against the contract-derived pairs, never key names per table, the full baseline tuple, and exactly one lookup match. Never
     drop an assertion to get green.
   hermetic: true
   graduation: graduate
@@ -147,8 +152,8 @@ verification_plan:
   hermetic: true
   graduation: waive
   graduation_waiver_reason: >-
-    A one-time removal sweep over three named files. The standing guard is step 1's growth and teeth nodes, which fail if
-    a literal pin returns in a form that blocks growth or stops catching drift.
+    A one-time removal sweep over three named files. Step 1's growth and teeth nodes guard the rewritten helpers; a new literal
+    pin in some other test is the class-level gap rec-4181 carries (the count-coupling scanner extension).
   expected_literals:
   - PINS_GONE
 - step: 3
@@ -226,10 +231,11 @@ context:
   and a teeth node for every pin. SPIRIT NOTE 191: the oracle derives from contracts, not dispatch, with a dropped-dispatch
   teeth case. SPIRIT NOTE 187: the roster keeps 'never widened', and dispositions are recorded below. RELATED: 148, 176,
   210, 200, 55, 59, 128/130, 131, 163, 48. Decisions triaged: 163 of 163. Roadmap items intersected: 1; CONFLICT: 0; RELATED: 1
-- "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=REVISE r1 (1 blocking + 8), all fixed; follow-on rec-4181 per F9"
+- "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=REVISE r1 (1 blocking + 8), REVISE r2 (1 + 6 informational), all fixed except r2 F6 (kept: guard_target names the reverted test files, per r1); follow-on rec-4181"
 - >-
-  Pin dispositions (Decision 187). Projection: 'only rule tables change', 'ops_recommendations changes' and 'ops_decisions/ops_entity_counters
-  carry no rule key' are retained, now contract-derived, with floors, and widened to every table. ScdTableSpec: history_table
+  Pin dispositions (Decision 187). Projection: 'only rule tables change', 'ops_recommendations changes', 'ops_decisions/ops_entity_counters
+  carry no rule key' and per-(column, kind) pair equality are retained, now contract-derived, with floors, and widened
+  to every table. ScdTableSpec: history_table
   non-Optional and the eleven names are retained; 'no field added' is re-pointed to 'no unrostered or required addition';
   every annotation, the order, defaults and frozen are newly pinned. amendment_log: 'write-conformance recorded' is re-pointed
   to the right entry; version == 5 becomes a >= 5 ratchet. 'Newest first' was never stated and is unenforced; its carrier
@@ -277,7 +283,7 @@ execution_steps:
   CLOSURE -- separate facts, in order (a)-(e) (implement skill Commit Flows; docs/contracts/git-ops.yaml handoff_sequence),
   each reported on its own. (a) READINESS: bin/venv-python -m scripts.session.github_readiness (unknown is never PASS).
   (b) Set implementation_declared true, commit, git fetch origin main and git rebase origin/main (STOP on conflict, except
-  the expected lexicon-hunk conflict with #1416: keep both sides). (c) VP step 5 on the committed, rebased, clean tree,
+  the expected lexicon-hunk conflict with #1416: keep this branch's lookup line and #1416's appended rec-4146 test). (c) VP step 5 on the committed, rebased, clean tree,
   then bin/venv-python -m scripts.checks.validation_result --verify-head. (d) Write a scratchpad JSON holding exactly the
   scripts.session.postflight_evidence.CATEGORIES keys, then bin/venv-python -m scripts.session.postflight --evidence <that
   file>. (e) Push, open the PR, subscribe; on green CI on the head, squash-merge with the PR body as commit_message (standing
