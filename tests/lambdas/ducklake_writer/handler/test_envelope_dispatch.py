@@ -273,3 +273,25 @@ def test_handler_status_transition_error_maps_422(monkeypatch):
     r = h.handler({"action": "update_ops", "table": "ops_recommendations", "record": {"id": "rec-1", "status": "open"}})
     assert r["statusCode"] == 422
     assert json.loads(r["body"])["error_type"] == "status_transition"
+
+
+def test_row_rule_violation_maps_to_422(monkeypatch):
+    con = FakeCon()
+    monkeypatch.setattr(h, "_open_writer_connection", lambda: con)
+
+    def _raise(c, rec, **kw):
+        raise rt.RowRuleViolationError("ops_recommendations", "min_length", "title", "2026-09-01")
+
+    monkeypatch.setattr(rt, "write_scd2", _raise)
+    monkeypatch.setattr(rt, "make_metric_sink", lambda **kw: lambda n, v: None)
+    r = h.handler({"action": "write", "record": {"rec_id": "r"}})
+    body = json.loads(r["body"])
+    assert r["statusCode"] == 422
+    assert body["ok"] is False and body["error_type"] == "row_rule"
+    assert (body["table"], body["rule"], body["column"], body["exclude_before"]) == (
+        "ops_recommendations",
+        "min_length",
+        "title",
+        "2026-09-01",
+    )
+    assert "row rule min_length violated" in body["error"]

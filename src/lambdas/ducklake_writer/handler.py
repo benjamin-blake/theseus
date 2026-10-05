@@ -310,6 +310,19 @@ def handler(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
             payload["_connect_ms"] = conn_meta["connect_ms"]
             payload["_connect_reused"] = conn_meta["reused"]
             return _response(200, fn(payload, con))
+    except rt.RowRuleViolationError as exc:
+        return _response(
+            422,
+            {
+                "ok": False,
+                "error_type": "row_rule",
+                "table": exc.table,
+                "rule": exc.rule,
+                "column": exc.column,
+                "exclude_before": exc.exclude_before,
+                "error": str(exc),
+            },
+        )
     except rt.SchemaGateError as exc:
         return _response(422, {"ok": False, "error_type": "schema_gate", "error": str(exc)})
     except rt.StatusTransitionError as exc:

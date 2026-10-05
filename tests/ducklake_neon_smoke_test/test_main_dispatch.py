@@ -129,3 +129,9 @@ def test_main_lambda_warm_reuse_writer_dispatch(monkeypatch, capsys):
     )
     assert smoke.main(["--lambda-warm-reuse-writer"]) == 0
     assert "WARM_REUSE_WRITER OK" in capsys.readouterr().out
+
+
+def test_main_lambda_row_rules_dispatch(monkeypatch, capsys):
+    monkeypatch.setattr(smoke, "lambda_row_rules", lambda profile=None, region="eu-west-2": print("LAMBDA_ROW_RULES OK stub"))
+    assert smoke.main(["--lambda-row-rules"]) == 0
+    assert "LAMBDA_ROW_RULES OK" in capsys.readouterr().out

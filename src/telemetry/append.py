@@ -13,7 +13,7 @@ no-op; the writer never updates or deletes -- a rejection writes nothing from th
 
 Every row-local rule the contract declares (not-null, accepted values, required_when, exactly-one-of, ordering,
 bounds, content integrity/threshold/cap, the write-time skew) is projected into the spec's RowRules and enforced
-by src/telemetry/rules.py before any SQL (Decision 210). prepare_batch is the pure half (gate, rules, derivation,
+by src/row_rules/rules.py before any SQL (Decision 210). prepare_batch is the pure half (gate, rules, derivation,
 intra-batch collapse); execute_prepared runs the one MERGE inside a transaction the CALLER owns, so a writer can
 put several tables in one transaction; append_events is the one-table facade over both.
 
@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
+from src.row_rules.rules import RowRuleError, RowRules, check_row
 from src.telemetry.gate import (
     AppendError,
     GateError,
@@ -41,7 +42,6 @@ from src.telemetry.gate import (
     reject_unknown_or_derived_columns,
 )
 from src.telemetry.identity import KEY_PLANS, derive_entity_key, derive_event_id
-from src.telemetry.rules import RowRuleError, RowRules, check_row
 
 if TYPE_CHECKING:
     import duckdb

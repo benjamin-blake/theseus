@@ -50,6 +50,14 @@ def split_ref(ref: str) -> tuple[str, str]:
     return Path(file_part).name, fragment.rstrip("/").rsplit("/", 1)[-1]
 
 
+def _not_null_leg(table_id: str, column: str, value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{table_id}.{column}: rule kind 'not_null' must be a mapping, got {type(value).__name__}")
+    return dict(value)
+
+
 def layer_rules(table_id: str, name: str, inherited: dict[str, Any], local: dict[str, Any]) -> dict[str, Any]:
     """Layer a $ref field's local dq_intent over its raw target's: a local key may add a rule or tighten not_null, never
     drop an inherited rule, and a rule key both declare with different values fails closed. A not_null leg keeps its
@@ -57,8 +65,8 @@ def layer_rules(table_id: str, name: str, inherited: dict[str, Any], local: dict
     merged = dict(inherited)
     for key, value in local.items():
         if key == "not_null":
-            local_leg = dict(value or {})
-            inherited_leg = dict(inherited.get("not_null") or {})
+            local_leg = _not_null_leg(table_id, name, value)
+            inherited_leg = _not_null_leg(table_id, name, inherited.get("not_null"))
             enforced = bool(local_leg.get("enforced")) or bool(inherited_leg.get("enforced"))
             merged["not_null"] = {**inherited_leg, **local_leg, "enforced": enforced}
         elif key in inherited and inherited[key] != value:
@@ -165,7 +173,7 @@ def declared_rules(
         for kind, value in intent.items():
             if kind == "write_time_exemptions":
                 continue
-            if kind == "not_null" and not (value or {}).get("enforced"):
+            if kind == "not_null" and not _not_null_leg(table_id, column, value).get("enforced"):
                 continue
             params, exclude_before = _normalise_leg(value)
             rules.append(DeclaredRule(table_id, column, kind, params, exclude_before, exemptions.get(kind)))

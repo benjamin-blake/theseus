@@ -1,4 +1,4 @@
-"""Mirror test for src/telemetry/rules.py: every rule kind rejects with table, rule and column; exemptions; the module
+"""Mirror test for src/row_rules/rules.py: every rule kind rejects with table, rule and column; exemptions; the module
 holds no table literal. Stdlib only (fast tier)."""
 
 from __future__ import annotations
@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-import src.telemetry.rules as rules_module
-from src.telemetry.rules import RowRuleError, RowRules, RuleProjectionError, check_row
+import src.row_rules.rules as rules_module
+from src.row_rules.rules import RowRuleError, RowRules, RuleProjectionError, check_row
 
 T0 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 CREATED = T0 + timedelta(seconds=10)
@@ -255,3 +255,168 @@ def test_rules_module_holds_no_table_literal() -> None:
     imported = {a.name for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) for a in n.names}
     modules = {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
     assert not any(m and m.startswith("src.telemetry") for m in modules) and "gate" not in imported
+
+
+def _extra_rules(columns: dict, **table_overrides) -> RowRules:
+    return RowRules.from_projection({**COLUMNS, **columns}, {**TABLE_RULES, **table_overrides})
+
+
+_NEW_KINDS = {
+    "title": {"role": "input", "sql_type": "VARCHAR", "nullable": True, "not_null": True, "min_length": 5},
+    "labels": {"role": "input", "sql_type": "VARCHAR[]", "nullable": True, "array_element_format": "^[a-z]+$"},
+}
+
+
+def test_min_length_and_element_format_reject() -> None:
+    rules = _extra_rules(_NEW_KINDS)
+    base = good(title="a valid title", labels=["ab", "cd"])
+    check_row(TABLE, base, rules, CREATED)
+    check_row(TABLE, good(title="a valid title", labels=[]), rules, CREATED)
+    check_row(TABLE, good(title="a valid title", labels=None), rules, CREATED)
+    cases = [
+        ({"title": None}, "not_null", "title"),
+        ({"title": "   ab  "}, "min_length", "title"),
+        ({"title": 12345}, "min_length", "title"),
+        ({"labels": "ab"}, "array_element_format", "labels"),
+        ({"labels": ["ab", None]}, "array_element_format", "labels"),
+        ({"labels": ["ab", 3]}, "array_element_format", "labels"),
+        ({"labels": ["ab", "Bad"]}, "array_element_format", "labels"),
+    ]
+    for override, rule, column in cases:
+        error = violation({**base, **override}, rules)
+        assert (error.table, error.rule, error.column) == (TABLE, rule, column), override
+        assert "valid title" not in str(error)
+    nullable_rules = _extra_rules({"note": {"nullable": True, "min_length": 3, "pattern": "^[a-z]+$"}})
+    check_row(TABLE, good(note=None), nullable_rules, CREATED)
+
+
+def test_exclude_before_binds_from_utc_midnight() -> None:
+    columns = {"title": {**_NEW_KINDS["title"], "exclude_before": {"min_length": "2026-09-01"}}}
+    rules = _extra_rules(columns)
+    row = good(title="tiny")
+    prior = {"title": "tiny"}
+    day = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    check_row(TABLE, row, rules, day - timedelta(microseconds=1), prior=prior)
+    for at in (day, day + timedelta(days=30)):
+        with pytest.raises(RowRuleError) as raised:
+            check_row(TABLE, row, rules, at, prior=prior)
+        assert raised.value.rule == "min_length"
+    assert violation(row, rules, day - timedelta(days=30)).rule == "min_length"  # prior None: an insert is always bound
+    dated_null = _extra_rules({"title": {**_NEW_KINDS["title"], "exclude_before": {"not_null": "2026-09-01"}}})
+    check_row(TABLE, good(title=None), dated_null, day - timedelta(seconds=1), prior={"title": None})
+    with pytest.raises(RowRuleError) as raised:
+        check_row(TABLE, good(title=None), dated_null, day, prior={"title": None})
+    assert raised.value.rule == "not_null"
+    west = timezone(timedelta(hours=-5))  # 2026-08-31 20:00 local is 2026-09-01 01:00 UTC: already bound
+    with pytest.raises(RowRuleError):
+        check_row(TABLE, row, rules, datetime(2026, 8, 31, 20, 0, tzinfo=west), prior=prior)
+    check_row(TABLE, row, rules, datetime(2026, 8, 31, 18, 0, tzinfo=west), prior=prior)  # 23:00 UTC on 08-31
+
+
+def test_changed_column_binds_older_rows() -> None:
+    columns = {
+        "title": {**_NEW_KINDS["title"], "exclude_before": {"min_length": "2026-09-01"}},
+        "labels": {**_NEW_KINDS["labels"], "exclude_before": {"array_element_format": "2026-09-01"}},
+    }
+    rules = _extra_rules(columns)
+    older = datetime(2026, 4, 1, tzinfo=timezone.utc)
+    prior = {"title": "short", "labels": ["Bad"]}
+    check_row(TABLE, good(title="short", labels=["Bad"]), rules, older, prior=prior)
+    with pytest.raises(RowRuleError) as raised:
+        check_row(TABLE, good(title="tiny", labels=["Bad"]), rules, older, prior=prior)
+    assert (raised.value.rule, raised.value.column) == ("min_length", "title")
+    with pytest.raises(RowRuleError) as raised:
+        check_row(TABLE, good(title="short", labels=["Worse"]), rules, older, prior=prior)
+    assert (raised.value.rule, raised.value.column) == ("array_element_format", "labels")
+    check_row(TABLE, good(title="a valid title", labels=["ok"]), rules, older, prior=prior)
+    two_column = _extra_rules({"happened": {**COLUMNS["happened"], "exclude_before": {"not_before": "2026-09-01"}}})
+    backwards = good(happened=T0 - timedelta(seconds=1))
+    prior_row = {"happened": T0 - timedelta(seconds=1), "started": T0}
+    check_row(TABLE, backwards, two_column, older, prior=prior_row)
+    with pytest.raises(RowRuleError):
+        check_row(TABLE, {**backwards, "started": T0 + timedelta(seconds=5)}, two_column, older, prior=prior_row)
+
+
+def test_producer_side_exemptions_are_recorded_not_evaluated() -> None:
+    why = {"class": "cross_row", "reason": "a lookup no row-local evaluator can run", "owner": "rec-1"}
+    columns = {
+        "a": {"nullable": True, "write_time_exemptions": {"acceptance_lint": why}},
+        "b": {"nullable": True, "write_time_exemptions": {"acceptance_lint": why, "array_element_reference": why}},
+    }
+    rules = _extra_rules(columns)
+    expected = ("a lookup no row-local evaluator can run", "rec-1")
+    assert rules.producer_exemptions == {
+        ("a", "acceptance_lint"): expected,
+        ("b", "acceptance_lint"): expected,
+        ("b", "array_element_reference"): expected,
+    }
+    assert rules.exemptions == {}
+    check_row(TABLE, good(a="anything", b=["x"]), rules, CREATED)
+
+
+def test_unknown_keys_and_bad_dates_fail_closed() -> None:
+    def project(column):
+        return _extra_rules({"c": {"nullable": True, **column}})
+
+    for bad in (False, "yes", 1):
+        with pytest.raises(RuleProjectionError, match="not_null"):
+            project({"not_null": bad})
+    for bad in (-1, "3", 1.5, True):
+        with pytest.raises(RuleProjectionError, match="min_length"):
+            project({"min_length": bad})
+    with pytest.raises(RuleProjectionError, match="array_element_format|pattern"):
+        project({"array_element_format": "("})
+    for bad in ({}, "2026-09-01", None):
+        with pytest.raises(RuleProjectionError, match="exclude_before"):
+            project({"min_length": 3, "exclude_before": bad})
+    for bad in ("2026-13-45", "yesterday", 20260901, datetime(2026, 9, 1)):
+        with pytest.raises(RuleProjectionError, match="ISO date"):
+            project({"min_length": 3, "exclude_before": {"min_length": bad}})
+    with pytest.raises(RuleProjectionError, match="not a dateable rule"):
+        project({"min_length": 3, "exclude_before": {"pattern": "2026-09-01"}})  # the column carries no pattern
+    with pytest.raises(RuleProjectionError, match="not a dateable rule"):
+        project({"required_when": {"kind": ["a"]}, "exclude_before": {"required_when": "2026-09-01"}})
+    with pytest.raises(RuleProjectionError, match="silently drop"):
+        _extra_rules({"c": {"nullable": False, "not_null": True, "exclude_before": {"not_null": "2026-09-01"}}})
+    with pytest.raises(RuleProjectionError, match="unknown or duplicate leg"):
+        project({"write_time_exemptions": {"made_up": {"reason": "r", "owner": "o"}}})
+    with pytest.raises(RuleProjectionError, match="needs a reason and an owner"):
+        project({"write_time_exemptions": {"acceptance_lint": {"reason": "r"}}})
+    assert _extra_rules(
+        {"c": {"nullable": True, "exclude_before": {"not_null": "2026-09-01"}, "not_null": True}}
+    ).exclude_before["c"]
+
+
+def test_package_is_a_stdlib_leaf() -> None:
+    import configparser
+    import sys
+
+    root = Path(rules_module.__file__).resolve().parent
+    init = ast.parse((root / "__init__.py").read_text(encoding="utf-8"))
+    assert not any(isinstance(n, (ast.Import, ast.ImportFrom, ast.Assign, ast.FunctionDef, ast.ClassDef)) for n in init.body)
+    for path in sorted(root.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            names = (
+                [a.name for a in node.names]
+                if isinstance(node, ast.Import)
+                else [node.module or ""]
+                if isinstance(node, ast.ImportFrom)
+                else []
+            )
+            for name in names:
+                assert name.split(".")[0] in sys.stdlib_module_names, f"{path.name}: non-stdlib import {name!r}"
+    config = configparser.ConfigParser()
+    config.read(root.parents[1] / ".importlinter", encoding="utf-8")
+    section = config["importlinter:contract:src-row-rules-is-a-leaf"]
+    assert section["type"] == "forbidden" and section["source_modules"].split() == ["src.row_rules"]
+    for forbidden in ("scripts", "src.common", "src.data", "src.lambdas", "src.schemas", "src.telemetry", "src.turn_capture"):
+        assert forbidden in section["forbidden_modules"].split()
+
+
+def test_a_naive_created_timestamp_is_read_as_utc() -> None:
+    rules = _extra_rules({"title": {**_NEW_KINDS["title"], "exclude_before": {"min_length": "2026-09-01"}}})
+    row, prior = good(title="tiny", happened=None), {"title": "tiny"}
+    check_row(TABLE, row, rules, datetime(2026, 8, 31, 23, 0), prior=prior)
+    with pytest.raises(RowRuleError):
+        check_row(TABLE, row, rules, datetime(2026, 9, 1, 0, 0), prior=prior)

@@ -241,3 +241,15 @@ def test_declared_rules_semantics(tmp_path: Path) -> None:
     assert got[("b", "not_before")].params == {"value": "a"}
     assert got[("b", "acceptance_lint")].exemption["owner"] == "rec-1"
     assert got[("b", "not_null")].exemption is None
+
+
+def test_scalar_not_null_leg_fails_with_a_message(tmp_path: Path) -> None:
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    (contracts / "demo.yaml").write_text(
+        yaml.safe_dump({"fields": {"name": {"dq_intent": {"not_null": True}}}}), encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match=r"demo\.name: rule kind 'not_null' must be a mapping, got bool"):
+        declared_rules("demo", contracts_dir=contracts, repo_root=tmp_path)
+    with pytest.raises(ValueError, match=r"demo\.name: rule kind 'not_null' must be a mapping, got str"):
+        layer_rules("demo", "name", {}, {"not_null": "yes"})

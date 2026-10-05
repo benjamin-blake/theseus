@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 
 import scripts.ducklake_neon_smoke_test as smoke
-from scripts.ducklake_smoke import core, lambda_ec_gates
+from scripts.ducklake_smoke import core, lambda_ec_gates, lambda_ops_gates
 from tests.fixtures.ducklake_smoke_fakes import _Resp
 
 
@@ -116,3 +116,74 @@ def test_catalog_restore_drill_probe_lost_fails(monkeypatch):
     monkeypatch.setattr(core, "_sigv4_invoke", lambda url, p, **kw: _Resp(200, {"ok": True, "restored": False}))
     with pytest.raises(smoke.SmokeTestFailure, match="did not restore"):
         smoke.catalog_restore_drill()
+
+
+def _row_rules_invoke(monkeypatch, *, answer, stored=0):
+    """Wire the gate to a scripted writer/reader; returns the list of (action, record) calls."""
+    monkeypatch.setattr(core, "_function_url", lambda role: f"https://{role}")
+    calls: list[tuple[str, dict]] = []
+
+    def fake_invoke(url, payload, **kw):
+        action = payload["action"]
+        calls.append((action, payload.get("record", {})))
+        if action == "write_ops":
+            return answer(payload["record"])
+        if action == "read_ops_current":
+            return _Resp(200, {"row_count": stored, "rows": []})
+        return _Resp(200, {"ok": True})
+
+    monkeypatch.setattr(core, "_sigv4_invoke", fake_invoke)
+    return calls
+
+
+def _expected_422(record):
+    for rule, overrides, column in lambda_ops_gates.ROW_RULES_CASES:
+        if all(record.get(k) == v for k, v in overrides.items()):
+            return _Resp(422, {"ok": False, "error_type": "row_rule", "rule": rule, "column": column})
+    raise AssertionError(f"record matches no case: {record}")
+
+
+def test_lambda_row_rules_ok(monkeypatch, capsys):
+    calls = _row_rules_invoke(monkeypatch, answer=_expected_422)
+    smoke.lambda_row_rules()
+    assert "LAMBDA_ROW_RULES OK 4 cases" in capsys.readouterr().out
+    assert [a for a, _ in calls].count("write_ops") == 4
+    assert calls[-1][0] == "read_ops_current" and "update_ops" not in [a for a, _ in calls]
+
+
+def test_lambda_row_rules_fails_on_accepted_write(monkeypatch):
+    first_case = lambda_ops_gates.ROW_RULES_CASES[0]
+    calls = _row_rules_invoke(monkeypatch, answer=lambda record: _Resp(200, {"ok": True}), stored=1)
+    with pytest.raises(smoke.SmokeTestFailure, match=f"{first_case[0]} case answered 200"):
+        smoke.lambda_row_rules()
+    actions = [a for a, _ in calls]
+    assert actions.index("update_ops") > actions.index("write_ops")  # the repair follows the unexpected 200
+    repair = next(r for a, r in calls if a == "update_ops")
+    clean = lambda_ops_gates.ROW_RULES_BASE
+    assert repair["status"] == "superseded" and "failed --lambda-row-rules gate" in repair["resolution"]
+    assert all(repair[k] == v for k, v in clean.items() if k != "status")
+
+
+def test_lambda_row_rules_fails_on_wrong_rule_or_column(monkeypatch):
+    rule, overrides, column = lambda_ops_gates.ROW_RULES_CASES[0]
+
+    def wrong_column(record):
+        return _Resp(422, {"ok": False, "error_type": "row_rule", "rule": rule, "column": "title"})
+
+    _row_rules_invoke(monkeypatch, answer=wrong_column)
+    with pytest.raises(smoke.SmokeTestFailure, match="expected accepted_values/effort"):
+        smoke.lambda_row_rules()
+
+    def schema_gate(record):
+        return _Resp(422, {"ok": False, "error_type": "schema_gate"})
+
+    _row_rules_invoke(monkeypatch, answer=schema_gate)
+    with pytest.raises(smoke.SmokeTestFailure, match="instead of 422 row_rule"):
+        smoke.lambda_row_rules()
+
+
+def test_lambda_row_rules_fails_when_a_row_is_read_back(monkeypatch):
+    calls = _row_rules_invoke(monkeypatch, answer=_expected_422, stored=1)
+    with pytest.raises(smoke.SmokeTestFailure, match="left a row in current"):
+        smoke.lambda_row_rules()
+    assert any(a == "update_ops" for a, _ in calls)

@@ -108,6 +108,7 @@ from scripts.ducklake_smoke.lambda_ops_gates import (  # noqa: F401 -- re-export
     catalog_restore_drill,
     connect_probe,
     lambda_append_only,
+    lambda_row_rules,
     migrate_ops_recs_columns,
     ops_churn_regate,
     ops_read_your_write,
@@ -131,6 +132,7 @@ _LAMBDA_GATES: dict[str, Callable[..., None]] = {
     "lambda_churn": lambda_churn,
     "lambda_churn_incontainer": lambda_churn_incontainer,
     "lambda_reader": lambda_reader,
+    "lambda_row_rules": lambda_row_rules,
     "lambda_warm_reuse": lambda_warm_reuse,
     "lambda_warm_reuse_writer": lambda_warm_reuse_writer,
     "lambda_maintenance_merge": lambda_maintenance_merge,
@@ -185,6 +187,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         help="[opt-in diagnostic] in-container 8-thread burst (legacy action_churn); NOT an EC8 gate",
     )
     group.add_argument("--lambda-reader", action="store_true", help="[post-deploy] closed reader path (EC1/boundary)")
+    group.add_argument(
+        "--lambda-row-rules",
+        action="store_true",
+        help="[post-deploy] rec-4158 plan B: the writer rejects each contract row-rule class (422 row_rule), nothing stored",
+    )
     group.add_argument(
         "--lambda-warm-reuse",
         action="store_true",
