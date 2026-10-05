@@ -52,7 +52,9 @@ scope:
     another. read_version is opaque and compared by equality only (no ordering is implied). describe_named_reads gains a
     read_version key per verb; nothing else in describe changes. The digest's column projection comes through a function-local
     deferred import of the facade (no module-scope import). 2b extends the digest input with classifier rules and adds its
-    telemetry verbs here.
+    telemetry verbs here. read_version is computed at call time, never at import (AGENTS.md: no raise at import; the catalog_dr
+    bundle carries the facade but not field_semantics.yaml), and SELECT * verbs are detected from the verb's own SQL --
+    never by importing ducklake_reader_client.ALL_TABLE_COLUMNS, which no DuckLake manifest bundles.
 - file: src/common/ducklake_write_verbs.py
   action: Create
   purpose: WriteVerb, VERB_REGISTRY and describe_write_verbs, moved verbatim -- describe's output is unchanged.
@@ -60,12 +62,13 @@ scope:
   action: Modify
   purpose: >-
     Catalog-aware and scheme-aware. _writer_keyspace_tables skips event-class entries before resolving (they have no keyspace)
-    and includes every id_keyspace=writer table whatever its id_scheme. The expected counter rows are the writer-keyspace
-    tables whose physical history table EXISTS in the catalog under check (one information_schema read, Decision 88 egress-cheap);
-    absent ones are reported in a new absent_tables response field, never silently dropped. Counter floor per scheme: serial
-    unchanged (current_value >= max allocated numeric id); ulid -> current_value >= count(*) of the table's current table.
-    Production (ducklake_ops) therefore keeps expecting exactly one row (ops_recommendations) while ops_tenants/ops_projects
-    exist nowhere.
+    and includes every id_keyspace=writer table whatever its id_scheme. The expected counter rows are every status-live
+    writer-keyspace table (always expected, so a vanished live table and its counter still fail exactly as today) plus each
+    non-live writer-keyspace table whose physical history table EXISTS in the catalog under check (one information_schema
+    read, Decision 88 egress-cheap); absent non-live tables are reported in a new absent_tables response field, never silently
+    dropped. Counter floor per scheme: serial unchanged (current_value >= max allocated numeric id); ulid -> current_value
+    >= count(*) of the table's current table. Production (ducklake_ops) therefore keeps expecting exactly one row (ops_recommendations)
+    while ops_tenants/ops_projects exist nowhere.
 - file: src/common/ducklake_partition_layout.py
   action: Modify
   purpose: >-
@@ -95,7 +98,8 @@ scope:
     existing registry_version stamp (C1). This is a narrow refusal list keyed on write_boundary, not a read-capability model:
     rec-3771 (registry read/write capability undifferentiated) stays open and owns that design. query_ops refuses by its
     `table` parameter only while its FROM is caller-controlled -- a declared residual (Decision 181 cl.2) with no exposure
-    today, since no catalog the reader attaches holds these tables; owner: 2c, before production provisioning.
+    today, since no catalog the reader attaches holds these tables; owner rec-4024 until 2c's rec is filed, before production
+    provisioning.
 - file: src/lambdas/ducklake_writer/manifest.yaml
   action: Modify
   purpose: >-
@@ -143,10 +147,11 @@ scope:
     and its owner: pre-production -- provisioned only in the disposable ducklake_smoke catalog by plan 3's provision_telemetry,
     which creates the full column set, so a column added before production is applied by re-provisioning smoke; 2c flips
     each to ducklake when production provisioning lands and extends the reconcile gate's added-column glob to telemetry_*.yaml
-    then (Decision 181 residual, owner rec-4024 / 2c). The four telemetry tables: status smoke (the existing vocabulary;
-    reconcile_catalog already reads a smoke table's absence from production as expected), write_boundary telemetry_append.
-    ops_tenants and ops_projects: status smoke, id_keyspace writer, id_scheme ulid, no entity_id_prefix, write_boundary
-    registration. The sidecar stays under 500 effective lines (Decision 166).
+    then (Decision 181 residual, owner rec-4024 / 2c). All six carry the new lifecycle status pre_production (data-modeling-standard.yaml's
+    vocabulary gains it; status smoke stays reserved for kernel-proof tables such as ops_smoke_events and never means catalog
+    residency; reconcile_catalog reports statuses without alarming, and only a live table's absence is notable). The four
+    telemetry tables: write_boundary telemetry_append. ops_tenants and ops_projects: id_keyspace writer, id_scheme ulid,
+    no entity_id_prefix, write_boundary registration. The sidecar stays under 500 effective lines (Decision 166).
 - file: config/lambda/ducklake/field_semantics.yaml
   action: Modify
   purpose: Regenerated by bin/venv-python -m scripts.schema_to_field_semantics; never hand-edited.
@@ -154,9 +159,9 @@ scope:
   action: Modify
   purpose: >-
     The diff-added-column leg computes each table's required sides from its write_mode first (control -> none, unchanged),
-    then skips a table only when it is reconcile_scope=exempt AND its sidecar status is not live -- a pre-production table
-    production does not have -- reporting each skipped table by name (Decision 170 accounting, never a vacuous pass). The
-    live, exempt, control-class ops_entity_counters therefore still runs the control branch (the graduated test_control_class_needs_no_reconcile_sides
+    then skips a table only when it is reconcile_scope=exempt AND its sidecar status is not live (the six tables are pre_production)
+    -- reporting each skipped table by name (Decision 170 accounting, never a vacuous pass). The live, exempt, control-class
+    ops_entity_counters therefore still runs the control branch (the graduated test_control_class_needs_no_reconcile_sides
     keeps covering it), and a live table wrongly marked exempt still owes ALTERs at merge. This lets the two brand-new ops_*.yaml
     contracts land without owing ALTERs for tables production lacks, and keeps the later deploy-inert telemetry contract
     amendment (review items C9-C13) deployable.
@@ -185,13 +190,14 @@ scope:
   purpose: >-
     Class A SCD2 contract. merge_key project_id (opaque writer-minted ULID); tenant_id; natural key (tenant_id, project_ref);
     registration accepted [unregistered, registered]; name, remote, canonical_project_id, status; purpose accepted [real,
-    drill, synthetic] (review item C2): a pure function of the project_ref's reserved prefix ('drill:' -> drill, 'synthetic:'
-    -> synthetic, anything else -> real), checked at registration with this contract as the rule's single source (Decision
-    210 cl.3), and immutable with the binding, so a project's history is never reclassified at read. No drill column exists
-    on the four event tables; readers derive drill/synthetic from this attribute (Decision 199 cl.1). Same partition shape
-    and governance as ops_tenants. Invariants with declared coverage: (tenant_id, project_ref) never re-binds (plan 3 writer);
-    canonical remap is single-hop, to a registered self-canonical row of the same tenant (DQ, rec-4063 family, residual
-    until 2b); rec-4121 residual named.
+    drill, synthetic] (review item C2): a write-time DERIVED column (derivation realized: true, inputs [project_ref]) whose
+    derivation block carries the reserved prefixes as data -- prefix_map {'drill:': drill, 'synthetic:': synthetic}, default
+    real -- so the writer derives it and never checks a caller value (Decision 210 cl.3: no hand-restated rule; the derivation
+    block, not dq_intent, holds the map, so the fail-closed rule-key readers of plans A/B are not tripped); immutable with
+    the binding, so a project's history is never reclassified at read. No drill column exists on the four event tables;
+    readers derive drill/synthetic from this attribute (Decision 199 cl.1). Same partition shape and governance as ops_tenants.
+    Invariants with declared coverage: (tenant_id, project_ref) never re-binds (plan 3 writer); canonical remap is single-hop,
+    to a registered self-canonical row of the same tenant (DQ, rec-4063 family, residual until 2b); rec-4121 residual named.
 - file: docs/contracts/_joins.yaml
   action: Modify
   purpose: >-
@@ -212,7 +218,8 @@ scope:
     and the model returns to /plan). "Committed in-repo" is reworded to "minted by code committed in this repository"; ids
     are catalog-local and never persisted outside the minting catalog (declared coverage: producers hold only project_ref
     -- the cursor stores project_ref, not project_id; residual owner rec-4026). Reserved namespace (review item C2): a project_ref
-    beginning 'drill:' or 'synthetic:' is NEVER auto-registered -- it must be registered explicitly with register_project,
+    whose ops_projects purpose derivation yields other than real (its prefix_map is the single source of the reserved prefixes,
+    today 'drill:' and 'synthetic:') is NEVER auto-registered -- it must be registered explicitly with register_project,
     and an append naming an unregistered reserved ref is rejected; this contract is that rule's single source and ops_projects.yaml
     points here (Decision 210 cl.3); declared coverage: writer-enforced in plan 3 (rec-4024), residual until then. The dimension
     join now exists. amendment_log entries (CD.25 category 6).
@@ -239,12 +246,20 @@ scope:
     describe's per-verb entry and the named_read 200 response shape carry it (an opaque digest, compared by equality only
     -- it has no ordering); registry_version stays the registry-format stamp. Declares the query_ops residual beside the
     refusal: the check reads the `table` parameter only and FROM is caller-controlled, so the refusal is complete only while
-    no reader-attached catalog holds these tables (owner 2c; rec-3771 owns the read-capability model).
+    no reader-attached catalog holds these tables (owner rec-4024 until 2c's rec is filed; rec-3771 owns the read-capability
+    model).
 - file: docs/contracts/read-engine.yaml
   action: Modify
   purpose: >-
     The NAMED_READS location pointer (:65) moves to src/common/ducklake_named_reads.py. amendment_log entry. The named-verb
     mechanism text names read_version as the per-verb compatibility stamp (opaque, equality-only).
+- file: docs/contracts/data-modeling-standard.yaml
+  action: Modify
+  purpose: >-
+    The vocabulary block gains status_pre_production: reserved meaning 'an ops_tables entry registered in the generated
+    registry and not yet provisioned in production ducklake_ops -- flipped to live by the plan that provisions it there';
+    do_not_use_for: a kernel-proof table (status_smoke), a statement of which catalog holds the table (registration says
+    what a table is, never where). amendment_log entry; version and updated_* per the file's convention.
 - file: docs/DECISIONS.md
   action: Modify
   purpose: >-
@@ -279,9 +294,10 @@ scope:
 - file: tests/test_ducklake_control_health.py
   action: Modify
   purpose: >-
-    test_control_health_expects_only_present_writer_keyspace_tables (a catalog without the dimension tables passes and reports
-    them in absent_tables), test_control_health_ulid_floor (a ulid counter below the current-table row count is a violation),
-    test_control_health_skips_event_entries; the graduated test_control_health_asserts_counter_invariants and test_control_health_metric_sink_receives_violation_count_before_raise
+    test_control_health_expects_only_present_writer_keyspace_tables (a catalog without the pre_production dimension tables
+    passes and reports them in absent_tables, while a missing live table still fails), test_control_health_ulid_floor (a
+    ulid counter below the current-table row count is a violation), test_control_health_skips_event_entries; the graduated
+    test_control_health_asserts_counter_invariants and test_control_health_metric_sink_receives_violation_count_before_raise
     keep their assertions unchanged while their FakeCon fixtures gain the information_schema rows the catalog-aware read
     now issues (without them the healthy case would fail and the wrong-row-count case would stop raising).
 - file: tests/test_ducklake_partition_layout.py
@@ -290,9 +306,10 @@ scope:
 - file: tests/common/test_ducklake_runtime.py
   action: Modify
   purpose: >-
-    test_ops_table_names_lists_all_six (len == 6) is updated in place to the twelve registered tables (renamed test_ops_table_names_lists_every_registered_table);
-    a guard updated, never deleted. Adds test_runtime_reexports_registry_helpers (rt.is_event_table, rt.table_write_boundary
-    and rt.read_version resolve to the defining modules' objects).
+    test_ops_table_names_lists_all_six (len == 6) is updated in place (renamed test_ops_table_names_lists_every_registered_table)
+    to assert membership of every registered table plus uniqueness, never an exact count (tests/CLAUDE.md); a guard updated,
+    never deleted. Adds test_runtime_reexports_registry_helpers (rt.is_event_table, rt.table_write_boundary and rt.read_version
+    resolve to the defining modules' objects).
 - file: tests/common/test_ducklake_tables.py
   action: Modify
   purpose: >-
@@ -308,8 +325,9 @@ scope:
 - file: tests/common/test_ducklake_maintenance_scope.py
   action: Modify
   purpose: >-
-    test_event_entries_classify_as_append_only_history (build_registry/class_universe add no class; Decision 191) and test_registered_absent_smoke_status_is_expected
-    (the six tables absent from a production enumeration).
+    test_event_entries_classify_as_append_only_history (build_registry/class_universe add no class; Decision 191) and test_registered_absent_preproduction_status_is_expected
+    (the six tables absent from a production enumeration report status pre_production), both module-level functions so the
+    VP node ids resolve (the file is otherwise class-organised).
 - file: tests/lambdas/ducklake_writer/handler/test_ops_actions.py
   action: Modify
   purpose: >-
@@ -343,11 +361,12 @@ scope:
 - file: tests/checks/ops_governance/test_validate_reconcile_pending_gate.py
   action: Modify
   purpose: >-
-    test_preproduction_exempt_table_owes_no_alters_and_is_reported (an exempt, status-smoke new contract's added fields
+    test_preproduction_exempt_table_owes_no_alters_and_is_reported (an exempt, pre_production new contract's added fields
     demand nothing and the leg names it), test_live_exempt_table_still_owes_alters (a live table marked exempt is not skipped);
     test_ops_table_ids_real updated to the registered set; the graduated test_control_class_needs_no_reconcile_sides unchanged
     and still exercising the control branch (100% mirror coverage of the leg's branches holds). Kept small so the module
-    stays under 500 SLOC (about 439 today).
+    stays under 500 SLOC (about 439 today). The two new tests are module-level functions; test_ops_table_ids_real stays
+    a method of TestRealRepoIntegration.
 - file: tests/checks/contracts/test__manifest.py
   action: Modify
   purpose: >-
@@ -362,8 +381,8 @@ scope:
     gone; the tenant pin and its residual owner present), test_writer_contract_idempotency_corrected (the MERGE-idempotent
     claim gone, the write_boundary refusal stated), test_dimension_joins_declared, test_named_reads_pointers_moved, test_reader_contracts_document_read_version,
     test_ops_entity_counters_catalog_aware_grain, test_reserved_project_namespace_declared (project-id.yaml holds the reject
-    rule, ops_projects.yaml the purpose-from-prefix rule and points to it), test_decision_200_reserved_namespace_annotation
-    (a trailing dated annotation on Decision 200 citing project-id.yaml).
+    rule and points to ops_projects.yaml's purpose derivation, whose prefix_map is structured data), test_decision_200_reserved_namespace_annotation
+    (a trailing dated annotation on Decision 200 citing project-id.yaml). Plus test_status_vocabulary_names_pre_production.
 bundled_recommendations: []
 followon_recs: []
 infrastructure_dependencies: []
@@ -379,8 +398,8 @@ acceptance_criteria:
   passes; each event entry builds a kernel EventTableSpec.
 - >-
   The generic write verbs (write_ops, update_ops, file_ops, create_ops_tables) refuse all six tables, and the generic read
-  verbs refuse them by their table parameter (the query_ops FROM residual declared, owner 2c), each with a directed error;
-  no code path in this plan creates a table in any catalog.
+  verbs refuse them by their table parameter (the query_ops FROM residual declared, owner rec-4024), each with a directed
+  error; no code path in this plan creates a table in any catalog.
 - >-
   control_health expects counter rows only for writer-keyspace tables present in the catalog under check, reports absent
   ones, applies the ulid floor, and stays green on production after deploy (ControlTableInvariantViolation 0).
@@ -427,13 +446,16 @@ verification_plan:
   command: >-
     bin/venv-python -m pytest tests/test_ducklake_scd2_schema.py::test_resolve_table_spec_directs_event_tables_elsewhere
     tests/test_ducklake_scd2_schema.py::test_table_write_boundary_reads_entry tests/test_ducklake_partition_layout.py::test_declared_spec_for_event_table_reads_history_partition
-    tests/common/test_ducklake_maintenance_scope.py::test_event_entries_classify_as_append_only_history tests/common/test_ducklake_maintenance_scope.py::test_registered_absent_smoke_status_is_expected
+    tests/common/test_ducklake_maintenance_scope.py::test_event_entries_classify_as_append_only_history tests/common/test_ducklake_maintenance_scope.py::test_registered_absent_preproduction_status_is_expected
     tests/lambdas/ducklake_writer/handler/test_ops_actions.py::test_generic_verbs_refuse_telemetry_and_registration_tables
     tests/test_ducklake_reader_handler.py::test_generic_reads_refuse_telemetry_and_registration_tables tests/test_ducklake_reader_handler.py::test_named_read_response_carries_read_version
     tests/common/test_ducklake_runtime.py::test_ops_table_names_lists_every_registered_table tests/common/test_ducklake_tables.py::test_history_partition_is_calendar_day_triple
-    tests/common/test_ducklake_runtime.py::test_runtime_reexports_registry_helpers -q
+    tests/common/test_ducklake_runtime.py::test_runtime_reexports_registry_helpers -q && ! grep -nE 'telemetry_(sessions|observations|transcripts|agents)'
+    src/common/ducklake_scd2_schema.py src/common/ducklake_control_health.py src/common/ducklake_partition_layout.py src/lambdas/ducklake_writer/handler.py
+    src/lambdas/ducklake_reader/handler.py && echo NO_HARDCODED_TABLES
   expected: >-
-    Exit 0, 11 passed. Red before: the new nodes are absent and the two updated guards fail on the registered event entries.
+    Exit 0, 11 passed, then NO_HARDCODED_TABLES. Red before: the new nodes are absent and the two updated guards fail on
+    the registered event entries.
   fix_if: >-
     A consumer that resolves an event entry through resolve_table_spec -> branch it on write_mode or the event entry, never
     widen ScdTableSpec.
@@ -478,7 +500,7 @@ verification_plan:
   action: The reconcile gate exempts pre-production tables by reconcile_scope and its deploy gate passes.
   command: >-
     bin/venv-python -m pytest tests/checks/ops_governance/test_validate_reconcile_pending_gate.py::test_preproduction_exempt_table_owes_no_alters_and_is_reported
-    tests/checks/ops_governance/test_validate_reconcile_pending_gate.py::test_live_exempt_table_still_owes_alters tests/checks/ops_governance/test_validate_reconcile_pending_gate.py::test_ops_table_ids_real
+    tests/checks/ops_governance/test_validate_reconcile_pending_gate.py::test_live_exempt_table_still_owes_alters tests/checks/ops_governance/test_validate_reconcile_pending_gate.py::TestRealRepoIntegration::test_ops_table_ids_real
     tests/checks/ops_governance/test_validate_reconcile_pending_gate.py::test_control_class_needs_no_reconcile_sides -q
     && bin/venv-python -m scripts.checks.ops_governance.validate_reconcile_pending_gate --deploy-gate
   expected: >-
@@ -495,25 +517,39 @@ verification_plan:
   expected_literals: []
 - step: 6
   phase: pre-deploy
-  action: Contract amendments, new contracts, the category-6 ritual and the contracts size cap.
+  action: >-
+    Index freshness, the category-6 ritual for the amended Class A/B/C contracts, and the contracts size cap.
   command: >-
-    bin/venv-python -m scripts.decisions_index --check && bin/venv-python -m pytest tests/checks/contracts/test_telemetry_dimension_contracts.py
-    -q && bin/venv-python -c "import subprocess,yaml;from scripts.contracts_schema import ContractDocument;from scripts.contracts_enforcement
-    import check_amendment_for_diff;base=lambda f:yaml.safe_load(subprocess.run(['git','show','origin/main:docs/contracts/%s.yaml'%f],capture_output=True,text=True,check=True).stdout);head=lambda
+    bin/venv-python -m scripts.decisions_index --check && bin/venv-python -c "import subprocess,yaml;from scripts.contracts_schema
+    import ContractDocument;from scripts.contracts_enforcement import check_amendment_for_diff;base=lambda f:yaml.safe_load(subprocess.run(['git','show','origin/main:docs/contracts/%s.yaml'%f],capture_output=True,text=True,check=True).stdout);head=lambda
     f:yaml.safe_load(open('docs/contracts/%s.yaml'%f,encoding='utf-8'));errs=[];[errs.extend(check_amendment_for_diff(ContractDocument.model_validate(base(f)),ContractDocument.model_validate(head(f))))
-    for f in ('ops_entity_counters','project-id','tenant-id','ducklake_writer','ducklake_reader','read-engine')];[ContractDocument.model_validate(head(f))
+    for f in ('ops_entity_counters','project-id','tenant-id','ducklake_writer','ducklake_reader')];[ContractDocument.model_validate(head(f))
     for f in ('ops_tenants','ops_projects')];print(chr(10).join(errs) or 'AMENDMENTS_OK');assert not errs" && bin/venv-python
-    -c "from scripts.checks.structural._classify import effective_lines;fs=['docs/contracts/%s.yaml'%f for f in ('ops_tenants','ops_projects','_joins','ops_entity_counters','project-id','tenant-id','ducklake_writer','ducklake_reader','read-engine')]+['config/lambda/ducklake/field_semantics.static.yaml'];big=[(f,effective_lines(open(f).read()))
+    -c "from scripts.checks.structural._classify import effective_lines;fs=['docs/contracts/%s.yaml'%f for f in ('ops_tenants','ops_projects','_joins','ops_entity_counters','project-id','tenant-id','ducklake_writer','ducklake_reader','read-engine','data-modeling-standard')]+['config/lambda/ducklake/field_semantics.static.yaml'];big=[(f,effective_lines(open(f).read()))
     for f in fs if effective_lines(open(f).read())>500];print(big);assert not big;print('SIZE_OK')"
-  expected: Exit 0, the index is fresh, the guard module passes, AMENDMENTS_OK, SIZE_OK.
+  expected: >-
+    Exit 0, the index is fresh, AMENDMENTS_OK, SIZE_OK. (read-engine.yaml is a Class D contract, not a ritual document:
+    its content is covered by step 12's guards and the full tier's drift gate.)
   fix_if: >-
     A category-6 error -> add the amendment_log entry with a consistent change_class/semantic_break pair; an oversized file
     -> compact its amendment history (Decision 166), never raise.
   hermetic: false
   graduation: waive
   graduation_waiver_reason: >-
-    The amendment ritual is diff-relative to origin/main by construction (its standing form is scripts.validate's contract
-    drift gate); the guard module graduates as its own row at implementation (node_id = the module).
+    Diff-relative to origin/main by construction (the standing form is scripts.validate's contract drift gate); the guard
+    module graduates separately as step 12.
+  expected_literals: []
+- step: 12
+  phase: pre-deploy
+  action: >-
+    Contract guards: the dimension contracts, identity-contract wording, the writer/reader contract amendments, the status
+    vocabulary and the Decision 200 annotation.
+  command: bin/venv-python -m pytest tests/checks/contracts/test_telemetry_dimension_contracts.py -q
+  expected: 'Exit 0, every node passes. Red before: the module does not exist.'
+  fix_if: A failing guard names the missing contract text -- fix the document, not the test.
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: telemetry-dimension-contract-guards
   expected_literals: []
 - step: 7
   phase: pre-deploy
@@ -642,7 +678,7 @@ test_obligations:
   red_green_expectation: red before (node absent), green after
 - source: docs/DECISIONS.md
   behavior: Decision 200 carries a trailing dated annotation for the reserved project_ref namespace.
-  verification_step: 6
+  verification_step: 12
   test_selector: >-
     tests/checks/contracts/test_telemetry_dimension_contracts.py::test_decision_200_reserved_namespace_annotation
   red_green_expectation: red before (no annotation), green after
@@ -655,45 +691,45 @@ test_obligations:
     and after; VP step 6 proves the index stays fresh.
 - source: docs/contracts/ops_tenants.yaml
   behavior: The tenant dimension contract's shape, coverage declarations and residual.
-  verification_step: 6
+  verification_step: 12
   test_selector: tests/checks/contracts/test_telemetry_dimension_contracts.py::test_dimension_contracts_shape
   red_green_expectation: red before (contract absent), green after
 - source: docs/contracts/ops_projects.yaml
   behavior: The project dimension contract's shape, coverage declarations and residual.
-  verification_step: 6
+  verification_step: 12
   test_selector: tests/checks/contracts/test_telemetry_dimension_contracts.py::test_dimension_contracts_shape
   red_green_expectation: red before (contract absent), green after
 - source: docs/contracts/_joins.yaml
   behavior: The dimension joins are declared.
-  verification_step: 6
+  verification_step: 12
   test_selector: tests/checks/contracts/test_telemetry_dimension_contracts.py::test_dimension_joins_declared
   red_green_expectation: red before, green after
 - source: docs/contracts/project-id.yaml
   behavior: The counter-row lock and race-test evidence; minted-by-code wording.
-  verification_step: 6
+  verification_step: 12
   test_selector: >-
     tests/checks/contracts/test_telemetry_dimension_contracts.py::test_identity_contracts_name_counter_lock
   red_green_expectation: red before (old lock wording), green after
 - source: docs/contracts/tenant-id.yaml
   behavior: The counter-row lock; the tenant pin and its residual owner.
-  verification_step: 6
+  verification_step: 12
   test_selector: >-
     tests/checks/contracts/test_telemetry_dimension_contracts.py::test_identity_contracts_name_counter_lock
   red_green_expectation: red before, green after
 - source: docs/contracts/ducklake_writer.yaml
   behavior: The idempotency claim corrected; the write_boundary refusal stated.
-  verification_step: 6
+  verification_step: 12
   test_selector: >-
     tests/checks/contracts/test_telemetry_dimension_contracts.py::test_writer_contract_idempotency_corrected
   red_green_expectation: red before (MERGE-idempotent claim present), green after
 - source: docs/contracts/ducklake_reader.yaml
   behavior: NAMED_READS pointers moved; read_version documented.
-  verification_step: 6
+  verification_step: 12
   test_selector: tests/checks/contracts/test_telemetry_dimension_contracts.py::test_named_reads_pointers_moved
   red_green_expectation: red before, green after
 - source: docs/contracts/read-engine.yaml
   behavior: NAMED_READS pointers moved; read_version documented.
-  verification_step: 6
+  verification_step: 12
   test_selector: tests/checks/contracts/test_telemetry_dimension_contracts.py::test_named_reads_pointers_moved
   red_green_expectation: red before, green after
 - source: scripts/checks/contracts/_manifest.py
@@ -733,7 +769,7 @@ test_obligations:
   red_green_expectation: red before (the extended invariant names modules the manifest does not list), green after
 - source: docs/contracts/ops_entity_counters.yaml
   behavior: Catalog-aware grain and the ulid scheme.
-  verification_step: 6
+  verification_step: 12
   test_selector: >-
     tests/checks/contracts/test_telemetry_dimension_contracts.py::test_ops_entity_counters_catalog_aware_grain
   red_green_expectation: red before (old grain wording), green after
@@ -771,6 +807,12 @@ test_obligations:
   verification_step: 2
   test_selector: tests/test_ducklake_reader_handler.py::test_named_read_response_carries_read_version
   red_green_expectation: red before (no read_version in the response), green after
+- source: docs/contracts/data-modeling-standard.yaml
+  behavior: The status vocabulary reserves pre_production apart from status_smoke.
+  verification_step: 12
+  test_selector: >-
+    tests/checks/contracts/test_telemetry_dimension_contracts.py::test_status_vocabulary_names_pre_production
+  red_green_expectation: red before (no pre_production entry), green after
 constraints:
 - >-
   No table is created in any catalog by this plan; production ducklake_ops is untouched (no create_ops_tables call, no reconcile).
@@ -794,8 +836,8 @@ context:
   177, 199, 200, 207, 210, 118, 170, 184. Decisions triaged: 163 of 163 Roadmap items intersected: 13; CONFLICT: 1; RELATED:
   12 (delta scout for C1-C3: Decisions triaged: 163 of 163; Roadmap items intersected: 18; CONFLICT: 2; RELATED: 16)
 - >-
-  gates: decision-scout=FLAGS_FOUND (all resolved, plus a delta scout for C1-C3); plan-critique=REVISE r1 (10 changes +
-  minors) and r2 (5 narrow edits + 5 minors), all fixed
+  gates: decision-scout=FLAGS_FOUND (all resolved, plus a delta scout for C1-C3); plan-critique=REVISE r1 (10), r2 (5 +
+  5 minor) and r3 (3 + 10 minor), all fixed; r4 is the confirming round
 - >-
   Direction: Benjamin 2026-10-05, 'yes to all' on /mnt/project-files/feedback-loop-review/REVIEW.md section 8 (review items
   C1-C8 fold into the 2a-2 plans, C1-C3 here); the W3 rulings give this project 2b, 3b and this split. Design: /mnt/project-files/telemetry-slice2/step6b-2a2-presentation.md;
@@ -813,7 +855,10 @@ context:
 - >-
   Residuals (Decision 181 cl.2): canonical-remap DQ and the tenant-pin monitor (rec-4063 family, 2b); the writer-side binding
   immutability, natural-key uniqueness and the counter-row lock itself (plan 3, rec-4024); the rec-4121 SCD2 history residual
-  applies to both dimensions.
+  applies to both dimensions. The four telemetry contracts' projects_to notes ('there is NO telemetry field_semantics.yaml')
+  go stale once this plan registers the tables; they are corrected by the C9-C13 telemetry contract amendment (owner rec-4024
+  until then; observations and sessions are at 493 and 498 of 500 lines, so they are not touched here). The query_ops FROM
+  residual is owned by rec-4024 until 2c's rec is filed.
 - >-
   Notes: dimension writes are plan 3's (register_tenant/register_project carry attribute updates and the canonical remap),
   so generic update_ops stays refused -- the approved design's update_ops path is dropped to make binding immutability structural.
@@ -823,7 +868,7 @@ context:
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
-- 'Only the plan-cited decision sections read: 128, 124, 79, 84, 191, 199, 200, 207, 210'
+- 'Only the plan-cited decision sections read: 128, 124, 79, 84, 170, 177, 181, 191, 199, 200, 207, 210'
 - >-
   Ops enforcement plan B's state on origin/main checked (rebase over it and regenerate field_semantics.yaml if merged)
 - All files in scope located and readable
@@ -848,8 +893,8 @@ execution_steps:
   namespace per their scope rows), the _joins entries, and the amendments with category-6 amendment_log entries; append
   the Decision 200 annotation and regenerate docs/decisions-index.json; the reconcile gate's new-table branch and glob;
   the manifests and data-pipeline excludes; the _manifest pre_globs.
-- Execute Verification Plan steps 1-7 -- loop until pass (Decision 55).
-- Write the registry rows for graduated steps 1-4 (check ids as declared on each step).
+- Execute Verification Plan steps 1-7 and 12 -- loop until pass (Decision 55).
+- Write the registry rows for graduated steps 1-4 and 12 (check ids as declared on each step).
 - >-
   CLOSURE -- separate facts, in order (a)-(e) (implement skill Commit Flows; docs/contracts/git-ops.yaml handoff_sequence),
   each reported on its own. (a) READINESS: bin/venv-python -m scripts.session.github_readiness. (b) Set implementation_declared
