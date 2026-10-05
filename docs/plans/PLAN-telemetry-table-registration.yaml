@@ -30,14 +30,16 @@ scope:
     DDL and MERGE builders, the status DAG (STATUS_TRANSITIONS and check_rec_status_transition stay here, so validate_ops_rule_source's
     AST read of this file and ops enforcement plan B's edits are unaffected) and schema_gate. Re-exports every name the
     two new modules now own, public and the private names any importer or test touches, so `src.common.ducklake_scd2_schema.<name>`
-    and ducklake_runtime's re-exports resolve unchanged. Additions: resolve_table_spec raises a directed SchemaGateError
-    for an event-class entry (today a raw KeyError on the absent merge_key), naming the event projection as its spec source;
-    a helper table_write_boundary(table, semantics=None) -> str | None reads an ops_tables entry's write_boundary without
-    resolving it; ScdTableSpec gains id_scheme ("serial" | "ulid", read as entry.get('id_scheme') or 'serial', since the
-    generator emits null for tables without one). Import direction: the two extracted modules have no module-scope import
-    of the facade; the one facade use -- ducklake_named_reads.read_version's column projection for SELECT * verbs -- is
-    a function-local deferred import (the Decision 124 precedent), and test_no_circular_import also imports each new module
-    first, on its own.
+    and ducklake_runtime's re-exports resolve unchanged. Additions: one shared predicate is_event_table(table, semantics=None)
+    -- true iff the ops_tables entry carries table_class: event (append_only ops_smoke_events, which has a merge_key, is
+    not one) -- used by resolve_table_spec, control_health, partition_layout and both handlers; resolve_table_spec raises
+    a directed SchemaGateError for an event-class entry (today a raw KeyError on the absent merge_key), naming the event
+    projection as its spec source; a helper table_write_boundary(table, semantics=None) -> str | None reads an ops_tables
+    entry's write_boundary without resolving it; ScdTableSpec gains id_scheme ("serial" | "ulid", read as entry.get('id_scheme')
+    or 'serial', since the generator emits null for tables without one). Import direction: the two extracted modules have
+    no module-scope import of the facade; the one facade use -- ducklake_named_reads.read_version's column projection for
+    SELECT * verbs -- is a function-local deferred import (the Decision 124 precedent), and test_no_circular_import also
+    imports each new module first, on its own.
 - file: src/common/ducklake_named_reads.py
   action: Create
   purpose: >-
@@ -71,6 +73,12 @@ scope:
     (the event projection's history-only spec) instead of resolve_table_spec, so a partition-layout read of a catalog holding
     telemetry tables (plan 3's smoke catalog) classifies and compares them like any append_only history table. Decision
     191 unchanged: write_mode stays the sole class source.
+- file: src/common/ducklake_runtime.py
+  action: Modify
+  purpose: >-
+    Re-exports is_event_table and table_write_boundary from ducklake_scd2_schema and read_version from ducklake_named_reads,
+    beside its existing re-export block (:55-90), because both handlers reach the schema layer only through `rt`. Ops plan
+    B also edits this file (coordination note).
 - file: src/lambdas/ducklake_writer/handler.py
   action: Modify
   purpose: >-
@@ -84,7 +92,10 @@ scope:
     _require_ops_table refuses the same two write_boundary values for the generic read verbs (read_ops_current, read_ops_history,
     query_ops) with a directed DuckLakeRuntimeError naming the write_boundary (a 500 under the reader's error map); telemetry
     and dimension reads arrive as named verbs in 2b. named_read responses carry the served verb's read_version beside the
-    existing registry_version stamp (C1).
+    existing registry_version stamp (C1). This is a narrow refusal list keyed on write_boundary, not a read-capability model:
+    rec-3771 (registry read/write capability undifferentiated) stays open and owns that design. query_ops refuses by its
+    `table` parameter only while its FROM is caller-controlled -- a declared residual (Decision 181 cl.2) with no exposure
+    today, since no catalog the reader attaches holds these tables; owner: 2c, before production provisioning.
 - file: src/lambdas/ducklake_writer/manifest.yaml
   action: Modify
   purpose: >-
@@ -106,8 +117,9 @@ scope:
   action: Modify
   purpose: >-
     The excludes list gains the two new modules beside ducklake_scd2_schema.py, so the `src/` wildcard never drags DuckLake
-    runtime code into data-pipeline.zip. The manifest edit marks the artifact affected, but its bundle content is unchanged
-    and deploy-prod-lambdas.yml does not trigger on this change, so no data-pipeline deploy is needed.
+    runtime code into data-pipeline.zip. The packaged manifest.yaml itself is the only zip delta (it marks the artifact
+    affected); deploy-prod-lambdas.yml does not trigger on this change and no runtime file differs, so no data-pipeline
+    deploy is needed (the PLAN-telemetry-kernel-identity-append precedent).
 - file: scripts/schema_to_field_semantics.py
   action: Modify
   purpose: >-
@@ -118,11 +130,12 @@ scope:
 - file: scripts/field_semantics_event_projection.py
   action: Modify
   purpose: >-
-    The event entry passes the sidecar's write_boundary through beside status, and its partition_column is derived from
-    the contract's validated partition_by (the calendar-day triple's column) instead of the literal session_started_at (review
-    item C3: event-table registration is data-driven; the existing triple validation stays, and the kernel's own session_started_at
-    check in EventTableSpec.from_projection is untouched, Decision 199 cl.2). The ops-rule-source implementation (#1408,
-    rec-4158 plan A) already reshaped this file onto scripts/contract_rules.py; this plan touches only the entry dict.
+    The event entry gains an explicit table_class: event marker and passes the sidecar's write_boundary through beside status,
+    and its partition_column is derived from the contract's validated partition_by (the calendar-day triple's column) instead
+    of the literal session_started_at (review item C3: event-table registration is data-driven; the existing triple validation
+    stays, and the kernel's own session_started_at check in EventTableSpec.from_projection is untouched, Decision 199 cl.2).
+    The ops-rule-source implementation (#1408, rec-4158 plan A) already reshaped this file onto scripts/contract_rules.py;
+    this plan touches only the entry dict.
 - file: config/lambda/ducklake/field_semantics.static.yaml
   action: Modify
   purpose: >-
@@ -140,11 +153,12 @@ scope:
 - file: scripts/checks/ops_governance/validate_reconcile_pending_gate.py
   action: Modify
   purpose: >-
-    The diff-added-column leg applies only to reconcile_scope=ducklake tables, matching --deploy-gate (which already refuses
-    only on ducklake tables): an exempt table owes no pending_reconcile entries, and the leg reports each exempt table it
-    skipped by name (Decision 170 accounting, never a vacuous pass). Today the only exempt table is the control-class ops_entity_counters,
-    which already owes no sides, so no existing coverage is lost (Decision 181). This lets the two brand-new ops_*.yaml
-    contracts land without owing ALTERs for tables production does not have, and keeps a later deploy-inert telemetry contract
+    The diff-added-column leg computes each table's required sides from its write_mode first (control -> none, unchanged),
+    then skips a table only when it is reconcile_scope=exempt AND its sidecar status is not live -- a pre-production table
+    production does not have -- reporting each skipped table by name (Decision 170 accounting, never a vacuous pass). The
+    live, exempt, control-class ops_entity_counters therefore still runs the control branch (the graduated test_control_class_needs_no_reconcile_sides
+    keeps covering it), and a live table wrongly marked exempt still owes ALTERs at merge. This lets the two brand-new ops_*.yaml
+    contracts land without owing ALTERs for tables production lacks, and keeps the later deploy-inert telemetry contract
     amendment (review items C9-C13) deployable.
 - file: scripts/checks/contracts/_manifest.py
   action: Modify
@@ -223,7 +237,9 @@ scope:
     The NAMED_READS location pointers (:11, :37, :88) move to src/common/ducklake_named_reads.py; the generic-read refusal
     of telemetry_append/registration tables is stated. amendment_log entry. Documents read_version as a field_add amendment:
     describe's per-verb entry and the named_read 200 response shape carry it (an opaque digest, compared by equality only
-    -- it has no ordering); registry_version stays the registry-format stamp.
+    -- it has no ordering); registry_version stays the registry-format stamp. Declares the query_ops residual beside the
+    refusal: the check reads the `table` parameter only and FROM is caller-controlled, so the refusal is complete only while
+    no reader-attached catalog holds these tables (owner 2c; rec-3771 owns the read-capability model).
 - file: docs/contracts/read-engine.yaml
   action: Modify
   purpose: >-
@@ -265,9 +281,9 @@ scope:
   purpose: >-
     test_control_health_expects_only_present_writer_keyspace_tables (a catalog without the dimension tables passes and reports
     them in absent_tables), test_control_health_ulid_floor (a ulid counter below the current-table row count is a violation),
-    test_control_health_skips_event_entries; the graduated test_control_health_asserts_counter_invariants keeps its assertions
-    unchanged while its FakeCon fixture gains the information_schema rows the catalog-aware read now issues (without them
-    the healthy case would fail and the wrong-row-count case would stop raising).
+    test_control_health_skips_event_entries; the graduated test_control_health_asserts_counter_invariants and test_control_health_metric_sink_receives_violation_count_before_raise
+    keep their assertions unchanged while their FakeCon fixtures gain the information_schema rows the catalog-aware read
+    now issues (without them the healthy case would fail and the wrong-row-count case would stop raising).
 - file: tests/test_ducklake_partition_layout.py
   action: Modify
   purpose: test_declared_spec_for_event_table_reads_history_partition.
@@ -275,7 +291,8 @@ scope:
   action: Modify
   purpose: >-
     test_ops_table_names_lists_all_six (len == 6) is updated in place to the twelve registered tables (renamed test_ops_table_names_lists_every_registered_table);
-    a guard updated, never deleted.
+    a guard updated, never deleted. Adds test_runtime_reexports_registry_helpers (rt.is_event_table, rt.table_write_boundary
+    and rt.read_version resolve to the defining modules' objects).
 - file: tests/common/test_ducklake_tables.py
   action: Modify
   purpose: >-
@@ -320,14 +337,17 @@ scope:
     (four event entries append_only with history_table = table id, write_boundary telemetry_append, status smoke; two SCD2
     entries with id_keyspace writer, id_scheme ulid, write_boundary registration, no entity_id_prefix), test_event_entries_build_kernel_specs
     (each event entry loads through src.telemetry.append.EventTableSpec.from_projection), test_partition_column_derived_from_contract
-    (a test contract partitioned on another timestamptz column projects that column), test_registry_says_what_not_where
-    (no catalog, meta_schema or data path key in any of the six entries).
+    (a test contract partitioned on another timestamptz column projects that column, and its entry carries table_class:
+    event and the sidecar's write_boundary), test_registry_says_what_not_where (no catalog, meta_schema or data path key
+    in any of the six entries).
 - file: tests/checks/ops_governance/test_validate_reconcile_pending_gate.py
   action: Modify
   purpose: >-
-    test_exempt_table_owes_no_alters_and_is_reported (a new exempt contract's added fields demand nothing and the leg names
-    it); test_ops_table_ids_real updated to the registered set; the graduated test_control_class_needs_no_reconcile_sides
-    unchanged. Kept to two edits so the module stays under 500 SLOC (about 439 today).
+    test_preproduction_exempt_table_owes_no_alters_and_is_reported (an exempt, status-smoke new contract's added fields
+    demand nothing and the leg names it), test_live_exempt_table_still_owes_alters (a live table marked exempt is not skipped);
+    test_ops_table_ids_real updated to the registered set; the graduated test_control_class_needs_no_reconcile_sides unchanged
+    and still exercising the control branch (100% mirror coverage of the leg's branches holds). Kept small so the module
+    stays under 500 SLOC (about 439 today).
 - file: tests/checks/contracts/test__manifest.py
   action: Modify
   purpose: >-
@@ -358,8 +378,9 @@ acceptance_criteria:
   the sidecar's status, write_boundary and (for the dimensions) id_keyspace writer and id_scheme ulid; the generator's --check
   passes; each event entry builds a kernel EventTableSpec.
 - >-
-  The generic write verbs (write_ops, update_ops, file_ops, create_ops_tables) and generic read verbs refuse all six tables
-  with a directed error; no code path in this plan creates a table in any catalog.
+  The generic write verbs (write_ops, update_ops, file_ops, create_ops_tables) refuse all six tables, and the generic read
+  verbs refuse them by their table parameter (the query_ops FROM residual declared, owner 2c), each with a directed error;
+  no code path in this plan creates a table in any catalog.
 - >-
   control_health expects counter rows only for writer-keyspace tables present in the catalog under check, reports absent
   ones, applies the ulid floor, and stays green on production after deploy (ControlTableInvariantViolation 0).
@@ -367,9 +388,9 @@ acceptance_criteria:
   The six tables are reconcile_scope exempt (pre-production, owner 2c); the reconcile gate's added-column leg follows reconcile_scope
   and reports skipped exempt tables by name; its --deploy-gate passes.
 - >-
-  ops_tenants.yaml and ops_projects.yaml are ratified Class A contracts; _joins.yaml, ops_entity_counters.yaml, project-id.yaml,
-  tenant-id.yaml, ducklake_writer.yaml, ducklake_reader.yaml and read-engine.yaml carry their amendments with category-6
-  amendment_log entries; each new invariant declares its enforcing check or residual owner.
+  ops_tenants.yaml and ops_projects.yaml are ratified Class A contracts; _joins.yaml declares the dimension joins; ops_entity_counters.yaml,
+  project-id.yaml, tenant-id.yaml, ducklake_writer.yaml, ducklake_reader.yaml and read-engine.yaml carry their amendments
+  with category-6 amendment_log entries; each new invariant declares its enforcing check or residual owner.
 - >-
   The governed deploy of all five DuckLake Lambdas succeeds on the merge commit with the existing smoke gates green.
 - >-
@@ -410,9 +431,9 @@ verification_plan:
     tests/lambdas/ducklake_writer/handler/test_ops_actions.py::test_generic_verbs_refuse_telemetry_and_registration_tables
     tests/test_ducklake_reader_handler.py::test_generic_reads_refuse_telemetry_and_registration_tables tests/test_ducklake_reader_handler.py::test_named_read_response_carries_read_version
     tests/common/test_ducklake_runtime.py::test_ops_table_names_lists_every_registered_table tests/common/test_ducklake_tables.py::test_history_partition_is_calendar_day_triple
-    -q
+    tests/common/test_ducklake_runtime.py::test_runtime_reexports_registry_helpers -q
   expected: >-
-    Exit 0, 10 passed. Red before: the new nodes are absent and the two updated guards fail on the registered event entries.
+    Exit 0, 11 passed. Red before: the new nodes are absent and the two updated guards fail on the registered event entries.
   fix_if: >-
     A consumer that resolves an event entry through resolve_table_spec -> branch it on write_mode or the event entry, never
     widen ScdTableSpec.
@@ -456,12 +477,13 @@ verification_plan:
   phase: pre-deploy
   action: The reconcile gate exempts pre-production tables by reconcile_scope and its deploy gate passes.
   command: >-
-    bin/venv-python -m pytest tests/checks/ops_governance/test_validate_reconcile_pending_gate.py::test_exempt_table_owes_no_alters_and_is_reported
-    tests/checks/ops_governance/test_validate_reconcile_pending_gate.py::test_ops_table_ids_real tests/checks/ops_governance/test_validate_reconcile_pending_gate.py::test_control_class_needs_no_reconcile_sides
-    -q && bin/venv-python -m scripts.checks.ops_governance.validate_reconcile_pending_gate --deploy-gate
+    bin/venv-python -m pytest tests/checks/ops_governance/test_validate_reconcile_pending_gate.py::test_preproduction_exempt_table_owes_no_alters_and_is_reported
+    tests/checks/ops_governance/test_validate_reconcile_pending_gate.py::test_live_exempt_table_still_owes_alters tests/checks/ops_governance/test_validate_reconcile_pending_gate.py::test_ops_table_ids_real
+    tests/checks/ops_governance/test_validate_reconcile_pending_gate.py::test_control_class_needs_no_reconcile_sides -q
+    && bin/venv-python -m scripts.checks.ops_governance.validate_reconcile_pending_gate --deploy-gate
   expected: >-
-    Exit 0: 3 passed, then the deploy gate reports no pending reconcile. Red before: the new node is absent and the gate
-    demands ALTERs for every field of the two new contracts.
+    Exit 0: 4 passed, then the deploy gate reports no pending reconcile. Red before: the two new nodes are absent and the
+    gate demands ALTERs for every field of the two new contracts.
   fix_if: >-
     The gate demanding ALTERs for an exempt table -> the added-column leg must follow reconcile_scope; never mark a live
     table exempt.
@@ -576,11 +598,6 @@ test_obligations:
   verification_step: 1
   test_selector: tests/test_ducklake_scd2_schema.py::test_facade_reexports_pre_split_surface
   red_green_expectation: red before (node absent), green after
-- source: src/common/ducklake_named_reads.py
-  behavior: Moved named-read registry and describe, unchanged.
-  verification_step: 1
-  test_selector: tests/test_ducklake_named_reads.py
-  red_green_expectation: red before (module absent), green after
 - source: src/common/ducklake_write_verbs.py
   behavior: Moved write-verb registry and describe, unchanged.
   verification_step: 1
@@ -607,11 +624,6 @@ test_obligations:
   verification_step: 3
   test_selector: tests/test_field_semantics_telemetry_registration.py::test_six_tables_registered
   red_green_expectation: red before (tables absent), green after
-- source: scripts/field_semantics_event_projection.py
-  behavior: Event entries carry write_boundary and still build kernel specs.
-  verification_step: 3
-  test_selector: tests/test_field_semantics_telemetry_registration.py::test_event_entries_build_kernel_specs
-  red_green_expectation: red before (no event entry registered), green after
 - source: config/lambda/ducklake/field_semantics.static.yaml
   behavior: Sidecar entries for the six tables say what each table is, never where it resides.
   verification_step: 3
@@ -719,18 +731,46 @@ test_obligations:
   verification_step: 1
   test_selector: tests/lambda_manifest/test_bundle_checks.py::test_new_ducklake_modules_track_scd2_schema_membership
   red_green_expectation: red before (the extended invariant names modules the manifest does not list), green after
-- source: scripts/checks/ops_governance/validate_reconcile_pending_gate.py
-  behavior: An exempt table owes no ALTER entries and is reported by name.
-  verification_step: 5
-  test_selector: >-
-    tests/checks/ops_governance/test_validate_reconcile_pending_gate.py::test_exempt_table_owes_no_alters_and_is_reported
-  red_green_expectation: red before (node absent; the gate demands ALTERs), green after
 - source: docs/contracts/ops_entity_counters.yaml
   behavior: Catalog-aware grain and the ulid scheme.
   verification_step: 6
   test_selector: >-
     tests/checks/contracts/test_telemetry_dimension_contracts.py::test_ops_entity_counters_catalog_aware_grain
   red_green_expectation: red before (old grain wording), green after
+- source: scripts/checks/ops_governance/validate_reconcile_pending_gate.py
+  behavior: >-
+    A pre-production exempt table owes no ALTER entries and is reported; a live exempt table still owes them.
+  verification_step: 5
+  test_selector: >-
+    tests/checks/ops_governance/test_validate_reconcile_pending_gate.py::test_preproduction_exempt_table_owes_no_alters_and_is_reported
+  red_green_expectation: red before (node absent; the gate demands ALTERs), green after
+- source: src/common/ducklake_runtime.py
+  behavior: The registry helpers and read_version are reachable through rt.
+  verification_step: 2
+  test_selector: tests/common/test_ducklake_runtime.py::test_runtime_reexports_registry_helpers
+  red_green_expectation: red before (helpers absent), green after
+- source: scripts/field_semantics_event_projection.py
+  behavior: >-
+    The event entry carries table_class: event and write_boundary, and derives partition_column from the contract.
+  verification_step: 3
+  test_selector: tests/test_field_semantics_telemetry_registration.py::test_partition_column_derived_from_contract
+  red_green_expectation: red before (the column is the literal and no marker or write_boundary is emitted), green after
+- source: src/common/ducklake_named_reads.py
+  behavior: The moved named-read registry and describe, now with a per-verb read_version key.
+  verification_step: 1
+  test_selector: tests/test_ducklake_named_reads.py
+  red_green_expectation: red before (module absent), green after
+- source: src/common/ducklake_named_reads.py
+  behavior: >-
+    read_version is a per-verb digest that changes only with that verb (SELECT * verbs include their columns).
+  verification_step: 1
+  test_selector: tests/test_ducklake_named_reads.py::test_read_version_is_per_verb_digest
+  red_green_expectation: red before (module absent), green after
+- source: src/lambdas/ducklake_reader/handler.py
+  behavior: named_read responses carry the served verb read_version beside registry_version.
+  verification_step: 2
+  test_selector: tests/test_ducklake_reader_handler.py::test_named_read_response_carries_read_version
+  red_green_expectation: red before (no read_version in the response), green after
 constraints:
 - >-
   No table is created in any catalog by this plan; production ducklake_ops is untouched (no create_ops_tables call, no reconcile).
@@ -755,7 +795,7 @@ context:
   12 (delta scout for C1-C3: Decisions triaged: 163 of 163; Roadmap items intersected: 18; CONFLICT: 2; RELATED: 16)
 - >-
   gates: decision-scout=FLAGS_FOUND (all resolved, plus a delta scout for C1-C3); plan-critique=REVISE r1 (10 changes +
-  minors), all fixed
+  minors) and r2 (5 narrow edits + 5 minors), all fixed
 - >-
   Direction: Benjamin 2026-10-05, 'yes to all' on /mnt/project-files/feedback-loop-review/REVIEW.md section 8 (review items
   C1-C8 fold into the 2a-2 plans, C1-C3 here); the W3 rulings give this project 2b, 3b and this split. Design: /mnt/project-files/telemetry-slice2/step6b-2a2-presentation.md;
@@ -767,9 +807,9 @@ context:
   paths, and the deploy workflow's src/common/ducklake_*.py filter would miss a package directory.
 - >-
   Coordination: ops-rule-source merged (#1408); ops plan B (PLAN-ops-writer-row-rules, #1410) moves the rule engine to src/row_rules/
-  and overlaps about ten files here (writer handler, generator, field_semantics.yaml, ducklake_writer.yaml, manifests, test_ducklake_scd2_schema.py)
-  -- whichever lands second rebases, re-runs VP steps 1-7 and regenerates field_semantics.yaml. rec-4024 stays OPEN (plan
-  4 closes it).
+  and overlaps about ten files here (writer handler, generator, field_semantics.yaml, ducklake_writer.yaml, manifests, ducklake_runtime.py,
+  test_ducklake_scd2_schema.py; its SCD2 row-rule projection will also read the two new dimension contracts) -- whichever
+  lands second rebases, re-runs VP steps 1-7 and regenerates field_semantics.yaml. rec-4024 stays OPEN (plan 4 closes it).
 - >-
   Residuals (Decision 181 cl.2): canonical-remap DQ and the tenant-pin monitor (rec-4063 family, 2b); the writer-side binding
   immutability, natural-key uniqueness and the counter-row lock itself (plan 3, rec-4024); the rec-4121 SCD2 history residual
@@ -777,7 +817,9 @@ context:
 - >-
   Notes: dimension writes are plan 3's (register_tenant/register_project carry attribute updates and the canonical remap),
   so generic update_ops stays refused -- the approved design's update_ops path is dropped to make binding immutability structural.
-  The Decision 200 annotation is surfaced to Benjamin with the plan PR (the critic called it the operator's call).
+  The reader refusal is a narrow write_boundary list; rec-3771 (read capability) stays open. Surfaced to Benjamin with the
+  plan PR: the Decision 200 annotation (the critic called it the operator's call) and C1's opaque digest in place of the
+  review's monotonic integer.
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
