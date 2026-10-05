@@ -129,7 +129,9 @@ scope:
     ops writer (src/common/ducklake_write_rules.py over src/row_rules/rules.py, rules projected into
     field_semantics.yaml), proven on every deploy by the --lambda-row-rules smoke gate", plus one residual clause:
     narrowing a contract-declared value set (not the registry, which validate_ops_rule_source ratchets) is guarded only
-    by the amendment ritual and a census run, its owner rec-4158 plan C. Every phrase
+    by the amendment ritual and a census run, its owner rec-4158 plan C; and adding a source to the registry now
+    regenerates field_semantics.yaml, so it ships through the DuckLake deploy before any producer emits it (Decision 210
+    cl.4). Every phrase
     tests/checks/contracts/test_write_time_enforcement_decision.py anchors is kept. amendment_log entry
     (governance_note_add, semantic_break false: a coverage pointer moves, no rule changes; plan A's precedent); updated_by.
 - file: scripts/contract_rules.py
@@ -203,7 +205,8 @@ scope:
   action: Modify
   purpose: >-
     lambda_row_rules(profile, region): from a rule-clean test-rr-<hex> base record, sends one write_ops per case (an
-    accepted_values, a min_length, an array_element_format and a pattern violation), each must return 422 with
+    accepted_values, a min_length, an array_element_format and a pattern violation; the base record and the four cases
+    are module-level constants so a hermetic test can evaluate them), each must return 422 with
     error_type row_rule naming the expected rule and column, then read_ops_current on that key must return zero rows.
     Writes nothing while enforcement is live. On an unexpected 200 it first repairs the row it just wrote --
     update_ops to the rule-clean base record with status superseded and a resolution naming the failed gate -- so a
@@ -250,7 +253,9 @@ scope:
   purpose: >-
     Mirror test: RowRuleViolationError is a SchemaGateError with no value in its message; the select widens only with
     dated rules; the bound row; insert, dated, older-unchanged and older-changed verdicts on the real projection; the
-    ops_read_your_write and selftest_roundtrip probe records (captured through stubs) pass the shipped rules; an
+    ops_read_your_write and selftest_roundtrip probe records (captured through stubs) pass the shipped rules, and the
+    --lambda-row-rules base record passes while each of its four cases raises exactly its expected rule and column
+    (so the per-deploy gate cannot false-red on its first production run); an
     older row run through the portal's real update shaping (_coerce_ops_rec_row, _sanitize_record, merge) with NULL
     lists and a pre-date tag violation passes check_write against its stored prior. Write-primitive tests through the
     shared FakeCon: a rule rejection inside write_scd2 rolls back with zero OCC retries even when its message would match
@@ -359,7 +364,8 @@ acceptance_criteria:
   validate_ops_rule_source fails a PR that removes a source registry id, and malformed rule legs produce FAIL lines
   (rec-4168).
 - >-
-  After the governed deploy, all five deploy records are fresh, --lambda-row-rules passes in the workflow and locally,
+  After the governed deploy, all five deploy records are fresh, the workflow run for the merge commit is green
+  including its --lambda-row-rules step (recorded in the post-merge execution step), --lambda-row-rules passes locally,
   the read-your-write probe passes, the census still exits 0, and there is no gross latency regression (post-deploy
   CommitLatencyMs p50 at or below the prior 7-day p95).
 - rec-4168 is closed by the Resolves trailer; rec-4158 carries a dated PLAN B DELIVERED note and stays open for plan C.
@@ -401,11 +407,12 @@ verification_plan:
     tests/common/test_ducklake_write_rules.py::test_select_widens_only_with_dated_rules
     tests/common/test_ducklake_write_rules.py::test_older_rows_verdicts_on_the_real_projection
     tests/common/test_ducklake_write_rules.py::test_smoke_probe_records_pass
+    tests/common/test_ducklake_write_rules.py::test_row_rule_gate_cases_trip_their_rule
     tests/common/test_ducklake_write_rules.py::test_portal_normalized_update_of_an_older_row_passes
     tests/common/test_ducklake_write_rules.py::test_row_rule_rejection_is_terminal_with_zero_retries
     tests/common/test_ducklake_write_rules.py::test_file_scd2_row_rule_rejects_before_catalog
     tests/common/test_ducklake_write_rules.py::test_write_scd2_update_binds_dated_rule_only_when_column_changes -q
-  expected: Exit 0, 8 passed. Red before, because the module and its tests do not exist.
+  expected: Exit 0, 9 passed. Red before, because the module and its tests do not exist.
   fix_if: A rejection retried or a counter touched -> fix the call site, never the test.
   hermetic: true
   graduation: graduate
@@ -837,7 +844,7 @@ context:
   (per-artifact gates: the workflow's plus step 19), 181 (shard bound and fixtures never weakened), 207 (identical
   re-send keeps the identical verdict). CITE: 210, 81, 84, 64, 65, 70, 79, 125, 126, 118, 88, 181. Decisions triaged:
   163 of 163; Roadmap items intersected: 16; CONFLICT: 2; RELATED: 12.
-- 'gates: decision-scout=FLAGS_FOUND (all resolved); plan-critique=REVISE r1 (7 findings), r2 (F1-F9), r3 (F1 required, F2-F7 optional), all addressed'
+- 'gates: decision-scout=FLAGS_FOUND (all resolved); plan-critique=REVISE r1 (7 findings), r2 (F1-F9), r3 (F1 required, F2-F7 optional), all addressed; PROCEED after 4 rounds; round 4 autonomous (optional F1-F4 applied)'
 - >-
   Operator direction (Benjamin, 2026-10-05, this thread): "I agree with your recommendations, write the plan" -- all
   five Step 6b forks below. Evidence in /mnt/project-files/ops-enforcement/: step6b-planB-presentation.md,
@@ -854,8 +861,8 @@ context:
   failures -- 21 in tests/common/test_ducklake_writes.py, 2 in tests/common/test_ducklake_runtime.py, 2 in
   tests/test_ducklake_scd2_schema.py (minimal records and the title flip), the rest from FakeCon's old select prefix.
 - >-
-  validate_pre_glob_closure, run on a simulated move: 6 fast-tier checks gain src/row_rules/rules.py in their closure
-  (scope rows for the three manifests); re-run it after implementing, since the projection import may add more.
+  validate_pre_glob_closure, run on a simulated move: 6 fast-tier checks gain src/row_rules/rules.py in their closure,
+  plus the reconcile gate through the projection import -- 7 Entries in the three manifest rows; re-run it after implementing.
 - >-
   Portal shaping (critique r1), measured 2026-10-05 by step 13's probe: no row stores an empty string in a ruled column
   and no list holds a NULL element; empty strings exist only in verification, verification_tier and resolution (no rules).
@@ -901,7 +908,8 @@ execution_steps:
   the merge deploys all five DuckLake Lambdas. Only on that approval: squash-merge with the PR body as commit_message.
 - >-
   Watch the deploy-ducklake-lambdas run for the merge commit to completion (maintenance smoke, reconcile gate, serving
-  deploy, smoke including --lambda-row-rules); a red job is stop-and-RCA, never a re-run into green.
+  deploy, smoke including --lambda-row-rules) and record its smoke-job conclusion in the PR as AC evidence; a red job is
+  stop-and-RCA, never a re-run into green.
 - Execute post-deploy steps 14-18; step 19 after the next Sunday 03:00 UTC catalog-dr run (weekly, cron(0 3 ? * SUN *)).
 - >-
   Portal bookkeeping (get_rec_write_guidance first, Decision 66; fetch-before-update; prepend a dated note): rec-4158
