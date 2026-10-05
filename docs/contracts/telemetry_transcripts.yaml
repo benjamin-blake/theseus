@@ -23,8 +23,12 @@ contract:
     content-addressed blob-port key (Decision 199), so telemetry_observations stays hot without a
     hard-coded blob-or-die pointer scheme.
   projects_to:
+    artifact: config/lambda/ducklake/field_semantics.yaml
+    table: telemetry_transcripts
+    generator: scripts/schema_to_field_semantics.py
     note: >-
-      No generated artifact yet (telemetry not on DuckLake; no telemetry field_semantics.yaml).
+      The event projection (scripts/field_semantics_event_projection.py) emits this table's entry from slice
+      2a-2 plan 1's registration onward and runs in-process before then, so no later flip is owed.
 fields:
   event_id:
     $ref: telemetry-event-envelope.yaml#/contract/fields/event_id
@@ -305,9 +309,9 @@ governance:
   table_class: event
   partition_by: "history=year(session_started_at), month(session_started_at), day(session_started_at)"
   write_path: >-
-    NOT PROVISIONED: no telemetry writer exists today. TARGET (Phase 4, post-T2.26): the
-    append_events boundary (rec-4024), putting to the blob port BEFORE the row write when the
-    payload spills (orphan sweep on a failed row write: rec-4033).
+    Not provisioned in production (slice 2c); the writer and blob route are rec-4024's slice 2a-2: the
+    append_events boundary, putting to the blob port BEFORE the row write when the payload spills (orphan sweep
+    on a failed row write: rec-4033).
 governance_notes: >-
   HYBRID CONTENT MODEL (Decision 199): the "inline content" tier here is a COLUMN-LEVEL choice
   (content vs content_uri), distinct from DuckLake data inlining, which stays DISABLED for
@@ -316,12 +320,13 @@ governance_notes: >-
   draft's ad-hoc phase_id/step_id/invocation_id mix. RETIRED: local_path, s3_key, size_bytes,
   created_at, ingested_at -- content_uri/content_bytes/event_timestamp/created_timestamp (the
   shared envelope) supersede them. Identity (transcript_id, observation_id, session_id) is derived
-  at the write boundary per telemetry-event-envelope.yaml's normative hash spec. NULLABILITY AXES:
-  `nullable` is the TARGET-SCHEMA column constraint; `dq_intent.not_null.enforced` is the CURRENT DQ
-  posture. REPORT-ONLY: target-state, not implemented. KNOWN GAPS: rec-4024 (writer + blob-port put
+  at the write boundary per telemetry-event-envelope.yaml's normative hash spec. NULLABILITY AXES: a column is NOT NULL at write when `nullable` is false or `dq_intent.not_null.enforced` is true, unless the field
+  carries `required_when`, which then governs (scripts/field_semantics_event_projection.py _is_not_null); required_when, accepted_values and pattern are
+  write-enforced whatever their enforced value (Decision 210, #1405), and the flag otherwise keeps its DQ-runner meaning, whose platform-wide re-read is rec-4158 plan C. Not provisioned in production (slice 2c). KNOWN GAPS: rec-4024 (writer + blob-port put
   ordering), rec-4026 (turn-capture producer), rec-4029 (PII scrubbing/erasure -- the blob port
   makes erasure of large payloads an object delete), rec-4033 (blob orphan sweep).
 amendment_log:
+  - {date: "2026-10-05", semantic_break: false, change_class: prose_improvement, summary: "PLAN-telemetry-lifecycle-friction-amendment (fork 2 (a)): projects_to, write_path and the governance notes (REPORT-ONLY premise, NULLABILITY AXES) corrected to the projection's actual rule and the not-provisioned-in-production status. Meta and notes only; no field text changed."}
   - date: "2026-10-04"
     semantic_break: true
     change_class: governance_note_add

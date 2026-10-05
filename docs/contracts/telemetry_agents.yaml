@@ -22,8 +22,12 @@ contract:
     tool_call, when the run was spawned by one. Token totals are DERIVED via the child session's own
     model_call observations, not stored on this table.
   projects_to:
+    artifact: config/lambda/ducklake/field_semantics.yaml
+    table: telemetry_agents
+    generator: scripts/schema_to_field_semantics.py
     note: >-
-      No generated artifact yet (telemetry not on DuckLake; no telemetry field_semantics.yaml).
+      The event projection (scripts/field_semantics_event_projection.py) emits this table's entry from slice
+      2a-2 plan 1's registration onward and runs in-process before then, so no later flip is owed.
 fields:
   event_id:
     $ref: telemetry-event-envelope.yaml#/contract/fields/event_id
@@ -136,11 +140,12 @@ fields:
     iceberg_type: string
     nullable: true
     description: "The inference provider: copilot_sdk | github_models | anthropic_max."
-    semantics: Dimension attribute. Open set; enforcement deferred to the Phase 4 telemetry DQ config.
+    semantics: Dimension attribute. The set is open; a closed set would be declared here when ratified (Decision 210 cl.3), and the vocabulary stays rec-4135's.
     populated_by: the write boundary, at the open event.
     dq_intent: {not_null: {enforced: false}}
     amendment_log:
       - {date: "2026-09-24", semantic_break: false, change_class: prose_improvement, summary: "PLAN-telemetry-event-journal-contracts (Decision 199): re-grounded populated_by wording to the open event; field meaning unchanged."}
+      - {date: "2026-10-05", semantic_break: false, change_class: prose_improvement, summary: "PLAN-telemetry-lifecycle-friction-amendment (fork 2 (a)): replaced 'enforcement deferred to the Phase 4 telemetry DQ config' with the open-set wording; vocabulary stays rec-4135's. Meaning unchanged."}
   version:
     type: str
     iceberg_type: string
@@ -156,11 +161,12 @@ fields:
     iceberg_type: string
     nullable: true
     description: "How the agent run was triggered: eventbridge | manual | smoke_test | cron_workflow."
-    semantics: Run-provenance attribute. Open set; enforcement deferred.
+    semantics: Run-provenance attribute. The set is open; a closed set would be declared here when ratified (Decision 210 cl.3).
     populated_by: the write boundary, at the open event.
     dq_intent: {not_null: {enforced: false}}
     amendment_log:
       - {date: "2026-09-24", semantic_break: false, change_class: prose_improvement, summary: "PLAN-telemetry-event-journal-contracts (Decision 199): re-grounded populated_by wording to the open event; field meaning unchanged."}
+      - {date: "2026-10-05", semantic_break: false, change_class: prose_improvement, summary: "PLAN-telemetry-lifecycle-friction-amendment (fork 2 (a)): replaced 'enforcement deferred' with the open-set wording. Meaning unchanged."}
   outcome:
     type: str
     iceberg_type: string
@@ -215,12 +221,15 @@ fields:
     iceberg_type: bigint
     nullable: true
     description: Wall-clock agent-run duration in seconds. DERIVED at read by pairing this run's open and close rows; NULL while the run has no close row yet.
-    semantics: close.event_timestamp minus open.event_timestamp for this agent_run_id.
+    semantics: >-
+      close.event_timestamp minus open.event_timestamp for this agent_run_id. The agent-run pair is also the state of the sub-agent's session
+      (telemetry_sessions.state): running while open, abandoned past the same idle threshold, and at close success -> success, failed, timeout or throttled -> failed.
     populated_by: a named reader verb (rec-4024).
     dq_intent: {not_null: {enforced: false}}
     derivation: {timing: read, derived_by: "reader_verb:agent_run_state_and_duration", formula: "(close.event_timestamp - open.event_timestamp).total_seconds(), paired on agent_run_id", inputs: [event_timestamp, event_kind, agent_run_id], realized: false}
     amendment_log:
       - {date: "2026-09-24", semantic_break: true, change_class: governance_note_add, summary: "PLAN-telemetry-event-journal-contracts (Decision 199): re-grounded from a stored open/close-pair column to a read-derived field paired by agent_run_id; field meaning (wall-clock run duration) unchanged."}
+      - {date: "2026-10-05", semantic_break: true, change_class: governance_note_add, summary: "PLAN-telemetry-lifecycle-friction-amendment (C9): the agent-run pair is also the sub-agent session's state (telemetry_sessions.state), with the outcome mapping success -> success and failed, timeout or throttled -> failed."}
   findings_count:
     type: int
     iceberg_type: bigint
@@ -281,9 +290,8 @@ governance:
   table_class: event
   partition_by: "history=year(session_started_at), month(session_started_at), day(session_started_at)"
   write_path: >-
-    NOT PROVISIONED: no telemetry writer exists today. TARGET (Phase 4, post-T2.26): the rooted
-    agent writer (carrying session_id) on the append_events boundary (rec-4024). Append-only; no
-    SCD2 merge, no in-place mutation.
+    Not provisioned in production (slice 2c); the writer is rec-4024's append verb, the rooted agent writer
+    (carrying session_id) on the append_events boundary. Append-only; no SCD2 merge, no in-place mutation.
 governance_notes: >-
   EVENT JOURNAL: telemetry_agents replaces the ROOTLESS telemetry_agent_invocations -- the
   canonical addition is session_id (+ optional observation_id), rooting every agent row to its
@@ -294,11 +302,12 @@ governance_notes: >-
   the contract_version 1 stored tokens_input/tokens_output/duration_seconds. findings_count/
   recs_created/queue_entries_written stay STORED (observed once, at close, not aggregates over
   child rows). Identity (agent_run_id, session_id, observation_id) is derived at the write boundary
-  per telemetry-event-envelope.yaml's normative hash spec. NULLABILITY AXES: `nullable` is the
-  TARGET-SCHEMA column constraint; `dq_intent.not_null.enforced` is the CURRENT DQ posture.
-  REPORT-ONLY: target-state, not implemented. KNOWN GAP: rec-2173 (preflight telemetry health) and
+  per telemetry-event-envelope.yaml's normative hash spec. NULLABILITY AXES: a column is NOT NULL at write when `nullable` is false or `dq_intent.not_null.enforced` is true, unless the field
+  carries `required_when`, which then governs (scripts/field_semantics_event_projection.py _is_not_null); required_when, accepted_values and pattern are
+  write-enforced whatever their enforced value (Decision 210, #1405), and the flag otherwise keeps its DQ-runner meaning, whose platform-wide re-read is rec-4158 plan C. Not provisioned in production (slice 2c). KNOWN GAP: rec-2173 (preflight telemetry health) and
   the broader Phase 4 re-provisioning (rec-4024) are CODE follow-ons, not this contract.
 amendment_log:
+  - {date: "2026-10-05", semantic_break: false, change_class: prose_improvement, summary: "PLAN-telemetry-lifecycle-friction-amendment (C9, fork 2 (a)): provider and trigger drop the enforcement-deferred premise, duration_seconds names the agent-run pair as the sub-agent session's state, and projects_to, write_path and the NULLABILITY AXES note are corrected. Per-field changes are on their own fields' logs."}
   - date: "2026-09-26"
     semantic_break: false
     change_class: prose_improvement
