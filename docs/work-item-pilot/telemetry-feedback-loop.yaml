@@ -316,6 +316,39 @@ work_items:
           - {id: q1, text: 'Failing runners and sessions lost before any turn closes land no rows: what out-of-band session denominator sees them?'}
           - {id: q2, text: 'Does SessionEnd fire on CC-web reclaim, and is a resumed transcript restored whole? Final-turn loss (R1) hinges on it.'}
           - {id: q3, text: 'billing_shape source for API-key sessions (rec-4147): the default mislabels unattended API-key runs as subscription.'}
+  - id: pwi-telemetry-reader-verbs
+    kind: task
+    title: 'Telemetry reader verbs: partition-bound, generation-aware derived-state reads over the event journal (rec-4024)'
+    extension:
+      consideration_register:
+        why: Decision 199 stores no state, duration, roll-up, friction or cost; every feedback-loop consumer (failure signals, classifier, back-validation, T3.3) reads them only through these verbs.
+        how: 'Extend NAMED_READS with an event-journal form: a server-decoded partition predicate from session_id, one shared R4/R5 dedupe block with its conflict report, and per-session verbs that return derived rows only.'
+        planes: [data_plane]
+        maturity:
+          rung: read_all
+          transitions:
+            - {from: read_all, to: sampled, trigger: {metric: consecutive sessions whose verb outputs match the harness re-derivation, comparator: '>=', threshold: 50}}
+            - {from: sampled, to: spot_check, trigger: {metric: verb re-derivation mismatches across the last 200 sampled sessions, comparator: ==, threshold: 0}}
+            - {from: spot_check, to: anomaly_triggered, trigger: {metric: consecutive days with zero mismatches and zero conflicted grain keys reported, comparator: '>=', threshold: 30}}
+        failure_signal: {signal: 'a verb returns a derived value (state, duration, roll-up) that differs from a re-derivation over the same raw rows, silently skewing every consumer', metric: 'verb_rederivation_mismatch_rate: sampled sessions whose verb output differs from the harness re-derivation', source: 'rec-4025 shadow mode once widened (q2); until then only CI vectors and the conflict stamp, dedupe leg only'}
+        verification: [c1, c2, c3]
+        rollback: Remove the telemetry verbs from NAMED_READS and bump the registry version; reads have no side effects and stored rows are untouched.
+        evidence:
+          - {kind: file_line, ref: 'src/common/ducklake_scd2_schema.py:333'}
+          - {kind: file_line, ref: 'docs/contracts/telemetry_sessions.yaml:188'}
+          - {kind: file_line, ref: 'docs/contracts/telemetry_sessions.yaml:248'}
+          - {kind: file_line, ref: 'docs/contracts/telemetry-event-envelope.yaml:377'}
+        settled:
+          - {id: s1, text: 'Read side only: D199 derived-at-read verbs; the writer and tables are T2.36, labels rec-4032 and prices rec-4031 compose on this mechanism.'}
+          - {id: s2, text: 'Registry needs an event-journal form: tables unregistered, a NamedRead''s table binding covers one table but R4 needs two, no forced partition (VP 1).'}
+          - {id: s3, text: 'Feasible: R4/R5 dedupe is one SQL statement passing 17/17 vectors (VP 2); a session_id alone bounds a read to its own day''s files (VP 3).'}
+        contested:
+          - {id: k1, text: 'State/duration: contract reads any close as terminal, times from root start; sub-agents have no own start or close, so (a) uses their agent-run pair.'}
+          - {id: k2, text: 'Window verb: D199 cl.1 needs one reading wherever built; (b) in T2.52 after its T2.36 trigger is no earlier than (a) here, later if lands=c2. Rec: (a).'}
+          - {id: k3, text: 'Abandoned state: rec-4024 item 6 wants running/abandoned/terminal via as_of and an idle threshold; the contract has none, so a crashed session runs forever.'}
+        open_questions:
+          - {id: q1, text: 'Which consumer latency bound tests D199''s derived-read-too-costly falsifier? Per-verb Neon latency and catalog egress are unmeasured.'}
+          - {id: q2, text: 'Is rec-4025''s harness the shadow re-derivation source for the failure_signal, or does the reader own a production raw-rows path?'}
 work_item_criteria:
   - {work_item: pwi-friction-classifier, criterion_id: c1, text: 'session_friction_rollup applies the versioned rules over the shared R4/R5 dedupe on DuckLake and passes every report vector; responses carry per-label counts, unmapped count and classifier_version.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_friction_rollup_ducklake.py -m integration -k vectors}, status: open}
   - {work_item: pwi-friction-classifier, criterion_id: c2, text: 'Rules-file guard: a specific rule names one exact signature (no wildcard) of a registered hook script or check; generic labels count as unmapped; two rules never tie on one fact.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_friction_rules.py -k guard}, status: open}
@@ -344,6 +377,9 @@ work_item_criteria:
   - {work_item: pwi-capture-producer-wiring, criterion_id: c1, text: 'Stop, SessionStart catch-up and SessionEnd hooks run record_turn; batches go data-first, byte-chunked, cursor after all acks; SessionEnd waits for the lock and emits a per-finalization close row; SessionEnd timeout set; never exit 2.', method: {kind: execution, check: null, command: P="bin/venv-python -m pytest tests/turn_capture/test_capture_runner.py -qk";$P hooks&&$P data_first&&$P chunks&&$P ack_cursor&&$P close_row&&$P lock_wait&&$P no_exit_2&&$P end_timeout}, status: open}
   - {work_item: pwi-capture-producer-wiring, criterion_id: c2, text: 'Failed or killed passes replay as writer no-ops; a lost cursor re-derives pins or defers; at finalize a runner-side check proves incremental equals one full parse, resume-after-finalize included.', method: {kind: execution, check: null, command: P="bin/venv-python -m pytest tests/turn_capture/test_capture_runner.py -qk";$P replay_noop&&$P lost_cursor_pins&&$P resume_boundary_conformance}, status: open}
   - {work_item: pwi-capture-producer-wiring, criterion_id: c3, text: 'Smoke-first (T3.20 c8): one live-catalog turn lands through the writer boundary and the rec-4101 orphan monitor runs on it before the hooks are enabled broadly.', method: {kind: review, resolver: operator at the T3.20 c8 smoke gate, evidence_requirement: smoke invocation output plus a rec-4101 monitor run over the smoke rows}, status: open}
+  - {work_item: pwi-telemetry-reader-verbs, criterion_id: c1, text: 'Verbs bind the append-only tables through an event-journal registry form with a server-decoded partition; the shared R4/R5 dedupe passes every vector on DuckLake, survivors compared by (event_id, parser_version), with conflicts.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_reader_verbs_ducklake.py -m integration -k dedupe_vectors}, status: open}
+  - {work_item: pwi-telemetry-reader-verbs, criterion_id: c2, text: 'Derivation verbs match golden fixtures under the operator''s k1/k3 resolution ((a): latest row, close last on ties; sub-agents from agent-run pairs, an async child included), resume-after-close included; rewritten if (a) is not chosen.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_reader_verbs.py -k derivation}, status: open}
+  - {work_item: pwi-telemetry-reader-verbs, criterion_id: c3, text: 'Before any consumer depends on a verb, its p95 latency and per-call catalog egress are measured on the production catalog against a named consumer bound (D199 falsifier, D88).', method: {kind: review, resolver: operator at the first telemetry-verb deploy review, evidence_requirement: 'per-verb p95 latency, response bytes and Neon catalog egress, compared with the named consumer bound'}, status: open}
 work_item_edges:
   - {from: pwi-friction-classifier, to: T3.20, kind: part_of}
   - {from: pwi-friction-classifier, to: T2.36, kind: depends_on}
@@ -360,3 +396,4 @@ work_item_edges:
   - {from: pwi-loop-cost-egress-budget, to: T2.36, kind: depends_on}
   - {from: pwi-capture-producer-wiring, to: T3.20, kind: part_of}
   - {from: pwi-capture-producer-wiring, to: T2.36, kind: depends_on}
+  - {from: pwi-telemetry-reader-verbs, to: T2.36, kind: part_of}
