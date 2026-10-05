@@ -268,6 +268,7 @@ class TestComputeAffectedArtifacts:
 def test_new_ducklake_modules_track_scd2_schema_membership():
     scd2_module = "src/common/ducklake_scd2_schema.py"
     control_module = "src/common/ducklake_control_tables.py"
+    split_modules = ("src/common/ducklake_named_reads.py", "src/common/ducklake_write_verbs.py")
     manifests = load_all()
     assert manifests, "expected at least one real src/lambdas/*/manifest.yaml"
 
@@ -279,11 +280,15 @@ def test_new_ducklake_modules_track_scd2_schema_membership():
         if scd2_module in includes:
             checked_include += 1
             assert control_module in includes, f"{slug}: bundles {scd2_module} but not {control_module} -- add an includes row"
+            for mod in split_modules:
+                assert mod in includes, f"{slug}: bundles {scd2_module} but not {mod} -- add an includes row"
         if scd2_module in excludes:
             checked_exclude += 1
             assert control_module in excludes, (
                 f"{slug}: excludes {scd2_module} but not {control_module} -- add an excludes row"
             )
+            for mod in split_modules:
+                assert mod in excludes, f"{slug}: excludes {scd2_module} but not {mod} -- add an excludes row"
     # Growth-safe (never a hardcoded count): both sides of the invariant must have been exercised
     # at least once, or this test would vacuously pass if every manifest happened to reference
     # neither module.

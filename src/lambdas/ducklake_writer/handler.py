@@ -214,6 +214,9 @@ def action_describe(event: dict[str, Any], _con: Any) -> dict[str, Any]:
     return {"ok": True, "verbs": rt.describe_write_verbs()}
 
 
+_GENERIC_REFUSED_BOUNDARIES = frozenset({"telemetry_append", "registration"})
+
+
 def _require_ops_table(table: Any, *, direction: str) -> None:
     """Loud-fail if *table* is not a configured ops_* table, or is a control-class table not
     reachable through the generic write verbs (closed-boundary table allow-list).
@@ -229,6 +232,12 @@ def _require_ops_table(table: Any, *, direction: str) -> None:
             f"{table!r} is a control-class table (write_boundary=writer_internal): not reachable "
             f"through the generic {direction} verbs -- provisioned only via create_ops_tables "
             "(docs/contracts/ops_entity_counters.yaml)"
+        )
+    boundary = rt.table_write_boundary(table) if isinstance(table, str) else None
+    if boundary in _GENERIC_REFUSED_BOUNDARIES:
+        raise WriterActionError(
+            f"{table!r} is not reachable through the generic {direction} verbs: written only by the "
+            f"telemetry verbs (write_boundary={boundary}) -- Decision 55 loud fail"
         )
     if not isinstance(table, str) or table not in rt.ops_table_names():
         raise WriterActionError(f"unknown or missing ops table {table!r}: expected one of {list(rt.ops_table_names())}")
@@ -295,8 +304,9 @@ def handler(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
         # the next invocation (NOT closed in a finally). The SELECT-1 liveness probe reopens a closed
         # connection at acquisition; a session that dies mid-statement (Neon scale-to-zero) surfaces as
         # a connection error -- reopen ONCE and retry. The production write actions are replay-safe
-        # under retry (file_ops via the client-replayed idempotency ULID; update_ops/write_ops are
-        # MERGE-idempotent on the merge key), and a connection death aborts the catalog txn so the
+        # under retry (file_ops via the client-replayed idempotency ULID; update_ops/write_ops mint
+        # a fresh write ULID per call, so a replay adds a history row while the current row converges, rec-4121),
+        # and a connection death aborts the catalog txn so the
         # first attempt left nothing committed. Any non-connection error still propagates (Decision 55).
         con, conn_meta = _warm_writer_connection()
         payload["_connect_ms"] = conn_meta["connect_ms"]

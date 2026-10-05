@@ -45,6 +45,7 @@ from src.common.ducklake_metrics import (  # noqa: F401 -- re-exported facade su
     emit_metric,
     make_metric_sink,
 )
+from src.common.ducklake_named_reads import read_version  # noqa: F401 -- re-exported for the reader handler's per-verb stamp
 from src.common.ducklake_reads import (  # noqa: F401 -- re-exported facade surface (PLAN-sloc-ducklake-layer)
     assert_read_only_sql,
     named_read,
@@ -85,10 +86,12 @@ from src.common.ducklake_scd2_schema import (
     check_rec_status_transition,  # noqa: F401 -- re-exported; own use (write_scd2) moved to ducklake_writes
     describe_named_reads,  # noqa: F401 -- re-exported for the reader handler's `describe` action
     describe_write_verbs,  # noqa: F401 -- re-exported for the writer handler's `describe` action
+    is_event_table,  # noqa: F401 -- re-exported for both handlers' write_boundary refusal and control_health
     load_field_semantics,  # noqa: F401 -- re-exported; own use (write_scd2/file_scd2) moved to ducklake_writes
     ops_table_names,  # noqa: F401 -- re-exported for backward compat
     resolve_table_spec,  # noqa: F401 -- re-exported; own use moved to ducklake_writes/tables/reads
     schema_gate,  # noqa: F401 -- re-exported; own use (write_scd2/file_scd2) moved to ducklake_writes
+    table_write_boundary,  # noqa: F401 -- re-exported for both handlers' write_boundary refusal
 )
 from src.common.ducklake_tables import (  # noqa: F401 -- re-exported facade surface
     create_control_table,

@@ -776,6 +776,8 @@ conditions:
 
 **Related:** Decision 197 clause 2 (amended), Decision 199 (the identity hash tenant_id/project_id feed), Decision 198 (retired the 'theseus' default this decision removes from project-id.yaml), Decision 84 I-2 (writer-minted ids precedent), rec-4024 (registration verb + dimension contracts).
 
+[Amendment 2026-10-05, PLAN-telemetry-table-registration (feedback-loop review item C2): an exception to clause 1's "auto-registering an unregistered row on first sight rather than rejecting the write" for the reserved `drill:` / `synthetic:` project_ref namespace -- such a ref is registered explicitly with register_project and an append naming it while unregistered is rejected, so a mistyped or hostile ref cannot mint a real-looking project. The writer-minted, never-caller-supplied, immutable id is unchanged. Detail: docs/contracts/project-id.yaml.]
+
 ---
 
 ## Decision 198: Theseus and Guerdon retired as external brands; On The Loop Labs Limited and On The Loop supersede the brand hierarchy (amends Decisions 101, 195, 196) (Decided)

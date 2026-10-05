@@ -8,7 +8,7 @@
 # consolidated DuckLake read boundary: CD.10's six-Lambda enumeration is illustrative not canonical
 # (audit F-008, 2026-06-09); CD.33 / Decision 81 / Decision 91 ratified the writer/reader/maintenance
 # split + closed boundary. The "list-tools" surface is the named-verb registry (named_read +
-# src/common/ducklake_scd2_schema.py NAMED_READS), NOT a separate Lambda.
+# src/common/ducklake_named_reads.py NAMED_READS), NOT a separate Lambda.
 #
 # Authored against the shipped scripts/contracts_schema.py + scripts/contracts.py loader (NOT the
 # INTENT worked examples). Verb surface read from src/lambdas/ducklake_reader/handler.py dispatch.
@@ -34,8 +34,9 @@ contract:
       - PlatformDev
       - PlatformAdmin
     registry_path: >-
-      src/common/ducklake_scd2_schema.py (the NAMED_READS registry; named_read verb dispatch,
-      Decision 84 I-3). The response stamps registry_version for cache-coherence.
+      src/common/ducklake_named_reads.py (the NAMED_READS registry, re-exported by ducklake_scd2_schema; named_read
+      verb dispatch, Decision 84 I-3). The response stamps registry_version (the registry-format version) and the served
+      verb's read_version (a per-verb compatibility stamp) for cache-coherence.
   provisional_v0:
     authored_at: "2026-06-22"
     authored_via: >-
@@ -85,13 +86,13 @@ verbs:
   named_read:
     payload_schema_ref: >-
       event envelope {action: "named_read", verb, params?: {..}, limit?}. `verb` names a
-      pre-established read from the NAMED_READS registry (src/common/ducklake_scd2_schema.py);
+      pre-established read from the NAMED_READS registry (src/common/ducklake_named_reads.py);
       `params` binds named bind values. No caller SQL crosses the boundary on this path (Decision
       84 I-3). `limit` (T1.16 c1) is an optional server-side integer-cast trailing LIMIT, accepted
       ONLY for a `paginable` verb (e.g. open_recs, recs_by_title_prefix) -- rejected with a
       DuckLakeRuntimeError for a non-paginable verb.
     response_codes:
-      200: "rows returned; body {ok, verb, registry_version, rows, row_count}"
+      200: "rows returned; body {ok, verb, registry_version, read_version, rows, row_count}. read_version is an opaque per-verb digest (first 16 hex of sha256 over the verb's canonical definition, SELECT * verbs including their column projection), compared by equality only -- it implies no ordering; registry_version stays the registry-format stamp"
       500: "DuckLakeRuntimeError (empty/unknown verb; non-object params; limit on a non-paginable verb) / VersionMismatchError"
     typed_errors:
       runtime: "missing/unknown verb, params not an object, or limit supplied for a non-paginable verb (500)"
@@ -100,10 +101,10 @@ verbs:
     payload_schema_ref: >-
       event envelope {action: "describe"}. Agent-facing verb (CD.10 / CD.15): returns the per-verb
       parameter schema for every NAMED_READS entry (table, description, params, paginable,
-      params_schema). Connectionless -- pure metadata, no Neon connection (Decision 88 bounded
+      params_schema, read_version). Connectionless -- pure metadata, no Neon connection (Decision 88 bounded
       egress).
     response_codes:
-      200: "body {ok, verbs: {<verb>: {table, description, params, paginable, params_schema}, ...}}"
+      200: "body {ok, verbs: {<verb>: {table, description, params, paginable, params_schema, read_version}, ...}}"
     typed_errors: {}
   query_ops:
     payload_schema_ref: >-
@@ -128,7 +129,18 @@ audit_invariants:
   - "Reader client-input errors (unknown/missing table, malformed filter, empty/unknown named_read verb, empty/non-SELECT sql) surface as DuckLakeRuntimeError -> 500, not 4xx -- the reader's loud-fail taxonomy is server-error-coded (faithfully documented here; a finer 4xx split would be a code change, not a contract amendment)."
   - "KNOWN GAP: the current_state single-key filter path has an open correctness rec (rec-2170) where a non-merge-key equality filter can bind against the merge key. The verb semantics here document the intended contract; the fix is a code amendment, not a contract change."
   - "T2.26: a control-class table (read_boundary: none, e.g. ops_entity_counters, docs/contracts/ops_entity_counters.yaml) is not reachable through read_ops_current, read_ops_history, query_ops, or named_read -- registering a table for governance does not by itself grant application read access. It is readable only in-transaction by its owning writer, or via the admin ducklake_maintenance control_health verb (outside this contract's boundary)."
+  - "Generic-read refusal: read_ops_current, read_ops_history and query_ops REFUSE (500, DuckLakeRuntimeError naming the write_boundary) a `table` whose ops_tables entry has write_boundary telemetry_append or registration (the four telemetry event tables, ops_tenants, ops_projects); telemetry and dimension reads arrive as named verbs in slice 2b. This is a narrow refusal list keyed on write_boundary, not a read-capability model: rec-3771 owns that design. Declared residual (Decision 181 cl.2): query_ops checks its `table` parameter only and its FROM target is caller-controlled, so the refusal is complete only while no catalog the reader attaches holds these tables -- true today; owner rec-4024 until slice 2c's rec is filed, before production provisioning."
 amendment_log:
+  - date: "2026-10-05"
+    semantic_break: false
+    change_class: field_add
+    summary: >-
+      PLAN-telemetry-table-registration (slice 2a-2 plan 1, review item C1): NAMED_READS location pointers move to
+      src/common/ducklake_named_reads.py; the describe per-verb entry and the named_read 200 response gain read_version (an opaque
+      per-verb digest compared by equality only; registry_version stays the registry-format stamp); the generic-read refusal of
+      telemetry_append and registration tables is stated, with the query_ops FROM residual declared.
+    migration_story: >-
+      Additive: existing consumers ignore the new key. No consumer pins read_version yet.
   - date: "2026-08-26"
     semantic_break: false
     change_class: prose_improvement

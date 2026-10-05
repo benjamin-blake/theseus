@@ -65,7 +65,17 @@ _GENERATED_HEADER = """\
 # Drift gate: bin/venv-python -m scripts.schema_to_field_semantics --check (non-zero on drift)
 """
 
-_CONTRACT_TABLE_IDS = ("ops_recommendations", "ops_decisions", "ops_entity_counters")
+_CONTRACT_TABLE_IDS = (
+    "ops_recommendations",
+    "ops_decisions",
+    "ops_entity_counters",
+    "telemetry_sessions",
+    "telemetry_observations",
+    "telemetry_transcripts",
+    "telemetry_agents",
+    "ops_tenants",
+    "ops_projects",
+)
 _DORMANT_TABLE_IDS = ("ops_priority_queue", "ops_execution_plans")
 # Append-only smoke tables (T1.14): no Class A contract, no current projection
 # (write_mode: append_only -> current_table absent); spliced verbatim from the sidecar.
@@ -266,6 +276,8 @@ def _project_contract_table(
         "merge_key": merge_key,
         "entity_id_prefix": ops_config.get("entity_id_prefix"),
         "id_keyspace": ops_config.get("id_keyspace"),
+        "id_scheme": ops_config.get("id_scheme"),
+        "write_boundary": ops_config.get("write_boundary"),
         "history_table": history_table,
         "current_table": current_table,
         "partition": partition,

@@ -457,3 +457,35 @@ def test_action_read_ops_current_rejects_malformed_filter():
         h.action_read_ops_current({"table": "ops_recommendations", "filter": {"column": "status"}}, FakeCon())
     with pytest.raises(rt.DuckLakeRuntimeError, match="BOTH 'column' and 'value'"):
         h.action_read_ops_current({"table": "ops_recommendations", "filter": "status=open"}, FakeCon())
+
+
+_REFUSED_READ_TABLES = (
+    "telemetry_sessions",
+    "telemetry_observations",
+    "telemetry_transcripts",
+    "telemetry_agents",
+    "ops_tenants",
+    "ops_projects",
+)
+
+
+def test_generic_reads_refuse_telemetry_and_registration_tables(monkeypatch):
+    """read_ops_current, read_ops_history and query_ops refuse the six tables by their `table` parameter
+    with the directed error naming the write_boundary (a 500 under the reader's error map)."""
+    monkeypatch.setattr(rt, "read_current", lambda *a, **k: pytest.fail("runtime reached"))
+    monkeypatch.setattr(rt, "read_history", lambda *a, **k: pytest.fail("runtime reached"))
+    monkeypatch.setattr(rt, "query_current", lambda *a, **k: pytest.fail("runtime reached"))
+    for table in _REFUSED_READ_TABLES:
+        boundary = "registration" if table.startswith("ops_") else "telemetry_append"
+        for action in (h.action_read_ops_current, h.action_read_ops_history, h.action_query_ops):
+            with pytest.raises(rt.DuckLakeRuntimeError, match=rf"write_boundary={boundary}"):
+                action({"table": table, "sql": "SELECT 1"}, FakeCon())
+
+
+def test_named_read_response_carries_read_version(monkeypatch):
+    monkeypatch.setattr(rt, "named_read", lambda con, *, verb, params, limit=None: [{"id": "rec-9"}])  # noqa: ARG005
+    out = h.action_named_read({"verb": "rec_by_id", "params": {"id": "rec-9"}}, FakeCon())
+    assert out["registry_version"] == rt.NAMED_READS_VERSION
+    assert out["read_version"] == rt.read_version("rec_by_id")
+    assert out["read_version"] != rt.read_version("open_recs")
+    assert h.action_describe({}, None)["verbs"]["rec_by_id"]["read_version"] == out["read_version"]
