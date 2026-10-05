@@ -20,8 +20,14 @@ scope:
   purpose: >-
     Derive the rule tables from the contracts, never from a list and never from the generator's own dispatch (Decision
     191). A private oracle walks every key of generate()'s ops_tables. It classifies the key by its contract, read as raw
-    YAML: no contract file -> no rules (dormant, smoke); governance.table_class event -> excluded, because the event projection
-    owns those keys; anything else -> expected keys from scripts.contract_rules.declared_rules. That covers SCD2 and control.
+    YAML and compared case-insensitively with a missing value read as scd2 (the generator's own rule; ops_recommendations
+    declares 'SCD2'): no contract file -> no rules (dormant, smoke); event -> excluded, because the event projection owns
+    those keys; anything else -> expected keys from scripts.contract_rules.declared_rules. That covers SCD2 and control.
+    The generator's control branch never calls project_row_rules, so the first projectable rule a control contract declares
+    fails test_other_tables_project_no_rule_key. That is intended teeth (Decision 210: a declared rule is enforced at write
+    or it is a gap), and the module docstring says so, so nobody 'fixes' it by excluding control. A rule key is any column
+    key outside the base column shape the SCD2 projection emits (role, sql_type, nullable, description, semantics); this
+    replaces the literal _RULE_KEYS set, so an unknown key also fails the per-table comparison.
     The oracle's logic uses only DeclaredRule attributes and nullable read from the identity-projected 'plain' doc, never
     the projection module - an exempt leg -> write_time_exemptions; a non-exempt not_null on a nullable:false column ->
     nothing; any other leg -> its kind, plus exclude_before when dated. The rule reader is an oracle parameter, defaulting
@@ -54,8 +60,10 @@ scope:
     field, and the one sanctioned growth path is an explicit, reviewed roster line. New node test_spec_shape_guard_admits_only_approved_defaulted_growth
     builds standalone fixtures with dataclasses.make_dataclass from the baseline (no subclassing of the frozen class). The
     guard admits the baseline itself and the baseline plus a defaulted id_scheme. It rejects (AssertionError) each of these:
-    an unrostered defaulted field; history_table re-annotated 'str | None'; two baseline fields swapped; a non-frozen copy;
-    and a rostered field added kw_only without a default.
+    a baseline field dropped; an unrostered defaulted field; history_table re-annotated 'str | None'; two baseline fields
+    swapped; a non-frozen copy; and a rostered field added kw_only without a default. Pinning every annotation is a tightening:
+    a non-widening refinement (for example dict[str, Any] to Mapping[str, Any]) edits the baseline in the same PR, a deliberate
+    review point.
 - file: tests/telemetry/test_contract_amendments.py
   action: Modify
   purpose: >-
@@ -78,6 +86,7 @@ scope:
 bundled_recommendations: []
 followon_recs:
 - rec-4180
+- rec-4181
 infrastructure_dependencies: []
 acceptance_criteria:
 - >-
@@ -90,7 +99,7 @@ acceptance_criteria:
 - >-
   The ScdTableSpec guard pins all eleven baseline fields' order, annotation and default status, requires frozen, and admits
   only rostered, defaulted additions (id_scheme seeded). test_spec_shape_guard_admits_only_approved_defaulted_growth proves
-  it admits that growth and rejects the five widening shapes.
+  it admits that growth and rejects the six widening shapes, a dropped baseline field among them.
 - >-
   No envelope, lexicon or data-modeling-standard amendment_log[0] pin remains. Each lookup asserts exactly one 2026-10-04
   PLAN-telemetry-write-conformance entry. data-modeling-standard's version is at least 5 and that entry's semantic_break
@@ -145,10 +154,10 @@ verification_plan:
 - step: 3
   phase: pre-deploy
   action: >-
-    Re-run the three modified test modules whole, then the generator's own suite.
+    Re-run the three modified test modules whole.
   command: >-
     bin/venv-python -m pytest tests/test_field_semantics_rule_projection.py tests/test_ducklake_control_tables.py tests/telemetry/test_contract_amendments.py
-    tests/test_schema_to_field_semantics.py -q
+    -q
   expected: Exit 0; no failures.
   fix_if: >-
     A node outside the rewritten set fails: the rewrite leaked state (a patch left active, a mutated generate() result);
@@ -156,12 +165,13 @@ verification_plan:
   hermetic: false
   graduation: waive
   graduation_waiver_reason: >-
-    A whole-file re-run of modules this plan modifies plus a standing suite that runs in every tier; the new nodes are graduated
-    by step 1.
+    A whole-file re-run of modules this plan modifies (vp-red-before hermetic_authoring carve-out (v)); the new nodes are
+    graduated by step 1, and step 5's full tier runs the generator's own suite.
 - step: 4
   phase: pre-deploy
   action: >-
-    Deploy-inert and test-only proof: the generated registry is fresh and nothing outside tests and the registry row changed.
+    Deploy-inert proof: the generated registry is fresh and nothing under src/, scripts/, config/lambda/, docs/contracts/,
+    docs/DECISIONS.md or terraform/ changed. The full location check is validate_scope_boundary, inside step 5.
   command: >-
     bin/venv-python -m scripts.schema_to_field_semantics --check && git diff --quiet "$(git merge-base origin/main HEAD)"
     -- src scripts config/lambda docs/contracts docs/DECISIONS.md terraform && echo INERT_OK
@@ -199,11 +209,11 @@ constraints:
   the context records. A failing invariant is fixed in the derivation, never by dropping an assertion.
 - >-
   Derive, don't list (tests/CLAUDE.md growing-collection rule; Decision 210 cl.3). The oracle shares declared_rules' input
-  with the projection, never its logic or its dispatch. The only literals in assertions are the named floors, the spec
-  baseline and roster, and the 2026-10-04 date and plan slug.
+  with the projection, never its logic or its dispatch. The only literals in assertions are the named floors, the base
+  column shape, the spec baseline and roster, and the 2026-10-04 date and plan slug.
 - >-
-  Keep node names (Decision 132): the ops-row-rules-projection and telemetry-contract-risk-amendments registry rows call
-  them. New nodes stay self-contained in their own modules (Decision 131).
+  Keep node names (Decision 132): the ops-row-rules-projection, telemetry-contract-risk-amendments and control-class-spec-and-write-refusal
+  registry rows call these modules or nodes. New nodes stay self-contained in their own modules (Decision 131).
 - >-
   No module-scope generate() or contract read (AGENTS.md: no raise at import). Every patch is scoped to a with-block.
 - >-
@@ -216,7 +226,7 @@ context:
   and a teeth node for every pin. SPIRIT NOTE 191: the oracle derives from contracts, not dispatch, with a dropped-dispatch
   teeth case. SPIRIT NOTE 187: the roster keeps 'never widened', and dispositions are recorded below. RELATED: 148, 176,
   210, 200, 55, 59, 128/130, 131, 163, 48. Decisions triaged: 163 of 163. Roadmap items intersected: 1; CONFLICT: 0; RELATED: 1
-- "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=PENDING"
+- "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=REVISE r1 (1 blocking + 8), all fixed; follow-on rec-4181 per F9"
 - >-
   Pin dispositions (Decision 187). Projection: 'only rule tables change', 'ops_recommendations changes' and 'ops_decisions/ops_entity_counters
   carry no rule key' are retained, now contract-derived, with floors, and widened to every table. ScdTableSpec: history_table
@@ -260,7 +270,18 @@ execution_steps:
   tests/test_ducklake_control_tables.py - the baseline tuple, roster and guard, then the fixture node.
 - tests/telemetry/test_contract_amendments.py - the lookup helper, the three re-pins, then the synthetic-log node.
 - Write the registry row for graduated step 1.
-- Execute Verification Plan steps 1-5; loop until pass (Decision 55).
-- 'Report: what was implemented, verification results'
+- >-
+  Execute Verification Plan steps 1-4. Stage the new registry row first (git add --intent-to-add on the Create row) and
+  loop until they pass. Never weaken an assertion; on an unrecoverable failure, stop and RCA (Decision 55).
+- >-
+  CLOSURE -- separate facts, in order (a)-(e) (implement skill Commit Flows; docs/contracts/git-ops.yaml handoff_sequence),
+  each reported on its own. (a) READINESS: bin/venv-python -m scripts.session.github_readiness (unknown is never PASS).
+  (b) Set implementation_declared true, commit, git fetch origin main and git rebase origin/main (STOP on conflict, except
+  the expected lexicon-hunk conflict with #1416: keep both sides). (c) VP step 5 on the committed, rebased, clean tree,
+  then bin/venv-python -m scripts.checks.validation_result --verify-head. (d) Write a scratchpad JSON holding exactly the
+  scripts.session.postflight_evidence.CATEGORIES keys, then bin/venv-python -m scripts.session.postflight --evidence <that
+  file>. (e) Push, open the PR, subscribe; on green CI on the head, squash-merge with the PR body as commit_message (standing
+  authorization: code review PROCEED and CI green; nothing deploys).
+- 'Report: what was implemented, verification results, merge outcome'
 rollback: >-
   Revert the squash commit. Tests and one registry row only; nothing deploys.
