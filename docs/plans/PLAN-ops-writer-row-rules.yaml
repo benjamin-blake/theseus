@@ -57,9 +57,9 @@ scope:
     telemetry 2a-2 plan 1, untouched). RowRuleViolationError(SchemaGateError) carrying table, rule, column and the
     rule's exclude_before (never a value), raised from the engine's RowRuleError. rules_for(spec) builds RowRules from
     spec.fields with RowRules.from_projection (None for the smoke pair, table None). existing_row_select(spec, rules,
-    include_status) returns (sql, columns): every ordered column when the rules carry any dated leg (the older-rows
-    rule needs the prior row), else exactly today's created_timestamp[, status] select; one statement either way
-    (Decision 88). check_write(spec, rules, record, created_timestamp, last_updated_timestamp, ulid, prior) evaluates
+    include_status) returns (sql, columns): created_timestamp, status when the table has a status DAG, and -- only when
+    the rules carry a dated leg -- every column a dated rule reads (the only prior values the changed-column test
+    needs), else exactly today's created_timestamp[, status] select; one statement either way (Decision 88). check_write(spec, rules, record, created_timestamp, last_updated_timestamp, ulid, prior) evaluates
     the bound row (every input column from the record, absent = None, plus the minted ulid, created_timestamp and
     last_updated_timestamp). Pure and I/O-free.
 - file: src/common/ducklake_writes.py
@@ -120,13 +120,16 @@ scope:
     file_ops, update_ops and write_ops: the 422 response text and a typed_errors row_rule entry (a contract row rule
     rejected the record; nothing written; body names table, rule, column and exclude_before, never a value); one
     audit_invariants line (the writer evaluates the contract's projected row rules under the older-rows rule before any
-    MERGE, Decision 210); amendment_log entry (field_add, semantic_break false; Decision 118).
+    MERGE, Decision 210); amendment_log entry (field_add, semantic_break true: the verbs now refuse payloads they used
+    to accept; Decision 118).
 - file: docs/contracts/data-modeling-standard.yaml
   action: Modify
   purpose: >-
     Rule write-time-enforcement COVERAGE: "writer enforcement -> rec-4158 plan B" becomes "writer enforcement -> the
     ops writer (src/common/ducklake_write_rules.py over src/row_rules/rules.py, rules projected into
-    field_semantics.yaml), proven on every deploy by the --lambda-row-rules smoke gate". Every phrase
+    field_semantics.yaml), proven on every deploy by the --lambda-row-rules smoke gate", plus one residual clause:
+    narrowing a contract-declared value set (not the registry, which validate_ops_rule_source ratchets) is guarded only
+    by the amendment ritual and a census run, its owner rec-4158 plan C. Every phrase
     tests/checks/contracts/test_write_time_enforcement_decision.py anchors is kept. amendment_log entry
     (governance_note_add, semantic_break false: a coverage pointer moves, no rule changes; plan A's precedent); updated_by.
 - file: scripts/contract_rules.py
@@ -249,7 +252,13 @@ scope:
     dated rules; the bound row; insert, dated, older-unchanged and older-changed verdicts on the real projection; the
     ops_read_your_write and selftest_roundtrip probe records (captured through stubs) pass the shipped rules; an
     older row run through the portal's real update shaping (_coerce_ops_rec_row, _sanitize_record, merge) with NULL
-    lists and a pre-date tag violation passes check_write against its stored prior.
+    lists and a pre-date tag violation passes check_write against its stored prior. Write-primitive tests through the
+    shared FakeCon: a rule rejection inside write_scd2 rolls back with zero OCC retries even when its message would match
+    a collision marker; file_scd2 rejects before any catalog statement; and write_scd2(require_exists=True) on a
+    scripted prior created before a rule's date that holds that rule's violation (a 50-character context, a Bad_Tag
+    tag) runs both MERGEs when the column is unchanged, and raises RowRuleViolationError with no MERGE and zero retries
+    when the column changes to another violating value -- the older-rows wiring (widened select, row-to-dict mapping,
+    prior passed through).
 - file: tests/common/test_ducklake_write_rules_integration.py
   action: Create
   purpose: >-
@@ -263,9 +272,8 @@ scope:
   action: Modify
   purpose: >-
     The minimal ops_recommendations records move to the shared factory (no assertion weakened, Decision 181 cl.1);
-    the two SQL-shape assertions read the select from existing_row_select; two new tests: a rule rejection inside
-    write_scd2 rolls back with zero OCC retries even when its message would match a collision marker, and file_scd2
-    rejects before any catalog statement. Stays under 500 SLOC.
+    the two SQL-shape assertions read the select from existing_row_select. No new test here (it is at 471 of 500 SLOC):
+    the write-primitive tests live in tests/common/test_ducklake_write_rules.py. Stays under 500 SLOC.
 - file: tests/common/test_ducklake_runtime.py
   action: Modify
   purpose: The two mistyped-field schema-gate tests supply a title so the type check they assert still fires first.
@@ -394,9 +402,10 @@ verification_plan:
     tests/common/test_ducklake_write_rules.py::test_older_rows_verdicts_on_the_real_projection
     tests/common/test_ducklake_write_rules.py::test_smoke_probe_records_pass
     tests/common/test_ducklake_write_rules.py::test_portal_normalized_update_of_an_older_row_passes
-    tests/common/test_ducklake_writes.py::test_row_rule_rejection_is_terminal_with_zero_retries
-    tests/common/test_ducklake_writes.py::test_file_scd2_row_rule_rejects_before_catalog -q
-  expected: Exit 0, 7 passed. Red before, because the module and the two writer tests do not exist.
+    tests/common/test_ducklake_write_rules.py::test_row_rule_rejection_is_terminal_with_zero_retries
+    tests/common/test_ducklake_write_rules.py::test_file_scd2_row_rule_rejects_before_catalog
+    tests/common/test_ducklake_write_rules.py::test_write_scd2_update_binds_dated_rule_only_when_column_changes -q
+  expected: Exit 0, 8 passed. Red before, because the module and its tests do not exist.
   fix_if: A rejection retried or a counter touched -> fix the call site, never the test.
   hermetic: true
   graduation: graduate
@@ -467,8 +476,10 @@ verification_plan:
   hermetic: false
   graduation: waive
   graduation_waiver_reason: >-
-    Needs duckdb plus the ducklake extension (network INSTALL) under the integration marker, which the fast tier never
-    collects; the hermetic unit steps 1-3 graduate the same behaviours.
+    Needs duckdb plus the ducklake extension (network INSTALL) under the integration marker, which neither CI tier
+    collects (-m "not integration"); this is the only real-catalog proof and runs locally before merge. Steps 1-3
+    graduate the engine verdicts and the write-primitive wiring on FakeCon (placement, terminality, prior passed
+    through), not the engine's real rollback or real counter state.
 - step: 9
   phase: pre-deploy
   action: The projection regenerates clean and the telemetry kernel is unchanged by the move.
@@ -532,8 +543,8 @@ verification_plan:
     yaml.safe_dump({'database':'agent_platform','ducklake':{'meta_schema':'ducklake_ops'},'tables':{'ops_recommendations':{'view_suffix':'_current','columns':cols}}},f);
     f.close();sys.exit(subprocess.call([sys.executable,'-m','scripts.data_quality_runner','--file',f.name,'--checks','expression']))"
   expected: >-
-    Exit 0, the "Data Quality -- PASS" banner, and a summary of Passed 10 with Failed, Errors, Skipped and Unavailable
-    all 0 (the runner exits 0 on SKIP, so the counts are what discriminate).
+    Exit 0, the PASS banner, and a summary line reading Passed 10 with every other count (Failed, Unenforced, Warned,
+    Errors, Skipped, Unavailable) at 0 -- the runner exits 0 on SKIP, so the counts are what discriminate.
   fix_if: >-
     Any violation -> STOP, do not merge, return to /plan (the writer would strand those rows; the fix is at the source).
     Unavailable or an error -> wait or fix the reader; never treat it as clean.
@@ -594,13 +605,13 @@ verification_plan:
     1.71x p50 swing between consecutive windows (Neon wake dominates). The structural control is step 3's single
     statement assertion; rec-4170 owns production latency itself.
   command: >-
-    bin/venv-python -c "import sys,boto3,datetime as d;c=boto3.Session(profile_name='agent_platform').client('cloudwatch',region_name='eu-west-2');
-    t=d.datetime.fromisoformat(sys.argv[1]);n=d.datetime.now(d.timezone.utc);
+    bin/venv-python -c "import json,boto3,datetime as d;c=boto3.Session(profile_name='agent_platform').client('cloudwatch',region_name='eu-west-2');
+    t=d.datetime.fromisoformat(json.loads(boto3.Session(profile_name='agent_platform').client('s3').get_object(Bucket='agent-platform-data-lake',Key='deploy-records/ducklake/agent-platform-ducklake-writer.json')['Body'].read())['deployed_at']);n=d.datetime.now(d.timezone.utc);
     q=lambda a,b,**k:(c.get_metric_statistics(Namespace='DuckLakeWriter',MetricName='CommitLatencyMs',StartTime=a,EndTime=b,Period=(int((b-a).total_seconds())+59)//60*60,**k)['Datapoints'] or [None])[0];
     pre=q(t-d.timedelta(days=7),t,ExtendedStatistics=['p95']);post=q(t,n,ExtendedStatistics=['p50']);cnt=q(t,n,Statistics=['SampleCount']);
     assert pre and post and cnt,'no datapoints yet: re-run later';
     a=pre['ExtendedStatistics']['p95'];b=post['ExtendedStatistics']['p50'];print('LATENCY pre_p95',round(a),'post_p50',round(b),'samples',int(cnt['SampleCount']));
-    assert cnt['SampleCount']>=10,'too few samples: re-run later';assert b<=a,'post-deploy p50 above the prior p95'" "<deploy completion timestamp, ISO 8601 UTC>"
+    assert cnt['SampleCount']>=10,'too few samples: re-run later';assert b<=a,'post-deploy p50 above the prior p95'"
   expected: Exit 0; the LATENCY line shows at least 10 post-deploy samples and post_p50 at or below pre_p95.
   fix_if: >-
     Too few samples or no datapoints -> re-run after more production writes, never treat it as passed; post_p50 above
@@ -613,13 +624,13 @@ verification_plan:
     (Sunday 03:00 UTC, cron(0 3 ? * SUN *), Decision 88 cl.3) and the admin maintenance function ran its 6-hourly
     merge_ops with no Lambda error.
   command: >-
-    bin/venv-python -c "import sys,boto3,datetime as d;c=boto3.Session(profile_name='agent_platform').client('cloudwatch',region_name='eu-west-2');
-    t=d.datetime.fromisoformat(sys.argv[1]);n=d.datetime.now(d.timezone.utc);p=(int((n-t).total_seconds())+59)//60*60;
+    bin/venv-python -c "import json,boto3,datetime as d;c=boto3.Session(profile_name='agent_platform').client('cloudwatch',region_name='eu-west-2');
+    t=d.datetime.fromisoformat(json.loads(boto3.Session(profile_name='agent_platform').client('s3').get_object(Bucket='agent-platform-data-lake',Key='deploy-records/ducklake/agent-platform-ducklake-writer.json')['Body'].read())['deployed_at']);n=d.datetime.now(d.timezone.utc);p=(int((n-t).total_seconds())+59)//60*60;
     s=lambda ns,m,dims:sum(x['Sum'] for x in c.get_metric_statistics(Namespace=ns,MetricName=m,Dimensions=dims,StartTime=t,EndTime=n,Period=p,Statistics=['Sum'])['Datapoints']);
     fn=[{'Name':'FunctionName','Value':'agent-platform-ducklake-maintenance'}];
     dr=s('DuckLakeCatalogDR','CatalogDumpSuccess',[]);inv=s('AWS/Lambda','Invocations',fn);err=s('AWS/Lambda','Errors',fn);
     print('POST_DEPLOY_FUNCTIONS catalog_dr_dumps',dr,'maintenance_invocations',inv,'maintenance_errors',err);
-    assert dr>=1 and inv>=1 and err==0" "<deploy completion timestamp, ISO 8601 UTC>"
+    assert dr>=1 and inv>=1 and err==0"
   expected: >-
     Exit 0 and a POST_DEPLOY_FUNCTIONS line with catalog_dr_dumps of 1 or more, maintenance_invocations of 1 or more
     and maintenance_errors of 0, read after the first Sunday 03:00 UTC following the deploy.
@@ -664,9 +675,11 @@ test_obligations:
   test_selector: tests/common/test_ducklake_write_rules.py::test_older_rows_verdicts_on_the_real_projection
   red_green_expectation: red before (module absent), green after
 - source: src/common/ducklake_writes.py
-  behavior: Both primitives reject before any MERGE, terminally, touching no counter.
+  behavior: >-
+    Both primitives reject before any MERGE, terminally, touching no counter; write_scd2 passes the fetched row as
+    prior, so an older row binds a dated rule only on the column that changes.
   verification_step: 3
-  test_selector: tests/common/test_ducklake_writes.py::test_row_rule_rejection_is_terminal_with_zero_retries
+  test_selector: tests/common/test_ducklake_write_rules.py::test_write_scd2_update_binds_dated_rule_only_when_column_changes
   red_green_expectation: red before (node absent; no rule check exists), green after
 - source: src/common/ducklake_runtime.py
   behavior: Re-exports RowRuleViolationError for the handler.
@@ -824,7 +837,7 @@ context:
   (per-artifact gates: the workflow's plus step 19), 181 (shard bound and fixtures never weakened), 207 (identical
   re-send keeps the identical verdict). CITE: 210, 81, 84, 64, 65, 70, 79, 125, 126, 118, 88, 181. Decisions triaged:
   163 of 163; Roadmap items intersected: 16; CONFLICT: 2; RELATED: 12.
-- 'gates: decision-scout=FLAGS_FOUND (all resolved); plan-critique=REVISE r1 (7 findings), r2 (F1-F9), all addressed'
+- 'gates: decision-scout=FLAGS_FOUND (all resolved); plan-critique=REVISE r1 (7 findings), r2 (F1-F9), r3 (F1 required, F2-F7 optional), all addressed'
 - >-
   Operator direction (Benjamin, 2026-10-05, this thread): "I agree with your recommendations, write the plan" -- all
   five Step 6b forks below. Evidence in /mnt/project-files/ops-enforcement/: step6b-planB-presentation.md,
@@ -856,7 +869,7 @@ context:
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
-- 'Only the plan-cited decision sections read: 210, 64, 70, 81, 84, 88, 100, 118, 125, 126, 181'
+- 'Only the plan-cited decision sections read: 210, 64, 65, 70, 79, 81, 84, 88, 100, 118, 125, 126, 181'
 - All files in scope located and readable
 - Acceptance criteria understood and verifiable
 - docs/contracts/ops_recommendations.yaml effective lines measured before editing (507 of 556 at planning)
