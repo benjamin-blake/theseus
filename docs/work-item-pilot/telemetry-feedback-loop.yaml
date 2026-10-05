@@ -283,6 +283,39 @@ work_items:
           - {id: q1, text: 'No measured egress exists: who runs catalog_stats on the live catalog (D88 cl.2), and are the seed envelopes set from that reading or from the model here?'}
           - {id: q2, text: 'Free tier (local adapter, no cloud bill): which lines exist there, and does a budget in bytes and seconds mean anything without a price to apply at read?'}
           - {id: q3, text: 'Review load: the model reads 72 items a day at read_all against a seed of 30 a day (900 a month); is this line a budget here or the ladder''s control (#1398 R1)?'}
+  - id: pwi-capture-producer-wiring
+    kind: task
+    title: 'Capture producer wiring: run record_turn from session hooks into the telemetry writer (rec-4026 slice 3b)'
+    extension:
+      consideration_register:
+        why: record_turn is pure (no writer call, no cursor store), so no turn, tool, cost or friction row reaches the warehouse; every other feedback-loop component reads rows only this wiring produces.
+        how: Stop and SessionStart catch-up hooks run one locked pass per root tree; SessionEnd finalizes with a root close row. Byte-chunked batches go data-first to the T2.36 writer verb, then the cursor is saved.
+        planes: [data_plane]
+        maturity:
+          rung: read_all
+          transitions:
+            - {from: read_all, to: sampled, trigger: {metric: consecutive finalized sessions whose runner-side conformance check reports zero violations, comparator: '>=', threshold: 20}}
+            - {from: sampled, to: spot_check, trigger: {metric: runner-side conformance violations across the last 30 sampled sessions, comparator: ==, threshold: 0}}
+            - {from: spot_check, to: anomaly_triggered, trigger: {metric: consecutive days with unfinalized_session_share <= 0.05 over the q1 out-of-band session denominator, comparator: '>=', threshold: 30}}
+        failure_signal: {signal: 'turns never reach the warehouse because the session, or its latest resumed segment, is never finalized, so its last turn never closes (R1)', metric: 'unfinalized_session_share: root sessions whose latest lifecycle row is not close 24 h after their last event', source: telemetry_sessions via rec-4024 reader verbs; blind to a failing runner and to sessions lost before any turn closes (q1)}
+        verification: [c1, c2, c3]
+        rollback: Remove the capture hook entries from .claude/settings.json; written rows are append-only and stay, cursors hold positions only, so re-enabling resumes or re-sends identical rows as writer no-ops.
+        evidence:
+          - {kind: file_line, ref: 'src/turn_capture/record_turn.py:6'}
+          - {kind: file_line, ref: 'docs/plans/PLAN-telemetry-turn-capture-core.yaml:640'}
+          - {kind: file_line, ref: 'docs/contracts/project-id.yaml:47'}
+          - {kind: file_line, ref: 'src/turn_capture/record_turn.py:149'}
+        settled:
+          - {id: s1, text: 'Producer side only: the telemetry writer verb, tables and project registration stay T2.36/rec-4024''s, a depends_on edge, not a pilot item.'}
+          - {id: s2, text: 'Data plane only (D209 cl.2a): hook to writer Function URL to the operator-owned DuckLake; nothing crosses to a control plane.'}
+          - {id: s3, text: 'Cursor saved after all chunks ack; the transcript is the replay source: no outbox (D84 I-4), no-op re-sends (D207). Needs R2 fixed (record_turn.py:149).'}
+        contested:
+          - {id: k1, text: 'Sync Stop hook vs detached pass: a pass is O(session), 8.8 s warm at 22k lines measured, but detaching loses the loud failure D84 I-4 wants.'}
+          - {id: k2, text: 'Cursor home on ephemeral CC-web containers: a local file dies on reclaim, and re-reading project_ref from config breaks the pin rule.'}
+        open_questions:
+          - {id: q1, text: 'Failing runners and sessions lost before any turn closes land no rows: what out-of-band session denominator sees them?'}
+          - {id: q2, text: 'Does SessionEnd fire on CC-web reclaim, and is a resumed transcript restored whole? Final-turn loss (R1) hinges on it.'}
+          - {id: q3, text: 'billing_shape source for API-key sessions (rec-4147): the default mislabels unattended API-key runs as subscription.'}
   - id: pwi-telemetry-reader-verbs
     kind: task
     title: 'Telemetry reader verbs: partition-bound, generation-aware derived-state reads over the event journal (rec-4024)'
@@ -341,6 +374,9 @@ work_item_criteria:
   - {work_item: pwi-loop-cost-egress-budget, criterion_id: c1, text: 'The verdict SQL applies the versioned params over the build''s budget, ledger and attribution tables and passes every report vector on DuckDB, each raise matching its message.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_loop_budget_verdict.py -k vectors}, status: open}
   - {work_item: pwi-loop-cost-egress-budget, criterion_id: c2, text: 'Over a month, every daily-cadence line lands one ledger row per day from a source needing no Terraform change or billed metric (k8; Lambda counters ship by governed deploy), and every shared line carries attribution in tolerance.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_loop_budget_verdict.py -k ledger_coverage}, status: open}
   - {work_item: pwi-loop-cost-egress-budget, criterion_id: c3, text: 'Before the first verdict acts, and on every register, envelope or price change, the operator approves the register with the prior month''s reconciliation residual beside it.', method: {kind: review, resolver: 'operator, before the first acting verdict and on every register, envelope or price change', evidence_requirement: 'register diff per line: unit, owner, cadence, envelope, warn share, source, plus the prior month''s invoice-vs-ledger residual'}, status: open}
+  - {work_item: pwi-capture-producer-wiring, criterion_id: c1, text: 'Stop, SessionStart catch-up and SessionEnd hooks run record_turn; batches go data-first, byte-chunked, cursor after all acks; SessionEnd waits for the lock and emits a per-finalization close row; SessionEnd timeout set; never exit 2.', method: {kind: execution, check: null, command: P="bin/venv-python -m pytest tests/turn_capture/test_capture_runner.py -qk";$P hooks&&$P data_first&&$P chunks&&$P ack_cursor&&$P close_row&&$P lock_wait&&$P no_exit_2&&$P end_timeout}, status: open}
+  - {work_item: pwi-capture-producer-wiring, criterion_id: c2, text: 'Failed or killed passes replay as writer no-ops; a lost cursor re-derives pins or defers; at finalize a runner-side check proves incremental equals one full parse, resume-after-finalize included.', method: {kind: execution, check: null, command: P="bin/venv-python -m pytest tests/turn_capture/test_capture_runner.py -qk";$P replay_noop&&$P lost_cursor_pins&&$P resume_boundary_conformance}, status: open}
+  - {work_item: pwi-capture-producer-wiring, criterion_id: c3, text: 'Smoke-first (T3.20 c8): one live-catalog turn lands through the writer boundary and the rec-4101 orphan monitor runs on it before the hooks are enabled broadly.', method: {kind: review, resolver: operator at the T3.20 c8 smoke gate, evidence_requirement: smoke invocation output plus a rec-4101 monitor run over the smoke rows}, status: open}
   - {work_item: pwi-telemetry-reader-verbs, criterion_id: c1, text: 'Verbs bind the append-only tables through an event-journal registry form with a server-decoded partition; the shared R4/R5 dedupe passes every vector on DuckLake, survivors compared by (event_id, parser_version), with conflicts.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_reader_verbs_ducklake.py -m integration -k dedupe_vectors}, status: open}
   - {work_item: pwi-telemetry-reader-verbs, criterion_id: c2, text: 'Derivation verbs match golden fixtures under the operator''s k1/k3 resolution ((a): latest row, close last on ties; sub-agents from agent-run pairs, an async child included), resume-after-close included; rewritten if (a) is not chosen.', method: {kind: execution, check: null, command: bin/venv-python -m pytest tests/telemetry/test_reader_verbs.py -k derivation}, status: open}
   - {work_item: pwi-telemetry-reader-verbs, criterion_id: c3, text: 'Before any consumer depends on a verb, its p95 latency and per-call catalog egress are measured on the production catalog against a named consumer bound (D199 falsifier, D88).', method: {kind: review, resolver: operator at the first telemetry-verb deploy review, evidence_requirement: 'per-verb p95 latency, response bytes and Neon catalog egress, compared with the named consumer bound'}, status: open}
@@ -358,4 +394,6 @@ work_item_edges:
   - {from: pwi-allow-list-transport, to: T2.36, kind: depends_on}
   - {from: pwi-goodhart-register, to: T2.36, kind: depends_on}
   - {from: pwi-loop-cost-egress-budget, to: T2.36, kind: depends_on}
+  - {from: pwi-capture-producer-wiring, to: T3.20, kind: part_of}
+  - {from: pwi-capture-producer-wiring, to: T2.36, kind: depends_on}
   - {from: pwi-telemetry-reader-verbs, to: T2.36, kind: part_of}

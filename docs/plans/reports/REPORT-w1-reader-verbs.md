@@ -342,9 +342,8 @@ Open (q1-q2 in the fixture; none is answerable from the repository):
 - Ownership overlap: W2 parks P4 for the operator, the split of the reader verbs and the
   ducklake_scd2_schema.py Decision 128 decomposition between the Telemetry project's slice 2b and this
   item. This report stages the design either owner would build; it does not decide P4.
-- Merge order: #1384 and this PR both replace the fixture's empty `work_items`, `work_item_criteria` and
-  `work_item_edges` lines. The second to merge hits a textual conflict: merge main, re-render with
-  render(parsed) and re-run validate_work_item_pilot (L1-L6).
+- Merge order: resolved. #1384 and components 3-10 merged first; this PR's item was appended to the
+  fixture they left, re-rendered with render(parsed) and re-checked (L1-L6), so the fixture holds 10 items.
 - Friction classifier (rec-4032): owns the labels table and its form. session_friction_rollup is built
   on this item's dedupe and binding; whether the labels are a DuckLake table joined in the verb or
   bundled registry config is the classifier's call, and it decides whether that verb reads one table
