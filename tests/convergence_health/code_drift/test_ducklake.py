@@ -363,3 +363,15 @@ class TestAcceptanceLint:
             "abc123def456",  # pragma: allowlist secret -- fake sha fixture, not a real credential
         )
         assert fields["acceptance"].count(" && git merge-base --is-ancestor ") == 2
+
+
+def test_pathspecs_include_row_rules() -> None:
+    stub = GitRunnerStub(head_latest="SHA_OLD", reachable={"SHA_OLD": "SHA_OLD"})
+    detect_ducklake_code_drift(
+        git_runner=stub,
+        s3_client=_FakeDeployRecordsS3(default_sha="SHA_OLD"),
+        portal_caller=lambda a, f: "rec-x",
+        open_recs=[],
+    )
+    argv = next(c for c in stub.calls if c[:4] == ["git", "log", "-1", "--format=%H"] and c[4] == "--")
+    assert "src/row_rules" in argv

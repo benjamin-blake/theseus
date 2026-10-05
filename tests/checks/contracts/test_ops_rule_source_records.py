@@ -73,7 +73,8 @@ def test_standard_records_the_ops_source() -> None:
         "never a moved anchor",
         "a date never moves later",
         "validate_ops_rule_source",
-        "rec-4158 plan b",
+        "ops writer (src/common/ducklake_write_rules.py over src/row_rules/rules.py",
+        "--lambda-row-rules smoke gate",
         "rec-4158 plan c",
         "rec-4167",
         "rec-4166",
@@ -148,3 +149,26 @@ def test_source_lineage_note_matches() -> None:
     lineage = yaml.safe_load((_CONTRACTS / "source-lineage.yaml").read_text(encoding="utf-8"))
     note = _norm(lineage["fields"]["registry_key"]["governance_notes"])
     assert "write_time:true" not in note and 'not_null enforced:true + exclude_before:"2026-05-01"' in note
+
+
+def test_title_is_not_nullable() -> None:
+    doc = yaml.safe_load((_CONTRACTS / "ops_recommendations.yaml").read_text(encoding="utf-8"))
+    title = doc["fields"]["title"]
+    assert title["nullable"] is False
+    assert "accepted by the schema gate" not in title["semantics"]
+    assert any(
+        e["change_class"] == "not_null_tighten"
+        and e["semantic_break"] is True
+        and "declarative" in e["migration_story"]
+        and "rec-4171" in e["migration_story"]
+        for e in title["amendment_log"]
+    )
+
+
+def test_writer_contract_names_row_rule() -> None:
+    doc = yaml.safe_load((_CONTRACTS / "ducklake_writer.yaml").read_text(encoding="utf-8"))
+    for verb in ("file_ops", "update_ops", "write_ops"):
+        assert "row_rule" in doc["verbs"][verb]["typed_errors"], verb
+        assert "row_rule" in doc["verbs"][verb]["response_codes"][422], verb
+    assert any("row rules" in line.lower() and "before any merge" in line.lower() for line in doc["audit_invariants"])
+    assert any(e["change_class"] == "field_add" and e["semantic_break"] is True for e in doc["amendment_log"])

@@ -254,6 +254,11 @@ def _project_contract_table(
     current_table = f"{table_id}_current"
     if not partition_by:
         raise ValueError(f"{table_id}: governance.partition_by is missing -- required for {table_class} tables")
+    from scripts.field_semantics_rule_projection import project_row_rules  # noqa: PLC0415
+    from src.row_rules.rules import RowRules  # noqa: PLC0415
+
+    columns = project_row_rules(table_id, columns)
+    RowRules.from_projection(columns)  # a malformed projection fails the generator, not the Lambda
     history, current = resolve_partition_block(parse_partition_by(partition_by), "scd2")
     partition = {"history": history, "current": current}
     entry = {

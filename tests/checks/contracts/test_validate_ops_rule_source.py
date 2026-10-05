@@ -354,3 +354,43 @@ def test_retired_expression_write_time_tests_are_ignored(tmp_path: Path) -> None
         lambda d: d["tables"]["ops_recommendations"]["columns"]["title"]["tests"].append({"expression": {"write_time": True}}),
     )
     assert _run(root) == []
+
+
+def test_malformed_leg_shapes_fail_with_a_message(tmp_path: Path) -> None:
+    root = _make_root(tmp_path / "a")
+    _edit_recs(root, lambda d: _fields(d)["title"]["dq_intent"].update(min_length=10))
+    failed = _run(root)
+    assert any("title: min_length leg must be a mapping, got int" in item for item in failed), failed
+
+    root = _make_root(tmp_path / "b")
+    _edit_recs(root, lambda d: _fields(d)["title"]["dq_intent"].update(not_null=True))
+    failed = _run(root)
+    assert any("title: not_null leg must be a mapping, got bool" in item for item in failed), failed
+
+    root = _make_root(tmp_path / "c")
+    _edit(
+        root,
+        "config/agent/data_quality/ops.yaml",
+        lambda d: d["tables"]["ops_recommendations"]["columns"]["title"]["tests"].extend(["a_bare_name", {}]),
+    )
+    failed = _run(root)
+    assert any("ops.yaml title: test entry {} must be a name or a single-key mapping" in item for item in failed), failed
+
+    root = _make_root(tmp_path / "d")
+    _edit_recs(root, lambda d: _fields(d)["title"]["dq_intent"].update(accepted_values=["a"]))
+    assert any("title: accepted_values leg must be a mapping, got list" in item for item in _run(root))
+
+
+def test_registry_removal_fails_the_ratchet(tmp_path: Path) -> None:
+    registry = "config/agent/data_quality/source_registry.yaml"
+
+    def add_retired_source(root: Path) -> None:
+        _edit(root, registry, lambda d: d["entries"].append({"canonical_id": "retired-source", "description": "x"}))
+
+    failed = _run(_git_root(tmp_path / "removed", base_mutation=add_retired_source))
+    assert any("ratchet: source 'retired-source' was removed from the source registry" in item for item in failed), failed
+
+    def drop_one(root: Path) -> None:
+        _edit(root, registry, lambda d: d["entries"].pop())
+
+    assert _run(_git_root(tmp_path / "added", base_mutation=drop_one)) == []

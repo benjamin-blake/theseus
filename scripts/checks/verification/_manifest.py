@@ -35,6 +35,7 @@ ENTRIES: tuple[Entry, ...] = (
         attr="validate_hermeticity_flags",
         pre=True,
         pre_globs=(
+            "src/row_rules/**",
             "pyproject.toml",
             "scripts/checks/_pytest_diff.py",
             "scripts/checks/_scaffolding.py",
@@ -85,6 +86,7 @@ ENTRIES: tuple[Entry, ...] = (
         attr="validate_verification_registry",
         pre=True,
         pre_globs=(
+            "src/row_rules/**",
             "config/agent/verification_registry/**",
             "scripts/verification_graduation.py",
             "scripts/verification_checks.py",
@@ -124,6 +126,7 @@ ENTRIES: tuple[Entry, ...] = (
         attr="validate_differential_gate_baseline",
         pre=True,
         pre_globs=(
+            "src/row_rules/**",
             "scripts/verification_checks.py",
             "scripts/verification_graduation.py",
             "scripts/checks/verification/**",

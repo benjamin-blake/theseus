@@ -101,6 +101,23 @@ def _date_error(table: str, value: Any) -> str | None:
     return None
 
 
+def _leg_well_formed(kind: str, value: Any) -> bool:
+    if kind == "not_before":
+        return isinstance(value, str) and bool(value)
+    if kind == "pattern":
+        return isinstance(value, (str, dict))
+    return isinstance(value, dict)
+
+
+def _leg_shape(kind: str) -> str:
+    return {"not_before": "a column name", "pattern": "a regex string or a mapping"}.get(kind, "a mapping")
+
+
+def _leg(intent: dict[str, Any], kind: str) -> dict[str, Any]:
+    value = intent.get(kind)
+    return value if isinstance(value, dict) else {}
+
+
 def _leg_value(kind: str, value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {"value": value}
 
@@ -134,6 +151,27 @@ def _exemption_errors(where: str, kind: str, why: Any, root: Path) -> list[str]:
     return errors
 
 
+def _leg_errors(table: str, where: str, kind: str, value: Any, exemptions: dict[str, Any]) -> list[str]:
+    if not _leg_well_formed(kind, value):
+        return [f"{where}: {kind} leg must be {_leg_shape(kind)}, got {type(value).__name__}"]
+    errors: list[str] = []
+    if isinstance(value, dict):
+        extra = set(value) - _SUBKEYS.get(kind, frozenset())
+        if extra:
+            errors.append(f"{where}: {kind} carries unknown sub-key(s) {sorted(extra)}")
+        if "exclude_before" in value:
+            err = _date_error(table, value["exclude_before"])
+            if err:
+                errors.append(f"{where}: {kind} {err}")
+    for pat in _patterns_of(kind, value):
+        err = _regex_subset_error(pat)
+        if err:
+            errors.append(f"{where}: {kind} pattern {err}")
+    if kind in PRODUCER_SIDE_KINDS and kind not in exemptions:
+        errors.append(f"{where}: producer-side rule {kind!r} needs a write_time_exemptions entry")
+    return errors
+
+
 def _grammar_errors(table: str, raw_fields: dict[str, Any], intents: dict[str, dict[str, Any]], root: Path) -> list[str]:
     errors: list[str] = []
     for column, intent in intents.items():
@@ -143,29 +181,14 @@ def _grammar_errors(table: str, raw_fields: dict[str, Any], intents: dict[str, d
             errors.append(f"{where}: rule key(s) {sorted(unknown)} outside the ops vocabulary")
         exemptions = intent.get("write_time_exemptions") or {}
         for kind, value in intent.items():
-            if kind in unknown or kind == "write_time_exemptions":
-                continue
-            if isinstance(value, dict):
-                extra = set(value) - _SUBKEYS.get(kind, frozenset())
-                if extra:
-                    errors.append(f"{where}: {kind} carries unknown sub-key(s) {sorted(extra)}")
-            if isinstance(value, dict) and "exclude_before" in value:
-                err = _date_error(table, value["exclude_before"])
-                if err:
-                    errors.append(f"{where}: {kind} {err}")
-            for pat in _patterns_of(kind, value):
-                err = _regex_subset_error(pat)
-                if err:
-                    errors.append(f"{where}: {kind} pattern {err}")
-            if kind in PRODUCER_SIDE_KINDS and kind not in exemptions:
-                errors.append(f"{where}: producer-side rule {kind!r} needs a write_time_exemptions entry")
+            if kind not in unknown and kind != "write_time_exemptions":
+                errors.extend(_leg_errors(table, where, kind, value, exemptions))
         for kind, why in exemptions.items():
             if kind not in intent:
                 errors.append(f"{where}: exemption {kind!r} names a rule the field does not declare")
             errors.extend(_exemption_errors(where, kind, why, root))
-        spec = raw_fields.get(column) or {}
         nn = intent.get("not_null")
-        if spec.get("nullable") is False and isinstance(nn, dict) and not nn.get("enforced"):
+        if (raw_fields.get(column) or {}).get("nullable") is False and isinstance(nn, dict) and not nn.get("enforced"):
             errors.append(f"{where}: not_null enforced false on a nullable false field")
     return errors
 
@@ -182,29 +205,36 @@ def _read_table(table: str, contracts_dir: Path, repo_root: Path) -> tuple[dict[
     return raw.get("fields") or {}, intents
 
 
-def _ops_yaml_tests(root: Path) -> dict[str, list[tuple[str, dict[str, Any]]]]:
+def _ops_yaml_tests(root: Path) -> tuple[dict[str, list[tuple[str, dict[str, Any]]]], list[str]]:
     doc = yaml.safe_load((root / _OPS_YAML_REL).read_text(encoding="utf-8")) or {}
     columns = (((doc.get("tables") or {}).get("ops_recommendations") or {}).get("columns")) or {}
     out: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+    malformed: list[str] = []
     for column, spec in columns.items():
         for test in (spec or {}).get("tests") or []:
-            name, params = (test, {}) if isinstance(test, str) else next(iter(test.items()))
+            params: Any
+            if isinstance(test, str):
+                name, params = test, {}
+            elif isinstance(test, dict) and len(test) == 1:
+                name, params = next(iter(test.items()))
+            else:
+                malformed.append(f"ops.yaml {column}: test entry {test!r} must be a name or a single-key mapping")
+                continue
             if isinstance(params, dict) and params.get("write_time") is True:
                 out.setdefault(column, []).append((name, params))
-    return out
+    return out, malformed
 
 
 def _blank_rejecting(intent: dict[str, Any]) -> bool:
-    min_length = intent.get("min_length")
-    if isinstance(min_length, dict) and isinstance(min_length.get("value"), int) and min_length["value"] >= 1:
+    min_length = _leg(intent, "min_length")
+    if isinstance(min_length.get("value"), int) and min_length["value"] >= 1:
         return True
     return "accepted_values" in intent
 
 
 def _parity_not_null(where: str, column: str, intent: dict[str, Any], raw_fields: dict[str, Any], params: dict) -> list[str]:
     errors = []
-    nn = intent.get("not_null")
-    if not (isinstance(nn, dict) and nn.get("enforced")):
+    if not _leg(intent, "not_null").get("enforced"):
         errors.append(f"{where}: no equal not_null rule in the contract")
     is_string = (raw_fields.get(column) or {}).get("iceberg_type", "string") == "string"
     if is_string and not _blank_rejecting(intent):
@@ -213,14 +243,14 @@ def _parity_not_null(where: str, column: str, intent: dict[str, Any], raw_fields
 
 
 def _parity_accepted_values(where: str, intent: dict[str, Any], params: dict) -> list[str]:
-    declared = (intent.get("accepted_values") or {}).get("values")
+    declared = _leg(intent, "accepted_values").get("values")
     if declared is None or set(declared) != set(params.get("values") or []):
         return [f"{where}: values differ from the contract's accepted_values"]
     return []
 
 
 def _parity_scalar(where: str, intent: dict[str, Any], name: str, key: str, params: dict) -> list[str]:
-    declared = (intent.get(name) or {}).get(key)
+    declared = _leg(intent, name).get(key)
     if declared != params.get(key if name != "min_length" else "value"):
         return [f"{where}: {key} differs from the contract's {name} ({declared!r})"]
     return []
@@ -247,8 +277,8 @@ def _parity_test(
 
 
 def _parity_errors(root: Path, raw_fields: dict[str, Any], intents: dict[str, dict[str, Any]]) -> list[str]:
-    errors: list[str] = []
-    for column, tests in _ops_yaml_tests(root).items():
+    tests_by_column, errors = _ops_yaml_tests(root)
+    for column, tests in tests_by_column.items():
         intent = intents.get(column)
         if intent is None:
             errors.append(f"ops.yaml {column}: write_time test on a column the contract does not declare")
@@ -309,7 +339,7 @@ def _model_status(root: Path) -> list[str] | None:
 
 
 def _status_errors(root: Path, intents: dict[str, dict[str, Any]]) -> list[str]:
-    declared = sorted((intents.get("status", {}).get("accepted_values") or {}).get("values") or [])
+    declared = sorted(_leg(intents.get("status", {}), "accepted_values").get("values") or [])
     errors = []
     for label, reader in (
         ("STATUS_TRANSITIONS enforced set", _scd2_status),
@@ -336,15 +366,19 @@ def resolve_base(root: Path) -> tuple[str | None, str]:
     return sha, ""
 
 
-def _base_legs(root: Path, base: str) -> dict[tuple[str, str, str], str | None]:
-    with tempfile.TemporaryDirectory() as tmp:
-        dest = Path(tmp)
-        for rel in _BASE_FILES:
-            shown = _git(root, "show", f"{base}:{rel}")
-            if shown.returncode == 0:
-                (dest / rel).parent.mkdir(parents=True, exist_ok=True)
-                (dest / rel).write_text(shown.stdout, encoding="utf-8")
-        return _legs(dest)
+def _base_snapshot(root: Path, base: str, dest: Path) -> None:
+    for rel in _BASE_FILES:
+        shown = _git(root, "show", f"{base}:{rel}")
+        if shown.returncode == 0:
+            (dest / rel).parent.mkdir(parents=True, exist_ok=True)
+            (dest / rel).write_text(shown.stdout, encoding="utf-8")
+
+
+def _registry_ids(root: Path) -> set[str]:
+    path = root / _REGISTRY_REL
+    doc = yaml.safe_load(path.read_text(encoding="utf-8")) if path.is_file() else None
+    entries = (doc or {}).get("entries") or []
+    return {e["canonical_id"] for e in entries if isinstance(e, dict) and "canonical_id" in e}
 
 
 def _legs(root: Path) -> dict[tuple[str, str, str], str | None]:
@@ -359,8 +393,15 @@ def _legs(root: Path) -> dict[tuple[str, str, str], str | None]:
 
 
 def _ratchet_errors(root: Path, base: str) -> list[str]:
-    base_legs, head_legs = _base_legs(root, base), _legs(root)
-    errors = []
+    with tempfile.TemporaryDirectory() as tmp:
+        _base_snapshot(root, base, Path(tmp))
+        base_legs, base_ids = _legs(Path(tmp)), _registry_ids(Path(tmp))
+    head_legs = _legs(root)
+    errors = [
+        f"ratchet: source {removed!r} was removed from the source registry; a removal strands every row carrying it "
+        "(Decision 70) -- a redefinition needing its own plan"
+        for removed in sorted(base_ids - _registry_ids(root))
+    ]
     for key, base_date in base_legs.items():
         where = ".".join(key)
         if key not in head_legs:

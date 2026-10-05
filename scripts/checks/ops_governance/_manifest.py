@@ -28,6 +28,7 @@ ENTRIES: tuple[Entry, ...] = (
         attr="validate_recommendations_schema",
         pre=True,
         pre_globs=(
+            "src/row_rules/**",
             "logs/.recommendations-log.jsonl",
             "scripts/executor/**",
             "scripts/s3_log_store.py",
@@ -133,6 +134,8 @@ ENTRIES: tuple[Entry, ...] = (
         attr="validate_reconcile_pending_gate",
         pre=True,
         pre_globs=(
+            "src/row_rules/**",
+            "scripts/field_semantics_rule_projection.py",
             "docs/contracts/**",
             "config/lambda/ducklake/field_semantics.static.yaml",
             "src/schemas/**",
@@ -168,7 +171,7 @@ ENTRIES: tuple[Entry, ...] = (
         module="scripts.checks.ops_governance.validate_acceptance_literals",
         attr="validate_acceptance_literals",
         pre=True,
-        pre_globs=("scripts/**", "src/common/**"),
+        pre_globs=("scripts/**", "src/common/**", "src/row_rules/**"),
         full_segment="full_after_lint",
     ),
 )

@@ -274,12 +274,16 @@ def test_schema_gate_raises_empty_required():
 
 
 def test_schema_gate_ops_table():
-    schema.schema_gate({"id": "rec-1", "status": "open", "automatable": True}, table="ops_recommendations")
+    schema.schema_gate(
+        {"id": "rec-1", "title": "a valid title", "status": "open", "automatable": True}, table="ops_recommendations"
+    )
 
 
 def test_schema_gate_ops_rejects_mistyped_bool():
     with pytest.raises(schema.SchemaGateError, match="expected bool"):
-        schema.schema_gate({"id": "rec-1", "status": "open", "automatable": "yes"}, table="ops_recommendations")
+        schema.schema_gate(
+            {"id": "rec-1", "title": "a valid title", "status": "open", "automatable": "yes"}, table="ops_recommendations"
+        )
 
 
 # ---------------------------------------------------------------------------

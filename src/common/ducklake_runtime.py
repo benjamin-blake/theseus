@@ -96,6 +96,9 @@ from src.common.ducklake_tables import (  # noqa: F401 -- re-exported facade sur
     reconcile_table_columns,
 )
 from src.common.ducklake_version import pinned_duckdb_version as _pinned_duckdb_version
+from src.common.ducklake_write_rules import (
+    RowRuleViolationError,  # noqa: F401 -- re-exported for the writer handler's 422 row_rule
+)
 from src.common.ducklake_writes import (  # noqa: F401 -- re-exported facade surface (PLAN-sloc-ducklake-layer)
     CHURN_WRITERS,
     CHURN_WRITES_PER_WRITER,

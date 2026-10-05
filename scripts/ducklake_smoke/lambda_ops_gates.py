@@ -92,6 +92,91 @@ def ops_read_your_write(*, profile: str | None = None, region: str = "eu-west-2"
     print(f"OPS_RYW OK write+read+update reflected; absent-update referential=409 probe_id={probe_id} superseded=true")
 
 
+_ROW_RULES_TABLE = "ops_recommendations"
+ROW_RULES_BASE: dict[str, object] = {
+    "status": "open",
+    "title": "row-rules gate probe",
+    "source": "manual",
+    "effort": "XS",
+    "priority": "Low",
+    "risk": "low",
+    "automatable": False,
+    "file": "scripts/ducklake_neon_smoke_test.py",
+    "context": (
+        "Row-rules gate probe written by ducklake_neon_smoke_test --lambda-row-rules to prove the deployed "
+        "writer rejects a record that breaks a contract-declared row rule."
+    ),
+    "acceptance": "grep -q lambda_row_rules scripts/ducklake_neon_smoke_test.py",
+}
+# (expected rule, record overrides, expected column): each case breaks exactly one rule of an otherwise clean record
+ROW_RULES_CASES: tuple[tuple[str, dict[str, object], str], ...] = (
+    ("accepted_values", {"effort": "XXL"}, "effort"),
+    ("min_length", {"title": "short"}, "title"),
+    ("array_element_format", {"dependencies": ["not-a-rec-id"]}, "dependencies"),
+    ("pattern", {"file": "/absolute/path.py"}, "file"),
+)
+
+
+def lambda_row_rules(*, profile: str | None = None, region: str = "eu-west-2") -> None:
+    """rec-4158 plan B per-deploy gate: the deployed writer rejects each rule class and writes nothing.
+
+    From a rule-clean test-rr- base record, sends one write_ops per ROW_RULES_CASES entry; each must answer 422
+    row_rule naming the expected rule and column, then read_ops_current on the key must return zero rows. On an
+    unexpected answer it first supersedes any row it wrote (update_ops to the rule-clean base) so a failed probe never
+    leaves a census violator in current, then raises SmokeTestFailure.
+    """
+    writer_url = core._function_url("writer")
+    reader_url = core._function_url("reader")
+    key = f"test-rr-{uuid4().hex[:12]}"
+    base = {**ROW_RULES_BASE, "id": key}
+
+    def stored_rows() -> int:
+        body = core._ok_json(
+            core._sigv4_invoke(
+                reader_url,
+                {"action": "read_ops_current", "table": _ROW_RULES_TABLE, "key": key},
+                profile=profile,
+                region=region,
+            )
+        )
+        return int(body.get("row_count", 0))
+
+    def repair_and_fail(message: str) -> None:
+        if stored_rows():
+            superseded = {
+                **base,
+                "status": "superseded",
+                "resolution": f"Superseded by a failed --lambda-row-rules gate: {message}",
+            }
+            core._ok_json(
+                core._sigv4_invoke(
+                    writer_url,
+                    {"action": "update_ops", "table": _ROW_RULES_TABLE, "record": superseded},
+                    profile=profile,
+                    region=region,
+                )
+            )
+        raise core.SmokeTestFailure(f"LAMBDA_ROW_RULES FAIL: {message}")
+
+    for rule, overrides, column in ROW_RULES_CASES:
+        resp = core._sigv4_invoke(
+            writer_url,
+            {"action": "write_ops", "table": _ROW_RULES_TABLE, "record": {**base, **overrides}},
+            profile=profile,
+            region=region,
+        )
+        body = resp.json() if resp.status_code == 422 else {}
+        if resp.status_code != 422 or body.get("error_type") != "row_rule":
+            repair_and_fail(f"{rule} case answered {resp.status_code} instead of 422 row_rule: {resp.text[:200]}")
+        if body.get("rule") != rule or body.get("column") != column:
+            repair_and_fail(
+                f"{rule} case named rule={body.get('rule')!r} column={body.get('column')!r}, expected {rule}/{column}"
+            )
+    if stored_rows():
+        repair_and_fail("a rejected write left a row in current")
+    print(f"LAMBDA_ROW_RULES OK {len(ROW_RULES_CASES)} cases rejected 422 row_rule, nothing stored key={key}")
+
+
 def ops_churn_regate(*, profile: str | None = None, region: str = "eu-west-2") -> None:
     """T2.19 VP12: re-run the Decision-82 EC8 churn/OCC gate at production scope (post-cutover catalog).
 

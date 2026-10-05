@@ -336,12 +336,16 @@ def test_schema_gate_ops_requires_merge_key_and_status():
 
 def test_schema_gate_ops_rejects_mistyped_bool():
     with pytest.raises(rt.SchemaGateError, match="expected bool"):
-        rt.schema_gate({"id": "rec-1", "status": "open", "automatable": "yes"}, table="ops_recommendations")
+        rt.schema_gate(
+            {"id": "rec-1", "title": "a valid title", "status": "open", "automatable": "yes"}, table="ops_recommendations"
+        )
 
 
 def test_schema_gate_ops_rejects_mistyped_array():
     with pytest.raises(rt.SchemaGateError, match="expected list"):
-        rt.schema_gate({"id": "rec-1", "status": "open", "tags": "not-a-list"}, table="ops_recommendations")
+        rt.schema_gate(
+            {"id": "rec-1", "title": "a valid title", "status": "open", "tags": "not-a-list"}, table="ops_recommendations"
+        )
 
 
 def test_build_merge_sql_ops_recommendations_uses_id_key():
