@@ -15,6 +15,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
 import yaml
 
 from scripts.contracts import load_contract
@@ -213,6 +214,34 @@ def _contract_text(name: str) -> str:
     return (_CONTRACTS_DIR / f"{name}.yaml").read_text(encoding="utf-8")
 
 
+_WRITE_CONFORMANCE_DATE = "2026-10-04"
+_WRITE_CONFORMANCE_PLAN = "PLAN-telemetry-write-conformance"
+
+
+def _write_conformance_entry(amendment_log) -> dict:
+    """The one raw-YAML amendment_log entry this slice's tests were written for, wherever it sits in the log."""
+    found = [
+        e
+        for e in amendment_log
+        if str(e.get("date")) == _WRITE_CONFORMANCE_DATE and _WRITE_CONFORMANCE_PLAN in (e.get("summary") or "")
+    ]
+    assert len(found) == 1, f"expected exactly one {_WRITE_CONFORMANCE_PLAN} entry, found {len(found)}"
+    return found[0]
+
+
+def test_write_conformance_lookup_survives_growth_only() -> None:
+    entry = {"date": _WRITE_CONFORMANCE_DATE, "summary": f"{_WRITE_CONFORMANCE_PLAN} (slice 2a-1): x"}
+    newer = {"date": "2026-10-05", "summary": "PLAN-other: y"}
+    assert _write_conformance_entry([newer, entry]) is entry
+    for log in (
+        [newer],
+        [entry, dict(entry)],
+        [{"date": _WRITE_CONFORMANCE_DATE, "summary": "PLAN-ops-rule-source: z"}],
+    ):
+        with pytest.raises(AssertionError):
+            _write_conformance_entry(log)
+
+
 def _entries(entries, change_class: str) -> bool:
     return any(entry.change_class.value == change_class and entry.semantic_break for entry in entries)
 
@@ -242,7 +271,9 @@ def test_session_pin_is_earliest_timestamp() -> None:
     skew = _norm(event_timestamp.semantics)
     assert "different clocks" in skew and "never an exact comparison" in skew and "300 s" in skew
     assert _entries(event_timestamp.amendment_log, "governance_note_add")
-    assert envelope.amendment_log[0].date == "2026-10-04" and envelope.contract.contract_version == 1
+    envelope_log = yaml.safe_load(_contract_text("telemetry-event-envelope"))["amendment_log"]
+    _write_conformance_entry(envelope_log)
+    assert envelope.contract.contract_version == 1
 
 
 def test_tool_result_capture_policy_declared() -> None:
@@ -339,7 +370,8 @@ def test_representation_only_columns_excluded_from_grain_compare() -> None:
     assert not re.search(r"telemetry_transcripts|content_uri", statement)
     first = re.search(r"Decision (\d+)", rules["grain-enforced-at-write"]["statement"])
     assert first and first.group(1) == "207"
-    assert standard["amendment_log"][0]["date"] == "2026-10-04" and standard["version"] == 5
+    assert _write_conformance_entry(standard["amendment_log"])["semantic_break"] is True
+    assert standard["version"] >= 5
 
 
 def test_decision_annotations_for_hash_compare_and_omission() -> None:
@@ -391,4 +423,4 @@ def test_lexicon_names_tool_output_and_omission() -> None:
         assert term in text, term
     assert "prompt | response | thinking | tool_input | tool_result | tool_output | system" in text
     assert "as the model saw it" in text and "user-facing progress-update thinking blocks" in text
-    assert lexicon["amendment_log"][0]["date"] == "2026-10-04"
+    _write_conformance_entry(lexicon["amendment_log"])
