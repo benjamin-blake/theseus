@@ -28,10 +28,12 @@ scope:
   purpose: >-
     src/telemetry/rules.py moved here with `git mv` (its 2a-1 plan's stated intent, PLAN-telemetry-write-conformance
     scope row: "rec-4158 can relocate it to a shared module unchanged"), then extended table-agnostically; still stdlib
-    only, still no table, column or value literal of any contract. New column keys: not_null (true; binds a nullable
-    column), min_length (non-negative int; violation when the value is not a str or len(value.strip()) is below it),
-    array_element_format (regex; violation when the value is not a list or any element is None, not a str, or fails
-    re.fullmatch; an empty list passes), and exclude_before (mapping of a rule key present on that column, not_null
+    only, still no table, column or value literal of any contract. A None value passes every value rule (min_length,
+    pattern, array_element_format, accepted_values): NULL is not_null's concern alone, exactly as the census's
+    violation_condition treats it. New column keys: not_null (true; binds a nullable column), min_length (non-negative
+    int; a non-None value violates when it is not a str or len(value.strip()) is below it), array_element_format (regex;
+    a non-None value violates when it is not a list or any element is None, not a str, or fails re.fullmatch; an empty
+    list passes), and exclude_before (mapping of a rule key present on that column, not_null
     included, to an ISO date; fail closed on an unknown key, a non-date, or a key naming a rule the column lacks).
     write_time_exemptions also accepts the two producer-side kinds acceptance_lint and array_element_reference
     (recorded, never evaluated); every other key stays fail-closed. check_row gains keyword-only `prior` (the existing
@@ -84,7 +86,8 @@ scope:
     project_row_rules(table_id, columns) -> columns: merges every rule scripts.contract_rules.declared_rules returns
     for an SCD2 contract table into its projected columns (the census compiles the same list, so writer and census
     share one rule set by construction). Mapping: not_null -> not_null: true (omitted on a nullable:false column,
-    which already binds every row); accepted_values -> the values list; min_length -> its int; pattern -> its regex;
+    which already binds every row; a DATED not_null leg on a nullable:false column raises, since dropping the key would
+    silently drop its date); accepted_values -> the values list; min_length -> its int; pattern -> its regex;
     array_element_format -> its pattern; not_before -> the column name; a dated leg also writes exclude_before[kind];
     a leg with an exemption ships only as write_time_exemptions[kind] {class, reason, owner}. Any other kind raises
     (fail closed). The enforced flag never reaches the projection (plan C).
@@ -107,7 +110,9 @@ scope:
     leg already binds every row and the census found no null or blank title). Its semantics stop saying the schema
     gate accepts empty or null titles and say the writer enforces not-null and the 2026-09-01 min_length from this
     contract. One field amendment_log entry (not_null_tighten, semantic_break true) stating the live table keeps a
-    nullable physical column -- no ALTER path exists (Decision 100, declarative only there). No rule leg changes.
+    nullable physical column -- reconcile_columns only adds columns, so the constraint is declarative there (Decision
+    100) -- and naming rec-4171 as that residual's owner (an admin-tier SET NOT NULL leg; the pinned DuckLake supports
+    ALTER COLUMN ... SET NOT NULL, verified at planning; Decision 181 cl.2). No rule leg changes.
 - file: docs/contracts/ducklake_writer.yaml
   action: Modify
   purpose: >-
@@ -235,7 +240,9 @@ scope:
   purpose: >-
     Mirror test: RowRuleViolationError is a SchemaGateError with no value in its message; the select widens only with
     dated rules; the bound row; insert, dated, older-unchanged and older-changed verdicts on the real projection; the
-    ops_read_your_write and selftest_roundtrip probe records (captured through stubs) pass the shipped rules.
+    ops_read_your_write and selftest_roundtrip probe records (captured through stubs) pass the shipped rules; an
+    older row run through the portal's real update shaping (_coerce_ops_rec_row, _sanitize_record, merge) with NULL
+    lists and a pre-date tag violation passes check_write against its stored prior.
 - file: tests/common/test_ducklake_write_rules_integration.py
   action: Create
   purpose: >-
@@ -304,6 +311,7 @@ bundled_recommendations:
 - rec-4168
 followon_recs:
 - rec-4158
+- rec-4171
 infrastructure_dependencies:
 - >-
   Lambda-packaged: all five active DuckLake artifacts (writer, reader, maintenance, maintenance-smoke, catalog-dr)
@@ -312,11 +320,19 @@ infrastructure_dependencies:
   deploy-ducklake-lambdas.yml channel, triggered by the implementation PR's squash-merge (Decision 125/126); the local
   build_lambda --ducklake-only --deploy stays break-glass only. Merging is therefore a production deploy and waits for
   the operator's explicit approval. No .tf, IAM, role, Function URL or environment change.
+- >-
+  data-pipeline (active) is ALSO reported affected, by its own manifest.yaml edit only (lambda_manifest's
+  manifest-changed clause): the edit adds excludes for paths that are new in this plan, so its staged runtime code is
+  byte-identical and only the inert manifest text inside its src/ copy differs. NO deploy is performed or needed:
+  deploy-prod-lambdas.yml's push paths do not include the manifest, nothing reads it at runtime, and it refreshes with
+  that artifact's next governed deploy (Decision 198 precedent, as PLAN-ops-rule-source did for its roadmap asset). VP
+  step 6's wiring test asserts that an engine or adapter edit never marks data-pipeline affected.
 acceptance_criteria:
 - >-
   The writer rejects, with 422 row_rule naming table, rule and column and writing nothing, every non-exempt rule the
   ops_recommendations contract declares, under the older-rows rule; a real local DuckLake catalog shows zero rows and an
-  unchanged counter after each rejection, and an older row with a pre-date violation stays updatable.
+  unchanged counter after each rejection, and an older row with a pre-date violation stays updatable, including through
+  the portal's update shaping (no older row stores an empty string or a NULL list element in a ruled column).
 - >-
   One engine: src/row_rules/rules.py serves the telemetry kernel and the ops writer; the telemetry tests pass unmodified
   apart from the moved rules test; the rules reach the Lambda only through the regenerated field_semantics.yaml, whose
@@ -367,9 +383,10 @@ verification_plan:
     tests/common/test_ducklake_write_rules.py::test_select_widens_only_with_dated_rules
     tests/common/test_ducklake_write_rules.py::test_older_rows_verdicts_on_the_real_projection
     tests/common/test_ducklake_write_rules.py::test_smoke_probe_records_pass
+    tests/common/test_ducklake_write_rules.py::test_portal_normalized_update_of_an_older_row_passes
     tests/common/test_ducklake_writes.py::test_row_rule_rejection_is_terminal_with_zero_retries
     tests/common/test_ducklake_writes.py::test_file_scd2_row_rule_rejects_before_catalog -q
-  expected: Exit 0, 6 passed. Red before, because the module and the two writer tests do not exist.
+  expected: Exit 0, 7 passed. Red before, because the module and the two writer tests do not exist.
   fix_if: A rejection retried or a counter touched -> fix the call site, never the test.
   hermetic: true
   graduation: graduate
@@ -457,13 +474,25 @@ verification_plan:
     red-before replay; its standing forms are validate_field_semantics_drift and the telemetry suites.
 - step: 10
   phase: pre-deploy
+  action: Stale-reference sweep for the two deleted surfaces (the engine moved out of src/telemetry).
+  command: >-
+    test ! -e src/telemetry/rules.py && test ! -e tests/telemetry/test_rules.py && ! git grep -n -E
+    'src[./]telemetry[./]rules' -- src scripts tests config .github .importlinter docs/contracts
+  expected: Exit 0 -- neither file exists and nothing outside docs/plans names the old module.
+  fix_if: A reference left -> repoint it to src/row_rules/rules.py; never leave a shim module at the old path.
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: ops-row-rules-old-engine-gone
+  expected_literals: []
+- step: 11
+  phase: pre-deploy
   action: Full validation tier before handoff (includes validate_pre_glob_closure, bundle completeness and the structural budgets).
   command: bin/venv-python -m scripts.validate
   expected: Exit 0.
   fix_if: Fix the named check; never raise a budget or skip a check.
   hermetic: false
   graduation: not-applicable
-- step: 11
+- step: 12
   phase: pre-deploy
   action: Live census against the warehouse, immediately before the merge (no row may be stranded by the writer).
   command: bin/venv-python -m scripts.contract_rule_census
@@ -473,7 +502,29 @@ verification_plan:
     unavailable: wait or fix, never treat it as clean.
   hermetic: false
   graduation: not-applicable
-- step: 12
+- step: 13
+  phase: pre-deploy
+  action: >-
+    Portal-normalization stranding probe (critique r1): update_rec rewrites a stored empty string to NULL
+    (_sanitize_record) and drops NULL list elements (_coerce_array), so an older row holding either in a ruled column
+    would look changed, bind a dated rule and become un-updatable (Decision 70). Count such rows, read-only, through
+    the DQ harness; zero at planning (2026-10-05), and the set can only shrink once the writer enforces, because a write
+    that puts an empty string into a ruled column changes it and is rejected.
+  command: >-
+    bin/venv-python -c "import sys,subprocess,tempfile,yaml;c=['title','source','effort','priority','risk','file','context','acceptance'];
+    e=lambda s,d:{'tests':[{'expression':{'sql':s,'description':d,'enforced':True}}]};
+    cols={x:e(f\"COALESCE({x}, 'x') <> ''\",f'{x} stores an empty string') for x in c};
+    cols.update({x:e(f'COALESCE(len(list_filter({x}, v -> v IS NULL)), 0) = 0',f'{x} holds a NULL element') for x in ('tags','dependencies')});
+    f=tempfile.NamedTemporaryFile('w',suffix='.yaml',delete=False);
+    yaml.safe_dump({'database':'agent_platform','ducklake':{'meta_schema':'ducklake_ops'},'tables':{'ops_recommendations':{'view_suffix':'_current','columns':cols}}},f);
+    f.close();sys.exit(subprocess.call([sys.executable,'-m','scripts.data_quality_runner','--file',f.name]))"
+  expected: Exit 0 and "Data Quality -- PASS" with Failed 0 and Unavailable 0 in the summary.
+  fix_if: >-
+    Any violation -> STOP, do not merge, return to /plan (the writer would strand those rows; the fix is at the source).
+    Unavailable or an error -> wait or fix the reader; never treat it as clean.
+  hermetic: false
+  graduation: not-applicable
+- step: 14
   phase: post-deploy
   action: All five DuckLake deploy records name the merge commit (the governed workflow shipped this code).
   command: >-
@@ -487,55 +538,69 @@ verification_plan:
     A stale record -> the workflow failed or skipped: read its run, RCA, re-dispatch the governed workflow; never a
     local build_lambda --deploy without the operator's direction. A later ducklake merge -> compare against that sha.
   hermetic: false
-- step: 13
+- step: 15
   phase: post-deploy
   action: Enforcement is live on the deployed writer (the same gate the workflow's smoke job ran).
-  command: bin/venv-python -m scripts.ducklake_neon_smoke_test --lambda-row-rules --profile agent_platform
+  command: >-
+    DUCKLAKE_WRITER_URL="$(aws ssm get-parameter --name /agent-platform/ducklake/writer_url --query Parameter.Value
+    --output text --profile agent_platform --region eu-west-2)" DUCKLAKE_READER_URL="$(aws ssm get-parameter --name
+    /agent-platform/ducklake/reader_url --query Parameter.Value --output text --profile agent_platform --region
+    eu-west-2)" bin/venv-python -m scripts.ducklake_neon_smoke_test --lambda-row-rules --profile agent_platform
   expected: Exit 0 and LAMBDA_ROW_RULES OK printed.
   fix_if: A 200 or a wrong rule -> STOP, revert the merge (it redeploys the prior code), RCA (Decision 55).
   hermetic: false
-- step: 14
+- step: 16
   phase: post-deploy
   action: The positive path on production -- a rule-clean write, update and supersede through the widened fetch.
-  command: bin/venv-python -m scripts.ducklake_neon_smoke_test --ops-read-your-write --profile agent_platform
+  command: >-
+    DUCKLAKE_WRITER_URL="$(aws ssm get-parameter --name /agent-platform/ducklake/writer_url --query Parameter.Value
+    --output text --profile agent_platform --region eu-west-2)" DUCKLAKE_READER_URL="$(aws ssm get-parameter --name
+    /agent-platform/ducklake/reader_url --query Parameter.Value --output text --profile agent_platform --region
+    eu-west-2)" bin/venv-python -m scripts.ducklake_neon_smoke_test --ops-read-your-write --profile agent_platform
   expected: Exit 0 and OPS_RYW OK printed.
   fix_if: A row_rule 422 on the clean probe -> the probe or a rule is wrong -- STOP, revert, RCA.
   hermetic: false
-- step: 15
+- step: 17
   phase: post-deploy
   action: The census still holds after the deploy.
   command: bin/venv-python -m scripts.contract_rule_census
   expected: Exit 0 with every rule at 0 violators.
   fix_if: A violator -> a writer bypass exists -- STOP and RCA; exit 2 -> wait or fix the reader.
   hermetic: false
-- step: 16
+- step: 18
   phase: post-deploy
   action: >-
-    Production commit latency has not regressed (the churn gate writes the smoke pair and never runs this path; scout,
-    Decision 82): CommitLatencyMs p50 over the writes since the deploy against the 7 days before it.
+    Gross production-latency regression check (the churn gate writes the smoke pair and never runs this path; scout,
+    Decision 82): the writer's CommitLatencyMs p50 over at least 10 writes since the deploy must stay below the p95 of
+    the 7 days before it. A tighter ratio is not usable -- a planning-time dry run with no deploy at all measured a
+    1.71x p50 swing between consecutive windows (Neon wake dominates). The structural control is step 3's single
+    statement assertion; rec-4170 owns production latency itself.
   command: >-
     bin/venv-python -c "import sys,boto3,datetime as d;c=boto3.Session(profile_name='agent_platform').client('cloudwatch',region_name='eu-west-2');
     t=d.datetime.fromisoformat(sys.argv[1]);n=d.datetime.now(d.timezone.utc);
-    g=lambda a,b:c.get_metric_statistics(Namespace='DuckLakeWriter',MetricName='CommitLatencyMs',StartTime=a,EndTime=b,Period=int((b-a).total_seconds())//60*60,ExtendedStatistics=['p50'],Statistics=['SampleCount'])['Datapoints'];
-    pre=g(t-d.timedelta(days=7),t)[0];post=g(t,n)[0];r=post['ExtendedStatistics']['p50']/pre['ExtendedStatistics']['p50'];
-    print('LATENCY',pre['ExtendedStatistics']['p50'],post['ExtendedStatistics']['p50'],post['SampleCount'],round(r,2));
-    assert post['SampleCount']>=10,'too few samples: re-run later';assert r<=1.25" "<deploy completion timestamp, ISO 8601 UTC>"
-  expected: Exit 0; the LATENCY line shows at least 10 post-deploy samples and a p50 ratio of 1.25 or less.
+    q=lambda a,b,**k:(c.get_metric_statistics(Namespace='DuckLakeWriter',MetricName='CommitLatencyMs',StartTime=a,EndTime=b,Period=(int((b-a).total_seconds())+59)//60*60,**k)['Datapoints'] or [None])[0];
+    pre=q(t-d.timedelta(days=7),t,ExtendedStatistics=['p95']);post=q(t,n,ExtendedStatistics=['p50']);cnt=q(t,n,Statistics=['SampleCount']);
+    assert pre and post and cnt,'no datapoints yet: re-run later';
+    a=pre['ExtendedStatistics']['p95'];b=post['ExtendedStatistics']['p50'];print('LATENCY pre_p95',round(a),'post_p50',round(b),'samples',int(cnt['SampleCount']));
+    assert cnt['SampleCount']>=10,'too few samples: re-run later';assert b<=a,'post-deploy p50 above the prior p95'" "<deploy completion timestamp, ISO 8601 UTC>"
+  expected: Exit 0; the LATENCY line shows at least 10 post-deploy samples and post_p50 at or below pre_p95.
   fix_if: >-
-    Too few samples -> re-run after more production writes, never treat it as passed; a ratio above 1.25 -> RCA the
-    widened fetch before anything else ships through the writer (Decision 55).
+    Too few samples or no datapoints -> re-run after more production writes, never treat it as passed; post_p50 above
+    pre_p95 -> RCA the widened fetch before anything else ships through the writer (Decision 55).
   hermetic: false
-- step: 17
+- step: 19
   phase: post-deploy
   action: catalog-dr's next scheduled dump succeeded on the new bundle (its only exercise of the new import).
   command: >-
     aws cloudwatch get-metric-statistics --namespace DuckLakeCatalogDR --metric-name CatalogDumpSuccess --statistics Sum
-    --start-time "<deploy completion timestamp>" --end-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --period 86400
+    --start-time "<deploy completion timestamp>" --end-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --period 1209600
     --profile agent_platform --region eu-west-2 --query 'Datapoints[0].Sum' --output text
-  expected: A number of 1 or more, read after the next 03:00 UTC run.
+  expected: >-
+    A number of 1 or more, read after the next weekly run (Sunday 03:00 UTC, cron(0 3 ? * SUN *), Decision 88 cl.3) and
+    within 14 days of the deploy.
   fix_if: None or 0 -> read the function's logs, RCA; an import error -> fix the manifest and redeploy through the workflow.
   hermetic: false
-- step: 18
+- step: 20
   phase: post-deploy
   action: Bookkeeping landed -- rec-4168 closed by the Resolves trailer, rec-4158 carries the plan B note.
   command: >-
@@ -556,6 +621,11 @@ test_obligations:
   verification_step: 1
   test_selector: tests/row_rules/test_rules.py::test_package_is_a_stdlib_leaf
   red_green_expectation: red before (package absent), green after
+- source: src/telemetry/rules.py
+  behavior: The old engine module is gone and nothing outside docs/plans names it.
+  verification_step: 10
+  command: test ! -e src/telemetry/rules.py
+  red_green_expectation: red before (the module exists), green after
 - source: src/telemetry/append.py
   behavior: Imports the engine from its new home with no behaviour change.
   verification_step: 9
@@ -623,17 +693,17 @@ test_obligations:
   red_green_expectation: red before (no registry ratchet), green after
 - source: scripts/checks/ops_governance/_manifest.py
   behavior: pre_globs cover the new import-closure members.
-  verification_step: 10
+  verification_step: 11
   command: bin/venv-python -m scripts.validate
   waiver_reason: A registration literal enforced by the existing validate_pre_glob_closure check, which fails the tier on an uncovered closure path.
 - source: scripts/checks/verification/_manifest.py
   behavior: pre_globs cover the new import-closure members.
-  verification_step: 10
+  verification_step: 11
   command: bin/venv-python -m scripts.validate
   waiver_reason: A registration literal enforced by the existing validate_pre_glob_closure check, which fails the tier on an uncovered closure path.
 - source: scripts/checks/deps/_manifest.py
   behavior: pre_globs cover the new import-closure members.
-  verification_step: 10
+  verification_step: 11
   command: bin/venv-python -m scripts.validate
   waiver_reason: A registration literal enforced by the existing validate_pre_glob_closure check, which fails the tier on an uncovered closure path.
 - source: .importlinter
@@ -643,7 +713,7 @@ test_obligations:
   red_green_expectation: red before (no contract), green after
 - source: docs/contracts/file-router.yaml
   behavior: Routes src/row_rules/ and allowlists the projection module.
-  verification_step: 10
+  verification_step: 11
   command: bin/venv-python -m scripts.validate
   waiver_reason: Registration literals enforced by the existing validate_placement and router link-validity checks in the full tier.
 - source: src/lambdas/ducklake_writer/manifest.yaml
@@ -698,18 +768,18 @@ test_obligations:
   red_green_expectation: red before (flag absent), green after
 - source: config/agent/verification_registry/entries/telemetry-kernel-row-rules.yaml
   behavior: The graduated engine guard follows the moved test.
-  verification_step: 10
+  verification_step: 11
   command: bin/venv-python -m scripts.validate
   waiver_reason: A modified graduated shard is replayed differentially by validate_verification_registry -- it must fail on origin/main and pass on HEAD, its own red-green proof.
 - source: config/agent/verification_registry/entries/ops-recommendations-partition-amendment-in-budget.yaml
   behavior: The line-count guard tracks the amended contract under the same 556 bound.
-  verification_step: 10
+  verification_step: 11
   command: bin/venv-python -m scripts.validate
   waiver_reason: A modified graduated shard is replayed differentially by validate_verification_registry -- it must fail on origin/main and pass on HEAD, its own red-green proof.
 constraints:
 - >-
   Merging the implementation PR is a production deploy of all five DuckLake Lambdas (Decision 125/126): it waits for
-  the operator's explicit approval after code review PROCEED, green CI and a clean step 11; no local build_lambda
+  the operator's explicit approval after code review PROCEED, green CI and clean steps 12-13; no local build_lambda
   --deploy, no terraform, no IAM change.
 - No line of src/common/ducklake_scd2_schema.py changes (telemetry 2a-2 plan 1 splits it); every file stays under 500 SLOC (Decision 128).
 - >-
@@ -722,12 +792,12 @@ constraints:
 context:
 - >-
   Decision-scout: FLAGS_FOUND, resolved -- SPIRIT WARN 82 (the churn gate writes the smoke pair: post-deploy CloudWatch
-  latency check, step 16); ROADMAP CONFLICT T2.30 c7 / T2.31 c2 (a general accepted-values ratchet would block the
+  gross latency check, step 18); ROADMAP CONFLICT T2.30 c7 / T2.31 c2 (a general accepted-values ratchet would block the
   integer migrations: the ratchet is registry-only); RELATED 100 (title NOT NULL is declarative on the live table), 79
-  (per-artifact gates: the workflow's plus step 17), 181 (shard bound and fixtures never weakened), 207 (identical
+  (per-artifact gates: the workflow's plus step 19), 181 (shard bound and fixtures never weakened), 207 (identical
   re-send keeps the identical verdict). CITE: 210, 81, 84, 64, 65, 70, 79, 125, 126, 118, 88, 181. Decisions triaged:
   163 of 163; Roadmap items intersected: 16; CONFLICT: 2; RELATED: 12.
-- 'gates: decision-scout=FLAGS_FOUND (all resolved); plan-critique=<pending>'
+- 'gates: decision-scout=FLAGS_FOUND (all resolved); plan-critique=REVISE r1 (7 findings, all addressed)'
 - >-
   Operator direction (Benjamin, 2026-10-05, this thread): "I agree with your recommendations, write the plan" -- all
   five Step 6b forks below. Evidence in /mnt/project-files/ops-enforcement/: step6b-planB-presentation.md,
@@ -747,8 +817,11 @@ context:
   validate_pre_glob_closure, run on a simulated move: 6 fast-tier checks gain src/row_rules/rules.py in their closure
   (scope rows for the three manifests); re-run it after implementing, since the projection import may add more.
 - >-
+  Portal shaping (critique r1), measured 2026-10-05 by step 13's probe: no row stores an empty string in a ruled column
+  and no list holds a NULL element; empty strings exist only in verification, verification_tier and resolution (no rules).
+- >-
   Production CommitLatencyMs (CloudWatch, 7 days to 2026-10-04): p50 2.6-3.5 s, p95 5.7-6.1 s -- already above the
-  2000 ms p95 the churn gate holds the smoke pair to; step 16 only guards against regression.
+  2000 ms p95 the churn gate holds the smoke pair to; step 18 only guards against regression.
 - >-
   Sequencing: telemetry 2a-2 (thread "Telemetry slice 2 plan") shares handler.py, ducklake_writes.py, the manifests,
   ducklake_writer.yaml and the deploy workflow; whichever lands second rebases. 2a-2 plans 2-4 should import
@@ -777,22 +850,22 @@ execution_steps:
   The ratchet and rec-4168 fixes; the writer contract, the standard's coverage sentence and the record tests; the
   manifests, data-pipeline excludes, workflow, drift pathspecs, the smoke gate and its CLI; the check manifests' pre_globs
   as validate_pre_glob_closure reports; re-pin the line-count shard.
-- Execute Verification Plan steps 1-10 -- loop until pass (Decision 55).
+- Execute Verification Plan steps 1-11 -- loop until pass (Decision 55).
 - Write the registry rows for graduated steps 1-6 (check ids as declared).
 - >-
   CLOSURE (implement skill Commit Flows; docs/contracts/git-ops.yaml handoff_sequence): readiness, implementation_declared
-  true, rebase on origin/main (STOP on conflict), step 10 on the clean tree and --verify-head, postflight evidence, push,
+  true, rebase on origin/main (STOP on conflict), step 11 on the clean tree and --verify-head, postflight evidence, push,
   open the PR (body carries "Resolves: rec-4168"), subscribe, drive CI green and code review to PROCEED.
 - >-
-  DEPLOY GATE: run step 11 (live census) on the final head, then STOP and ask the operator to approve the merge, because
+  DEPLOY GATE: run steps 12-13 (live census and the normalization probe) on the final head, then STOP and ask the operator to approve the merge, because
   the merge deploys all five DuckLake Lambdas. Only on that approval: squash-merge with the PR body as commit_message.
 - >-
   Watch the deploy-ducklake-lambdas run for the merge commit to completion (maintenance smoke, reconcile gate, serving
   deploy, smoke including --lambda-row-rules); a red job is stop-and-RCA, never a re-run into green.
-- Execute post-deploy steps 12-16; step 17 after the next 03:00 UTC catalog-dr run.
+- Execute post-deploy steps 14-18; step 19 after the next Sunday 03:00 UTC catalog-dr run (weekly, cron(0 3 ? * SUN *)).
 - >-
   Portal bookkeeping (get_rec_write_guidance first, Decision 66; fetch-before-update; prepend a dated note): rec-4158
-  gains '[<date> PLAN B DELIVERED via PLAN-ops-writer-row-rules]' naming what shipped and that plan C remains. Then step 18.
+  gains '[<date> PLAN B DELIVERED via PLAN-ops-writer-row-rules]' naming what shipped and that plan C remains. Then step 20.
 - 'Report: what was implemented, deploy outcome, verification results'
 rollback: >-
   Revert the squash commit: the governed workflow redeploys the prior code and projection on the revert's merge. Rejected
