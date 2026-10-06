@@ -420,3 +420,109 @@ def test_a_naive_created_timestamp_is_read_as_utc() -> None:
     check_row(TABLE, row, rules, datetime(2026, 8, 31, 23, 0), prior=prior)
     with pytest.raises(RowRuleError):
         check_row(TABLE, row, rules, datetime(2026, 9, 1, 0, 0), prior=prior)
+
+
+WHEN_COLUMNS = {
+    "kind": {"role": "input", "sql_type": "VARCHAR", "nullable": False, "accepted_values": ["a", "b", "c"]},
+    "label": {
+        "role": "input",
+        "sql_type": "VARCHAR",
+        "nullable": True,
+        "pattern_when": [{"when": {"kind": ["a"]}, "pattern": "^x:[a-z]+$"}],
+    },
+}
+
+
+def _when_rules(**label) -> RowRules:
+    columns = {**WHEN_COLUMNS, "label": {**WHEN_COLUMNS["label"], **label}}
+    return RowRules.from_projection(columns)
+
+
+def test_pattern_when_binds_only_where_its_condition_matches() -> None:
+    rules = _when_rules()
+    check_row(TABLE, {"kind": "a", "label": "x:ok"}, rules, CREATED)
+    check_row(TABLE, {"kind": "a", "label": None}, rules, CREATED)
+    check_row(TABLE, {"kind": "b", "label": "anything at all"}, rules, CREATED)
+    check_row(TABLE, {"kind": "b", "label": 7}, rules, CREATED)
+    for bad in ("nope", "x:", "x:ok\n", "X:ok", 7, b"x:ok"):
+        with pytest.raises(RowRuleError) as raised:
+            check_row(TABLE, {"kind": "a", "label": bad}, rules, CREATED)
+        assert (raised.value.table, raised.value.rule, raised.value.column) == (TABLE, "pattern_when", "label")
+        assert "nope" not in str(raised.value)
+    two = _when_rules(
+        pattern_when=[
+            {"when": {"kind": ["a"]}, "pattern": "^x:[a-z]+$"},
+            {"when": {"kind": ["a", "b"]}, "pattern": "^.{1,4}$"},
+        ]
+    )
+    check_row(TABLE, {"kind": "b", "label": "abcd"}, two, CREATED)
+    with pytest.raises(RowRuleError, match="pattern_when"):
+        check_row(TABLE, {"kind": "a", "label": "x:toolong"}, two, CREATED)
+
+
+def test_pattern_when_fails_closed_on_malformed_projection() -> None:
+    good_entry = {"when": {"kind": ["a"]}, "pattern": "^x$"}
+    malformed = [
+        None,
+        "x",
+        {},
+        [],
+        ["x"],
+        [{"when": {"kind": ["a"]}}],
+        [{"pattern": "^x$"}],
+        [{**good_entry, "extra": 1}],
+        [{"when": {}, "pattern": "^x$"}],
+        [{"when": {"kind": "a"}, "pattern": "^x$"}],
+        [{"when": {"kind": ["a"]}, "pattern": "("}],
+        [{"when": {"kind": ["a"]}, "pattern": 5}],
+        [{"when": {"ghost": ["a"]}, "pattern": "^x$"}],
+        [{"when": {"kind": ["zzz"]}, "pattern": "^x$"}],
+    ]
+    for bad in malformed:
+        with pytest.raises(RuleProjectionError, match="pattern_when"):
+            _when_rules(pattern_when=bad)
+    with pytest.raises(RuleProjectionError, match="not a dateable rule"):
+        _when_rules(exclude_before={"pattern_when": "2026-09-01"})
+
+
+def test_conditions_must_name_known_columns_and_values() -> None:
+    def project(rule: str, condition) -> RowRules:
+        columns = {**WHEN_COLUMNS, "other": {"nullable": True, rule: condition}}
+        return RowRules.from_projection(columns)
+
+    for rule in ("required_when", "null_or_zero_when"):
+        project(rule, {"kind": ["a", "b"]})
+        with pytest.raises(RuleProjectionError, match=rule):
+            project(rule, {"ghost": ["a"]})
+        with pytest.raises(RuleProjectionError, match=rule):
+            project(rule, {"kind": ["a", "typo"]})
+    open_values = {"free": {"nullable": True}, "other": {"nullable": True, "required_when": {"free": ["anything"]}}}
+    assert RowRules.from_projection(open_values).required_when["other"] == {"free": frozenset({"anything"})}
+
+
+def test_patterns_are_compiled_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    columns = {
+        "kind": {"nullable": False, "accepted_values": ["a"]},
+        "p": {"nullable": True, "pattern": "^p$"},
+        "arr": {"nullable": True, "array_element_format": "^e$"},
+        "w": {"nullable": True, "pattern_when": [{"when": {"kind": ["a"]}, "pattern": "^w$"}]},
+    }
+    rules = RowRules.from_projection(columns)
+
+    class Untouchable:
+        def __getattr__(self, name: str):
+            raise AssertionError(f"check_row used re.{name}")
+
+    monkeypatch.setattr(rules_module, "re", Untouchable())
+    check_row(TABLE, {"kind": "a", "p": "p", "arr": ["e", "e"], "w": "w"}, rules, CREATED)
+    for bad in ({"p": "q"}, {"arr": ["e", "z"]}, {"w": "z"}):
+        with pytest.raises(RowRuleError):
+            check_row(TABLE, {"kind": "a", **bad}, rules, CREATED)
+
+
+def test_pattern_when_always_binds_older_rows_and_unhashable_conditions_fail_closed() -> None:
+    rules = _when_rules()
+    with pytest.raises(RowRuleError, match="pattern_when"):
+        check_row(TABLE, {"kind": "a", "label": "bad"}, rules, CREATED, prior={"kind": "a", "label": "bad"})
+    with pytest.raises(RuleProjectionError, match="required_when"):
+        RowRules.from_projection({**WHEN_COLUMNS, "other": {"nullable": True, "required_when": {"kind": [["a"]]}}})

@@ -5,9 +5,11 @@ same engine (rec-4158). Every rule is built from the generator projection (RowRu
 module names a table, a column or a column value of any contract. check_row raises RowRuleError, which names the
 table, the rule and the column and never a row value.
 
-A None value passes every value rule (min_length, pattern, array_element_format, accepted_values): NULL is not_null's
-concern alone. A dated rule (exclude_before) binds an insert always, and an older row only when the write changes the
-rule's column (the recorded older-rows rule).
+A None value passes every value rule (min_length, pattern, pattern_when, array_element_format, accepted_values): NULL is
+not_null's concern alone. pattern_when is a list of {when, pattern} entries: a non-None value must fully match the pattern
+of every entry whose condition (the required_when grammar) the row meets, and a non-str value under a met entry violates;
+it is not dateable and always binds. A dated rule (exclude_before) binds an insert always, and an older row only when the
+write changes the rule's column (the recorded older-rows rule).
 """
 
 from __future__ import annotations
@@ -33,6 +35,7 @@ _COLUMN_KEYS = frozenset(
         "null_or_zero_when",
         "representation_of",
         "pattern",
+        "pattern_when",
         "not_null",
         "min_length",
         "array_element_format",
@@ -82,9 +85,10 @@ class RowRules:
     accepted_values: Mapping[str, frozenset[str]] = field(default_factory=dict)
     required_when: Mapping[str, Mapping[str, frozenset[str]]] = field(default_factory=dict)
     exactly_one_of: tuple[tuple[str, ...], ...] = ()
-    patterns: Mapping[str, str] = field(default_factory=dict)
+    patterns: Mapping[str, re.Pattern[str]] = field(default_factory=dict)
+    pattern_when: Mapping[str, tuple[tuple[Mapping[str, frozenset[str]], re.Pattern[str]], ...]] = field(default_factory=dict)
     min_length: Mapping[str, int] = field(default_factory=dict)
-    element_formats: Mapping[str, str] = field(default_factory=dict)
+    element_formats: Mapping[str, re.Pattern[str]] = field(default_factory=dict)
     exclude_before: Mapping[str, Mapping[str, datetime]] = field(default_factory=dict)
     producer_exemptions: Mapping[tuple[str, str], tuple[str, str]] = field(default_factory=dict)
     not_before: Mapping[str, str] = field(default_factory=dict)
@@ -106,9 +110,10 @@ class RowRules:
         not_null: set[str] = set()
         accepted: dict[str, frozenset[str]] = {}
         required: dict[str, dict[str, frozenset[str]]] = {}
-        patterns: dict[str, str] = {}
+        patterns: dict[str, re.Pattern[str]] = {}
+        conditional: dict[str, tuple[tuple[Mapping[str, frozenset[str]], re.Pattern[str]], ...]] = {}
         min_length: dict[str, int] = {}
-        element_formats: dict[str, str] = {}
+        element_formats: dict[str, re.Pattern[str]] = {}
         dated: dict[str, dict[str, datetime]] = {}
         producer: dict[tuple[str, str], tuple[str, str]] = {}
         not_before: dict[str, str] = {}
@@ -129,16 +134,13 @@ class RowRules:
                 not_null.add(name)
             if "min_length" in spec:
                 min_length[name] = _min_length(name, spec["min_length"])
-            if "array_element_format" in spec:
-                element_formats[name] = _pattern(name, spec["array_element_format"])
             if "accepted_values" in spec:
                 accepted[name] = frozenset(spec["accepted_values"])
             if "required_when" in spec:
-                required[name] = _condition(name, "required_when", spec["required_when"])
+                required[name] = _condition(name, "required_when", spec["required_when"], columns)
             if "null_or_zero_when" in spec:
-                zero[name] = _condition(name, "null_or_zero_when", spec["null_or_zero_when"])
-            if "pattern" in spec:
-                patterns[name] = _pattern(name, spec["pattern"])
+                zero[name] = _condition(name, "null_or_zero_when", spec["null_or_zero_when"], columns)
+            _collect_formats(name, spec, columns, patterns, conditional, element_formats)
             if "not_before" in spec:
                 not_before[name] = _column_ref(name, "not_before", spec["not_before"], columns)
             if "at_most" in spec:
@@ -162,6 +164,7 @@ class RowRules:
             required_when=required,
             exactly_one_of=groups,
             patterns=patterns,
+            pattern_when=conditional,
             min_length=min_length,
             element_formats=element_formats,
             exclude_before=dated,
@@ -231,23 +234,66 @@ def _collect_exemptions(
             exemptions[leg] = recorded
 
 
-def _condition(column: str, rule: str, raw: Any) -> dict[str, frozenset[str]]:
+def _collect_formats(
+    column: str,
+    spec: Mapping[str, Any],
+    columns: Mapping[str, Mapping[str, Any]],
+    patterns: dict[str, re.Pattern[str]],
+    conditional: dict[str, tuple[tuple[Mapping[str, frozenset[str]], re.Pattern[str]], ...]],
+    element_formats: dict[str, re.Pattern[str]],
+) -> None:
+    if "array_element_format" in spec:
+        element_formats[column] = _pattern(column, spec["array_element_format"])
+    if "pattern" in spec:
+        patterns[column] = _pattern(column, spec["pattern"])
+    if "pattern_when" in spec:
+        conditional[column] = _pattern_when(column, spec["pattern_when"], columns)
+
+
+def _condition(column: str, rule: str, raw: Any, columns: Mapping[str, Mapping[str, Any]]) -> dict[str, frozenset[str]]:
     if not isinstance(raw, Mapping) or not raw:
         raise RuleProjectionError(f"{column}: {rule} must be a non-empty mapping")
     out: dict[str, frozenset[str]] = {}
     for key, values in raw.items():
         if not isinstance(values, (list, tuple)) or not values:
             raise RuleProjectionError(f"{column}: {rule}.{key} must be a non-empty list")
-        out[key] = frozenset(values)
+        if key not in columns:
+            raise RuleProjectionError(f"{column}: {rule} names unknown column {key!r}")
+        declared = columns[key].get("accepted_values")
+        try:
+            allowed = frozenset(values)
+            outside = declared is not None and not allowed <= set(declared)
+        except TypeError as exc:
+            raise RuleProjectionError(f"{column}: {rule}.{key} holds an unhashable value") from exc
+        if outside:
+            raise RuleProjectionError(f"{column}: {rule}.{key} names value(s) outside the column's accepted_values")
+        out[key] = allowed
     return out
 
 
-def _pattern(column: str, raw: Any) -> str:
+def _pattern_when(
+    column: str, raw: Any, columns: Mapping[str, Mapping[str, Any]]
+) -> tuple[tuple[Mapping[str, frozenset[str]], re.Pattern[str]], ...]:
+    if not isinstance(raw, (list, tuple)) or not raw:
+        raise RuleProjectionError(f"{column}: pattern_when must be a non-empty list")
+    entries = []
+    for entry in raw:
+        if not isinstance(entry, Mapping) or set(entry) != {"when", "pattern"}:
+            raise RuleProjectionError(f"{column}: each pattern_when entry must be a mapping of exactly when and pattern")
+        entries.append(
+            (
+                _condition(column, "pattern_when", entry["when"], columns),
+                _pattern(column, entry["pattern"], rule="pattern_when"),
+            )
+        )
+    return tuple(entries)
+
+
+def _pattern(column: str, raw: Any, *, rule: str = "pattern") -> re.Pattern[str]:
     try:
-        re.compile(raw)
+        return re.compile(raw)
     except (re.error, TypeError) as exc:
-        raise RuleProjectionError(f"{column}: pattern is not a valid regex") from exc
-    return raw
+        raise RuleProjectionError(f"{column}: {rule} is not a valid regex") from exc
 
 
 def _column_ref(column: str, rule: str, other: Any, columns: Mapping[str, Any]) -> str:
@@ -330,8 +376,15 @@ def _check_presence(table: str, row: Mapping[str, Any], rules: RowRules, binds: 
 def _check_formats(table: str, row: Mapping[str, Any], rules: RowRules, binds: Any) -> None:
     for column, pattern in rules.patterns.items():
         value = row.get(column)
-        if value is not None and re.fullmatch(pattern, value) is None and binds(column, "pattern"):
+        if value is not None and pattern.fullmatch(value) is None and binds(column, "pattern"):
             raise RowRuleError(table, "pattern", column)
+    for column, entries in rules.pattern_when.items():
+        value = row.get(column)
+        if value is None:
+            continue
+        for condition, pattern in entries:
+            if _matches(row, condition) and (not isinstance(value, str) or pattern.fullmatch(value) is None):
+                raise RowRuleError(table, "pattern_when", column)
     for column, floor in rules.min_length.items():
         value = row.get(column)
         if value is not None and (not isinstance(value, str) or len(value.strip()) < floor) and binds(column, "min_length"):
@@ -342,10 +395,10 @@ def _check_formats(table: str, row: Mapping[str, Any], rules: RowRules, binds: A
             raise RowRuleError(table, "array_element_format", column)
 
 
-def _elements_match(value: Any, pattern: str) -> bool:
+def _elements_match(value: Any, pattern: re.Pattern[str]) -> bool:
     if not isinstance(value, list):
         return False
-    return all(isinstance(item, str) and re.fullmatch(pattern, item) is not None for item in value)
+    return all(isinstance(item, str) and pattern.fullmatch(item) is not None for item in value)
 
 
 def _check_relations(table: str, row: Mapping[str, Any], rules: RowRules, created_timestamp: datetime, binds: Any) -> None:

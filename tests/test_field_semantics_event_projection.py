@@ -411,6 +411,22 @@ def test_unknown_rule_key_fails_closed(tmp_path: Path) -> None:
         proj_mod._check_rule_keys("t", "c", {"accepted_values": ["a"]})
 
 
+def test_pattern_when_projects_verbatim(tmp_path: Path) -> None:
+    rule = [{"when": {"retry_count": [1]}, "pattern": "^x:[a-z]+$"}]
+    directory = _fixture_copy(
+        tmp_path,
+        lambda d: _edit_yaml(
+            d / "fixture_events.yaml", lambda c: c["fields"]["retry_count"]["dq_intent"].update(pattern_when=rule)
+        ),
+    )
+    doc = load_contract(directory / "fixture_events.yaml")
+    with patch.object(proj_mod, "_CONTRACTS_DIR", directory):
+        entry = proj_mod.project_event_table(
+            "fixture_events", resolve_refs(doc, directory), {}, doc.governance.partition_by, map_iceberg_type=_map_iceberg_type
+        )
+    assert entry["columns"]["retry_count"]["pattern_when"] == rule
+
+
 def test_envelope_rules_layer_under_a_local_block(tmp_path: Path) -> None:
     def add_envelope_rule(directory: Path) -> None:
         _edit_yaml(

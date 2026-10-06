@@ -196,10 +196,11 @@ def test_severity_closed_and_name_required_on_process_event() -> None:
     name = doc.fields["name"]
     assert name.dq_intent["required_when"] == _PROCESS_EVENT_POINT
     assert "pattern" not in name.dq_intent and "write_time_exemptions" not in name.dq_intent
+    assert [entry["when"] for entry in name.dq_intent["pattern_when"]] == [{"observation_type": ["process_event"]}]
     semantics = _norm(name.semantics)
-    assert "'<source>:<signature>'" in semantics and "not yet write-enforced" in semantics
-    assert "pattern rule is unconditional" in semantics and "tool_call and model_call names" in semantics
-    assert "decision 181 cl.2" in semantics and "rec-4176" in semantics
+    assert "'<source>:<signature>'" in semantics and "not yet write-enforced" not in semantics
+    assert "write-enforced by dq_intent.pattern_when" in semantics and "decision 210 cl.1" in semantics
+    assert "residual" not in semantics
     assert _has(name.amendment_log, "governance_note_add", True)
 
 
