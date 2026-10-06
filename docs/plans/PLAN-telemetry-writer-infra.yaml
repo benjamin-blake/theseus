@@ -21,20 +21,29 @@ scope:
   action: Modify
   purpose: >-
     (1) The shared locals block gains: - `ducklake_telemetry_meta_schema = "ducklake_smoke"`; - `telemetry_blob_data_prefix
-    = "telemetry-blobs"` (the `*_data_prefix` naming the lifecycle guard keys on); - `ducklake_telemetry_blob_root = "s3://${aws_s3_bucket.data_lake.bucket}/${local.telemetry_blob_data_prefix}/"`.
-    (2) The writer's environment gains: - TELEMETRY_META_SCHEMA = local.ducklake_telemetry_meta_schema; - TELEMETRY_DATA_PATH
-    = local.ducklake_smoke_data_path; - TELEMETRY_BLOB_ROOT = local.ducklake_telemetry_blob_root. The reader gains only
-    the first two (C4). The new names leave DUCKLAKE_DATA_PATH, DUCKLAKE_META_SCHEMA (unset, so the code default ducklake_ops)
-    and every ops verb and smoke probe untouched. Nothing reads the new variables until plan 3. No comment line goes inside
-    a `variables = {}` block, because a comment there broke terraform fmt in #1163. (3) The writer's DuckLakeWriterRuntime
-    inline policy gains two statements: - Sid TelemetryBlobReadWrite: exactly s3:GetObject and s3:PutObject on "${aws_s3_bucket.data_lake.arn}/${local.telemetry_blob_data_prefix}/*";
+    = "telemetry-blobs"` (the `*_data_prefix` naming the lifecycle guard keys on); - `ducklake_telemetry_blob_root = "s3://${aws_s3_bucket.data_lake.bucket}/${local.telemetry_blob_data_prefix}/${local.ducklake_telemetry_meta_schema}/"`.
+    The blob root is scoped by the catalog it serves (telemetry-blobs/ducklake_smoke/), so when 2c moves the catalog pin
+    the blob namespace moves with it and smoke-era and production blobs never share a root (which would let rec-4033's per-catalog
+    orphan sweep delete blobs the other catalog references). The IAM grant and the lifecycle rule stay on the whole telemetry-blobs/
+    prefix. The new locals start their own alignment group (a comment line above them), because ducklake_telemetry_meta_schema
+    is longer than every key in the existing group and terraform fmt cannot run locally (Decision 119). (2) The writer's
+    environment gains: - TELEMETRY_META_SCHEMA = local.ducklake_telemetry_meta_schema; - TELEMETRY_DATA_PATH = local.ducklake_smoke_data_path;
+    - TELEMETRY_BLOB_ROOT = local.ducklake_telemetry_blob_root. The reader gains only the first two (C4). The new names
+    leave DUCKLAKE_DATA_PATH, DUCKLAKE_META_SCHEMA (unset, so the code default ducklake_ops) and every ops verb and smoke
+    probe untouched. Nothing reads the new variables until plan 3. No comment line goes inside a `variables = {}` block,
+    because a comment there broke terraform fmt in #1163. (3) The writer's DuckLakeWriterRuntime inline policy gains two
+    statements: - Sid TelemetryBlobReadWrite: exactly s3:GetObject and s3:PutObject on "${aws_s3_bucket.data_lake.arn}/${local.telemetry_blob_data_prefix}/*";
     - Sid TelemetryBlobList: s3:ListBucket on the bucket, with StringLike s3:prefix ["${local.telemetry_blob_data_prefix}/*"].
     There is no DeleteObject: deleting blobs belongs to the orphan sweep (rec-4033) on the maintenance role, because CI
     identities can invoke the writer (Decision 143). The existing ops statements and the reader's policy are unchanged.
     No aws_iam_role resource is edited, the role descriptions included: an aws_iam_role update is outside the authority
-    budget and would route the whole apply to tf-gated-apply. (4) The stale "APPLY POSTURE ... HUMAN-GATED via agent_platform_admin"
-    header comment is corrected, comment only. Since Decision 144 cl.5 / T2.25, in-budget inline-policy updates on these
-    boundary-carrying roles auto-apply behind the guard, and role creation or trust changes still route to tf-gated-apply.
+    budget and would route the whole apply to tf-gated-apply. (4) Comment-only corrections: the stale "APPLY POSTURE ...
+    HUMAN-GATED via agent_platform_admin" header, and the stale CODE/INFRA COUPLING paragraph and the comments that still
+    name build_lambda --ducklake-only --deploy as the routine code path (:21-26, :262-263, :298-300; the governed channel
+    deploy-ducklake-lambdas.yml is routine, the build_lambda path is break-glass only, Decision 125/126). The corrected
+    header also says an aws_lambda_function_url change routes to tf-gated-apply (T2.45). Since Decision 144 cl.5 / T2.25,
+    in-budget inline-policy updates on these boundary-carrying roles auto-apply behind the guard, and role creation or trust
+    changes still route to tf-gated-apply.
 - file: terraform/personal/main.tf
   action: Modify
   purpose: >-
@@ -43,14 +52,16 @@ scope:
     = 30, bound to SNAPSHOT_RETAIN_DAYS as the other two rules are, and cross-checked by TestDataLakeLifecycleGoverned;
     - expiration.expired_object_delete_marker = true; - abort_incomplete_multipart_upload after 1 day; - no current-version
     expiration. The header comment above the resource gains one paragraph saying: - this extends the Decision 192 noncurrent-reclaim
-    family to a non-DuckLake prefix; - lifecycle now reclaims noncurrent BLOB versions, which is new delete authority over
-    old versions only; - current blobs never expire, because telemetry_transcripts rows reference them by content_uri; orphans
-    are rec-4033's; - the window moves with SNAPSHOT_RETAIN_DAYS if rec-3870 changes it. The two DuckLake rules are unchanged.
+    family to a non-DuckLake prefix; - the same justification as the DuckLake rules holds: telemetry_transcripts.content_uri
+    addresses a blob by key, never by version id, so noncurrent versions sit outside the referenced set and the rule touches
+    no referenced blob; - current blobs never expire, because telemetry_transcripts rows reference them by content_uri;
+    orphans are rec-4033's; - the window moves with SNAPSHOT_RETAIN_DAYS if rec-3870 changes it. The two DuckLake rules
+    are unchanged.
 - file: terraform/personal/ducklake_catalog_dr.tf
   action: Modify
   purpose: >-
-    Comment only: the same stale "HUMAN-GATED via agent_platform_admin" APPLY POSTURE header is corrected to the current
-    in-budget routing. No resource changes.
+    Comment only: the same stale "HUMAN-GATED via agent_platform_admin" APPLY POSTURE header (:12-20) and stale CODE/INFRA
+    COUPLING paragraph (:22-27) are corrected to the current routing. No resource changes.
 - file: tests/checks/iam_tf/test_telemetry_infra_pins.py
   action: Create
   purpose: >-
@@ -59,16 +70,21 @@ scope:
     predicate has its own red case under pytest.raises on synthetic HCL. Positive nodes that are red on the unchanged tree:
     test_telemetry_pins_target_the_smoke_catalog (writer and reader TELEMETRY_META_SCHEMA = local.ducklake_telemetry_meta_schema
     whose value is "ducklake_smoke", TELEMETRY_DATA_PATH = local.ducklake_smoke_data_path; the failure message says the
-    pin moves only with a Decision, 2c), test_blob_root_only_on_the_writer, test_writer_blob_grant_shape (TelemetryBlobReadWrite
-    exactly [s3:GetObject, s3:PutObject] on the telemetry_blob_data_prefix path; TelemetryBlobList conditioned on that prefix),
-    test_blob_lifecycle_rule_covers_the_prefix (the rule exists, Enabled, derived prefix with a trailing slash). Invariant
-    nodes, green before and after: test_ops_catalog_env_is_untouched (neither function sets DUCKLAKE_META_SCHEMA; DUCKLAKE_DATA_PATH
-    = local.ducklake_prod_data_path, DUCKLAKE_EXTENSION_DIRECTORY = local.ducklake_extension_dir and DUCKLAKE_FIELD_SEMANTICS_PATH
-    = the bundled /var/task path, each unchanged) and test_reader_has_no_blob_grant (no reader statement names the telemetry
-    prefix or a bucket-wide object resource). The no-Delete predicate rejects any statement on either role whose actions
-    include s3:DeleteObject, s3:Delete* or s3:* and whose resources cover the telemetry prefix, the prefix path or a bucket-wide
-    /*. Red cases: test_pin_guard_rejects_a_moved_pin, test_blob_root_guard_rejects_a_reader_root, test_grant_guard_rejects_delete
-    (literal DeleteObject, s3:Delete* and s3:* on the prefix, and on bucket-wide /*), test_lifecycle_guard_rejects_a_missing_rule,
+    pin moves only with a Decision, 2c), test_blob_root_only_on_the_writer (writer TELEMETRY_BLOB_ROOT = local.ducklake_telemetry_blob_root,
+    which resolves under telemetry-blobs/ and ends with the pinned meta schema; the reader has none), test_writer_blob_grant_shape
+    (TelemetryBlobReadWrite exactly [s3:GetObject, s3:PutObject] on the telemetry_blob_data_prefix path; TelemetryBlobList
+    conditioned on that prefix), test_blob_lifecycle_rule_covers_the_prefix (the rule exists, Enabled, derived prefix with
+    a trailing slash). Invariant nodes, green before and after: test_ops_catalog_env_is_untouched (neither function sets
+    DUCKLAKE_META_SCHEMA; DUCKLAKE_DATA_PATH = local.ducklake_prod_data_path, DUCKLAKE_EXTENSION_DIRECTORY = local.ducklake_extension_dir
+    and DUCKLAKE_FIELD_SEMANTICS_PATH = the bundled /var/task path, each unchanged) and test_reader_has_no_blob_grant (no
+    reader statement names the telemetry prefix or a bucket-wide object resource). The no-Delete predicate evaluates every
+    Allow statement on both roles with IAM-wildcard semantics: an action (or an Allow carrying NotAction) covers a delete
+    when a case-insensitive fnmatch of it matches s3:DeleteObject or s3:DeleteObjectVersion (so s3:*, s3:Delete*, s3:*Object*
+    and s3:Delete*Version all count), and a resource covers the prefix when a fnmatch of the resolved resource matches a
+    probe key under the bucket's telemetry-blobs/ prefix (so bucket-wide /*, telemetry-* and *blobs* all count). The reader
+    no-grant predicate uses the same resource coverage for any s3 action. Red cases: test_pin_guard_rejects_a_moved_pin,
+    test_blob_root_guard_rejects_a_reader_root, test_grant_guard_rejects_delete (literal DeleteObject, literal DeleteObjectVersion,
+    s3:Delete*, s3:*, NotAction, and a partial-wildcard resource such as telemetry-* and a bucket-wide /*), test_lifecycle_guard_rejects_a_missing_rule,
     test_ops_env_guard_rejects_a_moved_ops_catalog, test_reader_guard_rejects_a_blob_grant. About 200 SLOC.
 - file: config/agent/verification_registry/entries/telemetry-infra-pins.yaml
   action: Create
@@ -110,19 +126,20 @@ infrastructure_dependencies:
 acceptance_criteria:
 - >-
   Telemetry catalog pins: - the writer and reader environments carry TELEMETRY_META_SCHEMA = local.ducklake_telemetry_meta_schema
-  ("ducklake_smoke") and TELEMETRY_DATA_PATH = local.ducklake_smoke_data_path; - only the writer carries TELEMETRY_BLOB_ROOT;
-  - DUCKLAKE_DATA_PATH, DUCKLAKE_EXTENSION_DIRECTORY and DUCKLAKE_FIELD_SEMANTICS_PATH are unchanged, and DUCKLAKE_META_SCHEMA
-  stays unset.
+  ("ducklake_smoke") and TELEMETRY_DATA_PATH = local.ducklake_smoke_data_path; - only the writer carries TELEMETRY_BLOB_ROOT,
+  scoped to the pinned catalog (telemetry-blobs/ducklake_smoke/); - DUCKLAKE_DATA_PATH, DUCKLAKE_EXTENSION_DIRECTORY and
+  DUCKLAKE_FIELD_SEMANTICS_PATH are unchanged, and DUCKLAKE_META_SCHEMA stays unset.
 - >-
   Writer blob grant: DuckLakeWriterRuntime gains TelemetryBlobReadWrite (exactly s3:GetObject and s3:PutObject on telemetry-blobs/*)
-  and TelemetryBlobList (ListBucket conditioned on telemetry-blobs/*). No grant anywhere on these roles allows s3:DeleteObject
-  on the prefix. The reader's policy is unchanged.
+  and TelemetryBlobList (ListBucket conditioned on telemetry-blobs/*). No Allow on either role covers s3:DeleteObject or
+  s3:DeleteObjectVersion on the prefix under IAM-wildcard semantics. The reader's policy is unchanged.
 - >-
   The data_lake lifecycle configuration has a third Enabled rule on "telemetry-blobs/" with noncurrent_days == SNAPSHOT_RETAIN_DAYS,
   the delete-marker sweep, a 1-day multipart abort and no current-version expiry. The existing lifecycle guard passes unchanged.
 - >-
-  A graduated standing guard pins all of the above, with red cases. Moving the pin off ducklake_smoke needs a guard edit
-  together with a Decision.
+  A graduated standing guard pins all of the above, with red cases. Moving the pin, or the blob root, off ducklake_smoke
+  requires editing the guard, and the guard's failure message names the Decision that move needs (2c); the Decision half
+  is a review obligation, not machine-enforced.
 - >-
   The change is a single guard-pass plan: no aws_iam_role, trust, Function URL, delete or replace, PlatformDev/PlatformAdmin
   or Lambda-packaged file change. The stale HUMAN-GATED headers in ducklake_lambdas.tf and ducklake_catalog_dr.tf are corrected;
@@ -232,8 +249,10 @@ verification_plan:
   fix_if: >-
     - A red record or a stale-plan failure: run the acknowledge-and-retry dispatch (Decision 183) after checking that no
     other terraform/personal PR interleaved. Never apply locally. - A routed gated-apply: the guard saw an out-of-budget
-    change, so stop and report it to Benjamin. - A log without per-resource lines (output suppressed): assert the same resource
-    set from the PR's speculative-plan comment and record that the log shape differs.
+    change, so stop and report it to Benjamin. - A red record from the subagent plan review (a REVISE verdict, not a stale
+    plan): read the verdict and report it to Benjamin; do not acknowledge-and-retry, since the same review would object
+    again. - A log without per-resource lines (output suppressed): assert the same resource set from the PR's speculative-plan
+    comment and record that the log shape differs.
 - step: 6
   phase: post-deploy
   action: >-
@@ -295,13 +314,15 @@ test_obligations:
   test_selector: tests/checks/iam_tf/test_telemetry_infra_pins.py::test_telemetry_pins_target_the_smoke_catalog
   red_green_expectation: red before (module absent; then the predicate fails on the unchanged Terraform), green after
 - source: terraform/personal/ducklake_lambdas.tf
-  behavior: TELEMETRY_BLOB_ROOT is set on the writer only, pointing at the telemetry prefix.
+  behavior: >-
+    TELEMETRY_BLOB_ROOT is on the writer only and scoped to the pinned catalog (telemetry-blobs/ducklake_smoke/).
   verification_step: 1
   test_selector: tests/checks/iam_tf/test_telemetry_infra_pins.py::test_blob_root_only_on_the_writer
   red_green_expectation: red before (module absent; then the predicate fails on the unchanged Terraform), green after
 - source: terraform/personal/ducklake_lambdas.tf
   behavior: >-
-    The writer blob grant is exactly Get/Put plus a prefix-conditioned List, and nothing grants a delete on the prefix.
+    The writer blob grant is exactly Get/Put plus a prefix-conditioned List, and no Allow on either role covers s3:DeleteObject
+    or s3:DeleteObjectVersion on the prefix under IAM-wildcard semantics.
   verification_step: 1
   test_selector: tests/checks/iam_tf/test_telemetry_infra_pins.py::test_writer_blob_grant_shape
   red_green_expectation: red before (module absent; then the predicate fails on the unchanged Terraform), green after
@@ -371,7 +392,8 @@ context:
   both resolved below. RELATED 92, 125, 79, 88, 84/91, 184, 200, 207/210, 181, 132/176/189, 101, 83, 183, 180, 118, 128/166.
   Decisions triaged: 163 of 163. Roadmap items intersected: 3; CONFLICT: 0; RELATED: 3.
 - >-
-  gates: decision-scout=FLAGS_FOUND (2 flags, resolved); plan-critique=REVISE r1 (3 + 5 minor), all fixed
+  gates: decision-scout=FLAGS_FOUND (2 flags, resolved); plan-critique=REVISE r1 (3 + 5 minor) and r2 (2 + 6 minor), all
+  fixed
 - >-
   Direction: Benjamin 2026-10-06 said "write the plan" ("so long as there's verification after deployment") on /mnt/project-files/telemetry-slice2/step6b-2a2-plan2-presentation.md.
   The four forks below take the recommended options. His explicit confirmation of them was asked before the plan PR merges.
@@ -389,6 +411,10 @@ context:
 - >-
   fork: blob retention | chosen: a 30-day noncurrent window bound to SNAPSHOT_RETAIN_DAYS, no current expiry | class: asked
   | precedent: Benjamin 2026-10-06 | precedent_kind: answered-fork | reversible: yes | persisted: main.tf
+- >-
+  Decided with notice (critique r2): the writer's blob root is scoped by the catalog it serves (telemetry-blobs/ducklake_smoke/),
+  inside the approved telemetry-blobs/ grant and lifecycle prefix, so a later catalog flip (2c) gives production blobs their
+  own root and rec-4033's per-catalog sweep can never reach the other catalog's blobs; it joins the pinned set.
 - >-
   Decision 48 deferral: PlatformDev cannot read Lambda configuration or role policies (AccessDenied on lambda:GetFunctionConfiguration
   and iam:GetRolePolicy, measured 2026-10-06). This deviates from the approved presentation, which named a writer-policy
@@ -419,8 +445,9 @@ execution_steps:
   positive nodes (pins, blob root, grant shape, lifecycle rule) fail on their own assertions, the two invariant nodes pass,
   and all six red cases pass.
 - >-
-  Edit terraform/personal/ducklake_lambdas.tf: the three locals, the writer and reader environment entries (keep `=` aligned
-  and no comments inside the blocks), the two writer statements, and the header comment correction.
+  Edit terraform/personal/ducklake_lambdas.tf: the three locals (their own fmt alignment group, a comment line above), the
+  writer and reader environment entries (keep `=` aligned and no comments inside the blocks), the two writer statements,
+  and the header comment correction.
 - >-
   Edit terraform/personal/main.tf (the third rule plus one header paragraph) and the ducklake_catalog_dr.tf header comment.
 - Write the registry shard for graduated step 1.
@@ -428,7 +455,8 @@ execution_steps:
   Portal bookkeeping (get_rec_write_guidance first, Decision 66): file one rec (file_rec) for the 'APPLY POSTURE: HUMAN-GATED
   via agent_platform_admin' headers in terraform/personal/ducklake_maintenance.tf, prod_lambdas.tf and sns_alerts.tf --
   verify each against its resources' current routing (some may still be gated, e.g. resource policies) and correct the stale
-  ones.
+  ones; the same rec notes that the writer role's description and the section comment above it no longer list telemetry-blobs/,
+  which an aws_iam_role update (gated) would fix.
 - >-
   Execute Verification Plan steps 1-4. Loop until they pass, and never weaken an assertion. On an unrecoverable failure,
   stop and RCA (Decision 55).
@@ -438,7 +466,7 @@ execution_steps:
   speculative-plan comment showing a guard PASS with no tf-gated-apply routing and a change set of exactly the four in-place
   updates (0 to add, 4 to change, 0 to destroy). Any other pending change in the plan means unrelated drift: stop and report
   it before asking for the merge. Then ask Benjamin for the merge. On his word, squash-merge with the PR body as commit_message,
-  export MERGE_SHA, and run post-deploy steps 5-7.
+  export MERGE_SHA, and run post-deploy steps 5-8.
 - 'Report: what was provisioned, the verification results, and the plan 3 / plan 4 notes'
 rollback: >-
   Revert the squash commit in a new PR. CI then plans and applies the revert through the same pipeline: the writer policy
