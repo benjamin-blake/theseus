@@ -91,7 +91,8 @@ scope:
     check name and .pre-commit-config.yaml hook id, the sources rec-4172 will emit); test_rule_binds_process_event_rows_only
     (RowRules built from the real projected columns: a tool_call named Bash or mcp__github__create_pull_request, a step
     title with spaces and a NULL-named turn pass; every reject vector on a process_event raises RowRuleError rule
-    pattern_when and every accept vector passes).
+    pattern_when and every accept vector passes); test_no_python_file_restates_the_rule (reads the pattern from the
+    contract at test time and finds it in no *.py file under src, scripts or tests).
 - file: tests/fixtures/process_event_name_vectors.py
   action: Create
   purpose: >-
@@ -105,8 +106,9 @@ scope:
   purpose: >-
     pytest.mark.integration on a genuine local DuckLake catalog (tests/fixtures/turn_capture_ducklake helpers, which fail
     and never skip when the extension is unavailable, rec-4071): a golden hook case recorded by the v2 producer lands
-    with the rule live; the same batch with one process_event name broken raises GateError caused by RowRuleError rule
-    pattern_when and leaves telemetry_observations at zero rows (nothing from the batch written); every stored
+    with the rule live; in a fresh catalog the same batch with one process_event name broken raises GateError caused by
+    RowRuleError rule pattern_when and leaves telemetry_observations at zero rows and ducklake_list_files unchanged
+    (nothing from the batch written); every stored
     process_event name passes DuckDB's regexp_full_match with the projected regex, and every shared vector
     (tests/fixtures/process_event_name_vectors.py) gets the same verdict from DuckDB as from Python re (the regex stays
     portable to a later DuckDB-side census).
@@ -166,8 +168,9 @@ verification_plan:
     tests/telemetry/test_process_event_name_rule.py::test_every_emitted_v2_name_conforms
     tests/telemetry/test_process_event_name_rule.py::test_registered_hooks_and_planned_sources_conform
     tests/telemetry/test_process_event_name_rule.py::test_rule_binds_process_event_rows_only
+    tests/telemetry/test_process_event_name_rule.py::test_no_python_file_restates_the_rule
     tests/test_field_semantics_event_projection.py::test_pattern_when_projects_verbatim -q
-  expected: Exit 0, 6 passed. Red before, because the nodes do not exist.
+  expected: Exit 0, 7 passed. Red before, because the nodes do not exist.
   expected_literals: []
   fix_if: >-
     A real v2 or registered name fails -> STOP and return to the operator (the grammar or the producer is wrong; a
@@ -243,9 +246,9 @@ verification_plan:
   hermetic: true
   graduation: waive
   graduation_waiver_reason: >-
-    Its second half needs the implementation (red before), but its first half is a negated sweep that is green on any
-    tree without the regex, so as a standing guard it would mostly pass vacuously; the contract and shipped-projection
-    tests (step 2) are its graduated form.
+    A shard would pin the regex literal and couple every future grammar amendment to it; step 2's graduated
+    test_no_python_file_restates_the_rule (reading the regex from the contract) and the contract and shipped-projection
+    nodes are its standing form.
 - step: 8
   phase: pre-deploy
   action: Full tier on the committed, rebased, clean tree before handoff (Decision 163).
@@ -259,12 +262,12 @@ verification_plan:
   phase: post-deploy
   action: All five DuckLake deploy records name the merge commit (the governed workflow shipped this code).
   command: >-
-    bin/venv-python -c "import json,subprocess,boto3;s=boto3.Session(profile_name='agent_platform').client('s3');
+    git fetch origin main --quiet && bin/venv-python -c "import json,subprocess,boto3;s=boto3.Session(profile_name='agent_platform').client('s3');
     h=subprocess.check_output(['git','log','-1','--format=%H','origin/main','--','src/row_rules']).decode().strip();
     f=['writer','reader','maintenance','maintenance-smoke','catalog-dr']; bad=[x for x in f if
     json.loads(s.get_object(Bucket='agent-platform-data-lake',Key=f'deploy-records/ducklake/agent-platform-ducklake-{x}.json')['Body'].read()).get('source_git_sha')!=h];
     print('DEPLOY_RECORDS_FRESH' if not bad else bad);assert not bad"
-  expected: Exit 0 and DEPLOY_RECORDS_FRESH printed (git fetch origin main first).
+  expected: Exit 0 and DEPLOY_RECORDS_FRESH printed.
   fix_if: >-
     A stale record -> the workflow failed or skipped: read its run, RCA, re-dispatch the governed workflow; never a local
     build_lambda --deploy without the operator's direction. A later DuckLake merge -> compare against that sha.
@@ -355,7 +358,7 @@ constraints:
 - No rescue agents or workaround loops (Decision 55).
 context:
 - "Decision-scout: FLAGS_FOUND -- NOTE 48 (V3 acceptance must be behavioural): the deployed writer cannot exercise the telemetry name rule until rec-4024 slice 2a-2 plan 3 ships the telemetry writer verb; the real local DuckLake test (step 3) is the behavioural proof until then and 2a-2's isolated smoke carries a broken-name reject case (relayed to its owner); operator accepted the deferral 2026-10-06. CITE: 210, 118, 79, 126, 166. Decisions triaged: 163 of 163. Roadmap items intersected: 8; CONFLICT: 0; RELATED: 8."
-- "gates: decision-scout=FLAGS_FOUND (NOTE 48 resolved by deferral); plan-critique=PENDING"
+- "gates: decision-scout=FLAGS_FOUND (NOTE 48 resolved by deferral); plan-critique=REVISE r1 (F1-F4 fixed, advisories F5-F7 applied, F8 noted), PROCEED after 2 rounds; round 2 autonomous (optional F1-F4 applied; R3 non-str pattern TypeError left out of scope)"
 - "Operator direction (Benjamin): 2026-10-05 'make and implement a plan to flip the enforcement; it should not be lost to a rec'; 2026-10-06 recommendations 1 and 3 accepted, then 'write the plan' after fork 2 was explained. Evidence: /mnt/project-files/name-grammar-enforcement/ (step6b-presentation.md, fable-independent-design.md -- Fable's independent design, adopted except dateability)."
 - "fork: which signature sources the contract allows | chosen: closed list hook, gate, precommit | class: asked | precedent: operator answer 2026-10-06 | precedent_kind: answered-fork | reversible: yes | persisted: telemetry_observations.yaml name dq_intent"
 - "fork: pattern_when dateable (exclude_before) | chosen: not dateable, as required_when; a date fails closed | class: asked | precedent: operator answer 2026-10-06 | precedent_kind: answered-fork | reversible: yes | persisted: src/row_rules/rules.py _DATEABLE_KINDS"
@@ -385,7 +388,8 @@ execution_steps:
   Persist the obligations this plan creates on their owning recs (call get_rec_write_guidance first, Decision 66; fetch
   each rec immediately before update_rec and prepend a dated note to its full context): rec-4024 -- slice 2a-2's
   isolated smoke carries a process_event whose name breaks the grammar, expecting 422 row_rule, rule pattern_when,
-  column name (the premise of this plan's Decision 48 deferral); rec-4026 -- hook_name falls back to hookName when a
+  column name (the premise of this plan's Decision 48 deferral), and production capture beyond this repository's hooks
+  waits on rec-4026's hookName fallback; rec-4026 -- hook_name falls back to hookName when a
   script stem fails the signature class; rec-4172 -- its per-version signature prefixes stay within the contract's
   sources (hook, gate, precommit), a new source shipping as amendment plus writer deploy first; rec-4158 -- plan C's
   all-writer conformance check maps pattern_when.
