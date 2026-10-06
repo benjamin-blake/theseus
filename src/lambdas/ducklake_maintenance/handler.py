@@ -589,8 +589,12 @@ def _parse_event(event: dict[str, Any]) -> dict[str, Any]:
 
 
 def _response(status: int, payload: dict[str, Any]) -> dict[str, Any]:
-    """Build a Function-URL response envelope."""
-    return {"statusCode": status, "headers": {"Content-Type": "application/json"}, "body": json.dumps(payload)}
+    """Build a Function-URL response envelope. A 5xx body is also printed to CloudWatch Logs: an
+    asynchronous (EventBridge) invoke discards the response, so the log is the only record of why."""
+    body = json.dumps(payload)
+    if status >= 500:
+        print(f"MAINTENANCE_FAILURE status={status} body={body}")
+    return {"statusCode": status, "headers": {"Content-Type": "application/json"}, "body": body}
 
 
 def handler(event: dict[str, Any], context: Any = None) -> dict[str, Any]:

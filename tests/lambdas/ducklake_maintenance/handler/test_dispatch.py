@@ -127,6 +127,26 @@ def test_handler_maintenance_error_maps_to_500():
     assert body["breaker_tripped"] is True
 
 
+def test_handler_breaker_trip_reason_is_logged(capsys):
+    """A scheduled (async) invoke discards the response body, so the trip reason must reach the
+    Lambda log -- without it a weekly gc_ops trip cannot be attributed to a guard."""
+    raiser = MagicMock(side_effect=DuckLakeMaintenanceError("G2 retention floor violated: 1 snapshot(s) remain"))
+    with patch.dict(h._ACTIONS, {"gc_ops": raiser}):
+        with patch.object(h, "_emit_maintenance_metric"):
+            h.handler({"action": "gc_ops"})
+    out = capsys.readouterr().out
+    assert "MAINTENANCE_FAILURE status=500" in out
+    assert "G2 retention floor violated" in out
+
+
+def test_response_logs_only_server_errors(capsys):
+    h._response(200, {"ok": True})
+    h._response(400, {"ok": False})
+    assert capsys.readouterr().out == ""
+    h._response(500, {"ok": False, "error_type": "runtime"})
+    assert "MAINTENANCE_FAILURE status=500" in capsys.readouterr().out
+
+
 def test_handler_version_mismatch_maps_to_500():
     raiser = MagicMock(side_effect=VersionMismatchError("bad version"))
     with patch.dict(h._ACTIONS, {"catalog_reinit": raiser}):

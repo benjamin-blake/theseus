@@ -268,6 +268,17 @@ aws sns list-subscriptions-by-topic \
   --profile agent_platform
 ```
 
+The admin alarm declares no dimensions, so it sees only `agent-platform-ducklake-maintenance`'s
+datum; the smoke function emits `MaintenanceBreakerTrip` with `Catalog=smoke` and trips only
+`ducklake-maintenance-smoke-circuit-breaker` (the per-deploy `--lambda-maintenance-breaker` gate
+trips it on purpose). A scheduled run discards its response, so the cause is in the function's
+CloudWatch log as a `MAINTENANCE_FAILURE status=500 body=...` line (`MAINTENANCE_SMOKE_FAILURE` on
+the smoke function):
+```bash
+aws logs filter-log-events --log-group-name /aws/lambda/agent-platform-ducklake-maintenance \
+  --filter-pattern '"MAINTENANCE_FAILURE"' --start-time <epoch-ms> --profile agent_platform
+```
+
 **Triage the trip by cause, not just by the metric.** Four causes exist, and only three are the
 "RCA the file accumulation" case below:
 - **G1/G2/G3 violation** -- RCA the file accumulation: is the expiry cutoff too recent (< 30

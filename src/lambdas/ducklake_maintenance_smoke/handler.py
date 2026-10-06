@@ -44,8 +44,16 @@ def _open_connection() -> Any:
     return rt.open_connection(dsn=dsn, data_path=DATA_PATH, meta_schema=META_SCHEMA, extension_directory=EXTENSION_DIRECTORY)
 
 
+# Every smoke datum carries this dimension so the production breaker alarm (declared with NO
+# dimensions in terraform/personal/ducklake_maintenance.tf) never fires on a smoke trip -- the
+# per-deploy breaker_probe gate trips this Lambda deliberately. The smoke alarm selects it.
+METRIC_DIMENSIONS: dict[str, str] = {"Catalog": "smoke"}
+
+
 def _emit_maintenance_metric(name: str, value: float, *, profile: str | None = None) -> None:
-    rt.emit_metric(name, value, namespace=maint.MAINTENANCE_CLOUDWATCH_NAMESPACE, profile=profile)
+    rt.emit_metric(
+        name, value, namespace=maint.MAINTENANCE_CLOUDWATCH_NAMESPACE, profile=profile, dimensions=METRIC_DIMENSIONS
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -161,8 +169,12 @@ def _parse_event(event: dict[str, Any]) -> dict[str, Any]:
 
 
 def _response(status: int, payload: dict[str, Any]) -> dict[str, Any]:
-    """Build a Function-URL response envelope."""
-    return {"statusCode": status, "headers": {"Content-Type": "application/json"}, "body": json.dumps(payload)}
+    """Build a Function-URL response envelope. A 5xx body is also printed to CloudWatch Logs: an
+    asynchronous (EventBridge) invoke discards the response, so the log is the only record of why."""
+    body = json.dumps(payload)
+    if status >= 500:
+        print(f"MAINTENANCE_SMOKE_FAILURE status={status} body={body}")
+    return {"statusCode": status, "headers": {"Content-Type": "application/json"}, "body": body}
 
 
 def handler(event: dict[str, Any], context: Any = None) -> dict[str, Any]:

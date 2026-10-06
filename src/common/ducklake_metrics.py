@@ -20,11 +20,13 @@ def emit_metric(
     unit: str = "None",
     profile: str | None = None,
     client: Any = None,
+    dimensions: dict[str, str] | None = None,
 ) -> None:
     """Emit a single CloudWatch metric datum. Best-effort: a metrics failure must not fail a write.
 
     Pass `client` to inject a CloudWatch client (tests / a shared client). In the Lambda the ambient
-    execution-role credentials are used (no profile).
+    execution-role credentials are used (no profile). `dimensions` makes the datum a distinct
+    CloudWatch metric: an alarm declared with no dimensions never sees a dimensioned datum.
     """
     try:
         if client is None:
@@ -34,10 +36,10 @@ def emit_metric(
 
             session = boto3.Session(profile_name=resolve_aws_profile(profile))
             client = session.client("cloudwatch")
-        client.put_metric_data(
-            Namespace=namespace,
-            MetricData=[{"MetricName": name, "Value": float(value), "Unit": unit}],
-        )
+        datum: dict[str, Any] = {"MetricName": name, "Value": float(value), "Unit": unit}
+        if dimensions:
+            datum["Dimensions"] = [{"Name": k, "Value": v} for k, v in dimensions.items()]
+        client.put_metric_data(Namespace=namespace, MetricData=[datum])
     except Exception:  # noqa: BLE001 -- metrics are observability, never a write-blocking failure
         pass
 

@@ -59,8 +59,8 @@ resource "aws_cloudwatch_log_group" "ducklake_maintenance_smoke" {
 # ---------------------------------------------------------------------------
 # Smoke-prefix-scoped execution role: S3 Get/Put/Delete/List on the SMOKE prefix ONLY (no prod
 # prefix grant -- the blast-radius boundary this whole split exists to enforce), Neon DSN read,
-# DuckLakeMaintenance CloudWatch metrics (shared namespace with the admin function -- both singleton
-# cadences alarm through the same MaintenanceBreakerTrip metric), logs.
+# DuckLakeMaintenance CloudWatch metrics (shared namespace with the admin function; this function's
+# data carry the Catalog=smoke dimension, so the two breaker alarms watch distinct metrics), logs.
 # ---------------------------------------------------------------------------
 
 resource "aws_iam_role" "ducklake_maintenance_smoke" {
@@ -299,9 +299,11 @@ resource "aws_lambda_permission" "ducklake_maintenance_smoke_hot_merge" {
 }
 
 # ---------------------------------------------------------------------------
-# Circuit-breaker CloudWatch metric alarm (namespace-scoped, shared DuckLakeMaintenance namespace
-# with the admin function's own alarm in ducklake_maintenance.tf -- both singletons emit
-# MaintenanceBreakerTrip; a distinct alarm name here avoids colliding with the admin alarm).
+# Circuit-breaker CloudWatch metric alarm (shared DuckLakeMaintenance namespace with the admin
+# function's own alarm in ducklake_maintenance.tf). Both singletons emit MaintenanceBreakerTrip; this
+# function emits it with the Catalog=smoke dimension (handler METRIC_DIMENSIONS) and this alarm
+# selects that dimension, so the per-deploy breaker_probe gate's deliberate trip never reaches the
+# admin alarm, which is declared with no dimensions.
 # ---------------------------------------------------------------------------
 
 resource "aws_cloudwatch_metric_alarm" "ducklake_maintenance_smoke_breaker" {
@@ -314,6 +316,10 @@ resource "aws_cloudwatch_metric_alarm" "ducklake_maintenance_smoke_breaker" {
   period              = 300
   statistic           = "Sum"
   threshold           = 1
+
+  dimensions = {
+    Catalog = "smoke"
+  }
 
   alarm_actions = [aws_sns_topic.alerts.arn]
   ok_actions    = [aws_sns_topic.alerts.arn]
