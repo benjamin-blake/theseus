@@ -29,8 +29,9 @@ scope:
     a malformed shape: not a list, empty, an entry that is not a mapping or whose keys are not exactly when and pattern,
     a bad condition, a bad regex. The shared condition parser also fails closed, for pattern_when, required_when and
     null_or_zero_when alike, when a condition names a column the projection lacks or a value outside that column's
-    declared accepted_values (a typo would otherwise be a silently dead rule; all 27 live telemetry conditions pass and
-    no ops projection declares one, measured at planning). rec-4164: pattern, array_element_format and pattern_when
+    declared accepted_values (a typo would otherwise be a silently dead rule; at planning every live telemetry condition
+    passes this check and no ops projection declares a condition). The existing required_when fail-closed test's message
+    match keeps holding: the error names the rule key either way. rec-4164: pattern, array_element_format and pattern_when
     regexes compile once in from_projection and check_row uses the compiled objects. Still stdlib only, naming no table,
     column or value of any contract; the module docstring's value-rule list gains pattern_when.
 - file: scripts/field_semantics_event_projection.py
@@ -61,7 +62,8 @@ scope:
   purpose: >-
     Mirror test (Decision 131): test_pattern_when_binds_only_where_its_condition_matches,
     test_pattern_when_fails_closed_on_malformed_projection, test_conditions_must_name_known_columns_and_values and
-    test_patterns_are_compiled_once (rec-4164's node, at the path the engine moved to).
+    test_patterns_are_compiled_once (rec-4164's node, at the path the engine moved to; behavioural: with the module's
+    re.compile/re.fullmatch patched to raise, check_row still evaluates pattern, array_element_format and pattern_when).
 - file: tests/test_field_semantics_event_projection.py
   action: Modify
   purpose: >-
@@ -78,17 +80,26 @@ scope:
 - file: tests/telemetry/test_process_event_name_rule.py
   action: Create
   purpose: >-
-    Stdlib-only (fast tier). Every test reads the regex from the contract, never restates it (Decision 210 cl.3):
-    test_contract_declares_the_name_grammar (exact pattern_when and its scope); test_shipped_projection_carries_the_rule
+    Fast tier (no duckdb). No test restates the regex (Decision 210 cl.3): each reads it from the contract, and its
+    content is pinned by behaviour through the shared accept/reject vectors.
+    test_contract_declares_the_name_grammar (structure: exactly one entry, when == {observation_type: [process_event]},
+    the pattern compiles and is anchored); test_shipped_projection_carries_the_rule
     (config/lambda/ducklake/field_semantics.yaml's telemetry_observations name column equals the contract's rule);
     test_every_emitted_v2_name_conforms (every process_event name in the golden corpus's expected rows);
     test_registered_hooks_and_planned_sources_conform (hook_name over every command registered in .claude/settings.json
     and over '<HookEvent>:<tool>' forms including an MCP tool name with a hyphenated server, plus every registered gate
     check name and .pre-commit-config.yaml hook id, the sources rec-4172 will emit); test_rule_binds_process_event_rows_only
     (RowRules built from the real projected columns: a tool_call named Bash or mcp__github__create_pull_request, a step
-    title with spaces and a NULL-named turn pass; a process_event named never_on_main, Hook:x, hook:, hook:a b, hook:x:y,
-    hook:.foo, hooks:x, gate:x/y, edit:suppression_added, a non-ASCII or a 201-character signature raises RowRuleError
-    rule pattern_when; hook:unknown and a 200-character signature pass).
+    title with spaces and a NULL-named turn pass; every reject vector on a process_event raises RowRuleError rule
+    pattern_when and every accept vector passes).
+- file: tests/fixtures/process_event_name_vectors.py
+  action: Create
+  purpose: >-
+    The shared accept/reject vectors, data only, imported by both new test modules (a cross-test import is banned).
+    Accept: hook:unknown, hook:never_on_main, hook:PreToolUse.mcp__github-full__create_pull_request,
+    gate:validate_scope_boundary, precommit:ruff-format, a 200-character signature. Reject: never_on_main, Bash, Hook:x,
+    hook:, hook:a b, hook:x:y, hook:.foo, hooks:x, gate:x/y, edit:suppression_added, a non-ASCII signature, a
+    201-character signature, a trailing newline.
 - file: tests/telemetry/test_name_rule_ducklake_integration.py
   action: Create
   purpose: >-
@@ -96,8 +107,9 @@ scope:
     and never skip when the extension is unavailable, rec-4071): a golden hook case recorded by the v2 producer lands
     with the rule live; the same batch with one process_event name broken raises GateError caused by RowRuleError rule
     pattern_when and leaves telemetry_observations at zero rows (nothing from the batch written); every stored
-    process_event name passes DuckDB's regexp_full_match with the projected regex, and the step 2 vectors get the same
-    verdict from DuckDB as from Python re (the regex stays portable to a later DuckDB-side census).
+    process_event name passes DuckDB's regexp_full_match with the projected regex, and every shared vector
+    (tests/fixtures/process_event_name_vectors.py) gets the same verdict from DuckDB as from Python re (the regex stays
+    portable to a later DuckDB-side census).
 - file: config/agent/verification_registry/entries/telemetry-name-rule-engine.yaml
   action: Create
   purpose: Graduated shard for VP step 1 (check_id telemetry-name-rule-engine).
@@ -220,14 +232,30 @@ verification_plan:
   graduation_waiver_reason: Diffs against origin/main, so it depends on this session's transient branch state; validate_contract_drift and the structural size check are its standing forms.
 - step: 7
   phase: pre-deploy
-  action: Full tier before handoff.
-  command: bin/venv-python -m scripts.validate
-  expected: Exit 0.
-  fix_if: Any failure -> fix at root cause and rerun from the start (handoff_policy).
+  action: Single source -- the regex's signature class appears in no Python file (only the contract and the generated projection carry it).
+  command: >-
+    test -z "$(grep -rlF '[A-Za-z0-9_.-]{0,199}' src scripts tests)" && test "$(grep -lF '[A-Za-z0-9_.-]{0,199}'
+    docs/contracts/telemetry_observations.yaml config/lambda/ducklake/field_semantics.yaml | wc -l)" -eq 2 && echo
+    REGEX_SINGLE_SOURCE
+  expected: Exit 0 and REGEX_SINGLE_SOURCE printed (no Python file carries the class; both the contract and the projection do).
+  expected_literals: []
+  fix_if: A Python hit -> a test or module restates the rule; read it from the contract instead.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: >-
+    Its second half needs the implementation (red before), but its first half is a negated sweep that is green on any
+    tree without the regex, so as a standing guard it would mostly pass vacuously; the contract and shipped-projection
+    tests (step 2) are its graduated form.
+- step: 8
+  phase: pre-deploy
+  action: Full tier on the committed, rebased, clean tree before handoff (Decision 163).
+  command: bin/venv-python -m scripts.validate && bin/venv-python -m scripts.checks.validation_result --verify-head
+  expected: Exit 0; Validation Summary (scope all) passes and the head is verified.
+  fix_if: Any failure -> fix at root cause and rerun from the start (handoff_policy); never raise a budget, skip a check or weaken an assertion.
   hermetic: false
   graduation: waive
   graduation_waiver_reason: Invokes scripts.validate (recursion refusal); it is the handoff gate itself.
-- step: 8
+- step: 9
   phase: post-deploy
   action: All five DuckLake deploy records name the merge commit (the governed workflow shipped this code).
   command: >-
@@ -241,7 +269,7 @@ verification_plan:
     A stale record -> the workflow failed or skipped: read its run, RCA, re-dispatch the governed workflow; never a local
     build_lambda --deploy without the operator's direction. A later DuckLake merge -> compare against that sha.
   hermetic: false
-- step: 9
+- step: 10
   phase: post-deploy
   action: The shared engine on the deployed writer still rejects a rule-breaking ops write (plan B's gate).
   command: >-
@@ -252,7 +280,7 @@ verification_plan:
   expected: Exit 0 and LAMBDA_ROW_RULES OK printed.
   fix_if: A 200 or a wrong rule -> STOP, revert the merge (the workflow redeploys the prior code) and RCA (Decision 55).
   hermetic: false
-- step: 10
+- step: 11
   phase: post-deploy
   action: The positive path on production -- a rule-clean write, update and supersede.
   command: >-
@@ -263,7 +291,7 @@ verification_plan:
   expected: Exit 0 and OPS_RYW OK printed.
   fix_if: A row_rule 422 on the clean probe -> STOP, revert, RCA.
   hermetic: false
-- step: 11
+- step: 12
   phase: post-deploy
   action: Bookkeeping landed -- rec-4176 and rec-4164 closed by the Resolves trailer.
   command: >-
@@ -295,14 +323,14 @@ test_obligations:
   red_green_expectation: red before (node absent), green after
 - source: config/agent/verification_registry/entries/telemetry-name-rule-engine.yaml
   behavior: The graduated engine guard runs VP step 1's nodes as a standing regression check.
-  verification_step: 7
+  verification_step: 8
   command: bin/venv-python -m scripts.validate
   waiver_reason: >-
     A new graduated shard is replayed differentially by validate_verification_registry -- it must fail on origin/main
     and pass on HEAD, its own red-green proof.
 - source: config/agent/verification_registry/entries/telemetry-name-rule-contract.yaml
   behavior: The graduated contract guard runs VP step 2's nodes as a standing regression check.
-  verification_step: 7
+  verification_step: 8
   command: bin/venv-python -m scripts.validate
   waiver_reason: >-
     A new graduated shard is replayed differentially by validate_verification_registry -- it must fail on origin/main
@@ -333,9 +361,10 @@ context:
 - "fork: pattern_when dateable (exclude_before) | chosen: not dateable, as required_when; a date fails closed | class: asked | precedent: operator answer 2026-10-06 | precedent_kind: answered-fork | reversible: yes | persisted: src/row_rules/rules.py _DATEABLE_KINDS"
 - "fork: bundle rec-4164 (compile regexes once) | chosen: bundled | class: asked | precedent: operator answer 2026-10-06 | precedent_kind: answered-fork | reversible: yes | persisted: this plan's bundled_recommendations"
 - "fork: implementation home | chosen: this thread implements after the plan merges | class: asked | precedent: operator answer 2026-10-05 ('make and implement') | precedent_kind: answered-fork | reversible: yes | persisted: this plan's execution_steps"
-- "Producer facts: src/turn_capture/observations.py hook_name emits hook:<script stem> or hook:<HookEvent>[.<tool>]; the golden corpus and the 13 registered hooks fit; 137 registered gate check names (max 42 chars) and 9 pre-commit hook ids (max 27) fit the signature class."
-- "Relayed to slice 3b (rec-4026/rec-4172) via the coordinator: hook_name must fall back to hookName when a script stem fails the signature class (an argument token like --config=foo.py would be rejected); rec-4172's per-version signature prefixes must stay within this contract's sources. rec-4158 plan C's all-writer conformance check must map pattern_when."
+- "Producer facts: src/turn_capture/observations.py hook_name emits hook:<script stem> or hook:<HookEvent>[.<tool>]; the golden corpus and the 13 registered hooks fit; 139 registered gate check names at planning (max 42 chars) and 9 pre-commit hook ids (max 27) fit the signature class."
+- "Obligations this plan creates on other recs (relayed to the coordinator 2026-10-06 and persisted by the first execution steps): rec-4024 smoke reject vector; rec-4026 hookName fallback when a script stem fails the class (an argument token like --config=foo.py would be rejected); rec-4172 prefixes within the contract's sources; rec-4158 plan C maps pattern_when."
 - "Blast radius: a reject drops one table's rows for one turn (record_turn.batches); recovery is a re-parse under a new parser_version. No telemetry row exists in production."
+- "Generator: the event projection does not call RowRules.from_projection at generation (the ops branch does); a malformed pattern_when still fails CI through the fast-tier spec loads (load_specs, the shipped-projection test), so no generator change."
 - "Governance notes stay as they are: their 'required_when, accepted_values and pattern are write-enforced whatever their enforced value' sentence is about the enforced flag, which pattern_when does not carry."
 pre_implementation_checklist:
 - Branch confirmed not on main
@@ -352,9 +381,29 @@ execution_steps:
 - 'scripts/field_semantics_event_projection.py: add pattern_when to _COLUMN_RULE_KEYS.'
 - 'docs/contracts/telemetry_observations.yaml: the name dq_intent rule, the semantics sentence replacing the C11 residual, the amendment_log entry; regenerate field_semantics.yaml; re-pin the residual assertions in tests/telemetry/test_contract_lifecycle_friction.py.'
 - Add the two graduated registry shards.
-- 'rec-4164: its acceptance names tests/telemetry/test_rules.py, which plan B moved; repoint it to tests/row_rules/test_rules.py::test_patterns_are_compiled_once through update_rec before the merge.'
+- >-
+  Persist the obligations this plan creates on their owning recs (call get_rec_write_guidance first, Decision 66; fetch
+  each rec immediately before update_rec and prepend a dated note to its full context): rec-4024 -- slice 2a-2's
+  isolated smoke carries a process_event whose name breaks the grammar, expecting 422 row_rule, rule pattern_when,
+  column name (the premise of this plan's Decision 48 deferral); rec-4026 -- hook_name falls back to hookName when a
+  script stem fails the signature class; rec-4172 -- its per-version signature prefixes stay within the contract's
+  sources (hook, gate, precommit), a new source shipping as amendment plus writer deploy first; rec-4158 -- plan C's
+  all-writer conformance check maps pattern_when.
+- >-
+  rec-4164: its file (src/telemetry/rules.py) and acceptance (tests/telemetry/test_rules.py) predate plan B's move;
+  repoint both to src/row_rules/rules.py and tests/row_rules/test_rules.py::test_patterns_are_compiled_once through
+  update_rec before the merge (ci.yml's trailer job runs the acceptance command).
 - Execute the Verification Plan pre-deploy steps; loop until pass; on unrecoverable failure stop and RCA (Decision 55).
-- 'Code review; open the PR with the trailer Resolves rec-4176, rec-4164; wait for the operator''s explicit deploy approval before merging (pass the trailer in the squash commit_message); then run the post-deploy steps.'
+- 'Code review (the code-review skill in a fresh context); fix every blocking finding.'
+- >-
+  CLOSURE -- separate facts, in order (a)-(e) (implement skill Commit Flows; docs/contracts/git-ops.yaml), each reported
+  on its own. (a) READINESS: bin/venv-python -m scripts.session.github_readiness (unknown is never PASS). (b) Set
+  implementation_declared true, commit, git fetch origin main and git rebase origin/main (STOP on conflict). (c) VP
+  step 8 on the committed, rebased, clean tree. (d) Write a scratchpad JSON holding exactly the
+  scripts.session.postflight_evidence.CATEGORIES keys, then bin/venv-python -m scripts.session.postflight --evidence
+  that file. (e) Push, open the PR with the trailer Resolves rec-4176, rec-4164, subscribe; on green CI on the head,
+  ask the operator in the thread for the deploy approval and merge only on that explicit word, squashing with a
+  commit_message that carries the Resolves trailer in its own block; then run the post-deploy steps.
 - 'Report: what was implemented, verification results'
 work_areas: []
 rollback: >-
