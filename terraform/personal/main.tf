@@ -141,6 +141,13 @@ resource "aws_s3_bucket_policy" "data_lake_https_only" {
 # TestDataLakeLifecycleGoverned in the companion test module). NO current-version expiration rule
 # on either: DuckLake addresses live Parquet by key, never by version id, so an age-based rule
 # here would delete data the catalog still references.
+#
+# A third rule (telemetry-blobs-noncurrent-reclaim) extends the Decision 192 noncurrent-reclaim family to a
+# non-DuckLake prefix, the telemetry blob store (T2.36 slice 2a-2). The same justification holds:
+# telemetry_transcripts.content_uri addresses a blob by key, never by version id, so noncurrent versions sit
+# outside the referenced set and the rule touches no referenced blob. Current blobs never expire, because
+# telemetry_transcripts rows reference them by content_uri; orphans are rec-4033's. The window moves with
+# SNAPSHOT_RETAIN_DAYS if rec-3870 changes it.
 # ---------------------------------------------------------------------------
 
 resource "aws_s3_bucket_lifecycle_configuration" "data_lake" {
@@ -183,6 +190,29 @@ resource "aws_s3_bucket_lifecycle_configuration" "data_lake" {
       # Same shape and window as the production rule above -- noncurrent_days stays bound to
       # SNAPSHOT_RETAIN_DAYS for BOTH rules; revisiting the retention window is rec-3870's
       # business, not this one's.
+      noncurrent_days = 30
+    }
+
+    expiration {
+      expired_object_delete_marker = true
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 1
+    }
+  }
+
+  rule {
+    id     = "telemetry-blobs-noncurrent-reclaim"
+    status = "Enabled"
+
+    filter {
+      prefix = "${local.telemetry_blob_data_prefix}/"
+    }
+
+    noncurrent_version_expiration {
+      # Same window as the DuckLake rules, bound to SNAPSHOT_RETAIN_DAYS and cross-checked by
+      # TestDataLakeLifecycleGoverned. No current-version expiration: telemetry_transcripts rows reference blobs by key.
       noncurrent_days = 30
     }
 

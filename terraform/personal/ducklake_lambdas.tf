@@ -8,22 +8,20 @@
 # GetObject only, so a write from the read role is denied (closed-boundary proof).
 #
 # ---------------------------------------------------------------------------
-# APPLY POSTURE (Decision 35 + 77): HUMAN-GATED via agent_platform_admin.
+# APPLY POSTURE (Decision 77, 126, 144 cl.5): CI plans and applies; the guard decides the route.
 # ---------------------------------------------------------------------------
-# These resources create NEW IAM roles + inline policies, which trip the Decision-77 deterministic
-# guard (scripts/terraform_apply_guard.py, fail-closed on any IAM/trust change). The whole
-# terraform/personal apply for this change therefore routes to the MANUAL agent_platform_admin path,
-# NOT push-to-main auto-apply. IAM must precede the code deploy (terraform CLAUDE.md IAM-precedence):
-#   1. build_lambda --ducklake-only  (uploads the 2 zips + 2 layer zips to S3)
-#   2. terraform -chdir=terraform/personal plan  -> present to human -> apply via agent_platform_admin
-#   3. build_lambda --ducklake-only --deploy  (updates the two functions' code from S3)
+# terraform/personal applies through CI (speculative plan on the PR, apply-sandbox on merge). The
+# deterministic guard (scripts/terraform_apply_guard.py) routes by change class: in-budget inline-policy
+# UPDATEs on these boundary-carrying roles (Decision 144 cl.5 / T2.25), Lambda environment changes and
+# lifecycle changes auto-apply; role CREATION, trust changes, destroys and replaces, out-of-budget IAM
+# and any aws_lambda_function_url change (T2.45) route to the tf-gated-apply Environment. IAM must
+# precede the code that reads it (terraform CLAUDE.md IAM-precedence).
 #
-# CODE/INFRA COUPLING (Decision 125, environment-taxonomy.yaml conformance): RESOLVED. The two
-# aws_lambda_function resources below now carry a lifecycle block ignoring source_code_hash
-# changes, so a code-only redeploy no longer surfaces as a Terraform diff on this IAM-gated apply
-# path. Code deploys now go via `build_lambda --ducklake-only --deploy` (update-function-code,
-# independent of terraform) -- knowingly-interim break-glass status (Decision 125 pt 2-5) pending
-# the governed code-deploy CD channel (tracked as rec-2646's residual scope / A2/B1 follow-on).
+# CODE/INFRA COUPLING (Decision 125/126, environment-taxonomy.yaml conformance): RESOLVED. The two
+# aws_lambda_function resources below carry a lifecycle block ignoring source_code_hash changes, so a
+# code-only redeploy never surfaces as a Terraform diff. Routine code deploys go through the governed
+# code-deploy channel (.github/workflows/deploy-ducklake-lambdas.yml); `build_lambda --ducklake-only
+# --deploy` is break-glass only (Decision 125 pt 2-5).
 #
 # SINGLE-PORTAL NOTE (Decision 78/81): at T2.19 these Function URLs become the CLOSED ops boundary --
 # the writer is the sole ops_* write authority, the reader the sole read authority. ops_data_portal
@@ -42,6 +40,12 @@ locals {
   ducklake_extension_dir    = "/opt/duckdb_extensions"
   # SSOT pin: config/lambda/ducklake/version.yaml -- must be try()-wrapped (validate_terraform_try gate)
   ducklake_version = try(yamldecode(file("${path.module}/../../config/lambda/ducklake/version.yaml")).duckdb_version, "")
+
+  # Telemetry (T2.36, slice 2a-2): pinned to the ISOLATED smoke catalog until a Decision moves it (slice 2c). The blob root
+  # is scoped by the catalog it serves, so smoke-era and production blobs never share a root.
+  ducklake_telemetry_meta_schema = "ducklake_smoke"
+  telemetry_blob_data_prefix     = "telemetry-blobs"
+  ducklake_telemetry_blob_root   = "s3://${aws_s3_bucket.data_lake.bucket}/${local.telemetry_blob_data_prefix}/${local.ducklake_telemetry_meta_schema}/"
 }
 
 # ---------------------------------------------------------------------------
@@ -120,7 +124,7 @@ resource "aws_cloudwatch_log_group" "ducklake_reader" {
 }
 
 # ---------------------------------------------------------------------------
-# Write-scoped execution role: S3 read+write on the smoke prefix, DSN secret read, metrics, logs.
+# Write-scoped execution role: S3 RW on the ducklake/ + smoke prefixes, Get/Put on telemetry-blobs/, DSN secret read, metrics, logs.
 # ---------------------------------------------------------------------------
 
 data "aws_iam_policy_document" "lambda_assume" {
@@ -184,6 +188,26 @@ resource "aws_iam_role_policy" "ducklake_writer" {
         }
       },
       {
+        # Telemetry blobs (T2.36 slice 2a-2): Get and Put only on the telemetry-blobs/ prefix. No Delete --
+        # orphan deletion belongs to the maintenance role (rec-4033), because CI identities can invoke the
+        # writer (Decision 143). No prefix fence yet (slice 2c).
+        Sid      = "TelemetryBlobReadWrite"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject", "s3:PutObject"]
+        Resource = ["${aws_s3_bucket.data_lake.arn}/${local.telemetry_blob_data_prefix}/*"]
+      },
+      {
+        Sid      = "TelemetryBlobList"
+        Effect   = "Allow"
+        Action   = ["s3:ListBucket"]
+        Resource = [aws_s3_bucket.data_lake.arn]
+        Condition = {
+          StringLike = {
+            "s3:prefix" = ["${local.telemetry_blob_data_prefix}/*"]
+          }
+        }
+      },
+      {
         # PutMetricData does not support resource-level scoping; constrain to the writer namespace.
         Sid      = "CloudWatchMetrics"
         Effect   = "Allow"
@@ -200,8 +224,8 @@ resource "aws_iam_role_policy" "ducklake_writer" {
 }
 
 # ---------------------------------------------------------------------------
-# Read-scoped execution role: S3 GetObject ONLY on the smoke prefix (no Put/Delete -> writes denied),
-# DSN secret read, logs. No metrics.
+# Read-scoped execution role: S3 GetObject ONLY on the ducklake/ + smoke prefixes (no Put/Delete -> writes denied;
+# no telemetry-blobs/ access until slice 2b needs it), DSN secret read, logs. No metrics.
 # ---------------------------------------------------------------------------
 
 resource "aws_iam_role" "ducklake_reader" {
@@ -260,7 +284,7 @@ resource "aws_iam_role_policy" "ducklake_reader" {
 
 # ---------------------------------------------------------------------------
 # The two Lambda functions (from S3). source_code_hash try()-guarded; code is updated post-apply by
-# build_lambda --ducklake-only --deploy.
+# the governed code-deploy channel (Decision 125/126).
 # ---------------------------------------------------------------------------
 
 resource "aws_lambda_function" "ducklake_writer" {
@@ -287,6 +311,9 @@ resource "aws_lambda_function" "ducklake_writer" {
       DUCKLAKE_DATA_PATH            = local.ducklake_prod_data_path
       DUCKLAKE_EXTENSION_DIRECTORY  = local.ducklake_extension_dir
       DUCKLAKE_FIELD_SEMANTICS_PATH = "/var/task/config/lambda/ducklake/field_semantics.yaml"
+      TELEMETRY_META_SCHEMA         = local.ducklake_telemetry_meta_schema
+      TELEMETRY_DATA_PATH           = local.ducklake_smoke_data_path
+      TELEMETRY_BLOB_ROOT           = local.ducklake_telemetry_blob_root
     }
   }
 
@@ -295,8 +322,8 @@ resource "aws_lambda_function" "ducklake_writer" {
     aws_cloudwatch_log_group.ducklake_writer,
   ]
 
-  # Decision 125 physical decoupling: code deploys go via build_lambda --ducklake-only --deploy
-  # (update-function-code), not terraform. Without this, every rebuild's non-reproducible zip bytes
+  # Decision 125 physical decoupling: code deploys go through the governed code-deploy channel
+  # (deploy-ducklake-lambdas.yml; build_lambda --deploy is break-glass), not terraform. Without this, every rebuild's non-reproducible zip bytes
   # trip a Terraform diff on this IAM-gated apply path (rec-2646/rec-2654).
   lifecycle {
     ignore_changes = [source_code_hash]
@@ -332,6 +359,8 @@ resource "aws_lambda_function" "ducklake_reader" {
       DUCKLAKE_DATA_PATH            = local.ducklake_prod_data_path
       DUCKLAKE_EXTENSION_DIRECTORY  = local.ducklake_extension_dir
       DUCKLAKE_FIELD_SEMANTICS_PATH = "/var/task/config/lambda/ducklake/field_semantics.yaml"
+      TELEMETRY_META_SCHEMA         = local.ducklake_telemetry_meta_schema
+      TELEMETRY_DATA_PATH           = local.ducklake_smoke_data_path
     }
   }
 
@@ -340,8 +369,8 @@ resource "aws_lambda_function" "ducklake_reader" {
     aws_cloudwatch_log_group.ducklake_reader,
   ]
 
-  # Decision 125 physical decoupling: code deploys go via build_lambda --ducklake-only --deploy
-  # (update-function-code), not terraform. Without this, every rebuild's non-reproducible zip bytes
+  # Decision 125 physical decoupling: code deploys go through the governed code-deploy channel
+  # (deploy-ducklake-lambdas.yml; build_lambda --deploy is break-glass), not terraform. Without this, every rebuild's non-reproducible zip bytes
   # trip a Terraform diff on this IAM-gated apply path (rec-2646/rec-2654).
   lifecycle {
     ignore_changes = [source_code_hash]
@@ -383,12 +412,12 @@ output "ducklake_reader_function_url" {
 }
 
 output "ducklake_writer_function_name" {
-  description = "ducklake_writer Lambda function name (build_lambda --ducklake-only --deploy target)."
+  description = "ducklake_writer Lambda function name (code-deploy channel target)."
   value       = aws_lambda_function.ducklake_writer.function_name
 }
 
 output "ducklake_reader_function_name" {
-  description = "ducklake_reader Lambda function name (build_lambda --ducklake-only --deploy target)."
+  description = "ducklake_reader Lambda function name (code-deploy channel target)."
   value       = aws_lambda_function.ducklake_reader.function_name
 }
 
