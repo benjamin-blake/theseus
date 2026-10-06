@@ -347,6 +347,16 @@ def test_row_rules_projected_from_contracts() -> None:
     assert transcripts["columns"]["content_omitted_reason"]["accepted_values"] == ["oversize"]
 
 
+def test_amended_telemetry_rules_project() -> None:
+    columns = _real_entry("telemetry_observations")["columns"]
+    process_event_point = {"event_kind": ["point"], "observation_type": ["process_event"]}
+    assert columns["severity"]["accepted_values"] == ["info", "warning", "error", "critical"]
+    assert columns["severity"]["required_when"] == process_event_point
+    assert columns["name"]["required_when"] == process_event_point
+    assert "pattern" not in columns["name"]
+    assert "state" not in _real_entry("telemetry_sessions")["columns"]
+
+
 def test_agent_type_accepted_values_come_from_source_registry() -> None:
     registry = yaml.safe_load((_ROOT / "config/agent/data_quality/source_registry.yaml").read_text(encoding="utf-8"))
     expected = [entry["canonical_id"] for entry in registry["entries"]]

@@ -313,7 +313,7 @@ def test_tool_result_capture_policy_declared() -> None:
     assert "/full" in _norm(fields["external_ref"].governance_notes_local) and "/full" in _norm(
         fields["entity_ref"].governance_notes_local
     )
-    assert doc.amendment_log[0].date == "2026-10-04"
+    assert any(entry.date == "2026-10-04" for entry in doc.amendment_log)
 
 
 def test_tool_call_output_fields_declared() -> None:
@@ -349,7 +349,7 @@ def test_model_call_reasoning_fields_declared() -> None:
     assert tokens.dq_intent["null_or_zero_when"] == {"reasoning_visibility": ["none"]}
     assert "subset of tokens_output" in _norm(tokens.description) and "never a local estimate" in _norm(tokens.semantics)
     assert "first that applies" in _norm(doc.fields["reasoning_visibility"].semantics)
-    assert "reasoning_visibility" in doc.amendment_log[0].summary
+    assert any(entry.date == "2026-10-04" and "reasoning_visibility" in entry.summary for entry in doc.amendment_log)
 
 
 def test_parser_version_bumps_on_recorded_input_constant() -> None:
@@ -424,3 +424,17 @@ def test_lexicon_names_tool_output_and_omission() -> None:
     assert "prompt | response | thinking | tool_input | tool_result | tool_output | system" in text
     assert "as the model saw it" in text and "user-facing progress-update thinking blocks" in text
     _write_conformance_entry(lexicon["amendment_log"])
+
+
+def test_subagent_open_timestamp_and_open_marker_ref_declared() -> None:
+    doc = load_contract(_CONTRACTS_DIR / "telemetry_sessions.yaml")
+    timestamp = _norm(doc.fields["event_timestamp"].governance_notes_local)
+    assert "a sub-agent session's open row carries the root start" in timestamp
+    assert "session_started_at is the tree's pin" in timestamp
+    assert "a child's own start is its telemetry_agents open row" in timestamp
+    external_ref = _norm(doc.fields["external_ref"].governance_notes_local)
+    assert "the open marker is '<session entity_ref>#0/open'" in external_ref
+    for name in ("event_timestamp", "external_ref"):
+        log = [e for e in doc.fields[name].amendment_log if e.date == "2026-10-05"]
+        assert len(log) == 1 and log[0].change_class.value == "governance_note_add" and log[0].semantic_break, name
+        assert "rec-4146" in log[0].summary, name
