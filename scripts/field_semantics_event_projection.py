@@ -52,6 +52,7 @@ _COLUMN_RULE_KEYS = (
     "null_or_zero_when",
     "representation_of",
     "pattern",
+    "pattern_when",
     "write_time_exemptions",
 )
 _TABLE_RULE_KEYS = ("exactly_one_of", "content_inline_threshold_bytes", "full_output_cap_bytes", "integrity")
