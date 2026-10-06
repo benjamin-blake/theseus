@@ -12,6 +12,7 @@ kill message builders.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -23,6 +24,26 @@ import yaml
 from scripts.checks.verification import _vp_replay_budget as b
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
+
+_PID_RECORD = re.compile(r"[0-9]+\n")
+
+
+def _read_published_pid(pidfile: Path, timeout: float = 5.0) -> int:
+    """The PID a shell published with ``echo $! > pidfile``, once fully written.
+
+    The redirection creates the file before echo writes to it, so existence alone can expose an
+    empty file (rec-4182); echo's trailing newline is what marks the record complete."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            text = pidfile.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            text = ""
+        if _PID_RECORD.fullmatch(text):
+            return int(text)
+        if time.monotonic() >= deadline:
+            pytest.fail(f"{pidfile} never held a complete PID record within {timeout}s (last read {text!r})")
+        time.sleep(0.05)
 
 
 def _pid_is_dead(pid: int) -> bool:
@@ -37,6 +58,27 @@ def _pid_is_dead(pid: int) -> bool:
     close_paren = text.rfind(")")
     state = text[close_paren + 2] if close_paren != -1 else ""
     return state == "Z"
+
+
+class TestReadPublishedPid:
+    """rec-4182: the publishing write is staged inside the first poll sleep, so each case lands in
+    the created-but-incomplete window deterministically instead of racing a real shell."""
+
+    @pytest.mark.parametrize("staged", ["", "42"], ids=["created-not-written", "written-without-newline"])
+    def test_an_incomplete_pidfile_is_polled_until_the_full_record_lands(self, tmp_path: Path, staged: str) -> None:
+        pidfile = tmp_path / "grandchild.pid"
+        pidfile.write_text(staged, encoding="utf-8")
+
+        def _publish(_seconds: float) -> None:
+            pidfile.write_text("4242\n", encoding="utf-8")
+
+        with patch.object(time, "sleep", side_effect=_publish) as sleep:
+            assert _read_published_pid(pidfile) == 4242
+        assert sleep.call_count == 1
+
+    def test_no_complete_record_fails_naming_the_last_read(self, tmp_path: Path) -> None:
+        with pytest.raises(pytest.fail.Exception, match=r"never held a complete PID record within 0\.1s \(last read ''\)"):
+            _read_published_pid(tmp_path / "never-written.pid", timeout=0.1)
 
 
 class TestRunBoundedHappyPath:
@@ -59,7 +101,8 @@ class TestRunBoundedTimeoutKillsTheProcessGroup:
         assert result.timed_out
         assert result.returncode is None
 
-        pid = int(pidfile.read_text(encoding="utf-8").strip())
+        # run_bounded has already killed and reaped the shell, so the file is final: read it once.
+        pid = _read_published_pid(pidfile, timeout=0.0)
         deadline = time.monotonic() + 5.0
         dead = False
         while time.monotonic() < deadline:
@@ -97,10 +140,7 @@ class TestKillAndReapBoundedWait:
             start_new_session=True,
         )
         shell_pid = popen.pid
-        deadline = time.monotonic() + 5.0
-        while not pidfile.exists() and time.monotonic() < deadline:
-            time.sleep(0.05)
-        grandchild_pid = int(pidfile.read_text(encoding="utf-8").strip())
+        grandchild_pid = _read_published_pid(pidfile)
 
         try:
             with patch.object(b, "_REAP_TIMEOUT_SECONDS", 0.05):
