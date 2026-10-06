@@ -32,6 +32,28 @@ def test_emit_metric_with_injected_client():
     assert calls[0]["MetricData"][0]["MetricName"] == "OccRetryCount"
 
 
+def test_emit_metric_omits_dimensions_by_default():
+    calls = []
+
+    class _CW:
+        def put_metric_data(self, **kwargs):
+            calls.append(kwargs)
+
+    rt.emit_metric("MaintenanceBreakerTrip", 1.0, client=_CW())
+    assert "Dimensions" not in calls[0]["MetricData"][0]
+
+
+def test_emit_metric_attaches_dimensions():
+    calls = []
+
+    class _CW:
+        def put_metric_data(self, **kwargs):
+            calls.append(kwargs)
+
+    rt.emit_metric("MaintenanceBreakerTrip", 1.0, client=_CW(), dimensions={"Catalog": "smoke"})
+    assert calls[0]["MetricData"][0]["Dimensions"] == [{"Name": "Catalog", "Value": "smoke"}]
+
+
 def test_emit_metric_swallows_client_error():
     class _CW:
         def put_metric_data(self, **kwargs):

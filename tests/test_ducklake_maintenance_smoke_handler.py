@@ -9,6 +9,8 @@ operational verb is reachable. Action logic mirrors the admin handler's former s
 from __future__ import annotations
 
 import json
+import re
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -17,6 +19,7 @@ import src.lambdas.ducklake_maintenance_smoke.handler as h
 from src.common.ducklake_maintenance import DuckLakeMaintenanceError
 from src.common.ducklake_runtime import DuckLakeRuntimeError, VersionMismatchError
 from tests.fixtures.ducklake_maintenance_handler import FakeCon, _response_body
+from tests.fixtures.terraform_hcl_blocks import find_resource_block
 
 pytestmark = pytest.mark.unit
 
@@ -322,6 +325,59 @@ def test_handler_breaker_probe_emits_metric_exactly_once():
     assert r["statusCode"] == 500
     trip_emits = [c for c in mock_emit.call_args_list if c.args[0] == "MaintenanceBreakerTrip"]
     assert len(trip_emits) == 1, f"MaintenanceBreakerTrip must be emitted exactly once, got {len(trip_emits)}"
+
+
+# ---------------------------------------------------------------------------
+# Smoke metrics stay off the production breaker alarm
+# ---------------------------------------------------------------------------
+
+_TF_DIR = Path(__file__).resolve().parents[1] / "terraform" / "personal"
+_DIMENSIONS_RE = re.compile(r"dimensions\s*=\s*\{([^}]*)\}")
+_DIMENSION_PAIR_RE = re.compile(r'(\w+)\s*=\s*"([^"]*)"')
+
+
+def _alarm_dimensions(tf_file: str, resource_name: str) -> dict[str, str] | None:
+    block = find_resource_block((_TF_DIR / tf_file).read_text(encoding="utf-8"), "aws_cloudwatch_metric_alarm", resource_name)
+    match = _DIMENSIONS_RE.search(block)
+    return dict(_DIMENSION_PAIR_RE.findall(match.group(1))) if match else None
+
+
+def test_emit_maintenance_metric_carries_smoke_dimension():
+    with patch.object(h.rt, "emit_metric") as mock_emit:
+        h._emit_maintenance_metric("MaintenanceBreakerTrip", 1.0)
+    mock_emit.assert_called_once_with(
+        "MaintenanceBreakerTrip",
+        1.0,
+        namespace=h.maint.MAINTENANCE_CLOUDWATCH_NAMESPACE,
+        profile=None,
+        dimensions={"Catalog": "smoke"},
+    )
+
+
+def test_smoke_alarm_selects_the_handler_dimension():
+    assert _alarm_dimensions("ducklake_maintenance_smoke.tf", "ducklake_maintenance_smoke_breaker") == h.METRIC_DIMENSIONS
+
+
+def test_production_breaker_alarm_declares_no_dimensions():
+    """CloudWatch matches an alarm's dimension set exactly: with none declared, the production alarm
+    sees only the admin function's undimensioned datum, never the smoke Catalog=smoke one that the
+    per-deploy breaker_probe gate trips on purpose."""
+    assert _alarm_dimensions("ducklake_maintenance.tf", "ducklake_maintenance_breaker") is None
+
+
+def test_smoke_breaker_trip_reason_is_logged(capsys):
+    with patch.object(h, "_open_connection", return_value=MagicMock()):
+        with patch.object(h, "_emit_maintenance_metric"):
+            h.handler({"action": "breaker_probe"})
+    out = capsys.readouterr().out
+    assert "MAINTENANCE_SMOKE_FAILURE status=500" in out
+    assert "G1 reachability" in out
+
+
+def test_smoke_response_logs_only_server_errors(capsys):
+    h._response(200, {"ok": True})
+    h._response(400, {"ok": False})
+    assert capsys.readouterr().out == ""
 
 
 # ---------------------------------------------------------------------------
