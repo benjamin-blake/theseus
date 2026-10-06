@@ -94,6 +94,8 @@ _CLOSURE_INPUTS: dict[str, tuple[str, ...]] = {
         "config/lambda/ducklake/field_semantics.static.yaml",
         "src/common/ducklake_maintenance_scope.py",
         "src/common/ducklake_scd2_schema.py",
+        "src/common/ducklake_named_reads.py",
+        "src/common/ducklake_write_verbs.py",
         "src/common/ducklake_partition_spec.py",
         "scripts/checks/contracts/validate_maintenance_policy_matrix.py",
         "scripts/checks/_common.py",

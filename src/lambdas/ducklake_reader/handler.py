@@ -162,6 +162,7 @@ def action_named_read(event: dict[str, Any], con: Any) -> dict[str, Any]:
         "ok": True,
         "verb": verb,
         "registry_version": rt.NAMED_READS_VERSION,
+        "read_version": rt.read_version(verb),
         "rows": _json_safe(rows),
         "row_count": len(rows),
     }
@@ -209,6 +210,9 @@ def action_reset_warm_connection(event: dict[str, Any], _con: Any) -> dict[str, 
     return {"ok": True, "reset": True}
 
 
+_GENERIC_REFUSED_BOUNDARIES = frozenset({"telemetry_append", "registration"})
+
+
 def _require_ops_table(table: Any) -> None:
     """Loud-fail if *table* is not a configured ops_* table, or is a control-class table not
     reachable through any reader verb (closed-boundary table allow-list).
@@ -223,6 +227,12 @@ def _require_ops_table(table: Any) -> None:
             f"{table!r} is a control-class table (read_boundary=none): not reachable through any "
             "reader verb (docs/contracts/ops_entity_counters.yaml) -- readable only in-transaction "
             "by its owning writer, or via the admin ducklake_maintenance control_health verb"
+        )
+    boundary = rt.table_write_boundary(table) if isinstance(table, str) else None
+    if boundary in _GENERIC_REFUSED_BOUNDARIES:
+        raise rt.DuckLakeRuntimeError(
+            f"{table!r} is not reachable through the generic read verbs (write_boundary={boundary}): "
+            "telemetry and dimension reads arrive as named verbs"
         )
     if not isinstance(table, str) or table not in rt.ops_table_names():
         raise rt.DuckLakeRuntimeError(f"unknown or missing ops table {table!r}: expected one of {list(rt.ops_table_names())}")

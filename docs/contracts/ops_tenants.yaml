@@ -1,0 +1,181 @@
+---
+# Class A data contract for ops_tenants (DuckLake SCD2 dimension, pre-production).
+# Authored by PLAN-telemetry-table-registration (telemetry slice 2a-2 plan 1, rec-4024 carrier) under the
+# CD.25 ritual: the SCD2 tenant dimension Decision 200 forward-declares and tenant-id.yaml defers here.
+# Registered in the generated field_semantics registry as status pre_production, write_boundary
+# registration: the generic write/read verbs refuse it; plan 3's register_tenant verb (telemetry catalog only)
+# is its sole writer. Provisioned nowhere by this plan.
+contract:
+  id: ops_tenants
+  class: A
+  contract_version: 1
+  status: ratified
+  ratified_at: "2026-10-05"
+  ratified_via: "PLAN-telemetry-table-registration merge to main (telemetry slice 2a-2 plan 1; Decision 200)"
+  description: >-
+    Class A schema contract for the ops_tenants SCD2 dimension: one logical row per tenant (a customer or
+    organisation boundary, Decision 200), keyed by the opaque writer-minted tenant_id. The natural key
+    (principal_kind, principal_ref) binds a signing principal to its tenant and is immutable once bound.
+    Tenancy ENFORCEMENT stays a cloud-adapter property (Decision 197 clause 2); this table only records
+    which principal maps to which tenant_id.
+  projects_to:
+    artifact: config/lambda/ducklake/field_semantics.yaml
+    table: ops_tenants
+    generator: scripts/schema_to_field_semantics.py
+fields:
+  ulid:
+    type: str
+    iceberg_type: string
+    nullable: false
+    description: >-
+      Monotonic ULID minted once per write attempt by the writer, outside the OCC-retry loop. History
+      table logical PK; idempotency dedup key in MERGE-on-ULID append.
+    semantics: SCD2 envelope field; NOT caller-supplied.
+    populated_by: ducklake_runtime._derive_fields() -- minted once at op-start; NEVER caller-supplied.
+    dq_intent:
+      not_null:
+        enforced: true
+    derivation:
+      formula: python-ulid monotonic generation; minted once at op-start by ducklake_runtime._derive_fields()
+      inputs: []
+      realized: true
+
+  tenant_id:
+    $ref: tenant-id.yaml#/contract/fields/tenant_id
+    dq_intent_local: {not_null: {enforced: true}}
+    governance_notes_local: >-
+      Merge key of this dimension. Minted by plan 3's register_tenant verb (an opaque ULID), never
+      caller-supplied: it projects as role input only because the generic verbs refuse the table (the
+      ops_recommendations.id precedent for a writer-allocated key).
+
+  principal_kind:
+    type: str
+    iceberg_type: string
+    nullable: false
+    description: >-
+      Kind of signing principal bound to this tenant.
+    semantics: >-
+      Part of the natural key (principal_kind, principal_ref). aws_account: the principal is the AWS account of the signed caller; configured: the single-tenant local adapter's fixed configured tenant.
+    populated_by: >-
+      Plan 3's register_tenant verb, from the signed caller's identity (cloud) or deployment configuration (local).
+    dq_intent: {not_null: {enforced: true}, accepted_values: {values: [aws_account, configured]}}
+
+  principal_ref:
+    type: str
+    iceberg_type: string
+    nullable: false
+    description: >-
+      Opaque reference naming the principal within its kind (for aws_account, the account the caller signs from).
+    semantics: >-
+      Part of the natural key (principal_kind, principal_ref); immutable once bound to a tenant_id. Confidential (Decision 101): the value never appears in a fixture, log or response body -- tests and docs use placeholders only.
+    populated_by: >-
+      Plan 3's register_tenant verb, from the signed caller's identity; never read back out through any response.
+    dq_intent: {not_null: {enforced: true}}
+
+  name:
+    type: str
+    iceberg_type: string
+    nullable: true
+    description: >-
+      Human label of the tenant.
+    semantics: >-
+      Mutable attribute; carries no identity.
+    populated_by: >-
+      Plan 3's register_tenant verb (attribute update).
+    dq_intent: {not_null: {enforced: false}}
+
+  plan:
+    type: str
+    iceberg_type: string
+    nullable: true
+    description: >-
+      Commercial or capacity plan label of the tenant.
+    semantics: >-
+      Mutable attribute; carries no identity or enforcement.
+    populated_by: >-
+      Plan 3's register_tenant verb (attribute update).
+    dq_intent: {not_null: {enforced: false}}
+
+  status:
+    type: str
+    iceberg_type: string
+    nullable: false
+    description: >-
+      Lifecycle status of the tenant.
+    semantics: >-
+      active: rows are accepted for this tenant; suspended: the registration is retained but a future enforcement layer may refuse writes. Status never changes a tenant_id.
+    populated_by: >-
+      Plan 3's register_tenant verb.
+    dq_intent: {not_null: {enforced: true}, accepted_values: {values: [active, suspended]}}
+
+  canonical_tenant_id:
+    type: str
+    iceberg_type: string
+    nullable: true
+    description: >-
+      Optional remap to the canonical tenant this registration folds into.
+    semantics: >-
+      Read-side only (Decision 200 clause 3: never by rewriting facts): a reader maps rows of this tenant_id to the canonical one; the write boundary never changes what it resolves. Single-hop: the target must be a registered self-canonical row (declared coverage: DQ monitor, rec-4063 family, residual until slice 2b).
+    populated_by: >-
+      Plan 3's register_tenant verb.
+    dq_intent: {not_null: {enforced: false}}
+
+  created_timestamp:
+    type: datetime
+    iceberg_type: timestamptz
+    nullable: false
+    description: UTC timestamp minted at first write; carried unchanged on every later SCD2 version.
+    semantics: SCD2 envelope field; NOT caller-supplied. Also the history partition column.
+    populated_by: ducklake_runtime._derive_fields() -- NOT caller-supplied.
+    dq_intent:
+      not_null:
+        enforced: true
+    derivation:
+      formula: high-precision now() minted ONCE at op-start by ducklake_runtime._derive_fields(); carried unchanged on UPDATE
+      inputs: []
+      realized: true
+
+  last_updated_timestamp:
+    type: datetime
+    iceberg_type: timestamptz
+    nullable: false
+    description: UTC timestamp of the most recent write. SCD2 ordering key.
+    semantics: SCD2 envelope field; NOT caller-supplied. Stable across OCC retries of one write attempt.
+    populated_by: ducklake_runtime._derive_fields() -- NOT caller-supplied.
+    dq_intent:
+      not_null:
+        enforced: true
+    derivation:
+      formula: high-precision now() minted ONCE at op-start by ducklake_runtime._derive_fields(); stable across OCC retries
+      inputs: []
+      realized: true
+
+governance:
+  table_class: SCD2
+  partition_by: "history=year(created_timestamp), month(created_timestamp), day(created_timestamp); current=bucket(8, tenant_id)"
+  dedup_view: ops_tenants_current
+  write_path: >-
+    Plan 3's register_tenant verb on the ducklake_writer Lambda, in the telemetry catalog only. The generic
+    write_ops / update_ops / file_ops / create_ops_tables verbs REFUSE this table (write_boundary=registration);
+    the generic read verbs refuse it too (reads arrive as named verbs in slice 2b).
+  id_allocator: >-
+    Writer-minted opaque ULID (id_scheme ulid, id_keyspace writer): the registration verb mints tenant_id inside
+    the counter-row lock on ops_entity_counters. No entity_id_prefix: the id is not a serial.
+  merge_key: tenant_id
+
+governance_notes: >-
+  Pre-production: registered in the generated registry (status pre_production) and provisioned only in the
+  disposable ducklake_smoke catalog by plan 3; slice 2c flips it to live when production provisioning lands.
+  principal_ref is confidential (Decision 101): placeholders only in fixtures, logs and responses.
+  Coverage per invariant (Decision 181): natural-key (principal_kind, principal_ref) uniqueness and binding
+  immutability are enforced by plan 3's writer (the counter-row lock and the insert-only-when-absent path) --
+  residual until then, owner rec-4024. Known residual (rec-4121): history MERGE-on-ULID does not reject a replay
+  carrying different content for the same ulid; applies to this dimension. Canonical-remap single-hop is a DQ
+  monitor in slice 2b (rec-4063 family).
+
+audit_invariants:
+  - "The generic write verbs (write_ops, update_ops, file_ops, create_ops_tables) and generic read verbs refuse ops_tenants (write_boundary=registration) -- tests/lambdas/ducklake_writer/handler/test_ops_actions.py::test_generic_verbs_refuse_telemetry_and_registration_tables and tests/test_ducklake_reader_handler.py::test_generic_reads_refuse_telemetry_and_registration_tables."
+  - "(principal_kind, principal_ref) never re-binds to a different tenant_id -- enforced by plan 3's registration verb (counter-row lock); residual until then, owner rec-4024."
+  - "principal_ref never appears in a fixture, log or response body (Decision 101)."
+amendment_log: []
+previous_versions: []

@@ -164,8 +164,9 @@ verbs:
 audit_invariants:
   - "Closed boundary: every ops_* write transits this Function URL; there is no out-of-band write path (Decision 81 cl.7)."
   - "Loud-fail discipline: every failure maps to a typed 4xx/5xx; never a silent drop (Decision 55 / Decision 70)."
-  - "Idempotency: file_ops replays the client idempotency_ulid to return the originally-allocated id on a response-lost retry; update_ops / write_ops are MERGE-idempotent on the merge key."
+  - "Idempotency: file_ops replays the client idempotency_ulid to return the originally-allocated id on a response-lost retry; write_ops / update_ops mint a fresh write ULID per call, so a replay adds a history row while the current row converges on the merge key (rec-4121 residual: history MERGE-on-ULID does not reject differing content)."
   - "An unknown `action` returns 400 with the sorted action allow-list (no silent no-op)."
+  - "Table allow-list: write_ops, update_ops, file_ops and create_ops_tables REFUSE (400, WriterActionError naming the write_boundary) every ops_tables entry whose write_boundary is telemetry_append or registration -- the four telemetry event tables, ops_tenants and ops_projects are written only by the telemetry verbs (slice 2a-2 plan 3), so no generic path can write or create them in any catalog."
   - "_contract_version is stamped on every record at write time (default '1' when absent), per CD.25."
   - "KNOWN GAP: no delete_ops verb yet (rec-2158); postmortem DELETE cannot transit the closed boundary. A future delete_ops verb is a field_add amendment to this contract."
   - "update_ops against a write_mode: append_only ops table raises AppendOnlyUpdateError (a DuckLakeRuntimeError subclass) -> 500 (require_exists=True; Decision 70 write-once). write_ops (require_exists=False) and file_ops do NOT raise -- write_ops performs a bare history append with no current-projection MERGE. The production scd2 ops tables are not append_only, so this is a latent path today (e.g. ops_smoke_events)."
@@ -179,4 +180,15 @@ amendment_log:
       Decision 210 cl.1 (rec-4158 plan B): the three write verbs refuse payloads that break a contract-declared row rule, answering 422 row_rule naming table, rule, column and exclude_before (never a value).
     migration_story: >-
       Payloads the verbs used to accept are now refused (Decision 118). The live census proved no stored row would be stranded: a dated rule binds an older row only on a write that changes the ruled column, so older rows stay updatable.
+  - date: "2026-10-05"
+    semantic_break: false
+    change_class: prose_improvement
+    summary: >-
+      PLAN-telemetry-table-registration (slice 2a-2 plan 1): corrected the false "update_ops / write_ops are MERGE-idempotent on
+      the merge key" idempotency claim (they mint a fresh write ULID per call, so a replay adds a history row while the current
+      row converges; rec-4121 residual) and stated the table allow-list's write_boundary refusal for telemetry_append and
+      registration tables.
+    migration_story: >-
+      Prose and allow-list statement only: the refusal ships in the same change as a loud 400 for tables that no deployed
+      caller writes through the generic verbs.
 previous_versions: []

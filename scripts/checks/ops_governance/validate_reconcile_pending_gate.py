@@ -239,6 +239,8 @@ def _check_diff_added_column_gap(
         return
 
     pending_map = _pending_reconcile_map(sidecar)
+    contract_table_ops = sidecar.get("contract_table_ops", {}) or {}
+    skipped: list[str] = []
     for table_id, new_cols in added.items():
         pending = pending_map.get(table_id, {"history": [], "current": []})
         write_mode = _write_mode(table_id, sidecar, generated)
@@ -250,6 +252,14 @@ def _check_diff_added_column_gap(
             required_sides = ["history"]
         else:
             required_sides = ["history", "current"]
+        # A pre-production table (reconcile_scope exempt AND status not live) is provisioned nowhere
+        # in production, so a new column owes no ALTER; a LIVE table marked exempt still does. Reported
+        # by name, never a vacuous pass (Decision 170 accounting).
+        ops_entry = contract_table_ops.get(table_id) or {}
+        status = ops_entry.get("status")
+        if required_sides and ops_entry.get("reconcile_scope") == "exempt" and status not in (None, "live"):
+            skipped.append(table_id)
+            continue
         for col in sorted(new_cols):
             for side in required_sides:
                 if col not in pending.get(side, []):
@@ -260,6 +270,8 @@ def _check_diff_added_column_gap(
                         "merging, then run the admin-tier reconcile_columns action against the deployed "
                         "maintenance function to clear it after the maintenance deploy lands."
                     )
+    if skipped:
+        print(f"  SKIPPED (reconcile_scope exempt, pre-production -- owe no ALTERs): {sorted(skipped)}")
 
 
 @registry.register("validate_reconcile_pending_gate", owner="platform")

@@ -261,6 +261,30 @@ def test_control_class_needs_no_reconcile_sides() -> None:
     assert failed == []
 
 
+def _gap(status: str, scope: str = "exempt") -> list[str]:
+    sidecar = _sidecar(
+        {"ops_new": {"status": status, "reconcile_scope": scope, "pending_reconcile": {"history": [], "current": []}}}
+    )
+    generated = {"ops_new": {"write_mode": "scd2"}}
+    with mock.patch.object(gate, "_diff_added_columns", return_value={"ops_new": {"a", "b"}}):
+        failed: list[str] = []
+        gate._check_diff_added_column_gap(gate._common.ROOT, sidecar, "k:", failed, generated=generated)
+    return failed
+
+
+def test_preproduction_exempt_table_owes_no_alters_and_is_reported(capsys) -> None:
+    failed = _gap("pre_production")
+    assert failed == []
+    assert "['ops_new']" in capsys.readouterr().out  # the leg names the skipped table, never a vacuous pass
+
+
+def test_live_exempt_table_still_owes_alters() -> None:
+    failed = _gap("live")
+    assert len(failed) == 4  # two columns x history+current, none skipped
+    failed = _gap("pre_production", scope="ducklake")
+    assert len(failed) == 4  # reconcile_scope ducklake is never skipped
+
+
 class TestOriginMainAdvisorySkip:
     def test_unreachable_origin_main_advisory_skips_without_failing(self, capsys) -> None:
         sidecar = _sidecar(
@@ -457,6 +481,12 @@ class TestRealRepoIntegration:
             "ops_priority_queue",
             "ops_execution_plans",
             "ops_smoke_events",
+            "telemetry_sessions",
+            "telemetry_observations",
+            "telemetry_transcripts",
+            "telemetry_agents",
+            "ops_tenants",
+            "ops_projects",
         }
 
     def test_declared_columns_real_contract_table(self) -> None:

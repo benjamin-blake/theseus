@@ -366,3 +366,35 @@ def test_action_write_ops_append_only_table(monkeypatch):
     assert out["ok"] is True
     assert out["table"] == "ops_smoke_events"
     assert captured["table"] == "ops_smoke_events"
+
+
+_REFUSED_TABLES = (
+    "telemetry_sessions",
+    "telemetry_observations",
+    "telemetry_transcripts",
+    "telemetry_agents",
+    "ops_tenants",
+    "ops_projects",
+)
+
+
+def test_generic_verbs_refuse_telemetry_and_registration_tables(monkeypatch):
+    """write_ops, update_ops, file_ops and create_ops_tables each refuse all six tables with the directed
+    error naming the write_boundary, before any runtime call (so no generic path can write or create them)."""
+    called = []
+    for name in ("write_scd2", "file_scd2", "create_scd2_tables"):
+        monkeypatch.setattr(rt, name, lambda *a, _n=name, **k: called.append(_n))
+    for table in _REFUSED_TABLES:
+        boundary = "registration" if table.startswith("ops_") else "telemetry_append"
+        for action in (h.action_write_ops, h.action_update_ops, h.action_file_ops, h.action_create_ops_tables):
+            with pytest.raises(
+                h.WriterActionError, match=rf"written only by the telemetry verbs \(write_boundary={boundary}\)"
+            ):
+                action({"table": table, "record": {}}, FakeCon())
+    assert called == []
+
+
+def test_generic_verbs_still_refuse_unknown_and_non_string_tables():
+    for table in ("nope", None, ["ops_projects"]):
+        with pytest.raises(h.WriterActionError, match="unknown or missing ops table"):
+            h.action_write_ops({"table": table, "record": {}}, FakeCon())

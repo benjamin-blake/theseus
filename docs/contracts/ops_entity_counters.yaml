@@ -66,7 +66,9 @@ fields:
     semantics: >-
       Natural key and row identity. NOT a merge_key in the SCD2 sense (there is no history/current
       pair to merge into) -- it is also the partition column, asserted by control_health to
-      number exactly len(writer-keyspace tables) rows, never more, never fewer.
+      number exactly one row per writer-keyspace table PRESENT in the catalog under check (serial or ulid scheme), never more,
+      never fewer. Live tables are always expected; a pre_production table only once its history table exists in that
+      catalog (otherwise control_health reports it in absent_tables).
     populated_by: >-
       create_ops_tables' control-class branch does not itself insert a row; bootstrap_entity_counter
       (src/common/ducklake_control_tables.py, invoked by create_ops_tables for a writer-keyspace
@@ -74,14 +76,23 @@ fields:
     dq_intent:
       not_null:
         enforced: true
+    amendment_log:
+      - date: "2026-10-05"
+        semantic_break: true
+        change_class: governance_note_add
+        summary: >-
+          PLAN-telemetry-table-registration (slice 2a-2 plan 1): the row grain is one row per writer-keyspace table present in the catalog under check (serial or ulid scheme), not every registered table.
+        migration_story: >-
+          Production keeps exactly one expected row (ops_recommendations): ops_tenants and ops_projects exist in no production catalog.
 
   current_value:
     type: int
     iceberg_type: long
     nullable: false
     description: >-
-      The highest entity id currently allocated (or advanced to) for the owning writer-keyspace
-      table's keyspace.
+      For a serial table: the highest entity id currently allocated (or advanced to) for the owning writer-keyspace
+      table's keyspace. For a ulid-scheme table (id_scheme ulid: ops_tenants, ops_projects): the number of registrations so
+      far -- bookkeeping only, since the id is a ULID; it serves as the registration lock's serialization row.
     semantics: >-
       Serialization point for entity-id allocation (Decision 84 I-2): every file_ops allocation
       and every write_ops caller-keyed advance for the owning table UPDATEs this SAME row, which
@@ -99,6 +110,14 @@ fields:
     dq_intent:
       not_null:
         enforced: true
+    amendment_log:
+      - date: "2026-10-05"
+        semantic_break: true
+        change_class: governance_note_add
+        summary: >-
+          PLAN-telemetry-table-registration (slice 2a-2 plan 1): current_value gains the ulid-scheme meaning (registrations so far; bookkeeping only, the id is a ULID).
+        migration_story: >-
+          Production keeps exactly one expected row (ops_recommendations): ops_tenants and ops_projects exist in no production catalog.
 
 governance:
   table_class: control
@@ -129,6 +148,18 @@ audit_invariants:
   - "Never reachable through query_ops, named_read, read_ops_current, or read_ops_history (read_boundary: none) -- registering this table for governance does not grant application read access (T2.26)."
   - "Never reachable through write_ops, file_ops, or update_ops (write_boundary: writer_internal) -- ducklake_scd2_schema.resolve_table_spec raises a directed SchemaGateError on write_mode=control before any of those verbs could fall through into the SCD2 branch against current_table=None."
   - "dq_scope: exempt -- there is no DQ-runner coverage for this table (no reachable read path); the ducklake_maintenance control_health verb (every 6h) is the health binding that substitutes for it, asserting row count, counter floor, and live-file ceiling as failing conditions (Decision 55), never a report."
-  - "Row count invariant: exactly one row per writer-keyspace ops table (id_keyspace: writer in field_semantics contract_table_ops) -- today ops_recommendations only."
-amendment_log: []
+  - "Row count invariant: exactly one row per writer-keyspace ops table (id_keyspace: writer in field_semantics contract_table_ops) PRESENT in the catalog under check -- a status-live table is always expected, a pre_production table only once its history table exists in that catalog; absent ones are reported in control_health's absent_tables, never silently dropped. Today production expects ops_recommendations only."
+  - "Counter floor, per id_scheme: serial -- current_value >= the max allocated numeric id; ulid -- current_value >= the owning current table's row count (tests/test_ducklake_control_health.py::test_control_health_ulid_floor)."
+amendment_log:
+  - date: "2026-10-05"
+    semantic_break: true
+    change_class: governance_note_add
+    summary: >-
+      PLAN-telemetry-table-registration (slice 2a-2 plan 1): the counter_name grain becomes one row per writer-keyspace table
+      present in the catalog under check (serial or ulid scheme); current_value gains the ulid meaning (registrations so far);
+      control_health's audit invariants name the catalog-aware row count and the ulid floor (current_value >= the owning current
+      table's row count). semantic_break=true: the expected row set now depends on the catalog under check.
+    migration_story: >-
+      Production keeps exactly one expected row (ops_recommendations) because ops_tenants and ops_projects exist in no production
+      catalog; the dimension tables are provisioned only in the isolated ducklake_smoke catalog by plan 3.
 previous_versions: []

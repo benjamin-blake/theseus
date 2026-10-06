@@ -240,12 +240,15 @@ def project_event_table(
     history_spec = _validate_partition_by(table_id, partition_by, columns)
     table_rules = _table_rules(table_id, {n: intents.get(n) or {} for n in columns}, columns)
 
+    partition_column = _DAY_GRAIN_TRIPLE_RE.match(history_spec).group("col")  # type: ignore[union-attr]  # validated above
     entry = {
         "status": ops_config.get("status", "target"),
+        "table_class": "event",
+        "write_boundary": ops_config.get("write_boundary"),
         "write_mode": "append_only",
         "history_table": table_id,
         "partition": {"history": history_spec},
-        "partition_column": "session_started_at",
+        "partition_column": partition_column,
         "dedupe_key": ["producer", "event_id", "parser_version"],
         "entity_key": entity_key,
         "columns": columns,

@@ -362,19 +362,32 @@ def test_build_merge_sql_ops_recommendations_uses_id_key():
     assert "id = s.id" not in curr_sql.split("WHEN MATCHED THEN UPDATE SET")[1].split("WHEN NOT MATCHED")[0]
 
 
-def test_ops_table_names_lists_all_six():
+def test_ops_table_names_lists_every_registered_table():
     """T2.26: ops_entity_counters (control class) joins the registry -- refused at both
     boundaries via resolve_table_spec's directed raise, never removed from ops_table_names().
-    PLAN-t2-26-retire-ops-session-log: ops_session_log was retired (CD.40), dropping the count
-    from seven to six."""
+    ops_session_log was retired (CD.40). Membership and uniqueness, never an exact count: the
+    registry grows (telemetry event tables, ops_tenants, ops_projects)."""
     names = rt.ops_table_names()
     assert "ops_recommendations" in names
     assert "ops_decisions" in names
     assert "ops_priority_queue" in names
     assert "ops_smoke_events" in names
     assert "ops_entity_counters" in names
+    for registered in ("telemetry_sessions", "telemetry_observations", "telemetry_transcripts", "telemetry_agents"):
+        assert registered in names
+    assert "ops_tenants" in names and "ops_projects" in names
     assert "ops_session_log" not in names
-    assert len(names) == 6
+    assert len(names) == len(set(names))
+
+
+def test_runtime_reexports_registry_helpers():
+    """Both handlers reach the schema layer only through `rt`: the helpers and read_version are the
+    defining modules' own objects."""
+    from src.common import ducklake_named_reads
+
+    assert rt.is_event_table is schema.is_event_table
+    assert rt.table_write_boundary is schema.table_write_boundary
+    assert rt.read_version is ducklake_named_reads.read_version
 
 
 def test_split_smoke_merge_history_sql_byte_identical():
