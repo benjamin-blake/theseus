@@ -518,3 +518,11 @@ def test_patterns_are_compiled_once(monkeypatch: pytest.MonkeyPatch) -> None:
     for bad in ({"p": "q"}, {"arr": ["e", "z"]}, {"w": "z"}):
         with pytest.raises(RowRuleError):
             check_row(TABLE, {"kind": "a", **bad}, rules, CREATED)
+
+
+def test_pattern_when_always_binds_older_rows_and_unhashable_conditions_fail_closed() -> None:
+    rules = _when_rules()
+    with pytest.raises(RowRuleError, match="pattern_when"):
+        check_row(TABLE, {"kind": "a", "label": "bad"}, rules, CREATED, prior={"kind": "a", "label": "bad"})
+    with pytest.raises(RuleProjectionError, match="required_when"):
+        RowRules.from_projection({**WHEN_COLUMNS, "other": {"nullable": True, "required_when": {"kind": [["a"]]}}})

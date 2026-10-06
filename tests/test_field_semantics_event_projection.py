@@ -415,7 +415,9 @@ def test_pattern_when_projects_verbatim(tmp_path: Path) -> None:
     rule = [{"when": {"retry_count": [1]}, "pattern": "^x:[a-z]+$"}]
     directory = _fixture_copy(
         tmp_path,
-        lambda d: _edit_yaml(d / "fixture_events.yaml", lambda c: c["fields"]["retry_count"]["dq_intent"].update(pattern_when=rule)),
+        lambda d: _edit_yaml(
+            d / "fixture_events.yaml", lambda c: c["fields"]["retry_count"]["dq_intent"].update(pattern_when=rule)
+        ),
     )
     doc = load_contract(directory / "fixture_events.yaml")
     with patch.object(proj_mod, "_CONTRACTS_DIR", directory):
