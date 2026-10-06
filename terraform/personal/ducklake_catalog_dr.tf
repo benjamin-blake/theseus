@@ -10,21 +10,17 @@
 # fetched at build time by build_pgclient_layer (scripts/build_lambda.py).
 #
 # ---------------------------------------------------------------------------
-# APPLY POSTURE (Decision 35 + 77): HUMAN-GATED via agent_platform_admin.
+# APPLY POSTURE (Decision 77, 126, 144 cl.5): CI plans and applies; the guard decides the route.
 # ---------------------------------------------------------------------------
-# Creates a NEW IAM role + inline policy, which trips the Decision-77 deterministic fail-closed
-# guard (scripts/terraform_apply_guard.py). Apply routes to the MANUAL agent_platform_admin
-# path. IAM must precede the code deploy:
-#   1. build_lambda --ducklake-only       (upload catalog-dr zip + pgclient layer to S3)
-#   2. terraform plan -> human review -> terraform apply via agent_platform_admin
-#   3. build_lambda --ducklake-only --deploy  (update the DR function code pointer from S3)
+# terraform/personal applies through CI (speculative plan on the PR, apply-sandbox on merge). The
+# deterministic guard (scripts/terraform_apply_guard.py) auto-applies in-budget changes and routes role
+# creation, trust changes, destroys and out-of-budget IAM to the tf-gated-apply Environment.
+# IAM must precede the code that reads it (terraform CLAUDE.md IAM-precedence).
 #
-# CODE/INFRA COUPLING (Decision 125, environment-taxonomy.yaml conformance): RESOLVED. The
-# aws_lambda_function resource below now carries a lifecycle block ignoring source_code_hash
-# changes, so code-only redeploys no longer surface as a Terraform diff on this apply path. Code
-# deploys now go via step 3 above (`build_lambda --ducklake-only --deploy`) -- knowingly-interim
-# break-glass status (Decision 125 pt 2-5) pending the governed code-deploy CD channel (rec-2646
-# residual scope).
+# CODE/INFRA COUPLING (Decision 125/126, environment-taxonomy.yaml conformance): RESOLVED. The
+# aws_lambda_function resource below carries a lifecycle block ignoring source_code_hash changes, so
+# code-only redeploys never surface as a Terraform diff. Routine code deploys go through the governed
+# code-deploy channel; `build_lambda --ducklake-only --deploy` is break-glass only (Decision 125 pt 2-5).
 
 locals {
   ducklake_catalog_dr_function = "agent-platform-ducklake-catalog-dr"
@@ -248,8 +244,8 @@ resource "aws_lambda_function" "ducklake_catalog_dr" {
     Purpose = "T2.18 FP-B catalog disaster-recovery Lambda"
   }
 
-  # Decision 125 physical decoupling: code deploys go via build_lambda --ducklake-only --deploy
-  # (update-function-code), not terraform. Without this, every rebuild's non-reproducible zip bytes
+  # Decision 125 physical decoupling: code deploys go through the governed code-deploy channel
+  # (build_lambda --deploy is break-glass), not terraform. Without this, every rebuild's non-reproducible zip bytes
   # trip a Terraform diff on this IAM-gated apply path (rec-2646/rec-2654).
   lifecycle {
     ignore_changes = [source_code_hash]
