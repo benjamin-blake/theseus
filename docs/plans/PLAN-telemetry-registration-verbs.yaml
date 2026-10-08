@@ -230,7 +230,9 @@ scope:
     governance.write_path (:157-160) names register_tenant on agent-platform-ducklake-telemetry-writer, in the telemetry
     catalog only, and keeps the generic-verb refusal sentence. The populated_by of name and plan (:84, :96), which say
     "Plan 3's register_tenant verb (attribute update)", point to rec-4210 instead, because part 1's register_tenant takes
-    no attribute keys (populated_by is not a drift-compared key). One top-level amendment_log entry (prose_improvement,
+    no attribute keys (populated_by is not a drift-compared key). governance.id_allocator's "minted inside the counter-row
+    lock" is reconciled to "minted once per request outside the retry loop and bound inside the locked transaction"
+    (Decision 81 cl.3; the same edit in ops_projects.yaml). One top-level amendment_log entry (prose_improvement,
     semantic_break false), the telemetry_agents.yaml:310 precedent. No field type, nullability or description changes.
 - file: docs/contracts/ops_projects.yaml
   action: Modify
@@ -305,7 +307,13 @@ scope:
     port, metric namespace, request bytes and cache clearing.
 - file: tests/ducklake_neon_smoke_test/test_lambda_telemetry_gates.py
   action: Modify
-  purpose: Red cases for the new gate vectors, with core._sigv4_invoke and core._function_url patched.
+  purpose: >-
+    (Created by PLAN-telemetry-writer-deploy-wiring.) Its happy-path fake is extended IN PLACE to answer provision_telemetry,
+    register_tenant, register_project and telemetry_probe, keeping the node id so that plan's graduated shard
+    telemetry-writer-smoke-gate stays valid; attach_check keeps ignoring D2's decoy meta_schema/data_path keys (the
+    unknown-key 400 applies to the four new verbs only). New red cases, with core._sigv4_invoke and core._function_url
+    patched, cover each part 1 vector, including test_self_only_violation_fails: a 200 to register_tenant with
+    principal_ref must fail the gate (the deployed proof of the self-only property).
 - file: tests/test_field_semantics_telemetry_registration.py
   action: Modify
   purpose: The projected ops_projects derivations.purpose equals ops_projects.yaml's derivation block (the single source).
@@ -345,7 +353,9 @@ infrastructure_dependencies:
   TABLE, SET PARTITIONED BY, INSERT, UPDATE and DELETE into metadata-table DML plus Parquet on S3), so it needs no grant
   beyond that; this plan's live gate is the first run of every telemetry verb under the login, the measurement the
   boundary consult (Q3) asks for, and it reports catalog_sessions for the login's CONNECTION LIMIT 10. A privilege error
-  there is a grant gap reported to the direct-invoke thread, never worked around in code.
+  there is a grant gap reported to the direct-invoke thread, never worked around in code. The same holds for an S3
+  AccessDenied raised while DuckLake cleans up a losing transaction in the 4-way fan-out: the role has no s3:DeleteObject
+  by design, and this gate drives its first OCC conflicts.
 - >-
   Ordering: this implementation merges only after (a) PLAN-url-only-invoke-guard is applied and verified (Decision 213
   on main, the login provisioned), (b) PLAN-telemetry-writer-function is merged and applied, and (c)
@@ -452,7 +462,9 @@ verification_plan:
     tests/common/test_ducklake_telemetry_provision.py::test_half_present_dimension_pair_fails_loud
     tests/common/test_ducklake_telemetry_provision.py::test_preexisting_table_with_drifted_partition_fails_before_any_seed
     tests/common/test_ducklake_telemetry_provision.py::test_provision_never_enables_inlining
-    tests/common/test_ducklake_telemetry_provision.py::test_provision_reports_counters_and_tables -q
+    tests/common/test_ducklake_telemetry_provision.py::test_provision_reports_counters_and_tables
+    tests/common/test_ducklake_telemetry_provision.py::test_preexisting_table_with_drifted_columns_fails_before_any_seed
+    tests/common/test_ducklake_telemetry_provision.py::test_duplicated_counter_row_is_repaired_at_the_floor -q
   expected: Exit 0, every node passes. Red before because the module and nodes are absent.
   fix_if: An INSERT recorded before a SET PARTITIONED BY for any table breaks Decision 137; reorder.
   hermetic: true
@@ -520,6 +532,7 @@ verification_plan:
     tests/ducklake_neon_smoke_test/test_lambda_telemetry_gates.py::test_probe_below_counter_floor_fails
     tests/ducklake_neon_smoke_test/test_lambda_telemetry_gates.py::test_probe_non_smoke_binding_fails
     tests/ducklake_neon_smoke_test/test_lambda_telemetry_gates.py::test_probe_undeclared_partition_fails
+    tests/ducklake_neon_smoke_test/test_lambda_telemetry_gates.py::test_self_only_violation_fails
     tests/ducklake_neon_smoke_test/test_lambda_telemetry_gates.py::test_gate_output_never_contains_an_account_id -q
   expected: Exit 0, every node passes. Red before because the nodes are absent.
   fix_if: A vector that passes with divergent ids is too weak; tighten the vector.
@@ -800,7 +813,7 @@ context:
   T2.36:c2 CONFLICT resolved by Decision 213 (PLAN-url-only-invoke-guard, #1430); SPIRIT 143 resolved (S3 is IAM-scoped
   to the smoke prefixes and the catalog login is scoped to the smoke schema, Decision 213). RELATED 82, 97, 96, 191, 197,
   209, 144, 118, 128, 181, 48. Decisions triaged: 163 of 163. Roadmap items intersected: 5; CONFLICT: 1; RELATED: 4.'
-- 'gates: decision-scout=FLAGS_FOUND (3 flags, resolved); plan-critique=REVISE r1 (11), r2 (F1-F6), r3 (J1-J11), all fixed; also cites
+- 'gates: decision-scout=FLAGS_FOUND (3 flags, resolved); plan-critique=PROCEED after 4 round(s); round 4 autonomous (r1-r3 REVISE, all fixed; r4 notes J1-J4 folded in); also cites
   204 (live partition re-lays are admin-only, so provision ALTERs only on create) and 212 (CallerPrincipal is the port, no
   cross-port coupling). Out-of-scope critique finding filed as rec-4211 (account id in public Actions logs).'
 - 'Direction: Benjamin "write the plan" (cmsg_012XgaFy8VaDQbxP5D8nC958K9mX5fF3q1N3ruTT1UwZWu) after the split, the A + D
