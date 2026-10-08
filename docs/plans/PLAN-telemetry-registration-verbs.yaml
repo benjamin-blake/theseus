@@ -53,8 +53,9 @@ scope:
     registration). (5) resolve_or_register_tenant(con, principal, *, identity, semantics) -> (tenant_id, created): lookup;
     on a miss, lock_counter("ops_tenants") then write the first SCD2 version (status active, canonical_tenant_id null).
     (6) resolve_or_register_project(con, tenant_id, project_ref, *, explicit, attributes, identity, semantics) ->
-    (project_id, created): lookup; a hit with explicit=True writes a new SCD2 version only when name/remote differ or
-    registration moves unregistered -> registered (never back); a miss with explicit=False and purpose != real raises
+    (project_id, created): lookup; a hit with explicit=True writes a new SCD2 version only when a SUPPLIED name or remote
+    differs (an omitted attribute means unchanged, so a bare re-register never clears one) or registration moves
+    unregistered -> registered (never back); a miss with explicit=False and purpose != real raises
     TelemetryRequestError(403, project_unregistered, {remedy: register_project}) (project-id.yaml:55-59; part 2's append
     path); otherwise lock_counter("ops_projects") then insert with registration registered (explicit) or unregistered.
     (7) The dimension writer used by (5) and (6): schema_gate on the caller-known inputs, then the derived purpose added
@@ -79,10 +80,10 @@ scope:
     partitions it in the same transaction, so an existing table is never re-ALTERed (no per-deploy snapshot or conflict
     with in-flight writers, Decision 88; re-laying a live partition spec is reserved to the admin verbs, Decision 204):
     (1) the four event tables telemetry_sessions/observations/transcripts/agents, CREATE TABLE from
-    EventTableSpec.from_projection's declared columns with NOT NULL on exactly spec.not_null (the structural grain columns
-    plus the required key-plan columns; deliberately narrower than the projection's nullable:false set, which the kernel's
-    row rules enforce before any SQL, Decision 210 cl.5 defence in depth; create-only provisioning cannot tighten DDL
-    later without an admin step), then ALTER ... SET PARTITIONED BY the entry's history partition (the session_started_at
+    EventTableSpec.from_projection's declared columns with NOT NULL on spec.not_null (the structural grain columns plus the
+    required key-plan columns) plus tenant_id and project_id, which the writer always stamps (Decision 200 cl.2); this is
+    deliberately narrower than the projection's nullable:false set, which the kernel's row rules enforce before any SQL
+    (Decision 210 cl.5 defence in depth), and create-only provisioning cannot tighten DDL later without an admin step, then ALTER ... SET PARTITIONED BY the entry's history partition (the session_started_at
     calendar-day triple, Decision 199 cl.2 / 137); the table name is an attribute so validate_table_registration skips
     it, and every name is checked against the registry; (2) ops_tenants and ops_projects via create_scd2_tables
     (calendar-day history, bucket current) only when BOTH halves of a pair are absent; exactly one half present raises a
@@ -90,7 +91,8 @@ scope:
     half; (3) ops_entity_counters via create_control_table (partitioned on counter_name) when absent; (4) before any
     seed row is written, every PRE-EXISTING target table is checked read-only against its declared spec: its live
     partition transforms (the ducklake_table / partition metadata read that ducklake_partition_layout.read_partition_layout
-    performs, restricted to the seven target tables so an unrelated smoke-catalog table never fails provisioning,
+    performs, restricted to the target tables, i.e. the four event tables, BOTH halves of each SCD2 pair and the counter
+    table (nine physical tables), so an unrelated smoke-catalog table never fails provisioning,
     normalized with ducklake_partition_spec.normalize_partition_spec and compared as compare_to_declared does) and its
     column set (an information_schema read in the reconcile_table_columns shape); any mismatch raises a loud
     DuckLakeRuntimeError naming the table and the drift, never a value, and writes nothing (recon 3.5 item 4: the smoke
@@ -115,7 +117,8 @@ scope:
     registration}; the tenant must already be registered, else 403 tenant_unresolved {remedy: register_tenant}. (4)
     telemetry_probe {} (gate instrumentation, out of contract scope like the writer's probes) -> {ok, meta_schema,
     data_path_is_smoke, connect_reused, catalog_login, catalog_backend, catalog_sessions, tables (present and
-    partitioned_as_declared per name, from the same read-only check provisioning runs),
+    partitioned_as_declared per PHYSICAL table, both halves of each SCD2 pair included, from the same read-only check
+    provisioning runs),
     counters, counter_rows, current_counts}. catalog_login and catalog_backend come from the handler's per-container
     capture inside the opener (the stub's catalog_login pattern): catalog_backend is "neon", "rds" or "other", classified
     from the scoped secret's host by its public suffix; the host itself is never returned or logged. catalog_sessions is a
@@ -181,8 +184,9 @@ scope:
   action: Modify
   purpose: >-
     Regenerated by bin/venv-python -m scripts.schema_to_field_semantics after the generator change (the ops_projects entry
-    gains derivations.purpose). This file is in every DuckLake manifest, so the merge redeploys all six DuckLake functions
-    through the governed channel (recon 3).
+    gains derivations.purpose). It is bundled by the writer, reader, maintenance, maintenance-smoke and telemetry-writer
+    manifests (not catalog-dr), and the push-triggered workflow deploys every listed function, so the merge redeploys all
+    six DuckLake functions through the governed channel (recon 3).
 - file: scripts/ducklake_smoke/lambda_telemetry_gates.py
   action: Modify
   purpose: >-
@@ -196,7 +200,7 @@ scope:
     project_id, exactly one created true, purpose synthetic, registration registered; (4) telemetry_probe called twice
     back-to-back (connect_reused is asserted on the second, since the first may land on a fresh container after the deploy
     and fan-out): meta_schema ducklake_smoke, data_path_is_smoke true, catalog_login ducklake_telemetry_writer (the scoped
-    login, Decision 213), all seven tables present and partitioned_as_declared, exactly one counter row each for
+    login, Decision 213), all nine physical tables present and partitioned_as_declared, exactly one counter row each for
     ops_tenants and ops_projects, and
     each counter >= its current count (the ulid floor); (5) register_tenant with a principal_ref key is 400. It prints the
     markers TELEMETRY_PROVISION_OK, TELEMETRY_TENANT_STABLE, TELEMETRY_PROJECT_CONVERGED, TELEMETRY_PROBE_OK and
@@ -224,8 +228,10 @@ scope:
   action: Modify
   purpose: >-
     governance.write_path (:157-160) names register_tenant on agent-platform-ducklake-telemetry-writer, in the telemetry
-    catalog only, and keeps the generic-verb refusal sentence. One top-level amendment_log entry (prose_improvement,
-    semantic_break false), the telemetry_agents.yaml:310 precedent. No field changes.
+    catalog only, and keeps the generic-verb refusal sentence. The populated_by of name and plan (:84, :96), which say
+    "Plan 3's register_tenant verb (attribute update)", point to rec-4210 instead, because part 1's register_tenant takes
+    no attribute keys (populated_by is not a drift-compared key). One top-level amendment_log entry (prose_improvement,
+    semantic_break false), the telemetry_agents.yaml:310 precedent. No field type, nullability or description changes.
 - file: docs/contracts/ops_projects.yaml
   action: Modify
   purpose: >-
@@ -235,7 +241,9 @@ scope:
 - file: docs/contracts/ops_entity_counters.yaml
   action: Modify
   purpose: >-
-    governance.write_path (:125-131) keeps its ops sentences and adds: the telemetry writer's register verbs take a
+    governance.write_path (:125-131) keeps its ops sentences and adds (read against Decision 213 cl.2: the shared writer
+    stays the sole ops_* write authority in ducklake_ops; these writes are in the telemetry catalog only): the telemetry
+    writer's register verbs take a
     lock-only UPDATE of the ops_tenants / ops_projects row inside the registration transaction (Decision 84 I-2, Decision
     200 lock arm), and provision_telemetry seeds those two rows (a missing, duplicated or below-floor row is rewritten at
     the maximum of its values and count(*) of the current table), both in the telemetry catalog only. Two concurrent
@@ -263,7 +271,8 @@ scope:
     Function URL's signed identity, Decision 213), still a property of the function_url adapter of ops_verbs. No new port:
     CallerPrincipal is the internal type that adapter's edge hands the shared registration code, and the in_process
     adapter supplies kind configured (Decision 184 cl.2, Decision 212 cl.3), so the port registry gains no row
-    (Decision 212 cl.6).
+    (Decision 212 cl.6). The registration verbs are not in ops_verbs' provisional required_verbs today; whether they join
+    the port is owed with T4.23:c4's in_process oracle, recorded in the PC-01 text.
 - file: tests/common/test_ducklake_telemetry_txn.py
   action: Create
   purpose: Coverage home and red cases for ducklake_telemetry_txn (fake connection, no duckdb, fast tier).
@@ -340,7 +349,13 @@ infrastructure_dependencies:
 - >-
   Ordering: this implementation merges only after (a) PLAN-url-only-invoke-guard is applied and verified (Decision 213
   on main, the login provisioned), (b) PLAN-telemetry-writer-function is merged and applied, and (c)
-  PLAN-telemetry-writer-deploy-wiring is deployed with its --lambda-telemetry step green. The merge
+  PLAN-telemetry-writer-deploy-wiring is deployed with its --lambda-telemetry step green, and (d) the smoke catalog's
+  pre-existing target tables are known: an admin-directed, read-only reconcile_partitions call on the maintenance function
+  (dry_run true, meta_schema ducklake_smoke, the smoke data_path; PlatformAdmin, run by Benjamin's admin agent) reports
+  which of the nine target tables already exist and any partition drift, and any drift is repaired under Decision 204
+  cl.2's human-directed shape before the merge. If that read cannot run (for example an unclassified smoke table, or the
+  admin role's data-prefix scope), say so to Benjamin with precondition (a); provisioning's own read-only check then
+  fails loud on the first deploy and step 13's exception (1) applies. The merge
   redeploys all six DuckLake functions (field_semantics.yaml and src/common/ducklake_*.py), production writer and reader
   included, so it waits for Benjamin's explicit word.
 - >-
@@ -521,7 +536,7 @@ verification_plan:
     tests/checks/contracts/test_telemetry_dimension_contracts.py::test_substrate_rows_name_the_telemetry_writer
     tests/checks/contracts/test_telemetry_dimension_contracts.py::test_ports_pc01_names_the_telemetry_writer_edge
     tests/checks/contracts/test_telemetry_dimension_contracts.py::test_ops_entity_counters_catalog_aware_grain -q
-  expected: Exit 0, every node passes. Red before because the two new nodes are absent.
+  expected: Exit 0, every node passes. Red before because the three new nodes are absent.
   fix_if: A failing pinned-substring node means an edit dropped required text; restore it rather than loosening the pin.
   hermetic: true
   graduation: graduate
@@ -586,7 +601,15 @@ verification_plan:
     for x in (j.get('jobs') if isinstance(j,dict) else j)};print(jobs);want=['deploy-maintenance','maintenance-smoke','reconcile-gate','deploy-serving','smoke'];assert
     all(any(n.startswith(w) and c=='success' for n,c in jobs.items()) for w in want),jobs;print('DEPLOY_OK')"
   expected: Every named job concluded success (a skipped job fails this step), then DEPLOY_OK.
-  fix_if: A failed smoke or reconcile-gate job is this plan's to root-cause and fix forward, never a re-run to green.
+  fix_if: >-
+    A failed smoke or reconcile-gate job is this plan's to root-cause and fix forward, never a re-run to green, with two
+    named exceptions. (1) A provision refusal on a drifted PRE-EXISTING smoke-catalog table (partition or columns) is not
+    a code fault: the deploy run stays red until an admin-directed repair (Decision 204 cl.2's human-directed shape; for
+    partitions, reconcile_partitions with dry_run false on meta_schema ducklake_smoke; for columns no verb exists today,
+    so file a rec), report it to Benjamin, and acceptance criterion 9 is blocked until then. Precondition (d) exists to
+    prevent this. (2) A maintenance-smoke commit conflict on ducklake_smoke during the first provision is a concurrency
+    collision between two catalog writers: read both jobs' logs, re-dispatch the deploy once (it is idempotent), and file
+    a rec if it recurs.
   hermetic: false
   graduation: not-applicable
 - step: 14
@@ -607,7 +630,8 @@ verification_plan:
     connection limit (a measurement, not a pass condition).
   fix_if: >-
     A missing PROJECT_CONVERGED with divergent ids fires Decision 200's reversal condition: stop, report to Benjamin and
-    return the model to /plan. Any other missing marker is a deploy or vector fault to root-cause.
+    return the model to /plan. A missing PROVISION_OK with a drift refusal is step 13's exception (1), not a vector fault.
+    Any other missing marker is a deploy or vector fault to root-cause.
   hermetic: false
   graduation: not-applicable
 - step: 15
@@ -764,8 +788,9 @@ constraints:
   Public repository (Decision 101): no account id, ARN, host or a hash of any of them in code, fixtures, logs, responses
   or gate output. Tests use placeholders only; a 12-digit literal fails test_telemetry_dimension_contracts.py:55.
 - >-
-  Regenerate field_semantics.yaml with the generator, never by hand. Keep every new module under 500 SLOC; decompose
-  rather than raise a budget (Decision 128).
+  Regenerate field_semantics.yaml with the generator, never by hand. Keep every new module, and every file the sibling
+  plans created that this plan grows (lambda_telemetry_gates.py, test_lambda_telemetry_gates.py, test_handler.py,
+  test_packaging.py), under 500 SLOC; decompose rather than raise a budget (Decision 128).
 - >-
   The implementation merge redeploys every DuckLake function, so it waits for Benjamin's explicit word, and only after the
   boundary Deny is verified and the deploy-wiring plan is deployed and green.
@@ -775,7 +800,7 @@ context:
   T2.36:c2 CONFLICT resolved by Decision 213 (PLAN-url-only-invoke-guard, #1430); SPIRIT 143 resolved (S3 is IAM-scoped
   to the smoke prefixes and the catalog login is scoped to the smoke schema, Decision 213). RELATED 82, 97, 96, 191, 197,
   209, 144, 118, 128, 181, 48. Decisions triaged: 163 of 163. Roadmap items intersected: 5; CONFLICT: 1; RELATED: 4.'
-- 'gates: decision-scout=FLAGS_FOUND (3 flags, resolved); plan-critique=REVISE r1 (M1-M3, J1-J8) and r2 (F1-F6), all fixed; also cites
+- 'gates: decision-scout=FLAGS_FOUND (3 flags, resolved); plan-critique=REVISE r1 (11), r2 (F1-F6), r3 (J1-J11), all fixed; also cites
   204 (live partition re-lays are admin-only, so provision ALTERs only on create) and 212 (CallerPrincipal is the port, no
   cross-port coupling). Out-of-scope critique finding filed as rec-4211 (account id in public Actions logs).'
 - 'Direction: Benjamin "write the plan" (cmsg_012XgaFy8VaDQbxP5D8nC958K9mX5fF3q1N3ruTT1UwZWu) after the split, the A + D
@@ -805,6 +830,7 @@ pre_implementation_checklist:
 - 'Only the plan-cited decision sections read: 84 (I-2), 81 (cl.3, cl.8), 137, 143 (cl.3), 184 (cl.2), 199 (cl.2), 200,
   207, 210 (cl.1, cl.3, cl.5), and 213'
 - PLAN-url-only-invoke-guard is applied and verified, PLAN-telemetry-writer-function is applied, and PLAN-telemetry-writer-deploy-wiring is deployed with a green --lambda-telemetry step
+- 'Precondition (d) is answered: the read-only reconcile_partitions report on ducklake_smoke is in hand and any target-table drift is repaired, or Benjamin has accepted the first-deploy risk'
 - All files in scope located and readable (the D1/D2-created files exist on main)
 - Acceptance criteria understood and verifiable
 execution_steps:
