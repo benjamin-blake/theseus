@@ -97,8 +97,9 @@ scope:
     is 400 error_type unknown_action listing the actions. (d) describe is connectionless and returns ok, function "ducklake_telemetry_writer",
     actions (sorted), catalog {meta_schema: the pinned value, data_path_is_smoke: bool}, where data_path_is_smoke is TELEMETRY_DATA_PATH
     with one trailing slash normalised equal to rt.SMOKE_DATA_PATH. It never returns the data path or bucket. (e) attach_check acquires the per-container warm connection through rt.get_warm_connection with an opener that
-    calls rt.open_connection(dsn=rt.fetch_dsn(), data_path=TELEMETRY_DATA_PATH, meta_schema=TELEMETRY_META_SCHEMA, extension_directory=DUCKLAKE_EXTENSION_DIRECTORY
-    or rt.LAMBDA_EXTENSION_DIRECTORY), passing the same data_path / meta_schema as the cache key, runs SELECT 1, and returns
+    calls rt.open_connection(dsn=<the scoped DSN>, data_path=TELEMETRY_DATA_PATH, meta_schema=TELEMETRY_META_SCHEMA, extension_directory=DUCKLAKE_EXTENSION_DIRECTORY
+    or rt.LAMBDA_EXTENSION_DIRECTORY), the dsn being the scoped secret described below, passing the same data_path / meta_schema
+    as the cache key, runs SELECT 1, and returns
     ok, meta_schema, data_path_is_smoke, catalog_login (the username from the fetched secret; never the host or password),
     connect_ms, reused. catalog_login is captured inside the opener and cached per container beside the warm connection,
     because a warm reuse skips the opener and therefore fetch_dsn; a reused call returns the cached value. The DSN comes from rt.fetch_dsn(secret_id=TELEMETRY_DSN_SECRET_ID), never the default shared secret.
@@ -371,7 +372,7 @@ verification_plan:
     tests/build_lambda_deploy/test_canary_layers.py -q
   expected: Exit 0. Red before for the handler and packaging modules (absent) and the new invoke-implies-resolve case.
   fix_if: Fix the handler or the check; never weaken an assertion.
-  hermetic: true
+  hermetic: false
   graduation: graduate
   graduation_check_id: telemetry-writer-stub-handler
   expected_literals: []
@@ -396,21 +397,28 @@ verification_plan:
 - step: 4
   phase: pre-deploy
   action: >-
-    Scope and safety shape against the merge base: every changed file is a scope file; no PlatformDev or PlatformAdmin
+    Scope and safety shape against the merge base, untracked new files included: every changed file is a scope file (or
+    this plan file's own bookkeeping); no PlatformDev or PlatformAdmin
     policy touched; no `#` line inside the new file's variables block; no 12-digit literal added; the writer's and reader's
     role and URL blocks are byte-identical to the merge base. (That no other aws_iam_role changes is the speculative plan's
     exact 7/4/0 count, checked at closure.)
   command: >-
-    bin/venv-python -c "import subprocess,re,pathlib;from tests.fixtures.terraform_hcl_blocks import find_resource_block;mb=subprocess.run(['git','merge-base','origin/main','HEAD'],capture_output=True,text=True,check=True).stdout.strip();show=lambda
-    p:subprocess.run(['git','show',mb+':'+p],capture_output=True,text=True,check=True).stdout;f='terraform/personal/ducklake_lambdas.tf';old,new=show(f),pathlib.Path(f).read_text(encoding='utf-8');errs=[t+'.'+n+'
-    changed' for t,n in (('aws_iam_role','ducklake_writer'),('aws_iam_role','ducklake_reader'),('aws_lambda_function_url','ducklake_writer'),('aws_lambda_function_url','ducklake_reader'))
-    if find_resource_block(old,t,n)!=find_resource_block(new,t,n)];ch=subprocess.run(['git','diff','--name-only',mb],capture_output=True,text=True,check=True).stdout.split();import
-    yaml;sc={e['file'] for e in yaml.safe_load(open('docs/plans/PLAN-telemetry-writer-function.yaml',encoding='utf-8'))['scope']};errs+=[p+'
-    outside scope' for p in ch if p not in sc];errs+=[p+'
-    is a PlatformDev/PlatformAdmin policy file' for p in ch if p in ('terraform/personal/platform_dev_policies.tf','terraform/personal/platform_admin_policies.tf','terraform/personal/platform_admin_data_policies.tf','terraform/personal/platform_roles.tf')];add=subprocess.run(['git','diff',mb,'--','terraform/'],capture_output=True,text=True,check=True).stdout;errs+=['12-digit
-    literal added' for l in add.splitlines() if l.startswith('+') and re.search(r'\b\d{12}\b',l)];t=pathlib.Path('terraform/personal/ducklake_telemetry_writer.tf').read_text(encoding='utf-8');errs+=['comment
-    inside variables' for _ in [0] if re.search(r'variables\s*=\s*\{[^}]*\n\s*#',t)];print(chr(10).join(errs) or 'SHAPE_OK');assert
-    not errs"
+    bin/venv-python -c "import subprocess,re,pathlib,yaml;
+    from tests.fixtures.terraform_hcl_blocks import find_resource_block;
+    g=lambda *a:subprocess.run(['git',*a],capture_output=True,text=True,check=True).stdout;
+    mb=g('merge-base','origin/main','HEAD').strip();f='terraform/personal/ducklake_lambdas.tf';
+    old,new=g('show',mb+':'+f),pathlib.Path(f).read_text(encoding='utf-8');
+    errs=[t+'.'+n+'_changed' for t,n in (('aws_iam_role','ducklake_writer'),('aws_iam_role','ducklake_reader'),('aws_lambda_function_url','ducklake_writer'),('aws_lambda_function_url','ducklake_reader')) if find_resource_block(old,t,n)!=find_resource_block(new,t,n)];
+    nf=g('ls-files','--others','--exclude-standard').split();ch=g('diff','--name-only',mb).split()+nf;
+    pf='docs/plans/PLAN-telemetry-writer-function.yaml';
+    sc={e['file'] for e in yaml.safe_load(open(pf,encoding='utf-8'))['scope']}|{pf};
+    errs+=[p+':outside_scope' for p in ch if p not in sc];
+    errs+=[p+':PlatformDev_or_PlatformAdmin_policy' for p in ch if p in ('terraform/personal/platform_dev_policies.tf','terraform/personal/platform_admin_policies.tf','terraform/personal/platform_admin_data_policies.tf','terraform/personal/platform_roles.tf')];
+    add=[l for l in g('diff',mb,'--','terraform/').splitlines() if l.startswith('+')]+[l for q in nf if q.startswith('terraform/') for l in pathlib.Path(q).read_text(encoding='utf-8').splitlines()];
+    errs+=['twelve_digit_literal_added' for l in add if re.search(r'\b\d{12}\b',l)];
+    w=pathlib.Path('terraform/personal/ducklake_telemetry_writer.tf').read_text(encoding='utf-8');
+    errs+=['comment_inside_variables' for _ in [0] if re.search(r'variables\s*=\s*\{[^}]*\n\s*#',w)];
+    print(chr(10).join(errs) or 'SHAPE_OK');assert not errs"
   expected: Exit 0 and SHAPE_OK.
   fix_if: Revert any out-of-shape edit; a 12-digit literal becomes interpolation; a comment moves above the block.
   hermetic: false
@@ -646,7 +654,7 @@ context:
   ids in Decision 213), SPIRIT 126 (admin SQL and secret write: per-mutation human acceptance, Decision 213 cl.5), NOTE 118
   (stub actions are gate instrumentation until plan 3 part 1's contract), NOTE 154 (accepted deviation, recorded). Decisions
   triaged: 163 of 163. Roadmap items intersected: 7; CONFLICT: 0; RELATED: 7.
-- "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=REVISE (rounds 1-2, addressed)"
+- "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=PROCEED (round 3)"
 - >-
   Direction (Benjamin, thread "Writer direct-invoke IAM fix", 2026-10-08): A + D; after an independent review, a scoped
   login now, PlatformDev URL-only invoke now and the blob root fenced now. Governing Decision 213 and the admin-tier half
