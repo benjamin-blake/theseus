@@ -39,8 +39,10 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -62,6 +64,33 @@ class DucklakeArtifactError(RuntimeError):
 def _md5_hex(data: bytes) -> str:
     """Content-identity digest (parity check, not a security digest) -- matches the original md5sum."""
     return hashlib.md5(data).hexdigest()
+
+
+_ENTRY_DIFF_LIMIT = 10
+
+
+def _zip_entry_diff(local: bytes, remote: bytes) -> str:
+    """Name the zip entries differing by (CRC, uncompressed size): a mismatch is diagnosable from the log alone (rec-4189)."""
+    try:
+        local_entries, remote_entries = (
+            {info.filename: (info.CRC, info.file_size) for info in zipfile.ZipFile(io.BytesIO(data)).infolist()}
+            for data in (local, remote)
+        )
+    except zipfile.BadZipFile as exc:
+        return f"entry diff unavailable: {exc}"
+    shared = local_entries.keys() & remote_entries.keys()
+    differing = sorted(
+        [(name, "changed") for name in shared if local_entries[name] != remote_entries[name]]
+        + [(name, "only-local") for name in local_entries.keys() - remote_entries.keys()]
+        + [(name, "only-remote") for name in remote_entries.keys() - local_entries.keys()]
+    )
+    if not differing:
+        return "entry contents identical (CRC and size); only the container bytes differ (compression or zip metadata)"
+    lines = [f"{len(differing)} differing zip entr{'y' if len(differing) == 1 else 'ies'}:"]
+    lines += [f"{kind}: {name}" for name, kind in differing[:_ENTRY_DIFF_LIMIT]]
+    if len(differing) > _ENTRY_DIFF_LIMIT:
+        lines.append(f"... and {len(differing) - _ENTRY_DIFF_LIMIT} more")
+    return "\n".join(lines)
 
 
 def build_ducklake_only(*, cwd: str | None = None) -> None:
@@ -100,7 +129,8 @@ def assert_and_upload(
     """Byte-assert (push path only) then dual-write upload the built DuckLake zips.
 
     Raises DucklakeArtifactError (fail-closed) on a byte-mismatch or a missing per-sha reference
-    object when event_name == "push" (see module docstring for the event_name convention).
+    object when event_name == "push" (see module docstring for the event_name convention); a
+    mismatch message's later lines name the differing zip entries (_zip_entry_diff).
     Upload always dual-writes BOTH the fixed key (lambda-packages/<name>, keeps terraform's
     static s3_key genuine-republish read fed) AND the per-sha key
     (lambda-packages/<artifact_sha>/<name>, overwrite-immune per PR-head-sha -- D1/rec-2755
@@ -118,8 +148,8 @@ def assert_and_upload(
 
     if event_name == "push":
         for name in names:
-            local_path = packages_root / name
-            local_md5 = _md5_hex(local_path.read_bytes())
+            local_bytes = (packages_root / name).read_bytes()
+            local_md5 = _md5_hex(local_bytes)
             key = f"lambda-packages/{artifact_sha}/{name}"
             try:
                 response = s3_client.get_object(Bucket=bucket, Key=key)
@@ -133,7 +163,8 @@ def assert_and_upload(
             if local_md5 != remote_md5:
                 raise DucklakeArtifactError(
                     f"DUCKLAKE_ZIP_MISMATCH {name}: local={local_md5} remote={remote_md5}; applied layer "
-                    "content would skew from the reviewed plan.bin. Failing closed (Decision 77 no-TOCTOU)."
+                    "content would skew from the reviewed plan.bin. Failing closed (Decision 77 no-TOCTOU).\n"
+                    + _zip_entry_diff(local_bytes, remote_bytes)
                 )
         print("DUCKLAKE_ZIP_IDEMPOTENT_OK: all seven rebuilt zips are byte-identical to the PR-uploaded per-sha artifacts.")
 
