@@ -47,7 +47,9 @@ scope:
   purpose: >-
     aws_cloudtrail.platform_security gains a second event_selector: read_write_type "All", include_management_events false,
     data_resource { type = "AWS::Lambda::Function", values = the three unqualified function ARNs }. The existing management-event
-    selector is unchanged, so the Decision 202 detectors and test_platform_role_iam_change_alarms.py keep their inputs. The
+    selector is unchanged, so the Decision 202 detectors keep their inputs; test_platform_role_iam_change_alarms.py's trail
+    check is tightened to the management block (below), because a second event_selector would otherwise blind its write-only
+    red case. The
     telemetry writer's ARN is named before PLAN-telemetry-writer-function creates the function; CloudTrail's DataResource
     values are exact ARN strings, and if PutEventSelectors rejects a not-yet-existing function, step 5's fix_if applies.
     The alarm and metric filter on a non-URL invoke record are deferred until the record shape is measured (rec-4204).
@@ -83,21 +85,23 @@ scope:
     under the SECRET-VALUE-OUT-OF-BAND pattern of docs/contracts/secret-material-handling.yaml) with a description naming the role it holds, the quarterly
     manual rotation and the migration file. The apply role's SecretsManagerMetadataWrite covers CreateSecret on the agent-platform-* secret name prefix.
     The existing ducklake_ops role, database and DSN secret are unchanged.
-- file: migrations/ducklake_telemetry_writer_role.sql
+- file: src/lambdas/ducklake_maintenance/ducklake_telemetry_writer_role.sql
   action: Create
   purpose: >-
     Idempotent, password-free SQL run by the ducklake_ops owner login against the ducklake_ops database, on Neon now and
-    on RDS after the swap's restore. It is bundled into the ducklake_maintenance zip and applied by that function's provision_telemetry_login
-    verb (below), because no CC-web container, ADMIN included, has TCP/5432 egress (docs/SESSION_LOG.md "No Neon 5432 egress";
-    direct_gates refuses direct gates for the same reason). A header in the ducklake_ops_schema.sql style says what it is,
-    why (Decision 213 cl.3) and how it is applied. Body: a DO block creating role ducklake_telemetry_writer if absent; ALTER
+    on RDS after the swap's restore. It lives beside the verb that applies it, ducklake_maintenance's provision_telemetry_login
+    (below), because no CC-web container, ADMIN included, has TCP/5432 egress (docs/SESSION_LOG.md "No Neon 5432 egress";
+    direct_gates refuses direct gates for the same reason). Living under src/lambdas/ducklake_maintenance/ means an edit
+    to it triggers the governed deploy (push paths) and the drift sensor (code_drift pathspecs) like any maintenance source,
+    so a re-run never applies stale SQL. A header in the migrations/ducklake_ops_schema.sql style says what it is, why
+    (Decision 213 cl.3) and how it is applied. Body: a DO block creating role ducklake_telemetry_writer if absent; ALTER
     ROLE ducklake_telemetry_writer LOGIN NOINHERIT NOCREATEDB NOCREATEROLE CONNECTION LIMIT 10 (REPLICATION and BYPASSRLS
     are left at their NO defaults and not named, since a non-superuser owner may not set them); ALTER ROLE ... SET statement_timeout
     = '60s'; GRANT CONNECT ON DATABASE ducklake_ops; GRANT USAGE ON SCHEMA ducklake_smoke; GRANT SELECT, INSERT, UPDATE,
     DELETE ON ALL TABLES IN SCHEMA ducklake_smoke; GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA ducklake_smoke;
     ALTER DEFAULT PRIVILEGES FOR ROLE ducklake_ops IN SCHEMA ducklake_smoke GRANT the same table and sequence privileges.
     No CREATE on any schema, nothing on the ducklake_ops schema, nothing on public. The password is set separately by the
-    provisioning verb from the role's secret, as a SCRAM verifier. CONNECTION LIMIT 10
+    provisioning verb from the role's secret. CONNECTION LIMIT 10
     is twice the function's reserved concurrency of 5, pending the per-container session measurement in plan 3 part 1's
     gate.
 - file: src/lambdas/ducklake_maintenance/login_actions.py
@@ -106,32 +110,44 @@ scope:
     action_provision_telemetry_login(event, _con), a closed, human-invoked operational verb with no caller-supplied SQL,
     role or secret name. It refuses (rt.DuckLakeRuntimeError, the catalog_reinit refusal shape) unless event confirm equals
     "ducklake_telemetry_writer". In order: (1) as the owner login (rt.fetch_dsn(), psycopg2 over rt.libpq_conninfo, the
-    _drop_meta_schema pattern) it records whether the owner is a neon_superuser member (None where no such role exists,
-    as on RDS) and executes the bundled migration file, read at call time from the task root; (2) it reads the scoped
-    secret agent-platform-ducklake-telemetry-writer-dsn and refuses unless its username is ducklake_telemetry_writer and
-    its host and dbname equal the owner DSN's; (3) it sets the password as a SCRAM-SHA-256 verifier computed client-side
-    (psycopg2.extensions.encrypt_password), so the plaintext never reaches the server or its statement log; (4) it connects
-    as the scoped login and returns only booleans and counts: scope {smoke_usage, ops_usage, smoke_create, ops_create, public_create,
-    database_create, connection_limit} and metadata_readable (SELECT count(*) from ducklake_smoke.ducklake_metadata). It
-    never logs or returns a host, DSN or password. Idempotent: a re-run (rotation, the RDS swap) re-applies the migration
-    and sets the secret's current password. The DuckLake ATTACH proof stays with the telemetry writer's own runtime (PLAN-telemetry-writer-function
-    step 7), since this function's role is scoped to the production data prefix. Under 200 SLOC.
+    _drop_meta_schema pattern) it records owner_is_neon_superuser_member (None where no such role exists, as on RDS), then
+    executes the SQL file read from Path(__file__).with_name("ducklake_telemetry_writer_role.sql") with no parameters
+    (so a % in a comment stays literal) and commits, recording migration_sha256 of the file bytes; (2) it reads the scoped
+    secret agent-platform-ducklake-telemetry-writer-dsn and refuses unless its username is ducklake_telemetry_writer, its
+    host and dbname equal the owner DSN's and its sslmode is require; (3) it runs ALTER ROLE ducklake_telemetry_writer PASSWORD
+    %s with the secret's password as a psycopg2-bound parameter over the owner's TLS session. Neon accepts only plaintext
+    here ("Hashed passwords are not supported", Neon's role docs), so no verifier is computed; the platform never logs,
+    returns or prints the password, and the residual is that the server and its statement statistics see the statement,
+    visible only to the owner tier that can already alter the role. (4) It connects as the scoped login and returns only
+    ok, migration_applied, migration_sha256, password_set, owner_is_neon_superuser_member, scope {smoke_usage, ops_usage,
+    smoke_create, ops_create, public_create, database_create, connection_limit} and metadata_readable (SELECT count(*) from
+    ducklake_smoke.ducklake_metadata). Every psycopg2.Error is re-raised as rt.DuckLakeRuntimeError carrying only the exception
+    class name and its SQLSTATE, never its message, because a connect error names the host. Idempotent: a re-run (rotation,
+    the RDS swap) re-applies the migration and sets the secret's current password. The DuckLake ATTACH proof stays with
+    the telemetry writer's own runtime (PLAN-telemetry-writer-function step 7), since this function's role is scoped to
+    the production data prefix. Under 200 SLOC.
 - file: src/lambdas/ducklake_maintenance/handler.py
   action: Modify
-  purpose: _ACTIONS registers "provision_telemetry_login" -> login_actions.action_provision_telemetry_login. Nothing else changes.
+  purpose: >-
+    _ACTIONS registers "provision_telemetry_login" -> login_actions.action_provision_telemetry_login, with the import folded
+    into the existing partition_actions import line, and the module docstring's carve-out sentence (:20-21) names both carve-outs
+    (Decision 204's partition-layout verbs and Decision 213's provisioning verb) in the same number of lines. The file is
+    at 496 of 500 SLOC, so the edit must stay line-neutral or better; nothing else changes.
 - file: src/lambdas/ducklake_maintenance/manifest.yaml
   action: Modify
   purpose: >-
-    includes gains src/lambdas/ducklake_maintenance/login_actions.py; assets gains migrations/ducklake_telemetry_writer_role.sql.
+    includes gains src/lambdas/ducklake_maintenance/login_actions.py; assets gains src/lambdas/ducklake_maintenance/ducklake_telemetry_writer_role.sql; the notes' "sole carve-out"
+    sentence names both ADMIN-agent carve-outs (Decision 204 and Decision 213 cl.5).
 - file: tests/lambdas/ducklake_maintenance/test_login_actions.py
   action: Create
   purpose: >-
     With rt.fetch_dsn and psycopg2.connect patched: a missing or wrong confirm refuses before any connection; the owner
-    connection executes the migration file's text; a scoped secret whose username, host or dbname differs is refused before
-    any ALTER ROLE; the ALTER ROLE statement carries a SCRAM-SHA-256 verifier and never the plaintext; the response carries
-    the scope booleans, the connection limit and metadata_readable, and neither the response nor captured logs contain
-    the host or password; neon_superuser absent yields None; the handler dispatches the new action name. Fixture secrets
-    are composed at runtime (no literal credential-shaped strings).
+    connection executes the SQL file's text with no parameters and commits, and migration_sha256 equals the file's sha256;
+    a scoped secret whose username, host, dbname or sslmode differs is refused before any ALTER ROLE; the ALTER ROLE call
+    passes the password only as a bound parameter; the response carries the scope booleans, the connection limit and metadata_readable,
+    and neither the response nor captured logs contain the host or the password; an OperationalError whose message names
+    a host becomes a DuckLakeRuntimeError naming only the class and SQLSTATE; neon_superuser absent yields None; the handler
+    dispatches the new action name. Fixture secrets are composed at runtime (no literal credential-shaped strings).
 - file: terraform/personal/ducklake_maintenance.tf
   action: Modify
   purpose: >-
@@ -143,8 +159,9 @@ scope:
   purpose: >-
     Class B verb entry provision_telemetry_login (operational, human-invoked over 443 by PlatformAdmin, or by an ADMIN-container
     agent only under explicit human direction per Decision 213 cl.5; confirm=ducklake_telemetry_writer; non-destructive
-    to data; returns booleans only), the operational-verb lists in description and governance name it, and an amendment_log
-    entry.
+    to data; returns booleans, counts and the migration hash only). The operational-verb lists and every sentence that names
+    reconcile_partitions / rewrite_partition_layout as the only agent-invocable verbs (description, governance callers,
+    the invariants near :347) name it too, and an amendment_log entry records it.
 - file: docs/contracts/deploy-paths.yaml
   action: Modify
   purpose: >-
@@ -210,6 +227,13 @@ scope:
     and DuckLakeInvokeViaUrlOnly each name all six function ARN forms (red case: a telemetry-writer form omitted), since
     predicate (b) alone passes vacuously when a grant is missing; (g) the maintenance role's NeonDsnRead names the scoped
     login's secret. Under 300 SLOC.
+- file: tests/checks/iam_tf/test_platform_role_iam_change_alarms.py
+  action: Modify
+  purpose: >-
+    trail_problems (:118) requires read_write_type "All" and include_management_events true inside the SAME event_selector
+    block, rather than anywhere in the trail body, so the existing "write-only trail" red case (:408), which mutates the
+    first occurrence, stays red once the data-event selector is added. A new red case: management events on a selector
+    whose read_write_type is not All, with the data selector present.
 - file: config/agent/verification_registry/entries/url-only-invoke-guard.yaml
   action: Create
   purpose: Registry shard for graduated VP step 1 (check_id url-only-invoke-guard, command_exit_zero, the step's pytest target).
@@ -221,12 +245,13 @@ scope:
 - file: docs/DECISIONS.md
   action: Modify
   purpose: >-
-    Insert Decision 213 (re-check the number against main and open branches at implementation time; 211-212 are reserved
-    by #1426) verbatim from execution step 3, with the merge date. Append dated amendment annotations (Decision 177, trailing
-    "[Amendment <date>, Decision 213: ...]") to Decision 81 (cl.1 artifact list; cl.5 and cl.7 one chokepoint per table),
+    Insert Decision 213 (re-check the number against main and open branches at implementation time; 211 and 212 are on
+    main since #1429) verbatim from execution step 3, with the merge date. Append dated amendment annotations (Decision 177, trailing
+    "[Amendment <date>, Decision 213: ...]") to Decision 81 (cl.1 artifact list; cl.5 and cl.7 one chokepoint per table;
+    cl.6 a third agent-invocable maintenance verb, provision_telemetry_login, under human direction),
     Decision 91 (cl.1 identity-scoped verb sets; the realized DuckLakeInvokeRuntime grant is now split into DuckLakeInvokeUrl
     and DuckLakeInvokeViaUrlOnly) and Decision 126 (its admin tier, carved out by Decision 213 cl.5). Stay within the Decision 167 6,144 B entry
-    cap (the draft measures about 6,045 B with iter_decision_sections, about 95 B of headroom; keep any wording change byte-neutral).
+    cap (the draft measures about 6,090 B with iter_decision_sections, about 50 B of headroom; keep any wording change byte-neutral).
 - file: docs/decisions-index.json
   action: Modify
   purpose: Regenerated with the repo's decisions-index tooling after the insert (validate_decisions_index_freshness).
@@ -296,7 +321,8 @@ acceptance_criteria:
   recorded on rec-4204 instead, and this criterion is met by the record.
 - >-
   The bootstrap IAMRolesRead lists the telemetry writer role; the telemetry DSN secret container exists and, after the admin
-  steps, holds host, dbname, username ducklake_telemetry_writer, password and sslmode require.
+  steps, holds host, dbname, username ducklake_telemetry_writer, password and sslmode require (the provisioning verb refuses
+  any other sslmode).
 - >-
   The scoped login exists with the migration's attributes and grants, as reported by provision_telemetry_login: it can
   read the smoke catalog's metadata schema, has no USAGE on the ducklake_ops schema, no CREATE on ducklake_smoke, ducklake_ops,
@@ -324,13 +350,15 @@ verification_plan:
     and the provisioning verb behaves as specified.
   command: >-
     bin/venv-python -m pytest tests/test_iam_simulate.py tests/checks/contracts/test_validate_iam_simulate_fixture_shape.py
-    tests/lambdas/ducklake_maintenance/test_login_actions.py -q
-  expected: Exit 0. Red before for the boolean context test, the url-only fixture rows test and the provisioning verb (module absent).
+    tests/lambdas/ducklake_maintenance/test_login_actions.py tests/checks/iam_tf/test_platform_role_iam_change_alarms.py -q
+  expected: >-
+    Exit 0. Red before for the boolean context test, the url-only fixture rows test and the provisioning verb (module absent).
   fix_if: Fix the runner or the fixture rows; never loosen validate_iam_simulate_fixture_shape.
   hermetic: true
   graduation: waive
   graduation_waiver_reason: >-
-    tests/test_iam_simulate.py is already a standing suite and validate_iam_simulate_fixture_shape is a registered check;
+    tests/test_iam_simulate.py is already a standing suite, validate_iam_simulate_fixture_shape is a registered check, and
+    the new tests/lambdas/ducklake_maintenance/test_login_actions.py becomes standing through full-tier pytest collection;
     this step re-runs them as evidence for the new behaviour.
   expected_literals: []
 - step: 3
@@ -340,7 +368,8 @@ verification_plan:
     plan file's own bookkeeping) changed; no 12-digit literal added anywhere; no aws_secretsmanager_secret_version resource
     added; PlatformAdmin's policy files untouched. (The no-bracket-in-Action-array-comment
     rule is a constraint the implementer reads from the boundary file's own warning; terraform validate in CI parses the
-    result.)
+    result. The three plans reach main in one plan PR before implementation, so the sibling plan files are never in this
+    diff.)
   command: >-
     bin/venv-python -c "import subprocess,re,yaml,pathlib;g=lambda *a:subprocess.run(['git',*a],capture_output=True,text=True,check=True).stdout;mb=g('merge-base','origin/main','HEAD').strip();new=g('ls-files','--others','--exclude-standard').split();ch=g('diff','--name-only',mb).split()+new;pf='docs/plans/PLAN-url-only-invoke-guard.yaml';sc={e['file']
     for e in yaml.safe_load(open(pf,encoding='utf-8'))['scope']}|{pf};add=[l for l in g('diff',mb).splitlines() if l.startswith('+') and not l.startswith('+++')]+[l
@@ -415,22 +444,28 @@ verification_plan:
     (host, dbname and sslmode copied from ducklake-neon-catalog-dsn; username ducklake_telemetry_writer; a password from
     secrets.token_urlsafe(32)), printing nothing but SECRET_WRITTEN; the password is never displayed, logged or written
     to disk. Mutation 2: invoke ducklake_maintenance's provision_telemetry_login with confirm, which applies the migration,
-    sets the password from the secret and reports the login's reach. Save the invoke output to the file the command reads.
+    sets the password from the secret and reports the login's reach. Save the invoke output to the file the command reads;
+    the command also checks the deployed SQL is the merged file (migration_sha256).
   command: >-
     AWS_MAX_ATTEMPTS=1 aws lambda invoke --profile agent_platform_admin --region eu-west-2 --cli-read-timeout 300 --function-name
     agent-platform-ducklake-maintenance --cli-binary-format raw-in-base64-out --payload '{"action":"provision_telemetry_login","confirm":"ducklake_telemetry_writer"}'
-    "${TMPDIR:-/tmp}/provision.json" > /dev/null && bin/venv-python -c "import json,os;r=json.load(open(os.environ.get('TMPDIR','/tmp')+'/provision.json'));b=json.loads(r['body']);print('PROVISION',r['statusCode'],b.get('scope'),'neon_superuser_member=',b.get('owner_is_neon_superuser_member'));assert
+    "${TMPDIR:-/tmp}/provision.json" > /dev/null && bin/venv-python -c "import json,os;r=json.load(open(os.environ.get('TMPDIR','/tmp')+'/provision.json'));b=json.loads(r['body']);import hashlib;sha=hashlib.sha256(open('src/lambdas/ducklake_maintenance/ducklake_telemetry_writer_role.sql','rb').read()).hexdigest();print('PROVISION',r['statusCode'],b.get('scope'),'neon_superuser_member=',b.get('owner_is_neon_superuser_member'));assert
+    b.get('migration_sha256')==sha, 'deployed SQL differs from the merged file';assert
     r['statusCode']==200 and b['ok'] is True and b['metadata_readable'] is True and b['scope']=={'smoke_usage':True,'ops_usage':False,'smoke_create':False,'ops_create':False,'public_create':False,'database_create':False,'connection_limit':10};print('SCOPED_LOGIN_OK')"
   expected: >-
     PROVISION 200 with the expected scope, and SCOPED_LOGIN_OK. The neon_superuser measurement for the owner login is recorded
     in the report as a boolean (checked against Decision 107's "scoped non-owner role" control; the project thread files
     a rec if it is true).
   fix_if: >-
-    A 500 runtime refusal: read its error (a confirm or secret mismatch names itself). USAGE on ducklake_ops or CREATE
-    granted: the role inherited a privilege (check NOINHERIT and memberships) or a default privilege leaked; fix the migration
-    by PR and re-run mutation 2, never widen the check. metadata_readable false: the table grant is missing; fix the migration.
-    A timeout or lost response: the verb is idempotent, so read the function's log group before deciding to re-run, and
-    re-run only on Benjamin's word. Never print the DSN or password.
+    A 500 runtime refusal: read its error (a confirm or secret mismatch names itself; a database error names only its class
+    and SQLSTATE). USAGE on ducklake_ops or CREATE granted: the role inherited a privilege (check NOINHERIT and memberships)
+    or a default privilege leaked; fix the SQL by PR, whose merge redeploys ducklake_maintenance through the governed channel,
+    confirm its deploy record carries that merge, then re-run mutation 2; never widen the check. metadata_readable false:
+    the table grant is missing; fix the SQL the same way. migration_sha256 differs: the deployed maintenance code is stale;
+    dispatch deploy-ducklake-lambdas.yml and confirm the record before re-running. TooManyRequestsException: reserved concurrency
+    1 is held by a scheduled merge_ops or gc_ops run; wait for it and re-run on Benjamin's word. A timeout or lost response:
+    the verb is idempotent, so read the function's log group before deciding to re-run, and re-run only on Benjamin's word.
+    Never print the DSN or password.
 - step: 8
   phase: post-deploy
   action: >-
@@ -500,15 +535,15 @@ test_obligations:
   verification_step: 1
   test_selector: tests/checks/iam_tf/test_url_only_invoke_guard.py
   red_green_expectation: red before (unconditioned grant), green after
-- source: migrations/ducklake_telemetry_writer_role.sql
+- source: src/lambdas/ducklake_maintenance/ducklake_telemetry_writer_role.sql
   behavior: The scoped login is DML-only on the smoke schema with a connection limit and nothing on ducklake_ops.
   verification_step: 1
   test_selector: tests/checks/iam_tf/test_url_only_invoke_guard.py
   red_green_expectation: red before (file absent), green after
 - source: src/lambdas/ducklake_maintenance/login_actions.py
   behavior: >-
-    The provisioning verb refuses without confirm or on a mismatched secret, applies the migration as the owner, sets a
-    SCRAM verifier never the plaintext, and reports only booleans.
+    The provisioning verb refuses without confirm or on a mismatched secret, applies the SQL as the owner and reports its
+    hash, sets the password only as a bound parameter, sanitises database errors, and reports only booleans and counts.
   verification_step: 2
   test_selector: tests/lambdas/ducklake_maintenance/test_login_actions.py
   red_green_expectation: red before (module absent), green after
@@ -518,7 +553,7 @@ test_obligations:
   test_selector: tests/lambdas/ducklake_maintenance/test_login_actions.py
   red_green_expectation: red before (action unknown), green after
 - source: src/lambdas/ducklake_maintenance/manifest.yaml
-  behavior: The maintenance zip bundles the verb module and the migration file.
+  behavior: The maintenance zip bundles the verb module and the SQL file.
   verification_step: 4
   command: bin/venv-python -m scripts.validate
   waiver_reason: >-
@@ -619,7 +654,7 @@ context:
   ids in Decision 213), SPIRIT 126 (admin SQL and secret write: per-mutation human acceptance, Decision 213 cl.5), NOTE 118
   (stub actions are gate instrumentation until plan 3 part 1's contract), NOTE 154 (accepted deviation, recorded). Decisions
   triaged: 163 of 163. Roadmap items intersected: 7; CONFLICT: 0; RELATED: 7.
-- "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=REVISE (rounds 1-2, addressed)"
+- "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=REVISE (rounds 1-3, addressed)"
 - >-
   Direction (Benjamin, project thread "Writer direct-invoke IAM fix", 2026-10-08): option A + D; after an independent review
   he chose a scoped login now, the extra Denies plus CloudTrail data events, PlatformDev condition plus telemetry invoke
@@ -656,7 +691,7 @@ execution_steps:
   Insert Decision 213 into docs/DECISIONS.md, newest-first above the current top entry, re-checking the number first and
   replacing <merge date> with the merge date. Text, verbatim apart from the number and dates:
 
-    ## Decision 213: An identity-trusting Lambda is reachable only through its AWS_IAM Function URL, enforced in the permissions boundary; telemetry writes get their own function and their own scoped catalog login (amends Decision 81 clauses 1, 5 and 7, Decision 91 clause 1 and Decision 126) (Decided)
+    ## Decision 213: An identity-trusting Lambda is reachable only through its AWS_IAM Function URL, enforced in the permissions boundary; telemetry writes get their own function and their own scoped catalog login (amends Decision 81 clauses 1, 5, 6 and 7, Decision 91 clause 1 and Decision 126) (Decided)
 
     ```yaml
     number: 213
@@ -665,7 +700,7 @@ execution_steps:
     amends: [81, 91, 126]
     significance:
       value: numbered_decision
-      justification: "Durable IAM and runtime-artifact commitments with reversal conditions: amends Decision 81 cl.1/5/7, 91 cl.1 and 126's admin tier; a governance note in ducklake_writer.yaml cannot carry a cross-function boundary invariant, and amendment_forms annotations cannot add the URL-only rule, the login model or an admin carve-out."
+      justification: "Durable IAM and runtime-artifact commitments with reversal conditions: amends Decision 81 cl.1/5/6/7, 91 cl.1 and 126's admin tier; a governance note in ducklake_writer.yaml cannot carry a cross-function boundary invariant, and amendment_forms annotations cannot add the URL-only rule, the login model or an admin carve-out."
     ```
 
     **Status:** Decided
@@ -679,7 +714,7 @@ execution_steps:
     2. Telemetry write verbs run on agent-platform-ducklake-telemetry-writer under Decision 143 cl.3. Its role reaches S3 only on the telemetry catalog's data prefix and its fenced blob root, never the production ducklake/ prefix; it never carries a destructive or drop verb. The shared writer stays the sole ops_* write authority and keeps refusing telemetry boundaries. Amends Decision 81: cl.1's runtime artifacts are writer, reader, maintenance, maintenance_smoke, catalog_dr and telemetry_writer (catalog_dr was never listed); cl.5 (as widened by Decision 210) and cl.7 read as one write-time enforcement chokepoint per table, the closed boundary covering both writers. Amends Decision 91 cl.1: an identity-scoped verb set may live on its own function; OQ.15's thin-verb Lambdas are not reopened.
     3. Scoped catalog logins. The telemetry writer connects as its own SQL-created Postgres role, DML-only on its catalog's metadata schema, with a connection limit and its own secret; the role is defined in a version-controlled migration that the RDS swap re-runs. Schema migrations stay an admin step under the owner login.
     4. Detection. CloudTrail data events are logged for the named functions on the Decision 202 trail.
-    5. Amends Decision 126's admin tier: an ADMIN-container agent may write the scoped login's secret value and invoke ducklake_maintenance's provision_telemetry_login (migration plus password) only under explicit human direction, presenting each mutation and executing it after the human accepts (the Decision 204 cl.2 shape). The password is never displayed or stored outside Secrets Manager.
+    5. Amends Decision 126's admin tier and, for this verb only, Decision 81 cl.6: an ADMIN-container agent may write the scoped login's secret value and invoke ducklake_maintenance's provision_telemetry_login (migration plus password) only under explicit human direction, presenting each mutation and executing it after the human accepts (the Decision 204 cl.2 shape). The password is never displayed or stored outside Secrets Manager.
     6. Authorizes docs/contracts/iam-simulate-fixture.yaml's structural budget at 650 for the URL-only simulate rows (Decision 165).
 
     **Rationale:** The boundary is the one layer every bounded principal carries and agents cannot edit (Decision 143 cl.1, Decision 144); a boundary cannot see service principals or event source mappings, so those paths are closed at their control points. Live probe 2026-10-06: the Function URL needs both InvokeFunction and InvokeFunctionUrl, and lambda:InvokedViaFunctionUrl separates URL from direct calls in identity evaluation. Independent review: docs/plans/PLAN-url-only-invoke-guard.yaml context.
