@@ -4,19 +4,26 @@ Decision 154 / rec-2862).
 Covers: byte-mismatch fails closed; on push the assert runs and a missing per-sha object fails
 closed; the dual-write targets BOTH the fixed and per-sha keys; workflow_dispatch (any non-"push"
 event_name) skips the assert; fetch_reviewed() downloads the reviewed per-sha artifacts and
-server-side copies them onto the fixed key with no rebuild, failing closed on any missing object.
-No live S3 -- boto3 is fully mocked via an injected fake client.
+server-side copies them onto the fixed key with no rebuild, failing closed on any missing object;
+rec-4189: the deps layer rebuilds byte-identically across build interpreters and a mismatch names
+the differing zip entries. No live S3 -- boto3 is fully mocked via an injected fake client.
 """
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import io
+import sys
+import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, call, patch
 
 import pytest
 
+import scripts.build_lambda_packaging as bm
 from scripts.ci.ducklake_artifacts import (
     DUCKLAKE_ARTIFACT_NAMES,
     DucklakeArtifactError,
@@ -436,3 +443,103 @@ def test_main_default_mode_is_build_and_unaffected_by_fetch_addition() -> None:
     assert rc == 0
     mock_build.assert_called_once()
     mock_assert.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# rec-4189: deps-layer rebuild is byte-identical across build interpreters, and a push-path
+# mismatch names the differing zip entries
+# ---------------------------------------------------------------------------
+
+_HOSTED_PYTHONS = (
+    "/opt/hostedtoolcache/Python/3.12.14/x64/bin/python3",
+    "/opt/hostedtoolcache/Python/3.12.15/x64/bin/python3",
+)
+
+
+def _fake_pip_target(cmd: list[str], **_: Any) -> SimpleNamespace:
+    """Stand-in for `pip install --target`: a package, its dist-info, and a console-script wrapper
+    whose shebang and RECORD hash carry the interpreter that ran pip (cmd[0]), as real pip writes them."""
+    target = Path(cmd[cmd.index("--target") + 1])
+    wrapper = f"#!{cmd[0]}\nimport sys\nfrom ulid.__main__ import entrypoint\n".encode()
+    digest = base64.urlsafe_b64encode(hashlib.sha256(wrapper).digest()).rstrip(b"=").decode()
+    for directory in ("ulid", "bin", "python_ulid-4.0.1.dist-info"):
+        (target / directory).mkdir()
+    (target / "ulid" / "__init__.py").write_text("x = 1\n", encoding="utf-8")
+    (target / "bin" / "ulid").write_bytes(wrapper)
+    (target / "python_ulid-4.0.1.dist-info" / "RECORD").write_bytes(
+        f"../../bin/ulid,sha256={digest},{len(wrapper)}\r\n"
+        "ulid/__init__.py,sha256=abc,6\r\npython_ulid-4.0.1.dist-info/RECORD,,\r\n".encode()
+    )
+    return SimpleNamespace(returncode=0)
+
+
+def test_deps_layer_rebuild_is_byte_identical(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """rec-4189: two builds whose pip ran under interpreters at different paths are byte-identical,
+    and the layer carries no console-script wrapper or build-interpreter path."""
+    built: list[bytes] = []
+    for i, interpreter in enumerate(_HOSTED_PYTHONS):
+        out_dir = tmp_path / f"out{i}"
+        out_dir.mkdir()
+        monkeypatch.setattr(sys, "executable", interpreter)
+        monkeypatch.setattr(bm, "OUTPUT_DIR", out_dir)
+        with patch("scripts.build_lambda_packaging.subprocess.run", side_effect=_fake_pip_target):
+            built.append(bm.build_ducklake_deps_layer(tmp_path / f"build{i}").read_bytes())
+
+    assert _md5_hex(built[0]) == _md5_hex(built[1])
+    with zipfile.ZipFile(io.BytesIO(built[0])) as zf:
+        names = zf.namelist()
+        contents = b"".join(zf.read(name) for name in names)
+    assert any(name.endswith("site-packages/ulid/__init__.py") for name in names)
+    assert not [name for name in names if "/site-packages/bin/" in name]
+    assert not [path for path in _HOSTED_PYTHONS if path.encode() in contents]
+
+
+def _zip_bytes(entries: dict[str, bytes], compression: int = zipfile.ZIP_DEFLATED) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zf:
+        for name, data in entries.items():
+            info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+            info.compress_type = compression
+            zf.writestr(info, data)
+    return buffer.getvalue()
+
+
+def _mismatch_message(tmp_path: Path, local: bytes, remote: bytes) -> str:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    packages_dir = _write_packages(tmp_path, ["ducklake-deps-layer.zip"], content=local)
+    client = _FakeS3Client(objects={"lambda-packages/sha/ducklake-deps-layer.zip": remote})
+    with pytest.raises(DucklakeArtifactError) as excinfo:
+        assert_and_upload(["ducklake-deps-layer.zip"], "sha", "push", "b", packages_dir=packages_dir, s3_client=client)
+    assert client.uploads == []
+    return str(excinfo.value)
+
+
+def test_push_byte_mismatch_names_differing_entries(tmp_path: Path) -> None:
+    shared = {f"pkg/m{i:02d}.py": b"same" for i in range(3)}
+    local = _zip_bytes({**shared, "bin/ulid": b"#!/opt/a/python3", "only/local.py": b"l"})
+    remote = _zip_bytes({**shared, "bin/ulid": b"#!/opt/b/python3", "only/remote.py": b"r"})
+    message = _mismatch_message(tmp_path / "small", local, remote)
+    first, *rest = message.splitlines()
+    assert first.startswith("DUCKLAKE_ZIP_MISMATCH ducklake-deps-layer.zip: local=")
+    assert "changed: bin/ulid" in rest[1:]
+    assert "only-local: only/local.py" in rest[1:]
+    assert "only-remote: only/remote.py" in rest[1:]
+    assert not [line for line in rest if "pkg/m" in line]
+
+    many_local = _zip_bytes({f"pkg/m{i:02d}.py": b"a" for i in range(13)})
+    many_remote = _zip_bytes({f"pkg/m{i:02d}.py": b"b" for i in range(13)})
+    capped = _mismatch_message(tmp_path / "many", many_local, many_remote).splitlines()
+    assert "changed: pkg/m09.py" in capped and "changed: pkg/m10.py" not in capped
+    assert "... and 3 more" in capped
+
+
+def test_push_byte_mismatch_reports_container_only_difference(tmp_path: Path) -> None:
+    entries = {"pkg/a.py": b"a" * 200, "pkg/b.py": b"b"}
+    message = _mismatch_message(tmp_path, _zip_bytes(entries), _zip_bytes(entries, zipfile.ZIP_STORED))
+    assert "entry contents identical" in message.splitlines()[1]
+
+
+def test_push_byte_mismatch_without_zip_bytes_says_diff_unavailable(tmp_path: Path) -> None:
+    message = _mismatch_message(tmp_path, b"not-a-zip", b"also-not-a-zip")
+    assert message.splitlines()[0].startswith("DUCKLAKE_ZIP_MISMATCH ducklake-deps-layer.zip: local=")
+    assert message.splitlines()[1].startswith("entry diff unavailable")
