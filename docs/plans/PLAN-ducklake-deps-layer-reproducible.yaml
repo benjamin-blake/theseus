@@ -60,7 +60,9 @@ scope:
     (434 at planning; stays under 500). build_lambda_packaging.py stays at or above its 90.4 coverage floor.
 - file: config/agent/verification_registry/entries/ducklake-deps-layer-reproducible.yaml
   action: Create
-  purpose: Graduated shard for VP step 1 (check_id ducklake-deps-layer-reproducible, guard_target scripts/build_lambda_packaging.py).
+  purpose: >-
+    Graduated shard for VP step 1: check_id ducklake-deps-layer-reproducible, primitive_slot command_exit_zero running
+    both step-1 nodes, guard_target scripts/build_lambda_packaging.py.
 bundled_recommendations:
 - rec-4189
 - rec-4190
@@ -114,8 +116,8 @@ verification_plan:
   phase: pre-deploy
   action: >-
     Real pip, two interpreters at different paths (this repo's venv and a fresh venv): the two layers are byte-identical
-    and carry no bin/ entry. Before the fix this reproduces the incident locally (exactly bin/ulid and the python-ulid
-    RECORD differ).
+    and carry no bin/ entry. Before the fix this reproduces the incident locally (the md5s differ and bin/ulid is
+    present; step 4 shows the per-entry diff).
   command: |-
     S=$(mktemp -d) && /usr/bin/python3.12 -m venv "$S/interp-b" && PYTHONPATH=. bin/venv-python - "$S" "$(bin/venv-python -c 'import sys; print(sys.executable)')" "$S/interp-b/bin/python" <<'EOF'
     import hashlib, sys, zipfile
@@ -204,7 +206,7 @@ test_obligations:
   behavior: A push-path byte mismatch fails closed before upload and names the differing zip entries.
   verification_step: 2
   test_selector: tests/test_ducklake_artifacts.py::test_push_byte_mismatch_names_differing_entries
-  red_green_expectation: red before (node absent), green after
+  red_green_expectation: red before (node absent; written first, it fails on the missing entry names), green after
 - source: config/agent/verification_registry/entries/ducklake-deps-layer-reproducible.yaml
   behavior: The graduated guard runs VP step 1's nodes as a standing regression check.
   verification_step: 5
@@ -228,7 +230,7 @@ context:
   general premerge reproducibility probe is deferred to follow-on rec-4194, stated here per Decision 186. CITE: 77, 154,
   55, 72, 186, 201, 189, 132, 48, 79, 159, 126. Decisions triaged: 163 of 163. Roadmap items intersected: 1; CONFLICT:
   0; RELATED: 1.
-- "gates: decision-scout=FLAGS_FOUND (WARN 186 resolved by explicit scope statement and rec-4194); plan-critique=REVISE r1 (F1 closure sequence, F2 rec-4194, F3-F6 wording fixed); round 2 pending"
+- "gates: decision-scout=FLAGS_FOUND (WARN 186 resolved by explicit scope statement and rec-4194); plan-critique=REVISE r1 (F1 closure sequence, F2 rec-4194, F3-F6 wording fixed), PROCEED after 2 rounds; round 2 autonomous (optional N1-N5 applied)"
 - >-
   fork: fix shape | chosen: prune the wrappers and their RECORD rows | alternatives: rewrite shebangs, pin the Python
   patch, pip download and unpack | class: asked | precedent: Fable consult 2026-10-06 under the operator's approval line
@@ -268,7 +270,7 @@ execution_steps:
 - >-
   Write the red tests first (steps 1 and 2 nodes) and confirm each fails on the unchanged tree: the rec-4189 node on
   differing md5s, the prune node on the surviving wrapper, the message nodes on the missing entry names. Run step 3
-  once and confirm it exits 1 naming bin/ulid and the python-ulid RECORD.
+  once and confirm it exits 1 with differing md5s and bin/ulid listed.
 - 'scripts/build_lambda_packaging.py: the RECORD-driven wrapper prune, called from build_ducklake_deps_layer as scoped.'
 - 'scripts/ci/ducklake_artifacts.py: the entry diff in the DUCKLAKE_ZIP_MISMATCH message as scoped.'
 - Add the graduated registry shard.
@@ -279,7 +281,9 @@ execution_steps:
 - >-
   Execute VP steps 1-4; loop until pass; never weaken an assertion; on an unexplained step 3 or 4 diff STOP and RCA
   (Decision 55).
-- Code review via a fresh code-review subagent; fix every blocking finding and rerun VP steps 1-2.
+- >-
+  Code review via a fresh code-review subagent; fix every blocking finding and rerun VP steps 1-2, and steps 3-4 too if
+  scripts/build_lambda_packaging.py changed.
 - >-
   CLOSURE -- separate facts, in order (a)-(e) (implement skill Commit Flows; docs/contracts/git-ops.yaml), each reported
   on its own. (a) READINESS: bin/venv-python -m scripts.session.github_readiness (unknown is never PASS). (b) Set
@@ -294,5 +298,7 @@ execution_steps:
   Close rec-4189 after the merge: in scripts.verification_graduation.git_worktree(merge_sha) run
   rec_trailer_acceptance census and evaluate on its acceptance; only on isolation True and verdict holds, one update_rec
   call with status closed, resolution, closure_artifact shard:ducklake-deps-layer-reproducible, closure_fix_sha,
-  acceptance_verdict and closing_sha; then run VP steps 6 and 7.
+  acceptance_verdict and closing_sha. If census routes the acceptance to junit and evaluate yields no record, close by
+  the verdict-free closure_dependency.manual_route instead (sanctioned for this escape-classified rec). Then run VP
+  steps 6 and 7.
 - 'Report: what was implemented, verification results'
