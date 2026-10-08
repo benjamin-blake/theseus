@@ -153,7 +153,8 @@ scope:
   purpose: >-
     The conformance ducklake_detail text names six functions and adds terraform/personal/ducklake_telemetry_writer.tf to the
     list of files whose aws_lambda_function carries the ignore_changes block; an amendment_log entry if the file carries
-    one. Apply-model semantics are unchanged.
+    one. The sentence "The governed code-deploy channel for the five functions landed at T2.38" stays as written: it is
+    history, and the companion plan is what puts the sixth function on that channel. Apply-model semantics are unchanged.
 - file: scripts/checks/iam_tf/validate_invoke_implies_resolve.py
   action: Modify
   purpose: >-
@@ -178,20 +179,31 @@ scope:
     the shared DSN); test_writer_carries_no_telemetry_state (the writer env has no TELEMETRY_* key
     and its policy no telemetry-blobs grant); test_telemetry_writer_cannot_reach_the_production_prefix (no Allow statement
     on the telemetry writer role covers a probe key under ${local.ducklake_prod_data_prefix}/ for any s3 action, wildcards
-    and NotAction included, and its env sets neither DUCKLAKE_DATA_PATH nor DUCKLAKE_META_SCHEMA). The ops-env invariant
+    and NotAction included; every ListBucket statement's s3:prefix values are fnmatched against a ducklake/ probe, an absent
+    condition counting as covering, so a ["*"] or ["ducklake/*"] prefix fails; and its env sets neither DUCKLAKE_DATA_PATH
+    nor DUCKLAKE_META_SCHEMA). The ops-env invariant
     stays on the writer and reader only. Renamed nodes keep one behaviour each; the file stays under 500 SLOC.
 - file: config/agent/verification_registry/entries/telemetry-infra-pins.yaml
   action: Modify
-  purpose: guard_target adds terraform/personal/ducklake_telemetry_writer.tf; check_spec.command lists the current node ids.
+  purpose: >-
+    guard_target adds terraform/personal/ducklake_telemetry_writer.tf; check_spec.command lists the current node ids, including
+    at least one node absent at origin/main (the new or renamed nodes), so validate_verification_registry's modified-record
+    differential sees the record fail on the base tree rather than refusing it as tautological.
 - file: tests/checks/iam_tf/test_telemetry_writer_invoke_grants.py
   action: Create
   purpose: >-
     The CI invoke grant on the telemetry writer, over the real tree with tests/fixtures/terraform_hcl_blocks.py, each predicate
     with a red case on synthetic HCL: github_ci_branch's document grants lambda:InvokeFunctionUrl and lambda:GetFunctionUrlConfig
     on aws_lambda_function.ducklake_telemetry_writer.arn and its ":*" form in an unconditioned statement, and lambda:InvokeFunction
-    on them only in a statement carrying Bool lambda:InvokedViaFunctionUrl = true; the github_ci_pr, github_ci_planner and
-    github_ci_deploy documents grant no lambda action on the telemetry writer in any reference form (resource reference,
-    local or interpolated function name). Red before: the branch grant is absent on the unchanged tree.
+    on them only in a statement carrying Bool lambda:InvokedViaFunctionUrl = true; no other CI role document (github_ci_pr,
+    github_ci_planner, github_ci_deploy, with source_policy_documents composition resolved) grants an invoke-class action
+    (lambda:InvokeFunction, lambda:InvokeFunctionUrl, lambda:InvokeAsync, or any action pattern such as lambda:Invoke* or
+    lambda:* that covers one) on the telemetry writer. Matching uses IAM-wildcard semantics (fnmatchcase, as the pins guard
+    does) of each rendered Resource against the function's unqualified and ":*" ARNs, so a prefix wildcard such as function:agent-platform-ducklake-*
+    counts. Expected non-invoke coverage is named in the module docstring and not flagged: the planner's LambdaRead (Get*/List*
+    on function:agent-platform-*, refresh) and github_ci_deploy's UpdateFunctionCode on the same prefix, which the companion
+    plan's governed deploy needs. Red cases include a wildcard invoke grant (function:agent-platform-ducklake-* on github_ci_pr)
+    and an unconditioned InvokeFunction on github_ci_branch. Red before: the branch grant is absent on the unchanged tree.
 - file: config/agent/verification_registry/entries/telemetry-writer-function-pins.yaml
   action: Create
   purpose: >-
@@ -210,7 +222,7 @@ scope:
   action: Create
   purpose: >-
     Verification-registry shard for graduated VP step 2: check_id telemetry-writer-stub-handler (filename equals check_id),
-    primitive_slot command_exit_zero with the step's pytest targets, guard_target src/lambdas/ducklake_telemetry_writer/handler.py,
+    plan_slug telemetry-writer-function, primitive_slot command_exit_zero with the step's pytest targets, guard_target src/lambdas/ducklake_telemetry_writer/handler.py,
     graduated_by implement-agent.
 - file: tests/lambdas/ducklake_telemetry_writer/__init__.py
   action: Create
@@ -312,7 +324,9 @@ acceptance_criteria:
   reader keeps its two telemetry pins and has no blob grant.
 - >-
   github_ci_branch can invoke the new function (InvokeFunctionUrl and GetFunctionUrlConfig unconditioned, InvokeFunction
-  only via the URL); no other CI role holds any lambda grant on it (PlatformDev's comes from PLAN-url-only-invoke-guard). The planner
+  only via the URL); no other CI role holds an invoke-class action on it under IAM-wildcard matching (the planner's Get*/List*
+  read and the deploy role's UpdateFunctionCode on function:agent-platform-* are expected; PlatformDev's invoke comes from
+  PLAN-url-only-invoke-guard). The planner
   can refresh-read the new role. validate_invoke_implies_resolve covers the new function.
 - >-
   The stub handler rejects a request without requestContext.authorizer.iam with 403, never echoes or logs the caller account
@@ -382,14 +396,17 @@ verification_plan:
 - step: 4
   phase: pre-deploy
   action: >-
-    Scope and safety shape against the merge base: only scope files changed; no aws_iam_role block other than the new one;
-    no PlatformDev or PlatformAdmin policy touched; no `#` line inside a changed variables block; no 12-digit literal added;
-    the writer's role and URL blocks are byte-identical to the merge base.
+    Scope and safety shape against the merge base: every changed file is a scope file; no PlatformDev or PlatformAdmin
+    policy touched; no `#` line inside the new file's variables block; no 12-digit literal added; the writer's and reader's
+    role and URL blocks are byte-identical to the merge base. (That no other aws_iam_role changes is the speculative plan's
+    exact 7/4/0 count, checked at closure.)
   command: >-
     bin/venv-python -c "import subprocess,re,pathlib;from tests.fixtures.terraform_hcl_blocks import find_resource_block;mb=subprocess.run(['git','merge-base','origin/main','HEAD'],capture_output=True,text=True,check=True).stdout.strip();show=lambda
     p:subprocess.run(['git','show',mb+':'+p],capture_output=True,text=True,check=True).stdout;f='terraform/personal/ducklake_lambdas.tf';old,new=show(f),pathlib.Path(f).read_text(encoding='utf-8');errs=[t+'.'+n+'
     changed' for t,n in (('aws_iam_role','ducklake_writer'),('aws_iam_role','ducklake_reader'),('aws_lambda_function_url','ducklake_writer'),('aws_lambda_function_url','ducklake_reader'))
-    if find_resource_block(old,t,n)!=find_resource_block(new,t,n)];ch=subprocess.run(['git','diff','--name-only',mb],capture_output=True,text=True,check=True).stdout.split();errs+=[p+'
+    if find_resource_block(old,t,n)!=find_resource_block(new,t,n)];ch=subprocess.run(['git','diff','--name-only',mb],capture_output=True,text=True,check=True).stdout.split();import
+    yaml;sc={e['file'] for e in yaml.safe_load(open('docs/plans/PLAN-telemetry-writer-function.yaml',encoding='utf-8'))['scope']};errs+=[p+'
+    outside scope' for p in ch if p not in sc];errs+=[p+'
     is a PlatformDev/PlatformAdmin policy file' for p in ch if p in ('terraform/personal/platform_dev_policies.tf','terraform/personal/platform_admin_policies.tf','terraform/personal/platform_admin_data_policies.tf','terraform/personal/platform_roles.tf')];add=subprocess.run(['git','diff',mb,'--','terraform/'],capture_output=True,text=True,check=True).stdout;errs+=['12-digit
     literal added' for l in add.splitlines() if l.startswith('+') and re.search(r'\b\d{12}\b',l)];t=pathlib.Path('terraform/personal/ducklake_telemetry_writer.tf').read_text(encoding='utf-8');errs+=['comment
     inside variables' for _ in [0] if re.search(r'variables\s*=\s*\{[^}]*\n\s*#',t)];print(chr(10).join(errs) or 'SHAPE_OK');assert
@@ -453,8 +470,10 @@ verification_plan:
     && grep -qi 'explicit deny in a permissions boundary' "${TMPDIR:-/tmp}/tw-dryrun.err" && echo TELEMETRY_URL_ONLY_OK
   expected: Exit 0 with STUB_LIVE_OK and TELEMETRY_URL_ONLY_OK.
   fix_if: >-
-    A signed 403: PLAN-url-only-invoke-guard's PlatformDev grant is not applied. attach_check failing: read error_type; a
-    Postgres permission error is the scoped login's grant set (fix the migration through the admin, never by widening to
+    A signed 403: PLAN-url-only-invoke-guard's PlatformDev grant is not applied. attach_check failing: a 500 names its error_type;
+    a 502 with no error_type is an unmapped exception (a Postgres permission error from ATTACH, a Secrets Manager ClientError),
+    so read the function's log group /aws/lambda/agent-platform-ducklake-telemetry-writer for the exception. A Postgres
+    permission error is the scoped login's grant set (fix the migration through the admin, never by widening to
     the shared login), an S3 AccessDenied is this role's policy (fix by PR, in budget). An allowed DryRun means PlatformDev
     holds an unconditioned grant and the boundary Deny is missing; AccessDenied without the boundary phrase means only the
     grant condition denied it. Either way stop and tell Benjamin before plan 3 part 1 relies on the URL-only invariant.
@@ -464,9 +483,12 @@ verification_plan:
     No regression for the shared writer and the reader after the writer's env and policy change restarted its containers:
     the same ops smoke gates the governed deploy channel runs.
   command: >-
-    bin/venv-python -m scripts.ducklake_neon_smoke_test --lambda-attach && bin/venv-python -m scripts.ducklake_neon_smoke_test
-    --lambda-reader && bin/venv-python -m scripts.ducklake_neon_smoke_test --lambda-row-rules
-  expected: Exit 0 from all three gates after the apply.
+    export DUCKLAKE_WRITER_URL="$(aws ssm get-parameter --name /agent-platform/ducklake/writer_url --query Parameter.Value
+    --output text --profile agent_platform --region eu-west-2)" DUCKLAKE_READER_URL="$(aws ssm get-parameter --name /agent-platform/ducklake/reader_url
+    --query Parameter.Value --output text --profile agent_platform --region eu-west-2)" && for g in --lambda-attach --lambda-reader
+    --lambda-row-rules; do bin/venv-python -m scripts.ducklake_neon_smoke_test "$g" --profile agent_platform || exit 1;
+    done && echo OPS_GATES_OK
+  expected: Exit 0 and OPS_GATES_OK from all three gates after the apply; the URLs come from SSM and are never echoed.
   fix_if: >-
     A gate fails: the writer's env or policy edit disturbed the ops path, which should be impossible because no writer code
     reads the removed items. RCA it (Decision 55), report to Benjamin, and revert by a new PR if needed.
@@ -499,7 +521,7 @@ test_obligations:
 - source: terraform/personal/oidc_ci_roles.tf
   behavior: >-
     github_ci_branch holds InvokeFunctionUrl and GetFunctionUrlConfig on the telemetry writer unconditioned and InvokeFunction
-    only via the URL; no other CI role holds a lambda grant on it.
+    only via the URL; no other CI role holds an invoke-class action on it under IAM-wildcard matching.
   verification_step: 1
   test_selector: tests/checks/iam_tf/test_telemetry_writer_invoke_grants.py
   red_green_expectation: red before (module absent; then the branch grant is absent on the unchanged tree), green after
@@ -624,7 +646,7 @@ context:
   ids in Decision 213), SPIRIT 126 (admin SQL and secret write: per-mutation human acceptance, Decision 213 cl.5), NOTE 118
   (stub actions are gate instrumentation until plan 3 part 1's contract), NOTE 154 (accepted deviation, recorded). Decisions
   triaged: 163 of 163. Roadmap items intersected: 7; CONFLICT: 0; RELATED: 7.
-- "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=REVISE (round 1, addressed)"
+- "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=REVISE (rounds 1-2, addressed)"
 - >-
   Direction (Benjamin, thread "Writer direct-invoke IAM fix", 2026-10-08): A + D; after an independent review, a scoped
   login now, PlatformDev URL-only invoke now and the blob root fenced now. Governing Decision 213 and the admin-tier half

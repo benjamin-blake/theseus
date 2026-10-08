@@ -35,8 +35,8 @@ scope:
     `for role in writer reader telemetry_writer` and resolves --function-name "agent-platform-ducklake-${role//_/-}", exporting
     DUCKLAKE_TELEMETRY_WRITER_URL (masked, as today); line count unchanged. (4) A new step after lambda-attach, "Smoke test
     -- lambda-telemetry (telemetry writer URL-only proof)", runs `.venv/bin/python -m scripts.ducklake_neon_smoke_test --lambda-telemetry`.
-    (5) Header and step comments that count functions or artifacts are corrected: "the five ducklake" functions become six,
-    and "eight artifacts" (the header near :45 and the build and deploy-serving comments near :169 and :332) become nine,
+    (5) Header and step comments that count functions or artifacts are corrected: the header's "five DuckLake Lambdas" (:3)
+    and "covering all 7 functions -- the five ducklake + two prod" (:53-54) become six and 8, and "eight artifacts" (the header near :45 and the build and deploy-serving comments near :169 and :332) become nine,
     since PLAN-telemetry-writer-function's build adds the telemetry writer zip; "writer + reader" lists name the telemetry
     writer where the smoke job now covers it. No job, trigger, permission or role changes; push paths are unchanged (src/lambdas/ducklake_*/**
     already covers the new directory; src/telemetry/** is plan 3 part 1's).
@@ -48,9 +48,10 @@ scope:
 - file: scripts/ducklake_smoke/lambda_telemetry_gates.py
   action: Create
   purpose: >-
-    lambda_telemetry(*, profile=None, region="eu-west-2"), calling core._function_url / core._sigv4_invoke / core._ok_json
-    through the module object (Decision 104, the lambda_ops_gates pattern; those three names and boto3.Session are the
-    patch targets the tests use). In order, each a loud SmokeTestFailure (Decision 55) on mismatch: (1) url = core._function_url("telemetry_writer").
+    lambda_telemetry(*, profile=None, region="eu-west-2"), calling core._function_url and core._sigv4_invoke through the
+    module object (Decision 104, the lambda_ops_gates pattern; those two names and boto3.Session are the patch targets the
+    tests use). It parses responses with its own status check rather than core._ok_json, because a failure message carries
+    only the status code and the body's error_type, never the body text. In order, each a loud SmokeTestFailure (Decision 55) on mismatch: (1) url = core._function_url("telemetry_writer").
     (2) unsigned describe (sign=False) is 403 from the URL authorizer: the body carries no handler error_type (AWS answers
     {"Message":"Forbidden"}); a 403 whose body carries error_type missing_caller_identity means the request reached the
     handler, so the URL is not AWS_IAM, and raises "telemetry writer URL is not AWS_IAM". (3) signed describe is 200 with
@@ -81,6 +82,38 @@ scope:
     DUCKLAKE_SOURCE_PATHSPECS gains "src/lambdas/ducklake_telemetry_writer" so a source change to the new function advances
     its drift reference (the function list is already map-driven). The pre-existing ducklake_maintenance_smoke gap is rec-4208,
     not this plan.
+- file: docs/contracts/deploy-paths.yaml
+  action: Modify
+  purpose: >-
+    The DuckLake function set is restated where it is enumerated: deploy_code.description (the DuckLake Lambdas), its recovery
+    (the serving deploy is writer/reader/catalog-dr/telemetry-writer) and its status (six DuckLake Lambdas; the merged deploy
+    role covers all 8 functions). One amendment_log entry; no channel or role semantics change.
+- file: scripts/checks/ops_governance/validate_reconcile_pending_gate.py
+  action: Modify
+  purpose: >-
+    The DEPLOY REFUSED message names the serving deploy as writer/reader/catalog-dr/telemetry-writer, because the telemetry
+    writer joins the serving leg the reconcile gate blocks. Logic is unchanged.
+- file: tests/checks/ops_governance/test_validate_reconcile_pending_gate.py
+  action: Modify
+  purpose: The refusal case (near :433) also asserts the message names telemetry-writer (red before).
+- file: scripts/build_lambda.py
+  action: Modify
+  purpose: >-
+    Docstring and --ducklake-functions help text only (:122, :250): "the five DuckLake functions" and "all five" name the
+    mapped DuckLake functions without a count. The companion plan edits other lines of this file; no logic changes here.
+- file: scripts/build_lambda_deploy.py
+  action: Modify
+  purpose: Docstring only (:111, :115), the same count-free wording for the DuckLake deploy map. No logic changes.
+- file: .github/workflows/deploy-prod-lambdas.yml
+  action: Modify
+  purpose: >-
+    Header comment only (:23-24): the merged deploy role covers all 8 functions, the two prod plus six DuckLake. No job,
+    step or trigger changes.
+- file: AGENTS.md
+  action: Modify
+  purpose: >-
+    One word at :37: "the five DuckLake Lambdas' code" becomes "the DuckLake Lambdas' code"; the sentence's facts and links
+    are unchanged.
 - file: tests/ducklake_neon_smoke_test/test_lambda_telemetry_gates.py
   action: Create
   purpose: >-
@@ -91,7 +124,10 @@ scope:
     the shared ops login); unknown action not 400 or with another error_type; DryRun succeeding; DryRun AccessDenied without
     the boundary phrase; DryRun failing with a non-AccessDenied code (the inconclusive message). A leak case feeds a ClientError
     whose message carries a 12-digit id, an arn: string and a lambda-url host, and asserts none of the three reaches the
-    SmokeTestFailure text or captured stdout and stderr; the URL never appears in any case.
+    SmokeTestFailure text or captured stdout and stderr, and a second leak case does the same for a non-200 handler body
+    on an HTTP check. The fixture ARN and 12-digit id are composed at runtime from a FAKE_ACCT constant (tests/test_redaction_check.py:27
+    pattern), so the never-commit hook does not block the commit. A check-(1) case asserts the gate asks core._function_url
+    for "telemetry_writer" and lets its SmokeTestFailure propagate. The URL never appears in any case.
 - file: tests/test_build_lambda_config.py
   action: Modify
   purpose: >-
@@ -105,7 +141,10 @@ scope:
     smoke job's freshness step: deploy-maintenance's list equals maintenance-smoke's freshness set; deploy-serving's list
     equals smoke's freshness set; the two lists are disjoint and their union equals build-lambda.yaml's deploy_targets.ducklake_function_zip_keys;
     within jobs.smoke.steps, the step whose run resolves URLs and names telemetry_writer has a lower index than the step
-    whose run invokes --lambda-telemetry. Each assertion names the job and the function it found missing.
+    whose run invokes --lambda-telemetry, and that step exists in jobs.smoke. The URL step's `for role in ...` list is parsed
+    and each "agent-platform-ducklake-" + role.replace("_", "-") is a key of the deploy map; its run uses the ${role//_/-}
+    expansion for --function-name and exports DUCKLAKE_${role^^}_URL. Each assertion names the job and the function it
+    found missing.
 - file: tests/ducklake_neon_smoke_test/test_main_dispatch.py
   action: Modify
   purpose: --lambda-telemetry dispatches to lambda_telemetry with the profile and region.
@@ -164,11 +203,11 @@ verification_plan:
   command: >-
     bin/venv-python -m pytest tests/ducklake_neon_smoke_test/test_lambda_telemetry_gates.py tests/ducklake_neon_smoke_test/test_main_dispatch.py
     tests/convergence_health/code_drift/test_ducklake.py tests/build_lambda_deploy/test_update_functions.py tests/build_lambda_deploy/test_function_subset.py
-    tests/test_build_lambda_config.py -q
+    tests/test_build_lambda_config.py tests/checks/ops_governance/test_validate_reconcile_pending_gate.py -q
   expected: >-
     Exit 0. Red before for the gate module (absent), the CLI flag, the config constant and the map-driven counts.
   fix_if: Fix the gate or the wiring; never weaken an assertion.
-  hermetic: true
+  hermetic: false
   graduation: graduate
   graduation_check_id: telemetry-writer-smoke-gate
   expected_literals: []
@@ -183,11 +222,29 @@ verification_plan:
   fix_if: >-
     A function in the map but in no list is never deployed (only the drift sensor would notice); a function in two lists
     deploys twice. Fix the workflow lists, never the test.
-  hermetic: true
+  hermetic: false
   graduation: graduate
   graduation_check_id: ducklake-deploy-map-coverage
   expected_literals: []
 - step: 3
+  phase: pre-deploy
+  action: >-
+    No stale enumeration of the DuckLake function set survives in the surfaces this plan owns: the deploy-paths contract,
+    the reconcile gate's refusal message, the build docstrings, both deploy workflows' comments and AGENTS.md.
+  command: >-
+    ! rg -n -i "five DuckLake|five ducklake|five-function|deploy all five|all five ducklake|all 7 functions|writer/reader/catalog-dr\)"
+    docs/contracts/deploy-paths.yaml scripts/checks/ops_governance/validate_reconcile_pending_gate.py scripts/build_lambda.py
+    scripts/build_lambda_deploy.py .github/workflows/deploy-ducklake-lambdas.yml .github/workflows/deploy-prod-lambdas.yml
+    AGENTS.md && echo ENUMERATIONS_CURRENT
+  expected: Exit 0 and ENUMERATIONS_CURRENT. Red before (each file carries at least one hit today).
+  fix_if: Update the named line to the six-function set; never narrow the pattern.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: >-
+    Prose counts are not a standing invariant (the next function would make "six" stale too); the deploy-map wiring test
+    is the standing check over the function set itself.
+  expected_literals: []
+- step: 4
   phase: pre-deploy
   action: Fast tier, then the full tier before handoff.
   command: bin/venv-python -m scripts.validate --pre && bin/venv-python -m scripts.validate
@@ -197,12 +254,14 @@ verification_plan:
   fix_if: Fix the named check; never raise a budget or skip a check.
   hermetic: false
   graduation: not-applicable
-- step: 4
+- step: 5
   phase: post-deploy
   action: >-
     Right after the merge, on Benjamin's word, dispatch deploy-ducklake-lambdas.yml on main (mcp__github__actions_run_trigger)
     and wait for the run to complete. Export RUN_CONCLUSION (the run's conclusion, from mcp__github__actions_get), RUN_SHA
-    (its head sha) and SMOKE_LOG_FILE (the smoke job log, saved with mcp__github__get_job_logs).
+    (its head sha) and SMOKE_LOG_FILE (the smoke job log, saved with mcp__github__get_job_logs(job_id=<the smoke job>, return_content=true,
+    tail_lines=5000); confirm the returned content is not truncated by comparing it with original_length before the greps
+    run, because the freshness line prints before the long dependency install).
   command: >-
     test "$RUN_CONCLUSION" = success && test -s "$SMOKE_LOG_FILE" && grep -q "OK agent-platform-ducklake-telemetry-writer
     deploy record fresh: $RUN_SHA" "$SMOKE_LOG_FILE" && grep -qF 'LAMBDA_TELEMETRY OK unsigned=403 describe=200 attach_check=ok
@@ -215,7 +274,7 @@ verification_plan:
     read the error code and RCA it. attach_check failed: read the error_type; an S3 or secret AccessDenied is the telemetry
     role's policy (fix by PR, in budget), a Postgres permission error is the scoped login's grant set (an admin step). Never
     re-run into green without a root cause (Decision 55).
-- step: 5
+- step: 6
   phase: post-deploy
   action: >-
     The telemetry writer's deploy record in S3 carries the dispatched commit and a code hash, read as PlatformDev (the drift
@@ -226,9 +285,9 @@ verification_plan:
     and r['code_sha256'] and r['function']=='agent-platform-ducklake-telemetry-writer', r;print('DEPLOY_RECORD_OK')"
   expected: Exit 0 and DEPLOY_RECORD_OK.
   fix_if: >-
-    AccessDenied: record that PlatformDev cannot read deploy-records/ and rely on step 4's freshness line. A stale sha: the
+    AccessDenied: record that PlatformDev cannot read deploy-records/ and rely on step 5's freshness line. A stale sha: the
     deploy did not run for this function; read the deploy-serving log.
-- step: 6
+- step: 7
   phase: post-deploy
   action: >-
     The same gate from the session as PlatformDev (the second URL-only grantee), with the URL taken from SSM and never printed.
@@ -239,7 +298,7 @@ verification_plan:
   expected: Exit 0 and TELEMETRY_GATE_PLATFORMDEV_OK.
   fix_if: >-
     A DryRun that succeeds for PlatformDev but not for CI means PlatformDev holds an unconditioned grant and the boundary
-    is not on its role; stop and report it. Any other failure: compare with step 4's CI run and RCA (Decision 55). Read
+    is not on its role; stop and report it. Any other failure: compare with step 5's CI run and RCA (Decision 55). Read
     the output file for the failure line; it carries no URL.
 test_obligations:
 - source: scripts/ducklake_smoke/lambda_telemetry_gates.py
@@ -273,19 +332,69 @@ test_obligations:
   verification_step: 2
   test_selector: tests/verify_ci_workflow/test_ducklake_deploy_map_wiring.py
   red_green_expectation: red before (module absent; the leg lists also lack the telemetry writer), green after
+- source: scripts/checks/ops_governance/validate_reconcile_pending_gate.py
+  behavior: The refusal message names the telemetry writer in the serving deploy.
+  verification_step: 1
+  test_selector: tests/checks/ops_governance/test_validate_reconcile_pending_gate.py
+  red_green_expectation: red before (the message lacks telemetry-writer), green after
+- source: docs/contracts/deploy-paths.yaml
+  behavior: The deploy-paths index enumerates the current DuckLake function set.
+  verification_step: 3
+  command: >-
+    ! rg -n -i "five DuckLake|five ducklake|five-function|deploy all five|all five ducklake|all 7 functions|writer/reader/catalog-dr\)"
+    docs/contracts/deploy-paths.yaml scripts/checks/ops_governance/validate_reconcile_pending_gate.py scripts/build_lambda.py
+    scripts/build_lambda_deploy.py .github/workflows/deploy-ducklake-lambdas.yml .github/workflows/deploy-prod-lambdas.yml
+    AGENTS.md && echo ENUMERATIONS_CURRENT
+  waiver_reason: Contract prose; step 3's sweep is its check, and the contract schema and amendment_log checks run in the pre and full tiers.
+- source: scripts/build_lambda.py
+  behavior: Docstring and help text name the DuckLake functions without a stale count.
+  verification_step: 3
+  command: >-
+    ! rg -n -i "five DuckLake|five ducklake|five-function|deploy all five|all five ducklake|all 7 functions|writer/reader/catalog-dr\)"
+    docs/contracts/deploy-paths.yaml scripts/checks/ops_governance/validate_reconcile_pending_gate.py scripts/build_lambda.py
+    scripts/build_lambda_deploy.py .github/workflows/deploy-ducklake-lambdas.yml .github/workflows/deploy-prod-lambdas.yml
+    AGENTS.md && echo ENUMERATIONS_CURRENT
+  waiver_reason: Text-only change; tests/test_build_lambda.py keeps covering the module's behaviour.
+- source: scripts/build_lambda_deploy.py
+  behavior: Docstrings name the DuckLake deploy map without a stale count.
+  verification_step: 3
+  command: >-
+    ! rg -n -i "five DuckLake|five ducklake|five-function|deploy all five|all five ducklake|all 7 functions|writer/reader/catalog-dr\)"
+    docs/contracts/deploy-paths.yaml scripts/checks/ops_governance/validate_reconcile_pending_gate.py scripts/build_lambda.py
+    scripts/build_lambda_deploy.py .github/workflows/deploy-ducklake-lambdas.yml .github/workflows/deploy-prod-lambdas.yml
+    AGENTS.md && echo ENUMERATIONS_CURRENT
+  waiver_reason: Docstring-only change; tests/build_lambda_deploy/ keeps covering the module's behaviour.
+- source: .github/workflows/deploy-prod-lambdas.yml
+  behavior: The header comment counts the functions the merged deploy role covers.
+  verification_step: 3
+  command: >-
+    ! rg -n -i "five DuckLake|five ducklake|five-function|deploy all five|all five ducklake|all 7 functions|writer/reader/catalog-dr\)"
+    docs/contracts/deploy-paths.yaml scripts/checks/ops_governance/validate_reconcile_pending_gate.py scripts/build_lambda.py
+    scripts/build_lambda_deploy.py .github/workflows/deploy-ducklake-lambdas.yml .github/workflows/deploy-prod-lambdas.yml
+    AGENTS.md && echo ENUMERATIONS_CURRENT
+  waiver_reason: Comment-only change; the workflow checks in the pre tier cover its executable content, which is unchanged.
+- source: AGENTS.md
+  behavior: The deploy-channel rule names the DuckLake Lambdas without a stale count.
+  verification_step: 3
+  command: >-
+    ! rg -n -i "five DuckLake|five ducklake|five-function|deploy all five|all five ducklake|all 7 functions|writer/reader/catalog-dr\)"
+    docs/contracts/deploy-paths.yaml scripts/checks/ops_governance/validate_reconcile_pending_gate.py scripts/build_lambda.py
+    scripts/build_lambda_deploy.py .github/workflows/deploy-ducklake-lambdas.yml .github/workflows/deploy-prod-lambdas.yml
+    AGENTS.md && echo ENUMERATIONS_CURRENT
+  waiver_reason: One-word prose change in the root rules; the instruction-architecture checks in the pre tier cover the file.
 - source: config/composite_action_body_baseline.yaml
   behavior: The R3 baseline registers the new step with no raised count.
-  verification_step: 3
+  verification_step: 4
   command: bin/venv-python -m scripts.validate --pre
   waiver_reason: The R3 workflow-body guard in the pre and full tiers is the standing check over this baseline.
 - source: config/agent/verification_registry/entries/telemetry-writer-smoke-gate.yaml
   behavior: Registry shard for the graduated step-1 check.
-  verification_step: 3
+  verification_step: 4
   command: bin/venv-python -m scripts.validate
   waiver_reason: validate_graduation_completeness and validate_verification_registry (pre and full tiers) are its standing checks.
 - source: config/agent/verification_registry/entries/ducklake-deploy-map-coverage.yaml
   behavior: Registry shard for the graduated step-2 check.
-  verification_step: 3
+  verification_step: 4
   command: bin/venv-python -m scripts.validate
   waiver_reason: validate_graduation_completeness and validate_verification_registry (pre and full tiers) are its standing checks.
 constraints:
@@ -307,7 +416,7 @@ context:
   ids in Decision 213), SPIRIT 126 (admin SQL and secret write: per-mutation human acceptance, Decision 213 cl.5), NOTE 118
   (stub actions are gate instrumentation until plan 3 part 1's contract), NOTE 154 (accepted deviation, recorded). Decisions
   triaged: 163 of 163. Roadmap items intersected: 7; CONFLICT: 0; RELATED: 7.
-- "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=REVISE (round 1, addressed)"
+- "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=REVISE (rounds 1-2, addressed)"
 - >-
   Companions: docs/plans/PLAN-url-only-invoke-guard.yaml (admin tier, Decision 213) and docs/plans/PLAN-telemetry-writer-function.yaml
   (the function). Direction: Benjamin 2026-10-08, thread "Writer direct-invoke IAM fix". Split rationale: a function listed
@@ -317,12 +426,17 @@ context:
   The build-path counts change in the function plan; the map-driven deploy counts change here. The gate's DryRun check
   is one declared coverage surface of Decision 213 cl.1 (Decision 181 cl.2).
 - >-
+  Expected noise for rec-4204: every serving deploy (as github_ci_branch) and step 7 (as PlatformDev) makes one deliberate
+  denied DryRun direct invoke. If CloudTrail records denied DryRun data events (PLAN-url-only-invoke-guard step 9 measures
+  it), the non-URL-invoke alarm must expect or exclude this probe; the note is on rec-4204.
+- >-
   Plan 3 part 1 (the "Telemetry slice 2 plan" thread) appends verb vectors to lambda_telemetry_gates.py, writes under a synthetic:
   project ref, and adds src/telemetry/** to the push paths, the code_drift pathspecs and the bundle.
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
 - 'Only the plan-cited decision sections read: 125, 126, 55, 101, 104, 181, 213'
+- 'Note: the companion plan also edits scripts/build_lambda.py; rebase on it before editing that file'
 - The companion plan's apply is green and option A is applied (before the merge)
 - All files in scope located and readable
 - Acceptance criteria understood and verifiable
@@ -332,13 +446,13 @@ execution_steps:
   Write scripts/ducklake_smoke/lambda_telemetry_gates.py and wire scripts/ducklake_neon_smoke_test.py; edit the deploy map
   in both homes, the workflow, the R3 baseline and code_drift.py; update the map-driven tests; add the two registry shards
   for the graduated steps.
-- Execute Verification Plan steps 1-3. Loop until they pass, never weakening an assertion. On an unrecoverable failure stop and RCA (Decision 55).
+- Execute Verification Plan steps 1-4. Loop until they pass, never weakening an assertion. On an unrecoverable failure stop and RCA (Decision 55).
 - >-
   Closure evidence (implement skill Commit Flows): step 3's completed full tier; push, PR, CI green. Confirm the prerequisites,
   then ask Benjamin for the merge and the deploy dispatch in one question. On his word, squash-merge and dispatch the workflow
   at once, so the hourly drift sensor has no window in which the newly mapped function has no deploy record; if a ducklake_code_drift
   rec is filed in between, record it in the report (the next sensor tick closes it once the record is fresh). Export
-  RUN_CONCLUSION, RUN_SHA and SMOKE_LOG_FILE and run steps 4-6.
+  RUN_CONCLUSION, RUN_SHA and SMOKE_LOG_FILE and run steps 5-7.
 - 'Report: the deploy run, the gate results, and what plan 3 part 1 can now rely on'
 rollback: >-
   Revert the squash commit in a new PR: the function leaves the deploy map and the smoke job, and keeps running its last
