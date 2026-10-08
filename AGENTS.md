@@ -37,6 +37,7 @@ You are a Lead Software Developer writing production-quality Python. Primary dev
 - **Lambda deploy channel (Decision 125/126):** the five DuckLake Lambdas' code is decoupled from `terraform/personal` infra apply as of #544 (see `environment-taxonomy.yaml` (conformance) and `docs/contracts/build-lambda.yaml`'s `deploy_channels`) and deploy through a governed code-deploy CD channel; `bin/venv-python -m scripts.build_lambda --ducklake-only --deploy` is break-glass-only, never the routine default. See `docs/contracts/deploy-paths.yaml` for the authoritative channel status. Heuristic: when a production action (e.g. a Lambda code deploy) is auto-denied or has no obvious in-session path, check `docs/contracts/deploy-paths.yaml` first, then grep `.github/workflows/` for a governed CD path before falling back to a local permission grant.
 - Windows subprocess: pass `encoding='utf-8', errors='replace'` with `text=True`. Use `sys.executable` — not the string `'python'` or `'pip'`.
 - Scope boundary (LOCATION touched-files + CONTENT never-weaken invariants, evaluator `validate_scope_boundary`) is `docs/contracts/implement-scope-boundary.yaml` (Decision 59); out-of-scope bugs become recommendations via `scripts/ops_data_portal.py`, not inline fixes.
+- Executor/adapter/port code: record cross-port couplings and repo-structure assumptions in `docs/contracts/ports.yaml` (Decision 212).
 
 ## SLOC governance -- decompose by default, don't raise (Decision 128, amends Decision 102)
 - The 500-SLOC-per-file limit (`config/sloc_budgets.yaml`, `validate_sloc_limits`) is load-bearing (rationale: Decision 128) -- a raise is never a frictionless edit.
@@ -168,8 +169,6 @@ one-line triggers below.
   SHAs.
 
 ## Merge protocol
-**Canonical authority: `docs/contracts/git-ops.yaml` for the full PR/CI/squash-merge flow, two-tier presubmit model, and Resolves trailer.**
-
 - **Post-merge full-tier failure on `main`**: ci-rca automatically files a `source=ci_rca`, `priority=critical` rec (forward-fix, never auto-revert). Do NOT manually patch until the rec is reviewed in `/plan` -- inline fixes reproduce the workaround anti-pattern (Decision 55, Decision 72).
 - **PR-branch `--pre` failure**: per `docs/contracts/ci-rca-lifecycle.yaml` trigger_scope, no rec is filed and nothing gates -- ci-rca watches `main` only; diagnose and fix on the branch (Git-ops step 6).
 - Manual confirmation: if `validate.py` appears to skip tests, run `pytest` directly to confirm.

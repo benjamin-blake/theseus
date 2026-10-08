@@ -2,6 +2,110 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 212: Port independence and conformance -- one conformance suite per port against a credential-free oracle, cross-port coupling is a defect, the ops store is three ports, one file declares the bundle (amends Decision 184 clause 2 and Decision 197 clause 2) (Decided)
+
+```yaml
+number: 212
+status: Decided
+decided_date: "2026-10-06"
+amends: [184, 197]
+significance:
+  value: numbered_decision
+  justification: >-
+    Amends Decision 184 clause 2's port rule (testing model, inclusion rule, coupling rule) and
+    places Decision 197 clause 2's storage port among the ports, under reversal conditions. Not
+    amendment_forms: it amends two entries and the oracle and ops-store split clear the bar alone.
+    Not a contract note: docs/contracts/ports.yaml carries the registry, never the rule.
+```
+
+**Status:** Decided
+**Date:** 2026-10-06
+**Warehouse ID:** dec-212 (per Decision 84 backfill)
+
+**Problem:** Decision 184 clause 2 names ports but not how adapters are tested, which ports exist, or what makes a bundle valid. Cross-product bundle testing grows with every adapter, and a port drawn around today's vendors (one ops-store port for Neon plus S3) forces both halves from one vendor.
+
+**Intent:** Any supported adapter for one port composes with any supported adapter for another, proven per port and without credentials.
+
+**Decision:**
+1. One suite per port. Adapters are tested against their port's ONE conformance suite, never as a cross-product of ports. A bundle is valid by construction when each adapter passes its port's suite and no OPEN cross-port coupling exists; each supported bundle gets one smoke test. Precedent: Kubernetes conformance.
+2. Credential-free oracle. Every port has one credential-free oracle or a recorded oracle gap -- the oracle is its local adapter, or an emulator harness where one is the standing oracle (orchestration: the T4.20 moto harness, Decision 185 clause 1). (a) The gating suite runs in PR CI with no credentials against that oracle or an emulator; every other adapter must match it. (b) Optional live drift runs are credentialed, cost-capped, alarm-not-gate and never a merge gate; an LLM-invoking drift run only as Decision 205 clause 1 permits, or off Actions. A pending oracle means none exists today. run_persona has no oracle: its parity is outcome parity (Decision 206 clause 4), read from Decision 199 events (T4.27 c12).
+3. Coupling is a defect. An adapter for one port that assumes another port's adapter is a defect -- e.g. an ops-store transport needing AWS identity because compute is on AWS, or persona code calling the GitHub API (Decision 205 clause 2 forbids it). Findings are ports.yaml `coupling_findings` rows; a coupling a ratified Decision holds is an accepted row naming it, removable only by re-deciding that Decision.
+4. The ops store is three ports, matching DuckLake's own separation: catalog, table data files, and content blobs (payloads over 64 KiB), so an organisation can keep the catalog on a managed Postgres it already runs and the data in its own buckets. DuckLake stays the sole ops-store format (Decision 84 I-1). Decision 197 clause 2's work-item storage port is registered beside them: its adapters are DuckLake over whichever catalog and table-data adapters the bundle declares, so DuckLake-on-Neon is one bundle, not the cloud adapter; T4.23 stays its local-adapter item.
+5. Change surface as verbs. Git hosting is abstracted as the verbs the loop uses (T4.19 names them, ports.yaml registers them), never as a platform. GitHub is the first adapter; GitLab and bare git are future adapters, bare git needing a verdict surface other than the Checks API, which first requires re-deciding Decision 184 clause 3 and Decision 205 clause 2.
+6. Inclusion rule. A port exists for each service or platform-owned verb surface the loop reaches across a substitutable boundary: every cloud service (Decision 184 clause 2), every verb surface a ratified Decision bounds (Decision 81's closed named-verb boundary, a module boundary locally per Decision 184 clause 2; Decision 197 clause 2; Decision 206 clause 7's run_persona) and the persona compute host (Decision 205 clauses 2 and 6). docs/contracts/ports.yaml is the sole port registry. Exemption: verdict_plane and change_surface carry no local-adapter item while Decision 184 clause 3 stands, since Decision 205 clause 2's non-Actions verdict App still reports through the Checks API.
+7. Tiers. The adapter matrix is tiered supported / community / experimental (Terraform provider labelling), starts at local + GitHub + AWS, and grows only when work demands it.
+8. One declaration file. `ontheloop/platform.yaml` names the adapter per port, schema-validated; `otl doctor` runs the configured bundle's conformance probes read-only against the user's real credentials before the loop runs (cf. `dbt debug`, `terraform validate`).
+
+**Coverage (Decision 181 cl.2):** registry, oracle and finding shape -- validate_ports_contract; the coupling threshold -- the ports_open_coupling_findings_exceed predicate; each suite -- the owning item ports.yaml names (T4.2 c14, T4.20, T4.23 c4 and c16, T4.24 c14, T4.27 c7); the coupling audit -- T4.23 c15; the change-surface verbs -- T4.19 c6; clause 8 -- T4.24 c14. Advisory residual: clause 6's completeness (every cloud service has a port) is unenforced; model providers sit behind LiteLLM under inference-provider.yaml, so clause 6 mints no provider port.
+
+```yaml reversal-conditions
+decision: 212
+review_by: 2027-06-30
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: suite-cannot-be-shared
+    kind: manual
+    description: "A port's adapters cannot share one conformance suite (semantic divergence too large): re-decide that port's boundary."
+  - id: coupling-findings-exceed-ten
+    kind: repo_state
+    predicate: ports_open_coupling_findings_exceed
+    params: {threshold: 10}
+    description: "More than ten open coupling_findings rows at once: re-decide the port list."
+```
+
+**Related:** Decisions 78, 81, 84, 184, 185, 197, 199, 200, 205, 206, 209, 211; T4.1, T4.2, T4.19, T4.20, T4.22-T4.24, T4.27.
+
+---
+
+## Decision 211: Brownfield adoption model -- otl init attaches to the code and its history, replaces only the change process and builds the verification plane; the house style is an optional profile and autonomy is earned by coverage (Decided)
+
+```yaml
+number: 211
+status: Decided
+decided_date: "2026-10-06"
+significance:
+  value: numbered_decision
+  justification: >-
+    Durable, reversal-relevant product-boundary commitment (what adoption requires of a host
+    repository, how autonomy is earned there, the ontheloop/ layout) with a falsifiable
+    acceptance test. Not a contract note: no docs/contracts file owns host-repository adoption
+    (ports.yaml owns adapters, and T4.24 carries work, not the commitment). Not an
+    amendment_forms annotation: no single prior entry owns adoption.
+```
+
+**Status:** Decided
+**Date:** 2026-10-06
+**Warehouse ID:** dec-211 (per Decision 84 backfill)
+
+**Problem:** T4.24 c2 proves `otl init` against a fixture repository, and nothing records what init may assume about, or do to, an existing one. This repository's conventions (SLOC budgets, the prose freeze, the agent-first doc model, its directory layout) are enforced here, so an agent building init would read them as preconditions and adoption would mean refactoring first.
+
+**Intent:** A team adopts On The Loop on the repository it already has, without restructuring it, and earns autonomy as verification coverage grows.
+
+**Decision:**
+1. Attach, then replace the process. The platform attaches to the durable asset -- the code and its git history -- and `otl init` replaces only the change process; init never refactors code structure. Work items the loop produces later may change structure like any other work. Precedent: dbt attached to the warehouse and replaced transformation; Terraform attached to the cloud account and replaced provisioning.
+2. Required versus preferred. The platform REQUIRES a verification plane, a CI verdict plane and a store for decisions, contracts and work items. This repository's house style (SLOC budgets, prose freeze, agent-first doc model, directory layout) ships as an optional profile, never an adoption precondition; it still binds this repository. Declining the profile switches its decisions off through Tier C `supersedes` records that `otl init` scaffolds (Decision 196 clause 4), never by trimming them from Tier B.
+3. Init builds the verification plane. Characterisation (golden/approval) tests are recorded per boundary from observed behaviour: a regression envelope, never a correctness oracle -- the correctness of new work comes from the red-before rule (docs/contracts/vp-red-before.yaml). Re-baselining a golden requires a recorded, reviewed re-baseline (a work item plus evidence naming the behaviour change). Init characterises only inside a Decision 206 clause 5-style OS sandbox with no credentials and no network, and runs each boundary twice; a boundary that cannot run that way, or whose output differs, is marked as needing seams and counts toward coverage only once it runs there stably.
+4. Autonomy is earned. The autonomy level (the T3.4/T4.4 A0-A5 ladder) is a function of measured verification-boundary coverage, an input alongside T4.4's reliability thresholds, never a replacement for them. A brownfield repository starts at plan-only with human merges and earns autonomous merge as coverage grows.
+5. Layout. A tracked `ontheloop/` root folder; a gitignored `.ontheloop/` for runtime state (local catalog, logs, transcripts, run state). Tracked content is AUTHORED -- north stars and invariants, decisions with reversal conditions (Decision 196), the authority boundary, outcome-signal pointers -- or GENERATED then human-confirmed -- the boundary map (public interfaces and their consumers), the dependency graph, the verification registry (check -> boundary -> tier -> stability) and recipes (build, test, run, deploy, rollback, secrets). Every contract line carries an enforcement pointer or is marked advisory.
+6. Acceptance test. `otl init` succeeds, without refactoring, on three repositories the operator did not write.
+7. Incremental adoption. A team may take the memory layer alone (decisions plus enforcement), then the queue and the plan/implement workflow, then the autonomous loop, and stop at any level.
+
+**Coverage (Decision 181 cl.2):** clauses 1-2 -- T4.24 c9 (init derived from the recorded structural assumptions); clause 3 -- T4.24 c11; clause 5 -- T4.24 c12; clause 6 -- T4.24 c10; clause 7 -- T4.24 c13; clause 4 -- T4.4, through owning rec rec-4192 until a T4.4 criterion carries it; the assumptions themselves -- docs/contracts/ports.yaml `structural_assumptions`, shape-checked by validate_ports_contract.
+
+```yaml reversal-conditions
+decision: 211
+review_by: 2027-06-30
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: init-requires-refactor
+    kind: manual
+    description: "Two of the three clause-6 acceptance repositories need refactoring before otl init succeeds: re-decide the adoption model."
+```
+
+**Related:** Decisions 93, 181, 184, 196, 197, 206, 209, 212; T3.4, T4.4, T4.22-T4.24; docs/contracts/vp-red-before.yaml.
+
+---
+
 ## Decision 210: Data rules are enforced at the write boundary wherever the write can decide them; data-quality monitors own only what a write cannot (amends Decision 81 clauses 5 and 8) (Decided)
 
 ```yaml
@@ -932,6 +1036,8 @@ conditions:
 [Amendment 2026-09-26, audit criterion-shape-forks-9d25d918: clause 8's walk inputs are recorded here, not settled -- the walk starts from them (T4.23:c14; partition input read per rec-4068), re-verifies each against the tree, and a departure from the merge key or identity re-opens design_time_walk step 8. Verdicts: Q1 b-admitted-once, Q2 drop-the-field, Q3 pin-at-migration-time, Q4 two-tables-evidence-journal. The step-8 advice-consult question is closed for this routing run (Fable consult plus operator direction, 2026-09-26); the keys stay clause 8's. Tenancy per Decision 200, by analogy for clause 8 to confirm. Reversal readings: two-shapes-after-all not tripped, conditional on the typed method union (T4.23:c10); merge-authored-edges-lossy not tripped, conditional on the merge consuming the exact merged plan rather than trailers alone and on T4.5's ETL projecting closes_criteria as plan-row content (T4.5:c8) -- a trailer cannot carry an edge's target, criterion-version ULID or clause.]
 
 > **Update (2026-09-28):** Decision 205 clause 5 merges each plan before its implementation, so this entry's clause 5 ("the squash-merge writes them") reads as the implementation merge -- the merge that consumes the exact merged plan; the plan merge writes no edges.
+
+> **Amended by Decision 212 (2026-10-06):** Clause 2's storage port is `work_item_storage` in docs/contracts/ports.yaml (Decision 212 clause 4). Tenancy enforcement (Decision 200 clauses 1-2) stays with the cloud function_url ops_verbs adapter, Decision 200 clause 1's write boundary (coupling row PC-01).
 
 ---
 
@@ -1985,6 +2091,8 @@ conditions:
 > **Update (2026-09-28):** Clause 4's user-owned CLI backend, as amended by Decision 205, is specified by Decision 206 -- purpose, credential by substrate, the LiteLLM clarification, outcome parity, leash and usage window; the adapter is post-MVP (T4.27).
 
 > **Amended by Decision 209 (2026-09-28):** Clause 1's adapter residency is decided: the AWS and other cloud adapters stay public in this repository and only hosted compute is paid (Decision 209 clause 4). The `adapter-residency` condition is discharged for clause 1 only; its Decision 171 grant leg rests with Decision 194 clause 4 and T4.24 c6. The paid management plane is Decision 209 clause 2's managed control plane (multi-tenant, metadata only), held in the private monorepo of clause 3, importing released versions of the core.
+
+> **Amended by Decision 212 (2026-10-06):** Clause 2's port rule gains a testing model and an inclusion rule: one conformance suite per port against a credential-free oracle or a recorded oracle gap (the oracle is the local adapter, or an emulator harness where one is the standing oracle), cross-port coupling as a defect, the ops store as three ports (catalog, table data, content blobs) under the one DuckLake format, and `ontheloop/platform.yaml` declaring the bundle; verdict_plane and change_surface carry no local-adapter item while clause 3 stands. docs/contracts/ports.yaml is the sole port registry.
 
 ---
 
