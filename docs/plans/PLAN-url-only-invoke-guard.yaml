@@ -169,9 +169,10 @@ scope:
     admin_out_of_band gains a scoped_login_provisioning entry beside partition_layout_remediation: Decision 213 cl.5's
     carve-out (an ADMIN-container agent may write the scoped login's secret value and invoke provision_telemetry_login
     only under explicit human direction, presenting each mutation) and its procedure, the one home for it (docs/CLAUDE.md:
-    agent-led procedures are procedure blocks in the owning contract). Steps: (1) write the secret value with the exact
-    mutation-1 command in VP step 7; (2) invoke the verb with confirm=ducklake_telemetry_writer using step 7's invoke;
-    (3) check status, ok, scope and migration_sha256 as step 7 does. Re-runs: quarterly rotation repeats (1)-(3); the RDS
+    agent-led procedures are procedure blocks in the owning contract). The procedure carries its literal commands, copied
+    verbatim from this plan's step 7 so it never depends on a plan file: (1) write the secret value (mutation 1's command);
+    (2) invoke the verb with confirm=ducklake_telemetry_writer (step 7's invoke); (3) check status, ok, scope and migration_sha256
+    (step 7's check). Re-runs: quarterly rotation repeats (1)-(3); the RDS
     swap repeats them after the maintenance function points at RDS, so (1) copies the RDS host and dbname. ducklake_maintenance.yaml's
     verb entry points here. One amendment_log entry.
 - file: docs/contracts/git-ops.yaml
@@ -183,8 +184,8 @@ scope:
 - file: docs/contracts/terraform-cc-web-operations.yaml
   action: Modify
   purpose: >-
-    The development_surface sentence at :282-283 says ADMIN containers serve IAM work and human-directed ducklake maintenance
-    actions under Decisions 204 and 213, plus one amendment_log entry.
+    The operator_only_break_glass.scope sentence at :282-283 says ADMIN containers serve IAM work and human-directed ducklake
+    maintenance actions under Decisions 204 and 213, plus one amendment_log entry.
 - file: scripts/ci/iam_simulate.py
   action: Modify
   purpose: >-
@@ -250,7 +251,8 @@ scope:
     trail_problems (:118) requires read_write_type "All" and include_management_events true inside the SAME event_selector
     block, rather than anywhere in the trail body, so the existing "write-only trail" red case (:408), which mutates the
     first occurrence, stays red once the data-event selector is added. A new red case puts the data selector FIRST and
-    a write-only management selector second, proving the check does not depend on block order. The file is at 485 of
+    a write-only management selector second, and a green case with the data selector first and an All management selector
+    second passes, which together show the check does not depend on block order. The file is at 485 of
     500 SLOC, so the net change stays within 15 SLOC.
 - file: config/agent/verification_registry/entries/url-only-invoke-guard.yaml
   action: Create
@@ -478,7 +480,7 @@ verification_plan:
     in the report as a boolean (checked against Decision 107's "scoped non-owner role" control; the project thread files
     a rec if it is true).
   fix_if: >-
-    "provision refused" (a 500): read error_type and error (a confirm or secret mismatch names itself; a database error
+    "provision refused" (a 500, or a 400 if the verb is not deployed yet): read error_type and error (a confirm or secret mismatch names itself; a database error
     names only its class and SQLSTATE). "FunctionError <type>": an exception escaped the dispatcher (for example a Secrets
     Manager ClientError); report the errorType only and never paste errorMessage or the output file, which can carry ARNs;
     read the function's log group for the cause. USAGE on ducklake_ops or CREATE granted: the role inherited a privilege (check NOINHERIT and memberships)
@@ -593,10 +595,24 @@ test_obligations:
   command: bin/venv-python -m scripts.validate
   waiver_reason: Class B contract data; the contract schema and drift checks run in the pre and full tiers.
 - source: docs/contracts/deploy-paths.yaml
-  behavior: admin_out_of_band indexes the Decision 213 cl.5 carve-out.
+  behavior: admin_out_of_band carries the Decision 213 cl.5 carve-out and its scoped-login provisioning procedure.
   verification_step: 4
   command: bin/venv-python -m scripts.validate
-  waiver_reason: Navigation-only contract prose; the deploy-paths schema checks run in the pre and full tiers.
+  waiver_reason: >-
+    Contract prose and an operator procedure with no executable seam of its own; the deploy-paths schema checks run in the
+    pre and full tiers, and step 7 executes the same commands live.
+- source: docs/contracts/git-ops.yaml
+  behavior: The ADMIN branching-topology use names Decision 213's scoped-login provisioning.
+  verification_step: 4
+  command: bin/venv-python -m scripts.validate
+  waiver_reason: >-
+    Contract prose; validate_git_ops_contract and the structural size check (the file lands at 498 of 500 effective lines)
+    run in the pre and full tiers.
+- source: docs/contracts/terraform-cc-web-operations.yaml
+  behavior: The break-glass scope sentence names Decision 213's ADMIN use.
+  verification_step: 4
+  command: bin/venv-python -m scripts.validate
+  waiver_reason: Contract prose; validate_terraform_cc_web_operations and the structural size check run in the pre and full tiers.
 - source: scripts/ci/iam_simulate.py
   behavior: A boolean fixture context value is sent as ContextKeyType boolean.
   verification_step: 2
@@ -677,7 +693,7 @@ context:
   ids in Decision 213), SPIRIT 126 (admin SQL and secret write: per-mutation human acceptance, Decision 213 cl.5), NOTE 118
   (stub actions are gate instrumentation until plan 3 part 1's contract), NOTE 154 (accepted deviation, recorded). Decisions
   triaged: 163 of 163. Roadmap items intersected: 7; CONFLICT: 0; RELATED: 7.
-- "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=REVISE (rounds 1-4, addressed)"
+- "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=PROCEED (round 5, after its obligation fix)"
 - >-
   Direction (Benjamin, project thread "Writer direct-invoke IAM fix", 2026-10-08): option A + D; after an independent review
   he chose a scoped login now, the extra Denies plus CloudTrail data events, PlatformDev condition plus telemetry invoke
