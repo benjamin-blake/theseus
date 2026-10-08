@@ -35,8 +35,10 @@ scope:
     `for role in writer reader telemetry_writer` and resolves --function-name "agent-platform-ducklake-${role//_/-}", exporting
     DUCKLAKE_TELEMETRY_WRITER_URL (masked, as today); line count unchanged. (4) A new step after lambda-attach, "Smoke test
     -- lambda-telemetry (telemetry writer URL-only proof)", runs `.venv/bin/python -m scripts.ducklake_neon_smoke_test --lambda-telemetry`.
-    (5) Header and step comments that count functions or artifacts ("five", "eight artifacts", "writer + reader") are corrected
-    for the steps this plan edits. No job, trigger, permission or role changes; push paths are unchanged (src/lambdas/ducklake_*/**
+    (5) Header and step comments that count functions or artifacts are corrected: "the five ducklake" functions become six,
+    and "eight artifacts" (the header near :45 and the build and deploy-serving comments near :169 and :332) become nine,
+    since PLAN-telemetry-writer-function's build adds the telemetry writer zip; "writer + reader" lists name the telemetry
+    writer where the smoke job now covers it. No job, trigger, permission or role changes; push paths are unchanged (src/lambdas/ducklake_*/**
     already covers the new directory; src/telemetry/** is plan 3 part 1's).
 - file: config/composite_action_body_baseline.yaml
   action: Modify
@@ -47,16 +49,27 @@ scope:
   action: Create
   purpose: >-
     lambda_telemetry(*, profile=None, region="eu-west-2"), calling core._function_url / core._sigv4_invoke / core._ok_json
-    through the module object (Decision 104, the lambda_ops_gates pattern). In order, each a loud SmokeTestFailure (Decision
-    55) on mismatch: (1) url = core._function_url("telemetry_writer"); (2) unsigned describe is 403; (3) signed describe
-    is 200 with ok true, actions containing describe and attach_check, catalog.meta_schema == core.META_SCHEMA (ducklake_smoke)
-    and catalog.data_path_is_smoke true; (4) signed attach_check is 200 with ok true, meta_schema == core.META_SCHEMA,
-    data_path_is_smoke true and catalog_login == "ducklake_telemetry_writer" (the scoped login, Decision 213 cl.3); (5) a signed POST with a non-JSON body is 400; (6) a direct boto3 lambda invoke of agent-platform-ducklake-telemetry-writer
-    with InvocationType DryRun, under the same credentials (the caller holds a URL-only lambda:InvokeFunction grant on it), must fail
-    with AccessDeniedException; a success or any other error raises "URL-only guard missing: direct invoke was not denied"
-    naming the outcome, because the boundary's DenyDuckLakeDirectInvoke is what makes the function's caller identity trustworthy.
-    The URL and any account id are never printed (Decision 101). A module docstring says plan 3 part 1 appends its verb vectors
-    here.
+    through the module object (Decision 104, the lambda_ops_gates pattern; those three names and boto3.Session are the
+    patch targets the tests use). In order, each a loud SmokeTestFailure (Decision 55) on mismatch: (1) url = core._function_url("telemetry_writer").
+    (2) unsigned describe (sign=False) is 403 from the URL authorizer: the body carries no handler error_type (AWS answers
+    {"Message":"Forbidden"}); a 403 whose body carries error_type missing_caller_identity means the request reached the
+    handler, so the URL is not AWS_IAM, and raises "telemetry writer URL is not AWS_IAM". (3) signed describe is 200 with
+    ok true, actions containing describe and attach_check, catalog.meta_schema == core.META_SCHEMA (ducklake_smoke) and catalog.data_path_is_smoke
+    true. (4) signed attach_check whose payload also carries decoy keys meta_schema "ducklake_ops" and data_path "s3://example-invalid/ducklake/"
+    is 200 with ok true, meta_schema == core.META_SCHEMA, data_path_is_smoke true and catalog_login == "ducklake_telemetry_writer"
+    (the scoped login, Decision 213 cl.3): the live proof that the catalog comes from env, never from the event. (5) a signed
+    unknown action ("no_such_action") is 400 with error_type unknown_action (the handler's malformed-input path, reachable
+    through the dict payload core._sigv4_invoke takes). (6) a direct boto3 lambda invoke of agent-platform-ducklake-telemetry-writer
+    with InvocationType DryRun under the same credentials must raise a ClientError with code AccessDeniedException whose
+    message names a permissions boundary (case-insensitive "explicit deny in a permissions boundary", the phrase
+    PLAN-url-only-invoke-guard step 8 records live). The caller's own InvokeFunction grant is conditioned on InvokedViaFunctionUrl,
+    so a bare AccessDenied proves only that this principal cannot direct-invoke; the boundary phrase is what proves the
+    boundary Deny is in force. Outcomes: a DryRun success raises "URL-only guard missing: direct invoke allowed"; AccessDenied
+    without the phrase raises "URL-only boundary Deny not evident: denied by identity policy only"; any other code raises
+    "direct-invoke probe inconclusive: <ErrorCode>". The gate reads the message only to classify it and never prints or
+    raises it, nor any ARN, account id or URL (Decision 101); only the botocore error code may appear. On success it prints
+    one fixed, URL-free line: "LAMBDA_TELEMETRY OK unsigned=403 describe=200 attach_check=ok unknown_action=400 direct_invoke=boundary_denied".
+    A module docstring says plan 3 part 1 appends its verb vectors here.
 - file: scripts/ducklake_neon_smoke_test.py
   action: Modify
   purpose: >-
@@ -71,10 +84,28 @@ scope:
 - file: tests/ducklake_neon_smoke_test/test_lambda_telemetry_gates.py
   action: Create
   purpose: >-
-    With core._sigv4_invoke, core._function_url and boto3 patched: the happy path passes; each of the six checks has a red
-    case that raises SmokeTestFailure (unsigned 200, signed describe missing an action, a non-smoke meta schema, data_path_is_smoke
-    false, attach_check not ok, malformed body not 400, DryRun succeeding, DryRun failing with a non-AccessDenied code); the
-    failure messages and captured output contain no URL.
+    With core._sigv4_invoke, core._function_url and boto3.Session patched: the happy path passes and prints the fixed success
+    line. Red cases, each raising SmokeTestFailure: unsigned 200; unsigned 403 whose body carries error_type missing_caller_identity;
+    signed describe missing an action; describe on a non-smoke meta schema; data_path_is_smoke false; attach_check not ok;
+    attach_check meta_schema not ducklake_smoke (the decoy honoured); catalog_login not ducklake_telemetry_writer (for example
+    the shared ops login); unknown action not 400 or with another error_type; DryRun succeeding; DryRun AccessDenied without
+    the boundary phrase; DryRun failing with a non-AccessDenied code (the inconclusive message). A leak case feeds a ClientError
+    whose message carries a 12-digit id, an arn: string and a lambda-url host, and asserts none of the three reaches the
+    SmokeTestFailure text or captured stdout and stderr; the URL never appears in any case.
+- file: tests/test_build_lambda_config.py
+  action: Modify
+  purpose: >-
+    test_ducklake_function_zip_keys (:46-58) imports _DUCKLAKE_TELEMETRY_WRITER_FUNCTION and asserts its key is lambda-packages/ducklake-telemetry-writer.zip
+    (red before: the import fails).
+- file: tests/verify_ci_workflow/test_ducklake_deploy_map_wiring.py
+  action: Create
+  purpose: >-
+    The workflow wiring as data, following test_ducklake_row_rules_wiring.py:44-53 (yaml.safe_load of the workflow, then
+    jobs). With the --ducklake-functions list parsed from each deploy job's steps and the `for fn in ...; do` set from each
+    smoke job's freshness step: deploy-maintenance's list equals maintenance-smoke's freshness set; deploy-serving's list
+    equals smoke's freshness set; the two lists are disjoint and their union equals build-lambda.yaml's deploy_targets.ducklake_function_zip_keys;
+    within jobs.smoke.steps, the step whose run resolves URLs and names telemetry_writer has a lower index than the step
+    whose run invokes --lambda-telemetry. Each assertion names the job and the function it found missing.
 - file: tests/ducklake_neon_smoke_test/test_main_dispatch.py
   action: Modify
   purpose: --lambda-telemetry dispatches to lambda_telemetry with the profile and region.
@@ -93,7 +124,7 @@ scope:
 - file: config/agent/verification_registry/entries/ducklake-deploy-map-coverage.yaml
   action: Create
   purpose: >-
-    Registry shard for graduated VP step 2 (check_id ducklake-deploy-map-coverage, command_exit_zero, the step's command),
+    Registry shard for graduated VP step 2 (check_id ducklake-deploy-map-coverage, command_exit_zero, the step's pytest target),
     so a future DuckLake function added to the map but to no deploy leg fails the registry check.
 bundled_recommendations: []
 followon_recs: []
@@ -102,7 +133,7 @@ infrastructure_dependencies:
   HARD PREREQUISITES: PLAN-url-only-invoke-guard is fully applied (boundary Denies, scoped login and its secret value, PlatformDev
   URL-only invoke) and PLAN-telemetry-writer-function is merged with its tf-gated-apply run approved and green (the function,
   its URL and github_ci_branch's grant exist live). Without the second, deploy-serving's update-function-code fails on a
-  missing function; without the first, gate checks (4) and (6) fail by design.
+  missing function; without the first, gate check (4) fails (no scoped login) and check (6) fails on the missing boundary phrase.
 - >-
   No Terraform change; nothing routes through the apply guard.
 - >-
@@ -117,8 +148,9 @@ acceptance_criteria:
   it; the smoke job checks its deploy-record freshness, resolves its URL into DUCKLAKE_TELEMETRY_WRITER_URL and runs --lambda-telemetry.
 - >-
   The --lambda-telemetry gate asserts: unsigned 403; signed describe 200 on ducklake_smoke; signed attach_check ok on ducklake_smoke;
-  malformed body 400; a direct DryRun invoke by a principal that holds InvokeFunction is AccessDenied. Every check has a
-  red unit case and none prints the URL.
+  decoy catalog keys in the event ignored; unknown action 400; a direct DryRun invoke is denied by the permissions boundary.
+  Every check has a
+  red unit case and none prints the URL, an ARN or an account id.
 - >-
   code_drift watches src/lambdas/ducklake_telemetry_writer; the R3 workflow-body baseline passes with no raised count.
 - >-
@@ -133,7 +165,8 @@ verification_plan:
     bin/venv-python -m pytest tests/ducklake_neon_smoke_test/test_lambda_telemetry_gates.py tests/ducklake_neon_smoke_test/test_main_dispatch.py
     tests/convergence_health/code_drift/test_ducklake.py tests/build_lambda_deploy/test_update_functions.py tests/build_lambda_deploy/test_function_subset.py
     tests/test_build_lambda_config.py -q
-  expected: Exit 0. Red before for the gate module (absent) and the map-driven counts.
+  expected: >-
+    Exit 0. Red before for the gate module (absent), the CLI flag, the config constant and the map-driven counts.
   fix_if: Fix the gate or the wiring; never weaken an assertion.
   hermetic: true
   graduation: graduate
@@ -145,16 +178,11 @@ verification_plan:
     The workflow wiring is consistent: every function in the deploy map is deployed by exactly one leg's --ducklake-functions
     list and checked by that leg's freshness loop, and the telemetry writer's URL is resolved before the --lambda-telemetry
     step runs.
-  command: >-
-    bin/venv-python -c "import re,yaml,pathlib;w=pathlib.Path('.github/workflows/deploy-ducklake-lambdas.yml').read_text(encoding='utf-8');m=set(yaml.safe_load(open('docs/contracts/build-lambda.yaml'))['deploy_targets']['ducklake_function_zip_keys']);lists=[set(x.split(','))
-    for x in re.findall(r'--ducklake-functions\s+(agent-platform-[\w,-]+)',w)];fresh=[set(x.split()) for x in re.findall(r'for fn in ([\w -]+); do',w)];assert
-    sorted(map(len,lists))==sorted(map(len,fresh)) and set().union(*lists)==m==set().union(*fresh), (m,lists,fresh);assert
-    all(len(a&b)==0 for i,a in enumerate(lists) for b in lists[i+1:]);u=w.index('telemetry_writer');g=w.index('--lambda-telemetry');assert
-    u<g;print('DEPLOY_WIRING_OK')"
-  expected: Exit 0 and DEPLOY_WIRING_OK.
+  command: bin/venv-python -m pytest tests/verify_ci_workflow/test_ducklake_deploy_map_wiring.py -q
+  expected: Exit 0. Red before (the test module is absent).
   fix_if: >-
     A function in the map but in no list is never deployed (only the drift sensor would notice); a function in two lists
-    deploys twice. Fix the workflow lists.
+    deploys twice. Fix the workflow lists, never the test.
   hermetic: true
   graduation: graduate
   graduation_check_id: ducklake-deploy-map-coverage
@@ -172,18 +200,21 @@ verification_plan:
 - step: 4
   phase: post-deploy
   action: >-
-    On Benjamin's word, dispatch deploy-ducklake-lambdas.yml on main (mcp__github__actions_run_trigger) and wait for the run
-    to complete. Save the smoke job log to $SMOKE_LOG_FILE and the run's head sha to $RUN_SHA.
+    Right after the merge, on Benjamin's word, dispatch deploy-ducklake-lambdas.yml on main (mcp__github__actions_run_trigger)
+    and wait for the run to complete. Export RUN_CONCLUSION (the run's conclusion, from mcp__github__actions_get), RUN_SHA
+    (its head sha) and SMOKE_LOG_FILE (the smoke job log, saved with mcp__github__get_job_logs).
   command: >-
-    test -s "$SMOKE_LOG_FILE" && grep -q "OK agent-platform-ducklake-telemetry-writer deploy record fresh: $RUN_SHA" "$SMOKE_LOG_FILE"
-    && grep -q 'lambda-telemetry' "$SMOKE_LOG_FILE" && ! grep -q 'URL-only guard missing' "$SMOKE_LOG_FILE" && echo TELEMETRY_DEPLOY_GREEN
-  expected: >-
-    Exit 0 and the marker; the run concluded success (read from the run's conclusion, not only the log).
+    test "$RUN_CONCLUSION" = success && test -s "$SMOKE_LOG_FILE" && grep -q "OK agent-platform-ducklake-telemetry-writer
+    deploy record fresh: $RUN_SHA" "$SMOKE_LOG_FILE" && grep -qF 'LAMBDA_TELEMETRY OK unsigned=403 describe=200 attach_check=ok
+    unknown_action=400 direct_invoke=boundary_denied' "$SMOKE_LOG_FILE" && echo TELEMETRY_DEPLOY_GREEN
+  expected: Exit 0 and TELEMETRY_DEPLOY_GREEN; the run concluded success and the gate printed its success line.
   fix_if: >-
-    deploy-serving failed on the telemetry writer: check the function exists (the companion apply). The gate's DryRun check
-    failed: option A's Deny is missing, so stop and tell Benjamin before plan 3 part 1 proceeds. attach_check failed: read
-    the error_type; an S3 or secret AccessDenied is the telemetry role's policy (fix by PR, in budget). Never re-run into
-    green without a root cause (Decision 55).
+    deploy-serving failed on the telemetry writer: check the function exists (the companion apply). The DryRun check failed
+    (success, or AccessDenied without the boundary phrase): the caller holds an unconditioned InvokeFunction grant or the
+    boundary Deny is missing or bypassed, so stop and tell Benjamin before plan 3 part 1 proceeds. "probe inconclusive":
+    read the error code and RCA it. attach_check failed: read the error_type; an S3 or secret AccessDenied is the telemetry
+    role's policy (fix by PR, in budget), a Postgres permission error is the scoped login's grant set (an admin step). Never
+    re-run into green without a root cause (Decision 55).
 - step: 5
   phase: post-deploy
   action: >-
@@ -204,10 +235,12 @@ verification_plan:
   command: >-
     DUCKLAKE_TELEMETRY_WRITER_URL=$(aws ssm get-parameter --profile agent_platform --region eu-west-2 --name /agent-platform/ducklake/telemetry_writer_url
     --query Parameter.Value --output text) AWS_PROFILE=agent_platform bin/venv-python -m scripts.ducklake_neon_smoke_test --lambda-telemetry
-  expected: Exit 0.
+    > "${TMPDIR:-/tmp}/tw-gate.out" 2>&1 && grep -qF 'LAMBDA_TELEMETRY OK' "${TMPDIR:-/tmp}/tw-gate.out" && echo TELEMETRY_GATE_PLATFORMDEV_OK
+  expected: Exit 0 and TELEMETRY_GATE_PLATFORMDEV_OK.
   fix_if: >-
-    A DryRun that succeeds for PlatformDev but not for CI means PlatformDev holds an unconditioned grant somewhere; stop and
-    report it. Any other failure: compare with step 4's CI run and RCA (Decision 55).
+    A DryRun that succeeds for PlatformDev but not for CI means PlatformDev holds an unconditioned grant and the boundary
+    is not on its role; stop and report it. Any other failure: compare with step 4's CI run and RCA (Decision 55). Read
+    the output file for the failure line; it carries no URL.
 test_obligations:
 - source: scripts/ducklake_smoke/lambda_telemetry_gates.py
   behavior: Each of the six gate checks raises on mismatch; the URL is never printed.
@@ -228,19 +261,18 @@ test_obligations:
   behavior: The fallback deploy map equals the contract map, including the telemetry writer.
   verification_step: 1
   test_selector: tests/test_build_lambda_config.py
-  red_green_expectation: red before if only the YAML changes; green after both change
+  red_green_expectation: red before (the constant is absent, so the extended test's import fails), green after
 - source: docs/contracts/build-lambda.yaml
   behavior: The deploy map names the telemetry writer.
   verification_step: 1
-  test_selector: tests/test_build_lambda_config.py
-  red_green_expectation: red before (map lacks the function), green after
+  test_selector: tests/convergence_health/code_drift/test_ducklake.py::TestDetectDucklakeCodeDrift::test_reads_all_ducklake_functions
+  red_green_expectation: >-
+    red before (_ALL_DUCKLAKE_FUNCTIONS names the telemetry writer, the YAML map does not), green after
 - source: .github/workflows/deploy-ducklake-lambdas.yml
   behavior: Every mapped function is deployed by exactly one leg and freshness-checked; the URL is resolved before the gate.
-  verification_step: 3
-  command: bin/venv-python -m scripts.validate --pre
-  waiver_reason: >-
-    Workflow YAML has no unit seam; step 2's hermetic wiring check (graduated as ducklake-deploy-map-coverage) and the R3
-    body baseline in the pre tier are its standing checks.
+  verification_step: 2
+  test_selector: tests/verify_ci_workflow/test_ducklake_deploy_map_wiring.py
+  red_green_expectation: red before (module absent; the leg lists also lack the telemetry writer), green after
 - source: config/composite_action_body_baseline.yaml
   behavior: The R3 baseline registers the new step with no raised count.
   verification_step: 3
@@ -264,7 +296,7 @@ constraints:
 - >-
   The gate never prints the URL or an account id (Decision 101) and never re-runs a failed check into green (Decision 55).
 - >-
-  Do not touch scripts/ci/ducklake_artifacts.py (rec-4189's open fix) or any Terraform.
+  Do not touch scripts/ci/ducklake_artifacts.py (the companion plan owns its docstring) or any Terraform.
 - The dispatch that deploys the function waits for Benjamin's explicit word (governed DuckLake Lambda deploy).
 - No rescue agents or workaround loops (Decision 55).
 context:
@@ -275,7 +307,7 @@ context:
   ids in Decision 213), SPIRIT 126 (admin SQL and secret write: per-mutation human acceptance, Decision 213 cl.5), NOTE 118
   (stub actions are gate instrumentation until plan 3 part 1's contract), NOTE 154 (accepted deviation, recorded). Decisions
   triaged: 163 of 163. Roadmap items intersected: 7; CONFLICT: 0; RELATED: 7.
-- "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=PENDING"
+- "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=REVISE (round 1, addressed)"
 - >-
   Companions: docs/plans/PLAN-url-only-invoke-guard.yaml (admin tier, Decision 213) and docs/plans/PLAN-telemetry-writer-function.yaml
   (the function). Direction: Benjamin 2026-10-08, thread "Writer direct-invoke IAM fix". Split rationale: a function listed
@@ -290,7 +322,7 @@ context:
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
-- 'Only the plan-cited decision sections read: 125, 126, 55, 101, 104'
+- 'Only the plan-cited decision sections read: 125, 126, 55, 101, 104, 181, 213'
 - The companion plan's apply is green and option A is applied (before the merge)
 - All files in scope located and readable
 - Acceptance criteria understood and verifiable
@@ -303,8 +335,10 @@ execution_steps:
 - Execute Verification Plan steps 1-3. Loop until they pass, never weakening an assertion. On an unrecoverable failure stop and RCA (Decision 55).
 - >-
   Closure evidence (implement skill Commit Flows): step 3's completed full tier; push, PR, CI green. Confirm the prerequisites,
-  then ask Benjamin for the merge and, separately, for the deploy dispatch. On his word, squash-merge, dispatch the workflow,
-  export RUN_SHA and SMOKE_LOG_FILE, and run steps 4-5.
+  then ask Benjamin for the merge and the deploy dispatch in one question. On his word, squash-merge and dispatch the workflow
+  at once, so the hourly drift sensor has no window in which the newly mapped function has no deploy record; if a ducklake_code_drift
+  rec is filed in between, record it in the report (the next sensor tick closes it once the record is fresh). Export
+  RUN_CONCLUSION, RUN_SHA and SMOKE_LOG_FILE and run steps 4-6.
 - 'Report: the deploy run, the gate results, and what plan 3 part 1 can now rely on'
 rollback: >-
   Revert the squash commit in a new PR: the function leaves the deploy map and the smoke job, and keeps running its last
