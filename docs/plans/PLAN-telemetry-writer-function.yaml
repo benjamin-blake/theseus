@@ -149,6 +149,14 @@ scope:
     pipelines.ducklake.artifacts gains ducklake-telemetry-writer.zip after ducklake-catalog-dr.zip; an amendment_log entry
     records it. deploy_targets.ducklake_function_zip_keys is NOT changed here (the companion plan adds the deploy map entry
     once the function exists).
+- file: docs/DECISIONS.md
+  action: Modify
+  purpose: >-
+    Append one dated update line to Decision 213, after its Related line, in the pinned blockquote_update form of decision-entry.yaml
+    amendment_forms; no existing text changes: "> **Update (2026-10-09):** A principal whose own InvokeFunction grant is URL-only sees 'no identity-based policy allows' on a direct invoke, never the boundary's name (measured in the admin run), so the deploy gate asserts AccessDenied; the boundary is proven by the guard test on its policy text and the post-apply simulate (explicitDeny). Reversal reads: the gate's direct invoke stops returning AccessDenied, or the simulate stops reporting explicitDeny."
+- file: docs/decisions-index.json
+  action: Modify
+  purpose: Regenerated with the repo's decisions-index tooling after the update (validate_decisions_index_freshness).
 - file: docs/contracts/environment-taxonomy.yaml
   action: Modify
   purpose: >-
@@ -341,7 +349,7 @@ acceptance_criteria:
   Post-deploy on the merge commit: the convergence record is green after the gated approval; the apply log shows exactly
   7 added, 4 changed, 0 destroyed with the named resources; the SSM parameter resolves; an unsigned URL call is 403; as
   PlatformDev, a SigV4 describe is 200 on ducklake_smoke and attach_check returns ok under the scoped login (the first ATTACH
-  under that login), while a direct DryRun invoke is denied by the permissions boundary (the denial names it); the
+  under that login), while a direct DryRun invoke is AccessDenied; Decision 213 records why the gate cannot name the boundary; the
   writer and reader smoke gates still pass; a dispatched drift run is clean. The deploy-channel proof is the companion plan's
   gate.
 verification_plan:
@@ -464,9 +472,10 @@ verification_plan:
     The stub works under the scoped login and only through its URL. As PlatformDev (which holds URL-only invoke from PLAN-url-only-invoke-guard):
     the SSM parameter resolves to a Function URL; an unsigned call is 403; a signed describe is 200 with the ducklake_smoke
     catalog; a signed attach_check is 200 with ok true, meta_schema ducklake_smoke and catalog_login ducklake_telemetry_writer
-    (the first in-Lambda ATTACH under the scoped login); a direct DryRun invoke is AccessDenied and the denial names a permissions
-    boundary, which is what separates the boundary Deny from PlatformDev's own URL-only grant condition. Only the classification
-    is printed; the URL and the error message (which carries ARNs) never are.
+    (the first in-Lambda ATTACH under the scoped login); a direct DryRun invoke is AccessDenied. PlatformDev's own grant is
+    URL-only, so AWS reports the identity-layer denial ("no identity-based policy allows", measured 2026-10-09), never the
+    boundary; the boundary Deny itself is proven by the URL-only guard test and the post-apply simulate (Decision 213, updated
+    by this plan). Only the outcome is printed; the URL and the error message (which carries ARNs) never are.
   command: >-
     bin/venv-python -c "import json,boto3,requests;from scripts.ducklake_smoke import core;s=boto3.Session(profile_name='agent_platform',region_name='eu-west-2');u=s.client('ssm').get_parameter(Name='/agent-platform/ducklake/telemetry_writer_url')['Parameter']['Value'];assert
     u.startswith('https://') and '.lambda-url.' in u, 'not a function url';assert requests.post(u,data=json.dumps({'action':'describe'}),timeout=60).status_code==403,
@@ -475,7 +484,7 @@ verification_plan:
     a['ok'] is True and a['meta_schema']=='ducklake_smoke' and a['catalog_login']=='ducklake_telemetry_writer', a;print('STUB_LIVE_OK')"
     && ! aws lambda invoke --profile agent_platform --region eu-west-2 --function-name agent-platform-ducklake-telemetry-writer
     --invocation-type DryRun /dev/null 2> "${TMPDIR:-/tmp}/tw-dryrun.err" && grep -q AccessDeniedException "${TMPDIR:-/tmp}/tw-dryrun.err"
-    && grep -qi 'explicit deny in a permissions boundary' "${TMPDIR:-/tmp}/tw-dryrun.err" && echo TELEMETRY_URL_ONLY_OK
+    && echo TELEMETRY_URL_ONLY_OK
   expected: Exit 0 with STUB_LIVE_OK and TELEMETRY_URL_ONLY_OK.
   fix_if: >-
     A signed 403: PLAN-url-only-invoke-guard's PlatformDev grant is not applied. attach_check failing: a 500 names its error_type;
@@ -483,8 +492,8 @@ verification_plan:
     so read the function's log group /aws/lambda/agent-platform-ducklake-telemetry-writer for the exception. A Postgres
     permission error is the scoped login's grant set (fix the migration through the admin, never by widening to
     the shared login), an S3 AccessDenied is this role's policy (fix by PR, in budget). An allowed DryRun means PlatformDev
-    holds an unconditioned grant and the boundary Deny is missing; AccessDenied without the boundary phrase means only the
-    grant condition denied it. Either way stop and tell Benjamin before plan 3 part 1 relies on the URL-only invariant.
+    holds an unconditioned grant and the boundary Deny is missing or bypassed; stop and tell Benjamin before plan 3 part
+    1 relies on the URL-only invariant.
 - step: 8
   phase: post-deploy
   action: >-
@@ -617,6 +626,18 @@ test_obligations:
   waiver_reason: >-
     Contract data; tests/test_build_lambda_config.py's registry equivalence and the contract schema checks run in the full
     tier.
+- source: docs/DECISIONS.md
+  behavior: Decision 213 carries the dated update on what the live direct-invoke check can prove.
+  verification_step: 5
+  command: bin/venv-python -m scripts.validate
+  waiver_reason: >-
+    Decision prose in the pinned amendment form; the decisions checks (entry shape, annotations, size and amendment-delta
+    signals, index freshness) run in the pre and full tiers.
+- source: docs/decisions-index.json
+  behavior: The regenerated index matches DECISIONS.md.
+  verification_step: 5
+  command: bin/venv-python -m scripts.validate
+  waiver_reason: validate_decisions_index_freshness (pre and full tiers) fails a stale index.
 - source: docs/contracts/environment-taxonomy.yaml
   behavior: Conformance prose names the sixth function and its file.
   verification_step: 5
@@ -647,6 +668,12 @@ constraints:
 - The merge waits for Benjamin's explicit word (production IAM change) and for PLAN-url-only-invoke-guard fully applied.
 - No rescue agents or workaround loops (Decision 55).
 context:
+- >-
+  Prerequisite status (2026-10-09): PLAN-url-only-invoke-guard is merged (#1432, #1435) and its steps 5-9 are complete,
+  with one finding. Step 8 showed that a principal with a URL-only grant sees "no identity-based policy allows" on a direct
+  invoke, not the boundary's name, although the boundary Deny is in force (simulate explicitDeny). Benjamin chose to assert
+  AccessDenied only (thread "Writer direct-invoke IAM fix"); this plan and the deploy-wiring plan were re-planned to match,
+  and this plan appends the dated update to Decision 213. The owner login was measured as a neon_superuser member (rec-4227).
 - >-
   Decision-scout (one run over all three plans, after the independent review): FLAGS_FOUND. CITE 81, 91, 143, 144, 98, 200,
   202, 180, 183, 157, 125, 126, 77, 120, 79, 48, 88, 210, 101, 167, 177, 162. WARN 166 (fixture at 597 of 600 lines: raise
