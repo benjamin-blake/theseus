@@ -25,7 +25,9 @@ scope:
     The plane-neutral append request grammar (stdlib only; imports src.telemetry.timestamps and nothing else from the
     kernel, so the .importlinter turn_capture fence stays open for a producer-side lint; Decision 184 cl.2, Decision 212
     cl.2). parse_append_request(body, shapes) -> AppendRequest(project_ref, component, batches as ordered (table, rows)
-    pairs, producer, parser_version). Rules, in this order: body keys within the allowlist {action, project_ref,
+    pairs, producer, parser_version). Rules, in this order: no string anywhere in the body (key or value, walked
+    iteratively, never recursively) contains a lone surrogate U+D800-U+DFFF, which json.loads accepts but UTF-8 encoding and
+    DuckDB binding reject (bad_request, reason invalid_unicode, position only); body keys within the allowlist {action, project_ref,
     component, batches} (so catalog, meta_schema, data_path, tenant_id and project_id are refused with no denylist);
     project_ref a non-empty str; component optional, default 'unknown', else ^[a-z][a-z0-9_-]{0,63}$; batches a non-empty
     list of objects with exactly the keys table and rows (a malformed batch is bad_request); table in the closed set the
@@ -38,7 +40,8 @@ scope:
     refused (bad_request, reason blob_route_unavailable), and while the table's inline_within_threshold exemption exists an
     inline content whose UTF-8 length exceeds the contract threshold is refused (payload_too_large, rule
     inline_within_threshold, the threshold number). Then every present TIMESTAMP WITH TIME ZONE column is decoded with
-    parse_wire_timestamp into new row dicts (schema_gate, reason wire_timestamp). TableShape.from_spec reads an
+    parse_wire_timestamp into new row dicts (schema_gate, reason wire_timestamp, for a TimestampError and for the
+    OverflowError a range-edge value with an offset raises, e.g. 9999-12-31T23:59:59.999-23:59). TableShape.from_spec reads an
     EventTableSpec-shaped object through a local typing.Protocol, never an import of src.telemetry.append, not even under
     TYPE_CHECKING (import-linter counts those edges: .importlinter sets no exclude_type_checking_imports): timestamp
     columns, the content rule's inline and uri columns, and the threshold only while exempt. A test pins the module's
@@ -53,7 +56,8 @@ scope:
     invalid_ref, time_range, grain_key_null) are defined here and used by gate.py and append.py; every raise site in this
     module passes column and reason, except that unknown_column carries column None (the caller's undeclared key is never
     echoed into a body or log; the message may keep naming it for in-process callers); the BIGINT range and
-    non-finite DOUBLE messages stop echoing the value. RowRuleGateError(GateError) adds rule and is built from a
+    non-finite DOUBLE messages stop echoing the value, and the DOUBLE branch turns the OverflowError float() raises for an
+    over-large JSON integer into GateError(column, reason range). RowRuleGateError(GateError) adds rule and is built from a
     RowRuleError (table, rule, column). GrainConflictError gains table, event_id and row; collapse_or_reject_duplicates
     sets event_id and the 0-based index of the second conflicting row. Existing pinned message texts keep matching.
 - file: src/telemetry/append.py
@@ -100,6 +104,7 @@ scope:
     synchronous limit applies to the invocation event, in which the body is so escaped, plus about 2.2 KB of envelope, so a
     raw 6.2 MB escape-free body passes while a 3.2 MB quote-dense one is refused by AWS before the handler (measured
     2026-10-09, /mnt/project-files/telemetry-slice2/evidence-invoke-payload-limit.md); the producer chunks on the same
+    measure, len(json.dumps(S)) with S the exact request body string sent
     measure (relayed to rec-4026). MAX_ROWS_PER_TABLE 2000 and MAX_ROWS_PER_REQUEST 5000. Each a TelemetryRequestError
     413 (payload_too_large naming the measure / too_many_rows) checked before the kernel parse (rows counted only in
     well-formed batches; a malformed shape is left to the kernel's 400). Event specs and table shapes built lazily on the
@@ -190,9 +195,12 @@ scope:
     which is the producer's chunking contract, not a vector); a row-cap request of 2000 observation rows -> 200, printing
     "rowcap_commit_ms=" (the 2000 x 42 MERGE cost on the real catalog). Around the golden append it prints "append_files_per_commit=<n>" and
     "append_commit_ms=<ms>" from the probe's file counts and the response (measurements for the ingestion-shape decision,
-    never asserted). One auto-registration vector appends to a fresh NON-reserved ref -> 200,
-    created; it first asserts telemetry_probe reports data_path_is_smoke true and FAILS the gate otherwise, so 2c must
-    replace it before the function binds production. Prints the markers TELEMETRY_APPEND_OK, TELEMETRY_RESEND_NOOP,
+    never asserted). A body string carrying a lone surrogate -> 400 bad_request invalid_unicode. The auto-registration
+    vector sends the golden payload as three concurrent appends (thread pool, separate invocations) to one fresh
+    NON-reserved ref -> all 200, one project_id, exactly one created, and the probe's distinct grain keys equal one copy
+    of the payload (identical duplicates are legal, Fable design 2.5) -- the live proof of the composed first-sight path;
+    it first asserts telemetry_probe reports data_path_is_smoke true and FAILS the gate otherwise, so 2c must replace it
+    before the function binds production. Prints the markers TELEMETRY_APPEND_OK, TELEMETRY_RESEND_NOOP,
     TELEMETRY_GRAIN_CONFLICT_OK, TELEMETRY_REJECTS_OK, TELEMETRY_NEAR_CAP_OK, TELEMETRY_ROWCAP_OK and
     TELEMETRY_AUTOREGISTER_OK, the measurement lines (every *_ms an integer, every ratio to 3 decimal places), ids and
     counts only; never an account id, URL or host.
@@ -207,8 +215,9 @@ scope:
     409 grain_conflict, 413 payload_too_large / too_many_rows, 422 row_rule / schema_gate, 503 occ_exhausted, 500 runtime).
     audit_invariants gain: one transaction per request; within a request data batches precede the sessions marker, a
     producer tripwire for the cross-request R7 order the producer owns (inside one transaction order has no visibility
-    effect); the size cap is measured on the JSON-escaped body as delivered, an upper bound for ASCII-escaped bodies of
-    the measure Lambda's 6 MiB event limit applies to (measured 2026-10-09); an
+    effect); the size cap is len(json.dumps(S)), S the request body string as delivered: ASCII-escaped, so it equals the
+    measure Lambda's 6 MiB event limit applies to for an ASCII body and is an upper bound when the body carries non-ASCII
+    (measured 2026-10-09); an
     identical re-send is a no-op and a differing row writes nothing
     (Decision 207); no body carries a caller value; the two temporary rec-4024 refusals; one C6 line per answered request
     with no account id, ARN or hash. One amendment_log entry. telemetry_probe stays out of contract scope.
@@ -253,10 +262,15 @@ scope:
     Coverage home for append.py's changed lines (the per-file gate runs the mapped mirror only,
     scripts/checks/misc/coverage_baseline.py:95): RowRuleGateError, the derivation wrap with both reasons, the own-site
     reasons, table/row enrichment (fill-only-when-missing included), source_index and the stored conflict's event_id and
-    row (the parse-miss branch included). To stay under 500 SLOC (440 at planning), extend the existing nodes in place
-    (the own-site tests near :147-163 and the conflict test near :424-436) rather than adding new ones; gate-owned
-    assertions go to test_gate.py. If it still would exceed 500, STOP and return to /plan: a concern-split package needs
-    scripts/test_coverage_checker.py, outside this scope.
+    row (the parse-miss branch included). To stay under 500 SLOC (440 at planning), extend these existing nodes in place:
+    TestAppendEventsRejections::test_missing_required_ref_field_rejected (required_ref, column, table, row),
+    ::test_missing_session_started_at_rejected and ::test_missing_event_timestamp_rejected (not_null and column),
+    ::test_unknown_column_rejected (column None), test_grain_conflict_is_typed (the stored conflict's event_id and row, and
+    the parse-miss branch) and test_rule_rejection_leaves_no_row_and_no_transaction (RowRuleGateError attributes); add
+    one node only, TestAppendEventsRejections::test_bad_ref_and_pre_epoch_timestamp_are_gate_errors (both derivation
+    reasons). The registry-pinned ids test_cross_batch_grain_conflict_rejected and test_append_events_replay_is_noop stay
+    unchanged. Gate-owned assertions go to test_gate.py. If it still would exceed 500, STOP and return to /plan: a
+    concern-split package needs scripts/test_coverage_checker.py, outside this scope.
 - file: tests/common/test_ducklake_telemetry_append.py
   action: Create
   purpose: >-
@@ -277,7 +291,10 @@ scope:
     local timing of the row-cap MERGE before the live one).
 - file: tests/lambdas/ducklake_telemetry_writer/test_telemetry_edge.py
   action: Create
-  purpose: Mirror test -- caps at their boundaries before any kernel or catalog work, RequestError translation by type, the response shape, describe_entry, no value echo.
+  purpose: >-
+    Mirror test -- caps at their boundaries before any kernel or catalog work, RequestError translation by type, the
+    response shape, describe_entry, no value echo, and an adversarial node (lone surrogates in content, project_ref and
+    a VARCHAR; a 400-digit integer for a DOUBLE; range-edge offset timestamps) asserting only mapped classes surface.
 - file: tests/lambdas/ducklake_telemetry_writer/test_telemetry_log.py
   action: Create
   purpose: >-
@@ -299,7 +316,7 @@ scope:
   action: Create
   purpose: >-
     Hermetic proof the live vectors are right before they ship: the golden payload passes parse_append_request and
-    prepare_batch against the bundled projection for all four tables; the grammar, size, row-cap, timestamp, row-rule,
+    prepare_batch against the bundled projection for all four tables; the grammar, lone-surrogate, size, row-cap, timestamp, row-rule,
     content_uri, catalog-key and mixed-producer cases fail in the kernel or the edge with exactly their expected status,
     error_type and rule or column; the stored-row 409, the unregistered-ref 403, the identical re-send and the
     auto-registration case run through append_request with the shared fake connection and fake part 1 primitives
@@ -370,12 +387,13 @@ acceptance_criteria:
   and row index, and nothing from the request is written; a first-sight registration rolls back with the request on any
   in-transaction failure.
 - >-
-  Every request-grammar violation is refused before any database work with a mapped, value-free status: unknown or
+  Every request-grammar violation is refused before any catalog query or transaction (a cold container still pays its
+  one warm-connection ATTACH, part 1's dispatch order) with a mapped, value-free status: a lone-surrogate string, unknown or
   selector/identity keys, a bad component, a malformed batch, an unknown or repeated table, the sessions batch not last
   (400 write_order), mixed producer or parser_version (400 mixed_producer), an empty request (400), a caller content_uri
   (400), inline content above the threshold while the exemption stands (413 naming inline_within_threshold), over-cap
   bodies (measured on the JSON-escaped body) and row counts (413), and a timestamp without exactly three fraction digits
-  (422 naming the column).
+  or out of the datetime range (422 naming the column).
 - >-
   Every kernel rejection is a typed, value-free response: a row-rule break is 422 row_rule naming table, row, rule,
   column and exclude_before (the never_on_main vector answers pattern_when / name); a type, NOT NULL, ref or time-range
@@ -400,6 +418,8 @@ verification_plan:
     tests/telemetry/test_request.py::test_closed_table_set_each_table_once
     tests/telemetry/test_request.py::test_malformed_batch_shapes_are_refused
     tests/telemetry/test_request.py::test_request_module_imports_only_timestamps
+    tests/telemetry/test_request.py::test_lone_surrogate_strings_are_refused
+    tests/telemetry/test_request.py::test_range_edge_offset_timestamp_is_a_schema_gate
     tests/telemetry/test_request.py::test_sessions_batch_must_be_last
     tests/telemetry/test_request.py::test_one_producer_and_parser_version_per_request
     tests/telemetry/test_request.py::test_empty_request_is_refused
@@ -408,7 +428,7 @@ verification_plan:
     tests/telemetry/test_request.py::test_inline_content_above_threshold_is_refused_only_while_exempt
     tests/telemetry/test_request.py::test_content_uri_is_refused_until_the_blob_route
     tests/telemetry/test_request.py::test_errors_never_carry_a_value -q
-  expected: Exit 0, 12 passed. Red before, because the module and its test do not exist.
+  expected: Exit 0, 14 passed. Red before, because the module and its test do not exist.
   expected_literals: []
   fix_if: A miss -> fix request.py, never loosen a test. A threshold read from a literal -> read it from the bundled projection (Decision 210 cl.3).
   hermetic: true
@@ -424,10 +444,11 @@ verification_plan:
     tests/telemetry/test_gate.py::test_gate_messages_never_echo_the_value
     tests/telemetry/test_gate.py::test_row_rule_gate_error_carries_the_rule
     tests/telemetry/test_gate.py::test_in_batch_grain_conflict_names_event_id_and_row
+    tests/telemetry/test_gate.py::test_double_overflow_is_a_gate_error
     tests/telemetry/test_prepare.py::test_rule_break_is_a_row_rule_gate_error_with_table_and_row
     tests/telemetry/test_prepare.py::test_derivation_errors_are_gate_errors_with_both_reasons
     tests/telemetry/test_prepare.py::test_own_site_gate_errors_carry_column_and_reason -q
-  expected: Exit 0, 7 passed. Red before, because the nodes do not exist.
+  expected: Exit 0, 8 passed. Red before, because the nodes do not exist.
   expected_literals: []
   fix_if: A value in a message -> remove it from the message, never from the test.
   hermetic: true
@@ -437,11 +458,16 @@ verification_plan:
   phase: pre-deploy
   action: prepare_batch and execute_prepared raise only typed kernel errors, enriched with table and row, the stored conflict's event_id parsed.
   command: >-
-    bin/venv-python -m pytest tests/telemetry/test_append.py::test_row_rule_break_raises_row_rule_gate_error
-    tests/telemetry/test_append.py::test_bad_ref_and_pre_epoch_timestamp_are_gate_errors
-    tests/telemetry/test_append.py::test_prepare_batch_names_table_and_row
-    tests/telemetry/test_append.py::test_stored_grain_conflict_names_event_id_and_row -q
-  expected: Exit 0, 4 passed (duckdb present in the full venv). Red before, because the nodes do not exist.
+    bin/venv-python -m pytest tests/telemetry/test_append.py::TestAppendEventsRejections::test_missing_required_ref_field_rejected
+    tests/telemetry/test_append.py::TestAppendEventsRejections::test_missing_session_started_at_rejected
+    tests/telemetry/test_append.py::TestAppendEventsRejections::test_missing_event_timestamp_rejected
+    tests/telemetry/test_append.py::TestAppendEventsRejections::test_unknown_column_rejected
+    tests/telemetry/test_append.py::TestAppendEventsRejections::test_bad_ref_and_pre_epoch_timestamp_are_gate_errors
+    tests/telemetry/test_append.py::test_grain_conflict_is_typed
+    tests/telemetry/test_append.py::test_rule_rejection_leaves_no_row_and_no_transaction -q
+  expected: >-
+    Exit 0, 7 passed (duckdb present in the full venv). Red before: the six extended nodes fail their new attribute
+    assertions on the unchanged tree and the one new node does not exist.
   fix_if: An IdentityError or TimestampError escaping -> wrap it in _derive_row; a broken __cause__ pin -> raise `from` the RowRuleError.
   hermetic: false
   graduation: waive
@@ -473,6 +499,7 @@ verification_plan:
     bin/venv-python -m pytest tests/lambdas/ducklake_telemetry_writer/test_telemetry_edge.py::test_caps_are_413_at_the_boundaries
     tests/lambdas/ducklake_telemetry_writer/test_telemetry_edge.py::test_request_errors_translate_by_type
     tests/lambdas/ducklake_telemetry_writer/test_telemetry_edge.py::test_response_shape_and_no_value_echo
+    tests/lambdas/ducklake_telemetry_writer/test_telemetry_edge.py::test_adversarial_bodies_surface_only_mapped_errors
     tests/lambdas/ducklake_telemetry_writer/test_telemetry_log.py::test_line_fields_and_emf_on_the_five_data_verbs
     tests/lambdas/ducklake_telemetry_writer/test_telemetry_log.py::test_line_never_carries_account_id_or_arn
     tests/lambdas/ducklake_telemetry_writer/test_telemetry_log.py::test_function_keeps_the_text_log_format
@@ -483,7 +510,7 @@ verification_plan:
     tests/lambdas/ducklake_telemetry_writer/test_handler.py::test_invoke_bytes_is_the_escaped_body_length
     tests/lambdas/ducklake_telemetry_writer/test_telemetry_actions.py::test_probe_reports_grain_counts_for_one_session_day
     tests/lambdas/ducklake_telemetry_writer/test_packaging.py::test_manifest_bundles_the_append_modules -q
-  expected: Exit 0, 13 passed. Red before, because the nodes do not exist.
+  expected: Exit 0, 14 passed. Red before, because the nodes do not exist.
   expected_literals: []
   fix_if: An unmapped kernel class -> add the error-map row; an account id, ARN or 12-digit run in a line -> fix telemetry_log, never the test.
   hermetic: true
@@ -592,8 +619,9 @@ verification_plan:
     'arn:aws' not in t,'ARN in the telemetry step';print('APPEND_GATE_LIVE_OK')"
   expected: All eleven markers and measurement lines present in the --lambda-telemetry step's own log section, no 12-digit number and no ARN there, then APPEND_GATE_LIVE_OK.
   fix_if: >-
-    A missing marker is a deploy or vector fault to root-cause. TELEMETRY_AUTOREGISTER_OK missing with two project_ids ->
-    STOP: Decision 200's reversal condition; report to Benjamin. A 12-digit hit inside a measurement line (a *_ms or ratio
+    A missing marker is a deploy or vector fault to root-cause. TELEMETRY_AUTOREGISTER_OK missing because the three
+    concurrent first-sight appends returned two project_ids -> STOP: Decision 200's reversal condition; report to
+    Benjamin. A 12-digit hit inside a measurement line (a *_ms or ratio
     value) is a formatting defect in the gate, not an identity leak: fix the rendering; a hit anywhere else is a Decision
     101 leak: STOP, revert and fix.
   hermetic: false
@@ -641,7 +669,7 @@ test_obligations:
 - source: src/telemetry/append.py
   behavior: A bad ref or pre-epoch timestamp is a GateError, a row-rule break a RowRuleGateError, and every rejection names its table and row.
   verification_step: 3
-  test_selector: tests/telemetry/test_append.py::test_bad_ref_and_pre_epoch_timestamp_are_gate_errors
+  test_selector: tests/telemetry/test_append.py::TestAppendEventsRejections::test_bad_ref_and_pre_epoch_timestamp_are_gate_errors
   red_green_expectation: red before (node absent; today an IdentityError escapes), green after
 - source: src/common/ducklake_telemetry_append.py
   behavior: A rule rejection opens no transaction and the sentinel project id never reaches a write.
@@ -776,13 +804,13 @@ constraints:
 - >-
   Keep every new module and every file this plan grows (test_append.py at 440 SLOC, the telemetry writer handler, its
   tests, lambda_telemetry_gates.py) under 500 SLOC; decompose rather than raise a budget (Decision 128).
-- 'No producer change: rec-4026 (slice 3b, parser_version 3) owns the producer and its chunking on len(json.dumps(body)) <= 5 MiB.'
+- 'No producer change: rec-4026 (slice 3b, parser_version 3) owns the producer and its chunking on len(json.dumps(S)) <= 5 MiB, S the exact body string sent.'
 - 'Real DuckLake tests are never skipped or dropped for environment limits (rec-4071; Benjamin 2026-09-25).'
 - The implementation merge redeploys every DuckLake function, so it waits for Benjamin's explicit word.
 - No rescue agents or workaround loops (Decision 55).
 context:
 - "Decision-scout: FLAGS_FOUND -- NOTE 91 cl.1 (agent verbs extend ducklake_writer/reader): the third function rests on the Decision PLAN-url-only-invoke-guard inserts (cited here as 213, provisional until it lands with its 81/91/126 annotations); resolved by a checklist precondition (T2.36 c2's re-grounding is the same dependency). First run's NOTE 210 cl.5 resolved by the plane-neutral grammar. CITE 199, 200, 207, 210, 81, 84, 88, 143, 184, 212, 79, 125, 126, 48, 101, 128, 181. Decisions triaged: 165 of 165. Roadmap items intersected: 7; CONFLICT: 0; RELATED: 5. Report: /mnt/project-files/telemetry-slice2/scout-plan3-part2.md."
-- "gates: decision-scout=FLAGS_FOUND (NOTE 91 and NOTE 210 resolved); plan-critique=REVISE r1 (F1-F13 fixed; F8 kept the coverage nodes in the mirror and graduated duckdb-free twins), REVISE r2 (N1-N11 fixed: bounded-precision measurements, EMF directive only when recorded, no undeclared-name echo, bad_request token, shared test fakes), round 3 pending"
+- "gates: decision-scout=FLAGS_FOUND (NOTE 91 and NOTE 210 resolved); plan-critique=REVISE r1 (F1-F13 fixed; F8 kept the coverage nodes in the mirror and graduated duckdb-free twins), REVISE r2 (N1-N11 fixed: bounded-precision measurements, EMF directive only when recorded, no undeclared-name echo, bad_request token, shared test fakes), REVISE r3 (F1-F5 fixed: lone-surrogate, DOUBLE-overflow and range-edge timestamp inputs mapped; step 3 pinned to the extended nodes; concurrent auto-registration vector; size-measure wording; AC2 wording), round 4 pending"
 - "Evidence 2026-10-09: Lambda's 6 MiB limit applies to the invocation event, where the body is re-escaped as a JSON string (+ about 2.2 KB); a raw 6.2 MB escape-free body passed and a 3.2 MB quote-dense one got AWS's 413 (/mnt/project-files/telemetry-slice2/evidence-invoke-payload-limit.md). The cap is therefore measured on len(json.dumps(body)), which the producer computes identically."
 - "fork: telemetry ingestion shape (per-request commit vs S3 landing zone plus a scheduled fold-in, rds-swap/fable-catalog-backend-review.md Q5) | chosen: PENDING operator answer; recommended per-request commit for part 2 (smoke only) with the decision owned by a rec before 2c | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: this line and rec-4218"
 - "Direction (Benjamin): 2026-10-06 split plan 3 (cmsg_012XgaFy8VaDQbxP5D8nC958CXzUU6aTS53ez9rnGk2YbC); 2026-10-08 'I accept, write the plan' (cmsg_012XgaFy8VaDQbxP5D8nC958Ea85cpGqcEneeWhkAdD4uc); order part 1 on Neon, then the RDS swap, then part 2 (part 1 thread). Evidence: /mnt/project-files/telemetry-slice2/ (BRIEF-plan3-part2-append.md, step6b-plan3-part2-presentation.md, fable-consult-plan3/ADVICE.md, fable-consult-plan3-part2/ADVICE.md, fable-consult-telemetry-writer-boundary/ADVICE.md)."
@@ -797,7 +825,7 @@ context:
 - "Gotcha: an in-batch conflict names the second conflicting row; a stored conflict names the first row sent with that event_id (source_index)."
 - "Gotcha: EMF extraction needs the Lambda text log format (no logging_config today; a test pins it); the EMF Timestamp is a 13-digit epoch, so 12-digit scans exclude the _aws block."
 - "Out of scope (owners): blob route, removing the exemption and the capability handshake C8 (plan 4, rec-4024); canonical remap (rec-4210); OCC alarm (Terraform, rec-4024 item 8); smoke-table compaction (rec-4209); production residency and the gate's production shape (2c)."
-- "Producer contract served (rec-4026): chunk so len(json.dumps(body)) <= 5 MiB and rows within 2000/5000; halt on 422/409 using rule, column and row; 413 inline_within_threshold means wait for the blob route, never halt; a 413 payload_too_large or AWS's untyped 413 means re-chunk smaller."
+- "Producer contract served (rec-4026): chunk so len(json.dumps(S)) <= 5 MiB, S the exact body string sent, and rows within 2000/5000; halt on 422/409 using rule, column and row; 413 inline_within_threshold means wait for the blob route, never halt; a 413 payload_too_large or AWS's untyped 413 means re-chunk smaller."
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
@@ -819,7 +847,8 @@ execution_steps:
 - 'The real local DuckLake integration test (step 7), including the two-cursor first-sight race. Then steps 8 and 10.'
 - >-
   Persist the producer obligations on rec-4026 (call get_rec_write_guidance first, Decision 66; fetch the rec immediately
-  before update_rec and prepend a dated note to its full context): chunk on len(json.dumps(body)) <= 5 MiB and the row
+  before update_rec and prepend a dated note to its full context): chunk on len(json.dumps(S)) <= 5 MiB, S the exact body
+  string sent, and the row
   caps; the 413 meanings above; halt records use rule, column and the row index.
 - 'Code review (the code-review skill in a fresh context); fix every blocking finding.'
 - >-
