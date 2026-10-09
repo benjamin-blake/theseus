@@ -1,0 +1,525 @@
+schema_version: 5
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: neon-catalog-stats-index
+intent: >-
+  Keep the DuckLake catalog -- the metadata store under every warehouse read and write the platform's agents make --
+  on Neon and make it fast and recoverable before re-deciding a move: engage DuckLake's
+  upstream fix for the per-query full scan of ducklake_file_column_stats (issue #859, PR #1147) by creating the
+  (table_id, column_id) index it needs through an operator-only maintenance verb, add the per-invocation telemetry that
+  attributes today's 26-55 s Lambda tails, raise Neon point-in-time history to the 7 days Decisions 88 and 107 already
+  assume, and record the deferred RDS move with its re-open triggers in a numbered Decision.
+plan_type: IMPLEMENTATION
+implementation_declared: false
+verification_tier: V3
+plan_path: docs/plans/PLAN-neon-catalog-stats-index.yaml
+phase: >-
+  No tier_item: an operator-directed catalog tuning (soft-warn category user_explicit_out_of_scope). Relates to T2.19
+  (c11 latency headroom evidence) and rec-4170 (writer commit latency above the 2,000 ms budget), which it measures
+  but does not close. The compute cap is a follow-on plan filed as a rec at planning time.
+scope:
+- file: src/lambdas/ducklake_maintenance/catalog_stats_index.sql
+  action: Create
+  purpose: >-
+    The index DDL of record, beside the verb that applies it (an edit triggers the governed deploy and the drift
+    sensor; the precedent is PLAN-url-only-invoke-guard's role SQL). Header in the migrations/ducklake_ops_schema.sql
+    style: what, why (issue #859 / PR #1147: DuckLake uses postgres_query() pushdown only when this index exists;
+    "the index must currently be manually created by the user"), and how it is applied (ensure_catalog_indexes, owner
+    login, autocommit, never inside a transaction). Body: exactly one statement with a {meta_schema} placeholder:
+    CREATE INDEX CONCURRENTLY ducklake_file_column_stats_table_id_column_id_idx ON
+    {meta_schema}.ducklake_file_column_stats (table_id, column_id); -- no IF NOT EXISTS (a failed concurrent build
+    leaves an INVALID index that IF NOT EXISTS would accept).
+- file: src/lambdas/ducklake_maintenance/index_actions.py
+  action: Create
+  purpose: >-
+    action_ensure_catalog_indexes(event, _con): a closed, operator-only verb (Decision 81 cl.6: no agent invocation;
+    invoked over 443 or by a Lambda console test event, like the other operational verbs) with no caller-supplied
+    SQL, schema or index name. Refuses (rt.DuckLakeRuntimeError, the catalog_reinit refusal shape) unless confirm ==
+    "ducklake_file_column_stats". As the ducklake_ops owner login (rt.fetch_dsn(), psycopg2 over rt.libpq_conninfo,
+    autocommit = True, the _drop_meta_schema pattern) it ENUMERATES every schema holding a ducklake_file_column_stats
+    table from pg_catalog (never a hard-coded list, Decision 191's enumeration principle), and for each: reads the
+    index state through maint.catalog_index_status; valid -> no-op; invalid -> DROP INDEX CONCURRENTLY then build;
+    absent -> build (SQL file text formatted with the _require_identifier-validated schema); then re-reads and
+    requires valid. Returns only ok, migration_sha256 (of the SQL file bytes) and per schema {existed, valid_before,
+    created, rebuilt, valid_after}. Every psycopg2.Error is re-raised as rt.DuckLakeRuntimeError carrying only the
+    exception class and SQLSTATE, never its message (a connect error names the host). Also exports
+    ensure_index_for(meta_schema) for catalog_reinit. Maintenance bundle ONLY (Decision 204's mutate-half precedent).
+    Under 200 SLOC.
+- file: src/lambdas/ducklake_maintenance/health_actions.py
+  action: Create
+  purpose: >-
+    Decomposition (Decision 128; the handler is at 496-497 of 500 SLOC): action_control_health and
+    action_catalog_stats move here unchanged in behaviour, re-exported through the handler's _ACTIONS. control_health
+    additionally reads maint.catalog_index_status for every enumerated catalog schema (one read-only psycopg2
+    session) and emits, per schema, StatsIndexValid (0/1), FileColumnStatsIdxScan and FileColumnStatsSeqScan
+    (cumulative counters) to the DuckLakeMaintenance namespace, plus their result keys; an index-status read failure
+    is reported in the result and the metric, never raised (it is observability inside a health check).
+- file: src/lambdas/ducklake_maintenance/handler.py
+  action: Modify
+  purpose: >-
+    _ACTIONS registers "ensure_catalog_indexes" -> index_actions.action_ensure_catalog_indexes and points
+    "control_health" / "catalog_stats" at health_actions; the moved bodies are deleted; catalog_reinit appends
+    index_actions.ensure_index_for(meta_schema) after its SELECT 1 proof and returns its result under
+    "stats_index"; the module docstring's operational-verb list names the new verb as operator-only. Net SLOC falls.
+- file: src/lambdas/ducklake_maintenance/manifest.yaml
+  action: Modify
+  purpose: >-
+    includes gains index_actions.py and health_actions.py; assets gains catalog_stats_index.sql; notes name the new
+    operator-only verb. The maintenance-smoke manifest is unchanged: only read-only helpers are added to the shared
+    src/common/ducklake_maintenance.py, and nothing it imports is new.
+- file: src/common/ducklake_maintenance.py
+  action: Modify
+  purpose: >-
+    New read-only helpers catalog_index_schemas(cur) (schemas holding ducklake_file_column_stats) and
+    catalog_index_status(cur, meta_schema) -> {present, valid, idx_scan, size_bytes, table_seq_scan} from pg_index,
+    pg_stat_user_indexes and pg_stat_user_tables by the fixed index name; catalog_stats adds "stats_index" with that
+    status. The single source both the verb and the health check read (no duplicated SQL). Read-only, so it stays
+    inside Decision 88 cl.2's catalog_stats charter and safe in the smoke bundle.
+- file: src/common/ducklake_metrics.py
+  action: Modify
+  purpose: >-
+    log_invocation(function, action, status, connect_ms, connect_reused, reopened, elapsed_ms): prints one compact
+    JSON line {"event": "ducklake_invocation", ...those fields}, so CloudWatch Logs Insights discovers the fields and
+    can decompose latency (Lambda init shows separately on REPORT lines). Fixed fields only: never a payload value,
+    table row, host or error message.
+- file: src/lambdas/ducklake_reader/handler.py
+  action: Modify
+  purpose: >-
+    handler() measures elapsed time and records reopened (the dead-connection reopen branch) and calls
+    log_invocation in a finally, so every path (200, 4xx, 5xx, connectionless) logs exactly one line; connect_ms and
+    connect_reused come from the existing conn_meta (None on connectionless actions).
+- file: src/lambdas/ducklake_writer/handler.py
+  action: Modify
+  purpose: Same as the reader, one ducklake_invocation line per invocation on every path.
+- file: terraform/personal/neon_ducklake_catalog.tf
+  action: Modify
+  purpose: >-
+    history_retention_seconds 21600 -> 604800 (7 days, the paid Launch plan maximum), with the comment corrected (the
+    6 h figure was the free-tier ceiling; Decisions 88 cl.3 and 107 rely on 7-day PITR between weekly dumps). A
+    neon_* in-place update, so the guard routes the apply to tf-gated-apply (the operator approves). Nothing else in the
+    file changes.
+- file: docs/contracts/ducklake_maintenance.yaml
+  action: Modify
+  purpose: >-
+    Class B verb entry ensure_catalog_indexes (operational, operator-only per Decision 81 cl.6, confirm, idempotent,
+    non-destructive to data, enumerates schemas, returns booleans and the migration hash only); the control_health and
+    catalog_stats entries name their new outputs and metrics; an amendment_log entry. The file is at 475 of 500
+    effective lines (contracts class, config/structural_size_budgets.yaml): keep the additions terse and, if needed,
+    compact the oldest amendment_log entries (the class's relief valve); never raise the budget.
+- file: docs/DECISIONS.md
+  action: Modify
+  purpose: >-
+    NEW numbered Decision N (origin/main max + 1 at implementation time; 214 expected -- 213 is on main), amends
+    [107, 88], <= 6,144 bytes, content pinned in execution_steps and ratified by the operator on 2026-10-09; dated
+    trailing-bracket annotations on Decision 107 and Decision 88 naming it.
+- file: docs/decisions-index.json
+  action: Modify
+  purpose: Regenerated by bin/venv-python -m scripts.decisions_index --write.
+- file: tests/lambdas/ducklake_maintenance/test_index_actions.py
+  action: Create
+  purpose: >-
+    With rt.fetch_dsn and psycopg2.connect patched (a fake cursor scripting pg_catalog answers): missing or wrong
+    confirm refuses before any connection; autocommit is set before any DDL; schemas come from the enumeration query;
+    valid -> no DDL; absent -> exactly the SQL file's statement for that schema; invalid -> DROP INDEX CONCURRENTLY
+    then CREATE; a post-build invalid state raises; migration_sha256 equals the file's sha256; an OperationalError
+    whose message names a host becomes a DuckLakeRuntimeError naming only class and SQLSTATE; the response never
+    contains the host; ensure_index_for builds for one schema.
+- file: tests/lambdas/ducklake_maintenance/test_health_actions.py
+  action: Create
+  purpose: >-
+    control_health emits StatsIndexValid / FileColumnStatsIdxScan / FileColumnStatsSeqScan per enumerated schema
+    (metric sink captured), reports a status-read failure without raising, and its pre-existing invariant behaviour
+    is unchanged (the moved handler tests keep passing against the new module); catalog_stats returns stats_index.
+- file: tests/lambdas/ducklake_maintenance/handler/test_dispatch.py
+  action: Modify
+  purpose: >-
+    The dispatcher routes ensure_catalog_indexes, control_health and catalog_stats to their new modules, and
+    catalog_reinit's result carries stats_index (ensure_index_for patched).
+- file: tests/test_ducklake_maintenance.py
+  action: Modify
+  purpose: catalog_index_schemas and catalog_index_status over a fake cursor (present/valid/absent/invalid), and catalog_stats' stats_index key.
+- file: tests/test_ducklake_reader_handler.py
+  action: Modify
+  purpose: Exactly one ducklake_invocation line per invocation on success, 4xx, 5xx, connectionless and reopen paths, with only the fixed fields (capsys).
+- file: tests/lambdas/ducklake_writer/handler/test_invocation_log.py
+  action: Create
+  purpose: The writer's equivalent of the reader cases, including a row-rule 422 and an OCC-exhausted 503.
+- file: tests/common/test_ducklake_metrics.py
+  action: Modify
+  purpose: log_invocation prints one parseable line with exactly the fixed keys and refuses extra keys.
+- file: tests/checks/iam_tf/test_neon_catalog_history_retention.py
+  action: Create
+  purpose: >-
+    Text-level guard over terraform/personal/neon_ducklake_catalog.tf (tests/fixtures/terraform_hcl_blocks.py):
+    neon_project.ducklake_catalog sets history_retention_seconds = 604800. Red before (21600).
+- file: tests/checks/decisions/test_neon_catalog_tuning_decision.py
+  action: Create
+  purpose: >-
+    The Decision exists with its envelope (amends [107, 88]), one anchor per clause, the reversal-condition ids, and
+    dated annotations on Decisions 107 and 88 naming it. N is resolved from the contract's ensure_catalog_indexes verb
+    entry citation, never hard-coded.
+- file: config/agent/verification_registry/entries/ensure-catalog-indexes-verb.yaml
+  action: Create
+  purpose: Registry row for graduated VP step 1.
+- file: config/agent/verification_registry/entries/ducklake-invocation-log-line.yaml
+  action: Create
+  purpose: Registry row for graduated VP step 3.
+- file: config/agent/verification_registry/entries/neon-catalog-tuning-decision-declared.yaml
+  action: Create
+  purpose: Registry row for graduated VP step 5.
+bundled_recommendations: []
+followon_recs:
+- rec-4220
+- rec-4221
+- rec-4222
+infrastructure_dependencies:
+- >-
+  neon_project.ducklake_catalog in-place update of history_retention_seconds only; the guard's neon_* rule routes it to
+  tf-gated-apply, so the operator approves the Environment run. No IAM change: the maintenance role already reads the
+  DSN secret it connects with, and psycopg2 is in the ducklake-deps layer.
+- >-
+  Lambda deploy: compute_affected_artifacts names five active artifacts -- ducklake_maintenance, ducklake_reader,
+  ducklake_writer, ducklake_maintenance_smoke and ducklake_catalog_dr (the last two only through the shared
+  src/common/ducklake_metrics.py and src/common/ducklake_maintenance.py) -- all shipped by one run of the governed
+  channel (.github/workflows/deploy-ducklake-lambdas.yml) at merge (Decision 125/126), with its per-function smoke
+  gates. The merge waits for the operator's word (always-ask: governed DuckLake Lambda deploys).
+- >-
+  Sequencing: PLAN-url-only-invoke-guard's implementation is merged (#1432, cdc380d5): Decision 213 is taken, the
+  maintenance handler is at 497 SLOC with provision_telemetry_login registered. Rebase on origin/main before work.
+acceptance_criteria:
+- >-
+  ensure_catalog_indexes refuses without confirm, enumerates every catalog schema from pg_catalog, builds the index
+  CONCURRENTLY under autocommit, rebuilds an invalid one, and returns booleans and the migration hash only; it is
+  registered only on the admin maintenance function.
+- catalog_reinit leaves the re-initialised schema with a valid index; control_health emits StatsIndexValid and both scan counters per schema; catalog_stats reports stats_index.
+- Reader and writer log exactly one ducklake_invocation line per invocation on every path, carrying only the fixed fields.
+- neon_ducklake_catalog.tf sets history_retention_seconds = 604800 and the apply goes through tf-gated-apply.
+- Decision N (<= 6,144 bytes, amends [107, 88], reversal stanza) exists and Decisions 107 and 88 carry dated annotations naming it.
+- >-
+  Post-deploy: the operator's invocation reports a valid index on ducklake_ops and ducklake_smoke; after the warm
+  connections are reset, FileColumnStatsIdxScan rises and FileColumnStatsSeqScan stays flat over the next
+  control_health windows.
+- The full validation tier passes.
+verification_plan:
+- step: 1
+  phase: pre-deploy
+  action: The ensure verb's refusal, enumeration, build, rebuild and redaction behaviour.
+  command: >-
+    bin/venv-python -m pytest tests/lambdas/ducklake_maintenance/test_index_actions.py::test_refuses_without_confirm
+    tests/lambdas/ducklake_maintenance/test_index_actions.py::test_builds_absent_and_rebuilds_invalid_per_enumerated_schema
+    tests/lambdas/ducklake_maintenance/test_index_actions.py::test_errors_never_carry_host -q
+  expected: 'Exit 0, 3 passed. Red before: the module does not exist.'
+  fix_if: Fix the verb, never the test.
+  hermetic: false
+  graduation: graduate
+  graduation_check_id: ensure-catalog-indexes-verb
+  expected_literals: []
+- step: 2
+  phase: pre-deploy
+  action: Health emission, catalog_stats status and dispatch.
+  command: >-
+    bin/venv-python -m pytest tests/lambdas/ducklake_maintenance/test_health_actions.py tests/lambdas/ducklake_maintenance/handler/test_dispatch.py
+    tests/test_ducklake_maintenance.py -q
+  expected: Exit 0.
+  fix_if: Fix the moved or new code; the moved control_health/catalog_stats behaviour must be unchanged.
+  hermetic: false
+  graduation: not-applicable
+- step: 3
+  phase: pre-deploy
+  action: The per-invocation log line on reader and writer.
+  command: >-
+    bin/venv-python -m pytest tests/test_ducklake_reader_handler.py::test_one_invocation_line_per_path
+    tests/lambdas/ducklake_writer/handler/test_invocation_log.py::test_one_invocation_line_per_path
+    tests/common/test_ducklake_metrics.py::test_log_invocation_fixed_fields -q
+  expected: 'Exit 0, 3 passed. Red before: none of the three tests exists.'
+  fix_if: Fix the handler or helper; never log a payload value.
+  hermetic: false
+  graduation: graduate
+  graduation_check_id: ducklake-invocation-log-line
+  expected_literals: []
+- step: 4
+  phase: pre-deploy
+  action: The Terraform value and its format.
+  command: >-
+    bin/venv-python -m pytest tests/checks/iam_tf/test_neon_catalog_history_retention.py -q && terraform fmt -check terraform/personal/neon_ducklake_catalog.tf
+  expected: Exit 0.
+  fix_if: Set the value or fix formatting; never run init/validate/plan locally (Decision 119; CI's terraform-validate is the authority).
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: >-
+    terraform fmt needs the terraform binary, which venv-less replay lacks; the pytest half is guarded standing by the
+    test itself.
+- step: 5
+  phase: pre-deploy
+  action: The Decision, its clause anchors, reversal ids and the annotations on 107 and 88.
+  command: >-
+    bin/venv-python -m pytest tests/checks/decisions/test_neon_catalog_tuning_decision.py::test_decision_entry_and_annotations -q
+  expected: 'Exit 0, 1 passed. Red before: the module does not exist.'
+  fix_if: Fix the Decision text or annotations, never the test; then rerun scripts.decisions_index --write.
+  hermetic: false
+  graduation: graduate
+  graduation_check_id: neon-catalog-tuning-decision-declared
+  expected_literals: []
+- step: 6
+  phase: pre-deploy
+  action: Bundle completeness for the three functions.
+  command: >-
+    bin/venv-python -c "from scripts.checks.lambda_pkg.validate_lambda_bundle_completeness import
+    validate_lambda_bundle_completeness as v;f=[];v(f);print(f);assert not f;print('BUNDLES_OK')"
+  expected: Exit 0, an empty failure list and the success marker; every handler import resolves inside its bundle.
+  fix_if: Add the missing include or asset to the manifest.
+  hermetic: false
+  graduation: not-applicable
+- step: 7
+  phase: pre-deploy
+  action: Full validation tier before handoff.
+  command: bin/venv-python -m scripts.validate
+  expected: Exit 0.
+  fix_if: Fix the named check; never raise a budget or skip a check.
+  hermetic: false
+  graduation: not-applicable
+- step: 8
+  phase: post-deploy
+  action: >-
+    The PR's speculative-plan comment shows exactly one in-place update (neon_project.ducklake_catalog,
+    history_retention_seconds 21600 -> 604800) routed to tf-gated-apply; after the operator approves, the gated-apply
+    job for the merge SHA succeeds. Capture its log with mcp__github__actions_list and mcp__github__get_job_logs and
+    save it to $APPLY_LOG_FILE first.
+  command: >-
+    grep -c 'history_retention_seconds' "$APPLY_LOG_FILE" && grep -qE 'Apply complete! Resources: 0 added, 1 changed, 0 destroyed' "$APPLY_LOG_FILE"
+  expected: The attribute appears and the apply completed; no other resource changed.
+  fix_if: Any other resource in the plan is drift -- stop and report.
+  hermetic: false
+- step: 9
+  phase: post-deploy
+  action: >-
+    The governed deploy shipped all five affected functions and its smoke gates passed. Capture the
+    deploy-ducklake-lambdas.yml run for the merge SHA with mcp__github__actions_list and get_job_logs into
+    $DEPLOY_LOG_FILE first.
+  command: >-
+    test -s "$DEPLOY_LOG_FILE" && grep -oE 'agent-platform-ducklake-(maintenance-smoke|maintenance|reader|writer|catalog-dr)' "$DEPLOY_LOG_FILE" | sort -u | wc -l
+  expected: The run concluded success and the count is 5 (every affected function named).
+  fix_if: Diagnose the failed job per the deploy channel's rules (Decision 125); never deploy by hand.
+  hermetic: false
+- step: 10
+  phase: post-deploy
+  action: >-
+    Baseline with the new lines (at least 48 h after deploy, before the index): decompose latency per function from
+    the ducklake_invocation lines and REPORT Init Duration, saved without hostnames.
+  command: >-
+    for fn in agent-platform-ducklake-reader agent-platform-ducklake-writer; do aws logs start-query --profile agent_platform --region eu-west-2
+    --log-group-name /aws/lambda/$fn --start-time $(date -u -d '-48 hours' +%s) --end-time $(date -u +%s) --query-string
+    'filter event = "ducklake_invocation" | stats count(*), pct(elapsed_ms,50), pct(elapsed_ms,95) by connect_reused, reopened'
+    --query 'queryId' --output text; done
+  expected: >-
+    Two query ids; their results (aws logs get-query-results) are written to /mnt/project-files/neon-tuning/baseline.json
+    with p50/p95 elapsed split by reused and reopened, plus Init Duration p95 from REPORT lines.
+  fix_if: No lines found -- the deploy did not ship the log helper; check step 9.
+  hermetic: false
+- step: 11
+  phase: post-deploy
+  action: >-
+    The operator invokes the verb once on production (Lambda console test event on agent-platform-ducklake-maintenance,
+    event {"action": "ensure_catalog_indexes", "confirm": "ducklake_file_column_stats"}) and pastes the response into the
+    thread; the agent saves it to $ENSURE_RESPONSE_FILE. Warm containers pick the index up at their next ATTACH (Neon's
+    5-minute scale-to-zero ends idle sessions and Lambda recycles idle containers), so step 12 starts 6 h later.
+  command: >-
+    bin/venv-python -c "import json,os;r=json.load(open(os.environ['ENSURE_RESPONSE_FILE']));r=json.loads(r['body']) if 'body' in r else r;
+    s=r['schemas'];assert r['ok'] and s['ducklake_ops']['valid_after'] and s['ducklake_smoke']['valid_after'];print('INDEX_VALID')"
+  expected: >-
+    INDEX_VALID printed: ok true and valid_after true for ducklake_ops and ducklake_smoke.
+  fix_if: >-
+    valid_after false -> re-run the verb (it rebuilds an invalid index); a refusal -> check the confirm value; never run
+    DDL any other way.
+  hermetic: false
+- step: 12
+  phase: post-deploy
+  action: >-
+    Engagement proof over the two control_health windows after the 6 h pickup: StatsIndexValid is 1 for ducklake_ops,
+    FileColumnStatsIdxScan rises and FileColumnStatsSeqScan stays flat.
+  command: >-
+    for m in StatsIndexValid FileColumnStatsIdxScan FileColumnStatsSeqScan; do aws cloudwatch get-metric-statistics
+    --profile agent_platform --region eu-west-2 --namespace DuckLakeMaintenance --metric-name $m --dimensions
+    Name=MetaSchema,Value=ducklake_ops --start-time $(date -u -d '-14 hours' +%FT%TZ) --end-time $(date -u +%FT%TZ)
+    --period 21600 --statistics Maximum --query 'sort_by(Datapoints,&Timestamp)[].Maximum' --output text; done
+  expected: StatsIndexValid all 1; the idx_scan series strictly increases; the seq_scan series is constant.
+  fix_if: >-
+    seq_scan still rising after the reset -> the fix is not engaging: record the extension build string from a
+    connect_probe and file a rec (never add other indexes speculatively).
+  hermetic: false
+- step: 13
+  phase: post-deploy
+  action: >-
+    Seven days after step 11: compare against step 10 and the 14-day CloudWatch baseline in context; record the
+    numbers on the compute-cap follow-on rec, which carries the scale-to-zero decision.
+  command: >-
+    aws cloudwatch get-metric-statistics --profile agent_platform --region eu-west-2 --namespace DuckLakeWriter --metric-name
+    CommitLatencyMs --start-time $(date -u -d '-7 days' +%FT%TZ) --end-time $(date -u +%FT%TZ) --period 604800
+    --extended-statistics p50 p95 --output json
+  expected: >-
+    p50 and p95 recorded beside the baseline (p50 2.7 s, p95 5.5 s) and the step 10 query re-run for the same 7 days;
+    rec-4220's context is updated through the portal with both (it carries the scale-to-zero choice).
+  fix_if: Missing data -- check control_health and the deploy; do not re-run the index.
+  hermetic: false
+test_obligations:
+- source: src/lambdas/ducklake_maintenance/index_actions.py
+  behavior: Confirm-gated, enumerating, idempotent concurrent build with invalid-index rebuild and redacted errors.
+  verification_step: 1
+  test_selector: tests/lambdas/ducklake_maintenance/test_index_actions.py::test_builds_absent_and_rebuilds_invalid_per_enumerated_schema
+  red_green_expectation: red before (module absent), green after
+- source: src/lambdas/ducklake_maintenance/catalog_stats_index.sql
+  behavior: The single statement the verb runs, with the fixed index name and column order.
+  verification_step: 1
+  test_selector: tests/lambdas/ducklake_maintenance/test_index_actions.py::test_builds_absent_and_rebuilds_invalid_per_enumerated_schema
+  red_green_expectation: red before (file absent), green after
+- source: src/lambdas/ducklake_maintenance/health_actions.py
+  behavior: control_health emits index validity and scan counters per schema; moved behaviour unchanged.
+  verification_step: 2
+  test_selector: tests/lambdas/ducklake_maintenance/test_health_actions.py
+  red_green_expectation: red before (module absent), green after
+- source: src/lambdas/ducklake_maintenance/handler.py
+  behavior: Dispatch to the new and moved verbs; catalog_reinit ensures the index.
+  verification_step: 2
+  test_selector: tests/lambdas/ducklake_maintenance/handler/test_dispatch.py
+  red_green_expectation: red before (unknown action), green after
+- source: src/lambdas/ducklake_maintenance/manifest.yaml
+  behavior: The maintenance bundle contains the new modules and the SQL asset.
+  verification_step: 6
+  command: >-
+    bin/venv-python -c "from scripts.checks.lambda_pkg.validate_lambda_bundle_completeness import
+    validate_lambda_bundle_completeness as v;f=[];v(f);print(f);assert not f;print('BUNDLES_OK')"
+  red_green_expectation: red before the manifest edit (unresolved import), green after
+- source: src/common/ducklake_maintenance.py
+  behavior: Read-only index status helpers and catalog_stats' stats_index.
+  verification_step: 2
+  test_selector: tests/test_ducklake_maintenance.py
+  red_green_expectation: red before (helpers absent), green after
+- source: src/common/ducklake_metrics.py
+  behavior: log_invocation emits one fixed-field line.
+  verification_step: 3
+  test_selector: tests/common/test_ducklake_metrics.py::test_log_invocation_fixed_fields
+  red_green_expectation: red before (helper absent), green after
+- source: src/lambdas/ducklake_reader/handler.py
+  behavior: One invocation line per path.
+  verification_step: 3
+  test_selector: tests/test_ducklake_reader_handler.py::test_one_invocation_line_per_path
+  red_green_expectation: red before (no line), green after
+- source: src/lambdas/ducklake_writer/handler.py
+  behavior: One invocation line per path.
+  verification_step: 3
+  test_selector: tests/lambdas/ducklake_writer/handler/test_invocation_log.py::test_one_invocation_line_per_path
+  red_green_expectation: red before (no line), green after
+- source: terraform/personal/neon_ducklake_catalog.tf
+  behavior: Seven-day point-in-time history.
+  verification_step: 4
+  test_selector: tests/checks/iam_tf/test_neon_catalog_history_retention.py
+  red_green_expectation: red before (21600), green after
+- source: docs/contracts/ducklake_maintenance.yaml
+  behavior: The verb entry exists and matches the dispatch (Decision 118 drift gate).
+  verification_step: 7
+  command: bin/venv-python -m scripts.validate
+  red_green_expectation: red before (dispatch entry without contract entry), green after
+- source: docs/DECISIONS.md
+  behavior: Decision N with envelope, clauses and reversal stanza; dated annotations on 107 and 88.
+  verification_step: 5
+  test_selector: tests/checks/decisions/test_neon_catalog_tuning_decision.py::test_decision_entry_and_annotations
+  red_green_expectation: red before (entry absent), green after
+- source: docs/decisions-index.json
+  behavior: Regenerated index matches DECISIONS.md (validate_decisions_index_freshness in the full tier).
+  verification_step: 7
+  command: bin/venv-python -m scripts.validate
+  red_green_expectation: red before the regeneration (stale index), green after
+constraints:
+- Index DDL runs only through ensure_catalog_indexes, invoked by the operator; no agent invokes it (Decision 81 cl.6) and no other path runs DDL on the catalog.
+- No new IAM, no new Terraform resource; the only Terraform change is history_retention_seconds.
+- Nothing logs or returns a host, password, payload value or Postgres error message.
+- The maintenance-smoke dispatch is unchanged (Decision 143); the verb is registered on the admin function only.
+- Lambda code ships only through the governed deploy channel (Decision 125); no local build_lambda --deploy.
+- No budget raise anywhere (Decision 128); the handler is decomposed instead.
+- The Decision stays <= 6,144 bytes; 107 and 88 are annotated only by appended dated lines (Decision 177).
+- No rescue agents or workaround loops (Decision 55).
+context:
+- >-
+  Decision-scout: FLAGS_FOUND, all resolved in this plan -- (WARN 79) maintenance manifest in scope, DDL in the
+  maintenance bundle only, catalog_stats reads in place; (NOTE 59) every touched file in scope; (NOTE 84) the
+  ingestion-shape rec names Decision 84 I-4 and T2.36 c2/c4; (SPIRIT 82) the latency trigger is per-invocation wall
+  p95; (SPIRIT 191) schemas are enumerated, not hard-coded; 107 cond. 2 ruled on (history to 7 days). CITE: 107, 88,
+  81, 143, 82, 125, 126, 128, 177, 167. Decisions triaged: 165 of 165. Roadmap items intersected: 13; CONFLICT: 0;
+  RELATED: 12. Report: /mnt/project-files/rds-swap/decision-scout-report-neon-tuning.md.
+- 'gates: decision-scout=FLAGS_FOUND (all resolved); plan-critique=<pending>'
+- >-
+  Operator direction (Benjamin, 2026-10-09, thread "Neon to RDS catalog swap"): chose "Tune Neon first" over an RDS
+  move and a file catalog (decision card); then "1. yes" (history to 7 days) and "I can run it, and I approve the
+  decision. please proceed" (he runs ensure_catalog_indexes himself; the Decision text below is ratified).
+- >-
+  Design: /mnt/project-files/rds-swap/fable-neon-tuning-design.md (this plan's design review) and
+  fable-catalog-backend-review.md (backend comparison). Upstream: duckdb/ducklake PR #1147 (merged 2026-05-12 into
+  v1.5-variegata) fixes issue #859; the pinned DuckDB 1.5.4 installs ducklake build d318a545, 187 commits after the fix
+  commit (step 12 proves engagement rather than assuming it).
+- >-
+  Baseline (CloudWatch, 14 days to 2026-10-09): reader Duration p50 242 ms / p95 54.6 s / p99 67.3 s; writer p50 3.0 s
+  / p95 25.7 s; CommitLatencyMs p50 2.7 s / p95 5.5 s (681 ms warm in June, Decision 82 record); 523 commits, 1 OCC
+  retry; catalog 50.7 MB, 207k stats rows (Decision 204's 2026-09-28 amendment).
+- >-
+  Gotcha: CREATE INDEX CONCURRENTLY cannot run inside a transaction block (psycopg2 autocommit) and a failed build
+  leaves an INVALID index; DuckLake's index check is cached per transaction/attach, so warm containers keep the old path
+  until reset_warm_connection or recycle.
+- >-
+  Gotcha: the maintenance handler is at 497 of 500 SLOC on main, so its control_health and catalog_stats bodies move
+  to health_actions.py before anything is added.
+- 'Numbering -- take origin/main max + 1 at implementation time; the test resolves N from the contract''s verb-entry citation.'
+pre_implementation_checklist:
+- Branch confirmed not on main
+- docs/PROJECT_CONTEXT.md read
+- 'Only the plan-cited decision sections read: 107, 88, 81, 143, 204, 213'
+- Branch rebased on origin/main (PLAN-url-only-invoke-guard's implementation, #1432, is already merged)
+- All files in scope located and readable
+- Acceptance criteria understood and verifiable
+execution_steps:
+- >-
+  Move action_control_health and action_catalog_stats verbatim into health_actions.py and route _ACTIONS to them; run
+  the existing handler tests and confirm green before any behaviour change.
+- >-
+  Write the red tests named in test_obligations, then add catalog_index_schemas / catalog_index_status, the SQL file,
+  index_actions.py, the control_health emission, catalog_reinit's ensure step, log_invocation and the reader/writer
+  calls, the manifest entries and the contract entries. Metrics carry a MetaSchema dimension.
+- Change history_retention_seconds and its comment; add the Terraform value test.
+- >-
+  Add Decision N. Pinned content (tighten for the byte cap, never drop a clause). TITLE: "The DuckLake catalog stays on
+  Neon, tuned and capped, with measured triggers to move (amends Decision 107 and Decision 88)". PROBLEM: the operator
+  proposed a pre-emptive move to RDS (cost ~$10/month and rising with agents, cold starts, egress); an independent
+  review found the measured pain has cheaper causes: Lambda p95 26-55 s and commit p95 5.5 s against a 2,000 ms
+  budget, with DuckLake's fix for the per-query stats scan (#859, PR #1147) inert because its index was never created;
+  Terraform pins 6 h PITR while Decisions 88 and 107 assume 7 days. DECISION: (1) RDS is deferred, not rejected; its
+  pre-work design is on file (rds-swap) and a move stays a metadata dump, restore and secret flip because the runtime
+  uses only plain Postgres. (2) The stats index is created and kept by the operator-only ensure_catalog_indexes verb on
+  every catalog schema; Decision 88 gains invariant (v): the stats index is present and valid on every catalog schema,
+  asserted by control_health. (3) Neon history is 7 days (ruling on 107 cond. 2's RPO question); compute settings move
+  into Terraform with a pinned maximum in the follow-on plan, so the bill cannot rise with agent count. (4)
+  Per-invocation wall time is the latency signal (Decision 82's pinned term); commit latency and cold attach are
+  attribution. (5) A file catalog (DuckDB file on S3 under conditional-write CAS) is adopted only when peak commit
+  rate x swap time < 0.1, swap time < 1 s, maintenance commits reliably under CAS, a version-copy restore drill passes,
+  and only after telemetry 2c. RATIONALE: fix the measured cause before paying for a backend change. REVERSAL
+  CONDITIONS (review_by 2027-04-30, on_trigger "re-decide via /plan", each kind manual): capped-bill-exceeds-rds (Neon
+  above ~$20/month for two billing cycles); wall-p95-over-budget-after-tuning (per-invocation p95 > 2,000 ms, or cold
+  attach p95 over budget, for two consecutive windows after index and compute tuning); neon-tier-or-terms-change;
+  private-network-required; file-catalog-conditions-met. RELATED: 107, 88, 82, 81 cl.6, 84, 143, 191, 200, 204, 212;
+  rec-4170. ANNOTATIONS (dated the implementation day): Decision 107 -- "[Amendment <date>, Decision N: a
+  pre-emptive swap-back was evaluated and deferred; cond. 1's baseline is now the capped-Neon bill (~$20), not
+  $12-15; the RDS path is no longer Terraformed (retired in #82) and would be re-created from the rds-swap design;
+  history is 7 days, ruling on cond. 2.]"; Decision 88 -- "[Amendment <date>, Decision N: invariant (v) -- the
+  ducklake_file_column_stats (table_id, column_id) index is present and valid on every catalog schema, asserted by
+  control_health; cl.3's 7-day PITR is now true in Terraform.]". Regenerate the index.
+- Execute VP steps 1-7; loop until pass; on an unrecoverable failure stop and RCA (Decision 55).
+- Write the registry rows for graduated steps 1, 3 and 5.
+- >-
+  CLOSURE (implement skill Commit Flows; git-ops.yaml handoff_sequence): readiness; implementation_declared true;
+  commit; rebase on origin/main (a DECISIONS.md conflict is the numbering race: renumber N everywhere, prove no stale
+  reference in this change's added lines); full tier on the rebased tree with --verify-head; postflight evidence; push,
+  PR, subscribe. The merge deploys three Lambdas and applies a gated Terraform change: wait for the operator's word
+  before merging, then run post-deploy steps 8-13 (step 11 needs the operator; step 13 runs seven days later).
+rollback: >-
+  Code: revert the squash commit (the governed channel redeploys). Index: DROP INDEX CONCURRENTLY
+  <schema>.ducklake_file_column_stats_table_id_column_id_idx through a verb-only path if ever needed (DuckLake falls
+  back to the scan). History: setting it back is a gated neon_* update.
