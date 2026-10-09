@@ -70,8 +70,9 @@ scope:
     writer grants (its standing guard requires it): TelemetryWriterInvokeCI (lambda:InvokeFunctionUrl, lambda:GetFunctionUrlConfig
     on aws_lambda_function.ducklake_telemetry_writer.arn and its ":*" form) and TelemetryWriterInvokeCIViaUrlOnly (lambda:InvokeFunction
     on the same, condition Bool lambda:InvokedViaFunctionUrl = true). Both invoke actions are required for the AWS_IAM URL
-    today (live-verified 2026-10-06). The comment says the deploy smoke job (companion plan) runs as this role and that the
-    boundary denies direct invoke, which the companion plan's gate asserts. github_ci_pr, github_ci_planner and github_ci_deploy
+    today (live-verified 2026-10-06). The comment says the deploy smoke job (companion plan) runs as this role, that its
+    InvokeFunction is URL-only and the boundary also denies direct invoke, and that the companion plan's gate asserts a
+    direct invoke is AccessDenied. github_ci_pr, github_ci_planner and github_ci_deploy
     get no grant. PLAN-url-only-invoke-guard's guard predicate (b) recognises this aws_lambda_function.ducklake_telemetry_writer.arn
     reference form, so the condition is enforced on these statements too.
 - file: terraform/personal/oidc.tf
@@ -152,8 +153,9 @@ scope:
 - file: docs/DECISIONS.md
   action: Modify
   purpose: >-
-    Append one dated update line to Decision 213, after its Related line, in the pinned blockquote_update form of decision-entry.yaml
-    amendment_forms; no existing text changes: "> **Update (2026-10-09):** A principal whose own InvokeFunction grant is URL-only sees 'no identity-based policy allows' on a direct invoke, never the boundary's name (measured in the admin run), so the deploy gate asserts AccessDenied; the boundary is proven by the guard test on its policy text and the post-apply simulate (explicitDeny). Reversal reads: the gate's direct invoke stops returning AccessDenied, or the simulate stops reporting explicitDeny."
+    Decision 213 only. (1) Append one dated update line after its Related line, in the pinned blockquote_update form of
+    decision-entry.yaml amendment_forms: "> **Update (2026-10-09):** PLAN-url-only-invoke-guard step 8 measured that a principal whose own InvokeFunction grant is URL-only sees 'no identity-based policy allows' on a direct invoke, never the boundary's name, so the telemetry writer's deploy gate asserts AccessDenied for its own principal. The boundary Deny is proven by tests/checks/iam_tf/test_url_only_invoke_guard.py on the policy text, which names the telemetry writer, and by the post-apply simulate's url-only rows on the shared writer's ARN (same statement, explicitDeny). The reversal stanza's condition-key-semantics-change was re-armed to match." (2) Re-arm the reversal stanza's condition-key-semantics-change description
+    in place (Decision 177 cl.4 sanctions stanza interiors): "AWS changes lambda:InvokedViaFunctionUrl semantics, the deploy gate's direct DryRun invoke stops returning AccessDenied, or the post-apply simulate's url-only rows stop reporting explicitDeny: re-decide clause 1." No other text changes.
 - file: docs/decisions-index.json
   action: Modify
   purpose: Regenerated with the repo's decisions-index tooling after the update (validate_decisions_index_freshness).
@@ -411,7 +413,7 @@ verification_plan:
     role and URL blocks are byte-identical to the merge base. (That no other aws_iam_role changes is the speculative plan's
     exact 7/4/0 count, checked at closure.)
   command: >-
-    bin/venv-python -c "import subprocess,re,pathlib,yaml;
+    grep -qF '> **Update (2026-10-09):** PLAN-url-only-invoke-guard step 8 measured' docs/DECISIONS.md && bin/venv-python -c "import subprocess,re,pathlib,yaml;
     from tests.fixtures.terraform_hcl_blocks import find_resource_block;
     g=lambda *a:subprocess.run(['git',*a],capture_output=True,text=True,check=True).stdout;
     mb=g('merge-base','origin/main','HEAD').strip();f='terraform/personal/ducklake_lambdas.tf';
@@ -631,8 +633,9 @@ test_obligations:
   verification_step: 5
   command: bin/venv-python -m scripts.validate
   waiver_reason: >-
-    Decision prose in the pinned amendment form; the decisions checks (entry shape, annotations, size and amendment-delta
-    signals, index freshness) run in the pre and full tiers.
+    Decision prose in the pinned amendment form plus a sanctioned stanza edit; validate_reversal_stanzas (stanza well-formedness),
+    the size amendment-delta signal (WARN only for a baseline entry) and index freshness run in the pre and full tiers,
+    and step 4 asserts the update line is present.
 - source: docs/decisions-index.json
   behavior: The regenerated index matches DECISIONS.md.
   verification_step: 5
@@ -681,7 +684,7 @@ context:
   ids in Decision 213), SPIRIT 126 (admin SQL and secret write: per-mutation human acceptance, Decision 213 cl.5), NOTE 118
   (stub actions are gate instrumentation until plan 3 part 1's contract), NOTE 154 (accepted deviation, recorded). Decisions
   triaged: 163 of 163. Roadmap items intersected: 7; CONFLICT: 0; RELATED: 7.
-- "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=PROCEED (round 3)"
+- "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=PROCEED (round 3; 2026-10-09 re-plan re-checked)"
 - >-
   Direction (Benjamin, thread "Writer direct-invoke IAM fix", 2026-10-08): A + D; after an independent review, a scoped
   login now, PlatformDev URL-only invoke now and the blob root fenced now. Governing Decision 213 and the admin-tier half
@@ -724,7 +727,7 @@ execution_steps:
   Write terraform/personal/ducklake_telemetry_writer.tf, then edit ducklake_lambdas.tf, oidc_ci_roles.tf and oidc.tf. Write
   the handler, __init__.py and manifest; edit the data-pipeline manifest, build_lambda.py, the ducklake_artifacts.py docstring,
   the action description and the build-path tests; edit validate_invoke_implies_resolve.py, the two contracts and the
-  registry shards.
+  registry shards; append the Decision 213 update line, re-arm its stanza condition and regenerate the decisions index.
 - Execute Verification Plan steps 1-5. Loop until they pass, never weakening an assertion. On an unrecoverable failure stop and RCA (Decision 55).
 - >-
   Closure evidence (implement skill Commit Flows): step 5's completed full tier; push, PR, CI green, and the speculative-plan
