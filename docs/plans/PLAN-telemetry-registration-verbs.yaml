@@ -114,7 +114,12 @@ scope:
     key. (2)
     register_tenant {} -> {ok, tenant_id, created}; principal_kind/principal_ref/tenant_id keys are 400 (self only, no
     confirm token, Fable Q13). (3) register_project {project_ref, name?, remote?} -> {ok, project_id, created, purpose,
-    registration}; the tenant must already be registered, else 403 tenant_unresolved {remedy: register_tenant}. (4)
+    registration}; the tenant must already be registered, else 403 tenant_unresolved {remedy: register_tenant}. Every
+    string a verb accepts (project_ref, name, remote, component) must be a str with no U+0000 and no lone surrogate, else
+    400 bad_request naming the field, never the value: on a Postgres catalog a NUL in a value DuckLake renders into its
+    file-pruning SQL (the lookup and MERGE key filters) raises an unmapped ParserException that echoes the value and
+    pages as a Lambda Error (reproduced by the append-part thread on duckdb 1.5.4 with a Postgres 16 catalog; the local
+    file catalog does not show it). (4)
     telemetry_probe {} (gate instrumentation, out of contract scope like the writer's probes) -> {ok, meta_schema,
     data_path_is_smoke, connect_reused, catalog_login, catalog_backend, catalog_sessions, tables (present and
     partitioned_as_declared per PHYSICAL table, both halves of each SCD2 pair included, from the same read-only check
@@ -478,6 +483,7 @@ verification_plan:
     bin/venv-python -m pytest tests/lambdas/ducklake_telemetry_writer/test_telemetry_actions.py::test_register_tenant_refuses_principal_parameters
     tests/lambdas/ducklake_telemetry_writer/test_telemetry_actions.py::test_register_tenant_response_never_carries_the_principal
     tests/lambdas/ducklake_telemetry_writer/test_telemetry_actions.py::test_register_project_rejects_unknown_keys_but_accepts_component
+    tests/lambdas/ducklake_telemetry_writer/test_telemetry_actions.py::test_nul_or_lone_surrogate_in_any_string_is_400_without_the_value
     tests/lambdas/ducklake_telemetry_writer/test_telemetry_actions.py::test_register_project_requires_a_registered_tenant
     tests/lambdas/ducklake_telemetry_writer/test_telemetry_actions.py::test_telemetry_probe_reports_binding_reuse_backend_and_counters
     tests/lambdas/ducklake_telemetry_writer/test_telemetry_actions.py::test_catalog_backend_is_classified_without_echoing_the_host
@@ -716,6 +722,11 @@ test_obligations:
   verification_step: 5
   test_selector: tests/lambdas/ducklake_telemetry_writer/test_telemetry_actions.py::test_register_tenant_refuses_principal_parameters
   red_green_expectation: red before (module absent), green after
+- source: src/lambdas/ducklake_telemetry_writer/telemetry_actions.py
+  behavior: A NUL or lone surrogate in any accepted string is a 400 naming the field, before any catalog read.
+  verification_step: 5
+  test_selector: tests/lambdas/ducklake_telemetry_writer/test_telemetry_actions.py::test_nul_or_lone_surrogate_in_any_string_is_400_without_the_value
+  red_green_expectation: red before (module absent), green after
 - source: src/lambdas/ducklake_telemetry_writer/handler.py
   behavior: Registration errors map to their statuses and metrics go to the telemetry namespace.
   verification_step: 5
@@ -813,7 +824,7 @@ context:
   T2.36:c2 CONFLICT resolved by Decision 213 (PLAN-url-only-invoke-guard, #1430); SPIRIT 143 resolved (S3 is IAM-scoped
   to the smoke prefixes and the catalog login is scoped to the smoke schema, Decision 213). RELATED 82, 97, 96, 191, 197,
   209, 144, 118, 128, 181, 48. Decisions triaged: 163 of 163. Roadmap items intersected: 5; CONFLICT: 1; RELATED: 4.'
-- 'gates: decision-scout=FLAGS_FOUND (3 flags, resolved); plan-critique=PROCEED after 4 round(s); round 4 autonomous (r1-r3 REVISE, all fixed; r4 notes J1-J4 folded in); also cites
+- 'gates: decision-scout=FLAGS_FOUND (3 flags, resolved); plan-critique=PROCEED after 4 round(s); round 4 autonomous (r1-r3 REVISE, all fixed; r4 notes J1-J4 folded in; 2026-10-09 amendment: the NUL/lone-surrogate 400 guard, one critique round); also cites
   204 (live partition re-lays are admin-only, so provision ALTERs only on create) and 212 (CallerPrincipal is the port, no
   cross-port coupling). Out-of-scope critique finding filed as rec-4211 (account id in public Actions logs).'
 - 'Direction: Benjamin "write the plan" (cmsg_012XgaFy8VaDQbxP5D8nC958K9mX5fF3q1N3ruTT1UwZWu) after the split, the A + D
