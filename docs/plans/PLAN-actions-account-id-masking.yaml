@@ -6,8 +6,8 @@ slug: actions-account-id-masking
 intent: >-
   Close rec-4211. This repository is public, so its GitHub Actions job logs are public. Every AWS sign-in step builds its role
   ARN from the AWS_ACCOUNT_ID configuration variable, which GitHub does not mask, so the account ID prints in clear text in
-  every AWS job's log; the sign-in action then logs the assumed role's unique ID, whose 8 characters after AROA encode the
-  same account ID. Reading the account ID from an Actions secret, and referencing a second secret holding that 8-character
+  every AWS job's log; the sign-in action then logs the assumed role's unique ID, whose 8 characters after AROA carry 39
+  of the account ID's 40 bits (the 9th mixes the last bit with role-specific bits). Reading the account ID from an Actions secret, and referencing a second secret holding that 8-character
   account part, in every job that signs in to AWS makes the runner mask both everywhere in that job's log. A fast-tier
   guard keeps every future AWS sign-in job on that pattern.
 plan_type: IMPLEMENTATION
@@ -22,8 +22,10 @@ scope:
   purpose: &assume_purpose >-
     Each aws-actions/configure-aws-credentials step builds role-to-assume from secrets.AWS_ACCOUNT_ID instead of
     vars.AWS_ACCOUNT_ID (a same-line token swap) and gains a step-level env entry MASK_AWS_ROLE_ID_ACCOUNT_PART set from
-    secrets.AWS_ROLE_ID_ACCOUNT_PART. Nothing reads that entry; referencing the secret is what makes the runner mask it for
-    the whole job. Step names, ids, order and every other input are unchanged.
+    secrets.AWS_ROLE_ID_ACCOUNT_PART, placed between the step's uses: and with: keys so the step still ends on its last
+    with: input (tests/test_security_detector_liveness_workflow.py anchors a mutation on that text). Nothing reads that
+    entry; referencing the secret is what makes the runner mask it for the whole job. Step names, ids, order and every
+    other input are unchanged.
 - file: .github/workflows/ci-rca-inactivity-sweep.yml
   action: Modify
   purpose: *assume_purpose
@@ -86,8 +88,9 @@ scope:
   action: Create
   purpose: >-
     New registered check validate_actions_account_id_masking (filesystem-only, no network). Fails on: (R1) any
-    vars.AWS_ACCOUNT_ID text in any file of any extension under .github/workflows or .github/actions (a raw-text scan, at
-    least as strong as rec-4211's original grep -rq over the same two paths); (R2) any YAML string scalar under either tree that
+    match of the regular expression vars.AWS_ACCOUNT_ID (grep semantics: the dot matches any character) in any file of any
+    extension under .github/workflows or .github/actions, a raw-text scan at least as strong as rec-4211's original grep
+    -rq over the same two paths; (R2) any YAML string scalar under either tree that
     holds both arn:aws and a ${{ ... vars. ... }} expression; (R3) any workflow step using aws-actions/configure-aws-credentials
     whose with.role-to-assume does not reference secrets.AWS_ACCOUNT_ID, or that has no reference to
     secrets.AWS_ROLE_ID_ACCOUNT_PART in its step env, its job env, or the workflow's top-level env, where the top-level env
@@ -101,11 +104,15 @@ scope:
   action: Modify
   purpose: >-
     Entry for validate_actions_account_id_masking: pre=True, full_segment full_after_lint, pre_globs .github/workflows/**,
-    .github/actions/**, the module itself, scripts/checks/ci_guards/_workflow_shell_bodies.py, scripts/checks/_common.py
-    and scripts/checks/registry.py.
+    .github/actions/**, the module itself, scripts/checks/ci_guards/_workflow_shell_bodies.py, scripts/checks/_common.py,
+    scripts/checks/_marker_guard.py, scripts/decisions_md.py and scripts/checks/registry.py: the module's import closure
+    through _workflow_shell_bodies, matching the validate_oidc_failopen_guards Entry, so validate_pre_glob_closure passes.
 - file: config/ci_rca_taxonomy.yaml
   action: Modify
-  purpose: function_to_category row validate_actions_account_id_masking -> code_regression (a workflow edit reintroduced the leak).
+  purpose: >-
+    function_to_category row validate_actions_account_id_masking -> code_regression, chosen over the environment category
+    its two nearest siblings use: a failure means a committed workflow edit reintroduced the leak, never a runtime or
+    platform condition (the validate_branch_cleanup and dependabot guard precedent).
 - file: tests/checks/ci_guards/test_validate_actions_account_id_masking.py
   action: Create
   purpose: >-
@@ -113,7 +120,8 @@ scope:
     R1-R4 (including a .sh file under .github/actions for R1, and a workflow-level reference in a workflow with a job that
     does not sign in for R3), the multi-line folded role-to-assume shape ci.yml's terraform-validate uses, a vars-built ARN
     outside role-to-assume, a compliant workflow that passes, the examined count, and test_real_tree_is_compliant
-    (scan_repository on the real tree: zero violations, at least 31 assume-role steps), which becomes rec-4211's decidable
+    (scan_repository on the real tree: zero violations, and examined steps equal to an independent raw-text count of
+    uses: aws-actions/configure-aws-credentials lines under both trees, which is above zero), which becomes rec-4211's decidable
     acceptance node. test_real_tree_is_compliant is a module-level function, never a class method, so its junit node id
     equals the acceptance string exactly (the Decision 201 junit verdict route); other tests may sit in classes. Fixtures
     use short placeholder account values, never a 12-digit number (the never-commit pre-commit hook blocks one).
@@ -152,8 +160,8 @@ acceptance_criteria:
   .github/actions; neither Decision 166-pinned workflow grows.
 - >-
   validate_actions_account_id_masking is registered in the pre tier with a manifest Entry and a ci_rca_taxonomy row, calls
-  registry.examined(), passes on the real tree with at least 31 assume-role steps examined, and has a red unit case for
-  each of R1-R4.
+  registry.examined(), passes on the real tree with examined steps equal to the raw count of sign-in steps (31 today),
+  and has a red unit case for each of R1-R4.
 - >-
   Before the PR is pushed, rec-4211's acceptance is the decidable real-tree node
   tests/checks/ci_guards/test_validate_actions_account_id_masking.py::test_real_tree_is_compliant (a module-level test
@@ -179,15 +187,14 @@ verification_plan:
 - step: 2
   phase: pre-deploy
   action: >-
-    The guard passes on the real tree after the workflow edits and is not vacuous: it examined at least the 31 assume-role
-    steps that exist today.
-  command: >-
-    bin/venv-python -c "from scripts.checks.ci_guards.validate_actions_account_id_masking import scan_repository as s;
-    v, n = s(); print('violations', len(v), 'assume_steps', n); [print(x) for x in v]; assert not v and n >= 31"
-  expected: Exit 0, zero violations, at least 31 assume-role steps. Red before (the module is absent).
+    The guard passes on the real tree after the workflow edits and is not vacuous: the number of sign-in steps it examined
+    equals an independent raw-text count of uses: aws-actions/configure-aws-credentials lines (31 today), and that count is
+    above zero. No fixed floor, so a legitimate future removal of a sign-in step cannot red it.
+  command: &vp2_command "bin/venv-python -c \"import re, pathlib; from scripts.checks.ci_guards.validate_actions_account_id_masking import scan_repository as s; pat = re.compile(r'^\\\\s*(-\\\\s+)?uses:\\\\s*[\\\\x22\\\\x27]?aws-actions/configure-aws-credentials', re.M); k = sum(len(pat.findall(f.read_text(encoding='utf-8'))) for d in ('.github/workflows', '.github/actions') for f in pathlib.Path(d).rglob('*') if f.is_file() and f.suffix in ('.yml', '.yaml')); v, n = s(); print('violations', len(v), 'assume_steps', n, 'raw_count', k); [print(x) for x in v]; assert not v and n == k and k > 0\""
+  expected: Exit 0 with zero violations and examined equal to the raw count. Red before (the module is absent).
   fix_if: >-
-    A violation names a workflow, job and step: fix that step. Fewer than 31 steps examined means the scan misses a step
-    shape (a folded scalar, a quoted uses value); fix the scan, never the threshold.
+    A violation names a workflow, job and step: fix that step. Examined not equal to the raw count means the scan misses
+    or double-counts a step shape (a folded scalar, a quoted uses value); fix the scan.
   hermetic: true
   graduation: waive
   graduation_waiver_reason: >-
@@ -351,87 +358,87 @@ test_obligations:
     Every AWS sign-in step reads the account ID from the secret, its job references the role-ID-part secret, and no ARN is
     built from a configuration variable.
   verification_step: 2
-  command: &wf_command scan_repository
+  command: *vp2_command
   red_green_expectation: &wf_rg red before (module absent; variable-built ARNs present), green after
 - source: .github/workflows/ci-rca-inactivity-sweep.yml
   behavior: *wf_behavior
   verification_step: 2
-  command: *wf_command
+  command: *vp2_command
   red_green_expectation: *wf_rg
 - source: .github/workflows/ci-rca.yml
   behavior: *wf_behavior
   verification_step: 2
-  command: *wf_command
+  command: *vp2_command
   red_green_expectation: *wf_rg
 - source: .github/workflows/ci.yml
   behavior: *wf_behavior
   verification_step: 2
-  command: *wf_command
+  command: *vp2_command
   red_green_expectation: *wf_rg
 - source: .github/workflows/convergence-health.yml
   behavior: *wf_behavior
   verification_step: 2
-  command: *wf_command
+  command: *vp2_command
   red_green_expectation: *wf_rg
 - source: .github/workflows/cost-reconciliation.yml
   behavior: *wf_behavior
   verification_step: 2
-  command: *wf_command
+  command: *vp2_command
   red_green_expectation: *wf_rg
 - source: .github/workflows/dedup-probe.yml
   behavior: *wf_behavior
   verification_step: 2
-  command: *wf_command
+  command: *vp2_command
   red_green_expectation: *wf_rg
 - source: .github/workflows/deploy-ducklake-lambdas.yml
   behavior: *wf_behavior
   verification_step: 2
-  command: *wf_command
+  command: *vp2_command
   red_green_expectation: *wf_rg
 - source: .github/workflows/deploy-prod-lambdas.yml
   behavior: *wf_behavior
   verification_step: 2
-  command: *wf_command
+  command: *vp2_command
   red_green_expectation: *wf_rg
 - source: .github/workflows/main-canary.yml
   behavior: *wf_behavior
   verification_step: 2
-  command: *wf_command
+  command: *vp2_command
   red_green_expectation: *wf_rg
 - source: .github/workflows/rec-autoclose.yml
   behavior: *wf_behavior
   verification_step: 2
-  command: *wf_command
+  command: *vp2_command
   red_green_expectation: *wf_rg
 - source: .github/workflows/reconcile.yml
   behavior: *wf_behavior
   verification_step: 2
-  command: *wf_command
+  command: *vp2_command
   red_green_expectation: *wf_rg
 - source: .github/workflows/security-detector-liveness.yml
   behavior: *wf_behavior
   verification_step: 2
-  command: *wf_command
+  command: *vp2_command
   red_green_expectation: *wf_rg
 - source: .github/workflows/terraform-apply-sandbox.yml
   behavior: *wf_behavior
   verification_step: 2
-  command: *wf_command
+  command: *vp2_command
   red_green_expectation: *wf_rg
 - source: .github/workflows/terraform-drift.yml
   behavior: *wf_behavior
   verification_step: 2
-  command: *wf_command
+  command: *vp2_command
   red_green_expectation: *wf_rg
 - source: .github/workflows/terraform-provider-mirror-seed.yml
   behavior: *wf_behavior
   verification_step: 2
-  command: *wf_command
+  command: *vp2_command
   red_green_expectation: *wf_rg
 - source: .github/workflows/tf-gated-apply-prototype.yml
   behavior: *wf_behavior
   verification_step: 2
-  command: *wf_command
+  command: *vp2_command
   red_green_expectation: *wf_rg
 constraints:
 - >-
@@ -470,15 +477,17 @@ context:
   placement only where every job signs in: now rule R3). SPIRIT NOTE 205 (recorded in constraints). RELATED 158/183, 92/94,
   172, 154, 195, 162, 111, 176/189, 125/126, 128. Decisions triaged: 167 of 167. Roadmap items intersected: 7; CONFLICT:
   0; RELATED: 7.
-- "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=PENDING (r1 REVISE: F1-F6 fixed, N1 declined)"
+- "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=PENDING (r1 REVISE: F1-F6 fixed, N1 declined; r2 REVISE: F1-F3 and N1-N5 fixed)"
 - >-
   Evidence, 2026-10-09: CI run 37981329942, job terraform-validate (PR #1433) prints role-to-assume with the account ID in its
   configure-aws-credentials header. Its "Authenticated as assumedRoleId AROA..." line also encodes it: the 8 characters
-  after AROA base32-decode to the account ID and are shared by every role in the account (checked against two roles).
+  after AROA carry 39 of the account ID's 40 bits in base32 (the 9th character mixes the last bit with role-specific
+  bits), are fixed by the account ID alone, and are shared by every role in the account (checked against two roles).
+  Masking those 8 leaves at most the last bit visible, so the ID cannot be recovered.
 - >-
   Runner masking: a secret referenced in a job is masked in every step header and every output line of that job from job
   start, by exact value; the same log shows checkout's token input as ***. Step summaries are masked the same way
-  (inferred, not verified here). materialise_tfvars.sh already emits ::add-mask:: for account_id, but only after the
+  (inferred, not verified; a recorded residual that no VP step checks). materialise_tfvars.sh already emits ::add-mask:: for account_id, but only after the
   sign-in header has printed.
 - >-
   Existing public logs keep both copies until GitHub's log retention removes them (at most 90 days on a public repository).
@@ -498,7 +507,8 @@ pre_implementation_checklist:
 execution_steps:
 - >-
   Write the guard tests first, including test_real_tree_is_compliant as a module-level function (runs scan_repository on
-  the real tree and asserts zero violations and at least 31 assume-role steps), and run VP step 1 to see them red.
+  the real tree and asserts zero violations, and examined steps equal to the independent raw-text count of uses:
+  aws-actions/configure-aws-credentials lines, which is above zero), and run VP step 1 to see them red.
 - >-
   Write scripts/checks/ci_guards/validate_actions_account_id_masking.py, its manifest Entry, its taxonomy row and the step-1
   registry shard; run VP step 2 to see 31 violations on the unedited workflows.
@@ -506,7 +516,7 @@ execution_steps:
   Swap vars.AWS_ACCOUNT_ID for secrets.AWS_ACCOUNT_ID in the role-to-assume value of the 31 configure-aws-credentials steps
   in the 17 workflows, on the same line (including ci.yml's folded event-conditional form). In the 15 workflows other than
   terraform-apply-sandbox.yml and reconcile.yml, give each of those steps env MASK_AWS_ROLE_ID_ACCOUNT_PART:
-  secrets.AWS_ROLE_ID_ACCOUNT_PART. In those two, add that entry and AWS_DEFAULT_REGION: eu-west-2 to the top-level env
+  secrets.AWS_ROLE_ID_ACCOUNT_PART, inserted between the step's uses: and with: keys. In those two, add that entry and AWS_DEFAULT_REGION: eu-west-2 to the top-level env
   block, delete the job-level AWS_DEFAULT_REGION entries and any job env block left empty, and confirm with VP step 3
   that neither file grew. reconcile.yml's file-reconcile-starved-rec job gains AWS_DEFAULT_REGION from the hoist; that is
   harmless, since its sign-in step already sets aws-region eu-west-2 and exports the same value.
@@ -525,7 +535,9 @@ execution_steps:
   through the code-review skill with its findings dispositioned; the readiness check, then implementation_declared true;
   rebase on origin/main; VP step 4's full tier on the committed clean tree, a completed exit 0 (a timeout is blocked: resume
   and rerun from the start); structured postflight evidence; push; PR with a Resolves: rec-4211 trailer in the squash body;
-  CI green on the PR head. Then run VP step 6 on that head. Squash-merge only with CI green and step 6 passing.
+  CI green on the PR head. Then run VP step 6 on that head. The PR touches terraform-*.yml and reconcile.yml, which
+  CODEOWNERS covers with require_code_owner_review, so the merge needs Benjamin's code-owner approval (or his admin
+  bypass): ask him once, with step 6's result. Squash-merge only with CI green, step 6 passing and that approval.
 - Run VP steps 7, 8 and 10 after the merge (step 8 within a day of it); run step 9 on the first terraform/personal PR after it.
 - 'Report: the jobs scanned, the workflows not run in the window, whether step 9 is still pending, and that the variable can now be deleted.'
 rollback: >-
