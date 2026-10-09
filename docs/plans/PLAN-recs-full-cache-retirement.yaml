@@ -1,0 +1,949 @@
+schema_version: 5
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "recs-full-cache-retirement"
+intent: >-
+  Retire the full local recommendations cache (rec-4232, Critical): the full ops_recommendations
+  pull now exceeds the Lambda 6 MB synchronous response cap, so every sync fails and preflight
+  silently degrades its CI-RCA hard block to an empty list. Completeness-critical reads move to
+  bounded, server-side named verbs that fail closed; the reader returns a typed 413 instead of an
+  opaque 502; every consumer of the cache is moved to a verb, made loud, or named as an owned
+  residual; and a new Decision replaces Decision 88 cl.1(ii) and Decision 103's cache clause so the
+  methodology stops promising agents a complete local copy of the warehouse.
+plan_type: IMPLEMENTATION
+verification_tier: V3
+plan_path: docs/plans/PLAN-recs-full-cache-retirement.yaml
+phase: >-
+  ad_hoc_rec (rec-4232, Critical; soft-warn category, no tier_item claimed, so the Tier Item
+  Freshness Gate is skipped). T2.19 c9, T1.5 c1 and T0.7c receive progress_notes only.
+scope:
+  # --- reader boundary -------------------------------------------------------------------------
+  - file: src/lambdas/ducklake_reader/handler.py
+    action: Modify
+    purpose: >-
+      Response-size guard on EVERY action (rec-4232): _handle builds the response dict, measures
+      len(json.dumps(response).encode("utf-8")) -- the whole Function-URL envelope, since the body
+      string is JSON-escaped again inside it -- and above MAX_RESPONSE_BYTES = 6_000_000 (headroom
+      under the runtime's 6,291,556-byte RequestEntityTooLarge cap) returns HTTP 413 with body
+      {ok: false, error_type: "response_too_large", action, bytes, cap, hint} where hint names
+      "a narrower named verb, or the claim-check export (rec-4237)". The 413 path is logged through
+      the existing single log_invocation line (status 413). No other dispatch change.
+  - file: src/common/ducklake_named_reads.py
+    action: Modify
+    purpose: >-
+      NAMED_READS_VERSION 3 -> 4. REMOVE rec_by_id (consolidated, owner direction 2026-10-09).
+      ADD four ops_recommendations verbs, all fixed SQL with string binds (Decision 84 I-3):
+      (1) recs_by_ids(ids) -- SELECT * WHERE list_contains(string_split(?, ','), id) ORDER BY id;
+      one id or a comma-joined list; replaces rec_by_id for every caller. (2) recs_for_files(files)
+      -- the INTERIM direct-hit relevance read: id, title, status, priority, effort, source, file,
+      tags, created_timestamp for status = 'open' AND file in the comma-joined list, ORDER BY id
+      (the graph-aware ranking that builds on it is rec-4235). (3) open_recs_tally() -- one row:
+      open_count, aging_count, non_automatable_count over status = 'open', with predicates that
+      mirror recs_cache._count_recommendations_reader's current derivation exactly (aging
+      threshold and non-automatable test read from that function at implement time, never
+      re-invented). (4) preflight_signal_rows() -- the bounded preflight read model: id, title,
+      status, source, priority, file, automatable, acceptance, context, context_v2_json,
+      created_timestamp, last_updated_timestamp WHERE source IN PREFLIGHT_SIGNAL_SOURCES OR
+      (status = 'open' AND lower(priority) = 'critical') ORDER BY id. PREFLIGHT_SIGNAL_SOURCES is a
+      module-level tuple (ci_rca, ci_rca_evidence_dispute, ci_rca_probe_health, tf_drift,
+      budget_bypass, budget_breach) rendered into the SQL at import-free call time -- the single
+      definition the preflight derivations' source literals are tested against. Measured live
+      2026-10-09 without acceptance: 333 rows, 973,246 JSON bytes. open_recs is RETAINED
+      unchanged (no preflight caller after this plan; its fate is rec-4235's call).
+  - file: src/common/ducklake_reader_client.py
+    action: Modify
+    purpose: >-
+      VERB_FIELDS: drop rec_by_id, add the four verbs (recs_by_ids -> ALL_TABLE_COLUMNS; the others
+      their declared projections); _NAMED_READS_VERSION_PIN 4. New ResponseTooLargeError(ReaderInvokeError)
+      raised by _invoke on HTTP 413 carrying bytes/cap from the typed body; 413 stays OUTSIDE
+      _READER_TRANSIENT_STATUS {502, 503, 504} so it is never retried (Decision 155 cl.2).
+      New DuckLakeReader.recs_by_ids(ids) -> (rows, missing): strips, de-duplicates, refuses more
+      than 50 ids (ValueError), joins with ',' and returns the requested ids that did not resolve.
+      This file also ships in the data-pipeline artifact (Decision 79 disposition: no deploy -- the
+      change is additive for its callers, ResponseTooLargeError subclasses ReaderInvokeError so
+      existing except clauses still catch it, and deploy-prod-lambdas.yml excludes src/common).
+  - file: docs/contracts/ducklake_reader.yaml
+    action: Modify
+    purpose: >-
+      Every verb's response_codes gain 413 "response_too_large"; typed_errors gain
+      response_too_large; the audit invariant claiming all reader errors are 500-coded is restated
+      to name the one 4xx (a size outcome, not client input). amendment_log entry: field_add,
+      semantic_break false.
+  - file: docs/contracts/read-engine.yaml
+    action: Modify
+    purpose: >-
+      Verb roster matches the v4 registry (validate_read_engine_verbs): rec_by_id removed;
+      recs_by_ids, recs_for_files, open_recs_tally, preflight_signal_rows added; the
+      fetch-before-update line names recs_by_ids. amendment_log entry if the contract carries one.
+  # --- preflight (completeness reads, fail closed) -----------------------------------------------
+  - file: scripts/preflight/recs_signals_source.py
+    action: Create
+    purpose: >-
+      fetch_recs_signal_inputs(reader=None, followon_ids=()) -> RecsSignalInputs: at most THREE
+      reader calls -- open_recs_tally, preflight_signal_rows, and recs_by_ids(followon_ids) only
+      when followon_ids is non-empty. Returns tally, signal_rows, followon_rows, status
+      ("ok" | "unavailable"), error, and a recs_read record {calls, bytes: {verb: response bytes}}.
+      ANY reader exception (ReaderInvokeError incl. ResponseTooLargeError, connection error,
+      URL-resolution RuntimeError) yields status "unavailable" with every row field None --
+      never an empty list (Decision 55). Lives in its own module so ci_rca_signals.py (497/500
+      SLOC) does not grow.
+  - file: scripts/session/preflight.py
+    action: Modify
+    purpose: >-
+      warm_sync no longer pulls ops_recommendations (scripts/sync/ops.py); the recs inputs come
+      from fetch_recs_signal_inputs, called once before Phase B. Phase-B derivations receive
+      signal_rows (or None) where they received recs_rows_cache. Report: recs_read_status is
+      "ok" | "reader_unreachable" (existing values); recs_read carries the calls/bytes record;
+      when unavailable every completeness list (ci_rca_unresolved_recs, dispute, undetermined,
+      followon_recs, open_critical_recs) is JSON null, never []; ci_rca_unresolved_total is the
+      full open/in_progress ci_rca count (the list stays capped at 5 for display). The stdout
+      summary prints UNAVAILABLE (not 0) for unavailable counts.
+  - file: scripts/preflight/recs_cache.py
+    action: Modify
+    purpose: >-
+      _count_recommendations_reader serves (open, aging, non_automatable) from the open_recs_tally
+      row (None -> "reader_unreachable"; its open_recs reader fallback is removed);
+      _derive_followon_recs intersects landed-plan ids with recs_by_ids rows (status open);
+      _derive_open_critical_recs reads signal_rows. Delete count_recommendations and
+      _derive_open_recs (no production caller, inventory row 39). None stays None.
+  - file: scripts/preflight/ci_rca_signals.py
+    action: Modify
+    purpose: >-
+      The five `return [] if cache_rows is None` sites (lines ~107, 140, 166, 194, 295 at
+      2026-10-09) return None; _fetch_ci_rca_recs also returns the uncapped total and each entry
+      carries `acceptance` (orient's Step 3 probe reads it from the report). Net SLOC must not
+      rise (497/500); if a crossing is unavoidable, decompose to a facade package per Decision 128
+      -- never a budget raise.
+  - file: scripts/preflight/alerts.py
+    action: Modify
+    purpose: >-
+      None-propagation for forward-fix, budget-bypass and budget-breach alerts (unavailable, never
+      a clean all-clear); the budget-breach fallback call to the UNREGISTERED verb
+      budget_breach_recent is deleted -- budget_breach rows arrive in signal_rows.
+  - file: scripts/preflight/ci_rca_gauges.py
+    action: Modify
+    purpose: >-
+      None-propagation for every gauge; --assert-dedup-clear reads signal_rows via
+      fetch_recs_signal_inputs instead of RECS_JSONL and exits 1 when unavailable (never a
+      vacuous 0 on a missing file). Net SLOC must not rise (478/500).
+  - file: scripts/preflight/context_docs.py
+    action: Modify
+    purpose: recommendations_count from open_recs_tally instead of len(named("open_recs")) (which ships every open rec's context to count it)
+  - file: scripts/preflight/_common.py
+    action: Modify
+    purpose: >-
+      delete RECOMMENDATIONS_FILE (its only reader, recs_cache.count_recommendations, is deleted);
+      scripts/session/preflight.py drops the re-export
+  - file: scripts/preflight/correlation.py
+    action: Modify
+    purpose: >-
+      docstring-only: surface_queue_relevance_triage's cache_rows are caller-supplied rows, not
+      "the warmed read-cache (logs/.recommendations-log.jsonl)" -- no logic change (the function
+      is T3.8's, re-exported and tested, and stays)
+  - file: scripts/ci_rca/probe_health.py
+    action: Modify
+    purpose: >-
+      --assert-clear reads signal_rows via fetch_recs_signal_inputs instead of RECS_JSONL; exits 1
+      when unavailable (a missing cache file read as [] was a vacuous pass that could auto-close
+      its rec). Help text no longer claims "no AWS credentials required".
+  # --- retirement of the cache producers ---------------------------------------------------------
+  - file: scripts/sync/ops.py
+    action: Modify
+    purpose: >-
+      ops_recommendations leaves _TABLE_TO_LOCAL (sync and warm_sync pull decisions, priority
+      queue and execution plans only); sync() deletes a pre-existing logs/.recommendations-log.jsonl
+      so no stale full-looking copy survives in a long-lived checkout; module docstring updated.
+      _coerce_ops_rec_row stays only if another importer still uses it (otherwise removed with its
+      tests).
+  - file: scripts/ops_data_portal.py
+    action: Modify
+    purpose: >-
+      Remove the two _refresh_cache_after_write("ops_recommendations", ...) calls (file_rec and
+      update_rec) and the now-unused RECS_JSONL import if nothing else needs it; the
+      fetch-before-update read uses recs_by_ids. Net SLOC falls (489).
+  - file: scripts/ops_portal/cache.py
+    action: Modify
+    purpose: owner-concern docstring no longer claims a RECS_JSONL cache is kept in sync (decisions and execution plans only)
+  - file: scripts/rec_trailer_acceptance.py
+    action: Modify
+    purpose: >-
+      census: one recs_by_ids call for all trailer ids instead of a per-id rec_by_id loop. close:
+      the sync() call and the RECS_JSONL read are replaced by one recs_by_ids call in the close job
+      (id-token; Decision 201 cl.4 keeps the evaluate job credential-free), so the
+      already-closed skip and the context_v2_json closure stamp see live rows; a reader failure
+      in close raises (loud), never proceeds on an empty map.
+  - file: scripts/cost_reconciliation.py
+    action: Modify
+    purpose: >-
+      find_open_cost_rec_for uses rec_episode.find_recs(SOURCE, status="open") (source-scoped,
+      raises on reader failure) then the [cost:KEY] title match; the live-mode sync() call is
+      removed. A missing cache no longer returns None and files a duplicate rec (next cron run
+      2026-11-04).
+  - file: scripts/ops_portal/ci_rca_runtime.py
+    action: Modify
+    purpose: >-
+      --back-validate's default rows come from the source-scoped current_state(row_filter
+      "source = 'ci_rca'") read already used at line ~72, not load_all_recommendations() over the
+      cache (which silently yielded an empty report).
+  # --- rec_by_id -> recs_by_ids call sites -------------------------------------------------------
+  - file: scripts/ops_portal/write_validators.py
+    action: Modify
+    purpose: dependency-reference existence check calls recs_by_ids (net SLOC <= 0)
+  - file: scripts/convergence_health/sensor_liveness.py
+    action: Modify
+    purpose: _fetch_rec_by_id calls recs_by_ids (net SLOC <= 0; file is 494/500)
+  - file: scripts/convergence_health/budget_ingest.py
+    action: Modify
+    purpose: resolved-candidate full-row fetch becomes ONE recs_by_ids call for the batch instead of a per-id loop (net SLOC <= 0)
+  - file: scripts/ci/reconcile_target.py
+    action: Modify
+    purpose: open-rec resolution calls recs_by_ids
+  - file: scripts/agent_sdk/mcp_server.py
+    action: Modify
+    purpose: >-
+      _CACHE_FIRST_NOTE no longer cites Decision 88 invariant (ii) or a local cache; it reads
+      "Read recommendations through these named verbs; there is no local recommendations cache
+      (Decision 215)." (Decision number as finally assigned.)
+  - file: scripts/checks/hygiene/validate_episode_lookup_projection.py
+    action: Modify
+    purpose: docstring examples name recs_by_ids instead of rec_by_id; no logic change
+  # --- registered checks (Decision 170: no silent vacuous pass) ------------------------------------
+  - file: scripts/checks/executor/validate_executor_boundary.py
+    action: Modify
+    purpose: >-
+      a missing recs cache file now declares registry.skipped() with a reason naming the
+      retirement Decision and rec-4236 (owner of the executor surface), instead of returning
+      silently
+  - file: scripts/checks/ops_governance/validate_recommendations_schema.py
+    action: Modify
+    purpose: skipped() reason names the retirement Decision and rec-4237 (claim-check export) as the owner of a future full-table schema scan
+  - file: config/agent/data_quality/decisions/ops_recommendations.yaml
+    action: Modify
+    purpose: dependency-reference rule text names recs_by_ids instead of rec_by_id
+  - file: config/agent/data_quality/source_registry.yaml
+    action: Modify
+    purpose: sensor_liveness signal_interpretation names recs_by_ids instead of rec_by_id
+  # --- agent instruction surfaces (Decision 103 relevance gates) -----------------------------------
+  - file: .claude/skills/planning/SKILL.md
+    action: Modify
+    purpose: >-
+      "Suggest Aligned Recommendations": find aligned open recs with the ducklake-reads MCP
+      recs_for_files tool over the plan's scope files and recs_by_title_prefix, marked INTERIM
+      (CD.10 agent tool surface; graph-aware ranking is rec-4235); state that `scripts.sync.ops
+      sync` no longer pulls ops_recommendations and no local recs cache exists. Relevance Gate:
+      the rec comes from recs_by_ids. Closure Obligation example: verify closure through the
+      recs_by_ids status, not a cache grep. Preflight Constraints: recs_read_status !=
+      "ok" or a null ci_rca_unresolved_recs is a HARD BLOCK at commitment unless the human
+      explicitly overrides (fail-closed, Decision 215). Satisfies rec-2639 and rec-2863's
+      acceptance literals. Byte budget: 1,286 bytes of headroom.
+  - file: .claude/commands/plan.md
+    action: Modify
+    purpose: lines 39 and 48 read recs through recs_by_ids / recs_for_files instead of the cache file
+  - file: .claude/skills/implement/SKILL.md
+    action: Modify
+    purpose: relevance-check snippet fetches the rec with DuckLakeReader().recs_by_ids instead of reading the cache file; byte-neutral (28 bytes of headroom)
+  - file: .claude/skills/plan-critique/SKILL.md
+    action: Modify
+    purpose: Closure Obligation example verifies the rec's status through recs_by_ids instead of `--sync && grep` (94 bytes of headroom)
+  - file: .claude/skills/orient/SKILL.md
+    action: Modify
+    purpose: >-
+      the "Rec acceptance string (Step 3 probe)" source row reads ci_rca_unresolved_recs[].acceptance
+      from the preflight report (orient's no-reader-call rule stands); a null ci_rca_unresolved_recs
+      renders as an UNAVAILABLE hard block. Byte-neutral (zero headroom) unless the Decision
+      authorises a marked raise.
+  - file: .claude/commands/orient.md
+    action: Modify
+    purpose: Step 3 side-effect guard reads the acceptance string from the preflight report entry instead of the cache file
+  - file: docs/contracts/recommendation-relevance.yaml
+    action: Modify
+    purpose: >-
+      planning_gate_protocol reads the rec through one recs_by_ids call (the "Never call
+      _make_reader() inside this gate (Decision 88: use read-cache only)" sentence is replaced by
+      the Decision 215 rule); amendment_log entry if the contract carries one.
+  # --- governance --------------------------------------------------------------------------------
+  - file: docs/DECISIONS.md
+    action: Modify
+    purpose: >-
+      New numbered Decision (next free number at implement time, 215 at planning time) with
+      amends [88, 103] -- content pinned in execution_steps -- plus dated amendment_forms
+      annotations on Decision 88 cl.1(ii) and Decision 103's cache clause; never an in-place edit
+      of either line (Decision 177).
+  - file: AGENTS.md
+    action: Modify
+    purpose: >-
+      Warehouse-as-source-of-truth and portal paragraphs: recs have no local read cache (read via
+      the ducklake-reads named verbs); the read-cache sentence covers decisions only; no
+      `sync.ops pull` spelling remains. BYTE-NEUTRAL OR NET-NEGATIVE (S1 has zero headroom).
+  - file: docs/PROJECT_CONTEXT.md
+    action: Modify
+    purpose: Source-of-truth / Portal-discipline lines stop describing a recs read cache (31 bytes of headroom)
+  - file: docs/ROADMAP-PLATFORM.yaml
+    action: Modify
+    purpose: >-
+      progress_notes only: T2.19 c9 (its subject, the recs cache pull, is removed by the new
+      Decision; the loud-fail property is carried by the typed 413 and fail-closed preflight);
+      T1.5 (c1's "synced hermetic cache, mirroring the recs read path" model is re-grounded on
+      named verbs); T0.7c (minimum verb rec_by_id consolidated into recs_by_ids). No status flips.
+  - file: docs/contracts/log-storage.yaml
+    action: Modify
+    purpose: the line calling the recs cache git-tracked or a source of truth is corrected (it is retired)
+  - file: docs/contracts/exit-criteria-ledger.yaml
+    action: Modify
+    purpose: followon_recs readiness is computed from recs_by_ids rows, not the warm-sync pull
+  - file: docs/contracts/check-accounting.yaml
+    action: Modify
+    purpose: the rec-3681 CI-vacuity residual for validate_recommendations_schema is restated against the retirement (owner rec-4237)
+  - file: config/prose_budgets.yaml
+    action: Modify
+    purpose: >-
+      ONLY if a prose surface above cannot be held byte-neutral: a bounded raise carrying
+      `# raise-approved: dec-215 <reason>` (Decision 165), authorised by the new Decision's text.
+      Untouched otherwise.
+  # --- tests -------------------------------------------------------------------------------------
+  - file: tests/test_ducklake_reader_response_cap.py
+    action: Create
+    purpose: >-
+      rec-4232's acceptance node, class TestReadOpsCurrentResponseCap: an oversized read_ops_current
+      response returns 413 with error_type response_too_large, bytes and cap; an in-cap response
+      returns 200 unchanged; the guard measures the full envelope (a body just under the cap whose
+      escaped envelope exceeds it is refused)
+  - file: tests/common/ducklake_reader_client/test_response_too_large.py
+    action: Create
+    purpose: class TestResponseTooLargeNotRetried -- 413 raises ResponseTooLargeError after exactly one POST; recs_by_ids normalises, caps at 50 and reports missing ids
+  - file: tests/test_ducklake_named_reads.py
+    action: Modify
+    purpose: version 4; class TestRecsReadVerbsV4 -- rec_by_id absent, four new verbs registered with their params, PREFLIGHT_SIGNAL_SOURCES rendered into preflight_signal_rows
+  - file: tests/common/ducklake_reader_client/test_verb_fields_parity.py
+    action: Modify
+    purpose: new verbs' SQL executed in DuckDB yields the declared projections; recs_by_ids single and multi id; open_recs_tally equals the Python derivation on the same fixture rows
+  - file: tests/common/ducklake_reader_client/test_describe.py
+    action: Modify
+    purpose: re-point rec_by_id fixtures to recs_by_ids
+  - file: tests/common/ducklake_reader_client/test_ducklake_reader.py
+    action: Modify
+    purpose: re-point rec_by_id fixtures to recs_by_ids
+  - file: tests/common/ducklake_reader_client/test_reader_rows_helper.py
+    action: Modify
+    purpose: re-point rec_by_id fixtures to recs_by_ids
+  - file: tests/common/test_ducklake_reads.py
+    action: Modify
+    purpose: re-point rec_by_id fixtures to recs_by_ids
+  - file: tests/test_ducklake_reader_handler.py
+    action: Modify
+    purpose: re-point named_read rec_by_id fixtures to recs_by_ids
+  - file: tests/checks/contracts/test_validate_read_engine_verbs.py
+    action: Modify
+    purpose: roster fixtures follow the v4 registry
+  - file: tests/session/preflight/test_recs_signals_source.py
+    action: Create
+    purpose: class TestFailClosed -- reader failure, 413 and URL-resolution failure each yield status unavailable with None rows; ok path makes at most three calls and records bytes per verb; no follow-on ids means two calls
+  - file: tests/session/preflight/test_ci_rca_signals.py
+    action: Modify
+    purpose: class TestUnavailableIsNotEmpty -- each of the five sites returns None for None input; total is uncapped; entries carry acceptance
+  - file: tests/session/preflight/test_recs_cache.py
+    action: Modify
+    purpose: tally from the open_recs_tally row; follow-on intersection from recs_by_ids rows; deleted helpers' tests removed
+  - file: tests/session/preflight/test_alerts.py
+    action: Modify
+    purpose: None propagation; no budget_breach_recent call
+  - file: tests/session/preflight/test_ci_rca_gauges.py
+    action: Modify
+    purpose: None propagation
+  - file: tests/session/preflight/test_context_docs.py
+    action: Modify
+    purpose: count from open_recs_tally
+  - file: tests/test_session_preflight_cache_serving.py
+    action: Modify
+    purpose: preflight serves recs signals from fetch_recs_signal_inputs, with null lists and UNAVAILABLE output when it is unavailable
+  - file: tests/test_session_preflight_decomposition.py
+    action: Modify
+    purpose: follow the warm_sync / recs_signals_source split
+  - file: tests/sync/ops/test_pull.py
+    action: Modify
+    purpose: class TestRecsCacheRetired -- sync and warm_sync never request ops_recommendations; sync deletes a stale recs cache file
+  - file: tests/test_ops_portal_incremental_cache.py
+    action: Modify
+    purpose: class TestRecsCacheNotWritten -- file_rec and update_rec never create or modify the recs cache file; decisions keep their incremental refresh
+  - file: tests/test_rec_trailer_acceptance.py
+    action: Modify
+    purpose: class TestRecsByIdsRead -- census makes one recs_by_ids call; close reads live rows via recs_by_ids, never the cache, and raises on reader failure
+  - file: tests/test_cost_reconciliation.py
+    action: Modify
+    purpose: class TestFindOpenCostRecViaReader -- source-scoped read finds the open [cost:KEY] rec; reader failure raises instead of filing a duplicate
+  - file: tests/test_ci_rca_back_validate.py
+    action: Modify
+    purpose: default rows come from the source-scoped read
+  - file: tests/test_ci_rca_probe_health.py
+    action: Modify
+    purpose: class TestAssertClearReaderBacked -- --assert-clear exits 1 when signal inputs are unavailable and never reads the cache file
+  - file: tests/test_ci_rca_gauges.py
+    action: Modify
+    purpose: --assert-dedup-clear exits 1 when signal inputs are unavailable
+  - file: tests/test_ops_data_portal_validators.py
+    action: Modify
+    purpose: re-point rec_by_id fakes to recs_by_ids
+  - file: tests/ops_data_portal/test_pipeline_reader.py
+    action: Modify
+    purpose: re-point rec_by_id fakes to recs_by_ids
+  - file: tests/ops_data_portal/test_update_rec_content_validation.py
+    action: Modify
+    purpose: re-point rec_by_id fakes to recs_by_ids
+  - file: tests/convergence_health/test_sensor_liveness.py
+    action: Modify
+    purpose: re-point rec_by_id fakes to recs_by_ids
+  - file: tests/convergence_health/budget_ingest/conftest.py
+    action: Modify
+    purpose: re-point rec_by_id fakes to recs_by_ids
+  - file: tests/convergence_health/budget_ingest/test_dedupe.py
+    action: Modify
+    purpose: batch recs_by_ids fetch
+  - file: tests/test_agent_sdk_mcp_server.py
+    action: Modify
+    purpose: tool description note cites the retirement Decision, not Decision 88 (ii); rec_by_id fixtures re-pointed
+  - file: tests/checks/hygiene/test_validate_episode_lookup_projection.py
+    action: Modify
+    purpose: re-point rec_by_id fixtures to recs_by_ids
+  - file: tests/test_backlog_health_escalate.py
+    action: Modify
+    purpose: re-point any rec_by_id fake to recs_by_ids (only if it fakes the verb)
+  - file: tests/checks/executor/test_validate_executor_boundary.py
+    action: Modify
+    purpose: missing cache file declares skipped() with the retirement reason
+  - file: tests/checks/ops_governance/test_validate_recommendations_schema.py
+    action: Modify
+    purpose: skip reason names the retirement Decision and rec-4237
+  - file: tests/test_reconcile_target.py
+    action: Modify
+    purpose: re-point rec_by_id fakes to recs_by_ids
+  - file: tests/session/preflight/test_correlation.py
+    action: Modify
+    purpose: only if a docstring-pinned assertion references the cache path; otherwise untouched
+bundled_recommendations: ["rec-4232", "rec-2863", "rec-2639"]
+followon_recs: ["rec-4235", "rec-4236", "rec-4237"]
+infrastructure_dependencies: []
+acceptance_criteria:
+  - >-
+    An unfiltered read of ops_recommendations through the deployed reader returns HTTP 413
+    response_too_large (bytes and cap in the body) within one attempt, never a 502 and never a
+    client retry.
+  - >-
+    Session preflight on the deployed reader reports recs_read_status ok, makes at most three
+    ops_recommendations reader calls (recs_read.calls), serves open counts from open_recs_tally
+    (equal to count_by_status's open count, allowing a concurrent write), and the
+    preflight_signal_rows response stays under 1,500,000 bytes.
+  - >-
+    With the reader unreachable, preflight reports recs_read_status reader_unreachable and JSON
+    null (never []) for ci_rca_unresolved_recs and every other completeness list, and the planning
+    skill treats that as a hard block at commitment unless the human overrides.
+  - >-
+    No full-table ops_recommendations pull remains: sync and warm_sync skip the table, file_rec and
+    update_rec never write logs/.recommendations-log.jsonl, sync deletes a stale copy, and the
+    trailer closure, cost reconciliation, back-validate, assert-clear probes and relevance gates
+    read named verbs (or fail loudly) instead of the file.
+  - >-
+    rec_by_id no longer exists in the registry, the client, the MCP tool list or any application
+    call site; recs_by_ids serves one id or up to 50 and reports missing ids.
+  - >-
+    The new numbered Decision is merged with amends [88, 103], a Decision 181 coverage line naming
+    rec-4235 / rec-4236 / rec-4237 as residual owners, reversal conditions, and dated annotations
+    on Decisions 88 and 103.
+  - rec-4232, rec-2863 and rec-2639 close on merge through their acceptance commands.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: prove the handler refuses an oversized response with a typed 413 (rec-4232's own acceptance node)
+    command: bin/venv-python -m pytest "tests/test_ducklake_reader_response_cap.py::TestReadOpsCurrentResponseCap" -q
+    expected: all tests in the class pass
+    fix_if: the guard measures the body instead of the whole envelope, or an in-cap response changes shape
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: reader-response-cap-typed-413
+    expected_literals: ["passed"]
+  - step: 2
+    phase: pre-deploy
+    action: prove the client maps 413 to ResponseTooLargeError without retrying, and recs_by_ids normalises, caps and reports missing ids
+    command: bin/venv-python -m pytest "tests/common/ducklake_reader_client/test_response_too_large.py::TestResponseTooLargeNotRetried" -q
+    expected: all tests in the class pass; exactly one POST per oversized call
+    fix_if: 413 lands in _READER_TRANSIENT_STATUS or the error is a bare ReaderInvokeError
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: reader-client-413-not-retried
+    expected_literals: ["passed"]
+  - step: 3
+    phase: pre-deploy
+    action: prove the v4 registry (rec_by_id gone, four verbs present, signal sources rendered)
+    command: bin/venv-python -m pytest "tests/test_ducklake_named_reads.py::TestRecsReadVerbsV4" -q
+    expected: all tests in the class pass
+    fix_if: a verb's params or SQL drift from the scope purpose, or rec_by_id is still registered
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: named-reads-v4-recs-verbs
+    expected_literals: ["passed"]
+  - step: 4
+    phase: pre-deploy
+    action: execute every new verb's SQL in DuckDB against fixture rows (projection parity; tally equals the Python derivation)
+    command: bin/venv-python -m pytest tests/common/ducklake_reader_client/test_verb_fields_parity.py -q
+    expected: all parity tests pass, including open_recs_tally against the derivation and recs_by_ids for one and several ids
+    fix_if: a projection mismatch or a tally that diverges from _count_recommendations_reader's semantics
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      duckdb is a requirements-fast.txt heavy exclusion, so venv-less pr-validate cannot collect
+      this file; the full tier already runs it on every main push, so a graduated copy would only
+      duplicate that run.
+  - step: 5
+    phase: pre-deploy
+    action: prove preflight's recs inputs fail closed and stay within three calls
+    command: bin/venv-python -m pytest "tests/session/preflight/test_recs_signals_source.py::TestFailClosed" -q
+    expected: all tests in the class pass
+    fix_if: any failure path returns [] or a partial row set instead of None, or the ok path makes more than three calls
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: preflight-recs-inputs-fail-closed
+    expected_literals: ["passed"]
+  - step: 6
+    phase: pre-deploy
+    action: prove the five CI-RCA signal sites return None (not []) for unavailable input
+    command: bin/venv-python -m pytest "tests/session/preflight/test_ci_rca_signals.py::TestUnavailableIsNotEmpty" -q
+    expected: all tests in the class pass
+    fix_if: any site still returns [] for None input
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: ci-rca-signals-unavailable-not-empty
+    expected_literals: ["passed"]
+  - step: 7
+    phase: pre-deploy
+    action: prove the cache producers are retired (sync skips recs and deletes a stale copy; portal writes never touch the file)
+    command: bin/venv-python -m pytest "tests/sync/ops/test_pull.py::TestRecsCacheRetired" "tests/test_ops_portal_incremental_cache.py::TestRecsCacheNotWritten" -q
+    expected: all tests in both classes pass
+    fix_if: ops_recommendations is still pulled, or a portal write creates the recs cache file
+    hermetic: true
+    graduation: not-applicable
+  - step: 8
+    phase: pre-deploy
+    action: prove trailer closure, cost reconciliation and the assert-clear probe read named verbs and fail loudly
+    command: bin/venv-python -m pytest "tests/test_rec_trailer_acceptance.py::TestRecsByIdsRead" "tests/test_cost_reconciliation.py::TestFindOpenCostRecViaReader" "tests/test_ci_rca_probe_health.py::TestAssertClearReaderBacked" -q
+    expected: all tests in the three classes pass
+    fix_if: any of them still opens logs/.recommendations-log.jsonl or proceeds on an empty map after a reader failure
+    hermetic: true
+    graduation: not-applicable
+  - step: 9
+    phase: pre-deploy
+    action: run every created or modified test file in scope (re-pointed rec_by_id fakes, preflight, checks, MCP note)
+    command: >-
+      bin/venv-python -m pytest tests/test_ducklake_reader_response_cap.py
+      tests/common/ducklake_reader_client tests/common/test_ducklake_reads.py
+      tests/test_ducklake_named_reads.py tests/test_ducklake_reader_handler.py
+      tests/checks/contracts/test_validate_read_engine_verbs.py tests/session/preflight
+      tests/test_session_preflight_cache_serving.py tests/test_session_preflight_decomposition.py
+      tests/sync/ops tests/test_ops_portal_incremental_cache.py tests/test_rec_trailer_acceptance.py
+      tests/test_cost_reconciliation.py tests/test_ci_rca_back_validate.py tests/test_ci_rca_probe_health.py
+      tests/test_ci_rca_gauges.py tests/test_ops_data_portal_validators.py tests/ops_data_portal
+      tests/convergence_health tests/test_agent_sdk_mcp_server.py tests/checks/hygiene/test_validate_episode_lookup_projection.py
+      tests/test_backlog_health_escalate.py tests/test_reconcile_target.py tests/checks/executor/test_validate_executor_boundary.py
+      tests/checks/ops_governance/test_validate_recommendations_schema.py -q
+    expected: exit 0; duckdb-dependent files run where duckdb is installed and are skipped (not failed) where it is not
+    fix_if: any failure -- fix the code or the re-pointed fake, never delete an assertion
+    hermetic: false
+    graduation: not-applicable
+  - step: 10
+    phase: pre-deploy
+    action: stale-reference sweep for the retired verb and the retired cache on application paths and the migrated agent surfaces
+    command: >-
+      test "$(grep -rlE 'named\("rec_by_id"|verb="rec_by_id"|"rec_by_id":' scripts src | wc -l)" -eq 0 &&
+      test "$(grep -rl 'recommendations-log.jsonl' .claude/skills/planning/SKILL.md .claude/skills/implement/SKILL.md
+      .claude/skills/plan-critique/SKILL.md .claude/skills/orient/SKILL.md .claude/commands/plan.md .claude/commands/orient.md
+      docs/contracts/recommendation-relevance.yaml scripts/preflight scripts/session scripts/rec_trailer_acceptance.py
+      scripts/cost_reconciliation.py scripts/ci_rca/probe_health.py | wc -l)" -eq 0 &&
+      echo SWEEP_CLEAN
+    expected: prints the sweep marker; zero files match either pattern
+    fix_if: a remaining reference -- migrate it, or (only for a file outside this list) confirm rec-4236 owns it
+    hermetic: true
+    graduation: not-applicable
+    expected_literals: ["SWEEP_CLEAN"]
+  - step: 11
+    phase: pre-deploy
+    action: bundled-rec acceptance literals hold (rec-2639, rec-2863)
+    command: >-
+      ! grep -qE 'sync[_.]ops pull' .claude/skills/planning/SKILL.md AGENTS.md &&
+      grep -q 'scripts.sync.ops sync' .claude/skills/planning/SKILL.md &&
+      grep -q 'CD.10' .claude/skills/planning/SKILL.md && echo BUNDLED_ACCEPTANCE_OK
+    expected: prints the marker
+    fix_if: the planning skill lost the sync sentence or the CD.10 interim marker, or a pull spelling survives
+    hermetic: true
+    graduation: not-applicable
+    expected_literals: ["BUNDLED_ACCEPTANCE_OK"]
+  - step: 12
+    phase: pre-deploy
+    action: end-to-end fail-closed preflight against an unreachable reader (real preflight, forced URL)
+    command: |-
+      DUCKLAKE_READER_URL=https://127.0.0.1:9 bin/venv-python -m scripts.session.preflight >/dev/null 2>&1; bin/venv-python -c "
+      import json
+      d = json.load(open('logs/.preflight-report.json'))
+      assert d['recs_read_status'] != 'ok', d['recs_read_status']
+      assert d['ci_rca_unresolved_recs'] is None, d['ci_rca_unresolved_recs']
+      print('FAIL_CLOSED_OK', d['recs_read_status'])
+      "
+    expected: prints FAIL_CLOSED_OK with recs_read_status reader_unreachable
+    fix_if: the report shows [] (the false-zero) or ok
+    hermetic: false
+    graduation: not-applicable
+  - step: 13
+    phase: pre-deploy
+    action: fast-tier presubmit
+    command: bin/venv-python -m scripts.validate --pre
+    expected: exit 0 (SLOC, prose budgets, read-engine roster, plan documents, contract amendments all green)
+    fix_if: a budget or roster failure -- decompose or trim; never raise a budget without the Decision marker
+    hermetic: false
+    graduation: not-applicable
+  - step: 14
+    phase: post-deploy
+    action: the governed deploy shipped the v4 registry (describe lists the new verbs and not rec_by_id)
+    command: >-
+      bin/venv-python -c "from src.common.ducklake_reader_client import DuckLakeReader as R; v = R().describe();
+      assert {'recs_by_ids', 'recs_for_files', 'open_recs_tally', 'preflight_signal_rows'} <= set(v) and 'rec_by_id' not in v, sorted(v);
+      print('VERBS_OK', len(v))"
+    expected: prints VERBS_OK (deploy-ducklake-lambdas.yml ran on the merge push)
+    fix_if: the old registry is live -- confirm the governed workflow ran for the merge sha (Decision 126), never a local deploy
+    hermetic: false
+  - step: 15
+    phase: post-deploy
+    action: live typed 413 on the unfiltered recs read, one attempt
+    command: |-
+      bin/venv-python -c "
+      import time
+      from src.common.ducklake_reader_client import DuckLakeReader, ResponseTooLargeError
+      t = time.time()
+      try:
+          DuckLakeReader().current_state('ops_recommendations')
+      except ResponseTooLargeError as exc:
+          print('TYPED_413', exc.status, round(time.time() - t, 1))
+      else:
+          raise SystemExit('unfiltered recs read did not overflow the cap')
+      "
+    expected: prints TYPED_413 413 with an elapsed time of a single invocation (no retry backoff)
+    fix_if: a 502 or a retried call -- the handler guard or the client mapping did not deploy
+    hermetic: false
+  - step: 16
+    phase: post-deploy
+    action: live preflight serves recs signals from at most three bounded calls, with counts matching the warehouse
+    command: |-
+      bin/venv-python -m scripts.session.preflight >/dev/null 2>&1; bin/venv-python -c "
+      import json
+      from src.common.ducklake_reader_client import DuckLakeReader
+      d = json.load(open('logs/.preflight-report.json'))
+      assert d['recs_read_status'] == 'ok', d['recs_read_status']
+      assert isinstance(d['ci_rca_unresolved_recs'], list)
+      rr = d['recs_read']
+      assert rr['calls'] <= 3, rr
+      assert rr['bytes']['preflight_signal_rows'] < 1500000, rr
+      live = {r['status']: r['n'] for r in DuckLakeReader().named('count_by_status')}['open']
+      assert abs(d['open_recommendations'] - live) <= 2, (d['open_recommendations'], live)
+      print('PREFLIGHT_OK', rr)
+      "
+    expected: prints PREFLIGHT_OK with calls <= 3 and the signal-rows byte count
+    fix_if: unavailable on a healthy reader, more than three calls, or a count mismatch
+    hermetic: false
+  - step: 17
+    phase: post-deploy
+    action: bundled recs closed by the trailer-closure job (Closure Obligation), read through recs_by_ids
+    command: >-
+      bin/venv-python -c "from src.common.ducklake_reader_client import DuckLakeReader as R;
+      rows, missing = R().recs_by_ids(['rec-4232', 'rec-2863', 'rec-2639']);
+      st = {r['id']: r['status'] for r in rows}; assert not missing and set(st.values()) == {'closed'}, (st, missing);
+      print('CLOSED_OK', st)"
+    expected: prints CLOSED_OK with all three closed
+    fix_if: a rec left open -- act only on the trailer-closure job's own log per implement.md Step 7's post-merge closeout fallback
+    hermetic: false
+test_obligations:
+  - source: src/lambdas/ducklake_reader/handler.py
+    behavior: oversized responses become a typed 413, in-cap responses are unchanged
+    verification_step: 1
+    test_selector: tests/test_ducklake_reader_response_cap.py::TestReadOpsCurrentResponseCap
+    red_green_expectation: red before (class absent; no guard), green after
+  - source: src/common/ducklake_named_reads.py
+    behavior: v4 registry -- rec_by_id removed, four recs verbs with fixed SQL and declared params
+    verification_step: 3
+    test_selector: tests/test_ducklake_named_reads.py::TestRecsReadVerbsV4
+    red_green_expectation: red before (class absent), green after
+  - source: src/common/ducklake_reader_client.py
+    behavior: 413 maps to ResponseTooLargeError and is never retried; recs_by_ids normalises, caps and reports missing ids
+    verification_step: 2
+    test_selector: tests/common/ducklake_reader_client/test_response_too_large.py::TestResponseTooLargeNotRetried
+    red_green_expectation: red before (file absent), green after
+  - source: docs/contracts/ducklake_reader.yaml
+    behavior: contract documents the 413 response_too_large outcome
+    verification_step: 13
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: contract text and amendment_log only; the behaviour it documents is pinned by step 1's handler test and the contract-amendment check runs in --pre
+  - source: docs/contracts/read-engine.yaml
+    behavior: verb roster equals the v4 registry
+    verification_step: 9
+    test_selector: tests/checks/contracts/test_validate_read_engine_verbs.py
+    red_green_expectation: red before against the v4 registry (roster lists rec_by_id), green after the roster edit
+  - source: scripts/preflight/recs_signals_source.py
+    behavior: at most three calls; every failure path yields unavailable with None rows
+    verification_step: 5
+    test_selector: tests/session/preflight/test_recs_signals_source.py::TestFailClosed
+    red_green_expectation: red before (module absent), green after
+  - source: scripts/session/preflight.py
+    behavior: recs signals come from fetch_recs_signal_inputs; null lists and recs_read reporting when unavailable
+    verification_step: 9
+    test_selector: tests/test_session_preflight_cache_serving.py
+    red_green_expectation: red before (warm_sync still feeds recs rows), green after
+  - source: scripts/preflight/recs_cache.py
+    behavior: tally from open_recs_tally; follow-on intersection from recs_by_ids rows
+    verification_step: 9
+    test_selector: tests/session/preflight/test_recs_cache.py
+    red_green_expectation: red before (tally derived from full rows), green after
+  - source: scripts/preflight/ci_rca_signals.py
+    behavior: unavailable input returns None, never []; uncapped total; acceptance carried
+    verification_step: 6
+    test_selector: tests/session/preflight/test_ci_rca_signals.py::TestUnavailableIsNotEmpty
+    red_green_expectation: red before (returns []), green after
+  - source: scripts/preflight/alerts.py
+    behavior: alerts propagate None; no call to the unregistered budget_breach_recent verb
+    verification_step: 9
+    test_selector: tests/session/preflight/test_alerts.py
+    red_green_expectation: red before (fallback calls an unregistered verb), green after
+  - source: scripts/preflight/ci_rca_gauges.py
+    behavior: gauges propagate None; --assert-dedup-clear exits 1 when unavailable
+    verification_step: 9
+    test_selector: tests/test_ci_rca_gauges.py
+    red_green_expectation: red before (missing cache reads as a clear 0), green after
+  - source: scripts/preflight/context_docs.py
+    behavior: open count from open_recs_tally
+    verification_step: 9
+    test_selector: tests/session/preflight/test_context_docs.py
+    red_green_expectation: red before (counts open_recs rows), green after
+  - source: scripts/ci_rca/probe_health.py
+    behavior: --assert-clear is reader-backed and exits 1 when unavailable
+    verification_step: 8
+    test_selector: tests/test_ci_rca_probe_health.py::TestAssertClearReaderBacked
+    red_green_expectation: red before (reads the cache file), green after
+  - source: scripts/sync/ops.py
+    behavior: recs leave the full sync and warm_sync; a stale recs cache file is deleted
+    verification_step: 7
+    test_selector: tests/sync/ops/test_pull.py::TestRecsCacheRetired
+    red_green_expectation: red before (recs still in _TABLE_TO_LOCAL), green after
+  - source: scripts/ops_data_portal.py
+    behavior: file_rec and update_rec never write the recs cache; fetch-before-update uses recs_by_ids
+    verification_step: 7
+    test_selector: tests/test_ops_portal_incremental_cache.py::TestRecsCacheNotWritten
+    red_green_expectation: red before (incremental upsert writes the file), green after
+  - source: scripts/ops_portal/cache.py
+    behavior: docstring-only correction
+    verification_step: 9
+    test_selector: tests/test_ops_portal_incremental_cache.py
+    waiver_reason: docstring-only edit with no runtime behaviour; the decisions refresh it describes stays covered by the existing incremental-cache tests run in step 9
+  - source: scripts/rec_trailer_acceptance.py
+    behavior: census and close read live rows via recs_by_ids; close raises on reader failure
+    verification_step: 8
+    test_selector: tests/test_rec_trailer_acceptance.py::TestRecsByIdsRead
+    red_green_expectation: red before (per-id rec_by_id and a cache read), green after
+  - source: scripts/cost_reconciliation.py
+    behavior: open cost rec found via a source-scoped read; reader failure raises instead of duplicating
+    verification_step: 8
+    test_selector: tests/test_cost_reconciliation.py::TestFindOpenCostRecViaReader
+    red_green_expectation: red before (missing cache returns None), green after
+  - source: scripts/ops_portal/ci_rca_runtime.py
+    behavior: back-validate default rows from the source-scoped read
+    verification_step: 9
+    test_selector: tests/test_ci_rca_back_validate.py
+    red_green_expectation: red before (reads the cache via load_all_recommendations), green after
+  - source: scripts/ops_portal/write_validators.py
+    behavior: dependency existence check calls recs_by_ids
+    verification_step: 9
+    test_selector: tests/test_ops_data_portal_validators.py
+    red_green_expectation: red before against the v4 registry (rec_by_id unknown), green after
+  - source: scripts/convergence_health/sensor_liveness.py
+    behavior: rec fetch calls recs_by_ids
+    verification_step: 9
+    test_selector: tests/convergence_health/test_sensor_liveness.py
+    red_green_expectation: red before against re-pointed fakes (rec_by_id), green after
+  - source: scripts/convergence_health/budget_ingest.py
+    behavior: one batch recs_by_ids call for resolved candidates
+    verification_step: 9
+    test_selector: tests/convergence_health/budget_ingest/test_dedupe.py
+    red_green_expectation: red before (per-id loop), green after
+  - source: scripts/ci/reconcile_target.py
+    behavior: open-rec resolution calls recs_by_ids
+    verification_step: 9
+    test_selector: tests/test_reconcile_target.py
+    red_green_expectation: red before against re-pointed fakes (rec_by_id), green after
+  - source: scripts/preflight/_common.py
+    behavior: RECOMMENDATIONS_FILE removed from the preflight surface
+    verification_step: 9
+    test_selector: tests/test_session_preflight_decomposition.py
+    red_green_expectation: red before (the facade surface list still names RECOMMENDATIONS_FILE), green after
+  - source: scripts/preflight/correlation.py
+    behavior: docstring-only correction
+    verification_step: 9
+    test_selector: tests/session/preflight/test_correlation.py
+    waiver_reason: docstring-only edit with no runtime behaviour; the function's existing tests run unchanged in step 9
+  - source: scripts/agent_sdk/mcp_server.py
+    behavior: every projected tool carries the no-local-cache note citing the retirement Decision
+    verification_step: 9
+    test_selector: tests/test_agent_sdk_mcp_server.py
+    red_green_expectation: red before (note cites Decision 88 invariant (ii)), green after
+  - source: scripts/checks/hygiene/validate_episode_lookup_projection.py
+    behavior: docstring examples only
+    verification_step: 9
+    test_selector: tests/checks/hygiene/test_validate_episode_lookup_projection.py
+    waiver_reason: docstring-only edit; the check's logic iterates VERB_FIELDS and is exercised unchanged by its existing test file
+  - source: scripts/checks/executor/validate_executor_boundary.py
+    behavior: missing cache declares skipped() instead of a silent return
+    verification_step: 9
+    test_selector: tests/checks/executor/test_validate_executor_boundary.py
+    red_green_expectation: red before (no skipped() record), green after
+  - source: scripts/checks/ops_governance/validate_recommendations_schema.py
+    behavior: skip reason names the retirement Decision and rec-4237
+    verification_step: 9
+    test_selector: tests/checks/ops_governance/test_validate_recommendations_schema.py
+    red_green_expectation: red before (old reason), green after
+  - source: config/agent/data_quality/decisions/ops_recommendations.yaml
+    behavior: rule text names recs_by_ids
+    verification_step: 13
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: description text only; the dependency-reference rule's enforcement is the write validator covered by tests/test_ops_data_portal_validators.py in step 9
+  - source: config/agent/data_quality/source_registry.yaml
+    behavior: signal_interpretation text names recs_by_ids
+    verification_step: 13
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: description text only; the registry's canonical ids are unchanged and the source-registry guard still runs in --pre
+  - source: docs/contracts/recommendation-relevance.yaml
+    behavior: planning gate reads via recs_by_ids
+    verification_step: 13
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: agent-instruction text in a contract; step 10's sweep proves the cache reference is gone and the read path itself is tested via recs_by_ids in step 2
+  - source: docs/ROADMAP-PLATFORM.yaml
+    behavior: progress_notes only (T2.19, T1.5, T0.7c)
+    verification_step: 13
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: roadmap bookkeeping text with no status flip; validate_platform_roadmap in --pre is the schema guard
+  - source: docs/contracts/log-storage.yaml
+    behavior: corrected description of the recs cache
+    verification_step: 13
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: contract prose correction only; tests/contracts_enforcement/test_log_storage_examples_resolve.py still runs in the full tier
+  - source: docs/contracts/exit-criteria-ledger.yaml
+    behavior: followon readiness source restated
+    verification_step: 13
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: contract prose only; the readiness derivation itself is tested in tests/session/preflight/test_recs_cache.py (step 9)
+  - source: docs/contracts/check-accounting.yaml
+    behavior: CI-vacuity residual restated against the retirement
+    verification_step: 13
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: contract prose only; the skipped() declaration it describes is tested in step 9
+  - source: config/prose_budgets.yaml
+    behavior: conditional marked raise only if a surface cannot stay byte-neutral
+    verification_step: 13
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: budget registry data; validate_prose_budget_raises in --pre refuses any unmarked or unauthorised raise
+constraints:
+  - No full-table read of ops_recommendations on any application path; a missing signal is null/unavailable, never [] (Decision 55).
+  - Named verbs only, fixed SQL, string binds, no caller SQL (Decision 84 I-3); query_ops stays DQ-only.
+  - 413 is never retried; _READER_TRANSIENT_STATUS stays {502, 503, 504} (Decision 155 cl.2).
+  - Reader code ships only through deploy-ducklake-lambdas.yml on the merge push (Decision 126); no local build_lambda --deploy.
+  - Decision 128 -- ci_rca_signals.py (497), sensor_liveness.py (494), ops_data_portal.py (489), ci_rca_gauges.py (478) and budget_ingest.py (465) are near 500 SLOC; edits there are net-zero or negative, otherwise decompose (never raise).
+  - Decision 127 prose budgets -- AGENTS.md/S1, orient SKILL.md (zero headroom), implement SKILL.md (28 bytes), plan-critique SKILL.md (94) and PROJECT_CONTEXT.md (31) stay within budget; any unavoidable raise carries a dec-215 marker the new Decision authorises.
+  - Decision 167 -- the new Decision carries a yaml envelope with significance and stays at or under 6,144 bytes; amendments to 88 and 103 are dated annotations, never in-place edits (Decision 177).
+  - Decision 201 cl.4 -- trailer reads stay in the census and close jobs; the evaluate job stays credential-free.
+  - No rescue agents or workaround loops (Decision 55).
+context:
+  - "Evidence: rec-4232 (Critical); live 2026-10-09 measurements and the 65-consumer inventory are in this plan's commit body."
+  - "Decision-scout: FLAGS_FOUND. CITE 84, 55, 72, 79, 126, 201, 128, 127, 167, 181, 177. CONTRADICT 88 [WARN], 103 [WARN], 155 [NOTE]. SPIRIT 170 [WARN]. RELATED 81, 91, 140, 143, 213, 214, 212, 184, 100, 61, 65, 150, 134, 66."
+  - "Decisions triaged: 167 of 167"
+  - "Roadmap items intersected: 13; CONFLICT: 2; RELATED: 10"
+  - "Flag dispositions: 88/103 -> new Decision amends both; 155 -> fail-closed (no tolerance clause) + 413 not retried; 170 -> every cache reader settled here or owned by rec-4236/rec-4237; roadmap CONFLICT T2.19 c9 + T1.5 c1 -> progress_notes."
+  - "gates: decision-scout=FLAGS_FOUND (dispositioned at Step 6b); plan-critique=PENDING"
+  - "fork: split the retirement across plans | chosen: unblock + retire here; graph-aware related-recs verb (rec-4235), residual consumers (rec-4236), claim-check export (rec-4237) follow | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: scope + followon_recs"
+  - "fork: preflight posture when a completeness signal is unavailable | chosen: fail closed (hard block at commitment unless the human overrides) | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: new Decision + planning SKILL.md"
+  - "fork: preflight transport | chosen: open_recs_tally counts + bounded preflight_signal_rows + recs_by_ids (<= 3 calls) | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: ducklake_named_reads.py + new Decision"
+  - "fork: record form for the Decision 88 (ii) change | chosen: new numbered Decision amending 88 and 103 | class: asked | precedent: Decision 214 | precedent_kind: decision | reversible: yes | persisted: docs/DECISIONS.md"
+  - "fork: rec_by_id vs a batch verb | chosen: one recs_by_ids replacing rec_by_id (owner direction) | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: ducklake_named_reads.py"
+  - "fork: where the graph-aware related-recs verb lands | chosen: its own plan next (rec-4235); this plan ships only direct-hit recs_for_files | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: followon_recs"
+  - "Related recs filed with this plan, not follow-on halves: rec-4238 (tag vocabulary), rec-4239 (backlog growth)."
+  - "Retained on purpose: the open_recs verb (no preflight caller after this plan; its retirement or limit exposure is rec-4235's call); the executor cache readers (frozen, Decision 67; rec-4236)."
+  - "Gotcha: the reader's 6,291,556-byte cap applies to the whole Function-URL envelope, so measure json.dumps(response) -- the body is escaped again inside it."
+  - "Gotcha: recs_by_ids and recs_for_files bind ONE string param (NamedRead params are all required strings); clients join lists with ','."
+  - "Gotcha: rec-4232's acceptance is the step 1 node; trailer closure runs it offline, so the test must stay network-free."
+  - "Gotcha: the data-pipeline artifact bundles ducklake_reader_client.py -- keep the change additive (Decision 79 no-deploy disposition)."
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - only the plan-cited decision sections (84 I-3/I-4, 88 cl.1, 103, 155 cl.2-3, 167, 177, 181, 201 cl.4, 214 as format precedent)
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+  - Next free Decision number confirmed (215 at planning time)
+execution_steps:
+  - >-
+    Reader: implement the handler response-size guard and tests/test_ducklake_reader_response_cap.py
+    (step 1). Client: ResponseTooLargeError, recs_by_ids(), VERB_FIELDS and pin 4 (step 2).
+  - >-
+    Registry: NAMED_READS v4 per the scope purpose -- remove rec_by_id, add recs_by_ids,
+    recs_for_files, open_recs_tally (predicates copied from _count_recommendations_reader) and
+    preflight_signal_rows (PREFLIGHT_SIGNAL_SOURCES constant); update the parity tests (steps 3-4),
+    ducklake_reader.yaml and read-engine.yaml.
+  - >-
+    Re-point every rec_by_id call site and test fake to recs_by_ids (write_validators,
+    sensor_liveness, budget_ingest as one batch call, reconcile_target, ops_data_portal,
+    rec_trailer_acceptance census, MCP server note, episode-lookup docstring, DQ/source-registry
+    text).
+  - >-
+    Preflight: create scripts/preflight/recs_signals_source.py; wire scripts/session/preflight.py to
+    it; recs_cache/ci_rca_signals/alerts/ci_rca_gauges/context_docs/probe_health per scope (None
+    never []; acceptance and uncapped total on ci_rca entries; recs_read report block; budget_breach
+    fallback removed). Keep near-cap files net-zero SLOC (steps 5, 6).
+  - >-
+    Retire the producers: sync/ops.py drops recs and deletes a stale file; ops_data_portal.py drops
+    the two recs cache refreshes; trailer close, cost reconciliation and back-validate read verbs;
+    the two registered checks declare skipped() (steps 7, 8).
+  - >-
+    Agent surfaces: planning SKILL.md, plan.md, implement SKILL.md, plan-critique SKILL.md, orient
+    SKILL.md and orient.md, recommendation-relevance.yaml -- read via recs_by_ids / recs_for_files /
+    the preflight report; planning SKILL.md keeps the `scripts.sync.ops sync` sentence and the CD.10
+    interim marker (step 11). Measure bytes before and after each prose surface.
+  - >-
+    Decision (DECISIONS.md, next free number): title along the lines of "The full local
+    recommendations cache is retired; completeness reads are bounded server-side verbs that fail
+    closed, relevance reads are search verbs (amends Decision 88 and Decision 103)". Envelope:
+    amends [88, 103], significance numbered_decision with the rejected-alternative clause
+    (contract note / amendment_forms cannot carry a replaced invariant across two entries;
+    Decision 214 precedent). Clauses: (1) no full-table ops_recommendations pull on any application
+    path, logs/.recommendations-log.jsonl is no longer produced and sync removes a stale copy;
+    (2) completeness reads are bounded named verbs complete by construction or disclosing
+    complete/total, a missing signal is null/unavailable, never [], and an unavailable CI-RCA
+    signal blocks plan commitment unless the human overrides; (3) relevance reads are lookup/search
+    verbs (interim recs_for_files; graph-aware ranking rec-4235); bulk export, if any, is a claim
+    check outside the response body (rec-4237); (4) replaces 88 cl.1(ii) for ops_recommendations --
+    preflight makes at most three bounded recs calls per session and reports per-call bytes and
+    call count (recs_read); (5) replaces 103's warmed-read-cache clause -- relevance gates read
+    named verbs, one call per batch; (6) the reader returns a typed 413 response_too_large, never
+    retried; (7) rec_by_id is consolidated into recs_by_ids. Coverage line (Decision 181): enforced
+    by steps 1-12; residuals rec-4235 (cache-reference CI ban, open_recs verb), rec-4236 (executor
+    and other residual readers), rec-4237 (export, schema scan). reversal-conditions block:
+    preflight_signal_rows response above 3,000,000 bytes (move the arithmetic server-side);
+    reader calls or egress per preflight materially above the pre-incident warm-sync baseline; a
+    streaming or claim-check transport makes a full pull cheap and safe; more than three
+    fail-closed planning blocks caused by reader outages in 30 days. If a prose budget raise is
+    unavoidable, this Decision names the surface and the bounded delta. Then add dated
+    annotations to Decision 88 cl.1(ii) and Decision 103 in amendment_forms grammar. At or under
+    6,144 bytes.
+  - >-
+    AGENTS.md (byte-neutral), PROJECT_CONTEXT.md, ROADMAP-PLATFORM.yaml progress_notes (T2.19 c9,
+    T1.5, T0.7c), log-storage.yaml, exit-criteria-ledger.yaml, check-accounting.yaml; prose_budgets.yaml
+    only if forced.
+  - Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)
+  - >-
+    Post-merge: the governed deploy runs on the merge push; run steps 14-17. If rec-2639 or rec-2863
+    stays open because its acceptance literal no longer fits, act only on the trailer-closure job's
+    log per implement.md Step 7.
+  - "Report: what was implemented, verification results, measured preflight calls and bytes"
+rollback: >-
+  Revert the merge commit; the governed deploy workflow re-ships the v3 registry and the
+  guard-free handler on the revert push. The retired cache needs no restore: it was a derivative
+  projection, and nothing writes upstream from it.
