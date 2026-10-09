@@ -116,7 +116,9 @@ scope:
     telemetry_probe accepts optional {project_ref, session_ref, session_started_at} (all three or none, else 400
     bad_request); when given it adds grain_counts: per table, rows and distinct (producer, event_id, parser_version) keys
     whose session_id is the derived session key, bounded to that session's calendar day (ADVICE Q19; no conflicted_keys:
-    rows > keys is the legal identical-duplicate race, Fable design 2.5). Nothing else changes.
+    rows > keys is the legal identical-duplicate race, Fable design 2.5), plus each table's live data-file count and bytes
+    from ducklake_list_files on the pinned catalog (a measurement for the ingestion-shape decision, never a check).
+    Nothing else changes.
 - file: src/lambdas/ducklake_telemetry_writer/manifest.yaml
   action: Modify
   purpose: >-
@@ -148,7 +150,9 @@ scope:
     -> 400 mixed_producer; an unregistered drill: ref -> 403 project_unregistered; an omission row (content_omitted_reason,
     no content) -> 200; a near-cap request of about 4.9 MiB (transcript rows under the threshold, within the row caps) ->
     200 with commit_ms printed (the payload-ceiling measurement the writer-boundary consult asks for); a body one byte
-    over 5 MiB -> 413 payload_too_large. One auto-registration vector appends to a fresh NON-reserved ref -> 200,
+    over 5 MiB -> 413 payload_too_large. Around the golden append it prints "append_files_per_commit=<n>" and
+    "append_commit_ms=<ms>" from the probe's file counts and the response (measurements for the ingestion-shape decision,
+    never asserted). One auto-registration vector appends to a fresh NON-reserved ref -> 200,
     created; it first asserts telemetry_probe reports data_path_is_smoke true and FAILS the gate otherwise, so 2c must
     replace it before the function binds production. Prints the markers TELEMETRY_APPEND_OK, TELEMETRY_RESEND_NOOP,
     TELEMETRY_GRAIN_CONFLICT_OK, TELEMETRY_REJECTS_OK, TELEMETRY_NEAR_CAP_OK and TELEMETRY_AUTOREGISTER_OK, a
@@ -267,9 +271,9 @@ infrastructure_dependencies:
   --lambda-telemetry smoke step) and PLAN-telemetry-registration-verbs (#1431). EMF metrics need no PutMetricData grant.
 - >-
   Ordering: this implementation merges only after (a) PLAN-telemetry-registration-verbs is implemented, deployed and its
-  live gate recorded the lock converging (TELEMETRY_PROJECT_CONVERGED); (b) the RDS catalog swap has landed and part 1's
-  gate re-ran on it (Benjamin's order 2026-10-08: part 1 on Neon, then the swap, then part 2), unless Benjamin says
-  otherwise; (c) Benjamin gives his explicit word for the deploy. If (a) shows divergent ids, Decision 200's
+  live gate recorded the lock converging (TELEMETRY_PROJECT_CONVERGED); (b) the RDS move is paused to tune Neon first
+  (Benjamin 2026-10-09), so part 2 is sized on Neon; if a catalog swap lands first, part 1's gate re-runs on the new
+  backend before this merges; (c) Benjamin gives his explicit word for the deploy. If (a) shows divergent ids, Decision 200's
   registration-not-idempotent reversal condition fires and this plan returns to /plan.
 - >-
   The merge redeploys the six DuckLake functions through deploy-ducklake-lambdas.yml (src/telemetry/** and
@@ -676,6 +680,7 @@ constraints:
 context:
 - "Decision-scout: FLAGS_FOUND (re-run on the pinned scope pending). First run: NOTE 210 cl.5 resolved by placing the 64 KiB 413 and the content_uri refusal in the plane-neutral grammar. CITE 199, 200, 207, 210, 81, 84, 88, 143, 184, 212, 79, 125, 126, 48, 101, 128. Decisions triaged: 163 of 163. Roadmap items intersected: 11; CONFLICT: 0; RELATED: 9. Report: /mnt/project-files/telemetry-slice2/scout-plan3-part2.md."
 - "gates: decision-scout=FLAGS_FOUND (NOTE 210 resolved); plan-critique=PENDING"
+- "fork: telemetry ingestion shape (per-request commit vs S3 landing zone plus a scheduled fold-in, rds-swap/fable-catalog-backend-review.md Q5) | chosen: PENDING operator answer; recommended per-request commit for part 2 (smoke only) with the decision owned by a rec before 2c | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: this line and the follow-on rec"
 - "Direction (Benjamin): 2026-10-06 split plan 3 (cmsg_012XgaFy8VaDQbxP5D8nC958CXzUU6aTS53ez9rnGk2YbC); 2026-10-08 'I accept, write the plan' (cmsg_012XgaFy8VaDQbxP5D8nC958Ea85cpGqcEneeWhkAdD4uc); order part 1 on Neon, then the RDS swap, then part 2 (part 1 thread). Evidence: /mnt/project-files/telemetry-slice2/ (BRIEF-plan3-part2-append.md, step6b-plan3-part2-presentation.md, fable-consult-plan3/ADVICE.md, fable-consult-plan3-part2/ADVICE.md, fable-consult-telemetry-writer-boundary/ADVICE.md)."
 - "fork: where the request grammar lives | chosen: plane-neutral src/telemetry/request.py; only Lambda capacity in the edge | class: asked | precedent: Fable consult part 2 Q1 and scout NOTE 210 cl.5, operator 2026-10-08 | precedent_kind: answered-fork | reversible: yes | persisted: request.py"
 - "fork: first-sight validation order | chosen: prepare before BEGIN with the known id or a sentinel, re-derive inside only when the id differs | class: asked | precedent: Fable consult part 2 Q2, operator 2026-10-08 | precedent_kind: answered-fork | reversible: yes | persisted: ducklake_telemetry_append.py"
@@ -693,7 +698,7 @@ pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
 - 'Only the plan-cited decision sections read: 199 (cl.1, cl.3, cl.5), 200, 207, 210 (cl.1, cl.3, cl.5), 81 (cl.3), 84 (I-2), 88 (cl.1), 143 (cl.3), 184 (cl.2), 212, 213, 79, 125, 126, 48, 101, 128'
-- PLAN-telemetry-registration-verbs is implemented and deployed and its live gate shows the lock converging; the RDS swap has landed unless Benjamin said otherwise
+- PLAN-telemetry-registration-verbs is implemented and deployed and its live gate shows the lock converging on the catalog backend in service
 - ci_rca_open re-checked; tests/telemetry/test_append.py SLOC measured (440 of 500 at planning)
 - All files in scope located and readable (part 1's and #1430's files exist on main)
 - Acceptance criteria understood and verifiable
@@ -713,7 +718,7 @@ execution_steps:
   rebase on origin/main, step 10 on the committed clean tree, postflight evidence, push, PR, CI green. Confirm the
   infrastructure_dependencies ordering holds, then ask Benjamin for the merge (it redeploys every DuckLake function); on
   his word, squash-merge. Then run steps 11-14 against the deploy run for the merge commit.
-- 'Report: what was implemented, verification results, near_cap_commit_ms for the payload-ceiling measurement.'
+- 'Report: what was implemented, verification results, near_cap_commit_ms, append_files_per_commit and append_commit_ms for the payload-ceiling and ingestion-shape measurements.'
 work_areas: []
 rollback: >-
   Revert the squash commit in a new PR; the governed channel redeploys the previous code. Rows land only in the
