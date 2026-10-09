@@ -28,8 +28,10 @@ scope:
       string is JSON-escaped again inside it -- and above MAX_RESPONSE_BYTES = 6_000_000 (headroom
       under the runtime's 6,291,556-byte RequestEntityTooLarge cap) returns HTTP 413 with body
       {ok: false, error_type: "response_too_large", action, bytes, cap, hint} where hint names
-      "a narrower named verb, or the claim-check export (rec-4237)". The 413 path is logged through
-      the existing single log_invocation line (status 413). No other dispatch change.
+      "a narrower named verb, or the claim-check export (rec-4237)". The measured envelope size is
+      passed to the existing single log_invocation line as response_bytes on EVERY invocation (200 and
+      413), so the byte-based reversal conditions are observable from CloudWatch. No other dispatch
+      change.
   - file: src/common/ducklake_named_reads.py
     action: Modify
     purpose: >-
@@ -58,6 +60,11 @@ scope:
       ci_rca_evidence_dispute, ci_rca_probe_health, tf_drift, budget_bypass, budget_breach) that the
       derivations' source literals are tested against. Measured live 2026-10-09 with exactly this
       shape and today's 217 landed follow-on ids: 525 rows, 791,827 JSON bytes.
+  - file: src/common/ducklake_metrics.py
+    action: Modify
+    purpose: >-
+      log_invocation gains an optional keyword response_bytes: int | None = None, emitted as a fixed
+      numeric field (null when not passed), so the writer, maintenance and other callers are unchanged
   - file: src/common/ducklake_reader_client.py
     action: Modify
     purpose: >-
@@ -122,15 +129,16 @@ scope:
       prints ONE "CI-RCA signals UNAVAILABLE (reader unreachable) -- hard block at plan commitment"
       section instead of calling the three ci_rca printers (which print "(none)" for None), so
       ci_rca_signals.py does not grow. It passes the tally (or None) to context_docs.
-      ci_rca_unresolved_total is the full open/in_progress ci_rca count (the list stays capped at 5
+      ci_rca_open_total is the full open/in_progress ci_rca count (the list stays capped at 5
       for display). Drops the RECOMMENDATIONS_FILE re-export.
   - file: scripts/preflight/summary.py
     action: Modify
     purpose: >-
       _format_preflight_summary prints UNAVAILABLE for open_recs, non_automatable and the ci_rca
       segment when recs_read_status != "ok" or ci_rca_unresolved_recs is None -- today
-      len(None or []) prints ci_rca=0, the false zero this plan removes; when available it prints
-      ci_rca_unresolved=<shown> of <ci_rca_unresolved_total>.
+      len(None or []) prints ci_rca=0, the false zero this plan removes; when available it prints the
+      post-correlation counts as today plus a separate ci_rca_open_total=<n> (never "x of y": the two
+      counts are different populations).
   - file: scripts/preflight/recs_cache.py
     action: Modify
     purpose: >-
@@ -165,12 +173,14 @@ scope:
     purpose: >-
       gauges keep None propagation; --assert-dedup-clear reads signal_rows via
       fetch_recs_signal_inputs instead of RECS_JSONL and exits 1 when unavailable (never a vacuous 0
-      on a missing file). Net SLOC must not rise (478/500).
+      on a missing file); its section comment and help text (about lines 545-548, 569-570) no longer
+      claim credential-free operation. Net SLOC must not rise (478/500).
   - file: scripts/preflight/context_docs.py
     action: Modify
     purpose: >-
       read_context_files takes recommendations_count from the tally preflight already fetched (None
-      when unavailable) and its fallback reader call -- len(named("open_recs")), which ships every
+      when unavailable), keeping its open_recs_count keyword name (out-of-scope tests call
+      read_context_files(open_recs_count=0)), and its fallback reader call -- len(named("open_recs")), which ships every
       open rec's context to count it and turns a failure into 0 -- is deleted
   - file: scripts/preflight/correlation.py
     action: Modify
@@ -181,7 +191,8 @@ scope:
     action: Modify
     purpose: >-
       --assert-clear reads signal_rows via fetch_recs_signal_inputs instead of RECS_JSONL and exits 1
-      when unavailable. Help text no longer claims "no AWS credentials required". Disposition: in the
+      when unavailable. Help text, module docstring (about lines 9-13) and section comment (about
+      lines 320-324) no longer claim credential-free operation. Disposition: in the
       credential-free trailer evaluate job and the backlog-health probe this oracle now reads `fails`
       (safer than today's vacuous `holds` on a missing file), so the probe-health and dedup recs
       close only through their escalation's own idempotent close path, never a Resolves trailer.
@@ -228,7 +239,7 @@ scope:
       --back-validate's default rows come from the source-scoped current_state(row_filter
       "source = 'ci_rca'") read already used at about line 72, not load_all_recommendations() over
       the cache (which silently yielded an empty report); the now-unused import goes if nothing else
-      uses it.
+      uses it; the "constructs NO DuckLake reader" comment (about lines 330-331) is corrected.
   # --- registered checks (Decision 170: no silent vacuous pass) ------------------------------------
   - file: scripts/checks/executor/validate_executor_boundary.py
     action: Modify
@@ -265,6 +276,11 @@ scope:
       from the preflight report (orient's no-reader-call rule stands); a null ci_rca_unresolved_recs
       renders as an UNAVAILABLE hard block. Byte-neutral (zero headroom) unless the Decision
       authorises a marked raise.
+  - file: .claude/skills/overseer/SKILL.md
+    action: Modify
+    purpose: >-
+      Halt-on-open-ci_rca: "an open critical rec, or a null list (unavailable), halts dispatch" -- a
+      null ci_rca_unresolved_recs is never read as clear. 33 bytes of S4 headroom.
   - file: .claude/commands/orient.md
     action: Modify
     purpose: Step 3 side-effect guard reads the acceptance string from the preflight report entry instead of the cache file
@@ -340,6 +356,9 @@ scope:
   - file: tests/sync/ops/test_upsert_cache.py
     action: Modify
     purpose: the warm_sync tests (about lines 142-187) patch the stale-file constant to a tmp path so the new delete never touches the real logs/ directory
+  - file: tests/common/test_ducklake_metrics.py
+    action: Modify
+    purpose: class TestResponseBytesField -- the field is emitted when passed and null when omitted; existing callers' lines are otherwise unchanged
   - file: tests/test_ducklake_reader_response_cap.py
     action: Create
     purpose: >-
@@ -361,8 +380,10 @@ scope:
     action: Modify
     purpose: >-
       new verbs' SQL executed in DuckDB yields the declared projections; recs_by_ids one and several
-      ids; open_recs_tally equals the Python derivation on the same fixture rows;
-      preflight_signal_rows nulls heavy columns on old closed rows and returns open follow-on ids
+      ids (recs_by_ids joins _SELECT_STAR_VERBS); open_recs_tally equals the Python derivation on the
+      same fixture rows; preflight_signal_rows nulls context/acceptance on old closed rows, keeps
+      context_v2_json, returns open follow-on ids, and test_preventive_regressions_parity asserts
+      find_preventive_regressions returns the same pairs over preflight_signal_rows as over full rows
   - file: tests/checks/contracts/test_validate_read_engine_verbs.py
     action: Modify
     purpose: roster fixtures follow the v4 registry
@@ -375,12 +396,12 @@ scope:
       class TestFailClosed -- reader failure, 413 and URL-resolution failure each yield status
       unavailable with None rows; the ok path makes exactly two calls and records bytes per verb;
       217 follow-on ids ride the single preflight_signal_rows call
-  - file: tests/session/preflight/test_ci_rca_signals.py
-    action: Modify
-    purpose: class TestUnavailableIsNotEmpty -- each of the five sites returns None for None input; liveness and convergence-gap checks raise no alert on None; total is uncapped; entries carry acceptance
+  - file: tests/session/preflight/test_ci_rca_signals_unavailable.py
+    action: Create
+    purpose: class TestUnavailableIsNotEmpty -- each of the five sites returns None for None input; liveness and convergence-gap checks raise no alert on None; ci_rca_open_total is uncapped; entries carry acceptance (a new file because test_ci_rca_signals.py is at 452 SLOC)
   - file: tests/session/preflight/test_summary.py
     action: Create
-    purpose: class TestUnavailableSummary -- an unavailable report prints UNAVAILABLE, never ci_rca=0; an available one prints the shown/total form
+    purpose: class TestUnavailableSummary -- an unavailable report prints UNAVAILABLE, never ci_rca=0; an available one prints ci_rca_open_total separately from the post-correlation counts
   - file: tests/session/preflight/test_recs_cache.py
     action: Modify
     purpose: tally from the open_recs_tally row; follow-on intersection from signal_rows; deleted helpers' tests and RECOMMENDATIONS_FILE patches removed
@@ -396,12 +417,16 @@ scope:
   - file: tests/session/preflight/test_context_docs.py
     action: Modify
     purpose: count comes from the passed tally; the RECOMMENDATIONS_FILE patches (about lines 64, 74, 89, 134, 146) are removed with the constant; no fallback reader call
+  - file: tests/session/preflight/test_recs_unavailable_report.py
+    action: Create
+    purpose: >-
+      class TestRecsUnavailableReport, inside preflight.py's mapped coverage home
+      (tests/session/preflight/): every recs-derived field is null, one UNAVAILABLE section is printed,
+      recs_read is reported, and context_docs makes no reader call (a new file because
+      test_main_report.py is at 470 SLOC)
   - file: tests/session/preflight/test_main_report.py
     action: Modify
-    purpose: >-
-      class TestRecsUnavailableReport in preflight.py's mapped coverage home (tests/session/preflight/):
-      every recs-derived field is null, one UNAVAILABLE section is printed, recs_read is reported, and
-      context_docs makes no reader call; remove patch() targets on the deleted count_recommendations
+    purpose: remove patch() targets on the deleted count_recommendations; recs inputs patched at fetch_recs_signal_inputs (net SLOC <= 0; 470/500)
   - file: tests/session/preflight/test_aws_infra.py
     action: Modify
     purpose: remove the patch() on the deleted count_recommendations
@@ -491,14 +516,15 @@ acceptance_criteria:
     client retry.
   - >-
     Session preflight on the deployed reader reports recs_read_status ok, makes exactly two
-    ops_recommendations reader calls (recs_read.calls), serves open counts from open_recs_tally
+    read-model calls for ops_recommendations (recs_read.calls; write-path fetch-before-update reads by
+    an open escalation are outside the read model), serves open counts from open_recs_tally
     (within 2 of count_by_status's open count, allowing a concurrent write), and the
     preflight_signal_rows re-serialised row bytes stay under 1,500,000 (791,827 measured at planning).
   - >-
     With the reader unreachable, preflight reports recs_read_status reader_unreachable, JSON null
     (never [] or 0) for every recs-derived list and count, no false liveness alert, one UNAVAILABLE
     section and an UNAVAILABLE stdout summary, and makes no context_docs fallback reader call; the planning skill treats that as a hard block at
-    commitment unless the human overrides.
+    commitment unless the human overrides, and the overseer halts dispatch on a null list.
   - >-
     No full-table ops_recommendations pull remains: sync and warm_sync skip the table and delete a
     stale copy, the portal's sync refuses it, file_rec and update_rec never write
@@ -571,7 +597,7 @@ verification_plan:
   - step: 6
     phase: pre-deploy
     action: prove the CI-RCA signal sites return None (not []) and raise no false liveness alert on unavailable input
-    command: bin/venv-python -m pytest "tests/session/preflight/test_ci_rca_signals.py::TestUnavailableIsNotEmpty" -q
+    command: bin/venv-python -m pytest "tests/session/preflight/test_ci_rca_signals_unavailable.py::TestUnavailableIsNotEmpty" -q
     expected: all tests in the class pass
     fix_if: any site still returns [] for None input, or a liveness/gap alert fires on None
     hermetic: true
@@ -601,8 +627,8 @@ verification_plan:
   - step: 9
     phase: pre-deploy
     action: prove the UNAVAILABLE summary and report, the agent_facing MCP projection, and the 413 branch from the handler's own coverage home
-    command: bin/venv-python -m pytest "tests/session/preflight/test_summary.py::TestUnavailableSummary" "tests/test_agent_sdk_mcp_server.py::TestAgentFacingProjection" "tests/session/preflight/test_main_report.py::TestRecsUnavailableReport" "tests/test_ducklake_reader_handler.py::TestResponseSizeGuard" -q
-    expected: all tests in the four classes pass
+    command: bin/venv-python -m pytest "tests/session/preflight/test_summary.py::TestUnavailableSummary" "tests/test_agent_sdk_mcp_server.py::TestAgentFacingProjection" "tests/session/preflight/test_recs_unavailable_report.py::TestRecsUnavailableReport" "tests/test_ducklake_reader_handler.py::TestResponseSizeGuard" "tests/common/test_ducklake_metrics.py::TestResponseBytesField" -q
+    expected: all tests in the five classes pass
     fix_if: the summary prints ci_rca=0 for a null list, a recs-derived report field is [] or 0 when unavailable, open_recs / preflight_signal_rows is still projected, or the handler home does not reach the 413 branch
     hermetic: true
     graduation: graduate
@@ -614,7 +640,7 @@ verification_plan:
     command: >-
       bin/venv-python -m pytest tests/test_ducklake_reader_response_cap.py tests/test_ducklake_reader_handler.py tests/common/ducklake_reader_client
       tests/test_ducklake_named_reads.py tests/checks/contracts/test_validate_read_engine_verbs.py tests/test_ops_portal_facade.py
-      tests/checks/hygiene/test_validate_episode_lookup_projection.py tests/docs/test_project_context.py
+      tests/checks/hygiene/test_validate_episode_lookup_projection.py tests/docs/test_project_context.py tests/common/test_ducklake_metrics.py
       tests/test_agent_sdk_mcp_server.py tests/session/preflight tests/test_session_preflight_cache_serving.py
       tests/test_session_preflight_decomposition.py tests/sync/ops tests/test_ops_portal_incremental_cache.py
       tests/ops_data_portal tests/test_rec_trailer_acceptance.py tests/test_cost_reconciliation.py
@@ -637,19 +663,19 @@ verification_plan:
       .claude/commands/plan.md .claude/commands/orient.md docs/contracts/recommendation-relevance.yaml | wc -l)" -eq 0
       && echo SWEEP_CLEAN
     expected: prints the sweep marker; zero files match
-    fix_if: a remaining reference -- migrate it; a reference in a file outside this list is either retained on purpose (ops_data_portal's RECS_JSONL patch target) or owned by rec-4236 (e.g. ci_rca_runtime's generated refile-audit acceptance string)
+    fix_if: a remaining reference -- migrate it; a reference in a file outside this list is either retained on purpose (ops_data_portal's RECS_JSONL patch target) or owned by rec-4236 (e.g. ci_rca_runtime's generated refile-audit acceptance string). The graduated row stands until rec-4235's repo-wide CI ban replaces it.
     hermetic: true
-    graduation: waive
-    graduation_waiver_reason: the standing ban on cache references is rec-4235's dedicated CI check (Decision 181 residual); a hand-listed path sweep graduated here would be a weaker duplicate of it
+    graduation: graduate
+    graduation_check_id: recs-cache-reference-sweep
     expected_literals: ["SWEEP_CLEAN"]
   - step: 12
     phase: pre-deploy
-    action: bundled-rec acceptance literals hold (rec-2639, rec-2863), and the skills carry the fail-closed hard block and the UNAVAILABLE rendering (AC3)
+    action: bundled-rec acceptance literals hold (rec-2639, rec-2863), and the planning, orient and overseer skills carry the fail-closed rule (AC3)
     command: >-
       ! grep -qE 'sync[_.]ops pull' .claude/skills/planning/SKILL.md AGENTS.md &&
       grep -q 'scripts.sync.ops sync' .claude/skills/planning/SKILL.md &&
       grep -q 'CD.10' .claude/skills/planning/SKILL.md && grep -q 'recs_read_status' .claude/skills/planning/SKILL.md &&
-      grep -q 'UNAVAILABLE' .claude/skills/orient/SKILL.md && echo BUNDLED_ACCEPTANCE_OK
+      grep -q 'UNAVAILABLE' .claude/skills/orient/SKILL.md && grep -q 'null list' .claude/skills/overseer/SKILL.md && echo BUNDLED_ACCEPTANCE_OK
     expected: prints the marker
     fix_if: the planning skill lost the sync sentence, the CD.10 interim marker or the recs_read_status hard block, orient lacks the UNAVAILABLE rendering, or a pull spelling survives
     hermetic: true
@@ -682,7 +708,7 @@ verification_plan:
     phase: pre-deploy
     action: end-to-end fail-closed preflight against an unreachable reader (real preflight, forced URL)
     command: |-
-      DUCKLAKE_READER_URL=https://127.0.0.1:9 bin/venv-python -m scripts.session.preflight > /tmp/preflight_unreachable.out 2>&1; bin/venv-python -c "
+      rm -f logs/.preflight-report.json; DUCKLAKE_READER_URL=https://127.0.0.1:9 bin/venv-python -m scripts.session.preflight > /tmp/preflight_unreachable.out 2>&1; bin/venv-python -c "
       import json
       d = json.load(open('logs/.preflight-report.json'))
       assert d['recs_read_status'] != 'ok', d['recs_read_status']
@@ -700,11 +726,11 @@ verification_plan:
     graduation: not-applicable
   - step: 15
     phase: pre-deploy
-    action: prove the data-pipeline no-deploy disposition -- no data-pipeline handler references any symbol this plan adds
+    action: prove the data-pipeline no-deploy disposition -- no data-pipeline handler or bundled scripts entrypoint calls any symbol this plan adds (the client module itself ships inertly)
     command: >-
       test "$(grep -rlE 'ResponseTooLargeError|fetch_recs_by_ids|recs_by_ids|recs_for_files|open_recs_tally|preflight_signal_rows|agent_facing'
-      src/data/handlers | wc -l)" -eq 0 && echo DATA_PIPELINE_INERT
-    expected: prints the marker; zero handler files match
+      src/data/handlers scripts/run_scheduled_agent.py scripts/tool_runtime.py scripts/llm | wc -l)" -eq 0 && echo DATA_PIPELINE_INERT
+    expected: prints the marker; zero handler or bundled-entrypoint files match
     fix_if: a handler now uses a new symbol -- the data-pipeline artifact then needs its governed deploy (deploy-prod-lambdas.yml) and a smoke step
     hermetic: true
     graduation: waive
@@ -775,7 +801,7 @@ verification_plan:
     phase: post-deploy
     action: live preflight serves recs signals from two bounded calls, with counts matching the warehouse
     command: |-
-      bin/venv-python -m scripts.session.preflight > /dev/null 2>&1; bin/venv-python -c "
+      rm -f logs/.preflight-report.json; bin/venv-python -m scripts.session.preflight > /dev/null 2>&1; bin/venv-python -c "
       import json
       from src.common.ducklake_reader_client import DuckLakeReader
       d = json.load(open('logs/.preflight-report.json'))
@@ -813,6 +839,11 @@ test_obligations:
     verification_step: 3
     test_selector: tests/test_ducklake_named_reads.py::TestRecsReadVerbsV4
     red_green_expectation: red before (class absent), green after
+  - source: src/common/ducklake_metrics.py
+    behavior: log_invocation emits response_bytes when passed and null otherwise; existing callers unchanged
+    verification_step: 9
+    test_selector: tests/common/test_ducklake_metrics.py::TestResponseBytesField
+    red_green_expectation: red before (class absent; no field), green after
   - source: src/common/ducklake_reader_client.py
     behavior: 413 maps to ResponseTooLargeError and is never retried; fetch_recs_by_ids normalises, caps and reports missing ids
     verification_step: 2
@@ -841,7 +872,7 @@ test_obligations:
   - source: scripts/session/preflight.py
     behavior: recs signals come from fetch_recs_signal_inputs; every recs-derived field null, one UNAVAILABLE section, recs_read reported when unavailable
     verification_step: 9
-    test_selector: tests/session/preflight/test_main_report.py::TestRecsUnavailableReport
+    test_selector: tests/session/preflight/test_recs_unavailable_report.py::TestRecsUnavailableReport
     red_green_expectation: red before (class absent; counts set to 0 and lists coerced to []), green after
   - source: scripts/checks/hygiene/validate_episode_lookup_projection.py
     behavior: docstring-only correction
@@ -849,7 +880,7 @@ test_obligations:
     test_selector: tests/checks/hygiene/test_validate_episode_lookup_projection.py
     waiver_reason: docstring-only edit with no runtime behaviour; the check's existing tests (re-pointed to a fixture) run in step 10
   - source: scripts/preflight/summary.py
-    behavior: UNAVAILABLE instead of ci_rca=0 for a null signal; shown/total form when available
+    behavior: UNAVAILABLE instead of ci_rca=0 for a null signal; ci_rca_open_total printed separately when available
     verification_step: 9
     test_selector: tests/session/preflight/test_summary.py::TestUnavailableSummary
     red_green_expectation: red before (file absent; prints ci_rca=0), green after
@@ -866,7 +897,7 @@ test_obligations:
   - source: scripts/preflight/ci_rca_signals.py
     behavior: unavailable input returns None, never [], and raises no false liveness alert; uncapped total; acceptance carried
     verification_step: 6
-    test_selector: tests/session/preflight/test_ci_rca_signals.py::TestUnavailableIsNotEmpty
+    test_selector: tests/session/preflight/test_ci_rca_signals_unavailable.py::TestUnavailableIsNotEmpty
     red_green_expectation: red before (returns []), green after
   - source: scripts/preflight/alerts.py
     behavior: no call to the unregistered budget_breach_recent verb
@@ -964,12 +995,12 @@ test_obligations:
     command: bin/venv-python -m scripts.validate --pre
     waiver_reason: budget registry data; validate_prose_budget_raises in --pre refuses any unmarked or unauthorised raise
 constraints:
-  - No full-table read of ops_recommendations on any application path; a missing signal is null/unavailable, never [] (Decision 55).
+  - No full-table read of ops_recommendations on any path this plan touches (sync, warm_sync, preflight, portal writes, trailer, cost reconciliation, back-validate, probes, relevance gates); the remaining unfiltered reads (maintenance_ops selftest_read and repair_dependency_tokens) are rec-4237 residuals; a missing signal is null/unavailable, never [] (Decision 55).
   - Named verbs only, fixed SQL, string binds, no caller SQL (Decision 84 I-3); query_ops stays DQ-only.
   - EXPAND only -- no verb is removed and no rec_by_id caller is migrated here (rec-4240); the merge-push trailer census and close use only verbs present in both registries.
   - 413 is never retried; _READER_TRANSIENT_STATUS stays {502, 503, 504} (Decision 155 cl.2).
   - Reader code ships only through deploy-ducklake-lambdas.yml on the merge push (Decision 126); no local build_lambda --deploy.
-  - Decision 128/130 -- ci_rca_signals.py (497), ops_data_portal.py (489), ci_rca_gauges.py (478) and tests/test_rec_trailer_acceptance.py (500) are at or near 500 SLOC; edits there are net-zero or negative, otherwise decompose (never raise).
+  - Decision 128/130 -- ci_rca_signals.py (497), ops_data_portal.py (489), ci_rca_gauges.py (478), tests/test_rec_trailer_acceptance.py (500), tests/session/preflight/test_ci_rca_gauges.py (479), test_main_report.py (470) and test_ci_rca_signals.py (452) are at or near 500 SLOC; edits there are net-zero or negative (new test classes go to the declared new files), otherwise decompose (never raise).
   - Decision 127 prose budgets -- AGENTS.md/S1, orient SKILL.md (zero headroom), implement SKILL.md (28 bytes), plan-critique SKILL.md (94) and PROJECT_CONTEXT.md (31) stay within budget; any unavoidable raise carries a dec-215 marker the new Decision authorises.
   - Decision 167 -- the new Decision carries a yaml envelope with significance and stays at or under 6,144 bytes; amendments to 88 and 103 are dated annotations, never in-place edits (Decision 177).
   - Decision 201 cl.4 -- trailer reads stay in the census and close jobs; the evaluate job stays credential-free.
@@ -981,7 +1012,7 @@ context:
   - "Decisions triaged: 167 of 167"
   - "Roadmap items intersected: 13; CONFLICT: 2; RELATED: 10"
   - "Flag dispositions: 88/103 -> new Decision amends both; 155 -> fail-closed (no tolerance clause) + 413 not retried; 170 -> every cache reader settled here or owned by rec-4236/rec-4237; roadmap CONFLICT T2.19 c9 + T1.5 c1 -> progress_note additions."
-  - "gates: decision-scout=FLAGS_FOUND (dispositioned at Step 6b); plan-critique=PENDING (rounds 1-2 REVISE addressed)"
+  - "gates: decision-scout=FLAGS_FOUND (dispositioned at Step 6b); plan-critique=PENDING (rounds 1-3 REVISE addressed)"
   - "fork: split the retirement across plans | chosen: unblock + retire here; graph-aware related-recs verb (rec-4235), residual consumers (rec-4236), claim-check export (rec-4237) follow | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: scope + followon_recs"
   - "fork: preflight posture when a completeness signal is unavailable | chosen: fail closed (hard block at commitment unless the human overrides) | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: new Decision + planning SKILL.md"
   - "fork: preflight transport | chosen: open_recs_tally counts + bounded preflight_signal_rows (two calls) | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: ducklake_named_reads.py + new Decision"
@@ -1034,7 +1065,8 @@ execution_steps:
     (step 12). Measure bytes before and after each prose surface.
   - >-
     Decision (DECISIONS.md, next free number), title beginning "The full local recommendations cache
-    is retired". Envelope: amends [88, 103], significance numbered_decision whose justification names
+    is retired". Envelope: amends [88, 103]; Related names Decision 73 cl.4 (clause 2's fail-closed
+    rule tightens its planning-queue governance); significance numbered_decision whose justification names
     the rejected alternative (a contract note or amendment_forms annotation cannot carry a replaced
     invariant across two entries; Decision 214 precedent). Clauses: (1) no full-table
     ops_recommendations pull on any application path; logs/.recommendations-log.jsonl is no longer
@@ -1049,8 +1081,11 @@ execution_steps:
     (3) relevance reads are lookup/search verbs (interim recs_for_files; graph-aware ranking
     rec-4235); bulk export, if any, is a claim check outside the response body (rec-4237); verbs that
     are not agent tools declare agent_facing false. (4) replaces 88 cl.1(ii) for ops_recommendations:
-    preflight makes exactly two bounded recs calls per session and reports call count and re-serialised
-    row bytes (recs_read). (5) replaces 103's warmed-read-cache clause: relevance gates read named
+    preflight's recs READ MODEL is exactly two bounded calls per session, counted and sized by
+    recs_read (calls; re-serialised row bytes); write-path fetch-before-update reads (an escalation's
+    update_rec/close) and the three small-table syncs are outside it -- steady state is five reader
+    invocations per session, plus one per open escalation episode, observable per invocation through
+    the reader's log_invocation lines (response_bytes). (5) replaces 103's warmed-read-cache clause: relevance gates read named
     verbs, one call per batch. (6) the reader returns a typed 413 response_too_large, never retried.
     (7) rec_by_id is deprecated in favour of recs_by_ids and removed by rec-4240 once this plan's
     deploy is verified. Coverage line (Decision 181): enforced by plan steps 1-15; residuals rec-4235
@@ -1060,11 +1095,12 @@ execution_steps:
     dedup -- which the 413 now makes loud), rec-4237 (export, schema scan), rec-4240 (rec_by_id
     removal); the probe-health and dedup recs close only through their escalation's own close path.
     reversal-conditions block:
-    preflight_signal_rows re-serialised bytes above 3,000,000 (move the arithmetic server-side); any
-    status- or source-scoped full-column recs read above 3,000,000 bytes (rec-4236 moves it to a
-    bounded verb);
-    more than six reader invocations per preflight session in total (the pre-incident baseline was
-    four full-table pulls); a streaming or claim-check transport that makes a full pull cheap and
+    preflight_signal_rows re-serialised bytes above 3,000,000 (791,827 at planning; move the
+    arithmetic server-side); recs_read.calls other than two; any status- or source-scoped
+    full-column recs read above 4,500,000 envelope bytes, 75% of the 6,000,000 guard (the
+    backlog_health census measured 3,051,101 at planning; rec-4236 moves it to a bounded verb); daily
+    reader invocations more than twice the 7-day pre-merge baseline (log_invocation count); a
+    streaming or claim-check transport that makes a full pull cheap and
     safe; more than three fail-closed planning blocks caused by reader outages in 30 days. If a prose
     budget raise is unavoidable, name the surface and the bounded delta here. Then add dated
     annotations to Decision 88 cl.1(ii) and Decision 103 in amendment_forms grammar. At or under
