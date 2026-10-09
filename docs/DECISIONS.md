@@ -2,6 +2,59 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 214: The DuckLake catalog stays on Neon, tuned now and capped next, with measured triggers to move (amends Decision 107 and Decision 88) (Decided)
+
+```yaml
+number: 214
+status: Decided
+decided_date: "2026-10-09"
+amends: [107, 88]
+significance:
+  value: numbered_decision
+  justification: "Resets Decision 107's swap-back triggers and adds a standing invariant to Decision 88, with reversal conditions -- a commitment no contract note or amendment_forms annotation can carry; ducklake_maintenance.yaml carries the verb's field semantics."
+```
+
+**Status:** Decided
+**Date:** 2026-10-09
+**Warehouse ID:** dec-214 (per Decision 84 backfill)
+
+**Problem:** The operator proposed a pre-emptive move to RDS (cost ~$10/month and rising with agents, cold starts, egress). An independent review found the measured pain has cheaper causes: Lambda p95 26-55 s and commit p95 5.5 s against a 2,000 ms budget, with DuckLake's fix for the per-query stats scan (#859, PR #1147) inert because its index was never created; Terraform pins 6 h PITR while Decisions 88 and 107 assume 7 days.
+
+**Decision:**
+1. RDS is deferred, not rejected. Its reviewed design is kept on rec-4223, and a move stays a metadata dump, restore and secret flip because the runtime uses only plain Postgres.
+2. The stats index is created and kept by the operator-only ensure_catalog_indexes verb on every catalog schema and re-created by catalog_reinit on a re-initialised schema, both from one SQL file (no other path creates, drops or rebuilds this index). Decision 88 gains invariant (v): the stats index is present and valid on every catalog schema, reported by control_health every 6 hours (StatsIndexValid), with its alarm owned by rec-4220.
+3. Neon history is 7 days (ruling on Decision 107 cond. 2's RPO question); the compute moves into Terraform with a pinned maximum under rec-4220, so the bill cannot rise with agent count.
+4. Per-invocation wall time is the latency signal: the writer's warm per-invocation wall p95 against Decision 82's 2,000 ms (its pinned term and subject), and cold attach p95 against 3 s; commit latency is attribution.
+5. A file catalog (DuckDB file on S3 under conditional-write CAS) is adopted only when peak commit rate x swap time < 0.1, swap time < 1 s, maintenance commits reliably under CAS, a version-copy restore drill passes, and only after telemetry 2c.
+
+**Rationale:** Fix the measured cause before paying for a backend change.
+
+```yaml reversal-conditions
+decision: 214
+review_by: 2027-04-30
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: capped-bill-exceeds-rds
+    kind: manual
+    description: "Neon above ~$20/month for two billing cycles once rec-4220's cap is in place."
+  - id: wall-p95-over-budget-after-tuning
+    kind: manual
+    description: "The writer's warm per-invocation wall p95 above 2,000 ms, or cold attach p95 above 3 s, for two consecutive 7-day windows after index and compute tuning."
+  - id: neon-tier-or-terms-change
+    kind: manual
+    description: "Neon's tier or terms change so that clause 3's history or the capped bill no longer holds."
+  - id: private-network-required
+    kind: manual
+    description: "A requirement for private networking that Neon cannot meet."
+  - id: file-catalog-conditions-met
+    kind: manual
+    description: "All clause 5 conditions are met."
+```
+
+**Related:** Decision 107, 88, 82, 81 cl.6, 84, 143, 191, 200, 204, 212; rec-4170, rec-4220, rec-4221, rec-4223.
+
+---
+
 ## Decision 213: An identity-trusting Lambda is reachable only through its AWS_IAM Function URL, enforced in the permissions boundary; telemetry writes get their own function and their own scoped catalog login (amends Decision 81 clauses 1, 5, 6 and 7, Decision 91 clause 1 and Decision 126) (Decided)
 
 ```yaml
@@ -6709,6 +6762,8 @@ the weekly dump is relied on as the swap-back artifact.
 endpoint basis), Decision 81/CD.33 (runtime architecture retained), Decision 77 (fail-closed
 guard), Decision 100/75 (managed-service-native preference the Neon choice aligns with).
 
+[Amendment 2026-10-09, Decision 214: a pre-emptive swap-back was evaluated and deferred; once rec-4220 caps the compute, cond. 1's baseline is the capped Neon bill (~$20), not $12-15; the RDS path is no longer Terraformed (retired in #82) and its reviewed design is kept on rec-4223; history is 7 days, ruling on cond. 2.]
+
 ---
 
 ## Decision 106: Ratify CD.6 -- Personal AWS account is the destination; rebuild not migrate (Decided)
@@ -7865,6 +7920,8 @@ The free-tier breach proved the cap is real and the access pattern, not the work
 > `ListMetrics`. Direct CloudWatch reads are no longer IAM-blocked from the dev role; this is what
 > production-gc-and-storage-stability's VP14/VP16 `aws cloudwatch get-metric-data --profile
 > agent_platform` read-back depends on.
+
+[Amendment 2026-10-09, Decision 214: invariant (v) -- the ducklake_file_column_stats (table_id, column_id) index is present and valid on every catalog schema, reported by control_health; cl.3's 7-day PITR is now true in Terraform.]
 
 ---
 

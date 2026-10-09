@@ -22,10 +22,12 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from typing import Any, Callable
 
 from src.common import ducklake_connect_probe as probe
 from src.common import ducklake_runtime as rt
+from src.common.ducklake_metrics import log_invocation
 
 DATA_PATH = os.environ.get("DUCKLAKE_DATA_PATH", rt.SMOKE_DATA_PATH)
 META_SCHEMA = os.environ.get("DUCKLAKE_META_SCHEMA", rt.META_SCHEMA)
@@ -281,9 +283,8 @@ def _response(status: int, payload: dict[str, Any]) -> dict[str, Any]:
     return {"statusCode": status, "headers": {"Content-Type": "application/json"}, "body": json.dumps(payload)}
 
 
-def handler(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
-    """Reader Lambda entrypoint. Dispatches `action`; loud-fail maps to a 5xx (no silent drop)."""
-    payload = _parse_event(event)
+def _handle(payload: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
+    """Reader dispatch. Dispatches `action`; loud-fail maps to a 5xx (no silent drop)."""
     action = payload.get("action")
     fn = _ACTIONS.get(action)
     if fn is None:
@@ -299,6 +300,9 @@ def handler(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
         con, conn_meta = _warm_reader_connection()
         payload["_connect_ms"] = conn_meta["connect_ms"]
         payload["_connect_reused"] = conn_meta["reused"]
+        meta.update(
+            connect_ms=conn_meta["connect_ms"], connect_reused=conn_meta["reused"], reopened=bool(conn_meta.get("reopened"))
+        )
         try:
             return _response(200, fn(payload, con))
         except Exception as exc:  # noqa: BLE001 -- narrowed immediately to the dead-connection case
@@ -307,8 +311,33 @@ def handler(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
             con, conn_meta = _warm_reader_connection(force_reopen=True)
             payload["_connect_ms"] = conn_meta["connect_ms"]
             payload["_connect_reused"] = conn_meta["reused"]
+            meta.update(connect_ms=conn_meta["connect_ms"], connect_reused=conn_meta["reused"], reopened=True)
             return _response(200, fn(payload, con))
     except rt.VersionMismatchError as exc:
         return _response(500, {"ok": False, "error_type": "version_mismatch", "error": str(exc)})
     except rt.DuckLakeRuntimeError as exc:
         return _response(500, {"ok": False, "error_type": "runtime", "error": str(exc)})
+
+
+def handler(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
+    """Entrypoint: dispatch, then log exactly one ducklake_invocation line on every path."""
+    started = time.perf_counter()
+    payload: dict[str, Any] = {}
+    meta: dict[str, Any] = {"connect_ms": None, "connect_reused": None, "reopened": False}
+    status = 500
+    try:
+        payload = _parse_event(event)
+        response = _handle(payload, meta)
+        status = response["statusCode"]
+        return response
+    finally:
+        action = payload.get("action")
+        log_invocation(
+            "reader",
+            action if isinstance(action, str) and action in _ACTIONS else "unknown",
+            status,
+            meta["connect_ms"],
+            meta["connect_reused"],
+            meta["reopened"],
+            (time.perf_counter() - started) * 1000.0,
+        )

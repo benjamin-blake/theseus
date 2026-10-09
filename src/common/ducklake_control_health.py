@@ -96,7 +96,7 @@ def control_health(
 
     `metric_sink`, when provided, ALWAYS receives ControlTableInvariantViolation (0 on a clean
     pass) BEFORE any raise, so the metric/alarm signal survives the exception -- the caller
-    (src/lambdas/ducklake_maintenance/handler.py action_control_health) supplies one bound to the
+    (src/lambdas/ducklake_maintenance/health_actions.py action_control_health) supplies one bound to the
     DuckLakeMaintenance namespace.
     """
     writer_keyspace_tables, absent_tables = _expected_counter_tables(con, catalog)

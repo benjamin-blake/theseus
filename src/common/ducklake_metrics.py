@@ -6,6 +6,7 @@ ducklake_scd2_schema or any other DuckLake module -- this is a pure AWS-emission
 
 from __future__ import annotations
 
+import json
 from typing import Any, Callable
 
 # CloudWatch metric namespace for OCC-retry + commit-latency emission (EC9).
@@ -54,3 +55,34 @@ def make_metric_sink(
         emit_metric(name, value, namespace=namespace, unit=unit, client=client, profile=profile)
 
     return _sink
+
+
+def log_invocation(
+    function: str,
+    action: str,
+    status: int,
+    connect_ms: float | None,
+    connect_reused: bool | None,
+    reopened: bool,
+    elapsed_ms: float,
+) -> None:
+    """Print one compact JSON line per invocation, filterable with a CloudWatch Logs JSON pattern.
+
+    Fixed fields only: never a payload value, table row, host or error message. The caller passes a registered
+    action name or the fixed token "unknown".
+    """
+    print(
+        json.dumps(
+            {
+                "event": "ducklake_invocation",
+                "function": function,
+                "action": action,
+                "status": status,
+                "connect_ms": connect_ms,
+                "connect_reused": connect_reused,
+                "reopened": reopened,
+                "elapsed_ms": round(elapsed_ms, 2),
+            },
+            separators=(",", ":"),
+        )
+    )
