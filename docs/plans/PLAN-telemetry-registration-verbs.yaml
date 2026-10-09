@@ -22,7 +22,10 @@ scope:
   purpose: >-
     The telemetry writer's one transaction loop (seam 2 of part1-seams-from-part2.md) and its generic request error (seam 5).
     (1) TelemetryRequestError(Exception) carrying status (int), error_type (str) and a value-free fields mapping; its str()
-    never includes a request value. (2) run_telemetry_txn(con, body, *, terminal=(...), max_attempts=OCC_MAX_ATTEMPTS,
+    never includes a request value. (1b) invalid_string_field(values: Mapping[str, object]) -> str | None, a pure
+    function returning the name of the first entry whose value is not a str, contains U+0000, or contains any code point
+    in U+D800-U+DFFF (so str.encode("utf-8") succeeds; json.loads joins an escaped surrogate pair into one code point, so
+    only a lone surrogate can remain), else None; it never returns, formats or logs the value. (2) run_telemetry_txn(con, body, *, terminal=(...), max_attempts=OCC_MAX_ATTEMPTS,
     metric_sink=None, sleep=time.sleep) -> TxnOutcome(result, occ_retries, commit_ms). It owns BEGIN TRANSACTION, the body
     call, COMMIT, rollback on any error, and classification. TERMINAL FIRST (seam 1): after rollback, any instance of
     TelemetryRequestError, rt.DuckLakeRuntimeError (which subsumes SchemaGateError, RowRuleViolationError and
@@ -50,7 +53,9 @@ scope:
     current_value = current_value + 1 WHERE counter_name = ? (Decision 84 I-2: the write-write conflict at COMMIT is the
     serialization point; no id is allocated from it, ids are ULIDs). (4) lookup_tenant / lookup_project read-only lookups
     on the current tables: (principal_kind, principal_ref) -> tenant_id and (tenant_id, project_ref) -> (project_id,
-    registration). (5) resolve_or_register_tenant(con, principal, *, identity, semantics) -> (tenant_id, created): lookup;
+    registration); lookup_project, like resolve_or_register_project below, first runs invalid_string_field over
+    project_ref and any supplied name or remote and raises TelemetryRequestError(400, bad_request, {field}) before any
+    statement, because part 2's append path reaches them without telemetry_actions. (5) resolve_or_register_tenant(con, principal, *, identity, semantics) -> (tenant_id, created): lookup;
     on a miss, lock_counter("ops_tenants") then write the first SCD2 version (status active, canonical_tenant_id null).
     (6) resolve_or_register_project(con, tenant_id, project_ref, *, explicit, attributes, identity, semantics) ->
     (project_id, created): lookup; a hit with explicit=True writes a new SCD2 version only when a SUPPLIED name or remote
@@ -114,9 +119,11 @@ scope:
     key. (2)
     register_tenant {} -> {ok, tenant_id, created}; principal_kind/principal_ref/tenant_id keys are 400 (self only, no
     confirm token, Fable Q13). (3) register_project {project_ref, name?, remote?} -> {ok, project_id, created, purpose,
-    registration}; the tenant must already be registered, else 403 tenant_unresolved {remedy: register_tenant}. Every
-    string a verb accepts (project_ref, name, remote, component) must be a str with no U+0000 and no lone surrogate, else
-    400 bad_request naming the field, never the value: on a Postgres catalog a NUL in a value DuckLake renders into its
+    registration}; the tenant must already be registered, else 403 tenant_unresolved {remedy: register_tenant}. On the
+    four verbs this plan adds, every string a verb accepts (project_ref, name, remote, component) must be a str with no
+    U+0000 and no code point in U+D800-U+DFFF (str.encode("utf-8") succeeds), checked by ducklake_telemetry_txn's
+    invalid_string_field before any catalog read, else 400 bad_request {field} naming the field, never the value
+    (part 2 reuses the predicate for append_telemetry; the shared writer and reader's same gap is rec-4219): on a Postgres catalog a NUL in a value DuckLake renders into its
     file-pruning SQL (the lookup and MERGE key filters) raises an unmapped ParserException that echoes the value and
     pages as a Lambda Error (reproduced by the append-part thread on duckdb 1.5.4 with a Postgres 16 catalog; the local
     file catalog does not show it). (4)
@@ -224,9 +231,13 @@ scope:
     re_ratification_trigger first_of ["production_invocations >= 500"] only and no first_production_invocation_date (no
     production traffic yet, recon 2.1). verbs: describe (the agent-facing discovery verb, as ducklake_writer.yaml
     contracts it; PLAN-telemetry-writer-function's Decision 118 note), provision_telemetry, register_tenant,
-    register_project, each with payload_schema_ref, response_codes and typed_errors only (closed keys). attach_check and
+    register_project, each with payload_schema_ref, response_codes and typed_errors only (closed keys); each verb's
+    payload_schema_ref states that its accepted strings (component, plus project_ref, name and remote on register_project)
+    are str with no U+0000 and no code point in U+D800-U+DFFF, and its 400 response_code and bad_request typed_error name
+    both causes: an unknown key, or an invalid string with the field named, never the value. attach_check and
     telemetry_probe are named out of contract scope as gate instrumentation. audit_invariants: telemetry verbs attach only the pinned catalog
-    and take no catalog selector; no verb drops or truncates a table; principal_ref never appears in a response or log.
+    and take no catalog selector; no verb drops or truncates a table; principal_ref never appears in a response or log;
+    a rejected request string never appears in a response or log.
     amendment_log [] and
     previous_versions [].
 - file: docs/contracts/ops_tenants.yaml
@@ -303,7 +314,13 @@ scope:
   purpose: Coverage home for ducklake_telemetry_provision with a recording fake connection (fast tier).
 - file: tests/lambdas/ducklake_telemetry_writer/test_telemetry_actions.py
   action: Create
-  purpose: Coverage home for telemetry_actions (map_source_to_test mirror, recon 8), with fakes; includes the contract-verbs pin.
+  purpose: >-
+    Coverage home for telemetry_actions (map_source_to_test mirror, recon 8), with fakes; includes the contract-verbs pin.
+    test_nul_or_lone_surrogate_in_any_string_is_400_without_the_value is parametrized over every (verb, accepted string
+    field) pair of the four verbs and over U+0000, a lone high surrogate, a lone low surrogate and a non-str value, each
+    embedded with a sentinel: the response is 400 with error_type bad_request and the field named, the fake connection's
+    execute is never called, and the sentinel is absent from the response body and the captured logs. A positive case
+    sends a U+1F600 (an escaped surrogate pair in the JSON body) and is not refused.
 - file: tests/lambdas/ducklake_telemetry_writer/test_handler.py
   action: Modify
   purpose: >-
@@ -343,6 +360,7 @@ bundled_recommendations: []
 followon_recs:
 - rec-4209
 - rec-4210
+- rec-4219
 infrastructure_dependencies:
 - >-
   No Terraform. Every runtime resource comes from the three plans merged in #1430 (5433e631): PLAN-url-only-invoke-guard
@@ -386,7 +404,8 @@ acceptance_criteria:
 - register_tenant returns one canonical ULID per signed principal across calls and never returns or logs the principal.
 - register_project returns one project_id per (tenant, project_ref), derives purpose from the projected prefix_map,
   refuses an unregistered reserved ref when not explicit (403 project_unregistered) and requires a registered tenant (403
-  tenant_unresolved).
+  tenant_unresolved); on all four verbs, a non-str value, U+0000 or a code point in U+D800-U+DFFF in an accepted string is
+  400 bad_request naming the field, never the value, before any catalog read.
 - provision_telemetry creates and partitions all seven tables before any row lands, seeds only the two telemetry counter
   rows without ever lowering one, and has no drop path.
 - Two concurrent registrations of the same project_ref on a DuckLake catalog converge on one id (local race test, and the
@@ -409,7 +428,8 @@ verification_plan:
     tests/common/test_ducklake_telemetry_txn.py::test_request_error_is_terminal_and_rolled_back
     tests/common/test_ducklake_telemetry_txn.py::test_exhaustion_raises_occ_retry_exhausted
     tests/common/test_ducklake_telemetry_txn.py::test_non_occ_error_propagates_after_rollback
-    tests/common/test_ducklake_telemetry_txn.py::test_request_error_str_carries_no_value -q
+    tests/common/test_ducklake_telemetry_txn.py::test_request_error_str_carries_no_value
+    tests/common/test_ducklake_telemetry_txn.py::test_invalid_string_field_names_the_field_never_the_value -q
   expected: Exit 0, every node passes. Red before because the module and nodes are absent.
   fix_if: A conflict-text terminal error retried means the classification order is wrong; fix the helper, never the marker list.
   hermetic: true
@@ -424,7 +444,8 @@ verification_plan:
     tests/common/test_ducklake_telemetry_registration.py::test_missing_purpose_projection_is_loud
     tests/common/test_ducklake_telemetry_registration.py::test_caller_principal_repr_hides_the_ref
     tests/common/test_ducklake_telemetry_registration.py::test_clear_caches_empties_both_bindings
-    tests/common/test_ducklake_telemetry_registration.py::test_cache_untouched_when_commit_conflicts -q
+    tests/common/test_ducklake_telemetry_registration.py::test_cache_untouched_when_commit_conflicts
+    tests/common/test_ducklake_telemetry_registration.py::test_project_entry_points_refuse_an_invalid_string_before_any_statement -q
   expected: Exit 0, every node passes. Red before because the module and nodes are absent.
   fix_if: A purpose test passing on a hard-coded map means the map is restated in Python; read it from the registry.
   hermetic: true
@@ -723,7 +744,9 @@ test_obligations:
   test_selector: tests/lambdas/ducklake_telemetry_writer/test_telemetry_actions.py::test_register_tenant_refuses_principal_parameters
   red_green_expectation: red before (module absent), green after
 - source: src/lambdas/ducklake_telemetry_writer/telemetry_actions.py
-  behavior: A NUL or lone surrogate in any accepted string is a 400 naming the field, before any catalog read.
+  behavior: >-
+    A non-str value, U+0000 or a code point in U+D800-U+DFFF in any string the four verbs accept is a 400 bad_request
+    naming the field, never the value, before any catalog read; a surrogate pair (U+1F600) passes.
   verification_step: 5
   test_selector: tests/lambdas/ducklake_telemetry_writer/test_telemetry_actions.py::test_nul_or_lone_surrogate_in_any_string_is_400_without_the_value
   red_green_expectation: red before (module absent), green after
@@ -824,9 +847,11 @@ context:
   T2.36:c2 CONFLICT resolved by Decision 213 (PLAN-url-only-invoke-guard, #1430); SPIRIT 143 resolved (S3 is IAM-scoped
   to the smoke prefixes and the catalog login is scoped to the smoke schema, Decision 213). RELATED 82, 97, 96, 191, 197,
   209, 144, 118, 128, 181, 48. Decisions triaged: 163 of 163. Roadmap items intersected: 5; CONFLICT: 1; RELATED: 4.'
-- 'gates: decision-scout=FLAGS_FOUND (3 flags, resolved); plan-critique=PROCEED after 4 round(s); round 4 autonomous (r1-r3 REVISE, all fixed; r4 notes J1-J4 folded in; 2026-10-09 amendment: the NUL/lone-surrogate 400 guard, one critique round); also cites
-  204 (live partition re-lays are admin-only, so provision ALTERs only on create) and 212 (CallerPrincipal is the port, no
-  cross-port coupling). Out-of-scope critique finding filed as rec-4211 (account id in public Actions logs).'
+- 'gates: decision-scout=FLAGS_FOUND (3 flags, resolved); plan-critique=PROCEED after 4 round(s); round 4 autonomous
+  (r1-r3 REVISE, all fixed; r4 notes J1-J4 folded in); 2026-10-09 amendment (the NUL/lone-surrogate 400 guard): r1 REVISE
+  (A1, A2 fixed; N1-N3, N5 folded in). Also cites 204 (live partition re-lays are admin-only, so provision ALTERs only on
+  create) and 212 (CallerPrincipal is the port, no cross-port coupling). Out-of-scope critique findings filed as rec-4211
+  (account id in public Actions logs) and rec-4219 (the shared writer and reader NUL gap).'
 - 'Direction: Benjamin "write the plan" (cmsg_012XgaFy8VaDQbxP5D8nC958K9mX5fF3q1N3ruTT1UwZWu) after the split, the A + D
   choice and the revised design /mnt/project-files/telemetry-slice2/step6b-2a2-plan3-part1-D.md.'
 - 'Depends on the plans merged in #1430: PLAN-telemetry-writer-function creates the handler, manifest, test_handler.py
