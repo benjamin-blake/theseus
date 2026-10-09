@@ -124,7 +124,8 @@ scope:
   action: Create
   purpose: >-
     C6 (REVIEW.md C6): emit_request_line(action, status, error_type, request, body) prints ONE JSON line to stdout for every
-    request the handler answers: verb, component (from the body when a valid string, else 'unknown'), status, error_type,
+    request the handler answers: verb, component (from the body only when it matches request.py's component grammar,
+    for every verb, else 'unknown'), status, error_type,
     per-table submitted and inserted, request_bytes, invoke_bytes, tenant_id, project_id, occ_retries, commit_ms,
     connect_reused and
     caller_role (CallerPrincipal.role_name only). Never an account id, an ARN, a hash of either (Decision 101;
@@ -160,8 +161,10 @@ scope:
     bad_request); when given it adds grain_counts: per table, rows and distinct (producer, event_id, parser_version) keys
     whose session_id is the derived session key, bounded to that session's calendar day (ADVICE Q19; no conflicted_keys:
     rows > keys is the legal identical-duplicate race, Fable design 2.5), plus each table's live data-file count and bytes
-    from ducklake_list_files on the pinned catalog (a measurement for the ingestion-shape decision, never a check).
-    TelemetryRequest gains invoke_bytes (int). Nothing else changes.
+    from ducklake_list_files on the pinned catalog (a measurement for the ingestion-shape decision, never a check). The
+    three inputs pass request.py's string guard (400 bad_request, reason invalid_unicode) and parse_wire_timestamp (422
+    schema_gate) before any catalog read; an unregistered project_ref answers grain_counts null and project_registered
+    false. TelemetryRequest gains invoke_bytes (int). Nothing else changes.
 - file: src/lambdas/ducklake_telemetry_writer/manifest.yaml
   action: Modify
   purpose: >-
@@ -193,7 +196,8 @@ scope:
     -> 400 mixed_producer; an unregistered drill: ref, fresh per run (a uuid4 suffix, so an earlier registration cannot
     flip it) -> 403 project_unregistered; an omission row (content_omitted_reason,
     no content) -> 200; a near-cap request whose invoke measure is exactly MAX_INVOKE_BODY_BYTES, built from escape-dense
-    JSON-heavy transcript content under the threshold and within the row caps -> 200, printing "near_cap_commit_ms=" and
+    JSON-heavy transcript content (quotes, backslashes and the <, > and & characters) under the threshold and within the
+    row caps -> 200, printing "near_cap_commit_ms=" and
     "near_cap_inflation=" (invoke measure over raw bytes); an escape-dense request whose invoke measure is between the cap
     and 6,000,000 -> the handler's typed 413 payload_too_large (above about 6,289,000 AWS answers its own untyped 413,
     which is the producer's chunking contract, not a vector); a row-cap request of 2000 observation rows -> 200, printing
@@ -211,11 +215,15 @@ scope:
     counts only; never an account id, URL or host.
 - file: scripts/ducklake_smoke/lambda_telemetry_gates.py
   action: Modify
-  purpose: lambda_telemetry calls lambda_telemetry_append after part 1's vectors, passing the URL and part 1's registered ref.
+  purpose: >-
+    lambda_telemetry calls lambda_telemetry_append after part 1's vectors, passing the URL and part 1's registered ref. If
+    part 1's gate as built prints its synthetic:deploy-smoke-<uuid4 hex> ref, this row stops that print: a uuid4 hex
+    holds an exactly-12-digit run about 1.3% of the time, which step 12's scan would read as a Decision 101 leak.
 - file: docs/contracts/ducklake_telemetry_writer.yaml
   action: Modify
   purpose: >-
-    Verb append_telemetry: payload_schema_ref (the request shape, component, the three caps), response_codes and
+    Verb append_telemetry: payload_schema_ref (the request shape, component, the three caps, and the encoding-validity
+    refusals: a lone surrogate anywhere, U+0000 in a key, project_ref, component or producer), response_codes and
     typed_errors (400 bad_request / write_order / mixed_producer, the token part 1's verbs use for a malformed body, 403 tenant_unresolved / project_unregistered,
     409 grain_conflict, 413 payload_too_large / too_many_rows, 422 row_rule / schema_gate, 503 occ_exhausted, 500 runtime).
     audit_invariants gain: one transaction per request; within a request data batches precede the sessions marker, a
@@ -240,7 +248,9 @@ scope:
     project_id semantics: the reserved-namespace rule's "Declared coverage: writer-enforced in plan 3 (rec-4024), residual
     until then" becomes writer-enforced, naming its enforcing test
     (tests/common/test_ducklake_telemetry_append.py::test_unregistered_reserved_ref_is_refused_before_any_transaction,
-    Decision 181 cl.2). One field-level amendment_log entry.
+    Decision 181 cl.2). One sentence adds that the telemetry write boundary refuses a project_ref carrying U+0000 or a
+    lone surrogate as an encoding-validity guard (400 invalid_unicode), not a label rule. One field-level amendment_log
+    entry.
 - file: docs/contracts/storage-substrate.yaml
   action: Modify
   purpose: >-
@@ -311,10 +321,17 @@ scope:
     Terraform function sets no JSON log format (EMF extraction needs the text format).
 - file: tests/lambdas/ducklake_telemetry_writer/test_handler.py
   action: Modify
-  purpose: Dispatch of append_telemetry, the three kernel error-map rows (row_rule and schema_gate asserted separately so a less specific row cannot shadow), invoke_bytes as the escaped body length, and one C6 line per answered request.
+  purpose: >-
+    Dispatch of append_telemetry, the three kernel error-map rows (row_rule and schema_gate asserted separately so a less
+    specific row cannot shadow), invoke_bytes as the escaped body length, one C6 line per answered request, and the body
+    parse row driven through handler() with raw JSON text (malformed, deeply nested, a 5000-digit integer) -> 400
+    bad_request, never an unmapped error.
 - file: tests/lambdas/ducklake_telemetry_writer/test_telemetry_actions.py
   action: Modify
-  purpose: telemetry_probe's grain_counts and its all-or-none input rule; the contract-verbs pin covers append_telemetry.
+  purpose: >-
+    telemetry_probe's grain_counts and its all-or-none input rule; its three inputs refused before any catalog read (a
+    U+0000 or lone surrogate in project_ref -> 400 invalid_unicode, a malformed session_started_at -> 422 schema_gate),
+    and an unregistered project_ref answering grain_counts null; the contract-verbs pin covers append_telemetry.
 - file: tests/lambdas/ducklake_telemetry_writer/test_packaging.py
   action: Modify
   purpose: The manifest bundles request.py, the adapter, telemetry_edge.py and telemetry_log.py; the adapter affects only the telemetry writer.
@@ -395,7 +412,8 @@ acceptance_criteria:
   in-transaction failure.
 - >-
   Every request-grammar violation is refused before any catalog query or transaction (a cold container still pays its
-  one warm-connection ATTACH, part 1's dispatch order) with a mapped, value-free status: a lone-surrogate string, unknown or
+  one warm-connection ATTACH, part 1's dispatch order) with a mapped, value-free status: a lone-surrogate string or a
+  U+0000 in a key, project_ref, component or producer (400 bad_request, reason invalid_unicode), unknown or
   selector/identity keys, a bad component, a malformed batch, an unknown or repeated table, the sessions batch not last
   (400 write_order), mixed producer or parser_version (400 mixed_producer), an empty request (400), a caller content_uri
   (400), inline content above the threshold while the exemption stands (413 naming inline_within_threshold), over-cap
@@ -516,9 +534,11 @@ verification_plan:
     tests/lambdas/ducklake_telemetry_writer/test_handler.py::test_error_map_rows_for_kernel_errors
     tests/lambdas/ducklake_telemetry_writer/test_handler.py::test_one_c6_line_per_answered_request
     tests/lambdas/ducklake_telemetry_writer/test_handler.py::test_invoke_bytes_is_the_escaped_body_length
+    tests/lambdas/ducklake_telemetry_writer/test_handler.py::test_unparseable_bodies_through_handler_are_400
     tests/lambdas/ducklake_telemetry_writer/test_telemetry_actions.py::test_probe_reports_grain_counts_for_one_session_day
+    tests/lambdas/ducklake_telemetry_writer/test_telemetry_actions.py::test_probe_inputs_refused_before_any_catalog_read
     tests/lambdas/ducklake_telemetry_writer/test_packaging.py::test_manifest_bundles_the_append_modules -q
-  expected: Exit 0, 14 passed. Red before, because the nodes do not exist.
+  expected: Exit 0, 16 passed. Red before, because the nodes do not exist.
   expected_literals: []
   fix_if: An unmapped kernel class -> add the error-map row; an account id, ARN or 12-digit run in a line -> fix telemetry_log, never the test.
   hermetic: true
@@ -818,7 +838,7 @@ constraints:
 - No rescue agents or workaround loops (Decision 55).
 context:
 - "Decision-scout: FLAGS_FOUND -- NOTE 91 cl.1 (agent verbs extend ducklake_writer/reader): the third function rests on the Decision PLAN-url-only-invoke-guard inserts (cited here as 213, provisional until it lands with its 81/91/126 annotations); resolved by a checklist precondition (T2.36 c2's re-grounding is the same dependency). First run's NOTE 210 cl.5 resolved by the plane-neutral grammar. CITE 199, 200, 207, 210, 81, 84, 88, 143, 184, 212, 79, 125, 126, 48, 101, 128, 181. Decisions triaged: 165 of 165. Roadmap items intersected: 7; CONFLICT: 0; RELATED: 5. Report: /mnt/project-files/telemetry-slice2/scout-plan3-part2.md."
-- "gates: decision-scout=FLAGS_FOUND (NOTE 91 and NOTE 210 resolved); plan-critique=REVISE r1 (F1-F13 fixed; F8 kept the coverage nodes in the mirror and graduated duckdb-free twins), REVISE r2 (N1-N11 fixed: bounded-precision measurements, EMF directive only when recorded, no undeclared-name echo, bad_request token, shared test fakes), REVISE r3 (F1-F5 fixed: lone-surrogate, DOUBLE-overflow and range-edge timestamp inputs mapped; step 3 pinned to the extended nodes; concurrent auto-registration vector; size-measure wording; AC2 wording), REVISE r4 confirming round (F1 blocking: U+0000 in producer or project_ref crashes the Postgres catalog query -- fixed; F2-F5 non-blocking fixed); escalated to the operator, round 5 run as the recommended choice"
+- "gates: decision-scout=FLAGS_FOUND (NOTE 91 and NOTE 210 resolved); plan-critique=REVISE r1 (F1-F13 fixed; F8 kept the coverage nodes in the mirror and graduated duckdb-free twins), REVISE r2 (N1-N11 fixed: bounded-precision measurements, EMF directive only when recorded, no undeclared-name echo, bad_request token, shared test fakes), REVISE r3 (F1-F5 fixed: lone-surrogate, DOUBLE-overflow and range-edge timestamp inputs mapped; step 3 pinned to the extended nodes; concurrent auto-registration vector; size-measure wording; AC2 wording), REVISE r4 confirming round (F1 blocking: U+0000 in producer or project_ref crashes the Postgres catalog query -- fixed; F2-F5 non-blocking fixed); escalated to the operator, who was offered one more round as the recommended choice; round 5 PROCEED, N1-N8 non-blocking folded in (probe input guard, handler-driven parse node, AC2 NUL wording, encoding-validity refusals named in the Class B contract and project-id.yaml, <>& in the near-cap vector, part 1 precondition checks, component grammar in C6)"
 - "Evidence 2026-10-09: Lambda's 6 MiB limit applies to the invocation event, where the body is re-escaped as a JSON string (+ about 2.2 KB); a raw 6.2 MB escape-free body passed and a 3.2 MB quote-dense one got AWS's 413 (/mnt/project-files/telemetry-slice2/evidence-invoke-payload-limit.md). The cap is therefore measured on len(json.dumps(S)), S the body string as sent, which the producer computes identically."
 - "fork: telemetry ingestion shape (per-request commit vs S3 landing zone plus a scheduled fold-in, rds-swap/fable-catalog-backend-review.md Q5) | chosen: PENDING operator answer; recommended per-request commit for part 2 (smoke only) with the decision owned by a rec before 2c | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: this line and rec-4218"
 - "Direction (Benjamin): 2026-10-06 split plan 3 (cmsg_012XgaFy8VaDQbxP5D8nC958CXzUU6aTS53ez9rnGk2YbC); 2026-10-08 'I accept, write the plan' (cmsg_012XgaFy8VaDQbxP5D8nC958Ea85cpGqcEneeWhkAdD4uc); order part 1 on Neon, then the RDS swap, then part 2 (part 1 thread). Evidence: /mnt/project-files/telemetry-slice2/ (BRIEF-plan3-part2-append.md, step6b-plan3-part2-presentation.md, fable-consult-plan3/ADVICE.md, fable-consult-plan3-part2/ADVICE.md, fable-consult-telemetry-writer-boundary/ADVICE.md)."
@@ -829,6 +849,7 @@ context:
 - "Decided with notice: unknown request keys refused and undeclared names never echoed; an all-empty request is 400 bad_request; caps 5 MiB on the JSON-escaped body / 2000 / 5000 (plan 3 presentation 2026-10-06, measure fixed by the 2026-10-09 evidence); the binding and tenant caches are part 1's; data vectors write under part 1's registered synthetic: ref and one auto-registration vector fails unless bound to ducklake_smoke (writer-boundary consult 2c item 2); at-cap escape-dense and 2000-row vectors measure the ceilings; EMF namespace is the function's own (DuckLakeTelemetryWriter)."
 - "Moved by option D (#1430, Benjamin 2026-10-08): the verb lives on the separate telemetry writer, so this plan edits its handler, manifest and Class B contract, never the shared writer."
 - "ci-rca: none open (rec-4189 closed by #1428); re-check before the implementation merges."
+- "Owner (critique r5 N6): part 1's register_project has the same U+0000 exposure on project_ref; owned by an amendment to PLAN-telemetry-registration-verbs, agreed in the part 1 thread 2026-10-09, with a portal rec as the fallback (checklist)."
 - "Gotcha: part 1's run_telemetry_txn re-raises the AppendError family before is_occ_collision, which matches 'conflict' (a stored grain conflict's message contains TELEMETRY_GRAIN_CONFLICT)."
 - "Gotcha: an in-batch conflict names the second conflicting row; a stored conflict names the first row sent with that event_id (source_index)."
 - "Gotcha: EMF extraction needs the Lambda text log format (no logging_config today; a test pins it); the EMF Timestamp is a 13-digit epoch, so 12-digit scans exclude the _aws block."
@@ -841,6 +862,17 @@ pre_implementation_checklist:
 - PLAN-telemetry-registration-verbs is implemented and deployed and its live gate shows the lock converging on the catalog backend in service
 - The Decision PLAN-url-only-invoke-guard inserts (the separate telemetry writer; cited as 213) is in docs/DECISIONS.md with its 81/91/126 annotations; if its number is not 213, re-point every citation in this plan first
 - ci_rca_open re-checked; tests/telemetry/test_append.py SLOC measured (440 of 500 at planning)
+- >-
+  Part 1 as built: tests/checks/contracts/test_telemetry_dimension_contracts.py::test_substrate_rows_name_the_telemetry_writer
+  does not pin the "(append arrives in part 2)" parenthetical this plan replaces (if it does, add that test file to scope
+  and re-pin it to append_telemetry); part 1's gate output carries no synthetic:deploy-smoke- ref (else the
+  lambda_telemetry_gates.py row removes the print); part 1's symbols this plan pins (TelemetryRequest,
+  CallerPrincipal.role_name, lookup_project, resolve_or_register_project, run_telemetry_txn) match their signatures here,
+  else re-point the plan before coding
+- >-
+  Part 1's register_project refuses U+0000 in project_ref (part 1's plan amendment, agreed in the part 1 thread
+  2026-10-09); if it has not landed, file a rec through scripts.ops_data_portal before starting (this plan's append path
+  is guarded by request.py either way)
 - All files in scope located and readable (part 1's and #1430's files exist on main)
 - Acceptance criteria understood and verifiable
 execution_steps:
@@ -857,7 +889,8 @@ execution_steps:
   Persist the producer obligations on rec-4026 (call get_rec_write_guidance first, Decision 66; fetch the rec immediately
   before update_rec and prepend a dated note to its full context): send Content-Type application/json (a binary-typed
   body is base64-encoded by the Function URL, which changes the measure); chunk on len(json.dumps(S)) <= 5 MiB, S the
-  exact body string sent, and the row caps; never send U+0000 in producer or project_ref; the 413 meanings above; halt
+  exact body string sent, and the row caps; never send U+0000 in a key, producer, project_ref or component, nor a lone
+  surrogate in any string field (clean() covers content only); the 413 meanings above; halt
   records use rule, column and the row index.
 - 'Code review (the code-review skill in a fresh context); fix every blocking finding.'
 - >-
