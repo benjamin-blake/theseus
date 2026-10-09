@@ -1,7 +1,7 @@
 # DuckLake operational lakehouse -- Neon serverless Postgres catalog (T2.16b / CD.34, pending).
 #
 # Replaces the T2.16 RDS catalog (rds_ducklake_catalog.tf, retired in Phase 2) with Neon serverless
-# Postgres on the free tier ($0). Like RDS, this is a catalog-metadata store, NOT a query engine:
+# Postgres (originally the free tier). Like RDS, this is a catalog-metadata store, NOT a query engine:
 # DuckDB performs all computation against S3 Parquet; the catalog holds only DuckLake metadata
 # (table/version/snapshot pointers).
 #
@@ -62,9 +62,9 @@ resource "neon_project" "ducklake_catalog" {
   region_id  = var.neon_region_id
   pg_version = 16
 
-  # Free-plan PITR ceiling is 21600s (6h); the provider's 24h (86400) default is rejected on free.
-  # This is the ~6h free-tier history window the DR design accounts for (daily pg_dump covers >6h).
-  history_retention_seconds = 21600
+  # 7 days (604800s), the paid Launch plan maximum: the point-in-time window Decisions 88 cl.3 and 107 rely on
+  # between weekly dumps. The earlier 21600 (6h) was the free-plan ceiling.
+  history_retention_seconds = 604800
 }
 
 # Scoped, non-owner role for catalog access. Distinct from the project's auto-created owner role so the

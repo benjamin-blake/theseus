@@ -489,3 +489,75 @@ def test_named_read_response_carries_read_version(monkeypatch):
     assert out["read_version"] == rt.read_version("rec_by_id")
     assert out["read_version"] != rt.read_version("open_recs")
     assert h.action_describe({}, None)["verbs"]["rec_by_id"]["read_version"] == out["read_version"]
+
+
+# ---------------------------------------------------------------------------
+# one ducklake_invocation line per invocation (Decision 214)
+# ---------------------------------------------------------------------------
+
+
+def _invocation_lines(out: str) -> list[dict]:
+    return [json.loads(x) for x in out.splitlines() if x.startswith("{") and '"ducklake_invocation"' in x]
+
+
+def test_one_invocation_line_per_path(monkeypatch, capsys):
+    fixed = {"event", "function", "action", "status", "connect_ms", "connect_reused", "reopened", "elapsed_ms"}
+    monkeypatch.setattr(h, "_open_reader_connection", lambda: FakeCon())
+    monkeypatch.setattr(rt, "read_current", lambda con, **kw: [])
+
+    def one(event) -> dict:
+        capsys.readouterr()
+        h.handler(event)
+        lines = _invocation_lines(capsys.readouterr().out)
+        assert len(lines) == 1 and set(lines[0]) == fixed and lines[0]["function"] == "reader"
+        return lines[0]
+
+    ok = one({"action": "read_current", "rec_id": "SECRET-PAYLOAD-VALUE"})
+    assert (ok["action"], ok["status"], ok["connect_reused"], ok["reopened"]) == ("read_current", 200, False, False)
+    assert one({"action": "read_current"})["connect_reused"] is True  # warm reuse
+
+    bad = one({"action": "SECRET-ACTION-NAME"})
+    assert (bad["action"], bad["status"], bad["connect_ms"]) == ("unknown", 400, None)
+    capsys.readouterr()
+    h.handler({"action": "SECRET-ACTION-NAME"})
+    assert "SECRET" not in capsys.readouterr().out
+
+    monkeypatch.setattr(rt, "read_current", lambda con, **kw: (_ for _ in ()).throw(rt.DuckLakeRuntimeError("boom")))
+    assert one({"action": "read_current"})["status"] == 500
+
+    monkeypatch.setattr(rt, "reset_warm_connection", lambda: None)
+    conless = one({"action": "reset_warm_connection"})
+    assert (conless["status"], conless["connect_ms"], conless["connect_reused"]) == (200, None, None)
+
+
+def test_invocation_line_marks_both_reopen_paths(monkeypatch, capsys):
+    monkeypatch.setattr(h, "_open_reader_connection", lambda: FakeCon())
+    calls = {"n": 0}
+
+    def flaky(con, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise Exception("server closed the connection unexpectedly")
+        return []
+
+    monkeypatch.setattr(rt, "read_current", flaky)
+    h.handler({"action": "read_current"})
+    line = _invocation_lines(capsys.readouterr().out)[0]
+    assert line["status"] == 200 and line["reopened"] is True  # mid-statement dead-connection branch
+
+    monkeypatch.setattr(rt, "read_current", lambda con, **kw: [])
+    monkeypatch.setattr(
+        h,
+        "_warm_reader_connection",
+        lambda force_reopen=False: (FakeCon(), {"connect_ms": 9.0, "reused": False, "reopened": True}),
+    )
+    h.handler({"action": "read_current"})
+    line = _invocation_lines(capsys.readouterr().out)[0]
+    assert line["reopened"] is True and line["connect_ms"] == 9.0  # acquisition-time probe reopen
+
+
+def test_invocation_line_on_unparseable_body(capsys):
+    with pytest.raises(json.JSONDecodeError):
+        h.handler({"body": "{not json"})
+    line = _invocation_lines(capsys.readouterr().out)[0]
+    assert (line["action"], line["status"]) == ("unknown", 500)

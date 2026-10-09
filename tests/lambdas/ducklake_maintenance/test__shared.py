@@ -6,6 +6,8 @@ Mirror test for _shared.py -- identifier and data_path guards, 100% line coverag
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 
 from src.common.ducklake_runtime import DuckLakeRuntimeError
@@ -37,3 +39,21 @@ def test_require_data_path_accepts_s3_uri():
 def test_require_data_path_rejects_non_s3_uri(bad):
     with pytest.raises(DuckLakeRuntimeError, match="invalid data_path"):
         _shared._require_data_path(bad)
+
+
+def test_emit_maintenance_metric_forwards_to_rt_emit_metric():
+    with patch.object(_shared.rt, "emit_metric") as mock_emit:
+        _shared._emit_maintenance_metric("SomeMetric", 3.0, profile="agent_platform_admin")
+    mock_emit.assert_called_once_with(
+        "SomeMetric", 3.0, namespace=_shared.maint.MAINTENANCE_CLOUDWATCH_NAMESPACE, profile="agent_platform_admin"
+    )
+
+
+def test_emit_maintenance_metric_passes_dimensions_through():
+    with patch.object(_shared.rt, "emit_metric") as mock_emit:
+        _shared._emit_maintenance_metric("StatsIndexValid", 1.0, dimensions={"MetaSchema": "ducklake_ops"})
+    assert mock_emit.call_args.kwargs["dimensions"] == {"MetaSchema": "ducklake_ops"}
+
+
+def test_data_path_is_the_env_pinned_default():
+    assert _shared.DATA_PATH is None or _shared.DATA_PATH.startswith("s3://")

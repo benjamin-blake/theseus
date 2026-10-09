@@ -94,3 +94,25 @@ def test_make_metric_sink_units():
     units = {d["MetricName"]: d["Unit"] for d in captured}
     assert units["CommitLatencyMs"] == "Milliseconds"
     assert units["OccRetryCount"] == "Count"
+
+
+def test_log_invocation_fixed_fields(capsys):
+    import json
+
+    from src.common.ducklake_metrics import log_invocation
+
+    log_invocation("reader", "named_read", 200, 12.5, True, False, 33.333)
+    line = capsys.readouterr().out.strip()
+    assert json.loads(line) == {
+        "event": "ducklake_invocation",
+        "function": "reader",
+        "action": "named_read",
+        "status": 200,
+        "connect_ms": 12.5,
+        "connect_reused": True,
+        "reopened": False,
+        "elapsed_ms": 33.33,
+    }
+    assert "\n" not in line
+    with pytest.raises(TypeError):
+        log_invocation("reader", "x", 200, None, None, False, 1.0, payload="secret")  # type: ignore[call-arg]

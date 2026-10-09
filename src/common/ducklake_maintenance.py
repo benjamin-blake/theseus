@@ -45,6 +45,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
+from src.common import ducklake_catalog_index_status
 from src.common.ducklake_runtime import CATALOG_ALIAS, SMOKE_CURRENT_TABLE, SMOKE_HISTORY_TABLE, libpq_conninfo
 
 # A bare SQL identifier (meta-schema name) -- guards the f-string-interpolated catalog_stats query.
@@ -471,6 +472,8 @@ def catalog_stats(
     conn = connect(libpq_conninfo(dsn))
     try:
         with conn.cursor() as cur:
+            # Read FIRST: the per-ops-table failure branch below leaves the non-autocommit transaction aborted.
+            stats_index = ducklake_catalog_index_status.catalog_index_status(cur, meta_schema)
             # Exact bytes per metadata table + estimated rows, in one query (no per-table count scan).
             cur.execute(
                 "SELECT c.relname, pg_total_relation_size(c.oid), c.reltuples::bigint "
@@ -516,6 +519,7 @@ def catalog_stats(
         "metadata_tables": metadata_tables,
         "per_ops_table": per_ops_table,
         "per_ops_table_note": per_ops_note,
+        "stats_index": stats_index,
     }
 
 
