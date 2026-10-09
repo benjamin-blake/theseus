@@ -163,6 +163,81 @@ locals {
           # the boundary's (no circular resource reference).
           "arn:aws:iam::${var.account_id}:policy/agent-platform-github-ci-apply-reads",
         ]
+      },
+      {
+        # URL-only invariant (Decision 213 cl.1). A handler that trusts requestContext.authorizer.iam is safe
+        # only while every non-URL path to it is closed, so the three statements here and below close those
+        # paths for the DuckLake writer, reader and telemetry writer. The telemetry writer is named before
+        # its function exists, which IAM accepts. lambda:InvokedViaFunctionUrl is false on a direct call and
+        # true through the Function URL (live-verified 2026-10-06); BoolIfExists also denies a call that
+        # carries no such key at all.
+        Sid    = "DenyDuckLakeDirectInvoke"
+        Effect = "Deny"
+        Action = [
+          "lambda:InvokeFunction",
+          "lambda:InvokeAsync"
+        ]
+        Resource = [
+          "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-writer",
+          "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-writer:*",
+          "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-reader",
+          "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-reader:*",
+          "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-telemetry-writer",
+          "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-telemetry-writer:*",
+        ]
+        Condition = {
+          BoolIfExists = {
+            "lambda:InvokedViaFunctionUrl" = "false"
+          }
+        }
+      },
+      {
+        # A boundary cannot see service principals, so the resource-policy path is denied at its control
+        # point: no bounded identity, the CI apply role included, may grant a service principal or another
+        # account a way in that bypasses the Function URL. Both generations of the API are named: Add and
+        # RemovePermission edit one statement, while PutResourcePolicy and DeleteResourcePolicy replace or
+        # drop the whole function policy. Unconditioned on purpose.
+        Sid    = "DenyDuckLakeResourcePolicyEdit"
+        Effect = "Deny"
+        Action = [
+          "lambda:AddPermission",
+          "lambda:RemovePermission",
+          "lambda:PutResourcePolicy",
+          "lambda:DeleteResourcePolicy"
+        ]
+        Resource = [
+          "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-writer",
+          "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-writer:*",
+          "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-reader",
+          "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-reader:*",
+          "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-telemetry-writer",
+          "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-telemetry-writer:*",
+        ]
+      },
+      {
+        # Event source mappings are the third non-URL path: a mapping makes the Lambda service itself invoke
+        # the function, outside any identity check. CreateEventSourceMapping has no function resource to
+        # name, so the Deny sits on the wildcard and is keyed on lambda:FunctionArn. PlatformAdmin and root
+        # are outside this boundary by design (Decision 144 cl.3) and remain the trusted operators.
+        Sid    = "DenyDuckLakeEventSourceMapping"
+        Effect = "Deny"
+        Action = [
+          "lambda:CreateEventSourceMapping",
+          "lambda:UpdateEventSourceMapping"
+        ]
+        Resource = ["*"]
+        Condition = {
+          ArnLike = {
+            "lambda:FunctionArn" = [
+              "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-writer",
+              "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-writer:*",
+              "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-reader",
+              "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-reader:*",
+              "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-telemetry-writer",
+              "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-telemetry-writer:*",
+            ]
+          }
+        }
       }
     ]
   })

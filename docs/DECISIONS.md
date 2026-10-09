@@ -2,6 +2,53 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 213: An identity-trusting Lambda is reachable only through its AWS_IAM Function URL, enforced in the permissions boundary; telemetry writes get their own function and their own scoped catalog login (amends Decision 81 clauses 1, 5, 6 and 7, Decision 91 clause 1 and Decision 126) (Decided)
+
+```yaml
+number: 213
+status: Decided
+decided_date: "2026-10-09"
+amends: [81, 91, 126]
+significance:
+  value: numbered_decision
+  justification: "Durable IAM and runtime-artifact commitments with reversal conditions: amends Decision 81 cl.1/5/6/7, 91 cl.1 and 126's admin tier; a governance note in ducklake_writer.yaml cannot carry a cross-function boundary invariant, and amendment_forms annotations cannot add the URL-only rule, the login model or an admin carve-out."
+```
+
+**Status:** Decided
+**Date:** 2026-10-09
+**Warehouse ID:** dec-213 (per Decision 84 backfill)
+
+**Problem:** A direct lambda:Invoke delivers the caller's raw payload as the event, so any holder of lambda:InvokeFunction can forge requestContext.authorizer.iam. Telemetry derives the tenant from that field (Decision 200 cl.1). Telemetry verbs were headed for the shared ops writer, which every agent and CI identity can invoke and which carries production-destructive verbs, and every catalog-connecting Lambda shares one database login (created through the Neon API, so likely a neon_superuser member) that reaches both catalogs' metadata.
+
+**Decision:**
+1. URL-only invariant. A handler may trust requestContext.authorizer.iam only when every non-URL path to it is closed. The permissions boundary carries three Deny statements naming by ARN each function whose handler trusts that field (today the telemetry writer) and, as defence in depth, the shared writer and reader: lambda:InvokeFunction / InvokeAsync unless lambda:InvokedViaFunctionUrl is true; lambda:AddPermission / RemovePermission / PutResourcePolicy / DeleteResourcePolicy; and lambda:Create/UpdateEventSourceMapping on lambda:FunctionArn. Every bounded identity's grant of lambda:InvokeFunction on such a function also carries the condition. A new identity-trusting function is named in the boundary, by a human-applied bootstrap change, before it ships.
+2. Telemetry write verbs run on agent-platform-ducklake-telemetry-writer under Decision 143 cl.3. Its role reaches S3 only on the telemetry catalog's data prefix and its fenced blob root, never the production ducklake/ prefix; it never carries a destructive or drop verb. The shared writer stays the sole ops_* write authority and keeps refusing telemetry boundaries. Amends Decision 81: cl.1's runtime artifacts are writer, reader, maintenance, maintenance_smoke, catalog_dr and telemetry_writer (catalog_dr was never listed); cl.5 (as widened by Decision 210) and cl.7 read as one write-time enforcement chokepoint per table, the closed boundary covering both writers. Amends Decision 91 cl.1: an identity-scoped verb set may live on its own function; OQ.15's thin-verb Lambdas are not reopened.
+3. Scoped catalog logins. The telemetry writer connects as its own SQL-created Postgres role, DML-only on its catalog's metadata schema, with a connection limit and its own secret; the role is defined in a version-controlled migration that the RDS swap re-runs. Schema migrations stay an admin step under the owner login.
+4. Detection. CloudTrail data events are logged for the named functions on the Decision 202 trail.
+5. Amends Decision 126's admin tier and, for this verb only, Decision 81 cl.6: an ADMIN-container agent may write the scoped login's secret value and invoke ducklake_maintenance's provision_telemetry_login (migration plus password) only under explicit human direction, presenting each mutation and executing it after the human accepts (the Decision 204 cl.2 shape). The password is never displayed or stored outside Secrets Manager.
+6. Authorizes docs/contracts/iam-simulate-fixture.yaml's structural budget at 650 for the URL-only simulate rows (Decision 165).
+
+**Rationale:** The boundary is the one layer every bounded principal carries and agents cannot edit (Decision 143 cl.1, Decision 144); a boundary cannot see service principals or event source mappings, so those paths are closed at their control points. Live probe 2026-10-06: the Function URL needs both InvokeFunction and InvokeFunctionUrl, and lambda:InvokedViaFunctionUrl separates URL from direct calls in identity evaluation.
+
+**Coverage (Decision 181 cl.2):** direct invoke by bounded principals -- the boundary Deny and the per-grant conditions; resource-policy and event-source paths -- the two further Denies; continuous proof -- the telemetry writer's deploy gate asserts a direct DryRun invoke is denied by the permissions boundary (the denial names it), and the post-apply simulate rows expect explicitDeny; defence in depth -- the handler rejects a missing requestContext. Residuals with owning recs: PlatformAdmin and root (unbounded by Decision 144 cl.3, trusted operators; alarm on non-URL invokes, rec-4204); the apply guard's EventBridge safe shape and the repo checks that keep the boundary list, grant conditions and guard routing in sync (rec-4203); before 2c, the PR CI role's writer invoke (rec-4205), create_ops_tables force_recreate on the CI-reachable writer (rec-4206), and the producer identity model with the telemetry writer's re-sizing (rec-4207); cl.5's per-mutation human confirmation is instruction-enforced (rec-4098).
+
+```yaml reversal-conditions
+decision: 213
+review_by: 2027-04-30
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: condition-key-semantics-change
+    kind: manual
+    description: "AWS changes lambda:InvokedViaFunctionUrl semantics or the deploy gate's direct-invoke check stops reporting a boundary denial: re-decide clause 1."
+  - id: scoped-login-blocks-verbs
+    kind: manual
+    description: "The scoped login cannot run a telemetry verb that needs no destructive privilege: re-examine the grant set before widening it."
+```
+
+**Related:** Decision 81 (amended), 91 (amended), 126 (amended), 143 cl.1/cl.3, 144 cl.1/cl.3, 200 cl.1, 202, 204 cl.2, 210, 181 cl.2, 165, 84 I-1, 98, 107, 157, 177.
+
+---
+
 ## Decision 212: Port independence and conformance -- one conformance suite per port against a credential-free oracle, cross-port coupling is a defect, the ops store is three ports, one file declares the bundle (amends Decision 184 clause 2 and Decision 197 clause 2) (Decided)
 
 ```yaml
@@ -5815,6 +5862,11 @@ admin tier: an ADMIN-container agent may invoke two named partition-layout maint
 explicit human direction, rather than only filing a rec. `deploy-paths.yaml`'s admin_out_of_band
 index now names this carve-out beside bootstrap-root and IAM/trust/destroy admin-only work.]
 
+[Amendment 2026-10-09, Decision 213 cl.5: the operator-only admin tier is carved out a second time beside
+Decision 204's: an ADMIN-container agent may write the telemetry writer's scoped-login secret value and invoke
+ducklake_maintenance's provision_telemetry_login only under explicit human direction, presenting each
+mutation. `deploy-paths.yaml`'s admin_out_of_band.scoped_login_provisioning indexes it.]
+
 ---
 
 ## Decision 125: Ratify decoupling DuckLake Lambda code deploys from terraform/personal infra apply (environment-taxonomy.md section 5 conformance) (Decided)
@@ -7741,6 +7793,10 @@ two-principal allow-list retained; state:pending unchanged), CD.33 (closed read/
 OQ.15 (resolved to option (a) here), T0.6 (closed via supersession), T0.7a/b/c/T1.1/T1.2/T1.3
 (re-grounded; still not_started), ROADMAP-PLATFORM.yaml.
 
+[Amendment 2026-10-09, Decision 213: clause 1's identity-scoped verb sets may live on their own function
+(the telemetry writer); OQ.15's thin-verb Lambdas are not reopened. The realized DuckLakeInvokeRuntime grant
+is now split into DuckLakeInvokeUrl and DuckLakeInvokeViaUrlOnly, so a direct invoke is no longer authorized.]
+
 ---
 
 ## Decision 90: Four-Tier Workflow Architecture (Decided)
@@ -8222,6 +8278,12 @@ history MERGE on the write ULID).]
 [Amendment 2026-09-29, Decision 210: clause 5's schema-enforcement chokepoint is widened to every write-decidable data rule, not only types (ops-writer
 residual owned by rec-4158); clause 8's in-transaction referential existence check is write-owned under Decision 210,
 while uniqueness under the concurrent-append race stays DQ.]
+
+[Amendment 2026-10-09, Decision 213: clause 1's runtime artifacts are writer, reader, maintenance,
+maintenance_smoke, catalog_dr and telemetry_writer (catalog_dr was never listed here); clauses 5 and 7 read
+as one write-time enforcement chokepoint per table, the closed boundary covering both the shared writer and
+the telemetry writer; clause 6's "no LLM / agent invocation" carve-out gains a third maintenance verb,
+provision_telemetry_login, invocable by an ADMIN-container agent only under explicit human direction.]
 
 ---
 

@@ -25,11 +25,14 @@ contract:
     and merge_ops (every 6h) / gc_ops (weekly, ENABLED per gc-ops-baseline-gate-and-schedule-enable) run against the PRODUCTION catalog
     (ducklake_ops, data_path + meta_schema supplied by the EventBridge target). OPERATIONAL actions
     (catalog_reinit, restore_drill, catalog_stats, reconcile_columns, reconcile_partitions,
-    rewrite_partition_layout) are human-invoked over 443 via `aws lambda invoke` against the
-    PRODUCTION catalog with explicit data_path + meta_schema event params (no-arg invokes
-    refused). The scheduled path is agent-free (CD.33 cl.5 / Decision 81 cl.6); an ADMIN-container
+    rewrite_partition_layout, provision_telemetry_login) are human-invoked over 443 via `aws lambda
+    invoke`; all but the last target the PRODUCTION catalog with explicit data_path + meta_schema
+    event params (no-arg invokes refused), and provision_telemetry_login takes only its confirm token.
+    The scheduled path is agent-free (CD.33 cl.5 / Decision 81 cl.6); an ADMIN-container
     agent may invoke reconcile_partitions / rewrite_partition_layout only under explicit human
-    direction (Decision 204), per docs/contracts/ducklake-partition-remediation.yaml's procedure.
+    direction (Decision 204), per docs/contracts/ducklake-partition-remediation.yaml's procedure,
+    and provision_telemetry_login likewise (Decision 213 cl.5), per docs/contracts/deploy-paths.yaml
+    admin_out_of_band.scoped_login_provisioning.
     Singleton via reserved_concurrent_executions=1. This contract documents the
     SCHEDULED + OPERATIONAL verb surface only; the forced-trip guard-set test action breaker_probe
     is VP instrumentation (analogous to the writer/reader probes), NOT an operational verb, and is
@@ -41,14 +44,15 @@ contract:
       EventBridge-triggered (merge daily 04:00 UTC -> smoke; gc weekly 05:00 UTC Sun -> smoke;
       hot_merge cron(0 */6 * * ? *) -> smoke; merge_ops cron(30 */6 * * ? *) -> PRODUCTION
       ducklake_ops). OPERATIONAL actions (catalog_reinit, restore_drill, catalog_stats,
-      reconcile_columns, reconcile_partitions, rewrite_partition_layout) are human-invoked over 443
-      via `aws lambda invoke` (AWS_IAM); the two partition verbs are additionally invokable by an
-      ADMIN-container agent only under explicit human direction (Decision 204). Singleton:
+      reconcile_columns, reconcile_partitions, rewrite_partition_layout, provision_telemetry_login)
+      are human-invoked over 443 via `aws lambda invoke` (AWS_IAM); the two partition verbs
+      (Decision 204) and provision_telemetry_login (Decision 213 cl.5) are additionally invokable by
+      an ADMIN-container agent only under explicit human direction. Singleton:
       reserved_concurrent_executions=1 (Decision 81 cl.6).
     principal_classes:
       - "events.amazonaws.com (EventBridge service principal; scheduled merge / gc / hot_merge -> smoke, merge_ops -> production)"
-      - "PlatformAdmin (human-invoked operational actions: catalog_reinit / restore_drill / catalog_stats / reconcile_columns / reconcile_partitions / rewrite_partition_layout)"
-      - "ADMIN-container agent, human-directed only (reconcile_partitions / rewrite_partition_layout, Decision 204)"
+      - "PlatformAdmin (human-invoked operational actions: catalog_reinit / restore_drill / catalog_stats / reconcile_columns / reconcile_partitions / rewrite_partition_layout / provision_telemetry_login)"
+      - "ADMIN-container agent, human-directed only (reconcile_partitions / rewrite_partition_layout, Decision 204; provision_telemetry_login, Decision 213 cl.5)"
     admin_only_features:
       - "Human-invoked operational actions are PlatformAdmin-only by invocation path (aws lambda invoke), not by an in-handler ARN check; the boundary is IAM-role scoping."
       - "catalog_reinit: the only CATALOG-STRUCTURE destructive action (meta-schema drop + reinit, IRREVERSIBLE); requires confirm=<meta_schema> and an explicit s3:// data_path (no production default). NB: gc is separately DATA-FILE destructive (see audit_invariants)."
@@ -57,13 +61,15 @@ contract:
       - "catalog_stats: read-only catalog-metadata footprint (psycopg2 metadata read; ATTACH-free; requires explicit meta_schema)."
       - "reconcile_partitions (Decision 204): no-op-free ALTER TABLE SET PARTITIONED BY on live-vs-declared partition drift; dry_run=true by default; requires explicit data_path + meta_schema."
       - "rewrite_partition_layout (Decision 204): row-preserving re-lay of a HISTORY table's legacy-scheme files, digest-proven before and after commit; requires confirm=<table> plus the table's own rewrite_partition_layout policy cell to apply (control refuses)."
+      - "provision_telemetry_login (Decision 213): applies the password-free scoped-login migration and sets the telemetry writer role's password from its secret, as the ducklake_ops owner login; requires confirm=ducklake_telemetry_writer, takes no other input (no caller-supplied SQL, role or secret name); non-destructive to data."
     human_initiated_value: >-
       catalog_reinit / restore_drill / catalog_stats / reconcile_columns / reconcile_partitions /
-      rewrite_partition_layout are human-invoked (aws lambda invoke) with explicit catalog params;
+      rewrite_partition_layout / provision_telemetry_login are human-invoked (aws lambda invoke) with
+      explicit catalog params (provision_telemetry_login: its confirm token);
       no-arg invokes are refused so they can never hit the smoke catalog by accident (Decision
       84/81 guard). The two partition verbs are additionally never autonomous when an ADMIN-agent
       invokes them -- each mutation (the ALTER, and each table's rewrite) is confirmed by the human
-      first (Decision 204). merge / gc / hot_merge / merge_ops are EventBridge-scheduled, NOT
+      first (Decision 204); provision_telemetry_login is held to the same rule (Decision 213 cl.5). merge / gc / hot_merge / merge_ops are EventBridge-scheduled, NOT
       human-initiated (merge_ops hits PRODUCTION on the schedule with params supplied by the
       EventBridge target).
   provisional_v0:
@@ -342,10 +348,30 @@ verbs:
     typed_errors:
       runtime: "confirm mismatch, a refused precondition (non-history / zero legacy files / still drifted / not classified), OCC retry exhaustion, a digest mismatch, or a post-commit proof failure (500)"
       version_mismatch: "DuckDB/extension version mismatch (500)"
+  provision_telemetry_login:
+    payload_schema_ref: >-
+      event envelope {action: "provision_telemetry_login", confirm: "ducklake_telemetry_writer"}.
+      OPERATIONAL (human-invoked, or an ADMIN-container agent under explicit human direction,
+      Decision 213 cl.5): as the ducklake_ops owner login it applies the password-free role migration
+      (ducklake_telemetry_writer_role.sql, bundled with the function), reads the scoped login's secret
+      (refused unless its username, host and dbname match the owner DSN's and its sslmode is require),
+      sets the role's password from it as a bound parameter, then connects AS the scoped login to
+      report its reach. No caller-supplied SQL, role or secret name; refuses without the confirm token
+      before any connection. Idempotent (rotation and the RDS swap re-run it). First run, rotation and
+      the RDS swap procedure: docs/contracts/deploy-paths.yaml admin_out_of_band.scoped_login_provisioning.
+    response_codes:
+      200: >-
+        {ok, migration_applied, migration_sha256, password_set, owner_is_neon_superuser_member (boolean,
+        null where no neon_superuser role exists), scope {smoke_usage, ops_usage, smoke_create,
+        ops_create, public_create, database_create, connection_limit}, metadata_readable} -- booleans,
+        counts and the migration hash only; never a host, DSN or password
+      500: "DuckLakeRuntimeError: missing/wrong confirm, a scoped secret that differs from the owner DSN, or a database error naming only its class and SQLSTATE"
+    typed_errors:
+      runtime: "missing/wrong confirm, a scoped secret that differs from the owner DSN, or a database error (class and SQLSTATE only) (500)"
 audit_invariants:
   - "Singleton: reserved_concurrent_executions=1 enforces a single concurrent maintenance run (Decision 81 cl.6)."
-  - "The scheduled path is agent-free (CD.33 cl.5 / Decision 81 cl.6); an ADMIN-container agent may invoke reconcile_partitions / rewrite_partition_layout only under explicit human direction, confirming each mutation (Decision 204 -- see docs/contracts/ducklake-partition-remediation.yaml's procedure for the agent-led run)."
-  - "Scheduled merge/gc/hot_merge operate on the SMOKE catalog (ducklake_smoke); merge_ops and gc_ops are ALSO EventBridge-scheduled (every 6h / weekly respectively) but target the PRODUCTION catalog (ducklake_ops) with data_path+meta_schema supplied by the EventBridge target -- gc_ops's rule is ENABLED (gc-ops-baseline-gate-and-schedule-enable). The human-invoked operational actions (catalog_reinit/restore_drill/catalog_stats/reconcile_columns/reconcile_partitions/rewrite_partition_layout) target production via explicit params and refuse no-arg invokes."
+  - "The scheduled path is agent-free (CD.33 cl.5 / Decision 81 cl.6); an ADMIN-container agent may invoke reconcile_partitions / rewrite_partition_layout only under explicit human direction, confirming each mutation (Decision 204 -- see docs/contracts/ducklake-partition-remediation.yaml's procedure for the agent-led run), and provision_telemetry_login likewise (Decision 213 cl.5 -- deploy-paths.yaml admin_out_of_band.scoped_login_provisioning)."
+  - "Scheduled merge/gc/hot_merge operate on the SMOKE catalog (ducklake_smoke); merge_ops and gc_ops are ALSO EventBridge-scheduled (every 6h / weekly respectively) but target the PRODUCTION catalog (ducklake_ops) with data_path+meta_schema supplied by the EventBridge target -- gc_ops's rule is ENABLED (gc-ops-baseline-gate-and-schedule-enable). The human-invoked operational actions (catalog_reinit/restore_drill/catalog_stats/reconcile_columns/reconcile_partitions/rewrite_partition_layout) target production via explicit params and refuse no-arg invokes; provision_telemetry_login takes only its confirm token and is non-destructive to data."
   - "GC (both gc and gc_ops) is guarded by the fail-closed G1-G4 guard set (reachability, retention floor, catalog sanity, an absolute per-pass deletion bound); a G1/G2/G3 trip raises DuckLakeMaintenanceError, emits MaintenanceBreakerTrip=1, and deletes nothing, while a G4 over-budget pass defers the whole destructive step instead. The forced-trip breaker_probe action (out of contract scope) exists to prove G1. gc_ops additionally runs an INDEPENDENT post-pass safety check (referenced_missing against a real storage listing, plus a value-scanning read-path re-read) that G1-G4 do not perform, because gc_ops's live set is UNIVERSAL (every table, no policy input) rather than scoped by maintenance_policy."
   - "Three destructive paths exist: catalog_reinit is CATALOG-STRUCTURE destructive (meta-schema drop + reinit; confirm=<meta_schema>-guarded; IRREVERSIBLE); gc / gc_ops are DATA-FILE destructive (snapshot expiry + orphan-file deletion on the happy path), guarded by the G1-G4 guard set, not a confirm token (gc_ops additionally supports dry_run=true); and rewrite_partition_layout is ROW-PRESERVING but DATA-FILE destructive until snapshot expiry (the legacy-scheme files are superseded, not deleted), confirm=<table>-guarded, history tables only (Decision 204)."
   - "maintenance_policy governs PER-TABLE-SCOPED verbs only -- its production consumers are merge_ops, reconcile_partitions and rewrite_partition_layout (Decision 204); gc_ops NEVER reads it or calls scope.resolve_scope, because a catalog-wide destructive verb takes no policy cell (filtering its live set would narrow what the guards can SEE, never what gets deleted)."
@@ -450,4 +476,15 @@ amendment_log:
       its own apply=false policy cell (no prose change needed -- the existing control-class
       refusal prose already generalizes). No destructive-path count or guard-set invariant
       changed.
+  - date: "2026-10-09"
+    semantic_break: true
+    change_class: field_add
+    summary: >-
+      PLAN-url-only-invoke-guard (Decision 213 cl.5): added the OPERATIONAL verb
+      provision_telemetry_login (confirm=ducklake_telemetry_writer; applies the scoped telemetry
+      login's migration and sets its password from its secret; booleans, counts and the migration hash
+      only). Real behaviour, not prose-only: it is additionally invokable by an ADMIN-container agent
+      under explicit human direction, a third verb beside the two partition verbs in Decision 81 cl.6's
+      "no LLM / agent invocation" carve-out, restated in the description, governance and
+      audit_invariants. It is non-destructive to data, so the destructive-path invariant is unchanged.
 previous_versions: []

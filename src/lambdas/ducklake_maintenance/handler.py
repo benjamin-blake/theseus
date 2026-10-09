@@ -18,8 +18,8 @@ seed_ops_recommendations bootstrap action was removed at the 2026-06-09 recs sig
 boundary now admits recs writes only via the portal `file_rec`/`update_rec` -> writer path,
 Decision 81 cl.7.)
 
-The scheduled path is agent-free; an ADMIN-container agent may invoke the partition-layout verbs
-only under explicit human direction, Decision 204 (amending CD.33 clause 5 / Decision 81 clause 6).
+The scheduled path is agent-free; an ADMIN-container agent may invoke the partition-layout verbs (Decision 204)
+and provision_telemetry_login (Decision 213) only under explicit human direction (CD.33 clause 5 / Decision 81 cl.6).
 Singleton enforced by reserved_concurrent_executions=1 (Decision 81 clause 6; see Terraform).
 
 See src/common/ducklake_maintenance.py::MAINTENANCE_SCOPE_NOTE.
@@ -37,7 +37,7 @@ from src.common import ducklake_gc_ops as gc_ops_body
 from src.common import ducklake_maintenance as maint
 from src.common import ducklake_maintenance_scope as scope
 from src.common import ducklake_runtime as rt
-from src.lambdas.ducklake_maintenance import partition_actions
+from src.lambdas.ducklake_maintenance import login_actions, partition_actions
 from src.lambdas.ducklake_maintenance._shared import EXTENSION_DIRECTORY, _require_identifier
 
 # T2.26: control_health is read-mostly (asserts invariants, never mutates), so -- unlike the
@@ -574,6 +574,7 @@ _ACTIONS: dict[str, Any] = {
     "control_health": action_control_health,
     "reconcile_partitions": partition_actions.action_reconcile_partitions,
     "rewrite_partition_layout": partition_actions.action_rewrite_partition_layout,
+    "provision_telemetry_login": login_actions.action_provision_telemetry_login,
 }
 
 

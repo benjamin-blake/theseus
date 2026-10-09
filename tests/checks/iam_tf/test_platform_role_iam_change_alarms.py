@@ -27,6 +27,7 @@ from tests.checks.iam_tf._platform_security_hcl import (
     _block_body,
     _local_map,
     _local_string,
+    _mask,
     _resource_body,
     _resources,
     _strip_comments,
@@ -115,7 +116,11 @@ def trail_problems(trail_text: str) -> list[str]:
         for a in ("is_multi_region_trail", "include_global_service_events", "enable_log_file_validation", "enable_logging")
         if not _is_true(body, a)
     ]
-    if not re.search(r'read_write_type\s*=\s*"All"', body) or not re.search(r"include_management_events\s*=\s*true", body):
+    selectors = [_block_body(body, m.end() - 1) for m in re.finditer(r"\bevent_selector\s*\{", _mask(body))]
+    if not any(
+        re.search(r'read_write_type\s*=\s*"All"', s) and re.search(r"include_management_events\s*=\s*true", s)
+        for s in selectors
+    ):
         problems.append("trail does not log All management events")
     if "aws_cloudwatch_log_group.platform_security_trail.arn" not in (_attr(body, "cloud_watch_logs_group_arn") or ""):
         problems.append("trail does not deliver to the platform-security log group")
@@ -449,7 +454,21 @@ _PATTERN_REDS: list[tuple] = [
         "",
     ),
 ]
+_MGMT = '  event_selector {\n    read_write_type           = "All"\n    include_management_events = true\n  }\n'
+
+
+_DEPENDS = "  depends_on = [\n    aws_s3_bucket_policy"
+
+
+def _data_first(mgmt: str) -> str:
+    assert _MGMT in _trail() and _DEPENDS in _trail(), "the selector text this reordering relies on moved"
+    return _trail().replace(_MGMT, "", 1).replace(_DEPENDS, mgmt + "\n" + _DEPENDS, 1)
+
+
 _OTHER_REDS: dict[str, Callable[[], list[str]]] = {
+    "data selector first, write-only management second": lambda: trail_problems(
+        _data_first(_MGMT.replace('"All"', '"WriteOnly"'))
+    ),
     "sixth alarm": lambda: alarm_problems(
         _alarms()
         + '\nresource "aws_cloudwatch_metric_alarm" "platform_security_extra" {\n  alarm_name = "platform-security-x"\n}\n'
@@ -519,6 +538,9 @@ def _pattern_red(label: str, name: str, old: str, new: str | None = None) -> lis
 class TestPlatformRoleIamChangeDetector:
     def test_trail(self) -> None:
         assert trail_problems(_trail()) == []
+
+    def test_trail_selector_order_is_irrelevant(self) -> None:
+        assert trail_problems(_data_first(_MGMT)) == []
 
     def test_bucket(self) -> None:
         assert bucket_problems(_trail()) == []

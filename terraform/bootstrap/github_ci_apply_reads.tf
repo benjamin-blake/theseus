@@ -103,6 +103,11 @@ locals {
           # in the PassRole-completion PR; the matching oidc.tf planner-read entry is added in the
           # DEP-02 create PR and both entries are removed together in the DEP-02 revert PR.
           "arn:aws:iam::${var.account_id}:role/agent-platform-probe-liveproof-role",
+          # Decision 213: pre-staged ahead of the role's own creation, the same precedent as the
+          # probe-liveproof entry above. PLAN-telemetry-writer-function creates
+          # agent-platform-ducklake-telemetry-writer; without this entry the gated apply's own
+          # iam:GetRole after that create, and every later plan's refresh, fail closed.
+          "arn:aws:iam::${var.account_id}:role/agent-platform-ducklake-telemetry-writer",
         ]
       },
       {

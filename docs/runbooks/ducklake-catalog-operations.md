@@ -301,7 +301,7 @@ Never relax a guard to pass, on any of the four causes.
 ### Manual invoke runbook
 
 All recipes below invoke `agent-platform-ducklake-maintenance`, an admin-gated singleton --
-PlatformDev's `DuckLakeInvokeRuntime` grant is scoped to the writer/reader Lambdas only, so every
+PlatformDev's `DuckLakeInvokeUrl` and `DuckLakeInvokeViaUrlOnly` grants are scoped to the writer/reader/telemetry-writer Lambdas only, so every
 recipe here runs under `agent_platform_admin` (Decision 143 blast radius; maintenance stays
 break-glass, never widened to remove the operator step).
 
