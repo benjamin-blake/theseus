@@ -90,14 +90,16 @@ scope:
     New registered check validate_actions_account_id_masking (filesystem-only, no network). Fails on: (R1) any
     match of the regular expression vars.AWS_ACCOUNT_ID (grep semantics: the dot matches any character) in any file of any
     extension under .github/workflows or .github/actions, a raw-text scan at least as strong as rec-4211's original grep
-    -rq over the same two paths; (R2) any YAML string scalar under either tree that
-    holds both arn:aws and a ${{ ... vars. ... }} expression; (R3) any workflow step using aws-actions/configure-aws-credentials
+    -rq over the same two paths; (R2) any YAML string scalar under either tree that holds both arn:aws and a ${{ }}
+    expression using the vars context as a whole token (not a substring such as steps.tfvars.outcome); (R3) any workflow step using aws-actions/configure-aws-credentials
     whose with.role-to-assume does not reference secrets.AWS_ACCOUNT_ID, or that has no reference to
     secrets.AWS_ROLE_ID_ACCOUNT_PART in its step env, its job env, or the workflow's top-level env, where the top-level env
     counts only when every job in that workflow has a sign-in step (so a hoist can never put a secret into a deliberately
     secretless job, Decision 143 / Decision 201 cl.4); (R4) any composite action under .github/actions
-    that uses configure-aws-credentials (a composite cannot reference secrets, so job-wide masking could not be guaranteed).
-    Calls registry.examined() with the count of assume-role steps scanned (Decision 170). The module docstring states why
+    that uses configure-aws-credentials (a composite cannot reference secrets, so job-wide masking could not be guaranteed);
+    (R5) any workflow top-level env value referencing secrets.AWS_ACCOUNT_ID or secrets.AWS_ROLE_ID_ACCOUNT_PART in a workflow
+    where some job has no sign-in step, even when every sign-in step also carries its own reference (so the R3 allowance
+    cannot be bypassed by a redundant hoist, and Decision 143's secretless jobs stay secretless). Calls registry.examined() with the count of assume-role steps scanned (Decision 170). The module docstring states why
     each value must be its own secret: the runner masks exact registered values, so a secret holding a whole ARN would not
     mask the bare ID where sts output or an AWS error prints it, and the role-ID part is a different string.
 - file: scripts/checks/ci_guards/_manifest.py
@@ -117,13 +119,18 @@ scope:
   action: Create
   purpose: >-
     Inline-fixture tests (the validate_oidc_failopen_guards test pattern, ROOT patched to tmp_path): one red case per rule
-    R1-R4 (including a .sh file under .github/actions for R1, and a workflow-level reference in a workflow with a job that
-    does not sign in for R3), the multi-line folded role-to-assume shape ci.yml's terraform-validate uses, a vars-built ARN
+    R1-R5 (including a .sh file under .github/actions for R1, a steps.tfvars.outcome-style expression beside an ARN that R2
+    must not flag, a workflow-level reference in a workflow with a job that does not sign in for R3, and a redundant
+    workflow-level reference beside per-step ones for R5), the defensive branches the sibling's
+    TestDefensiveBranchesOnMalformedInput covers (unparseable YAML, a non-dict document, non-dict jobs, job or steps) so
+    the new module reaches the full tier's coverage bar, the multi-line folded role-to-assume shape ci.yml's terraform-validate uses, a vars-built ARN
     outside role-to-assume, a compliant workflow that passes, the examined count, and test_real_tree_is_compliant
     (scan_repository on the real tree: zero violations, and examined steps equal to an independent raw-text count of
     uses: aws-actions/configure-aws-credentials lines under both trees, which is above zero), which becomes rec-4211's decidable
     acceptance node. test_real_tree_is_compliant is a module-level function, never a class method, so its junit node id
-    equals the acceptance string exactly (the Decision 201 junit verdict route); other tests may sit in classes. Fixtures
+    equals the acceptance string exactly; other tests may sit in classes. The acceptance uses the bare form pytest
+    <node>, which classify_grammar routes junit (single_node_chain); bin/venv-python -m pytest <node> would route static,
+    because the interpreter's -m is read as pytest's marker selector (open as rec-4099). Fixtures
     use short placeholder account values, never a 12-digit number (the never-commit pre-commit hook blocks one).
 - file: config/agent/verification_registry/entries/actions-account-id-masking-guard.yaml
   action: Create
@@ -161,9 +168,9 @@ acceptance_criteria:
 - >-
   validate_actions_account_id_masking is registered in the pre tier with a manifest Entry and a ci_rca_taxonomy row, calls
   registry.examined(), passes on the real tree with examined steps equal to the raw count of sign-in steps (31 today),
-  and has a red unit case for each of R1-R4.
+  and has a red unit case for each of R1-R5.
 - >-
-  Before the PR is pushed, rec-4211's acceptance is the decidable real-tree node
+  Before the PR is pushed, rec-4211's acceptance is the bare-form junit-routed node pytest
   tests/checks/ci_guards/test_validate_actions_account_id_masking.py::test_real_tree_is_compliant (a module-level test
   function), proved by VP step 5, so the Resolves trailer can close it (Decision 201).
 - >-
@@ -236,13 +243,15 @@ verification_plan:
     201 cl.2 keys the closure verdict on the current acceptance's sha256, and git-ops.yaml forbids the manual route after an
     acceptance-verdict refusal).
   command: >-
-    bin/venv-python -c "from scripts.ops_data_portal import _fetch_rec_from_reader as f; r=f('rec-4211') or {};
-    assert r.get('acceptance')=='bin/venv-python -m pytest tests/checks/ci_guards/test_validate_actions_account_id_masking.py::test_real_tree_is_compliant',
-    r.get('acceptance'); print('ACCEPTANCE_UPDATED')"
+    bin/venv-python -c "from scripts.ops_data_portal import _fetch_rec_from_reader as f; from scripts.rec_trailer_acceptance_junit
+    import classify_grammar as g; r=f('rec-4211') or {}; a=r.get('acceptance');
+    assert a=='pytest tests/checks/ci_guards/test_validate_actions_account_id_masking.py::test_real_tree_is_compliant', a;
+    assert g(a).route=='junit', g(a); print('ACCEPTANCE_UPDATED')"
   expected: Exit 0 and ACCEPTANCE_UPDATED.
   fix_if: >-
-    The old leading-! grep is still stored: run the update_rec call in execution step 4, then re-run this step. Never push
-    the PR with the trailer while this step is red.
+    The old leading-! grep is still stored: run the update_rec call in execution step 4, then re-run this step. A non-junit
+    route means the stored string is not the bare pytest form (bin/venv-python -m pytest routes static, rec-4099). Never
+    push the PR with the trailer while this step is red.
   hermetic: false
   graduation: not-applicable
 - step: 6
@@ -258,8 +267,9 @@ verification_plan:
     curl -sSfL "$LOGS_URL" -o "$LOG_FILE" && test "$(wc -l < "$LOG_FILE")" -gt 0 && ACCT="$(aws sts get-caller-identity
     --profile agent_platform --query Account --output text)" && PART="$(aws sts get-caller-identity --profile agent_platform
     --query UserId --output text | cut -c5-12)" && test -n "$ACCT" && test -n "$PART" && ! grep -qF "$ACCT" "$LOG_FILE" &&
-    ! grep -qF "$PART" "$LOG_FILE" && grep -qF 'arn:aws:iam::***:role/agent-platform-github-ci-pr' "$LOG_FILE" && grep -qF
-    'assumedRoleId AROA***' "$LOG_FILE" && echo PR_LOG_MASKED
+    ! grep -qF "$PART" "$LOG_FILE" && ! grep -qE 'AROA[A-Z2-7]{8}' "$LOG_FILE" && grep -qF
+    'arn:aws:iam::***:role/agent-platform-github-ci-pr' "$LOG_FILE" && grep -qF 'assumedRoleId AROA***' "$LOG_FILE" && echo
+    PR_LOG_MASKED
   expected: Exit 0 and PR_LOG_MASKED.
   fix_if: >-
     No assumedRoleId line: the assume failed, so AWS_ACCOUNT_ID is missing or wrong; ask Benjamin to check it, then re-run
@@ -271,22 +281,23 @@ verification_plan:
 - step: 7
   phase: post-deploy
   action: >-
-    The merge commit's main-validate job (push to main, branch role, fails closed on a bad ARN). Export JOB_CONCLUSION from
-    mcp__github__actions_get(method="get_workflow_job") for that job and LOGS_URL from get_job_logs(return_content=false) as
-    in step 6. The log runs to about 31,000 lines with the sign-in lines near line 140, which is why the full download, not
-    a tailed content read, is required.
+    The merge commit's main-validate job (push to main, branch role, fails closed on a bad ARN). Export LOGS_URL from
+    get_job_logs(return_content=false) as in step 6. The log runs to about 31,000 lines with the sign-in lines near line
+    140, which is why the full download, not a tailed content read, is required. The masking proof does not depend on the
+    job's conclusion: the assumedRoleId line already proves the assume.
   command: >-
-    test "$JOB_CONCLUSION" = success && curl -sSfL "$LOGS_URL" -o "$LOG_FILE" && test "$(wc -l < "$LOG_FILE")" -gt 0 &&
+    curl -sSfL "$LOGS_URL" -o "$LOG_FILE" && test "$(wc -l < "$LOG_FILE")" -gt 0 &&
     ACCT="$(aws sts get-caller-identity --profile agent_platform --query Account --output text)" && PART="$(aws sts
     get-caller-identity --profile agent_platform --query UserId --output text | cut -c5-12)" && test -n "$ACCT" && test -n
-    "$PART" && ! grep -qF "$ACCT" "$LOG_FILE" && ! grep -qF "$PART" "$LOG_FILE" && grep -qF
-    'arn:aws:iam::***:role/agent-platform-github-ci-branch' "$LOG_FILE" && grep -qF 'assumedRoleId AROA***' "$LOG_FILE" &&
-    echo MAIN_LOG_MASKED
+    "$PART" && ! grep -qF "$ACCT" "$LOG_FILE" && ! grep -qF "$PART" "$LOG_FILE" && ! grep -qE 'AROA[A-Z2-7]{8}' "$LOG_FILE"
+    && grep -qF 'arn:aws:iam::***:role/agent-platform-github-ci-branch' "$LOG_FILE" && grep -qF 'assumedRoleId AROA***'
+    "$LOG_FILE" && echo MAIN_LOG_MASKED
   expected: Exit 0 and MAIN_LOG_MASKED.
   fix_if: >-
-    A failed job with no assumedRoleId line means the secret is wrong and every AWS job on main is red: tell Benjamin at
-    once (the fix is the secret value, or a revert PR). A value still present: find which step prints it and RCA (Decision
-    55).
+    No assumedRoleId line means the secret is wrong and every AWS job on main is red: tell Benjamin at once (the fix is the
+    secret value, or a revert PR). The job failed but the assumedRoleId line is present: the masking proof stands, and the
+    failure belongs to ci-rca's main-path handling, not to this step. A value still present: find which step prints it and
+    RCA (Decision 55).
 - step: 8
   phase: post-deploy
   action: >-
@@ -298,13 +309,15 @@ verification_plan:
     ACCT="$(aws sts get-caller-identity --profile agent_platform --query Account --output text)" && PART="$(aws sts
     get-caller-identity --profile agent_platform --query UserId --output text | cut -c5-12)" && test -n "$ACCT" && test -n
     "$PART" && ls "$LOG_DIR"/*.log > /dev/null && for f in "$LOG_DIR"/*.log; do grep -qF 'arn:aws:iam::***:role/' "$f" ||
-    exit 1; done && ! grep -lF "$ACCT" "$LOG_DIR"/*.log && ! grep -lF "$PART" "$LOG_DIR"/*.log && echo POST_MERGE_LOGS_MASKED
+    exit 1; done && ! grep -lF "$ACCT" "$LOG_DIR"/*.log && ! grep -lF "$PART" "$LOG_DIR"/*.log && ! grep -lE
+    'AROA[A-Z2-7]{8}' "$LOG_DIR"/*.log && echo POST_MERGE_LOGS_MASKED
   expected: >-
     Exit 0 and POST_MERGE_LOGS_MASKED; the report lists each workflow and job scanned and each affected workflow that did not
     run in the window.
   fix_if: >-
     A log without the masked role-to-assume line is the wrong job or a truncated download: replace it. A file name printed
-    by grep -l is a job whose log still carries a value: find which step prints it and RCA (Decision 55).
+    by grep -l is a job whose log still carries a value; for the AROA pattern, that is a role whose 8-character part
+    differs from the secret's (any role, apply and deploy included): find which step prints it and RCA (Decision 55).
 - step: 9
   phase: post-deploy
   action: >-
@@ -315,7 +328,8 @@ verification_plan:
     ACCT="$(aws sts get-caller-identity --profile agent_platform --query Account --output text)" && PART="$(aws sts
     get-caller-identity --profile agent_platform --query UserId --output text | cut -c5-12)" && test -n "$ACCT" && test -n
     "$PART" && ls "$LOG_DIR2"/*.log > /dev/null && for f in "$LOG_DIR2"/*.log; do grep -qF 'assumedRoleId AROA***' "$f" ||
-    exit 1; done && ! grep -lF "$ACCT" "$LOG_DIR2"/*.log && ! grep -lF "$PART" "$LOG_DIR2"/*.log && echo WORKFLOW_LEVEL_MASKED
+    exit 1; done && ! grep -lF "$ACCT" "$LOG_DIR2"/*.log && ! grep -lF "$PART" "$LOG_DIR2"/*.log && ! grep -lE
+    'AROA[A-Z2-7]{8}' "$LOG_DIR2"/*.log && echo WORKFLOW_LEVEL_MASKED
   expected: Exit 0 and WORKFLOW_LEVEL_MASKED.
   fix_if: >-
     The role-ID part present in those logs but masked in step-level jobs: workflow-level env does not reach the job's secret
@@ -333,7 +347,7 @@ verification_plan:
 test_obligations:
 - source: scripts/checks/ci_guards/validate_actions_account_id_masking.py
   behavior: >-
-    R1-R4 each fail on their violating shape, including a workflow-level reference in a workflow with a job that does not
+    R1-R5 each fail on their violating shape, including a workflow-level reference in a workflow with a job that does not
     sign in; a compliant tree passes; the real tree passes; the examined count is reported.
   verification_step: 1
   test_selector: tests/checks/ci_guards/test_validate_actions_account_id_masking.py
@@ -477,7 +491,7 @@ context:
   placement only where every job signs in: now rule R3). SPIRIT NOTE 205 (recorded in constraints). RELATED 158/183, 92/94,
   172, 154, 195, 162, 111, 176/189, 125/126, 128. Decisions triaged: 167 of 167. Roadmap items intersected: 7; CONFLICT:
   0; RELATED: 7.
-- "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=PENDING (r1 REVISE: F1-F6 fixed, N1 declined; r2 REVISE: F1-F3 and N1-N5 fixed)"
+- "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=PENDING (r1 REVISE: F1-F6 fixed, N1 declined; r2 REVISE: F1-F3 and N1-N5 fixed; r3 REVISE: F1-F2 and N1-N5 fixed)"
 - >-
   Evidence, 2026-10-09: CI run 37981329942, job terraform-validate (PR #1433) prints role-to-assume with the account ID in its
   configure-aws-credentials header. Its "Authenticated as assumedRoleId AROA..." line also encodes it: the 8 characters
@@ -487,7 +501,10 @@ context:
 - >-
   Runner masking: a secret referenced in a job is masked in every step header and every output line of that job from job
   start, by exact value; the same log shows checkout's token input as ***. Step summaries are masked the same way
-  (inferred, not verified; a recorded residual that no VP step checks). materialise_tfvars.sh already emits ::add-mask:: for account_id, but only after the
+  (inferred, not verified; a recorded residual that no VP step checks). Recorded residuals: the runner drops any job
+  output whose value contains a masked secret (no sign-in job's outputs carry either value today, so a future output
+  carrying an ARN would vanish silently), and masking never reaches text posted through the API (PR comments,
+  check-run summaries, commit-status descriptions) beyond what rec-4230 and rec-4231 own. materialise_tfvars.sh already emits ::add-mask:: for account_id, but only after the
   sign-in header has printed.
 - >-
   Existing public logs keep both copies until GitHub's log retention removes them (at most 90 days on a public repository).
@@ -521,14 +538,15 @@ execution_steps:
   that neither file grew. reconcile.yml's file-reconcile-starved-rec job gains AWS_DEFAULT_REGION from the hoist; that is
   harmless, since its sign-in step already sets aws-region eu-west-2 and exports the same value.
 - >-
-  Before the push, update rec-4211's acceptance through update_rec to bin/venv-python -m pytest
-  tests/checks/ci_guards/test_validate_actions_account_id_masking.py::test_real_tree_is_compliant (equal or stronger than the
+  Before the push, update rec-4211's acceptance through update_rec to pytest
+  tests/checks/ci_guards/test_validate_actions_account_id_masking.py::test_real_tree_is_compliant, the bare form so that
+  classify_grammar routes it junit rather than static (rec-4099) (equal or stronger than the
   original, Decision 181 cl.1: rule R1 scans the same vars.AWS_ACCOUNT_ID text over the same .github/workflows and
-  .github/actions paths as the original grep, and R2-R4 add to it; it passes lint_acceptance_command with
+  .github/actions paths as the original grep, and R2-R5 add to it; it passes lint_acceptance_command with
   require_decidable=True). It must land before ci.yml's trailer closure runs, because the verdict keys on the current
   acceptance's sha256 (Decision 201 cl.2). In the same update_rec call, prepend a dated note to the rec's context: the
   acceptance changed because the original leading-! grep is not decidable under Decision 201, and the replacement node
-  covers the same pattern and paths plus R2-R4. VP step 5 proves it landed.
+  covers the same pattern and paths plus R2-R5. VP step 5 proves it landed and routes junit.
 - Execute VP steps 1-5. Loop until they pass, never weakening an assertion. On an unrecoverable failure stop and RCA (Decision 55).
 - >-
   Closure (implement skill Commit Flows; docs/contracts/git-ops.yaml), each a distinct state: a fresh-context code review
