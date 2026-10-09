@@ -28,14 +28,14 @@ scope:
     pairs, producer, parser_version). Rules, in this order: body keys within the allowlist {action, project_ref,
     component, batches} (so catalog, meta_schema, data_path, tenant_id and project_id are refused with no denylist);
     project_ref a non-empty str; component optional, default 'unknown', else ^[a-z][a-z0-9_-]{0,63}$; batches a non-empty
-    list of objects with exactly the keys table and rows (a malformed batch is request); table in the closed set the
+    list of objects with exactly the keys table and rows (a malformed batch is bad_request); table in the closed set the
     shapes name, each at most once; GENERATION_MARKER_TABLE telemetry_sessions last when present (write_order: inside one
     transaction batch order has no visibility effect, so the rule is a producer tripwire for the cross-request R7 order,
     telemetry-event-envelope.yaml R7); rows a
     list of objects; at least one row in the request; every present producer and parser_version value identical across
     the request (mixed_producer; envelope R1). Two temporary rules owned by rec-4024 and removed by plan 4 live here so
     every plane refuses alike (Decision 210 cl.5; decision scout): a row carrying the table's content-rule uri column is
-    refused (request, reason blob_route_unavailable), and while the table's inline_within_threshold exemption exists an
+    refused (bad_request, reason blob_route_unavailable), and while the table's inline_within_threshold exemption exists an
     inline content whose UTF-8 length exceeds the contract threshold is refused (payload_too_large, rule
     inline_within_threshold, the threshold number). Then every present TIMESTAMP WITH TIME ZONE column is decoded with
     parse_wire_timestamp into new row dicts (schema_gate, reason wire_timestamp). TableShape.from_spec reads an
@@ -43,14 +43,16 @@ scope:
     TYPE_CHECKING (import-linter counts those edges: .importlinter sets no exclude_type_checking_imports): timestamp
     columns, the content rule's inline and uri columns, and the threshold only while exempt. A test pins the module's
     imports to the stdlib and src.telemetry.timestamps. RequestError(ValueError) carries error_type, table, row, column,
-    rule, reason and threshold, and its message names only those, never a value.
+    rule, reason and threshold, and its message names only those, never a value; an undeclared name the caller sent (an
+    unknown body key, table or column) is never carried, only its reason and position.
 - file: src/telemetry/gate.py
   action: Modify
   purpose: >-
     Value-free structured kernel errors (Fable consult part 2 Q3). GateError gains keyword-only table, row, column and
     reason, default None. The closed reason tokens (unknown_column, derived_column, type, range, not_null, required_ref,
     invalid_ref, time_range, grain_key_null) are defined here and used by gate.py and append.py; every raise site in this
-    module passes column and reason; the BIGINT range and
+    module passes column and reason, except that unknown_column carries column None (the caller's undeclared key is never
+    echoed into a body or log; the message may keep naming it for in-process callers); the BIGINT range and
     non-finite DOUBLE messages stop echoing the value. RowRuleGateError(GateError) adds rule and is built from a
     RowRuleError (table, rule, column). GrainConflictError gains table, event_id and row; collapse_or_reject_duplicates
     sets event_id and the 0-based index of the second conflicting row. Existing pinned message texts keep matching.
@@ -100,14 +102,16 @@ scope:
     2026-10-09, /mnt/project-files/telemetry-slice2/evidence-invoke-payload-limit.md); the producer chunks on the same
     measure (relayed to rec-4026). MAX_ROWS_PER_TABLE 2000 and MAX_ROWS_PER_REQUEST 5000. Each a TelemetryRequestError
     413 (payload_too_large naming the measure / too_many_rows) checked before the kernel parse (rows counted only in
-    well-formed batches; a malformed shape is left to the kernel's 400). Event specs and table shapes built once per
+    well-formed batches; a malformed shape is left to the kernel's 400). Event specs and table shapes built lazily on the
+    first call and cached per
     container from the bundled
     field_semantics.yaml. action_append_telemetry(request, con, deps): caps, parse_append_request (a RequestError becomes
-    TelemetryRequestError with its status by error_type: request / write_order / mixed_producer 400, payload_too_large
+    TelemetryRequestError with its status by error_type: bad_request / write_order / mixed_producer 400, payload_too_large
     413, schema_gate 422, and its value-free fields), tenant from part 1's tenant cache, else lookup_tenant on
     request.principal and cached after the read (Decision 88 cl.1(ii); missing -> 403 tenant_unresolved, remedy
     register_tenant), append_request, then the response {ok, tenant_id, project_id,
-    project_registration, tables: {table: {submitted, collapsed, inserted}}, occ_retries, commit_ms}. describe_entry()
+    project_registration, tables: {table: {submitted, collapsed, inserted}}, occ_retries, commit_ms as an integer}.
+    describe_entry()
     gives the verb's description, params_schema and the three caps.
 - file: src/lambdas/ducklake_telemetry_writer/telemetry_log.py
   action: Create
@@ -121,9 +125,12 @@ scope:
     register_project, provision_telemetry, telemetry_probe) the line carries a CloudWatch Embedded Metric Format _aws
     block: namespace DuckLakeTelemetryWriter, metric RequestCount with dimension set [Verb] (five series; operator
     accepted the spend 2026-10-08; no component dimension), with the EMF target members `Verb` and `RequestCount` (value
-    1) at the line's top level beside the lowercase verb field; append_telemetry lines also carry the recording sink's
+    1) at the line's top level beside the lowercase verb field; an append_telemetry line also carries the recording sink's
     OccRetryCount and CommitLatencyMs under an empty dimension set (the series part 1's sink already creates, so no new
-    series). describe and attach_check get the line without the block. append_telemetry makes no PutMetricData call; part
+    series), but that directive and its members appear only when the sink recorded values (a pre-BEGIN 422 or a 409
+    records none, and a directive without its members would invalidate the block and drop RequestCount too). Every
+    millisecond value in the line is an integer and every ratio has 3 decimal places (a raw float repr can carry a
+    12-digit run that a leak scan would misread). describe and attach_check get the line without the block. append_telemetry makes no PutMetricData call; part
     1's other verbs keep their sink; ducklake_metrics.py is unchanged.
 - file: src/lambdas/ducklake_telemetry_writer/handler.py
   action: Modify
@@ -133,8 +140,10 @@ scope:
     row: RowRuleGateError -> 422 row_rule {table, row, rule, column, exclude_before from the spec's rules};
     GateError -> 422 schema_gate {table, row, column, reason}; GrainConflictError -> 409 grain_conflict {table, event_id,
     row}; bodies built from attributes only, never str(exc). (3) The response builder calls telemetry_log.emit_request_line
-    once per answered request, success and every mapped error alike. (4) TelemetryRequest.invoke_bytes is computed from the
-    raw Function URL body string as len(json.dumps(body)) beside part 1's request_bytes.
+    once per answered request, success and every mapped error alike; its verb field is the dispatched action, or 'unknown'
+    when the action is not dispatched (never the caller's string). (4) TelemetryRequest.invoke_bytes is computed from the
+    event's body field as delivered, before any base64 decoding, as len(json.dumps(body_field)) (ASCII-escaped, an upper
+    bound for non-ASCII bodies), beside part 1's request_bytes.
 - file: src/lambdas/ducklake_telemetry_writer/telemetry_actions.py
   action: Modify
   purpose: >-
@@ -172,7 +181,8 @@ scope:
     fraction-less session_started_at -> 422 schema_gate naming the column; a process_event named never_on_main -> 422
     row_rule, rule pattern_when, column name (rec-4176's Decision 48 deferral, plan3-inputs.md); inline content of
     threshold + 1 bytes -> 413 naming inline_within_threshold; a content_uri -> 400; a catalog key -> 400; two producers
-    -> 400 mixed_producer; an unregistered drill: ref -> 403 project_unregistered; an omission row (content_omitted_reason,
+    -> 400 mixed_producer; an unregistered drill: ref, fresh per run (a uuid4 suffix, so an earlier registration cannot
+    flip it) -> 403 project_unregistered; an omission row (content_omitted_reason,
     no content) -> 200; a near-cap request whose invoke measure is exactly MAX_INVOKE_BODY_BYTES, built from escape-dense
     JSON-heavy transcript content under the threshold and within the row caps -> 200, printing "near_cap_commit_ms=" and
     "near_cap_inflation=" (invoke measure over raw bytes); an escape-dense request whose invoke measure is between the cap
@@ -184,7 +194,8 @@ scope:
     created; it first asserts telemetry_probe reports data_path_is_smoke true and FAILS the gate otherwise, so 2c must
     replace it before the function binds production. Prints the markers TELEMETRY_APPEND_OK, TELEMETRY_RESEND_NOOP,
     TELEMETRY_GRAIN_CONFLICT_OK, TELEMETRY_REJECTS_OK, TELEMETRY_NEAR_CAP_OK, TELEMETRY_ROWCAP_OK and
-    TELEMETRY_AUTOREGISTER_OK, the measurement lines, ids and counts only; never an account id, URL or host.
+    TELEMETRY_AUTOREGISTER_OK, the measurement lines (every *_ms an integer, every ratio to 3 decimal places), ids and
+    counts only; never an account id, URL or host.
 - file: scripts/ducklake_smoke/lambda_telemetry_gates.py
   action: Modify
   purpose: lambda_telemetry calls lambda_telemetry_append after part 1's vectors, passing the URL and part 1's registered ref.
@@ -192,11 +203,12 @@ scope:
   action: Modify
   purpose: >-
     Verb append_telemetry: payload_schema_ref (the request shape, component, the three caps), response_codes and
-    typed_errors (400 request / write_order / mixed_producer / bad_request, 403 tenant_unresolved / project_unregistered,
+    typed_errors (400 bad_request / write_order / mixed_producer, the token part 1's verbs use for a malformed body, 403 tenant_unresolved / project_unregistered,
     409 grain_conflict, 413 payload_too_large / too_many_rows, 422 row_rule / schema_gate, 503 occ_exhausted, 500 runtime).
     audit_invariants gain: one transaction per request; within a request data batches precede the sessions marker, a
     producer tripwire for the cross-request R7 order the producer owns (inside one transaction order has no visibility
-    effect); the size cap is measured on the JSON-escaped body, the measure Lambda's 6 MiB event limit applies to; an
+    effect); the size cap is measured on the JSON-escaped body as delivered, an upper bound for ASCII-escaped bodies of
+    the measure Lambda's 6 MiB event limit applies to (measured 2026-10-09); an
     identical re-send is a no-op and a differing row writes nothing
     (Decision 207); no body carries a caller value; the two temporary rec-4024 refusals; one C6 line per answered request
     with no account id, ARN or hash. One amendment_log entry. telemetry_probe stays out of contract scope.
@@ -240,8 +252,11 @@ scope:
   purpose: >-
     Coverage home for append.py's changed lines (the per-file gate runs the mapped mirror only,
     scripts/checks/misc/coverage_baseline.py:95): RowRuleGateError, the derivation wrap with both reasons, the own-site
-    reasons, table/row enrichment, source_index and the stored conflict's event_id and row. Stays under 500 SLOC (440 at
-    planning); gate-owned assertions go to test_gate.py.
+    reasons, table/row enrichment (fill-only-when-missing included), source_index and the stored conflict's event_id and
+    row (the parse-miss branch included). To stay under 500 SLOC (440 at planning), extend the existing nodes in place
+    (the own-site tests near :147-163 and the conflict test near :424-436) rather than adding new ones; gate-owned
+    assertions go to test_gate.py. If it still would exceed 500, STOP and return to /plan: a concern-split package needs
+    scripts/test_coverage_checker.py, outside this scope.
 - file: tests/common/test_ducklake_telemetry_append.py
   action: Create
   purpose: >-
@@ -258,7 +273,8 @@ scope:
     batches unwritten; on a FIRST-SIGHT project, a failure injected into the third batch's execute_prepared (a stored
     conflict cannot exist under a fresh project_id, which every event_id hashes) leaves the registration and the first two
     batches unwritten; a re-send inserts 0; a grain conflict is not retried; two cursors appending first-sight to one fresh
-    project_ref end with one project_id.
+    project_ref end with one project_id; a 2000-row observations batch commits and prints its commit time (the first
+    local timing of the row-cap MERGE before the live one).
 - file: tests/lambdas/ducklake_telemetry_writer/test_telemetry_edge.py
   action: Create
   purpose: Mirror test -- caps at their boundaries before any kernel or catalog work, RequestError translation by type, the response shape, describe_entry, no value echo.
@@ -283,16 +299,29 @@ scope:
   action: Create
   purpose: >-
     Hermetic proof the live vectors are right before they ship: the golden payload passes parse_append_request and
-    prepare_batch against the bundled projection for all four tables, and each negative case fails in the kernel or the
-    edge with exactly its expected status, error_type and rule or column.
+    prepare_batch against the bundled projection for all four tables; the grammar, size, row-cap, timestamp, row-rule,
+    content_uri, catalog-key and mixed-producer cases fail in the kernel or the edge with exactly their expected status,
+    error_type and rule or column; the stored-row 409, the unregistered-ref 403, the identical re-send and the
+    auto-registration case run through append_request with the shared fake connection and fake part 1 primitives
+    (tests/fixtures/telemetry_append_fakes.py).
 - file: tests/ducklake_neon_smoke_test/test_lambda_telemetry_append_gates.py
   action: Create
-  purpose: Red cases with core._sigv4_invoke patched -- each vector's divergence fails loudly; the output carries no account id, URL or host.
+  purpose: >-
+    Red cases with core._sigv4_invoke patched -- each vector's divergence fails loudly; the output carries no account id,
+    URL or host, including when the fake writer answers realistic float commit_ms values (raw float printing goes red).
+- file: tests/fixtures/telemetry_append_fakes.py
+  action: Create
+  purpose: >-
+    One shared recording fake connection and fake part 1 primitives (cache, lookup, purpose, resolve_or_register,
+    run_telemetry_txn) and a fake telemetry writer that answers append_telemetry and the grain_counts probe; used by
+    test_ducklake_telemetry_append.py, test_telemetry_append_vectors.py and the in-place fake in
+    test_lambda_telemetry_gates.py, so none of them grows a private copy.
 - file: tests/ducklake_neon_smoke_test/test_lambda_telemetry_gates.py
   action: Modify
   purpose: >-
     (Created by PLAN-telemetry-writer-deploy-wiring, extended by part 1.) Its happy-path fake is extended IN PLACE to
-    answer append_telemetry and the grain_counts probe, keeping every node id so the graduated shards
+    answer append_telemetry and the grain_counts probe through tests/fixtures/telemetry_append_fakes.py, keeping every
+    node id so the graduated shards
     telemetry-writer-smoke-gate and telemetry-registration-gate stay valid; a new node pins that lambda_telemetry runs part
     2's vectors after part 1's, with part 1's registered synthetic: ref.
 - file: config/agent/verification_registry/entries/telemetry-append-request-grammar.yaml
@@ -350,7 +379,8 @@ acceptance_criteria:
 - >-
   Every kernel rejection is a typed, value-free response: a row-rule break is 422 row_rule naming table, row, rule,
   column and exclude_before (the never_on_main vector answers pattern_when / name); a type, NOT NULL, ref or time-range
-  break is 422 schema_gate naming table, row, column and reason; no telemetry error escapes as an unmapped Lambda error.
+  break is 422 schema_gate naming table, row, column and reason; no caller-triggerable rejection escapes as an unmapped
+  Lambda error, and no undeclared name the caller sent is echoed.
 - >-
   An unregistered drill:/synthetic: project_ref answers 403 project_unregistered before any transaction; concurrent
   first-sight appends of one project_ref converge on one project_id; a grain conflict is never retried as an OCC
@@ -446,13 +476,14 @@ verification_plan:
     tests/lambdas/ducklake_telemetry_writer/test_telemetry_log.py::test_line_fields_and_emf_on_the_five_data_verbs
     tests/lambdas/ducklake_telemetry_writer/test_telemetry_log.py::test_line_never_carries_account_id_or_arn
     tests/lambdas/ducklake_telemetry_writer/test_telemetry_log.py::test_function_keeps_the_text_log_format
+    tests/lambdas/ducklake_telemetry_writer/test_telemetry_log.py::test_occ_directive_only_when_recorded
     tests/lambdas/ducklake_telemetry_writer/test_handler.py::test_dispatch_includes_append_telemetry
     tests/lambdas/ducklake_telemetry_writer/test_handler.py::test_error_map_rows_for_kernel_errors
     tests/lambdas/ducklake_telemetry_writer/test_handler.py::test_one_c6_line_per_answered_request
     tests/lambdas/ducklake_telemetry_writer/test_handler.py::test_invoke_bytes_is_the_escaped_body_length
     tests/lambdas/ducklake_telemetry_writer/test_telemetry_actions.py::test_probe_reports_grain_counts_for_one_session_day
     tests/lambdas/ducklake_telemetry_writer/test_packaging.py::test_manifest_bundles_the_append_modules -q
-  expected: Exit 0, 12 passed. Red before, because the nodes do not exist.
+  expected: Exit 0, 13 passed. Red before, because the nodes do not exist.
   expected_literals: []
   fix_if: An unmapped kernel class -> add the error-map row; an account id, ARN or 12-digit run in a line -> fix telemetry_log, never the test.
   hermetic: true
@@ -468,8 +499,9 @@ verification_plan:
     tests/ducklake_neon_smoke_test/test_lambda_telemetry_append_gates.py::test_resend_that_inserts_fails
     tests/ducklake_neon_smoke_test/test_lambda_telemetry_append_gates.py::test_autoregister_off_smoke_binding_fails
     tests/ducklake_neon_smoke_test/test_lambda_telemetry_append_gates.py::test_gate_output_never_contains_an_account_id
+    tests/ducklake_neon_smoke_test/test_lambda_telemetry_append_gates.py::test_measurements_print_as_bounded_precision
     tests/ducklake_neon_smoke_test/test_lambda_telemetry_gates.py::test_append_vectors_run_after_registration_with_the_registered_ref -q
-  expected: Exit 0, 7 passed. Red before, because the modules and their tests do not exist.
+  expected: Exit 0, 8 passed. Red before, because the modules and their tests do not exist.
   expected_literals: []
   fix_if: The golden payload breaks a rule -> fix the payload data, never the rule; a vector that passes against a wrong answer is too weak, tighten it.
   hermetic: true
@@ -561,7 +593,9 @@ verification_plan:
   expected: All eleven markers and measurement lines present in the --lambda-telemetry step's own log section, no 12-digit number and no ARN there, then APPEND_GATE_LIVE_OK.
   fix_if: >-
     A missing marker is a deploy or vector fault to root-cause. TELEMETRY_AUTOREGISTER_OK missing with two project_ids ->
-    STOP: Decision 200's reversal condition; report to Benjamin.
+    STOP: Decision 200's reversal condition; report to Benjamin. A 12-digit hit inside a measurement line (a *_ms or ratio
+    value) is a formatting defect in the gate, not an identity leak: fix the rendering; a hit anywhere else is a Decision
+    101 leak: STOP, revert and fix.
   hermetic: false
 - step: 13
   phase: post-deploy
@@ -728,8 +762,9 @@ constraints:
   append_telemetry lives only on agent-platform-ducklake-telemetry-writer. Do not touch the shared writer, VERB_REGISTRY,
   ducklake_writer.yaml, ducklake_writes.py or ducklake_scd2_schema.py; reuse helpers by import.
 - >-
-  No Terraform, no IAM change, no workflow change. EMF metrics use namespace DuckLakeTelemetryWriter and carry only
-  RequestCount by Verb for the five data verbs (the accepted spend); no component dimension.
+  No Terraform, no IAM change, no workflow change. EMF metrics use namespace DuckLakeTelemetryWriter: RequestCount by
+  Verb for the five data verbs (the accepted spend), plus append_telemetry's OccRetryCount and CommitLatencyMs with no
+  dimensions when recorded (existing series); no component dimension and no other new series.
 - >-
   Nothing in ducklake_runtime's import closure, and nothing under scripts/, may import a module that imports
   src.telemetry.append (.importlinter scripts-never-import-telemetry-append). request.py imports only
@@ -741,13 +776,13 @@ constraints:
 - >-
   Keep every new module and every file this plan grows (test_append.py at 440 SLOC, the telemetry writer handler, its
   tests, lambda_telemetry_gates.py) under 500 SLOC; decompose rather than raise a budget (Decision 128).
-- 'No producer change: rec-4026 (slice 3b, parser_version 3) owns the producer and its chunking under the 5 MiB cap.'
+- 'No producer change: rec-4026 (slice 3b, parser_version 3) owns the producer and its chunking on len(json.dumps(body)) <= 5 MiB.'
 - 'Real DuckLake tests are never skipped or dropped for environment limits (rec-4071; Benjamin 2026-09-25).'
 - The implementation merge redeploys every DuckLake function, so it waits for Benjamin's explicit word.
 - No rescue agents or workaround loops (Decision 55).
 context:
 - "Decision-scout: FLAGS_FOUND -- NOTE 91 cl.1 (agent verbs extend ducklake_writer/reader): the third function rests on the Decision PLAN-url-only-invoke-guard inserts (cited here as 213, provisional until it lands with its 81/91/126 annotations); resolved by a checklist precondition (T2.36 c2's re-grounding is the same dependency). First run's NOTE 210 cl.5 resolved by the plane-neutral grammar. CITE 199, 200, 207, 210, 81, 84, 88, 143, 184, 212, 79, 125, 126, 48, 101, 128, 181. Decisions triaged: 165 of 165. Roadmap items intersected: 7; CONFLICT: 0; RELATED: 5. Report: /mnt/project-files/telemetry-slice2/scout-plan3-part2.md."
-- "gates: decision-scout=FLAGS_FOUND (NOTE 91 and NOTE 210 resolved); plan-critique=REVISE r1 (F1-F13 fixed; F8 kept the coverage nodes in the mirror and graduated duckdb-free twins), round 2 pending"
+- "gates: decision-scout=FLAGS_FOUND (NOTE 91 and NOTE 210 resolved); plan-critique=REVISE r1 (F1-F13 fixed; F8 kept the coverage nodes in the mirror and graduated duckdb-free twins), REVISE r2 (N1-N11 fixed: bounded-precision measurements, EMF directive only when recorded, no undeclared-name echo, bad_request token, shared test fakes), round 3 pending"
 - "Evidence 2026-10-09: Lambda's 6 MiB limit applies to the invocation event, where the body is re-escaped as a JSON string (+ about 2.2 KB); a raw 6.2 MB escape-free body passed and a 3.2 MB quote-dense one got AWS's 413 (/mnt/project-files/telemetry-slice2/evidence-invoke-payload-limit.md). The cap is therefore measured on len(json.dumps(body)), which the producer computes identically."
 - "fork: telemetry ingestion shape (per-request commit vs S3 landing zone plus a scheduled fold-in, rds-swap/fable-catalog-backend-review.md Q5) | chosen: PENDING operator answer; recommended per-request commit for part 2 (smoke only) with the decision owned by a rec before 2c | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: this line and rec-4218"
 - "Direction (Benjamin): 2026-10-06 split plan 3 (cmsg_012XgaFy8VaDQbxP5D8nC958CXzUU6aTS53ez9rnGk2YbC); 2026-10-08 'I accept, write the plan' (cmsg_012XgaFy8VaDQbxP5D8nC958Ea85cpGqcEneeWhkAdD4uc); order part 1 on Neon, then the RDS swap, then part 2 (part 1 thread). Evidence: /mnt/project-files/telemetry-slice2/ (BRIEF-plan3-part2-append.md, step6b-plan3-part2-presentation.md, fable-consult-plan3/ADVICE.md, fable-consult-plan3-part2/ADVICE.md, fable-consult-telemetry-writer-boundary/ADVICE.md)."
@@ -755,7 +790,7 @@ context:
 - "fork: first-sight validation order | chosen: prepare before BEGIN with the known id or a sentinel, re-derive inside only when the id differs | class: asked | precedent: Fable consult part 2 Q2, operator 2026-10-08 | precedent_kind: answered-fork | reversible: yes | persisted: ducklake_telemetry_append.py"
 - "fork: error-body structure | chosen: value-free kernel attributes, bodies from attributes, a 409 locates by row index, never external_ref | class: asked | precedent: Fable consult part 2 Q3, operator 2026-10-08 | precedent_kind: answered-fork | reversible: yes | persisted: gate.py, append.py, the handler's error map"
 - "fork: metric mechanism and spend | chosen: EMF in the C6 line, RequestCount by Verb for five verbs (about USD 1.50 a month) | class: asked | precedent: Fable consult part 2 Q4; operator accepted the spend 2026-10-08 | precedent_kind: answered-fork | reversible: yes | persisted: telemetry_log.py"
-- "Decided with notice: unknown request keys refused; an all-empty request is 400; caps 5 MiB / 2000 / 5000 (plan 3 presentation, 2026-10-06); the binding cache is part 1's; data vectors write under part 1's registered synthetic: ref and one auto-registration vector fails unless bound to ducklake_smoke (writer-boundary consult 2c item 2); a near-cap 4.9 MiB vector measures the 6 MB ceiling; EMF namespace is the function's own (DuckLakeTelemetryWriter)."
+- "Decided with notice: unknown request keys refused and undeclared names never echoed; an all-empty request is 400 bad_request; caps 5 MiB on the JSON-escaped body / 2000 / 5000 (plan 3 presentation 2026-10-06, measure fixed by the 2026-10-09 evidence); the binding and tenant caches are part 1's; data vectors write under part 1's registered synthetic: ref and one auto-registration vector fails unless bound to ducklake_smoke (writer-boundary consult 2c item 2); at-cap escape-dense and 2000-row vectors measure the ceilings; EMF namespace is the function's own (DuckLakeTelemetryWriter)."
 - "Moved by option D (#1430, Benjamin 2026-10-08): the verb lives on the separate telemetry writer, so this plan edits its handler, manifest and Class B contract, never the shared writer."
 - "ci-rca: none open (rec-4189 closed by #1428); re-check before the implementation merges."
 - "Gotcha: part 1's run_telemetry_txn re-raises the AppendError family before is_occ_collision, which matches 'conflict' (a stored grain conflict's message contains TELEMETRY_GRAIN_CONFLICT)."
