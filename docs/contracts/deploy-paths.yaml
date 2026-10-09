@@ -29,6 +29,14 @@ contract:
     agent_surface: AGENTS.md
 
 amendment_log:
+  - date: "2026-10-09"
+    semantic_break: false
+    change_class: field_add
+    summary: >-
+      PLAN-url-only-invoke-guard (Decision 213 cl.5): added admin_out_of_band.scoped_login_provisioning,
+      indexing the narrow ADMIN-container agent carve-out for the telemetry writer's scoped login (write the
+      secret value, invoke provision_telemetry_login, check the result; human-directed, each mutation
+      presented) and carrying its literal commands as the one home for the procedure.
   - date: "2026-09-26"
     semantic_break: false
     change_class: field_add
@@ -208,6 +216,29 @@ admin_out_of_band:
       the ducklake_maintenance reconcile_partitions / rewrite_partition_layout verbs only under
       explicit human direction (never self-directed), confirming each mutation before it executes.
     procedure_ref: "docs/contracts/ducklake-partition-remediation.yaml -- the full ADMIN-container procedure lives there (navigation only; this file is never a second source of truth for it)."
+  scoped_login_provisioning:
+    description: >-
+      Decision 213 cl.5's narrow carve-out (amends Decision 126 and, for this verb only, Decision 81
+      cl.6): an ADMIN-container agent may write the telemetry writer's scoped-login secret value and
+      invoke ducklake_maintenance's provision_telemetry_login only under explicit human direction
+      (never self-directed), presenting each mutation and executing it only after the human accepts.
+      The password is never displayed, logged or written to disk; no step prints a host, DSN or
+      password. This is the one home for the procedure (agent-led procedures are procedure blocks in the
+      owning contract); ducklake_maintenance.yaml's verb entry points here. No container has TCP/5432
+      egress, so the migration, the password set and the reach check all run inside the maintenance Lambda.
+    procedure:
+      mutation_1_write_secret: |-
+        AWS_DEFAULT_REGION=eu-west-2 bin/venv-python -c "import json,secrets,boto3;from src.common import ducklake_runtime as rt;o=rt.fetch_dsn(profile='agent_platform_admin');v={'host':o['host'],'dbname':o['dbname'],'sslmode':'require','username':'ducklake_telemetry_writer'};v['pass'+'word']=secrets.token_urlsafe(32);boto3.Session(profile_name='agent_platform_admin',region_name='eu-west-2').client('secretsmanager').put_secret_value(SecretId='agent-platform-ducklake-telemetry-writer-dsn',SecretString=json.dumps(v));print('SECRET_WRITTEN')"
+      mutation_2_invoke: |-
+        P="${TMPDIR:-/tmp}/provision.json" && AWS_MAX_ATTEMPTS=1 aws lambda invoke --profile agent_platform_admin --region eu-west-2 --cli-read-timeout 300 --function-name agent-platform-ducklake-maintenance --cli-binary-format raw-in-base64-out --payload '{"action":"provision_telemetry_login","confirm":"ducklake_telemetry_writer"}' "$P" > /dev/null
+      check_result: |-
+        bin/venv-python -c "import json,sys,hashlib;r=json.load(open(sys.argv[1]));assert 'body' in r, 'FunctionError '+str(r.get('errorType'));b=json.loads(r['body']);print('PROVISION',r['statusCode'],b.get('error_type'),b.get('scope'),'neon_superuser_member=',b.get('owner_is_neon_superuser_member'));assert r['statusCode']==200 and b['ok'] is True, 'provision refused';sha=hashlib.sha256(open('src/lambdas/ducklake_maintenance/ducklake_telemetry_writer_role.sql','rb').read()).hexdigest();assert b.get('migration_sha256')==sha, 'deployed SQL differs from the merged file';assert b['metadata_readable'] is True and b['scope']=={'smoke_usage':True,'ops_usage':False,'smoke_create':False,'ops_create':False,'public_create':False,'database_create':False,'connection_limit':10};print('SCOPED_LOGIN_OK')" "$P"
+      reruns: >-
+        Quarterly rotation repeats mutation 1, mutation 2 and the check. The RDS swap repeats them after
+        the maintenance function points at the RDS catalog, so mutation 1 copies the RDS host and dbname
+        (it reads them from the owner DSN secret). A failed check names its cause in the response
+        (error_type / error carry only a class and SQLSTATE); a re-run is idempotent but happens only on
+        the human's word.
   procedure:
     description: >-
       Operator-recovery steps for the human-gated interactive apply loop. Never self-directed

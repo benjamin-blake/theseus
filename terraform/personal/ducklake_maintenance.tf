@@ -93,10 +93,15 @@ resource "aws_iam_role_policy" "ducklake_maintenance" {
         Resource = ["${aws_cloudwatch_log_group.ducklake_maintenance.arn}:*"]
       },
       {
-        Sid      = "NeonDsnRead"
-        Effect   = "Allow"
-        Action   = ["secretsmanager:GetSecretValue"]
-        Resource = [aws_secretsmanager_secret.ducklake_neon_catalog_dsn.arn]
+        # Decision 213: the scoped telemetry login's secret is read here too, so provision_telemetry_login
+        # can set the role's password from it. GetSecretValue only; the function holds no write on it.
+        Sid    = "NeonDsnRead"
+        Effect = "Allow"
+        Action = ["secretsmanager:GetSecretValue"]
+        Resource = [
+          aws_secretsmanager_secret.ducklake_neon_catalog_dsn.arn,
+          aws_secretsmanager_secret.ducklake_telemetry_writer_dsn.arn,
+        ]
       },
       {
         # T2.19: the operational actions write to the PRODUCTION prefix -- catalog_reinit at

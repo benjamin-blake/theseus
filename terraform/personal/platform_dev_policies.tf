@@ -42,29 +42,44 @@ locals {
         # T2.19 recs cutover: the ops portal runs as PlatformDev at RUNTIME and reaches the closed
         # DuckLake boundary by SigV4-invoking the writer/reader AWS_IAM Function URLs (file_rec /
         # update_rec -> writer; recs reads -> reader). Without this grant every post-cutover recs op
-        # fails 403 AccessDenied at the Function-URL auth layer. Scoped to the two function ARNs.
+        # fails 403 AccessDenied at the Function-URL auth layer. Decision 213 adds the telemetry writer.
         #
-        # ACTION: lambda:InvokeFunction is the action the Function-URL IAM authorizer actually checks.
-        # Verified live 2026-06-09: InvokeFunction alone, scoped to these ARNs, authorizes the URL invoke
-        # (stable past propagation), while lambda:InvokeFunctionUrl alone is INSUFFICIENT -- reproducible
-        # 403 over 3 min, even at Resource:"*" and even with a resource-based aws_lambda_permission added.
-        # PlatformAdmin works only because its AdminOps lambda statement (below) includes InvokeFunction.
-        # The IAM policy simulator reports InvokeFunctionUrl as "allowed" but the live URL denies it -- do
-        # not trust the simulator for Function-URL authorization. InvokeFunctionUrl is retained alongside
-        # InvokeFunction for AWS-doc alignment / forward-compat (harmless, not sufficient on its own; this
-        # matches the two-action grant in lambda_tooling_iam.tf). Maintenance ops stay break-glass on PlatformAdmin.
-        Sid    = "DuckLakeInvokeRuntime"
+        # ACTIONS: the Function URL needs BOTH lambda:InvokeFunctionUrl and lambda:InvokeFunction
+        # (live-verified 2026-10-06, superseding the 2026-06-09 reading that InvokeFunction alone sufficed).
+        # They sit in two statements because the permissions boundary denies a direct invoke
+        # (DenyDuckLakeDirectInvoke) and InvokeFunction here carries Bool lambda:InvokedViaFunctionUrl = true,
+        # so it authorizes only the URL path. InvokeFunctionUrl stays unconditioned. The IAM policy simulator
+        # does not model Function-URL authorization; do not trust it for this. Maintenance ops stay
+        # break-glass on PlatformAdmin.
+        Sid    = "DuckLakeInvokeUrl"
         Effect = "Allow"
-        Action = ["lambda:InvokeFunction", "lambda:InvokeFunctionUrl"]
-        # Scoped to writer + reader, both the unqualified ARN and the :* qualified form (the URLs are on
-        # $LATEST/unqualified; the :* form covers any future qualifier/alias). Verified live with this
-        # exact 4-ARN scoping.
+        Action = ["lambda:InvokeFunctionUrl"]
         Resource = [
           aws_lambda_function.ducklake_writer.arn,
           "${aws_lambda_function.ducklake_writer.arn}:*",
           aws_lambda_function.ducklake_reader.arn,
           "${aws_lambda_function.ducklake_reader.arn}:*",
+          "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-telemetry-writer",
+          "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-telemetry-writer:*",
         ]
+      },
+      {
+        Sid    = "DuckLakeInvokeViaUrlOnly"
+        Effect = "Allow"
+        Action = ["lambda:InvokeFunction"]
+        Resource = [
+          aws_lambda_function.ducklake_writer.arn,
+          "${aws_lambda_function.ducklake_writer.arn}:*",
+          aws_lambda_function.ducklake_reader.arn,
+          "${aws_lambda_function.ducklake_reader.arn}:*",
+          "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-telemetry-writer",
+          "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-telemetry-writer:*",
+        ]
+        Condition = {
+          Bool = {
+            "lambda:InvokedViaFunctionUrl" = "true"
+          }
+        }
       },
       {
         # DuckLake endpoint-discovery: SSM GetParameter on the /agent-platform/ducklake/* path so
@@ -83,7 +98,7 @@ locals {
         # future T4.2 LiteLLM transport) fetches the DeepSeek and Anthropic API keys via
         # get_secret_value. Scoped to exactly the two inference-credential secret ARNs defined
         # in inference_credentials.tf -- no wildcard (least-privilege per the IAM grant pattern
-        # established by DuckLakeEndpointDiscovery and DuckLakeInvokeRuntime above).
+        # established by DuckLakeEndpointDiscovery and the DuckLakeInvokeUrl/DuckLakeInvokeViaUrlOnly pair above).
         # MANUAL admin-apply required (IAM change, Decision 77 guard fail-closes). # pragma: allowlist secret
         Sid    = "InferenceCredentialsRead"
         Effect = "Allow"

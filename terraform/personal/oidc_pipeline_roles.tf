@@ -155,11 +155,28 @@ data "aws_iam_policy_document" "github_ci_planner" {
     # files the drift rec via the ops portal. The reader is explicitly excluded.
     sid     = "DuckLakeWriterInvoke"
     effect  = "Allow"
-    actions = ["lambda:InvokeFunction", "lambda:InvokeFunctionUrl", "lambda:GetFunctionUrlConfig"]
+    actions = ["lambda:InvokeFunctionUrl", "lambda:GetFunctionUrlConfig"]
     resources = [
       aws_lambda_function.ducklake_writer.arn,
       "${aws_lambda_function.ducklake_writer.arn}:*",
     ]
+  }
+
+  statement {
+    # Decision 213 cl.1: lambda:InvokeFunction authorizes only the Function-URL path (the permissions
+    # boundary denies a direct invoke); the Function URL needs this action alongside InvokeFunctionUrl.
+    sid     = "DuckLakeWriterInvokeViaUrlOnly"
+    effect  = "Allow"
+    actions = ["lambda:InvokeFunction"]
+    resources = [
+      aws_lambda_function.ducklake_writer.arn,
+      "${aws_lambda_function.ducklake_writer.arn}:*",
+    ]
+    condition {
+      test     = "Bool"
+      variable = "lambda:InvokedViaFunctionUrl"
+      values   = ["true"]
+    }
   }
 
   statement {

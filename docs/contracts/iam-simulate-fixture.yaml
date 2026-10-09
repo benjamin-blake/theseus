@@ -38,11 +38,10 @@
 # .terraform.lock.hcl). RE-RUN THIS FIXTURE ON ANY PROVIDER BUMP -- a provider that migrates a call
 # (e.g. logs:TagLogGroup -> logs:TagResource) changes which companion verbs are load-bearing.
 #
-# required_context_keys DEFAULTS TO {} WHEN ABSENT (rec-3325 compaction): a triple with no
-# condition-key requirement simply omits the field -- scripts.ci.iam_simulate.build_triples reads
-# it via `row.get("required_context_keys") or {}`. The field stays a discoverable key for any
-# triple that DOES need a context entry (the iam:PermissionsBoundary / iam:PassedToService pairs
-# below); it is never required to be spelled out as an empty mapping.
+# required_context_keys DEFAULTS TO {} WHEN ABSENT (rec-3325 compaction): a triple with no condition-key requirement simply
+# omits the field -- scripts.ci.iam_simulate.build_triples reads it via `row.get("required_context_keys") or {}`. The field
+# stays a discoverable key for any triple that DOES need a context entry (the iam:PermissionsBoundary / iam:PassedToService
+# pairs below); it is never required to be spelled out as an empty mapping.
 contract:
   id: iam-simulate-fixture
   class: D
@@ -57,6 +56,7 @@ contract:
     check: validate_iam_simulate_fixture_shape
 
 amendment_log:
+  - {date: "2026-10-09", semantic_break: false, change_class: field_add, summary: "PLAN-url-only-invoke-guard (Decision 213): six url-only rows record the boundary's URL-only Denies for the writer, reader and telemetry writer; a bool required_context_keys value is now sent as a boolean ContextKeyType by scripts/ci/iam_simulate.py. Structural budget raised 600 to 650 under Decision 213 cl.6."}
   - date: "2026-09-13"
     semantic_break: false
     change_class: prose_improvement
@@ -695,3 +695,39 @@ triples:
       above for a different one of the four metadata verbs. A mismatch here is a GRANT LEAK, not a
       fixture error.
     why: "Confirms the PlatformAdmin exclusion holds across more than one of the four metadata verbs."
+
+  # -- Decision 213: URL-only invoke guard. The boundary Denies hold for the CI apply role, which carries the boundary. --
+  - id: url-only-direct-invoke-denied
+    verb: "lambda:InvokeFunction"
+    target_arn_template: "arn:aws:lambda:${region}:${account_id}:function:agent-platform-ducklake-writer"
+    expected_decision: explicitDeny
+    required_context_keys:
+      "lambda:InvokedViaFunctionUrl": false
+    why: "DenyDuckLakeDirectInvoke: a direct invoke (the key is false) is refused by the boundary whatever an identity grant says."
+  - id: url-only-direct-invoke-absent-key-denied
+    verb: "lambda:InvokeFunction"
+    target_arn_template: "arn:aws:lambda:${region}:${account_id}:function:agent-platform-ducklake-writer"
+    expected_decision: explicitDeny
+    why: "BoolIfExists: a call that carries no lambda:InvokedViaFunctionUrl key at all is denied too."
+  - id: url-only-add-permission-denied
+    verb: "lambda:AddPermission"
+    target_arn_template: "arn:aws:lambda:${region}:${account_id}:function:agent-platform-ducklake-writer"
+    expected_decision: explicitDeny
+    why: "DenyDuckLakeResourcePolicyEdit; without it LambdaPermissionWrite would let the apply role open a service-principal path past the URL."
+  - id: url-only-put-resource-policy-denied
+    verb: "lambda:PutResourcePolicy"
+    target_arn_template: "arn:aws:lambda:${region}:${account_id}:function:agent-platform-ducklake-writer"
+    expected_decision: explicitDeny
+    why: "DenyDuckLakeResourcePolicyEdit also names PutResourcePolicy and DeleteResourcePolicy: the newer API replaces a whole function policy."
+  - id: url-only-add-permission-scoped
+    verb: "lambda:AddPermission"
+    target_arn_template: "arn:aws:lambda:${region}:${account_id}:function:agent-platform-simulate-probe"
+    expected_decision: allowed
+    why: "The Deny is scoped to the three DuckLake functions; EventBridge wiring on any other function still applies."
+  - id: url-only-event-source-mapping-denied
+    verb: "lambda:CreateEventSourceMapping"
+    target_arn_template: "arn:aws:lambda:${region}:${account_id}:event-source-mapping:simulate-probe"
+    expected_decision: explicitDeny
+    required_context_keys:
+      "lambda:FunctionArn": "arn:aws:lambda:${region}:${account_id}:function:agent-platform-ducklake-writer"
+    why: "DenyDuckLakeEventSourceMapping: a mapping makes the Lambda service itself invoke the function, outside any identity check."

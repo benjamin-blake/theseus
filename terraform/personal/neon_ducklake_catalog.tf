@@ -131,6 +131,27 @@ resource "aws_secretsmanager_secret_version" "ducklake_neon_catalog_dsn" {
 }
 
 # ---------------------------------------------------------------------------
+# Scoped catalog login for the telemetry writer (Decision 213 cl.3) -- the CONTAINER only.
+#
+# There is deliberately no aws_secretsmanager_secret_version here: the role is created by SQL
+# (src/lambdas/ducklake_maintenance/ducklake_telemetry_writer_role.sql), not by the Neon provider, and
+# its password is generated and written out of band by the admin under the SECRET-VALUE-OUT-OF-BAND
+# pattern of docs/contracts/secret-material-handling.yaml, so it never enters Terraform state. The
+# value is {host, dbname, username, password, sslmode}; ducklake_maintenance's provision_telemetry_login
+# reads it to set the role's password (deploy-paths.yaml admin_out_of_band.scoped_login_provisioning).
+# ---------------------------------------------------------------------------
+
+resource "aws_secretsmanager_secret" "ducklake_telemetry_writer_dsn" {
+  name        = "agent-platform-ducklake-telemetry-writer-dsn"
+  description = "DuckLake telemetry writer scoped catalog login (role ducklake_telemetry_writer, DML-only on the smoke metadata schema). Value written out of band by the admin. ROTATION: quarterly, manual, via provision_telemetry_login. Migration: src/lambdas/ducklake_maintenance/ducklake_telemetry_writer_role.sql (Decision 213)."
+
+  tags = {
+    Name    = "DuckLake Telemetry Writer DSN"
+    Purpose = "Decision 213 scoped catalog login - runtime-fetch by the telemetry writer"
+  }
+}
+
+# ---------------------------------------------------------------------------
 # Outputs -- consumed by the T2.16b smoke test + the T2.17 Lambda runtime.
 # ---------------------------------------------------------------------------
 
