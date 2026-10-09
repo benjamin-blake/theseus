@@ -86,7 +86,8 @@ scope:
   action: Create
   purpose: >-
     New registered check validate_actions_account_id_masking (filesystem-only, no network). Fails on: (R1) any
-    vars.AWS_ACCOUNT_ID text under .github/workflows or .github/actions; (R2) any YAML string scalar under either tree that
+    vars.AWS_ACCOUNT_ID text in any file of any extension under .github/workflows or .github/actions (a raw-text scan, at
+    least as strong as rec-4211's original grep -rq over the same two paths); (R2) any YAML string scalar under either tree that
     holds both arn:aws and a ${{ ... vars. ... }} expression; (R3) any workflow step using aws-actions/configure-aws-credentials
     whose with.role-to-assume does not reference secrets.AWS_ACCOUNT_ID, or that has no reference to
     secrets.AWS_ROLE_ID_ACCOUNT_PART in its step env, its job env, or the workflow's top-level env, where the top-level env
@@ -109,9 +110,13 @@ scope:
   action: Create
   purpose: >-
     Inline-fixture tests (the validate_oidc_failopen_guards test pattern, ROOT patched to tmp_path): one red case per rule
-    R1-R4, the multi-line folded role-to-assume shape ci.yml's terraform-validate uses, a vars-built ARN outside
-    role-to-assume, a compliant workflow that passes, and the examined count. Fixtures use short placeholder account
-    values, never a 12-digit number (the never-commit pre-commit hook blocks one).
+    R1-R4 (including a .sh file under .github/actions for R1, and a workflow-level reference in a workflow with a job that
+    does not sign in for R3), the multi-line folded role-to-assume shape ci.yml's terraform-validate uses, a vars-built ARN
+    outside role-to-assume, a compliant workflow that passes, the examined count, and test_real_tree_is_compliant
+    (scan_repository on the real tree: zero violations, at least 31 assume-role steps), which becomes rec-4211's decidable
+    acceptance node. test_real_tree_is_compliant is a module-level function, never a class method, so its junit node id
+    equals the acceptance string exactly (the Decision 201 junit verdict route); other tests may sit in classes. Fixtures
+    use short placeholder account values, never a 12-digit number (the never-commit pre-commit hook blocks one).
 - file: config/agent/verification_registry/entries/actions-account-id-masking-guard.yaml
   action: Create
   purpose: Registry shard for graduated VP step 1 (check_id actions-account-id-masking-guard, test_selector slot).
@@ -129,7 +134,7 @@ infrastructure_dependencies:
   2026-10-09), and the repository secret AWS_ROLE_ID_ACCOUNT_PART set to the output of `aws sts get-caller-identity
   --profile agent_platform --query UserId --output text | cut -c5-12` (the 8 characters after AROA in any role unique ID
   in the account). A missing or wrong AWS_ACCOUNT_ID fails every main-path AWS job at assume-role once merged, while on
-  the PR only terraform-validate signs in and that job fails open, so PR CI green proves neither secret. VP step 5 is
+  the PR only terraform-validate signs in and that job fails open, so PR CI green proves neither secret. VP step 6 is
   the pre-merge proof of both.
 - >-
   Optional, Benjamin: add the same two secrets under Dependabot secrets. Dependabot PRs cannot read Actions secrets, so
@@ -150,9 +155,9 @@ acceptance_criteria:
   registry.examined(), passes on the real tree with at least 31 assume-role steps examined, and has a red unit case for
   each of R1-R4.
 - >-
-  rec-4211's acceptance is the decidable real-tree node
-  tests/checks/ci_guards/test_validate_actions_account_id_masking.py::test_real_tree_is_compliant before the merge, so the
-  Resolves trailer can close it (Decision 201).
+  Before the PR is pushed, rec-4211's acceptance is the decidable real-tree node
+  tests/checks/ci_guards/test_validate_actions_account_id_masking.py::test_real_tree_is_compliant (a module-level test
+  function), proved by VP step 5, so the Resolves trailer can close it (Decision 201).
 - >-
   On the implementation PR's own CI, the terraform-validate job log shows role-to-assume as
   arn:aws:iam::***:role/agent-platform-github-ci-pr and a successful assume whose role ID reads AROA*** (account part
@@ -220,18 +225,34 @@ verification_plan:
 - step: 5
   phase: pre-deploy
   action: >-
-    Pre-merge proof that both secrets exist with the right values and mask the log. After the PR's CI completes on its head
-    commit, fetch the terraform-validate job log with mcp__github__get_job_logs(owner="benjamin-blake", repo="theseus",
-    job_id=<that job>, return_content=true, tail_lines=20000), confirm the content is not truncated against original_length,
-    and save it to LOG_FILE in the session scratchpad (never under the repository). The assumedRoleId line prints only after
-    a successful assume, so its presence proves the secret-built ARN resolved; the job itself fails open, so its green
-    status does not.
+    Before the push, rec-4211's acceptance is the decidable real-tree node, so the Resolves trailer can close it (Decision
+    201 cl.2 keys the closure verdict on the current acceptance's sha256, and git-ops.yaml forbids the manual route after an
+    acceptance-verdict refusal).
   command: >-
-    test -s "$LOG_FILE" && ACCT="$(aws sts get-caller-identity --profile agent_platform --query Account --output text)" &&
-    PART="$(aws sts get-caller-identity --profile agent_platform --query UserId --output text | cut -c5-12)" && test -n "$ACCT"
-    && test -n "$PART" && ! grep -qF "$ACCT" "$LOG_FILE" && ! grep -qF "$PART" "$LOG_FILE" && grep -qF
-    'arn:aws:iam::***:role/agent-platform-github-ci-pr' "$LOG_FILE" && grep -qF 'assumedRoleId AROA***' "$LOG_FILE" && echo
-    PR_LOG_MASKED
+    bin/venv-python -c "from scripts.ops_data_portal import _fetch_rec_from_reader as f; r=f('rec-4211') or {};
+    assert r.get('acceptance')=='bin/venv-python -m pytest tests/checks/ci_guards/test_validate_actions_account_id_masking.py::test_real_tree_is_compliant',
+    r.get('acceptance'); print('ACCEPTANCE_UPDATED')"
+  expected: Exit 0 and ACCEPTANCE_UPDATED.
+  fix_if: >-
+    The old leading-! grep is still stored: run the update_rec call in execution step 4, then re-run this step. Never push
+    the PR with the trailer while this step is red.
+  hermetic: false
+  graduation: not-applicable
+- step: 6
+  phase: pre-deploy
+  action: >-
+    Pre-merge proof that both secrets exist with the right values and mask the log. After the PR's CI completes on its head
+    commit, call mcp__github__get_job_logs(owner="benjamin-blake", repo="theseus", job_id=<that run's terraform-validate
+    job>, return_content=false) and export the returned logs_url as LOGS_URL; the command downloads the full log into
+    LOG_FILE in the session scratchpad (never under the repository). Never cat or display a log: print only booleans and
+    counts. The assumedRoleId line prints only after a successful assume, so its presence proves the secret-built ARN
+    resolved; the job itself fails open, so its green status does not.
+  command: >-
+    curl -sSfL "$LOGS_URL" -o "$LOG_FILE" && test "$(wc -l < "$LOG_FILE")" -gt 0 && ACCT="$(aws sts get-caller-identity
+    --profile agent_platform --query Account --output text)" && PART="$(aws sts get-caller-identity --profile agent_platform
+    --query UserId --output text | cut -c5-12)" && test -n "$ACCT" && test -n "$PART" && ! grep -qF "$ACCT" "$LOG_FILE" &&
+    ! grep -qF "$PART" "$LOG_FILE" && grep -qF 'arn:aws:iam::***:role/agent-platform-github-ci-pr' "$LOG_FILE" && grep -qF
+    'assumedRoleId AROA***' "$LOG_FILE" && echo PR_LOG_MASKED
   expected: Exit 0 and PR_LOG_MASKED.
   fix_if: >-
     No assumedRoleId line: the assume failed, so AWS_ACCOUNT_ID is missing or wrong; ask Benjamin to check it, then re-run
@@ -240,53 +261,59 @@ verification_plan:
     merge with this step red, and never print either value to find out.
   hermetic: false
   graduation: not-applicable
-- step: 6
+- step: 7
   phase: post-deploy
   action: >-
-    The merge commit's main-validate job (push to main, branch role, fails closed on a bad ARN) concluded success; save its
-    log to LOG_FILE as in step 5.
+    The merge commit's main-validate job (push to main, branch role, fails closed on a bad ARN). Export JOB_CONCLUSION from
+    mcp__github__actions_get(method="get_workflow_job") for that job and LOGS_URL from get_job_logs(return_content=false) as
+    in step 6. The log runs to about 31,000 lines with the sign-in lines near line 140, which is why the full download, not
+    a tailed content read, is required.
   command: >-
-    test -s "$LOG_FILE" && ACCT="$(aws sts get-caller-identity --profile agent_platform --query Account --output text)" &&
-    PART="$(aws sts get-caller-identity --profile agent_platform --query UserId --output text | cut -c5-12)" && test -n "$ACCT"
-    && test -n "$PART" && ! grep -qF "$ACCT" "$LOG_FILE" && ! grep -qF "$PART" "$LOG_FILE" && grep -qF
+    test "$JOB_CONCLUSION" = success && curl -sSfL "$LOGS_URL" -o "$LOG_FILE" && test "$(wc -l < "$LOG_FILE")" -gt 0 &&
+    ACCT="$(aws sts get-caller-identity --profile agent_platform --query Account --output text)" && PART="$(aws sts
+    get-caller-identity --profile agent_platform --query UserId --output text | cut -c5-12)" && test -n "$ACCT" && test -n
+    "$PART" && ! grep -qF "$ACCT" "$LOG_FILE" && ! grep -qF "$PART" "$LOG_FILE" && grep -qF
     'arn:aws:iam::***:role/agent-platform-github-ci-branch' "$LOG_FILE" && grep -qF 'assumedRoleId AROA***' "$LOG_FILE" &&
     echo MAIN_LOG_MASKED
-  expected: Exit 0 and MAIN_LOG_MASKED, and the job concluded success.
+  expected: Exit 0 and MAIN_LOG_MASKED.
   fix_if: >-
-    A failed assume on main means the secret is wrong and every AWS job on main is red: tell Benjamin at once (the fix is the
-    secret value, or a revert PR). The value still present: read which step prints it and RCA (Decision 55).
-- step: 7
+    A failed job with no assumedRoleId line means the secret is wrong and every AWS job on main is red: tell Benjamin at
+    once (the fix is the secret value, or a revert PR). A value still present: find which step prints it and RCA (Decision
+    55).
+- step: 8
   phase: post-deploy
   action: >-
     Within a day of the merge, list the completed runs since the merge of the other 16 affected workflows (scheduled and
     push-triggered ones run on their own; dispatch-only ones may not run, and the guard covers them). For every job in them
-    that ran a configure-aws-credentials step, save its full log into LOG_DIR in the session scratchpad.
+    that ran a configure-aws-credentials step, download its full log with get_job_logs(return_content=false) and curl -sSfL
+    into LOG_DIR in the session scratchpad, one .log file per job.
   command: >-
     ACCT="$(aws sts get-caller-identity --profile agent_platform --query Account --output text)" && PART="$(aws sts
     get-caller-identity --profile agent_platform --query UserId --output text | cut -c5-12)" && test -n "$ACCT" && test -n
-    "$PART" && ls "$LOG_DIR"/*.log && ! grep -lF "$ACCT" "$LOG_DIR"/*.log && ! grep -lF "$PART" "$LOG_DIR"/*.log && echo
-    POST_MERGE_LOGS_MASKED
+    "$PART" && ls "$LOG_DIR"/*.log > /dev/null && for f in "$LOG_DIR"/*.log; do grep -qF 'arn:aws:iam::***:role/' "$f" ||
+    exit 1; done && ! grep -lF "$ACCT" "$LOG_DIR"/*.log && ! grep -lF "$PART" "$LOG_DIR"/*.log && echo POST_MERGE_LOGS_MASKED
   expected: >-
     Exit 0 and POST_MERGE_LOGS_MASKED; the report lists each workflow and job scanned and each affected workflow that did not
     run in the window.
   fix_if: >-
-    A file name printed by grep -l is a job whose log still carries a value: read which step prints it and RCA (Decision 55).
-- step: 8
+    A log without the masked role-to-assume line is the wrong job or a truncated download: replace it. A file name printed
+    by grep -l is a job whose log still carries a value: find which step prints it and RCA (Decision 55).
+- step: 9
   phase: post-deploy
   action: >-
     The workflow-level placement in terraform-apply-sandbox.yml, proved live: on the first terraform/personal PR after the
-    merge, save the speculative-plan and advisory-status job logs into LOG_DIR2 in the session scratchpad. If no such PR
-    exists when the implementation thread reports, it says so and leaves this step pending; the guard covers the structure.
+    merge, download the speculative-plan and advisory-status job logs as in step 8 into LOG_DIR2. If no such PR exists when
+    the implementation thread reports, it says so and leaves this step pending; the guard covers the structure.
   command: >-
     ACCT="$(aws sts get-caller-identity --profile agent_platform --query Account --output text)" && PART="$(aws sts
     get-caller-identity --profile agent_platform --query UserId --output text | cut -c5-12)" && test -n "$ACCT" && test -n
-    "$PART" && ls "$LOG_DIR2"/*.log && ! grep -lF "$ACCT" "$LOG_DIR2"/*.log && ! grep -lF "$PART" "$LOG_DIR2"/*.log && grep
-    -lF 'assumedRoleId AROA***' "$LOG_DIR2"/*.log && echo WORKFLOW_LEVEL_MASKED
+    "$PART" && ls "$LOG_DIR2"/*.log > /dev/null && for f in "$LOG_DIR2"/*.log; do grep -qF 'assumedRoleId AROA***' "$f" ||
+    exit 1; done && ! grep -lF "$ACCT" "$LOG_DIR2"/*.log && ! grep -lF "$PART" "$LOG_DIR2"/*.log && echo WORKFLOW_LEVEL_MASKED
   expected: Exit 0 and WORKFLOW_LEVEL_MASKED.
   fix_if: >-
     The role-ID part present in those logs but masked in step-level jobs: workflow-level env does not reach the job's secret
     set; move the reference to each job's env in a follow-up PR (it costs lines, so offset under the pin) and RCA why.
-- step: 9
+- step: 10
   phase: post-deploy
   action: rec-4211 closed by the squash commit's Resolves trailer.
   command: >-
@@ -431,7 +458,7 @@ constraints:
   get-caller-identity, so the exposure Decision 205 rejects adds nothing here. Decision 205's secretless pull_request rule
   binds persona verdict jobs and is not engaged; no persona verdict job may be added to terraform-apply-sandbox.yml while
   its workflow env carries a secret. Fork PRs read no secrets and are already excluded from those jobs.
-- Do not merge until VP step 5 passes on the PR head; PR CI green alone proves neither secret.
+- Do not merge until VP step 6 passes on the PR head; PR CI green alone proves neither secret.
 - >-
   Out of scope: artifact contents (rec-4230), the speculative-plan PR comment's redaction of account-encoding unique IDs
   (rec-4231, scripts/ci/redaction_check.py), and deleting existing public logs.
@@ -443,7 +470,7 @@ context:
   placement only where every job signs in: now rule R3). SPIRIT NOTE 205 (recorded in constraints). RELATED 158/183, 92/94,
   172, 154, 195, 162, 111, 176/189, 125/126, 128. Decisions triaged: 167 of 167. Roadmap items intersected: 7; CONFLICT:
   0; RELATED: 7.
-- "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=PENDING"
+- "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=PENDING (r1 REVISE: F1-F6 fixed, N1 declined)"
 - >-
   Evidence, 2026-10-09: CI run 37981329942, job terraform-validate (PR #1433) prints role-to-assume with the account ID in its
   configure-aws-credentials header. Its "Authenticated as assumedRoleId AROA..." line also encodes it: the 8 characters
@@ -470,8 +497,8 @@ pre_implementation_checklist:
 - Acceptance criteria understood and verifiable
 execution_steps:
 - >-
-  Write the guard tests first, including test_real_tree_is_compliant (runs scan_repository on the real tree and asserts
-  zero violations and at least 31 assume-role steps), and run VP step 1 to see them red.
+  Write the guard tests first, including test_real_tree_is_compliant as a module-level function (runs scan_repository on
+  the real tree and asserts zero violations and at least 31 assume-role steps), and run VP step 1 to see them red.
 - >-
   Write scripts/checks/ci_guards/validate_actions_account_id_masking.py, its manifest Entry, its taxonomy row and the step-1
   registry shard; run VP step 2 to see 31 violations on the unedited workflows.
@@ -484,18 +511,23 @@ execution_steps:
   that neither file grew. reconcile.yml's file-reconcile-starved-rec job gains AWS_DEFAULT_REGION from the hoist; that is
   harmless, since its sign-in step already sets aws-region eu-west-2 and exports the same value.
 - >-
-  Before the merge, update rec-4211's acceptance through update_rec to bin/venv-python -m pytest
+  Before the push, update rec-4211's acceptance through update_rec to bin/venv-python -m pytest
   tests/checks/ci_guards/test_validate_actions_account_id_masking.py::test_real_tree_is_compliant (equal or stronger than the
   original, Decision 181 cl.1: rule R1 scans the same vars.AWS_ACCOUNT_ID text over the same .github/workflows and
   .github/actions paths as the original grep, and R2-R4 add to it; it passes lint_acceptance_command with
   require_decidable=True). It must land before ci.yml's trailer closure runs, because the verdict keys on the current
-  acceptance's sha256 (Decision 201 cl.2).
-- Execute VP steps 1-4. Loop until they pass, never weakening an assertion. On an unrecoverable failure stop and RCA (Decision 55).
+  acceptance's sha256 (Decision 201 cl.2). In the same update_rec call, prepend a dated note to the rec's context: the
+  acceptance changed because the original leading-! grep is not decidable under Decision 201, and the replacement node
+  covers the same pattern and paths plus R2-R4. VP step 5 proves it landed.
+- Execute VP steps 1-5. Loop until they pass, never weakening an assertion. On an unrecoverable failure stop and RCA (Decision 55).
 - >-
-  Push, open the PR with a Resolves: rec-4211 trailer in the squash body, wait for CI, then run VP step 5 on the PR head.
-  Merge only on green CI and a passing step 5.
-- Run VP steps 6, 7 and 9 after the merge (step 7 within a day of it); run step 8 on the first terraform/personal PR after it.
-- 'Report: the jobs scanned, the workflows not run in the window, whether step 8 is still pending, and that the variable can now be deleted.'
+  Closure (implement skill Commit Flows; docs/contracts/git-ops.yaml), each a distinct state: a fresh-context code review
+  through the code-review skill with its findings dispositioned; the readiness check, then implementation_declared true;
+  rebase on origin/main; VP step 4's full tier on the committed clean tree, a completed exit 0 (a timeout is blocked: resume
+  and rerun from the start); structured postflight evidence; push; PR with a Resolves: rec-4211 trailer in the squash body;
+  CI green on the PR head. Then run VP step 6 on that head. Squash-merge only with CI green and step 6 passing.
+- Run VP steps 7, 8 and 10 after the merge (step 8 within a day of it); run step 9 on the first terraform/personal PR after it.
+- 'Report: the jobs scanned, the workflows not run in the window, whether step 9 is still pending, and that the variable can now be deleted.'
 rollback: >-
   Revert the squash commit in a new PR; the workflows go back to the variable and the two secrets stay unused and harmless.
   Nothing outside the repository changes.
