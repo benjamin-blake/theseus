@@ -27,7 +27,10 @@ scope:
     cl.2). parse_append_request(body, shapes) -> AppendRequest(project_ref, component, batches as ordered (table, rows)
     pairs, producer, parser_version). Rules, in this order: no string anywhere in the body (key or value, walked
     iteratively, never recursively) contains a lone surrogate U+D800-U+DFFF, which json.loads accepts but UTF-8 encoding and
-    DuckDB binding reject (bad_request, reason invalid_unicode, position only); body keys within the allowlist {action, project_ref,
+    DuckDB binding reject, and no key nor the project_ref, component or any row's producer contains U+0000, which a
+    Postgres-backed DuckLake catalog cannot carry in the file-pruning SQL it renders from those values (a local Postgres
+    16 repro raised an unmapped ParserException; NUL inside other free-text values commits safely, its stats going NULL,
+    and stays accepted) (bad_request, reason invalid_unicode, position only); body keys within the allowlist {action, project_ref,
     component, batches} (so catalog, meta_schema, data_path, tenant_id and project_id are refused with no denylist);
     project_ref a non-empty str; component optional, default 'unknown', else ^[a-z][a-z0-9_-]{0,63}$; batches a non-empty
     list of objects with exactly the keys table and rows (a malformed batch is bad_request); table in the closed set the
@@ -104,8 +107,7 @@ scope:
     synchronous limit applies to the invocation event, in which the body is so escaped, plus about 2.2 KB of envelope, so a
     raw 6.2 MB escape-free body passes while a 3.2 MB quote-dense one is refused by AWS before the handler (measured
     2026-10-09, /mnt/project-files/telemetry-slice2/evidence-invoke-payload-limit.md); the producer chunks on the same
-    measure, len(json.dumps(S)) with S the exact request body string sent
-    measure (relayed to rec-4026). MAX_ROWS_PER_TABLE 2000 and MAX_ROWS_PER_REQUEST 5000. Each a TelemetryRequestError
+    measure, len(json.dumps(S)) with S the exact request body string sent (relayed to rec-4026). MAX_ROWS_PER_TABLE 2000 and MAX_ROWS_PER_REQUEST 5000. Each a TelemetryRequestError
     413 (payload_too_large naming the measure / too_many_rows) checked before the kernel parse (rows counted only in
     well-formed batches; a malformed shape is left to the kernel's 400). Event specs and table shapes built lazily on the
     first call and cached per
@@ -148,7 +150,9 @@ scope:
     once per answered request, success and every mapped error alike; its verb field is the dispatched action, or 'unknown'
     when the action is not dispatched (never the caller's string). (4) TelemetryRequest.invoke_bytes is computed from the
     event's body field as delivered, before any base64 decoding, as len(json.dumps(body_field)) (ASCII-escaped, an upper
-    bound for non-ASCII bodies), beside part 1's request_bytes.
+    bound for non-ASCII bodies), beside part 1's request_bytes. (5) The stub's body parse answers 400 bad_request for every
+    json.loads failure, RecursionError (deep nesting) and the int-digit-limit ValueError included; if the stub as built
+    catches only JSONDecodeError, this plan widens that one row.
 - file: src/lambdas/ducklake_telemetry_writer/telemetry_actions.py
   action: Modify
   purpose: >-
@@ -193,9 +197,10 @@ scope:
     "near_cap_inflation=" (invoke measure over raw bytes); an escape-dense request whose invoke measure is between the cap
     and 6,000,000 -> the handler's typed 413 payload_too_large (above about 6,289,000 AWS answers its own untyped 413,
     which is the producer's chunking contract, not a vector); a row-cap request of 2000 observation rows -> 200, printing
-    "rowcap_commit_ms=" (the 2000 x 42 MERGE cost on the real catalog). Around the golden append it prints "append_files_per_commit=<n>" and
+    "rowcap_commit_ms=" (the 2000 x 42 MERGE cost on the real catalog); no project_ref is ever printed. Around the golden append it prints "append_files_per_commit=<n>" and
     "append_commit_ms=<ms>" from the probe's file counts and the response (measurements for the ingestion-shape decision,
-    never asserted). A body string carrying a lone surrogate -> 400 bad_request invalid_unicode. The auto-registration
+    never asserted). A body string carrying a lone surrogate, and a producer carrying U+0000, -> 400 bad_request
+    invalid_unicode (the NUL case shows only against the real Postgres-backed catalog). The auto-registration
     vector sends the golden payload as three concurrent appends (thread pool, separate invocations) to one fresh
     NON-reserved ref -> all 200, one project_id, exactly one created, and the probe's distinct grain keys equal one copy
     of the payload (identical duplicates are legal, Fable design 2.5) -- the live proof of the composed first-sight path;
@@ -294,7 +299,8 @@ scope:
   purpose: >-
     Mirror test -- caps at their boundaries before any kernel or catalog work, RequestError translation by type, the
     response shape, describe_entry, no value echo, and an adversarial node (lone surrogates in content, project_ref and
-    a VARCHAR; a 400-digit integer for a DOUBLE; range-edge offset timestamps) asserting only mapped classes surface.
+    a VARCHAR; U+0000 in project_ref and producer; a 400-digit integer for a DOUBLE; range-edge offset timestamps; a
+    deeply nested body; a 5000-digit integer) asserting only mapped classes surface.
 - file: tests/lambdas/ducklake_telemetry_writer/test_telemetry_log.py
   action: Create
   purpose: >-
@@ -316,7 +322,7 @@ scope:
   action: Create
   purpose: >-
     Hermetic proof the live vectors are right before they ship: the golden payload passes parse_append_request and
-    prepare_batch against the bundled projection for all four tables; the grammar, lone-surrogate, size, row-cap, timestamp, row-rule,
+    prepare_batch against the bundled projection for all four tables; the grammar, lone-surrogate, NUL, size, row-cap, timestamp, row-rule,
     content_uri, catalog-key and mixed-producer cases fail in the kernel or the edge with exactly their expected status,
     error_type and rule or column; the stored-row 409, the unregistered-ref 403, the identical re-send and the
     auto-registration case run through append_request with the shared fake connection and fake part 1 primitives
@@ -325,7 +331,8 @@ scope:
   action: Create
   purpose: >-
     Red cases with core._sigv4_invoke patched -- each vector's divergence fails loudly; the output carries no account id,
-    URL or host, including when the fake writer answers realistic float commit_ms values (raw float printing goes red).
+    URL or host, including when the fake writer answers realistic float commit_ms values (raw float printing goes red),
+    and no project_ref (whose uuid4 suffix can hold a 12-digit run) is ever printed, failure messages included.
 - file: tests/fixtures/telemetry_append_fakes.py
   action: Create
   purpose: >-
@@ -419,6 +426,7 @@ verification_plan:
     tests/telemetry/test_request.py::test_malformed_batch_shapes_are_refused
     tests/telemetry/test_request.py::test_request_module_imports_only_timestamps
     tests/telemetry/test_request.py::test_lone_surrogate_strings_are_refused
+    tests/telemetry/test_request.py::test_nul_in_catalog_bound_strings_is_refused
     tests/telemetry/test_request.py::test_range_edge_offset_timestamp_is_a_schema_gate
     tests/telemetry/test_request.py::test_sessions_batch_must_be_last
     tests/telemetry/test_request.py::test_one_producer_and_parser_version_per_request
@@ -428,7 +436,7 @@ verification_plan:
     tests/telemetry/test_request.py::test_inline_content_above_threshold_is_refused_only_while_exempt
     tests/telemetry/test_request.py::test_content_uri_is_refused_until_the_blob_route
     tests/telemetry/test_request.py::test_errors_never_carry_a_value -q
-  expected: Exit 0, 14 passed. Red before, because the module and its test do not exist.
+  expected: Exit 0, 15 passed. Red before, because the module and its test do not exist.
   expected_literals: []
   fix_if: A miss -> fix request.py, never loosen a test. A threshold read from a literal -> read it from the bundled projection (Decision 210 cl.3).
   hermetic: true
@@ -810,8 +818,8 @@ constraints:
 - No rescue agents or workaround loops (Decision 55).
 context:
 - "Decision-scout: FLAGS_FOUND -- NOTE 91 cl.1 (agent verbs extend ducklake_writer/reader): the third function rests on the Decision PLAN-url-only-invoke-guard inserts (cited here as 213, provisional until it lands with its 81/91/126 annotations); resolved by a checklist precondition (T2.36 c2's re-grounding is the same dependency). First run's NOTE 210 cl.5 resolved by the plane-neutral grammar. CITE 199, 200, 207, 210, 81, 84, 88, 143, 184, 212, 79, 125, 126, 48, 101, 128, 181. Decisions triaged: 165 of 165. Roadmap items intersected: 7; CONFLICT: 0; RELATED: 5. Report: /mnt/project-files/telemetry-slice2/scout-plan3-part2.md."
-- "gates: decision-scout=FLAGS_FOUND (NOTE 91 and NOTE 210 resolved); plan-critique=REVISE r1 (F1-F13 fixed; F8 kept the coverage nodes in the mirror and graduated duckdb-free twins), REVISE r2 (N1-N11 fixed: bounded-precision measurements, EMF directive only when recorded, no undeclared-name echo, bad_request token, shared test fakes), REVISE r3 (F1-F5 fixed: lone-surrogate, DOUBLE-overflow and range-edge timestamp inputs mapped; step 3 pinned to the extended nodes; concurrent auto-registration vector; size-measure wording; AC2 wording), round 4 pending"
-- "Evidence 2026-10-09: Lambda's 6 MiB limit applies to the invocation event, where the body is re-escaped as a JSON string (+ about 2.2 KB); a raw 6.2 MB escape-free body passed and a 3.2 MB quote-dense one got AWS's 413 (/mnt/project-files/telemetry-slice2/evidence-invoke-payload-limit.md). The cap is therefore measured on len(json.dumps(body)), which the producer computes identically."
+- "gates: decision-scout=FLAGS_FOUND (NOTE 91 and NOTE 210 resolved); plan-critique=REVISE r1 (F1-F13 fixed; F8 kept the coverage nodes in the mirror and graduated duckdb-free twins), REVISE r2 (N1-N11 fixed: bounded-precision measurements, EMF directive only when recorded, no undeclared-name echo, bad_request token, shared test fakes), REVISE r3 (F1-F5 fixed: lone-surrogate, DOUBLE-overflow and range-edge timestamp inputs mapped; step 3 pinned to the extended nodes; concurrent auto-registration vector; size-measure wording; AC2 wording), REVISE r4 confirming round (F1 blocking: U+0000 in producer or project_ref crashes the Postgres catalog query -- fixed; F2-F5 non-blocking fixed); escalated to the operator, round 5 run as the recommended choice"
+- "Evidence 2026-10-09: Lambda's 6 MiB limit applies to the invocation event, where the body is re-escaped as a JSON string (+ about 2.2 KB); a raw 6.2 MB escape-free body passed and a 3.2 MB quote-dense one got AWS's 413 (/mnt/project-files/telemetry-slice2/evidence-invoke-payload-limit.md). The cap is therefore measured on len(json.dumps(S)), S the body string as sent, which the producer computes identically."
 - "fork: telemetry ingestion shape (per-request commit vs S3 landing zone plus a scheduled fold-in, rds-swap/fable-catalog-backend-review.md Q5) | chosen: PENDING operator answer; recommended per-request commit for part 2 (smoke only) with the decision owned by a rec before 2c | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: this line and rec-4218"
 - "Direction (Benjamin): 2026-10-06 split plan 3 (cmsg_012XgaFy8VaDQbxP5D8nC958CXzUU6aTS53ez9rnGk2YbC); 2026-10-08 'I accept, write the plan' (cmsg_012XgaFy8VaDQbxP5D8nC958Ea85cpGqcEneeWhkAdD4uc); order part 1 on Neon, then the RDS swap, then part 2 (part 1 thread). Evidence: /mnt/project-files/telemetry-slice2/ (BRIEF-plan3-part2-append.md, step6b-plan3-part2-presentation.md, fable-consult-plan3/ADVICE.md, fable-consult-plan3-part2/ADVICE.md, fable-consult-telemetry-writer-boundary/ADVICE.md)."
 - "fork: where the request grammar lives | chosen: plane-neutral src/telemetry/request.py; only Lambda capacity in the edge | class: asked | precedent: Fable consult part 2 Q1 and scout NOTE 210 cl.5, operator 2026-10-08 | precedent_kind: answered-fork | reversible: yes | persisted: request.py"
@@ -847,9 +855,10 @@ execution_steps:
 - 'The real local DuckLake integration test (step 7), including the two-cursor first-sight race. Then steps 8 and 10.'
 - >-
   Persist the producer obligations on rec-4026 (call get_rec_write_guidance first, Decision 66; fetch the rec immediately
-  before update_rec and prepend a dated note to its full context): chunk on len(json.dumps(S)) <= 5 MiB, S the exact body
-  string sent, and the row
-  caps; the 413 meanings above; halt records use rule, column and the row index.
+  before update_rec and prepend a dated note to its full context): send Content-Type application/json (a binary-typed
+  body is base64-encoded by the Function URL, which changes the measure); chunk on len(json.dumps(S)) <= 5 MiB, S the
+  exact body string sent, and the row caps; never send U+0000 in producer or project_ref; the 413 meanings above; halt
+  records use rule, column and the row index.
 - 'Code review (the code-review skill in a fresh context); fix every blocking finding.'
 - >-
   Closure (implement skill Commit Flows; docs/contracts/git-ops.yaml): readiness check, set implementation_declared true,
