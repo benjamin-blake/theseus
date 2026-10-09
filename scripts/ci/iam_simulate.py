@@ -105,10 +105,11 @@ def build_triples(data: dict[str, Any], account_id: str, region: str) -> list[Tr
         if expected not in VALID_DECISIONS:
             raise ValueError(f"{triple_id}: expected_decision {expected!r} is not one of {VALID_DECISIONS}")
         target = resolve_placeholders(str(row["target_arn_template"]), account_id, region)
-        if "*" in target:
+        if "*" in target and target != "*":
             raise ValueError(
                 f"{triple_id}: target ARN {target!r} contains a wildcard -- the simulator matches the POLICY's "
-                "resource pattern against this literal string, so a wildcard here proves nothing"
+                "resource pattern against this literal string, so a wildcard here proves nothing "
+                "(only the bare '*' is accepted, for actions IAM scopes to no resource type)"
             )
         raw_context = row.get("required_context_keys") or {}
         if not isinstance(raw_context, dict):

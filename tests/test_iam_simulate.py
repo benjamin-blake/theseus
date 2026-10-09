@@ -150,6 +150,26 @@ def test_build_triples_rejects_wildcard_target(tmp_path: Path) -> None:
         build_triples(load_fixture(_write(tmp_path, body)), _ACCOUNT, _REGION)
 
 
+def test_build_triples_rejects_a_wildcard_inside_an_arn_even_when_it_ends_in_star(tmp_path: Path) -> None:
+    body = (
+        'triples:\n  - id: x\n    verb: "lambda:CreateEventSourceMapping"\n'
+        '    target_arn_template: "arn:aws:lambda:${region}:${account_id}:*"\n'
+        '    expected_decision: explicitDeny\n    why: "w"\n'
+    )
+    with pytest.raises(ValueError, match="only the bare"):
+        build_triples(load_fixture(_write(tmp_path, body)), _ACCOUNT, _REGION)
+
+
+def test_build_triples_accepts_the_bare_star_target_for_resourceless_actions(tmp_path: Path) -> None:
+    """Decision 213: CreateEventSourceMapping has no resource type, so the policy's Resource "*" is what is matched."""
+    body = (
+        'triples:\n  - id: x\n    verb: "lambda:CreateEventSourceMapping"\n    target_arn_template: "*"\n'
+        '    expected_decision: explicitDeny\n    why: "w"\n'
+    )
+    (triple,) = build_triples(load_fixture(_write(tmp_path, body)), _ACCOUNT, _REGION)
+    assert triple.target_arn == "*"
+
+
 def test_build_triples_rejects_duplicate_ids(tmp_path: Path) -> None:
     row = (
         '  - id: dup\n    verb: "iam:GetRole"\n    target_arn_template: "arn:aws:iam::${account_id}:role/x"\n'
@@ -404,6 +424,7 @@ def test_real_fixture_carries_the_url_only_rows() -> None:
     assert by_id["url-only-direct-invoke-denied"].context["lambda:InvokedViaFunctionUrl"] is False
     assert by_id["url-only-direct-invoke-absent-key-denied"].context == {}
     assert by_id["url-only-add-permission-scoped"].target_arn.endswith("function:agent-platform-simulate-probe")
+    assert by_id["url-only-event-source-mapping-denied"].target_arn == "*"
     assert (
         by_id["url-only-event-source-mapping-denied"]
         .context["lambda:FunctionArn"]
