@@ -1,6 +1,7 @@
 """Decision 213 cl.5: the human-invoked provision_telemetry_login verb (src/lambdas/ducklake_maintenance/login_actions.py).
 
-psycopg2 and the Secrets Manager DSN fetch are patched at the boundary; fixture hosts and passwords are
+psycopg2 is replaced by a local stub (the fast CI tier installs no native driver, and the plan's VP step is
+hermetic), and the Secrets Manager DSN fetch is patched at the boundary; fixture hosts and passwords are
 composed at runtime so no credential-shaped literal lands in the tree.
 """
 
@@ -9,10 +10,11 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
+import sys
+import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import psycopg2
 import pytest
 
 import src.lambdas.ducklake_maintenance.handler as h
@@ -20,6 +22,34 @@ import src.lambdas.ducklake_maintenance.login_actions as la
 from src.common.ducklake_runtime import DuckLakeRuntimeError
 
 pytestmark = pytest.mark.unit
+
+
+class Error(Exception):
+    def __init__(self, message: str = "", pgcode: str | None = None) -> None:
+        super().__init__(message)
+        self.pgcode = pgcode
+
+
+class OperationalError(Error):
+    pass
+
+
+class InsufficientPrivilege(Error):
+    def __init__(self, message: str = "") -> None:
+        super().__init__(message, "42501")
+
+
+_PG = types.ModuleType("psycopg2")
+_PG.Error = Error  # type: ignore[attr-defined]
+_PG.OperationalError = OperationalError  # type: ignore[attr-defined]
+_PG.errors = types.SimpleNamespace(InsufficientPrivilege=InsufficientPrivilege)  # type: ignore[attr-defined]
+_PG.connect = MagicMock()  # type: ignore[attr-defined]
+
+
+@pytest.fixture(autouse=True)
+def _stub_psycopg2(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(sys.modules, "psycopg2", _PG)
+
 
 _SQL = Path(la.__file__).with_name("ducklake_telemetry_writer_role.sql")
 _HOST = "ep-" + secrets.token_hex(6) + ".example.invalid"
@@ -158,7 +188,7 @@ def test_response_reports_scope_and_readability_without_host_or_password(
 
 
 def test_unreadable_metadata_is_reported_false_not_raised() -> None:
-    out, *_ = _run(scoped_fetches=[_SCOPE_ROW, psycopg2.errors.InsufficientPrivilege("denied")])
+    out, *_ = _run(scoped_fetches=[_SCOPE_ROW, _PG.errors.InsufficientPrivilege("denied")])
     assert out["metadata_readable"] is False
     assert out["scope"] == _EXPECTED_SCOPE
 
@@ -169,11 +199,11 @@ def test_absent_neon_superuser_role_reports_none() -> None:
 
 
 def test_database_errors_surface_only_the_class_and_sqlstate() -> None:
-    boom = psycopg2.OperationalError(f"connection to server at {_HOST} failed: {_PW}")
+    boom = OperationalError(f"connection to server at {_HOST} failed: {_PW}", "08001")
     with patch.object(la.rt, "fetch_dsn", return_value=_dsn()), patch("psycopg2.connect", side_effect=boom):
         with pytest.raises(DuckLakeRuntimeError) as err:
             la.action_provision_telemetry_login({"confirm": la.TELEMETRY_LOGIN}, None)
-    assert "OperationalError" in str(err.value) and "sqlstate" in str(err.value)
+    assert "OperationalError" in str(err.value) and "sqlstate=08001" in str(err.value)
     assert _HOST not in str(err.value) and _PW not in str(err.value)
     assert err.value.__cause__ is None and err.value.__suppress_context__ is True
 
