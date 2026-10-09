@@ -47,10 +47,8 @@ def _require_data_path(value: Any) -> str:
 def _emit_maintenance_metric(
     name: str, value: float, *, profile: str | None = None, dimensions: dict[str, str] | None = None
 ) -> None:
-    rt.emit_metric(
-        name,
-        value,
-        namespace=maint.MAINTENANCE_CLOUDWATCH_NAMESPACE,
-        profile=profile,
-        **({"dimensions": dimensions} if dimensions else {}),
-    )
+    namespace = maint.MAINTENANCE_CLOUDWATCH_NAMESPACE
+    if dimensions:
+        rt.emit_metric(name, value, namespace=namespace, profile=profile, dimensions=dimensions)
+    else:
+        rt.emit_metric(name, value, namespace=namespace, profile=profile)

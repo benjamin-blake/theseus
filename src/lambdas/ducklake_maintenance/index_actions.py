@@ -84,8 +84,11 @@ def _probe_pushdown(cur: Any, dsn: dict[str, str]) -> dict[str, Any]:
         column = cur.fetchone()[0]
         _require_identifier(table)
         _require_identifier(column)
+        data_path = _shared.DATA_PATH
+        if data_path is None:
+            raise rt.DuckLakeRuntimeError("the function has no DUCKLAKE_DATA_PATH")
         con = rt.open_connection(
-            dsn=dsn, data_path=_shared.DATA_PATH, meta_schema=PROBE_SCHEMA, extension_directory=EXTENSION_DIRECTORY
+            dsn=dsn, data_path=data_path, meta_schema=PROBE_SCHEMA, extension_directory=EXTENSION_DIRECTORY
         )
         try:
             con.execute(

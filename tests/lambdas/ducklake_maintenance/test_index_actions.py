@@ -52,6 +52,7 @@ def _stub_psycopg2(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ia.rt, "fetch_dsn", lambda: {"host": _HOST})
     monkeypatch.setattr(ia.rt, "libpq_conninfo", lambda dsn: "conninfo")
     monkeypatch.setattr(ia.time, "sleep", lambda s: None)
+    monkeypatch.setattr(ia._shared, "DATA_PATH", "s3://bucket/ducklake/")
 
 
 class _Cursor:
@@ -194,6 +195,13 @@ def test_pushdown_probe_reports_engagement(monkeypatch):
     monkeypatch.setattr(ia, "_idx_scan", lambda cur: 1)
     out = ia._probe_pushdown(_Cursor(_Conn(fetch=[(7, "ops_things"), ("rec_id",)])), {"host": _HOST})
     assert out == {"engaged": None, "error_class": "RuntimeError"} and _HOST not in str(out)
+
+
+def test_probe_without_a_data_path_reports_the_error_class(monkeypatch):
+    monkeypatch.setattr(ia._shared, "DATA_PATH", None)
+    monkeypatch.setattr(ia, "_idx_scan", lambda cur: 1)
+    out = ia._probe_pushdown(_Cursor(_Conn(fetch=[(7, "ops_things"), ("rec_id",)])), {"host": _HOST})
+    assert out == {"engaged": None, "error_class": "DuckLakeRuntimeError"}
 
 
 def test_probe_error_never_fails_the_verb(monkeypatch):
