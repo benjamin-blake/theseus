@@ -31,17 +31,16 @@
 # TARGET ARNS ARE REPRESENTATIVE, NOT ASSERTIONS OF EXISTENCE. iam:SimulatePrincipalPolicy evaluates
 # policy against the ARN string supplied and happily simulates resources that do not exist, so
 # `agent-platform-simulate-probe`-style names are used wherever a concrete ARN is needed only to
-# exercise a prefix pattern. Never put a wildcard in a target ARN: the simulator matches the policy's
-# resource pattern against this literal string, so a "*" here proves nothing.
+# exercise a prefix pattern. No wildcard inside a target ARN (only a bare "*", for actions IAM scopes to no resource
+# type): the simulator matches the policy's pattern against this literal string, so a partial "*" proves nothing.
 #
 # PROVIDER-SCOPED: every call-set inference below is scoped to hashicorp/aws 5.100 (the version in
 # .terraform.lock.hcl). RE-RUN THIS FIXTURE ON ANY PROVIDER BUMP -- a provider that migrates a call
 # (e.g. logs:TagLogGroup -> logs:TagResource) changes which companion verbs are load-bearing.
 #
-# required_context_keys DEFAULTS TO {} WHEN ABSENT (rec-3325 compaction): a triple with no condition-key requirement simply
-# omits the field -- scripts.ci.iam_simulate.build_triples reads it via `row.get("required_context_keys") or {}`. The field
-# stays a discoverable key for any triple that DOES need a context entry (the iam:PermissionsBoundary / iam:PassedToService
-# pairs below); it is never required to be spelled out as an empty mapping.
+# required_context_keys DEFAULTS TO {} WHEN ABSENT (rec-3325 compaction): a triple with no condition-key requirement simply omits the field --
+# scripts.ci.iam_simulate.build_triples reads it via `row.get("required_context_keys") or {}`. The field stays a discoverable key for any triple
+# that DOES need a context entry (the iam:PermissionsBoundary / iam:PassedToService pairs below); it is never required to be an empty mapping.
 contract:
   id: iam-simulate-fixture
   class: D
@@ -56,6 +55,7 @@ contract:
     check: validate_iam_simulate_fixture_shape
 
 amendment_log:
+  - {date: "2026-10-09", semantic_break: false, change_class: correction, summary: "PLAN-url-only-invoke-guard follow-up: the url-only-event-source-mapping-denied row now targets the bare '*' (CreateEventSourceMapping has no IAM resource type, so the Deny's Resource '*' is what the simulator must match); scripts/ci/iam_simulate.py accepts only that bare wildcard target."}
   - {date: "2026-10-09", semantic_break: false, change_class: field_add, summary: "PLAN-url-only-invoke-guard (Decision 213): six url-only rows record the boundary's URL-only Denies for the writer, reader and telemetry writer; a bool required_context_keys value is now sent as a boolean ContextKeyType by scripts/ci/iam_simulate.py. Structural budget raised 600 to 650 under Decision 213 cl.6."}
   - date: "2026-09-13"
     semantic_break: false
@@ -726,7 +726,7 @@ triples:
     why: "The Deny is scoped to the three DuckLake functions; EventBridge wiring on any other function still applies."
   - id: url-only-event-source-mapping-denied
     verb: "lambda:CreateEventSourceMapping"
-    target_arn_template: "arn:aws:lambda:${region}:${account_id}:event-source-mapping:simulate-probe"
+    target_arn_template: "*"
     expected_decision: explicitDeny
     required_context_keys:
       "lambda:FunctionArn": "arn:aws:lambda:${region}:${account_id}:function:agent-platform-ducklake-writer"
