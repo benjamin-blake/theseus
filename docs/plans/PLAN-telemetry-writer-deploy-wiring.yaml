@@ -74,15 +74,15 @@ scope:
     (the scoped login, Decision 213 cl.3): the live proof that the catalog comes from env, never from the event. (5) a signed
     unknown action ("no_such_action") is 400 with error_type unknown_action (the handler's malformed-input path, reachable
     through the dict payload core._sigv4_invoke takes). (6) a direct boto3 lambda invoke of agent-platform-ducklake-telemetry-writer
-    with InvocationType DryRun under the same credentials must raise a ClientError with code AccessDeniedException whose
-    message names a permissions boundary (case-insensitive "explicit deny in a permissions boundary", the phrase
-    PLAN-url-only-invoke-guard step 8 records live). The caller's own InvokeFunction grant is conditioned on InvokedViaFunctionUrl,
-    so a bare AccessDenied proves only that this principal cannot direct-invoke; the boundary phrase is what proves the
-    boundary Deny is in force. Outcomes: a DryRun success raises "URL-only guard missing: direct invoke allowed"; AccessDenied
-    without the phrase raises "URL-only boundary Deny not evident: denied by identity policy only"; any other code raises
-    "direct-invoke probe inconclusive: <ErrorCode>". The gate reads the message only to classify it and never prints or
-    raises it, nor any ARN, account id or URL (Decision 101); only the botocore error code may appear. On success it prints
-    one fixed, URL-free line: "LAMBDA_TELEMETRY OK unsigned=403 describe=200 attach_check=ok unknown_action=400 direct_invoke=boundary_denied".
+    with InvocationType DryRun under the same credentials must raise a ClientError with code AccessDeniedException. The
+    caller's own InvokeFunction grant is URL-only, so AWS reports the identity-layer denial ("no identity-based policy allows",
+    measured 2026-10-09 in PLAN-url-only-invoke-guard step 8), never the boundary: this check proves the principal cannot
+    direct-invoke, and the boundary Deny itself is proven by tests/checks/iam_tf/test_url_only_invoke_guard.py on the policy
+    text and by the post-apply simulate (Decision 213, as updated). Outcomes: a DryRun success raises "URL-only guard missing:
+    direct invoke allowed"; any other code raises "direct-invoke probe inconclusive: <ErrorCode>". The gate never reads,
+    prints or raises the error message, nor any ARN, account id or URL (Decision 101); only the botocore error code may
+    appear. On success it prints one fixed, URL-free line: "LAMBDA_TELEMETRY OK unsigned=403 describe=200 attach_check=ok
+    unknown_action=400 direct_invoke=denied".
     A module docstring says plan 3 part 1 appends its verb vectors here.
 - file: scripts/ducklake_neon_smoke_test.py
   action: Modify
@@ -137,8 +137,8 @@ scope:
     line. Red cases, each raising SmokeTestFailure: unsigned 200; unsigned 403 whose body carries error_type missing_caller_identity;
     signed describe missing an action; describe on a non-smoke meta schema; data_path_is_smoke false; attach_check not ok;
     attach_check meta_schema not ducklake_smoke (the decoy honoured); catalog_login not ducklake_telemetry_writer (for example
-    the shared ops login); unknown action not 400 or with another error_type; DryRun succeeding; DryRun AccessDenied without
-    the boundary phrase; DryRun failing with a non-AccessDenied code (the inconclusive message). A leak case feeds a ClientError
+    the shared ops login); unknown action not 400 or with another error_type; DryRun succeeding; DryRun failing with a non-AccessDenied
+    code (the inconclusive message). A leak case feeds a ClientError
     whose message carries a 12-digit id, an arn: string and a lambda-url host, and asserts none of the three reaches the
     SmokeTestFailure text or captured stdout and stderr, and a second leak case does the same for a non-200 handler body
     on an HTTP check. The fixture ARN and 12-digit id are composed at runtime from a FAKE_ACCT constant (tests/test_redaction_check.py:27
@@ -193,7 +193,7 @@ infrastructure_dependencies:
   HARD PREREQUISITES: PLAN-url-only-invoke-guard is fully applied (boundary Denies, scoped login and its secret value, PlatformDev
   URL-only invoke) and PLAN-telemetry-writer-function is merged with its tf-gated-apply run approved and green (the function,
   its URL and github_ci_branch's grant exist live). Without the second, deploy-serving's update-function-code fails on a
-  missing function; without the first, gate check (4) fails (no scoped login) and check (6) fails on the missing boundary phrase.
+  missing function; without the first, gate check (4) fails (no scoped login) check (6) cannot detect a missing boundary: it proves only that the caller cannot direct-invoke.
 - >-
   No Terraform change; nothing routes through the apply guard.
 - >-
@@ -208,7 +208,7 @@ acceptance_criteria:
   it; the smoke job checks its deploy-record freshness, resolves its URL into DUCKLAKE_TELEMETRY_WRITER_URL and runs --lambda-telemetry.
 - >-
   The --lambda-telemetry gate asserts: unsigned 403; signed describe 200 on ducklake_smoke; signed attach_check ok on ducklake_smoke;
-  decoy catalog keys in the event ignored; unknown action 400; a direct DryRun invoke is denied by the permissions boundary.
+  decoy catalog keys in the event ignored; unknown action 400; a direct DryRun invoke is AccessDenied.
   Every check has a
   red unit case and none prints the URL, an ARN or an account id.
 - >-
@@ -287,12 +287,11 @@ verification_plan:
   command: >-
     test "$RUN_CONCLUSION" = success && test -s "$SMOKE_LOG_FILE" && grep -q "OK agent-platform-ducklake-telemetry-writer
     deploy record fresh: $RUN_SHA" "$SMOKE_LOG_FILE" && grep -qF 'LAMBDA_TELEMETRY OK unsigned=403 describe=200 attach_check=ok
-    unknown_action=400 direct_invoke=boundary_denied' "$SMOKE_LOG_FILE" && echo TELEMETRY_DEPLOY_GREEN
+    unknown_action=400 direct_invoke=denied' "$SMOKE_LOG_FILE" && echo TELEMETRY_DEPLOY_GREEN
   expected: Exit 0 and TELEMETRY_DEPLOY_GREEN; the run concluded success and the gate printed its success line.
   fix_if: >-
     deploy-serving failed on the telemetry writer: check the function exists (the companion apply). The DryRun check failed
-    (success, or AccessDenied without the boundary phrase): the caller holds an unconditioned InvokeFunction grant or the
-    boundary Deny is missing or bypassed, so stop and tell Benjamin before plan 3 part 1 proceeds. "probe inconclusive":
+    (a DryRun success): the caller holds an unconditioned InvokeFunction grant and the boundary Deny is missing or bypassed, so stop and tell Benjamin before plan 3 part 1 proceeds. "probe inconclusive":
     read the error code and RCA it. attach_check failed: read the error_type; an S3 or secret AccessDenied is the telemetry
     role's policy (fix by PR, in budget), a Postgres permission error is the scoped login's grant set (an admin step). Never
     re-run into green without a root cause (Decision 55).
@@ -438,7 +437,7 @@ context:
   ids in Decision 213), SPIRIT 126 (admin SQL and secret write: per-mutation human acceptance, Decision 213 cl.5), NOTE 118
   (stub actions are gate instrumentation until plan 3 part 1's contract), NOTE 154 (accepted deviation, recorded). Decisions
   triaged: 163 of 163. Roadmap items intersected: 7; CONFLICT: 0; RELATED: 7.
-- "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=PROCEED (round 5, after its one text-only fix)"
+- "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=PROCEED (round 5; 2026-10-09 re-plan re-checked)"
 - >-
   Companions: docs/plans/PLAN-url-only-invoke-guard.yaml (admin tier, Decision 213) and docs/plans/PLAN-telemetry-writer-function.yaml
   (the function). Direction: Benjamin 2026-10-08, thread "Writer direct-invoke IAM fix". Split rationale: a function listed
