@@ -53,12 +53,14 @@ scope:
     current_value = current_value + 1 WHERE counter_name = ? (Decision 84 I-2: the write-write conflict at COMMIT is the
     serialization point; no id is allocated from it, ids are ULIDs). (4) lookup_tenant / lookup_project read-only lookups
     on the current tables: (principal_kind, principal_ref) -> tenant_id and (tenant_id, project_ref) -> (project_id,
-    registration); lookup_project, like resolve_or_register_project below, first runs invalid_string_field over
-    project_ref and any supplied name or remote and raises TelemetryRequestError(400, bad_request, {field}) before any
-    statement, because part 2's append path reaches them without telemetry_actions. (5) resolve_or_register_tenant(con, principal, *, identity, semantics) -> (tenant_id, created): lookup;
+    registration); lookup_project first runs invalid_string_field over project_ref and raises TelemetryRequestError(400,
+    bad_request, {field}) before any statement, because part 2's append path reaches it without telemetry_actions. (5)
+    resolve_or_register_tenant(con, principal, *, identity, semantics) -> (tenant_id, created): lookup;
     on a miss, lock_counter("ops_tenants") then write the first SCD2 version (status active, canonical_tenant_id null).
     (6) resolve_or_register_project(con, tenant_id, project_ref, *, explicit, attributes, identity, semantics) ->
-    (project_id, created): lookup; a hit with explicit=True writes a new SCD2 version only when a SUPPLIED name or remote
+    (project_id, created): first runs invalid_string_field over project_ref and any supplied name or remote in
+    attributes, raising TelemetryRequestError(400, bad_request, {field}) before any statement; then lookup; a hit with
+    explicit=True writes a new SCD2 version only when a SUPPLIED name or remote
     differs (an omitted attribute means unchanged, so a bare re-register never clears one) or registration moves
     unregistered -> registered (never back); a miss with explicit=False and purpose != real raises
     TelemetryRequestError(403, project_unregistered, {remedy: register_project}) (project-id.yaml:55-59; part 2's append
@@ -231,10 +233,12 @@ scope:
     re_ratification_trigger first_of ["production_invocations >= 500"] only and no first_production_invocation_date (no
     production traffic yet, recon 2.1). verbs: describe (the agent-facing discovery verb, as ducklake_writer.yaml
     contracts it; PLAN-telemetry-writer-function's Decision 118 note), provision_telemetry, register_tenant,
-    register_project, each with payload_schema_ref, response_codes and typed_errors only (closed keys); each verb's
-    payload_schema_ref states that its accepted strings (component, plus project_ref, name and remote on register_project)
-    are str with no U+0000 and no code point in U+D800-U+DFFF, and its 400 response_code and bad_request typed_error name
-    both causes: an unknown key, or an invalid string with the field named, never the value. attach_check and
+    register_project, each with payload_schema_ref, response_codes and typed_errors only (closed keys); the
+    payload_schema_ref of provision_telemetry, register_tenant and register_project states that its accepted strings
+    (component, plus project_ref, name and remote on register_project) are str with no U+0000 and no code point in
+    U+D800-U+DFFF, and its 400 response_code and bad_request typed_error name both causes: an unknown key, or an invalid
+    string with the field named, never the value. describe's payload_schema_ref and 400 are unchanged (connectionless;
+    the string rule covers the four verbs telemetry_actions dispatches). attach_check and
     telemetry_probe are named out of contract scope as gate instrumentation. audit_invariants: telemetry verbs attach only the pinned catalog
     and take no catalog selector; no verb drops or truncates a table; principal_ref never appears in a response or log;
     a rejected request string never appears in a response or log.
@@ -320,7 +324,7 @@ scope:
     field) pair of the four verbs and over U+0000, a lone high surrogate, a lone low surrogate and a non-str value, each
     embedded with a sentinel: the response is 400 with error_type bad_request and the field named, the fake connection's
     execute is never called, and the sentinel is absent from the response body and the captured logs. A positive case
-    sends a U+1F600 (an escaped surrogate pair in the JSON body) and is not refused.
+    builds the body with json.loads of the escaped pair \ud83d\ude00 (decoded to U+1F600) and is not refused.
 - file: tests/lambdas/ducklake_telemetry_writer/test_handler.py
   action: Modify
   purpose: >-
@@ -733,6 +737,16 @@ test_obligations:
   verification_step: 3
   test_selector: tests/common/test_ducklake_telemetry_registration.py::test_register_tenant_locks_the_counter_only_when_creating
   red_green_expectation: red before (module absent), green after
+- source: src/common/ducklake_telemetry_txn.py
+  behavior: invalid_string_field names the first non-str, U+0000 or U+D800-U+DFFF field and never returns the value.
+  verification_step: 1
+  test_selector: tests/common/test_ducklake_telemetry_txn.py::test_invalid_string_field_names_the_field_never_the_value
+  red_green_expectation: red before (module absent), green after
+- source: src/common/ducklake_telemetry_registration.py
+  behavior: lookup_project and resolve_or_register_project refuse an invalid string with a 400 before any statement.
+  verification_step: 2
+  test_selector: tests/common/test_ducklake_telemetry_registration.py::test_project_entry_points_refuse_an_invalid_string_before_any_statement
+  red_green_expectation: red before (module absent), green after
 - source: src/common/ducklake_telemetry_provision.py
   behavior: Every table is created and partitioned before any write; only the two telemetry counter rows are seeded.
   verification_step: 4
@@ -849,8 +863,9 @@ context:
   209, 144, 118, 128, 181, 48. Decisions triaged: 163 of 163. Roadmap items intersected: 5; CONFLICT: 1; RELATED: 4.'
 - 'gates: decision-scout=FLAGS_FOUND (3 flags, resolved); plan-critique=PROCEED after 4 round(s); round 4 autonomous
   (r1-r3 REVISE, all fixed; r4 notes J1-J4 folded in); 2026-10-09 amendment (the NUL/lone-surrogate 400 guard): r1 REVISE
-  (A1, A2 fixed; N1-N3, N5 folded in). Also cites 204 (live partition re-lays are admin-only, so provision ALTERs only on
-  create) and 212 (CallerPrincipal is the port, no cross-port coupling). Out-of-scope critique findings filed as rec-4211
+  (A1, A2 fixed; N1-N3, N5 folded in), r2 REVISE (D1 describe kept out of the string rule; notes D2-D4 folded in).
+  Also cites 204 (live partition re-lays are admin-only, so provision ALTERs only on create) and 212 (CallerPrincipal is
+  the port, no cross-port coupling). Out-of-scope critique findings filed as rec-4211
   (account id in public Actions logs) and rec-4219 (the shared writer and reader NUL gap).'
 - 'Direction: Benjamin "write the plan" (cmsg_012XgaFy8VaDQbxP5D8nC958K9mX5fF3q1N3ruTT1UwZWu) after the split, the A + D
   choice and the revised design /mnt/project-files/telemetry-slice2/step6b-2a2-plan3-part1-D.md.'
