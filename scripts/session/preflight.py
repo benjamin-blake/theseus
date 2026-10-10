@@ -233,8 +233,10 @@ def main(roadmap_detail: str = "slim") -> int:
     # Recs inputs: two bounded named-verb reads (Decision 215). signal_rows is a list, or None when the
     # reads failed or credentials are down (degrade loudly); Phase-B derivations never re-touch the reader.
     if creds_status == "ok":
-        recs_inputs = fetch_recs_signal_inputs(followon_ids=recs_cache._landed_followon_rec_ids())
+        landed_followons = recs_cache._landed_followon_rec_ids()
+        recs_inputs = fetch_recs_signal_inputs(followon_ids=landed_followons)
     else:
+        landed_followons = None
         recs_inputs = RecsSignalInputs("unavailable", error="credentials unavailable")
     recs_rows_cache = recs_inputs.signal_rows
     pq_cache = warm_rows.get("ops_priority_queue") if warm_reader_ok.get("ops_priority_queue") else None
@@ -396,7 +398,7 @@ def main(roadmap_detail: str = "slim") -> int:
     )
     # Ad-hoc /orient lane (audit PDB-01, B1-R4 + B4-O1): pure derivations over the bounded signal rows; null
     # (never []) when the rows are unavailable -- /orient's recs_read_status-keyed clause reads the null.
-    report["followon_recs"] = recs_cache._derive_followon_recs(recs_rows_cache)
+    report["followon_recs"] = recs_cache._derive_followon_recs(recs_rows_cache, landed=landed_followons)
     report["open_critical_recs"] = recs_cache._derive_open_critical_recs(recs_rows_cache)
     report["ci_rca_liveness_alert"] = ci_rca_liveness_alert
     report["convergence_sensor_liveness_alert"] = convergence_sensor_liveness_alert

@@ -67,7 +67,9 @@ def _landed_followon_rec_ids(plans_dir: Path | None = None) -> dict[str, str]:
     return result
 
 
-def _derive_followon_recs(rows: list[dict] | None, plans_dir: Path | None = None) -> list[dict] | None:
+def _derive_followon_recs(
+    rows: list[dict] | None, plans_dir: Path | None = None, landed: dict[str, str] | None = None
+) -> list[dict] | None:
     """Client-side `followon_recs` /orient key: OPEN recs named in a landed plan's followon_recs.
 
     Intersects `_landed_followon_rec_ids`'s map with the OPEN rows in *rows* -- both derivations
@@ -76,7 +78,7 @@ def _derive_followon_recs(rows: list[dict] | None, plans_dir: Path | None = None
     """
     if rows is None:
         return None
-    landed = _landed_followon_rec_ids(plans_dir)
+    landed = _landed_followon_rec_ids(plans_dir) if landed is None else landed
     if not landed:
         return []
     matched = [r for r in rows if r.get("status") == "open" and r.get("id") in landed]

@@ -72,6 +72,12 @@ class TestAdHocLaneDerivations:
         result = recs_cache._derive_followon_recs(rows, plans_dir=tmp_path)
         assert result == []
 
+    def test_supplied_landed_map_skips_the_plan_walk(self, tmp_path: Path) -> None:
+        rows = [{"id": "rec-7", "status": "open", "title": "t", "created_timestamp": "2026-01-01T00:00:00Z"}]
+        with patch.object(recs_cache, "_landed_followon_rec_ids", side_effect=AssertionError("plan walk repeated")):
+            result = recs_cache._derive_followon_recs(rows, landed={"rec-7": "parent"})
+        assert [r["parent_plan"] for r in result] == ["parent"]
+
     def test_plan_never_naming_the_key_is_never_parsed(self, tmp_path: Path) -> None:
         """The T-1.23 substring gate skips a plan file before yaml.safe_load ever runs on it."""
         unrelated = tmp_path / "PLAN-unrelated.yaml"
