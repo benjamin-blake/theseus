@@ -40,10 +40,11 @@ scope:
     with offsets preserved (validate_terraform_try's idiom), and returns {zip basename: ["path:line", ...]} for every string
     argument of a Terraform file-family function (regex \bfile\w*\s*\(\s*"[^"]*lambda-packages/([^"/]+)", covering filemd5,
     file, filebase64sha256, fileexists and the rest) that names a lambda-packages zip. unfetched_lambda_package_reads(tf_dir)
-    returns the subset the CI plan job builds but the apply jobs do not fetch: zips in docs/contracts/build-lambda.yaml's
-    pipelines.ducklake.artifacts (what build_lambda --ducklake-only builds for every plan job) and not in scripts/ci/ducklake_artifacts.py's
-    DUCKLAKE_ARTIFACT_NAMES (what fetch mode downloads and assert mode byte-checks). A zip no terraform job builds, such as
-    data-pipeline.zip in prod_lambdas.tf, is absent at plan and at apply alike, so it is not flagged. The module docstring
+    is fail-closed: it returns every read whose zip is neither in scripts/ci/ducklake_artifacts.py's DUCKLAKE_ARTIFACT_NAMES
+    (what fetch mode downloads and assert mode byte-checks) nor in docs/contracts/build-lambda.yaml's pipelines.prod.artifacts
+    (zips no terraform job builds, such as data-pipeline.zip in prod_lambdas.tf, absent at plan and at apply alike), so
+    an unlisted zip is flagged too. The contract is resolved from the repo root (Path(__file__).resolve().parents[2]),
+    never from tf_dir, because step 2 passes a temporary tree holding only terraform/personal. The module docstring
     declares the coverage (decision-scout NOTE 181): lambda-packages zips the DuckLake build produces, the only artifacts
     a terraform job builds today; any other file read that differs between jobs is the residual rec-4248 owns (plan with
     the apply jobs' artifacts). No import-time work.
@@ -55,9 +56,14 @@ scope:
     decoupled function, Decision 125/126, or add the zip to DUCKLAKE_ARTIFACT_NAMES), and the docstring states the rule:
     Terraform re-evaluates file functions when it applies a saved plan, so a zip present in the plan job and absent in the
     apply job changes a planned value and the provider rejects the apply (rec-4243). A non-vacuity floor asserts the scan
-    finds ducklake-writer.zip (membership, not a count; tests/CLAUDE.md count-coupling rule). test_parity_scan_flags_only_unfetched_builds
-    writes synthetic HCL to tmp_path reading ducklake-telemetry-writer.zip (flagged), ducklake-writer.zip (fetched),
-    data-pipeline.zip (never built) and a commented-out read, and asserts the predicate returns exactly the first. The file
+    finds ducklake-writer.zip (membership, not a count; tests/CLAUDE.md count-coupling rule). test_parity_scan_flags_only_unfetched_reads
+    writes synthetic HCL to tmp_path reading ducklake-telemetry-writer.zip (flagged), ducklake-writer.zip (fetched), data-pipeline.zip
+    (never built by a terraform job), an unlisted zip (flagged: fail-closed) and a commented-out read of ducklake-maintenance-smoke.zip
+    (flagged if the comment were not blanked), and asserts the predicate returns exactly the telemetry and unlisted zips.
+    The test text names ducklake_telemetry_writer.tf, ducklake_maintenance_smoke.tf, build-lambda.yaml and ducklake_artifacts.py,
+    so --pre's affected-set data edges select it when those change; its docstring declares the gap that a brand-new .tf
+    file is caught by the mandatory pre-handoff full tier rather than --pre (critique F2; rec-4248 closes the class at the
+    job level). The file
     stays under 500 SLOC (370 today).
 - file: config/agent/verification_registry/entries/gated-apply-artifact-parity.yaml
   action: Create
@@ -74,7 +80,7 @@ scope:
     with its true scope: ignore_changes keeps an existing function's or layer's prior source_code_hash, so a re-evaluated
     filemd5() cannot change it on an update; Terraform still re-evaluates file functions when it applies a saved plan and
     nothing masks a create, so a resource created on any apply route reads only an artifact every apply route provides exactly
-    as the plan job had it (the seven DUCKLAKE_ARTIFACT_NAMES on gated-apply and Reconcile), and a decoupled function whose
+    as the plan job had it (DUCKLAKE_ARTIFACT_NAMES on gated-apply and Reconcile; name the set, never its size), and a decoupled function whose
     zip is outside that set sets no source_code_hash (rec-4243; guarded by gated-apply-artifact-parity). Add a 2026-10-10
     amendment_log entry (semantic_break false; change_class from the contract's own allowed values, governance_note_add
     if it fits) naming the correction. No apply-model, guard-classification or typed conformance field changes.
@@ -173,7 +179,7 @@ verification_plan:
   phase: pre-deploy
   action: The parity guard passes over the real Terraform tree, with its synthetic red case.
   command: >-
-    bin/venv-python -m pytest tests/test_ducklake_artifacts.py::test_terraform_reads_only_fetched_lambda_packages tests/test_ducklake_artifacts.py::test_parity_scan_flags_only_unfetched_builds
+    bin/venv-python -m pytest tests/test_ducklake_artifacts.py::test_terraform_reads_only_fetched_lambda_packages tests/test_ducklake_artifacts.py::test_parity_scan_flags_only_unfetched_reads
     -q
   expected: >-
     Exit 0. Red before: both nodes are absent on the plan-only PR (Decision 189), and on the unfixed tree the first fails
@@ -264,9 +270,11 @@ verification_plan:
   phase: pre-deploy
   action: >-
     Before merge, the PR's speculative plan is exactly the remaining set. Save the "Terraform Speculative Plan" PR comment
-    body (mcp__github__pull_request_read get_comments) to $SPEC_PLAN_FILE.
+    body for the PR's final head (mcp__github__pull_request_read get_comments; re-pushes leave several) to $SPEC_PLAN_FILE
+    and export PR_HEAD_SHA.
   command: >-
-    test -s "$SPEC_PLAN_FILE" && bin/venv-python -c "import os,re;t=open(os.environ['SPEC_PLAN_FILE'],encoding='utf-8',errors='replace').read();
+    test -s "$SPEC_PLAN_FILE" && test -n "$PR_HEAD_SHA" && bin/venv-python -c "import os,re;t=open(os.environ['SPEC_PLAN_FILE'],encoding='utf-8',errors='replace').read();
+    assert ('PR head SHA: '+chr(96)+os.environ['PR_HEAD_SHA']+chr(96)) in t, 'not the final head comment';
     m=re.search(r'Plan: (\d+) to add, (\d+) to change, (\d+) to destroy',t);assert m and m.groups()==('4','1','0'), m and m.group(0);
     assert 'Predicted guard verdict: BLOCKED' in t, 'not routed';
     new=('aws_lambda_function.ducklake_telemetry_writer','aws_lambda_function_url.ducklake_telemetry_writer','aws_ssm_parameter.ducklake_telemetry_writer_url','aws_cloudwatch_metric_alarm.ducklake_telemetry_writer_errors');
@@ -284,6 +292,24 @@ verification_plan:
 - step: 7
   phase: post-deploy
   action: >-
+    After the merge and the acknowledge-and-retry dispatch, and before asking Benjamin to approve, the dispatch's fresh
+    plan is exactly the routed remaining set (critique F3: an unrelated terraform merge refused on the red record would
+    otherwise ride into the approved plan unseen). Save the dispatch run's apply-sandbox job log (mcp__github__get_job_logs)
+    to $DISPATCH_PLAN_LOG_FILE.
+  command: >-
+    test -s "$DISPATCH_PLAN_LOG_FILE" && bin/venv-python -c "import os,re;t=re.sub(r'\x1b\[[0-9;]*m','',open(os.environ['DISPATCH_PLAN_LOG_FILE'],encoding='utf-8',errors='replace').read());
+    assert 'CONVERGENCE_ACK' in t, 'precondition did not accept the acknowledgement';assert 'Apply complete!' not in t, 'applied without the gate';
+    m=re.search(r'Plan: (\d+) to add, (\d+) to change, (\d+) to destroy',t);assert m and m.groups()==('4','1','0'), m and m.group(0);
+    new=('aws_lambda_function.ducklake_telemetry_writer','aws_lambda_function_url.ducklake_telemetry_writer','aws_ssm_parameter.ducklake_telemetry_writer_url','aws_cloudwatch_metric_alarm.ducklake_telemetry_writer_errors');
+    miss=[r for r in new if not re.search(r'# '+re.escape(r)+r' will be created',t)]+([] if re.search(r'# aws_iam_role_policy\.github_ci_branch will be updated in-place',t) else ['github_ci_branch']);
+    assert not miss, miss;print('DISPATCH_PLAN_OK',m.group(0))"
+  expected: Exit 0 and DISPATCH_PLAN_OK with 4 to add, 1 to change, 0 to destroy.
+  fix_if: >-
+    Any delta: do not ask for approval. Tell Benjamin what changed and recommend rejecting the pending deployment; the record
+    stays red and the next dispatch re-plans. Never approve or apply on his behalf.
+- step: 8
+  phase: post-deploy
+  action: >-
     After the merge (push run refused on the red record), the acknowledge-and-retry dispatch and Benjamin's tf-gated-apply
     approval: run PLAN-telemetry-writer-function's step 6 as amended (the two gated applies together match the plan; record
     green on the retry run). Set RETRY_SHA, RETRY_RUN_ID, FIRST_APPLY_LOG_FILE and RETRY_APPLY_LOG_FILE as that step's action
@@ -294,21 +320,21 @@ verification_plan:
   fix_if: >-
     Follow that step's fix_if. A second failed apply: stop, RCA (Decision 55) and tell Benjamin; never apply locally and
     never dispatch a third attempt without his word.
-- step: 8
+- step: 9
   phase: post-deploy
   action: The stub is live through its URL under the scoped login and refuses direct invoke (PLAN-telemetry-writer-function step 7, unchanged).
   command: >-
     bin/venv-python -c "import subprocess,yaml;s={x['step']:x for x in yaml.safe_load(open('docs/plans/PLAN-telemetry-writer-function.yaml',encoding='utf-8'))['verification_plan']};subprocess.run(s[7]['command'],shell=True,check=True)"
   expected: Exit 0 with STUB_LIVE_OK and TELEMETRY_URL_ONLY_OK.
   fix_if: Follow PLAN-telemetry-writer-function step 7's fix_if.
-- step: 9
+- step: 10
   phase: post-deploy
   action: The shared writer and reader ops gates still pass (PLAN-telemetry-writer-function step 8, unchanged).
   command: >-
     bin/venv-python -c "import subprocess,yaml;s={x['step']:x for x in yaml.safe_load(open('docs/plans/PLAN-telemetry-writer-function.yaml',encoding='utf-8'))['verification_plan']};subprocess.run(s[8]['command'],shell=True,check=True)"
   expected: Exit 0 and OPS_GATES_OK.
   fix_if: Follow PLAN-telemetry-writer-function step 8's fix_if.
-- step: 10
+- step: 11
   phase: post-deploy
   action: >-
     Live-versus-declared read-back: dispatch terraform-drift.yml after the green apply, save its drift-check job log to $DRIFT_LOG_FILE
@@ -317,17 +343,22 @@ verification_plan:
     bin/venv-python -c "import subprocess,yaml;s={x['step']:x for x in yaml.safe_load(open('docs/plans/PLAN-telemetry-writer-function.yaml',encoding='utf-8'))['verification_plan']};subprocess.run(s[9]['command'],shell=True,check=True)"
   expected: Exit 0 and DRIFT_CLEAN.
   fix_if: Follow PLAN-telemetry-writer-function step 9's fix_if; drift on the smoke function means its zero-diff claim failed, so report it.
-- step: 11
+- step: 12
   phase: post-deploy
   action: rec-4243 closed by the implementation PR's Resolves trailer (Decision 201 acceptance-gated closure).
   command: >-
     bin/venv-python -m scripts.sync.ops sync && bin/venv-python -c "import json,pathlib;rows=[json.loads(l) for l in pathlib.Path('logs/.recommendations-log.jsonl').read_text(encoding='utf-8').splitlines()
-    if l.strip()];r=next((x for x in rows if x.get('id')=='rec-4243'),None);assert r and r.get('status')=='closed', (r or {}).get('status');print('rec-4243
+    if l.strip()];r=next((x for x in rows if x.get('id')=='rec-4243'),None);assert r and r.get('status')=='closed', (r or {}).get('status');assert
+    'test_terraform_reads_only_fetched_lambda_packages' in (r.get('acceptance') or ''), r.get('acceptance');print('rec-4243
     closed')"
-  expected: Prints rec-4243 closed.
+  expected: >-
+    Prints rec-4243 closed; its acceptance names the guard node. The Decision 186 gate refuses closure without the shard
+    closure artifact, so closed also proves that field.
   fix_if: >-
     Still open: the trailer-acceptance job refused it (read its verdict artifact; the acceptance must be the guard selector,
     execution step 3) or the trailer was omitted. Close through the portal with the verdict, never by editing the cache.
+    A duplicate ci-rca rec filed by a Decision 190 escalation during the approval wait is closed as a duplicate of rec-4243
+    once the record is green (critique F10).
 test_obligations:
 - source: terraform/personal/ducklake_telemetry_writer.tf
   behavior: The telemetry writer reads no lambda-packages zip outside the apply-path fetch set.
@@ -342,7 +373,7 @@ test_obligations:
 - source: tests/fixtures/lambda_package_reads.py
   behavior: The predicate flags a zip the plan job builds and the apply jobs do not fetch, and nothing else.
   verification_step: 1
-  test_selector: tests/test_ducklake_artifacts.py::test_parity_scan_flags_only_unfetched_builds
+  test_selector: tests/test_ducklake_artifacts.py::test_parity_scan_flags_only_unfetched_reads
   red_green_expectation: red before (module and node absent), green after
 - source: config/agent/verification_registry/entries/gated-apply-artifact-parity.yaml
   behavior: Registry shard for the graduated step-1 check.
@@ -407,14 +438,15 @@ context:
 - "fork: acknowledge the red sha, not rec-4243 | chosen: red sha | class: consistency-only | precedent: deploy-paths.yaml | precedent_kind: contract | reversible: yes | persisted: execution steps"
 - >-
   PLAN-telemetry-writer-function is amended in this plan's PR (VP step 6, its post-deploy acceptance criterion, its function
-  scope text, the 7/4/0 prerequisite note and the Code-at-creation bullet); steps 7-10 here delegate to its steps 6-9.
+  scope text, the 7/4/0 prerequisite note and the Code-at-creation bullet); steps 8-11 here delegate to its steps 6-9.
 - >-
   Decision-scout (re-run after the scope widened): FLAGS_FOUND. CITE 55, 77, 119, 125, 126, 154, 183, 213, 186, 201,
   48, 132, 189, 59, 67, 101. WARN 165 (zero prose headroom: verbatim lines shrink both surfaces), WARN 92 (terraform/CLAUDE.md
   points at the contract instead of restating it), NOTE 181 (step 6 union stated per conjunct; guard coverage declared,
   residual rec-4248), SPIRIT 154 (fixed-key creation bytes, Benjamin's choice; deploy-wiring's DEPLOY_RECORD_OK step).
-  Decisions triaged: 167 of 167. Roadmap items intersected: 4; CONFLICT: 0; RELATED: 4.
-- "gates: decision-scout=FLAGS_FOUND (resolved in-plan, 2 runs); plan-critique=PENDING"
+  Decisions triaged: 167 of 167. Roadmap items intersected: 4; CONFLICT: 0; RELATED: 4. Provenance of the retired
+  md5(file()) example: archived Decision 19 (DECISIONS_ARCHIVE.md, single-environment plan-equals-apply premise).
+- "gates: decision-scout=FLAGS_FOUND (resolved in-plan, 2 runs); plan-critique=PROCEED round 1 (F1-F10 disposed), confirming round PENDING"
 - >-
   Gotchas: removing the longest key shifts terraform fmt alignment of s3_bucket/s3_key (CI fmt -check fails otherwise);
   RETRY_SHA is the dispatch run's head sha, which the gated-apply record write uses as commit_sha; the push run's refusal
@@ -427,7 +459,8 @@ pre_implementation_checklist:
 - Acceptance criteria understood and verifiable
 execution_steps:
 - >-
-  Write tests/fixtures/lambda_package_reads.py and the two tests first; run step 1 on the unchanged Terraform and record
+  Start from main after this plan's PR has merged (step 4 diffs against the merge base, so a branch without the merged
+  plan amendment flags it). Write tests/fixtures/lambda_package_reads.py and the two tests first; run step 1 on the unchanged Terraform and record
   that the real-tree test fails naming exactly the smoke and telemetry zips.
 - Edit the two .tf files and the three instruction files; run steps 1-4.
 - >-
@@ -443,9 +476,9 @@ execution_steps:
 - >-
   Push, open the PR with Resolves rec-4243 in the squash body, drive CI green, run step 6 on the speculative-plan comment.
   Squash-merge, confirm the push run refused with CONVERGENCE_RED, dispatch terraform-apply-sandbox.yml (mcp__github__actions_run_trigger,
-  ref main, acknowledge_red_commit c21ba7da56a5640bc7c368af6cb8b50ae92b3e78), confirm its guard routed, and ask Benjamin
-  to approve the tf-gated-apply run.
-- Execute steps 7-11. Loop until they pass, never weakening an assertion. On an unrecoverable failure stop and RCA (Decision 55).
+  ref main, acknowledge_red_commit c21ba7da56a5640bc7c368af6cb8b50ae92b3e78), run step 7 on its apply-sandbox log, and
+  only then ask Benjamin to approve the tf-gated-apply run.
+- Execute steps 8-12. Loop until they pass, never weakening an assertion. On an unrecoverable failure stop and RCA (Decision 55).
 - 'Report: what landed, the verification results, and that the deploy-wiring plan and plan 3 part 1 are unblocked'
 rollback: >-
   Before the retry: revert the squash commit (nothing was applied). After it: the function exists with no source_code_hash
