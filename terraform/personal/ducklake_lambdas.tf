@@ -53,8 +53,8 @@ locals {
 
 # ---------------------------------------------------------------------------
 # Layers (from S3) -- duckdb (pinned via config/lambda/ducklake/version.yaml) + deps, and the 3
-# baked extensions. The layer zips are uploaded to S3 by build_lambda BEFORE the apply; the
-# source_code_hash is try()-guarded so a plan without the local zip (e.g. CI validate) does not fail.
+# baked extensions. The layer zips are uploaded to S3 by build_lambda BEFORE the apply; no
+# source_code_hash is set, so Terraform reads no local zip.
 # ---------------------------------------------------------------------------
 
 resource "aws_lambda_layer_version" "ducklake_deps" {
@@ -63,15 +63,14 @@ resource "aws_lambda_layer_version" "ducklake_deps" {
   s3_bucket           = aws_s3_bucket.data_lake.id
   s3_key              = "lambda-packages/ducklake-deps-layer.zip"
   compatible_runtimes = ["python3.12"]
-  source_code_hash    = try(filemd5("${path.module}/../../lambda-packages/ducklake-deps-layer.zip"), null)
 
   # T2.42 c1 (rec-2646/rec-2654 pattern extended to layers, Decision 126 pt3/pt5, DEP-03): decouples
-  # routine rebuild churn from this IAM-gated apply path -- without this, every rebuild's
-  # non-reproducible zip bytes surface as a layer create+delete (replace) diff, which the Decision-77
-  # guard blocks as a delete action (routes to gated-apply for zero real change). s3_key stays the
+  # routine rebuild churn from this IAM-gated apply path. No source_code_hash is set (Terraform reads no
+  # build artifact) and this block stays as the conformance marker and a backstop. Terraform never
+  # republishes a layer on content change (it did not before either; rec-4253). s3_key stays the
   # fixed literal (unaffected by T2.42 c3's content-addressed upload path).
   #
-  # SILENT-FREEZE GUARD: source_code_hash is now ignored, so Terraform only publishes a new layer
+  # SILENT-FREEZE GUARD: source_code_hash is not set, so Terraform only publishes a new layer
   # version when `description` changes. This description interpolates local.ducklake_version ONLY --
   # a genuine non-duckdb dependency bump (psycopg2-binary / python-ulid / pyyaml) with an unchanged
   # duckdb version leaves the description unchanged, so terraform publishes NO new layer version and
@@ -88,12 +87,11 @@ resource "aws_lambda_layer_version" "ducklake_extensions" {
   s3_bucket           = aws_s3_bucket.data_lake.id
   s3_key              = "lambda-packages/ducklake-extensions-layer.zip"
   compatible_runtimes = ["python3.12"]
-  source_code_hash    = try(filemd5("${path.module}/../../lambda-packages/ducklake-extensions-layer.zip"), null)
 
   # T2.42 c1 (rec-2646/rec-2654 pattern extended to layers, Decision 126 pt3/pt5, DEP-03): decouples
-  # routine rebuild churn from this IAM-gated apply path -- without this, every rebuild's
-  # non-reproducible zip bytes surface as a layer create+delete (replace) diff, which the Decision-77
-  # guard blocks as a delete action (routes to gated-apply for zero real change). s3_key stays the
+  # routine rebuild churn from this IAM-gated apply path. No source_code_hash is set (Terraform reads no
+  # build artifact) and this block stays as the conformance marker and a backstop. Terraform never
+  # republishes a layer on content change (it did not before either; rec-4253). s3_key stays the
   # fixed literal (unaffected by T2.42 c3's content-addressed upload path). This layer's description
   # is fully duckdb-version-driven (local.ducklake_version), so a genuine content bump (a DuckDB
   # version bump) always moves the description and republishes correctly -- no silent-freeze risk.
@@ -266,7 +264,7 @@ resource "aws_iam_role_policy" "ducklake_reader" {
 }
 
 # ---------------------------------------------------------------------------
-# The two Lambda functions (from S3). source_code_hash try()-guarded; code is updated post-apply by
+# The two Lambda functions (from S3). No source_code_hash is set; code is updated post-apply by
 # the governed code-deploy channel (Decision 125/126).
 # ---------------------------------------------------------------------------
 
@@ -280,9 +278,8 @@ resource "aws_lambda_function" "ducklake_writer" {
   timeout       = 120
   memory_size   = 3008 # Retained as baseline headroom per human decision (Decision 82 frame correction). Branch-P rationale superseded: EC8 now measures N concurrent invocations (each its own vCPU), not in-container thread contention.
 
-  s3_bucket        = aws_s3_bucket.data_lake.id
-  s3_key           = "lambda-packages/ducklake-writer.zip"
-  source_code_hash = try(filemd5("${path.module}/../../lambda-packages/ducklake-writer.zip"), null)
+  s3_bucket = aws_s3_bucket.data_lake.id
+  s3_key    = "lambda-packages/ducklake-writer.zip"
 
   layers = [
     aws_lambda_layer_version.ducklake_deps.arn,
@@ -303,8 +300,9 @@ resource "aws_lambda_function" "ducklake_writer" {
   ]
 
   # Decision 125 physical decoupling: code deploys go through the governed code-deploy channel
-  # (deploy-ducklake-lambdas.yml; build_lambda --deploy is break-glass), not terraform. Without this, every rebuild's non-reproducible zip bytes
-  # trip a Terraform diff on this IAM-gated apply path (rec-2646/rec-2654).
+  # (deploy-ducklake-lambdas.yml; build_lambda --deploy is break-glass), not terraform. No source_code_hash
+  # is set (Terraform reads no build artifact); this block is the conformance marker and a backstop
+  # (rec-2646/rec-2654).
   lifecycle {
     ignore_changes = [source_code_hash]
   }
@@ -325,9 +323,8 @@ resource "aws_lambda_function" "ducklake_reader" {
   timeout       = 120
   memory_size   = 1024
 
-  s3_bucket        = aws_s3_bucket.data_lake.id
-  s3_key           = "lambda-packages/ducklake-reader.zip"
-  source_code_hash = try(filemd5("${path.module}/../../lambda-packages/ducklake-reader.zip"), null)
+  s3_bucket = aws_s3_bucket.data_lake.id
+  s3_key    = "lambda-packages/ducklake-reader.zip"
 
   layers = [
     aws_lambda_layer_version.ducklake_deps.arn,
@@ -350,8 +347,9 @@ resource "aws_lambda_function" "ducklake_reader" {
   ]
 
   # Decision 125 physical decoupling: code deploys go through the governed code-deploy channel
-  # (deploy-ducklake-lambdas.yml; build_lambda --deploy is break-glass), not terraform. Without this, every rebuild's non-reproducible zip bytes
-  # trip a Terraform diff on this IAM-gated apply path (rec-2646/rec-2654).
+  # (deploy-ducklake-lambdas.yml; build_lambda --deploy is break-glass), not terraform. No source_code_hash
+  # is set (Terraform reads no build artifact); this block is the conformance marker and a backstop
+  # (rec-2646/rec-2654).
   lifecycle {
     ignore_changes = [source_code_hash]
   }

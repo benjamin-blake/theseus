@@ -27,6 +27,16 @@ contract:
     check: validate_environment_taxonomy
 
 amendment_log:
+  - date: "2026-10-10"
+    semantic_break: false
+    change_class: governance_note_add
+    summary: >-
+      PLAN-telemetry-writer-apply-parity (rec-4243): conformance states that Terraform never reads a build
+      artifact and that no resource sets source_code_hash, replacing the false clause that a verbatim
+      saved-plan apply skips file reads against the local tree. Retires archived Decision 19's
+      try(filemd5(...), md5(file(...))) fallback and its use-the-artifact-hash-to-detect-changes rationale
+      (already superseded in substance by Decisions 125/126). No apply-model, guard-classification or
+      typed conformance field changed.
   - date: "2026-10-09"
     semantic_break: false
     change_class: governance_note_add
@@ -339,6 +349,17 @@ conformance:
     does not surface as a Terraform diff on the guarded auto-apply path. Code ships via the build
     pipeline; infra ships via Terraform. Keeping them decoupled means the deterministic apply guard
     sees only genuine infra changes, not routine code-hash churn.
+    Terraform never reads a build artifact; function and layer code is addressed only by
+    s3_bucket/s3_key, no resource sets source_code_hash (the ignore_changes block stays as the
+    conformance marker and a backstop), and code ships through the code-deploy channel. Because
+    Terraform re-evaluates file functions when it applies a saved plan, and nothing masks a create,
+    no configuration file read may name a file a job builds or downloads (rec-4243). Coverage
+    (Decision 181): validate_terraform_no_build_artifact_reads enforces it for every literal
+    filesystem path in terraform/ (a prefixed literal anywhere, or a plain literal passed to a
+    file-family function) and flags any source_code_hash argument; declared residuals: a path
+    assembled from non-literal parts, and a job output written to an untracked but not ignored
+    path (none exists today; rec-4246); job-materialised inputs that are not file reads (the tfvars
+    fetched from Secrets Manager, the provider mirror) are recorded in plan.bin itself.
   ducklake_class: DECOUPLED
   ducklake_detail: >-
     Decision 125/126, #544: the DuckLake Lambdas (writer, reader, maintenance, catalog-dr,
@@ -351,12 +372,11 @@ conformance:
     decoupled, as of T2.42 c1: every aws_lambda_layer_version resource for the three layers carries
     the same lifecycle { ignore_changes = [source_code_hash] } block -- a routine rebuild's
     non-reproducible zip bytes no longer surface as a layer create+delete (replace) diff on the
-    guarded auto-apply path. This is load-bearing for Decision 154 / rec-2862's fetch_reviewed()
-    route (scripts/ci/ducklake_artifacts.py): the human-gated apply paths (gated-apply, both
+    guarded auto-apply path. Decision 154 / rec-2862's fetch_reviewed() route
+    (scripts/ci/ducklake_artifacts.py): the human-gated apply paths (gated-apply, both
     Reconcile jobs) fetch the already-reviewed per-sha artifacts and server-side copy them onto the
-    fixed key instead of rebuilding, and this decoupling is precisely why a verbatim saved-plan
-    apply never re-evaluates filemd5() against the local tree regardless of where that fetch step's
-    working directory lands. The governed code-deploy channel for the five functions landed at
+    fixed key instead of rebuilding; Terraform reads none of them (see the never-read rule in
+    conformance.description). The governed code-deploy channel for the five functions landed at
     T2.38: .github/workflows/deploy-ducklake-lambdas.yml; local
     build_lambda --ducklake-only --deploy is now a genuinely non-default break-glass fallback. This
     file remains the sole SoT for the apply-model / guard classification -- this section extends
@@ -372,7 +392,8 @@ conformance:
     .github/workflows/deploy-prod-lambdas.yml; local build_lambda --deploy is a genuinely
     non-default break-glass fallback (mirrors the DuckLake class's break-glass posture). This file
     remains the sole SoT for the apply-model / guard classification -- this section extends that
-    SoT for the prod class, it does not compete with it.
+    SoT for the prod class, it does not compete with it. The never-read rule in
+    conformance.description binds this class too.
 
 lockfile: >-
   Provider lock file consideration (apply-path supply chain): terraform/personal/
