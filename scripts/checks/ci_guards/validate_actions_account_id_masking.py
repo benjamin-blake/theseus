@@ -39,8 +39,8 @@ from scripts.checks import _common, registry
 from scripts.checks.ci_guards import _workflow_shell_bodies
 
 _CREDENTIALS_ACTION_PREFIX = "aws-actions/configure-aws-credentials"
-_ACCOUNT_SECRET = "secrets.AWS_ACCOUNT_ID"  # pragma: allowlist secret
-_ROLE_PART_SECRET = "secrets.AWS_ROLE_ID_ACCOUNT_PART"  # pragma: allowlist secret
+_ACCOUNT_REF = "secrets.AWS_ACCOUNT_ID"
+_ROLE_PART_REF = "secrets.AWS_ROLE_ID_ACCOUNT_PART"
 _VARS_LINE = re.compile(r"vars.AWS_ACCOUNT_ID")
 _VARS_CONTEXT_EXPR = re.compile(r"\$\{\{(?:(?!\}\}).)*(?<![\w.-])vars(?![\w-])", re.DOTALL)
 _TREES = (".github/workflows", ".github/actions")
@@ -89,7 +89,7 @@ def _steps(container: Any) -> list[Any]:
 
 
 def _refs_part(env: Any) -> bool:
-    return isinstance(env, dict) and any(_ROLE_PART_SECRET in s for s in _strings(env))
+    return isinstance(env, dict) and any(_ROLE_PART_REF in s for s in _strings(env))
 
 
 def _scan_text(rel: str, text: str) -> list[str]:
@@ -130,7 +130,7 @@ def _scan_workflow(rel: str, data: Any) -> tuple[list[str], int]:
         any(_is_signin(s) for s in _steps(job)) for job in job_dicts.values()
     )
     violations: list[str] = []
-    top_refs = any(_ACCOUNT_SECRET in s or _ROLE_PART_SECRET in s for s in _strings(top_env))
+    top_refs = any(_ACCOUNT_REF in s or _ROLE_PART_REF in s for s in _strings(top_env))
     if top_refs and not every_job_signs_in:
         violations.append(
             f"{rel}: R5 workflow-level env references an AWS account secret but some job does not sign in; "
@@ -145,11 +145,11 @@ def _scan_workflow(rel: str, data: Any) -> tuple[list[str], int]:
             identity = f"{rel}::{job_id}::{step.get('id') or step.get('name') or f'#{index}'}"
             with_block = step.get("with")
             role = with_block.get("role-to-assume") if isinstance(with_block, dict) else None
-            if not (isinstance(role, str) and _ACCOUNT_SECRET in role):
-                violations.append(f"{identity}: R3 role-to-assume does not reference {_ACCOUNT_SECRET}.")
+            if not (isinstance(role, str) and _ACCOUNT_REF in role):
+                violations.append(f"{identity}: R3 role-to-assume does not reference {_ACCOUNT_REF}.")
             masked = _refs_part(step.get("env")) or _refs_part(job.get("env")) or (every_job_signs_in and _refs_part(top_env))
             if not masked:
-                violations.append(f"{identity}: R3 no reference to {_ROLE_PART_SECRET} in step, job or workflow env.")
+                violations.append(f"{identity}: R3 no reference to {_ROLE_PART_REF} in step, job or workflow env.")
     return violations, examined
 
 
