@@ -134,6 +134,23 @@ ENTRIES: tuple[Entry, ...] = (
         full_segment="full_after_lint",
     ),
     Entry(
+        name="validate_actions_account_id_masking",
+        module="scripts.checks.ci_guards.validate_actions_account_id_masking",
+        attr="validate_actions_account_id_masking",
+        pre=True,
+        pre_globs=(
+            ".github/workflows/**",
+            ".github/actions/**",
+            "scripts/checks/ci_guards/validate_actions_account_id_masking.py",
+            "scripts/checks/ci_guards/_workflow_shell_bodies.py",
+            "scripts/checks/_common.py",
+            "scripts/checks/_marker_guard.py",
+            "scripts/decisions_md.py",
+            "scripts/checks/registry.py",
+        ),
+        full_segment="full_after_lint",
+    ),
+    Entry(
         name="validate_dependabot_automation",
         module="scripts.checks.ci_guards.validate_dependabot_automation",
         attr="validate_dependabot_automation",
