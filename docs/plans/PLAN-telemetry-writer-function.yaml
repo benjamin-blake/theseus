@@ -42,7 +42,7 @@ scope:
     role the new role, python3.12, handler src.lambdas.ducklake_telemetry_writer.handler.handler, x86_64, timeout 120, memory_size
     3008 (the writer's baseline, Decision 82), reserved_concurrent_executions = 5 (bounds catalog sessions to 5 containers,
     per the connection review and the RDS swap thread's connection budget; 2c re-sizes it), s3_key lambda-packages/ducklake-telemetry-writer.zip,
-    source_code_hash = try(filemd5("${path.module}/../../lambda-packages/ducklake-telemetry-writer.zip"), null), layers ducklake_deps
+    no source_code_hash (amended 2026-10-10, rec-4243: a create must not read a zip the gated-apply job does not fetch), layers ducklake_deps
     and ducklake_extensions (no pgclient). Environment: TELEMETRY_META_SCHEMA = local.ducklake_telemetry_meta_schema, TELEMETRY_DATA_PATH
     = local.ducklake_smoke_data_path, TELEMETRY_BLOB_ROOT = local.ducklake_telemetry_blob_root, DUCKLAKE_EXTENSION_DIRECTORY
     = local.ducklake_extension_dir, DUCKLAKE_FIELD_SEMANTICS_PATH = "/var/task/config/lambda/ducklake/field_semantics.yaml",
@@ -283,6 +283,9 @@ infrastructure_dependencies:
   this PR's CI, because the full tier's refresh-read coverage needs its IAMRolesRead entry and terraform-validate needs
   its secret declaration; and this PR's speculative plan is produced (pushed or re-planned) after its bootstrap and governed
   applies, so the reviewed saved plan is exactly 7 to add, 4 to change, 0 to destroy. Implementation may start earlier.
+  (Amended 2026-10-10: the reviewed plan showed 5 changes, the fifth being github_ci_pr's policy, whose document is read
+  during apply because it references the writer function and the writer had a pending environment change. It would have
+  been a no-op.)
 - >-
   Lambda deployment (Decision 79): compute_affected_artifacts over this scope returns data-pipeline (active) because of
   the manifest exclude edit. The exclude keeps data-pipeline.zip's contents unchanged, so data-pipeline needs no deploy;
@@ -303,7 +306,8 @@ infrastructure_dependencies:
   and ducklake-* alarm writes and SSM writes on parameter/agent-platform/*. No PlatformDev or PlatformAdmin policy changes
   (Decision 180).
 - >-
-  Code at creation: the PR speculative-plan job (build-ducklake-artifacts mode upload-only) uploads ducklake-telemetry-writer.zip
+  Code at creation (amended 2026-10-10, rec-4243): the function sets no source_code_hash, because Terraform re-evaluates
+  filemd5 when it applies a saved plan and the gated apply does not have this zip locally. The PR speculative-plan job (build-ducklake-artifacts mode upload-only) uploads ducklake-telemetry-writer.zip
   to the fixed key; the gated apply ('fetch' mode, seven artifacts) leaves that key alone and creates the function from it.
   The stub is therefore live after the apply without the deploy channel. Accepted deviation from Decision 154's reviewed-bytes
   intent (scout SPIRIT note): another PR's upload-only run can overwrite that fixed key during the approval wait; the bytes
@@ -349,8 +353,10 @@ acceptance_criteria:
   a change to it affects only the telemetry writer artifact; the apply-path artifact set (scripts/ci/ducklake_artifacts.py's
   DUCKLAKE_ARTIFACT_NAMES) is unchanged.
 - >-
-  Post-deploy on the merge commit: the convergence record is green after the gated approval; the apply log shows exactly
-  7 added, 4 changed, 0 destroyed with the named resources; the SSM parameter resolves; an unsigned URL call is 403; as
+  Post-deploy (amended 2026-10-10, rec-4243): the first gated apply (run 38046095276, c21ba7da) applied three creates and
+  three updates and stopped; after PLAN-telemetry-writer-apply-parity's forward fix, the acknowledge-and-retry run applies
+  4 added, 1 changed, 0 destroyed and the convergence record is green on it. Together the two runs created exactly the seven
+  planned resources and updated exactly the four planned ones, destroying nothing; the SSM parameter resolves; an unsigned URL call is 403; as
   PlatformDev, a SigV4 describe is 200 on ducklake_smoke and attach_check returns ok under the scoped login (the first ATTACH
   under that login), while a direct DryRun invoke is AccessDenied; Decision 213 records why the gate cannot name the boundary; the
   writer and reader smoke gates still pass; a dispatched drift run is clean. The deploy-channel proof is the companion plan's
@@ -450,25 +456,36 @@ verification_plan:
 - step: 6
   phase: post-deploy
   action: >-
-    After Benjamin approves the tf-gated-apply run, the apply converged on the merge commit with exactly the planned resources.
-    Fetch the gated-apply job log for the merge-commit run with mcp__github__actions_list / mcp__github__get_job_logs and
-    save it to $APPLY_LOG_FILE.
+    Amended 2026-10-10 (rec-4243; the original single-log 7/4/0 assertion cannot hold after a partial apply). After Benjamin
+    approves the tf-gated-apply run of the acknowledge-and-retry dispatch that follows PLAN-telemetry-writer-apply-parity's
+    forward fix, the two applies together created and updated exactly the planned resources. Save the first gated-apply job
+    log (run 38046095276, its gated-apply job) to $FIRST_APPLY_LOG_FILE and the retry run's apply-job log (gated-apply when routed)
+    to $RETRY_APPLY_LOG_FILE with mcp__github__actions_list / mcp__github__get_job_logs; export RETRY_RUN_ID and RETRY_SHA
+    (the retry run's id and head sha, which the record write uses as run_id and commit_sha).
   command: >-
-    test -n "$MERGE_SHA" && test -s "$APPLY_LOG_FILE" && aws s3api get-object --bucket agent-platform-data-lake --key convergence/personal/sandbox.json
-    --profile agent_platform "${TMPDIR:-/tmp}/convergence.json" > /dev/null && bin/venv-python -c "import json,os,re;c=json.load(open(os.environ.get('TMPDIR','/tmp')+'/convergence.json'));assert
-    c['status']=='green' and c['commit_sha']==os.environ['MERGE_SHA'], c;log=open(os.environ['APPLY_LOG_FILE'],encoding='utf-8',errors='replace').read();made=('aws_cloudwatch_log_group.ducklake_telemetry_writer','aws_iam_role.ducklake_telemetry_writer','aws_iam_role_policy.ducklake_telemetry_writer','aws_lambda_function.ducklake_telemetry_writer','aws_lambda_function_url.ducklake_telemetry_writer','aws_ssm_parameter.ducklake_telemetry_writer_url','aws_cloudwatch_metric_alarm.ducklake_telemetry_writer_errors');mod=('aws_lambda_function.ducklake_writer','aws_iam_role_policy.ducklake_writer','aws_iam_role_policy.github_ci_branch','aws_iam_role_policy.github_ci_planner');miss=[r
-    for r in made if not re.search(re.escape(r)+r': Creation complete',log)]+[r for r in mod if not re.search(re.escape(r)+r':
-    Modifications complete',log)];assert not miss, miss;m=re.search(r'Apply complete! Resources: (\d+) added, (\d+) changed,
-    (\d+) destroyed',log);assert m and m.groups()==('7','4','0'), m and m.group(0);print('APPLY_CONVERGED', m.group(0))"
+    test -n "$RETRY_SHA" && test -n "$RETRY_RUN_ID" && test -s "$FIRST_APPLY_LOG_FILE" && test -s "$RETRY_APPLY_LOG_FILE" && aws s3api
+    get-object --bucket agent-platform-data-lake --key convergence/personal/sandbox.json --profile agent_platform "${TMPDIR:-/tmp}/convergence.json"
+    > /dev/null && bin/venv-python -c "import json,os,re;c=json.load(open(os.environ.get('TMPDIR','/tmp')+'/convergence.json'));assert
+    c['status']=='green' and c['commit_sha']==os.environ['RETRY_SHA'] and str(c['run_id'])==os.environ['RETRY_RUN_ID'], c;rd=lambda
+    k:open(os.environ[k],encoding='utf-8',errors='replace').read();first,retry=rd('FIRST_APPLY_LOG_FILE'),rd('RETRY_APPLY_LOG_FILE');assert
+    'c21ba7da56a5640bc7c368af6cb8b50ae92b3e78' in first and 'Provider produced inconsistent final plan' in first, 'not the first run';made=('aws_cloudwatch_log_group.ducklake_telemetry_writer','aws_iam_role.ducklake_telemetry_writer','aws_iam_role_policy.ducklake_telemetry_writer','aws_lambda_function.ducklake_telemetry_writer','aws_lambda_function_url.ducklake_telemetry_writer','aws_ssm_parameter.ducklake_telemetry_writer_url','aws_cloudwatch_metric_alarm.ducklake_telemetry_writer_errors');mod=('aws_lambda_function.ducklake_writer','aws_iam_role_policy.ducklake_writer','aws_iam_role_policy.github_ci_branch','aws_iam_role_policy.github_ci_planner');done=lambda
+    log,verb:{a for a in made+mod if re.search(re.escape(a)+r': '+verb+' complete',log)};c1,c2,m1,m2=done(first,'Creation'),done(retry,'Creation'),done(first,'Modifications'),done(retry,'Modifications');assert
+    c1|c2==set(made) and not c1&c2, (sorted(c1),sorted(c2));assert m1|m2==set(mod) and not m1&m2, (sorted(m1),sorted(m2));assert
+    not re.search(r'Destruction complete',first+retry), 'a destroy ran';m=re.search(r'Apply complete! Resources: (\d+) added, (\d+)
+    changed, (\d+) destroyed',retry);assert m and m.groups()==('4','1','0'), m and m.group(0);print('APPLY_CONVERGED', m.group(0))"
   expected: >-
-    Exit 0. Green record on the merge commit; seven creates and four in-place updates named in the log; 7 added, 4 changed,
-    0 destroyed.
+    Exit 0. Conjuncts: (1) the record is green with commit_sha RETRY_SHA and run_id RETRY_RUN_ID; (2) the first log is run
+    38046095276's (c21ba7da, the rec-4243 error); (3) each of the seven planned creates completed in exactly one of the
+    two logs; (4) each of the four planned updates completed in exactly one of the two logs; (5) neither log destroyed
+    anything; (6) the retry reports 4 added, 1 changed, 0 destroyed. Step 9's clean drift run then proves all eleven are
+    live as declared.
   fix_if: >-
-    A red record: read red_cause (Decision 190). DUCKLAKE_ZIP_MISMATCH (rec-4190) heals with one re-apply dispatch; a stale
-    saved plan heals with acknowledge-and-retry (Decision 183); an AccessDenied on iam:GetRole for the new role means option
-    A's IAMRolesRead pre-stage was not applied, so stop and tell Benjamin. Never apply locally. If the resource names differ
-    from the plan's (e.g. a different policy resource name), assert the same set from the speculative-plan comment and record
-    it.
+    A red record: read red_cause (Decision 190); DUCKLAKE_ZIP_MISMATCH (rec-4190) heals with one re-apply dispatch, and an
+    AccessDenied on iam:GetRole for the new role means the IAMRolesRead pre-stage is missing (stop and tell Benjamin); never
+    apply locally. A different retry split: compare it with the forward
+    fix's speculative plan and the retry run's own plan; a change from an unrelated merge is reported, not absorbed. If
+    the retry applied in apply-sandbox (not routed), use that job's log. A second apply failure: stop, RCA (Decision 55)
+    and tell Benjamin.
 - step: 7
   phase: post-deploy
   action: >-
