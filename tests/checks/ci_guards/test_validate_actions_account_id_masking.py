@@ -204,3 +204,10 @@ def test_real_tree_is_compliant() -> None:
     )
     assert violations == []
     assert raw > 0 and examined == raw
+
+
+def test_yaml_outside_workflow_globs_gets_only_text_and_expression_rules(tmp_path: Path) -> None:
+    nested = "t: arn:aws:iam::x:role/${{ vars.OTHER }}\nu: uses aws-actions/configure-aws-credentials\n"
+    _, violations, examined = _run(tmp_path, {".github/workflows/sub/nested.yml": nested})
+    assert any("R2" in v for v in violations)
+    assert examined == 0
