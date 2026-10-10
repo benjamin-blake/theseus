@@ -92,13 +92,15 @@ on_trigger: "re-decide via /plan"
 conditions:
   - id: condition-key-semantics-change
     kind: manual
-    description: "AWS changes lambda:InvokedViaFunctionUrl semantics or the deploy gate's direct-invoke check stops reporting a boundary denial: re-decide clause 1."
+    description: "AWS changes lambda:InvokedViaFunctionUrl semantics, the deploy gate's direct DryRun invoke stops returning AccessDenied, or the post-apply simulate's url-only rows stop reporting explicitDeny: re-decide clause 1."
   - id: scoped-login-blocks-verbs
     kind: manual
     description: "The scoped login cannot run a telemetry verb that needs no destructive privilege: re-examine the grant set before widening it."
 ```
 
 **Related:** Decision 81 (amended), 91 (amended), 126 (amended), 143 cl.1/cl.3, 144 cl.1/cl.3, 200 cl.1, 202, 204 cl.2, 210, 181 cl.2, 165, 84 I-1, 98, 107, 157, 177.
+
+> **Update (2026-10-09):** PLAN-url-only-invoke-guard step 8 measured that a principal whose own InvokeFunction grant is URL-only sees 'no identity-based policy allows' on a direct invoke, never the boundary's name, so the telemetry writer's deploy gate asserts AccessDenied for its own principal. The boundary Deny is proven by tests/checks/iam_tf/test_url_only_invoke_guard.py on the policy text, which names the telemetry writer, and by the post-apply simulate's url-only rows on the shared writer's ARN (same statement, explicitDeny). The reversal stanza's condition-key-semantics-change was re-armed to match.
 
 ---
 

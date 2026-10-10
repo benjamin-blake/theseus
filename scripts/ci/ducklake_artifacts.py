@@ -8,8 +8,8 @@ action is the caller for its 'assert' and 'skip-assert' modes: it runs `python -
 scripts.build_lambda --ducklake-only --skip-upload` to produce the seven zips under
 lambda-packages/, then calls assert_and_upload() below to byte-check (push path only) and
 dual-write them to S3. The action's third mode, 'upload-only' (the PR speculative-plan job's
-first-upload path, which also builds an eighth artifact -- ducklake-maintenance-smoke.zip -- not
-in DUCKLAKE_ARTIFACT_NAMES below), does not call this module at all: it runs `build_lambda
+first-upload path, which also builds two more artifacts -- ducklake-maintenance-smoke.zip and
+ducklake-telemetry-writer.zip -- not in DUCKLAKE_ARTIFACT_NAMES below), does not call this module at all: it runs `build_lambda
 --ducklake-only` WITHOUT --skip-upload and lets build_lambda's own internal upload_to_s3 (already
 a fixed+per-sha dual-write, scripts/build_lambda_deploy.py) handle the upload directly.
 

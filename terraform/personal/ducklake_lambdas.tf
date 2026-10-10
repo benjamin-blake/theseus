@@ -46,6 +46,9 @@ locals {
   ducklake_telemetry_meta_schema = "ducklake_smoke"
   telemetry_blob_data_prefix     = "telemetry-blobs"
   ducklake_telemetry_blob_root   = "s3://${aws_s3_bucket.data_lake.bucket}/${local.telemetry_blob_data_prefix}/${local.ducklake_telemetry_meta_schema}/"
+
+  # Telemetry writer function name; declared here so the pin guard's locals parse sees it.
+  ducklake_telemetry_writer_function = "agent-platform-ducklake-telemetry-writer"
 }
 
 # ---------------------------------------------------------------------------
@@ -124,7 +127,7 @@ resource "aws_cloudwatch_log_group" "ducklake_reader" {
 }
 
 # ---------------------------------------------------------------------------
-# Write-scoped execution role: S3 RW on the ducklake/ + smoke prefixes, Get/Put on telemetry-blobs/, DSN secret read, metrics, logs.
+# Write-scoped execution role: S3 RW on the ducklake/ + smoke prefixes, DSN secret read, metrics, logs (ops only; telemetry has its own function and role).
 # ---------------------------------------------------------------------------
 
 data "aws_iam_policy_document" "lambda_assume" {
@@ -184,26 +187,6 @@ resource "aws_iam_role_policy" "ducklake_writer" {
         Condition = {
           StringLike = {
             "s3:prefix" = ["${local.ducklake_prod_data_prefix}/*", "${local.ducklake_smoke_data_prefix}/*"]
-          }
-        }
-      },
-      {
-        # Telemetry blobs (T2.36 slice 2a-2): Get and Put only on the telemetry-blobs/ prefix. No Delete --
-        # orphan deletion belongs to the maintenance role (rec-4033), because CI identities can invoke the
-        # writer (Decision 143). No prefix fence yet (slice 2c).
-        Sid      = "TelemetryBlobReadWrite"
-        Effect   = "Allow"
-        Action   = ["s3:GetObject", "s3:PutObject"]
-        Resource = ["${aws_s3_bucket.data_lake.arn}/${local.telemetry_blob_data_prefix}/*"]
-      },
-      {
-        Sid      = "TelemetryBlobList"
-        Effect   = "Allow"
-        Action   = ["s3:ListBucket"]
-        Resource = [aws_s3_bucket.data_lake.arn]
-        Condition = {
-          StringLike = {
-            "s3:prefix" = ["${local.telemetry_blob_data_prefix}/*"]
           }
         }
       },
@@ -311,9 +294,6 @@ resource "aws_lambda_function" "ducklake_writer" {
       DUCKLAKE_DATA_PATH            = local.ducklake_prod_data_path
       DUCKLAKE_EXTENSION_DIRECTORY  = local.ducklake_extension_dir
       DUCKLAKE_FIELD_SEMANTICS_PATH = "/var/task/config/lambda/ducklake/field_semantics.yaml"
-      TELEMETRY_META_SCHEMA         = local.ducklake_telemetry_meta_schema
-      TELEMETRY_DATA_PATH           = local.ducklake_smoke_data_path
-      TELEMETRY_BLOB_ROOT           = local.ducklake_telemetry_blob_root
     }
   }
 
