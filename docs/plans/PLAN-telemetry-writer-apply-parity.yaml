@@ -38,8 +38,8 @@ scope:
     .ducklake_reader (realign to `s3_bucket = ...` / `s3_key    = "lambda-packages/ducklake-<writer|reader>.zip"`). Keep
     every ignore_changes block. Reword the comments that rest on Terraform reading the zip: the two "source_code_hash
     is try()-guarded" section comments, each layer's "T2.42 c1 ... without this, every rebuild's non-reproducible zip
-    bytes surface as a layer create+delete" lead-in, each layer's SILENT-FREEZE GUARD ("source_code_hash is now ignored")
-    and the writer's and reader's lifecycle comments ("Without this, every rebuild's non-reproducible zip bytes trip a
+    bytes surface as a layer create+delete" lead-in, the deps layer's SILENT-FREEZE GUARD ("source_code_hash is now ignored";
+    the extensions layer has none) and the writer's and reader's lifecycle comments ("Without this, every rebuild's non-reproducible zip bytes trip a
     Terraform diff"). The replacement wording: no source_code_hash is set, the lifecycle block stays as the conformance
     marker and a backstop, and Terraform never republishes a layer on content change (it did not before either; rec-4253).
 - file: terraform/personal/ducklake_catalog_dr.tf
@@ -72,10 +72,13 @@ scope:
     with ${path.module}, ${path.root}, ${path.cwd}, ./ or ../ anywhere in the file, or when it is the plain first argument
     of a file-family function (file, filemd5, filesha1, filesha256, filesha512, filebase64, filebase64sha256, filebase64sha512,
     templatefile, fileexists, fileset). An s3_key literal such as "lambda-packages/x.zip" is neither and is legitimate.
-    Resolution base: ${path.module} is the file's directory; ${path.root}, ${path.cwd} and an unprefixed file-function
-    argument resolve against the directory of the root module containing the file (each terraform/<root>/ is its own
-    root module with no child modules). Rule (a): a filesystem path containing "lambda-packages/". Rule (b): a filesystem
-    path that is_ignored reports as ignored once resolved. This catches direct and bare file-function arguments, templatefile(),
+    Resolution base: every terraform/<root>/ is its own root module with no child modules, so ${path.module}, ${path.root},
+    ${path.cwd} and an unprefixed file-function argument all resolve against the file's own directory. Rule (a): a filesystem
+    path with lambda-packages as a path segment, (^|/)lambda-packages(/|$), so a directory local such as
+    "${path.module}/../../lambda-packages" is caught. Rule (b): a filesystem path that is_ignored reports as ignored once
+    resolved, probing both the path and the path with a trailing slash (git check-ignore answers a directory pattern only
+    for the slash form when the directory is absent). Rule (c): any source_code_hash argument in terraform/, whatever its
+    value, so the "no resource sets source_code_hash" half of the invariant has a standing guard too. This catches direct and bare file-function arguments, templatefile(),
     and indirection through a local or a variable default alike. The registered check passes a `git check-ignore -q` probe run from the
     repo root and treats any exit other than 0 (ignored) or 1 (not ignored) as a finding, so an unanswerable probe fails
     closed. It scans the whole terraform/ tree like validate_terraform_try, calls registry.examined(count, unit="tf_files"),
@@ -103,7 +106,7 @@ scope:
     the real tree with the real git probe and asserts no findings. Red cases on synthetic HCL in tmp_path with an injected
     is_ignored: a direct try(filemd5("${path.module}/../../lambda-packages/x.zip"), null) (flagged once, though both rules
     match); a locals indirection p = "${path.module}/../../lambda-packages/x.zip" then filemd5(local.p) (flagged on the local's
-    line); a bare "../../lambda-packages/x.zip" and a "${path.root}/build/out.json" that is ignored (flagged); a templatefile()
+    line); a directory local "${path.module}/../../lambda-packages" (flagged); source_code_hash = "abc" (flagged, rule c); a bare "../../lambda-packages/x.zip" and a "${path.root}/build/out.json" that is ignored (flagged); a templatefile()
     of an ignored path (flagged); a probe that errors (flagged, fail closed); an s3_key = "lambda-packages/x.zip" literal,
     a commented-out read, and a file() of a tracked in-tree file (none flagged). Bare file-function arguments: try(filemd5("lambda-packages/x.zip"),
     null) and file("<an ignored path>") (both flagged). test_check_is_registered_in_pre asserts registry._ALL_ENTRIES holds
@@ -119,12 +122,14 @@ scope:
     Because Terraform re-evaluates file functions when it applies a saved plan, and nothing masks a create, no configuration
     file read may name a file a job builds or downloads (rec-4243). Coverage (Decision 181): validate_terraform_no_build_artifact_reads
     enforces it for every literal filesystem path in terraform/ (a prefixed literal anywhere, or a plain literal passed
-    to a file-family function); a path assembled from non-literal parts is the declared residual (none exists today; rec-4246); job-materialised inputs that are not file reads (the tfvars fetched from Secrets
+    to a file-family function) and flags any source_code_hash argument; declared residuals: a path assembled from non-literal
+    parts, and a job output written to an untracked but not ignored path (none exists today; rec-4246); job-materialised inputs that are not file reads (the tfvars fetched from Secrets
     Manager, the provider mirror) are recorded in plan.bin itself. In conformance.ducklake_detail, replace the false clause
     "and this decoupling is precisely why a verbatim saved-plan apply never re-evaluates filemd5() against the local tree
     regardless of where that fetch step's working directory lands" with a pointer to that rule, and add the same pointer
     to prod_detail. Add a 2026-10-10 amendment_log entry (semantic_break false; change_class from the contract's allowed
-    values) naming the correction. No apply-model, guard-classification or typed conformance field changes.
+    values) naming the correction and that it retires archived Decision 19's try(filemd5(...), md5(file(...))) fallback
+    and its "use the artifact hash to detect changes" rationale (already superseded in substance by Decisions 125/126). No apply-model, guard-classification or typed conformance field changes.
 - file: terraform/CLAUDE.md
   action: Modify
   purpose: >-
@@ -221,9 +226,10 @@ acceptance_criteria:
   = [source_code_hash] block remains; CI's terraform-validate (fmt -check) passes.
 - >-
   validate_terraform_no_build_artifact_reads is registered in --pre with terraform/**/*.tf globs and a ci_rca taxonomy
-  row; it passes on the fixed tree, its scan over origin/main's terraform/personal finds exactly the ten read lines (four in
-  ducklake_lambdas.tf, two in ducklake_catalog_dr.tf, one each in ducklake_maintenance.tf, ducklake_maintenance_smoke.tf,
-  ducklake_telemetry_writer.tf and prod_lambdas.tf), and its mirror test covers both rules and the legitimate cases.
+  row; it passes on the fixed tree, its scan over origin/main's terraform/personal finds exactly twelve lines (the ten
+  reads: four in ducklake_lambdas.tf, two in ducklake_catalog_dr.tf, one each in ducklake_maintenance.tf, ducklake_maintenance_smoke.tf,
+  ducklake_telemetry_writer.tf and prod_lambdas.tf; plus prod_lambdas.tf's two source_code_hash = local.prod_source_hash
+  lines), and its mirror test covers all three rules and the legitimate cases.
 - >-
   The fix PR's speculative plan is exactly 4 to add, 1 to change, 0 to destroy, routed, naming only the five remaining
   addresses, with source_code_hash unknown on the new function.
@@ -242,8 +248,8 @@ verification_plan:
   action: The new check's mirror test passes, real tree included.
   command: bin/venv-python -m pytest tests/checks/iam_tf/test_validate_terraform_no_build_artifact_reads.py -q
   expected: >-
-    Exit 0. Red before on the unfixed tree (execution step 1 records the real-tree node failing on the ten read lines, one
-    finding per line).
+    Exit 0. Red before on the unfixed tree (execution step 1 records the real-tree node failing on twelve lines, one finding
+    per line).
   fix_if: >-
     A real-tree finding: drop the argument (code is addressed by s3_bucket/s3_key), never loosen the rule; a finding on
     some other ignored-path literal is a real plan input to remove or a case to raise with Benjamin, never a silent
@@ -261,11 +267,11 @@ verification_plan:
   command: >-
     d="$(mktemp -d)" && git archive origin/main terraform/personal | tar -x -C "$d" && bin/venv-python -c "import sys,pathlib,collections;from
     scripts.checks.iam_tf.validate_terraform_no_build_artifact_reads import find_build_artifact_reads as f;r=f(pathlib.Path(sys.argv[1])/'terraform'/'personal',lambda
-    p:False);c=collections.Counter(pathlib.Path(x[0]).name for x in r);assert c=={'ducklake_lambdas.tf':4,'ducklake_catalog_dr.tf':2,'ducklake_maintenance.tf':1,'ducklake_maintenance_smoke.tf':1,'ducklake_telemetry_writer.tf':1,'prod_lambdas.tf':1},
+    p:False);c=collections.Counter(pathlib.Path(x[0]).name for x in r);assert c=={'ducklake_lambdas.tf':4,'ducklake_catalog_dr.tf':2,'ducklake_maintenance.tf':1,'ducklake_maintenance_smoke.tf':1,'ducklake_telemetry_writer.tf':1,'prod_lambdas.tf':3},
     dict(c);print('CHECK_RED_ON_MAIN', sum(c.values()))" "$d"
-  expected: Exit 0 and CHECK_RED_ON_MAIN 10.
+  expected: Exit 0 and CHECK_RED_ON_MAIN 12 (the ten read lines plus the two source_code_hash = local.prod_source_hash lines, rule c).
   fix_if: >-
-    A different count: either the scan misses the real idiom (fix the rule) or main has another read; add it through a
+    A different count: either the scan misses the real idiom (fix the rule) or main has another read or hash argument; add it through a
     human-directed amendment rather than widening silently.
   hermetic: false
   graduation: waive
@@ -464,9 +470,12 @@ verification_plan:
     closure without the check closure artifact, so closed also proves that field), and rec-4245's acceptance names only
     scripts/executor/step_context.py.
   fix_if: >-
-    Still open: the trailer-acceptance job refused it (read its verdict artifact) or the trailer was omitted; close through
-    the portal with a holds verdict, never by editing the cache. A duplicate ci-rca rec filed by a Decision 190 escalation
-    during the approval wait is closed as a duplicate with the same closure artifact and the fix squash sha as fixed_by_sha.
+    Still open: read the trailer job's verdict artifact. A ClosureArtifactRequired or merge-leg refusal, a transport failure
+    or an omitted trailer may close through the portal's manual route with --closure-artifact and --closure-fix-sha in
+    one call; an AcceptanceVerdictRefused is never closed manually: fix the acceptance or the code and let a trailer close
+    it. Never edit the cache. A duplicate ci-rca rec filed during the approval wait, by a Decision 190 escalation or by
+    a CONVERGENCE_RED push refusal processed after rec-4243 closed, is closed as a duplicate with the same closure artifact
+    and the fix squash sha as fixed_by_sha.
 test_obligations:
 - source: terraform/personal/ducklake_telemetry_writer.tf
   behavior: Reads no build artifact.
@@ -587,7 +596,7 @@ context:
   environment-taxonomy.yaml), WARN 181 (invariant narrowed to configuration file reads, with a coverage line), SPIRIT 154
   (steps 8-9 creation-bytes checks; rec-4254 owns the immutable reference). Decisions triaged: 167 of 167. Roadmap items intersected:
   5; CONFLICT: 0; RELATED: 4. Retired example's provenance: archived Decision 19.
-- "gates: decision-scout=FLAGS_FOUND (resolved in-plan, 3 runs); plan-critique=new series after the re-scope: round 1 REVISE (J1-J4, A1-A7 fixed), round 2 REVISE (J1-J3, M1-M4 fixed; escalated to Benjamin on the recurring guard-coverage anchor), round 3 PENDING (prior series: PROCEED then REVISE on the narrower scope)"
+- "gates: decision-scout=FLAGS_FOUND (resolved in-plan, 3 runs); plan-critique=new series after the re-scope: round 1 REVISE (J1-J4, A1-A7 fixed), round 2 REVISE (J1-J3, M1-M4 fixed; escalated to Benjamin on the recurring guard-coverage anchor; he chose one more round), round 3 PROCEED with non-blocking notes, the strengthenings it marked safe (J1, J3-J6, M1, M4) folded in after the verdict; J2's not-tracked predicate left as an implement-time option (prior series: PROCEED then REVISE on the narrower scope)"
 - >-
   Gotchas: removing the longest key shifts terraform fmt alignment of s3_bucket/s3_key in nine groups (the two DuckLake
   layers keep theirs); RETRY_SHA is the dispatch run's head sha, which the gated-apply record write uses as commit_sha;
@@ -601,7 +610,7 @@ pre_implementation_checklist:
 execution_steps:
 - >-
   Start from main after this plan's PR has merged (step 4 diffs against the merge base). Write the check module and its
-  mirror test first; run step 1 on the unchanged Terraform and record the real-tree node failing on the ten reads; run
+  mirror test first; run step 1 on the unchanged Terraform and record the real-tree node failing on the twelve lines; run
   step 2.
 - Register the check (manifest Entry, taxonomy row), then edit the six .tf files, the contract, terraform/CLAUDE.md, AGENTS.md, prose budgets and the two workflow comments; run steps 1-4.
 - >-
@@ -610,7 +619,9 @@ execution_steps:
   (a bare pytest head with a ::node_id, decidable and junit-routed under Decision 201) and context_v2_json.closure_artifact
   becomes check:validate_terraform_no_build_artifact_reads (Decision 186; the check is pre=True); append that the coalesce/md5(file)
   fallback fails the same check and the heal verb is acknowledge-and-retry. Narrow rec-4245 to the remaining executor
-  prompt string in scripts/executor/step_context.py (frozen, Decision 67) with acceptance
+  prompt string in scripts/executor/step_context.py (frozen, Decision 67), noting in its context the stale bootstrap
+  comment at terraform/bootstrap/github_ci_apply_policy.tf (layers "compute source_code_hash live", around :511-519,
+  admin-tier file), with acceptance
   ! grep -qF "md5(file('module_file.tf'))" scripts/executor/step_context.py && grep -qF 'never reads a build artifact' scripts/executor/step_context.py.
   Write the registry shard; run step 5.
 - >-
