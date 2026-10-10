@@ -9,8 +9,8 @@ intent: >-
   reaped with a bounded wait. validate then survives, records an ordinary timed-out check failure and writes
   validation-result.json (rule failed_run, which the handoff gate warns on) instead of dying with exit 137 and leaving the
   gate to deny on missing evidence. The 300s cap becomes one named constant that both the deadline and the failure text
-  read. The vp-replay runner moves onto the same helper, so the repo keeps one reaper (bundles rec-4185's test-teardown
-  fix). For the stranded PLAN-recs-full-cache-retirement handoff (rec-4232, Critical) the gate's deny on missing evidence
+  read. The vp-replay runner moves onto the same helper, so scripts/checks/ keeps one reaper (bundles rec-4185's
+  test-teardown fix). For the stranded PLAN-recs-full-cache-retirement handoff (rec-4232, Critical) the gate's deny on missing evidence
   becomes a failed_run warning. Operator go-ahead is still required while rec-3208's preflight coverage timeout stands.
 plan_type: IMPLEMENTATION
 verification_tier: V2
@@ -24,9 +24,10 @@ scope:
   purpose: >-
     The shared process-group kill-and-reap helper. It is a top-level scripts/checks/ sibling for the same reason as
     _marker_guard.py: Decision 104 keeps _common.py for its named primitives and forbids a domain _shared.py that spans
-    domains. Public surface: REAP_TIMEOUT_SECONDS = 5.0 and kill_and_reap(popen) -> tuple[str, str]. The function looks up
-    pgid = os.getpgid(popen.pid). On ProcessLookupError (the leader is already reaped) it falls back to pgid = popen.pid, so
-    surviving group members are still killed; this keeps vp-red-before.yaml replay_bound.kill's 'never a bare process
+    domains. Public surface: REAP_TIMEOUT_SECONDS = 5.0 and kill_and_reap(popen) -> tuple[str, str]. When popen.returncode is not None
+    (leader already reaped) it uses pgid = popen.pid directly and never calls os.getpgid on a possibly recycled pid.
+    Otherwise it looks up pgid = os.getpgid(popen.pid), falling back to pgid = popen.pid on ProcessLookupError (the
+    poll-to-lookup race). Either way surviving group members are still killed; this keeps vp-red-before.yaml replay_bound.kill's 'never a bare process
     kill' true in the BaseException-after-reap window. When pgid equals os.getpgrp() it sends os.kill(popen.pid, SIGKILL)
     only, so it never signals a group the caller belongs to; this guards any future call site that forgets
     start_new_session. Otherwise it sends os.killpg(pgid, SIGKILL). Both signal calls sit inside ONE shared 'try: ...
@@ -50,7 +51,9 @@ scope:
       spy that records each pgid, raises PermissionError for os.getpgrp() and delegates any other pgid. The test asserts
       the spy never saw os.getpgrp() and the child's returncode is -SIGKILL.
     - test_an_already_reaped_child_is_not_an_error: true with start_new_session, waited, then kill_and_reap returns without
-      raising. This drives the getpgid fallback and the tolerated killpg ProcessLookupError, and replaces TestKillpgQuiet.
+      raising. This drives the reaped-leader branch and the tolerated killpg ProcessLookupError, and replaces TestKillpgQuiet.
+    - test_a_leader_gone_before_lookup_falls_back_to_its_pid: a live start_new_session child with os.getpgid patched to raise
+      ProcessLookupError. It asserts killpg was sent to popen.pid and the child is dead, covering the race arm.
     Class TestKillAndReapBoundedWait (moved from test__vp_replay_budget.py, node names kept):
     - test_reap_timeout_closes_pipes_and_reaps_the_shell: now patches pg.REAP_TIMEOUT_SECONDS and calls pg.kill_and_reap.
       It carries rec-4185's fix: the pidfile read moves inside the try, and the finally carries 'if popen.returncode is None:'
@@ -114,7 +117,9 @@ scope:
     subprocess_module.TimeoutExpired' raises TypeError before the BaseException arm) and communicate.side_effect =
     KeyboardInterrupt(), patches kill_and_reap, and asserts the KeyboardInterrupt propagates after exactly one
     kill_and_reap(proc) call. No mock pid ever reaches a real os.killpg. The file is 456 SLOC
-    at plan time and must stay at or under 500.
+    at plan time and must stay at or under 500. If it would not, first extract the repeated source/test_file/mock-proc
+    scaffolding into one module-level helper in this file. Never move a node that exercises coverage_baseline.py lines
+    out of the mapped file.
 - file: config/agent/verification_registry/entries/process-group-kill-and-reap.yaml
   action: Create
   purpose: >-
@@ -165,16 +170,17 @@ verification_plan:
 - step: 1
   phase: pre-deploy
   action: >-
-    Run the shared helper's new and moved nodes: whole-group kill, own-group refusal, already-reaped child, and the three
-    bounded-wait proofs.
+    Run the shared helper's new and moved nodes: whole-group kill, own-group refusal, already-reaped child, the lookup-race
+    fallback, and the three bounded-wait proofs.
   command: >-
     bin/venv-python -m pytest tests/checks/test__process_group.py::TestKillAndReapSignalTargeting::test_kills_the_detached_childs_whole_group
     tests/checks/test__process_group.py::TestKillAndReapSignalTargeting::test_never_signals_the_callers_own_group tests/checks/test__process_group.py::TestKillAndReapSignalTargeting::test_an_already_reaped_child_is_not_an_error
+    tests/checks/test__process_group.py::TestKillAndReapSignalTargeting::test_a_leader_gone_before_lookup_falls_back_to_its_pid
     tests/checks/test__process_group.py::TestKillAndReapBoundedWait::test_reap_timeout_closes_pipes_and_reaps_the_shell
     tests/checks/test__process_group.py::TestKillAndReapBoundedWait::test_reap_success_returns_the_captured_output tests/checks/test__process_group.py::TestKillAndReapBoundedWait::test_reap_itself_timing_out_returns_empty_strings
     -q
   expected: >-
-    Exit 0, 6 passed in a few seconds (the reap-timeout node patches REAP_TIMEOUT_SECONDS to 0.05, so no real 5s wait, per
+    Exit 0, 7 passed in a few seconds (the reap-timeout node patches REAP_TIMEOUT_SECONDS to 0.05, so no real 5s wait, per
     Decision 208). Red before: tests/checks/test__process_group.py is absent from the pre-change tree (pytest exit 4,
     target_absent).
   fix_if: >-
@@ -184,7 +190,7 @@ verification_plan:
   graduation: graduate
   graduation_check_id: process-group-kill-and-reap
   expected_literals:
-  - 6 passed
+  - 7 passed
 - step: 2
   phase: pre-deploy
   action: >-
@@ -261,8 +267,9 @@ verification_plan:
     assert e == ['scripts/session/preflight.py: coverage check timed out (3s)'], e; print('CALLER_SURVIVED')" && ! pgrep
     -f '[-]m pytest tests/session/preflight' && echo NO_ORPHANS
   expected: >-
-    Exit 0 within about 10s, both markers printed. On the pre-change code the probe is SIGKILLed (setsid reports the child
-    did not exit normally, exit 9), which is the rec-4252 failure reproduced at plan time.
+    Exit 0 within about 10s, both markers printed. The pre-change code ignores the constant, so there the probe runs about
+    300s and is then SIGKILLed (setsid reports the child did not exit normally, exit 9). The plan-time scratch probe
+    reproduced exactly that, with the literal patched to 3s.
   fix_if: >-
     setsid reports exit 9: the caller still shares the child's group. NO_ORPHANS missing: a descendant escaped the kill;
     confirm kill_and_reap signals the pgid it looked up, not the bare pid.
@@ -302,7 +309,9 @@ verification_plan:
   fix_if: >-
     Fix the named check and rerun the full tier from the start; never raise a budget, skip a check or weaken an assertion.
     A timed-out or incomplete full run is BLOCKED -- resume and rerun the full tier from the start; never skipped,
-    downgraded to a warning, or handed to CI.
+    downgraded to a warning, or handed to CI. If validate itself was killed externally, first confirm no orphaned coverage
+    child is still running (pgrep -f -- '--cov-report=json:.coverage.json'); end it and remove any root .coverage.json
+    before the rerun (residual (a)).
   hermetic: false
   graduation: not-applicable
 - step: 8
@@ -396,7 +405,7 @@ context:
   structural leg asserting the fix. Its RELATED 182/189 edge (the reaped-leader window) is answered by the pgid
   fallback. CITE: 104, 128, 131, 132, 159, 163, 189, 201, 203. RELATED: 48, 55, 67, 103, 148, 161, 165, 170, 176, 181,
   182, 186, 187, 208. Decisions triaged: 167 of 167. Roadmap items intersected: 2; CONFLICT: 0; RELATED: 2
-- "gates: decision-scout=FLAGS_FOUND after 3 passes (all flags resolved in this plan); plan-critique=<pending>"
+- "gates: decision-scout=FLAGS_FOUND after 3 passes (all resolved); plan-critique=PROCEED after 2 rounds (r1 REVISE: F1-F6 fixed, F7 disputed -- operator-owned rec-2489 closure and declined executor tracking; r2 confirming PROCEED, optional 1-4 applied)"
 - >-
   Decision 203: this is reversal (a)'s case. A checker defect left no evidence, so the identity gate denied on 'missing'
   instead of warning on failed_run; fix the checker, never add an override. Reversal (b) count: one wedged non-exempt push
