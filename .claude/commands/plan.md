@@ -36,7 +36,7 @@ Save the printed UUID for the `session_postflight --close-session` call in Step 
 
 ## Step 2: Read Context
 Use the preflight JSON `context` field (`roadmap_phase`, `open_decisions_count`, `recent_sessions`). Read `docs/PROJECT_CONTEXT.md` fully.
-If the request references a recommendation ID, search `logs/.recommendations-log.jsonl`, read briefing files if they exist, and load dependencies.
+If the request references a recommendation ID, fetch it with the ducklake-reads `recs_by_ids` verb, read briefing files if they exist, and load dependencies.
 
 **Orientation and CI-RCA block:** see the planning skill's Platform Roadmap Eligibility section for orientation responsibility and the HARD BLOCK conditions on open ci-rca recs -- run `/orient` first if no item has been chosen yet.
 
@@ -45,7 +45,7 @@ If the request references a recommendation ID, search `logs/.recommendations-log
 ## Step 3: Clarify the Request
 Decompose the input into Goal, Constraints, Acceptance criteria, Affected areas, and Phase alignment.
 If vague, ask 2-5 questions. Watch for ROADMAP misalignment (the platform/product roadmap state is already in the preflight JSON `next_eligible` / `strategic_pending` fields). Decision-contradiction checking is delegated to the `decision-scout` subagent gate in Step 6 -- do NOT read `docs/DECISIONS.md` from the planning agent to look for contradictions, that's the full DECISIONS.md (large -- near its Decision 134 size ceiling), a cost the subagent avoids.
-Suggest 3-5 open recommendations from `logs/.recommendations-log.jsonl` that align with the current task.
+Suggest 3-5 open recommendations (ducklake-reads `recs_for_files` over the likely scope files) that align with the current task.
 
 ## Step 4: Identify Affected Files
 1. Use the File Router to locate source files.

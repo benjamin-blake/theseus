@@ -20,7 +20,24 @@ from typing import Any
 # crosses the boundary on this path. `{tbl}` = current projection, `{hist}` = history table.
 # ---------------------------------------------------------------------------
 
-NAMED_READS_VERSION = 3
+NAMED_READS_VERSION = 4
+
+# Sources whose rows preflight's bounded read model carries (single source for the derivations and the SQL).
+PREFLIGHT_SIGNAL_SOURCES: tuple[str, ...] = (
+    "ci_rca",
+    "ci_rca_evidence_dispute",
+    "ci_rca_probe_health",
+    "tf_drift",
+    "budget_bypass",
+    "budget_breach",
+)
+_SIGNAL_SOURCES_SQL = ", ".join(f"'{src}'" for src in PREFLIGHT_SIGNAL_SOURCES)
+_SIGNAL = f"source IN ({_SIGNAL_SOURCES_SQL})"
+_OPEN_CRITICAL = "(status = 'open' AND lower(priority) = 'critical')"
+_HEAVY_ROW = (
+    f"({_OPEN_CRITICAL} OR ({_SIGNAL} AND (status IN ('open', 'in_progress') "
+    "OR created_timestamp > (current_timestamp - INTERVAL 30 DAY))))"
+)
 
 
 @dataclass(frozen=True)
@@ -33,6 +50,7 @@ class NamedRead:
     params: tuple[str, ...] = ()
     description: str = ""
     paginable: bool = False  # True => the caller-supplied `limit` (named_read) may bound this verb's rows
+    agent_facing: bool = True  # False => not projected as an MCP agent tool; excluded from read_version
 
 
 NAMED_READS: dict[str, NamedRead] = {
@@ -44,13 +62,58 @@ NAMED_READS: dict[str, NamedRead] = {
             sql=("SELECT id, title, context, created_timestamp, automatable FROM {tbl} WHERE status = 'open' ORDER BY id"),
             description="Open recommendations with the fields the preflight tally consumes.",
             paginable=True,
+            agent_facing=False,
         ),
         NamedRead(
             verb="rec_by_id",
             table="ops_recommendations",
             sql="SELECT * FROM {tbl} WHERE id = ?",
             params=("id",),
-            description="Single recommendation by id (portal fetch-before-update).",
+            description="deprecated: use recs_by_ids (removal rec-4240). Single rec by id (portal fetch-before-update).",
+        ),
+        NamedRead(
+            verb="recs_by_ids",
+            table="ops_recommendations",
+            sql="SELECT * FROM {tbl} WHERE list_contains(string_split(?, ','), id) ORDER BY id",
+            params=("ids",),
+            description="Recommendations by id: one id or a comma-joined list (batch lookup; replaces rec_by_id).",
+        ),
+        NamedRead(
+            verb="recs_for_files",
+            table="ops_recommendations",
+            sql=(
+                "SELECT id, title, status, priority, effort, source, file, tags, created_timestamp FROM {tbl} "
+                "WHERE status = 'open' AND list_contains(string_split(?, ','), file) ORDER BY id"
+            ),
+            params=("files",),
+            description="INTERIM direct-hit relevance read: open recs targeting any file in the comma-joined list (rec-4235).",
+        ),
+        NamedRead(
+            verb="open_recs_tally",
+            table="ops_recommendations",
+            sql=(
+                "SELECT COUNT(*) AS open_count, "
+                "COUNT(*) FILTER (WHERE created_timestamp < (current_timestamp - INTERVAL 31 DAY)) AS aging_count, "
+                "COUNT(*) FILTER (WHERE lower(CAST(automatable AS VARCHAR)) = 'false') AS non_automatable_count "
+                "FROM {tbl} WHERE status = 'open'"
+            ),
+            description="One row: open, aging (>30 days) and non-automatable counts over open recommendations.",
+        ),
+        NamedRead(
+            verb="preflight_signal_rows",
+            table="ops_recommendations",
+            sql=(
+                "SELECT id, title, status, source, priority, file, automatable, created_timestamp, "
+                "last_updated_timestamp, "
+                f"CASE WHEN {_SIGNAL} OR {_OPEN_CRITICAL} THEN context_v2_json END AS context_v2_json, "
+                f"CASE WHEN {_HEAVY_ROW} THEN context END AS context, "
+                f"CASE WHEN {_HEAVY_ROW} THEN acceptance END AS acceptance "
+                f"FROM {{tbl}} WHERE {_SIGNAL} OR {_OPEN_CRITICAL} "
+                "OR (status = 'open' AND list_contains(string_split(?, ','), id)) ORDER BY id"
+            ),
+            params=("followon_ids",),
+            description="Bounded preflight read model: signal-source, open-critical and named follow-on rows.",
+            agent_facing=False,
         ),
         NamedRead(
             verb="recs_by_title_prefix",
@@ -184,6 +247,7 @@ def describe_named_reads(semantics: dict[str, Any] | None = None) -> dict[str, d
             "description": nr.description,
             "params": list(nr.params),
             "paginable": nr.paginable,
+            "agent_facing": nr.agent_facing,
             "params_schema": _params_schema(nr.params),
             "read_version": read_version(verb, semantics),
         }

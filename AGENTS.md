@@ -65,7 +65,7 @@ You are a Lead Software Developer writing production-quality Python. Primary dev
   Lambda-packaged. See the planning skill for the affected-artifact detection method.
 
 ## Memory policy — CLAUDE.md is canonical persistence
-Do **not** write to the auto-memory system (`~/.claude/projects/.../memory/`) in this project. The user's persistence model is git-tracked CLAUDE.md files (root + per-directory) plus structured logs (`docs/SESSION_LOG.md`, `docs/DECISIONS.md`, `logs/.recommendations-log.jsonl`).
+Do **not** write to the auto-memory system (`~/.claude/projects/.../memory/`) in this project. The user's persistence model is git-tracked CLAUDE.md files (root + per-directory) plus structured logs (`docs/SESSION_LOG.md`, `docs/DECISIONS.md`).
 
 - When you learn something durable, **propose** adding it to the appropriate CLAUDE.md and let the user approve. Do not silently save.
 - When the user says "remember this", propose a CLAUDE.md edit — don't reach for auto-memory.
@@ -109,7 +109,7 @@ does not consume the recommendation queue. Invokes the `overseer` skill.
 When a slash command instructs you to "apply" or "invoke" a skill, use the `Skill` tool — do **not** manually `Read` `SKILL.md` files. The Skill tool loads them on demand.
 
 ## Operational data governance — Single Portal Invariant
-All recommendation and decision writes go through `python -m scripts.ops_data_portal`. Never `Edit` or `Write` to `logs/.recommendations-log.jsonl` or `logs/.decisions-index.jsonl` directly -- `validate.py` will fail CI. Recommendation IDs are allocated BY THE WRITER atomically with the insert (`file_ops`, Decision 84 I-2) -- never client-side; decision numbering authority is `DECISIONS.md` (callers supply `decision_id`). The local JSONL files are read-only caches.
+All recommendation and decision writes go through `python -m scripts.ops_data_portal`. Never `Edit` or `Write` to `logs/.decisions-index.jsonl` directly -- `validate.py` will fail CI. Recommendations have no local cache (Decision 215): read them through the ducklake-reads named verbs. Recommendation IDs are allocated BY THE WRITER atomically with the insert (`file_ops`, Decision 84 I-2) -- never client-side; decision numbering authority is `DECISIONS.md` (callers supply `decision_id`). The local decisions JSONL is a read-only cache.
 
 Agent surface is three functions: `file_rec`, `update_rec`, `sync`. Do not call `sync.ops` or any pull CLI directly. Portal calls require the `agent_platform` (PlatformDev) assume-role profile to reach the reader/writer Function URLs. If unreachable, confirm the chain with `aws sts get-caller-identity --profile agent_platform` (the session-start hook `.claude/hooks/session_start_aws.sh` reports this each session); locally, refresh the `agent_static` key if it has been rotated. There is no SSO login in the static-key model. A write that cannot complete FAILS LOUDLY at the call site -- there is no offline outbox (Decision 84 I-4); re-file after restoring connectivity.
 
@@ -121,7 +121,7 @@ This is an append-only lakehouse. The warehouse is the single source of truth fo
 
 Local files have exactly one valid role:
 
-1. **Read cache** (`logs/.recommendations-log.jsonl`, `logs/.decisions-index.jsonl`) — derivative projection rebuilt FROM the warehouse via `sync.ops pull` (all tables from the DuckLake reader). Downstream of the warehouse, never upstream. There is no staging outbox: a write that cannot reach the warehouse fails loudly (Decision 84 I-4).
+1. **Read cache** (`logs/.decisions-index.jsonl`) — derivative projection rebuilt FROM the warehouse (the DuckLake reader). Recommendations have none (Decision 215). Downstream of the warehouse, never upstream. There is no staging outbox: a write that cannot reach the warehouse fails loudly (Decision 84 I-4).
 
 **Hard rule: a read cache is never a write source.** Reading any file in `logs/` and replaying it
 back into the warehouse is the CRUD anti-pattern in lakehouse clothing, and the row-resurrection
@@ -129,7 +129,7 @@ failure mode it produces is recorded in Decision 84 -- recs writes go only throu
 
 The legitimate write paths are: (a) `file_rec` / `update_rec` portal calls, and (b) ETL from a non-warehouse source of truth (e.g., `DECISIONS.md` -> `ops_decisions`). Anything else that writes warehouse rows must be reviewed for replay-from-cache violations.
 
-If a clone or runner shows stale data, an operator may rebuild that environment's local cache by running `bin/venv-python -m scripts.sync.ops sync` (which pulls every table from the DuckLake reader and overwrites local). Never fix drift by replaying the local file back upstream.
+If a clone or runner shows stale data, an operator may rebuild that environment's local cache by running `bin/venv-python -m scripts.sync.ops sync` (which rebuilds the decisions cache from the DuckLake reader). Never fix drift by replaying the local file back upstream.
 
 ## Data-modeling default
 Before designing any table, decide **grain first** -- "one row per ___" -- before picking a write

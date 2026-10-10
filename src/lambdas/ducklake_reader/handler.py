@@ -283,6 +283,34 @@ def _response(status: int, payload: dict[str, Any]) -> dict[str, Any]:
     return {"statusCode": status, "headers": {"Content-Type": "application/json"}, "body": json.dumps(payload)}
 
 
+# Headroom under the Lambda runtime's 6,291,556-byte RequestEntityTooLarge cap on the whole Function-URL response.
+MAX_RESPONSE_BYTES = 6_000_000
+
+
+def _guard_response_size(response: dict[str, Any], payload: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
+    """Refuse an oversized response with a typed 413 (rec-4232) instead of the runtime's opaque 502.
+
+    The cap applies to the whole Function-URL envelope, whose `body` string is JSON-escaped again
+    inside it, so the envelope (not the body) is what is measured.
+    """
+    size = len(json.dumps(response).encode("utf-8"))
+    meta["response_bytes"] = size
+    if size <= MAX_RESPONSE_BYTES:
+        return response
+    action = payload.get("action")
+    return _response(
+        413,
+        {
+            "ok": False,
+            "error_type": "response_too_large",
+            "action": action if isinstance(action, str) and action in _ACTIONS else "unknown",
+            "bytes": size,
+            "cap": MAX_RESPONSE_BYTES,
+            "hint": "use a narrower named verb, or the claim-check export (rec-4237)",
+        },
+    )
+
+
 def _handle(payload: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
     """Reader dispatch. Dispatches `action`; loud-fail maps to a 5xx (no silent drop)."""
     action = payload.get("action")
@@ -323,11 +351,11 @@ def handler(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
     """Entrypoint: dispatch, then log exactly one ducklake_invocation line on every path."""
     started = time.perf_counter()
     payload: dict[str, Any] = {}
-    meta: dict[str, Any] = {"connect_ms": None, "connect_reused": None, "reopened": False}
+    meta: dict[str, Any] = {"connect_ms": None, "connect_reused": None, "reopened": False, "response_bytes": None}
     status = 500
     try:
         payload = _parse_event(event)
-        response = _handle(payload, meta)
+        response = _guard_response_size(_handle(payload, meta), payload, meta)
         status = response["statusCode"]
         return response
     finally:
@@ -340,4 +368,5 @@ def handler(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
             meta["connect_reused"],
             meta["reopened"],
             (time.perf_counter() - started) * 1000.0,
+            response_bytes=meta["response_bytes"],
         )

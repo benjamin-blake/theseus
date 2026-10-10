@@ -349,7 +349,6 @@ def cmd_junit_verdict(args: argparse.Namespace) -> int:
 def cmd_close(args: argparse.Namespace) -> int:
     import os  # noqa: PLC0415
 
-    from scripts.ops_data_portal import sync  # noqa: PLC0415
     from scripts.ops_portal.ci_rca_lifecycle import close_recs_from_trailer  # noqa: PLC0415
 
     census_doc = _read_json(args.artifact_dir / _CENSUS_ARTIFACT)
@@ -369,21 +368,12 @@ def cmd_close(args: argparse.Namespace) -> int:
     run_id = os.environ.get("GITHUB_RUN_ID", "unknown")
     run_url = f"https://github.com/{repo}/actions/runs/{run_id}"
 
-    try:
-        sync()
-    except Exception as exc:  # noqa: BLE001 -- mirrors rec-autoclose.yml's prior best-effort sync
-        print(f"[rec_trailer_acceptance close] sync warning ({exc}); continuing with possibly stale cache")
-
+    reader = _make_reader()
     recs_cache: dict[str, dict[str, Any]] = {}
-    cache_path = ROOT / "logs" / ".recommendations-log.jsonl"
-    if cache_path.exists():
-        for line in cache_path.read_text(encoding="utf-8").splitlines():
-            if line.strip():
-                try:
-                    row = json.loads(line)
-                    recs_cache[row["id"]] = row
-                except (json.JSONDecodeError, KeyError):
-                    pass
+    for rec_id in ids:
+        found = reader.named("rec_by_id", id=rec_id)
+        if found:
+            recs_cache[rec_id] = dict(found[0])
 
     return close_recs_from_trailer(
         ids,

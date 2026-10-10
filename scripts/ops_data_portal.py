@@ -2,8 +2,8 @@
 """Unified write gateway for recommendation and decision operations.
 
 All writes to ops_recommendations and ops_decisions MUST go through this
-module. Direct appends to logs/.recommendations-log.jsonl are forbidden and
-caught by validate.py.
+module. Recs have no local read cache (Decision 215): writes never touch
+logs/.recommendations-log.jsonl.
 
 Failure mode (Decision 84 I-4): a write that cannot complete fails LOUDLY at
 the call site -- there is no offline outbox. Entity ids (rec-NNN) are allocated
@@ -48,7 +48,7 @@ import yaml
 from scripts.executor.jsonl_store import (
     _VALID_STATUSES,
     DECISIONS_JSONL,  # noqa: F401 -- imported-name trap; read by decisions.py, re-exported here
-    RECS_JSONL,
+    RECS_JSONL,  # noqa: F401 -- retained patch target (tests patch it); the recs cache is retired (Decision 215)
     Recommendation,
 )
 from scripts.executor.rec_write_guidance import validate_source
@@ -212,8 +212,7 @@ def file_rec(
             via a caller-keyed write_ops upsert instead of writer allocation. The id
             is formed as f"rec-{n:03d}" (zero-padded under 1000) so dependency /
             priority-queue FKs to padded ids still match. Must not be used elsewhere.
-        _skip_sync: PRIVATE. When True, suppress the per-row _sync_table() flush so
-            a bulk import can call sync() exactly once at the end. Migration-only.
+        _skip_sync: PRIVATE. Accepted for bulk-import callers; a no-op for recs (no local cache).
         _migration_mode: PRIVATE. When True, bypass the write-time CONTENT-quality
             validation surface (the two explicit calls _validate_file_path /
             _validate_context_length AND the YAML-loaded _load_write_time_validators loop,
@@ -415,7 +414,6 @@ def file_rec(
         merged["id"] = str(rec_id)
 
     logger.info("[PORTAL] Filed %s: %s", rec_id, merged.get("title", ""))
-    _refresh_cache_after_write("ops_recommendations", merged, response, RECS_JSONL, append_only=_skip_sync)
     return str(rec_id)
 
 
@@ -544,9 +542,8 @@ def update_rec(
     )
 
     # ops_recommendations always routes to DuckLake (Decision 81 cl.7 / T2.19).
-    response = _ducklake_write("ops_recommendations", merged, action="update_ops", profile=profile)
+    _ducklake_write("ops_recommendations", merged, action="update_ops", profile=profile)
     logger.info("[PORTAL] Updated %s: %s", rec_id, list(updates.keys()))
-    _refresh_cache_after_write("ops_recommendations", merged, response, RECS_JSONL)
     return True
 
 
@@ -600,18 +597,20 @@ def sync(tables: Optional[list] = None) -> dict:
     """Pull the local read-cache fresh from the DuckLake reader (the single flush primitive).
 
     Args:
-        tables: Ops table names to sync. Defaults to ops_recommendations,
-                ops_decisions, ops_priority_queue.
+        tables: Ops table names to sync. Defaults to ops_decisions, ops_priority_queue.
 
     Returns:
         {"pulled": {table: rows}}
 
     Raises:
+        ValueError: ops_recommendations requested (no recs cache, Decision 215).
         RuntimeError: If the reader boundary is unreachable.
     """
     from scripts.sync.ops import _pull_single_table  # noqa: PLC0415
 
-    ops_tables = tables or ["ops_recommendations", "ops_decisions", "ops_priority_queue"]
+    ops_tables = tables or ["ops_decisions", "ops_priority_queue"]
+    if "ops_recommendations" in ops_tables:
+        raise ValueError("ops_recommendations has no local cache (Decision 215): read recs through the named verbs")
 
     # Every migrated table is a live `current` projection behind the atomic catalog commit
     # (Decision 84 I-1): a cache pull per table is the whole job -- no drain/compact/view-refresh.

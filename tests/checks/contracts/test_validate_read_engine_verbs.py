@@ -84,6 +84,18 @@ class TestAbsentEmptyTarget:
         assert any("must all be lists" in f for f in failed)
 
 
+class TestRealContractRoster:
+    def test_real_contract_matches_registry_and_names_v4_verbs(self) -> None:
+        contracts_dir = Path(__file__).resolve().parents[3] / "docs" / "contracts"
+        doc = yaml.safe_load((contracts_dir / _CONTRACT_NAME).read_text(encoding="utf-8"))
+        declared = doc["read_surface"]["named_verbs"]["verbs"]["ops_recommendations"]
+
+        assert {"recs_by_ids", "recs_for_files", "open_recs_tally", "preflight_signal_rows", "rec_by_id"} <= set(declared)
+        failed: list[str] = []
+        validate_read_engine_verbs(failed, contracts_dir=contracts_dir)
+        assert failed == []
+
+
 class TestMissingFile:
     def test_missing_contract_file_fails(self, tmp_path: Path) -> None:
         failed: list[str] = []

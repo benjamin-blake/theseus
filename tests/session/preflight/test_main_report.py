@@ -63,7 +63,6 @@ class TestStdoutDoesNotDumpFullJson:
             patch("scripts.preflight.aws_infra.check_terraform_pending", return_value=False),
             patch("scripts.preflight.aws_infra.check_credentials", return_value="ok"),
             patch("scripts.preflight.context_docs.parse_last_session", return_value=""),
-            patch("scripts.preflight.recs_cache.count_recommendations", return_value=(3, 0, 0, [])),
             patch("session_preflight._sync_ops_pull", return_value={}),
             patch(
                 "scripts.preflight.context_docs.read_context_files",
@@ -109,7 +108,6 @@ class TestJsonOutputSchema:
             patch("scripts.preflight.aws_infra.check_terraform_pending", return_value=False),
             patch("scripts.preflight.aws_infra.check_credentials", return_value="ok"),
             patch("scripts.preflight.context_docs.parse_last_session", return_value="## [2026-03-01] -- test"),
-            patch("scripts.preflight.recs_cache.count_recommendations", return_value=(5, 1, 0, [])),
             patch("session_preflight._sync_ops_pull", return_value={}),
             patch(
                 "scripts.preflight.context_docs.read_context_files",
@@ -177,7 +175,6 @@ class TestJsonOutputSchema:
             patch("scripts.preflight.aws_infra.check_terraform_pending", return_value=False),
             patch("scripts.preflight.aws_infra.check_credentials", return_value="ok"),
             patch("scripts.preflight.context_docs.parse_last_session", return_value=""),
-            patch("scripts.preflight.recs_cache.count_recommendations", return_value=(3, 0, 0, [])),
             patch(
                 "scripts.sync.ops.warm_sync",
                 return_value={
@@ -247,10 +244,6 @@ class TestMainIncludesPriorityQueue:
                 return_value="",
             ),
             patch(
-                "scripts.preflight.recs_cache.count_recommendations",
-                return_value=(1, 0, 0, []),
-            ),
-            patch(
                 "scripts.preflight.priority_queue.read_priority_queue",
                 return_value=mock_queue,
             ),
@@ -316,10 +309,6 @@ class TestMainIncludesPriorityQueue:
             patch(
                 "scripts.preflight.context_docs.parse_last_session",
                 return_value="",
-            ),
-            patch(
-                "scripts.preflight.recs_cache.count_recommendations",
-                return_value=(0, 0, 0, []),
             ),
             patch(
                 "scripts.preflight.priority_queue.read_priority_queue",
@@ -402,7 +391,6 @@ class TestPreflightReportDisputeKey:
             patch("scripts.preflight.aws_infra.check_terraform_pending", return_value=False),
             patch("scripts.preflight.aws_infra.check_credentials", return_value="ok"),
             patch("scripts.preflight.context_docs.parse_last_session", return_value=""),
-            patch("scripts.preflight.recs_cache.count_recommendations", return_value=(0, 0, 0, [])),
             patch("scripts.preflight.context_docs.read_context_files", return_value={}),
             patch("scripts.preflight.ci_rca_signals._check_ci_rca_liveness", return_value=None),
             patch("builtins.print"),
@@ -437,7 +425,6 @@ class TestDecisionConditionsGlue:
             patch("scripts.preflight.aws_infra.check_terraform_pending", return_value=False),
             patch("scripts.preflight.aws_infra.check_credentials", return_value="ok"),
             patch("scripts.preflight.context_docs.parse_last_session", return_value=""),
-            patch("scripts.preflight.recs_cache.count_recommendations", return_value=(0, 0, 0, [])),
             patch("session_preflight._sync_ops_pull", return_value={}),
             patch(
                 "scripts.preflight.context_docs.read_context_files",
@@ -485,7 +472,6 @@ class TestDecisionConditionsGlue:
                 patch("scripts.preflight.aws_infra.check_terraform_pending", return_value=False),
                 patch("scripts.preflight.aws_infra.check_credentials", return_value="ok"),
                 patch("scripts.preflight.context_docs.parse_last_session", return_value=""),
-                patch("scripts.preflight.recs_cache.count_recommendations", return_value=(0, 0, 0, [])),
                 patch("scripts.preflight.priority_queue.read_priority_queue", return_value=[]),
                 patch("session_preflight._sync_ops_pull", return_value={}),
                 patch(

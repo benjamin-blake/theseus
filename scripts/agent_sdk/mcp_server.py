@@ -37,10 +37,7 @@ SERVER_NAME = "agent-platform-ducklake-reads"
 # whichever is sanctioned. Every projected tool's description carries this cache-first guidance so
 # a verb added to NAMED_READS later inherits it automatically -- applied once, here, by the shared
 # projection template, never restated per-verb.
-_CACHE_FIRST_NOTE = (
-    " Prefer this named read over pulling the whole table into a local cache and re-querying it in "
-    "Python (Decision 88 invariant (ii))."
-)
+_CACHE_FIRST_NOTE = " Read recommendations through these named verbs; there is no local recommendations cache (Decision 215)."
 
 
 def _tool_description(meta: dict[str, Any]) -> str:
@@ -53,11 +50,13 @@ def build_tool_registry(verbs: dict[str, dict[str, Any]]) -> list[types.Tool]:
 
     Derived, not hand-maintained: this function iterates whatever *verbs* contains and must never
     filter against a local list of known verb names -- doing so would reinstate the
-    hand-registration this design exists to eliminate.
+    hand-registration this design exists to eliminate. A verb is projected unless the registry itself
+    declares it not agent-facing (a describe without the key projects everything).
     """
     return [
         types.Tool(name=verb, description=_tool_description(meta), inputSchema=meta["params_schema"])
         for verb, meta in verbs.items()
+        if meta.get("agent_facing", True)
     ]
 
 

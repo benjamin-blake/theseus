@@ -32,7 +32,7 @@ def test_project_context_keeps_operational_boundaries_actionable() -> None:
     assert "Never commit credentials" in text
     assert "Agent-facing operations are only" in text
     assert "file_rec" in text and "update_rec" in text and "sync" in text
-    assert "Never append to `logs/.recommendations-log.jsonl`" in text
+    assert "recommendations have no local cache (Decision 215)" in text
     assert "governed GitHub workflows" in text
     assert "break-glass only" in text
 

@@ -66,7 +66,7 @@ Presence/link validators are deterministic; adequacy is this fresh-context judge
 
 Trigger condition 1 -- **Rec-resolving plan**: `bundled_recommendations` is non-empty, OR the plan's `intent`, `context`, `scope`, or `acceptance_criteria` names an open rec id as the motivation.
 - Required: every named rec id also appears in `bundled_recommendations` (a named rec with an empty list is the exact miss this catches).
-- Required: at least one VP step verifies each listed rec closed (e.g. `ops_data_portal --sync && grep rec-NNNN logs/.recommendations-log.jsonl`).
+- Required: at least one VP step verifies each listed rec closed (e.g. ducklake-reads `recs_by_ids` returns the rec with status closed).
 - If either is missing, recommend REVISE: "Rec-resolving plan omits closure obligation: add bundled_recommendations list and a VP step to verify each rec closed."
 
 Trigger condition 2 -- **Surface-retiring plan**: `scope` carries an `action: Delete` row OR the plan states an X->Y migration/cutover (old path deleted, Lambda retired, write path swapped, config flag removed, backend superseded).

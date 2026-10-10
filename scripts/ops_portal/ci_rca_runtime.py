@@ -16,7 +16,6 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
-from scripts.executor.jsonl_store import load_all_recommendations
 from scripts.ops_portal.ci_rca_schema import (
     _check_bundle_s3_existence,
     _load_and_verify_bundle,
@@ -327,9 +326,10 @@ def back_validate_ci_rca(
 ) -> dict:
     """Re-validate warn-period source=ci_rca recs against the current strict-mode schema (T1.13 c2 enabler).
 
-    Reads the warm recommendation cache directly (logs/.recommendations-log.jsonl; Decision 88 --
-    the handler constructs NO DuckLake reader). Every source=ci_rca rec with created_timestamp >=
-    `since` is sorted into exactly one bucket, mirroring what strict-mode file_rec() actually does:
+    Reads the source-scoped current_state(row_filter "source = 'ci_rca'") through the closed
+    DuckLake reader (no local recs cache, Decision 215; a reader failure raises). Every source=ci_rca
+    rec with created_timestamp >= `since` is sorted into exactly one bucket, mirroring what
+    strict-mode file_rec() actually does:
 
       legacy_no_schema -- context_v2_json is absent/empty. Historical rows filed before CIRCA-02
         (strict mode now raises ValueError for a NEW source=ci_rca write with no context_v2_json)
@@ -349,8 +349,7 @@ def back_validate_ci_rca(
     carrying the parent rec id and its failing-checks list. Default is report-only: zero writes.
 
     Args:
-        cache_rows: Injected warm-cache rows (test seam). Defaults to loading
-            logs/.recommendations-log.jsonl via load_all_recommendations() when None.
+        cache_rows: Injected rows (test seam). Defaults to the source-scoped reader read when None.
         since: ISO date/timestamp floor on created_timestamp (inclusive).
         refile_audit: When True, files audit recs for non_conformant entries (capped at `cap`).
         cap: Max audit recs filed in this invocation.
@@ -363,7 +362,9 @@ def back_validate_ci_rca(
         audit rec ids; empty unless refile_audit=True), audit_cap_reached (bool).
     """
     if cache_rows is None:
-        cache_rows = list(load_all_recommendations().values())
+        from src.common.ducklake_reader_client import make_reader  # noqa: PLC0415
+
+        cache_rows = make_reader(profile=profile).current_state("ops_recommendations", row_filter="source = 'ci_rca'") or []
 
     legacy_no_schema: list[dict] = []
     non_conformant: list[dict] = []

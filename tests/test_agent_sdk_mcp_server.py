@@ -124,7 +124,7 @@ class TestReadOnlySurface:
         tools = build_tool_registry(real_verbs)
         names = {t.name for t in tools}
         assert names & self._FORBIDDEN_NAMES == set()
-        assert len(tools) == len(real_verbs)
+        assert {t.name for t in tools} == {v for v, m in real_verbs.items() if m.get("agent_facing", True)}
 
     def test_no_tool_accepts_a_raw_sql_parameter(self):
         from src.common.ducklake_scd2_schema import describe_named_reads
@@ -240,3 +240,24 @@ class TestEndToEnd:
         rec_rows = rec_result.structuredContent["rows"]
         assert len(rec_rows) == 1
         assert rec_rows[0]["id"] == rec_id
+
+
+class TestAgentFacingProjection:
+    def test_agent_facing_false_verbs_are_not_projected(self):
+        verbs = {"shown": _verb_meta(agent_facing=True), "hidden": _verb_meta(agent_facing=False)}
+        assert [t.name for t in build_tool_registry(verbs)] == ["shown"]
+
+    def test_describe_without_the_key_projects_everything(self):
+        verbs = {"a": _verb_meta(), "b": _verb_meta()}
+        assert [t.name for t in build_tool_registry(verbs)] == ["a", "b"]
+
+    def test_real_registry_hides_open_recs_and_preflight_signal_rows(self):
+        from src.common.ducklake_scd2_schema import describe_named_reads
+
+        names = {t.name for t in build_tool_registry(describe_named_reads())}
+        assert {"open_recs", "preflight_signal_rows"}.isdisjoint(names)
+        assert {"recs_by_ids", "recs_for_files", "open_recs_tally"} <= names
+
+    def test_tool_note_cites_the_retirement_decision(self):
+        (tool,) = build_tool_registry({"v": _verb_meta()})
+        assert "no local recommendations cache (Decision 215)" in tool.description

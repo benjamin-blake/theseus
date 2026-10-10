@@ -144,11 +144,28 @@ ALL_TABLE_COLUMNS: object = object()
 
 # Same-commit parity with src.common.ducklake_scd2_schema.NAMED_READS_VERSION, asserted by
 # test_verb_fields_parity.py::test_version_pin_matches_registry.
-_NAMED_READS_VERSION_PIN = 3
+_NAMED_READS_VERSION_PIN = 4
 
 VERB_FIELDS: dict[str, tuple[str, ...] | object] = {
     "open_recs": ("id", "title", "context", "created_timestamp", "automatable"),
     "rec_by_id": ALL_TABLE_COLUMNS,
+    "recs_by_ids": ALL_TABLE_COLUMNS,
+    "recs_for_files": ("id", "title", "status", "priority", "effort", "source", "file", "tags", "created_timestamp"),
+    "open_recs_tally": ("open_count", "aging_count", "non_automatable_count"),
+    "preflight_signal_rows": (
+        "id",
+        "title",
+        "status",
+        "source",
+        "priority",
+        "file",
+        "automatable",
+        "created_timestamp",
+        "last_updated_timestamp",
+        "context_v2_json",
+        "context",
+        "acceptance",
+    ),
     "recs_by_title_prefix": ("id", "title", "status", "source"),
     "ci_rca_open": ("id", "title", "priority", "created_timestamp", "file"),
     "ci_rca_since": ("id",),
@@ -181,6 +198,18 @@ class ReaderInvokeError(RuntimeError):
         self.text = text
         self.body = body
         super().__init__(f"ducklake_reader {action!r} failed (HTTP {status}): {text[:300]}")
+
+
+class ResponseTooLargeError(ReaderInvokeError):
+    """The reader refused a response above its size cap (HTTP 413 response_too_large, rec-4232).
+
+    Never retried: the same request yields the same oversize answer. Narrow the read to a named verb.
+    """
+
+    def __init__(self, action: str | None, text: str, body: dict[str, Any] | None) -> None:
+        super().__init__(action, 413, text, body)
+        self.bytes = (body or {}).get("bytes")
+        self.cap = (body or {}).get("cap")
 
 
 def _parse_error_body(text: str) -> dict[str, Any] | None:
@@ -273,6 +302,8 @@ class DuckLakeReader:
                 return resp.json()
             last_status, last_text = resp.status_code, resp.text
             last_body = _parse_error_body(resp.text)
+            if resp.status_code == 413:
+                raise ResponseTooLargeError(payload.get("action"), last_text, last_body)
             if resp.status_code in _READER_TRANSIENT_STATUS and attempt < _READER_MAX_ATTEMPTS - 1:
                 # Cold-resume: give Neon time to wake, then re-invoke (reads are idempotent).
                 logger.warning(
@@ -355,6 +386,25 @@ class DuckLakeReader:
         """Execute *sql* (using `{tbl}`) over the current projection via the reader. Raises on error (Decision 55)."""
         body = self._invoke({"action": "query_ops", "table": table, "sql": sql, "params": list(params)})
         return list(body.get("rows", []))
+
+
+_MAX_RECS_BY_IDS = 50
+
+
+def fetch_recs_by_ids(reader: Any, ids: Any) -> tuple[list[dict], list[str]]:
+    """Fetch recommendations by id through the registered `named` verb; return (rows, missing ids).
+
+    Strips and de-duplicates *ids* (order kept), refuses more than 50 with ValueError, and reports the
+    requested ids that did not resolve so a caller never mistakes an absent rec for a present one.
+    """
+    wanted = list(dict.fromkeys(i.strip() for i in ids if isinstance(i, str) and i.strip()))
+    if not wanted:
+        return [], []
+    if len(wanted) > _MAX_RECS_BY_IDS:
+        raise ValueError(f"fetch_recs_by_ids: at most {_MAX_RECS_BY_IDS} ids per call; got {len(wanted)}")
+    rows = list(reader.named("recs_by_ids", ids=",".join(wanted)))
+    found = {r.get("id") for r in rows}
+    return rows, [i for i in wanted if i not in found]
 
 
 def make_reader(profile: str | None = None, table: str | None = None) -> Reader:

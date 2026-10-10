@@ -116,3 +116,21 @@ def test_log_invocation_fixed_fields(capsys):
     assert "\n" not in line
     with pytest.raises(TypeError):
         log_invocation("reader", "x", 200, None, None, False, 1.0, payload="secret")  # type: ignore[call-arg]
+
+
+class TestResponseBytesField:
+    def _line(self, capsys, **kw):
+        import json
+
+        from src.common.ducklake_metrics import log_invocation
+
+        capsys.readouterr()
+        log_invocation("reader", "describe", 200, None, None, False, 1.234, **kw)
+        return json.loads(capsys.readouterr().out)
+
+    def test_present_when_passed(self, capsys):
+        assert self._line(capsys, response_bytes=1234)["response_bytes"] == 1234
+
+    def test_absent_when_omitted(self, capsys):
+        line = self._line(capsys)
+        assert "response_bytes" not in line and len(line) == 8

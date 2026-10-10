@@ -56,10 +56,9 @@ For each rec id in `bundled_recommendations`:
 bin/venv-python -c "
 from scripts.rec_relevance import evaluate_rec_relevance
 from scripts.ops_data_portal import propose_or_close_rec
-import json, pathlib
-cache = pathlib.Path('logs/.recommendations-log.jsonl')
-rows = [json.loads(l) for l in cache.read_text().splitlines() if l.strip()]
-rec = next((r for r in rows if r.get('id') == 'rec-NNNN'), None)
+from src.common.ducklake_reader_client import fetch_recs_by_ids, make_reader
+rows, _ = fetch_recs_by_ids(make_reader(), ['rec-NNNN'])
+rec = rows[0] if rows else None
 verdict, evidence = evaluate_rec_relevance(rec, run_acceptance_probe=True)
 det = (verdict == 'satisfied' and evidence.startswith('acceptance probe passed:'))
 proposal = propose_or_close_rec('rec-NNNN', verdict, evidence, deterministic=det)

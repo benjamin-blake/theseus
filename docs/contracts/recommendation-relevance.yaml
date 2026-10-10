@@ -18,6 +18,15 @@ contract:
     check: validate_rec_relevance_contract
 
 amendment_log:
+  - date: "2026-10-10"
+    semantic_break: false
+    change_class: prose_improvement
+    summary: >-
+      PLAN-recs-full-cache-retirement (Decision 215, amends Decision 103's warmed-read-cache
+      clause): planning_gate_protocol reads the rec through fetch_recs_by_ids (the recs_by_ids
+      named verb) instead of the retired local recs cache file, and the "never call
+      _make_reader() (Decision 88: use read-cache only)" sentence is replaced by Decision 215's
+      rule. No verdict set, signal definition, or constraint changed.
   - date: "2026-09-12"
     semantic_break: false
     change_class: prose_improvement
@@ -62,11 +71,11 @@ planning_gate_protocol: >-
   scripts/rec_relevance.py. Recs can go stale between filing and the current session (target file
   deleted, decision ratified, sibling plan already fixed it). Protocol: for each candidate rec
   identified via the "Suggest Aligned Recommendations" step, run
-  `bin/venv-python -c "from scripts.rec_relevance import evaluate_rec_relevance; import json,
-  pathlib; cache = pathlib.Path('logs/.recommendations-log.jsonl'); rows = [json.loads(l) for l in
-  cache.read_text().splitlines() if l.strip()]; rec = next((r for r in rows if r.get('id') ==
-  'rec-NNNN'), None); verdict, evidence = evaluate_rec_relevance(rec, run_acceptance_probe=False);
-  print(verdict, '|', evidence[:120])"`. Verdict handling: relevant or unknown -- proceed; offer to
+  `bin/venv-python -c "from scripts.rec_relevance import evaluate_rec_relevance; from
+  src.common.ducklake_reader_client import fetch_recs_by_ids, make_reader; rows, missing =
+  fetch_recs_by_ids(make_reader(), ['rec-NNNN']); rec = rows[0] if rows else None; verdict,
+  evidence = evaluate_rec_relevance(rec, run_acceptance_probe=False); print(verdict, '|',
+  evidence[:120])"` (one recs_by_ids call per batch of up to 50 ids; Decision 215). Verdict handling: relevant or unknown -- proceed; offer to
   bundle normally. satisfied -- do NOT bundle; surface the evidence and the proposal command from
   propose_or_close_rec(rec_id, 'satisfied', evidence, deterministic=False) (planning time: never
   deterministic); wait for operator to run the closure command, then proceed without bundling.
@@ -74,7 +83,8 @@ planning_gate_protocol: >-
   the propose_or_close_rec output and wait for operator decision; remove from candidate list
   regardless of outcome. Constraints: run_acceptance_probe=False is mandatory at planning time
   (Decision 55: no auto-closure from semantic judgment); acceptance probes run only at /implement
-  time. Never call _make_reader() inside this gate (Decision 88: use read-cache only).
+  time. Read recs only through fetch_recs_by_ids (Decision 215: no local recs cache exists; one
+  bounded named-verb call per batch, never a per-rec loop or a full-table read).
 
 verdicts:
   - relevant

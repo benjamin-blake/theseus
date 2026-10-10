@@ -61,7 +61,6 @@ class TestReadContextFiles:
             patch("scripts.preflight._common.ROADMAP_FILE", roadmap),
             patch("scripts.preflight._common.DECISIONS_FILE", tmp_path / "missing.md"),
             patch("scripts.preflight._common.SESSION_LOG_FILE", tmp_path / "missing2.md"),
-            patch("scripts.preflight._common.RECOMMENDATIONS_FILE", tmp_path / "missing3.md"),
         ):
             result = _preflight.read_context_files()
         assert result["roadmap_phase"] == "Phase 1.5: Schema Flattening"
@@ -71,7 +70,6 @@ class TestReadContextFiles:
             patch("scripts.preflight._common.ROADMAP_FILE", tmp_path / "missing.md"),
             patch("scripts.preflight._common.DECISIONS_FILE", tmp_path / "missing2.md"),
             patch("scripts.preflight._common.SESSION_LOG_FILE", tmp_path / "missing3.md"),
-            patch("scripts.preflight._common.RECOMMENDATIONS_FILE", tmp_path / "missing4.md"),
         ):
             result = _preflight.read_context_files()
         assert result["roadmap_phase"] == "unknown"
@@ -86,7 +84,6 @@ class TestReadContextFiles:
             patch("scripts.preflight._common.ROADMAP_FILE", tmp_path / "missing.md"),
             patch("scripts.preflight._common.DECISIONS_FILE", decisions),
             patch("scripts.preflight._common.SESSION_LOG_FILE", tmp_path / "missing2.md"),
-            patch("scripts.preflight._common.RECOMMENDATIONS_FILE", tmp_path / "missing3.md"),
         ):
             result = _preflight.read_context_files()
         # Decision 1 and 3 are open; Decision 2 is Decided
@@ -131,7 +128,6 @@ class TestReadContextFiles:
             patch("scripts.preflight._common.ROADMAP_FILE", tmp_path / "missing.md"),
             patch("scripts.preflight._common.DECISIONS_FILE", tmp_path / "missing2.md"),
             patch("scripts.preflight._common.SESSION_LOG_FILE", session_log),
-            patch("scripts.preflight._common.RECOMMENDATIONS_FILE", tmp_path / "missing3.md"),
         ):
             result = _preflight.read_context_files()
         assert len(result["recent_sessions"]) == 2
@@ -143,13 +139,12 @@ class TestReadContextFiles:
             patch("scripts.preflight._common.ROADMAP_FILE", tmp_path / "missing.md"),
             patch("scripts.preflight._common.DECISIONS_FILE", tmp_path / "missing2.md"),
             patch("scripts.preflight._common.SESSION_LOG_FILE", tmp_path / "missing3.md"),
-            patch("scripts.preflight._common.RECOMMENDATIONS_FILE", tmp_path / "missing4.md"),
         ):
             result = _preflight.read_context_files()
         assert result["roadmap_phase"] == "unknown"
         assert result["open_decisions_count"] == 0
         assert result["recent_sessions"] == []
-        assert result["recommendations_count"] == 0
+        assert result["recommendations_count"] is None
 
 
 class TestOpenTelemetrySession:
@@ -170,32 +165,26 @@ class TestOpenTelemetrySession:
 
 
 class TestReadContextFilesRecsCount:
-    """read_context_files() counts open recs via the open_recs verb (Decision 84 I-3)."""
+    """read_context_files() takes the open count from the tally preflight fetched; no reader call (Decision 215)."""
 
-    def test_recommendations_count_is_len_of_open_recs_rows(self, tmp_path: Path) -> None:
-        reader = MagicMock()
-        reader.named.return_value = [{"id": "rec-1"}, {"id": "rec-2"}, {"id": "rec-3"}]
+    def _call(self, tmp_path: Path, reader: MagicMock, **kw):
         with (
             patch("scripts.preflight._common._make_reader", return_value=reader),
             patch("scripts.preflight._common.ROADMAP_FILE", tmp_path / "missing.md"),
             patch("scripts.preflight._common.DECISIONS_FILE", tmp_path / "missing2.md"),
             patch("scripts.preflight._common.SESSION_LOG_FILE", tmp_path / "missing3.md"),
         ):
-            result = _preflight.read_context_files()
-        assert result["recommendations_count"] == 3
-        reader.named.assert_called_once_with("open_recs")
+            return _preflight.read_context_files(**kw)
 
-    def test_recommendations_count_zero_on_reader_failure(self, tmp_path: Path) -> None:
+    def test_recommendations_count_is_the_passed_tally_count(self, tmp_path: Path) -> None:
         reader = MagicMock()
-        reader.named.side_effect = RuntimeError("reader down")
-        with (
-            patch("scripts.preflight._common._make_reader", return_value=reader),
-            patch("scripts.preflight._common.ROADMAP_FILE", tmp_path / "missing.md"),
-            patch("scripts.preflight._common.DECISIONS_FILE", tmp_path / "missing2.md"),
-            patch("scripts.preflight._common.SESSION_LOG_FILE", tmp_path / "missing3.md"),
-        ):
-            result = _preflight.read_context_files()
-        assert result["recommendations_count"] == 0
+        assert self._call(tmp_path, reader, open_recs_count=3)["recommendations_count"] == 3
+        reader.named.assert_not_called()
+
+    def test_recommendations_count_is_none_when_unavailable_and_no_fallback_call(self, tmp_path: Path) -> None:
+        reader = MagicMock()
+        assert self._call(tmp_path, reader)["recommendations_count"] is None
+        reader.named.assert_not_called()
 
 
 class TestRetiredStagingEstate:
