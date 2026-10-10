@@ -17,7 +17,7 @@ verification_tier: V3
 plan_path: docs/plans/PLAN-recs-full-cache-retirement.yaml
 phase: >-
   ad_hoc_rec (rec-4232, Critical; soft-warn category, no tier_item claimed, so the Tier Item
-  Freshness Gate is skipped). T2.19, T1.5 and T0.7c receive progress_note additions only.
+  Freshness Gate is skipped). T2.19 and T1.5 receive progress_note additions only.
 scope:
   # --- reader boundary -------------------------------------------------------------------------
   - file: src/lambdas/ducklake_reader/handler.py
@@ -63,8 +63,10 @@ scope:
   - file: src/common/ducklake_metrics.py
     action: Modify
     purpose: >-
-      log_invocation gains an optional keyword response_bytes: int | None = None, emitted as a fixed
-      numeric field (null when not passed), so the writer, maintenance and other callers are unchanged
+      log_invocation gains an optional keyword response_bytes: int | None = None, emitted ONLY when
+      passed -- a call without it produces the byte-identical 8-key line it does today, so the writer's
+      line, the graduated ducklake-invocation-log-line check (test_log_invocation_fixed_fields) and
+      tests/lambdas/ducklake_writer/handler/test_invocation_log.py stay unchanged and green
   - file: src/common/ducklake_reader_client.py
     action: Modify
     purpose: >-
@@ -106,7 +108,8 @@ scope:
   - file: scripts/preflight/recs_signals_source.py
     action: Create
     purpose: >-
-      fetch_recs_signal_inputs(reader=None, followon_ids=()) -> RecsSignalInputs: exactly TWO reader
+      fetch_recs_signal_inputs(reader=None, followon_ids=()) -> RecsSignalInputs, plus
+      ci_rca_open_total(signal_rows) -> int | None (open/in_progress ci_rca rows; None for None): exactly TWO reader
       calls -- open_recs_tally and preflight_signal_rows(followon_ids joined with ','). Returns
       tally, signal_rows, status ("ok" | "unavailable"), error, and recs_read = {calls, bytes:
       {verb: n}} where n = len(json.dumps(rows, default=str).encode("utf-8")) -- the re-serialised
@@ -124,7 +127,8 @@ scope:
       calls/bytes record; when unavailable EVERY recs-derived field is JSON null, never [] or 0:
       ci_rca_recs, ci_rca_unresolved_recs, ci_rca_likely_resolved_recs, ci_rca_dispute_recs,
       ci_rca_undetermined_recs, ci_rca_undetermined_total, followon_recs, open_critical_recs,
-      open_recommendations, aging_recommendations and non_automatable_recommendations (today line
+      open_recommendations, aging_recommendations, non_automatable_recommendations and
+      non_automatable_softcap_breached (whose check must not be called with None) (today line
       ~287 sets the counts to 0 and lines ~371-373 coerce lists with `or []`). When unavailable it
       prints ONE "CI-RCA signals UNAVAILABLE (reader unreachable) -- hard block at plan commitment"
       section instead of calling the three ci_rca printers (which print "(none)" for None), so
@@ -156,12 +160,15 @@ scope:
     action: Modify
     purpose: >-
       The five `return [] if cache_rows is None` sites (about lines 107, 140, 166, 194, 295 on
-      2026-10-09) return None; _fetch_ci_rca_recs also returns the uncapped total and each entry
-      carries `acceptance` (orient's Step 3 probe reads it from the report).
+      2026-10-09) return None; _fetch_ci_rca_recs keeps its list return shape (capped at 5) and each
+      entry carries `acceptance` (orient's Step 3 probe reads it from the report); the uncapped
+      ci_rca_open_total is computed in recs_signals_source.py (ci_rca_open_total(signal_rows) -> int |
+      None), not here.
       _check_ci_rca_liveness and _check_convergence_rca_gap return None (no alert) when rows are
       None: unavailability is carried ONLY by recs_read_status and the null lists, and never fires a
-      "no tracking rec" alert. Net SLOC must not rise (497/500); if a crossing is unavoidable,
-      decompose to a facade package per Decision 128 -- never a budget raise.
+      "no tracking rec" alert. Stays at or under 500 SLOC (497 today; the acceptance key is the only
+      addition); if a crossing is unavoidable, decompose to a facade package per Decision 128 -- never
+      a budget raise.
   - file: scripts/preflight/alerts.py
     action: Modify
     purpose: >-
@@ -313,8 +320,9 @@ scope:
       progress_note additions only (no status flips): T2.19 -- c9's subject (the recs cache pull) is
       removed by the new Decision and its loud-fail property now holds via the typed 413 and the
       fail-closed preflight, so the T2.19 closeout plan may mark c9 met by removal; T1.5 -- c1's
-      "synced hermetic cache, mirroring the recs read path" model is re-grounded on named verbs;
-      T0.7c -- minimum verb rec_by_id is deprecated in favour of recs_by_ids (consolidation rec-4240).
+      "synced hermetic cache, mirroring the recs read path" model is re-grounded on named verbs. No
+      note on T0.7c: it is complete and stays compact (Decision 147 point 4); its minimum verb
+      rec_by_id's deprecation is carried by the new Decision's clause 7 and rec-4240.
   - file: docs/contracts/log-storage.yaml
     action: Modify
     purpose: the line calling the recs cache git-tracked or a source of truth is corrected (it is retired)
@@ -333,10 +341,13 @@ scope:
   # --- tests (new classes are the pre-deploy evidence; existing files are re-pointed, never weakened) ---
   - file: scripts/checks/hygiene/validate_episode_lookup_projection.py
     action: Modify
-    purpose: docstring (about lines 35-37) no longer cites alerts.py's budget_breach_recent fallback, which this plan deletes; no logic change
+    purpose: docstring (about lines 16-21 on recs_cache's named("open_recs") / _derive_open_recs, and 35-37 on alerts.py's budget_breach_recent fallback) no longer describes code this plan deletes; no logic change
   - file: tests/test_ducklake_reader_handler.py
     action: Modify
-    purpose: class TestResponseSizeGuard -- the 413 branch exercised from the handler's own mapped coverage home (validate_test_coverage runs only this file for handler.py)
+    purpose: >-
+      class TestResponseSizeGuard -- the 413 branch exercised from the handler's own mapped coverage
+      home (validate_test_coverage runs only this file for handler.py); test_one_invocation_line_per_path's
+      fixed key set (about lines 504, 511) gains response_bytes, which the reader now always passes
   - file: tests/ops_data_portal/test_pipeline_reader.py
     action: Modify
     purpose: >-
@@ -358,7 +369,7 @@ scope:
     purpose: the warm_sync tests (about lines 142-187) patch the stale-file constant to a tmp path so the new delete never touches the real logs/ directory
   - file: tests/common/test_ducklake_metrics.py
     action: Modify
-    purpose: class TestResponseBytesField -- the field is emitted when passed and null when omitted; existing callers' lines are otherwise unchanged
+    purpose: class TestResponseBytesField -- the field is present when passed and ABSENT when omitted (the existing fixed-fields test stays as is)
   - file: tests/test_ducklake_reader_response_cap.py
     action: Create
     purpose: >-
@@ -380,10 +391,11 @@ scope:
     action: Modify
     purpose: >-
       new verbs' SQL executed in DuckDB yields the declared projections; recs_by_ids one and several
-      ids (recs_by_ids joins _SELECT_STAR_VERBS); open_recs_tally equals the Python derivation on the
-      same fixture rows; preflight_signal_rows nulls context/acceptance on old closed rows, keeps
-      context_v2_json, returns open follow-on ids, and test_preventive_regressions_parity asserts
-      find_preventive_regressions returns the same pairs over preflight_signal_rows as over full rows
+      ids (recs_by_ids joins _SELECT_STAR_VERBS); new class TestRecsReadModelParity:
+      open_recs_tally equals the Python derivation on the same fixture rows; preflight_signal_rows
+      nulls context/acceptance on old closed rows, keeps context_v2_json and returns open follow-on
+      ids; test_preventive_regressions_parity asserts find_preventive_regressions returns the same
+      pairs over preflight_signal_rows as over full rows
   - file: tests/checks/contracts/test_validate_read_engine_verbs.py
     action: Modify
     purpose: roster fixtures follow the v4 registry
@@ -396,6 +408,13 @@ scope:
       class TestFailClosed -- reader failure, 413 and URL-resolution failure each yield status
       unavailable with None rows; the ok path makes exactly two calls and records bytes per verb;
       217 follow-on ids ride the single preflight_signal_rows call
+  - file: tests/session/preflight/test_ci_rca_signals.py
+    action: Modify
+    purpose: >-
+      net-zero SLOC re-points only: TestFetchCiRcaDisputeRecs::test_cache_rows_none_returns_empty
+      (about lines 411-414) and TestFetchCiRcaUndeterminedRecs::test_fetch_returns_empty_for_none_cache
+      (about lines 526-528) assert `is None` instead of `== []`; TestFetchCiRcaRecs keeps its list
+      expectations (the return shape is unchanged) and gains `acceptance` in any exact-dict assertion
   - file: tests/session/preflight/test_ci_rca_signals_unavailable.py
     action: Create
     purpose: class TestUnavailableIsNotEmpty -- each of the five sites returns None for None input; liveness and convergence-gap checks raise no alert on None; ci_rca_open_total is uncapped; entries carry acceptance (a new file because test_ci_rca_signals.py is at 452 SLOC)
@@ -574,16 +593,13 @@ verification_plan:
     expected_literals: ["passed"]
   - step: 4
     phase: pre-deploy
-    action: execute every new verb's SQL in DuckDB against fixture rows (projection parity; tally equals the Python derivation; heavy columns nulled on old closed rows)
-    command: bin/venv-python -m pytest tests/common/ducklake_reader_client/test_verb_fields_parity.py -q
-    expected: all parity tests pass, including find_preventive_regressions returning the same pairs over preflight_signal_rows as over full rows
-    fix_if: a projection mismatch, a tally that diverges from _count_recommendations_reader's semantics, or a derivation that reads a column the verb nulls
+    action: prove the bounded read model still supplies every Phase-B derivation -- tally equals the Python derivation, context/acceptance nulled only on old closed rows, find_preventive_regressions identical over preflight_signal_rows and full rows (projection parity for the new verbs rides the already-graduated test_verb_fields_match_registry_sql, parametrized over NAMED_READS)
+    command: bin/venv-python -m pytest "tests/common/ducklake_reader_client/test_verb_fields_parity.py::TestRecsReadModelParity" -q
+    expected: all tests in the class pass
+    fix_if: a tally that diverges from _count_recommendations_reader's semantics, or a derivation that reads a column the verb nulls
     hermetic: false
-    graduation: waive
-    graduation_waiver_reason: >-
-      duckdb is a requirements-fast.txt heavy exclusion, so venv-less pr-validate cannot collect
-      this file; the full tier already runs it on every main push, so a graduated copy would only
-      duplicate that run.
+    graduation: graduate
+    graduation_check_id: recs-read-model-parity
   - step: 5
     phase: pre-deploy
     action: prove preflight's recs inputs fail closed and take exactly two calls, with 217 follow-on ids in one call
@@ -840,7 +856,7 @@ test_obligations:
     test_selector: tests/test_ducklake_named_reads.py::TestRecsReadVerbsV4
     red_green_expectation: red before (class absent), green after
   - source: src/common/ducklake_metrics.py
-    behavior: log_invocation emits response_bytes when passed and null otherwise; existing callers unchanged
+    behavior: log_invocation emits response_bytes only when passed; a call without it is byte-identical to today
     verification_step: 9
     test_selector: tests/common/test_ducklake_metrics.py::TestResponseBytesField
     red_green_expectation: red before (class absent; no field), green after
@@ -970,7 +986,7 @@ test_obligations:
     command: bin/venv-python -m scripts.validate --pre
     waiver_reason: agent-instruction text in a contract; step 11's sweep proves the cache reference is gone and the read path itself is tested in step 2
   - source: docs/ROADMAP-PLATFORM.yaml
-    behavior: progress_note additions only (T2.19, T1.5, T0.7c)
+    behavior: progress_note additions only (T2.19, T1.5)
     verification_step: 16
     command: bin/venv-python -m scripts.validate --pre
     waiver_reason: roadmap bookkeeping text with no status flip; validate_platform_roadmap in --pre is the schema guard
@@ -1012,7 +1028,7 @@ context:
   - "Decisions triaged: 167 of 167"
   - "Roadmap items intersected: 13; CONFLICT: 2; RELATED: 10"
   - "Flag dispositions: 88/103 -> new Decision amends both; 155 -> fail-closed (no tolerance clause) + 413 not retried; 170 -> every cache reader settled here or owned by rec-4236/rec-4237; roadmap CONFLICT T2.19 c9 + T1.5 c1 -> progress_note additions."
-  - "gates: decision-scout=FLAGS_FOUND (dispositioned at Step 6b); plan-critique=PENDING (rounds 1-3 REVISE addressed)"
+  - "gates: decision-scout=FLAGS_FOUND (dispositioned at Step 6b); plan-critique=PENDING (rounds 1-4 REVISE addressed; round 5 by human choice after the round-4 confirming REVISE)"
   - "fork: split the retirement across plans | chosen: unblock + retire here; graph-aware related-recs verb (rec-4235), residual consumers (rec-4236), claim-check export (rec-4237) follow | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: scope + followon_recs"
   - "fork: preflight posture when a completeness signal is unavailable | chosen: fail closed (hard block at commitment unless the human overrides) | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: new Decision + planning SKILL.md"
   - "fork: preflight transport | chosen: open_recs_tally counts + bounded preflight_signal_rows (two calls) | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: ducklake_named_reads.py + new Decision"
@@ -1092,8 +1108,9 @@ execution_steps:
     (cache-reference CI ban, open_recs fate, and the audit.md / audit-prompt SKILL.md dedup
     instructions), rec-4236 (executor, validate_executor_boundary and other residual readers, plus the
     status- or source-scoped full-column reads -- backlog census, scheduled-agent preload, ci_rca
-    dedup -- which the 413 now makes loud), rec-4237 (export, schema scan), rec-4240 (rec_by_id
-    removal); the probe-health and dedup recs close only through their escalation's own close path.
+    dedup -- which the 413 now makes loud -- and the nine open recs whose acceptance commands grep the
+    retired cache: rec-219, rec-220, rec-221, rec-223, rec-224, rec-225, rec-226, rec-227, rec-3228),
+    rec-4237 (export, schema scan), rec-4240 (rec_by_id removal); the probe-health and dedup recs close only through their escalation's own close path.
     reversal-conditions block:
     preflight_signal_rows re-serialised bytes above 3,000,000 (791,827 at planning; move the
     arithmetic server-side); recs_read.calls other than two; any status- or source-scoped
@@ -1107,8 +1124,12 @@ execution_steps:
     6,144 bytes (step 13).
   - >-
     AGENTS.md (byte-neutral), PROJECT_CONTEXT.md, ROADMAP-PLATFORM.yaml progress_note additions
-    (T2.19, T1.5, T0.7c), log-storage.yaml, exit-criteria-ledger.yaml, check-accounting.yaml;
+    (T2.19, T1.5), log-storage.yaml, exit-criteria-ledger.yaml, check-accounting.yaml;
     prose_budgets.yaml only if forced.
+  - >-
+    Update rec-4236 through the portal: its context's "3,000,000 bytes" threshold becomes the
+    Decision's 4,500,000-envelope-byte condition, and it gains the nine retired-cache acceptance
+    recs (rec-219..rec-227, rec-3228) as residuals.
   - Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)
   - >-
     Code review gate (implement skill), then the closure sequence: readiness check; set
