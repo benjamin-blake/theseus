@@ -64,6 +64,7 @@ class TestResolveDucklakeProfile:
                     _FakePath(name="m.zip"),
                     _FakePath(name="ms.zip"),
                     _FakePath(name="dr.zip"),
+                    _FakePath(name="tw.zip"),
                 ],
             ),
             patch("scripts.build_lambda.build_ducklake_deps_layer", return_value=_FakePath(name="deps.zip")),

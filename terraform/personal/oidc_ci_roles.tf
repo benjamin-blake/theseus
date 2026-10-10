@@ -151,6 +151,32 @@ data "aws_iam_policy_document" "github_ci_branch" {
   }
 
   statement {
+    # Telemetry writer (PLAN-telemetry-writer-function): the deploy smoke job (companion plan) runs as this role.
+    # InvokeFunctionUrl and GetFunctionUrlConfig are required for the AWS_IAM URL; InvokeFunction is URL-only
+    # (see the next statement). The boundary also denies direct invoke, and the companion plan's gate asserts
+    # a direct invoke is AccessDenied. github_ci_pr, github_ci_planner and github_ci_deploy get no grant.
+    sid     = "TelemetryWriterInvokeCI"
+    effect  = "Allow"
+    actions = ["lambda:InvokeFunctionUrl", "lambda:GetFunctionUrlConfig"]
+    resources = [
+      aws_lambda_function.ducklake_telemetry_writer.arn,
+      "${aws_lambda_function.ducklake_telemetry_writer.arn}:*",
+    ]
+  }
+
+  statement {
+    sid       = "TelemetryWriterInvokeCIViaUrlOnly"
+    effect    = "Allow"
+    actions   = ["lambda:InvokeFunction"]
+    resources = [aws_lambda_function.ducklake_telemetry_writer.arn, "${aws_lambda_function.ducklake_telemetry_writer.arn}:*"]
+    condition {
+      test     = "Bool"
+      variable = "lambda:InvokedViaFunctionUrl"
+      values   = ["true"]
+    }
+  }
+
+  statement {
     # T2.43: the deploy-prod-lambdas.yml smoke job assumes this role to invoke each prod-class
     # function and assert observable output (mirrors the ducklake smoke job reusing this role's
     # DuckLakeInvokeCI grant above -- these three functions have no Function URL, so plain

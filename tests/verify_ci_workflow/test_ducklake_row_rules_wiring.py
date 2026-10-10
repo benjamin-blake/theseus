@@ -1,4 +1,4 @@
-"""Packaging and deploy wiring for the shared row-rule engine and the writer adapter (rec-4158 plan B): the five DuckLake
+"""Packaging and deploy wiring for the shared row-rule engine and the writer adapter (rec-4158 plan B): the DuckLake
 bundles carry them, data-pipeline never does, and the governed deploy workflow redeploys on an engine edit and runs the
 --lambda-row-rules gate after the reader gate."""
 
@@ -16,7 +16,14 @@ _FILES = (
     "src/row_rules/__init__.py",
     "src/row_rules/rules.py",
 )
-_DUCKLAKE = ("ducklake_writer", "ducklake_reader", "ducklake_maintenance", "ducklake_maintenance_smoke", "ducklake_catalog_dr")
+_DUCKLAKE = (
+    "ducklake_writer",
+    "ducklake_reader",
+    "ducklake_maintenance",
+    "ducklake_maintenance_smoke",
+    "ducklake_catalog_dr",
+    "ducklake_telemetry_writer",
+)
 _WORKFLOW = _ROOT / ".github" / "workflows" / "deploy-ducklake-lambdas.yml"
 
 
@@ -24,7 +31,7 @@ def _manifest(slug: str) -> dict:
     return yaml.safe_load((_ROOT / "src" / "lambdas" / slug / "manifest.yaml").read_text(encoding="utf-8"))
 
 
-def test_five_ducklake_manifests_include_the_engine_files() -> None:
+def test_ducklake_manifests_include_the_engine_files() -> None:
     for slug in _DUCKLAKE:
         includes = _manifest(slug)["includes"]
         for rel in _FILES:
