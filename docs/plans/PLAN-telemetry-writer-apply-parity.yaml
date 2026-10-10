@@ -68,12 +68,15 @@ scope:
     A registered check, @registry.register("validate_terraform_no_build_artifact_reads", owner="platform"). Public helper
     find_build_artifact_reads(tf_root, is_ignored) returns sorted findings (relative path, line, reasons), one per (file,
     line), over every *.tf under tf_root, skipping .terraform/, with whole-line # and // comments blanked offset-preserving
-    (import _blank_comment_lines from validate_terraform_try). It considers every HCL string literal that is a filesystem
-    path: one starting with ${path.module}, ${path.root}, ${path.cwd}, ./ or ../ (an s3_key literal such as
-    "lambda-packages/x.zip" has no such prefix and is legitimate). Rule (a): such a path containing "lambda-packages/".
-    Rule (b): such a path that, resolved against the file's directory (path.module) or the terraform root (path.root,
-    path.cwd), is_ignored reports as ignored. This catches direct file-function arguments, templatefile(), and indirection
-    through a local or a variable default alike. The registered check passes a `git check-ignore -q` probe run from the
+    (import _blank_comment_lines from validate_terraform_try). A string literal counts as a filesystem path when it starts
+    with ${path.module}, ${path.root}, ${path.cwd}, ./ or ../ anywhere in the file, or when it is the plain first argument
+    of a file-family function (file, filemd5, filesha1, filesha256, filesha512, filebase64, filebase64sha256, filebase64sha512,
+    templatefile, fileexists, fileset). An s3_key literal such as "lambda-packages/x.zip" is neither and is legitimate.
+    Resolution base: ${path.module} is the file's directory; ${path.root}, ${path.cwd} and an unprefixed file-function
+    argument resolve against the directory of the root module containing the file (each terraform/<root>/ is its own
+    root module with no child modules). Rule (a): a filesystem path containing "lambda-packages/". Rule (b): a filesystem
+    path that is_ignored reports as ignored once resolved. This catches direct and bare file-function arguments, templatefile(),
+    and indirection through a local or a variable default alike. The registered check passes a `git check-ignore -q` probe run from the
     repo root and treats any exit other than 0 (ignored) or 1 (not ignored) as a finding, so an unanswerable probe fails
     closed. It scans the whole terraform/ tree like validate_terraform_try, calls registry.examined(count, unit="tf_files"),
     and each finding names file:line, the rule and the fix (address code by s3_bucket/s3_key and ship it through the deploy
@@ -102,8 +105,10 @@ scope:
     match); a locals indirection p = "${path.module}/../../lambda-packages/x.zip" then filemd5(local.p) (flagged on the local's
     line); a bare "../../lambda-packages/x.zip" and a "${path.root}/build/out.json" that is ignored (flagged); a templatefile()
     of an ignored path (flagged); a probe that errors (flagged, fail closed); an s3_key = "lambda-packages/x.zip" literal,
-    a commented-out read, and a file() of a tracked in-tree file (none flagged). Plus the registered check's failure path
-    appending to failed and its pass path, and that it declares examined.
+    a commented-out read, and a file() of a tracked in-tree file (none flagged). Bare file-function arguments: try(filemd5("lambda-packages/x.zip"),
+    null) and file("<an ignored path>") (both flagged). test_check_is_registered_in_pre asserts registry._ALL_ENTRIES holds
+    validate_terraform_no_build_artifact_reads with pre True and pre_globs including "terraform/**/*.tf" and ".gitignore".
+    Plus the registered check's failure path appending to failed and its pass path, and that it declares examined.
 - file: docs/contracts/environment-taxonomy.yaml
   action: Modify
   purpose: >-
@@ -113,8 +118,8 @@ scope:
     ignore_changes block stays as the conformance marker and a backstop), and code ships through the code-deploy channel.
     Because Terraform re-evaluates file functions when it applies a saved plan, and nothing masks a create, no configuration
     file read may name a file a job builds or downloads (rec-4243). Coverage (Decision 181): validate_terraform_no_build_artifact_reads
-    enforces it for every literal filesystem path in terraform/; a path assembled from non-literal parts is the declared
-    residual (none exists today; rec-4246); job-materialised inputs that are not file reads (the tfvars fetched from Secrets
+    enforces it for every literal filesystem path in terraform/ (a prefixed literal anywhere, or a plain literal passed
+    to a file-family function); a path assembled from non-literal parts is the declared residual (none exists today; rec-4246); job-materialised inputs that are not file reads (the tfvars fetched from Secrets
     Manager, the provider mirror) are recorded in plan.bin itself. In conformance.ducklake_detail, replace the false clause
     "and this decoupling is precisely why a verbatim saved-plan apply never re-evaluates filemd5() against the local tree
     regardless of where that fetch step's working directory lands" with a pointer to that rule, and add the same pointer
@@ -123,9 +128,9 @@ scope:
 - file: terraform/CLAUDE.md
   action: Modify
   purpose: >-
-    Replace the "Optional artifacts" hard-rule line verbatim, in place, with this line (8 bytes shorter): "- **Optional
-    artifacts**: `try()`-wrap `filemd5()`/`file()` on optional in-tree files. Terraform never reads a build artifact (no
-    `source_code_hash`; guard `validate_terraform_no_build_artifact_reads`; environment-taxonomy.yaml conformance)." It
+    Replace the "Optional artifacts" hard-rule line verbatim, in place, with this line (34 bytes shorter): "- **Optional
+    artifacts**: `try()`-wrap `filemd5()`/`file()`. Terraform never reads a build artifact (no `source_code_hash`; guard
+    `validate_terraform_no_build_artifact_reads`; environment-taxonomy.yaml conformance)." It
     drops the md5(file("module_file.tf")) example, points at the contract instead of restating it, and names the guard.
     Zero prose headroom (Decision 43/127), so it must not grow; the terraform-cc-web-operations.yaml pointer stays.
 - file: AGENTS.md
@@ -139,7 +144,7 @@ scope:
   action: Modify
   purpose: >-
     Ratchet S1 root_ambient_load_set and S2 terraform/CLAUDE.md down to their measured sizes after the two edits (1 and
-    8 bytes smaller). The prose-budgets-reseeded-to-measured registry check asserts budget equals measured, so this is
+    34 bytes smaller). The prose-budgets-reseeded-to-measured registry check asserts budget equals measured, so this is
     required. A decrease needs no raise marker; never an increase.
 - file: .github/workflows/reconcile.yml
   action: Modify
@@ -190,15 +195,15 @@ infrastructure_dependencies:
   The merge applies nothing: the push run's convergence precondition refuses on the red record (CONVERGENCE_RED), which
   is expected and dedupes to rec-4243. Recovery per docs/contracts/deploy-paths.yaml's reconcile row (the fix merged after
   the red commit): dispatch terraform-apply-sandbox.yml with acknowledge_red_commit = the red sha, not Reconcile, which
-  would re-apply c21ba7da's HCL. The dispatch plans fresh at main HEAD, step 7 checks that plan before Benjamin is asked,
+  would re-apply c21ba7da's HCL. The dispatch plans fresh at main HEAD, steps 7 and 8 check that plan and the creation bytes before Benjamin is asked,
   the guard routes it, and gated-apply applies it via SANDBOX_FRESH_PLAN_ARTIFACT (Decision 183) after his tf-gated-apply
   approval, which is the governed-deploy authorization. The one update is github_ci_branch's policy, not a PlatformDev
   or PlatformAdmin write, so Decision 183 point 4's admin split-apply does not apply.
 - >-
   Code at creation: the function is created from the fixed key lambda-packages/ducklake-telemetry-writer.zip, last written
   by an upload-only run (this fix PR's own speculative plan rebuilds it from the same source as #1442). This is PLAN-telemetry-writer-function's
-  accepted Decision 154 deviation, narrowed by step 7's byte-identity check against the fix PR's per-sha upload and step
-  8's proof that the key was not rewritten during the approval wait. The telemetry writer is not in the deploy map yet (build_lambda_config.py _DUCKLAKE_FUNCTION_ZIP_KEYS),
+  accepted Decision 154 deviation, narrowed by step 8's byte-identity check against a reviewed per-sha upload and step
+  9's proof that the key was not rewritten during the approval wait. The telemetry writer is not in the deploy map yet (build_lambda_config.py _DUCKLAKE_FUNCTION_ZIP_KEYS),
   so until PLAN-telemetry-writer-deploy-wiring lands, another PR's upload-only run can redefine its live stub; deploy-wiring
   should run right after this apply, and its DEPLOY_RECORD_OK step proves the merged-sha bytes. The immutable-reference
   fix for creates is rec-4254.
@@ -355,36 +360,45 @@ verification_plan:
   action: >-
     After the merge and the acknowledge-and-retry dispatch, and before asking Benjamin to approve, the dispatch's fresh
     plan is the same routed set (an unrelated terraform merge refused on the red record would otherwise ride into the approved
-    plan). It also checks that, at this moment, the fixed key lambda-packages/ducklake-telemetry-writer.zip holds the fix
-    PR's reviewed per-sha upload, and records the key's ETag and LastModified to $CREATION_KEY_FILE so step 8 can prove
-    nothing rewrote it during the approval wait (decision-scout SPIRIT 154; nothing else binds creation bytes until rec-4254).
-    Save the dispatch run's apply-sandbox job log (mcp__github__get_job_logs) to $DISPATCH_PLAN_LOG_FILE and export PR_HEAD_SHA
-    (the fix PR's final head). Tell Benjamin the fresh plan artifact is kept for two days, so the approval must land
-    within that window or the dispatch is re-run.
+    plan), and the creation key's ETag and LastModified are recorded to $CREATION_KEY_FILE for step 9. Save the dispatch
+    run's apply-sandbox job log (mcp__github__get_job_logs) to $DISPATCH_PLAN_LOG_FILE. Tell Benjamin the fresh plan artifact
+    is kept for two days, so the approval must land within that window or the dispatch is re-run.
   command: >-
-    test -s "$DISPATCH_PLAN_LOG_FILE" && test -n "$PR_HEAD_SHA" && d="$(mktemp -d)" && aws s3 cp --quiet --profile agent_platform
-    s3://agent-platform-data-lake/lambda-packages/ducklake-telemetry-writer.zip "$d/fixed.zip" && aws s3 cp --quiet --profile
-    agent_platform "s3://agent-platform-data-lake/lambda-packages/${PR_HEAD_SHA}/ducklake-telemetry-writer.zip" "$d/reviewed.zip"
-    && cmp -s "$d/fixed.zip" "$d/reviewed.zip" && test -n "$CREATION_KEY_FILE" && aws s3api head-object --profile agent_platform
-    --bucket agent-platform-data-lake --key lambda-packages/ducklake-telemetry-writer.zip --query '[ETag,LastModified]'
-    --output text > "$CREATION_KEY_FILE" && echo CREATION_BYTES_REVIEWED && bin/venv-python -c "import os,re;t=re.sub(r'\x1b\[[0-9;]*m','',open(os.environ['DISPATCH_PLAN_LOG_FILE'],encoding='utf-8',errors='replace').read());
+    test -s "$DISPATCH_PLAN_LOG_FILE" && test -n "$CREATION_KEY_FILE" && aws s3api head-object --profile agent_platform --bucket
+    agent-platform-data-lake --key lambda-packages/ducklake-telemetry-writer.zip --query '[ETag,LastModified]' --output
+    text > "$CREATION_KEY_FILE" && bin/venv-python -c "import os,re;t=re.sub(r'\x1b\[[0-9;]*m','',open(os.environ['DISPATCH_PLAN_LOG_FILE'],encoding='utf-8',errors='replace').read());
     assert 'CONVERGENCE_ACK' in t, 'precondition did not accept the acknowledgement';assert 'Apply complete!' not in t, 'applied without the gate';
     m=re.search(r'Plan: (\d+) to add, (\d+) to change, (\d+) to destroy',t);assert m and m.groups()==('4','1','0'), m and m.group(0);
     want={'aws_lambda_function.ducklake_telemetry_writer':'created','aws_lambda_function_url.ducklake_telemetry_writer':'created','aws_ssm_parameter.ducklake_telemetry_writer_url':'created','aws_cloudwatch_metric_alarm.ducklake_telemetry_writer_errors':'created','aws_iam_role_policy.github_ci_branch':'updated in-place'};
     got={a:v for a,v in re.findall(r'# (\S+) (?:will|must) be (created|updated in-place|destroyed|replaced|read during apply)',t) if not a.startswith('data.')};
     assert got==want, got;print('DISPATCH_PLAN_OK',m.group(0))"
-  expected: Exit 0, CREATION_BYTES_REVIEWED, and DISPATCH_PLAN_OK with 4 to add, 1 to change, 0 to destroy.
+  expected: Exit 0 and DISPATCH_PLAN_OK with 4 to add, 1 to change, 0 to destroy; $CREATION_KEY_FILE written.
   fix_if: >-
     Any plan delta: do not ask for approval. Tell Benjamin what changed and recommend rejecting the pending deployment; the
-    record stays red and the next dispatch re-plans. Never approve or apply on his behalf. Creation bytes differ: find the
-    fixed key's writer (object LastModified against workflow runs); a main deploy-ducklake-lambdas run's merged bytes are
-    acceptable (record it), another PR's upload-only bytes are not (re-run the fix PR's speculative-plan job to restore
-    the reviewed bytes, re-check, and only then ask for approval).
+    record stays red and the next dispatch re-plans. Never approve or apply on his behalf.
 - step: 8
   phase: post-deploy
   action: >-
+    Also before asking for approval: the fixed key lambda-packages/ducklake-telemetry-writer.zip holds reviewed bytes, either
+    the fix PR's per-sha upload (export PR_HEAD_SHA, the fix PR's final head) or, if a main deploy-ducklake-lambdas run
+    rewrote the key since, that run's merged per-sha upload (export MERGED_DEPLOY_SHA, that run's head sha, and record
+    the run id). Decision-scout SPIRIT 154; nothing else binds creation bytes until rec-4254.
+  command: >-
+    test -n "$PR_HEAD_SHA" && d="$(mktemp -d)" && k=s3://agent-platform-data-lake/lambda-packages && aws s3 cp --quiet --profile
+    agent_platform "$k/ducklake-telemetry-writer.zip" "$d/fixed.zip" && { { aws s3 cp --quiet --profile agent_platform "$k/${PR_HEAD_SHA}/ducklake-telemetry-writer.zip"
+    "$d/pr.zip" && cmp -s "$d/fixed.zip" "$d/pr.zip" && echo CREATION_BYTES_REVIEWED pr; } || { test -n "$MERGED_DEPLOY_SHA"
+    && aws s3 cp --quiet --profile agent_platform "$k/${MERGED_DEPLOY_SHA}/ducklake-telemetry-writer.zip" "$d/main.zip"
+    && cmp -s "$d/fixed.zip" "$d/main.zip" && echo CREATION_BYTES_REVIEWED main; }; }
+  expected: Exit 0 and CREATION_BYTES_REVIEWED (pr, or main with the deploy run recorded).
+  fix_if: >-
+    Neither matches: another PR's upload-only run wrote the key. Re-run the fix PR's speculative-plan job to restore the
+    reviewed bytes, re-run steps 7 and 8, and only then ask for approval.
+- step: 9
+  phase: post-deploy
+  action: >-
     Right after Benjamin's approval and the gated apply: the fixed key was not rewritten during the approval wait, so the
-    function was created from the bytes step 7 checked (the key's ETag and LastModified still match $CREATION_KEY_FILE).
+    function was created from the bytes step 8 checked (the key's ETag and LastModified still match $CREATION_KEY_FILE,
+    written in step 7).
     PlatformDev cannot read the function's CodeSha256, so key continuity is the evidence.
   command: >-
     test -s "$CREATION_KEY_FILE" && aws s3api head-object --profile agent_platform --bucket agent-platform-data-lake --key
@@ -395,7 +409,7 @@ verification_plan:
     Changed: find the writer (LastModified against workflow runs). A main deploy-ducklake-lambdas run's merged bytes are
     acceptable (record it). Another PR's upload-only bytes mean the stub may be running unreviewed code: tell Benjamin
     and run the deploy-wiring plan's governed deploy next, which replaces the code from the merged sha.
-- step: 9
+- step: 10
   phase: post-deploy
   action: >-
     After Benjamin's tf-gated-apply approval: run PLAN-telemetry-writer-function's step 6 as amended (the two gated applies
@@ -405,29 +419,28 @@ verification_plan:
     bin/venv-python -c "import subprocess,yaml;s={x['step']:x for x in yaml.safe_load(open('docs/plans/PLAN-telemetry-writer-function.yaml',encoding='utf-8'))['verification_plan']};subprocess.run(s[6]['command'],shell=True,check=True)"
   expected: Exit 0 and APPLY_CONVERGED with 4 added, 1 changed, 0 destroyed for the retry.
   fix_if: >-
-    Follow that step's fix_if; if the red sha is absent from the first log, confirm its provenance by run 38046095276 instead
-    and record it. A second failed apply: stop, RCA (Decision 55) and tell Benjamin; never apply locally and never dispatch
+    Follow that step's fix_if. A second failed apply: stop, RCA (Decision 55) and tell Benjamin; never apply locally and never dispatch
     a third attempt without his word.
-- step: 10
+- step: 11
   phase: post-deploy
   action: The stub is live through its URL under the scoped login and refuses direct invoke (PLAN-telemetry-writer-function step 7, unchanged).
   command: >-
     bin/venv-python -c "import subprocess,yaml;s={x['step']:x for x in yaml.safe_load(open('docs/plans/PLAN-telemetry-writer-function.yaml',encoding='utf-8'))['verification_plan']};subprocess.run(s[7]['command'],shell=True,check=True)"
   expected: Exit 0 with STUB_LIVE_OK and TELEMETRY_URL_ONLY_OK.
   fix_if: Follow PLAN-telemetry-writer-function step 7's fix_if.
-- step: 11
+- step: 12
   phase: post-deploy
   action: The shared writer and reader ops gates still pass (PLAN-telemetry-writer-function step 8, unchanged).
   command: >-
     bin/venv-python -c "import subprocess,yaml;s={x['step']:x for x in yaml.safe_load(open('docs/plans/PLAN-telemetry-writer-function.yaml',encoding='utf-8'))['verification_plan']};subprocess.run(s[8]['command'],shell=True,check=True)"
   expected: Exit 0 and OPS_GATES_OK.
   fix_if: Follow PLAN-telemetry-writer-function step 8's fix_if.
-- step: 12
+- step: 13
   phase: post-deploy
   action: >-
     Live-versus-declared read-back: dispatch terraform-drift.yml after the green apply, save its drift-check job log to $DRIFT_LOG_FILE
-    and run PLAN-telemetry-writer-function step 9 (unchanged). This also proves the nine deletions left every other resource
-    unchanged in AWS.
+    and run PLAN-telemetry-writer-function step 9 (unchanged). This also proves the eleven argument deletions and the removed
+    local left every other resource unchanged in AWS.
   command: >-
     bin/venv-python -c "import subprocess,yaml;s={x['step']:x for x in yaml.safe_load(open('docs/plans/PLAN-telemetry-writer-function.yaml',encoding='utf-8'))['verification_plan']};subprocess.run(s[9]['command'],shell=True,check=True)"
   expected: Exit 0 and DRIFT_CLEAN.
@@ -435,7 +448,7 @@ verification_plan:
     Follow PLAN-telemetry-writer-function step 9's fix_if; drift on a resource this plan edited means a zero-diff claim
     failed, so report it. A crash with "Argument list too long" is rec-4255 and only happens when drift exists (exit 2):
     read the plan output above the crash.
-- step: 13
+- step: 14
   phase: post-deploy
   action: >-
     rec-4243 closed by the implementation PR's Resolves trailer (Decision 201 acceptance-gated closure), and rec-4245 narrowed
@@ -491,10 +504,10 @@ test_obligations:
   test_selector: tests/checks/iam_tf/test_validate_terraform_no_build_artifact_reads.py
   red_green_expectation: red before (module and mirror test absent), green after
 - source: scripts/checks/iam_tf/_manifest.py
-  behavior: The check is registered in --pre on terraform/**/*.tf.
-  verification_step: 5
-  command: bin/venv-python -m scripts.validate --pre
-  waiver_reason: validate_check_manifests and the domain mirror test tests/checks/iam_tf/test__manifest.py are the standing checks on this registration.
+  behavior: The check is registered in --pre on terraform/**/*.tf and .gitignore.
+  verification_step: 1
+  test_selector: tests/checks/iam_tf/test_validate_terraform_no_build_artifact_reads.py::test_check_is_registered_in_pre
+  red_green_expectation: red before (no Entry), green after
 - source: config/ci_rca_taxonomy.yaml
   behavior: The check's failures classify as environment.
   verification_step: 5
@@ -547,7 +560,7 @@ constraints:
   amendment_log entry), using the verbatim lines so AGENTS.md and terraform/CLAUDE.md shrink (no prose budget raise, Decision
   165). Layer publication (rec-4253) and immutable code references (rec-4254) are not this plan.
 - >-
-  Dispatch the retry only after the merge and only when step 6 passed; run step 7 before asking Benjamin to approve; if
+  Dispatch the retry only after the merge and only when step 6 passed; run steps 7 and 8 before asking Benjamin to approve; if
   the dispatch's guard does not route, stop and ask him. His tf-gated-apply approval is the deploy authorization.
 - 'Public repository (Decision 101): no account id, ARN or hostname literal anywhere, including PR text and pasted logs.'
 - No rescue agents or workaround loops (Decision 55).
@@ -567,14 +580,14 @@ context:
 - "fork: acknowledge the red sha, not rec-4243 | chosen: red sha | class: consistency-only | precedent: deploy-paths.yaml | precedent_kind: contract | reversible: yes | persisted: execution steps"
 - >-
   PLAN-telemetry-writer-function is amended in this plan's PR (VP step 6, its post-deploy criterion, its function scope
-  text, the count note and Code at creation); steps 9-12 here delegate to its steps 6-9.
+  text, the count note and Code at creation); steps 10-13 here delegate to its steps 6-9.
 - >-
   Decision-scout (third run, widened scope): FLAGS_FOUND. CITE 125, 126, 77, 154, 183, 119, 213, 55, 48, 186, 201, 132,
   189, 170, 187, 59, 67, 101; T2.54 (clause names the check). WARN 92 (the ambient lines are short forms pointing at
   environment-taxonomy.yaml), WARN 181 (invariant narrowed to configuration file reads, with a coverage line), SPIRIT 154
-  (step 7 byte-identity check; rec-4254 owns the immutable reference). Decisions triaged: 167 of 167. Roadmap items intersected:
+  (steps 8-9 creation-bytes checks; rec-4254 owns the immutable reference). Decisions triaged: 167 of 167. Roadmap items intersected:
   5; CONFLICT: 0; RELATED: 4. Retired example's provenance: archived Decision 19.
-- "gates: decision-scout=FLAGS_FOUND (resolved in-plan, 3 runs); plan-critique=new series after the re-scope: round 1 REVISE (J1-J4, A1-A7 fixed), confirming round PENDING (prior series: PROCEED then REVISE on the narrower scope)"
+- "gates: decision-scout=FLAGS_FOUND (resolved in-plan, 3 runs); plan-critique=new series after the re-scope: round 1 REVISE (J1-J4, A1-A7 fixed), round 2 REVISE (J1-J3, M1-M4 fixed; escalated to Benjamin on the recurring guard-coverage anchor), round 3 PENDING (prior series: PROCEED then REVISE on the narrower scope)"
 - >-
   Gotchas: removing the longest key shifts terraform fmt alignment of s3_bucket/s3_key in nine groups (the two DuckLake
   layers keep theirs); RETRY_SHA is the dispatch run's head sha, which the gated-apply record write uses as commit_sha;
@@ -603,9 +616,9 @@ execution_steps:
 - >-
   Push, open the PR with Resolves rec-4243 in the squash body, drive CI green, run step 6 on the final head's speculative-plan
   comment. Squash-merge, confirm the push run refused with CONVERGENCE_RED, dispatch terraform-apply-sandbox.yml (mcp__github__actions_run_trigger,
-  ref main, acknowledge_red_commit c21ba7da56a5640bc7c368af6cb8b50ae92b3e78), run step 7 on its apply-sandbox log, and
-  only then ask Benjamin to approve the tf-gated-apply run.
-- Execute steps 8-13. Loop until they pass, never weakening an assertion. On an unrecoverable failure stop and RCA (Decision 55).
+  ref main, acknowledge_red_commit c21ba7da56a5640bc7c368af6cb8b50ae92b3e78), run steps 7 and 8, and only then ask
+  Benjamin to approve the tf-gated-apply run.
+- Execute steps 9-14. Loop until they pass, never weakening an assertion. On an unrecoverable failure stop and RCA (Decision 55).
 - 'Report: what landed, the verification results, and that the deploy-wiring plan (to run next) and plan 3 part 1 are unblocked'
 rollback: >-
   Before the retry: revert the squash commit (nothing was applied). After it: the function exists; the provider keeps
