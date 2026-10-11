@@ -8,24 +8,29 @@ intent: >-
   ccr-<8hex>-<6alnum> (e.g. ccr-679d754f-m99ugp), outside git-ops.yaml's declared agent_branch_prefixes, so the
   Decision 203 handoff gate denies every push and PR from them, and neither PR wake signal (CI green, merge conflict)
   would fire for them. Add ccr- to the declared set and to both wake consumers, and repair the three slash-only shape
-  rules that a hyphen-terminated prefix trips. Operator-directed simplest fix (rec-4257); the self-registration migration
-  is deferred to an owned follow-on rec.
+  rules that a hyphen-terminated prefix trips. Operator-directed simplest fix (rec-4257, rec-4193); the self-registration
+  migration is deferred to owned follow-on rec-4266.
 plan_type: IMPLEMENTATION
 verification_tier: V2
 plan_path: docs/plans/PLAN-ccr-branch-prefix.yaml
 phase: >-
-  Operator-directed fix for rec-4257 (Benjamin, 2026-10-11). No tier_item: an ad_hoc_rec soft-warn exception that claims,
+  Operator-directed fix for rec-4257 and rec-4193 (Benjamin, 2026-10-11). No tier_item: an ad_hoc_rec soft-warn exception that claims,
   moves and closes no tier_item criterion.
 scope:
 - file: docs/contracts/git-ops.yaml
   action: Modify
   purpose: >-
     branching_topology.agent_branch_prefixes becomes ["agent/", "claude/", "ccr-"]. agent_branch_prefixes_reversal keeps
-    triggers (a) and (c) verbatim. Trigger (b) becomes "any further measured miss of the prefix discriminator", plus one
-    clause: the second miss (rec-4257, the harness's ccr- rename) was reviewed 2026-10-11 and resolved at operator
-    direction by extending the declared set, with the self-registration migration owned by rec-4266.
+    trigger (a) verbatim and records that triggers (b) and (c) have both fired and are reviewed here. (b): the harness's
+    ccr- rename is the second measured miss of the prefix discriminator, first measured 2026-10-06 on ccr-43776a06-et0u4a
+    (rec-4193) and re-measured 2026-10-10 (rec-4257). The literal ccr-43776a06 must appear in this clause, because
+    rec-4193's acceptance greps git-ops.yaml for it. (c): it fired on 2026-09-26, when the Decision 203 handoff gate
+    became the set's third structural consumer. Both were resolved 2026-10-11 at operator direction by extending the
+    declared set, with the self-registration migration owned by rec-4266. Both are re-armed: (b) as any further measured
+    miss, (c) as the next change that would add a fourth consumer. agent_branch_prefixes_rationale's consumer list gains
+    the Decision 203 handoff gate's destination rule (scripts/session/handoff_evidence.py, read from origin/main).
     contract.contract_version goes 6 -> 7. Add a new one-line flow-mapping amendment_log entry at the head: date, semantic_break
-    true, change_class accepted_values_extend, a summary naming PLAN-ccr-branch-prefix and rec-4257. The file is at 498
+    true, change_class accepted_values_extend, a summary naming PLAN-ccr-branch-prefix, rec-4257 and rec-4193. The file is at 498
     of the contracts class's 500 effective lines (Decision 166), so compact older amendment_log entries until the file is
     at or under 500, starting with the 2026-09-26 PLAN-ducklake-partition-layout-remediation entry. Turn it into a
     one-line flow mapping with the same date/semantic_break/change_class and a shortened summary, never a budget raise.
@@ -83,10 +88,14 @@ scope:
     docs/contracts/git-ops.yaml over the seeded one with _commit_file and pushes main, so origin/main carries the real
     contract. It opens a ccr-679d754f-m99ugp worktree with _new_branch_worktree, commits docs/plans/PLAN-probe.yaml, and
     asserts handoff_evidence.decide_bash(parse_canonical("git push -u origin HEAD"), wt) returns kind pass, rule exempt.
-    On the old contract it returns deny/destination. The file is 490 SLOC and must stay at or under 500: the sketch is
-    9 SLOC with a # comment rather than a docstring, and _common joins the existing "from scripts.checks import
-    validation_result" line. If it still does not fit, hoist test_real_contract_exempt_clause_parses' function-local
-    imports to the module import block. Never raise a budget (Decision 128).
+    It also asserts handoff_evidence._dst_allowed("random-branch", handoff_evidence.destination_prefixes(wt)) is False,
+    so undeclared heads stay denied against the real contract. On the old contract the push returns deny/destination.
+    The file is 490 SLOC and must stay at or under 500. The node is about 10 SLOC with a # comment rather than a
+    docstring, and _common joins the existing "from scripts.checks import validation_result" line. Critique round 1
+    simulated the base node under ruff format and measured 499. Hoisting test_real_contract_exempt_clause_parses' two
+    function-local imports into the module import block (net -1) pays for the denial assertion (+1). If the file would
+    still exceed 500, STOP and amend this plan's scope: the Decision 128 route is moving TestCli to a sibling test module,
+    and that module is not in this scope. Never raise a budget.
 - file: tests/test_pr_conflict_signal_wiring.py
   action: Modify
   purpose: >-
@@ -120,6 +129,7 @@ scope:
     scripts/ci/pr_conflict_signal.sh, guard_symbol null, plan_slug ccr-branch-prefix, graduated_by implement-agent.
 bundled_recommendations:
 - rec-4257
+- rec-4193
 followon_recs:
 - rec-4266
 infrastructure_dependencies: []
@@ -137,13 +147,15 @@ acceptance_criteria:
   validate_pr_conflict_signal accepts a hyphen-terminated token, still rejects a token with no trailing separator, and
   carries no prefix literal.
 - >-
-  git-ops.yaml records trigger (b)'s review, re-arms it, and names the follow-on rec owning the self-registration
-  migration. It bumps contract_version 6 -> 7 with an accepted_values_extend entry and ends at or under 500 effective
+  git-ops.yaml records that triggers (b) and (c) fired and were reviewed: (b) with both measurements (ccr-43776a06,
+  rec-4193; rec-4257), and (c) with the handoff gate as the third consumer. It re-arms both, names the gate in the
+  rationale's consumer list, and names rec-4266 as owner of the self-registration migration. It bumps contract_version 6 -> 7 with an accepted_values_extend entry and ends at or under 500 effective
   lines with no budget raise.
 - >-
   rec-4257's acceptance node exists at exactly
-  tests/test_session_handoff_evidence.py::test_a_ccr_harness_session_branch_is_an_allowed_destination, and the rec
-  closes through the squash commit's Resolves trailer.
+  tests/test_session_handoff_evidence.py::test_a_ccr_harness_session_branch_is_an_allowed_destination. rec-4193's
+  acceptance (grep for ccr-43776a06 in git-ops.yaml, plus a PLAN-*branch-prefix*.yaml file) passes. Both recs close
+  through the squash commit's Resolves trailer.
 verification_plan:
 - step: 1
   phase: pre-deploy
@@ -231,9 +243,11 @@ verification_plan:
 - step: 5
   phase: pre-deploy
   action: >-
-    The amended contract stays within the contracts class budget and keeps its version-bump and amendment conventions.
+    rec-4193's acceptance passes verbatim, and the amended contract stays within the contracts class budget and keeps
+    its version-bump and amendment conventions.
   command: >-
-    bin/venv-python -c "from pathlib import Path; import yaml; from scripts.checks.structural._classify import
+    grep -q 'ccr-43776a06' docs/contracts/git-ops.yaml && ls docs/plans/PLAN-*branch-prefix*.yaml && bin/venv-python -c
+    "from pathlib import Path; import yaml; from scripts.checks.structural._classify import
     effective_lines; t = Path('docs/contracts/git-ops.yaml').read_text(encoding='utf-8'); d = yaml.safe_load(t); n =
     effective_lines(t); assert n <= 500, n; assert d['contract']['contract_version'] == 7, d['contract'];
     assert d['branching_topology']['agent_branch_prefixes'] == ['agent/', 'claude/', 'ccr-'];
@@ -241,13 +255,16 @@ verification_plan:
     print('GIT_OPS_AMENDED_WITHIN_BUDGET')"
   expected: Exit 0 and the success marker printed.
   fix_if: >-
-    Over 500: compact another older amendment_log entry to one line (Decision 166 relief valve); never raise the budget.
+    No ccr-43776a06 in the contract: the reversal clause dropped rec-4193's measurement. Over 500: compact another older
+    amendment_log entry to one line (Decision 166 relief valve); never raise the budget.
   hermetic: true
   graduation: waive
   graduation_waiver_reason: >-
     A one-time amendment-shape check. The structural size gate and validate_git_ops_contract already guard the budget
-    and contract shape, and pinning contract_version 7 would go red on the next legitimate bump.
+    and contract shape, pinning contract_version 7 would go red on the next legitimate bump, and rec-4193's acceptance
+    is closed by this plan's own trailer evaluation.
   expected_literals:
+  - docs/plans/PLAN-ccr-branch-prefix.yaml
   - GIT_OPS_AMENDED_WITHIN_BUDGET
 - step: 6
   phase: pre-deploy
@@ -292,13 +309,15 @@ verification_plan:
     ccr- absent: origin/main does not carry the merged contract; confirm the squash merge landed and re-fetch.
 - step: 9
   phase: post-deploy
-  action: rec-4257 is closed by the squash commit's Resolves trailer; the follow-on migration rec stays open.
+  action: >-
+    rec-4257 and rec-4193 are closed by the squash commit's Resolves trailer; follow-on rec-4266 stays open.
   command: >-
-    bin/venv-python -c "from scripts.ops_data_portal import _fetch_rec_from_reader as f; s = (f('rec-4257') or
-    {}).get('status'); print(s); assert s == 'closed', s"
-  expected: Prints closed, exit 0.
+    bin/venv-python -c "from scripts.ops_data_portal import _fetch_rec_from_reader as f; st = {k: (f(k) or
+    {}).get('status') for k in ('rec-4257', 'rec-4193', 'rec-4266')}; print(st); assert st == {'rec-4257': 'closed',
+    'rec-4193': 'closed', 'rec-4266': 'open'}, st"
+  expected: Prints the three statuses (closed, closed, open), exit 0.
   fix_if: >-
-    Still open: confirm the squash body carries 'Resolves: rec-4257' and inspect ci.yml's closure job run on the merge
+    A bundled rec is still open: confirm the squash body carries 'Resolves: rec-4257, rec-4193' and inspect ci.yml's closure job run on the merge
     commit.
 test_obligations:
 - source: docs/contracts/git-ops.yaml
@@ -345,6 +364,14 @@ test_obligations:
   waiver_reason: >-
     A registry row is itself a standing check. Its own test is validate_verification_registry's differential admission
     gate, which the full tier runs and step 6 runs directly, proving the row fails on origin/main and passes on HEAD.
+- source: docs/contracts/verification-registry.yaml
+  behavior: governance_notes records the two in-place row edits as claim-preserving and claim-additive, keeping their check_ids.
+  verification_step: 7
+  command: bin/venv-python -m scripts.validate
+  waiver_reason: >-
+    A prose-only governance note plus an amendment_log entry, with no executable behavior. The contract's schema and
+    amendment ritual are guarded by the full tier's contract checks. The row edits it documents are proven by step 6's
+    differential admission run.
 - source: config/agent/verification_registry/entries/handoff-gate-admits-ccr-session-branch.yaml
   behavior: Registry row for the graduated step-1 check.
   verification_step: 7
@@ -366,7 +393,8 @@ constraints:
   never-exempt. No override, flag, env var or exemption is added (Decision 163 point 1, Decision 203 cl.3).
 - >-
   Extend, do not migrate (operator direction, 2026-10-11). The repo-owned self-registration migration (wake label or
-  body token) is owned by follow-on rec-4266 (filed at plan-write time) and is not started here.
+  body token) is owned by follow-on rec-4266 and is not started here. rec-4266 was filed at plan-write time and its
+  start conditions were aligned to the re-armed triggers after critique round 1.
 - >-
   claude-slash stays declared and transitional, since the bootstrap pushes use it and open PRs may carry it. agent-slash
   is unchanged (the frozen executor's namespace, Decision 67).
@@ -390,7 +418,7 @@ context:
   (row edits keep check_ids): recorded in verification-registry.yaml governance_notes. CITE: 203, 132, 189, 166, 201.
   RELATED: 163, 67, 191, 167, 150, 168, 176, 187, 139, 76, 181. Decisions triaged: 167 of 167. Roadmap items
   intersected: 3; CONFLICT: 0; RELATED: 3
-- "gates: decision-scout=FLAGS_FOUND (all resolved); plan-critique=PENDING"
+- "gates: decision-scout=FLAGS_FOUND (all resolved); plan-critique=REVISE r1 (F1 rec-4193 bundled, F2 trigger (c) recorded, F3 deferral refreshed, F4/F5 applied -- all fixed, none disputed); r2 pending"
 - >-
   Bootstrap. Until this merges, origin/main's contract has no ccr-, so the gate denies every push and PR from a ccr-*
   branch, including exempt plan-only pushes, because the destination rule runs before the exemption rule. This plan's
@@ -407,12 +435,13 @@ context:
   No numbered Decision: an accepted_values_extend amendment plus the reversal-review record is contract field semantics
   (decision-entry.yaml significance routing; Decision 167/150).
 - >-
-  CI-RCA deferral (Related-Work check). rec-4243 (Critical, terraform/personal/ducklake_telemetry_writer.tf first-CREATE
-  apply regression) shares no file, Decision or failure category with this plan. The operator confirmed the deferral
-  (Benjamin, 2026-10-11).
+  Related-Work check: no CI-RCA rec is open (ci_rca_open returned 0 rows on 2026-10-11). rec-4243, deferred at Step 6,
+  has since closed (#1446).
 - >-
-  Preflight ran degraded: the recs reader returned 502 for bulk reads, so open_recs and the aligned-rec search were
-  unavailable. The named ci_rca_open read found rec-4243.
+  Preflight ran degraded: the recs reader returned 502 for bulk reads, so the aligned-rec search missed rec-4193 (the
+  same ccr- rename, first measured 2026-10-06). Critique round 1 surfaced it, and it is bundled. The relevance gate,
+  fed rows from the named rec_by_id read because the cache was unavailable, returned unknown (proceed) for both
+  rec-4193 and rec-4257.
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
@@ -444,7 +473,7 @@ execution_steps:
   scripts.session.github_readiness, reporting each state on its own. (2) Set implementation_declared: true. (3)
   Postflight evidence. (4) VP step 7's full tier on the committed, rebased, clean tree, then bin/venv-python -m
   scripts.checks.validation_result --verify-head exit 0. (5) Push per the Bootstrap context item, as its own call. (6) A
-  PR with head = the pushed destination, whose squash body carries 'Resolves: rec-4257'. (7) CI green. (8)
+  PR with head = the pushed destination, whose squash body carries 'Resolves: rec-4257, rec-4193'. (7) CI green. (8)
   Squash-merge. Then VP steps 8 and 9 post-merge.
 - >-
   Report readiness states, the validator verdict, the postflight evidence and the real push, PR and CI outcomes
