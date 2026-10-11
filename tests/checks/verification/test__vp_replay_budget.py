@@ -3,16 +3,14 @@ shared-budget, Decision 131 -- carries its own fixtures, imports only from the s
 
 validate_test_coverage measures THIS FILE ALONE against the source module (no
 config/coverage_baseline.yaml entry exists for scripts/checks/verification/**, so the threshold is
-100%): every defensive branch of run_bounded (the happy path, the timeout-kill path, the
-BaseException-kill path, the bounded-reap-itself-times-out path, and _killpg_quiet's
-already-exited-group path) is covered here, alongside the pure telemetry helpers and the deadline-
+100%): every defensive branch of run_bounded (the happy path, the timeout-kill path and the
+BaseException-kill path) is covered here -- the shared kill-and-reap it calls is covered by
+tests/checks/test__process_group.py -- alongside the pure telemetry helpers and the deadline-
 kill message builders.
 """
 
 from __future__ import annotations
 
-import os
-import re
 import subprocess
 import time
 from pathlib import Path
@@ -22,42 +20,10 @@ import pytest
 import yaml
 
 from scripts.checks.verification import _vp_replay_budget as b
+from tests.fixtures.process_probes import pid_is_dead as _pid_is_dead
+from tests.fixtures.process_probes import read_published_pid as _read_published_pid
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-
-_PID_RECORD = re.compile(r"[0-9]+\n")
-
-
-def _read_published_pid(pidfile: Path, timeout: float = 5.0) -> int:
-    """The PID a shell published with ``echo $! > pidfile``, once fully written.
-
-    The redirection creates the file before echo writes to it, so existence alone can expose an
-    empty file (rec-4182); echo's trailing newline is what marks the record complete."""
-    deadline = time.monotonic() + timeout
-    while True:
-        try:
-            text = pidfile.read_text(encoding="utf-8")
-        except FileNotFoundError:
-            text = ""
-        if _PID_RECORD.fullmatch(text):
-            return int(text)
-        if time.monotonic() >= deadline:
-            pytest.fail(f"{pidfile} never held a complete PID record within {timeout}s (last read {text!r})")
-        time.sleep(0.05)
-
-
-def _pid_is_dead(pid: int) -> bool:
-    """True iff /proc/<pid>/stat is absent, or reports zombie state 'Z' -- never
-    ProcessLookupError alone, which measures reaping rather than death (plan-critique measured
-    1.46-1.72s of zombie reap latency in this container)."""
-    stat_path = Path(f"/proc/{pid}/stat")
-    try:
-        text = stat_path.read_text(encoding="utf-8")
-    except (FileNotFoundError, ProcessLookupError):
-        return True
-    close_paren = text.rfind(")")
-    state = text[close_paren + 2] if close_paren != -1 else ""
-    return state == "Z"
 
 
 class TestReadPublishedPid:
@@ -113,96 +79,6 @@ class TestRunBoundedTimeoutKillsTheProcessGroup:
         assert dead, f"grandchild pid {pid} survived the process-group kill"
 
 
-def _pid_state(pid: int) -> str:
-    stat_path = Path(f"/proc/{pid}/stat")
-    try:
-        text = stat_path.read_text(encoding="utf-8")
-    except (FileNotFoundError, ProcessLookupError):
-        return "gone"
-    close_paren = text.rfind(")")
-    return text[close_paren + 2] if close_paren != -1 else ""
-
-
-class TestKillAndReapBoundedWait:
-    def test_reap_timeout_closes_pipes_and_reaps_the_shell(self, tmp_path: Path) -> None:
-        """When the bounded reap itself times out, both pipes are closed and the already-
-        SIGKILLed SHELL (never the escaped descendant, which this test kills in teardown) is
-        reaped with a plain wait -- no zombie, no open file descriptor survives the call."""
-        pidfile = tmp_path / "grandchild.pid"
-        command = f"sleep 30 & echo $! > {pidfile}; wait"
-        popen = subprocess.Popen(
-            command,
-            shell=True,
-            cwd=tmp_path,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True,
-        )
-        shell_pid = popen.pid
-        grandchild_pid = _read_published_pid(pidfile)
-
-        try:
-            with patch.object(b, "_REAP_TIMEOUT_SECONDS", 0.05):
-                stdout, stderr = b._kill_and_reap(popen)
-            assert stdout == ""
-            assert stderr == ""
-            assert popen.stdout is None or popen.stdout.closed
-            assert popen.stderr is None or popen.stderr.closed
-
-            deadline = time.monotonic() + 5.0
-            state = _pid_state(shell_pid)
-            while state not in ("gone", "Z") and time.monotonic() < deadline:
-                time.sleep(0.05)
-                state = _pid_state(shell_pid)
-            assert state in ("gone", "Z"), f"shell pid {shell_pid} was neither reaped nor a zombie (state={state!r})"
-        finally:
-            b._killpg_quiet(grandchild_pid)
-            try:
-                os.waitpid(grandchild_pid, os.WNOHANG)
-            except ChildProcessError:
-                pass
-
-    def test_reap_success_returns_the_captured_output(self, tmp_path: Path) -> None:
-        popen = subprocess.Popen(
-            "echo reaped",
-            shell=True,
-            cwd=tmp_path,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True,
-        )
-        popen.wait(timeout=5.0)
-        stdout, _stderr = b._kill_and_reap(popen)
-        assert "reaped" in stdout
-
-    def test_reap_itself_timing_out_returns_empty_strings(self, tmp_path: Path) -> None:
-        """A descendant that escaped the killed group via setsid, still holding the pipe open,
-        would otherwise make an unbounded communicate() hang forever -- mocked here (rather than
-        spawned for real) so the test is deterministic and leaves nothing to clean up."""
-        popen = subprocess.Popen(
-            "sleep 5",
-            shell=True,
-            cwd=tmp_path,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True,
-        )
-        try:
-            with patch.object(
-                popen, "communicate", side_effect=subprocess.TimeoutExpired(cmd="sleep 5", timeout=b._REAP_TIMEOUT_SECONDS)
-            ):
-                stdout, stderr = b._kill_and_reap(popen)
-            assert stdout == ""
-            assert stderr == ""
-        finally:
-            # _kill_and_reap's own killpg call above already sent the real SIGKILL; only the
-            # (mocked) reap was skipped, so the child is a killed-but-unwaited zombie here.
-            popen.wait(timeout=5.0)
-
-
 class TestRunBoundedBaseExceptionPath:
     def test_kills_the_group_and_reraises(self, tmp_path: Path) -> None:
         real_communicate = subprocess.Popen.communicate
@@ -218,13 +94,6 @@ class TestRunBoundedBaseExceptionPath:
             with pytest.raises(KeyboardInterrupt):
                 b.run_bounded("sleep 5", cwd=tmp_path, timeout=5.0)
         assert calls["n"] == 2, "the reap call must reach the real communicate() exactly once"
-
-
-class TestKillpgQuiet:
-    def test_swallows_process_lookup_error_on_an_already_exited_group(self, tmp_path: Path) -> None:
-        popen = subprocess.Popen("true", shell=True, cwd=tmp_path, start_new_session=True)
-        popen.wait(timeout=5.0)
-        b._killpg_quiet(popen.pid)  # must not raise
 
 
 class TestDurationSuffix:

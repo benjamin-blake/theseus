@@ -28,6 +28,15 @@ seeding PR itself), the guard SKIPs rather than treating "missing base" as "empt
 The tamper-guard half (`validate_coverage_baseline_edits`) delegates its diff/authorization
 mechanics to scripts.checks._marker_guard (shared across all five raise-marker guards); this
 module owns only the registry's own RegistrySpec binding plus the measurement engine below.
+
+The coverage child runs in its own session (``start_new_session=True``) so a timeout or an
+interrupt while waiting kills its whole process group through ``_process_group.kill_and_reap``
+without ever signalling this process's group. Accepted residuals: (a) a SIGTERM/SIGKILL delivered
+to validate itself raises no Python exception, so a still-running detached coverage child is
+orphaned and may later write .coverage.json or .coverage into the repo root (before this change a
+group-directed kill took it down with validate; moving those artefacts out of the root is owned by
+rec-3615/rec-3282); (b) the timeout arm is POSIX-only, matching the vp-replay "every surface is
+Linux" precedent.
 """
 
 from __future__ import annotations
@@ -39,9 +48,12 @@ from typing import Callable, Optional
 
 import yaml
 
-from scripts.checks import _common, _marker_guard, registry
+from scripts.checks import _common, _marker_guard, _process_group, registry
 
 _BASELINE_REL_PATH = "config/coverage_baseline.yaml"
+
+# Not raised to fit a slow target: rec-3208 owns that slowness, and a timeout is a recorded failure.
+COVERAGE_TIMEOUT_SECONDS = 300
 
 
 def load_baseline(path=None) -> dict[str, float]:
@@ -121,17 +133,22 @@ def measure_and_check(source_files: list, *, root, map_source_to_test, is_empty_
             errors="replace",
             cwd=root,
             env=child_env,
+            start_new_session=True,
         ) as proc:
             try:
-                stdout, stderr = proc.communicate(timeout=300)
+                stdout, stderr = proc.communicate(timeout=COVERAGE_TIMEOUT_SECONDS)
             except subprocess_module.TimeoutExpired:
-                from scripts.llm.utils import kill_process_tree  # noqa: PLC0415
-
-                kill_process_tree(proc.pid)
-                proc.wait()
-                errors.append(f"{rel}: coverage check timed out (300s)")
+                out, err = _process_group.kill_and_reap(proc)
+                print(
+                    f"  [diagnostic] {rel}: coverage subprocess killed at {COVERAGE_TIMEOUT_SECONDS}s; "
+                    f"output tail={(out + err)[-500:]!r}"
+                )
+                errors.append(f"{rel}: coverage check timed out ({COVERAGE_TIMEOUT_SECONDS}s)")
                 pcts[key] = None
                 continue
+            except BaseException:
+                _process_group.kill_and_reap(proc)
+                raise
             returncode = proc.returncode
 
         coverage_json = root / ".coverage.json"
