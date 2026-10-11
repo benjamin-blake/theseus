@@ -119,7 +119,7 @@ def _run_ducklake_build(args: argparse.Namespace) -> None:
 
     ``--ducklake-functions`` and ``--ducklake-deploy-only`` (hotfix follow-up to the 2026-07-24
     ops_decisions incident) split the deploy leg from the build/upload leg so a governed pipeline
-    can deploy the five DuckLake functions in two gated stages (maintenance first, serving last)
+    can deploy the DuckLake functions in two gated stages (maintenance first, serving last)
     without building and uploading the same artifacts twice. Both default to today's behaviour
     when omitted: every existing caller and the Decision 125 break-glass path are byte-identical.
     """
@@ -205,8 +205,7 @@ def _run_ducklake_build(args: argparse.Namespace) -> None:
             if args.deploy:
                 print(
                     "[3b/4] Updating DuckLake Lambda function code "
-                    "(writer + reader + maintenance + maintenance-smoke + catalog-dr; "
-                    "telemetry-writer is not in the deploy map yet)..."
+                    "(writer + reader + maintenance + maintenance-smoke + catalog-dr + telemetry-writer)..."
                 )
                 update_lambda_functions(
                     bucket,
@@ -236,11 +235,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--ducklake-only",
         action="store_true",
-        help="Build/upload/deploy ONLY the DuckLake artifacts (6 zips + 3 layers + 5 "
-        "functions: writer, reader, maintenance, maintenance-smoke, catalog-dr; the "
-        "telemetry-writer zip is built and uploaded but not deployed here until the deploy "
-        "map names it); leave "
-        "data-pipeline untouched (Decision 79).",
+        help="Build/upload/deploy ONLY the DuckLake artifacts (6 zips + 3 layers; the "
+        "deployed functions are writer, reader, maintenance, maintenance-smoke, "
+        "catalog-dr, telemetry-writer); leave data-pipeline untouched (Decision 79).",
     )
     parser.add_argument(
         "--list-bundle",
@@ -255,7 +252,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="FN1,FN2,...",
         help="Comma-separated subset of the full AWS DuckLake function names (e.g. "
         "agent-platform-ducklake-writer) to deploy -- not bare slugs. Requires --ducklake-only "
-        "--deploy. Omit to deploy all five, unchanged from today's behaviour.",
+        "--deploy. Omit to deploy every DuckLake function, unchanged from today's behaviour.",
     )
     parser.add_argument(
         "--ducklake-deploy-only",

@@ -315,7 +315,7 @@ def main(argv: list[str] | None = None) -> int:
         if blocking:
             print(
                 f"DEPLOY REFUSED: reconcile_scope=ducklake table(s) with a non-empty pending_reconcile: "
-                f"{blocking}. The serving deploy (writer/reader/catalog-dr) is blocked until an operator "
+                f"{blocking}. The serving deploy (writer/reader/catalog-dr/telemetry-writer) is blocked until an operator "
                 "runs the admin-tier reconcile_columns action against the deployed ducklake_maintenance "
                 "function for each pending column, then clears pending_reconcile in "
                 "config/lambda/ducklake/field_semantics.static.yaml (moving the column into `reconciled` "

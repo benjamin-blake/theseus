@@ -432,6 +432,7 @@ class TestDeployGateCli:
         assert exit_code == 1
         assert "DEPLOY REFUSED" in captured.err
         assert "ops_decisions" in captured.err
+        assert "telemetry-writer" in captured.err
 
     def test_deploy_gate_zero_when_clear(self) -> None:
         sidecar = _sidecar(

@@ -12,6 +12,7 @@ from scripts.build_lambda_config import (
     _DUCKLAKE_MAINTENANCE_FUNCTION,
     _DUCKLAKE_MAINTENANCE_SMOKE_FUNCTION,
     _DUCKLAKE_READER_FUNCTION,
+    _DUCKLAKE_TELEMETRY_WRITER_FUNCTION,
     _DUCKLAKE_WRITER_FUNCTION,
     _LAMBDA_SCRIPTS,
     PINNED_DUCKDB_VERSION,
@@ -55,6 +56,10 @@ class TestPinnedConstants:
         )
         assert (
             bl_config._DUCKLAKE_FUNCTION_ZIP_KEYS[_DUCKLAKE_CATALOG_DR_FUNCTION] == "lambda-packages/ducklake-catalog-dr.zip"
+        )
+        assert (
+            bl_config._DUCKLAKE_FUNCTION_ZIP_KEYS[_DUCKLAKE_TELEMETRY_WRITER_FUNCTION]
+            == "lambda-packages/ducklake-telemetry-writer.zip"
         )
 
 
