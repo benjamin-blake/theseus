@@ -116,11 +116,11 @@ Current constraints are the temporary strategic/executor freeze, telemetry blind
 
 ### Source of truth
 
-Warehouse state is authoritative. Local JSONL files under `logs/` are read caches, not write sources. Recommendations, decisions, priority queue, and execution plans use DuckLake-on-Neon. Session log remains on its legacy path pending disposition; telemetry re-lands as the T2.36 four-table DuckLake model. Mutable operational entities use SCD2; event journals are append-only.
+Warehouse state is authoritative. The decisions JSONL under `logs/` is a read cache, never a write source; recommendations have no local cache (Decision 215). Recommendations, decisions, priority queue, and execution plans use DuckLake-on-Neon. Session log remains on its legacy path pending disposition; telemetry re-lands as the T2.36 four-table DuckLake model. Mutable operational entities use SCD2; event journals are append-only.
 
 ### Portal discipline
 
-Agent-facing operations are only `file_rec`, `update_rec`, and `sync`. All recommendation and decision writes go through `scripts.ops_data_portal`. Never append to `logs/.recommendations-log.jsonl` or other read caches, pending outboxes, or S3 staging as a substitute. IDs are writer-allocated. Migrated tables have no offline outbox; failed writes fail loudly.
+Agent-facing operations are only `file_rec`, `update_rec`, and `sync`. All recommendation and decision writes go through `scripts.ops_data_portal`. Read recs via ducklake-reads named verbs; no caches, outboxes, or S3 staging substitutes. IDs are writer-allocated. Migrated tables have no offline outbox; failed writes fail loudly.
 
 ### Data modeling default
 

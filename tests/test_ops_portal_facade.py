@@ -242,7 +242,7 @@ class TestPatchInterception:
             assert _facade.update_rec("rec-042", {"status": "closed"}) is True
 
         assert mock_write.call_args.kwargs["action"] == "update_ops"
-        mock_refresh.assert_called_once()
+        mock_refresh.assert_not_called()
 
 
 class TestCliContractStability:

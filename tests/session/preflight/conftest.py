@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from scripts.preflight.recs_signals_source import RecsSignalInputs
 from tests.fixtures.platform_roadmap_state import live_state_dict
 from tests.fixtures.session_preflight_module import preflight as _preflight  # noqa: F401
 
@@ -48,14 +49,21 @@ def _disable_reader_and_git_fetch(request: pytest.FixtureRequest):
     class_name = request.cls.__name__ if request.cls else ""
     module_name = request.module.__name__ if request.module else ""
 
-    # warm_sync is the single warm-up reader touch main() makes (neon-egress-reduction D4); stub it
-    # so main() integration tests never hit the network. reader_ok=True + empty rows => main derives
-    # empty signals (0 open recs etc.), matching the prior empty-reader-stub behaviour.
+    # warm_sync (small tables) and fetch_recs_signal_inputs (the two bounded recs reads) are main()'s only
+    # reader touches; stub both so main() integration tests never hit the network. An ok-but-empty recs
+    # read => main derives empty signals (0 open recs etc.).
+    recs_inputs_stub = RecsSignalInputs(
+        "ok",
+        {"open_count": 0, "aging_count": 0, "non_automatable_count": 0},
+        [],
+        None,
+        {"calls": 2, "bytes": {}},
+    )
     warm_sync_stub = {
         "drained": {},
         "pulled": {},
-        "rows": {"ops_recommendations": [], "ops_decisions": [], "ops_priority_queue": []},
-        "reader_ok": {"ops_recommendations": True, "ops_decisions": True, "ops_priority_queue": True},
+        "rows": {"ops_decisions": [], "ops_priority_queue": []},
+        "reader_ok": {"ops_decisions": True, "ops_priority_queue": True},
     }
 
     with ExitStack() as stack:
@@ -63,6 +71,7 @@ def _disable_reader_and_git_fetch(request: pytest.FixtureRequest):
         stack.enter_context(patch("scripts.sync.ops.sync", return_value={"drained": {}, "pulled": {}}))
         stack.enter_context(patch("scripts.sync.ops.warm_sync", return_value=warm_sync_stub))
         stack.enter_context(patch("session_preflight._sync_ops_pull", return_value={}))
+        stack.enter_context(patch("session_preflight.fetch_recs_signal_inputs", return_value=recs_inputs_stub))
         stack.enter_context(patch("session_preflight.platform_roadmap.compute_state_dict", new=live_state_dict))
         if class_name != "TestCheckMainFreshness":
             stack.enter_context(patch("scripts.preflight.env_git.check_main_freshness", return_value=freshness_stub))

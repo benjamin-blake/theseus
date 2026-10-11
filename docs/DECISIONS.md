@@ -2,6 +2,64 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 215: The full local recommendations cache is retired; completeness reads are bounded named verbs that fail closed (amends Decision 88 clause 1(ii) and Decision 103) (Decided)
+
+```yaml
+number: 215
+status: Decided
+decided_date: "2026-10-10"
+amends: [88, 103]
+significance:
+  value: numbered_decision
+  justification: "Replaces an invariant held across two entries (88 cl.1(ii), 103's warmed-cache clause) and sets a fail-closed rule with reversal conditions; a contract note or amendment_forms annotation cannot carry a replaced invariant across two entries (Decision 214 precedent)."
+```
+
+**Status:** Decided
+**Date:** 2026-10-10
+**Warehouse ID:** dec-215 (per Decision 84 backfill)
+
+**Problem:** The full ops_recommendations pull exceeds the Lambda 6 MB synchronous response cap, so every sync fails and preflight silently degrades its CI-RCA hard block to an empty list (rec-4232).
+
+**Decision:**
+1. No full-table ops_recommendations pull on any application path; logs/.recommendations-log.jsonl is no longer produced and both sync paths remove a stale copy. Rejected: prioritised truncation (Decision 55's false zero with a better order); keyset pagination of the full table (it rebuilds the same complete local copy, loads agent context, and pays per-query egress on every page); a RESPONSE_STREAM Function URL (the Python managed runtime cannot stream, and a streamed full table is still a full copy).
+2. Completeness reads are bounded named verbs, complete by construction or disclosing complete/total; a missing signal is null/unavailable, never []. An unavailable CI-RCA signal blocks plan commitment unless the human overrides, including when credentials are unavailable (tightens Decision 73 cl.4).
+3. Relevance reads are lookup/search verbs (interim recs_for_files; graph-aware ranking rec-4235); bulk export, if any, is a claim check outside the response body (rec-4237); verbs that are not agent tools declare agent_facing false.
+4. Replaces 88 cl.1(ii) for ops_recommendations: preflight's recs read model is exactly two bounded calls per session, counted and sized by recs_read (calls; re-serialised row bytes). Write-path fetch-before-update reads and the three small-table syncs are outside it; steady state is five reader invocations per session, plus one per open escalation episode, observable through the reader's log_invocation response_bytes.
+5. Replaces 103's warmed-read-cache clause: relevance gates read named verbs, one call per batch.
+6. The reader returns a typed 413 response_too_large, never retried.
+7. rec_by_id is deprecated in favour of recs_by_ids and removed by rec-4240 once this deploy is verified.
+
+**Coverage (Decision 181):** enforced by plan steps 1-15 of PLAN-recs-full-cache-retirement; residuals rec-4235 (cache-reference CI ban, open_recs fate, audit dedup instructions), rec-4236 (executor and other residual readers, status- or source-scoped full-column reads the 413 now makes loud, nine open recs whose acceptance greps the retired cache: rec-219..rec-227, rec-3228), rec-4237 (export, schema scan), rec-4240 (rec_by_id removal).
+
+```yaml reversal-conditions
+decision: 215
+review_by: 2027-04-30
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: signal-rows-over-budget
+    kind: manual
+    description: "preflight_signal_rows re-serialised bytes above 3,000,000 (791,827 at planning); move the arithmetic server-side."
+  - id: recs-read-calls-drift
+    kind: manual
+    description: "recs_read.calls other than two."
+  - id: scoped-full-column-read-over-budget
+    kind: manual
+    description: "Any status- or source-scoped full-column recs read above 4,500,000 envelope bytes (75% of the 6,000,000 guard); the backlog_health census measured 3,051,101 at planning and rec-4236 moves it to a bounded verb."
+  - id: reader-invocations-doubled
+    kind: manual
+    description: "Daily reader invocations more than twice the 7-day pre-merge baseline (log_invocation count)."
+  - id: cheap-full-pull-transport
+    kind: manual
+    description: "A streaming or claim-check transport makes a full pull cheap and safe."
+  - id: fail-closed-blocks-frequent
+    kind: manual
+    description: "More than three fail-closed planning blocks caused by reader outages in 30 days."
+```
+
+**Related:** Decision 88 cl.1(ii), 103, 73 cl.4, 84 I-3, 55, 155 cl.2, 177, 181, 214; rec-4232, rec-4235, rec-4236, rec-4237, rec-4240.
+
+---
+
 ## Decision 214: The DuckLake catalog stays on Neon, tuned now and capped next, with measured triggers to move (amends Decision 107 and Decision 88) (Decided)
 
 ```yaml
@@ -7017,6 +7075,8 @@ semantics.]
 > (vocabulary, enforcement site, structural binding) is what crosses this decision's text; the
 > venue-reuse alone would not have.
 
+> **Update (2026-10-10):** Decision 215: "Queue-wide relevance surfacing serves the warmed read-cache only" is replaced for recommendations -- the cache is retired and relevance gates read named verbs, one call per batch (Decision 215 cl.5).
+
 ## Decision 102: SLOC Waiver Ratchet -- amends Decision 43 SLOC row (Decided)
 
 **Status:** Decided
@@ -7924,6 +7984,8 @@ The free-tier breach proved the cap is real and the access pattern, not the work
 > agent_platform` read-back depends on.
 
 [Amendment 2026-10-09, Decision 214: invariant (v) -- the ducklake_file_column_stats (table_id, column_id) index is present and valid on every catalog schema, reported by control_health; cl.3's 7-day PITR is now true in Terraform.]
+
+> **Update (2026-10-10):** Decision 215: clause 1(ii)'s "never re-query data already in the local read-cache" no longer applies to ops_recommendations, which has no local read cache; preflight's recs read model is two bounded named-verb calls (Decision 215 cl.4). Decision and other tables keep the clause.
 
 ---
 

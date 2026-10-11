@@ -177,13 +177,13 @@ class TestCiRcaSchemaEnforcement:
 
         recs_file = tmp_path / "recs.jsonl"
         with (
-            patch("scripts.ops_data_portal._ducklake_write", return_value={"key": "rec-9001"}),
+            patch("scripts.ops_data_portal._ducklake_write", return_value={"key": "rec-9001"}) as mock_write,
             patch("scripts.ops_data_portal._sync_table"),
             patch("scripts.ops_data_portal.RECS_JSONL", recs_file),
         ):
             rec_id = p.file_rec(dict(_CI_RCA_FIELDS), context_v2_json=dict(_VALID_CONTEXT_V2))
         assert rec_id == "rec-9001"
-        entry = json.loads(recs_file.read_text(encoding="utf-8").splitlines()[0])
+        entry = mock_write.call_args.args[1]
         assert "context_v2_json" in entry
         stored = json.loads(entry["context_v2_json"])
         assert stored["schema_version"] == 1
@@ -319,7 +319,7 @@ class TestCiRcaSchemaEnforcement:
 
         recs_file = tmp_path / "recs.jsonl"
         with (
-            patch("scripts.ops_data_portal._ducklake_write", return_value={"key": "rec-cv2-1"}),
+            patch("scripts.ops_data_portal._ducklake_write", return_value={"key": "rec-cv2-1"}) as mock_write,
             patch("scripts.ops_data_portal._sync_table"),
             patch("scripts.ops_data_portal.RECS_JSONL", recs_file),
         ):
@@ -352,7 +352,7 @@ class TestCiRcaSchemaEnforcement:
         assert rc == 0
         captured = capsys.readouterr()
         assert "rec-cv2-1" in captured.out
-        entry = _json.loads(recs_file.read_text(encoding="utf-8").splitlines()[0])
+        entry = mock_write.call_args.args[1]
         assert "context_v2_json" in entry
         stored = _json.loads(entry["context_v2_json"])
         assert stored["schema_version"] == 1

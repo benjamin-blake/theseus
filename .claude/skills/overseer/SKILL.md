@@ -109,7 +109,7 @@ prompt); escalate with the RCA findings (Decision 55, one level up). See
 `overseer-dispatch.yaml#executor_rca_feed`.
 
 **Halt-on-open-ci_rca (Decision 73):** before any new-slice dispatch, check `ci_rca_unresolved_recs`
-in the preflight cache; an open critical rec halts dispatch -- never overridden, not even by
+in the preflight cache; an open critical rec, or a null list (unavailable), halts dispatch -- never overridden, not even by
 proceed-with-notice.
 
 ## Division of Labor & Gate Ownership (Design B)

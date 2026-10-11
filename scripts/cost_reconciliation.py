@@ -28,10 +28,11 @@ from typing import Any, Optional
 import yaml
 from pydantic import BaseModel, ConfigDict
 
+from scripts import rec_episode
+
 DEFAULT_CONFIG_PATH = Path("config/agent/cost_reconciliation.yaml")
 ROADMAP_FILE = "docs/ROADMAP-PLATFORM.yaml"
 SOURCE = "cost_reconciliation"
-RECS_JSONL_PATH = Path("logs/.recommendations-log.jsonl")
 
 
 # ---------------------------------------------------------------------------
@@ -395,29 +396,12 @@ def _validate_rec_payload(fields: dict[str, Any]) -> None:
 def find_open_cost_rec_for(trigger_key: str) -> Optional[str]:
     """Return the id of the first open cost_reconciliation rec tagged for trigger_key, or None.
 
-    Mirrors find_open_postmortem_for: reads the local (gitignored) recs cache --
-    the caller MUST call sync() first in live mode so the cache is populated
-    (absent in a fresh Actions checkout, per rec-autoclose.yml precedent).
+    Reads live through the source-scoped reader (rec_episode.find_recs), which raises on a reader
+    failure, so an unreachable warehouse can never be mistaken for "no open rec" and file a duplicate.
     """
-    try:
-        lines = RECS_JSONL_PATH.read_text(encoding="utf-8").splitlines()
-    except (FileNotFoundError, OSError):
-        return None
     tag = f"[cost:{trigger_key}]"
-    by_id: dict[str, dict] = {}
-    for line in lines:
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        try:
-            entry = json.loads(stripped)
-        except json.JSONDecodeError:
-            continue
-        rec_id = entry.get("id")
-        if rec_id:
-            by_id[rec_id] = entry
-    for rec in by_id.values():
-        if rec.get("source") == SOURCE and rec.get("status") == "open" and tag in (rec.get("title") or ""):
+    for rec in rec_episode.find_recs(SOURCE, status="open"):
+        if tag in (rec.get("title") or ""):
             return rec.get("id")
     return None
 
@@ -437,11 +421,10 @@ def reconcile(
 ) -> dict[str, Any]:
     """Load, evaluate, report, and (in live mode) dedupe-and-auto-close per trigger.
 
-    Persistent-condition discipline (Decision 103): in live mode, sync() runs
-    BEFORE find_open_cost_rec_for so the dedupe lookup reads a populated cache
-    (Decision 84 I-4 -- the gitignored recs cache is absent in a fresh checkout).
-    dry_run builds + validates the rec payload for every tripped trigger and
-    performs NO sync and NO portal write (proves the rec-filing path without a
+    Persistent-condition discipline (Decision 103): in live mode the dedupe lookup
+    reads live rows through the source-scoped reader (no local recs cache,
+    Decision 215). dry_run builds + validates the rec payload for every tripped
+    trigger and performs NO reader read and NO portal write (proves the rec-filing path without a
     live warehouse write, per ULF-08 acceptance).
     """
     snapshot = load_snapshot(snapshot_path)
@@ -476,9 +459,8 @@ def reconcile(
             would_file.append(fields)
         result["would_file"] = would_file
     else:
-        from scripts.ops_data_portal import file_rec, sync, update_rec  # noqa: PLC0415
+        from scripts.ops_data_portal import file_rec, update_rec  # noqa: PLC0415
 
-        sync()
         for cond in alarm_conditions:
             existing_id = find_open_cost_rec_for(cond.key)
             if cond.tripped:

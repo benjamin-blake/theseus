@@ -65,24 +65,25 @@ def log_invocation(
     connect_reused: bool | None,
     reopened: bool,
     elapsed_ms: float,
+    *,
+    response_bytes: int | None = None,
 ) -> None:
     """Print one compact JSON line per invocation, filterable with a CloudWatch Logs JSON pattern.
 
     Fixed fields only: never a payload value, table row, host or error message. The caller passes a registered
-    action name or the fixed token "unknown".
+    action name or the fixed token "unknown". `response_bytes` (the measured Function-URL envelope size) is
+    emitted only when passed, so a call without it keeps the original eight-key line.
     """
-    print(
-        json.dumps(
-            {
-                "event": "ducklake_invocation",
-                "function": function,
-                "action": action,
-                "status": status,
-                "connect_ms": connect_ms,
-                "connect_reused": connect_reused,
-                "reopened": reopened,
-                "elapsed_ms": round(elapsed_ms, 2),
-            },
-            separators=(",", ":"),
-        )
-    )
+    line: dict[str, Any] = {
+        "event": "ducklake_invocation",
+        "function": function,
+        "action": action,
+        "status": status,
+        "connect_ms": connect_ms,
+        "connect_reused": connect_reused,
+        "reopened": reopened,
+        "elapsed_ms": round(elapsed_ms, 2),
+    }
+    if response_bytes is not None:
+        line["response_bytes"] = response_bytes
+    print(json.dumps(line, separators=(",", ":")))

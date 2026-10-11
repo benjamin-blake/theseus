@@ -22,7 +22,8 @@ never_on_main: true                # no file edits while on main branch
 ## Preflight Constraints (Workflow Step 1)
 When reading `logs/.preflight-report.json`, apply these conditionals:
 - **`venv_ok: false`** -- Verify `bin/venv-python -c "import sys; print(sys.executable)"` resolves to the venv interpreter and rerun preflight. If still false, STOP.
-- **`creds_status: "unavailable"`** -- **Static-key recovery (non-fatal, Decision 60):** the static-key assume-role chain has no interactive login. Verify it with `aws sts get-caller-identity --profile agent_platform`; if the `agent_static` key was rotated, refresh `~/.aws/credentials`. Do NOT block -- continue in degraded mode (credential-dependent verifiers are skipped, emitting SKIPPED). Autonomous executors never attempt recovery.
+- **`creds_status: "unavailable"`** -- **Static-key recovery (non-fatal, Decision 60):** the static-key assume-role chain has no interactive login. Verify it with `aws sts get-caller-identity --profile agent_platform`; if the `agent_static` key was rotated, refresh `~/.aws/credentials`. Do NOT block (except the CI-RCA signal, next bullet) -- continue in degraded mode (credential-dependent verifiers are skipped, emitting SKIPPED). Autonomous executors never attempt recovery.
+- **`recs_read_status != "ok"` or `ci_rca_unresolved_recs` null** -- HARD BLOCK at commitment (fail-closed, Decision 215): every recs-derived field is null (never `[]` or 0) when the reader was unreachable, so the CI-RCA hard block cannot be evaluated. This supersedes the `creds_status` "Do NOT block" bullet for the CI-RCA signal. Surface it; proceed only if the human explicitly overrides.
 - **`log_sync_result.status == "committed"`** -- Print a one-line confirmation naming the file
   count committed to main. Continue.
 - **`log_sync_result.status == "conflict"`** -- STOP. Print error and require human resolution.
@@ -93,9 +94,9 @@ scoping ANY tier_item -- the single authoritative definition of the four checks 
 discipline rule. Do not re-author it here.
 
 ## Suggest Aligned Recommendations
-Search `logs/.recommendations-log.jsonl` for open recommendations that align with the current task (ensure cache is fresh via `bin/venv-python -m scripts.sync.ops pull` during preflight):
-1. Extract keywords from the task description (file paths, module names, concepts)
-2. Match against `title`, `file`, and `context` fields of open recommendations
+No local recs cache exists (`bin/venv-python -m scripts.sync.ops sync` no longer pulls `ops_recommendations`). INTERIM (CD.10 agent tool surface; graph-aware ranking is rec-4235): with the ducklake-reads MCP, call `recs_for_files` over the plan's scope files plus `recs_by_title_prefix`:
+1. Extract keywords and scope file paths from the task description
+2. Match the returned open recs against the task's `title`, `file`, and `context`
 3. Present top 3-5 matches (if any):
 > "These open recommendations may align with your task:
 > - **rec-XXX**: [title] (effort: [effort], priority: [priority])
@@ -107,9 +108,8 @@ Search `logs/.recommendations-log.jsonl` for open recommendations that align wit
 Conditional read-trigger: before adding any open recommendation to the plan's
 `bundled_recommendations` list, read
 `docs/contracts/recommendation-relevance.yaml#planning_gate_protocol` in full -- it is the single
-authoritative definition of the re-check protocol (the `evaluate_rec_relevance` call against the
-read cache), the verdict handling, and the `run_acceptance_probe=False` / no-`_make_reader()`
-constraints. Do not re-author it here.
+authoritative definition of the re-check protocol (the `recs_by_ids` fetch and `evaluate_rec_relevance` call), the verdict handling, and the `run_acceptance_probe=False`
+constraint. Do not re-author it here.
 
 ## Documentation Artefact Design
 
@@ -387,7 +387,7 @@ If `ci_rca_unresolved_recs` is non-empty when writing the PLAN file (or `ci_rca_
 Apply this check when writing the PLAN file. It is CONDITIONAL -- additive plans that neither resolve recs nor retire a surface are exempt.
 
 **Trigger conditions (either/both):**
-1. **Rec-resolving plan**: the plan's scope or intent explicitly fixes one or more open recommendations. The plan MUST declare them in `bundled_recommendations` AND include a VP step that verifies each rec closed (e.g. grep the local cache after sync).
+1. **Rec-resolving plan**: the plan's scope or intent explicitly fixes one or more open recommendations. The plan MUST declare them in `bundled_recommendations` AND include a VP step that verifies each rec closed (e.g. `recs_by_ids` shows status closed).
 2. **Surface-retiring plan**: the plan's scope includes a `Delete` row OR an explicit `X -> Y` migration/cutover (file, Lambda, write path, config flag, or backend). The plan MUST include a stale-reference sweep VP step that confirms the old surface is unreachable or deleted.
 
 **Enforcement:** a plan that trips a trigger but omits its closure obligation fails plan-critique 12k. Surface it during Step 6 presentation; the missing declaration or VP step must be added before writing.

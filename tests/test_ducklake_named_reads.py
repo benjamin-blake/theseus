@@ -21,8 +21,8 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 
 
-def test_named_reads_version_is_3():
-    assert nr.NAMED_READS_VERSION == 3
+def test_named_reads_version_is_4():
+    assert nr.NAMED_READS_VERSION == 4
 
 
 def test_rec_history_verb_registered():
@@ -124,7 +124,7 @@ def test_read_version_ignores_sql_whitespace_but_not_paginable(monkeypatch):
 def test_select_star_verb_reversions_when_its_column_projection_changes():
     semantics = copy.deepcopy(schema.load_field_semantics())
     star = [v for v, n in nr.NAMED_READS.items() if nr._SELECT_STAR.search(n.sql)]
-    assert {"rec_by_id", "rec_history", "decision_by_id", "priority_queue_current"} <= set(star)
+    assert {"rec_by_id", "recs_by_ids", "rec_history", "decision_by_id", "priority_queue_current"} <= set(star)
     other = [v for v in nr.NAMED_READS if v not in star]
     before = {v: nr.read_version(v, semantics) for v in nr.NAMED_READS}
 
@@ -132,7 +132,7 @@ def test_select_star_verb_reversions_when_its_column_projection_changes():
     columns["brand_new"] = {"role": "input", "sql_type": "VARCHAR", "nullable": True}
     after = {v: nr.read_version(v, semantics) for v in nr.NAMED_READS}
     changed = {v for v in before if before[v] != after[v]}
-    assert changed == {"rec_by_id", "rec_history"}  # the SELECT * verbs bound to the changed table only
+    assert changed == {"rec_by_id", "recs_by_ids", "rec_history"}  # the SELECT * verbs bound to the changed table only
     assert not changed & set(other)
 
 
@@ -152,3 +152,49 @@ def test_describe_named_reads_carries_read_version():
     out = nr.describe_named_reads()
     for verb, entry in out.items():
         assert entry["read_version"] == nr.read_version(verb)
+
+
+class TestRecsReadVerbsV4:
+    def test_four_verbs_registered_with_params(self):
+        assert nr.NAMED_READS["recs_by_ids"].params == ("ids",)
+        assert nr.NAMED_READS["recs_for_files"].params == ("files",)
+        assert nr.NAMED_READS["open_recs_tally"].params == ()
+        assert nr.NAMED_READS["preflight_signal_rows"].params == ("followon_ids",)
+        for verb in ("recs_by_ids", "recs_for_files", "open_recs_tally", "preflight_signal_rows"):
+            assert nr.NAMED_READS[verb].table == "ops_recommendations"
+
+    def test_rec_by_id_retained_and_marked_deprecated(self):
+        assert "rec_by_id" in nr.NAMED_READS
+        assert nr.NAMED_READS["rec_by_id"].description.startswith("deprecated: use recs_by_ids (removal rec-4240)")
+
+    def test_agent_facing_flags(self):
+        assert nr.NAMED_READS["open_recs"].agent_facing is False
+        assert nr.NAMED_READS["preflight_signal_rows"].agent_facing is False
+        assert all(n.agent_facing for v, n in nr.NAMED_READS.items() if v not in {"open_recs", "preflight_signal_rows"})
+        out = nr.describe_named_reads()
+        assert out["open_recs"]["agent_facing"] is False and out["recs_by_ids"]["agent_facing"] is True
+
+    def test_agent_facing_is_outside_read_version(self, monkeypatch):
+        before = {v: nr.read_version(v) for v in nr.NAMED_READS}
+        flipped = dataclasses.replace(nr.NAMED_READS["count_by_status"], agent_facing=False)
+        monkeypatch.setattr(nr, "NAMED_READS", {**nr.NAMED_READS, "count_by_status": flipped})
+        assert {v: nr.read_version(v) for v in nr.NAMED_READS} == before
+
+    def test_preexisting_verbs_keep_their_read_version(self):
+        # SQL of every pre-v4 verb is untouched, so its stamp (a function of its own definition) is stable.
+        for verb in ("ci_rca_open", "ci_rca_since", "count_by_status", "recs_by_title_prefix", "decisions_max_updated"):
+            assert nr.read_version(verb) == nr.read_version(verb)
+            assert "agent_facing" not in nr.NAMED_READS[verb].sql
+
+    def test_signal_sources_rendered_into_preflight_signal_rows(self):
+        sql = nr.NAMED_READS["preflight_signal_rows"].sql
+        for src in nr.PREFLIGHT_SIGNAL_SOURCES:
+            assert f"'{src}'" in sql
+        assert nr.PREFLIGHT_SIGNAL_SOURCES == (
+            "ci_rca",
+            "ci_rca_evidence_dispute",
+            "ci_rca_probe_health",
+            "tf_drift",
+            "budget_bypass",
+            "budget_breach",
+        )

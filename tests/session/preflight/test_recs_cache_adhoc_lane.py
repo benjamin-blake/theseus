@@ -23,6 +23,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from scripts.preflight import recs_cache
+from scripts.preflight.recs_signals_source import RecsSignalInputs
 from tests.fixtures.session_preflight_module import preflight as _preflight
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -70,6 +71,12 @@ class TestAdHocLaneDerivations:
         # rec-2002 is named by the landed plan but has no matching row at all (dangling id).
         result = recs_cache._derive_followon_recs(rows, plans_dir=tmp_path)
         assert result == []
+
+    def test_supplied_landed_map_skips_the_plan_walk(self, tmp_path: Path) -> None:
+        rows = [{"id": "rec-7", "status": "open", "title": "t", "created_timestamp": "2026-01-01T00:00:00Z"}]
+        with patch.object(recs_cache, "_landed_followon_rec_ids", side_effect=AssertionError("plan walk repeated")):
+            result = recs_cache._derive_followon_recs(rows, landed={"rec-7": "parent"})
+        assert [r["parent_plan"] for r in result] == ["parent"]
 
     def test_plan_never_naming_the_key_is_never_parsed(self, tmp_path: Path) -> None:
         """The T-1.23 substring gate skips a plan file before yaml.safe_load ever runs on it."""
@@ -171,7 +178,7 @@ def _base_main_patches() -> list:
 
 
 class TestAdHocLaneReportWiring:
-    """main() writes both keys at report top level; a degraded pull yields [] for both."""
+    """main() writes both keys at report top level; a degraded read yields null for both."""
 
     def test_main_writes_both_keys_and_surfaces_the_injected_critical_row(self, tmp_path: Path) -> None:
         preflight_report = tmp_path / ".preflight-report.json"
@@ -188,13 +195,10 @@ class TestAdHocLaneReportWiring:
                 stack.enter_context(cm)
             stack.enter_context(
                 patch(
-                    "scripts.sync.ops.warm_sync",
-                    return_value={
-                        "drained": {},
-                        "pulled": {"ops_recommendations": 1},
-                        "rows": {"ops_recommendations": [injected], "ops_decisions": [], "ops_priority_queue": []},
-                        "reader_ok": {"ops_recommendations": True, "ops_decisions": True, "ops_priority_queue": True},
-                    },
+                    "session_preflight.fetch_recs_signal_inputs",
+                    return_value=RecsSignalInputs(
+                        "ok", {"open_count": 1, "aging_count": 0, "non_automatable_count": 0}, [injected], None, {}
+                    ),
                 )
             )
             stack.enter_context(patch("session_preflight.PREFLIGHT_REPORT", preflight_report))
@@ -207,19 +211,21 @@ class TestAdHocLaneReportWiring:
         assert [r["id"] for r in data["open_critical_recs"]] == ["rec-9001"]
         assert data["followon_recs"] == []
 
-    def test_degraded_recommendation_pull_yields_empty_lists_never_a_missing_key(self, tmp_path: Path) -> None:
+    def test_degraded_recommendation_pull_yields_null_never_empty_or_missing(self, tmp_path: Path) -> None:
         preflight_report = tmp_path / ".preflight-report.json"
         with contextlib.ExitStack() as stack:
             for cm in _base_main_patches():
                 stack.enter_context(cm)
-            stack.enter_context(patch("scripts.sync.ops.warm_sync", side_effect=RuntimeError("warehouse unreachable")))
+            stack.enter_context(
+                patch("session_preflight.fetch_recs_signal_inputs", return_value=RecsSignalInputs("unavailable", error="down"))
+            )
             stack.enter_context(patch("session_preflight.PREFLIGHT_REPORT", preflight_report))
             stack.enter_context(patch("builtins.print"))
             _preflight.main()
 
         data = json.loads(preflight_report.read_text(encoding="utf-8"))
-        assert data["followon_recs"] == []
-        assert data["open_critical_recs"] == []
+        assert "followon_recs" in data and data["followon_recs"] is None
+        assert "open_critical_recs" in data and data["open_critical_recs"] is None
 
 
 class TestOrientAdHocLaneContract:

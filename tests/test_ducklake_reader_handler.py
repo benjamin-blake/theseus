@@ -501,7 +501,17 @@ def _invocation_lines(out: str) -> list[dict]:
 
 
 def test_one_invocation_line_per_path(monkeypatch, capsys):
-    fixed = {"event", "function", "action", "status", "connect_ms", "connect_reused", "reopened", "elapsed_ms"}
+    fixed = {
+        "event",
+        "function",
+        "action",
+        "status",
+        "connect_ms",
+        "connect_reused",
+        "reopened",
+        "elapsed_ms",
+        "response_bytes",
+    }
     monkeypatch.setattr(h, "_open_reader_connection", lambda: FakeCon())
     monkeypatch.setattr(rt, "read_current", lambda con, **kw: [])
 
@@ -561,3 +571,33 @@ def test_invocation_line_on_unparseable_body(capsys):
         h.handler({"body": "{not json"})
     line = _invocation_lines(capsys.readouterr().out)[0]
     assert (line["action"], line["status"]) == ("unknown", 500)
+
+
+# ---------------------------------------------------------------------------
+# response-size guard (rec-4232) -- the 413 branch from the handler's own coverage home
+# ---------------------------------------------------------------------------
+
+
+class TestResponseSizeGuard:
+    def test_oversized_envelope_becomes_413_and_logs_bytes(self, monkeypatch, capsys):
+        monkeypatch.setattr(h, "_open_reader_connection", lambda: FakeCon())
+        monkeypatch.setattr(h, "MAX_RESPONSE_BYTES", 500)
+        monkeypatch.setattr(rt, "read_current", lambda con, **kw: [{"payload": "x" * 600}])
+        capsys.readouterr()
+        r = h.handler({"action": "read_current"})
+        body = json.loads(r["body"])
+        assert r["statusCode"] == 413 and body["error_type"] == "response_too_large"
+        assert body["action"] == "read_current" and body["cap"] == 500 and body["bytes"] > 500
+        line = _invocation_lines(capsys.readouterr().out)[0]
+        assert line["status"] == 413 and line["response_bytes"] == body["bytes"]
+
+    def test_unknown_action_name_is_never_echoed(self, monkeypatch):
+        monkeypatch.setattr(h, "MAX_RESPONSE_BYTES", 10)
+        r = h._guard_response_size(h._response(200, {"pad": "x" * 100}), {"action": "SECRET-ACTION"}, {})
+        assert r["statusCode"] == 413 and "SECRET" not in r["body"]
+
+    def test_in_cap_response_passes_through_with_measured_bytes(self):
+        meta: dict = {}
+        resp = h._response(200, {"ok": True})
+        assert h._guard_response_size(resp, {"action": "describe"}, meta) is resp
+        assert meta["response_bytes"] == len(json.dumps(resp).encode("utf-8"))

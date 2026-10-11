@@ -45,11 +45,8 @@ class TestFileRec:
         assert mock_dl_write.call_args.kwargs["action"] == "file_ops"
         ulid = mock_dl_write.call_args.kwargs["idempotency_ulid"]
         assert isinstance(ulid, str) and len(ulid) == 26  # ULID (time-ordered tiebreak for history reads)
-        # write-through: local JSONL has new entry carrying the allocated id
-        lines = recs_file.read_text(encoding="utf-8").strip().splitlines()
-        assert len(lines) == 1
-        entry = json.loads(lines[0])
-        assert entry["id"] == "rec-2171"
+        # the record handed to the writer carries the allocated id (no local cache write, Decision 215)
+        assert call_rec["id"] == "rec-2171"
 
     def test_file_rec_missing_allocated_key_raises(self, tmp_path: Path) -> None:
         """file_rec() raises RuntimeError when the writer response carries no allocated key."""
@@ -97,7 +94,7 @@ class TestFileRec:
         recs_file = tmp_path / ".recommendations-log.jsonl"
 
         with (
-            patch("scripts.ops_data_portal._ducklake_write", return_value={"key": "rec-602"}),
+            patch("scripts.ops_data_portal._ducklake_write", return_value={"key": "rec-602"}) as mock_dl_write,
             patch("scripts.ops_data_portal._sync_table"),
             patch("scripts.ops_data_portal.RECS_JSONL", recs_file),
         ):
@@ -106,7 +103,7 @@ class TestFileRec:
             result = file_rec(dict(_VALID_FIELDS))
 
         assert result == "rec-602"
-        entry = json.loads(recs_file.read_text(encoding="utf-8").strip().splitlines()[0])
+        entry = mock_dl_write.call_args[0][1]
         assert entry.get("date") is not None  # date was added
 
     def test_file_rec_rejects_unregistered_source(self, tmp_path: Path) -> None:
@@ -147,7 +144,7 @@ class TestUpdateRec:
     """Tests for update_rec()."""
 
     def test_update_rec_success(self, tmp_path: Path) -> None:
-        """update_rec() reads via the reader, merges updates, writes update_ops, appends to local JSONL."""
+        """update_rec() reads via the reader, merges updates, writes update_ops, writes through ducklake_writer."""
         existing = {**_VALID_FIELDS, "id": "rec-042", "date": "2026-01-01"}
         recs_file = tmp_path / ".recommendations-log.jsonl"
         recs_file.write_text(json.dumps(existing) + "\n", encoding="utf-8")
@@ -168,12 +165,7 @@ class TestUpdateRec:
         assert call_rec["status"] == "closed"
         assert call_rec["execution_result"] == "success"
         assert mock_dl_write.call_args.kwargs["action"] == "update_ops"
-        # write-through: the incremental upsert keeps ONE deduplicated row per id (D4), reflecting
-        # the update (was: append, which left the stale original behind until the next full sync).
-        lines = recs_file.read_text(encoding="utf-8").strip().splitlines()
-        assert len(lines) == 1
-        cached = json.loads(lines[0])
-        assert cached["id"] == "rec-042" and cached["status"] == "closed"
+        assert call_rec["id"] == "rec-042"
 
     def test_update_rec_invalid_status(self) -> None:
         """update_rec() raises ValueError for invalid status values (before any read)."""
@@ -368,8 +360,8 @@ class TestMigrationParams:
         assert mock_dl_write.call_args.kwargs["action"] == "write_ops"
         assert "idempotency_ulid" not in mock_dl_write.call_args.kwargs
 
-    def test_file_rec_skip_sync_uses_append_not_upsert(self, tmp_path: Path) -> None:
-        """_skip_sync=True appends (bulk path; final sync reconciles); the default path upserts (D4)."""
+    def test_file_rec_never_appends_or_upserts_recs_cache(self, tmp_path: Path) -> None:
+        """Neither the bulk (_skip_sync) path nor the default path writes a recs cache (Decision 215)."""
         with (
             patch("scripts.ops_data_portal._ducklake_write", return_value={"key": "rec-700"}),
             patch("scripts.ops_data_portal.RECS_JSONL", tmp_path / "recs.jsonl"),
@@ -379,17 +371,10 @@ class TestMigrationParams:
         ):
             from scripts.ops_data_portal import file_rec
 
-            # Bulk path: append only, no per-row upsert and never the full-table _sync_table.
             file_rec(dict(_VALID_FIELDS), _skip_sync=True)
-            mock_append.assert_called_once()
-            mock_upsert.assert_not_called()
-            mock_sync.assert_not_called()
-
-            # Default path: incremental upsert, no append and no full-table _sync_table (D4).
-            mock_append.reset_mock()
             file_rec(dict(_VALID_FIELDS))
-            mock_upsert.assert_called_once()
             mock_append.assert_not_called()
+            mock_upsert.assert_not_called()
             mock_sync.assert_not_called()
 
     def test_file_rec_migration_mode_bypasses_content_validators(self, tmp_path: Path) -> None:

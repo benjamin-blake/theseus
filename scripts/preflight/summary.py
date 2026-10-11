@@ -142,12 +142,21 @@ def _format_preflight_summary(report: dict, report_path: Path) -> str:
     ahead = mf.get("commits_ahead", "?")
     recs_status = report.get("recs_read_status", "ok")
     recs_status_suffix = "" if recs_status == "ok" else f" [DEGRADED: recs_read_status={recs_status}]"
-    ci_rca_unresolved = len(report.get("ci_rca_unresolved_recs") or [])
-    ci_rca_likely = len(report.get("ci_rca_likely_resolved_recs") or [])
-    if ci_rca_unresolved or ci_rca_likely:
-        ci_rca_summary = f"ci_rca_unresolved={ci_rca_unresolved} ci_rca_likely_resolved={ci_rca_likely}"
+    unresolved_recs = report.get("ci_rca_unresolved_recs")
+    if recs_status != "ok" or unresolved_recs is None:
+        recs_summary = "open_recs=UNAVAILABLE non_automatable=UNAVAILABLE ci_rca=UNAVAILABLE"
     else:
-        ci_rca_summary = "ci_rca=0"
+        ci_rca_unresolved = len(unresolved_recs)
+        ci_rca_likely = len(report.get("ci_rca_likely_resolved_recs") or [])
+        if ci_rca_unresolved or ci_rca_likely:
+            ci_rca_summary = f"ci_rca_unresolved={ci_rca_unresolved} ci_rca_likely_resolved={ci_rca_likely}"
+        else:
+            ci_rca_summary = "ci_rca=0"
+        recs_summary = (
+            f"open_recs={report.get('open_recommendations')} "
+            f"non_automatable={report.get('non_automatable_recommendations')} "
+            f"{ci_rca_summary} ci_rca_open_total={report.get('ci_rca_open_total')}"
+        )
     convergence_rca_gap = report.get("convergence_rca_gap_alert")
     convergence_rca_gap_suffix = (
         f" convergence_rca_gap_alert=red_{convergence_rca_gap['red_age_hours']}h" if convergence_rca_gap else ""
@@ -158,8 +167,6 @@ def _format_preflight_summary(report: dict, report_path: Path) -> str:
         f"Preflight OK -> {report_path}\n"
         f"  venv={report.get('venv_ok')} creds={report.get('creds_status')} "
         f"branch={report.get('branch')} main=({behind} behind, {ahead} ahead)\n"
-        f"  open_recs={report.get('open_recommendations')} "
-        f"non_automatable={report.get('non_automatable_recommendations')} "
-        f"{ci_rca_summary}{recs_status_suffix}{convergence_rca_gap_suffix}{sensor_liveness_suffix}\n"
+        f"  {recs_summary}{recs_status_suffix}{convergence_rca_gap_suffix}{sensor_liveness_suffix}\n"
         f"  Read the report file for full constraint detail."
     )

@@ -11,11 +11,10 @@ import sys
 from collections.abc import Callable
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from scripts import decisions_md
 from scripts.preflight import _common
-from src.common.ducklake_reader_client import DuckLakeReader
 
 # Session-log block grammar: group 1 is the whole header line, group 2 its date, group 3 the
 # optional Done line. ONE regex serves both call sites so parse_last_session and
@@ -156,11 +155,8 @@ def read_context_files(open_recs_count: int | None = None) -> dict:
     """Read key context documents and return a summary dict for plan.prompt.md.
 
     Args:
-        open_recs_count: Pre-computed open-recs count from the caller. When provided,
-            the open_recs verb query is skipped (dedup: avoids a second named() call
-            when main() has already fetched the count via _count_recommendations_reader).
-            Standalone callers (e.g. tests) may omit it; the function falls back to
-            its own open_recs query in that case.
+        open_recs_count: Open-recs count from the open_recs_tally row preflight already fetched, or None
+            when unavailable. No reader call is made here (Decision 215).
 
     Returns:
         Dict with keys: roadmap_phase, open_decisions_count, recent_sessions,
@@ -197,16 +193,8 @@ def read_context_files(open_recs_count: int | None = None) -> dict:
             entry += f" -- {done_line.strip()}"
         recent_sessions.append(entry)
 
-    # recommendations_count: use pre-computed count when available (avoids a second
-    # open_recs verb call when main() already fetched the count in Phase B).
-    if open_recs_count is not None:
-        recommendations_count = open_recs_count
-    else:
-        recommendations_count = 0
-        try:
-            recommendations_count = len(cast(DuckLakeReader, _common._make_reader()).named("open_recs"))
-        except Exception:  # noqa: BLE001
-            pass
+    # recommendations_count comes from the tally preflight already fetched; None when unavailable.
+    recommendations_count = open_recs_count
 
     return {
         "roadmap_phase": roadmap_phase,
