@@ -36,8 +36,12 @@ _PROBE_TABLE_SQL = (
 )
 _PROBE_COLUMN_SQL = (
     f"SELECT column_name FROM {PROBE_SCHEMA}.ducklake_column WHERE table_id = %s AND end_snapshot IS NULL "
-    "AND parent_column IS NULL AND column_type = 'VARCHAR' ORDER BY column_order LIMIT 1"
+    "AND parent_column IS NULL AND lower(column_type) = 'varchar' ORDER BY column_order LIMIT 1"
 )
+
+
+class ProbeTargetMissing(Exception):
+    """The catalog has no live table, or that table no text column, for the fixed probe read."""
 
 
 def _db_error(exc: Exception) -> rt.DuckLakeRuntimeError:
@@ -79,9 +83,15 @@ def _probe_pushdown(cur: Any, dsn: dict[str, str]) -> dict[str, Any]:
     try:
         before = _idx_scan(cur)
         cur.execute(_PROBE_TABLE_SQL)
-        table_id, table = cur.fetchone()
+        table_row = cur.fetchone()
+        if table_row is None:
+            raise ProbeTargetMissing
+        table_id, table = table_row
         cur.execute(_PROBE_COLUMN_SQL, [table_id])
-        column = cur.fetchone()[0]
+        column_row = cur.fetchone()
+        if column_row is None:
+            raise ProbeTargetMissing
+        column = column_row[0]
         _require_identifier(table)
         _require_identifier(column)
         data_path = _shared.DATA_PATH
