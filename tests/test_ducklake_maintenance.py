@@ -52,6 +52,8 @@ class FakeCon:
         return (0,)
 
     def fetchall(self) -> list[Any]:
+        if self._last.lstrip().lower().startswith("select count(*)"):
+            return [self.fetchone()]  # a count(*) statement yields exactly one row, however it is fetched
         for sub, val in self._fetchall_map.items():
             if sub in self._last:
                 return val
