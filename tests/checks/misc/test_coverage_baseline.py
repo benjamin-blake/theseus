@@ -5,6 +5,8 @@ import re
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from scripts.checks.misc import coverage_baseline
 from scripts.checks.misc.coverage_baseline import _SPEC
 
@@ -254,7 +256,7 @@ class TestMeasureAndCheck:
         assert pcts == {str(source.resolve()): 100.0}
         assert errors == []
 
-    def test_timeout_yields_none_and_error(self, tmp_path: Path) -> None:
+    def _timeout_scaffold(self, tmp_path: Path, side_effect: BaseException) -> tuple:
         import subprocess as real_subprocess
 
         source = tmp_path / "scripts" / "probe.py"
@@ -270,11 +272,21 @@ class TestMeasureAndCheck:
         proc = MagicMock()
         proc.__enter__.return_value = proc
         proc.__exit__.return_value = False
-        proc.communicate.side_effect = real_subprocess.TimeoutExpired(cmd="pytest", timeout=300)
-        proc.pid = 12345
+        proc.communicate.side_effect = side_effect
         mock_subprocess.Popen.return_value = proc
+        return source, test_file, mock_subprocess, proc
 
-        with patch("scripts.llm.utils.kill_process_tree") as mock_kill:
+    def test_timeout_kills_the_child_group_and_records_the_cap(self, tmp_path: Path, capsys) -> None:
+        import subprocess as real_subprocess
+
+        source, test_file, mock_subprocess, proc = self._timeout_scaffold(
+            tmp_path, real_subprocess.TimeoutExpired(cmd="pytest", timeout=7)
+        )
+
+        with (
+            patch.object(coverage_baseline, "COVERAGE_TIMEOUT_SECONDS", 7),
+            patch("scripts.checks._process_group.kill_and_reap", return_value=("", "tail")) as mock_kill,
+        ):
             pcts, errors = coverage_baseline.measure_and_check(
                 [source],
                 root=tmp_path,
@@ -282,9 +294,26 @@ class TestMeasureAndCheck:
                 is_empty_dir=lambda p: False,
                 subprocess_module=mock_subprocess,
             )
-        mock_kill.assert_called_once_with(12345)
+        assert mock_subprocess.Popen.call_args.kwargs["start_new_session"] is True
+        assert proc.communicate.call_args.kwargs["timeout"] == 7
+        mock_kill.assert_called_once_with(proc)
+        assert errors == ["scripts/probe.py: coverage check timed out (7s)"]
         assert pcts == {str(source.resolve()): None}
-        assert any("timed out" in e for e in errors)
+        assert "killed at 7s" in capsys.readouterr().out
+
+    def test_interrupt_while_waiting_kills_the_child_group_and_reraises(self, tmp_path: Path) -> None:
+        source, test_file, mock_subprocess, proc = self._timeout_scaffold(tmp_path, KeyboardInterrupt())
+
+        with patch("scripts.checks._process_group.kill_and_reap") as mock_kill:
+            with pytest.raises(KeyboardInterrupt):
+                coverage_baseline.measure_and_check(
+                    [source],
+                    root=tmp_path,
+                    map_source_to_test=lambda p: test_file,
+                    is_empty_dir=lambda p: False,
+                    subprocess_module=mock_subprocess,
+                )
+        mock_kill.assert_called_once_with(proc)
 
 
 class TestSubthresholdDiagnostics:
