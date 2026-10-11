@@ -4,8 +4,8 @@ handoff_policy:
   timeout_disposition: blocked
 slug: coverage-child-tier-parity
 intent: >-
-  Clear the Critical CI-RCA hard block rec-4273 at root cause: post-merge main-validate run 38171425451 went red on
-  validate_test_coverage after #1452 (c792924d, the rec-4232 fix). The per-file coverage child is the only CI pytest
+  Clear the Critical CI-RCA hard block at root cause: rec-4273 (post-merge main-validate run 38171425451) and its duplicate
+  rec-4275 (main-canary run 38175699974) both record validate_test_coverage red after #1452 (c792924d, the rec-4232 fix). The per-file coverage child is the only CI pytest
   invocation that does not deselect integration tests, so a live-boundary test ran inside a CI coverage measurement and was
   the sole coverage of mcp_server.create_server. Separately, #1452 added an unstubbed plan-corpus walk to preflight main(),
   doubling every main()-level test and pushing the preflight.py coverage child past its 300s cap. Selection parity, hermetic
@@ -35,7 +35,9 @@ scope:
     "-m" (the interpreter's own "python -m", the rec-4099 misread). It asserts the mocked Popen argv carries "-m" plus that
     same expression after its own "pytest" token, so drift in either builder fails it. The file is 480 SLOC at plan time and
     must stay at or under 500: first extract the repeated source/test_file/mock-proc scaffolding into one module-level
-    helper in this file (Decision 128); never raise a budget. The node path is fixed before execution step 6 names it.
+    helper in this file (Decision 128); never raise a budget. Keep every node id an existing registry shard pins
+    (coverage-timeout-process-group, coverage-baseline-reports-diagnostics, coverage-baseline-gate-tests). The new node path
+    is fixed before execution step 6 names it.
 - file: tests/test_agent_sdk_mcp_server.py
   action: Modify
   purpose: >-
@@ -47,7 +49,7 @@ scope:
     async context manager, server.run an AsyncMock awaited once); test_main_builds_the_server_and_runs_stdio (create_server
     and anyio.run patched; anyio.run receives _run_stdio and the built server). Together they cover mcp_server.py at 100%
     with integration deselected (prototyped at plan time: 100.0%, no missing lines). (2) Repair the stale live test, kept in
-    TestEndToEnd with @integration + @aws and NO credentials-skip guard (Decision 215 cl.2): rename the node
+    TestEndToEnd with @integration + @aws and NO credentials-skip guard (its existing docstring stance): rename the node
     test_recs_by_ids_tool_returns_exactly_one_row_against_live_boundary; assert recs_by_ids is projected and open_recs and
     preflight_signal_rows are NOT (Decision 215 cl.3); call recs_by_ids (cl.7; rec_by_id is deprecated, rec-4240) with
     ids="rec-100", an append-only historical row, and assert exactly one row whose id is rec-100 (prototyped against the
@@ -115,6 +117,7 @@ scope:
     _disable_reader_and_git_fetch, plan_slug coverage-child-tier-parity, graduated_by implement-agent.
 bundled_recommendations:
 - rec-4273
+- rec-4275
 - rec-4134
 followon_recs: []
 infrastructure_dependencies: []
@@ -123,22 +126,25 @@ acceptance_criteria:
   The per-file coverage child passes the same -m marker expression as the full-tier unit-test command; an
   integration-marked test never executes inside a coverage measurement.
 - >-
-  scripts/agent_sdk/mcp_server.py measures 100% through the real checker with integration deselected, and
+  scripts/agent_sdk/mcp_server.py measures 100% with integration deselected (diagnostic step 4; authoritative in step 9's
+  full tier and post-merge CI, since this merge changes the file), and
   config/coverage_baseline.yaml carries no entry for it.
 - >-
   Run with credentials, the repaired live test passes against the deployed reader and still carries no credentials-skip
   guard.
-- src/data/handlers/scheduled_agent_handler.py measures at or above its 80.3 baseline through the real checker.
+- >-
+  src/data/handlers/scheduled_agent_handler.py measures at or above its 80.3 baseline (diagnostic step 4; an accepted
+  residual until a merge changes that file).
 - >-
   Every tests/session/preflight main()-level test runs with the follow-on plan walk stubbed; only TestAdHocLaneDerivations
   sees the real function; scripts/session/preflight.py still measures 100%. COVERAGE_TIMEOUT_SECONDS is unchanged at 300.
 - >-
-  Before merge, rec-4273's stored acceptance is VP step 8's decidable node list, it passes inside the probe sandbox, and
-  its context carries the pre-stamped closure_artifact shard:coverage-child-integration-deselect. After merge the Resolves
-  trailer closes rec-4273 and rec-4134.
+  Before merge, rec-4273's and rec-4275's stored acceptance is VP step 8's decidable node list, it passes inside the probe
+  sandbox, and each context carries the pre-stamped closure_artifact shard:coverage-child-integration-deselect. After merge
+  the Resolves trailer closes rec-4273, rec-4275 and rec-4134.
 - >-
   The post-merge main-validate run on the merge commit is green and re-measured mcp_server.py in CI under the new
-  selection; no new ci_rca rec is filed.
+  selection; no open ci_rca rec remains for this failure (rec-4273, rec-4275) and none was filed since the merge.
 - >-
   rec-4232, rec-2863 and rec-2639 are closed under the operator's recorded authorization, each resolution embedding its
   acceptance command re-run on the green main and that output (Decision 103 proof) and citing c792924d.
@@ -189,8 +195,9 @@ verification_plan:
 - step: 4
   phase: pre-deploy
   action: >-
-    The real gate, through scripts.test_coverage_checker's own measurement path, on the two sources whose measured value
-    this plan changes. Plan-time evidence for the other three sources whose mapped tests hold integration tests, measured
+    DIAGNOSTIC evidence (the checker labels its own verdict non-authoritative) through scripts.test_coverage_checker's
+    measurement path, on the two sources whose measured value this plan changes. The authoritative gates are step 9's full
+    tier and post-merge CI, which measure only files in the diff (mcp_server.py, coverage_baseline.py). Plan-time evidence for the other three sources whose mapped tests hold integration tests, measured
     with -m "not integration": ops_data_portal.py 100.0, ducklake_maintenance_ops.py 100.0, ducklake_spike.py 29.7
     (baseline 29.7).
   command: >-
@@ -244,8 +251,8 @@ verification_plan:
 - step: 7
   phase: pre-deploy
   action: >-
-    The real gate on scripts/session/preflight.py (Decision 163: post-merge CI will not re-measure it, since it is not in this
-    merge's diff). The cap is raised IN THIS PROBE ONLY, so the local run completes; it records local wall time against
+    DIAGNOSTIC measurement of scripts/session/preflight.py (Decision 163: neither step 9 nor post-merge CI re-measures it,
+    since it is not in this merge's diff). The cap is raised IN THIS PROBE ONLY, so the local run completes; it records local wall time against
     the 300s cap and proves coverage is unchanged by the stub.
   command: >-
     bin/venv-python -c "import time; from pathlib import Path; import scripts.test_coverage_checker as t; from
@@ -265,23 +272,23 @@ verification_plan:
 - step: 8
   phase: pre-deploy
   action: >-
-    rec-4273's amended acceptance and pre-stamped closure artifact are stored, the acceptance lints decidable, and it passes
-    inside the same isolation the trailer evaluator uses (scripts.backlog_health.probe.run_one: unshare -rmn, read-only bind,
+    rec-4273's and rec-4275's amended acceptance and pre-stamped closure artifact are stored, the acceptance lints
+    decidable, and it passes inside the same isolation the trailer evaluator uses (scripts.backlog_health.probe.run_one: unshare -rmn, read-only bind,
     30s pytest cap). Plan time: the CURRENT acceptance returns fail there.
   command: >-
     bin/venv-python -c "import json; from pathlib import Path; from scripts.backlog_health import probe; from
     scripts.executor.acceptance_lint import lint_acceptance_command as lint; from src.common.ducklake_reader_client import
-    fetch_recs_by_ids, make_reader; rows, _ = fetch_recs_by_ids(make_reader(), ['rec-4273']); r = rows[0]; a =
-    r['acceptance']; want = 'bin/venv-python -m pytest
+    fetch_recs_by_ids, make_reader; rows, _ = fetch_recs_by_ids(make_reader(), ['rec-4273', 'rec-4275']); assert
+    len(rows) == 2, rows; want = 'bin/venv-python -m pytest
     tests/checks/misc/test_coverage_baseline.py::TestMeasureAndCheck::test_child_selects_the_full_tier_marker_expression
     tests/test_agent_sdk_mcp_server.py::TestCreateServer
     tests/session/preflight/test_recs_cache_adhoc_lane.py::TestPlanWalkStub::test_main_level_tests_see_a_stubbed_plan_walk
-    -q'; assert a == want, a; assert lint(a, require_decidable=True)[0], a; ctx = json.loads(r['context_v2_json']); assert
-    ctx.get('closure_artifact') == 'shard:coverage-child-integration-deselect', ctx; v = probe.run_one(a,
-    repo_root=Path('.').resolve()); assert v == probe.PASS, v; print('ACCEPTANCE_HOLDS')"
+    -q'; assert all(r['acceptance'] == want for r in rows), rows; assert lint(want, require_decidable=True)[0], want; assert
+    all(json.loads(r['context_v2_json']).get('closure_artifact') == 'shard:coverage-child-integration-deselect' for r in
+    rows), rows; v = probe.run_one(want, repo_root=Path('.').resolve()); assert v == probe.PASS, v; print('ACCEPTANCE_HOLDS')"
   expected: Exit 0 and ACCEPTANCE_HOLDS.
   fix_if: >-
-    The old acceptance or no closure_artifact is stored: run execution step 6's single update_rec call, then rerun. probe
+    An old acceptance or no closure_artifact is stored: run execution step 6's update_rec calls, then rerun. probe
     timeout: a named node exceeds the 30s sandbox cap; keep main() calls out of the acceptance. Never push the trailer while
     this step is red (Decision 201: the closing verdict is keyed to the current acceptance's sha256).
   hermetic: false
@@ -317,19 +324,31 @@ verification_plan:
     merge-protocol forward-fix path applies (Decision 73); do not patch main inline before /plan reviews it.
 - step: 11
   phase: post-deploy
-  action: rec-4273 and rec-4134 are closed by the squash commit's Resolves trailer.
+  action: rec-4273, rec-4275 and rec-4134 are closed by the squash commit's Resolves trailer.
   command: >-
     bin/venv-python -c "from src.common.ducklake_reader_client import fetch_recs_by_ids, make_reader; rows, _ =
-    fetch_recs_by_ids(make_reader(), ['rec-4273', 'rec-4134']); st = {r['id']: r['status'] for r in rows}; print(st); assert
-    st == {'rec-4273': 'closed', 'rec-4134': 'closed'}, st"
-  expected: Prints both statuses as closed, exit 0.
+    fetch_recs_by_ids(make_reader(), ['rec-4273', 'rec-4275', 'rec-4134']); st = {r['id']: r['status'] for r in rows};
+    print(st); assert st == {'rec-4273': 'closed', 'rec-4275': 'closed', 'rec-4134': 'closed'}, st"
+  expected: Prints all three statuses as closed, exit 0.
   fix_if: >-
-    Still open: confirm the squash body carries 'Resolves: rec-4273, rec-4134' in a Key: value block, then read the
+    Still open: confirm the squash body carries 'Resolves: rec-4273, rec-4275, rec-4134' in a Key: value block, then read the
     trailer-closure job's verdict artifact. ClosureArtifactRequired despite the pre-stamp: confirm the verdict says holds,
     then close via ci-rca-lifecycle closure_dependency.manual_route with the same --closure-artifact and --closure-fix-sha
     <merge sha> in one call. An AcceptanceVerdictRefused is never closed manually: fix the acceptance or the code and let a
     trailer close it.
 - step: 12
+  phase: post-deploy
+  action: >-
+    The planning hard block is actually cleared: ci_rca_open (the preflight hard-block surface) returns neither rec-4273
+    nor rec-4275. Steps 10-11 alone would pass with a pre-existing duplicate still open.
+  command: >-
+    bin/venv-python -c "from src.common.ducklake_reader_client import make_reader; rows = make_reader().named('ci_rca_open');
+    ids = {r['id'] for r in rows}; print(ids); assert not ids & {'rec-4273', 'rec-4275'}, ids"
+  expected: Prints the open ci_rca ids (neither rec-4273 nor rec-4275), exit 0.
+  fix_if: >-
+    One is still open: return to step 11's fix_if for that rec. A different open ci_rca rec for this same failure filed
+    before the merge is a further duplicate: close it like rec-4275, citing the same shard.
+- step: 13
   phase: post-deploy
   action: >-
     Operator-authorized closure of the #1452 recs (Benjamin, 2026-10-11, Step 6b) once step 10 is green. For each of
@@ -415,19 +434,23 @@ context:
 - >-
   Decision-scout FLAGS_FOUND (r1 + delta), all folded; CITE: 215, 159, 178, 163, 73, 186, 189, 66, 128, 143, 103, 132,
   181. Decisions triaged: 168 of 168. Roadmap items intersected: 3; CONFLICT: 0; RELATED: 3
-- "gates: decision-scout=FLAGS_FOUND (2 passes, all folded); plan-critique=r1 REVISE (5 findings, all fixed); r2 pending"
-- "Related-Work check, condition 1 (same file): scope carries tests/test_agent_sdk_mcp_server.py, rec-4273's file."
+- "gates: decision-scout=FLAGS_FOUND (2 passes, all folded); plan-critique=r1 REVISE (5 fixed); r2 REVISE (F1-F3 new, fixed; operator chose one more round); r3 pending"
+- "Related-Work check, condition 1 (same file): scope carries rec-4273's and rec-4275's files (the mcp_server test and module)."
 - >-
-  Decision 73 cl.4 related scope: rec-4134 rides this merge only so CI re-measures mcp_server.py; step 12 releases the
+  rec-4275 duplicates rec-4273 from main-canary run 38175699974 (fingerprint b4e02ed2, so dedup missed it; filed after
+  plan r1). Same amended acceptance and closure shard; its old acceptance names the renamed live-test node.
+- >-
+  Decision 73 cl.4 related scope: rec-4134 rides this merge only so CI re-measures mcp_server.py; step 13 releases the
   stranded #1452 implementer (its step 22 waits on a green main; c792924d carries no Resolves trailer, class owned by
   rec-4244/rec-3856). Those three recs stay off this trailer (git-ops resolves_trailer CARRIER rule).
 - >-
-  Step 12 sits outside git-ops resolves_trailer FALLBACK's enumerated conditions (transport failure, merge-leg refusal); it
+  Step 13 sits outside git-ops resolves_trailer FALLBACK's enumerated conditions (transport failure, merge-leg refusal); it
   is carried by the operator's 2026-10-11 authorization, which each resolution records. No verdict is supplied on that
   route (Decision 201 residual, rec-3999), so each resolution embeds its re-run proof (Decision 103).
 - >-
-  Accepted residual (rec-3208): CI's preflight.py margin is projected, not measured; about 357s x 0.58-0.65 = 207-232s vs
-  the 300s cap. The next merge touching preflight.py re-measures it; rec-4273 carries fixed_by_sha for regression routing.
+  Accepted residuals: CI's preflight.py margin is projected (about 357s x 0.58-0.65 = 207-232s vs the 300s cap; rec-3208),
+  and scheduled_agent_handler.py's 80.3 is diagnostic only. Neither file is in this diff; the next merge touching each is
+  its authoritative re-measure, and rec-4273 carries fixed_by_sha for regression routing.
 - >-
   Parity, not the RCA's live_boundary marker plus skipif (Decision 186 spirit): the integration marker already means "never
   in a CI tier"; a skip leaves mcp_server.py at 60.5% and counts as a pass. Decision 181: no assertion weakens; 88.4 -> 100.
@@ -437,13 +460,13 @@ context:
 - >-
   Not bundled: rec-3208 (residual preflight slowness), rec-2914, rec-4240 (rec_by_id removal), rec-4099 family (-m misread),
   rec-3615/3282, rec-2871, rec-3232, rec-4088 (manual_route disagreement, avoided by the pre-stamp).
-- "fork: rec-4273 oracle | chosen: amend to hermetic nodes + pre-stamp shard | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: rec-4273 row"
-- "fork: #1452 rec closure | chosen: operator-authorized manual close | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: step 12"
+- "fork: rec-4273 oracle | chosen: amend to hermetic nodes + pre-stamp shard | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: rec-4273/rec-4275 rows"
+- "fork: #1452 rec closure | chosen: operator-authorized manual close | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: step 13"
 - "fork: preflight wall fix depth | chosen: conftest stub only | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: scope"
 - "fork: CI-side proof | chosen: bundle rec-4134 | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: bundled_recommendations"
 - "fork: selection parity vs new marker | chosen: reuse integration | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: Step 6b approach"
 - "fork: live test verb | chosen: recs_by_ids | class: consistency-only | precedent: Decision 215 cl.7 | precedent_kind: decision | reversible: yes | persisted: scope"
-- "fork: closure artifact kind | chosen: shard | class: consistency-only | precedent: ci-rca-lifecycle closure_obligation.kind_strength | precedent_kind: contract | reversible: yes | persisted: rec-4273 row"
+- "fork: closure artifact kind | chosen: shard | class: consistency-only | precedent: ci-rca-lifecycle closure_obligation.kind_strength | precedent_kind: contract | reversible: yes | persisted: rec-4273/rec-4275 rows"
 - "fork: baseline entry | chosen: remove | class: consistency-only | precedent: Decision 159 cl.2 | precedent_kind: decision | reversible: yes | persisted: config/coverage_baseline.yaml"
 pre_implementation_checklist:
 - Branch confirmed not on main
@@ -466,16 +489,17 @@ execution_steps:
   bin/venv-python -m pytest tests/session/preflight -n 4 -q and confirm TestAdHocLaneDerivations stays green.
 - Create the three verification-registry shards per their scope rows (graduated_at = implement date).
 - >-
-  rec-4273, in ONE status-preserving portal call after get_rec_write_guidance(): bin/venv-python -m scripts.ops_data_portal
-  --update-rec rec-4273 --acceptance '<VP step 8 want string>' --closure-artifact 'shard:coverage-child-integration-deselect'.
+  rec-4273 and rec-4275, one status-preserving portal call each after get_rec_write_guidance(): bin/venv-python -m
+  scripts.ops_data_portal --update-rec <rec-4273|rec-4275> --acceptance '<VP step 8 want string>' --closure-artifact
+  'shard:coverage-child-integration-deselect' (rec-4275 is a duplicate; Decision 186 cl.5: it cites the class artifact).
   Rationale for the record (Decision 181): the old pipe oracle passes on a skip and can only fail in the networkless probe
   sandbox; shard is the strongest closure kind (Decision 186) and its file lands in the merge sha. rec-4134 keeps its filed
   acceptance.
 - Execute Verification Plan steps 1-9 -- loop until pass; on unrecoverable failure stop and RCA (Decision 55)
 - >-
   Code-review gate (implement skill), then PR, CI and squash merge. The squash commit body carries 'Resolves: rec-4273,
-  rec-4134' in a Key: value block before the attribution footer (git-ops.yaml resolves_trailer PLACEMENT; pass it as the
-  merge commit_message, rec-4244). Then run post-deploy steps 10-12 in order.
+  rec-4275, rec-4134' in a Key: value block before the attribution footer (git-ops.yaml resolves_trailer PLACEMENT; pass it as the
+  merge commit_message, rec-4244). Then run post-deploy steps 10-13 in order.
 - 'Report: what was implemented, verification results'
 rollback: >-
   Revert the squash commit: the coverage child returns to unfiltered selection and the 88.4 entry returns. A rec closed by
