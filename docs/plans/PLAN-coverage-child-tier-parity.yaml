@@ -133,7 +133,7 @@ acceptance_criteria:
   Every tests/session/preflight main()-level test runs with the follow-on plan walk stubbed; only TestAdHocLaneDerivations
   sees the real function; scripts/session/preflight.py still measures 100%. COVERAGE_TIMEOUT_SECONDS is unchanged at 300.
 - >-
-  Before merge, rec-4273's stored acceptance is VP step 7's decidable node list, it passes inside the probe sandbox, and
+  Before merge, rec-4273's stored acceptance is VP step 8's decidable node list, it passes inside the probe sandbox, and
   its context carries the pre-stamped closure_artifact shard:coverage-child-integration-deselect. After merge the Resolves
   trailer closes rec-4273 and rec-4134.
 - >-
@@ -203,7 +203,11 @@ verification_plan:
     mcp_server.py below 100: a TestCreateServer node misses a line. scheduled_agent_handler.py below 80.3: the marker removal
     is incomplete. Never restore or add a baseline entry.
   hermetic: false
-  graduation: not-applicable
+  graduation: waive
+  graduation_waiver_reason: >-
+    Duplicates the full tier's per-file validate_test_coverage gate, which re-measures each of these files whenever a merge
+    changes it (Decision 159 cl.1), and costs coverage subprocesses that run for minutes on CC-web. Steps 1-2's graduated
+    nodes guard the selection rule and mcp_server.py's hermetic coverage as standing checks.
 - step: 5
   phase: pre-deploy
   action: >-
@@ -221,17 +225,17 @@ verification_plan:
 - step: 6
   phase: pre-deploy
   action: >-
-    Relative timing in one container: tests/session/preflight on an origin/main worktree, then on HEAD. CC-web runs this
-    package several times slower than CI, so this is a ratio, not CI's absolute figure; CI reached 84% of the package in 300s
-    on c792924d.
+    Relative timing in one container, SERIAL like the coverage child (no -n): tests/session/preflight on an origin/main
+    worktree, then on HEAD. CC-web runs this package several times slower than CI, so this is a ratio, not CI's absolute
+    figure; CI reached 84% of the package in 300s on c792924d. Run in the background; each leg takes minutes.
   command: >-
     R=$PWD && D=$(mktemp -d) && git worktree add -q --detach $D/wt origin/main && cd $D/wt && t0=$(date +%s) &&
-    $R/bin/venv-python -m pytest tests/session/preflight -n 4 -q && base=$(( $(date +%s) - t0 )) && cd $R && git worktree
-    remove --force $D/wt && t1=$(date +%s) && bin/venv-python -m pytest tests/session/preflight -n 4 -q && head=$(( $(date
+    $R/bin/venv-python -m pytest tests/session/preflight -q && base=$(( $(date +%s) - t0 )) && cd $R && git worktree
+    remove --force $D/wt && t1=$(date +%s) && bin/venv-python -m pytest tests/session/preflight -q && head=$(( $(date
     +%s) - t1 )) && echo "base=${base}s head=${head}s" && test $(( head * 100 )) -le $(( base * 65 )) && echo TIMING_OK
   expected: >-
-    Both runs all-passed, then the two durations and TIMING_OK (plan time: 100s on origin/main, 58s with the stub
-    prototyped).
+    Both runs all-passed, then the two durations and TIMING_OK (plan time, 4 workers: 100s on origin/main, 58s with the stub
+    prototyped; the serial sum of per-test durations fell from about 340s to about 190s).
   fix_if: >-
     No improvement: the stub does not intercept main()'s call. Never relax the ratio, and never raise
     COVERAGE_TIMEOUT_SECONDS.
@@ -253,7 +257,11 @@ verification_plan:
     A coverage error: the stub removed a covered path from preflight.py's own lines; check main()'s call site. Never keep
     the raised cap outside this probe.
   hermetic: false
-  graduation: not-applicable
+  graduation: waive
+  graduation_waiver_reason: >-
+    A minutes-long, one-time probe that overrides the cap in-process; as a standing check it would duplicate the full
+    tier's own preflight.py measurement, which runs whenever a merge changes that file. Step 3's graduated node guards the
+    stub that this probe exercises.
 - step: 8
   phase: pre-deploy
   action: >-
@@ -293,16 +301,19 @@ verification_plan:
 - step: 10
   phase: post-deploy
   action: >-
-    Post-merge: main-validate on the merge commit concluded success (read it with mcp__github__actions_list
-    list_workflow_runs for ci.yml on main, matching head_sha) and its validate_test_coverage measured mcp_server.py; no new
-    ci_rca rec was filed since the merge.
+    Post-merge, in this order. PRECONDITION: read main-validate's run for the merge commit with mcp__github__actions_list
+    (list_workflow_runs, resource_id ci.yml, branch main, matching head_sha) and proceed only once it reports status
+    completed and conclusion success; its log shows validate_test_coverage mapping scripts/agent_sdk/mcp_server.py. Only
+    then run the command, which proves no ci_rca rec was filed since the merge (it would pass vacuously before the run
+    concludes).
   command: >-
     bin/venv-python -c "import sys; from src.common.ducklake_reader_client import make_reader; rows =
     make_reader().named('ci_rca_since', since_ts=sys.argv[1]); print(rows); assert rows == [], rows" "$(git fetch -q origin
     main && git log -1 --format=%cI origin/main)"
   expected: Prints [] and the workflow run's conclusion is success.
   fix_if: >-
-    origin/main moved past the merge: pass the merge commit's own %cI instead. A new ci_rca rec or a red run: the
+    The run has not concluded: wait for its completion event, never run the command early. origin/main moved past the
+    merge: pass the merge commit's own %cI instead. A new ci_rca rec or a red run: the
     merge-protocol forward-fix path applies (Decision 73); do not patch main inline before /plan reviews it.
 - step: 11
   phase: post-deploy
@@ -404,15 +415,19 @@ context:
 - >-
   Decision-scout FLAGS_FOUND (r1 + delta), all folded; CITE: 215, 159, 178, 163, 73, 186, 189, 66, 128, 143, 103, 132,
   181. Decisions triaged: 168 of 168. Roadmap items intersected: 3; CONFLICT: 0; RELATED: 3
-- "gates: decision-scout=FLAGS_FOUND (2 passes, all folded); plan-critique=PENDING"
+- "gates: decision-scout=FLAGS_FOUND (2 passes, all folded); plan-critique=r1 REVISE (5 findings, all fixed); r2 pending"
 - "Related-Work check, condition 1 (same file): scope carries tests/test_agent_sdk_mcp_server.py, rec-4273's file."
 - >-
   Decision 73 cl.4 related scope: rec-4134 rides this merge only so CI re-measures mcp_server.py; step 12 releases the
   stranded #1452 implementer (its step 22 waits on a green main; c792924d carries no Resolves trailer, class owned by
   rec-4244/rec-3856). Those three recs stay off this trailer (git-ops resolves_trailer CARRIER rule).
 - >-
-  Decision 201 note: step 12's manual close is a one-off operator exception; no verdict is supplied on that route
-  (residual owned by rec-3999), so each resolution embeds its re-run proof (Decision 103).
+  Step 12 sits outside git-ops resolves_trailer FALLBACK's enumerated conditions (transport failure, merge-leg refusal); it
+  is carried by the operator's 2026-10-11 authorization, which each resolution records. No verdict is supplied on that
+  route (Decision 201 residual, rec-3999), so each resolution embeds its re-run proof (Decision 103).
+- >-
+  Accepted residual (rec-3208): CI's preflight.py margin is projected, not measured; about 357s x 0.58-0.65 = 207-232s vs
+  the 300s cap. The next merge touching preflight.py re-measures it; rec-4273 carries fixed_by_sha for regression routing.
 - >-
   Parity, not the RCA's live_boundary marker plus skipif (Decision 186 spirit): the integration marker already means "never
   in a CI tier"; a skip leaves mcp_server.py at 60.5% and counts as a pass. Decision 181: no assertion weakens; 88.4 -> 100.
