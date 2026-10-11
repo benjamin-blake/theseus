@@ -113,6 +113,7 @@ from scripts.ducklake_smoke.lambda_ops_gates import (  # noqa: F401 -- re-export
     ops_churn_regate,
     ops_read_your_write,
 )
+from scripts.ducklake_smoke.lambda_telemetry_gates import lambda_telemetry  # noqa: F401 -- re-exported package surface
 from src.common import catalog_dr as _catalog_dr  # noqa: F401 -- re-exported: smoke._catalog_dr
 from src.common import ducklake_runtime, ducklake_spike, neon_api  # noqa: F401 -- re-exported module aliases
 from src.common.ducklake_runtime import (  # noqa: F401 -- re-exported runtime budget constants
@@ -142,6 +143,7 @@ _LAMBDA_GATES: dict[str, Callable[..., None]] = {
     "lambda_maintenance_hot_merge": lambda_maintenance_hot_merge,
     "connect_probe": connect_probe,
     "lambda_append_only": lambda_append_only,
+    "lambda_telemetry": lambda_telemetry,
 }
 
 
@@ -247,6 +249,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         action="store_true",
         help="[post-deploy] T1.14 VP gate: write_ops on ops_smoke_events (append_only), "
         "assert 1 history row + no current projection",
+    )
+    group.add_argument(
+        "--lambda-telemetry",
+        action="store_true",
+        help="[post-deploy] telemetry writer URL-only proof",
     )
     group.add_argument(
         "--canary-rehearsal",

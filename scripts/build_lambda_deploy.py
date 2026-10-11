@@ -108,11 +108,11 @@ def update_lambda_functions(
 
     ``only_functions`` (hotfix follow-up to the 2026-07-24 ops_decisions incident -- splits the
     ducklake deploy into a maintenance leg and a serving leg so the reconcile gate can refuse only
-    the latter): further filters ``only_ducklake``'s five-function map down to the named subset.
+    the latter): further filters ``only_ducklake``'s deploy map down to the named subset.
     Raises ``ValueError`` on an unrecognised function name (a subset deploy that silently
     intersects to empty and reports success is exactly the false-green this exists to prevent) and
     on ``only_functions`` passed with ``only_ducklake=False`` (the prod branch builds a different
-    map; subsetting it is out of scope). ``None`` (the default) deploys all five ducklake functions,
+    map; subsetting it is out of scope). ``None`` (the default) deploys every ducklake function,
     unchanged from prior behaviour.
 
     Ref: AWS CLI ``lambda update-function-code`` requires

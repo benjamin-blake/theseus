@@ -16,6 +16,7 @@ from scripts.build_lambda_config import (
     _DUCKLAKE_MAINTENANCE_FUNCTION,
     _DUCKLAKE_MAINTENANCE_SMOKE_FUNCTION,
     _DUCKLAKE_READER_FUNCTION,
+    _DUCKLAKE_TELEMETRY_WRITER_FUNCTION,
     _DUCKLAKE_WRITER_FUNCTION,
 )
 
@@ -73,16 +74,16 @@ class TestOnlyFunctionsFiltersSet:
             targeted.append(cmd[cmd.index("--function-name") + 1])
         assert set(targeted) == {_DUCKLAKE_WRITER_FUNCTION, _DUCKLAKE_READER_FUNCTION, _DUCKLAKE_CATALOG_DR_FUNCTION}
 
-    def test_omitting_only_functions_deploys_all_five_unchanged(self):
+    def test_omitting_only_functions_deploys_every_function_unchanged(self):
         """A subset deploy that silently intersects to empty and reports success is exactly the
         false-green this feature exists to prevent -- proven by the inverse: omitting the filter
         must still deploy every function, byte-identical to prior behaviour."""
         with patch("scripts.build_lambda.subprocess.run") as mock_run:
-            mock_run.side_effect = _side_effects(5)
+            mock_run.side_effect = _side_effects(6)
             bd.update_lambda_functions("b", "p", "eu-west-2", only_ducklake=True, only_functions=None)
-        assert mock_run.call_count == 10
+        assert mock_run.call_count == 12
         targeted = []
-        for idx in range(0, 10, 2):
+        for idx in range(0, 12, 2):
             cmd = mock_run.call_args_list[idx][0][0]
             targeted.append(cmd[cmd.index("--function-name") + 1])
         assert set(targeted) == {
@@ -91,6 +92,7 @@ class TestOnlyFunctionsFiltersSet:
             _DUCKLAKE_MAINTENANCE_FUNCTION,
             _DUCKLAKE_MAINTENANCE_SMOKE_FUNCTION,
             _DUCKLAKE_CATALOG_DR_FUNCTION,
+            _DUCKLAKE_TELEMETRY_WRITER_FUNCTION,
         }
 
 

@@ -135,3 +135,16 @@ def test_main_lambda_row_rules_dispatch(monkeypatch, capsys):
     monkeypatch.setattr(smoke, "lambda_row_rules", lambda profile=None, region="eu-west-2": print("LAMBDA_ROW_RULES OK stub"))
     assert smoke.main(["--lambda-row-rules"]) == 0
     assert "LAMBDA_ROW_RULES OK" in capsys.readouterr().out
+
+
+def test_main_lambda_telemetry_dispatch(monkeypatch, capsys):
+    seen = {}
+
+    def fake(profile=None, region="eu-west-2"):
+        seen.update(profile=profile, region=region)
+        print("LAMBDA_TELEMETRY OK stub")
+
+    monkeypatch.setattr(smoke, "lambda_telemetry", fake)
+    assert smoke.main(["--lambda-telemetry", "--profile", "p", "--region", "r"]) == 0
+    assert seen == {"profile": "p", "region": "r"}
+    assert "LAMBDA_TELEMETRY OK" in capsys.readouterr().out
