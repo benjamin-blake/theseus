@@ -27,7 +27,8 @@
 # permissions, alarm) auto-apply behind the guard once the exec role exists in state.
 #
 # CODE/INFRA COUPLING (Decision 125, environment-taxonomy.yaml conformance): the aws_lambda_function
-# resource below carries a lifecycle block ignoring source_code_hash changes -- code deploys go via
+# resource below sets no source_code_hash (Terraform reads no build artifact) and keeps a lifecycle
+# block ignoring it as the conformance marker and a backstop -- code deploys go via
 # the governed CD channel (.github/workflows/deploy-ducklake-lambdas.yml, T2.38), never via this
 # apply path.
 # ---------------------------------------------------------------------------
@@ -142,9 +143,8 @@ resource "aws_lambda_function" "ducklake_maintenance_smoke" {
 
   reserved_concurrent_executions = var.ducklake_maintenance_smoke_reserved_concurrency
 
-  s3_bucket        = aws_s3_bucket.data_lake.id
-  s3_key           = "lambda-packages/ducklake-maintenance-smoke.zip"
-  source_code_hash = try(filemd5("${path.module}/../../lambda-packages/ducklake-maintenance-smoke.zip"), null)
+  s3_bucket = aws_s3_bucket.data_lake.id
+  s3_key    = "lambda-packages/ducklake-maintenance-smoke.zip"
 
   layers = [
     aws_lambda_layer_version.ducklake_deps.arn,
@@ -171,7 +171,8 @@ resource "aws_lambda_function" "ducklake_maintenance_smoke" {
   }
 
   # Decision 125/126 physical decoupling: code deploys go via the governed CD channel
-  # (.github/workflows/deploy-ducklake-lambdas.yml), not terraform.
+  # (.github/workflows/deploy-ducklake-lambdas.yml), not terraform. No source_code_hash is set; this
+  # block is the conformance marker and a backstop.
   lifecycle {
     ignore_changes = [source_code_hash]
   }

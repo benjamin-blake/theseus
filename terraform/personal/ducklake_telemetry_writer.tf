@@ -11,7 +11,9 @@
 # aws_lambda_function_url change route the saved plan to the tf-gated-apply Environment. In-budget
 # inline-policy writes and Lambda config changes auto-apply. Code ships through
 # deploy-ducklake-lambdas.yml (build_lambda --deploy is break-glass only), never through this apply:
-# the function below carries an ignore_changes block on source_code_hash (Decision 125/126).
+# the function below sets no source_code_hash (it is addressed by s3_bucket/s3_key; Terraform reads no
+# build artifact, environment-taxonomy.yaml conformance) and keeps an ignore_changes block on it as the
+# conformance marker and a backstop (Decision 125/126).
 # ---------------------------------------------------------------------------
 
 resource "aws_cloudwatch_log_group" "ducklake_telemetry_writer" {
@@ -117,9 +119,8 @@ resource "aws_lambda_function" "ducklake_telemetry_writer" {
   # Bounds catalog sessions to 5 containers (connection budget); slice 2c re-sizes it.
   reserved_concurrent_executions = 5
 
-  s3_bucket        = aws_s3_bucket.data_lake.id
-  s3_key           = "lambda-packages/ducklake-telemetry-writer.zip"
-  source_code_hash = try(filemd5("${path.module}/../../lambda-packages/ducklake-telemetry-writer.zip"), null)
+  s3_bucket = aws_s3_bucket.data_lake.id
+  s3_key    = "lambda-packages/ducklake-telemetry-writer.zip"
 
   layers = [
     aws_lambda_layer_version.ducklake_deps.arn,
@@ -148,6 +149,8 @@ resource "aws_lambda_function" "ducklake_telemetry_writer" {
   }
 
   # Decision 125/126 physical decoupling: code deploys go via the governed CD channel, not terraform.
+  # No source_code_hash is set (Terraform reads no build artifact); this block is the conformance marker
+  # and a backstop if the argument is ever reintroduced.
   lifecycle {
     ignore_changes = [source_code_hash]
   }

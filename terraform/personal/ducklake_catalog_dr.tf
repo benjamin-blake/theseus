@@ -181,17 +181,16 @@ resource "aws_lambda_layer_version" "ducklake_pgclient" {
   compatible_runtimes      = ["python3.12"]
   compatible_architectures = ["x86_64"]
 
-  s3_bucket        = aws_s3_bucket.data_lake.id
-  s3_key           = "lambda-packages/ducklake-pgclient-layer.zip"
-  source_code_hash = try(filemd5("${path.module}/../../lambda-packages/ducklake-pgclient-layer.zip"), null)
+  s3_bucket = aws_s3_bucket.data_lake.id
+  s3_key    = "lambda-packages/ducklake-pgclient-layer.zip"
 
   # T2.42 c1 (rec-2646/rec-2654 pattern extended to layers, Decision 126 pt3/pt5, DEP-03): decouples
-  # routine rebuild churn from this IAM-gated apply path -- without this, every rebuild's
-  # non-reproducible zip bytes surface as a layer create+delete (replace) diff, which the Decision-77
-  # guard blocks as a delete action (routes to gated-apply for zero real change). s3_key stays the
+  # routine rebuild churn from this IAM-gated apply path. No source_code_hash is set (Terraform reads no
+  # build artifact) and this block stays as the conformance marker and a backstop. Terraform never
+  # republishes a layer on content change (it did not before either; rec-4253). s3_key stays the
   # fixed literal (unaffected by T2.42 c3's content-addressed upload path).
   #
-  # SILENT-FREEZE GUARD: source_code_hash is now ignored, so Terraform only publishes a new layer
+  # SILENT-FREEZE GUARD: source_code_hash is not set, so Terraform only publishes a new layer
   # version when `description` changes. This description is fully static (no interpolation) -- ANY
   # content bump (e.g. a pg_dump/libpq version bump) leaves the description unchanged, so terraform
   # publishes NO new layer version and the function silently keeps the OLD pgclient binaries. Any
@@ -216,9 +215,8 @@ resource "aws_lambda_function" "ducklake_catalog_dr" {
   timeout       = 300
   memory_size   = 512
 
-  s3_bucket        = aws_s3_bucket.data_lake.id
-  s3_key           = "lambda-packages/ducklake-catalog-dr.zip"
-  source_code_hash = try(filemd5("${path.module}/../../lambda-packages/ducklake-catalog-dr.zip"), null)
+  s3_bucket = aws_s3_bucket.data_lake.id
+  s3_key    = "lambda-packages/ducklake-catalog-dr.zip"
 
   layers = [
     aws_lambda_layer_version.ducklake_pgclient.arn,
@@ -245,8 +243,8 @@ resource "aws_lambda_function" "ducklake_catalog_dr" {
   }
 
   # Decision 125 physical decoupling: code deploys go through the governed code-deploy channel
-  # (build_lambda --deploy is break-glass), not terraform. Without this, every rebuild's non-reproducible zip bytes
-  # trip a Terraform diff on this IAM-gated apply path (rec-2646/rec-2654).
+  # (build_lambda --deploy is break-glass), not terraform. No source_code_hash is set (Terraform reads no
+  # build artifact); this block is the conformance marker and a backstop (rec-2646/rec-2654).
   lifecycle {
     ignore_changes = [source_code_hash]
   }

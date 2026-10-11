@@ -169,9 +169,8 @@ resource "aws_lambda_function" "ducklake_maintenance" {
   # model (no reserved concurrency, clause 3). See the variable definition above for the quota history.
   reserved_concurrent_executions = var.ducklake_maintenance_reserved_concurrency
 
-  s3_bucket        = aws_s3_bucket.data_lake.id
-  s3_key           = "lambda-packages/ducklake-maintenance.zip"
-  source_code_hash = try(filemd5("${path.module}/../../lambda-packages/ducklake-maintenance.zip"), null)
+  s3_bucket = aws_s3_bucket.data_lake.id
+  s3_key    = "lambda-packages/ducklake-maintenance.zip"
 
   layers = [
     aws_lambda_layer_version.ducklake_deps.arn,
@@ -208,8 +207,8 @@ resource "aws_lambda_function" "ducklake_maintenance" {
   }
 
   # Decision 125 physical decoupling: code deploys go via build_lambda --ducklake-only --deploy
-  # (update-function-code), not terraform. Without this, every rebuild's non-reproducible zip bytes
-  # trip a Terraform diff on this IAM-gated apply path (rec-2646/rec-2654).
+  # (update-function-code), not terraform. No source_code_hash is set (Terraform reads no build artifact);
+  # this block is the conformance marker and a backstop (rec-2646/rec-2654).
   lifecycle {
     ignore_changes = [source_code_hash]
   }

@@ -206,10 +206,10 @@ jobs:
         # the commit plan.bin was planned from, so terraform apply's own state/plan-serial checks
         # operate against the same tree the guard and reviewer inspected (Decision 77 no-TOCTOU).
         # NOT because a DuckLake lambda-zip rebuild needs to reproduce source_code_hash bytes from
-        # this tree -- Decision 154 / rec-2862 replaced that rebuild with fetch_reviewed() below,
-        # and every DuckLake function and layer carries ignore_changes = [source_code_hash]
-        # (ducklake_lambdas.tf:74,94,302,347) regardless, so filemd5() against this checkout was
-        # never load-bearing for the applied diff (see docs/contracts/environment-taxonomy.yaml).
+        # this tree -- Decision 154 / rec-2862 replaced that rebuild with fetch_reviewed() below.
+        # Terraform reads no build artifact (docs/contracts/environment-taxonomy.yaml conformance;
+        # validate_terraform_no_build_artifact_reads), so nothing under lambda-packages/ is a plan
+        # input for this checkout.
         # Any red commit Reconcile is ever dispatched against postdates this plan's merge (Reconcile
         # cannot meaningfully run before it exists), so scripts/terraform_apply_guard.py --digest,
         # scripts/ci/review_verdict.py, and scripts/ci/reconcile_target.py are always present here.
@@ -322,11 +322,11 @@ jobs:
         # default "." would still resolve the OLD RED_SHA module and die on the unrecognized
         # --mode argument. Consequence: lambda-packages/ lands under .dispatch-tooling/, NOT at
         # the workspace root -- safe because the fetch path's load-bearing output is the
-        # server-side copy_object onto the fixed key, and every DuckLake function and layer
-        # carries ignore_changes = [source_code_hash] (ducklake_lambdas.tf:74,94,302,347), so the
-        # verbatim saved-plan apply never re-evaluates filemd5 against the local tree -- the local
-        # download itself is dead weight on this call site (~183 MB terraform never reads here),
-        # retained only for call-site symmetry with the sandbox path, not for correctness. No
+        # server-side copy_object onto the fixed key, and Terraform reads no build artifact
+        # (environment-taxonomy.yaml conformance; validate_terraform_no_build_artifact_reads), so
+        # nothing under lambda-packages/ is a plan input -- the local download itself is dead
+        # weight on this call site (~183 MB terraform never reads; rec-4248 makes the fetch
+        # copy-only), retained only for call-site symmetry with the sandbox path. No
         # rebuild here, so no re-assert either -- Decision 77 no-TOCTOU is preserved by the
         # ORIGINAL PR-time byte-identical assert plus this fetch's own fail-closed missing-object
         # check (scripts/ci/ducklake_artifacts.py fetch_reviewed()), not by a second rebuild-assert.
@@ -734,9 +734,9 @@ jobs:
         # a mis-wired working-directory here would break the resolution the whole plan exists to
         # deliver. Consequence: lambda-packages/ lands under .dispatch-tooling/, NOT at the
         # workspace root -- safe because the fetch path's load-bearing output is the server-side
-        # copy_object onto the fixed key, and every DuckLake function and layer carries
-        # ignore_changes = [source_code_hash] (ducklake_lambdas.tf:74,94,302,347), so the
-        # verbatim saved-plan apply never re-evaluates filemd5 against the local tree.
+        # copy_object onto the fixed key, and Terraform reads no build artifact
+        # (environment-taxonomy.yaml conformance; validate_terraform_no_build_artifact_reads), so
+        # nothing under lambda-packages/ is a plan input (rec-4248 makes the fetch copy-only).
         uses: ./.dispatch-tooling/.github/actions/build-ducklake-artifacts
         with:
           mode: fetch
