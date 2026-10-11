@@ -3,18 +3,22 @@
 TestEndToEnd is the sole live-boundary test (it needs both @pytest.mark.integration, for the
 conftest socket-block tripwire, AND @pytest.mark.aws, for conftest's _block_unmocked_aws_client
 opt-out). It deliberately carries NO credentials-skip guard: absent credentials must fail this
-test loudly, not silently pass it.
+test loudly, not silently pass it. It runs only when invoked explicitly, never inside a CI tier or
+a coverage measurement (rec-4273); TestCreateServer is the hermetic coverage of create_server.
 """
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import anyio
 import pytest
 from mcp import types
 
 from scripts.agent_sdk import errors as agent_errors
+from scripts.agent_sdk import mcp_server
 from scripts.agent_sdk.mcp_server import _invoke_verb, build_tool_registry, create_server
 from src.common.ducklake_reader_client import ReaderInvokeError
 
@@ -219,27 +223,68 @@ class TestEndToEnd:
     directly -- a direct named() call passes on unmodified main and proves nothing about this
     plan. No credentials-skip guard: absent credentials must fail this test, not skip it green."""
 
-    def test_rec_by_id_tool_returns_exactly_one_row_against_live_boundary(self, _allow_network_for_integration: None) -> None:
+    def test_recs_by_ids_tool_returns_exactly_one_row_against_live_boundary(
+        self, _allow_network_for_integration: None
+    ) -> None:
         server = create_server()
 
         tools = anyio.run(_list_tools_via_server, server)
         names = {t.name for t in tools}
-        assert "open_recs" in names
-        assert "rec_by_id" in names
+        assert "recs_by_ids" in names
+        assert {"open_recs", "preflight_signal_rows"}.isdisjoint(names)
 
-        open_result = anyio.run(_call_tool_via_server, server, "open_recs", {})
-        assert not open_result.isError, open_result.content
-        assert open_result.structuredContent is not None
-        open_rows = open_result.structuredContent["rows"]
-        assert open_rows, "expected at least one open recommendation to discover an id from"
-        rec_id = open_rows[0]["id"]
+        result = anyio.run(_call_tool_via_server, server, "recs_by_ids", {"ids": "rec-100"})
+        assert not result.isError, result.content
+        assert result.structuredContent is not None
+        rows = result.structuredContent["rows"]
+        assert len(rows) == 1
+        assert rows[0]["id"] == "rec-100"
 
-        rec_result = anyio.run(_call_tool_via_server, server, "rec_by_id", {"id": rec_id})
-        assert not rec_result.isError, rec_result.content
-        assert rec_result.structuredContent is not None
-        rec_rows = rec_result.structuredContent["rows"]
-        assert len(rec_rows) == 1
-        assert rec_rows[0]["id"] == rec_id
+
+class TestCreateServer:
+    """Hermetic create_server/main coverage: a stub reader or patched seam, never the network."""
+
+    def _server(self, **named: Any) -> tuple[Any, _StubReader]:
+        reader = _StubReader({"shown": _verb_meta(agent_facing=True), "hidden": _verb_meta(agent_facing=False)}, **named)
+        return create_server(reader=reader), reader  # type: ignore[arg-type]
+
+    def test_lists_only_agent_facing_verbs(self) -> None:
+        server, _ = self._server()
+        assert [t.name for t in anyio.run(_list_tools_via_server, server)] == ["shown"]
+
+    def test_call_forwards_arguments_and_returns_rows(self) -> None:
+        server, reader = self._server(named_result=[{"id": "rec-1"}])
+        result = anyio.run(_call_tool_via_server, server, "shown", {"ids": "rec-1"})
+        assert not result.isError, result.content
+        assert reader.named_calls == [("shown", {"ids": "rec-1"})]
+        assert result.structuredContent == {"rows": [{"id": "rec-1"}], "row_count": 1}
+
+    def test_unknown_tool_returns_an_error_result(self) -> None:
+        server, reader = self._server()
+        for name in ("absent", "hidden"):
+            assert anyio.run(_call_tool_via_server, server, name, {}).isError
+        assert reader.named_calls == []
+
+    def test_run_stdio_serves_over_the_stdio_streams(self) -> None:
+        @asynccontextmanager
+        async def fake_stdio():
+            yield ("read", "write")
+
+        server = MagicMock()
+        server.run = AsyncMock()
+        with patch.object(mcp_server, "stdio_server", fake_stdio):
+            anyio.run(mcp_server._run_stdio, server)
+        server.run.assert_awaited_once()
+        assert server.run.await_args.args[:2] == ("read", "write")
+
+    def test_main_builds_the_server_and_runs_stdio(self) -> None:
+        with (
+            patch.object(mcp_server, "create_server", return_value="srv") as build,
+            patch.object(mcp_server.anyio, "run") as run,
+        ):
+            mcp_server.main()
+        build.assert_called_once_with()
+        run.assert_called_once_with(mcp_server._run_stdio, "srv")
 
 
 class TestAgentFacingProjection:

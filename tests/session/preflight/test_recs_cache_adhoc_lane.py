@@ -20,7 +20,7 @@ from __future__ import annotations
 import contextlib
 import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from scripts.preflight import recs_cache
 from scripts.preflight.recs_signals_source import RecsSignalInputs
@@ -175,6 +175,13 @@ def _base_main_patches() -> list:
         patch("scripts.preflight.ci_rca_signals._check_ci_rca_liveness", return_value=None),
         patch("scripts.preflight.ci_rca_signals._check_convergence_sensor_liveness", return_value=None),
     ]
+
+
+class TestPlanWalkStub:
+    def test_main_level_tests_see_a_stubbed_plan_walk(self) -> None:
+        walk = recs_cache._landed_followon_rec_ids
+        assert isinstance(walk, MagicMock)
+        assert walk() == {}
 
 
 class TestAdHocLaneReportWiring:

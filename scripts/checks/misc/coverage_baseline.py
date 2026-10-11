@@ -37,6 +37,9 @@ orphaned and may later write .coverage.json or .coverage into the repo root (bef
 group-directed kill took it down with validate; moving those artefacts out of the root is owned by
 rec-3615/rec-3282); (b) the timeout arm is POSIX-only, matching the vp-replay "every surface is
 Linux" precedent.
+
+The child selects tests with `-m "not integration"`, the same expression the full-tier unit-test command uses, so a
+live-boundary test never runs inside a coverage measurement (rec-4273).
 """
 
 from __future__ import annotations
@@ -121,6 +124,8 @@ def measure_and_check(source_files: list, *, root, map_source_to_test, is_empty_
                 "-m",
                 "pytest",
                 test_path_str,
+                "-m",
+                "not integration",
                 f"--cov={cov_target}",
                 "--cov-report=json:.coverage.json",
                 "-q",
