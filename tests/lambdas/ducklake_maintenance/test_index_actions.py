@@ -204,6 +204,18 @@ def test_probe_without_a_data_path_reports_the_error_class(monkeypatch):
     assert out == {"engaged": None, "error_class": "DuckLakeRuntimeError"}
 
 
+def test_probe_column_match_is_case_insensitive():
+    # DuckLake's catalog stores column types in its own lowercase spelling ("varchar"), not DuckDB's "VARCHAR".
+    assert "lower(column_type) = 'varchar'" in ia._PROBE_COLUMN_SQL
+
+
+@pytest.mark.parametrize("fetch", [[None], [(7, "ops_things"), None]])
+def test_probe_names_a_missing_target(monkeypatch, fetch):
+    monkeypatch.setattr(ia, "_idx_scan", lambda cur: 1)
+    out = ia._probe_pushdown(_Cursor(_Conn(fetch=fetch)), {"host": _HOST})
+    assert out == {"engaged": None, "error_class": "ProbeTargetMissing"}
+
+
 def test_probe_error_never_fails_the_verb(monkeypatch):
     _connect(monkeypatch, _Conn())
     _script(monkeypatch, {"ducklake_ops": [_status(present=True, valid=True), _status(present=True, valid=True)]})
