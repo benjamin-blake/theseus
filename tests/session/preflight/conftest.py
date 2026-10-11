@@ -32,6 +32,11 @@ def _disable_reader_and_git_fetch(request: pytest.FixtureRequest):
     Git fetch: check_main_freshness() shells out to ``git fetch origin main``; patch it to
     a deterministic stub for every test except TestCheckMainFreshness (which exercises the
     real function via subprocess.run mocking).
+
+    Plan walk: main() calls recs_cache._landed_followon_rec_ids() (an unbounded walk of the plan corpus)
+    before the recs read; it is stubbed to {} for every test except TestAdHocLaneDerivations, which owns
+    the real function and reaches it with a tmp plans_dir (rec-4273: unstubbed, it doubled every
+    main()-level test and pushed the preflight.py coverage child past its cap).
     """
     from contextlib import ExitStack  # noqa: PLC0415
 
@@ -73,6 +78,8 @@ def _disable_reader_and_git_fetch(request: pytest.FixtureRequest):
         stack.enter_context(patch("session_preflight._sync_ops_pull", return_value={}))
         stack.enter_context(patch("session_preflight.fetch_recs_signal_inputs", return_value=recs_inputs_stub))
         stack.enter_context(patch("session_preflight.platform_roadmap.compute_state_dict", new=live_state_dict))
+        if class_name != "TestAdHocLaneDerivations":
+            stack.enter_context(patch("scripts.preflight.recs_cache._landed_followon_rec_ids", return_value={}))
         if class_name != "TestCheckMainFreshness":
             stack.enter_context(patch("scripts.preflight.env_git.check_main_freshness", return_value=freshness_stub))
         # dependabot.check_stranded_prs shells out to `gh pr list` on every main() run and,

@@ -8,8 +8,11 @@ named-verb boundary only). A failed describe() at startup RAISES; there is no fa
 hardcoded verb list (Decision 55).
 
 WRITE LEG DEFERRED (operator decision, round-1 plan critique): the write verbs' only prospective
-bound was a module-level Python literal inside this agent-editable server, which is weaker than the
-in-handler guard Decision 143 requires. This module therefore projects reads only.
+bound was a module-level Python literal inside this agent-editable server. Like any guard in this
+agent-editable module, that is the in-handler kind Decision 143 cl.1/cl.3 rejects. Decision 143
+requires the write leg's identity boundary to be enforced by IAM and resource shape, kept
+outside the agent merge loop, and T4.10a c7 gates the write leg on it. This module therefore
+projects reads only until that boundary exists.
 
 KNOWN LIMITATION: the tool list is fetched once at process startup (stdio transport is one process
 per session) -- a verb added to NAMED_READS after this process started surfaces only on the next
