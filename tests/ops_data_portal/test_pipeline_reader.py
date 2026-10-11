@@ -11,8 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-
-from tests.fixtures.ops_portal_records import VALID_FIELDS as _VALID_FIELDS  # noqa: E402
+from tests.fixtures.ops_portal_records import VALID_FIELDS as _VALID_FIELDS
 
 
 class TestPipelineConsolidation:
