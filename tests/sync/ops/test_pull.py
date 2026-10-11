@@ -298,6 +298,12 @@ class TestRecsCacheRetired:
         assert "ops_recommendations" not in result["pulled"]
         assert not stale.exists()
 
+    def test_stale_file_that_cannot_be_deleted_is_logged_not_raised(self, tmp_path):
+        from scripts.sync import ops as sync_ops
+
+        with patch("pathlib.Path.unlink", side_effect=OSError("denied")), patch("scripts.sync.ops._LOGS_DIR", tmp_path):
+            sync_ops._delete_retired_recs_cache()
+
     def test_warm_sync_never_requests_recs_and_deletes_stale_file(self, tmp_path):
         from scripts.sync import ops as sync_ops
 

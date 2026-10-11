@@ -576,3 +576,15 @@ class TestAssertClearReaderBacked:
             patch(self._FETCH, return_value=self._inputs("ok", [])),
         ):
             assert main(["--assert-clear"]) == 0
+
+
+class TestEscapeModeRowAndDefaultNow:
+    def test_row_escape_mode_reads_detection_gap(self) -> None:
+        from scripts.ci_rca.probe_health import _row_escape_mode
+
+        row = {"context_v2_json": json.dumps({"detection_gap": {"escape_mode": "undetermined"}})}
+        assert _row_escape_mode(row) == "undetermined"
+        assert _row_escape_mode({"context_v2_json": json.dumps({"detection_gap": "x"})}) is None
+
+    def test_escape_mode_rate_default_now(self) -> None:
+        assert compute_escape_mode_abstention_rate([]) == (0, 0, 0.0)

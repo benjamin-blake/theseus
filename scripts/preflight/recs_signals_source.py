@@ -36,7 +36,7 @@ def fetch_recs_signal_inputs(reader: Any = None, followon_ids: Iterable[str] = (
     """Make the two bounded reads. *followon_ids* ride the single `preflight_signal_rows` call, comma-joined."""
     recs_read: dict[str, Any] = {"calls": 0, "bytes": {}}
     try:
-        active = reader if reader is not None else _common._make_reader()
+        active: Any = reader if reader is not None else _common._make_reader()
         recs_read["calls"] += 1
         tally_rows = active.named("open_recs_tally")
         recs_read["bytes"]["open_recs_tally"] = _row_bytes(tally_rows)

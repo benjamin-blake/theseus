@@ -280,23 +280,23 @@ def main(roadmap_detail: str = "slim") -> int:
         budget_breach_summary = fut_budget_breach_summary.result()
         dependabot_stranded_prs = fut_dependabot.result()
 
-    recs_ok = recs_inputs.status == "ok" and _rec_result != "reader_unreachable"
+    recs_ok = recs_inputs.status == "ok" and isinstance(_rec_result, tuple)
     recs_read_status = "ok" if recs_ok else "reader_unreachable"
-    if recs_ok:
-        open_recommendations, aging_recommendations, non_automatable_count, _ = _rec_result  # type: ignore[misc]
+    open_recommendations = aging_recommendations = non_automatable_count = None
+    ci_rca_correlation: dict = {}
+    if isinstance(_rec_result, tuple) and recs_ok:
+        open_recommendations, aging_recommendations, non_automatable_count, _ = _rec_result
         closed_ci_rca_recs = ci_rca_signals._derive_ci_rca_closed(recs_rows_cache or [])
         ci_rca_correlation = correlation.correlate_ci_rca_with_main(
-            ci_rca_recs, recent_main_commits, closed_ci_rca_recs=closed_ci_rca_recs
+            ci_rca_recs or [], recent_main_commits, closed_ci_rca_recs=closed_ci_rca_recs
         )
         ci_rca_correlation = ci_rca_signals.annotate_prior_deferrals(ci_rca_correlation)
-        ci_rca_signals.print_ci_rca_recs(ci_rca_recs, correlation=ci_rca_correlation)
-        ci_rca_signals.print_ci_rca_dispute_recs(ci_rca_dispute_recs)
-        ci_rca_signals.print_ci_rca_undetermined_recs(ci_rca_undetermined_recs)
+        ci_rca_signals.print_ci_rca_recs(ci_rca_recs or [], correlation=ci_rca_correlation)
+        ci_rca_signals.print_ci_rca_dispute_recs(ci_rca_dispute_recs or [])
+        ci_rca_signals.print_ci_rca_undetermined_recs(ci_rca_undetermined_recs or [])
     else:
         # Unavailable is NEVER an empty list or a zero (Decision 55): every recs-derived field is null.
-        open_recommendations = aging_recommendations = non_automatable_count = None
         ci_rca_recs = ci_rca_dispute_recs = ci_rca_undetermined_recs = None
-        ci_rca_correlation = {}
         print("\n--- CI-RCA signals UNAVAILABLE (reader unreachable) -- hard block at plan commitment ---\n")
 
     ci_rca_abstention_gauge = ci_rca_gauges._compute_ci_rca_abstention(recs_rows_cache)
@@ -372,8 +372,8 @@ def main(roadmap_detail: str = "slim") -> int:
         "ci_rca_unresolved_recs": (ci_rca_correlation.get("unresolved") or []) if recs_ok else None,
         "ci_rca_likely_resolved_recs": (ci_rca_correlation.get("likely_resolved") or []) if recs_ok else None,
         "ci_rca_dispute_recs": ci_rca_dispute_recs,
-        "ci_rca_undetermined_recs": ci_rca_undetermined_recs[:5] if recs_ok else None,
-        "ci_rca_undetermined_total": len(ci_rca_undetermined_recs) if recs_ok else None,
+        "ci_rca_undetermined_recs": (ci_rca_undetermined_recs or [])[:5] if recs_ok else None,
+        "ci_rca_undetermined_total": len(ci_rca_undetermined_recs or []) if recs_ok else None,
         "ci_rca_abstention_gauge": ci_rca_abstention_gauge,
         "ci_rca_escape_mode_gauge": ci_rca_escape_mode_gauge,
         "ci_rca_probe_health_escalation": ci_rca_probe_health_escalation,
@@ -394,7 +394,7 @@ def main(roadmap_detail: str = "slim") -> int:
     report["provisional_contracts_due"] = provisional_contracts_due
     report["decision_conditions"] = decision_conditions_bucket
     report["non_automatable_softcap_breached"] = (
-        recs_cache._check_non_automatable_softcap(non_automatable_count) if recs_ok else None
+        recs_cache._check_non_automatable_softcap(non_automatable_count) if non_automatable_count is not None else None
     )
     # Ad-hoc /orient lane (audit PDB-01, B1-R4 + B4-O1): pure derivations over the bounded signal rows; null
     # (never []) when the rows are unavailable -- /orient's recs_read_status-keyed clause reads the null.
