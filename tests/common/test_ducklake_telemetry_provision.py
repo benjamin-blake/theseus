@@ -210,3 +210,10 @@ def test_provision_reports_counters_and_tables() -> None:
     result = prov.provision_telemetry_catalog(con, semantics=SEM)
     assert list(result.tables) == NINE and len(result.tables) == 9
     assert result.counters == {"ops_tenants": 0, "ops_projects": 0}
+
+
+def test_inspect_partitions_reports_only_present_target_tables() -> None:
+    transforms = _declared_transforms()
+    transforms["telemetry_agents"] = ()
+    con = FakeCon(("telemetry_agents", "telemetry_sessions"), transforms=transforms, extra_tables=("unrelated_smoke_table",))
+    assert prov.inspect_partitions(con, set(con.existing), SEM) == {"telemetry_agents": False, "telemetry_sessions": True}
