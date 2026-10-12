@@ -58,6 +58,12 @@ conditions:
 
 **Related:** Decision 88 cl.1(ii), 103, 73 cl.4, 84 I-3, 55, 155 cl.2, 177, 181, 214; rec-4232, rec-4235, rec-4236, rec-4237, rec-4240.
 
+> **Amended (2026-10-12, PLAN-recs-related-verb / rec-4235, mints no new Decision number):** clause 3's graph-aware
+> ranking shipped as the `recs_related` reader verb (registry v5, agent_facing false) behind `scripts.recs_related`; the
+> planning surfaces read it in place of the interim `recs_for_files`. `recs_for_files` and `open_recs` are deprecated and
+> removed by rec-4240. The Coverage residuals rec-4235 owned (the cache-reference CI ban and the audit dedup
+> instructions) now belong to rec-4279 (Decision 181 point 2). This body is otherwise unedited.
+
 ---
 
 ## Decision 214: The DuckLake catalog stays on Neon, tuned now and capped next, with measured triggers to move (amends Decision 107 and Decision 88) (Decided)

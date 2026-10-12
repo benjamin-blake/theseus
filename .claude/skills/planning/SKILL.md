@@ -94,7 +94,7 @@ scoping ANY tier_item -- the single authoritative definition of the four checks 
 discipline rule. Do not re-author it here.
 
 ## Suggest Aligned Recommendations
-No local recs cache exists (`bin/venv-python -m scripts.sync.ops sync` no longer pulls `ops_recommendations`). INTERIM (CD.10 agent tool surface; graph-aware ranking is rec-4235): with the ducklake-reads MCP, call `recs_for_files` over the plan's scope files plus `recs_by_title_prefix`:
+No local recs cache exists. Run `bin/venv-python -m scripts.recs_related <scope files>` (ranked hits with why and a completeness envelope; `--terms` for keyword search; bodies via `recs_by_ids`), plus `recs_by_title_prefix`:
 1. Extract keywords and scope file paths from the task description
 2. Match the returned open recs against the task's `title`, `file`, and `context`
 3. Present top 3-5 matches (if any):

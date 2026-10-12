@@ -20,7 +20,7 @@ from typing import Any
 # crosses the boundary on this path. `{tbl}` = current projection, `{hist}` = history table.
 # ---------------------------------------------------------------------------
 
-NAMED_READS_VERSION = 4
+NAMED_READS_VERSION = 5
 
 # Sources whose rows preflight's bounded read model carries (single source for the derivations and the SQL).
 PREFLIGHT_SIGNAL_SOURCES: tuple[str, ...] = (
@@ -37,6 +37,46 @@ _OPEN_CRITICAL = "(status = 'open' AND lower(priority) = 'critical')"
 _HEAVY_ROW = (
     f"({_OPEN_CRITICAL} OR ({_SIGNAL} AND (status IN ('open', 'in_progress') "
     "OR created_timestamp > (current_timestamp - INTERVAL 30 DAY))))"
+)
+
+# recs_related (Decision 215 cl.3): the five binds are unnested exactly once each, in params order (files, near, terms,
+# exclude_ids, max_rows). `cand` is MATERIALIZED so the per-row regex runs only on rows that passed the contains()
+# prefilter; the exclude guard is referenced in WHERE so DuckDB cannot optimise error() away.
+_RECS_RELATED_SQL = (
+    "WITH q AS (SELECT p AS path FROM (SELECT unnest(string_split(?, ',')) AS p) WHERE p <> ''), "
+    "near AS (SELECT split_part(x, '|', 1) AS path, CAST(split_part(x, '|', 2) AS DOUBLE) AS w "
+    "FROM (SELECT unnest(string_split(?, ',')) AS x) WHERE x <> ''), "
+    "terms_in AS (SELECT split_part(x, '|', 1) AS term, CAST(split_part(x, '|', 2) AS DOUBLE) AS w "
+    "FROM (SELECT unnest(string_split(?, ',')) AS x) WHERE x <> ''), "
+    "ex AS (SELECT string_split(?, ',') AS ids), "
+    "guard AS (SELECT CASE WHEN len(ids) > 200 "
+    "THEN error('recs_related: exclude_ids over 200 ids -- narrow the query') END AS g FROM ex), "
+    "openr AS (SELECT id, title, status, priority, effort, source, file, created_timestamp, context, "
+    "lower(title || ' ' || coalesce(context, '')) AS doc FROM {tbl} WHERE status = 'open'), "
+    "n AS (SELECT count(*) AS n_open FROM openr), "
+    "cand AS MATERIALIZED (SELECT o.id, o.doc, t.term, t.w FROM openr o JOIN terms_in t ON contains(o.doc, t.term)), "
+    "hits AS (SELECT id, term, w FROM cand "
+    "WHERE regexp_matches(doc, '(^|[^a-z0-9_])' || regexp_escape(term) || '($|[^a-z0-9_])')), "
+    "df AS (SELECT term, count(*) AS df FROM hits GROUP BY term), "
+    "term_scores AS (SELECT h.id, sum(h.w * ln(1 + n.n_open / (1 + df.df))) AS term_w, "
+    "count(*) FILTER (WHERE df.df <= 0.05 * n.n_open) AS admitting_hits, "
+    "string_agg(h.term, ' ' ORDER BY h.term) AS matched_terms "
+    "FROM hits h JOIN df USING (term) CROSS JOIN n GROUP BY h.id), "
+    "nearw AS (SELECT path, max(w) AS w FROM near WHERE path <> '' GROUP BY path), "
+    "scored AS (SELECT o.id, o.title, o.status, o.priority, o.effort, o.source, o.file, o.created_timestamp, "
+    "coalesce(o.file IN (SELECT path FROM q), false) AS direct, "
+    "coalesce(nw.w, 0) AS near_w, coalesce(ts.term_w, 0) AS term_w, coalesce(ts.admitting_hits, 0) AS admitting_hits, "
+    "ts.matched_terms, left(o.context, 200) AS snippet "
+    "FROM openr o CROSS JOIN guard CROSS JOIN ex "
+    "LEFT JOIN nearw nw ON nw.path = o.file "
+    "LEFT JOIN term_scores ts ON ts.id = o.id "
+    "WHERE guard.g IS NULL AND NOT list_contains(ex.ids, o.id)) "
+    "SELECT id, title, status, priority, effort, source, file, created_timestamp, direct, near_w + term_w AS score, "
+    "matched_terms, snippet, count(*) OVER () AS total, count(*) FILTER (WHERE direct) OVER () AS direct_total "
+    "FROM scored WHERE direct OR near_w > 0 OR admitting_hits > 0 "
+    "ORDER BY direct DESC, CASE lower(priority) WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 "
+    "WHEN 'low' THEN 3 ELSE 4 END, score DESC, created_timestamp DESC, id "
+    "LIMIT least(CAST(? AS INTEGER), 100)"
 )
 
 
@@ -60,7 +100,10 @@ NAMED_READS: dict[str, NamedRead] = {
             verb="open_recs",
             table="ops_recommendations",
             sql=("SELECT id, title, context, created_timestamp, automatable FROM {tbl} WHERE status = 'open' ORDER BY id"),
-            description="Open recommendations with the fields the preflight tally consumes.",
+            description=(
+                "deprecated: use open_recs_tally or preflight_signal_rows (removal rec-4240). "
+                "Open recommendations with the fields the preflight tally consumes."
+            ),
             paginable=True,
             agent_facing=False,
         ),
@@ -86,7 +129,21 @@ NAMED_READS: dict[str, NamedRead] = {
                 "WHERE status = 'open' AND list_contains(string_split(?, ','), file) ORDER BY id"
             ),
             params=("files",),
-            description="INTERIM direct-hit relevance read: open recs targeting any file in the comma-joined list (rec-4235).",
+            description=(
+                "deprecated: use recs_related via scripts.recs_related (removal rec-4240). "
+                "INTERIM direct-hit relevance read: open recs targeting any file in the comma-joined list."
+            ),
+        ),
+        NamedRead(
+            verb="recs_related",
+            table="ops_recommendations",
+            sql=_RECS_RELATED_SQL,
+            params=("files", "near", "terms", "exclude_ids", "max_rows"),
+            description=(
+                "Ranked, bounded relevance lookup of open recs behind scripts.recs_related (direct anchor hits, weighted "
+                "near paths, whole-token term hits); a relevance lookup, not a bulk path."
+            ),
+            agent_facing=False,
         ),
         NamedRead(
             verb="open_recs_tally",

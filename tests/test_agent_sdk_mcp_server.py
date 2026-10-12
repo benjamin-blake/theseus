@@ -231,7 +231,7 @@ class TestEndToEnd:
         tools = anyio.run(_list_tools_via_server, server)
         names = {t.name for t in tools}
         assert "recs_by_ids" in names
-        assert {"open_recs", "preflight_signal_rows"}.isdisjoint(names)
+        assert {"open_recs", "preflight_signal_rows", "recs_related"}.isdisjoint(names)
 
         result = anyio.run(_call_tool_via_server, server, "recs_by_ids", {"ids": "rec-100"})
         assert not result.isError, result.content
@@ -300,7 +300,7 @@ class TestAgentFacingProjection:
         from src.common.ducklake_scd2_schema import describe_named_reads
 
         names = {t.name for t in build_tool_registry(describe_named_reads())}
-        assert {"open_recs", "preflight_signal_rows"}.isdisjoint(names)
+        assert {"open_recs", "preflight_signal_rows", "recs_related"}.isdisjoint(names)
         assert {"recs_by_ids", "recs_for_files", "open_recs_tally"} <= names
 
     def test_tool_note_cites_the_retirement_decision(self):

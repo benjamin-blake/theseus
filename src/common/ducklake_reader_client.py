@@ -144,13 +144,29 @@ ALL_TABLE_COLUMNS: object = object()
 
 # Same-commit parity with src.common.ducklake_scd2_schema.NAMED_READS_VERSION, asserted by
 # test_verb_fields_parity.py::test_version_pin_matches_registry.
-_NAMED_READS_VERSION_PIN = 4
+_NAMED_READS_VERSION_PIN = 5
 
 VERB_FIELDS: dict[str, tuple[str, ...] | object] = {
     "open_recs": ("id", "title", "context", "created_timestamp", "automatable"),
     "rec_by_id": ALL_TABLE_COLUMNS,
     "recs_by_ids": ALL_TABLE_COLUMNS,
     "recs_for_files": ("id", "title", "status", "priority", "effort", "source", "file", "tags", "created_timestamp"),
+    "recs_related": (
+        "id",
+        "title",
+        "status",
+        "priority",
+        "effort",
+        "source",
+        "file",
+        "created_timestamp",
+        "direct",
+        "score",
+        "matched_terms",
+        "snippet",
+        "total",
+        "direct_total",
+    ),
     "open_recs_tally": ("open_count", "aging_count", "non_automatable_count"),
     "preflight_signal_rows": (
         "id",
