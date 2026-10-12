@@ -218,5 +218,6 @@ def test_ports_pc01_names_the_telemetry_writer_edge() -> None:
     text = " ".join(pc01["description"].split())
     assert "src/lambdas/ducklake_telemetry_writer/handler.py" in text and "Decision 213" in text
     assert "function_url adapter" in text and "rec-4024" not in text and "no port row is added" in text
-    assert ports["amendment_log"][0]["date"] == "2026-10-12" and ports["amendment_log"][0]["semantic_break"] is False
+    entry = next(e for e in ports["amendment_log"] if "PLAN-telemetry-registration-verbs" in e["summary"])
+    assert entry["date"] == "2026-10-12" and entry["semantic_break"] is False
     assert pc01["status"] == "accepted" and pc01["ports"] == ["ops_verbs", "persona_compute_host"]
