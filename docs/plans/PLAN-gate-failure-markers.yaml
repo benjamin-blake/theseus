@@ -144,23 +144,25 @@ verification_plan:
 - step: 3
   phase: pre-deploy
   action: >-
-    Run the real pre-commit node: a temporary git repository with a failing local hook (language fail) and a passing
-    verbose hook, run through pre-commit 4.6.2; parse_markers must return only the failing hook id.
+    Run the real pre-commit node: a temporary git repository with three local hooks run through pre-commit 4.6.2 -- one
+    failing (language fail), one that exits 0 but modifies its staged file (language system, entry
+    bash -c 'for f in "$@"; do echo changed >> "$f"; done' --), and one passing verbose hook; parse_markers must return
+    exactly the first two hook ids.
   command: >-
     bin/venv-python -m pytest tests/test_gate_failure_markers.py::test_real_precommit_failure_output_parses_to_hook_id -q
   expected: >-
     Exit 0, 1 passed. pre-commit is a dev-only dependency (requirements-dev.txt), so the node skips where it is absent.
   fix_if: >-
     No marker: pre-commit's per-hook lines changed (pre_commit/commands/run.py); re-pin the grammar and bump
-    GATE_MARKER_VERSION only if the gate line also changes. The passing verbose hook parses: the block rule ignores the
-    exit-code requirement.
+    GATE_MARKER_VERSION only if the gate line also changes. The modifying hook is missing: the files-modified literal
+    changed. The passing verbose hook parses: the block rule ignores the exit-code requirement.
   hermetic: false
   graduation: waive
   graduation_waiver_reason: >-
-    A registry row would pass vacuously ("1 skipped") wherever pre-commit is absent (it is dev-only, not in
-    requirements-fast.txt), and the node is side-effectful out of tree (hermetic_authoring (iv)): it runs git and
-    pre-commit in a temporary repository with PRE_COMMIT_HOME pointed at tmp_path. The full tier runs it through the
-    unit-test scaffold.
+    The node is side-effectful out of tree (hermetic_authoring (iv)): it runs git and pre-commit in a temporary
+    repository with PRE_COMMIT_HOME pointed at tmp_path. It would also pass vacuously ("1 skipped") in the
+    trailer-acceptance-evaluate job, which installs requirements.txt and requirements-fast.txt only. Every CI validate
+    tier installs requirements-dev.txt and runs it through the unit-test scaffold.
 - step: 4
   phase: pre-deploy
   action: >-
@@ -295,7 +297,7 @@ context:
   Decision-scout verdict: FLAGS_FOUND (two NOTEs, both resolved in this plan: brand-neutral prefix per Decision 198;
   pattern derived from the contract per Decision 210 cl.3). CITE: 170, 169, 128, 131, 210, 201, 79. Decisions triaged:
   168 of 168. Roadmap items intersected: 21; CONFLICT: 0; RELATED: 21.
-- "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=REVISE r1 (F1-F9 fixed), REVISE r2 confirming (C1-C9 fixed), escalated"
+- "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=REVISE r1-r3, all fixed (r2 escalated; operator chose another round)"
 - >-
   Slice 3b split and spike: Benjamin, 2026-10-12 ("yes to the split of the plans, and yes to the spike"). Design inputs:
   /mnt/project-files/telemetry-slice3/step6b-3b-presentation.md, 3b-fable-consult/ADVICE.md (F8).
@@ -306,7 +308,9 @@ context:
 - >-
   Attribution: registered checks attribute through _ATTRIBUTIONS (dispatch_recording, both tiers; validate.py:93).
   Scaffold steps have no check identity (Decision 104/169), so run_scaffold records the step name in a separate
-  accumulator; the scaffold names are the closed tuples in scripts/checks/registry.py (_PRE_TIER_LEADING_SCAFFOLDS,
+  accumulator. Decision 170's scaffold outcome rows (_OUTCOMES, kind scaffold) are not the source: they carry function
+  names (run_precommit_checks covers both pre-commit scaffolds) and unit_tests, terraform_checks and pytest_diff open
+  no outcome scope; the scaffold names are the closed tuples in scripts/checks/registry.py (_PRE_TIER_LEADING_SCAFFOLDS,
   _PRE_TIER_TRAILING_SCAFFOLDS, _FULL_TIER_SKELETON). validation_result.clear() runs only in the full tier
   (validate.py:226-228); --pre relies on a fresh process, so tests reset both accumulators.
 - >-
@@ -320,13 +324,11 @@ context:
   Consumers: P-B parses markers from the FULL tool output (sidecar when persisted). The window and the event shape
   (parent tool_call, role gate_event.<n>) are P-B's, with two hand-offs: a pre-commit per-hook block can sit anywhere in
   a validate run's output (only the gate marker is at the tail), and whole-line markers are not tied to the process
-  that printed them, so P-B scopes parsing to Bash calls that run the gates or declares the noise. tests/telemetry/test_process_event_name_rule.py already checks
-  gate:<check> and precommit:<id> names; this plan adds scaffold names and the marker round trip.
+  that printed them, so P-B scopes parsing to Bash calls that run the gates or declares the noise.
 - >-
   Known gaps (declared, no rec owed): a budget_assertion exit happens inside the scaffold before the summary
   (validate.py:505, :535, :548), so that run prints no markers; budget breaches are already recorded durably by their own
-  rec filing and CI step-summary notice (Decision 153). --terraform-only dispatches no registered check,
-  so it prints none. No ports.yaml row is owed: src/turn_capture is producer code, not executor, adapter or port code
+  rec filing and CI step-summary notice (Decision 153). --terraform-only prints none. No ports.yaml row is owed: src/turn_capture is producer code, not executor, adapter or port code
   (Decision 212; P-B's scout reached the same reading).
 - "Deploy-inert: src/turn_capture is excluded from data-pipeline.zip; scripts/ is not Lambda-packaged (Decision 79)."
 pre_implementation_checklist:
@@ -347,16 +349,22 @@ execution_steps:
 - >-
   In scripts/checks/validation_result.py add _SCAFFOLD_FAILURES (cleared in clear()), run_scaffold, failure_markers
   (unique check names from _ATTRIBUTIONS in first-seen order, then unique scaffold names in first-seen order,
-  each through markers.format_gate_marker) and print_failure_summary, which prints "Failed checks:", one
-  "  - <label>" line per entry of failed (unchanged), then one marker line per failure_markers() entry.
+  each through markers.format_gate_marker) and print_failure_summary, which prints "Failed checks:" and one
+  "  - <label>" line per entry of failed (unchanged) BEFORE it computes the markers, then one marker line per
+  failure_markers() entry, so the label block survives even if a marker cannot be formatted.
 - >-
   In scripts/validate.py replace the three summary blocks and the two scaffold dispatch calls as the scope row says;
   change nothing else.
 - >-
   Write the four test modules in scope (node names as in the verification plan). In tests/test_gate_failure_markers.py
   the pre-commit dependency is skipped NODE-locally (pytest.importorskip inside
-  test_real_precommit_failure_output_parses_to_hook_id), never at module level, so the file stays collectable in the
-  venv-less pr-validate tier where steps 1 and 2 run; that node points PRE_COMMIT_HOME at tmp_path.
+  test_real_precommit_failure_output_parses_to_hook_id), never at module level, so the whole file stays collectable
+  where pre-commit is absent (the trailer-acceptance-evaluate job that checks rec-4172's acceptance at P-B's closure);
+  that node points PRE_COMMIT_HOME at tmp_path. The full-tier node in tests/validate/test_gate_failure_summary.py
+  patches validate.validation_result.clear and validate.validation_result.write_completed_visible (precedent
+  tests/validate/test_tiers.py:34-35), because a full-tier main() otherwise deletes and rewrites the real
+  logs/debug/validation-result.json and write_completed's path default is bound at definition time; with clear()
+  patched, the test resets _ATTRIBUTIONS and _SCAFFOLD_FAILURES itself.
   tests/checks/test_validation_result.py has 87 SLOC of headroom under 500 (Decision 130): keep its additions within
   it, and extend its autouse reset fixture to clear _SCAFFOLD_FAILURES. Step 2's node also asserts the scaffold names
   (registry.py _PRE_TIER_LEADING_SCAFFOLDS, _PRE_TIER_TRAILING_SCAFFOLDS, _FULL_TIER_SKELETON) are disjoint from
