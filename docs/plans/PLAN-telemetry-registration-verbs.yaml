@@ -319,18 +319,55 @@ scope:
 - file: tests/lambdas/ducklake_telemetry_writer/test_telemetry_actions.py
   action: Create
   purpose: >-
-    Coverage home for telemetry_actions (map_source_to_test mirror, recon 8), with fakes; includes the contract-verbs pin.
+    Coverage home for telemetry_actions (map_source_to_test's flat-home-absence mirror, rule 4 / rec-3809, live once the
+    flat tests/test_ducklake_telemetry_writer_handler.py is moved; see the next row), with fakes; includes the
+    contract-verbs pin.
     test_nul_or_lone_surrogate_in_any_string_is_400_without_the_value is parametrized over every (verb, accepted string
     field) pair of the four verbs and over U+0000, a lone high surrogate, a lone low surrogate and a non-str value, each
     embedded with a sentinel: the response is 400 with error_type bad_request and the field named, the fake connection's
     execute is never called, and the sentinel is absent from the response body and the captured logs. A positive case
     builds the body with json.loads of the escaped pair \ud83d\ude00 (decoded to U+1F600) and is not refused.
 - file: tests/lambdas/ducklake_telemetry_writer/test_handler.py
+  action: Create
+  purpose: >-
+    Created by git mv of the flat tests/test_ducklake_telemetry_writer_handler.py (the stub's pins, created by
+    PLAN-telemetry-writer-function at that path by its #1441 amendment), keeping every existing node. The
+    pins are then extended to the new dispatch entries, error-map rows (row_rule and schema_gate asserted separately, so a
+    less specific row shadowing a more specific one fails), principal port, metric namespace, request bytes and cache
+    clearing. With no flat home, rule 4 measures handler.py by this file and telemetry_actions.py by
+    test_telemetry_actions.py; part 2 (PLAN-telemetry-append-inline) declares mirror homes for its two new modules on the
+    same routing.
+- file: tests/lambdas/ducklake_telemetry_writer/conftest.py
+  action: Create
+  purpose: >-
+    Only if step 20 needs it: shared fakes for test_handler.py and test_telemetry_actions.py, so each module reaches 100%
+    from its own file without one test module importing another (tests/CLAUDE.md, Decision 131).
+- file: tests/test_ducklake_telemetry_writer_handler.py
+  action: Delete
+  purpose: >-
+    Moved, not dropped (the git mv above). While this flat file exists, the RS-08 rule maps every
+    src/lambdas/ducklake_telemetry_writer/*.py to it, so telemetry_actions.py is measured by the handler tests alone (51% in
+    the build) and part 2's modules would follow; one file holding every module's tests passes 500 SLOC in part 2.
+- file: tests/test_coverage_checker/test_coverage_checker_map.py
   action: Modify
   purpose: >-
-    The stub's pins (created by PLAN-telemetry-writer-function) are extended to the new dispatch entries, error-map rows
-    (row_rule and schema_gate asserted separately, so a less specific row shadowing a more specific one fails), principal
-    port, metric namespace, request bytes and cache clearing.
+    (1) A correction, not a loosening (Decision 181): test_all_lambda_handlers_map_to_distinct_existing_parent_qualified_tests
+    (RS-08, written 2026-07-14) predates rule 4 (rec-3809, 2026-09-14) and pins only the flat shape, so it now tracks the
+    map as it is. For a non-roster lambda, exactly one of tests/test_{slug}_handler.py and
+    tests/lambdas/<slug>/test_handler.py exists (a new guard: a coexisting flat file would silently re-capture every
+    sibling, the trap this amendment fixes), and the result equals the one that exists and is a file. The roster branch
+    and the distinctness, retired-shim and smoke_actions assertions are unchanged. (2) A new node
+    TestMapSourceToTest::test_telemetry_writer_modules_map_to_their_own_mirror_tests pins handler.py and telemetry_actions.py to
+    tests/lambdas/ducklake_telemetry_writer/test_handler.py and test_telemetry_actions.py, both existing. No change to
+    scripts/test_coverage_checker.py. The file stays under 500 SLOC (445 today).
+- file: config/agent/verification_registry/entries/telemetry-writer-stub-handler.yaml
+  action: Modify
+  purpose: >-
+    (PLAN-telemetry-writer-function's graduated shard.) check_spec.command names the moved
+    tests/lambdas/ducklake_telemetry_writer/test_handler.py in place of the flat path; every other field and token is
+    unchanged. The edit triggers validate_verification_registry's differential admission gate: the command fails on an
+    origin/main worktree because the moved file is absent there (an admission by absence, not by behaviour; the five
+    unchanged test paths keep the HEAD leg meaningful) and passes at HEAD.
 - file: tests/ducklake_neon_smoke_test/test_lambda_telemetry_gates.py
   action: Modify
   purpose: >-
@@ -421,6 +458,9 @@ acceptance_criteria:
 - The telemetry writer bundle includes the kernel and the new modules; data-pipeline excludes them; the deploy workflow
   triggers on src/telemetry/**; code_drift tracks src/telemetry.
 - The deployed --lambda-telemetry step passes with part 1's vectors on the merge commit and logs catalog_backend=neon.
+- Each telemetry writer module is measured by its own mirror test file at 100% line coverage (handler.py by
+  tests/lambdas/ducklake_telemetry_writer/test_handler.py, telemetry_actions.py by test_telemetry_actions.py), and the flat
+  tests/test_ducklake_telemetry_writer_handler.py no longer exists.
 verification_plan:
 - step: 1
   phase: pre-deploy
@@ -599,6 +639,67 @@ verification_plan:
   graduation_waiver_reason: >-
     Duplicates the registered validate_contract_drift check, which already runs in the pre and full tiers
     (scripts/checks/contracts/_manifest.py:77-81), and is diff-relative to the merge base, so a standing copy adds nothing.
+- step: 18
+  phase: pre-deploy
+  action: >-
+    Each telemetry writer module maps to its own mirror test file, and every lambda handler still maps to a distinct
+    existing home with exactly one of its flat and mirror files present.
+  command: >-
+    bin/venv-python -m pytest
+    tests/test_coverage_checker/test_coverage_checker_map.py::TestMapSourceToTest::test_telemetry_writer_modules_map_to_their_own_mirror_tests
+    tests/test_coverage_checker/test_coverage_checker_map.py::TestMapSourceToTest::test_all_lambda_handlers_map_to_distinct_existing_parent_qualified_tests
+    -q
+  expected: Exit 0, every node passes. Red before because the new node is absent (and, once present, the flat home wins).
+  fix_if: >-
+    A telemetry writer module mapping to tests/test_ducklake_telemetry_writer_handler.py means either the flat file still
+    exists (finish the move) or the module's own tests/lambdas/ducklake_telemetry_writer/test_<module>.py is missing (create
+    it); never recreate the flat file, special-case the checker or loosen the pin.
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: telemetry-writer-test-homes
+  expected_literals: []
+- step: 19
+  phase: pre-deploy
+  action: >-
+    Nothing live still names the moved flat test file (closure sweep for the Delete row), and the stub-handler shard names
+    the moved file.
+  command: >-
+    ! git grep -n -F tests/test_ducklake_telemetry_writer_handler.py -- config scripts src .github && git grep -q -F
+    tests/lambdas/ducklake_telemetry_writer/test_handler.py --
+    config/agent/verification_registry/entries/telemetry-writer-stub-handler.yaml
+  expected: >-
+    Exit 0 with no output. Red before because the telemetry-writer-stub-handler shard names the flat path. docs/plans and
+    logs are left out because merged plans and generated reports keep the old path as history, and tests/ because a pin
+    may name the old path in an absence assertion.
+  fix_if: >-
+    A hit is a live consumer of the old path: repoint it to tests/lambdas/ducklake_telemetry_writer/test_handler.py, or
+    regenerate it with its own tool if it is a generated file.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: >-
+    A one-time migration sweep: once the move lands, an absence grep has no revertable counter-example (the
+    no-retired-ci-role-in-live-surfaces precedent), and a stale path left in a live command fails on its own when run
+    (pytest exit 4). A graduated copy would also carry the flat path into config/agent/verification_registry/entries/ and
+    match itself. Step 18's graduated exclusive-or pin guards the flat file itself returning.
+  expected_literals: []
+- step: 20
+  phase: pre-deploy
+  action: Each telemetry writer module reaches 100% line coverage from its own mirror test file alone.
+  command: >-
+    bin/venv-python -m scripts.test_coverage_checker --check-tests --check-coverage --files
+    src/lambdas/ducklake_telemetry_writer/handler.py src/lambdas/ducklake_telemetry_writer/telemetry_actions.py
+  expected: >-
+    Exit 0: both modules have their test file and are at 100% line coverage, each measured by its mapped file alone
+    (step 18 proves which file that is).
+  fix_if: >-
+    A module below 100% needs direct tests in its own file (shared fakes in the declared
+    tests/lambdas/ducklake_telemetry_writer/conftest.py, never imported from another test_ module); never add a
+    coverage_baseline.yaml entry (Decision 159).
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: >-
+    Duplicates the full tier's per-file coverage check (step 12), which measures every changed source by its mapped test
+    file; a standing copy adds nothing.
 - step: 10
   phase: pre-deploy
   action: >-
@@ -769,6 +870,14 @@ test_obligations:
   verification_step: 5
   test_selector: tests/lambdas/ducklake_telemetry_writer/test_handler.py::test_error_map_rows_for_registration_errors
   red_green_expectation: red before (node absent), green after
+- source: config/agent/verification_registry/entries/telemetry-writer-stub-handler.yaml
+  behavior: The graduated stub-handler check runs the moved handler test file, not the deleted flat path.
+  verification_step: 19
+  command: >-
+    ! git grep -n -F tests/test_ducklake_telemetry_writer_handler.py -- config scripts src .github && git grep -q -F
+    tests/lambdas/ducklake_telemetry_writer/test_handler.py --
+    config/agent/verification_registry/entries/telemetry-writer-stub-handler.yaml
+  red_green_expectation: red before (the shard names the flat path), green after
 - source: src/lambdas/ducklake_telemetry_writer/manifest.yaml
   behavior: The telemetry writer bundles the kernel and the new modules.
   verification_step: 7
@@ -850,8 +959,9 @@ constraints:
   or gate output. Tests use placeholders only; a 12-digit literal fails test_telemetry_dimension_contracts.py:55.
 - >-
   Regenerate field_semantics.yaml with the generator, never by hand. Keep every new module, and every file the sibling
-  plans created that this plan grows (lambda_telemetry_gates.py, test_lambda_telemetry_gates.py, test_handler.py,
-  test_packaging.py), under 500 SLOC; decompose rather than raise a budget (Decision 128).
+  plans created that this plan grows (lambda_telemetry_gates.py, test_lambda_telemetry_gates.py, test_handler.py moved
+  from the flat path, test_packaging.py), under 500 SLOC; decompose rather than raise a budget (Decision 128). Each telemetry writer module
+  keeps its own mirror test file; never special-case scripts/test_coverage_checker.py to route one.
 - >-
   The implementation merge redeploys every DuckLake function, so it waits for Benjamin's explicit word, and only after the
   boundary Deny is verified and the deploy-wiring plan is deployed and green.
@@ -864,15 +974,23 @@ context:
 - 'gates: decision-scout=FLAGS_FOUND (3 flags, resolved); plan-critique=PROCEED after 4 round(s); round 4 autonomous
   (r1-r3 REVISE, all fixed; r4 notes J1-J4 folded in); 2026-10-09 amendment (the NUL/lone-surrogate 400 guard): r1 REVISE
   (A1, A2 fixed; N1-N3, N5 folded in), r2 REVISE (D1 describe kept out of the string rule; notes D2-D4 folded in),
-  r3 PROCEED. Also cites 204 (live partition re-lays are admin-only, so provision ALTERs only on create) and 212 (CallerPrincipal is
+  r3 PROCEED; 2026-10-12 amendment (test homes): r1 REVISE (R1, R2 fixed), r2 PROCEED (notes folded in), r3 REVISE (A1
+  fixed), r4 PROCEED (notes folded in); round 4 autonomous. Also cites 204 (live partition re-lays are admin-only, so provision ALTERs only on create) and 212 (CallerPrincipal is
   the port, no cross-port coupling). Out-of-scope critique findings filed as rec-4211
   (account id in public Actions logs) and rec-4219 (the shared writer and reader NUL gap).'
 - 'Direction: Benjamin "write the plan" (cmsg_012XgaFy8VaDQbxP5D8nC958K9mX5fF3q1N3ruTT1UwZWu) after the split, the A + D
   choice and the revised design /mnt/project-files/telemetry-slice2/step6b-2a2-plan3-part1-D.md.'
-- 'Depends on the plans merged in #1430: PLAN-telemetry-writer-function creates the handler, manifest, test_handler.py
-  and test_packaging.py; PLAN-telemetry-writer-deploy-wiring creates the gate module, its test and
+- 'Depends on the plans merged in #1430: PLAN-telemetry-writer-function creates the handler, manifest, the flat
+  tests/test_ducklake_telemetry_writer_handler.py (moved to test_handler.py here; 2026-10-12 amendment) and
+  test_packaging.py; PLAN-telemetry-writer-deploy-wiring creates the gate module, its test and
   test_ducklake_deploy_map_wiring.py; this plan extends them. rec-4024''s "no second writer" item is re-grounded on
   Decision 213 (dated note, 2026-10-08).'
+- 'Amendment 2026-10-12 (test homes; Benjamin routed it to planning, cmsg_012XgaFy8VaDQbxP5D8nC9589ntmJSdv6g8RLpgYVDJNea):
+  reverses #1441 (f91bd9e4), which moved the file flat only because the RS-08 pin required it. decision-scout=FLAGS_FOUND
+  (NOTE 181, resolved: the RS-08 change is a correction tracking rule 4, exact per branch, plus an exclusive-or guard);
+  CITE 131, 59, 128, 130, 159, 176; RELATED 104, 187, 132, 189, 148, 213, 79, 48. Decisions triaged: 168 of 168. Roadmap
+  items intersected: 2; CONFLICT: 0; RELATED: 2. Advice: plan3-part1-test-home/ADVICE.md. The shard repoint is path-only;
+  its provenance is this row, not a note in the Class A verification-registry.yaml (always-ask for Benjamin).'
 - 'Part 2 (append_telemetry) pins against this plan; seams: /mnt/project-files/telemetry-slice2/part1-seams-from-part2.md
   (seam 4''s reset_warm_connection hook is declined: ducklake_runtime may not import a telemetry module; the handler
   clears caches on a reopened connection instead).'
@@ -912,8 +1030,19 @@ execution_steps:
 - >-
   Write tests/common/test_ducklake_telemetry_provision.py, then src/common/ducklake_telemetry_provision.py. Run step 4.
 - >-
+  Move the handler tests. A branch started before this amendment rebases onto it first (validate_scope_boundary reads
+  scope from the base). git mv tests/test_ducklake_telemetry_writer_handler.py
+  tests/lambdas/ducklake_telemetry_writer/test_handler.py, as its own commit where the branch allows, so review sees a
+  rename; if a mirror test_handler.py already exists, fold the flat file's nodes into it without dropping any, then
+  delete the flat file. Repoint the telemetry-writer-stub-handler shard's command; generalise the RS-08 pin in
+  tests/test_coverage_checker/test_coverage_checker_map.py. Run step 19 and step 18's RS-08 node. If telemetry_actions.py
+  already exists without test_telemetry_actions.py, tests/test_coverage_checker/test_coverage_checker_checks.py::
+  test_unmapped_sources_do_not_grow stays red until the next step adds that file.
+- >-
   Write telemetry_actions.py and its tests, extend handler.py and test_handler.py, and create
-  docs/contracts/ducklake_telemetry_writer.yaml. Run step 5.
+  docs/contracts/ducklake_telemetry_writer.yaml. Run step 5. Then add
+  TestMapSourceToTest::test_telemetry_writer_modules_map_to_their_own_mirror_tests (it needs test_telemetry_actions.py to
+  exist, since rule 4 falls back only to an existing mirror) and run steps 18 and 20.
 - >-
   Update the telemetry writer and data-pipeline manifests, the deploy push paths and code_drift, with the wiring tests.
   Run steps 7 and 11.
