@@ -24,7 +24,9 @@ scope:
     action: Modify
     purpose: >-
       NAMED_READS_VERSION 4 -> 5 (EXPAND only, no verb removed). New NamedRead recs_related on ops_recommendations, params
-      ("files", "near", "terms", "exclude_ids", "limit") in that bind order, paginable False, agent_facing False, a
+      ("files", "near", "terms", "exclude_ids", "max_rows") in that bind order (max_rows, not limit, so it is never
+      confused with the reader envelope's `limit`, which is accepted only for paginable verbs), paginable False,
+      agent_facing False, a
       description saying it is a relevance lookup behind scripts.recs_related and not a bulk path. Fixed SQL, every bind a
       string (Decision 84 I-3); execution step 2 carries the planning-time SQL validated on duckdb 1.5.4 (the Lambda pin).
       Semantics: `files` (comma list, empty entries dropped) is the DIRECT tier -- exact anchor equality only; the verb
@@ -38,7 +40,7 @@ scope:
       `exclude_ids` (keyset-by-exclusion paging) over 200 ids raises via DuckDB error() -- loud, never a silent empty. A row
       is a candidate iff direct OR near weight > 0 OR an admitting term hit; status = 'open' only. ORDER BY direct DESC,
       priority rank (critical 0, high 1, medium 2, low 3, else 4), score (near weight + term score) DESC,
-      created_timestamp DESC, id; LIMIT least(CAST(? AS INTEGER), 100). Projects id, title, status, priority, effort,
+      created_timestamp DESC, id; LIMIT least(CAST(? AS INTEGER), 100) bound from max_rows. Projects id, title, status, priority, effort,
       source, file, created_timestamp, direct, score, matched_terms, snippet (left(context, 200)), total (count(*) OVER (),
       counted AFTER the exclude filter), direct_total (count(*) FILTER (WHERE direct) OVER (), likewise). All-empty binds
       return zero rows. recs_for_files' and open_recs' descriptions gain a leading "deprecated: ... (removal rec-4240)"
@@ -67,9 +69,9 @@ scope:
     action: Create
     purpose: >-
       The single output schema (dataclasses): Hit (id, title, priority, status, effort, source, file, tier
-      direct|near|term, score, why list, snippet) and Envelope (query, hits, total, direct_total, returned, complete,
-      direct_complete, channels {name: ok|unavailable: reason}, query {files, aliases, terms}, query_files [{path,
-      status}], dir_anchor_hits, near_truncated, terms_truncated, next_exclude), with to_json(). Completeness is computed
+      direct|near|term, score, why list, snippet) and Envelope (query {files, aliases, terms}, query_files [{path,
+      status}], hits, total, direct_total, returned, complete, direct_complete, channels {name: ok|unavailable: reason},
+      dir_anchor_hits, near_truncated, terms_truncated, next_exclude), with to_json(). Completeness is computed
       against the post-exclusion totals the verb returns: complete = returned >= total; direct_complete = (direct hits
       returned) >= direct_total. The CLI's JSON is asserted against it, and rec-4280's MCP outputSchema will be generated
       from it.
@@ -116,14 +118,16 @@ scope:
       -- near per path = sum over query files of upstream 4, downstream 1, sibling 1, tests mirror 1, patch_string 1, mention
       0.5, coupling 0.5*min(shared, 5) + 0.5*confidence (near list capped at 400 paths by weight, truncation reported);
       aliases join the direct tier; interim directory scope -- each query file's parent directory (0.5) and grandparent
-      directory (0.25), trailing slash, never a single-segment root such as scripts/ or src/, join `near` with why
+      directory (0.25), each emitted in BOTH spellings (with and without the trailing slash, since live rec-3173 is
+      anchored on docs/contracts), never a single-segment root such as scripts/ or src/, join `near` with why
       "ancestor_dir:<dir>" and are counted in dir_anchor_hits (rec-4279 deletes this once directory anchors are repaired);
       terms = stem 16, module 1, basename 0.5, path 0.5, symbol 0.5 -- then makes EXACTLY ONE
       reader.named("recs_related", ...) call and attaches a why list to every hit from the expansion map and matched_terms.
       Query paths are normalised first (an absolute path under the repo root becomes repo-relative, ./ and // collapse,
       POSIX separators) and each gets a status in the envelope: tracked, untracked (e.g. a not-yet-created plan scope file:
       it still joins the direct tier and keeps its sibling and term channels, while import, mention and history channels
-      report unavailable for it) or outside_repo (dropped and reported, never silently).
+      report unavailable for it), outside_repo, or invalid (a path containing ',' or '|', which would corrupt a bind) --
+      the last two are dropped and reported, never silently. Near paths obey the same bind-safety rule.
       next_exclude carries the ids seen so far (prior excludes plus this page); at 200 excluded ids paging stops with
       complete false and a narrow-the-query hint (decision-scout NOTE). A reader failure raises (Decision 55); it never
       returns an empty result.
@@ -134,7 +138,9 @@ scope:
       20, max 100)] [--exclude IDS] [--table]. JSON (Envelope.to_json) by default, --table for one line per hit (a
       directory-anchored near hit prints its tier as near(dir)) plus an envelope line. No files and no terms exits 2; a reader failure exits 1 with the error on stderr.
   # --- tests (mirror package, every directory carries __init__.py). Tmp git repos set GIT_AUTHOR_*/GIT_COMMITTER_* (or
-  # --- -c user.*) and write only under tmp_path: the Decision 201 closure sandbox has no git identity and a read-only repo.
+  # --- -c user.*), pass -c commit.gpgsign=false (or GIT_CONFIG_GLOBAL=/dev/null; precedent tests/hooks/
+  # --- test_handoff_evidence_gate.py) and write only under tmp_path: the Decision 201 closure sandbox has no git
+  # --- identity and a read-only repo, and CC-web's global config signs commits through the harness signer.
   - file: tests/recs_related/__init__.py
     action: Create
     purpose: Mirror test package marker (prepend import mode).
@@ -170,8 +176,9 @@ scope:
       rec-4235's acceptance file. Fully hermetic (fake reader, tmp repo, no duckdb, no credentials, no network) because the
       Decision 201 closure verdict runs it in the static sandbox on the merge push, before the deploy. Class
       TestRelatedRecs: one named("recs_related") call with the expected binds and weights; every hit carries a why; aliases
-      join files; the parent (0.5) and grandparent (0.25) ancestor directories reach near with why ancestor_dir and are
-      counted in dir_anchor_hits, while a single-segment root never does; query-path normalisation and the
+      join files; the parent (0.5) and grandparent (0.25) ancestor directories reach near in both spellings (a
+      slashless directory anchor such as docs/contracts is reached too) with why ancestor_dir and are counted in
+      dir_anchor_hits, while a single-segment root never does; a query path with ',' or '|' is reported invalid; query-path normalisation and the
       tracked/untracked/outside_repo statuses; the 40-term cap truncates by
       weight and sets terms_truncated; complete, direct_complete and next_exclude across a three-page sequence where
       candidates remain after page 2; the 200-id stop; a reader error propagates; an empty query is refused.
@@ -181,8 +188,8 @@ scope:
       Executes recs_related's REGISTERED SQL in in-memory DuckDB (pytest.importorskip("duckdb"); the table built from
       resolve_table_spec("ops_recommendations"), {tbl} substituted as the parity test does). The fixture holds more than 20
       open rows (the 5% ceiling needs them) plus closed, empty-anchor and NULL-anchor rows. Asserts: direct tier first, then
-      priority, score, recency; a trailing-slash directory anchor is NEVER direct, even for files beneath it, and is
-      reached only when its path is passed in near; whole-token matching (no substring hit) and
+      priority, score, recency; a directory anchor, with or without a trailing slash, is NEVER direct, even for files
+      beneath it, and is reached only when its exact spelling is passed in near; whole-token matching (no substring hit) and
       regexp_escape (a '.' in a term is literal); a common term (df over 5%) never admits a row alone but re-ranks; the
       exclude filter, post-exclusion total/direct_total on a 250-candidate two-page case, and the >200-id error; the
       100-row cap; non-open, empty-anchor and NULL-anchor rows never returned for empty binds; a malformed near weight
@@ -194,13 +201,16 @@ scope:
     action: Modify
     purpose: >-
       test_named_reads_version_is_4 becomes ..._is_5. New class TestRecsRelatedVerbV5: registered on ops_recommendations
-      with its five params in bind order, paginable False, agent_facing False; its ORDER BY ends with the id tiebreak
+      with its five params in bind order (files, near, terms, exclude_ids, max_rows), paginable False, agent_facing
+      False; its ORDER BY ends with the id tiebreak
       immediately before LIMIT (the existing total-order regex does not match LIMIT least(...)); recs_for_files and
       open_recs still registered with descriptions starting "deprecated:"; no pre-existing verb re-versioned -- read_version
       digests are pinned ONLY for the non-SELECT-* verbs (their digest depends on their own definition alone); for the five
       SELECT * verbs (rec_by_id, recs_by_ids, rec_history, decision_by_id, priority_queue_current) the test pins table,
       params, paginable and whitespace-normalised SQL and lets the column projection float (a field_semantics column add
-      must not redden this file; the existing projection test at :124-136 covers it). TestRecsReadVerbsV4
+      must not redden this file; the existing projection test at :124-136 covers it); the class docstring states the
+      pins are the "re-versioning must be deliberate" guard, so a later intentional verb change (rec-4240) edits them
+      openly rather than reading as a weakening (Decision 181). TestRecsReadVerbsV4
       .test_agent_facing_flags' exemption set gains recs_related.
   - file: tests/checks/contracts/test_validate_read_engine_verbs.py
     action: Modify
@@ -209,7 +219,7 @@ scope:
       recs_related under ops_recommendations and names recs_for_files and open_recs under deprecated_verbs. Red before.
   - file: tests/common/ducklake_reader_client/test_verb_fields_parity.py
     action: Modify
-    purpose: _PARAM_VALUES gains castable values for near ("a.py|1"), terms ("x|1") and limit ("5") so the parity harness executes recs_related's SQL.
+    purpose: _PARAM_VALUES gains castable values for near ("a.py|1"), terms ("x|1") and max_rows ("5") so the parity harness executes recs_related's SQL.
   - file: tests/test_agent_sdk_mcp_server.py
     action: Modify
     purpose: >-
@@ -531,7 +541,7 @@ verification_plan:
     command: >-
       bin/venv-python -c "from src.common.ducklake_reader_client import DuckLakeReader as R;
       v = R().describe()['recs_related']; print(v['agent_facing'], v['params'])"
-    expected: False ['files', 'near', 'terms', 'exclude_ids', 'limit'].
+    expected: False ['files', 'near', 'terms', 'exclude_ids', 'max_rows'].
     fix_if: Verb absent or flags wrong after a green deploy -- RCA the packaging, never retry-loop (Decision 55).
     hermetic: false
   - step: 22
@@ -643,7 +653,7 @@ context:
     Decision-scout FLAGS_FOUND (1 NOTE, Decision 215 cl.1 paging drift; resolved by pivot: 5% term ceiling, 200-id exclude
     cap, not-a-bulk-path statement). CITE: 215, 84, 88, 212, 211, 135, 128, 127, 86, 177, 181, 201, 79, 125, 126.
     Decisions triaged: 168 of 168. Roadmap items intersected: 7; CONFLICT: 0; RELATED: 7
-  - "gates: decision-scout=FLAGS_FOUND (1 NOTE, folded); plan-critique=r1 REVISE (R1-R5, S1-S4 fixed); r2 REVISE (R1-R2, S1-S6 fixed; S1 decided by the owner after a Fable consult); r3 PENDING"
+  - "gates: decision-scout=FLAGS_FOUND (1 NOTE, folded); plan-critique=PROCEED after 3 rounds (r1 REVISE R1-R5/S1-S4 fixed; r2 REVISE R1-R2/S1-S6 fixed, S1 owner-decided after a Fable consult; r3 PROCEED, should-fix S1-S5/S7/S8 folded post-verdict as one-line amendments, S6 filed as rec-4282)"
   - >-
     Measurement (840 linked closed recs, 288 fix commits, graphs at each fix's parent, chronological 60/40 split) and both
     Fable consults are recorded in this plan's initial commit body; weights in related_recs.py come from it.
@@ -654,7 +664,11 @@ context:
     unless candidates are a MATERIALIZED CTE (3.8 s -> 0.19 s on a 1,600-row synthetic corpus, results identical).
   - >-
     Not bundled: rec-4238 (tag facet measured 1.8% coverage, about 1% precision); rec-3355 and rec-4191 (rec-4279 and
-    T4.24 territory); rec-2641/rec-2634 (coverage-gate mapping for new subpackages; VP 11 measures this package directly).
+    T4.24 territory); rec-2641/rec-2634 (coverage-gate mapping for new subpackages; VP 11 measures this package
+    directly); rec-4282 (DuckDB errors in named verbs surface as a retried 502, pre-existing). Not shipped: rec-4235's
+    file-router-domain channel (routes are mostly single files or directories that coincide with the measured sibling
+    and ancestor-dir channels) -- a rec-4281 candidate signal, with hub damping and score-before-priority in the
+    non-direct tier. If dependabot's duckdb 1.5.6 bump (PR 1412) merges first, re-run VP 2 on the new pin.
   - "fork: split | chosen: verb+core+CLI+planning surfaces here; rec-4279 owns the rest | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: followon_recs"
   - "fork: agent surface | chosen: core+CLI now, separate repo-tools MCP tool next (rec-4280), raw verb never agent-facing | class: asked (after a Fable consult) | precedent: none | precedent_kind: none | reversible: yes | persisted: followon_recs, scope"
   - "fork: scout NOTE paging drift | chosen: term ceiling + exclude cap + not-a-bulk-path | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: scope (registry SQL)"
