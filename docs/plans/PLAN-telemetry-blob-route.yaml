@@ -30,7 +30,7 @@ scope:
     items a non-empty list of objects with exactly {session_ref, session_started_at, content_sha256, content_bytes};
     session_ref a non-empty str; session_started_at decoded by parse_wire_timestamp; content_sha256 ^[0-9a-f]{64}$;
     content_bytes an int with threshold < n <= cap (bad_request, reason below_threshold / above_cap, the bound named);
-    more than MAX_BLOB_ITEMS items is payload_too_large reason too_many_blobs. Errors are request.RequestError with the
+    more than MAX_BLOB_ITEMS items is error_type too_many_blobs (413), the same token append_telemetry answers. Errors are request.RequestError with the
     item index as row and the field as column, never a value; the lone-surrogate and NUL walk request.py applies runs
     here too. sha256_hex_to_b64(hex) and its inverse. Two predicates, each the single definition of its rule:
     spill_item(row, threshold) (a producer row whose content's UTF-8 length exceeds the threshold becomes an item) and
@@ -63,9 +63,16 @@ scope:
     x-amz-* header, 120 s timeout, bounded parallelism); the returned rows have content removed from every spilled
     row. Idempotent. BlobDeliveryError(kind refused | defect | transient | proxy, status, s3_code) never carries a URL,
     key or payload: begin_blobs 400/403 refused; begin_blobs 500/502 defect with no retry (the writer raised a paging
-    fault); 503 or a transport error retried 3 times then transient; PUT 403
+    fault); 429 (the function's reserved concurrency is 5), 503 or a transport error retried 3 times with backoff then
+    transient; PUT 403
     triggers one grant re-request then refused; PUT 400 (BadDigest, InvalidDigest, IncompleteBody) defect; PUT 5xx or
     timeout retried 3 times then transient; a 403 or 407 whose body is not S3 XML is proxy.
+- file: docs/contracts/file-router.yaml
+  action: Modify
+  purpose: >-
+    One route, telemetry-client, targets [src/telemetry_client/]: the producer-side transport plane (blob delivery,
+    later slice 3b's transport), beside the telemetry-kernel and turn-capture routes. One amendment_log entry
+    (field_add, additive only).
 - file: .importlinter
   action: Modify
   purpose: >-
@@ -141,7 +148,8 @@ scope:
   action: Modify
   purpose: >-
     action_begin_blobs(request, con, deps): tenant as for append (cache, else lookup_tenant; missing -> 403
-    tenant_unresolved), parse_begin_blobs_request with the projection's threshold and cap (RequestError translated
+    tenant_unresolved), parse_begin_blobs_request with the projection's threshold and cap (too_many_blobs joins part 2's 413 error types;
+    RequestError otherwise translated
     by type as part 2 does), the verb core, then the response {ok, tenant_id, project_id, project_registration,
     protocol_version, items: [{existed, upload: {method PUT, url, headers, expires_at} | null, duplicate_of}], counts}.
     describe_entry() gains begin_blobs. append_telemetry passes deps.blob_store and adds blobs.verified to its
@@ -218,7 +226,9 @@ scope:
     claim-check route: the producer PUTs the payload under a writer-issued, checksum- and length-bound grant, and the
     writer HEAD-verifies it and sets content_uri before the row commits; part 2's interim-413 sentence removed; the
     governance_notes KNOWN GAPS entry "rec-4024 (writer + blob-port put ordering)" is replaced by the route's owners
-    (rec-4033 orphan sweep, rec-4291 get_blob). No
+    (rec-4033 orphan sweep, rec-4291 get_blob), and the rec-4029 entry's "the blob port makes erasure of large payloads
+    an object delete" gains that begin_blobs re-grants a missing object, so erasure must tombstone the key or erase at
+    the source. No
     threshold, cap, key grammar or contract_version change: a mechanism below the content tier Decision 199 cl.5
     fixes (Fable consult Q1). Field-level amendment_log entries on content and content_uri.
 - file: config/lambda/ducklake/field_semantics.yaml
@@ -231,7 +241,7 @@ scope:
   action: Modify
   purpose: >-
     Verb begin_blobs (payload_schema_ref: the item shape, bounds, cap and string rules; response_codes 200/400/403/
-    413/503/500; typed_errors bad_request, tenant_unresolved, project_unregistered, too_many_blobs,
+    413/503, and 502 for the three paging faults, which raise inside the handler; typed_errors bad_request, tenant_unresolved, project_unregistered, too_many_blobs,
     blob_store_unavailable). append_telemetry: blob delivery (a row with no content and no omission reason above the
     threshold is verified by HEAD and its content_uri written by the writer), 413 too_many_blobs, 422
     blob_not_verified (reasons missing, stale, unknown_project), 503 blob_store_unavailable, the caller content_uri
@@ -245,7 +255,9 @@ scope:
     unreferenced object is deleted by the maintenance sweep, rec-4033, never ingested; T2.36 c2/c4; enforced by the
     writer-bundle S3-surface test, with the CI role's bucket-wide S3 write as a named residual owned by rec-4292); a
     blob row whose object is missing or older than 7 days commits only as the no-op of an identical stored row (the
-    7 days a writer mechanism constant, cross-pinned to the code by a test, like part 2's caps); begin_blobs touches the catalog only on a binding-cache miss and writes only a first-sight
+    7 days a writer mechanism constant, cross-pinned to the code by a test, like part 2's caps; require_stored is a commit precondition for an
+    unverifiable blob, not a data rule, so Decision 210 cl.2(a)'s no-extra-round-trip bound on cross-row rules does not
+    apply); begin_blobs touches the catalog only on a binding-cache miss and writes only a first-sight
     registration; no presigned URL is ever logged; blob integrity, grant self-check and blob-store access faults page.
     One amendment_log entry.
 - file: docs/contracts/ports.yaml
@@ -498,9 +510,10 @@ acceptance_criteria:
   content_uri is 400; inline content above 64 KiB is 422 row_rule inline_within_threshold.
 - >-
   A size or checksum mismatch, a grant failing its signed-header self-check, or an S3 client error other than
-  throttling (including a HEAD denied for an object the exact-key list shows present) emits the C6 line with status 500
-  and raises, so the Errors alarm pages; a HEAD denied for a key the list shows absent is missing; S3 throttling
-  answers 503.
+  throttling, a 5xx or a timeout (those answer 503), including a HEAD denied for an object the exact-key list shows
+  present, emits the C6 line with status 500
+  and raises, so the Errors alarm pages and the caller sees the Function URL's 502; a HEAD denied for a key the list
+  shows absent is missing.
 - >-
   describe advertises blob_protocol version 1 and a per-table schema view derived from the bundled projection; the
   producer helper delivers rows through it and is what the smoke gate uses.
@@ -711,7 +724,11 @@ verification_plan:
     NO_OUTBOX_WRITERS (no outbox writer and no VarChar-coercion surface), NO_RETIRED_INTERIM_SURFACE (the 12k
     stale-reference sweep: no blob_route_unavailable reason and no 413 inline_within_threshold expectation left
     anywhere), then exit 0 from the suites, tests/turn_capture included, the bundle check and import-linter.
-  fix_if: An outbox writer -> stop and report (c4 cannot close); a broken fence -> remove the edge, never edit an existing .importlinter contract.
+  fix_if: >-
+    An outbox writer -> stop and report (c4 cannot close); a broken fence -> remove the edge, never edit an existing
+    .importlinter contract. A retired-surface hit in an amendment_log entry or a negative test assertion -> write that
+    history or assertion without the literal token (for example "the interim reason") and never edit an earlier
+    amendment_log entry; any other hit is a leftover to remove.
   hermetic: false
   graduation: waive
   graduation_waiver_reason: >-
@@ -802,11 +819,11 @@ verification_plan:
   phase: post-deploy
   action: >-
     The bundled rec closed with the merge (Resolves: rec-4024 in the squash body), and the follow-on and dependent recs
-    carry this plan's notes. Read the ducklake-reads recs_by_ids verb for "rec-4024,rec-4033,rec-4026,rec-4291,rec-4292"
+    carry this plan's notes. Read the ducklake-reads recs_by_ids verb for "rec-4024,rec-4029,rec-4033,rec-4026,rec-4291,rec-4292"
     and write its JSON result to $RECS_JSON.
   command: >-
     test -s "$RECS_JSON" && bin/venv-python -c "import json,os;r={x['id']:x for x in json.load(open(os.environ['RECS_JSON']))['rows']};assert
-    r['rec-4024']['status']=='closed',r['rec-4024']['status'];assert 'telemetry-blob-route' in r['rec-4033']['context'] and
+    r['rec-4024']['status']=='closed',r['rec-4024']['status'];assert all('telemetry-blob-route' in r[k]['context'] for k in ('rec-4029','rec-4033')) and
     'telemetry-blob-route' in r['rec-4026']['context'];assert all(r[k]['status']=='open' for k in ('rec-4291','rec-4292'));print('RECS_OK')"
   expected: RECS_OK.
   fix_if: rec-4024 still open -> check the squash body's Resolves trailer and ci.yml's closure job; never close it by hand without the merge evidence.
@@ -827,6 +844,13 @@ test_obligations:
   verification_step: 6
   test_selector: tests/telemetry_client/test_blob_delivery.py::test_error_contract
   red_green_expectation: red before (package absent), green after
+- source: docs/contracts/file-router.yaml
+  behavior: The telemetry-client route exists, with a Class D amendment entry.
+  verification_step: 12
+  command: bin/venv-python -m scripts.validate
+  waiver_reason: >-
+    An additive routing row; validate_contract_drift requires its amendment entry and the router's own placement check
+    reads it.
 - source: .importlinter
   behavior: src.telemetry_client may not import the kernel's write boundary, src.common, src.lambdas, scripts or turn_capture.
   verification_step: 6
@@ -1025,7 +1049,7 @@ constraints:
 - No rescue agents or workaround loops (Decision 55).
 context:
 - "Decision-scout: FLAGS_FOUND -- WARN 210 cl.1 (a stale refusal broke the identical re-send no-op) resolved by committing a stale blob only as the no-op of a stored row; NOTE 81 cl.7, 199 cl.5 and 181 cl.1 resolved in the claim-check invariant, the tier judgement below and the dated c2/c4 re-grounding. CITE 84, 88, 101, 143, 184, 200, 201, 207, 212, 213, 79, 126. Decisions triaged: 168 of 168. Roadmap items intersected: 9; CONFLICT: 1; RELATED: 7. Report: /mnt/project-files/telemetry-slice2/plan4-blob-route/scout.md."
-- "gates: decision-scout=FLAGS_FOUND (WARN 210 and three NOTEs resolved); plan-critique=REVISE r1 (F1 three exemption-dependent tests scoped with a shared as_written helper; F2 retired-surface sweep as a checklist gate and in step 10, fixtures and gate tests extended in place; F3 step 17 literal; F4 c4 guard covers every DuckLake bundle and SQL reads of s3://, plus coercion evidence; F5 residual qualifier; F6 PC-05 open under T4.23:c7, PC-01 left to part 1; F7 missing objects commit only as stored no-ops; F8 a 403 HEAD is disambiguated by an exact-key list; F9 pool 32 and checksum-query self-check; F10 STOP over 500; AC7 proxy disposition); REVISE r2 (R2-F1/F2 the c4 guard refuses object reads in every DuckLake bundle, admits 2b's named get_blob seam and keeps the strict allowlist for the writer bundle only; R2-F3 rec-4029 note; R2-F4 AC3 and the 403 gotcha; R2-F5 begin_blobs 500/502 is a defect; R2-F6 stale rec-4024 pointers; R2-F7 delivery-failure kind; R2-F8 step 16 reads a status-200 line)"
+- "gates: decision-scout=FLAGS_FOUND (WARN 210 and three NOTEs resolved); plan-critique=REVISE r1 (F1 three exemption-dependent tests scoped with a shared as_written helper; F2 retired-surface sweep as a checklist gate and in step 10, fixtures and gate tests extended in place; F3 step 17 literal; F4 c4 guard covers every DuckLake bundle and SQL reads of s3://, plus coercion evidence; F5 residual qualifier; F6 PC-05 open under T4.23:c7, PC-01 left to part 1; F7 missing objects commit only as stored no-ops; F8 a 403 HEAD is disambiguated by an exact-key list; F9 pool 32 and checksum-query self-check; F10 STOP over 500; AC7 proxy disposition); REVISE r2 (R2-F1/F2 the c4 guard refuses object reads in every DuckLake bundle, admits 2b's named get_blob seam and keeps the strict allowlist for the writer bundle only; R2-F3 rec-4029 note; R2-F4 AC3 and the 403 gotcha; R2-F5 begin_blobs 500/502 is a defect; R2-F6 stale rec-4024 pointers; R2-F7 delivery-failure kind; R2-F8 step 16 reads a status-200 line); round 3 PROCEED (confirming), R3-F1 to R3-F7 non-blocking folded in (AC3 maps 5xx and timeouts to 503; one too_many_blobs token and a named 502; helper retries 429; step 17 checks rec-4029; step 10 history wording; rec-4029 gap reworded; telemetry-client router row)"
 - "Design inputs: /mnt/project-files/telemetry-slice2/plan4-blob-route/ADVICE.md (Fable, 2026-10-12, Q1-Q9) on top of fable-consult-blob/ADVICE.md (route adopted 2026-09-29) and the approved 2a-2 split (step6b-2a2-presentation.md row 4)."
 - "fork: where the claim-check-not-staging rule lives | chosen: writer contract audit invariant plus T2.36 c2/c4 re-grounding; no numbered Decision, no annotation on Decisions 84 or 199 (199's 2026-10-04 update closed cl.5; the grant route is a mechanism below the tier) | class: decided-with-notice | precedent: decision-entry.yaml routing_rule question 3; Fable Q1 | reversible: yes | persisted: ducklake_telemetry_writer.yaml, ROADMAP T2.36"
 - "fork: integrity fault handling | chosen: log the C6 line then raise so the Errors alarm pages (breaks the typed-500 convention for this one class) | class: decided-with-notice | precedent: Fable Q2, Decision 55 | reversible: yes | persisted: handler.py"
