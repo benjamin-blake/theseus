@@ -66,7 +66,8 @@ scope:
     purpose: >-
       The single output schema (dataclasses): Hit (id, title, priority, status, effort, source, file, tier
       direct|near|term, score, why list, snippet) and Envelope (query, hits, total, direct_total, returned, complete,
-      direct_complete, channels {name: ok|unavailable: reason}, next_exclude), with to_json(). Completeness is computed
+      direct_complete, channels {name: ok|unavailable: reason}, query_files [{path, status}], near_truncated,
+      terms_truncated, next_exclude), with to_json(). Completeness is computed
       against the post-exclusion totals the verb returns: complete = returned >= total; direct_complete = (direct hits
       returned) >= direct_total. The CLI's JSON is asserted against it, and rec-4280's MCP outputSchema will be generated
       from it.
@@ -85,8 +86,10 @@ scope:
     purpose: >-
       Text-reference channel the import graph cannot see (37% of anchors are yaml/md/yml/tf/sh): repo paths and dotted
       src/scripts/tests module names referenced in the query file's own text, matched precisely (path or quoted-token,
-      never a bare substring -- Decision 135 cl.1(b)) with its OWN two patterns (never import affected_tests.py's private
-      `_` matchers), resolved to tracked files (git ls-files). Outbound only (inbound measured at zero lift).
+      never a bare substring -- Decision 135 cl.1(b)) with its OWN two patterns, whose docstring cites
+      scripts/checks/deps/affected_tests.py's _quoted_token_pattern/_dotted_token_pattern as their source (never import those
+      private names; promoting them would touch Decision 135's selection module), resolved to tracked files (git
+      ls-files). Outbound only (inbound measured at zero lift).
   - file: scripts/recs_related/history.py
     action: Create
     purpose: >-
@@ -101,7 +104,8 @@ scope:
       Lexical channel: repo path, dotted module, stem (skipping generic stems such as __init__, conftest, manifest, skill,
       handler, claude, readme), basename, and up to 40 top-level def/class names of length >= 5 read by AST (never import
       or exec). Lower-cased, restricted to [a-z0-9_./-] (no comma or pipe can reach a bind), deduplicated; free-text --terms
-      are sanitised the same way; at most 40 terms per call.
+      are sanitised the same way; at most 40 terms per call, kept by weight, with any truncation reported in the envelope
+      (terms_truncated), never silent.
   - file: scripts/recs_related/related_recs.py
     action: Create
     purpose: >-
@@ -111,6 +115,10 @@ scope:
       0.5, coupling 0.5*min(shared, 5) + 0.5*confidence (near list capped at 400 paths by weight, truncation reported);
       aliases join the direct tier; terms = stem 16, module 1, basename 0.5, path 0.5, symbol 0.5 -- then makes EXACTLY ONE
       reader.named("recs_related", ...) call and attaches a why list to every hit from the expansion map and matched_terms.
+      Query paths are normalised first (an absolute path under the repo root becomes repo-relative, ./ and // collapse,
+      POSIX separators) and each gets a status in the envelope: tracked, untracked (e.g. a not-yet-created plan scope file:
+      it still joins the direct tier and keeps its sibling and term channels, while import, mention and history channels
+      report unavailable for it) or outside_repo (dropped and reported, never silently).
       next_exclude carries the ids seen so far (prior excludes plus this page); at 200 excluded ids paging stops with
       complete false and a narrow-the-query hint (decision-scout NOTE). A reader failure raises (Decision 55); it never
       returns an empty result.
@@ -135,7 +143,8 @@ scope:
     purpose: >-
       Hermetic class TestNeighbourhood over a tmp repo tree: upstream and downstream 1-hop, patch_string, siblings, the
       tests mirror through map_source_to_test (scripts.test_coverage_checker.ROOT patched to the tmp tree) and through the
-      stem rule, a missing file yields no neighbours and an ok status.
+      stem rule; an untracked (not-yet-created) file yields its siblings but no import neighbours, with the import channel
+      reported unavailable for it.
   - file: tests/recs_related/test_mentions.py
     action: Create
     purpose: >-
@@ -156,8 +165,9 @@ scope:
       rec-4235's acceptance file. Fully hermetic (fake reader, tmp repo, no duckdb, no credentials, no network) because the
       Decision 201 closure verdict runs it in the static sandbox on the merge push, before the deploy. Class
       TestRelatedRecs: one named("recs_related") call with the expected binds and weights; every hit carries a why; aliases
-      join files; complete, direct_complete and next_exclude across a three-page sequence where candidates remain after
-      page 2; the 200-id stop; a reader error propagates; an empty query is refused.
+      join files; query-path normalisation and the tracked/untracked/outside_repo statuses; the 40-term cap truncates by
+      weight and sets terms_truncated; complete, direct_complete and next_exclude across a three-page sequence where
+      candidates remain after page 2; the 200-id stop; a reader error propagates; an empty query is refused.
   - file: tests/recs_related/test_verb_sql.py
     action: Create
     purpose: >-
@@ -178,9 +188,12 @@ scope:
       test_named_reads_version_is_4 becomes ..._is_5. New class TestRecsRelatedVerbV5: registered on ops_recommendations
       with its five params in bind order, paginable False, agent_facing False; its ORDER BY ends with the id tiebreak
       immediately before LIMIT (the existing total-order regex does not match LIMIT least(...)); recs_for_files and
-      open_recs still registered with descriptions starting "deprecated:"; no pre-existing verb re-versioned (each other
-      verb's read_version equals a value pinned in the test). TestRecsReadVerbsV4.test_agent_facing_flags' exemption set
-      gains recs_related.
+      open_recs still registered with descriptions starting "deprecated:"; no pre-existing verb re-versioned -- read_version
+      digests are pinned ONLY for the non-SELECT-* verbs (their digest depends on their own definition alone); for the five
+      SELECT * verbs (rec_by_id, recs_by_ids, rec_history, decision_by_id, priority_queue_current) the test pins table,
+      params, paginable and whitespace-normalised SQL and lets the column projection float (a field_semantics column add
+      must not redden this file; the existing projection test at :124-136 covers it). TestRecsReadVerbsV4
+      .test_agent_facing_flags' exemption set gains recs_related.
   - file: tests/checks/contracts/test_validate_read_engine_verbs.py
     action: Modify
     purpose: >-
@@ -237,7 +250,8 @@ infrastructure_dependencies:
     redeploys the six DuckLake functions bundling ducklake_named_reads.py (reader, writer, maintenance, maintenance-smoke,
     catalog-dr, telemetry-writer) and writes their deploy records; VP 20 checks run conclusion and records.
   - >-
-    data-pipeline (bundles src/, including both changed modules) is a no-deploy disposition: none of its handlers or
+    data-pipeline (bundles src/ but excludes ducklake_named_reads.py, so only ducklake_reader_client.py ships in it) is a
+    no-deploy disposition: none of its handlers or
     bundled scripts entry points reference recs_related, VERB_FIELDS, verb_rows or the version pin (VP 18), and
     deploy-prod-lambdas.yml's paths exclude src/common, so the inert change ships with its next governed deploy.
 acceptance_criteria:
@@ -279,7 +293,7 @@ verification_plan:
     graduation: waive
     graduation_waiver_reason: >-
       Depends on duckdb, absent from requirements-fast.txt (vp-red-before hermetic_authoring rule iii), so venv-less
-      pr-validate cannot replay it; the full tier runs it on every PR that touches the registry or this test.
+      pr-validate cannot collect it; the full tier runs it pre-handoff locally and post-merge on main.
   - step: 3
     phase: pre-deploy
     action: VERB_FIELDS parity executes recs_related's SQL and matches its declared columns.
