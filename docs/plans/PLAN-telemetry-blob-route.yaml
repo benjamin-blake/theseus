@@ -62,7 +62,8 @@ scope:
     duplicate_of is PUT once with urllib (Content-Type application/octet-stream, the grant's headers exactly, no other
     x-amz-* header, 120 s timeout, bounded parallelism); the returned rows have content removed from every spilled
     row. Idempotent. BlobDeliveryError(kind refused | defect | transient | proxy, status, s3_code) never carries a URL,
-    key or payload: begin_blobs 400/403 refused; 503 or a transport error retried 3 times then transient; PUT 403
+    key or payload: begin_blobs 400/403 refused; begin_blobs 500/502 defect with no retry (the writer raised a paging
+    fault); 503 or a transport error retried 3 times then transient; PUT 403
     triggers one grant re-request then refused; PUT 400 (BadDigest, InvalidDigest, IncompleteBody) defect; PUT 5xx or
     timeout retried 3 times then transient; a 403 or 407 whose body is not S3 XML is proxy.
 - file: .importlinter
@@ -114,8 +115,9 @@ scope:
     (producer, event_id, parser_version) are already stored; any that is not -> TelemetryRequestError(422,
     blob_not_verified, {table, row, reason missing | stale}). So an object is newly referenced only when it is present
     and younger than 7 days, while an identical re-send of a stored row stays a no-op whatever the object's age or
-    presence (Decision 210 cl.1, Decision 207), and a re-send never re-uploads content that an erasure removed
-    (rec-4029).
+    presence (Decision 210 cl.1, Decision 207); the append verb never demands a re-upload for a stored row, but
+    begin_blobs re-grants any missing object, so a producer's re-send restores an object an erasure deleted (recorded
+    on rec-4029).
     Never logs a key, digest, URL or value.
 - file: src/common/ducklake_telemetry_handshake.py
   action: Create
@@ -214,7 +216,9 @@ scope:
     content.dq_intent.write_time_exemptions removed (the leg was exempt "until slice 2a-2's blob route lands";
     owner rec-4024). content.semantics, content_uri.populated_by and governance.write_path re-worded to the
     claim-check route: the producer PUTs the payload under a writer-issued, checksum- and length-bound grant, and the
-    writer HEAD-verifies it and sets content_uri before the row commits; part 2's interim-413 sentence removed. No
+    writer HEAD-verifies it and sets content_uri before the row commits; part 2's interim-413 sentence removed; the
+    governance_notes KNOWN GAPS entry "rec-4024 (writer + blob-port put ordering)" is replaced by the route's owners
+    (rec-4033 orphan sweep, rec-4291 get_blob). No
     threshold, cap, key grammar or contract_version change: a mechanism below the content tier Decision 199 cl.5
     fixes (Fable consult Q1). Field-level amendment_log entries on content and content_uri.
 - file: config/lambda/ducklake/field_semantics.yaml
@@ -310,12 +314,17 @@ scope:
   purpose: >-
     Mirror test. Fast-tier nodes use a hand fake client (no botocore); two nodes take botocore through a function-scope
     pytest.importorskip (an offline presign with fake credentials; a Stubber HEAD carrying ChecksumMode ENABLED). One
-    node is the T2.36 c4 guard, defining "staging" as an S3 read whose result becomes catalog rows and refusing it in
-    every module bundled by any DuckLake manifest (the only processes that write catalog rows, Decision 84 I-1): an
-    AST walk allows only head_object, generate_presigned_url with put_object and list_objects_v2 as S3 client calls
-    (no get_object, download_*, select_object_content or copy_object), and a string-literal scan refuses DuckDB SQL
-    that reads object storage into the catalog (read_parquet, read_json, read_csv, read_blob or read_text over s3://,
-    COPY ... FROM, ducklake_add_data_files).
+    node is the T2.36 c4 guard. Its docstring defines staging as an S3 object read whose bytes become catalog rows, and
+    it has two legs. (a) Every module bundled by any DuckLake manifest (the only processes that write catalog rows,
+    Decision 84 I-1): no S3 object read (get_object, download_file, download_fileobj, select_object_content,
+    copy_object) and no string literal that reads object storage into a table (read_parquet, read_json, read_csv,
+    read_blob or read_text over s3://, COPY ... FROM, ducklake_add_data_files); uploads and listings are not reads and
+    stay allowed (catalog_dr's upload_file, ducklake_maintenance's list_objects_v2 paginator). One named seam is
+    admitted by design: a function named get_blob in src/common/ducklake_telemetry_blobstore.py, the content_blobs
+    port's read verb (rec-4291, slice 2b), which returns bytes to a caller and never feeds a table, so 2b never has to
+    weaken this guard. (b) The telemetry writer bundle: its S3 client calls are exactly head_object,
+    generate_presigned_url with put_object and list_objects_v2, apart from that seam, and no writer-bundle module other
+    than the adapter names get_blob.
 - file: tests/common/test_ducklake_telemetry_blobs.py
   action: Create
   purpose: Mirror test with a fake store and part 2's shared fakes of part 1's primitives (fast tier).
@@ -369,8 +378,10 @@ scope:
 - file: tests/ducklake_neon_smoke_test/test_lambda_telemetry_blob_gates.py
   action: Create
   purpose: >-
-    Red cases with core._sigv4_invoke and the PUT patched: each divergence fails loudly; output never carries a URL,
-    X-Amz-* query names, ASIA, a 12-digit run, an ARN, a key, a digest or a project_ref, failure messages included.
+    Red cases with core._sigv4_invoke and the PUT patched: each divergence fails loudly; a delivery failure's
+    SmokeTestFailure names the helper's kind (proxy, refused, defect or transient) and its status, still value-free, so
+    step 15 can tell an environment block from a route fault; output never carries a URL, X-Amz-* query names, ASIA, a
+    12-digit run, an ARN, a key, a digest or a project_ref, failure messages included.
 - file: tests/ducklake_neon_smoke_test/test_lambda_telemetry_gates.py
   action: Modify
   purpose: >-
@@ -388,6 +399,12 @@ scope:
     prepare_batch: the 3a core emits above-threshold content inline by design and spilling is the transport's job, so
     without it the golden case large_tool_result_over_64k.json fails inline_within_threshold once the exemption goes
     (critique r1 F1). The slice 3b thread is told this file changes.
+- file: tests/turn_capture/test_capture_ducklake_integration.py
+  action: Modify
+  purpose: >-
+    Comment only: ROUTE_PENDING_BYTES's note "the blob route ... lands in slice 2a-2 (rec-4024)" becomes "the kernel
+    facade has no blob route; the writer's begin_blobs and HEAD-verify store larger payloads". The hold-back itself
+    stays correct.
 - file: tests/turn_capture/test_real_transcript_conformance.py
   action: Modify
   purpose: >-
@@ -480,8 +497,10 @@ acceptance_criteria:
   nothing whatever the object's age or presence; a caller
   content_uri is 400; inline content above 64 KiB is 422 row_rule inline_within_threshold.
 - >-
-  A size or checksum mismatch, a grant failing its signed-header self-check, or a HEAD denied by S3 emits the C6 line
-  with status 500 and raises, so the Errors alarm pages; S3 throttling answers 503.
+  A size or checksum mismatch, a grant failing its signed-header self-check, or an S3 client error other than
+  throttling (including a HEAD denied for an object the exact-key list shows present) emits the C6 line with status 500
+  and raises, so the Errors alarm pages; a HEAD denied for a key the list shows absent is missing; S3 throttling
+  answers 503.
 - >-
   describe advertises blob_protocol version 1 and a per-table schema view derived from the bundled projection; the
   producer helper delivers rows through it and is what the smoke gate uses.
@@ -490,9 +509,10 @@ acceptance_criteria:
   credential name, a key, a digest, an account id or an ARN; begin_blobs' C6 line carries counts, declared bytes and
   the RequestCount EMF block.
 - >-
-  T2.36 c4 holds against the new write path: no active ops-outbox writer or VarChar-coercion surface exists, no
-  DuckLake bundle reads object storage into the catalog (S3 client calls are HEAD, presign-PUT and List only, and no
-  SQL reads s3:// into a table), and the c2 and c4 texts name the claim-check route.
+  T2.36 c4 holds against the new write path: no active ops-outbox writer or VarChar-coercion surface exists; no
+  DuckLake bundle reads S3 objects into the catalog (no object-read call outside the named get_blob seam and no SQL
+  read of s3:// into a table); the telemetry writer's S3 calls are HEAD, presign-PUT and List only; and the c2 and c4
+  texts name the claim-check route.
 - >-
   After the governed deploy of the merge commit every blob vector passes in CI and in an independent PlatformDev run
   (if this session's proxy refuses the S3 endpoint, that run is recorded as environment-blocked with the proxy status
@@ -533,8 +553,9 @@ verification_plan:
   expected: Exit 0, 7 passed. Red before, because the module and its test do not exist.
   expected_literals: []
   fix_if: >-
-    A 403 read as missing without the list -> fix verify; an S3 call or SQL read over s3:// in any DuckLake bundle
-    that the guard refuses -> remove it or stop and return to /plan.
+    A 403 read as missing without the list -> fix verify. The guard flags an object read or an s3:// ingestion literal
+    that this plan added -> remove it; if it flags code this plan did not touch, the guard is mis-specified: fix the
+    guard's classification, never the untouched module, and stop and return to /plan if the code really ingests.
   hermetic: true
   graduation: graduate
   graduation_check_id: telemetry-blobstore-adapter
@@ -625,9 +646,10 @@ verification_plan:
     tests/ducklake_neon_smoke_test/test_lambda_telemetry_blob_gates.py::test_vectors_pass_on_a_consistent_writer
     tests/ducklake_neon_smoke_test/test_lambda_telemetry_blob_gates.py::test_resend_that_uploads_fails
     tests/ducklake_neon_smoke_test/test_lambda_telemetry_blob_gates.py::test_gate_output_never_carries_a_url_or_identity
+    tests/ducklake_neon_smoke_test/test_lambda_telemetry_blob_gates.py::test_delivery_failure_names_its_kind
     tests/ducklake_neon_smoke_test/test_lambda_telemetry_gates.py::test_blob_vectors_run_after_the_append_vectors
     tests/ducklake_neon_smoke_test/test_telemetry_append_vectors.py::test_each_negative_vector_fails_as_expected -q
-  expected: Exit 0, 7 passed. Red before, because the modules and the new nodes do not exist.
+  expected: Exit 0, 8 passed. Red before, because the modules and the new nodes do not exist.
   expected_literals: []
   fix_if: A vector that passes against a wrong answer is too weak; tighten it.
   hermetic: true
@@ -768,7 +790,7 @@ verification_plan:
     test -s "$DEPLOY_JOBS_JSON" && bin/venv-python -c "import datetime as d,json,os,boto3;b=boto3.Session(profile_name='agent_platform',region_name='eu-west-2');acct=b.client('sts').get_caller_identity()['Account'];
     jobs=json.load(open(os.environ['DEPLOY_JOBS_JSON']));jobs=jobs.get('jobs') if isinstance(jobs,dict) else jobs;t=d.datetime.fromisoformat([x['completed_at'] for x in jobs if x['name'].startswith('deploy-serving')][0].replace('Z','+00:00'));
     ev=b.client('logs').filter_log_events(logGroupName='/aws/lambda/agent-platform-ducklake-telemetry-writer',filterPattern='{ $.verb = \"begin_blobs\" }',startTime=int(t.timestamp()*1000))['events'];
-    m=[e['message'] for e in ev];assert m,'no begin_blobs line';assert all(acct not in x and 'arn:' not in x and 'X-Amz-' not in x and 'amazonaws.com' not in x for x in m),'leak';x=json.loads(m[0]);assert '_aws' in x and 'granted' in x and 'declared_bytes_total' in x,x.keys();
+    m=[e['message'] for e in ev];assert m,'no begin_blobs line';assert all(acct not in x and 'arn:' not in x and 'X-Amz-' not in x and 'amazonaws.com' not in x for x in m),'leak';x=[json.loads(y) for y in m if json.loads(y).get('status')==200][0];assert '_aws' in x and 'granted' in x and 'declared_bytes_total' in x,x.keys();
     cw=b.client('cloudwatch');assert cw.list_metrics(Namespace='DuckLakeTelemetryWriter',MetricName='RequestCount',Dimensions=[{'Name':'Verb','Value':'begin_blobs'}])['Metrics'],'no RequestCount';s=sum(p['Sum'] for p in cw.get_metric_statistics(Namespace='AWS/Lambda',MetricName='Errors',Dimensions=[{'Name':'FunctionName','Value':'agent-platform-ducklake-telemetry-writer'}],StartTime=t,EndTime=d.datetime.now(d.timezone.utc),Period=3600,Statistics=['Sum'])['Datapoints']);assert
     s==0,s;print('C6_BLOB_ERRORS_OK',len(m))"
   expected: Exit 0 and C6_BLOB_ERRORS_OK with the count of begin_blobs lines.
@@ -1003,7 +1025,7 @@ constraints:
 - No rescue agents or workaround loops (Decision 55).
 context:
 - "Decision-scout: FLAGS_FOUND -- WARN 210 cl.1 (a stale refusal broke the identical re-send no-op) resolved by committing a stale blob only as the no-op of a stored row; NOTE 81 cl.7, 199 cl.5 and 181 cl.1 resolved in the claim-check invariant, the tier judgement below and the dated c2/c4 re-grounding. CITE 84, 88, 101, 143, 184, 200, 201, 207, 212, 213, 79, 126. Decisions triaged: 168 of 168. Roadmap items intersected: 9; CONFLICT: 1; RELATED: 7. Report: /mnt/project-files/telemetry-slice2/plan4-blob-route/scout.md."
-- "gates: decision-scout=FLAGS_FOUND (WARN 210 and three NOTEs resolved); plan-critique=REVISE r1 (F1 three exemption-dependent tests scoped with a shared as_written helper; F2 retired-surface sweep as a checklist gate and in step 10, fixtures and gate tests extended in place; F3 step 17 literal; F4 c4 guard covers every DuckLake bundle and SQL reads of s3://, plus coercion evidence; F5 residual qualifier; F6 PC-05 open under T4.23:c7, PC-01 left to part 1; F7 missing objects commit only as stored no-ops; F8 a 403 HEAD is disambiguated by an exact-key list; F9 pool 32 and checksum-query self-check; F10 STOP over 500; AC7 proxy disposition)"
+- "gates: decision-scout=FLAGS_FOUND (WARN 210 and three NOTEs resolved); plan-critique=REVISE r1 (F1 three exemption-dependent tests scoped with a shared as_written helper; F2 retired-surface sweep as a checklist gate and in step 10, fixtures and gate tests extended in place; F3 step 17 literal; F4 c4 guard covers every DuckLake bundle and SQL reads of s3://, plus coercion evidence; F5 residual qualifier; F6 PC-05 open under T4.23:c7, PC-01 left to part 1; F7 missing objects commit only as stored no-ops; F8 a 403 HEAD is disambiguated by an exact-key list; F9 pool 32 and checksum-query self-check; F10 STOP over 500; AC7 proxy disposition); REVISE r2 (R2-F1/F2 the c4 guard refuses object reads in every DuckLake bundle, admits 2b's named get_blob seam and keeps the strict allowlist for the writer bundle only; R2-F3 rec-4029 note; R2-F4 AC3 and the 403 gotcha; R2-F5 begin_blobs 500/502 is a defect; R2-F6 stale rec-4024 pointers; R2-F7 delivery-failure kind; R2-F8 step 16 reads a status-200 line)"
 - "Design inputs: /mnt/project-files/telemetry-slice2/plan4-blob-route/ADVICE.md (Fable, 2026-10-12, Q1-Q9) on top of fable-consult-blob/ADVICE.md (route adopted 2026-09-29) and the approved 2a-2 split (step6b-2a2-presentation.md row 4)."
 - "fork: where the claim-check-not-staging rule lives | chosen: writer contract audit invariant plus T2.36 c2/c4 re-grounding; no numbered Decision, no annotation on Decisions 84 or 199 (199's 2026-10-04 update closed cl.5; the grant route is a mechanism below the tier) | class: decided-with-notice | precedent: decision-entry.yaml routing_rule question 3; Fable Q1 | reversible: yes | persisted: ducklake_telemetry_writer.yaml, ROADMAP T2.36"
 - "fork: integrity fault handling | chosen: log the C6 line then raise so the Errors alarm pages (breaks the typed-500 convention for this one class) | class: decided-with-notice | precedent: Fable Q2, Decision 55 | reversible: yes | persisted: handler.py"
@@ -1015,7 +1037,7 @@ context:
 - "Tier judgement (scout NOTE 199): plan 4 carries out Decision 199 cl.5 (threshold, cap, key grammar and writer-set content_uri unchanged; the exemption expires as its contract scheduled), so no numbered Decision; shown to Benjamin, who may route it to one."
 - "T3.20 c1 (scout): the credential scrub stays the producer's, before hashing; the writer never sees blob bytes and never scrubs."
 - "Data model: grain (producer, event_id, parser_version) and columns unchanged; content and content_uri stay representation-only (Decision 207's 2026-10-04 update), so a writer-derived content_uri never causes a 409."
-- "Gotcha: HEAD answers 404 for a missing key only because the role holds the prefix-conditioned ListBucket; a 403 is an access fault, never 'missing'."
+- "Gotcha: the role's ListBucket is conditioned on s3:prefix, which a HEAD request does not carry, so a HEAD of an absent key most likely answers 403, not 404; verify disambiguates every 403 with one exact-key list (absent -> missing, present -> access fault), so the list path is the normal missing path. Read head_ms in the first live run."
 - "Gotcha: the deps layer bundles no boto3; the Lambda runtime's botocore presigns, so the writer self-checks each grant's signed headers (Fable Q8.1)."
 - "Gotcha: the CI branch role holds bucket-wide S3 write today (oidc_ci_roles.tf); an explicit Deny on telemetry-blobs/* for non-writer roles is a 2c item, not this plan's."
 - "Out of scope (owners): orphan sweep (rec-4033, before 2c's first production write); get_blob and reader verbs (rec-4291); production and alarms (rec-4292); the hook's handshake check and transport (rec-4026, slice 3b)."
@@ -1033,8 +1055,9 @@ pre_implementation_checklist:
   move this plan's nodes there and re-point the VP paths only (node names unchanged).
 - >-
   Retired-surface sweep on the built tree: rg -n "blob_route_unavailable|inline_within_threshold|payload_too_large|five
-  data verbs|five_data_verbs" src scripts tests docs/contracts config; classify every hit, and any that pins the interim
-  413, the blob_route_unavailable reason or the five-verb EMF set and is not already a scope row is added to this plan
+  data verbs|five_data_verbs|rec-4024|lands in slice 2a-2" src scripts tests docs/contracts config; classify every hit, and any that pins the interim
+  413, the blob_route_unavailable reason or the five-verb EMF set, or points at rec-4024 as the route's future owner,
+  and is not already a scope row is added to this plan
   (a plan amendment) before coding
 - ci_rca_open re-checked
 - All files in scope located and readable
@@ -1054,7 +1077,9 @@ execution_steps:
   Persist the notes (get_rec_write_guidance first, Decision 66; fetch each rec immediately before update_rec and
   prepend a dated note to its full context): rec-4033 -- delete only objects older than 30 days, by VersionId (the
   maintenance role will need s3:DeleteObjectVersion on telemetry-blobs/), anti-join on content_uri bounded to the
-  object's session prefix, against this plan's 7-day commit age; rec-4026 -- the describe handshake shape, the helper's
+  object's session prefix, against this plan's 7-day commit age; rec-4029 -- begin_blobs re-grants a missing object, so erasure by object delete is undone by the producer's next
+  re-send of that turn; erasure must tombstone the key at the writer or erase at the source; rec-4026 -- the describe
+  handshake shape, the helper's
   signature and error contract, 422 blob_not_verified re-runs delivery once, 413 too_many_blobs re-chunks, inline
   above the threshold is a 422 defect; rec-4024 -- the re-homing of its remainder to rec-4291 and rec-4292, and its acceptance re-pointed to step 4's
   graduated nodes so it holds at the closing commit (Decision 201).
