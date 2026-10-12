@@ -48,13 +48,13 @@ scope:
 - file: tests/checks/test_validation_result.py
   action: Modify
   purpose: >-
-    Covers run_scaffold, failure_markers (order, de-duplication, the pre-commit scaffold exemption), clear() resetting
+    Covers run_scaffold, failure_markers (order, de-duplication, scaffold names after check names), clear() resetting
     the scaffold accumulator, and print_failure_summary's exact output.
 - file: tests/validate/test_gate_failure_summary.py
   action: Create
   purpose: >-
     Drives validate.main() through --pre, the full tier and --terraform-only with stubbed sequences: the summary prints
-    one marker per failed check and per failed non-exempt scaffold after the unchanged label lines; nothing on success.
+    one marker per failed check and per failed scaffold step after the unchanged label lines; nothing on success.
 - file: tests/test_gate_failure_markers.py
   action: Create
   purpose: >-
@@ -74,6 +74,12 @@ scope:
     Verification-registry row for graduated VP step 2. check_id gate-marker-names-fit-process-event-pattern,
     primitive_slot command_exit_zero, check_spec.command is step 2's pytest node, guard_target src/turn_capture/markers.py,
     guard_symbol null, plan_slug gate-failure-markers, graduated_by implement-agent.
+- file: config/agent/verification_registry/entries/gate-failure-summary-wired-in-validate-main.yaml
+  action: Create
+  purpose: >-
+    Verification-registry row for graduated VP step 4. check_id gate-failure-summary-wired-in-validate-main,
+    primitive_slot command_exit_zero, check_spec.command is step 4's pytest command, guard_target scripts/validate.py,
+    guard_symbol null, plan_slug gate-failure-markers, graduated_by implement-agent.
 bundled_recommendations: []
 followon_recs: []
 infrastructure_dependencies: []
@@ -81,9 +87,9 @@ acceptance_criteria:
 - >-
   A failing registered check in --pre or the full tier makes the summary print exactly one line
   "GATE-FAILURE v1 source=gate check=<check name>" for that check after the unchanged "Failed checks:" label list; a
-  failing scaffold step other than precommit_changed, precommit_all_files and budget_assertion prints one such line
-  with its step name; a clean run prints none. A run that exits inside budget_assertion (validate.py:505, :535, :548)
-  prints neither labels nor markers, as today.
+  failing scaffold step (including precommit_changed and precommit_all_files) prints one such line with its step name;
+  a clean run prints none. A run that exits inside budget_assertion (validate.py:505, :535, :548) prints neither labels
+  nor markers, as today.
 - >-
   markers.parse_markers returns a Marker with source "gate" and the check name for every printed marker line, and
   one with source "precommit" and the hook id for every pre-commit hook block that carries a non-zero exit code or the files-modified line, proven against real pre-commit
@@ -127,8 +133,9 @@ verification_plan:
   expected: >-
     Exit 0, 1 passed. Red before: target_absent (pytest exit 4).
   fix_if: >-
-    A name fails the pattern: a new check or hook id breaks the signature class; rename it rather than widen the
-    contract (Decision 210 cl.4). The contract read fails: the test hard-codes the regex instead of reading pattern_when.
+    A name fails the pattern: a new check, scaffold or hook id breaks the signature class; rename it, or widen the
+    contract first through an amendment and a writer deploy (Decision 210 cl.4). A scaffold name collides with a check
+    name: rename one. The contract read fails: the test hard-codes the regex instead of reading pattern_when.
   hermetic: true
   graduation: graduate
   graduation_check_id: gate-marker-names-fit-process-event-pattern
@@ -150,8 +157,10 @@ verification_plan:
   hermetic: false
   graduation: waive
   graduation_waiver_reason: >-
-    Needs pre-commit, which is absent from requirements-fast.txt, so the venv-less pr-validate tier cannot collect it
-    (vp-red-before.yaml hermetic_authoring (iii)); it still runs in the full tier through the unit-test scaffold.
+    A registry row would pass vacuously ("1 skipped") wherever pre-commit is absent (it is dev-only, not in
+    requirements-fast.txt), and the node is side-effectful out of tree (hermetic_authoring (iv)): it runs git and
+    pre-commit in a temporary repository with PRE_COMMIT_HOME pointed at tmp_path. The full tier runs it through the
+    unit-test scaffold.
 - step: 4
   phase: pre-deploy
   action: >-
@@ -165,13 +174,11 @@ verification_plan:
     Exit 0, 4 passed. Red before: target_absent.
   fix_if: >-
     A summary site still prints its own label loop: one of the three blocks was not replaced. The scaffold marker is
-    missing: a scaffold dispatch site still calls scaffold_fns[...]() directly. A consumer reads a marker as a label:
-    a marker line starts with "- ", or a blank line was printed between the labels and the markers.
+    missing: a scaffold dispatch site still calls scaffold_fns[...]() directly. A consumer returns a marker as a label:
+    a marker line starts with "- " after stripping.
   hermetic: true
-  graduation: waive
-  graduation_waiver_reason: >-
-    Step 1's graduated row already guards the marker-per-failure contract through the same print_failure_summary;
-    these nodes pin main()'s call sites, which the unit suite keeps running in both tiers.
+  graduation: graduate
+  graduation_check_id: gate-failure-summary-wired-in-validate-main
   expected_literals:
   - 4 passed
 - step: 5
@@ -210,7 +217,7 @@ verification_plan:
 - step: 7
   phase: pre-deploy
   action: >-
-    Lint, type-check and run the full tier, as the handoff policy requires before commit.
+    Lint the changed Python files and run the full tier, as the handoff policy requires before commit.
   command: >-
     bin/venv-python -m ruff check src/turn_capture/markers.py scripts/checks/validation_result.py scripts/validate.py
     tests/turn_capture/test_markers.py tests/checks/test_validation_result.py tests/validate/test_gate_failure_summary.py
@@ -231,8 +238,8 @@ test_obligations:
   red_green_expectation: red before (module and test absent), green after.
 - source: scripts/checks/validation_result.py
   behavior: >-
-    run_scaffold attributes only newly appended labels; failure_markers is ordered, de-duplicated and exempts the two
-    pre-commit scaffolds; print_failure_summary prints labels then markers and nothing extra on an empty marker list.
+    run_scaffold attributes only newly appended labels; failure_markers is ordered and de-duplicated, check names
+    first; print_failure_summary prints labels then markers and nothing extra on an empty marker list.
   verification_step: 5
   test_selector: tests/checks/test_validation_result.py
   red_green_expectation: red before (functions absent), green after.
@@ -259,6 +266,14 @@ test_obligations:
     Verification-registry metadata for step 2's graduation. Its standing checks are validate_verification_registry's
     differential admission gate (the node is absent on origin/main) and validate_graduation_completeness, both in the
     full tier step 7 runs.
+- source: config/agent/verification_registry/entries/gate-failure-summary-wired-in-validate-main.yaml
+  behavior: Registry row for the graduated step-4 check.
+  verification_step: 7
+  command: bin/venv-python -m scripts.validate
+  waiver_reason: >-
+    Verification-registry metadata for step 4's graduation. Its standing checks are validate_verification_registry's
+    differential admission gate (the nodes are absent on origin/main) and validate_graduation_completeness, both in the
+    full tier step 7 runs.
 constraints:
 - Only the files listed in scope may be modified.
 - src/turn_capture/markers.py imports only the standard library (tests/turn_capture/test_package_boundary.py, .importlinter).
@@ -280,7 +295,7 @@ context:
   Decision-scout verdict: FLAGS_FOUND (two NOTEs, both resolved in this plan: brand-neutral prefix per Decision 198;
   pattern derived from the contract per Decision 210 cl.3). CITE: 170, 169, 128, 131, 210, 201, 79. Decisions triaged:
   168 of 168. Roadmap items intersected: 21; CONFLICT: 0; RELATED: 21.
-- "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=REVISE r1 (F1-F9 dispositioned), confirming round pending"
+- "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=REVISE r1 (F1-F9 fixed), REVISE r2 confirming (C1-C9 fixed), escalated"
 - >-
   Slice 3b split and spike: Benjamin, 2026-10-12 ("yes to the split of the plans, and yes to the spike"). Design inputs:
   /mnt/project-files/telemetry-slice3/step6b-3b-presentation.md, 3b-fable-consult/ADVICE.md (F8).
@@ -297,17 +312,20 @@ context:
 - >-
   Pre-commit: pinned, not wrapped. Wrapping cannot cover git-commit-time failures, which never pass through validate.py.
   pre-commit prints "- hook id: <id>" for a failing hook and also for a verbose passing one, so the block rule requires
-  a non-zero exit code line or the files-modified line (pre_commit/commands/run.py, 4.6.2). The two pre-commit
-  scaffolds get no gate marker because their failures are already itemised by those lines.
+  a non-zero exit code line or the files-modified line (pre_commit/commands/run.py, 4.6.2). The pre-commit scaffolds
+  (precommit_changed, precommit_all_files) ALSO get a gate marker: in --pre, pre-commit's per-hook block prints early
+  and inline (_scaffolding.py:136-148), so only the summary marker reliably lands in the output tail, and it also covers
+  a pre-commit infrastructure failure that prints no per-hook block.
 - >-
   Consumers: P-B parses markers from the FULL tool output (sidecar when persisted). The window and the event shape
-  (parent tool_call, role gate_event.<n>) are P-B's. tests/telemetry/test_process_event_name_rule.py already checks
+  (parent tool_call, role gate_event.<n>) are P-B's, with two hand-offs: a pre-commit per-hook block can sit anywhere in
+  a validate run's output (only the gate marker is at the tail), and whole-line markers are not tied to the process
+  that printed them, so P-B scopes parsing to Bash calls that run the gates or declares the noise. tests/telemetry/test_process_event_name_rule.py already checks
   gate:<check> and precommit:<id> names; this plan adds scaffold names and the marker round trip.
 - >-
   Known gaps (declared, no rec owed): a budget_assertion exit happens inside the scaffold before the summary
   (validate.py:505, :535, :548), so that run prints no markers; budget breaches are already recorded durably by their own
-  rec filing and CI step-summary notice (Decision 153). A pre-commit infrastructure failure (hook install or config
-  error) prints no per-hook block, so it yields no precommit marker. --terraform-only dispatches no registered check,
+  rec filing and CI step-summary notice (Decision 153). --terraform-only dispatches no registered check,
   so it prints none. No ports.yaml row is owed: src/turn_capture is producer code, not executor, adapter or port code
   (Decision 212; P-B's scout reached the same reading).
 - "Deploy-inert: src/turn_capture is excluded from data-pipeline.zip; scripts/ is not Lambda-packaged (Decision 79)."
@@ -328,7 +346,7 @@ execution_steps:
   the 0-based index in the input text. format_gate_marker raises ValueError on a check that does not fully match.
 - >-
   In scripts/checks/validation_result.py add _SCAFFOLD_FAILURES (cleared in clear()), run_scaffold, failure_markers
-  (unique check names from _ATTRIBUTIONS in first-seen order, then unique non-exempt scaffold names in first-seen order,
+  (unique check names from _ATTRIBUTIONS in first-seen order, then unique scaffold names in first-seen order,
   each through markers.format_gate_marker) and print_failure_summary, which prints "Failed checks:", one
   "  - <label>" line per entry of failed (unchanged), then one marker line per failure_markers() entry.
 - >-
@@ -338,10 +356,21 @@ execution_steps:
   Write the four test modules in scope (node names as in the verification plan). In tests/test_gate_failure_markers.py
   the pre-commit dependency is skipped NODE-locally (pytest.importorskip inside
   test_real_precommit_failure_output_parses_to_hook_id), never at module level, so the file stays collectable in the
-  venv-less pr-validate tier where steps 1 and 2 run. tests/checks/test_validation_result.py has 87 SLOC of headroom
-  under 500 (Decision 130): keep its additions within it, and extend its autouse reset fixture to clear
-  _SCAFFOLD_FAILURES.
-- Execute Verification Plan -- run each step; loop until pass; on an unrecoverable failure stop and RCA (Decision 55).
+  venv-less pr-validate tier where steps 1 and 2 run; that node points PRE_COMMIT_HOME at tmp_path.
+  tests/checks/test_validation_result.py has 87 SLOC of headroom under 500 (Decision 130): keep its additions within
+  it, and extend its autouse reset fixture to clear _SCAFFOLD_FAILURES. Step 2's node also asserts the scaffold names
+  (registry.py _PRE_TIER_LEADING_SCAFFOLDS, _PRE_TIER_TRAILING_SCAFFOLDS, _FULL_TIER_SKELETON) are disjoint from
+  all_checks(), since both print as check=<name>. Every test that prints a marker captures its output (capsys or
+  capture_output) and uses synthetic check names no friction rule keys on (never validate_scope_boundary).
+- Execute Verification Plan steps 1-6 -- loop until pass; on an unrecoverable failure stop and RCA (Decision 55).
+- >-
+  Closure sequence (implement skill, git-ops handoff_sequence), each outcome reported on its own: run the code-review
+  gate (fresh sibling subagent); run scripts.session.github_readiness and report each state separately (unknown is
+  unproven, never PASS); set implementation_declared true in this plan; rebase onto origin/main; write the
+  retrospective evidence and run scripts.session.postflight --evidence; then VP step 7, the full tier on the committed,
+  rebased, clean tree to completion, then scripts.checks.validation_result --verify-head exit 0. Any review-fix commit
+  reruns both; a timeout is BLOCKED, never skipped. Push, open the PR, wait for CI by subscription, squash-merge; report
+  push, PR, CI and merge outcomes separately.
 - >-
   Closeout: add an update_rec note on rec-4172 (ops portal) naming what landed (markers.py grammar, validate summary
   markers, the pinned pre-commit lines) and that PLAN-telemetry-parser-v3 declares the per-version prefixes and resolves
