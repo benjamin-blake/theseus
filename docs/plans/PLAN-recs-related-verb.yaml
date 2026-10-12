@@ -27,8 +27,9 @@ scope:
       ("files", "near", "terms", "exclude_ids", "limit") in that bind order, paginable False, agent_facing False, a
       description saying it is a relevance lookup behind scripts.recs_related and not a bulk path. Fixed SQL, every bind a
       string (Decision 84 I-3); execution step 2 carries the planning-time SQL validated on duckdb 1.5.4 (the Lambda pin).
-      Semantics: `files` (comma list, empty entries dropped) is the DIRECT tier -- exact anchor match, plus a trailing-slash
-      directory anchor that prefixes a query file; an empty or NULL anchor is never direct; `near` is "path|weight" pairs
+      Semantics: `files` (comma list, empty entries dropped) is the DIRECT tier -- exact anchor equality only; the verb
+      encodes no directory model (directories are scope, never anchors -- owner choice after a Fable consult; a
+      trailing-slash anchor is matched only through `near`), and an empty or NULL anchor is never direct; `near` is "path|weight" pairs
       (CAST, never TRY_CAST, so a malformed weight fails loudly); `terms` is "term|weight" pairs of plain lower-case
       literals the SQL escapes with regexp_escape and matches as whole tokens ('(^|[^a-z0-9_])' || regexp_escape(term) ||
       '($|[^a-z0-9_])') over lower(title || ' ' || context), computed ONCE per (open rec, term) pair after a materialised
@@ -54,8 +55,9 @@ scope:
       read_surface.named_verbs.verbs.ops_recommendations gains recs_related; deprecated_verbs gains recs_for_files and
       open_recs (removal rec-4240); the recs_cache line names recs_related (through scripts.recs_related) as the relevance
       read; one related_recs_read block (named so it cannot be confused with Decision 103's relevance lifecycle verdict)
-      carrying the output field semantics (direct, score, matched_terms, snippet, total and direct_total counted after
-      exclusion), the 100-row page cap, the 200-id exclude cap, the 5% term ceiling, and "a relevance lookup, not a bulk
+      carrying the output field semantics (direct = exact anchor equality only, score, matched_terms, snippet, total and
+      direct_total counted after exclusion; directory anchors are scope, reached only as interim client-side near paths
+      until rec-4279 re-anchors them), the 100-row page cap, the 200-id exclude cap, the 5% term ceiling, and "a relevance lookup, not a bulk
       path -- bulk export is rec-4237"; amendment_log entry (Decision 168). validate_read_engine_verbs stays green.
   # --- client core + CLI (scripts/recs_related/, every module < 500 SLOC, Decision 128) ---
   - file: scripts/recs_related/__init__.py
@@ -66,8 +68,8 @@ scope:
     purpose: >-
       The single output schema (dataclasses): Hit (id, title, priority, status, effort, source, file, tier
       direct|near|term, score, why list, snippet) and Envelope (query, hits, total, direct_total, returned, complete,
-      direct_complete, channels {name: ok|unavailable: reason}, query_files [{path, status}], near_truncated,
-      terms_truncated, next_exclude), with to_json(). Completeness is computed
+      direct_complete, channels {name: ok|unavailable: reason}, query {files, aliases, terms}, query_files [{path,
+      status}], dir_anchor_hits, near_truncated, terms_truncated, next_exclude), with to_json(). Completeness is computed
       against the post-exclusion totals the verb returns: complete = returned >= total; direct_complete = (direct hits
       returned) >= direct_total. The CLI's JSON is asserted against it, and rec-4280's MCP outputSchema will be generated
       from it.
@@ -113,7 +115,10 @@ scope:
       exclude_ids, reader=None) -> Envelope. Builds the five binds with the measured weights pinned in one module constant
       -- near per path = sum over query files of upstream 4, downstream 1, sibling 1, tests mirror 1, patch_string 1, mention
       0.5, coupling 0.5*min(shared, 5) + 0.5*confidence (near list capped at 400 paths by weight, truncation reported);
-      aliases join the direct tier; terms = stem 16, module 1, basename 0.5, path 0.5, symbol 0.5 -- then makes EXACTLY ONE
+      aliases join the direct tier; interim directory scope -- each query file's parent directory (0.5) and grandparent
+      directory (0.25), trailing slash, never a single-segment root such as scripts/ or src/, join `near` with why
+      "ancestor_dir:<dir>" and are counted in dir_anchor_hits (rec-4279 deletes this once directory anchors are repaired);
+      terms = stem 16, module 1, basename 0.5, path 0.5, symbol 0.5 -- then makes EXACTLY ONE
       reader.named("recs_related", ...) call and attaches a why list to every hit from the expansion map and matched_terms.
       Query paths are normalised first (an absolute path under the repo root becomes repo-relative, ./ and // collapse,
       POSIX separators) and each gets a status in the envelope: tracked, untracked (e.g. a not-yet-created plan scope file:
@@ -126,8 +131,8 @@ scope:
     action: Create
     purpose: >-
       CLI over the core only: bin/venv-python -m scripts.recs_related FILE [FILE ...] [--terms "a b"] [--limit N (default
-      20, max 100)] [--exclude IDS] [--table]. JSON (Envelope.to_json) by default, --table for one line per hit plus an
-      envelope line. No files and no terms exits 2; a reader failure exits 1 with the error on stderr.
+      20, max 100)] [--exclude IDS] [--table]. JSON (Envelope.to_json) by default, --table for one line per hit (a
+      directory-anchored near hit prints its tier as near(dir)) plus an envelope line. No files and no terms exits 2; a reader failure exits 1 with the error on stderr.
   # --- tests (mirror package, every directory carries __init__.py). Tmp git repos set GIT_AUTHOR_*/GIT_COMMITTER_* (or
   # --- -c user.*) and write only under tmp_path: the Decision 201 closure sandbox has no git identity and a read-only repo.
   - file: tests/recs_related/__init__.py
@@ -165,7 +170,9 @@ scope:
       rec-4235's acceptance file. Fully hermetic (fake reader, tmp repo, no duckdb, no credentials, no network) because the
       Decision 201 closure verdict runs it in the static sandbox on the merge push, before the deploy. Class
       TestRelatedRecs: one named("recs_related") call with the expected binds and weights; every hit carries a why; aliases
-      join files; query-path normalisation and the tracked/untracked/outside_repo statuses; the 40-term cap truncates by
+      join files; the parent (0.5) and grandparent (0.25) ancestor directories reach near with why ancestor_dir and are
+      counted in dir_anchor_hits, while a single-segment root never does; query-path normalisation and the
+      tracked/untracked/outside_repo statuses; the 40-term cap truncates by
       weight and sets terms_truncated; complete, direct_complete and next_exclude across a three-page sequence where
       candidates remain after page 2; the 200-id stop; a reader error propagates; an empty query is refused.
   - file: tests/recs_related/test_verb_sql.py
@@ -174,7 +181,8 @@ scope:
       Executes recs_related's REGISTERED SQL in in-memory DuckDB (pytest.importorskip("duckdb"); the table built from
       resolve_table_spec("ops_recommendations"), {tbl} substituted as the parity test does). The fixture holds more than 20
       open rows (the 5% ceiling needs them) plus closed, empty-anchor and NULL-anchor rows. Asserts: direct tier first, then
-      priority, score, recency; the trailing-slash directory anchor; whole-token matching (no substring hit) and
+      priority, score, recency; a trailing-slash directory anchor is NEVER direct, even for files beneath it, and is
+      reached only when its path is passed in near; whole-token matching (no substring hit) and
       regexp_escape (a '.' in a term is literal); a common term (df over 5%) never admits a row alone but re-ranks; the
       exclude filter, post-exclusion total/direct_total on a 250-candidate two-page case, and the >200-id error; the
       100-row cap; non-open, empty-anchor and NULL-anchor rows never returned for empty binds; a malformed near weight
@@ -258,7 +266,8 @@ acceptance_criteria:
   - >-
     recs_related is registered (registry v5, agent_facing False) and its SQL ranks direct hits first, then priority, score
     and recency, at most 100 rows per call with post-exclusion total and direct_total disclosed; a common term never admits
-    a row alone; an empty or NULL anchor is never direct; more than 200 excluded ids fails loudly.
+    a row alone; only an exact anchor match is direct (never a directory, empty or NULL anchor); more than 200 excluded
+    ids fails loudly.
   - >-
     One related_recs call (CLI or core) makes exactly one reader call and returns hits that each carry a why, plus an
     Envelope whose complete flag is false whenever candidates remain unreturned, with per-channel status and next_exclude;
@@ -267,7 +276,8 @@ acceptance_criteria:
   - recs_for_files and open_recs remain registered with deprecated descriptions; no pre-existing verb is re-versioned.
   - >-
     The merge's deploy-ducklake-lambdas.yml run concludes success and all six DuckLake functions carry the merge sha; the
-    live reader describes recs_related and the live CLI's direct_total equals recs_for_files' row count for the same file.
+    live reader describes recs_related and the live CLI's direct_total equals recs_for_files' row count over the same
+    file and its git aliases.
   - rec-4235 is closed by the merge's Resolves trailer; Decision 215 carries the dated annotation naming rec-4279 and rec-4240.
 verification_plan:
   - step: 1
@@ -287,7 +297,8 @@ verification_plan:
     command: bin/venv-python -m pytest tests/recs_related/test_verb_sql.py -q
     expected: Exit 0, all nodes pass. Red before, the test file is absent.
     fix_if: >-
-      Ordering, token boundary, escaping, term ceiling, empty-anchor rule, exclude guard, post-exclusion totals or the cap
+      Ordering, token boundary, escaping, term ceiling, exact-only direct tier, empty-anchor rule, exclude guard,
+      post-exclusion totals or the cap
       diverge; fix the SQL, never relax the fixture.
     hermetic: false
     graduation: waive
@@ -527,13 +538,14 @@ verification_plan:
     phase: post-deploy
     action: >-
       Live, self-asserting, differential CLI check on the file carrying the most open recs: direct_total equals
-      recs_for_files' row count for the same file (that verb stays registered until rec-4240), at most 20 hits, the direct
-      tier first, every hit explained; wall time recorded.
+      recs_for_files' row count over the same file plus the git aliases the envelope reports (both are exact-match; that
+      verb stays registered until rec-4240), at most 20 hits, the direct tier first, every hit explained; wall time
+      recorded.
     command: >-
       bin/venv-python -c "import json,subprocess,time;from src.common.ducklake_reader_client import DuckLakeReader as R;
       f='scripts/preflight/ci_rca_signals.py';t=time.time();e=json.loads(subprocess.run(['bin/venv-python','-m',
       'scripts.recs_related',f,'--limit','20'],capture_output=True,text=True,check=True).stdout);w=time.time()-t;
-      d=len(R().named('recs_for_files',files=f));h=e['hits'];assert e['direct_total']==d,(e['direct_total'],d);
+      d=len(R().named('recs_for_files',files=','.join([f]+e['query']['aliases'])));h=e['hits'];assert e['direct_total']==d,(e['direct_total'],d);
       assert len(h)<=20;assert all(x['tier']=='direct' for x in h[:min(d,20)]);assert all(x['why'] for x in h);
       print('LIVE_OK',d,e['total'],round(w,1))"
     expected: One LIVE_OK line with the direct count, total and wall seconds; record the wall time in the PR body.
@@ -631,7 +643,7 @@ context:
     Decision-scout FLAGS_FOUND (1 NOTE, Decision 215 cl.1 paging drift; resolved by pivot: 5% term ceiling, 200-id exclude
     cap, not-a-bulk-path statement). CITE: 215, 84, 88, 212, 211, 135, 128, 127, 86, 177, 181, 201, 79, 125, 126.
     Decisions triaged: 168 of 168. Roadmap items intersected: 7; CONFLICT: 0; RELATED: 7
-  - "gates: decision-scout=FLAGS_FOUND (1 NOTE, folded); plan-critique=r1 REVISE (R1-R5, S1-S4 fixed); r2 PENDING"
+  - "gates: decision-scout=FLAGS_FOUND (1 NOTE, folded); plan-critique=r1 REVISE (R1-R5, S1-S4 fixed); r2 REVISE (R1-R2, S1-S6 fixed; S1 decided by the owner after a Fable consult); r3 PENDING"
   - >-
     Measurement (840 linked closed recs, 288 fix commits, graphs at each fix's parent, chronological 60/40 split) and both
     Fable consults are recorded in this plan's initial commit body; weights in related_recs.py come from it.
@@ -648,6 +660,7 @@ context:
   - "fork: scout NOTE paging drift | chosen: term ceiling + exclude cap + not-a-bulk-path | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: scope (registry SQL)"
   - "fork: recs_for_files/open_recs fate | chosen: deprecate here, remove via rec-4240 (widened 2026-10-12) | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: rec-4240"
   - "fork: evaluation harness | chosen: follow-on rec-4281 after rec-4237 | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: followon_recs"
+  - "fork: directory anchors | chosen: scope never anchor -- exact-only direct tier, interim client ancestor-dir near paths, rec-4279 rejects and triages directory anchors | class: asked (after a Fable consult) | precedent: none | precedent_kind: none | reversible: yes | persisted: scope, rec-4279"
   - "fork: signal mix and weights | chosen: all four families, direct > priority > score > recency | class: consistency-only | precedent: owner instruction to let the measurement pick | precedent_kind: none | reversible: yes | persisted: scope (related_recs.py constant)"
 pre_implementation_checklist:
   - Branch confirmed not on main
@@ -686,8 +699,7 @@ execution_steps:
       nearw AS (SELECT path, max(w) AS w FROM near GROUP BY path),
       scored AS (
         SELECT o.id, o.title, o.status, o.priority, o.effort, o.source, o.file, o.created_timestamp,
-               coalesce(o.file IN (SELECT path FROM q)
-                        OR (right(o.file, 1) = '/' AND EXISTS (SELECT 1 FROM q WHERE starts_with(q.path, o.file))), false) AS direct,
+               coalesce(o.file IN (SELECT path FROM q), false) AS direct,
                coalesce(nw.w, 0) AS near_w, coalesce(ts.term_w, 0) AS term_w, coalesce(ts.admitting_hits, 0) AS admitting_hits,
                ts.matched_terms, left(o.context, 200) AS snippet
         FROM openr o CROSS JOIN guard CROSS JOIN ex
