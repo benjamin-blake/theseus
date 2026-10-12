@@ -45,7 +45,7 @@ If the request references a recommendation ID, fetch it with the ducklake-reads 
 ## Step 3: Clarify the Request
 Decompose the input into Goal, Constraints, Acceptance criteria, Affected areas, and Phase alignment.
 If vague, ask 2-5 questions. Watch for ROADMAP misalignment (the platform/product roadmap state is already in the preflight JSON `next_eligible` / `strategic_pending` fields). Decision-contradiction checking is delegated to the `decision-scout` subagent gate in Step 6 -- do NOT read `docs/DECISIONS.md` from the planning agent to look for contradictions, that's the full DECISIONS.md (large -- near its Decision 134 size ceiling), a cost the subagent avoids.
-Suggest 3-5 open recommendations (ducklake-reads `recs_for_files` over the likely scope files) that align with the current task.
+Suggest 3-5 open recommendations aligned with the task (`bin/venv-python -m scripts.recs_related` over the likely scope files).
 
 ## Step 4: Identify Affected Files
 1. Use the File Router to locate source files.

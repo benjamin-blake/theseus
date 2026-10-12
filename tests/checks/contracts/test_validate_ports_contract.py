@@ -214,7 +214,7 @@ def test_accepts_structural_assumption_row(root: Path) -> None:
         root,
         lambda d: d["structural_assumptions"].append(
             {
-                "id": "SA-01",
+                "id": "SA-99",
                 "assumption": "The loop reads docs/ROADMAP-PLATFORM.yaml at a fixed repo path.",
                 "location": "scripts/executor/example.py",
                 "status": "open",

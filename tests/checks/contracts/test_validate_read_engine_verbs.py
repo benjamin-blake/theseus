@@ -95,6 +95,14 @@ class TestRealContractRoster:
         validate_read_engine_verbs(failed, contracts_dir=contracts_dir)
         assert failed == []
 
+    def test_real_contract_names_recs_related(self) -> None:
+        contracts_dir = Path(__file__).resolve().parents[3] / "docs" / "contracts"
+        doc = yaml.safe_load((contracts_dir / _CONTRACT_NAME).read_text(encoding="utf-8"))
+        named_verbs = doc["read_surface"]["named_verbs"]
+
+        assert "recs_related" in named_verbs["verbs"]["ops_recommendations"]
+        assert {"recs_for_files", "open_recs"} <= set(named_verbs["deprecated_verbs"])
+
 
 class TestMissingFile:
     def test_missing_contract_file_fails(self, tmp_path: Path) -> None:
