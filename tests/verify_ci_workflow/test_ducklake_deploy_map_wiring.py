@@ -73,3 +73,10 @@ def test_url_loop_roles_map_to_deploy_map_functions() -> None:
     assert "telemetry_writer" in roles
     assert "${role//_/-}" in run, "smoke: --function-name must use the ${role//_/-} expansion"
     assert "DUCKLAKE_${role^^}_URL" in run, "smoke: URL export must use DUCKLAKE_${role^^}_URL"
+
+
+def test_deploy_push_paths_include_src_telemetry() -> None:
+    """The telemetry kernel is bundled into a DuckLake function, so a kernel edit must trigger the governed deploy."""
+    doc = yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
+    triggers = doc.get("on", doc.get(True))
+    assert "src/telemetry/**" in triggers["push"]["paths"]

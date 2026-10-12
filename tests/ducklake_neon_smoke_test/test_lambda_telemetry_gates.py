@@ -5,6 +5,9 @@ The six --lambda-telemetry checks, each with a red case, and the Decision 101 le
 
 from __future__ import annotations
 
+import re
+import threading
+
 # boto3 is patched by string below; the import makes the heavy-dep requirement visible to the fast tier's collect pass.
 import boto3  # noqa: F401
 import pytest
@@ -29,6 +32,33 @@ ATTACH_OK = {
     "data_path_is_smoke": True,
     "catalog_login": "ducklake_telemetry_writer",
 }
+
+
+TENANT_ID = "01HTENANT" + "0" * 17
+PROJECT_ID = "01HPRQJEKT" + "0" * 16
+TABLES = [f"t{i}" for i in range(9)]
+PROBE_OK = {
+    "ok": True,
+    "meta_schema": core.META_SCHEMA,
+    "data_path_is_smoke": True,
+    "connect_reused": True,
+    "catalog_login": "ducklake_telemetry_writer",
+    "catalog_backend": "neon",
+    "catalog_sessions": 3,
+    "tables": {t: {"present": True, "partitioned_as_declared": True} for t in TABLES},
+    "counters": {"ops_tenants": 2, "ops_projects": 5},
+    "counter_rows": {"ops_tenants": 1, "ops_projects": 1},
+    "current_counts": {"ops_tenants": 1, "ops_projects": 5},
+}
+MARKERS = (
+    "TELEMETRY_PROVISION_OK",
+    "TELEMETRY_TENANT_STABLE",
+    "TELEMETRY_PROJECT_CONVERGED",
+    "TELEMETRY_PROBE_OK",
+    "TELEMETRY_SELF_ONLY_OK",
+    "catalog_backend=neon",
+    "catalog_sessions=3",
+)
 
 
 class _Client:
@@ -57,15 +87,40 @@ def wired(monkeypatch):
         "unknown": _Resp(400, {"ok": False, "error_type": "unknown_action"}),
         "client": _Client(_denied()),
         "sent": [],
+        "provision": _Resp(200, {"ok": True, "tables": TABLES, "counters": {"ops_tenants": 0, "ops_projects": 0}}),
+        "tenant_ids": [TENANT_ID, TENANT_ID],
+        "project_ids": lambda n: PROJECT_ID,
+        "probe": _Resp(200, PROBE_OK),
+        "self_only": _Resp(400, {"ok": False, "error_type": "bad_request"}),
+        "project_purpose": "synthetic",
     }
+    lock = threading.Lock()
+    counts = {"tenant": 0, "project": 0}
 
     def fake_invoke(url, payload, **kw):
-        state["sent"].append((payload, kw.get("sign", True)))
+        with lock:
+            state["sent"].append((payload, kw.get("sign", True)))
         if kw.get("sign", True) is False:
             return state["unsigned"]
-        return {"describe": state["describe"], "attach_check": state["attach"], "no_such_action": state["unknown"]}[
-            payload["action"]
-        ]
+        action = payload["action"]
+        if action == "register_tenant" and "principal_ref" in payload:
+            return state["self_only"]
+        if action == "register_tenant":
+            with lock:
+                n = counts["tenant"] = counts["tenant"] + 1
+            return _Resp(200, {"ok": True, "tenant_id": state["tenant_ids"][min(n, 2) - 1], "created": n == 1})
+        if action == "register_project":
+            with lock:
+                n = counts["project"] = counts["project"] + 1
+            body = {"ok": True, "project_id": state["project_ids"](n), "created": n == 1}
+            return _Resp(200, {**body, "purpose": state["project_purpose"], "registration": "registered"})
+        return {
+            "describe": state["describe"],
+            "attach_check": state["attach"],
+            "no_such_action": state["unknown"],
+            "provision_telemetry": state["provision"],
+            "telemetry_probe": state["probe"],
+        }[action]
 
     class Session:
         def __init__(self, profile_name=None):
@@ -83,7 +138,7 @@ def wired(monkeypatch):
 def test_happy_path_prints_fixed_line(wired, capsys):
     lambda_telemetry_gates.lambda_telemetry()
     out = capsys.readouterr().out
-    assert out.strip() == SUCCESS_LINE
+    assert out.strip().splitlines()[-1] == SUCCESS_LINE
     assert "fake-url" not in out
     assert wired["client"].calls == [
         {"FunctionName": "agent-platform-ducklake-telemetry-writer", "InvocationType": "DryRun", "Payload": b"{}"}
@@ -173,3 +228,142 @@ def test_http_body_never_leaks(wired, capsys):
         assert FAKE_ACCT not in text
         assert "arn:" not in text
         assert "lambda-url" not in text
+
+
+def _register_project_calls(wired):
+    return [p for p, _ in wired["sent"] if p["action"] == "register_project"]
+
+
+def test_registration_vectors_pass_on_a_consistent_writer(wired, capsys):
+    lambda_telemetry_gates.lambda_telemetry()
+    out = capsys.readouterr().out
+    for marker in MARKERS:
+        assert marker in out, marker
+    lines = out.strip().splitlines()
+    assert lines.index("catalog_sessions=3") < next(
+        i for i, ln in enumerate(lines) if ln.startswith("TELEMETRY_TENANT_STABLE")
+    )
+    calls = _register_project_calls(wired)
+    assert len(calls) == 4 and len({c["project_ref"] for c in calls}) == 1
+    assert calls[0]["project_ref"].startswith("synthetic:deploy-smoke-") and len(calls[0]["project_ref"]) == 23 + 32
+    assert [p["action"] for p, _ in wired["sent"]].count("telemetry_probe") == 3
+    assert [p["action"] for p, _ in wired["sent"]].count("provision_telemetry") == 2
+
+
+def test_register_tenant_id_drift_fails(wired):
+    wired["tenant_ids"] = [TENANT_ID, "01HDRAFT" + "0" * 18]
+    with pytest.raises(core.SmokeTestFailure, match="not stable across calls"):
+        lambda_telemetry_gates.lambda_telemetry()
+
+
+def test_register_tenant_non_ulid_fails(wired):
+    wired["tenant_ids"] = ["not-a-ulid", "not-a-ulid"]
+    with pytest.raises(core.SmokeTestFailure, match="canonical uppercase ULID"):
+        lambda_telemetry_gates.lambda_telemetry()
+
+
+def test_concurrent_register_project_divergent_ids_fail(wired):
+    wired["project_ids"] = lambda n: f"01HDVRGNT{n:017d}"
+    with pytest.raises(core.SmokeTestFailure, match="Decision 200 reversal condition"):
+        lambda_telemetry_gates.lambda_telemetry()
+
+
+@pytest.mark.parametrize(
+    ("override", "needle"),
+    [
+        ({"project_purpose": "real"}, "purpose or registration"),
+        ({"project_ids": lambda n: "lowercase-not-a-ulid"}, "canonical uppercase ULID"),
+    ],
+)
+def test_register_project_shape_failures(wired, override, needle):
+    wired.update(override)
+    with pytest.raises(core.SmokeTestFailure, match=needle):
+        lambda_telemetry_gates.lambda_telemetry()
+
+
+def test_every_concurrent_call_claiming_created_fails(wired, monkeypatch):
+    original = core._sigv4_invoke
+
+    def all_created(url, payload, **kw):
+        resp = original(url, payload, **kw)
+        if payload["action"] == "register_project":
+            return _Resp(200, {**resp.json(), "created": True})
+        return resp
+
+    monkeypatch.setattr(core, "_sigv4_invoke", all_created)
+    with pytest.raises(core.SmokeTestFailure, match="created 4 projects"):
+        lambda_telemetry_gates.lambda_telemetry()
+
+
+def test_provision_unstable_table_set_fails(wired):
+    wired["provision"] = _Resp(200, {"ok": True, "tables": TABLES[:8], "counters": {}})
+    with pytest.raises(core.SmokeTestFailure, match="one stable set of nine tables"):
+        lambda_telemetry_gates.lambda_telemetry()
+
+
+def test_probe_below_counter_floor_fails(wired):
+    wired["probe"] = _Resp(200, {**PROBE_OK, "counters": {"ops_tenants": 2, "ops_projects": 4}})
+    with pytest.raises(core.SmokeTestFailure, match="ops_projects counter is below its table count"):
+        lambda_telemetry_gates.lambda_telemetry()
+
+
+def test_probe_counter_row_count_fails(wired):
+    wired["probe"] = _Resp(200, {**PROBE_OK, "counter_rows": {"ops_tenants": 2, "ops_projects": 1}})
+    with pytest.raises(core.SmokeTestFailure, match="ops_tenants counter does not have exactly one row"):
+        lambda_telemetry_gates.lambda_telemetry()
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"meta_schema": "ducklake_ops"},
+        {"data_path_is_smoke": False},
+    ],
+)
+def test_probe_non_smoke_binding_fails(wired, override):
+    wired["probe"] = _Resp(200, {**PROBE_OK, **override})
+    with pytest.raises(core.SmokeTestFailure, match="not bound to the smoke catalog"):
+        lambda_telemetry_gates.lambda_telemetry()
+
+
+@pytest.mark.parametrize(
+    ("override", "needle"),
+    [
+        ({"connect_reused": False}, "connect_reused is not true"),
+        ({"catalog_login": "ducklake_ops"}, "scoped telemetry login"),
+        ({"tables": {"t": {"present": True, "partitioned_as_declared": True}}}, "nine physical tables"),
+        ({"counters": None}, "omitted the counter reads"),
+    ],
+)
+def test_probe_other_failures(wired, override, needle):
+    wired["probe"] = _Resp(200, {**PROBE_OK, **override})
+    with pytest.raises(core.SmokeTestFailure, match=needle):
+        lambda_telemetry_gates.lambda_telemetry()
+
+
+def test_probe_undeclared_partition_fails(wired):
+    tables = {**PROBE_OK["tables"], "t3": {"present": True, "partitioned_as_declared": False}, "t4": {"present": False}}
+    wired["probe"] = _Resp(200, {**PROBE_OK, "tables": tables})
+    with pytest.raises(core.SmokeTestFailure, match="1 tables absent, 2 not partitioned as declared"):
+        lambda_telemetry_gates.lambda_telemetry()
+
+
+def test_self_only_violation_fails(wired):
+    wired["self_only"] = _Resp(200, {"ok": True, "tenant_id": TENANT_ID, "created": False})
+    with pytest.raises(core.SmokeTestFailure, match="self-only register_tenant status=200"):
+        lambda_telemetry_gates.lambda_telemetry()
+
+
+def test_unrecognised_measurements_print_a_neutral_value(wired, capsys):
+    wired["probe"] = _Resp(200, {**PROBE_OK, "catalog_backend": f"{FAKE_HOST}", "catalog_sessions": None})
+    lambda_telemetry_gates.lambda_telemetry()
+    out = capsys.readouterr().out
+    assert "catalog_backend=unrecognised" in out and "catalog_sessions=unavailable" in out and FAKE_HOST not in out
+
+
+def test_gate_output_never_contains_an_account_id(wired, capsys):
+    wired["probe"] = _Resp(200, {**PROBE_OK, "leak": f"{FAKE_ACCT} {FAKE_ARN} {FAKE_HOST}"})
+    lambda_telemetry_gates.lambda_telemetry()
+    out = capsys.readouterr().out
+    assert FAKE_ACCT not in out and "arn:" not in out and "lambda-url" not in out and "fake-url" not in out
+    assert not re.search(r"(?<![0-9])[0-9]{12}(?![0-9])", out)

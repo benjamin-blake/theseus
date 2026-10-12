@@ -180,12 +180,15 @@ governance:
   partition_by: "history=year(created_timestamp), month(created_timestamp), day(created_timestamp); current=bucket(8, tenant_id)"
   dedup_view: ops_projects_current
   write_path: >-
-    Plan 3's register_project verb on the ducklake_writer Lambda, in the telemetry catalog only. The generic
-    write_ops / update_ops / file_ops / create_ops_tables verbs REFUSE this table (write_boundary=registration);
-    the generic read verbs refuse it too (reads arrive as named verbs in slice 2b).
+    The register_project verb on the agent-platform-ducklake-telemetry-writer Lambda (Decision 213), in the telemetry
+    catalog only. The generic write_ops / update_ops / file_ops / create_ops_tables verbs on the shared ducklake_writer
+    REFUSE this table (write_boundary=registration); the generic read verbs refuse it too (reads arrive as named verbs
+    in slice 2b). The purpose prefix_map projects into field_semantics as ops_tables.ops_projects.derivations.purpose,
+    where the writer reads it; this contract's derivation block stays the single source.
   id_allocator: >-
-    Writer-minted opaque ULID (id_scheme ulid, id_keyspace writer), minted inside the counter-row lock on
-    ops_entity_counters. No entity_id_prefix: the id is not a serial.
+    Writer-minted opaque ULID (id_scheme ulid, id_keyspace writer), minted once per request outside the retry loop and
+    bound inside the transaction that takes the lock-only counter-row UPDATE on ops_entity_counters (Decision 81 cl.3,
+    Decision 200). No entity_id_prefix: the id is not a serial.
   merge_key: project_id
 
 governance_notes: >-
@@ -201,5 +204,15 @@ audit_invariants:
   - "The generic write and read verbs refuse ops_projects (write_boundary=registration) -- the same two tests as ops_tenants.yaml."
   - "(tenant_id, project_ref) never re-binds to a different project_id -- enforced by plan 3's registration verb; residual until then, owner rec-4024."
   - "purpose derives only from project_ref's reserved prefix via the derivation's prefix_map and is immutable with the binding; schema_gate refuses a caller-supplied value -- tests/test_ducklake_scd2_schema.py::test_order_columns_keeps_writer_derived_columns."
-amendment_log: []
+amendment_log:
+  - date: "2026-10-12"
+    semantic_break: false
+    change_class: prose_improvement
+    summary: >-
+      PLAN-telemetry-registration-verbs (slice 2a-2 plan 3 part 1): governance.write_path names the register_project verb
+      on the telemetry writer function (Decision 213) and states that the purpose prefix_map projects into field_semantics
+      as ops_tables.ops_projects.derivations.purpose; governance.id_allocator states that the id is minted once per request
+      outside the retry loop and bound inside the locked transaction (Decision 81 cl.3). The derivation block is unchanged.
+    migration_story: >-
+      Prose only: no field type, nullability or description changes, and nothing reads write_path.
 previous_versions: []

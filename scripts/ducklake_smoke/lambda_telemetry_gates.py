@@ -2,8 +2,8 @@
 
 One post-deploy gate, --lambda-telemetry, proves the telemetry writer serves only signed Function URL calls on the
 ducklake_smoke catalog and that its caller cannot direct-invoke it (the live check behind Decision 213). Gates call
-core._function_url / core._sigv4_invoke through the module object (Decision 104). Plan 3 part 1 appends its verb
-vectors to this module.
+core._function_url / core._sigv4_invoke through the module object (Decision 104). Plan 3 part 1's verb vectors
+(provision, register_tenant, register_project and telemetry_probe) follow the URL-only cases in the same gate.
 
 Failure text carries only a status code, a handler error_type or a botocore error code; never a response body, an
 error message, an ARN, an account id or a URL (Decision 101).
@@ -11,12 +11,19 @@ error message, an ARN, an account id or a URL (Decision 101).
 
 from __future__ import annotations
 
+import re
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from scripts.ducklake_smoke import core
 
 _FUNCTION_NAME = "agent-platform-ducklake-telemetry-writer"
 _DECOY = {"meta_schema": "ducklake_ops", "data_path": "s3://example-invalid/ducklake/"}
+_ULID = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$")
+_FAN_OUT = 4
+_COUNTED = ("ops_tenants", "ops_projects")
+_BACKENDS = ("neon", "rds", "other")
 
 
 def _fail(message: str) -> core.SmokeTestFailure:
@@ -97,12 +104,110 @@ def _check_direct_invoke_denied(profile: str | None, region: str) -> None:
     raise _fail("URL-only guard missing: direct invoke allowed")
 
 
+def _invoke(url: str, payload: dict[str, Any], profile: str | None, region: str) -> Any:
+    return core._sigv4_invoke(url, payload, profile=profile, region=region)
+
+
+def _check_provision(url: str, profile: str | None, region: str) -> None:
+    first = _expect_ok(_invoke(url, {"action": "provision_telemetry"}, profile, region), "provision_telemetry")
+    second = _expect_ok(_invoke(url, {"action": "provision_telemetry"}, profile, region), "provision_telemetry (repeat)")
+    tables = first.get("tables")
+    if not isinstance(tables, list) or len(tables) != 9 or tables != second.get("tables"):
+        raise _fail("provision_telemetry did not return one stable set of nine tables")
+    print("TELEMETRY_PROVISION_OK")
+
+
+def _probe(url: str, profile: str | None, region: str) -> dict[str, Any]:
+    return _expect_ok(_invoke(url, {"action": "telemetry_probe"}, profile, region), "telemetry_probe")
+
+
+def _report_measurements(url: str, profile: str | None, region: str) -> None:
+    body = _probe(url, profile, region)
+    backend, sessions = body.get("catalog_backend"), body.get("catalog_sessions")
+    print(f"catalog_backend={backend if backend in _BACKENDS else 'unrecognised'}")
+    print(f"catalog_sessions={sessions if isinstance(sessions, int) else 'unavailable'}")
+
+
+def _check_tenant(url: str, profile: str | None, region: str) -> None:
+    first = _expect_ok(_invoke(url, {"action": "register_tenant"}, profile, region), "register_tenant")
+    second = _expect_ok(_invoke(url, {"action": "register_tenant"}, profile, region), "register_tenant (repeat)")
+    tenant_id = first.get("tenant_id")
+    if not isinstance(tenant_id, str) or not _ULID.match(tenant_id):
+        raise _fail("register_tenant did not return a canonical uppercase ULID")
+    if second.get("tenant_id") != tenant_id or second.get("created") is not False:
+        raise _fail("register_tenant is not stable across calls (tenant id drift or created not false)")
+    print(f"TELEMETRY_TENANT_STABLE tenant_id={tenant_id}")
+
+
+def _check_project_fan_out(url: str, profile: str | None, region: str) -> None:
+    project_ref = "synthetic:deploy-smoke-" + uuid.uuid4().hex
+    payload = {"action": "register_project", "project_ref": project_ref}
+    with ThreadPoolExecutor(max_workers=_FAN_OUT) as pool:
+        responses = list(pool.map(lambda _i: _invoke(url, payload, profile, region), range(_FAN_OUT)))
+    bodies = [_expect_ok(r, "register_project") for r in responses]
+    ids = {b.get("project_id") for b in bodies}
+    if len(ids) != 1:
+        raise _fail(f"concurrent register_project returned {len(ids)} project ids (Decision 200 reversal condition)")
+    project_id = next(iter(ids))
+    if not isinstance(project_id, str) or not _ULID.match(project_id):
+        raise _fail("register_project did not return a canonical uppercase ULID")
+    created = sum(1 for b in bodies if b.get("created") is True)
+    if created != 1:
+        raise _fail(f"concurrent register_project created {created} projects (want exactly 1)")
+    if any(b.get("purpose") != "synthetic" or b.get("registration") != "registered" for b in bodies):
+        raise _fail("register_project purpose or registration is not synthetic/registered")
+    print(f"TELEMETRY_PROJECT_CONVERGED project_id={project_id}")
+
+
+def _check_probe(url: str, profile: str | None, region: str) -> None:
+    _probe(url, profile, region)
+    body = _probe(url, profile, region)
+    if body.get("connect_reused") is not True:
+        raise _fail("telemetry_probe connect_reused is not true on the second back-to-back call")
+    if body.get("meta_schema") != core.META_SCHEMA or body.get("data_path_is_smoke") is not True:
+        raise _fail("telemetry_probe is not bound to the smoke catalog")
+    if body.get("catalog_login") != "ducklake_telemetry_writer":
+        raise _fail("telemetry_probe catalog_login is not the scoped telemetry login")
+    tables = body.get("tables")
+    if not isinstance(tables, dict) or len(tables) != 9:
+        raise _fail("telemetry_probe did not report the nine physical tables")
+    missing = [t for t, s in tables.items() if not (isinstance(s, dict) and s.get("present") is True)]
+    undeclared = [t for t, s in tables.items() if not (isinstance(s, dict) and s.get("partitioned_as_declared") is True)]
+    if missing or undeclared:
+        raise _fail(f"telemetry_probe: {len(missing)} tables absent, {len(undeclared)} not partitioned as declared")
+    rows, counters, counts = body.get("counter_rows"), body.get("counters"), body.get("current_counts")
+    if not (isinstance(rows, dict) and isinstance(counters, dict) and isinstance(counts, dict)):
+        raise _fail("telemetry_probe omitted the counter reads")
+    for name in _COUNTED:
+        value, count = counters.get(name), counts.get(name)
+        if rows.get(name) != 1:
+            raise _fail(f"telemetry_probe: {name} counter does not have exactly one row")
+        if not isinstance(value, int) or not isinstance(count, int) or value < count:
+            raise _fail(f"telemetry_probe: {name} counter is below its table count (ulid floor)")
+    print("TELEMETRY_PROBE_OK")
+
+
+def _check_self_only(url: str, profile: str | None, region: str) -> None:
+    resp = _invoke(url, {"action": "register_tenant", "principal_ref": "x"}, profile, region)
+    if resp.status_code != 400 or _error_type(resp) != "bad_request":
+        raise _fail(
+            f"self-only register_tenant status={resp.status_code} error_type={_error_type(resp)} (want 400 bad_request)"
+        )
+    print("TELEMETRY_SELF_ONLY_OK")
+
+
 def lambda_telemetry(*, profile: str | None = None, region: str = "eu-west-2") -> None:
-    """Prove the telemetry writer is URL-only, env-pinned to the smoke catalog and direct-invoke denied."""
+    """Prove the telemetry writer is URL-only and smoke-pinned, then run its provisioning and registration vectors."""
     url = core._function_url("telemetry_writer")
     _check_unsigned(url, profile, region)
     _check_describe(url, profile, region)
     _check_attach(url, profile, region)
     _check_unknown_action(url, profile, region)
     _check_direct_invoke_denied(profile, region)
+    _check_provision(url, profile, region)
+    _report_measurements(url, profile, region)
+    _check_tenant(url, profile, region)
+    _check_project_fan_out(url, profile, region)
+    _check_probe(url, profile, region)
+    _check_self_only(url, profile, region)
     print("LAMBDA_TELEMETRY OK unsigned=403 describe=200 attach_check=ok unknown_action=400 direct_invoke=denied")

@@ -31,6 +31,17 @@ contract:
     check: validate_data_model_standard
 
 amendment_log:
+  - date: "2026-10-12"
+    semantic_break: false
+    change_class: prose_improvement
+    summary: >-
+      PLAN-telemetry-registration-verbs (slice 2a-2 plan 3 part 1, Class D): tables.telemetry_tables states that the four
+      event tables are provisioned in the isolated ducklake_smoke catalog only, by the telemetry writer's provision_telemetry
+      verb (status stays not_provisioned: it records production residency, which is slice 2c), and names the telemetry
+      writer function as the write boundary (append arrives in part 2); tables.ops_entity_counters write_boundary adds the
+      telemetry writer's registration lock and provision seed in ducklake_smoke. No other entry changed.
+    migration_story: >-
+      Prose only: no table entry is added, removed or re-typed, and production residency is unchanged.
   - date: "2026-09-28"
     semantic_break: false
     change_class: field_add
@@ -145,7 +156,9 @@ tables:
     write_boundary: >-
       ducklake_writer Lambda, writer_internal ONLY -- create_ops_tables provisioning plus the
       writer's own in-transaction allocate/advance calls; NOT reachable through
-      write_ops/file_ops/update_ops (ducklake_scd2_schema.resolve_table_spec refuses it).
+      write_ops/file_ops/update_ops (ducklake_scd2_schema.resolve_table_spec refuses it). In the
+      isolated ducklake_smoke catalog the telemetry writer function also takes a registration lock
+      and seeds the ops_tenants / ops_projects rows (provision_telemetry).
     read_boundary: >-
       none -- writer-owned, in-transaction only. Periodic health assertion via the admin
       ducklake_maintenance control_health verb (maintenance_binding below); not an application
@@ -219,15 +232,19 @@ tables:
       tables -- telemetry_sessions, telemetry_observations, telemetry_transcripts, telemetry_agents --
       each with a ratified Class A contract at contract_version 2 (those four are indexed in the
       "Class A contracts (authoritative)" header above, NOT in this substrate table), $ref-ing the
-      shared telemetry-event-envelope.yaml (Class C). No telemetry table is provisioned today: the
-      legacy draft schema and its emitters were deleted with the retired query-engine estate, so the
-      Class A contracts are target-state only until the Phase 4 rebuild lands them on DuckLake.
+      shared telemetry-event-envelope.yaml (Class C). No telemetry table is provisioned in production
+      today: the legacy draft schema and its emitters were deleted with the retired query-engine estate.
+      The four tables are provisioned in the isolated ducklake_smoke catalog only, by provision_telemetry
+      on the telemetry writer function; production residency lands with the Phase 4 rebuild (slice 2c).
     substrate: DuckLake-on-Neon (target state)
     status: not_provisioned
     reason: >-
-      Legacy draft schema and emitters deleted; no telemetry table exists in the personal account and
-      no writer emits telemetry. Rebuild is owned by tier_item T2.36 / Phase 4.
-    write_boundary: ducklake_writer Lambda -- at the Phase 4 rebuild (rec-4024's append_events verb)
+      Legacy draft schema and emitters deleted; no telemetry table exists in the production catalog and
+      no writer emits telemetry there. The tables exist in the ducklake_smoke catalog only (provision_telemetry).
+      Rebuild is owned by tier_item T2.36 / Phase 4.
+    write_boundary: >-
+      agent-platform-ducklake-telemetry-writer Lambda (Decision 213) -- provisioning today; the append verb arrives
+      with slice 2a-2 plan 3 part 2 (rec-4024). Never the shared ducklake_writer.
     read_boundary: ducklake_reader Lambda (NAMED VERBS only) -- at the Phase 4 rebuild
     contract_ref:
       - docs/contracts/telemetry_sessions.yaml
