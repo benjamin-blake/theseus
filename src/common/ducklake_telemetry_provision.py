@@ -270,7 +270,8 @@ def ownership_report(con: Any, *, meta_schema: str, scoped_login: str = SCOPED_L
         con,
         "SELECT "
         "(SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
-        f"WHERE n.nspname = '{schema}' AND c.relkind IN ('r', 'p', 'S', 'v', 'm') AND c.relowner <> n.nspowner) AS foreign_owned, "
+        f"WHERE n.nspname = '{schema}' AND c.relkind IN ('r', 'p', 'S', 'v', 'm') "
+        "AND c.relowner <> n.nspowner) AS foreign_owned, "
         f"(SELECT n.nspowner = (SELECT oid FROM pg_roles WHERE rolname = current_user) FROM pg_namespace n "
         f"WHERE n.nspname = '{schema}') AS schema_owner_is_current_user, "
         f"has_schema_privilege('{login}', '{schema}', 'CREATE') AS scoped_create_on_schema, "

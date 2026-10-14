@@ -1,10 +1,11 @@
 """Real-DuckLake race evidence for telemetry registration (Decision 200 lock arm; tenant-id.yaml, project-id.yaml).
 
 pytest.mark.integration: never gates CI (rec-4071), a local proof. Two cursors of one DuckDB instance share a file-backed
-DuckLake catalog aliased ops_catalog, created by create_telemetry_tables and provisioned by provision_telemetry_catalog themselves, so the live gate is not
-provisioning's first real-catalog run. Both register the same tenant and the same project_ref concurrently; one COMMIT
-conflicts on the counter-row UPDATE, run_telemetry_txn retries it, and both return one id. If ids diverge, Decision 200's
-reversal condition fires and the model returns to /plan. The fixture FAILS when the extension cannot load (a skip is a FAIL).
+DuckLake catalog aliased ops_catalog, whose tables are created by create_telemetry_tables and then verified and seeded by
+provision_telemetry_catalog, so the live gate is not provisioning's first real-catalog run. Both register the same tenant and
+the same project_ref concurrently; one COMMIT conflicts on the counter-row UPDATE, run_telemetry_txn retries it, and both
+return one id. If ids diverge, Decision 200's reversal condition fires and the model returns to /plan. The fixture FAILS when
+the extension cannot load (a skip is a FAIL).
 """
 
 from __future__ import annotations
