@@ -60,7 +60,8 @@ scope:
     event verbs to execute and event_read_version); describe_all (the ops rows from rt.describe_named_reads unchanged,
     plus one row per event verb that is a superset of the ops row shape -- table (its first table), description, params,
     paginable, agent_facing, params_schema, read_version -- plus kind event_journal, tables, catalog telemetry, binding and
-    max_window_days). Imported by the reader handler only.
+    max_window_days). The telemetry slot's opener sets memory_limit '300MB' on its connection, so two DuckDB instances fit
+    the reader's 1024 MB with the ops slot unchanged. Imported by the reader handler only.
 - file: src/common/ducklake_event_read_sql.py
   action: Create
   purpose: >-
@@ -137,9 +138,10 @@ scope:
     lists the nine event verbs at kind event_journal with their agent_facing flags; telemetry_health_count answers for all
     four tables; a well-formed absent session_id returns zero rows from session_state_and_duration; a malformed session_id
     answers 400 named_read_input without echoing the value; a query_ops whose SQL is pinned to the two-part name
-    (SELECT count(*) FROM telemetry_catalog.telemetry_sessions) answers 500 unmapped with error_class CatalogException or
-    BinderException and a "does not exist" catalog message (the ops slot never attaches it; a 200 or any other answer fails
-    the gate). Prints TELEMETRY_READS_OK.
+    (SELECT count(*) FROM telemetry_catalog.telemetry_sessions) answers HTTP 500 with error_type unmapped and error_class
+    CatalogException or BinderException (the ops slot never attaches it; the typed unmapped body carries no message, #1476,
+    so the gate asserts status, type and class only; a 200 or any other status or class fails the gate). Prints
+    TELEMETRY_READS_OK.
 - file: docs/contracts/ducklake_reader.yaml
   action: Modify
   purpose: >-
@@ -248,7 +250,11 @@ scope:
   purpose: The tri-state gauge, its catalog label, its one-call budget and preflight.main's report wiring.
 - file: tests/ducklake_neon_smoke_test/test_lambda_ec_gates.py
   action: Modify
-  purpose: The telemetry read checks pass on a consistent reader and fail on each named regression.
+  purpose: >-
+    The telemetry read checks pass on a consistent reader and fail on each named regression. The existing
+    test_lambda_reader_ok and test_lambda_reader_boundary_broken_fails fake every non-read_current action as 200
+    write_denied: update their fakes deliberately so describe, the health verb, the 400 and the unmapped 500 answer in the
+    real shapes (the unmapped body without a message key), and boundary_broken still fails on the write boundary it targets.
 bundled_recommendations: []
 followon_recs:
 - rec-4291
@@ -322,7 +328,8 @@ acceptance_criteria:
   modules; ducklake_reader.yaml (with the narrowed object-store residual) and read-engine.yaml match the registries.
 - >-
   After the governed deploy: every deploy and smoke job of the run passed; the CI lambda-reader step prints
-  TELEMETRY_READS_OK; an independent live run of that gate and of the ops warm-reuse gate pass; a live window over the smoke
+  TELEMETRY_READS_OK (including the query_ops isolation check: HTTP 500, error_type unmapped, error_class CatalogException
+  or BinderException); an independent live run of that gate and of the ops warm-reuse gate pass; a live window over the smoke
   rows returns at least one session whose per-session state agrees with its window row, with response bytes recorded; and
   the live preflight telemetry-store gauge reports pass on ducklake_smoke, after which T2.36 c3 is flipped to met by the
   bookkeeping PR.
@@ -524,13 +531,16 @@ verification_plan:
     tests/ducklake_neon_smoke_test/test_lambda_ec_gates.py::test_telemetry_read_checks_fail_when_query_ops_reaches_telemetry
     tests/ducklake_neon_smoke_test/test_lambda_ec_gates.py::test_isolation_check_needs_the_catalog_exception_not_any_error
     tests/ducklake_neon_smoke_test/test_lambda_ec_gates.py::test_telemetry_read_checks_fail_when_a_bad_id_is_echoed
+    tests/ducklake_neon_smoke_test/test_lambda_ec_gates.py::test_lambda_reader_ok
+    tests/ducklake_neon_smoke_test/test_lambda_ec_gates.py::test_lambda_reader_boundary_broken_fails
     -q
   expected: Exit 0, every node passes. Red before because the nodes are absent.
   expected_literals: []
   fix_if: >-
     A gate that passes when query_ops reaches telemetry_catalog, or on any non-200 (auth, throttling, 503), is too weak: the
-    isolation check passes only on 500 unmapped with error_class CatalogException or BinderException and a catalog
-    "does not exist" message, for the pinned two-part probe statement.
+    isolation check passes only on HTTP 500 with error_type unmapped and error_class CatalogException or BinderException
+    for the pinned two-part probe statement. The fakes mirror the real unmapped body (no message key); the "does not exist"
+    message is asserted only by step 4's real-duckdb node.
   hermetic: true
   graduation: graduate
   graduation_check_id: telemetry-read-gate
@@ -557,19 +567,32 @@ verification_plan:
     src/common/ducklake_runtime.py src/common/ducklake_event_reads.py src/common/ducklake_event_read_sql.py
     src/common/ducklake_event_read_verbs.py src/common/ducklake_named_reads.py src/common/ducklake_reader_client.py
     scripts/checks/contracts/validate_read_engine_verbs.py src/lambdas/ducklake_reader/handler.py
-    scripts/preflight/telemetry_health.py scripts/session/preflight.py scripts/ducklake_smoke/lambda_ec_gates.py &&
-    bin/venv-python -m pytest tests/session/preflight/test_telemetry_health.py -q -p no:randomly
-    --cov=scripts.preflight.telemetry_health --cov-report=term-missing --cov-fail-under=100
-  expected: Exit 0 from both, the second showing the new gauge module at 100 percent.
+    scripts/preflight/telemetry_health.py scripts/session/preflight.py scripts/ducklake_smoke/lambda_ec_gates.py
+  expected: Exit 0.
   fix_if: >-
     A module below its threshold needs direct tests in its own mapped file; never add a coverage_baseline.yaml entry
     (Decision 159). For the reader handler, any changed line its existing suite does not execute means the wiring grew a
     branch; move the branch into ducklake_event_reads. The checker maps no test to scripts/preflight/telemetry_health.py or
-    scripts/ducklake_smoke/lambda_ec_gates.py and reports them skipped: the second command measures the new gauge module
-    directly, and step 8's nodes are the evidence for the gate checks.
+    scripts/ducklake_smoke/lambda_ec_gates.py and reports them skipped: step 20 measures the new gauge module directly, and
+    step 8's nodes are the evidence for the gate checks.
   hermetic: false
   graduation: waive
   graduation_waiver_reason: Coverage measurement re-runs the files' suites; it duplicates the gate the full tier already runs.
+- step: 20
+  phase: pre-deploy
+  action: The new preflight gauge module is fully covered by its own tests (the coverage checker maps no test to it).
+  command: >-
+    bin/venv-python -m pytest tests/session/preflight/test_telemetry_health.py -q --randomly-seed=12345
+    --cov=scripts.preflight.telemetry_health --cov-report=term-missing --cov-fail-under=100
+  expected: Exit 0, with scripts/preflight/telemetry_health.py at 100 percent line coverage.
+  fix_if: A missed line needs a direct node in tests/session/preflight/test_telemetry_health.py; never a coverage_baseline.yaml entry.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: >-
+    pytest-cov is not in the fast tier (requirements-dev only), so the venv-less PR tier cannot run this; and the full tier
+    does not cover this module's percentage either (scripts.test_coverage_checker maps no test to scripts/preflight/), so
+    this step is the module's only 100 percent gate and the implementer runs it before the PR. Graduating it into a
+    standing check is a separate change to the coverage mapping, out of this plan.
 - step: 11
   phase: pre-deploy
   action: Lint and run the full tier, as the handoff policy requires before commit.
@@ -598,8 +621,9 @@ verification_plan:
   expected: Every named job concluded success (a skipped job fails this step), then DEPLOY_OK.
   fix_if: >-
     A failed deploy job, or a failure in the lambda-reader step, is this plan's to root-cause and fix forward, never a
-    re-run to green (Decision 55). The merge is sequenced after rec-4320's fix (PR #1478) has a green smoke job on main,
-    so a red lambda-telemetry step here is a new regression in that gate: report it to its owner (the append thread) and
+    re-run to green (Decision 55). The merge is sequenced after rec-4320's fix-forward build (the PR that changes
+    src/common/ducklake_telemetry_txn.py; #1478 is only its plan amendment) has a green smoke job on main, so a red
+    lambda-telemetry step here is a new regression in that gate: report it to its owner (the append thread) and
     hold steps 15 and 17 until a later deploy run of main containing MERGE_SHA is green, then bind steps 12-13 to that run.
   hermetic: false
   graduation: not-applicable
@@ -666,14 +690,19 @@ verification_plan:
     assert s['row_count']==1 and s['rows'][0]['state']==r['state'], (s['rows'],r['state']);
     h=core._sigv4_invoke(u,{'action':'named_read','verb':'telemetry_health_count','params':{}});
     print(json.dumps({'window_rows':wb['row_count'],'window_bytes':len(w.content),'health_bytes':len(h.content)}));
-    assert len(w.content)<1000000;print('LIVE_DERIVATION_OK')"
+    assert len(w.content)<1000000;print('LIVE_DERIVATION_OK')" && (aws logs filter-log-events --profile agent_platform
+    --region eu-west-2 --log-group-name /aws/lambda/agent-platform-ducklake-reader --filter-pattern '"Max Memory Used"'
+    --start-time $(( ($(date +%s) - 900) * 1000 )) --query 'events[-3:].message' --output text 2>/dev/null || echo
+    MEMORY_READING_UNAVAILABLE)
   expected: >-
     One JSON line with the window's row count and the two response sizes (recorded in the report as the window's first
-    egress reading), then LIVE_DERIVATION_OK.
+    egress reading), then LIVE_DERIVATION_OK, then the reader's recent REPORT lines with Max Memory Used (recorded; or
+    MEMORY_READING_UNAVAILABLE if the profile cannot read the log group, said so in the report).
   fix_if: >-
     A per-session state that disagrees with its window row means the two verbs do not share the rendered state rule; fix
     the SQL module. A window response near the cap means the 7-day bound needs re-deciding before any consumer depends on
-    the verb (Decision 88).
+    the verb (Decision 88). Max Memory Used above 800 MB means the slots need tighter memory limits before any consumer
+    depends on the verbs (rec-4296's process-exit class).
   hermetic: false
   graduation: not-applicable
 - step: 17
@@ -696,10 +725,10 @@ verification_plan:
   action: The dated notes landed on rec-4291 (get_blob remains) and rec-4292 (smoke-pin refusal, c3 production re-verification, the query_ops object-store residual).
   command: >-
     bin/venv-python -c "from src.common.ducklake_reader_client import make_reader;
-    rows={r['id']:r['context'] for r in make_reader().named('recs_by_ids',ids='rec-4291,rec-4292')};
-    assert 'telemetry-reader-verbs' in rows['rec-4291'] and 'get_blob' in rows['rec-4291'], 'rec-4291';
-    c=rows['rec-4292'];assert 'telemetry-reader-verbs' in c and 'query_ops' in c and 'T2.36:c3' in c, 'rec-4292';print('REC_NOTES_OK')"
-  expected: Both notes present, then REC_NOTES_OK.
+    import os;m=os.environ['MERGE_SHA'][:8];rows={r['id']:r['context'] for r in make_reader().named('recs_by_ids',ids='rec-4291,rec-4292')};
+    assert m in rows['rec-4291'] and 'get_blob' in rows['rec-4291'], 'rec-4291';
+    c=rows['rec-4292'];assert m in c and 'query_ops' in c and 'T2.36:c3' in c, 'rec-4292';print('REC_NOTES_OK')"
+  expected: Both notes present, each naming the merge commit's short SHA (so neither passes on the planning-time split note), then REC_NOTES_OK.
   fix_if: >-
     A missing note leaves the ducklake_reader.yaml residual's owner unrecorded (Decision 181 cl.2); prepend it through
     scripts.ops_data_portal and rerun.
@@ -778,7 +807,12 @@ test_obligations:
 - source: docs/ROADMAP-PLATFORM.yaml
   behavior: The c3 flip, T2.36's status move and its progress_note land on main after the live PASS.
   verification_step: 17
-  command: git fetch origin main --quiet
+  command: >-
+    git fetch origin main --quiet && git show origin/main:docs/ROADMAP-PLATFORM.yaml > "${TMPDIR:-/tmp}/roadmap_main.yaml" &&
+    bin/venv-python -c "import os,yaml;d=yaml.safe_load(open(os.path.join(os.environ.get('TMPDIR','/tmp'),'roadmap_main.yaml')));
+    w=lambda o:[o] if isinstance(o,dict) and o.get('id')=='T2.36' else sum((w(v) for v in (o.values() if isinstance(o,dict) else o if isinstance(o,list) else [])),[]);
+    it=w(d)[0];c=[x for x in it['exit_criteria'] if x['id']=='c3'][0];print(it['status'],c);
+    assert c['status']=='met' and c.get('met_by')=='telemetry-reader-verbs' and it['status']=='in_progress';print('C3_MET')"
   waiver_reason: >-
     Roadmap bookkeeping data in a post-deploy PR, guarded by validate_platform_roadmap's closes_criteria and exit-criteria
     ledger checks in that PR's CI; step 17 reads the flip on main.
@@ -848,7 +882,7 @@ context:
   SPIRIT 200 (smoke-pin refusal plus deferral to rec-4292), T2.52 CONFLICT WARN (closes nothing there, no depends_on): all
   resolved. RELATED 95, 96, 97, 137, 143, 210, 212, 184, 214, 107, 125, 118, 168, 166, 181, 48, 140. Decisions triaged: 169
   of 169. Roadmap items intersected: 12; CONFLICT: 1; RELATED: 11.
-- "gates: decision-scout=FLAGS_FOUND (3 flags, resolved); plan-critique=PENDING (r1-r3 REVISE, all findings addressed)"
+- "gates: decision-scout=FLAGS_FOUND (3 flags, resolved); plan-critique=PENDING (r1-r3 REVISE fixed; r4 confirming REVISE fixed, escalated: critique-escalation.md)"
 - >-
   Direction: Benjamin "yes to all, write the plan" (cmsg_012XgaFy8VaDQbxP5D8nC958GgNiPNy3uHRFLovP66hD4X): the split,
   sessions_window now, cost as reported-only. Evidence: /mnt/project-files/telemetry-slice2b/ (step6b-presentation.md,
@@ -872,8 +906,9 @@ context:
   egress line here is response size; Neon egress is measured with rec-4292 before production.
 - >-
   ci-rca: rec-4320 (Critical, open since 2026-10-14T22:16Z): the telemetry writer's masked COMMIT failure on #1477's
-  lambda-telemetry smoke step; fix PR #1478 (append thread). Deferral rationale: this plan touches none of its files
-  (src/common/ducklake_telemetry_txn.py) and shares only the post-deploy smoke job, so its merge is sequenced after #1478.
+  lambda-telemetry smoke step; plan amendment #1478 then a fix-forward build (append thread). Deferral rationale: this
+  plan touches none of its files (src/common/ducklake_telemetry_txn.py) and shares only the post-deploy smoke job, so its
+  merge waits for that build's green smoke job on main.
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
@@ -906,12 +941,14 @@ execution_steps:
   origin/main; step 11 (the full tier) on the committed, clean tree, then --verify-head; the postflight evidence file and
   scripts.session.postflight --evidence; push; PR; CI green on the head. Merge on code review PROCEED and green CI under
   the standing rule (a CI-run DuckLake deploy with no IAM, spend, Class A or manual step; it redeploys all six DuckLake
-  functions), and only after rec-4320's fix (PR #1478) has merged with a green deploy-ducklake-lambdas smoke job on main.
+  functions), and only after rec-4320's fix-forward build PR (the one that changes src/common/ducklake_telemetry_txn.py;
+  #1478 is only its plan amendment) has merged with a green deploy-ducklake-lambdas smoke job on main, or rec-4320 is
+  closed.
 - >-
   After merge: steps 12-16 against the deploy run for the merge commit, then step 18 once the notes below are written. On step 15 PASS, open the bookkeeping PR
   (docs/ROADMAP-PLATFORM.yaml only: the c3 flip with its smoke-scope note, the T2.36 status move, the progress_note) and
   merge it on green CI; then step 17. Append dated notes through scripts.ops_data_portal (get_rec_write_guidance first,
-  fetch the rec just before update_rec and prepend to its full context): rec-4292 (slice 2c lifts the smoke-pin refusal
+  fetch the rec just before update_rec and prepend to its full context; each note names the merge commit's short SHA): rec-4292 (slice 2c lifts the smoke-pin refusal
   with tenant-scoped reads, re-verifies c3 on production, and owns the query_ops object-store residual before production
   reads) and rec-4291 (everything but get_blob delivered here).
 - 'Report: what was implemented, verification results incl. step 6 output and step 16 response sizes'
