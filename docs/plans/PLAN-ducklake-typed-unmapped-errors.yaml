@@ -4,8 +4,9 @@ handoff_policy:
   timeout_disposition: blocked
 slug: ducklake-typed-unmapped-errors
 intent: >-
-  Resolve rec-4294 (Critical, ci-rca) and rec-4282: an exception that no error-map row recognises must never reach a DuckLake
-  serving Function URL as the runtime's untyped 502. The three URL-only serving functions (telemetry writer, reader, ops
+  Close rec-4282 and land rec-4294's preventive half (PLAN-telemetry-owner-provisioning bundles and closes rec-4294 with the
+  grant fix): an exception that no error-map row recognises must never reach a DuckLake serving Function URL as the runtime's
+  untyped 502. The three URL-only serving functions (telemetry writer, reader, ops
   writer) answer an unmapped exception with a typed 500 `unmapped` carrying only the exception class and the Lambda request id,
   a dead catalog connection with a typed retryable 503 `catalog_unavailable`, an unparseable body with a 400 `bad_request`,
   and (reader) a caller-input DuckDB error inside a named verb with a 400 `named_read_input` carrying the DuckDB message. Paging
@@ -16,7 +17,8 @@ verification_tier: V3
 plan_path: docs/plans/PLAN-ducklake-typed-unmapped-errors.yaml
 phase: >-
   ci_rca soft-warn exception category (rec-4294, the one open ci-rca rec; same file as its source_file). Touches the T2.36
-  telemetry writer and the T2.19 reader and ops writer serving functions; closes no roadmap exit criterion.
+  telemetry writer and the T2.19 reader and ops writer serving functions, named only as owners of the touched code; closes
+  no roadmap exit criterion (no open T2.19 or T2.36 criterion is advanced).
 scope:
 - file: src/common/ducklake_handler_errors.py
   action: Create
@@ -53,8 +55,8 @@ scope:
     DuckLakeRuntimeError and whose class is one of InvalidInputException, ConversionException, OutOfRangeException or
     TypeMismatchException from the duckdb/_duckdb module (the classes a bound value or a registry error() guard raises) is
     raised as a NamedReadInputError and answered
-    400 {ok: false, error_type: "named_read_input", verb, error_class, error: the first line of the DuckDB message truncated to
-    300 characters}; every other DuckDB class falls through to 500 unmapped (class name only: BinderException and
+    400 {ok: false, error_type: "named_read_input", verb, error_class, error: the DuckDB message passed through the helper's
+    redact() (first line, 300 characters; defence in depth, since InvalidInputException is broad)}; every other DuckDB class falls through to 500 unmapped (class name only: BinderException and
     ParserException mean registry-versus-schema drift, since callers send no SQL (Decision 84 I-3), and IOException,
     CatalogException, HTTPException and the rest carry URLs, hosts and paths). The dead-connection check stays first so the reopen-once path is
     unchanged. The "Any non-connection error still propagates (Decision 55)" comment is reworded to the new terminal posture.
@@ -95,7 +97,8 @@ scope:
   purpose: >-
     Failure-text helpers only (_error_type, _expect_ok, _fail callers that print error_type): a failing response also prints
     error_class and request_id from the JSON body, or for a body-less response the x-amzn-RequestId header, as
-    "error_class=X request_id=Y" ("none" when absent). The module docstring's allowed-fields sentence gains "an exception
+    "error_class=X request_id=Y"; each value is printed only when it matches its shape (a Python identifier of at most 100
+    characters; a UUID), else "none", so the gate never prints arbitrary body text. The module docstring's allowed-fields sentence gains "an exception
     class name or a request id". No vector, _check_provision or other gate logic changes (the writer grant fix thread edits
     those).
 - file: terraform/personal/ducklake_telemetry_writer.tf
@@ -153,7 +156,11 @@ scope:
     transient) now arrive as a typed 500 unmapped and gate; no new call site is licensed and clause 3 is untouched. (b) The
     four consumers the classifier reaches, by path. (c) The allow-list is scripts/ops_portal/reader_transient.py's
     _TRANSIENT_ERROR_TYPES, asserted equal to src/common/ducklake_handler_errors.py's TRANSIENT_ERROR_TYPES, with a test that
-    every other error_type the three serving contracts declare still gates.
+    every other error_type the three serving contracts declare still gates. (d) Decision 167 question 3 and the Decision
+    213/214/215 precedent, answered explicitly: those entries minted numbers because they replaced an invariant or added a
+    carve-out; this changes no outcome at any consumer for either failure class (an outage stays transient, a defect still
+    gates and now gates more often), so no routing row other than an annotation is needed. (e) The consumer list is for
+    impact only: it licenses no call site retroactively, and clause 3's named-call-site rule is unchanged.
 - file: docs/decisions-index.json
   action: Modify
   purpose: >-
@@ -196,10 +203,14 @@ scope:
     for named_read caller-input classes -> 400 with the message (fake classes whose __module__ is _duckdb, parametrized over
     the four names), BinderException and another DuckDB class -> 500 unmapped without the message, a dead connection surviving reopen-once -> 503,
     a non-object body -> 400, and one real-DuckDB node (pytest.importorskip("duckdb") inside the test) proving a CAST failure
-    on a bound value and an error() guard classify as named_read_input with the real classes. Stays under 500 SLOC.
+    on a bound value and an error() guard classify as named_read_input with the real classes. Stays under 500 SLOC: if it
+    would cross, the real-DuckDB node moves to a new sibling tests/test_ducklake_reader_named_read_errors.py (the fake-based
+    branch nodes stay in this mapped file, which the coverage gate runs); never a budget raise (Decision 128).
 - file: tests/lambdas/ducklake_writer/handler/test_envelope_dispatch.py
   action: Modify
-  purpose: New nodes for the ops writer's 500 unmapped, 503 catalog_unavailable after reopen-once and 400 bad_request body.
+  purpose: >-
+    New nodes for the ops writer's 500 unmapped, 503 catalog_unavailable after reopen-once, and 400 bad_request for an
+    unparseable body and for a non-object body.
 - file: tests/common/ducklake_reader_client/test_named_read_errors.py
   action: Create
   purpose: >-
@@ -229,11 +240,22 @@ scope:
   purpose: >-
     One node: the three serving manifests bundle src/common/ducklake_handler_errors.py, data-pipeline excludes it, and no
     async DuckLake manifest (maintenance, maintenance_smoke, catalog_dr) bundles it yet.
+- file: scripts/agent_sdk/errors.py
+  action: Modify
+  purpose: >-
+    map_reader_error learns the new reader shapes: named_read_input -> a new ReaderInputError(AgentToolError) carrying the
+    reader's message (the caller can fix its input); catalog_unavailable -> a new ReaderUnavailableError(AgentToolError)
+    (transient, retry later); unmapped stays the loud generic ReaderBoundaryError, its message naming error_class and
+    request_id. The module docstring lists every shape the reader now answers (it says "three" today).
+- file: tests/test_agent_sdk_errors.py
+  action: Modify
+  purpose: >-
+    Nodes for named_read_input -> ReaderInputError, catalog_unavailable -> ReaderUnavailableError, and unmapped ->
+    ReaderBoundaryError naming the class and request id; both new types are AgentToolErrors.
 - file: docs/plans/PLAN-ducklake-typed-unmapped-errors.yaml
   action: Create
   purpose: This plan.
 bundled_recommendations:
-- rec-4294
 - rec-4282
 followon_recs:
 - rec-4303
@@ -246,8 +268,8 @@ infrastructure_dependencies:
   is green, so a typed 5xx never ships unwatched. Spend: each alarm goes from one to two metrics, about USD 0.10 a month
   each, signed off by Benjamin on the decision card (2026-10-14).
 - >-
-  PR B merges only after the Writer grant fix (the amendment to PLAN-telemetry-registration-verbs, thread "Writer grant fix
-  plan") is deployed and its --lambda-telemetry gate printed TELEMETRY_PROVISION_OK: PR B's own governed deploy runs the same
+  PR B merges only after the Writer grant fix (PLAN-telemetry-owner-provisioning, thread "Writer grant fix plan", which
+  bundles and closes rec-4294) is deployed and its --lambda-telemetry gate printed TELEMETRY_PROVISION_OK: PR B's own governed deploy runs the same
   gate, which would otherwise be red at provision_telemetry (now as a typed 500). PR B rebases onto that fix, which edits
   the same telemetry writer contract (its 500 runtime row gains "a target table is absent"; this plan's unmapped text joins
   that same 500 key, so merge the two strings, never replace one), only _check_probe in lambda_telemetry_gates.py (this plan
@@ -263,17 +285,21 @@ infrastructure_dependencies:
   for Benjamin's explicit word (always-ask: Decision text). LAMBDA-DEPLOY DEFERRED for data-pipeline: manifest excludes only.
 acceptance_criteria:
 - >-
-  No request that reaches the telemetry writer, reader or ops writer handler answers 502: an exception no row maps answers
-  500 {ok: false, error_type: unmapped, error_class, request_id, action, elapsed_ms} with no exception message, and one
-  ducklake_unmapped_error log line carries the class, request id, frames and the redacted, truncated message.
+  No request that reaches the telemetry writer, reader or ops writer handler code answers 502: an exception no row maps
+  answers 500 {ok: false, error_type: unmapped, error_class, request_id, action, elapsed_ms} with no exception message, and
+  one ducklake_unmapped_error log line carries the class, request id, frames and the redacted, truncated message.
+  Process-level failures (timeout, out of memory, Runtime.ExitError, an init failure) still answer the runtime's 502 and
+  count in AWS/Lambda Errors by design (rec-4296 owns the reader's).
 - >-
   A dead catalog connection that fails at connect or survives the reopen-once answers a typed 503 catalog_unavailable; the
-  reader and writer clients retry it, and the Decision 155 classifier treats it (and only it among error_type-bearing
-  failures) as transient.
+  reader client retries it, the ops writer transport retries it for replay-safe requests only (an idempotency_ulid or
+  update_ops, unchanged), and the Decision 155 classifier treats it (and only it among error_type-bearing failures) as
+  transient.
 - >-
   A reader named verb whose bound value or error() guard raises a caller-input DuckDB class answers 400 named_read_input with
   the DuckDB message (live: recs_related with 201 exclude_ids answers 400 naming "narrow the query"); the client raises it
-  after one POST. Every other DuckDB class answers 500 unmapped with the class name only.
+  after one POST, and the agent SDK maps it to ReaderInputError. Every other DuckDB class answers 500 unmapped with the
+  class name only.
 - An unparseable or non-object body answers 400 bad_request on all three serving functions.
 - >-
   Both writers' errors alarms sum AWS/Lambda Errors and Url5xxCount with FILL(..., 0), threshold > 0 over 900 s, and the
@@ -284,8 +310,8 @@ acceptance_criteria:
   The plan 3 part 2 and blob-route plans no longer assume a raise-to-502 or Errors-only zero check; Decision 155 carries the
   dated catalog_unavailable amendment; the three contracts declare the typed answers.
 - >-
-  rec-4282 is closed by PR B's Resolves trailer; rec-4294 (escape-classified) is closed through the verdict-bound manual
-  route once its acceptance holds on PR B's merge commit.
+  rec-4282 is closed by PR B's Resolves trailer. rec-4294 is cited, not bundled: PLAN-telemetry-owner-provisioning closes
+  it.
 verification_plan:
 - step: 1
   phase: pre-deploy
@@ -331,7 +357,10 @@ verification_plan:
     tests/test_ducklake_reader_handler.py::test_handler_non_dead_error_does_not_reopen
     tests/common/ducklake_reader_client/test_named_read_errors.py::test_named_read_input_raises_after_one_post
     tests/common/ducklake_reader_client/test_named_read_errors.py::test_unmapped_500_raises_after_one_post
-    tests/common/ducklake_reader_client/test_named_read_errors.py::test_catalog_unavailable_is_retried -q
+    tests/common/ducklake_reader_client/test_named_read_errors.py::test_catalog_unavailable_is_retried
+    tests/test_agent_sdk_errors.py::test_named_read_input_maps_to_reader_input_error
+    tests/test_agent_sdk_errors.py::test_catalog_unavailable_maps_to_reader_unavailable_error
+    tests/test_agent_sdk_errors.py::test_unmapped_maps_to_boundary_error_naming_class_and_request_id -q
   expected: Exit 0, every node passes. Red before because the nodes are absent and the unparseable-body test expects a raise.
   fix_if: A caller-input class answering 500, or the reopen-once no longer firing on a dead connection, is a handler ordering bug.
   hermetic: true
@@ -357,6 +386,7 @@ verification_plan:
     bin/venv-python -m pytest tests/lambdas/ducklake_writer/handler/test_envelope_dispatch.py::test_handler_unmapped_exception_is_typed_500
     tests/lambdas/ducklake_writer/handler/test_envelope_dispatch.py::test_handler_dead_connection_after_reopen_is_503
     tests/lambdas/ducklake_writer/handler/test_envelope_dispatch.py::test_handler_unparseable_body_is_400
+    tests/lambdas/ducklake_writer/handler/test_envelope_dispatch.py::test_handler_non_object_body_is_400
     tests/lambdas/ducklake_writer/handler/test_envelope_dispatch.py::test_handler_runtime_error_maps_500 -q
   expected: Exit 0, every node passes. Red before because the new nodes are absent.
   fix_if: An escaping exception means the terminal except is not outermost in handler().
@@ -398,14 +428,16 @@ verification_plan:
   phase: pre-deploy
   action: Both writers' errors alarms sum Errors and Url5xxCount with FILL, and the pin rejects a dropped operand.
   command: >-
-    bin/venv-python -m pytest tests/checks/iam_tf/test_ducklake_writer_error_alarms.py -q
+    bin/venv-python -m pytest tests/checks/iam_tf/test_ducklake_writer_error_alarms.py::test_telemetry_writer_alarm_sums_errors_and_url5xx
+    tests/checks/iam_tf/test_ducklake_writer_error_alarms.py::test_ops_writer_alarm_sums_errors_and_url5xx
+    tests/checks/iam_tf/test_ducklake_writer_error_alarms.py::test_alarm_expression_fills_both_operands
+    tests/checks/iam_tf/test_ducklake_writer_error_alarms.py::test_pin_rejects_a_dropped_operand_or_fill -q
   expected: Exit 0, every node passes. Red before because the file is absent.
   fix_if: A missing FILL lets the alarm go silent on a period with no Url5xxCount datapoint (it emits none at zero); restore it.
-  hermetic: false
-  graduation: waive
-  graduation_waiver_reason: >-
-    Whole-file selector of a test file this plan creates (hermetic_authoring rule (v)); the --pre pytest_diff affected set
-    runs it at PR time, and the node-level pins live in the file itself for the full tier.
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: writer-error-alarms-sum-5xx
+  expected_literals: []
 - step: 9
   phase: pre-deploy
   action: The helper is bundled by the three serving functions and excluded from data-pipeline.
@@ -421,10 +453,11 @@ verification_plan:
   phase: pre-deploy
   action: The sibling plans no longer assume a raise-to-502, both name Url5xxCount, and both still validate.
   command: >-
-    ! grep -n -E "log_then_raise|it must log then raise|then re-raise|500/502 defect" docs/plans/PLAN-telemetry-blob-route.yaml &&
+    ! grep -n -E "log_then_raise|it must log then raise|then re-raise|500/502 defect|paging faults, which raise|caller sees the Function URL's 502" docs/plans/PLAN-telemetry-blob-route.yaml &&
     grep -c Url5xxCount docs/plans/PLAN-telemetry-blob-route.yaml && grep -c Url5xxCount docs/plans/PLAN-telemetry-append-inline.yaml &&
+    grep -c "error_type unmapped" docs/plans/PLAN-telemetry-append-inline.yaml &&
     bin/venv-python -m scripts.roadmap.plan_document docs/plans/PLAN-telemetry-blob-route.yaml docs/plans/PLAN-telemetry-append-inline.yaml
-  expected: Exit 0; both counts are at least 1 and both plans validate.
+  expected: Exit 0; every count is at least 1 and both plans validate.
   fix_if: A surviving raise-to-502 phrase would reinstate the defect when the blob route is built; edit it.
   hermetic: true
   graduation: waive
@@ -484,8 +517,11 @@ verification_plan:
     test -s "$DEPLOY_JOBS_JSON" && test -s "$SMOKE_LOG_FILE" && bin/venv-python -c "import json,os,re;j=json.load(open(os.environ['DEPLOY_JOBS_JSON']));jobs={x['name']:x.get('conclusion')
     for x in (j.get('jobs') if isinstance(j,dict) else j)};want=['deploy-maintenance','maintenance-smoke','reconcile-gate','deploy-serving','smoke'];assert
     all(any(n.startswith(w) and c=='success' for n,c in jobs.items()) for w in want),jobs;t=open(os.environ['SMOKE_LOG_FILE'],encoding='utf-8',errors='replace').read();assert
-    'TELEMETRY_PROVISION_OK' in t,'no TELEMETRY_PROVISION_OK';assert 'status=502' not in t,'a 502 in the smoke log';assert not re.search(r'(?<![0-9])[0-9]{12}(?![0-9])',t.split('--lambda-telemetry',1)[-1]),'12-digit run';print('DEPLOY_AND_GATE_OK')"
-  expected: DEPLOY_AND_GATE_OK; every named job succeeded and the smoke log carries TELEMETRY_PROVISION_OK with no 502.
+    'TELEMETRY_PROVISION_OK' in t,'no TELEMETRY_PROVISION_OK';assert 'status=502' not in t,'a 502 in the smoke log';L=t.splitlines();i=next(k for k,l in enumerate(L) if '##[group]Run' in l and '--lambda-telemetry' in l);j=next((k for k in range(i+1,len(L)) if '##[group]Run' in L[k]),len(L));assert
+    not re.search(r'(?<![0-9])[0-9]{12}(?![0-9])',chr(10).join(L[i:j])),'12-digit run in the telemetry step';print('DEPLOY_AND_GATE_OK')"
+  expected: >-
+    DEPLOY_AND_GATE_OK; every named job succeeded, the smoke log carries TELEMETRY_PROVISION_OK with no 502, and the
+    --lambda-telemetry step's own section (its group header to the next step's) has no 12-digit run.
   fix_if: >-
     A red smoke at provision_telemetry before the grant fix deployed is the ordering precondition, not this plan's fault:
     hold. Any other red job is this plan's to root-cause and fix forward, never a re-run to green.
@@ -515,7 +551,7 @@ verification_plan:
     metrics are zero over the same window (the reader's Runtime.ExitError process exits are out of scope and excluded).
   command: >-
     test -s "$DEPLOY_JOBS_JSON" && bin/venv-python -c "import datetime as d,json,os,boto3;b=boto3.Session(profile_name='agent_platform',region_name='eu-west-2');j=json.load(open(os.environ['DEPLOY_JOBS_JSON']));jobs=j.get('jobs') if isinstance(j,dict) else j;t=d.datetime.fromisoformat([x['completed_at'] for x in jobs if x['name'].startswith('deploy-serving')][0].replace('Z','+00:00'));lg=b.client('logs');cw=b.client('cloudwatch');now=d.datetime.now(d.timezone.utc);
-    esc={f:len(lg.filter_log_events(logGroupName='/aws/lambda/agent-platform-ducklake-'+f,filterPattern='\"Traceback (most recent call last)\"',startTime=int(t.timestamp()*1000))['events']) for f in ('reader','writer','telemetry-writer')};assert not any(esc.values()),esc;
+    pg=lg.get_paginator('filter_log_events');esc={f:sum(len(pp['events']) for pp in pg.paginate(logGroupName='/aws/lambda/agent-platform-ducklake-'+f,filterPattern='\"Traceback (most recent call last)\"',startTime=int(t.timestamp()*1000))) for f in ('reader','writer','telemetry-writer')};assert not any(esc.values()),esc;
     S=lambda f,m:sum(p['Sum'] for p in cw.get_metric_statistics(Namespace='AWS/Lambda',MetricName=m,Dimensions=[{'Name':'FunctionName','Value':'agent-platform-ducklake-'+f}],StartTime=t,EndTime=now,Period=3600,Statistics=['Sum'])['Datapoints']);v={(f,m):S(f,m) for f in ('writer','telemetry-writer') for m in ('Errors','Url5xxCount')};assert not any(v.values()),v;print('NO_ESCAPED_EXCEPTIONS',esc,v)"
   expected: NO_ESCAPED_EXCEPTIONS with zero escaped tracebacks and zero Errors and Url5xxCount on both writers.
   fix_if: A traceback means a path bypasses the terminal answer (read it and route it through the helper); a Url5xxCount above zero is a typed 5xx to read by its request id.
@@ -529,21 +565,6 @@ verification_plan:
     print(R().named('recs_by_ids', ids='rec-4282')[0]['status'])"
   expected: closed
   fix_if: Still open -- read ci.yml's trailer-closure job; the repaired acceptance names hermetic node ids only.
-  hermetic: false
-  graduation: not-applicable
-- step: 19
-  phase: post-deploy
-  action: >-
-    rec-4294 (escape-classified, no trailer) closed through the verdict-bound manual route: in
-    scripts.verification_graduation.git_worktree($MERGE_SHA) run rec_trailer_acceptance census and evaluate; only on isolation
-    True and verdict holds, one update_rec with status closed, resolution, closure_artifact
-    pytest:tests/lambdas/ducklake_telemetry_writer/test_handler.py::test_unexpected_exception_is_a_typed_500, closure_fix_sha,
-    acceptance_verdict and closing_sha; then read it back.
-  command: >-
-    bin/venv-python -c "from src.common.ducklake_reader_client import DuckLakeReader as R;
-    r=R().named('recs_by_ids', ids='rec-4294')[0];print(r['status'], bool(r.get('closure_artifact')), bool(r.get('fixed_by_sha')))"
-  expected: closed True True
-  fix_if: A refused verdict leaves it open; report the verdict record, never close it around the gate (git-ops.yaml resolves_trailer).
   hermetic: false
   graduation: not-applicable
 test_obligations:
@@ -629,8 +650,13 @@ test_obligations:
   waiver_reason: >-
     A derived artefact regenerated by the repo's own index tooling only when validate_decisions_index_freshness reports
     drift; that standing --pre check is its guard, so a plan-specific test would restate it.
+- source: scripts/agent_sdk/errors.py
+  behavior: The agent SDK maps named_read_input and catalog_unavailable to their own typed errors and unmapped to the loud generic.
+  verification_step: 3
+  test_selector: tests/test_agent_sdk_errors.py::test_named_read_input_maps_to_reader_input_error
+  red_green_expectation: red before (node absent), green after
 constraints:
-- Never return or print an exception message in a response body or smoke output (Decision 101; ATTACH errors embed the libpq password, src/common/ducklake_runtime.py libpq_conninfo).
+- Never return or print the message of an unmapped or catalog_unavailable exception in a response body or smoke output (Decision 101; ATTACH errors embed the libpq password, src/common/ducklake_runtime.py libpq_conninfo); the one message a new answer carries, named_read_input's, passes through redact(). Mapped rows the plan leaves unchanged keep their existing bodies.
 - "No catch-and-relax (Decision 55): every terminal answer is a non-2xx typed response plus one structured log line, and both writers' alarms still page on it."
 - The dead-connection check stays ahead of every other classification so the reopen-once paths are unchanged.
 - Async DuckLake handlers (maintenance, maintenance_smoke, catalog_dr) are out of scope (EventBridge-invoked; an escaped exception drives Lambda's own retries); rec-4303 owns them.
@@ -638,10 +664,10 @@ constraints:
 - No rescue agents or workaround loops (Decision 55); a red post-deploy step is root-caused, never re-run to green.
 context:
 - "Decision-scout verdict FLAGS_FOUND (Decisions triaged: 168 of 168; Roadmap items intersected: 13; CONFLICT: 0; RELATED: 13). CITE: Decision 55, Decision 81, Decision 84, Decision 213, Decision 215, Decision 79, Decision 125, Decision 126, Decision 77, Decision 177, Decision 181, Decision 186, Decision 201. WARN Decision 155 resolved by the three-condition amendment (scope row docs/DECISIONS.md); NOTE Decision 88 resolved below; SPIRIT Decision 84 resolved (BinderException stays 500)."
-- "gates: decision-scout=FLAGS_FOUND (WARN 155, NOTE 88, SPIRIT 84 resolved); plan-critique=<pending>"
+- "gates: decision-scout=FLAGS_FOUND (WARN 155, NOTE 88, SPIRIT 84 resolved); plan-critique=REVISE r1 (R1 rec-4294 moved to PLAN-telemetry-owner-provisioning, its acceptance cannot hold in the networkless evaluator, finding relayed; R2 paginated log scan; R3 full tier before PR A; N1-N9 folded in)"
 - "Decision 88 cl.1(i) reading: 'a dead session is the one expected reopen condition; any other error still raises' holds at the connection layer (the reopen predicate and its raise are unchanged); only the handler's terminal answer to a raise changes. The summed alarm pages on 503 catalog_unavailable and the writers' existing 503 occ_exhausted and 500 runtime/version_mismatch too; Benjamin signs that scope off with the spend."
 - "Decision 213: the telemetry writer's 403 missing_caller_identity stays ahead of body parsing and of every new answer; Decision 215 cl.6: the reader's 413 response_too_large stays a returned response ahead of the terminal except; every mapped row keeps precedence (Decisions 81, 207, 210)."
-- "rec-4294 trigger (scoped login lacks CREATE on the smoke metadata schema; DuckLake's failed S3 cleanup masks it as TransactionException ... Forbidden) is fixed by the Writer grant fix amendment to PLAN-telemetry-registration-verbs, cited not bundled; this plan owns the masking half."
+- "rec-4294 trigger (scoped login lacks CREATE on the smoke metadata schema; DuckLake's failed S3 cleanup masks it as TransactionException ... Forbidden) is fixed by PLAN-telemetry-owner-provisioning (the Writer grant fix, which bundles and closes rec-4294); this plan owns the masking half."
 - "Live evidence 2026-10-14 (agent_platform CloudWatch): the two 502s counted in AWS/Lambda Errors at 10:22 and 10:47 with no Url5xxCount datapoint, so a handler-returned 5xx is invisible to an Errors-only alarm; hence the summed alarm. Reader Errors 3-39/day are Runtime.ExitError process exits, not Python exceptions (separate rec)."
 - "Design input: /mnt/project-files/rec-4294/ADVICE.md (Fable, 2026-10-14); brief /mnt/project-files/rec-4294/fable-brief/BRIEF.md."
 - "fork: standalone vs fold into PLAN-telemetry-blob-route | chosen: standalone, landing before part 2 and the blob route | class: decided-with-notice | precedent: rec-4294 Critical; blob route builds two plans out | reversible: yes | persisted: this plan"
@@ -651,7 +677,10 @@ context:
 - "fork: catalog_unavailable | chosen: typed 503 plus a one-entry allow-list in the Decision 155 classifier, recorded as a dated amendment on Decision 155 (no new number) | class: always-ask (Decision text) | precedent: Decision 215's 2026-10-12 annotation | reversible: yes | persisted: reader_transient.py, DECISIONS.md"
 - "fork: scope | chosen: the three URL-only serving functions now; async handlers as follow-on rec-4303 | class: decided-with-notice | precedent: Fable Q4 | reversible: yes | persisted: followon_recs"
 - "fork: sibling plans | chosen: amend PLAN-telemetry-append-inline and PLAN-telemetry-blob-route here (their fix_if text would otherwise reinstate the raise) | class: decided-with-notice | precedent: PLAN-company-formation-vp-expected-amendment | reversible: yes | persisted: those plans"
-- "rec-4294 closure: escape-classified (escape_mode no_premerge_gate_by_design), so no Resolves trailer; verdict-bound manual route (PR #1420 precedent). rec-4282's filed acceptance (whole-file pytest) is out_of_grammar for require_decidable: repair it to this plan's hermetic node ids before PR B merges (get_rec_write_guidance first; never weaker)."
+- "rec-4294 is cited, not bundled: PLAN-telemetry-owner-provisioning bundles it and closes it via the escape-classified manual route (agreed through the coordinator 2026-10-14); never name it in this plan's Resolves trailer. rec-4282's filed acceptance (whole-file pytest) is out_of_grammar for require_decidable: repair it to this plan's hermetic node ids before PR B merges (get_rec_write_guidance first; never weaker)."
+- "Url5xxCount premise, 14 days to 2026-10-14 (agent_platform, read-only): ops writer Url4xxCount 73 and telemetry writer 17 (handler-returned 4xx), reader Url5xxCount 11 against Errors 208; the metric counts handler-returned statuses, never the runtime's 502."
+- "Side effect, deliberate (Decision 55): an infra error outside rt.is_dead_connection_error's signatures (a DuckDB HTTPException on an S3 read, Secrets Manager throttling) used to escape as a 502 the Decision 155 classifier calls transient; it now answers 500 unmapped and gates DCG-03, DQ and the preflight gauges. The log line names its class, so a recurring transient class is added to the predicate by a rec, never by widening the classifier."
+- "Decision 155 vehicle: the Fable consult (ADVICE.md Q6.5) recommended a short numbered Decision; the scout allowed a dated amendment under three conditions; this plan uses the amendment. PR B's merge ask to Benjamin states the consult's recommendation and offers the numbered form."
 - "Gotcha: Url5xxCount emits no datapoint at zero; FILL(m, 0) is mandatory in the alarm expression."
 - "Gotcha: DuckDB exception classes live in module _duckdb (duckdb 1.5.4); classify on class name and module, with the real-DuckDB node as the drift guard."
 - "Separately filed (not a split of this plan): the reader's Runtime.ExitError process exits, rec-4296."
@@ -659,18 +688,18 @@ pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
 - Decision 55, Decision 101, Decision 155 and Decision 84 I-4 sections only
-- The Writer grant fix is deployed with TELEMETRY_PROVISION_OK before PR B merges
+- PLAN-telemetry-owner-provisioning's build is deployed with TELEMETRY_PROVISION_OK before PR B merges
 - All files in scope located and readable
 - Acceptance criteria understood and verifiable
 execution_steps:
-- 'PR A: edit the two alarms and create tests/checks/iam_tf/test_ducklake_writer_error_alarms.py; run steps 8 and 12; open PR A; on green CI (the speculative plan shows two in-place alarm updates and no IAM) merge; run step 14.'
-- 'Rebase onto main (PR A and, before PR B merges, the Writer grant fix).'
+- 'PR A: edit the two alarms and create tests/checks/iam_tf/test_ducklake_writer_error_alarms.py; run steps 8, 12 and 13 (the full tier; a timeout is blocked, never a CI-only handoff, Decision 203); open PR A; on green CI (the speculative plan shows two in-place alarm updates and no IAM) merge; run step 14.'
+- 'Rebase onto main (PR A and, before PR B merges, PLAN-telemetry-owner-provisioning''s build; merge its 500 runtime contract string with this plan''s unmapped text).'
 - 'Create src/common/ducklake_handler_errors.py and its tests; wire the three handlers; update the four manifests, the classifier, the gate helpers, the three contracts, the Decision 155 amendment (regenerate docs/decisions-index.json only if the freshness check says so) and the two sibling plans; add every test node named in steps 1-11.'
-- 'Repair rec-4282''s acceptance to the hermetic node ids of steps 3 (get_rec_write_guidance first; one update_rec).'
+- 'Repair rec-4282''s acceptance to hermetic node ids of step 3 (get_rec_write_guidance first; one update_rec; never weaker).'
 - Execute Verification Plan steps 1-13 -- loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)
-- 'Code review (code-review skill); open PR B with "Resolves: rec-4282" in the squash body (never rec-4294); merge on green CI, review PROCEED and Benjamin''s explicit word (Decision 155 text).'
-- Execute post-deploy steps 15-19.
-- 'Report: what was implemented, verification results, both rec closures.'
+- 'Code review (code-review skill); open PR B with "Resolves: rec-4282" in the squash body (never rec-4294); merge on green CI, review PROCEED and Benjamin''s explicit word (Decision 155 text; state that the consult recommended a numbered Decision and offer it).'
+- Execute post-deploy steps 15-18.
+- 'Report: what was implemented, verification results, the rec-4282 closure.'
 rollback: >-
   PR B: revert the squash; the handlers return to propagating and the reverted classifier gates catalog_unavailable again
   (no 503 is emitted after the revert). PR A: revert to restore the single-metric alarms; nothing depends on the second
