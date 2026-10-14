@@ -13,6 +13,7 @@ import pytest
 
 duckdb = pytest.importorskip("duckdb")
 
+from src.row_rules.rules import RowRuleError  # noqa: E402
 from src.telemetry.append import (  # noqa: E402
     AppendResult,
     EventTableSpec,
@@ -21,7 +22,8 @@ from src.telemetry.append import (  # noqa: E402
     execute_prepared,
     prepare_batch,
 )
-from src.telemetry.gate import AppendError, GateError, GrainConflictError  # noqa: E402
+from src.telemetry.gate import AppendError, GateError, GrainConflictError, RowRuleGateError  # noqa: E402
+from src.telemetry.identity import IdentityError  # noqa: E402
 
 TENANT = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
 PROJECT = "01BRZ3NDEKTSV4RRFFQ69G5FBW"
@@ -141,26 +143,54 @@ class TestAppendEventsRejections:
             append_events(con, _spec(), [_row(event_id="nope")], tenant_id=TENANT, project_id=PROJECT, catalog="memory")
 
     def test_unknown_column_rejected(self, con: Any) -> None:
-        with pytest.raises(AppendError):
+        with pytest.raises(GateError) as raised:
             append_events(con, _spec(), [_row(bogus="x")], tenant_id=TENANT, project_id=PROJECT, catalog="memory")
+        assert (raised.value.reason, raised.value.column, raised.value.table) == ("unknown_column", None, "telemetry_sessions")
 
     def test_missing_required_ref_field_rejected(self, con: Any) -> None:
         row = _row()
         del row["entity_ref"]
-        with pytest.raises(AppendError):
-            append_events(con, _spec(), [row], tenant_id=TENANT, project_id=PROJECT, catalog="memory")
+        with pytest.raises(GateError) as raised:
+            append_events(con, _spec(), [_row(), row], tenant_id=TENANT, project_id=PROJECT, catalog="memory")
+        err = raised.value
+        assert (err.reason, err.column, err.table, err.row) == ("required_ref", "entity_ref", "telemetry_sessions", 1)
 
     def test_missing_session_started_at_rejected(self, con: Any) -> None:
         row = _row()
         del row["session_started_at"]
-        with pytest.raises(AppendError):
+        with pytest.raises(GateError) as raised:
             append_events(con, _spec(), [row], tenant_id=TENANT, project_id=PROJECT, catalog="memory")
+        assert (raised.value.reason, raised.value.column, raised.value.row) == ("not_null", "session_started_at", 0)
 
     def test_missing_event_timestamp_rejected(self, con: Any) -> None:
         row = _row()
         del row["event_timestamp"]
-        with pytest.raises(AppendError):
+        with pytest.raises(GateError) as raised:
             append_events(con, _spec(), [row], tenant_id=TENANT, project_id=PROJECT, catalog="memory")
+        assert (raised.value.reason, raised.value.column) == ("not_null", "event_timestamp")
+
+    def test_bad_ref_and_pre_epoch_timestamp_are_gate_errors(self, con: Any) -> None:
+        def rejected(row: dict[str, Any]) -> GateError:
+            with pytest.raises(GateError) as raised:
+                prepare_batch(_spec(), [row], tenant_id=TENANT, project_id=PROJECT)
+            assert isinstance(raised.value.__cause__, IdentityError)
+            return raised.value
+
+        bad_ref = rejected(_row(entity_ref=""))
+        assert (bad_ref.reason, bad_ref.column, bad_ref.table, bad_ref.row) == (
+            "invalid_ref",
+            "entity_ref",
+            "telemetry_sessions",
+            0,
+        )
+        assert "sess" not in str(bad_ref)
+        pre_epoch = datetime(1960, 1, 1, tzinfo=timezone.utc)
+        assert (rejected(_row(session_started_at=pre_epoch)).reason, rejected(_row(session_started_at=pre_epoch)).column) == (
+            "time_range",
+            "session_started_at",
+        )
+        assert rejected(_row(event_timestamp=pre_epoch)).column == "event_timestamp"
+        assert rejected(_row(external_ref="")).reason == "invalid_ref"
 
     def test_strict_type_rejection_bool_as_bigint(self, con: Any) -> None:
         with pytest.raises(AppendError):
@@ -204,6 +234,18 @@ class _RecordingConnection:
         if sql.strip().upper().startswith("MERGE"):
             self.merge_statements.append(sql)
         return self._real.execute(sql, *args, **kwargs)
+
+
+class _MergeRaises:
+    """A UTC connection whose MERGE raises the given message."""
+
+    def __init__(self, message: str) -> None:
+        self._message = message
+
+    def execute(self, sql: str, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        if sql.startswith("MERGE"):
+            raise RuntimeError(self._message)
+        return type("R", (), {"fetchone": staticmethod(lambda: ("UTC",))})()
 
 
 class TestMergeShapeAndBounds:
@@ -429,8 +471,20 @@ def test_grain_conflict_is_typed(con: Any) -> None:
     prepared = prepare_batch(_spec(), [_row()], tenant_id=TENANT, project_id=PROJECT)
     execute_prepared(con, prepared, catalog="memory")
     conflicting = prepare_batch(_spec(), [_row(workflow="plan")], tenant_id=TENANT, project_id=PROJECT)
-    with pytest.raises(GrainConflictError, match="TELEMETRY_GRAIN_CONFLICT"):
+    assert conflicting.source_index == {conflicting.rows[0]["event_id"]: 0}
+    with pytest.raises(GrainConflictError, match="TELEMETRY_GRAIN_CONFLICT") as stored:
         execute_prepared(con, conflicting, catalog="memory")
+    assert (stored.value.table, stored.value.event_id, stored.value.row) == (
+        "telemetry_sessions",
+        conflicting.rows[0]["event_id"],
+        0,
+    )
+    with pytest.raises(GrainConflictError) as unparsed:
+        execute_prepared(_MergeRaises("TELEMETRY_GRAIN_CONFLICT: no id here"), conflicting, catalog="memory")
+    assert (unparsed.value.event_id, unparsed.value.row) == (None, None)
+    with pytest.raises(GrainConflictError) as in_batch:
+        prepare_batch(_spec(), [_row(), _row(external_ref="x#1"), _row(workflow="b")], tenant_id=TENANT, project_id=PROJECT)
+    assert (in_batch.value.table, in_batch.value.row) == ("telemetry_sessions", 2)
     with pytest.raises(GateError):
         append_events(con, _spec(), [_row(parser_version=True)], tenant_id=TENANT, project_id=PROJECT, catalog="memory")
     assert _count(con) == 1
@@ -508,8 +562,11 @@ def test_transcript_representation_change_is_not_a_conflict(transcripts_con: Any
 def test_rule_rejection_leaves_no_row_and_no_transaction(transcripts_con: Any) -> None:
     spec = _transcript_spec()
     bad = _transcript("hi", event_timestamp=datetime(2025, 1, 1, tzinfo=timezone.utc))
-    with pytest.raises(GateError, match="not_before"):
+    with pytest.raises(GateError, match="not_before") as raised:
         append_events(transcripts_con, spec, [bad], tenant_id=TENANT, project_id=PROJECT, catalog="memory")
+    err = raised.value
+    assert isinstance(err, RowRuleGateError) and isinstance(err.__cause__, RowRuleError)
+    assert (err.rule, err.column, err.table, err.row) == ("not_before", "event_timestamp", "telemetry_transcripts", 0)
     assert transcripts_con.execute("SELECT count(*) FROM telemetry_transcripts").fetchone()[0] == 0
 
 

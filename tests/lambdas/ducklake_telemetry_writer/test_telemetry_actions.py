@@ -38,10 +38,12 @@ class _Cur:
 class RecordingCon:
     def __init__(self, answers: dict[str, Any] | None = None) -> None:
         self.sql: list[str] = []
+        self.params: list[Any] = []
         self.answers = answers or {}
 
     def execute(self, sql: str, params: Any = None) -> _Cur:
         self.sql.append(sql)
+        self.params.append(params)
         for needle, rows in self.answers.items():
             if needle in sql:
                 if isinstance(rows, Exception):
@@ -287,7 +289,8 @@ def test_catalog_sessions_is_a_measurement_never_a_failure(
 def test_contract_verbs_match_the_dispatched_production_verbs() -> None:
     contract = yaml.safe_load(CONTRACT.read_text(encoding="utf-8"))
     production = set(h._all_actions()) - {"attach_check", "telemetry_probe"}
-    assert set(contract["verbs"]) == production == {"describe", "provision_telemetry", "register_tenant", "register_project"}
+    assert set(contract["verbs"]) == production
+    assert production == {"describe", "append_telemetry", "provision_telemetry", "register_tenant", "register_project"}
     assert contract["contract"]["id"] == "ducklake_telemetry_writer" and contract["contract"]["class"] == "B"
     for verb in ("provision_telemetry", "register_tenant", "register_project"):
         text = contract["verbs"][verb]["payload_schema_ref"]
@@ -295,3 +298,79 @@ def test_contract_verbs_match_the_dispatched_production_verbs() -> None:
         assert "unknown" in contract["verbs"][verb]["typed_errors"]["bad_request"]
         assert "never the value" in contract["verbs"][verb]["typed_errors"]["bad_request"]
     assert "U+0000" not in contract["verbs"]["describe"]["payload_schema_ref"]
+
+
+_TENANT = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+_PROJECT = "01BX5ZZKBKACTAV9WEVGEMMVRY"
+
+
+def _session_probe(monkeypatch: pytest.MonkeyPatch, registered: bool = True) -> RecordingCon:
+    targets = prov.target_tables(SEM)
+    monkeypatch.setattr(actions.prov, "existing_tables", lambda con: set(targets))
+    monkeypatch.setattr(actions.prov, "inspect_partitions", lambda con, existing, sem: dict.fromkeys(targets, True))
+    monkeypatch.setattr(actions.reg, "lookup_tenant", lambda con, kind, ref, semantics=None: _TENANT)
+    found = (_PROJECT, "registered") if registered else None
+    monkeypatch.setattr(actions.reg, "lookup_project", lambda con, tenant, ref, semantics=None: found)
+    return RecordingCon(
+        {
+            "FROM duckdb_databases": [("meta_db",)],
+            "postgres_query": [(4,)],
+            "WHERE counter_name": [(1,)],
+            "ducklake_list_files": [(2, 4096)],
+            "SELECT DISTINCT": [(2,)],
+            "SELECT count(*) FROM ops_catalog": [(3,)],
+        }
+    )
+
+
+_SESSION = {"project_ref": "repo:example", "session_ref": "sess", "session_started_at": "2026-01-01T12:34:56.789Z"}
+
+
+def test_probe_reports_grain_counts_for_one_session_day(monkeypatch: pytest.MonkeyPatch) -> None:
+    from datetime import datetime, timezone
+
+    from src.telemetry.identity import derive_entity_key
+
+    con = _session_probe(monkeypatch)
+    out = _call("telemetry_probe", con, **_SESSION)
+    events = {t for t in prov.target_tables(SEM) if t.startswith("telemetry_")}
+    assert out["project_registered"] is True and set(out["grain_counts"]) == events
+    assert all(v == {"rows": 3, "keys": 2} for v in out["grain_counts"].values())
+    assert set(out["data_files"]) == events and all(v == {"files": 2, "bytes": 4096} for v in out["data_files"].values())
+    started = datetime(2026, 1, 1, 12, 34, 56, 789000, tzinfo=timezone.utc)
+    session_id = derive_entity_key("telemetry_sessions:session_id", _TENANT, _PROJECT, "sess", started)
+    bound = [p for p in con.params if p and p[0] == session_id]
+    assert bound and all(
+        p[1:] == [datetime(2026, 1, 1, tzinfo=timezone.utc), datetime(2026, 1, 2, tzinfo=timezone.utc)] for p in bound
+    )
+    assert "conflicted" not in json.dumps(out) and "repo:example" not in json.dumps(out)
+    none = _call("telemetry_probe", _session_probe(monkeypatch, registered=False), **_SESSION)
+    assert none["grain_counts"] is None and none["project_registered"] is False and set(none["data_files"]) == events
+    assert "grain_counts" not in _call("telemetry_probe", _session_probe(monkeypatch))
+
+
+def test_probe_inputs_refused_before_any_catalog_read() -> None:
+    def refused(**body: Any) -> TelemetryRequestError:
+        con = RecordingCon()
+        with pytest.raises(TelemetryRequestError) as info:
+            _call("telemetry_probe", con, **body)
+        assert not con.sql, "a catalog read happened before the refusal"
+        assert SENTINEL not in json.dumps(info.value.fields)
+        return info.value
+
+    for field in ("project_ref", "session_ref"):
+        for bad in (f"{SENTINEL}\x00", f"{SENTINEL}\ud800"):
+            err = refused(**{**_SESSION, field: bad})
+            assert (err.status, err.error_type, err.fields) == (400, "bad_request", {"field": field})
+    for given in ({"project_ref": "p"}, {"session_ref": "s", "session_started_at": _SESSION["session_started_at"]}):
+        err = refused(**given)
+        assert (err.status, err.error_type) == (400, "bad_request") and "requires" in err.fields
+    for bad in ("2026-01-01T12:00:00Z", "nope", 7, "1960-01-01T00:00:00.000Z"):
+        err = refused(**{**_SESSION, "session_started_at": bad})
+        assert (err.status, err.error_type, err.fields) == (
+            422,
+            "schema_gate",
+            {"column": "session_started_at", "reason": "wire_timestamp"},
+        )
+    err = refused(**{**_SESSION, "session_ref": ""})
+    assert (err.status, err.fields) == (400, {"field": "session_ref"})

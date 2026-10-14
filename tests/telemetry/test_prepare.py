@@ -10,8 +10,10 @@ from typing import Any
 
 import pytest
 
+from src.row_rules.rules import RowRuleError
 from src.telemetry.append import EventTableSpec, PreparedBatch, prepare_batch
-from src.telemetry.gate import AppendError, GateError, GrainConflictError
+from src.telemetry.gate import AppendError, GateError, GrainConflictError, RowRuleGateError
+from src.telemetry.identity import IdentityError
 from tests.fixtures.turn_capture_ducklake import load_specs
 
 TENANT = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
@@ -137,3 +139,62 @@ def test_identifier_validation_rejects_unsafe_names() -> None:
     spec = EventTableSpec(table="telemetry_sessions", columns={"bad col": "VARCHAR"})
     with pytest.raises(AppendError, match="safe SQL identifier"):
         prepare_batch(spec, [], tenant_id=TENANT, project_id=PROJECT)
+
+
+def test_rule_break_is_a_row_rule_gate_error_with_table_and_row() -> None:
+    bad = transcript("u2#0", origin=None)
+    with pytest.raises(RowRuleGateError) as caught:
+        prepare([transcript(), bad])
+    err = caught.value
+    assert isinstance(err.__cause__, RowRuleError)
+    assert (err.table, err.row, err.rule, err.column) == ("telemetry_transcripts", 1, "not_null", "origin")
+    assert "hello" not in str(err)
+
+
+def test_derivation_errors_are_gate_errors_with_both_reasons() -> None:
+    def rejected(**over: Any) -> GateError:
+        with pytest.raises(GateError) as caught:
+            prepare([transcript(**over)])
+        assert isinstance(caught.value.__cause__, IdentityError)
+        return caught.value
+
+    bad_ref = rejected(entity_ref="")
+    assert (bad_ref.reason, bad_ref.column, bad_ref.table, bad_ref.row) == (
+        "invalid_ref",
+        "entity_ref",
+        "telemetry_transcripts",
+        0,
+    )
+    pre_epoch = datetime(1960, 1, 1, tzinfo=timezone.utc)
+    assert (rejected(session_started_at=pre_epoch).reason, rejected(session_started_at=pre_epoch).column) == (
+        "time_range",
+        "session_started_at",
+    )
+    assert (rejected(event_timestamp=pre_epoch).reason, rejected(event_timestamp=pre_epoch).column) == (
+        "time_range",
+        "event_timestamp",
+    )
+    assert rejected(external_ref="").column == "external_ref"
+
+
+def test_own_site_gate_errors_carry_column_and_reason() -> None:
+    def rejected(row: dict[str, Any]) -> GateError:
+        with pytest.raises(GateError) as caught:
+            prepare([row])
+        return caught.value
+
+    full = transcript()
+    cases = [
+        ({k: v for k, v in full.items() if k != "session_started_at"}, "session_started_at", "not_null"),
+        ({k: v for k, v in full.items() if k != "observation_ref"}, "observation_ref", "required_ref"),
+        ({k: v for k, v in full.items() if k != "external_ref"} | {"entity_ref": "e"}, "external_ref", "not_null"),
+        ({k: v for k, v in full.items() if k != "event_timestamp"}, "event_timestamp", "not_null"),
+    ]
+    for row, column, reason in cases:
+        err = rejected(row)
+        assert (err.column, err.reason, err.table, err.row) == (column, reason, "telemetry_transcripts", 0)
+    kept = GateError("m", table="x", row=9)
+    from src.telemetry.append import _locate
+
+    _locate(kept, "y", 0)
+    assert (kept.table, kept.row) == ("x", 9)

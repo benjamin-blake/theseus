@@ -1,0 +1,110 @@
+"""C6 for the telemetry writer (REVIEW.md C6; T2.36 plan 3 part 2): ONE JSON line per answered request, with a
+CloudWatch Embedded Metric Format block on the five data verbs.
+
+Fixed fields only. Never an account id, an ARN, a hash of either (Decision 101; ops_tenants.yaml) or a row value:
+caller_role is CallerPrincipal.role_name, tenant_id and project_id are the registry's ULIDs, and every millisecond value
+is an integer (a raw float repr can carry a 12-digit run that a leak scan would misread).
+
+EMF: namespace DuckLakeTelemetryWriter, metric RequestCount with dimension set [Verb] (five series), with the target
+members `Verb` and `RequestCount` at the line's top level beside the lowercase `verb` field. An append_telemetry line
+also carries OccRetryCount and CommitLatencyMs under an empty dimension set (the series part 1's sink already creates),
+but that directive and its members appear only when the recording sink saw values: a directive whose members are absent
+invalidates the block and drops RequestCount with it. The Lambda text log format is required for extraction (the
+function sets no JSON log format; a test pins that).
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import time
+from dataclasses import dataclass, field
+from typing import Any
+
+from src.common.ducklake_telemetry_registration import CallerPrincipal
+from src.telemetry.request import COMPONENT_RE, DEFAULT_COMPONENT
+
+NAMESPACE = "DuckLakeTelemetryWriter"
+DATA_VERBS = frozenset({"append_telemetry", "register_tenant", "register_project", "provision_telemetry", "telemetry_probe"})
+_ID_RE = re.compile(r"^[0-9A-Z]{26}$")
+
+
+@dataclass
+class RequestStats:
+    """What one request learned, filled by the edge and the recording metric sink, read when the line is emitted."""
+
+    tenant_id: str | None = None
+    project_id: str | None = None
+    tables: dict[str, tuple[int, int]] = field(default_factory=dict)  # table -> (submitted, inserted)
+    connect_reused: bool | None = None
+    recorded: dict[str, float] = field(default_factory=dict)
+
+    def sink(self, name: str, value: float) -> None:
+        self.recorded[name] = value
+
+
+def _component(payload: Any) -> str:
+    value = payload.get("component") if isinstance(payload, dict) else None
+    return value if isinstance(value, str) and COMPONENT_RE.match(value) else DEFAULT_COMPONENT
+
+
+def _clean_id(value: str | None) -> str | None:
+    return value if value is not None and _ID_RE.match(value) else None
+
+
+def _emf(verb: str, recorded: dict[str, float]) -> dict[str, Any]:
+    directives: list[dict[str, Any]] = [
+        {"Namespace": NAMESPACE, "Dimensions": [["Verb"]], "Metrics": [{"Name": "RequestCount", "Unit": "Count"}]}
+    ]
+    members: dict[str, Any] = {"Verb": verb, "RequestCount": 1}
+    metrics = []
+    if "OccRetryCount" in recorded:
+        metrics.append({"Name": "OccRetryCount", "Unit": "Count"})
+        members["OccRetryCount"] = int(recorded["OccRetryCount"])
+    if "CommitLatencyMs" in recorded:
+        metrics.append({"Name": "CommitLatencyMs", "Unit": "Milliseconds"})
+        members["CommitLatencyMs"] = int(round(recorded["CommitLatencyMs"]))
+    if metrics and verb == "append_telemetry":
+        directives.append({"Namespace": NAMESPACE, "Dimensions": [[]], "Metrics": metrics})
+    else:
+        for name in ("OccRetryCount", "CommitLatencyMs"):
+            members.pop(name, None)
+    return {"_aws": {"Timestamp": int(time.time() * 1000), "CloudWatchMetrics": directives}, **members}
+
+
+def build_request_line(
+    action: str,
+    status: int,
+    error_type: str | None,
+    *,
+    payload: Any,
+    principal: CallerPrincipal | None,
+    request_bytes: int | None,
+    invoke_bytes: int | None,
+    stats: RequestStats,
+) -> dict[str, Any]:
+    recorded = stats.recorded
+    commit_ms = recorded.get("CommitLatencyMs")
+    line: dict[str, Any] = {
+        "event": "telemetry_request",
+        "verb": action,
+        "component": _component(payload),
+        "status": status,
+        "error_type": error_type,
+        "tables": {t: {"submitted": s, "inserted": i} for t, (s, i) in stats.tables.items()},
+        "request_bytes": request_bytes,
+        "invoke_bytes": invoke_bytes,
+        "tenant_id": _clean_id(stats.tenant_id),
+        "project_id": _clean_id(stats.project_id),
+        "occ_retries": int(recorded["OccRetryCount"]) if "OccRetryCount" in recorded else None,
+        "commit_ms": int(round(commit_ms)) if commit_ms is not None else None,
+        "connect_reused": stats.connect_reused,
+        "caller_role": principal.role_name if principal is not None else None,
+    }
+    if action in DATA_VERBS:
+        line.update(_emf(action, recorded))
+    return line
+
+
+def emit_request_line(*args: Any, **kwargs: Any) -> None:
+    print(json.dumps(build_request_line(*args, **kwargs), separators=(",", ":")), flush=True)

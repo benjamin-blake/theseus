@@ -15,6 +15,7 @@ from botocore.exceptions import ClientError
 
 from scripts.ducklake_smoke import core, lambda_telemetry_gates
 from tests.fixtures.ducklake_smoke_fakes import _Resp
+from tests.fixtures.telemetry_append_fakes import LiveFake
 
 FAKE_ACCT = "123456789012"
 FAKE_ARN = "arn:" + f"aws:lambda:eu-west-2:{FAKE_ACCT}:function:agent-platform-ducklake-telemetry-writer"
@@ -94,6 +95,7 @@ def wired(monkeypatch):
         "probe": _Resp(200, PROBE_OK),
         "self_only": _Resp(400, {"ok": False, "error_type": "bad_request"}),
         "project_purpose": "synthetic",
+        "live": LiveFake(),
     }
     lock = threading.Lock()
     counts = {"tenant": 0, "project": 0}
@@ -110,9 +112,12 @@ def wired(monkeypatch):
             with lock:
                 n = counts["tenant"] = counts["tenant"] + 1
             return _Resp(200, {"ok": True, "tenant_id": state["tenant_ids"][min(n, 2) - 1], "created": n == 1})
+        if action == "append_telemetry" or (action == "telemetry_probe" and "project_ref" in payload):
+            return state["live"].invoke(url, payload)
         if action == "register_project":
             with lock:
                 n = counts["project"] = counts["project"] + 1
+            state["live"].register(payload["project_ref"], PROJECT_ID)
             body = {"ok": True, "project_id": state["project_ids"](n), "created": n == 1}
             return _Resp(200, {**body, "purpose": state["project_purpose"], "registration": "registered"})
         return {
@@ -130,6 +135,7 @@ def wired(monkeypatch):
         def client(self, name, region_name=None):
             return state["client"]
 
+    state["live"].activate(monkeypatch)
     monkeypatch.setattr(core, "_function_url", lambda role: "https://fake-url.invalid")
     monkeypatch.setattr(core, "_sigv4_invoke", fake_invoke)
     monkeypatch.setattr("boto3.Session", Session)
@@ -272,7 +278,7 @@ def test_registration_vectors_pass_on_a_consistent_writer(wired, capsys):
     calls = _register_project_calls(wired)
     assert len(calls) == 4 and len({c["project_ref"] for c in calls}) == 1
     assert calls[0]["project_ref"].startswith("synthetic:deploy-smoke-") and len(calls[0]["project_ref"]) == 23 + 32
-    assert [p["action"] for p, _ in wired["sent"]].count("telemetry_probe") == 3
+    assert [p["action"] for p, _ in wired["sent"] if "project_ref" not in p].count("telemetry_probe") == 4
     assert [p["action"] for p, _ in wired["sent"]].count("provision_telemetry") == 2
 
 
@@ -407,3 +413,19 @@ def test_gate_output_never_contains_an_account_id(wired, capsys):
     out = capsys.readouterr().out
     assert FAKE_ACCT not in out and "arn:" not in out and "lambda-url" not in out and "fake-url" not in out
     assert not re.search(r"(?<![0-9])[0-9]{12}(?![0-9])", out)
+
+
+def test_append_vectors_run_after_registration_with_the_registered_ref(wired, capsys):
+    lambda_telemetry_gates.lambda_telemetry()
+    out = capsys.readouterr().out
+    sent = [p for p, _ in wired["sent"]]
+    registered = _register_project_calls(wired)[0]["project_ref"]
+    last_registration = max(i for i, p in enumerate(sent) if p["action"] == "register_project")
+    first_append = next(i for i, p in enumerate(sent) if p["action"] == "append_telemetry")
+    last_self_only = max(i for i, p in enumerate(sent) if p["action"] == "register_tenant")
+    assert last_registration < first_append and last_self_only < first_append
+    assert sent[first_append]["project_ref"] == registered and registered.startswith("synthetic:deploy-smoke-")
+    for marker in ("TELEMETRY_APPEND_OK", "TELEMETRY_RESEND_NOOP", "TELEMETRY_AUTOREGISTER_OK", "TELEMETRY_ROWCAP_OK"):
+        assert marker in out, marker
+    assert registered not in out and registered.split(":", 1)[1] not in out
+    assert out.strip().splitlines()[-1] == SUCCESS_LINE
