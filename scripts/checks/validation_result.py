@@ -13,7 +13,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from scripts.checks import _common, registry
-from src.turn_capture import markers
 
 
 def evidence_path_for(toplevel: Path) -> Path:
@@ -154,6 +153,8 @@ def run_scaffold(name: str, failed: list[str], fn: Callable[[], None]) -> None:
 
 def failure_markers() -> list[str]:
     """One gate marker per failed check (first-seen order), then per failed scaffold step."""
+    from src.turn_capture import markers  # noqa: PLC0415 -- deferred: keeps src/ out of this module's import closure
+
     names = list(dict.fromkeys(a["check"] for a in _ATTRIBUTIONS))
     names.extend(n for n in dict.fromkeys(_SCAFFOLD_FAILURES) if n not in names)
     return [markers.format_gate_marker(n) for n in names]
