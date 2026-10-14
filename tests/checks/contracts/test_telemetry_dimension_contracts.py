@@ -155,3 +155,69 @@ def test_decision_200_reserved_namespace_annotation() -> None:
     assert len(notes) == 1 and "project-id.yaml" in notes[0] and "drill:" in notes[0] and "synthetic:" in notes[0]
     assert section.rstrip().endswith("---")  # a trailing annotation, never a mid-body splice
     assert section.index(notes[0]) > section.index("```yaml reversal-conditions")
+
+
+_TELEMETRY_WRITER = "agent-platform-ducklake-telemetry-writer"
+
+
+def test_dimension_write_paths_name_the_telemetry_writer() -> None:
+    for name, verb in (("ops_tenants", "register_tenant"), ("ops_projects", "register_project")):
+        doc = _load(name)
+        write_path = " ".join(doc["governance"]["write_path"].split())
+        assert (
+            verb in write_path
+            and _TELEMETRY_WRITER in write_path
+            and "ducklake_writer Lambda, in the telemetry" not in write_path
+        )
+        assert "write_boundary=registration" in write_path  # the generic-verb refusal sentence is kept
+        assert "outside the retry loop" in " ".join(doc["governance"]["id_allocator"].split())
+        assert (
+            doc["amendment_log"][-1]["date"] == "2026-10-12"
+            and doc["amendment_log"][-1]["change_class"] == "prose_improvement"
+        )
+        assert doc["amendment_log"][-1]["semantic_break"] is False
+    assert "derivations.purpose" in " ".join(_load("ops_projects")["governance"]["write_path"].split())
+    assert "rec-4210" in _text("ops_tenants") and "Plan 3's register_tenant verb (attribute update)" not in _text(
+        "ops_tenants"
+    )
+    counters = _load("ops_entity_counters")
+    path = " ".join(counters["governance"]["write_path"].split())
+    for needle in (
+        "lock-only UPDATE",
+        "provision_telemetry seeds",
+        "Decision 213",
+        "telemetry catalog only",
+        "exactly one row",
+    ):
+        assert needle in path, needle
+    assert "control_health runs on production only" in " ".join(counters["governance_notes"].split())
+    log = counters["amendment_log"]
+    assert [e["date"] for e in log] == ["2026-10-05", "2026-10-12"] and log[1]["semantic_break"] is True
+    assert log[1]["change_class"] == "governance_note_add"
+
+
+def test_substrate_rows_name_the_telemetry_writer() -> None:
+    tables = _load("storage-substrate")["tables"]
+    telemetry = tables["telemetry_tables"]
+    assert telemetry["status"] == "not_provisioned"  # production residency is slice 2c
+    assert _TELEMETRY_WRITER in telemetry["write_boundary"] and "ducklake_writer" not in telemetry["write_boundary"].replace(
+        "shared ducklake_writer", ""
+    )
+    assert "ducklake_smoke catalog only" in " ".join(telemetry["note"].split())
+    assert "ducklake_smoke" in telemetry["reason"]
+    assert "year(session_started_at), month(session_started_at), day(session_started_at)" in telemetry["disposition"]
+    assert "telemetry-event-envelope.yaml" in " ".join(telemetry["contract_ref"]) and "blob port" in _text("storage-substrate")
+    counters = tables["ops_entity_counters"]["write_boundary"]
+    assert "telemetry writer" in " ".join(counters.split()) and "ducklake_smoke" in counters
+    assert _load("storage-substrate")["amendment_log"][0]["date"] == "2026-10-12"
+
+
+def test_ports_pc01_names_the_telemetry_writer_edge() -> None:
+    ports = _load("ports")
+    pc01 = next(f for f in ports["coupling_findings"] if f["id"] == "PC-01")
+    text = " ".join(pc01["description"].split())
+    assert "src/lambdas/ducklake_telemetry_writer/handler.py" in text and "Decision 213" in text
+    assert "function_url adapter" in text and "rec-4024" not in text and "no port row is added" in text
+    entry = next(e for e in ports["amendment_log"] if "PLAN-telemetry-registration-verbs" in e["summary"])
+    assert entry["date"] == "2026-10-12" and entry["semantic_break"] is False
+    assert pc01["status"] == "accepted" and pc01["ports"] == ["ops_verbs", "persona_compute_host"]

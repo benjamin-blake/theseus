@@ -314,7 +314,11 @@ class TestMapSourceToTest:
                 assert result == ROOT / "tests" / "lambdas" / slug / "handler", (slug, result)
                 assert result.is_dir() and any(result.glob("test_*.py")), f"empty/missing package for {slug}: {result}"
             else:
-                assert result == ROOT / "tests" / flat_home, (slug, result)
+                flat = ROOT / "tests" / flat_home
+                mirror = ROOT / "tests" / "lambdas" / slug / "test_handler.py"
+                assert flat.is_file() != mirror.is_file(), f"exactly one of the flat and mirror homes must exist for {slug}"
+                expected = flat if flat.is_file() else mirror
+                assert result == expected, (slug, result)
                 assert result.is_file(), f"missing test home for {slug}: {result}"
 
         # Every handler's home is distinct from every other handler's home (no collision).
@@ -326,6 +330,15 @@ class TestMapSourceToTest:
         # smoke_actions.py (split-out from ducklake_writer/handler.py) shares that lambda's home.
         smoke_actions_result = map_source_to_test(ROOT / "src" / "lambdas" / "ducklake_writer" / "smoke_actions.py")
         assert smoke_actions_result == handler_results["ducklake_writer"]
+
+    def test_telemetry_writer_modules_map_to_their_own_mirror_tests(self) -> None:
+        """With no flat home, each telemetry writer module is measured by its own mirror file (rule 4, rec-3809)."""
+        base = ROOT / "src" / "lambdas" / "ducklake_telemetry_writer"
+        tests = ROOT / "tests" / "lambdas" / "ducklake_telemetry_writer"
+        assert map_source_to_test(base / "handler.py") == tests / "test_handler.py"
+        assert map_source_to_test(base / "telemetry_actions.py") == tests / "test_telemetry_actions.py"
+        assert (tests / "test_handler.py").is_file() and (tests / "test_telemetry_actions.py").is_file()
+        assert not (ROOT / "tests" / "test_ducklake_telemetry_writer_handler.py").exists()
 
     @pytest.mark.parametrize(
         ("stem", "expected_test_name"),

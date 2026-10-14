@@ -21,11 +21,46 @@ def test_data_pipeline_manifest_excludes_the_directory() -> None:
     assert "src/lambdas/ducklake_telemetry_writer" in manifest["excludes"]
 
 
-def test_telemetry_manifest_bundles_no_telemetry_kernel_or_maintenance_modules() -> None:
-    manifest = yaml.safe_load(
+_COMMON_MODULES = (
+    "src/common/ducklake_telemetry_txn.py",
+    "src/common/ducklake_telemetry_registration.py",
+    "src/common/ducklake_telemetry_provision.py",
+)
+_KERNEL = ("__init__", "append", "gate", "identity", "timestamps")
+
+
+def _telemetry_manifest() -> dict:
+    return yaml.safe_load(
         (_ROOT / "src" / "lambdas" / "ducklake_telemetry_writer" / "manifest.yaml").read_text(encoding="utf-8")
     )
+
+
+def test_telemetry_writer_manifest_bundles_the_kernel_and_modules() -> None:
+    manifest = _telemetry_manifest()
     includes = manifest["includes"]
-    assert not any(i.startswith("src/telemetry") for i in includes)
+    for rel in (f"src/telemetry/{name}.py" for name in _KERNEL):
+        assert rel in includes, rel
+    for rel in (*_COMMON_MODULES, "src/lambdas/ducklake_telemetry_writer/telemetry_actions.py"):
+        assert rel in includes, rel
+    for rel in ("src/common/ducklake_partition_layout.py", "src/common/ducklake_maintenance_scope.py"):
+        assert rel in includes, rel
     assert "src/common/ducklake_maintenance.py" not in includes
     assert manifest["functions"] == ["agent-platform-ducklake-telemetry-writer"]
+
+
+def test_new_common_modules_affect_only_the_telemetry_writer() -> None:
+    for rel in _COMMON_MODULES:
+        assert sorted(compute_affected_artifacts([rel])) == ["ducklake_telemetry_writer"], rel
+    assert sorted(compute_affected_artifacts(["src/lambdas/ducklake_telemetry_writer/telemetry_actions.py"])) == [
+        "ducklake_telemetry_writer"
+    ]
+
+
+def test_data_pipeline_excludes_every_ducklake_telemetry_module() -> None:
+    excludes = yaml.safe_load((_ROOT / "src" / "lambdas" / "data-pipeline" / "manifest.yaml").read_text(encoding="utf-8"))[
+        "excludes"
+    ]
+    on_disk = sorted(p.relative_to(_ROOT).as_posix() for p in (_ROOT / "src" / "common").glob("ducklake_telemetry_*.py"))
+    assert on_disk == sorted(_COMMON_MODULES)
+    for rel in on_disk:
+        assert rel in excludes, rel

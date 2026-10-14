@@ -124,11 +124,19 @@ governance:
   partition_by: counter_name
   write_path: >-
     ducklake_writer Lambda create_ops_tables (control branch) -> src/common/ducklake_tables.py
-    create_control_table (one CREATE + one SET PARTITIONED BY, T2.26). Row-level mutation happens
+    create_control_table (one CREATE + one SET PARTITIONED BY, T2.26). In the ops catalog, row-level mutation happens
     ONLY inside the SAME transaction as a write_scd2/file_scd2 call on a writer-keyspace table
     (src/common/ducklake_writes.py _allocate_entity_id / _advance_entity_counter) -- there is no
-    standalone write path, and the generic write_ops/file_ops/update_ops verbs refuse this table
-    (ducklake_scd2_schema.resolve_table_spec raises a directed error on write_mode=control).
+    standalone write path on the ops verbs, and the generic write_ops/file_ops/update_ops verbs refuse this table
+    (ducklake_scd2_schema.resolve_table_spec raises a directed error on write_mode=control). Read against Decision 213
+    cl.2: the shared writer stays the sole ops_* write authority in ducklake_ops; the telemetry writer
+    (agent-platform-ducklake-telemetry-writer) writes this table in the telemetry catalog only. Its register_tenant and
+    register_project verbs take a lock-only UPDATE of the ops_tenants / ops_projects row inside the registration
+    transaction (Decision 84 I-2, Decision 200 lock arm), and provision_telemetry seeds those two rows (a missing,
+    duplicated or below-floor row is rewritten at the maximum of its values and count(*) of the current table, and an
+    existing row at or above the floor is left alone). Two concurrent provisions on a catalog missing a row can both
+    insert it (DuckLake inserts do not conflict); the duplicate is detected loudly (lock_counter refuses anything but
+    exactly one row) and repaired by the next provision.
   id_allocator: >-
     None -- this table has no writer-owned entity keyspace of its own (it IS the keyspace
     bookkeeping for other tables). entity_id_prefix / id_keyspace are absent from its
@@ -137,6 +145,7 @@ governance:
   merge_key: counter_name
 
 governance_notes: >-
+  control_health runs on production only; the telemetry catalog's counter rows are read by the telemetry writer's probe.
   dq_scope: exempt. See the file header comment for the full read_boundary/write_boundary/
   dq_scope/health-binding rationale and health.live_file_ceiling: 200
   (src/common/ducklake_maintenance.py CONTROL_LIVE_FILE_CEILING) -- reproduced here since
@@ -162,4 +171,16 @@ amendment_log:
     migration_story: >-
       Production keeps exactly one expected row (ops_recommendations) because ops_tenants and ops_projects exist in no production
       catalog; the dimension tables are provisioned only in the isolated ducklake_smoke catalog by plan 3.
+  - date: "2026-10-12"
+    semantic_break: true
+    change_class: governance_note_add
+    summary: >-
+      PLAN-telemetry-registration-verbs (slice 2a-2 plan 3 part 1): governance.write_path gains a second writer in the
+      telemetry catalog only -- the telemetry writer's lock-only UPDATE of the ops_tenants / ops_projects row inside a
+      registration transaction, and provision_telemetry's seed of those two rows -- and narrows the "no standalone write
+      path" clause to the ops verbs. A governance note says control_health runs on production only.
+      semantic_break=true: a second writer now mutates this table.
+    migration_story: >-
+      The production ops catalog is untouched: the shared writer remains its sole writer and the expected row set there is
+      unchanged. The telemetry writer acts only in the isolated ducklake_smoke catalog.
 previous_versions: []

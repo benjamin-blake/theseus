@@ -29,6 +29,7 @@ DUCKLAKE_SOURCE_PATHSPECS: tuple[str, ...] = (
     "src/lambdas/ducklake_telemetry_writer",
     "src/common/ducklake_*.py",
     "src/row_rules",
+    "src/telemetry",
     "config/lambda/ducklake",
 )
 

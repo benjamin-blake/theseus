@@ -382,3 +382,10 @@ def test_pathspecs_include_row_rules() -> None:
     )
     argv = next(c for c in stub.calls if c[:4] == ["git", "log", "-1", "--format=%H"] and c[4] == "--")
     assert "src/row_rules" in argv
+
+
+def test_ducklake_pathspecs_include_src_telemetry() -> None:
+    """The telemetry kernel is bundled into a DuckLake function, so a kernel change advances the drift reference."""
+    from scripts.convergence_health.code_drift import DUCKLAKE_SOURCE_PATHSPECS
+
+    assert "src/telemetry" in DUCKLAKE_SOURCE_PATHSPECS

@@ -12,11 +12,18 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.common import ducklake_runtime as rt
+from src.common import ducklake_telemetry_registration as reg
+from src.common.ducklake_scd2_schema import SchemaGateError
+from src.common.ducklake_telemetry_txn import TelemetryRequestError
+from src.common.ducklake_write_rules import RowRuleViolationError
+from src.common.ducklake_writes import OCCRetryExhaustedError
 from src.lambdas.ducklake_telemetry_writer import handler as h
 
 ACCOUNT = "acct-under-test"
 USER_ARN = "arn:aws:sts::acct-under-test:assumed-role/Some/secret-session"
 SECRET_ID = "agent-platform-ducklake-telemetry-writer-dsn"
+VERB_NAMES = ["provision_telemetry", "register_project", "register_tenant", "telemetry_probe"]
+ALL_ACTIONS = sorted(["attach_check", "describe", *VERB_NAMES])
 
 
 @pytest.fixture(autouse=True)
@@ -104,7 +111,7 @@ def test_unknown_action_is_400_and_lists_actions(payload: dict[str, Any]) -> Non
     resp = h.handler(_event(payload))
     body = _body(resp)
     assert resp["statusCode"] == 400 and body["error_type"] == "unknown_action"
-    assert body["actions"] == ["attach_check", "describe"]
+    assert body["actions"] == ALL_ACTIONS
 
 
 def test_describe_is_connectionless(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -116,7 +123,7 @@ def test_describe_is_connectionless(monkeypatch: pytest.MonkeyPatch) -> None:
     body = _body(resp)
     assert resp["statusCode"] == 200
     assert body["function"] == "ducklake_telemetry_writer"
-    assert body["actions"] == ["attach_check", "describe"]
+    assert body["actions"] == ALL_ACTIONS
     assert body["catalog"] == {"meta_schema": "ducklake_smoke", "data_path_is_smoke": True}
     assert "s3://" not in resp["body"]
 
@@ -212,3 +219,154 @@ def test_unexpected_exception_propagates(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(rt, "get_warm_connection", MagicMock(side_effect=KeyError("unmapped")))
     with pytest.raises(KeyError):
         h.handler(_event({"action": "attach_check"}))
+
+
+def _stub_verbs(monkeypatch: pytest.MonkeyPatch, fn: Any = None) -> list[Any]:
+    seen: list[Any] = []
+
+    def stub(request: Any, con: Any, deps: Any) -> dict[str, Any]:
+        seen.append((request, con, deps))
+        if fn is not None:
+            return fn(request, con, deps)
+        return {"ok": True, "echo": request.action}
+
+    for name in VERB_NAMES:
+        monkeypatch.setitem(h.actions.VERBS, name, stub)
+    return seen
+
+
+def test_dispatch_includes_the_registration_verbs(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_runtime(monkeypatch)
+    seen = _stub_verbs(monkeypatch)
+    assert sorted(h.actions.VERBS) == VERB_NAMES
+    for name in VERB_NAMES:
+        resp = h.handler(_event({"action": name}))
+        assert resp["statusCode"] == 200 and _body(resp) == {"ok": True, "echo": name}
+    assert [r.action for r, _c, _d in seen] == VERB_NAMES
+    assert _body(h.handler(_event({"action": "describe"})))["actions"] == ALL_ACTIONS
+
+
+def test_invalid_request_is_refused_before_any_connection(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fetch, _opened, warm = _patch_runtime(monkeypatch)
+    resp = h.handler(_event({"action": "register_project", "project_ref": "bad\u0000sentinel-value"}))
+    body = _body(resp)
+    assert resp["statusCode"] == 400 and body["error_type"] == "bad_request" and body["field"] == "project_ref"
+    assert "sentinel-value" not in resp["body"] and not warm.called
+
+
+@pytest.mark.parametrize(
+    ("exc", "status", "error_type"),
+    [
+        (RowRuleViolationError("ops_projects", "not_null", "tenant_id"), 422, "row_rule"),
+        (SchemaGateError("unknown field"), 422, "schema_gate"),
+        (OCCRetryExhaustedError("budget"), 503, "occ_exhausted"),
+        (rt.DuckLakeRuntimeError("boom"), 500, "runtime"),
+    ],
+)
+def test_error_map_rows_for_registration_errors(
+    monkeypatch: pytest.MonkeyPatch, exc: Exception, status: int, error_type: str
+) -> None:
+    _patch_runtime(monkeypatch)
+
+    def boom(*_a: Any) -> dict[str, Any]:
+        raise exc
+
+    _stub_verbs(monkeypatch, boom)
+    resp = h.handler(_event({"action": "register_tenant"}))
+    body = _body(resp)
+    assert resp["statusCode"] == status and body["error_type"] == error_type and body["ok"] is False
+    if error_type == "row_rule":
+        assert "ops_projects" in body["error"] and "not_null" in body["error"] and "tenant_id" in body["error"]
+
+
+def test_request_error_maps_to_its_own_status_and_value_free_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_runtime(monkeypatch)
+
+    def refuse(*_a: Any) -> dict[str, Any]:
+        raise TelemetryRequestError(403, "tenant_unresolved", {"remedy": "register_tenant"})
+
+    _stub_verbs(monkeypatch, refuse)
+    resp = h.handler(_event({"action": "register_project", "project_ref": "p"}))
+    body = _body(resp)
+    assert resp["statusCode"] == 403 and body["error_type"] == "tenant_unresolved" and body["remedy"] == "register_tenant"
+
+
+def test_principal_port_is_built_at_the_edge_and_never_logged(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    _patch_runtime(monkeypatch)
+    seen = _stub_verbs(monkeypatch)
+    resp = h.handler(_event({"action": "register_tenant"}))
+    principal = seen[0][0].principal
+    assert (principal.kind, principal.ref, principal.role_name) == ("aws_account", ACCOUNT, "Some")
+    out = capsys.readouterr()
+    assert ACCOUNT not in resp["body"] + caplog.text + out.out + out.err + repr(principal)
+    other = _event({"action": "register_tenant"})
+    other["requestContext"]["authorizer"]["iam"]["userArn"] = "arn:aws:iam::acct-under-test:user/bob"
+    h.handler(other)
+    assert seen[1][0].principal.role_name == "bob"
+    other["requestContext"]["authorizer"]["iam"]["userArn"] = "opaque"
+    h.handler(other)
+    assert seen[2][0].principal.role_name == ""
+
+
+def test_metric_sink_uses_the_telemetry_namespace(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_runtime(monkeypatch)
+    seen = _stub_verbs(monkeypatch)
+    factory = MagicMock(return_value="SINK")
+    monkeypatch.setattr(h, "make_metric_sink", factory)
+    h.handler(_event({"action": "provision_telemetry"}))
+    factory.assert_called_once_with(namespace="DuckLakeTelemetryWriter")
+    assert h.METRIC_NAMESPACE == "DuckLakeTelemetryWriter" and seen[0][2].metric_sink == "SINK"
+
+
+def test_request_bytes_reach_the_verb(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_runtime(monkeypatch)
+    seen = _stub_verbs(monkeypatch)
+    raw = json.dumps({"action": "telemetry_probe", "component": "caf\u00e9"})
+    h.handler(_event(raw))
+    h.handler(_event(raw, b64=True))
+    expected = len(raw.encode("utf-8"))
+    assert [r.request_bytes for r, _c, _d in seen] == [expected, expected]
+    assert h._parse_body({}) == ({}, 0)
+
+
+def test_reopened_connection_clears_telemetry_caches(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_runtime(monkeypatch)
+    _stub_verbs(monkeypatch)
+    reg._TENANT_CACHE[("aws_account", "x")] = "T"
+    monkeypatch.setattr(
+        rt,
+        "get_warm_connection",
+        MagicMock(return_value=(MagicMock(), {"reused": True, "reopened": False, "connect_ms": 0.0})),
+    )
+    h.handler(_event({"action": "register_tenant"}))
+    assert reg.cached_tenant_id("aws_account", "x") == "T"
+    monkeypatch.setattr(
+        rt,
+        "get_warm_connection",
+        MagicMock(return_value=(MagicMock(), {"reused": False, "reopened": True, "connect_ms": 3.0})),
+    )
+    h.handler(_event({"action": "register_tenant"}))
+    assert reg.cached_tenant_id("aws_account", "x") is None
+
+
+@pytest.mark.parametrize(
+    ("host", "backend"),
+    [
+        ("ep-example.neon.tech", "neon"),
+        ("db.example.rds.amazonaws.com", "rds"),
+        ("db.example.invalid", "other"),
+        ("", "other"),
+    ],
+)
+def test_catalog_backend_class_reaches_the_verb_without_the_host(
+    monkeypatch: pytest.MonkeyPatch, host: str, backend: str
+) -> None:
+    fetch, _opened, _warm = _patch_runtime(monkeypatch)
+    fetch.return_value = {**fetch.return_value, "host": host}
+    seen = _stub_verbs(monkeypatch, lambda r, c, d: {"ok": True, "backend": d.catalog_backend, "reused": d.connect_reused})
+    resp = h.handler(_event({"action": "telemetry_probe"}))
+    assert _body(resp)["backend"] == backend and seen[0][2].catalog_login == "ducklake_telemetry_writer"
+    assert host not in resp["body"] or host == ""

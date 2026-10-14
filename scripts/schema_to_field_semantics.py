@@ -222,9 +222,16 @@ def _project_contract_table(
         )
 
     columns: dict[str, Any] = {}
+    derivations: dict[str, Any] = {}
     for fname, fspec in resolved_fields.items():
         derivation = fspec.derivation if hasattr(fspec, "derivation") else fspec.get("derivation")
         role = _project_role(derivation)
+        if derivation and derivation.get("prefix_map"):
+            derivations[fname] = {
+                "inputs": list(derivation["inputs"]),
+                "prefix_map": dict(derivation["prefix_map"]),
+                "default": derivation["default"],
+            }
         sql_type = _map_iceberg_type(
             fspec.iceberg_type if hasattr(fspec, "iceberg_type") else fspec.get("iceberg_type"),
             fname,
@@ -283,6 +290,8 @@ def _project_contract_table(
         "partition": partition,
         "columns": columns,
     }
+    if derivations:
+        entry["derivations"] = derivations
     if migration_columns:
         entry["migration_columns"] = migration_columns
     return entry

@@ -99,3 +99,17 @@ def test_dimension_specs_carry_every_physical_column(registry) -> None:
     assert "purpose" in {c for c, _ in schema.resolve_table_spec("ops_projects", registry).ordered_columns}
     with pytest.raises(schema.SchemaGateError, match="derived"):
         schema.schema_gate({"project_id": "x", "purpose": "drill"}, registry, table="ops_projects")
+
+
+def test_ops_projects_registry_carries_the_purpose_prefix_map(registry) -> None:
+    """The projected prefix_map is the contract's derivation block, the single source (Decision 210 cl.3)."""
+    contracts_dir = _ROOT / "docs" / "contracts"
+    resolved = resolve_refs(load_contract(contracts_dir / "ops_projects.yaml"), contracts_dir)
+    block = resolved["purpose"].derivation
+    projected = registry["ops_tables"]["ops_projects"]["derivations"]["purpose"]
+    assert projected == {"inputs": block["inputs"], "prefix_map": block["prefix_map"], "default": block["default"]}
+    others = [t for t, e in registry["ops_tables"].items() if t != "ops_projects" and "derivations" in e]
+    assert others == []
+    assert all(
+        "derivation" not in c and "derivations" not in c for c in registry["ops_tables"]["ops_projects"]["columns"].values()
+    )
