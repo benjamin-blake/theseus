@@ -174,23 +174,51 @@ resource "aws_ssm_parameter" "ducklake_telemetry_writer_url" {
 
 resource "aws_cloudwatch_metric_alarm" "ducklake_telemetry_writer_errors" {
   alarm_name          = "ducklake-telemetry-writer-errors"
-  alarm_description   = "DuckLake telemetry writer Lambda errors (loud-fail posture, Decision 55)."
+  alarm_description   = "DuckLake telemetry writer: AWS/Lambda Errors plus Url5xxCount > 0 over 15m (loud-fail posture, Decision 55; PLAN-ducklake-typed-unmapped-errors: a typed 5xx answer is a handled return, so Errors alone no longer pages). An operator-run gate that elicits a typed 5xx on purpose pages too."
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 1
-  metric_name         = "Errors"
-  namespace           = "AWS/Lambda"
-  period              = 900
-  statistic           = "Sum"
   threshold           = 0
+  treat_missing_data  = "notBreaching"
 
-  dimensions = {
-    FunctionName = aws_lambda_function.ducklake_telemetry_writer.function_name
+  metric_query {
+    id = "m1"
+
+    metric {
+      metric_name = "Errors"
+      namespace   = "AWS/Lambda"
+      period      = 900
+      stat        = "Sum"
+
+      dimensions = {
+        FunctionName = aws_lambda_function.ducklake_telemetry_writer.function_name
+      }
+    }
+  }
+
+  metric_query {
+    id = "m2"
+
+    metric {
+      metric_name = "Url5xxCount"
+      namespace   = "AWS/Lambda"
+      period      = 900
+      stat        = "Sum"
+
+      dimensions = {
+        FunctionName = aws_lambda_function.ducklake_telemetry_writer.function_name
+      }
+    }
+  }
+
+  metric_query {
+    id          = "e1"
+    expression  = "FILL(m1, 0) + FILL(m2, 0)"
+    label       = "errors plus url 5xx"
+    return_data = true
   }
 
   alarm_actions = [aws_sns_topic.alerts.arn]
   ok_actions    = [aws_sns_topic.alerts.arn]
-
-  treat_missing_data = "notBreaching"
 
   tags = {
     Name    = "DuckLake Telemetry Writer Errors Alarm"

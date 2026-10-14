@@ -434,20 +434,50 @@ resource "aws_ssm_parameter" "ducklake_writer_url" {
 # Writer loud-failure visibility (Decision 84 I-4): with the offline outbox retired, a failed
 # write surfaces only at the call site -- which may be a headless GitHub Actions run (ci-rca).
 # This alarm makes writer errors reach a human within 15 minutes regardless of the caller.
+# Url5xxCount is summed because the handler now answers a typed 5xx (a handled return) that never counts in Errors.
 resource "aws_cloudwatch_metric_alarm" "ducklake_writer_errors" {
   alarm_name          = "ducklake-writer-errors"
-  alarm_description   = "ducklake_writer Lambda errors > 0 over 15m. Decision 84 I-4: no outbox buffers a failed ops write; a sustained error here means rec/decision filing is down."
+  alarm_description   = "ducklake_writer: AWS/Lambda Errors plus Url5xxCount > 0 over 15m. Decision 84 I-4: no outbox buffers a failed ops write; a sustained error here means rec/decision filing is down. An operator-run gate that elicits a typed 5xx on purpose pages too (PLAN-ducklake-typed-unmapped-errors)."
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 1
-  metric_name         = "Errors"
-  namespace           = "AWS/Lambda"
-  period              = 900
-  statistic           = "Sum"
   threshold           = 0
   treat_missing_data  = "notBreaching"
 
-  dimensions = {
-    FunctionName = aws_lambda_function.ducklake_writer.function_name
+  metric_query {
+    id = "m1"
+
+    metric {
+      metric_name = "Errors"
+      namespace   = "AWS/Lambda"
+      period      = 900
+      stat        = "Sum"
+
+      dimensions = {
+        FunctionName = aws_lambda_function.ducklake_writer.function_name
+      }
+    }
+  }
+
+  metric_query {
+    id = "m2"
+
+    metric {
+      metric_name = "Url5xxCount"
+      namespace   = "AWS/Lambda"
+      period      = 900
+      stat        = "Sum"
+
+      dimensions = {
+        FunctionName = aws_lambda_function.ducklake_writer.function_name
+      }
+    }
+  }
+
+  metric_query {
+    id          = "e1"
+    expression  = "FILL(m1, 0) + FILL(m2, 0)"
+    label       = "errors plus url 5xx"
+    return_data = true
   }
 
   alarm_actions = [aws_sns_topic.alerts.arn]
