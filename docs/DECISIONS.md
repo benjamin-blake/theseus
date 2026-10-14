@@ -2,6 +2,103 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 217: Scale-readiness commitments gated on executor concurrency above 1 (amends Decisions 73, 196, 205, 206) (Decided)
+
+```yaml
+number: 217
+status: Decided
+decided_date: "2026-10-14"
+amends: [73, 196, 205, 206]
+significance:
+  value: numbered_decision
+  justification: >-
+    Durable, reversal-relevant commitments about system shape spanning Decisions 73, 196, 205 and
+    206. Not a contract governance note: they set direction, not field semantics, and git-ops.yaml
+    owns procedure. Not amendment_forms lines: one gated set spans four entries and needs one
+    monitored stanza.
+```
+
+**Status:** Decided
+**Date:** 2026-10-14
+**Warehouse ID:** dec-217 (per Decision 84 backfill)
+
+**Problem:** Anthropic's post "Redesigning source control at Anthropic" (2026-10-13,
+https://www.anthropic.com/engineering/redesigning-source-control) reports that once merges grew
+tenfold, infrastructure built for human scale became the bottleneck. Its transferable conclusions
+(no global merge lock, post-merge testing, agents own textual conflicts, humans review intent,
+derived data computed on demand) match Decision 73. A review of this repository against it
+(https://claude.ai/code/session_011cfEwz5UxFbXnqycRhnXbL, 2026-10-14) agreed commitments not
+actionable at rec-level concurrency 1 and with no roadmap home.
+
+**Intent:**
+Scale-readiness direction is recorded with triggers, so it self-surfaces when concurrency rises.
+
+**Decision:**
+1. **No global merge enforcer for red main.** Above concurrency 1, Decision 73 cl.4's plan-time
+   block on an open ci-rca rec becomes an overlap block between the plan's and the red's affected
+   sets (Decision 135's import-closure and data-edge channels, scripts/checks/deps/affected_tests.py).
+   A red whose file set cannot be determined still blocks (Decision 215). Until then cl.4 stands.
+2. **Textual conflicts.** Once the git-ops procedure of rec-4323 lands, the implementing agent
+   resolves three mechanical classes (derived files by regeneration, rosters by union, the
+   numbering race by renumbering) under the existing structural handoff gate (full tier on the
+   rebased tree) and stops only for judgment conflicts. Above concurrency 1, a bounded rebase step
+   owns every textual conflict, two failures escalate via a rec, and semantic conflicts not
+   excluded by CD.37's semantic locks (T4.8) stay post-merge (Decision 73).
+3. **Identity.** Interactive sessions keep the operator's identity (the CC-web proxy acts as the
+   operator). The executor lane is ONE non-bypass GitHub App (confirms Decisions 185 cl.3 and
+   205), persona as metadata (branch prefix, label, trailer); per-persona Apps wait on a measured
+   rate-limit breach. The free tier uses a repository-scoped fine-grained token.
+4. **Budget grain.** Tokens by kind are facts; dollars derive via the telemetry contract's
+   effective-dated price table. The governor acts on each lane's binding unit: API lane, a dollar
+   cap per rec and per day; subscription lane, turns and wall-clock plus Decision 206 cl.6's
+   plan-limit pause. Cost per verified merge is top-line; shadow dollars are never a spend.
+5. **Decision identity.** When Decision 196 cl.8's per-file split executes, the file slug is the
+   identity and the index generator derives the sequence number from first-parent merge order for
+   new entries only; existing numbers freeze and Decision 196 cl.6 prefixes are unchanged. Until
+   then numbers stay max-plus-one with the re-check.
+6. **Non-atomic.** With the split, clause ids become addressable in the decision-entry grammar and
+   a supersession edge may target a clause.
+7. **Index.** With the split, the index is generated into the gitignored runtime root (Decision
+   211 cl.5) at session start and in CI, never committed.
+8. **Review.** The pre-merge scout on every plan PR head SHA (Decision 205 cl.1, T4.25 c1) is
+   unchanged and never sampled. Above concurrency 1, extending Decision 205 cl.1's eligible list, a
+   push-to-main scout audits merged Tier C entries against Tier A and files a rec on a hit; human
+   review of Tier C is sampled, ratcheted with the T4.4 gates.
+
+**Coverage:** none enforced today. Homes: cl.1-2, 8 T4.4 (cl.1-2 also T4.8); cl.3
+T4.1/T4.2/T4.9a; cl.4 T4.11 (Decision 185 cl.3 ceilings); cl.5-7 T4.24 c7; cl.8 T4.25.
+Measurement: rec-4321, rec-4322.
+
+**Rationale:** Recording the destination unbuilt follows Decision 197 cl.8 and is not frame-lock
+(Decision 75): behaviour is unchanged until each trigger fires.
+
+```yaml reversal-conditions
+decision: 217
+review_by: 2027-03-31
+on_trigger: "re-plan the gated clause via /plan; review_by backstops the manual conditions"
+conditions:
+  - id: concurrency-raised
+    kind: manual
+    description: "Executor concurrency is configured above 1 (the T4.4 A2+ ratchet): clauses 1, 2 and 8."
+  - id: split-executing
+    kind: repo_state
+    predicate: roadmap_items_complete
+    params:
+      items: [T4.24]
+    description: "T4.24 complete: confirm clauses 5-7 landed with the split."
+  - id: rate-limit-breach
+    kind: manual
+    description: "A GitHub primary or secondary rate limit is hit by agent traffic: clause 3."
+  - id: red-window-growth
+    kind: manual
+    description: "Red-main window times merge rate grows until unrelated PRs routinely land on a red base: clause 1 early."
+```
+
+**Related:** Decisions 73, 196, 205, 206 (amended), 135, 215, 177, 167, 197, 75, 211, 185, 86;
+CD.37.
+
+---
+
 ## Decision 216: One owner per DuckLake metadata schema -- scoped catalog logins never hold CREATE, and telemetry tables are created under the owner login, by CI on the disposable smoke catalog (amends Decision 143 clause 2 and Decision 213 clause 3) (Decided)
 
 ```yaml
@@ -625,6 +722,8 @@ conditions:
 
 **Related:** Decisions 116, 122, 164, 173, 184, 185, 199, 205; CD.27, CD.28; T4.10a, T4.15, T4.27; PLAN-persona-event-origin-plans-in-git.
 
+> **Amended by Decision 217 (2026-10-14):** Clause 6's plan-limit pause, with turn and wall-clock budgets, is the subscription lane's binding budget unit; its shadow dollars are never a spend, and cost per verified merge is the top-line metric (Decision 217 clause 4).
+
 ---
 
 ## Decision 205: GitHub-hosted persona compute keys on GitHub event origin; plans live in git; unattended agents use the API-key lane (amends Decision 184, Decision 87, Decision 116 and Decision 73) (Decided)
@@ -674,6 +773,8 @@ conditions:
 ```
 
 **Related:** Decisions 72, 77, 122, 164, 173; rec-3386.
+
+> **Amended by Decision 217 (2026-10-14):** The executor App is ONE non-bypass App with persona carried as metadata; per-persona Apps wait on a measured rate-limit breach (Decision 217 clause 3). Above executor concurrency 1, clause 1's eligible list gains a push-to-main decision-scout pass that audits merged Tier C entries against Tier A and files a rec on a hit; the pre-merge scout on every plan PR is unchanged (Decision 217 clause 8).
 
 ---
 
@@ -1316,6 +1417,8 @@ conditions:
 > **Amended by Decision 198 (2026-09-21):** Clause 7's "undecided organisation handle" is now
 > decided (`otl-labs`, Decision 195 clause 4 / Decision 198). `otl` remains the CLI alias of the
 > `ontheloop` product/distribution namespace, a separate identifier from the org handle.
+
+> **Amended by Decision 217 (2026-10-14):** When clause 8's per-file split executes, the file slug is the decision identity, existing numbers freeze and new numbers derive from first-parent merge order, clause ids become addressable, and the index is generated into the gitignored runtime root, never committed (Decision 217 clauses 5-7); clause 6 prefixes are unchanged.
 
 ---
 
@@ -8824,6 +8927,8 @@ Key elements:
 **Related:** Decision 44, Decision 55, Decision 60, Decision 67, Decision 68, Decision 71, Decision 72 (RCA-as-Plan-Source), Decision 89 (branch protection), `docs/INTENT-ci-cd-architecture.md`, `docs/ROADMAP-PRODUCT.md` (Phase Infra-Env).
 
 > **Amended by Decision 205 (2026-09-28):** Once rec-4114's path filter lands, clause 2's full tier on push to main stops covering a merge touching only docs/plans/**: Decision 205 clause 5 runs the fast tier for it -- the plan checks already run in --pre on the same diff, and every full-only check that reads plan content re-asserts an invariant they gate -- with Main Canary's 3-hourly full tier as the backstop; every other push to main keeps the full tier.
+
+> **Amended by Decision 217 (2026-10-14):** Above executor concurrency 1, clause 4's plan-time block on an open ci-rca rec becomes an affected-set overlap block, and a red whose file set cannot be determined still blocks (Decision 217 clause 1); until then clause 4 stands unchanged. Textual conflicts route per Decision 217 clause 2.
 
 ---
 
