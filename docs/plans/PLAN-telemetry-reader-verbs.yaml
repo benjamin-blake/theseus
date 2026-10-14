@@ -1,0 +1,649 @@
+schema_version: 5
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: telemetry-reader-verbs
+intent: >-
+  The telemetry read layer (rec-4291): give the shared ducklake_reader read access to the telemetry catalog through a
+  second, isolated warm connection and an event-journal named-verb form, and ship the contract-named derived-state verbs
+  (session state and duration, process-event, friction and agent-run roll-ups, the bounded sessions window, reported model
+  cost) plus a metadata-only telemetry health verb and its preflight gauge. Telemetry state is then derived at read through
+  the closed named-verb boundary (Decision 199 cl.1, Decision 84 I-3), every response reports generations and grain
+  conflicts instead of resolving them (Decision 207), and slice 4 (rec-4025) has verbs to verify.
+plan_type: IMPLEMENTATION
+verification_tier: V3
+plan_path: docs/plans/PLAN-telemetry-reader-verbs.yaml
+phase: >-
+  T2.36 (Phase 4: telemetry re-lands on DuckLake), the telemetry read layer (rec-4291; Benjamin, 2026-10-14,
+  cmsg_012XgaFy8VaDQbxP5D8nC958GgNiPNy3uHRFLovP66hD4X). Closes T2.36:c3 ("Preflight telemetry health check re-enabled
+  against the ducklake_reader boundary; telemetry-store preflight reports PASS when tables are populated"): the preflight
+  gauge reads the smoke telemetry tables through the deployed reader and reports pass over the rows plan 3 part 2's smoke
+  gate (PLAN-telemetry-append-inline, merged #1477) writes. get_blob is the one remaining rec-4291 item, in a follow-up
+  blob read plan built after plan 4. T2.52 c3 is not closed and T2.52 gains no dependant (Decision 93): sessions_window is
+  the operator's reader-k2 (a) verb (2026-10-04), built in the reader.
+closes_criteria:
+- T2.36:c3
+scope:
+- file: src/common/ducklake_runtime.py
+  action: Modify
+  purpose: >-
+    Named warm-connection slots: get_warm_connection gains slot (default "ops", so every existing caller, the telemetry
+    writer included, is unchanged); each slot keeps its own key, liveness probe, dead-session reopen and connect meta; a
+    reopen of one slot never closes the other; reset_warm_connection(slot=None) drops one slot or all. open_connection
+    gains alias (default CATALOG_ALIAS) and TELEMETRY_CATALOG_ALIAS = "telemetry_catalog" is added. No import of any
+    src.telemetry or event-read module: the event-read modules ship in the reader bundle only, so the five other DuckLake
+    bundles that carry ducklake_runtime need no new file (and the scripts-never-import-telemetry-append fence holds).
+- file: src/common/ducklake_event_reads.py
+  action: Create
+  purpose: >-
+    The event-journal read mechanism: the frozen EventRead type (verb, tables, sql template, params, binding session or
+    window, max_window_days, data, description, paginable, agent_facing); parameter validation before any SQL (session_id a
+    canonical 26-character ULID, as_of a tz-aware ISO-8601 timestamp, day_from/day_to ISO dates with day_to - day_from + 1
+    <= max_window_days; errors name the parameter, never the value); the smoke-pin refusal; the partition binding (the
+    session_id's 48-bit time prefix decoded with src.telemetry.identity.decode_time_prefix to its UTC calendar day,
+    rendered as a bound session_started_at range plus the bound session_id; a window as a bound day range); the one
+    rendered R4/R5 dedupe fragment and the pre-retirement conflict report (Decision 207), compared over every stored
+    column except created_timestamp, producer_version and the row rules' representation-only columns
+    (src.row_rules.RowRules.from_projection over the field_semantics event projection, never src.telemetry.append);
+    event_read_version (sha256 over verb, tables, params, binding, max_window_days, paginable, normalised SQL template,
+    canonical JSON of data, and the compared-column set per table); describe_event_reads (the describe rows: the ops
+    keys plus kind event_journal, tables, catalog telemetry, binding and max_window_days, table = the first table);
+    execute (one SQL statement per call, values bound). Imported by the reader handler only.
+- file: src/common/ducklake_event_read_verbs.py
+  action: Create
+  purpose: >-
+    The registry data and verb SQL: IDLE_THRESHOLD_SECONDS = 86400; the friction rules block (classifier_version 1,
+    repeat_threshold 3, run rule repeated_tool_failure, rules r01-r04 and r90-r94 from
+    docs/plans/reports/REPORT-w1-friction-classifier.md section 2); MAX_WINDOW_DAYS = 7; and the EVENT_READS entries
+    session_state_and_duration, session_process_event_rollup, session_friction_rollup, agent_run_state_and_duration,
+    agent_run_token_rollup, model_call_cost_estimate, sessions_window, sessions_window_all_purposes,
+    telemetry_health_count, each rendering the shared dedupe fragment and returning derived rows only (never a raw row,
+    transcript content or free text, Decision 209 cl.2a). Pure data and strings: no I/O and nothing that can raise at
+    import (AGENTS.md Safety).
+- file: src/common/ducklake_named_reads.py
+  action: Modify
+  purpose: >-
+    NAMED_READS_VERSION 5 -> 6 (the registry format now spans two verb classes). NAMED_READS itself, read_version and
+    describe_named_reads are unchanged, so the 17 ops verbs' read_versions and describe rows are byte-identical; the event
+    registry (EVENT_READS) stays in the reader-only module so no other DuckLake bundle has to carry it.
+- file: src/lambdas/ducklake_reader/handler.py
+  action: Modify
+  purpose: >-
+    The reader is the one bundle that composes both registries. A named_read whose verb is in EVENT_READS binds the
+    telemetry slot (its opener reads TELEMETRY_META_SCHEMA and TELEMETRY_DATA_PATH at call time, refuses before any
+    connect unless they name the smoke catalog, and ATTACHes under TELEMETRY_CATALOG_ALIAS), runs ducklake_event_reads.execute
+    and stamps that verb's event_read_version (an event-read input refusal answers through the existing 400 named_read_input
+    path, naming the parameter, never its value; the smoke-pin refusal is a 500 runtime error naming rec-4292); every
+    other action, query_ops included, binds the ops slot exactly as today;
+    the reconnect-once path reopens only the slot in use; describe returns the ops and event rows together (verb names
+    disjoint). The response envelope, the typed terminal answers (#1476) and the size guard are otherwise untouched.
+- file: src/lambdas/ducklake_reader/manifest.yaml
+  action: Modify
+  purpose: >-
+    Includes src/common/ducklake_event_reads.py, src/common/ducklake_event_read_verbs.py, src/telemetry/__init__.py,
+    src/telemetry/identity.py and src/telemetry/timestamps.py (all already under the deploy trigger paths); src/row_rules
+    is already included.
+- file: src/lambdas/data-pipeline/manifest.yaml
+  action: Modify
+  purpose: Excludes the two new src/common/ducklake_event_read*.py modules by name (DuckLake-bundle only).
+- file: src/common/ducklake_reader_client.py
+  action: Modify
+  purpose: _NAMED_READS_VERSION_PIN 6 and VERB_FIELDS entries for every event verb's output columns.
+- file: scripts/preflight/telemetry_health.py
+  action: Create
+  purpose: >-
+    check_telemetry_health(reader): one telemetry_health_count call, returning the telemetry-store gauge as status pass
+    (at least one of the four tables holds a committed row; a non-replayable producer writes no sessions row, envelope R8),
+    unpopulated (all four empty) or unavailable (reader error or refusal),
+    with per-table counts, and null counts, never 0 or [], when unavailable (Decision 215 cl.2). Never raises.
+- file: scripts/session/preflight.py
+  action: Modify
+  purpose: >-
+    Calls check_telemetry_health once per run, prints one telemetry-store line and writes the report's telemetry_health key.
+    Reader invocations per session go from five to six (Decision 215 cl.4; its reversal condition is a doubling).
+- file: scripts/ducklake_smoke/lambda_ec_gates.py
+  action: Modify
+  purpose: >-
+    lambda_reader also runs the telemetry read checks (so the CI smoke job covers them with no workflow change): describe
+    lists the event verbs at kind event_journal; telemetry_health_count answers for all four tables; a well-formed absent
+    session_id returns zero rows from session_state_and_duration; a malformed session_id is refused without echoing it; a
+    query_ops whose SQL names telemetry_catalog fails because the ops slot never attaches it. Prints TELEMETRY_READS_OK.
+- file: docs/contracts/ducklake_reader.yaml
+  action: Modify
+  purpose: >-
+    Documents the event-journal named-verb class, the telemetry slot and its smoke-pin refusal (lifted by slice 2c with
+    tenant-scoped reads, rec-4292, Decision 200 cl.2), required as_of, the response stamps, and replaces the query_ops
+    declared residual with its closure by construction (Decision 181 cl.2 coverage: the slot-isolation test and the live
+    gate). amendment_log entry.
+- file: docs/contracts/read-engine.yaml
+  action: Modify
+  purpose: read_surface.named_verbs.verbs lists the event verbs under their first table (the validate_read_engine_verbs parity list).
+- file: scripts/checks/contracts/validate_read_engine_verbs.py
+  action: Modify
+  purpose: The live grouping is NAMED_READS by table plus EVENT_READS by first table, so the contract cannot drift from either registry.
+- file: tests/checks/contracts/test_validate_read_engine_verbs.py
+  action: Modify
+  purpose: The check fails when an event verb is missing from or extra in read-engine.yaml.
+- file: docs/ROADMAP-PLATFORM.yaml
+  action: Modify
+  purpose: >-
+    Bookkeeping walk only (tier-item-lifecycle.yaml bookkeeping_walk): flip T2.36:c3 open -> met with met_by this plan,
+    move T2.36 not_started -> in_progress, and add a dated progress_note line naming what remains (c1, c2, c4, c5).
+- file: tests/common/test_ducklake_event_reads.py
+  action: Create
+  purpose: Pure mechanism tests (no duckdb at module scope).
+- file: tests/common/test_ducklake_event_read_verbs.py
+  action: Create
+  purpose: >-
+    Real local DuckLake integration tests (pinned duckdb and ducklake extension, UTC, inlining off, calendar-day
+    partitions): dedupe vectors, golden derivations, friction vectors, window, cost, health, partition-bound file reads,
+    VERB_FIELDS parity for event verbs.
+- file: tests/fixtures/telemetry_read_lake.py
+  action: Create
+  purpose: >-
+    Shared helper (never a test_ module): builds the four tables plus ops_projects in a local DuckLake via
+    tests/fixtures/turn_capture_ducklake.py and loads fixture rows, attached under TELEMETRY_CATALOG_ALIAS.
+- file: tests/telemetry/fixtures/derivation_cases.yaml
+  action: Create
+  purpose: Golden derivation cases with expected rows at two as_of values each.
+- file: tests/telemetry/fixtures/friction_vectors.yaml
+  action: Create
+  purpose: The 17 friction vectors (v01-v17) from REPORT-w1-friction-classifier.md section 2 as a committed fixture.
+- file: tests/test_ducklake_named_reads.py
+  action: Modify
+  purpose: Version pin 6; the ops pinned digests stay unchanged.
+- file: tests/common/test_ducklake_runtime.py
+  action: Modify
+  purpose: Slot independence, per-slot reopen and reset, the alias keyword.
+- file: tests/test_ducklake_reader_handler.py
+  action: Modify
+  purpose: >-
+    Slot selection per action and verb; query_ops on the ops slot only; the smoke-pin refusal before any connect; event
+    routing and its read_version stamp; describe returns both registries.
+- file: tests/common/ducklake_reader_client/test_verb_fields_parity.py
+  action: Modify
+  purpose: >-
+    Version pin 6; VERB_FIELDS keys equal NAMED_READS plus EVENT_READS (ops column parity unchanged; event column parity runs
+    in the integration file).
+- file: tests/session/preflight/test_telemetry_health.py
+  action: Create
+  purpose: The tri-state gauge and its one-call budget.
+- file: tests/ducklake_neon_smoke_test/test_lambda_ec_gates.py
+  action: Modify
+  purpose: The telemetry read checks pass on a consistent reader and fail on each named regression.
+bundled_recommendations: []
+followon_recs:
+- rec-4291
+infrastructure_dependencies: []
+acceptance_criteria:
+- >-
+  The reader keeps two independent warm connections: an EventRead named_read binds the telemetry slot (ATTACHed under
+  telemetry_catalog from TELEMETRY_META_SCHEMA/TELEMETRY_DATA_PATH, opened lazily); every other action, query_ops included,
+  binds the ops slot and never opens or reaches the telemetry slot; a dead session reopens only its own slot.
+- >-
+  Every event verb refuses, before any connection or SQL, unless the telemetry pin names the smoke catalog; the refusal names
+  rec-4292 (slice 2c lifts it with tenant-scoped reads, Decision 200 cl.2).
+- >-
+  NAMED_READS_VERSION is 6; describe lists the nine event verbs with kind, tables, catalog, binding and max_window_days; the 17
+  ops verbs' read_versions are unchanged; an event verb's read_version changes when its SQL, any registry datum or any
+  compared column changes.
+- >-
+  Parameters are validated before any SQL and every value is bound, never interpolated: a non-canonical session_id, a naive
+  or malformed as_of, a malformed day or a window over its max_window_days each fail naming the parameter and never echoing
+  the value.
+- >-
+  The rendered R4/R5 block passes all 17 committed dedupe vectors on a real local DuckLake with survivors compared by
+  (event_id, parser_version) and conflicted grain keys exact, and distinguishes the two mutants the vectors miss
+  (keep-lowest version; V* taken from non-open rows).
+- >-
+  Each derived row carries generations (V* per producer), conflicted_grain_keys and derivation_conflicted; a conflict never
+  nulls, drops or errors the derivation.
+- >-
+  session_state_and_duration matches every golden case in derivation_cases.yaml at both as_of values (resume after close,
+  close-last tie, annotate excluded, abandoned past 24 h and not before, a resume reviving an abandoned session,
+  multi-producer, sync and async sub-agents from their agent-run pair with failed/timeout/throttled -> failed).
+- >-
+  session_process_event_rollup, session_friction_rollup (all 17 friction vectors; rework_total, exception_total, per-label
+  counts, unmapped_count, classifier_version), agent_run_state_and_duration and agent_run_token_rollup (one count per
+  model_call after the entity collapse) match their golden cases.
+- >-
+  sessions_window returns one derived row per root session of a real-purpose project in the bound day range ordered by
+  (session_started_at, session_id), excludes drill and synthetic projects, refuses an eight-day window, and
+  sessions_window_all_purposes (not agent-facing) includes all purposes.
+- >-
+  model_call_cost_estimate returns cost_usd with cost_source reported, allowance (billing_shape
+  fixed_non_rollover_allowance, cost NULL) or unpriced (cost NULL), never a 0 standing in for an unknown.
+- >-
+  telemetry_health_count reads catalog metadata only (no data file) and the preflight telemetry-store gauge is pass (any of
+  the four tables populated), unpopulated (all empty) or unavailable from exactly one reader call, with null counts when
+  unavailable.
+- >-
+  The reader bundle carries the new modules and the three src/telemetry stdlib modules; data-pipeline excludes the new
+  modules; ducklake_reader.yaml and read-engine.yaml match the registry.
+- >-
+  After the governed deploy: the CI smoke job's lambda-reader step prints TELEMETRY_READS_OK, an independent live run of the
+  same gate passes, the existing reader gates still pass, and the live preflight telemetry-store gauge reports pass over the
+  smoke rows plan 3 part 2's gate wrote (T2.36:c3), with T2.36 c3 flipped to met in the roadmap.
+verification_plan:
+- step: 1
+  phase: pre-deploy
+  action: The pure event-read mechanism validates, binds, refuses and versions correctly.
+  command: >-
+    bin/venv-python -m pytest
+    tests/common/test_ducklake_event_reads.py::test_session_id_must_be_a_canonical_ulid
+    tests/common/test_ducklake_event_reads.py::test_as_of_must_be_tz_aware
+    tests/common/test_ducklake_event_reads.py::test_window_span_is_capped_per_verb
+    tests/common/test_ducklake_event_reads.py::test_errors_name_the_param_never_the_value
+    tests/common/test_ducklake_event_reads.py::test_partition_bounds_decode_from_the_session_id
+    tests/common/test_ducklake_event_reads.py::test_values_are_bound_never_interpolated
+    tests/common/test_ducklake_event_reads.py::test_refuses_unless_the_pin_is_the_smoke_catalog
+    tests/common/test_ducklake_event_reads.py::test_read_version_moves_with_every_datum_sql_and_column
+    tests/common/test_ducklake_event_reads.py::test_compared_columns_match_the_writer_compare_set
+    -q
+  expected: Exit 0, every node passes. Red before because the module and nodes are absent.
+  expected_literals: []
+  fix_if: >-
+    A read_version unchanged by a datum edit means the datum is outside the hash; add it. A compared-column mismatch with
+    EventTableSpec means reader conflicts and writer grain checks disagree; derive both from the same projection.
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: telemetry-event-reads-mechanism
+- step: 2
+  phase: pre-deploy
+  action: The reader serves both registries at version 6 without re-versioning any ops verb, and the contract parity check covers both.
+  command: >-
+    bin/venv-python -m pytest
+    tests/test_ducklake_named_reads.py::test_registry_version_is_six
+    tests/test_ducklake_named_reads.py::test_ops_verb_read_versions_unchanged_by_event_reads
+    tests/common/test_ducklake_event_reads.py::test_event_verbs_are_described_with_their_class_and_bounds
+    tests/common/test_ducklake_event_reads.py::test_event_and_ops_verb_names_are_disjoint
+    tests/test_ducklake_reader_handler.py::test_named_read_routes_event_verbs_to_the_event_executor
+    tests/test_ducklake_reader_handler.py::test_describe_returns_both_registries
+    tests/checks/contracts/test_validate_read_engine_verbs.py::test_fails_when_an_event_verb_is_undeclared
+    -q
+  expected: Exit 0, every node passes. Red before because the nodes are absent.
+  expected_literals: []
+  fix_if: >-
+    An ops digest change means the event class leaked into the NamedRead hash; keep the registries separate. A parity pass
+    with an undeclared event verb means the check reads only NAMED_READS.
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: telemetry-event-reads-registry
+- step: 3
+  phase: pre-deploy
+  action: Warm-connection slots are independent and the handler binds the right slot per action.
+  command: >-
+    bin/venv-python -m pytest
+    tests/common/test_ducklake_runtime.py::test_named_slots_are_independent
+    tests/common/test_ducklake_runtime.py::test_dead_slot_reopens_without_evicting_the_other
+    tests/common/test_ducklake_runtime.py::test_reset_drops_one_slot_or_all
+    tests/common/test_ducklake_runtime.py::test_open_connection_attaches_under_the_given_alias
+    tests/test_ducklake_reader_handler.py::test_event_read_binds_the_telemetry_slot
+    tests/test_ducklake_reader_handler.py::test_ops_actions_never_open_the_telemetry_slot
+    tests/test_ducklake_reader_handler.py::test_query_ops_runs_on_the_ops_slot_only
+    tests/test_ducklake_reader_handler.py::test_smoke_pin_refusal_happens_before_any_connect
+    -q
+  expected: Exit 0, every node passes. Red before because the nodes are absent.
+  expected_literals: []
+  fix_if: >-
+    Any ops action that opens the telemetry slot reopens the query_ops residual; route it to the ops slot. A reopen that
+    closes the other slot breaks Decision 88 cl.1(i); key the probe and reopen per slot.
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: telemetry-reader-slots
+- step: 4
+  phase: pre-deploy
+  action: The rendered dedupe block passes every committed vector on a real local DuckLake and catches both known mutants.
+  command: >-
+    bin/venv-python -m pytest
+    tests/common/test_ducklake_event_read_verbs.py::test_rendered_dedupe_passes_every_vector
+    tests/common/test_ducklake_event_read_verbs.py::test_dedupe_catches_keep_lowest_and_non_open_generation_mutants
+    tests/common/test_ducklake_event_read_verbs.py::test_conflicted_keys_are_reported_never_resolved
+    -m integration -q
+  expected: Exit 0, every node passes on the pinned duckdb with the ducklake extension.
+  fix_if: >-
+    A vector failure is a dedupe bug in the rendered fragment; fix the fragment, never the vectors (they are normative). An
+    extension INSTALL failure is an environment fault to fix, never a skip (rec-4071).
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: >-
+    Needs duckdb and the ducklake extension, which the fast tier excludes (requirements-fast.txt heavy-exclusion); the full
+    tier runs the file on every main build.
+- step: 5
+  phase: pre-deploy
+  action: Every derived verb matches its golden cases on a real local DuckLake.
+  command: >-
+    bin/venv-python -m pytest
+    tests/common/test_ducklake_event_read_verbs.py::test_session_state_golden_cases
+    tests/common/test_ducklake_event_read_verbs.py::test_sub_agent_state_from_the_agent_run_pair
+    tests/common/test_ducklake_event_read_verbs.py::test_process_event_rollup_golden_cases
+    tests/common/test_ducklake_event_read_verbs.py::test_friction_vectors
+    tests/common/test_ducklake_event_read_verbs.py::test_agent_run_state_and_tokens_golden_cases
+    tests/common/test_ducklake_event_read_verbs.py::test_sessions_window_real_projects_only_and_ordered
+    tests/common/test_ducklake_event_read_verbs.py::test_cost_source_never_a_false_zero
+    tests/common/test_ducklake_event_read_verbs.py::test_health_count_reads_metadata_only
+    tests/common/test_ducklake_event_read_verbs.py::test_verb_fields_match_event_verb_output_columns
+    -m integration -q
+  expected: Exit 0, every node passes.
+  fix_if: >-
+    A golden mismatch is a derivation bug: the contract formulas (telemetry_sessions.yaml state, duration_seconds,
+    *_total; telemetry_agents.yaml) are normative, so fix the SQL, never the expected rows, unless the case itself
+    misreads the contract (then say so in the report).
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: >-
+    Needs duckdb and the ducklake extension, which the fast tier excludes; the full tier runs the file on every main build.
+- step: 6
+  phase: pre-deploy
+  action: A per-session read touches only its own calendar day's data files.
+  command: >-
+    bin/venv-python -m pytest
+    tests/common/test_ducklake_event_read_verbs.py::test_session_read_touches_only_its_day_files
+    -m integration -q
+  expected: Exit 0. The test writes several days of interleaved sessions and asserts the files a per-session verb reads.
+  fix_if: >-
+    A read of another day's files means the partition binding is missing or not prunable; bind the decoded day range on
+    session_started_at.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: Needs duckdb and the ducklake extension (fast-tier heavy exclusion); full tier only.
+- step: 7
+  phase: pre-deploy
+  action: The preflight gauge is tri-state from one reader call.
+  command: >-
+    bin/venv-python -m pytest
+    tests/session/preflight/test_telemetry_health.py::test_pass_when_sessions_hold_rows
+    tests/session/preflight/test_telemetry_health.py::test_unpopulated_when_sessions_are_empty
+    tests/session/preflight/test_telemetry_health.py::test_unavailable_carries_null_counts_never_zero
+    tests/session/preflight/test_telemetry_health.py::test_exactly_one_reader_call
+    -q
+  expected: Exit 0, every node passes. Red before because the module and nodes are absent.
+  expected_literals: []
+  fix_if: An unavailable gauge carrying 0 or [] is a false negative (Decision 215 cl.2); return null.
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: telemetry-health-gauge
+- step: 8
+  phase: pre-deploy
+  action: The smoke gate's telemetry read checks pass on a consistent reader and fail on each regression.
+  command: >-
+    bin/venv-python -m pytest
+    tests/ducklake_neon_smoke_test/test_lambda_ec_gates.py::test_telemetry_read_checks_pass_on_a_consistent_reader
+    tests/ducklake_neon_smoke_test/test_lambda_ec_gates.py::test_telemetry_read_checks_fail_when_query_ops_reaches_telemetry
+    tests/ducklake_neon_smoke_test/test_lambda_ec_gates.py::test_telemetry_read_checks_fail_when_a_bad_id_is_echoed
+    -q
+  expected: Exit 0, every node passes. Red before because the nodes are absent.
+  expected_literals: []
+  fix_if: A gate that passes when query_ops reaches telemetry_catalog is too weak; assert the failure.
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: telemetry-read-gate
+- step: 9
+  phase: pre-deploy
+  action: The reader bundle carries the new modules and data-pipeline does not.
+  command: >-
+    bin/venv-python -c "from scripts.lambda_manifest import compute_affected_artifacts as c;
+    a=c(['src/common/ducklake_event_reads.py','src/common/ducklake_event_read_verbs.py']);print(sorted(a));
+    assert set(a)=={'ducklake_reader'}, a;b=c(['src/telemetry/identity.py']);assert 'ducklake_reader' in b, b;print('BUNDLE_OK')"
+  expected: The two new modules affect exactly the ducklake_reader artifact, identity.py reaches the reader, then BUNDLE_OK.
+  expected_literals: []
+  fix_if: >-
+    A data-pipeline hit means an exclude line is missing; add it by name. Any other DuckLake artifact in the set means a
+    shared module imports an event-read module; move the import into the reader handler.
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: telemetry-reader-bundle
+- step: 10
+  phase: pre-deploy
+  action: Every modified or created source file has its test file and full coverage of new code.
+  command: >-
+    bin/venv-python -m scripts.test_coverage_checker --check-tests --check-coverage --files
+    src/common/ducklake_runtime.py src/common/ducklake_event_reads.py src/common/ducklake_event_read_verbs.py
+    src/common/ducklake_named_reads.py src/common/ducklake_reader_client.py scripts/checks/contracts/validate_read_engine_verbs.py
+    src/lambdas/ducklake_reader/handler.py scripts/preflight/telemetry_health.py scripts/session/preflight.py
+    scripts/ducklake_smoke/lambda_ec_gates.py
+  expected: Exit 0.
+  fix_if: A module below 100% on new code needs direct tests in its own file; never add a coverage_baseline.yaml entry (Decision 159).
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: Coverage measurement re-runs the files' suites; it duplicates the gate the full tier already runs.
+- step: 11
+  phase: pre-deploy
+  action: Lint and run the full tier, as the handoff policy requires before commit.
+  command: >-
+    bin/venv-python -m ruff check src/common src/lambdas/ducklake_reader scripts/preflight scripts/ducklake_smoke
+    scripts/checks/contracts tests/common tests/session/preflight tests/fixtures && bin/venv-python -m scripts.validate
+  expected: ruff exit 0, then the full tier ends with "All checks passed." and exit 0.
+  fix_if: >-
+    Any failure: fix at root and rerun the full tier from the start (handoff_policy). A validate_read_engine_verbs failure
+    means read-engine.yaml and the registries disagree; a validate_scope_boundary failure means a touched file is outside
+    this plan's scope (stop and escalate, never widen silently).
+  hermetic: false
+  graduation: not-applicable
+- step: 12
+  phase: post-deploy
+  action: >-
+    The governed deploy of the merge commit succeeded. Read with mcp__github__actions_list (list_workflow_runs, workflow
+    deploy-ducklake-lambdas.yml, head_sha $MERGE_SHA) then list_workflow_jobs for that run, writing the jobs JSON to
+    $DEPLOY_JOBS_JSON.
+  command: >-
+    test -s "$DEPLOY_JOBS_JSON" && bin/venv-python -c "import json,os;j=json.load(open(os.environ['DEPLOY_JOBS_JSON']));
+    jobs={x['name']:x.get('conclusion') for x in (j.get('jobs') if isinstance(j,dict) else j)};print(jobs);
+    want=['deploy-serving','smoke'];assert all(any(n.startswith(w) and c=='success' for n,c in jobs.items()) for w in want),jobs;print('DEPLOY_OK')"
+  expected: deploy-serving and smoke concluded success (a skipped job fails this step), then DEPLOY_OK.
+  fix_if: A failed smoke job is this plan's to root-cause and fix forward, never a re-run to green (Decision 55).
+  hermetic: false
+  graduation: not-applicable
+- step: 13
+  phase: post-deploy
+  action: >-
+    The CI smoke job ran the telemetry read checks on the merge commit. Save that run's smoke job log
+    (mcp__github__get_job_logs) to $SMOKE_LOG_FILE.
+  command: >-
+    test -s "$SMOKE_LOG_FILE" && bin/venv-python -c "import os,re;L=open(os.environ['SMOKE_LOG_FILE'],encoding='utf-8',errors='replace').read().splitlines();
+    i=next(k for k,l in enumerate(L) if '##[group]Run' in l and '--lambda-reader' in l);
+    j=next((k for k in range(i+1,len(L)) if '##[group]Run' in L[k]),len(L));t=chr(10).join(L[i:j]);
+    assert 'READER OK' in t and 'TELEMETRY_READS_OK' in t, 'markers';
+    assert not re.search(r'(?<![0-9])[0-9]{12}(?![0-9])',t),'12-digit number';assert 'arn:aws' not in t,'ARN';print('SMOKE_LIVE_OK')"
+  expected: Both markers in the lambda-reader step's own section, no 12-digit number and no ARN there, then SMOKE_LIVE_OK.
+  fix_if: A missing TELEMETRY_READS_OK with READER OK present means the telemetry slot or a verb failed live; read the step log.
+  hermetic: false
+  graduation: not-applicable
+- step: 14
+  phase: post-deploy
+  action: An independent live run of the reader gate from this session as PlatformDev.
+  command: >-
+    AWS_PROFILE=agent_platform bin/venv-python -m scripts.ducklake_neon_smoke_test --lambda-reader >
+    "${TMPDIR:-/tmp}/reader_gate.out" 2>&1 && grep -q TELEMETRY_READS_OK "${TMPDIR:-/tmp}/reader_gate.out" && grep -q
+    'READER OK' "${TMPDIR:-/tmp}/reader_gate.out" && echo LOCAL_GATE_OK
+  expected: Exit 0, both markers in the captured output, then LOCAL_GATE_OK.
+  fix_if: An AccessDenied on the smoke data prefix means the reader role lost its read grant; report it, never widen locally.
+  hermetic: false
+  graduation: not-applicable
+- step: 15
+  phase: post-deploy
+  action: T2.36 c3 live proof -- the preflight telemetry-store gauge reports PASS through the deployed reader.
+  command: >-
+    bin/venv-python -m scripts.session.preflight > /dev/null 2>&1; bin/venv-python -c "import json;
+    h=json.load(open('logs/.preflight-report.json')).get('telemetry_health') or {};print(h.get('status'),h.get('tables'));
+    assert h.get('status')=='pass', h;print('GAUGE_LIVE_PASS')"
+  expected: >-
+    status pass with non-zero counts from the rows plan 3 part 2's smoke gate wrote (all four tables, synthetic project),
+    then GAUGE_LIVE_PASS.
+  fix_if: >-
+    unavailable means the live verb failed or refused: read the reason in the report and the reader's log line.
+    unpopulated means the smoke tables hold no rows: confirm the deploy-ducklake-lambdas run of #1477 (or a later one)
+    passed its telemetry append gate; if it did not, report it to the append thread and hold c3 (never flip it on an
+    unpopulated reading).
+  hermetic: false
+  graduation: not-applicable
+test_obligations:
+- source: src/common/ducklake_event_reads.py
+  behavior: Parameters validated before SQL, values bound, smoke-pin refusal, partition decode, read_version coverage, compare set.
+  verification_step: 1
+  test_selector: tests/common/test_ducklake_event_reads.py::test_read_version_moves_with_every_datum_sql_and_column
+  red_green_expectation: red before (module absent), green after
+- source: src/common/ducklake_event_read_verbs.py
+  behavior: Every verb derives the contract formulas over deduped rows and reports conflicts.
+  verification_step: 5
+  test_selector: tests/common/test_ducklake_event_read_verbs.py::test_session_state_golden_cases
+  red_green_expectation: red before (module absent), green after
+- source: src/common/ducklake_named_reads.py
+  behavior: Version 6; ops digests unchanged.
+  verification_step: 2
+  test_selector: tests/test_ducklake_named_reads.py::test_registry_version_is_six
+  red_green_expectation: red before (node absent), green after
+- source: scripts/checks/contracts/validate_read_engine_verbs.py
+  behavior: read-engine.yaml parity covers the event registry.
+  verification_step: 2
+  test_selector: tests/checks/contracts/test_validate_read_engine_verbs.py::test_fails_when_an_event_verb_is_undeclared
+  red_green_expectation: red before (the check reads NAMED_READS only), green after
+- source: src/common/ducklake_runtime.py
+  behavior: Independent named slots with per-slot reopen.
+  verification_step: 3
+  test_selector: tests/common/test_ducklake_runtime.py::test_dead_slot_reopens_without_evicting_the_other
+  red_green_expectation: red before (node absent), green after
+- source: src/lambdas/ducklake_reader/handler.py
+  behavior: query_ops and every ops action stay on the ops slot.
+  verification_step: 3
+  test_selector: tests/test_ducklake_reader_handler.py::test_query_ops_runs_on_the_ops_slot_only
+  red_green_expectation: red before (node absent), green after
+- source: src/common/ducklake_reader_client.py
+  behavior: VERB_FIELDS covers the event verbs at version 6.
+  verification_step: 5
+  test_selector: tests/common/test_ducklake_event_read_verbs.py::test_verb_fields_match_event_verb_output_columns
+  red_green_expectation: red before (node absent), green after
+- source: scripts/preflight/telemetry_health.py
+  behavior: Tri-state gauge, null when unavailable, one call.
+  verification_step: 7
+  test_selector: tests/session/preflight/test_telemetry_health.py::test_unavailable_carries_null_counts_never_zero
+  red_green_expectation: red before (module absent), green after
+- source: scripts/session/preflight.py
+  behavior: One telemetry health call per run, written to the report.
+  verification_step: 7
+  test_selector: tests/session/preflight/test_telemetry_health.py::test_exactly_one_reader_call
+  red_green_expectation: red before (node absent), green after
+- source: scripts/ducklake_smoke/lambda_ec_gates.py
+  behavior: The live gate fails when query_ops reaches the telemetry catalog.
+  verification_step: 8
+  test_selector: tests/ducklake_neon_smoke_test/test_lambda_ec_gates.py::test_telemetry_read_checks_fail_when_query_ops_reaches_telemetry
+  red_green_expectation: red before (node absent), green after
+- source: docs/ROADMAP-PLATFORM.yaml
+  behavior: The c3 flip, T2.36's status move and its progress_note are well formed.
+  verification_step: 11
+  command: bin/venv-python -m scripts.validate
+  waiver_reason: >-
+    Roadmap bookkeeping data, guarded by validate_platform_roadmap's closes_criteria and exit-criteria ledger checks in the
+    full tier that step 11 runs.
+- source: src/lambdas/ducklake_reader/manifest.yaml
+  behavior: The reader bundle includes the event-read modules.
+  verification_step: 9
+  command: >-
+    assert set(a)=={'ducklake_reader'}, a
+  red_green_expectation: red before (module in no DuckLake manifest), green after
+- source: src/lambdas/data-pipeline/manifest.yaml
+  behavior: data-pipeline excludes the event-read modules.
+  verification_step: 9
+  command: >-
+    assert set(a)=={'ducklake_reader'}, a
+  red_green_expectation: red before (the src/ wildcard includes the new module), green after
+constraints:
+- No caller SQL crosses the boundary; every value is a bound parameter and the SQL is registry content (Decision 84 I-3).
+- One SQL statement per verb call, so a call pays one catalog stats transfer (Decision 88 cl.1, ducklake #859).
+- >-
+  The telemetry slot is a reused warm connection, reopened only on the dead-session condition (Decision 88 cl.1(i)); it is
+  opened lazily. Two Postgres sessions per warm reader container on the shared owner login is the stated bound until
+  rec-4300 gives the reader a SELECT-only login.
+- No Terraform, IAM, spend, Class A contract or Decision edit. The telemetry contracts' derivation blocks stay realized false
+  (scripts/field_semantics_event_projection.py refuses true for read-timed fields).
+- >-
+  Nothing in ducklake_runtime's import closure imports src.telemetry.append (the scripts-never-import-telemetry-append
+  contract); event reads import only src.telemetry.identity/timestamps and src.row_rules.
+- Decompose any module that would cross 500 SLOC into a facade package; never raise a budget (Decision 128).
+- >-
+  No feedback-loop work (Benjamin 2026-10-12): per-label and unmapped counts are output columns only; no ratio signals,
+  filer, back-validation or ladder shapes.
+- sessions_window closes no T2.52 criterion and adds no depends_on to T2.52 (Decision 93).
+- No rescue agents or workaround loops (Decision 55).
+- >-
+  Not here: the canonical project remap (rec-4210), a SELECT-only reader login (rec-4300), duplicate-rate and
+  pending-generation DQ monitors (rec-4063), tenant-scoped reads and lifting the smoke-pin refusal (slice 2c, rec-4292),
+  the price table (rec-4031), mid-request FatalException recycling (rec-4298).
+- >-
+  Gotchas: resolve_table_spec raises for event tables, so event verbs never touch the NamedRead path; describe is computed
+  connectionless at MCP startup, so the registry must stay import-safe; the ops_projects dimension's current table name
+  comes from resolve_table_spec('ops_projects'); DuckLake day() alone is day-of-month (rec-4065), so day bounds are
+  timestamp ranges, never day(); a NUL in a string reaches DuckLake's pruning SQL (rec-4219), which the canonical-ULID and
+  ISO-date checks rule out for these verbs.
+context:
+- >-
+  Decision-scout: FLAGS_FOUND. CITE 199, 84, 81, 88, 207, 213, 215, 216, 79, 126, 128, 93. NOTE 199 (window verbs: each
+  session derived in its own partition, capped day range, reader-k2 (a) and the WINDOW VERBS note as the cl.1 reading),
+  SPIRIT 200 (smoke-pin refusal plus deferral to rec-4292), T2.52 CONFLICT WARN (closes nothing there, no depends_on): all
+  resolved. RELATED 95, 96, 97, 137, 143, 210, 212, 184, 214, 107, 125, 118, 168, 166, 181, 48, 140. Decisions triaged: 169
+  of 169. Roadmap items intersected: 12; CONFLICT: 1; RELATED: 11.
+- "gates: decision-scout=FLAGS_FOUND (3 flags, resolved); plan-critique=PENDING"
+- >-
+  Direction: Benjamin "yes to all, write the plan" (cmsg_012XgaFy8VaDQbxP5D8nC958GgNiPNy3uHRFLovP66hD4X): the split, sessions_window
+  now, cost as reported-only. Evidence: /mnt/project-files/telemetry-slice2b/ (step6b-presentation.md, ADVICE.md,
+  SCOUT-reader-verbs.md, fable-brief/BRIEF.md). c3 moved into this plan with notice: plan 3 part 2 merged (#1477) after the
+  presentation, so its smoke rows exist for the PASS proof and the follow-up plan carries get_blob only.
+- >-
+  Design inputs: REPORT-w1-reader-verbs.md (#1390) and REPORT-w1-friction-classifier.md section 2; W3 rulings reader-k1/k2/k3
+  (a), friction-k1/k2 (a); the contracts' derivation blocks and envelope R3-R8 are normative.
+- >-
+  Dependencies, all on main: Terraform pins the reader's TELEMETRY_META_SCHEMA/TELEMETRY_DATA_PATH to smoke
+  (terraform/personal/ducklake_lambdas.tf:339-340) and its role reads ducklake-neon-smoke/*; the smoke telemetry tables
+  exist (Decision 216, #1473); typed reader errors incl. 400 named_read_input (#1476); the append verb and its smoke gate,
+  which leaves the golden rows in all four tables (#1477; its deploy run was in progress at planning time).
+- >-
+  Overlaps: plan 4 (PLAN-telemetry-blob-route, unbuilt) edits the data-pipeline manifest and docs/ROADMAP-PLATFORM.yaml
+  T2.36 c2/c4: whichever lands second rebases. The new modules are named outside the ducklake_telemetry_* glob its
+  packaging test pins.
+- >-
+  Follow-up (carried by rec-4291): get_blob in plan 4's src/common/ducklake_telemetry_blobstore.py with a reader GetObject
+  grant on telemetry-blobs/<meta_schema>/* (IAM, Benjamin's word). Planned in this thread after this plan merges; built
+  after plan 4. Advice for it: ADVICE.md Q9.
+- >-
+  Decided with notice: second slot on the shared reader, not a telemetry reader function (Fable Q2); registry data as
+  Python, not YAML (Fable Q3); as_of required (Fable Q4); friction ships per-label and unmapped counts with the contract
+  fields (Fable Q7); health verb is metadata-only so smoke rows of any date count.
+- "ci-rca: none open (ci_rca_open read 2026-10-14)."
+pre_implementation_checklist:
+- Branch confirmed not on main
+- docs/PROJECT_CONTEXT.md read
+- 'Only the plan-cited decision sections read (199, 207, 84 I-3, 88 cl.1, 215 cl.2/cl.4, 213 cl.1-2, 216, 93)'
+- All files in scope located and readable; the reader handler read as #1476 left it (typed terminal answers)
+- The two design reports' SQL sketches read (REPORT-w1-reader-verbs.md section 2, REPORT-w1-friction-classifier.md section 2)
+execution_steps:
+- >-
+  src/common/ducklake_runtime.py: named slots and the alias keyword (scope row). Run step 3's runtime nodes red then green.
+- >-
+  src/common/ducklake_event_reads.py: EventRead, validation, smoke-pin refusal, partition binding, the dedupe fragment and
+  conflict report, event_read_version, execute. Step 1 red then green.
+- >-
+  src/common/ducklake_event_read_verbs.py: registry data and the nine verbs; tests/fixtures/telemetry_read_lake.py,
+  tests/telemetry/fixtures/derivation_cases.yaml and friction_vectors.yaml; steps 4-6 red then green on a real local
+  DuckLake. Author the golden cases from the contract formulas before writing the SQL.
+- >-
+  src/common/ducklake_named_reads.py (version 6), src/common/ducklake_reader_client.py (pin, VERB_FIELDS) and
+  scripts/checks/contracts/validate_read_engine_verbs.py (both registries). Step 2's registry and check nodes red then green.
+- >-
+  src/lambdas/ducklake_reader/handler.py: slot selection, event routing and describe composition. Steps 2 and 3's handler
+  nodes red then green.
+- Both manifests (step 9).
+- scripts/preflight/telemetry_health.py and the preflight call (step 7).
+- scripts/ducklake_smoke/lambda_ec_gates.py telemetry read checks (step 8).
+- docs/contracts/ducklake_reader.yaml and read-engine.yaml (step 11 parity).
+- Steps 10 and 11, then the full tier (bin/venv-python -m scripts.validate) to exit 0 before the commit (handoff_policy).
+- Code review (the code-review skill in a fresh context); fix every blocking finding.
+- Open the PR; merge on code review PROCEED and green CI under the standing rule (no IAM, spend or Class A content).
+- >-
+  After merge: steps 12-15. Then append a dated note to rec-4292 (slice 2c lifts the smoke-pin refusal together with
+  tenant-scoped reads) and to rec-4291 (everything but get_blob delivered at this plan), through scripts.ops_data_portal.
+- Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55).
+- 'Report: what was implemented, verification results'
+work_areas: []
+rollback: >-
+  Revert the merge commit: the governed channel redeploys the reader without the event verbs and the second slot. Reads have
+  no side effects and no stored row changes; NAMED_READS_VERSION returns to 5 with the revert.
