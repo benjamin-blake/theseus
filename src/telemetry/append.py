@@ -36,12 +36,14 @@ from src.telemetry.gate import (
     AppendError,
     GateError,
     GrainConflictError,
+    RowRuleGateError,
     check_and_normalize_value,
     check_not_null,
     collapse_or_reject_duplicates,
     reject_unknown_or_derived_columns,
 )
-from src.telemetry.identity import KEY_PLANS, derive_entity_key, derive_event_id
+from src.telemetry.identity import KEY_PLANS, IdentityError, derive_entity_key, derive_event_id
+from src.telemetry.timestamps import TimestampError
 
 if TYPE_CHECKING:
     import duckdb
@@ -52,6 +54,7 @@ _ALWAYS_DERIVED = frozenset({"event_id", "created_timestamp", "tenant_id", "proj
 _GRAIN_KEY = ("producer", "event_id", "parser_version")
 _STRUCTURAL_EXCLUDED = frozenset({"created_timestamp", "producer_version"})
 _CONFLICT_TOKEN = "TELEMETRY_GRAIN_CONFLICT"
+_CONFLICT_EVENT_ID_RE = re.compile(re.escape(_CONFLICT_TOKEN) + r": conflicting row for event_id=([0-9A-Z]{26})")
 
 
 @dataclass(frozen=True)
@@ -156,6 +159,13 @@ def _require_utc_connection(con: duckdb.DuckDBPyConnection) -> None:
         )
 
 
+def _identity_gate_error(exc: IdentityError, *, time_column: str, ref_column: str) -> GateError:
+    """A value-free GateError for an identity derivation failure: a time basis out of range, else an invalid ref."""
+    if isinstance(exc.__cause__, TimestampError):
+        return GateError(f"{time_column} is outside the supported time range", column=time_column, reason="time_range")
+    return GateError(f"{ref_column} is not a valid reference", column=ref_column, reason="invalid_ref")
+
+
 def _derive_row(
     table_spec: EventTableSpec,
     raw_row: dict[str, Any],
@@ -173,22 +183,39 @@ def _derive_row(
 
     session_started_at = typed.get("session_started_at")
     if not isinstance(session_started_at, datetime):
-        raise GateError("session_started_at is required and must be a datetime")
+        raise GateError(
+            "session_started_at is required and must be a datetime", column="session_started_at", reason="not_null"
+        )
 
     for column, plan in table_spec.key_plans.items():
         ref = raw_row.get(plan.ref_field)
         if ref is None:
             if plan.required:
-                raise GateError(f"{table_spec.table}: required ref field {plan.ref_field!r} is missing")
+                raise GateError(
+                    f"{table_spec.table}: required ref field {plan.ref_field!r} is missing",
+                    column=plan.ref_field,
+                    reason="required_ref",
+                )
             typed[column] = None
             continue
-        typed[column] = derive_entity_key(plan.domain_tag, tenant_id, project_id, ref, session_started_at)
+        try:
+            typed[column] = derive_entity_key(plan.domain_tag, tenant_id, project_id, ref, session_started_at)
+        except IdentityError as exc:
+            raise _identity_gate_error(exc, time_column="session_started_at", ref_column=plan.ref_field) from exc
 
     external_ref = typed.get("external_ref")
     event_timestamp = typed.get("event_timestamp")
     if not isinstance(external_ref, str) or not isinstance(event_timestamp, datetime):
-        raise GateError(f"{table_spec.table}: external_ref and event_timestamp are required to derive event_id")
-    typed["event_id"] = derive_event_id(table_spec.table, tenant_id, project_id, external_ref, event_timestamp)
+        missing = "external_ref" if not isinstance(external_ref, str) else "event_timestamp"
+        raise GateError(
+            f"{table_spec.table}: external_ref and event_timestamp are required to derive event_id",
+            column=missing,
+            reason="not_null",
+        )
+    try:
+        typed["event_id"] = derive_event_id(table_spec.table, tenant_id, project_id, external_ref, event_timestamp)
+    except IdentityError as exc:
+        raise _identity_gate_error(exc, time_column="event_timestamp", ref_column="external_ref") from exc
 
     typed["tenant_id"] = tenant_id
     typed["project_id"] = project_id
@@ -198,7 +225,7 @@ def _derive_row(
     try:
         check_row(table_spec.table, typed, table_spec.rules, created_timestamp)
     except RowRuleError as exc:
-        raise GateError(str(exc)) from exc
+        raise RowRuleGateError(str(exc), rule=exc.rule, table=exc.table, column=exc.column) from exc
     return typed
 
 
@@ -231,6 +258,14 @@ def _build_merge_sql(
     )
 
 
+def _locate(exc: GateError | GrainConflictError, table: str, index: int | None) -> None:
+    """Fill the table and row a kernel error lacks; a locator the raise site already set is kept."""
+    if exc.table is None:
+        exc.table = table
+    if exc.row is None:
+        exc.row = index
+
+
 @dataclass(frozen=True)
 class PreparedBatch:
     """The pure half's output: derived, rule-checked, intra-batch-collapsed rows ready for execute_prepared."""
@@ -239,6 +274,7 @@ class PreparedBatch:
     rows: list[dict[str, Any]]
     submitted: int
     collapsed: int
+    source_index: dict[str, int] = field(default_factory=dict)  # event_id -> index of its first row as sent
 
 
 def prepare_batch(
@@ -263,12 +299,28 @@ def prepare_batch(
         raise AppendError("now must be a tz-aware datetime")
     moment = moment.astimezone(timezone.utc)
     created_timestamp = moment.replace(microsecond=(moment.microsecond // 1000) * 1000)
-    derived_rows = [
-        _derive_row(table_spec, raw_row, tenant_id=tenant_id, project_id=project_id, created_timestamp=created_timestamp)
-        for raw_row in rows
-    ]
-    deduped_rows, collapsed = collapse_or_reject_duplicates(derived_rows, _GRAIN_KEY, table_spec.compare_excluded)
-    return PreparedBatch(table_spec=table_spec, rows=deduped_rows, submitted=len(rows), collapsed=collapsed)
+    derived_rows: list[dict[str, Any]] = []
+    for index, raw_row in enumerate(rows):
+        try:
+            derived_rows.append(
+                _derive_row(
+                    table_spec, raw_row, tenant_id=tenant_id, project_id=project_id, created_timestamp=created_timestamp
+                )
+            )
+        except GateError as exc:
+            _locate(exc, table_spec.table, index)
+            raise
+    try:
+        deduped_rows, collapsed = collapse_or_reject_duplicates(derived_rows, _GRAIN_KEY, table_spec.compare_excluded)
+    except (GateError, GrainConflictError) as exc:
+        _locate(exc, table_spec.table, None)
+        raise
+    source_index: dict[str, int] = {}
+    for index, derived in enumerate(derived_rows):
+        source_index.setdefault(derived["event_id"], index)
+    return PreparedBatch(
+        table_spec=table_spec, rows=deduped_rows, submitted=len(rows), collapsed=collapsed, source_index=source_index
+    )
 
 
 def execute_prepared(con: duckdb.DuckDBPyConnection, prepared: PreparedBatch, *, catalog: str) -> AppendResult:
@@ -292,7 +344,11 @@ def execute_prepared(con: duckdb.DuckDBPyConnection, prepared: PreparedBatch, *,
         result_row = con.execute(sql, params).fetchone()
     except Exception as exc:
         if _CONFLICT_TOKEN in str(exc):
-            raise GrainConflictError(str(exc)) from exc
+            found = _CONFLICT_EVENT_ID_RE.search(str(exc))
+            event_id = found.group(1) if found else None
+            raise GrainConflictError(
+                str(exc), table=table_spec.table, event_id=event_id, row=prepared.source_index.get(event_id or "")
+            ) from exc
         raise
     assert result_row is not None
     (inserted,) = result_row

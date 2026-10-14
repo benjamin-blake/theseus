@@ -25,6 +25,7 @@ _COMMON_MODULES = (
     "src/common/ducklake_telemetry_txn.py",
     "src/common/ducklake_telemetry_registration.py",
     "src/common/ducklake_telemetry_provision.py",
+    "src/common/ducklake_telemetry_append.py",
 )
 _KERNEL = ("__init__", "append", "gate", "identity", "timestamps")
 
@@ -101,3 +102,18 @@ def test_data_pipeline_excludes_every_ducklake_telemetry_module() -> None:
     assert on_disk == sorted(_COMMON_MODULES)
     for rel in on_disk:
         assert rel in excludes, rel
+
+
+def test_manifest_bundles_the_append_modules() -> None:
+    includes = _telemetry_manifest()["includes"]
+    for rel in (
+        "src/telemetry/request.py",
+        "src/common/ducklake_telemetry_append.py",
+        "src/lambdas/ducklake_telemetry_writer/telemetry_edge.py",
+        "src/lambdas/ducklake_telemetry_writer/telemetry_log.py",
+    ):
+        assert rel in includes, rel
+        assert (_ROOT / rel).is_file(), rel
+    assert sorted(compute_affected_artifacts(["src/common/ducklake_telemetry_append.py"])) == ["ducklake_telemetry_writer"]
+    assert sorted(compute_affected_artifacts(["src/telemetry/request.py"])) == ["ducklake_telemetry_writer"]
+    assert "append_telemetry" in _telemetry_manifest()["notes"]

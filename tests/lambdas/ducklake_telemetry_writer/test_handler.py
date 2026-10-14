@@ -18,13 +18,14 @@ from src.common.ducklake_telemetry_txn import TelemetryRequestError
 from src.common.ducklake_write_rules import RowRuleViolationError
 from src.common.ducklake_writes import OCCRetryExhaustedError
 from src.lambdas.ducklake_telemetry_writer import handler as h
+from src.telemetry.gate import GateError, GrainConflictError, RowRuleGateError
 
 ACCOUNT = "acct-under-test"
 USER_ARN = "arn:aws:sts::acct-under-test:assumed-role/Some/secret-session"
 SECRET_ID = "agent-platform-ducklake-telemetry-writer-dsn"
 VERB_NAMES = ["provision_telemetry", "register_project", "register_tenant", "telemetry_probe"]
 _PW = "pass" + "word=hunter2"
-ALL_ACTIONS = sorted(["attach_check", "describe", *VERB_NAMES])
+ALL_ACTIONS = sorted(["append_telemetry", "attach_check", "describe", *VERB_NAMES])
 
 
 @pytest.fixture(autouse=True)
@@ -391,7 +392,7 @@ def test_request_bytes_reach_the_verb(monkeypatch: pytest.MonkeyPatch) -> None:
     h.handler(_event(raw, b64=True))
     expected = len(raw.encode("utf-8"))
     assert [r.request_bytes for r, _c, _d in seen] == [expected, expected]
-    assert h._parse_body({}) == ({}, 0)
+    assert h._parse_body({}) == ({}, 0, 0)
 
 
 def test_reopened_connection_clears_telemetry_caches(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -461,3 +462,125 @@ def test_provision_absent_tables_maps_to_500_runtime(monkeypatch: pytest.MonkeyP
     assert "create_telemetry_tables" in body["error"]
     assert not [s for s in con.sql if s.startswith(("CREATE", "ALTER", "INSERT", "DELETE"))]
     assert con.sql[0] == "BEGIN TRANSACTION" and con.sql[-1] == "ROLLBACK"
+
+
+def _c6_lines(out: str) -> list[dict[str, Any]]:
+    lines = [json.loads(ln) for ln in out.splitlines() if ln.startswith("{")]
+    return [ln for ln in lines if ln.get("event") == "telemetry_request"]
+
+
+def test_dispatch_includes_append_telemetry(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_runtime(monkeypatch)
+    seen: list[Any] = []
+
+    def stub(request: Any, con: Any, deps: Any) -> dict[str, Any]:
+        seen.append((request, deps))
+        return {"ok": True}
+
+    monkeypatch.setattr(h.edge, "action_append_telemetry", stub)
+    factory = MagicMock(return_value="SINK")
+    monkeypatch.setattr(h, "make_metric_sink", factory)
+    body = {"action": "append_telemetry", "project_ref": "p", "batches": [{"table": "t", "rows": [{}]}]}
+    resp = h.handler(_event(body))
+    assert resp["statusCode"] == 200 and _body(resp) == {"ok": True}
+    request, deps = seen[0]
+    assert request.action == "append_telemetry" and request.body == body
+    assert deps.metric_sink == deps.stats.sink and not factory.called
+    assert "append_telemetry" in _body(h.handler(_event({"action": "describe"})))["actions"]
+    assert _body(h.handler(_event({"action": "describe"})))["verbs"]["append_telemetry"]["caps"]["max_rows_per_table"] == 2000
+
+
+@pytest.mark.parametrize(
+    ("exc", "status", "error_type", "expected"),
+    [
+        (
+            RowRuleGateError("t.c: row rule r violated", rule="r", table="t", row=2, column="c"),
+            422,
+            "row_rule",
+            {"table": "t", "row": 2, "rule": "r", "column": "c", "exclude_before": "2026-01-01"},
+        ),
+        (
+            GateError("m", table="t", row=1, column="c", reason="type"),
+            422,
+            "schema_gate",
+            {"table": "t", "row": 1, "column": "c", "reason": "type"},
+        ),
+        (
+            GrainConflictError("TELEMETRY_GRAIN_CONFLICT secret", table="t", event_id="E", row=4),
+            409,
+            "grain_conflict",
+            {"table": "t", "event_id": "E", "row": 4},
+        ),
+    ],
+)
+def test_error_map_rows_for_kernel_errors(
+    monkeypatch: pytest.MonkeyPatch, exc: Exception, status: int, error_type: str, expected: dict[str, Any]
+) -> None:
+    _patch_runtime(monkeypatch)
+    monkeypatch.setattr(h.edge, "exclude_before", lambda table, column, rule: "2026-01-01")
+
+    def boom(*_a: Any) -> dict[str, Any]:
+        raise exc
+
+    monkeypatch.setattr(h.edge, "action_append_telemetry", boom)
+    resp = h.handler(_event({"action": "append_telemetry"}))
+    body = _body(resp)
+    assert resp["statusCode"] == status and body == {"ok": False, "error_type": error_type, **expected}
+    assert "secret" not in resp["body"]
+
+
+def test_one_c6_line_per_answered_request(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    _patch_runtime(monkeypatch)
+
+    def ok(request: Any, con: Any, deps: Any) -> dict[str, Any]:
+        deps.stats.tenant_id, deps.stats.project_id = "T" * 26, "P" * 26
+        deps.stats.tables = {"telemetry_sessions": (2, 1)}
+        deps.metric_sink("OccRetryCount", 1.0)
+        deps.metric_sink("CommitLatencyMs", 12.4)
+        return {"ok": True}
+
+    monkeypatch.setattr(h.edge, "action_append_telemetry", ok)
+
+    def answered(event: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        capsys.readouterr()
+        resp = h.handler(event)
+        (line,) = _c6_lines(capsys.readouterr().out)
+        assert line["status"] == resp["statusCode"]
+        return resp, line
+
+    _resp, line = answered(_event({"action": "append_telemetry", "component": "hook-stop"}))
+    assert (line["verb"], line["component"], line["caller_role"], line["tenant_id"]) == (
+        "append_telemetry",
+        "hook-stop",
+        "Some",
+        "T" * 26,
+    )
+    assert line["tables"] == {"telemetry_sessions": {"submitted": 2, "inserted": 1}}
+    assert (line["occ_retries"], line["commit_ms"], line["Verb"], line["RequestCount"]) == (1, 12, "append_telemetry", 1)
+    _resp, unknown = answered(_event({"action": "nope\u0001"}))
+    assert (unknown["verb"], unknown["status"]) == ("unknown", 400) and "_aws" not in unknown
+    assert answered(_event("{bad"))[1]["error_type"] == "bad_request"
+    assert answered(_event({"action": "describe"}))[1]["verb"] == "describe"
+    assert answered(_event({"action": "describe"}, identity=False))[1]["caller_role"] is None
+    monkeypatch.setattr(h.rt, "get_warm_connection", MagicMock(side_effect=KeyError("x")))
+    assert answered(_event({"action": "attach_check"}))[1]["error_type"] == "unmapped"
+
+
+def test_invoke_bytes_is_the_escaped_body_length(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_runtime(monkeypatch)
+    seen = _stub_verbs(monkeypatch)
+    raw = json.dumps({"action": "telemetry_probe", "component": 'caf\u00e9 "q" \\ <>&'})
+    h.handler(_event(raw))
+    encoded = _event(raw, b64=True)
+    h.handler(encoded)
+    assert [r.invoke_bytes for r, _c, _d in seen] == [len(json.dumps(raw)), len(json.dumps(encoded["body"]))]
+    assert seen[0][0].invoke_bytes > len(raw.encode("utf-8")) - 1
+    assert h._parse_body({"body": None}) == ({}, 0, 0)
+
+
+@pytest.mark.parametrize(
+    "raw", ["{bad", "[" * 100000, '{"action": "append_telemetry", "x": ' + "9" * 5000 + "}", '{"a":"\\ud800"', "\x00"]
+)
+def test_unparseable_bodies_through_handler_are_400(raw: str) -> None:
+    resp = h.handler(_event(raw))
+    assert resp["statusCode"] == 400 and _body(resp)["error_type"] == "bad_request"

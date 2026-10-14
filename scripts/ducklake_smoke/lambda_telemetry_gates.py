@@ -3,7 +3,8 @@
 One post-deploy gate, --lambda-telemetry, proves the telemetry writer serves only signed Function URL calls on the
 ducklake_smoke catalog and that its caller cannot direct-invoke it (the live check behind Decision 213). Gates call
 core._function_url / core._sigv4_invoke through the module object (Decision 104). Plan 3 part 1's verb vectors
-(provision, register_tenant, register_project and telemetry_probe) follow the URL-only cases in the same gate.
+(provision, register_tenant, register_project and telemetry_probe) follow the URL-only cases in the same gate, then part 2's
+append_telemetry vectors (lambda_telemetry_append_gates) under part 1's registered synthetic project.
 
 Failure text carries only a status code, a handler error_type, an exception class name or a request id (each printed
 only when it matches its shape) or a botocore error code; never a response body, an error message, an ARN, an account id
@@ -160,7 +161,8 @@ def _check_tenant(url: str, profile: str | None, region: str) -> None:
     print(f"TELEMETRY_TENANT_STABLE tenant_id={tenant_id}")
 
 
-def _check_project_fan_out(url: str, profile: str | None, region: str) -> None:
+def _check_project_fan_out(url: str, profile: str | None, region: str) -> str:
+    """Register one synthetic project concurrently and return its ref (never printed: a uuid4 hex can hold a 12-digit run)."""
     project_ref = "synthetic:deploy-smoke-" + uuid.uuid4().hex
     payload = {"action": "register_project", "project_ref": project_ref}
     with ThreadPoolExecutor(max_workers=_FAN_OUT) as pool:
@@ -178,6 +180,7 @@ def _check_project_fan_out(url: str, profile: str | None, region: str) -> None:
     if any(b.get("purpose") != "synthetic" or b.get("registration") != "registered" for b in bodies):
         raise _fail("register_project purpose or registration is not synthetic/registered")
     print(f"TELEMETRY_PROJECT_CONVERGED project_id={project_id}")
+    return project_ref
 
 
 def _check_probe(url: str, profile: str | None, region: str) -> None:
@@ -233,7 +236,10 @@ def lambda_telemetry(*, profile: str | None = None, region: str = "eu-west-2") -
     _check_provision(url, profile, region)
     _report_measurements(url, profile, region)
     _check_tenant(url, profile, region)
-    _check_project_fan_out(url, profile, region)
+    project_ref = _check_project_fan_out(url, profile, region)
     _check_probe(url, profile, region)
     _check_self_only(url, profile, region)
+    from scripts.ducklake_smoke import lambda_telemetry_append_gates  # noqa: PLC0415 -- it imports this module's helpers
+
+    lambda_telemetry_append_gates.lambda_telemetry_append(url, project_ref, profile=profile, region=region)
     print("LAMBDA_TELEMETRY OK unsigned=403 describe=200 attach_check=ok unknown_action=400 direct_invoke=denied")

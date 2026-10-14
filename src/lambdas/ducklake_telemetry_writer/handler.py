@@ -28,6 +28,9 @@ from src.common.ducklake_telemetry_txn import TelemetryRequestError
 from src.common.ducklake_write_rules import RowRuleViolationError
 from src.common.ducklake_writes import OCCRetryExhaustedError
 from src.lambdas.ducklake_telemetry_writer import telemetry_actions as actions
+from src.lambdas.ducklake_telemetry_writer import telemetry_edge as edge
+from src.lambdas.ducklake_telemetry_writer import telemetry_log
+from src.telemetry.gate import GateError, GrainConflictError, RowRuleGateError
 
 METRIC_NAMESPACE = "DuckLakeTelemetryWriter"
 
@@ -74,12 +77,18 @@ def _principal(event: dict[str, Any]) -> CallerPrincipal:
     return CallerPrincipal(kind="aws_account", ref=str(iam["accountId"]), role_name=segments[1] if len(segments) > 1 else "")
 
 
-def _parse_body(event: dict[str, Any]) -> tuple[dict[str, Any], int]:
-    """The JSON object body and its raw (decoded) byte length."""
+def _parse_body(event: dict[str, Any]) -> tuple[dict[str, Any], int, int]:
+    """The JSON object body, its raw (decoded) byte length and its invoke measure.
+
+    The invoke measure is len(json.dumps(body field as delivered)), taken before any base64 decoding: the body re-escaped
+    as a JSON string, ASCII-escaped, which is what Lambda's 6 MiB event limit applies to (an upper bound for a body that
+    carries non-ASCII).
+    """
     body: Any = event.get("body")
     if body is None or body == "":
-        return {}, 0
-    nbytes = len(body.encode("utf-8")) if isinstance(body, str) else 0
+        return {}, 0, 0
+    invoke_bytes = len(json.dumps(body)) if isinstance(body, str) else 0
+    nbytes = len(body.encode("utf-8", errors="replace")) if isinstance(body, str) else 0
     try:
         if isinstance(body, str):
             if event.get("isBase64Encoded"):
@@ -91,7 +100,7 @@ def _parse_body(event: dict[str, Any]) -> tuple[dict[str, Any], int]:
         raise _ClientError(400, "bad_request", "request body is not valid JSON") from exc
     if not isinstance(body, dict):
         raise _ClientError(400, "bad_request", "request body must be a JSON object")
-    return body, nbytes
+    return body, nbytes, invoke_bytes
 
 
 def action_describe(_payload: dict[str, Any]) -> dict[str, Any]:
@@ -101,6 +110,7 @@ def action_describe(_payload: dict[str, Any]) -> dict[str, Any]:
         "ok": True,
         "function": "ducklake_telemetry_writer",
         "actions": _all_actions(),
+        "verbs": {"append_telemetry": edge.describe_entry()},
         "catalog": {"meta_schema": meta_schema, "data_path_is_smoke": _is_smoke(data_path)},
     }
 
@@ -141,20 +151,29 @@ def action_attach_check(_payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def run_verb(request: actions.TelemetryRequest) -> dict[str, Any]:
-    """Validate (before any connection), open the pinned connection, run the verb with the function's metric sink."""
-    actions.validate_request(request)
+def run_verb(request: actions.TelemetryRequest, stats: telemetry_log.RequestStats | None = None) -> dict[str, Any]:
+    """Validate (before any connection), open the pinned connection, run the verb.
+
+    append_telemetry validates in its own edge (the request grammar) and records OccRetryCount and CommitLatencyMs for the
+    C6 line's EMF block instead of calling PutMetricData; the other verbs keep the function's metric sink.
+    """
+    append = request.action == "append_telemetry"
+    if not append:
+        actions.validate_request(request)
     con, meta = _warm_connection()
+    stats = stats if stats is not None else telemetry_log.RequestStats()
+    stats.connect_reused = bool(meta["reused"])
     deps = actions.Deps(
         semantics=load_field_semantics(),
-        metric_sink=make_metric_sink(namespace=METRIC_NAMESPACE),
+        metric_sink=stats.sink if append else make_metric_sink(namespace=METRIC_NAMESPACE),
         meta_schema=_env("TELEMETRY_META_SCHEMA"),
         data_path_is_smoke=_is_smoke(_env("TELEMETRY_DATA_PATH")),
         catalog_login=_CATALOG_LOGIN.get("login", ""),
         catalog_backend=_CATALOG_LOGIN.get("backend", "other"),
         connect_reused=bool(meta["reused"]),
+        stats=stats,
     )
-    return actions.VERBS[request.action](request, con, deps)
+    return _verbs()[request.action](request, con, deps)
 
 
 _ACTIONS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
@@ -163,9 +182,32 @@ _ACTIONS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
 }
 
 
-def _all_actions() -> list[str]:
-    return sorted({*_ACTIONS, *actions.VERBS})
+def _verbs() -> dict[str, Callable[[actions.TelemetryRequest, Any, actions.Deps], dict[str, Any]]]:
+    return {**actions.VERBS, "append_telemetry": edge.action_append_telemetry}
 
+
+def _all_actions() -> list[str]:
+    return sorted({*_ACTIONS, *_verbs()})
+
+
+def _kernel_fields(exc: Exception) -> dict[str, Any]:
+    """Response fields of a kernel refusal, built from its attributes only, never str(exc) (a value-free body)."""
+    if isinstance(exc, RowRuleGateError):
+        before = edge.exclude_before(exc.table or "", exc.column or "", exc.rule)
+        fields = {"table": exc.table, "row": exc.row, "rule": exc.rule, "column": exc.column, "exclude_before": before}
+    elif isinstance(exc, GateError):
+        fields = {"table": exc.table, "row": exc.row, "column": exc.column, "reason": exc.reason}
+    else:
+        assert isinstance(exc, GrainConflictError)
+        fields = {"table": exc.table, "event_id": exc.event_id, "row": exc.row}
+    return {k: v for k, v in fields.items() if v is not None}
+
+
+_KERNEL_ERRORS: tuple[tuple[type[Exception], int, str], ...] = (
+    (RowRuleGateError, 422, "row_rule"),
+    (GateError, 422, "schema_gate"),
+    (GrainConflictError, 409, "grain_conflict"),
+)
 
 _ERROR_MAP: tuple[tuple[type[Exception], int, str], ...] = (
     (RowRuleViolationError, 422, "row_rule"),
@@ -181,50 +223,78 @@ def _response(status: int, payload: dict[str, Any]) -> dict[str, Any]:
 
 def _registered_action(action: Any) -> str:
     """A registered action name or the fixed token "unknown", never the caller's string (the log_invocation rule)."""
-    return action if isinstance(action, str) and (action in _ACTIONS or action in actions.VERBS) else "unknown"
+    return action if isinstance(action, str) and (action in _ACTIONS or action in _verbs()) else "unknown"
+
+
+class _Answer:
+    """What one request learned on its way to a response; read by the C6 line."""
+
+    def __init__(self) -> None:
+        self.action = "unknown"
+        self.payload: Any = None
+        self.principal: actions.reg.CallerPrincipal | None = None
+        self.request: actions.TelemetryRequest | None = None
+        self.stats = telemetry_log.RequestStats()
 
 
 def handler(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
-    """Authenticate the caller, parse the Function URL body, dispatch `action`.
+    """Authenticate the caller, parse the Function URL body, dispatch `action`; emit one C6 line per answered request.
 
     No exception escapes as the runtime's untyped 502: an unmapped one answers 500 `unmapped` and a dead catalog
     connection 503 `catalog_unavailable`, each carrying the exception class and request id, never the message.
     """
+    answer = _Answer()
+    status, body = _answer(event, context, answer)
+    request = answer.request
+    telemetry_log.emit_request_line(
+        answer.action,
+        status,
+        body.get("error_type"),
+        payload=answer.payload,
+        principal=answer.principal,
+        request_bytes=request.request_bytes if request is not None else None,
+        invoke_bytes=request.invoke_bytes if request is not None else None,
+        stats=answer.stats,
+    )
+    return _response(status, body)
+
+
+def _answer(event: dict[str, Any], context: Any, answer: _Answer) -> tuple[int, dict[str, Any]]:
     t0 = time.perf_counter()
-    logged_action = "unknown"
     try:
         _require_caller(event)
-        payload, nbytes = _parse_body(event)
+        answer.principal = _principal(event)
+        payload, nbytes, invoke_bytes = _parse_body(event)
+        answer.payload = payload
         action = payload.get("action")
-        logged_action = _registered_action(action)
-        if isinstance(action, str) and action in actions.VERBS:
-            request = actions.TelemetryRequest(action, payload, _principal(event), nbytes)
-            return _response(200, run_verb(request))
+        answer.action = _registered_action(action)
+        if isinstance(action, str) and action in _verbs():
+            answer.request = actions.TelemetryRequest(action, payload, answer.principal, nbytes, invoke_bytes)
+            return 200, run_verb(answer.request, answer.stats)
         fn = _ACTIONS.get(action) if isinstance(action, str) else None
         if fn is None:
             raise _ClientError(400, "unknown_action", "unknown or missing action", actions=_all_actions())
-        return _response(200, fn(payload))
+        return 200, fn(payload)
     except _ClientError as exc:
-        return _response(exc.status, {"ok": False, "error_type": exc.error_type, "error": str(exc), **exc.extra})
+        return exc.status, {"ok": False, "error_type": exc.error_type, "error": str(exc), **exc.extra}
     except TelemetryRequestError as exc:
-        return _response(exc.status, {"ok": False, "error_type": exc.error_type, "error": str(exc), **exc.fields})
+        return exc.status, {"ok": False, "error_type": exc.error_type, "error": str(exc), **exc.fields}
     except Exception as exc:
+        for cls, status, error_type in _KERNEL_ERRORS:
+            if isinstance(exc, cls):
+                return status, {"ok": False, "error_type": error_type, **_kernel_fields(exc)}
         for cls, status, error_type in _ERROR_MAP:
             if isinstance(exc, cls):
-                return _response(
-                    status,
-                    {
-                        "ok": False,
-                        "error_type": error_type,
-                        "error": str(exc),
-                        "elapsed_ms": round((time.perf_counter() - t0) * 1000, 2),
-                    },
-                )
-        status, body = handler_errors.terminal(
+                return status, {
+                    "ok": False,
+                    "error_type": error_type,
+                    "error": str(exc),
+                    "elapsed_ms": round((time.perf_counter() - t0) * 1000, 2),
+                }
+        return handler_errors.terminal(
             exc,
             function="telemetry-writer",
-            action=logged_action,
+            action=answer.action,
             request_id=handler_errors.request_id(context),
             elapsed_ms=(time.perf_counter() - t0) * 1000,
         )
-        return _response(status, body)
