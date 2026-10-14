@@ -27,6 +27,22 @@ def _reset_accumulators():
     validation_result._SCAFFOLD_FAILURES.clear()
 
 
+@pytest.fixture(autouse=True)
+def _refuse_unstubbed_subprocess():
+    def _refuse(cmd, *args, **kwargs):
+        raise AssertionError(f"unstubbed scripts.checks._common.run({cmd!r}): stub it with _pre_mock_run")
+
+    with patch("scripts.checks._common.run", side_effect=_refuse):
+        yield
+
+
+def test_unstubbed_subprocess_is_refused() -> None:
+    from scripts.checks import _common
+
+    with pytest.raises(AssertionError, match="show-current"):
+        _common.run(["git", "branch", "--show-current"])
+
+
 def _failing_check(failed: list[str]) -> None:
     failed.append("synthetic failure label")
 
@@ -99,7 +115,11 @@ def test_clean_run_and_terraform_only_print_no_marker(monkeypatch: pytest.Monkey
     def fail_terraform(failed: list[str]) -> None:
         failed.append("terraform label")
 
-    with patch("validate.run_terraform_creds_free", side_effect=fail_terraform), pytest.raises(SystemExit) as exc:
+    with (
+        patch("validate.run_terraform_creds_free", side_effect=fail_terraform),
+        patch("scripts.checks._common.run", side_effect=_pre_mock_run),
+        pytest.raises(SystemExit) as exc,
+    ):
         _validate.main()
     out = capsys.readouterr().out
     assert exc.value.code == 1
