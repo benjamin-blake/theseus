@@ -281,3 +281,10 @@ def test_identifier_guard_refuses_unsafe_names() -> None:
         with pytest.raises(DuckLakeRuntimeError, match="unsafe"):
             prov.session_can_create(con, meta_schema=bad)
         assert not con.sql
+
+
+def test_inspect_partitions_reports_only_present_target_tables() -> None:
+    transforms = _declared_transforms()
+    transforms["telemetry_agents"] = ()
+    con = FakeCon(("telemetry_agents", "telemetry_sessions"), transforms=transforms, extra_tables=("unrelated_smoke_table",))
+    assert prov.inspect_partitions(con, set(con.existing), SEM) == {"telemetry_agents": False, "telemetry_sessions": True}
