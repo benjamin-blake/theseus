@@ -40,6 +40,23 @@ scope:
     validation_result.print_failure_summary(failed) call each, and the two scaffold dispatch sites
     (run_python_checks and the --pre loop) call validation_result.run_scaffold(step.name, failed, scaffold_fns[step.name]).
     Net SLOC goes down (474 today, Decision 128).
+- file: scripts/checks/verification/_manifest.py
+  action: Modify
+  purpose: >-
+    The validate_hermeticity_flags, validate_verification_registry and validate_differential_gate_baseline Entries:
+    each reaches scripts/checks/validation_result.py through scripts/checks/_scaffolding.py, and
+    validation_result.py now imports src/turn_capture/markers.py, so its pre_globs gain
+    "src/turn_capture/markers.py" (validate_pre_glob_closure: adding globs is that check's prescribed pay-down,
+    never a _PRUNED_EDGES row, which needs a Decision marker and is for edges with no behavioural bearing). Widening
+    only: no other glob, tier membership or segment changes.
+- file: scripts/checks/deps/_manifest.py
+  action: Modify
+  purpose: >-
+    The validate_presubmit_tool_pin_escalation Entry reaches scripts/checks/validation_result.py through
+    scripts/checks/_scaffolding.py, and validation_result.py now imports src/turn_capture/markers.py, so its
+    pre_globs gain "src/turn_capture/markers.py" (validate_pre_glob_closure: adding globs is that check's prescribed
+    pay-down, never a _PRUNED_EDGES row, which needs a Decision marker and is for edges with no behavioural
+    bearing). Widening only: no other glob, tier membership or segment changes.
 - file: tests/turn_capture/test_markers.py
   action: Create
   purpose: >-
@@ -105,6 +122,9 @@ acceptance_criteria:
 - >-
   validation-result.json and the _ATTRIBUTIONS shape are unchanged, scripts/validate.py's SLOC does not increase, and
   src/turn_capture stays stdlib-only (tests/turn_capture/test_package_boundary.py green).
+- >-
+  validate_pre_glob_closure is clean on the built tree: every gated Entry whose import closure reaches
+  scripts/checks/validation_result.py declares src/turn_capture/markers.py in its pre_globs.
 verification_plan:
 - step: 1
   phase: pre-deploy
@@ -219,11 +239,31 @@ verification_plan:
 - step: 7
   phase: pre-deploy
   action: >-
+    Prove every gated check that now reaches markers.py through validation_result.py declares it in its pre_globs.
+  command: >-
+    bin/venv-python -m pytest
+    tests/checks/deps/validate_pre_glob_closure/test_blocking_contract.py::TestLiveTreeSmoke::test_runs_clean_on_the_real_tree
+    -q
+  expected: >-
+    Exit 0, 1 passed. Red before: on the built tree without the four glob additions it fails, naming
+    validate_hermeticity_flags, validate_verification_registry, validate_differential_gate_baseline and
+    validate_presubmit_tool_pin_escalation with src/turn_capture/markers.py uncovered.
+  fix_if: >-
+    Another Entry is named: its closure also reaches markers.py; STOP and report it (an out-of-scope manifest edit needs
+    a further amendment). A different path is uncovered: markers.py imports something beyond the standard library.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: >-
+    A pre-existing live-tree node, green on main, already run by the unit tiers; its standing guard is
+    validate_pre_glob_closure itself, BLOCKING in --pre and the full tier.
+- step: 8
+  phase: pre-deploy
+  action: >-
     Lint the changed Python files and run the full tier, as the handoff policy requires before commit.
   command: >-
     bin/venv-python -m ruff check src/turn_capture/markers.py scripts/checks/validation_result.py scripts/validate.py
-    tests/turn_capture/test_markers.py tests/checks/test_validation_result.py tests/validate/test_gate_failure_summary.py
-    tests/test_gate_failure_markers.py && bin/venv-python -m scripts.validate
+    scripts/checks/verification/_manifest.py scripts/checks/deps/_manifest.py tests/turn_capture/test_markers.py
+    tests/checks/test_validation_result.py tests/validate/test_gate_failure_summary.py tests/test_gate_failure_markers.py && bin/venv-python -m scripts.validate
   expected: >-
     ruff exit 0, then the full tier ends with "All checks passed." and exit 0.
   fix_if: >-
@@ -254,28 +294,41 @@ test_obligations:
   red_green_expectation: red before (no markers printed), green after.
 - source: config/agent/verification_registry/entries/gate-failure-marker-per-failed-check.yaml
   behavior: Registry row for the graduated step-1 check.
-  verification_step: 7
+  verification_step: 8
   command: bin/venv-python -m scripts.validate
   waiver_reason: >-
     Verification-registry metadata for step 1's graduation. Its standing checks are validate_verification_registry's
     differential admission gate (the node is absent on origin/main) and validate_graduation_completeness, both in the
-    full tier step 7 runs.
+    full tier step 8 runs.
 - source: config/agent/verification_registry/entries/gate-marker-names-fit-process-event-pattern.yaml
   behavior: Registry row for the graduated step-2 check.
-  verification_step: 7
+  verification_step: 8
   command: bin/venv-python -m scripts.validate
   waiver_reason: >-
     Verification-registry metadata for step 2's graduation. Its standing checks are validate_verification_registry's
     differential admission gate (the node is absent on origin/main) and validate_graduation_completeness, both in the
-    full tier step 7 runs.
+    full tier step 8 runs.
 - source: config/agent/verification_registry/entries/gate-failure-summary-wired-in-validate-main.yaml
   behavior: Registry row for the graduated step-4 check.
-  verification_step: 7
+  verification_step: 8
   command: bin/venv-python -m scripts.validate
   waiver_reason: >-
     Verification-registry metadata for step 4's graduation. Its standing checks are validate_verification_registry's
     differential admission gate (the nodes are absent on origin/main) and validate_graduation_completeness, both in the
-    full tier step 7 runs.
+    full tier step 8 runs.
+- source: scripts/checks/verification/_manifest.py
+  behavior: >-
+    The three verification Entries whose closure reaches validation_result.py declare src/turn_capture/markers.py.
+  verification_step: 7
+  test_selector: >-
+    tests/checks/deps/validate_pre_glob_closure/test_blocking_contract.py::TestLiveTreeSmoke::test_runs_clean_on_the_real_tree
+  red_green_expectation: red before (on the built tree the closure auditor names the three Entries), green after.
+- source: scripts/checks/deps/_manifest.py
+  behavior: The validate_presubmit_tool_pin_escalation Entry declares src/turn_capture/markers.py.
+  verification_step: 7
+  test_selector: >-
+    tests/checks/deps/validate_pre_glob_closure/test_blocking_contract.py::TestLiveTreeSmoke::test_runs_clean_on_the_real_tree
+  red_green_expectation: red before (on the built tree the closure auditor names the Entry), green after.
 constraints:
 - Only the files listed in scope may be modified.
 - src/turn_capture/markers.py imports only the standard library (tests/turn_capture/test_package_boundary.py, .importlinter).
@@ -297,7 +350,7 @@ context:
   Decision-scout verdict: FLAGS_FOUND (two NOTEs, both resolved in this plan: brand-neutral prefix per Decision 198;
   pattern derived from the contract per Decision 210 cl.3). CITE: 170, 169, 128, 131, 210, 201, 79. Decisions triaged:
   168 of 168. Roadmap items intersected: 21; CONFLICT: 0; RELATED: 21.
-- "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=PROCEED after 4 round(s); round 4 autonomous (r2 escalated; operator chose another round)"
+- "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=PROCEED after 4 round(s); round 4 autonomous (r2 escalated; operator chose another round); 2026-10-14 amendment (pre_glob closure): r1 PROCEED (A1-A4 folded in)"
 - >-
   Slice 3b split and spike: Benjamin, 2026-10-12 ("yes to the split of the plans, and yes to the spike"). Design inputs:
   /mnt/project-files/telemetry-slice3/step6b-3b-presentation.md, 3b-fable-consult/ADVICE.md (F8).
@@ -326,11 +379,12 @@ context:
   a validate run's output (only the gate marker is at the tail), and whole-line markers are not tied to the process
   that printed them, so P-B scopes parsing to Bash calls that run the gates or declares the noise.
 - >-
-  Known gaps (declared, no rec owed): a budget_assertion exit happens inside the scaffold before the summary
-  (validate.py:505, :535, :548), so that run prints no markers; budget breaches are already recorded durably by their own
-  rec filing and CI step-summary notice (Decision 153). --terraform-only prints none. No ports.yaml row is owed: src/turn_capture is producer code, not executor, adapter or port code
-  (Decision 212; P-B's scout reached the same reading).
+  Known gaps (declared, no rec owed): a budget_assertion exit (validate.py:505, :535, :548) prints no markers (its own
+  rec and CI notice record it, Decision 153); --terraform-only prints none; no ports.yaml row is owed (Decision 212).
 - "Deploy-inert: src/turn_capture is excluded from data-pipeline.zip; scripts/ is not Lambda-packaged (Decision 79)."
+- >-
+  Amendment 2026-10-14 (Benjamin routes build escalations to planning, cmsg_012XgaFy8VaDQbxP5D8nC958HxCfxQ5mrSDSEch9TMVdWR):
+  two manifests join scope (VP 7; full tier now VP 8). A branch started before it rebases onto it first.
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
@@ -370,12 +424,12 @@ execution_steps:
   (registry.py _PRE_TIER_LEADING_SCAFFOLDS, _PRE_TIER_TRAILING_SCAFFOLDS, _FULL_TIER_SKELETON) are disjoint from
   all_checks(), since both print as check=<name>. Every test that prints a marker captures its output (capsys or
   capture_output) and uses synthetic check names no friction rule keys on (never validate_scope_boundary).
-- Execute Verification Plan steps 1-6 -- loop until pass; on an unrecoverable failure stop and RCA (Decision 55).
+- Execute Verification Plan steps 1-7 -- loop until pass; on an unrecoverable failure stop and RCA (Decision 55).
 - >-
   Closure sequence (implement skill, git-ops handoff_sequence), each outcome reported on its own: run the code-review
   gate (fresh sibling subagent); run scripts.session.github_readiness and report each state separately (unknown is
   unproven, never PASS); set implementation_declared true in this plan; rebase onto origin/main; write the
-  retrospective evidence and run scripts.session.postflight --evidence; then VP step 7, the full tier on the committed,
+  retrospective evidence and run scripts.session.postflight --evidence; then VP step 8, the full tier on the committed,
   rebased, clean tree to completion, then scripts.checks.validation_result --verify-head exit 0. Any review-fix commit
   reruns both; a timeout is BLOCKED, never skipped. Push, open the PR, wait for CI by subscription, squash-merge; report
   push, PR, CI and merge outcomes separately.
