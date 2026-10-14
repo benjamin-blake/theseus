@@ -43,7 +43,8 @@ scope:
     The terminal `raise` at handler.py:211 becomes the helper's terminal answer: a dead-connection error (at _warm_connection
     or mid-verb) answers 503 catalog_unavailable (reopened false; no reopen-once is added), anything else 500 unmapped, with
     request_id from context.aws_request_id (None when context is None) and the dispatched action or "unknown". Every mapped
-    row is unchanged and keeps precedence. The docstring's "unmapped errors propagate" is replaced.
+    row is unchanged and keeps precedence. The docstring's "unmapped errors propagate" is replaced. _parse_body's 400
+    bad_request row also catches RecursionError (a deeply nested body), as the reader and ops writer rows do.
 - file: src/lambdas/ducklake_reader/handler.py
   action: Modify
   purpose: >-
@@ -160,7 +161,8 @@ scope:
     213/214/215 precedent, answered explicitly: those entries minted numbers because they replaced an invariant or added a
     carve-out; this changes no outcome at any consumer for either failure class (an outage stays transient, a defect still
     gates and now gates more often), so no routing row other than an annotation is needed. (e) The consumer list is for
-    impact only: it licenses no call site retroactively, and clause 3's named-call-site rule is unchanged.
+    impact only: it licenses no call site retroactively, and clause 3's named-call-site rule is unchanged. The annotation
+    stays within the accretion norm (about 150 words); detail beyond (a)-(e) belongs in PR B's body.
 - file: docs/decisions-index.json
   action: Modify
   purpose: >-
@@ -228,6 +230,11 @@ scope:
   purpose: >-
     A failing vector's text carries error_class and request_id from the body, a body-less 502 carries the x-amzn-RequestId
     header, and the existing never-leaks tests still hold (no message, ARN or account id).
+- file: tests/fixtures/ducklake_smoke_fakes.py
+  action: Modify
+  purpose: >-
+    _Resp gains an optional headers mapping (default empty dict) so the body-less 502 node can carry x-amzn-RequestId;
+    every existing caller is unchanged.
 - file: tests/checks/iam_tf/test_ducklake_writer_error_alarms.py
   action: Create
   purpose: >-
@@ -524,7 +531,9 @@ verification_plan:
     --lambda-telemetry step's own section (its group header to the next step's) has no 12-digit run.
   fix_if: >-
     A red smoke at provision_telemetry before the grant fix deployed is the ordering precondition, not this plan's fault:
-    hold. Any other red job is this plan's to root-cause and fix forward, never a re-run to green.
+    hold. A red --lambda-reader step whose reader log shows a Runtime.ExitError REPORT line is rec-4296's process exit:
+    record the request id on rec-4296 and report it, never re-run to green. Any other red job is this plan's to root-cause
+    and fix forward, never a re-run to green.
   hermetic: false
   graduation: not-applicable
 - step: 16
@@ -664,7 +673,7 @@ constraints:
 - No rescue agents or workaround loops (Decision 55); a red post-deploy step is root-caused, never re-run to green.
 context:
 - "Decision-scout verdict FLAGS_FOUND (Decisions triaged: 168 of 168; Roadmap items intersected: 13; CONFLICT: 0; RELATED: 13). CITE: Decision 55, Decision 81, Decision 84, Decision 213, Decision 215, Decision 79, Decision 125, Decision 126, Decision 77, Decision 177, Decision 181, Decision 186, Decision 201. WARN Decision 155 resolved by the three-condition amendment (scope row docs/DECISIONS.md); NOTE Decision 88 resolved below; SPIRIT Decision 84 resolved (BinderException stays 500)."
-- "gates: decision-scout=FLAGS_FOUND (WARN 155, NOTE 88, SPIRIT 84 resolved); plan-critique=REVISE r1 (R1 rec-4294 moved to PLAN-telemetry-owner-provisioning, its acceptance cannot hold in the networkless evaluator, finding relayed; R2 paginated log scan; R3 full tier before PR A; N1-N9 folded in)"
+- "gates: decision-scout=FLAGS_FOUND (WARN 155, NOTE 88, SPIRIT 84 resolved); plan-critique=REVISE r1 (R1 rec-4294 moved to PLAN-telemetry-owner-provisioning, its acceptance cannot hold in the networkless evaluator, finding relayed; R2 paginated log scan; R3 full tier before PR A; N1-N9 folded in); REVISE r2 (B1 PR sequencing for registry rows and the implementation_declared flip; N1 RecursionError; N2 rollback order; N3 fixture headers; N4 merge-ask wording and annotation length; N6 rec-4296 routing)"
 - "Decision 88 cl.1(i) reading: 'a dead session is the one expected reopen condition; any other error still raises' holds at the connection layer (the reopen predicate and its raise are unchanged); only the handler's terminal answer to a raise changes. The summed alarm pages on 503 catalog_unavailable and the writers' existing 503 occ_exhausted and 500 runtime/version_mismatch too; Benjamin signs that scope off with the spend."
 - "Decision 213: the telemetry writer's 403 missing_caller_identity stays ahead of body parsing and of every new answer; Decision 215 cl.6: the reader's 413 response_too_large stays a returned response ahead of the terminal except; every mapped row keeps precedence (Decisions 81, 207, 210)."
 - "rec-4294 trigger (scoped login lacks CREATE on the smoke metadata schema; DuckLake's failed S3 cleanup masks it as TransactionException ... Forbidden) is fixed by PLAN-telemetry-owner-provisioning (the Writer grant fix, which bundles and closes rec-4294); this plan owns the masking half."
@@ -692,15 +701,16 @@ pre_implementation_checklist:
 - All files in scope located and readable
 - Acceptance criteria understood and verifiable
 execution_steps:
+- 'Sequencing (graduation and replay): this plan merges in its own plan PR first. PR A adds NO verification-registry row and leaves implementation_declared unset (an override of the implement commit flow''s flip step for PR A only), so the implement-leg replay does not run steps 1-11 against a tree without the helper. PR B carries all eight graduate registry rows (steps 1, 2, 3, 5, 6, 7, 8 and 9, including writer-error-alarms-sum-5xx for step 8 whose test lands in PR A) and the implementation_declared flip. Never downgrade a graduate disposition to waive to get green.'
 - 'PR A: edit the two alarms and create tests/checks/iam_tf/test_ducklake_writer_error_alarms.py; run steps 8, 12 and 13 (the full tier; a timeout is blocked, never a CI-only handoff, Decision 203); open PR A; on green CI (the speculative plan shows two in-place alarm updates and no IAM) merge; run step 14.'
 - 'Rebase onto main (PR A and, before PR B merges, PLAN-telemetry-owner-provisioning''s build; merge its 500 runtime contract string with this plan''s unmapped text).'
 - 'Create src/common/ducklake_handler_errors.py and its tests; wire the three handlers; update the four manifests, the classifier, the gate helpers, the three contracts, the Decision 155 amendment (regenerate docs/decisions-index.json only if the freshness check says so) and the two sibling plans; add every test node named in steps 1-11.'
 - 'Repair rec-4282''s acceptance to hermetic node ids of step 3 (get_rec_write_guidance first; one update_rec; never weaker).'
 - Execute Verification Plan steps 1-13 -- loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)
-- 'Code review (code-review skill); open PR B with "Resolves: rec-4282" in the squash body (never rec-4294); merge on green CI, review PROCEED and Benjamin''s explicit word (Decision 155 text; state that the consult recommended a numbered Decision and offer it).'
+- 'Code review (code-review skill); open PR B with "Resolves: rec-4282" in the squash body (never rec-4294); merge on green CI, review PROCEED and Benjamin''s explicit word (Decision 155 text: state that the consult recommended a numbered Decision, that the cited Decision 215 annotation recorded a shipped clause rather than a changed rule so it is a weaker precedent, and offer the numbered form).'
 - Execute post-deploy steps 15-18.
 - 'Report: what was implemented, verification results, the rec-4282 closure.'
 rollback: >-
   PR B: revert the squash; the handlers return to propagating and the reverted classifier gates catalog_unavailable again
-  (no 503 is emitted after the revert). PR A: revert to restore the single-metric alarms; nothing depends on the second
-  metric.
+  (no 503 is emitted after the revert). PR A: revert to restore the single-metric alarms only after PR B's revert is
+  deployed, never while PR B is live, because PR B's typed 5xx answers page only through Url5xxCount.
