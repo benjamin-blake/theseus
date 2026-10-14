@@ -78,11 +78,13 @@ scope:
     session_friction_rollup (session_id), agent_run_state_and_duration (session_id, as_of), agent_run_token_rollup
     (session_id), model_call_cost_estimate (session_id) and sessions_window (day_from, day_to, as_of; real-purpose projects
     only, paginable, ordered by session_started_at then session_id) are agent-facing; sessions_window_all_purposes (same
-    params, every purpose) and telemetry_health_count (no params; per-table committed record counts from the catalog's
-    DuckLake metadata, plus the pinned meta schema as a bound value) are not. Each agent-facing description says it reads
+    params, every purpose) and telemetry_health_count (no params; per-table committed record counts read through the
+    two-part __ducklake_metadata_<alias>.ducklake_table / ducklake_table_stats form the live partition-layout reads use,
+    src/common/ducklake_partition_layout.py:106-112, plus the pinned meta schema as a bound value) are not. Each agent-facing description says it reads
     the smoke catalog only until slice 2c (rec-4292), so no agent reads synthetic smoke rows as real telemetry. Every verb
     returns derived rows only, never a raw row, transcript content or free text (Decision 209 cl.2a). Pure data, no I/O,
-    nothing that can raise at import.
+    nothing that can raise at import. session_state_and_duration and both window verbs return the same session_id, state,
+    outcome and duration_seconds columns from the one shared state rule.
 - file: src/common/ducklake_named_reads.py
   action: Modify
   purpose: >-
@@ -116,16 +118,17 @@ scope:
 - file: scripts/preflight/telemetry_health.py
   action: Create
   purpose: >-
-    check_telemetry_health(reader): one telemetry_health_count call, returning the telemetry-store gauge with the catalog
-    it read (the pinned meta schema, ducklake_smoke until slice 2c): status pass when any of the four tables holds a
+    check_telemetry_health(reader): one telemetry_health_count call, returning the telemetry-store gauge as
+    {status, catalog, tables} with catalog the pinned meta schema it read (ducklake_smoke until slice 2c): status pass when any of the four tables holds a
     committed row (a non-replayable producer writes no sessions row, envelope R8), unpopulated when all four are empty, or
     unavailable on a reader error or refusal, with per-table counts, and null counts, never 0 or [], when unavailable
     (Decision 215 cl.2). Never raises.
 - file: scripts/session/preflight.py
   action: Modify
   purpose: >-
-    Calls check_telemetry_health once per run, prints one telemetry-store line naming the catalog, and writes the report's
-    telemetry_health key. Reader invocations per session go from five to six (Decision 215 cl.4's reversal condition is a
+    Calls check_telemetry_health once per run in the warm-up phase beside fetch_recs_signal_inputs and, like it, only when
+    creds_status is ok (otherwise the gauge is unavailable with null counts and no reader call; Phase B stays at zero reader
+    calls), prints one telemetry-store line naming the catalog, and writes the report's telemetry_health key. Reader invocations per session go from five to six (Decision 215 cl.4's reversal condition is a
     doubling; the dated note on that clause is rec-4324's).
 - file: scripts/ducklake_smoke/lambda_ec_gates.py
   action: Modify
@@ -133,9 +136,10 @@ scope:
     lambda_reader also runs the telemetry read checks (so the CI smoke job covers them with no workflow change): describe
     lists the nine event verbs at kind event_journal with their agent_facing flags; telemetry_health_count answers for all
     four tables; a well-formed absent session_id returns zero rows from session_state_and_duration; a malformed session_id
-    answers 400 named_read_input without echoing the value; a query_ops whose SQL names telemetry_catalog answers 500
-    unmapped with error_class CatalogException (the ops slot never attaches it; any other answer fails the gate). Prints
-    TELEMETRY_READS_OK.
+    answers 400 named_read_input without echoing the value; a query_ops whose SQL is pinned to the two-part name
+    (SELECT count(*) FROM telemetry_catalog.telemetry_sessions) answers 500 unmapped with error_class CatalogException or
+    BinderException and a "does not exist" catalog message (the ops slot never attaches it; a 200 or any other answer fails
+    the gate). Prints TELEMETRY_READS_OK.
 - file: docs/contracts/ducklake_reader.yaml
   action: Modify
   purpose: >-
@@ -175,8 +179,9 @@ scope:
   purpose: >-
     In-memory DuckDB tests (module-level pytest.importorskip("duckdb"), NOT integration-marked, so the full tier runs them
     pre-handoff and on main): the four tables and the ops_projects current table built from the field_semantics event
-    projection under an attached telemetry_catalog, a mock DuckLake metadata schema for the health verb; dedupe vectors,
-    the two mutants, golden derivations, friction vectors, window, cost, health and VERB_FIELDS parity for event verbs.
+    projection under an attached telemetry_catalog, a mock DuckLake metadata schema for the health verb; golden
+    derivations, friction vectors, window, cost, health and VERB_FIELDS parity for event verbs (dedupe lives in
+    test_ducklake_event_read_dedupe.py).
 - file: tests/common/test_ducklake_event_read_verbs_integration.py
   action: Create
   purpose: >-
@@ -217,6 +222,22 @@ scope:
   purpose: >-
     TestReportSchemaFreeze: telemetry_health joins FROZEN_REPORT_KEYS (53 -> 54 at both assertions) and
     check_telemetry_health is stubbed in _base_stub_specs, the deliberate report-key addition the file's own comment asks for.
+- file: tests/test_session_preflight_cache_serving.py
+  action: Modify
+  purpose: >-
+    TestPhaseBAbsenceOfReaderCalls::test_main_phase_b_makes_no_reader_calls: its expected main() verb calls (credentials
+    ok) gain telemetry_health_count: 1, the creds-gated warm-up gauge call; nothing else changes.
+- file: tests/session/preflight/test_priority_queue.py
+  action: Modify
+  purpose: >-
+    Conditional: only if TestVerbDedup's counting harness observes the creds-gated gauge call, stub check_telemetry_health
+    there; its Phase-B-zero assertion itself never changes.
+- file: tests/common/test_ducklake_event_read_dedupe.py
+  action: Create
+  purpose: >-
+    In-memory DuckDB (module-level importorskip, not integration-marked): the 17 dedupe vectors, the two mutants, the
+    conflict report, and the query_ops isolation probe's error class on the pinned duckdb (pre-split from the derivation
+    tests so node ids stay stable).
 - file: tests/common/ducklake_reader_client/test_verb_fields_parity.py
   action: Modify
   purpose: >-
@@ -241,8 +262,8 @@ infrastructure_dependencies:
   grant already exist (terraform/personal/ducklake_lambdas.tf).
 - >-
   LAMBDA-DEPLOY DEFERRED (CD.16 / Decision 79), per-artifact reasoned disposition: compute_affected_artifacts flags
-  data-pipeline through src/common/ducklake_reader_client.py (bundled by its src/ wildcard) and through
-  docs/ROADMAP-PLATFORM.yaml (an asset). No build, deploy or smoke-test is owed: its handlers never read VERB_FIELDS or the
+  data-pipeline through src/common/ducklake_reader_client.py (bundled by its src/ wildcard), its own manifest,
+  docs/ROADMAP-PLATFORM.yaml (an asset) and, until their exclude lines land, the three new modules. No build, deploy or smoke-test is owed: its handlers never read VERB_FIELDS or the
   version pin, .github/workflows/deploy-prod-lambdas.yml's path triggers include neither file, and the consuming scheduled
   agents are disabled; the artifact refreshes with its next governed deploy.
 acceptance_criteria:
@@ -291,7 +312,8 @@ acceptance_criteria:
 - >-
   telemetry_health_count reads catalog metadata only (no data file); the preflight telemetry-store gauge names its catalog
   and is pass (any of the four tables populated, including only a non-sessions table), unpopulated (all empty) or
-  unavailable from exactly one reader call, with null counts when unavailable, and preflight.main writes it to the report.
+  unavailable from exactly one creds-gated warm-up reader call (none without credentials), with null counts when
+  unavailable, and preflight.main writes it to the report.
 - >-
   A per-session read touches only its own calendar day's data files on a real local DuckLake; that test is
   integration-marked, so no CI tier gates it (rec-4071 owns that residual) and the implementer runs it before the PR.
@@ -371,11 +393,15 @@ verification_plan:
     tests/lambdas/ducklake_reader/test_event_routing.py::test_smoke_pin_refusal_happens_before_any_connect
     tests/lambdas/ducklake_reader/test_event_routing.py::test_event_input_refusal_is_400_without_the_value
     tests/lambdas/ducklake_reader/test_event_routing.py::test_describe_returns_both_registries
-    tests/test_ducklake_runtime_warm_connection.py tests/test_ducklake_reader_handler.py
+    tests/test_ducklake_runtime_warm_connection.py
+    tests/test_ducklake_reader_handler.py::test_invocation_line_marks_both_reopen_paths
+    tests/test_ducklake_reader_handler.py::test_named_read_caller_input_error_is_400_with_its_message
+    tests/test_ducklake_reader_handler.py::test_named_read_other_duckdb_error_is_unmapped_500
+    tests/test_ducklake_reader_handler.py::test_unmapped_error_outside_a_connection_action_is_500
     -q
   expected: >-
-    Exit 0, every node passes, and the two existing suites (warm connection and reader handler, the latter with its one
-    describe edit) pass. Red before because the new nodes are absent.
+    Exit 0, every node passes: the new nodes, the unmodified warm-connection suite, and the handler nodes whose
+    monkeypatched acquirer and describe patch the wiring must keep working. Red before because the new nodes are absent.
   expected_literals: []
   fix_if: >-
     Any ops action that opens the telemetry slot reopens the query_ops catalog path; route it to the ops slot. A reopen that
@@ -386,12 +412,15 @@ verification_plan:
   graduation_check_id: telemetry-reader-slots
 - step: 4
   phase: pre-deploy
-  action: The rendered dedupe block passes every committed vector in DuckDB and catches both known mutants.
+  action: >-
+    The rendered dedupe block passes every committed vector in DuckDB and catches both known mutants, and the gate's
+    pinned query_ops probe raises the catalog-missing class on the pinned duckdb.
   command: >-
     bin/venv-python -m pytest
-    tests/common/test_ducklake_event_read_verbs.py::test_rendered_dedupe_passes_every_vector
-    tests/common/test_ducklake_event_read_verbs.py::test_dedupe_catches_keep_lowest_and_non_open_generation_mutants
-    tests/common/test_ducklake_event_read_verbs.py::test_conflicted_keys_are_reported_never_resolved
+    tests/common/test_ducklake_event_read_dedupe.py::test_rendered_dedupe_passes_every_vector
+    tests/common/test_ducklake_event_read_dedupe.py::test_dedupe_catches_keep_lowest_and_non_open_generation_mutants
+    tests/common/test_ducklake_event_read_dedupe.py::test_conflicted_keys_are_reported_never_resolved
+    tests/common/test_ducklake_event_read_dedupe.py::test_query_ops_probe_raises_catalog_missing_on_pinned_duckdb
     -q
   expected: Exit 0, every node passes on the pinned duckdb.
   fix_if: >-
@@ -458,6 +487,7 @@ verification_plan:
     tests/session/preflight/test_telemetry_health.py::test_exactly_one_reader_call
     tests/session/preflight/test_telemetry_health.py::test_preflight_main_writes_telemetry_health_once
     tests/test_session_preflight_decomposition.py::TestReportSchemaFreeze
+    tests/session/preflight/test_telemetry_health.py::test_no_reader_call_without_credentials
     -q
   expected: Exit 0, every node passes. Red before because the module and nodes are absent.
   expected_literals: []
@@ -467,6 +497,24 @@ verification_plan:
   hermetic: true
   graduation: graduate
   graduation_check_id: telemetry-health-gauge
+- step: 19
+  phase: pre-deploy
+  action: >-
+    preflight main()'s pinned reader-call sets: with credentials the warm-up adds exactly one telemetry_health_count call,
+    and Phase B still makes none.
+  command: >-
+    bin/venv-python -m pytest
+    tests/test_session_preflight_cache_serving.py::TestPhaseBAbsenceOfReaderCalls
+    tests/session/preflight/test_priority_queue.py::TestVerbDedup
+    -q
+  expected: Exit 0, both classes pass.
+  fix_if: >-
+    A Phase-B reader call means the gauge moved out of the warm-up; move it back. Never widen the Phase-B-zero assertion.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: >-
+    tests/test_session_preflight_cache_serving.py imports duckdb at module scope, a fast-tier heavy exclusion, so the PR
+    tier cannot collect it; the full tier runs both files pre-handoff and on main.
 - step: 8
   phase: pre-deploy
   action: The smoke gate's telemetry read checks pass on a consistent reader and fail on each regression.
@@ -481,7 +529,8 @@ verification_plan:
   expected_literals: []
   fix_if: >-
     A gate that passes when query_ops reaches telemetry_catalog, or on any non-200 (auth, throttling, 503), is too weak: the
-    isolation check passes only on 500 unmapped with error_class CatalogException.
+    isolation check passes only on 500 unmapped with error_class CatalogException or BinderException and a catalog
+    "does not exist" message, for the pinned two-part probe statement.
   hermetic: true
   graduation: graduate
   graduation_check_id: telemetry-read-gate
@@ -549,9 +598,9 @@ verification_plan:
   expected: Every named job concluded success (a skipped job fails this step), then DEPLOY_OK.
   fix_if: >-
     A failed deploy job, or a failure in the lambda-reader step, is this plan's to root-cause and fix forward, never a
-    re-run to green (Decision 55). A failure in another gate's step that is also red on the previous deploy run of main
-    (for example the lambda-telemetry step, red on #1477's run 38645229466) is not this plan's: report it to its owner and
-    hold steps 15 and 17 until it is green.
+    re-run to green (Decision 55). The merge is sequenced after rec-4320's fix (PR #1478) has a green smoke job on main,
+    so a red lambda-telemetry step here is a new regression in that gate: report it to its owner (the append thread) and
+    hold steps 15 and 17 until a later deploy run of main containing MERGE_SHA is green, then bind steps 12-13 to that run.
   hermetic: false
   graduation: not-applicable
 - step: 13
@@ -642,6 +691,20 @@ verification_plan:
   fix_if: A missing flip means the bookkeeping PR did not land; open it (ROADMAP only) and merge it on green CI.
   hermetic: false
   graduation: not-applicable
+- step: 18
+  phase: post-deploy
+  action: The dated notes landed on rec-4291 (get_blob remains) and rec-4292 (smoke-pin refusal, c3 production re-verification, the query_ops object-store residual).
+  command: >-
+    bin/venv-python -c "from src.common.ducklake_reader_client import make_reader;
+    rows={r['id']:r['context'] for r in make_reader().named('recs_by_ids',ids='rec-4291,rec-4292')};
+    assert 'telemetry-reader-verbs' in rows['rec-4291'] and 'get_blob' in rows['rec-4291'], 'rec-4291';
+    c=rows['rec-4292'];assert 'telemetry-reader-verbs' in c and 'query_ops' in c and 'T2.36:c3' in c, 'rec-4292';print('REC_NOTES_OK')"
+  expected: Both notes present, then REC_NOTES_OK.
+  fix_if: >-
+    A missing note leaves the ducklake_reader.yaml residual's owner unrecorded (Decision 181 cl.2); prepend it through
+    scripts.ops_data_portal and rerun.
+  hermetic: false
+  graduation: not-applicable
 test_obligations:
 - source: src/common/ducklake_event_reads.py
   behavior: Parameters validated before SQL, values bound, smoke-pin refusal, partition decode, read_version coverage, compare set, routing.
@@ -651,7 +714,7 @@ test_obligations:
 - source: src/common/ducklake_event_read_sql.py
   behavior: The rendered dedupe and conflict fragments implement R4/R5 exactly.
   verification_step: 4
-  test_selector: tests/common/test_ducklake_event_read_verbs.py::test_rendered_dedupe_passes_every_vector
+  test_selector: tests/common/test_ducklake_event_read_dedupe.py::test_rendered_dedupe_passes_every_vector
   red_green_expectation: red before (module absent), green after
 - source: src/common/ducklake_event_read_verbs.py
   behavior: Every verb derives the contract formulas over deduped rows and reports conflicts.
@@ -741,7 +804,8 @@ constraints:
 - >-
   The telemetry slot is a reused warm connection, reopened only on the dead-session condition (Decision 88 cl.1(i)); it is
   opened lazily. Two Postgres sessions per warm reader container on the shared owner login is the stated bound until
-  rec-4300 gives the reader a SELECT-only login.
+  rec-4300 gives the reader a SELECT-only login with a connection limit; no agent-readable probe of the reader's session
+  count exists today, so this plan states the bound rather than measuring it.
 - >-
   No Terraform, IAM, spend, Class A contract or Decision edit. The telemetry contracts' derivation blocks stay realized false
   (scripts/field_semantics_event_projection.py refuses true for read-timed fields); the Decision 199, 207 and 215 dated notes
@@ -761,6 +825,9 @@ constraints:
   No feedback-loop work (Benjamin 2026-10-12): per-label and unmapped counts are output columns only; no ratio signals,
   filer, back-validation or ladder shapes.
 - sessions_window closes no T2.52 criterion and adds no depends_on to T2.52 (Decision 93).
+- >-
+  scripts/agent_sdk/mcp_server.py is unchanged: the event verbs reach agents through its derived projection, and its shared
+  recommendations-cache note on every tool description is harmless on telemetry tools.
 - No rescue agents or workaround loops (Decision 55).
 - >-
   Not here: get_blob (rec-4291's follow-up), the canonical project remap (rec-4210), a SELECT-only reader login (rec-4300),
@@ -781,7 +848,7 @@ context:
   SPIRIT 200 (smoke-pin refusal plus deferral to rec-4292), T2.52 CONFLICT WARN (closes nothing there, no depends_on): all
   resolved. RELATED 95, 96, 97, 137, 143, 210, 212, 184, 214, 107, 125, 118, 168, 166, 181, 48, 140. Decisions triaged: 169
   of 169. Roadmap items intersected: 12; CONFLICT: 1; RELATED: 11.
-- "gates: decision-scout=FLAGS_FOUND (3 flags, resolved); plan-critique=PENDING (r1, r2 REVISE, all findings addressed)"
+- "gates: decision-scout=FLAGS_FOUND (3 flags, resolved); plan-critique=PENDING (r1-r3 REVISE, all findings addressed)"
 - >-
   Direction: Benjamin "yes to all, write the plan" (cmsg_012XgaFy8VaDQbxP5D8nC958GgNiPNy3uHRFLovP66hD4X): the split,
   sessions_window now, cost as reported-only. Evidence: /mnt/project-files/telemetry-slice2b/ (step6b-presentation.md,
@@ -804,10 +871,9 @@ context:
   health verb so smoke rows of any date count. Correction to the presentation: catalog_stats is admin-only, so the live
   egress line here is response size; Neon egress is measured with rec-4292 before production.
 - >-
-  Live state at planning: #1477's deploy run (38645229466) passed every deploy job and the lambda-reader step, wrote the
-  near-cap and row-cap smoke rows, then failed its lambda-telemetry step (the append thread's to fix); step 15 waits on
-  that gate being green.
-- "ci-rca: none open (ci_rca_open read 2026-10-14)."
+  ci-rca: rec-4320 (Critical, open since 2026-10-14T22:16Z): the telemetry writer's masked COMMIT failure on #1477's
+  lambda-telemetry smoke step; fix PR #1478 (append thread). Deferral rationale: this plan touches none of its files
+  (src/common/ducklake_telemetry_txn.py) and shares only the post-deploy smoke job, so its merge is sequenced after #1478.
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
@@ -840,9 +906,9 @@ execution_steps:
   origin/main; step 11 (the full tier) on the committed, clean tree, then --verify-head; the postflight evidence file and
   scripts.session.postflight --evidence; push; PR; CI green on the head. Merge on code review PROCEED and green CI under
   the standing rule (a CI-run DuckLake deploy with no IAM, spend, Class A or manual step; it redeploys all six DuckLake
-  functions).
+  functions), and only after rec-4320's fix (PR #1478) has merged with a green deploy-ducklake-lambdas smoke job on main.
 - >-
-  After merge: steps 12-16 against the deploy run for the merge commit. On step 15 PASS, open the bookkeeping PR
+  After merge: steps 12-16 against the deploy run for the merge commit, then step 18 once the notes below are written. On step 15 PASS, open the bookkeeping PR
   (docs/ROADMAP-PLATFORM.yaml only: the c3 flip with its smoke-scope note, the T2.36 status move, the progress_note) and
   merge it on green CI; then step 17. Append dated notes through scripts.ops_data_portal (get_rec_write_guidance first,
   fetch the rec just before update_rec and prepend to its full context): rec-4292 (slice 2c lifts the smoke-pin refusal
