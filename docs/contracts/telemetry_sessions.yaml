@@ -59,8 +59,9 @@ fields:
         enforced: true
     governance_notes_local: >-
       For the open event this EQUALS session_started_at; for resume/compact/close/annotate it is that event's own source-derived time. A sub-agent session's open row carries the ROOT start (session_started_at is the tree's pin), so a child's own start is its telemetry_agents open row. A close row's
-      event_timestamp is that of the last root-stream record carrying a uuid at that finalization. duration_seconds (derived) is the latest close's event_timestamp minus session_started_at, wall-clock.
+      event_timestamp is that of the last root-stream record carrying a uuid and a parseable timestamp at that finalization. duration_seconds (derived) is the latest close's event_timestamp minus session_started_at, wall-clock.
     amendment_log:
+      - {date: "2026-10-14", semantic_break: true, change_class: governance_note_add, summary: "PLAN-telemetry-parser-v3 (slice 3b plan P-B): the close anchor is the last root-stream record carrying a uuid and a parseable timestamp."}
       - {date: "2026-10-05", semantic_break: true, change_class: governance_note_add, summary: "PLAN-telemetry-lifecycle-friction-amendment (rec-4146, C9): a sub-agent session's open row carries the ROOT start (session_started_at is the tree's pin); a close row's event_timestamp is the last root-stream uuid record's; duration reads the latest close, wall-clock."}
   session_started_at:
     $ref: telemetry-event-envelope.yaml#/contract/fields/session_started_at
@@ -72,15 +73,18 @@ fields:
   source_ordinal:
     $ref: telemetry-event-envelope.yaml#/contract/fields/source_ordinal
     governance_notes_local: >-
-      Orders a session's lifecycle events when two share an event_timestamp. A close row's source_ordinal is that of the last root-stream record carrying a uuid at that finalization (the record its external_ref names).
+      Orders a session's lifecycle events when two share an event_timestamp. A close row's source_ordinal is that of the last root-stream record carrying a uuid and a parseable timestamp at that finalization (the record its external_ref names).
+    amendment_log:
+      - {date: "2026-10-14", semantic_break: true, change_class: governance_note_add, summary: "PLAN-telemetry-parser-v3 (slice 3b plan P-B): the close anchor is the last root-stream record carrying a uuid and a parseable timestamp."}
   external_ref:
     $ref: telemetry-event-envelope.yaml#/contract/fields/external_ref
     dq_intent_local:
       not_null:
         enforced: true
     governance_notes_local: >-
-      The hash input for this row's event_id; grammar '<source_record_id>#0/<event_kind>'. The open marker is '<session entity_ref>#0/open'. ONE close row is written per finalization: its external_ref is the role_ref '<uuid>#0/close' of the last root-stream record carrying a uuid at that finalize.
+      The hash input for this row's event_id; grammar '<source_record_id>#0/<event_kind>'. The open marker is '<session entity_ref>#0/open'. ONE close row is written per finalization at which the session's open row is due, unless an earlier finalization already wrote the same anchor: its external_ref is the role_ref '<uuid>#0/close' of the last root-stream record carrying a uuid and a parseable timestamp at that finalize.
     amendment_log:
+      - {date: "2026-10-14", semantic_break: true, change_class: governance_note_add, summary: "PLAN-telemetry-parser-v3 (slice 3b plan P-B): one close row per finalization at which the open row is due, unless an earlier finalization already wrote the same anchor."}
       - {date: "2026-10-05", semantic_break: true, change_class: governance_note_add, summary: "PLAN-telemetry-lifecycle-friction-amendment (rec-4146, C9): declared the open marker '<session entity_ref>#0/open' and the per-finalization close-row identity '<uuid>#0/close' (last root-stream record carrying a uuid)."}
   entity_ref:
     $ref: telemetry-event-envelope.yaml#/contract/fields/entity_ref
@@ -181,9 +185,13 @@ fields:
       Observed at each finalization and recorded on that finalization's close row (STORED per the data-modeling-standard.yaml stored-vs-derived rule), derived from the transcript, never from SessionEnd hook input. SESSION STATE (a session's current disposition) is DERIVED at read by a named reader
       verb (see `state`): a resume after a close makes the session running again, so a close row's outcome is the terminal state only while that close is the session's latest lifecycle row. This replaces the retired mutate-outcome-in-place model (contract_version 1), which had no room for the
       resume/compact events this shape now represents.
+    governance_notes_local: >-
+      claude_code parser_version 3 derives outcome per its close rule: cancelled when the last turn was interrupted (an interrupt sentinel, a user-rejected tool, an aborted stream or a tool_use with no result), failed when it ended in an API-error record (failure_reason carries that record's error kind identifier), otherwise success. A
+      session or sub-agent stream with no closed turn holding an assistant record emits no row in any telemetry table until it has one.
     populated_by: the write boundary at a close event (rec-4024); the producer derives it from the transcript at each finalization (rec-4026).
     dq_intent: {not_null: {enforced: false}, required_when: {event_kind: [close]}, accepted_values: {values: [success, failed, cancelled], enforced: false}}
     amendment_log:
+      - {date: "2026-10-14", semantic_break: true, change_class: governance_note_add, summary: "PLAN-telemetry-parser-v3 (slice 3b plan P-B): claude_code outcome rule on close rows (cancelled, failed with the API-error kind, else success) and the no-reply rule (a stream with no closed assistant turn emits no row in any table until it has one)."}
       - date: "2026-09-24"
         semantic_break: true
         change_class: accepted_values_narrow
@@ -425,7 +433,7 @@ governance:
 governance_notes: >-
   EVENT JOURNAL (Decision 199, amending Decision 95 clause 1, Decision 96 clauses 1 and 3, and Decision 97 clauses 1-4): telemetry_sessions is the trace ROOT, now shaped as an append-only journal of lifecycle events rather than one row mutated in place. SESSION STATE: running, abandoned or a
   terminal outcome is DERIVED AT READ into `state` (never stored) by the named reader verb that also derives DURATION, reading this session's own rows bounded to its single calendar-day partition (answers Decision 81 clause 8 -- never an unprunable full scan). The state is the session's latest
-  lifecycle row (annotate excluded; close ranks last on a tie), so a resume after a close makes the session running again; one close row is written per finalization, its outcome derived from the transcript. Identity (session_id, parent_session_id) is derived at the write boundary per
+  lifecycle row (annotate excluded; close ranks last on a tie), so a resume after a close makes the session running again; one close row is written per finalization at which the session's open row is due (unless an earlier finalization already wrote the same anchor), its outcome derived from the transcript. Identity (session_id, parent_session_id) is derived at the write boundary per
   telemetry-event-envelope.yaml's normative hash spec, not minted-once-and-propagated. ROLL-UP RECONCILIATION: process_event_total / rework_total / exception_total / steps_completed_total are DERIVED aggregates of telemetry_observations rows sharing this session_id (rework_total / exception_total
   from the facts classified by the reader's governed rules file, not a stored tier column). classifier_version is a reader response stamp, never a column. WINDOW VERBS (Decision 199 cl.1, CD.52): a verb over many sessions is a bounded window of per-session derivations, each reading only its own
   session's single calendar-day partition. Each window verb declares its own maximum window in the reader's named-read registry and stamps its read_version; there is no contract-wide day count, and each window is an egress line under Decision 88. NULLABILITY AXES: a column is NOT NULL at write when
@@ -433,6 +441,7 @@ governance_notes: >-
   and the flag otherwise keeps its DQ-runner meaning, whose platform-wide re-read is rec-4158 plan C. KNOWN GAPS (open recs, future CODE work, not this contract): rec-275 (failure-path step telemetry), rec-2173 (preflight telemetry health re-enable), rec-4024 (the writer/reader verbs and dimension
   contracts this contract's derivations name), rec-4030 (the live legacy UUID4 session_id minter's migration to this contract's derivation model), rec-4032 (the later materialised friction-labels form of the reader's rules file that rework_total/exception_total read).
 amendment_log:
+  - {date: "2026-10-14", semantic_break: true, change_class: governance_note_add, summary: "PLAN-telemetry-parser-v3 (slice 3b plan P-B): the per-finalization close-row qualifier (open row due, same anchor written once) joins the governance summary; field entries on outcome, event_timestamp, source_ordinal and external_ref carry the rest."}
   - {date: "2026-10-05", semantic_break: false, change_class: prose_improvement, summary: "PLAN-telemetry-lifecycle-friction-amendment (feedback-loop review C9, C10, C13, rec-4146): new read-derived state, close-row identity, friction roll-up facts and rules-file home, WINDOW VERBS note, and the stale enforcement/provisioning premise reworded (projects_to keys, write_path, header, NULLABILITY AXES). Per-field changes are on their own fields' logs."}
   - {date: "2026-09-26", semantic_break: false, change_class: prose_improvement, summary: "rec-4073: governance.partition_by respelled role-prefixed ('history=year(...), month(...), day(...)'), matching the shared ops partition grammar; resolved spec unchanged. No runtime migration: no live telemetry writer."}
   - {date: "2026-09-25", semantic_break: false, change_class: prose_improvement, summary: "rec-4065: partition respelled to the calendar-day triple year/month/day(session_started_at); DuckLake's bare day() is day-of-month. No table exists yet."}

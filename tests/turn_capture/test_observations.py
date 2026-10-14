@@ -22,6 +22,7 @@ from tests.fixtures.turn_capture_corpus import (
     TENANT,
     assistant,
     attachment,
+    build_secret,
     hook,
     make_ctx,
     make_files,
@@ -199,6 +200,67 @@ def test_every_hook_attachment_is_one_process_event() -> None:
     assert not by(live, external_ref="h4#0/process_event") and by(live, external_ref="h0#0/process_event")
 
 
+def test_hook_name_rules_h1_to_h3() -> None:
+    assert hook_name({"command": 'bash "/w/.claude/hooks/quoted_hook.sh" --flag'}) == "hook:quoted_hook"
+    assert hook_name({"command": "sh '/w/hooks/single.sh'", "hookName": "Stop"}) == "hook:single"
+    assert hook_name({"command": "python3 /w/hooks/weird@name.py", "hookName": "PostToolUse:Bash"}) == "hook:PostToolUse.Bash"
+    assert hook_name({"command": "echo done", "hookName": "Stop"}) == "hook:Stop"
+    assert hook_name({"command": "python3 /w/hooks/weird@name.py", "hookName": "!!"}) == "hook:unknown"
+    assert hook_name({"command": "echo", "hookName": "a b"}) == "hook:unknown"
+    assert hook_name({"hookName": "x" * 201}) == "hook:unknown" and hook_name({"hookName": "x" * 200}) == "hook:" + "x" * 200
+    assert hook_name({"command": 7, "hookName": 7}) == "hook:unknown"
+
+
+def test_hook_stderr_scrubbed_before_truncation() -> None:
+    secret = build_secret("aws_access")
+    stderr = "e" * 500 + " " + secret + " tail"
+    root = [
+        prompt("u1", 1, "p1", "go"),
+        assistant("a1", 2, "m1", [text_block("x")]),
+        hook("h1", 2.5, "Stop", command="bash .claude/hooks/stop.sh", stderr=stderr),
+        prompt("u2", 4, "p2", "next"),
+    ]
+    rows, _ = build(root)
+    head = json.loads(by(rows, observation_type="process_event")[0]["metadata"])["stderr_head"]
+    assert "AKIA" not in head and len(head) <= 512 and head.startswith("e" * 500)
+
+
+def test_tool_denial_kind_outcomes_and_close_metadata() -> None:
+    root = [
+        prompt("u1", 1, "p1", "go"),
+        assistant(
+            "a1", 2, "m1",
+            [tool_use_block(t, "Bash", {}) for t in ("tr", "tp", "tu", "tn", "th")],
+        ),
+        tool_result(
+            "r1", 3, "tr", "nope", pid="p1", is_error=True, tur="User rejected tool use", toolDenialKind="user-rejected"
+        ),
+        tool_result(
+            "r2", 3.1, "tp", "host said no", pid="p1", is_error=True, tur="Error: x", toolDenialKind="permission-rule",
+            permissionDecision={"decision": "reject", "source": "user_reject"},
+        ),
+        tool_result("r3", 3.2, "tu", "odd", pid="p1", is_error=True, toolDenialKind="brand-new-kind"),
+        tool_result("r4", 3.3, "tn", "<tool_use_error>Blocked: x", pid="p1", is_error=True),
+        tool_result("r5", 3.4, "th", "ok", pid="p1", toolDenialKind="User Rejected", permissionDecision={"source": "X y"}),
+        prompt("u2", 5, "p2", "next"),
+    ]  # fmt: skip
+    rows, diag = build(root)
+    closes = {r["entity_ref"]: r for r in by(rows, observation_type="tool_call", event_kind="close")}
+    assert {t: c["outcome"] for t, c in closes.items()} == {
+        "tr": "interrupted", "tp": "blocked", "tu": "error", "tn": "error", "th": "success",
+    }  # fmt: skip
+    assert diag["unknown_tool_denial_kind"] == 2
+    meta = {t: json.loads(c["metadata"]) for t, c in closes.items()}
+    assert (meta["tr"]["tool_denial_kind"], meta["tr"]["permission_decision_source"]) == ("user-rejected", None)
+    assert (meta["tp"]["tool_denial_kind"], meta["tp"]["permission_decision_source"]) == ("permission-rule", "user_reject")
+    assert (meta["th"]["tool_denial_kind"], meta["th"]["permission_decision_source"]) == (None, None)
+    assert meta["tn"]["tool_denial_kind"] is None
+    synthetic = build(
+        [prompt("u1", 1, "p1", "go"), assistant("a1", 2, "m1", [tool_use_block("t1", "Bash", {})]), prompt("u2", 3, "p2", "n")]
+    )[0]
+    assert json.loads(by(synthetic, observation_type="tool_call", event_kind="close")[0]["metadata"]) == {"synthetic": True}
+
+
 def test_hook_name_fallbacks() -> None:
     assert hook_name({"command": "python -m tool.mod", "hookName": "Stop"}) == "hook:Stop"
     assert hook_name({"command": "run /x/y/gate.sh now", "hookName": "Stop"}) == "hook:gate"
@@ -239,6 +301,7 @@ def test_tool_call_open_and_close_columns() -> None:
     assert json.loads(closed["metadata"]) == {
         "agent_id": "ag", "interrupted": None, "is_async": True, "is_error": False,
         "persisted_output": "o.txt", "persisted_output_size": 9, "status": "s",
+        "permission_decision_source": None, "tool_denial_kind": None,
     }  # fmt: skip
 
 

@@ -252,6 +252,86 @@ def full_output_omitted_over_cap_files() -> dict[str, str]:
     return make_files(records, sidecars={"dump.txt": "0123456789\nabcdefghij\n0123456789\nabcdefghij"})
 
 
+def fork_boundary(files: dict[str, str]) -> int:
+    """1 + the line index of the first attachment of the last SessionStart:fork hook group in the root file, else 0.
+
+    A group ends at the next user or assistant record. The root cuts of every schedule start here: an earlier cut is
+    rule K-1's halting case, pinned by its own test.
+    """
+    boundary, in_group = 0, False
+    for index, line in enumerate(files[f"{SID}.jsonl"].split("\n")[:-1]):
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        att = rec.get("attachment") if isinstance(rec, dict) else None
+        if isinstance(rec, dict) and rec.get("type") in ("user", "assistant"):
+            in_group = False
+        elif isinstance(att, dict) and str(att.get("hookName", "")).startswith("SessionStart:fork") and not in_group:
+            in_group, boundary = True, index + 1
+    return boundary
+
+
+def _turn(n: int, sidecar: str | None) -> list[dict[str, Any]]:
+    t = 10.0 * n
+    tool = f"tool{n}"
+    tur = {"persistedOutputPath": f"/e/tool-results/{sidecar}", "persistedOutputSize": 9} if sidecar else None
+    return [
+        prompt(f"lu{n}", t, f"lp{n}", f"question {n}"),
+        assistant(f"la{n}", t + 1, f"lm{n}", [tool_use_block(tool, "Bash", {"command": "ls"})]),
+        tool_result(f"lr{n}", t + 2, tool, f"out {n}", pid=f"lp{n}", tur=tur),
+        assistant(f"lb{n}", t + 3, f"ln{n}", [text_block("done")]),
+    ]
+
+
+def large_tree(n_lines: int, first: int = 0) -> dict[str, str]:
+    """A synthetic root tree of about n_lines records (four per turn) with one persisted sidecar per 500 lines."""
+    records, sidecars = [], {}
+    for n in range(first, first + n_lines // 4):
+        name = f"side{n}.txt" if (n - first) % 125 == 0 else None
+        records += _turn(n, name)
+        if name:
+            sidecars[name] = f"sidecar body {n}\n"
+    return make_files(records, sidecars=sidecars)
+
+
+def resumed_large_tree(n_lines: int, finalizations: int) -> list[dict[str, str]]:
+    """The tree after each of *finalizations* finalizations: every later one resumes (SessionStart:resume) and grows."""
+    per = n_lines // finalizations // 4
+    records: list[dict[str, Any]] = []
+    sidecars: dict[str, str] = {}
+    trees = []
+    for k in range(finalizations):
+        if k:
+            records.append(hook(f"lh{k}", 10.0 * k * per - 1, "SessionStart:resume", command="bash ./resume.sh"))
+        for n in range(k * per, (k + 1) * per):
+            name = f"side{n}.txt" if (n - k * per) % 125 == 0 else None
+            records += _turn(n, name)
+            if name:
+                sidecars[name] = f"sidecar body {n}\n"
+        trees.append(make_files(records, sidecars=dict(sidecars)))
+    return trees
+
+
+RESUME_TAIL = 100000.0
+
+
+def resume_tail() -> list[dict[str, Any]]:
+    return [
+        hook("rz-h", RESUME_TAIL, "SessionStart:resume", command="bash ./resume.sh"),
+        prompt("rz-u", RESUME_TAIL + 1, "rz-p", "back again"),
+        assistant("rz-a", RESUME_TAIL + 2, "rz-m", [text_block("welcome back")]),
+    ]
+
+
+def root_lines(files: dict[str, str]) -> list[str]:
+    return files[f"{SID}.jsonl"].splitlines(keepends=True)
+
+
+def with_root(files: dict[str, str], body: str) -> dict[str, str]:
+    return {**files, f"{SID}.jsonl": body}
+
+
 def case_names() -> list[str]:
     return list(json.loads((GOLDEN_DIR / "index.json").read_text(encoding="utf-8"))["cases"])
 

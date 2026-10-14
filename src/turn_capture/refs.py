@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-ROLE_SESSION = ("open", "resume", "compact")
-ROLE_OBSERVATION = ("turn_open", "turn_close", "tool_call_open", "tool_call_close", "process_event")
+ROLE_SESSION = ("open", "resume", "compact", "close")
+ROLE_OBSERVATION = ("turn_open", "turn_close", "tool_call_open", "tool_call_close", "process_event", "gate_event")
 ROLE_AGENT = ("agent_open", "agent_close")
 ROLE_TRANSCRIPT = ("full",)
 
@@ -38,3 +38,7 @@ def model_call_ref(message_id: str) -> str:
 
 def session_marker_ref(session_ref: str, role: str = "open") -> str:
     return f"{session_ref}#0/{role}"
+
+
+def gate_event_ref(source_record_id: str, block_index: int, n: int) -> str:
+    return role_ref(source_record_id, block_index, f"gate_event.{n}")

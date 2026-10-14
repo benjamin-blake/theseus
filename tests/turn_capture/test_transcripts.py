@@ -323,3 +323,57 @@ def test_sidecar_vanishing_between_size_and_read_is_unavailable() -> None:
     tree = Vanishing(make_files([prompt("u1", 1, "p1", "go")], None, {"gone.txt": "abc"}))
     side = Sidecars(tree, None)
     assert side.output("gone.txt", 100) is None and side.used["gone.txt"] is None
+
+
+def test_harness_origins_and_api_error_system_row() -> None:
+    interrupt = "[Request interrupted by user for tool use]"
+    root = [
+        prompt("u1", 1, "p1", "go"),
+        assistant("a1", 2, "m1", [tool_use_block("t1", "Bash", {}), tool_use_block("t2", "Bash", {})]),
+        tool_result(
+            "r1",
+            3,
+            "t1",
+            "rejected text",
+            pid="p1",
+            is_error=True,
+            tur="User rejected tool use",
+            toolDenialKind="user-rejected",
+        ),
+        tool_result("r2", 3.1, "t2", interrupt, pid="p1", is_error=True),
+        prompt("u2", 4, "p1", [text_block(interrupt)]),
+        prompt("u3", 5, "p2", "hello again"),
+        assistant(
+            "e1",
+            6,
+            "00000000-0000-4000-8000-0000000000e1",
+            [text_block("API Error: x")],
+            model="<synthetic>",
+            isApiErrorMessage=True,
+        ),
+        prompt("u4", 7, "p3", "last"),
+    ]
+    diag: Counter[str] = Counter()
+    rows, _ = build(root, diag=diag)
+    results = {r["external_ref"]: r for r in by(rows, purpose="tool_result")}
+    assert results["r1#0"]["origin"] == "harness" and results["r2#0"]["origin"] == "harness"
+    sentinel = by(rows, external_ref="u2#0")[0]
+    assert (sentinel["purpose"], sentinel["origin"]) == ("system", "harness")
+    assert by(rows, external_ref="u3#0")[0]["origin"] == "human"
+    error = by(rows, external_ref="e1#0")[0]
+    assert (error["purpose"], error["origin"], error["observation_ref"]) == ("system", "harness", f"{SID}/p2")
+    assert "model" not in error and by(rows, purpose="response") == []
+    assert diag["unmatched_string_tool_use_result"] == 0
+
+
+def test_denial_kind_exempts_a_string_tool_use_result_from_the_unmatched_counter() -> None:
+    diag: Counter[str] = Counter()
+    root = [
+        prompt("u1", 1, "p1", "go"),
+        assistant("a1", 2, "m1", [tool_use_block("t1", "Bash", {}), tool_use_block("t2", "Bash", {})]),
+        tool_result("r1", 3, "t1", "x", pid="p1", is_error=True, tur="User rejected tool use", toolDenialKind="user-rejected"),
+        tool_result("r2", 3.1, "t2", "y", pid="p1", is_error=True, tur="Error: other"),
+        prompt("u2", 5, "p2", "next"),
+    ]
+    build(root, diag=diag)
+    assert diag["unmatched_string_tool_use_result"] == 1

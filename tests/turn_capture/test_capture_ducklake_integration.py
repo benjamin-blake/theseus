@@ -96,7 +96,10 @@ def test_every_golden_case_loads_with_every_fk_resolving(tmp_path: Path) -> None
             for t in TABLES
             if any(rows for tbl, rows in result.batches if tbl == t)
         }
-        assert starts == {1}, name
+        if starts:
+            assert starts == {1}, name
+        else:
+            assert name == "no_reply_session.json" and not any(rows for _, rows in result.batches), name
         stored = con.execute("SELECT coalesce(max(strlen(content)), 0) FROM lake.telemetry_transcripts").fetchone()[0]
         assert stored <= ROUTE_PENDING_BYTES, name
         con.close()

@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -55,12 +56,31 @@ CASES = (
     "mcp_overflow_saved_output.json",
     "full_output_omitted_over_cap.json",
     "reasoning_visibility_forms.json",
+    "gate_and_precommit_markers.json",
+    "close_cancelled_mid_stream.json",
+    "close_cancelled_running_tool.json",
+    "close_failed_api_error.json",
+    "resume_after_interrupt.json",
+    "fork_branch_copied_head.json",
+    "fork_session_copied_head.json",
+    "fork_session_nested.json",
+    "hook_command_names.json",
+    "no_reply_session.json",
 )
 
 
 def _cap_of(entry: dict) -> int | None:
     """The producer input cap recorded in force for a history entry; a missing key reads as 'no cap'."""
     return entry.get("full_output_cap_bytes")
+
+
+def _contract_sources() -> list[str]:
+    """The process_event name sources, read from the contract's pattern_when (never restated here)."""
+    contract = yaml.safe_load((ROOT / "docs/contracts/telemetry_observations.yaml").read_text(encoding="utf-8"))
+    pattern = contract["fields"]["name"]["dq_intent"]["pattern_when"][0]["pattern"]
+    match = re.match(r"\^\(([A-Za-z|]+)\):", pattern)
+    assert match, pattern
+    return match.group(1).split("|")
 
 
 def registry_problems(registry: dict, producer: str, code_version: int, recomputed: str, expected: str) -> list[str]:
@@ -77,6 +97,11 @@ def registry_problems(registry: dict, producer: str, code_version: int, recomput
         problems.append("output drift without a bump: the recomputed golden digest differs from the registry")
     if history[-1]["golden_digest"] != expected:
         problems.append("expected files edited without a bump: the committed expected_rows digest differs from the registry")
+    prefixes = history[-1].get("signature_prefixes")
+    if not isinstance(prefixes, list) or not prefixes:
+        problems.append("the current version declares no signature_prefixes")
+    elif len(set(prefixes)) != len(prefixes) or not set(prefixes) <= set(_contract_sources()):
+        problems.append("signature_prefixes repeats a prefix or names a source outside the contract's")
     for before, after in zip(history, history[1:]):
         if before["golden_digest"] == after["golden_digest"] and _cap_of(before) == _cap_of(after):
             problems.append(f"bump without drift: v{after['version']} repeats v{before['version']}'s digest")
@@ -107,7 +132,7 @@ def _live_registry() -> dict:
 def _synthetic() -> dict:
     return {"producers": {"p": {"current": 2, "history": [
         {"version": 1, "date": "2026-01-01", "golden_digest": "d1", "reason": "first"},
-        {"version": 2, "date": "2026-01-02", "golden_digest": "d2", "reason": "second"},
+        {"version": 2, "date": "2026-01-02", "golden_digest": "d2", "reason": "second", "signature_prefixes": ["hook"]},
     ]}}}  # fmt: skip
 
 
@@ -128,6 +153,19 @@ def test_bump_without_drift_fails() -> None:
     unordered = copy.deepcopy(_synthetic())
     unordered["producers"]["p"]["history"][1]["version"] = 1
     assert "history versions are not strictly increasing" in registry_problems(unordered, "p", 1, "d2", "d2")
+
+
+def test_signature_prefixes_are_required_and_validated_on_the_current_version() -> None:
+    assert registry_problems(_synthetic(), "p", 2, "d2", "d2") == []
+    missing = copy.deepcopy(_synthetic())
+    del missing["producers"]["p"]["history"][1]["signature_prefixes"]
+    assert registry_problems(missing, "p", 2, "d2", "d2") == ["the current version declares no signature_prefixes"]
+    for bad in (["hook", "hook"], ["hook", "invented"], []):
+        broken = copy.deepcopy(_synthetic())
+        broken["producers"]["p"]["history"][1]["signature_prefixes"] = bad
+        assert registry_problems(broken, "p", 2, "d2", "d2"), bad
+    live = _live_registry()["producers"][PRODUCER]["history"]
+    assert "signature_prefixes" not in live[0] and "signature_prefixes" not in live[1]
 
 
 def test_expected_edit_without_bump_fails() -> None:
@@ -195,6 +233,17 @@ def test_registry_matches_producer() -> None:
         "a history entry repeats its predecessor's digest without a different producer input cap"
     )
     assert registry_problems(registry, PRODUCER, PARSER_VERSION, recomputed, committed) == []
+
+
+def test_declared_signature_prefixes_match_the_corpus() -> None:
+    declared = _live_registry()["producers"][PRODUCER]["history"][-1]["signature_prefixes"]
+    emitted = set()
+    for name in case_names():
+        for row in load_case(name)[1]:
+            if row.get("table") == "telemetry_observations" and row.get("observation_type") == "process_event":
+                emitted.add(row["name"].split(":", 1)[0])
+    assert emitted == set(declared) == {"hook", "gate", "precommit"}
+    assert set(declared) <= set(_contract_sources())
 
 
 def test_cases_match_index() -> None:

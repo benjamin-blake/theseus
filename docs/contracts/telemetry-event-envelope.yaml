@@ -112,7 +112,7 @@ fields:
     description: >-
       The ROOT session's start time: source-derived from the EARLIEST parseable record timestamp in the
       root transcript at pin time (the first capture pass), UTC, truncated to ms -- never a warehouse
-      lookup, never re-derived downstream.
+      lookup, never re-derived downstream. For a forked or copied Claude Code session, only the records it wrote itself count (see external_ref).
       Every row of a root session AND all its sub-agent sessions carries this SAME value, so a
       whole trace tree lands in one calendar-day partition regardless of how deep the sub-agent
       nesting goes or how much wall-clock time a long-running root session spans.
@@ -145,12 +145,13 @@ fields:
       appended later with a timestamp earlier than the persisted pin RE-PINS only while the cursor
       has emitted no row under that pin (its consumed prefix builds zero rows, so no row carries the
       old value); once any row is emitted under the pin, such a record is a producer HALT, never
-      re-pinned and never emitted.
-    populated_by: the emitting producer, pinned once per session at the earliest root-transcript timestamp.
+      re-pinned and never emitted. For a forked or copied Claude Code session, records the fork did not write (forkedFrom, or before its own SessionStart:fork hook group) take no part in the pin: it is the earliest timestamp among the records the session wrote itself.
+    populated_by: the emitting producer, pinned once per session at the earliest root-transcript timestamp of the session's own records.
     dq_intent:
       not_null:
         enforced: false
     amendment_log:
+      - {date: "2026-10-14", semantic_break: true, change_class: governance_note_add, summary: "PLAN-telemetry-parser-v3 (slice 3b plan P-B): rec-4149: for a forked or copied Claude Code session only the records it wrote itself count toward the pin."}
       - date: "2026-09-26"
         semantic_break: true
         change_class: governance_note_add
@@ -213,12 +214,13 @@ fields:
       For a model_call row specifically, external_ref is '<provider_response_id>/model_call' for
       EVERY producer that observes that response id, and is owned by the LAST source record
       carrying it (final usage numbers win) -- see entity_ref below for how model_call rows still
-      de-duplicate to one row per API response despite each producer's event_id differing.
+      de-duplicate to one row per API response despite each producer's event_id differing. A forked or copied Claude Code session's copied records keep their uuids and are the parent session's events, never the fork's: the claude_code producer (parser version 3) emits a fork's rows only for the records it wrote, recognising copies by forkedFrom or by their position before the fork's own SessionStart:fork hook group, so no ref is re-scoped (R10 untouched). If neither signal is present, the fork's first pass collides with its source in the same partition and halts loudly (Decision 207); a pass that ran before the fork's own SessionStart:fork record existed makes the next pass halt on its moved session pin.
     populated_by: the emitting producer.
     dq_intent:
       not_null:
         enforced: false
     amendment_log:
+      - {date: "2026-10-14", semantic_break: true, change_class: governance_note_add, summary: "PLAN-telemetry-parser-v3 (slice 3b plan P-B): rec-4149: a fork's copied records are the parent's events; the claude_code producer emits a fork's rows only for the records it wrote."}
       - date: "2026-09-28"
         semantic_break: true
         change_class: governance_note_add
@@ -304,7 +306,7 @@ fields:
       write data rows first and ONE telemetry_sessions batch of every tree session's rows LAST
       (the generation commit marker), bind its cursor to parser_version and reset it on mismatch,
       never emit v for a session after a v+1 marker for it, and reuse the pinned project_ref and
-      session_started_at persisted with its cursor across a reset (never re-reading config), so a
+      session_started_at and the recorded finalization cuts persisted with its cursor across a reset (never re-reading config), so a
       re-emission cannot re-key the tree. A non-replayable producer (R8) emits no open marker,
       never re-emits, and a bump retires nothing.
     populated_by: the emitting producer, a hand-maintained per-producer constant (never a build identity).
@@ -312,6 +314,7 @@ fields:
       not_null:
         enforced: false
     amendment_log:
+      - {date: "2026-10-14", semantic_break: true, change_class: governance_note_add, summary: "PLAN-telemetry-parser-v3 (slice 3b plan P-B): the cursor's recorded finalization cuts persist across a reset like the pins."}
       - date: "2026-09-28"
         semantic_break: true
         change_class: governance_note_add
@@ -388,16 +391,16 @@ governance_notes: >-
   R6: a telemetry_agents row belongs to its own (child) session_id's generation, committed by the
   child's own open-row marker, never the spawning session's.
   R7 producer obligations: a producer never emits two different rows under one grain key (a
-  model_call is emitted only once its source record carries final usage); every emitted column is
+  model_call is emitted only once its source record carries final usage, or at a recorded finalization cut, which treats the tree as final); every emitted column is
   a pure function of the source records plus the inputs pinned with the cursor, and incremental
-  emission equals a full re-parse for every row already emitted (with one carve-out: a record
+  emission equals the emission set recomputed from the tree and its recorded finalization cuts for every row already emitted (with one carve-out: a record
   appended later with a timestamp earlier than the persisted session_started_at pin re-pins only while
   the cursor has emitted no row under that pin, and is otherwise a producer halt); a replayable producer on a bump
   re-parses the whole root tree from the start, writes data rows first and ONE telemetry_sessions
   batch of every tree session's rows LAST, binds its cursor to parser_version and resets it on
   mismatch, never emits v for a session after a v+1 marker for it, and REUSES the pinned
-  project_ref and session_started_at persisted with its cursor across a reset (never re-reading
-  config), so a re-emission cannot re-key the tree.
+  project_ref and session_started_at and the recorded finalization cuts persisted with its cursor across a reset (never re-reading
+  config), so a re-emission cannot re-key the tree. A replayable producer's emission set is a function of the tree and its recorded finalization cuts; the cuts survive a parser_version reset like the pins, so a bump re-emits every finalization's close row. Two declared exceptions arise when a stream keeps writing after a finalization cut (a background sub-agent still running at its root's finalization, or a root session continued without a recorded SessionStart:resume boundary), counted in the producer's per-pass diagnostics (CaptureResult.diagnostics; not stored durably): a row first emitted at the cut whose content later differs (e.g. a model_call with partial usage) is kept as first emitted (cut_content_divergence); and a turn, and each of its tool_calls with no result at the cut, gains a second close under its later anchor; the cut-time tool_call close is synthetic (metadata.synthetic true, output_capture no_result, outcome interrupted) and is superseded, never retracted (reanchored_close).
   R8: non-replayable producers emit no open marker, never re-emit, and a bump retires nothing.
   DQ intents (owner rec-4063): more than one distinct row per grain key (conflict); pending
   generations older than 2h; null producer.
@@ -417,6 +420,7 @@ governance_notes: >-
   length/control-character rules, the closed domain-tag registry), which is implementation policy
   of src/telemetry/identity.py, not part of the ratified spec itself.
 amendment_log:
+  - {date: "2026-10-14", semantic_break: true, change_class: governance_note_add, summary: "PLAN-telemetry-parser-v3 (slice 3b plan P-B): governance_notes R7 qualified in place (final-usage and full-re-parse clauses) and extended with the finalization-cut emission-set rule and its two declared exceptions."}
   - date: "2026-10-04"
     semantic_break: true
     change_class: governance_note_add

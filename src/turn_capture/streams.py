@@ -14,7 +14,7 @@ from datetime import datetime
 from typing import Any
 
 from src.turn_capture.refs import root_session_ref, subagent_session_ref
-from src.turn_capture.transcript import ROOT, TranscriptTree, read_lines, record_time
+from src.turn_capture.transcript import ROOT, TranscriptTree, inherited_lines, read_lines, record_time
 
 AGENT_TOOL_NAMES = ("Agent", "Task")
 IGNORED_RECORD_TYPES = ("ai-title", "last-prompt", "atis-latch", "mode", "queue-operation", "cost-state", "system")
@@ -46,6 +46,10 @@ KNOWN_ATTACHMENT_TYPES = (
 RESUME_HOOK = "SessionStart:resume"
 COMPACT_HOOKS = ("SessionStart:compact", "PreCompact", "PostCompact")
 BACKGROUND_COMPLETION_TAG = "<task-notification>"
+HARNESS_INTERRUPT_SENTINELS = ("[Request interrupted by user]", "[Request interrupted by user for tool use]")
+HARNESS_DENIAL_PREFIXES: tuple[str, ...] = ()
+API_ERROR_FLAG_KEYS = ("isApiErrorMessage",)
+TOOL_DENIAL_OUTCOMES = {"permission-rule": "blocked", "user-rejected": "interrupted"}
 
 
 @dataclass
@@ -165,7 +169,14 @@ def has_tool_result_block(content: Any) -> bool:
     return isinstance(content, list) and any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content)
 
 
-def classify(data: dict[str, Any], diag: Counter[str]) -> str:
+def is_api_error(data: dict[str, Any]) -> bool:
+    return data.get("type") == "assistant" and any(data.get(key) is True for key in API_ERROR_FLAG_KEYS)
+
+
+def classify(data: dict[str, Any], diag: Counter[str], inherited: bool = False) -> str:
+    if inherited:
+        diag["inherited_records"] += 1
+        return "inherited"
     kind = data.get("type")
     if kind not in ("user", "assistant", "attachment"):
         if kind not in IGNORED_RECORD_TYPES:
@@ -193,6 +204,9 @@ def classify(data: dict[str, Any], diag: Counter[str]) -> str:
     if kind == "assistant":
         message = data.get("message")
         if isinstance(message, dict) and _nonempty(message.get("id")) and isinstance(content, list):
+            if not is_api_error(data) and message.get("model") == "<synthetic>":
+                diag["synthetic_assistant_records"] += 1
+                return "other"
             return "assistant"
         diag["unclassified_assistant_records"] += 1
         return "other"
@@ -343,6 +357,8 @@ def _group_responses(stream: Stream, diag: Counter[str]) -> None:
         if rec.turn is None:
             diag["pre_turn_assistant_records"] += 1
             continue
+        if is_api_error(rec.data):
+            continue
         mid = rec.data["message"]["id"]
         key = (rec.turn.ordinal, mid)
         if key in by_key:
@@ -366,13 +382,15 @@ def _build_stream(
         return None
     lines = read_lines(data, limit)
     totals[key] = len(lines)
+    skip = inherited_lines(lines) if key == ROOT else set()
     recs: list[Rec] = []
     for item in lines:
         if item.data is None:
             diag["malformed_lines"] += 1
             continue
-        kind = classify(item.data, diag)
-        recs.append(Rec(key, item.line, item.data, record_time(item.data), kind))
+        kind = classify(item.data, diag, item.line in skip)
+        if kind != "inherited":
+            recs.append(Rec(key, item.line, item.data, record_time(item.data), kind))
     stream = Stream(key, session_ref, recs)
     _walk(stream, closing, diag)
     _index_tools(stream, diag)
@@ -446,10 +464,6 @@ def parse_tree(tree: TranscriptTree, limits: dict[str, int] | None, final: bool)
     if orphans := known - {s.agent_id for s in spawns}:
         diag["orphan_subagents"] += len(orphans)
     return ParsedTree(tree.session_id, final, streams, spawns, totals, diag)
-
-
-HARNESS_DENIAL_PREFIXES: tuple[str, ...] = ()
-HARNESS_INTERRUPT_SENTINELS: tuple[str, ...] = ()
 
 
 def emitting_streams(parsed: ParsedTree) -> list[Stream]:

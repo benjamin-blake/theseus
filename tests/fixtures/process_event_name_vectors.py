@@ -28,3 +28,13 @@ REJECT: tuple[str, ...] = (
     "hook:" + "a" * 201,
     "hook:x\n",
 )
+
+HOOK_NAME_CASES: tuple[tuple[dict[str, str], str], ...] = (
+    ({"command": 'bash "/w/.claude/hooks/quoted_hook.sh" --flag'}, "hook:quoted_hook"),
+    ({"command": "sh '/w/hooks/single.sh'"}, "hook:single"),
+    ({"command": "python3 /w/hooks/weird@name.py", "hookName": "PostToolUse:Bash"}, "hook:PostToolUse.Bash"),
+    ({"command": "echo done", "hookName": "Stop"}, "hook:Stop"),
+    ({"command": "echo done", "hookName": "!!"}, "hook:unknown"),
+    ({"command": "python3 /w/hooks/weird@name.py", "hookName": "x" * 201}, "hook:unknown"),
+    ({}, "hook:unknown"),
+)

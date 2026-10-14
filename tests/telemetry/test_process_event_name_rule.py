@@ -18,7 +18,7 @@ import yaml
 from scripts.checks.registry import all_checks
 from src.row_rules.rules import RowRuleError, RowRules, check_row
 from src.turn_capture.observations import hook_name
-from tests.fixtures.process_event_name_vectors import ACCEPT, REJECT
+from tests.fixtures.process_event_name_vectors import ACCEPT, HOOK_NAME_CASES, REJECT
 
 _ROOT = Path(__file__).resolve().parents[2]
 _CONTRACT = _ROOT / "docs" / "contracts" / "telemetry_observations.yaml"
@@ -86,6 +86,7 @@ def test_registered_hooks_and_planned_sources_conform() -> None:
     names += [hook_name({"hookName": f"{event}:{tool}"}) for event in _HOOK_EVENTS for tool in _TOOLS]
     names += [hook_name({"hookName": event}) for event in _HOOK_EVENTS]
     names += [hook_name({"command": c, "hookName": f"PreToolUse:{t}"}) for c in commands for t in _TOOLS]
+    names += [hook_name(att) for att, _ in HOOK_NAME_CASES]
     checks = sorted(all_checks())
     assert checks
     names += [f"gate:{check}" for check in checks]
@@ -94,6 +95,13 @@ def test_registered_hooks_and_planned_sources_conform() -> None:
     assert hook_ids
     names += [f"precommit:{hook_id}" for hook_id in hook_ids]
     assert [n for n in names if regex.fullmatch(n) is None] == []
+
+
+def test_hook_name_vectors_hold_and_conform() -> None:
+    regex = _regex()
+    for att, expected in HOOK_NAME_CASES:
+        assert hook_name(att) == expected and regex.fullmatch(expected), att
+        assert expected in ACCEPT or regex.fullmatch(expected)
 
 
 def test_rule_binds_process_event_rows_only() -> None:

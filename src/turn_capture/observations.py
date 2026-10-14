@@ -11,16 +11,18 @@ reasoning_visibility and the provider-reported reasoning_tokens.
 from __future__ import annotations
 
 import hashlib
-import posixpath
 import re
 from collections import Counter
 from typing import Any
 
+from src.turn_capture.gate_events import build_gate_events
+from src.turn_capture.markers import SIGNATURE_PATTERN
 from src.turn_capture.refs import model_call_ref, role_ref, turn_entity_ref
 from src.turn_capture.scrub import scrub_text
 from src.turn_capture.streams import (
     HARNESS_DENIAL_PREFIXES,
     HARNESS_INTERRUPT_SENTINELS,
+    TOOL_DENIAL_OUTCOMES,
     ParsedTree,
     Rec,
     Result,
@@ -30,6 +32,7 @@ from src.turn_capture.streams import (
     block_base,
     emitting_streams,
 )
+from src.turn_capture.transcript import hook_script
 from src.turn_capture.transcripts import Ctx, Sidecars, canonical_json, line_count, persisted_output, text_of
 
 OBSERVATION_COLUMNS = (
@@ -71,7 +74,8 @@ OBSERVATION_COLUMNS = (
     "rec_id",
     "metadata",
 )
-_SCRIPT = re.compile(r"[^\s]+\.(py|sh)$")
+_SIGNATURE = re.compile(SIGNATURE_PATTERN)
+_IDENTIFIER = re.compile(r"[a-z][a-z0-9_-]{0,63}")
 _USAGE_KEYS = (
     ("tokens_input", "input_tokens"),
     ("tokens_output", "output_tokens"),
@@ -119,23 +123,35 @@ def _model(rec: Rec) -> str | None:
     return model if isinstance(model, str) else None
 
 
-def outcome_of(res: Result, stream: Stream) -> str:
-    """blocked, then interrupted, then error, else success."""
+def outcome_of(res: Result, stream: Stream, diag: Counter[str] | None = None) -> str:
+    """blocked, then interrupted, then error, else success (rule K-4)."""
     is_error = res.body.get("is_error") is True
     text = text_of(res.body.get("content"))
+    kind = res.rec.data.get("toolDenialKind")
+    denial = TOOL_DENIAL_OUTCOMES.get(kind) if isinstance(kind, str) else None
+    if kind is not None and denial is None and diag is not None:
+        diag["unknown_tool_denial_kind"] += 1
     hook_block = any(line < res.rec.line for line in stream.pre_tool_blocks.get(res.tool_use_id, []))
-    if (is_error and text.startswith(HARNESS_DENIAL_PREFIXES)) or hook_block:
+    if denial == "blocked" or hook_block or (is_error and text.startswith(HARNESS_DENIAL_PREFIXES)):
         return "blocked"
     info = res.use_result
-    if (isinstance(info, dict) and info.get("interrupted") is True) or (is_error and text in HARNESS_INTERRUPT_SENTINELS):
+    interrupted = isinstance(info, dict) and info.get("interrupted") is True
+    if denial == "interrupted" or interrupted or (is_error and text in HARNESS_INTERRUPT_SENTINELS):
         return "interrupted"
     return "error" if is_error else "success"
+
+
+def _identifier(value: Any) -> str | None:
+    return value if isinstance(value, str) and _IDENTIFIER.fullmatch(value) else None
 
 
 def _result_meta(res: Result) -> str:
     info = res.use_result if isinstance(res.use_result, dict) else {}
     persisted = persisted_output(res)
+    decision = res.rec.data.get("permissionDecision")
     return _meta(
+        tool_denial_kind=_identifier(res.rec.data.get("toolDenialKind")),
+        permission_decision_source=_identifier(decision.get("source") if isinstance(decision, dict) else None),
         is_error=res.body.get("is_error") is True,
         interrupted=info.get("interrupted") if isinstance(info.get("interrupted"), bool) else None,
         persisted_output=persisted.name if persisted is not None else None,
@@ -183,7 +199,9 @@ def _reasoning(resp: Any, tokens: int | None) -> str:
     return "omitted" if thinking or (tokens is not None and tokens > 0) else "none"
 
 
-def _tool_rows(ctx: Ctx, stream: Stream, turn: Turn, tref: str, use: ToolUse, sidecars: Sidecars) -> list[dict[str, Any]]:
+def _tool_rows(
+    ctx: Ctx, stream: Stream, tref: str, use: ToolUse, sidecars: Sidecars, diag: Counter[str]
+) -> list[dict[str, Any]]:
     rec, block = use.rec, use.block_body
     caller = block.get("caller")
     tid = use.tool_id
@@ -223,7 +241,7 @@ def _tool_rows(ctx: Ctx, stream: Stream, turn: Turn, tref: str, use: ToolUse, si
                 tref,
                 name=name,
                 sequence=use.ordinal,
-                outcome=outcome_of(res, stream),
+                outcome=outcome_of(res, stream, diag),
                 metadata=_result_meta(res),
                 **_output_cols(ctx, res, sidecars),
             )
@@ -320,7 +338,7 @@ def _turn_rows(ctx: Ctx, stream: Stream, turn: Turn, diag: Counter[str], sidecar
             )
         )
     for use in turn.tool_uses:
-        rows += _tool_rows(ctx, stream, turn, tref, use, sidecars)
+        rows += _tool_rows(ctx, stream, tref, use, sidecars, diag)
     for res in turn.orphan_results:
         rows.append(
             _row(
@@ -332,7 +350,7 @@ def _turn_rows(ctx: Ctx, stream: Stream, turn: Turn, diag: Counter[str], sidecar
                 "tool_call",
                 "close",
                 tref,
-                outcome=outcome_of(res, stream),
+                outcome=outcome_of(res, stream, diag),
                 metadata=_result_meta(res),
                 **_output_cols(ctx, res, sidecars),
             )
@@ -341,12 +359,13 @@ def _turn_rows(ctx: Ctx, stream: Stream, turn: Turn, diag: Counter[str], sidecar
 
 
 def hook_name(att: dict[str, Any]) -> str:
-    command = att.get("command")
-    for token in command.split() if isinstance(command, str) else []:
-        if _SCRIPT.match(token):
-            return "hook:" + posixpath.splitext(posixpath.basename(token))[0]
+    """Rules H-1..H-3: the script stem, else hookName with ':' as '.', else hook:unknown; each must fit the class."""
+    stem, _ = hook_script(att.get("command"))
+    if stem is not None and _SIGNATURE.fullmatch(stem):
+        return "hook:" + stem
     hook = att.get("hookName")
-    return "hook:" + (hook.replace(":", ".") if isinstance(hook, str) and hook else "unknown")
+    name = hook.replace(":", ".") if isinstance(hook, str) else ""
+    return "hook:" + (name if _SIGNATURE.fullmatch(name) else "unknown")
 
 
 def _hook_row(ctx: Ctx, stream: Stream, rec: Rec) -> dict[str, Any]:
@@ -379,7 +398,7 @@ def _hook_row(ctx: Ctx, stream: Stream, rec: Rec) -> dict[str, Any]:
             duration_ms=att.get("durationMs") if type(att.get("durationMs")) is int else None,
             tool_use_id=use_id,
             command=scrub_text(command).text if isinstance(command, str) else None,
-            stderr_head=scrub_text(stderr[:512]).text if isinstance(stderr, str) else None,
+            stderr_head=scrub_text(stderr).text[:512] if isinstance(stderr, str) else None,
         ),
     )
 
@@ -390,5 +409,7 @@ def build_observations(parsed: ParsedTree, ctx: Ctx, diag: Counter[str], sidecar
         for turn in stream.turns:
             if turn.closed:
                 rows += _turn_rows(ctx, stream, turn, diag, sidecars)
+                tref = turn_entity_ref(stream.session_ref, turn.prompt_id)
+                rows += build_gate_events(ctx, stream, turn, tref, sidecars, diag, _row)
         rows += [_hook_row(ctx, stream, rec) for rec in stream.hooks if rec.turn is None or rec.turn.closed]
     return rows

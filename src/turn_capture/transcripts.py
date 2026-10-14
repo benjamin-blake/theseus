@@ -4,7 +4,8 @@ Content is scrubbed BEFORE content_sha256 and content_bytes; an empty payload yi
 blocks are replaced by a {type, media_type, sha256, bytes} stub. A tool_result row holds what the model saw (the
 in-transcript text). A persisted output (a Bash persistedOutputPath or an MCP-overflow message naming a saved file)
 adds ONE tool_output row holding the full sidecar, or, above the cap, ONE omission row carrying the raw bytes'
-identity and no payload. content_truncated is a defect detector no v2 path sets. Attachments emit no rows in 3a.
+identity and no payload. content_truncated is a defect detector no path sets. Attachments emit no transcript rows in
+v3 (attachment-derived system transcripts are deferred: no consumer).
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ from src.turn_capture.streams import (
     Result,
     block_base,
     emitting_streams,
+    is_api_error,
 )
 from src.turn_capture.transcript import TranscriptTree
 
@@ -101,6 +103,7 @@ class Sidecars:
         self._tree = tree
         self._cursor = cursor
         self.used: dict[str, str | None] = {}
+        self.reads = 0
         self._outputs: dict[str, Output | None] = {}
 
     def output(self, name: str, cap: int) -> Output | None:
@@ -123,6 +126,7 @@ class Sidecars:
             return None
         if size > cap:
             hasher, total, lf, last = hashlib.sha256(), 0, 0, b""
+            self.reads += 1
             for chunk in self._tree.sidecar_chunks(name):
                 hasher.update(chunk)
                 total += len(chunk)
@@ -131,6 +135,7 @@ class Sidecars:
             sha = hasher.hexdigest()
             self._pin(name, sha)
             return Output(Digest(total, sha, line_count(lf, total, last == b"\n")), None)
+        self.reads += 1
         data = self._tree.sidecar(name)
         if data is None:
             self._pin(name, None)
@@ -326,11 +331,13 @@ def _tool_result(ctx: Ctx, res: Result, session_ref: str, sidecars: Sidecars, di
     visible = text_of(res.body.get("content"))
     info = res.use_result
     persisted = persisted_output(res)
-    if isinstance(info, str) and persisted is None:
+    denial = isinstance(res.rec.data.get("toolDenialKind"), str)
+    if isinstance(info, str) and persisted is None and not denial:
         diag["unmatched_string_tool_use_result"] += 1
     rows: list[dict[str, Any]] = []
     if visible != "":
-        origin = "harness" if is_sentinel(visible) or (persisted is not None and persisted.mcp) else "tool"
+        harness = denial or is_sentinel(visible) or (persisted is not None and persisted.mcp)
+        origin = "harness" if harness else "tool"
         rows.append(_row(ctx, res.rec, res.block, session_ref, res.tool_use_id, "tool_result", origin, visible, None))
     out = sidecars.output(persisted.name, ctx.full_output_cap_bytes) if persisted is not None else None
     if out is not None:
@@ -350,11 +357,13 @@ def build_transcripts(parsed: ParsedTree, ctx: Ctx, sidecars: Sidecars, diag: Co
             tref = turn_entity_ref(sref, turn.prompt_id)
             for rec in turn.recs:
                 if rec.kind == "prompt":
-                    harness = rec.data.get("isMeta") is True
+                    harness = rec.data.get("isMeta") is True or is_sentinel(text_of(rec.data["message"]["content"]))
                     rows += _prompt_like(
                         ctx, rec, sref, tref, "system" if harness else "prompt", "harness" if harness else "human"
                     )
                 elif rec.kind == "companion":
+                    rows += _prompt_like(ctx, rec, sref, tref, "system", "harness")
+                elif rec.kind == "assistant" and is_api_error(rec.data):
                     rows += _prompt_like(ctx, rec, sref, tref, "system", "harness")
                 elif rec.kind == "assistant":
                     rows += _assistant(ctx, rec, sref, diag)

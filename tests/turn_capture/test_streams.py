@@ -6,7 +6,18 @@ from collections import Counter
 from pathlib import Path
 
 from src.turn_capture import streams
-from src.turn_capture.streams import ROOT, classify, emitting_streams, is_background_completion, parse_tree
+from src.turn_capture.streams import (
+    API_ERROR_FLAG_KEYS,
+    HARNESS_DENIAL_PREFIXES,
+    HARNESS_INTERRUPT_SENTINELS,
+    ROOT,
+    TOOL_DENIAL_OUTCOMES,
+    classify,
+    emitting_streams,
+    is_api_error,
+    is_background_completion,
+    parse_tree,
+)
 from src.turn_capture.transcript import FsTree, MemTree
 from tests.fixtures.turn_capture_corpus import (
     SID,
@@ -19,6 +30,11 @@ from tests.fixtures.turn_capture_corpus import (
     text_block,
     tool_result,
     tool_use_block,
+)
+from tests.fixtures.turn_capture_v3_cases import (
+    fork_branch_copied_head_files,
+    fork_session_copied_head_files,
+    fork_session_nested_files,
 )
 
 
@@ -266,3 +282,97 @@ def test_limits_truncate_each_file() -> None:
     cut = parse_tree(tree, {ROOT: 2}, False)
     assert len(cut.streams[ROOT].recs) == 2 and cut.spawns == [] and cut.lines_total == {ROOT: 2}
     assert parse_tree(tree, {}, False).streams[ROOT].recs == []
+
+
+def test_spike_pinned_constants() -> None:
+    assert HARNESS_INTERRUPT_SENTINELS == ("[Request interrupted by user]", "[Request interrupted by user for tool use]")
+    assert HARNESS_DENIAL_PREFIXES == () and API_ERROR_FLAG_KEYS == ("isApiErrorMessage",)
+    assert TOOL_DENIAL_OUTCOMES == {"permission-rule": "blocked", "user-rejected": "interrupted"}
+
+
+def _parse_files(files, limits=None):
+    return parse_tree(MemTree(files), limits, True)
+
+
+def test_inherited_records_are_classified_and_left_out_of_the_stream() -> None:
+    diag: Counter[str] = Counter()
+    ok = {"uuid": "u", "timestamp": "2026-01-01T00:00:00.000Z", "type": "user", "promptId": "p", "message": {"content": "x"}}
+    assert classify(ok, diag, inherited=True) == "inherited" and diag["inherited_records"] == 1
+    assert classify(ok, diag) == "prompt"
+    branch = _parse_files(fork_branch_copied_head_files())
+    assert branch.diag["inherited_records"] == 4
+    assert [r.uuid for r in branch.streams[ROOT].recs if r.data.get("uuid")] == ["sys1", "o1", "o2", "o3"]
+    assert [t.prompt_id for t in branch.streams[ROOT].turns] == ["op1", "op2"]
+    session = _parse_files(fork_session_copied_head_files())
+    assert session.diag["inherited_records"] == 4
+    assert [t.prompt_id for t in session.streams[ROOT].turns] == ["op1", "op2"]
+    nested = _parse_files(fork_session_nested_files())
+    assert nested.diag["inherited_records"] == 7 and [t.prompt_id for t in nested.streams[ROOT].turns] == ["op1", "op2"]
+
+
+def test_inheritance_is_a_function_of_the_prefix() -> None:
+    files = fork_session_copied_head_files()
+    before = _parse_files(files, {ROOT: 4})
+    assert before.diag["inherited_records"] == 0 and len(before.streams[ROOT].recs) == 4
+    after = _parse_files(files, {ROOT: 5})
+    assert after.diag["inherited_records"] == 4
+    nested = fork_session_nested_files()
+    assert _parse_files(nested, {ROOT: 7}).diag["inherited_records"] == 4
+    assert _parse_files(nested, {ROOT: 8}).diag["inherited_records"] == 7
+
+
+def test_inheritance_never_applies_to_a_subagent_file() -> None:
+    kid = [
+        child(prompt("c1", 2, "p1", "t"), "ag1"),
+        child({**assistant("c2", 3, "mc", [text_block("w")]), "forkedFrom": {}}, "ag1"),
+    ]
+    root = [
+        prompt("u1", 1, "p1", "go"),
+        assistant("a1", 1.5, "m1", [tool_use_block("tuA", "Agent", {})]),
+        tool_result("r1", 1.6, "tuA", "done", pid="p1", tur={"agentId": "ag1", "isAsync": False}),
+    ]
+    tree = parsed(root, {"ag1": kid}, final=True)
+    assert tree.diag["inherited_records"] == 0 and len(tree.streams["ag1"].recs) == 2
+
+
+def test_synthetic_and_api_error_assistant_records() -> None:
+    diag: Counter[str] = Counter()
+    ok = {
+        "uuid": "u",
+        "timestamp": "2026-01-01T00:00:00.000Z",
+        "type": "assistant",
+        "message": {"id": "m", "content": [], "model": "<synthetic>"},
+    }
+    assert classify(ok, diag) == "other" and diag["synthetic_assistant_records"] == 1
+    flagged = {**ok, "isApiErrorMessage": True}
+    assert (
+        classify(flagged, diag) == "assistant"
+        and is_api_error(flagged)
+        and not is_api_error({**ok, "isApiErrorMessage": False})
+    )
+    assert not is_api_error({**flagged, "type": "user"}) and diag["synthetic_assistant_records"] == 1
+    root = [
+        prompt("u1", 1, "p1", "go"),
+        assistant(
+            "e1",
+            2,
+            "00000000-0000-4000-8000-0000000000e1",
+            [text_block("API Error")],
+            model="<synthetic>",
+            isApiErrorMessage=True,
+        ),
+        prompt("u2", 3, "p2", "again"),
+        assistant(
+            "s1",
+            4,
+            "00000000-0000-4000-8000-0000000000e2",
+            [text_block("No response requested.")],
+            model="<synthetic>",
+            isApiErrorMessage=False,
+        ),
+        assistant("a2", 5, "m2", [text_block("fine")]),
+    ]
+    tree = parsed(root, final=True)
+    first, second = tree.streams[ROOT].turns
+    assert first.last_assistant is not None and first.last_assistant.uuid == "e1" and first.responses == []
+    assert [r.message_id for r in second.responses] == ["m2"] and tree.diag["synthetic_assistant_records"] == 1

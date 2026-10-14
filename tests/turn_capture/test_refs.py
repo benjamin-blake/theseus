@@ -31,9 +31,11 @@ def test_grammar_strings() -> None:
     assert refs.model_call_ref("m") == "m/model_call"
     assert refs.session_marker_ref("s") == "s#0/open"
     assert refs.session_marker_ref("s", "compact") == "s#0/compact"
+    assert refs.gate_event_ref("u", 2, 3) == "u#2/gate_event.3"
 
 
 def test_role_vocabulary() -> None:
-    assert refs.ROLE_SESSION == ("open", "resume", "compact")
+    assert refs.ROLE_SESSION == ("open", "resume", "compact", "close")
     assert "process_event" in refs.ROLE_OBSERVATION and "agent_close" in refs.ROLE_AGENT
+    assert "gate_event" in refs.ROLE_OBSERVATION
     assert refs.ROLE_TRANSCRIPT == ("full",)
