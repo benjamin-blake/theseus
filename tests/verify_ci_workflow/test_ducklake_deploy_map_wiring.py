@@ -80,3 +80,24 @@ def test_deploy_push_paths_include_src_telemetry() -> None:
     doc = yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
     triggers = doc.get("on", doc.get(True))
     assert "src/telemetry/**" in triggers["push"]["paths"]
+
+
+def test_create_telemetry_step_is_last_in_maintenance_smoke_and_not_cancelled() -> None:
+    """The owner-login DDL step runs after the four maintenance gates, whatever they did, and nothing runs after it."""
+    steps = _jobs()["maintenance-smoke"]["steps"]
+    assert steps[-1].get("id") == "create-telemetry-tables"
+    assert steps[-1]["if"].replace(" ", "") == "${{!cancelled()}}"
+    assert "--lambda-maintenance-create-telemetry" in steps[-1]["run"]
+    gates = [s["run"] for s in steps[:-1] if "--lambda-maintenance-" in s.get("run", "")]
+    assert len(gates) == 4 and all("create-telemetry" not in g for g in gates)
+    assert "if" not in steps[-2] or "cancelled" not in str(steps[-2]["if"])
+
+
+def test_smoke_job_waits_for_maintenance_smoke() -> None:
+    """The telemetry gate runs only after the owner step had its turn; deploy-serving never waits on a smoke step."""
+    jobs = _jobs()
+    smoke = jobs["smoke"]
+    assert set(smoke["needs"]) == {"deploy-serving", "maintenance-smoke"}
+    condition = str(smoke["if"]).replace(" ", "")
+    assert "!cancelled()" in condition and "needs.deploy-serving.outputs.deployed=='true'" in condition
+    assert "maintenance-smoke" not in jobs["deploy-serving"].get("needs", [])

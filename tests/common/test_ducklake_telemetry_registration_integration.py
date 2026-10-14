@@ -1,7 +1,7 @@
 """Real-DuckLake race evidence for telemetry registration (Decision 200 lock arm; tenant-id.yaml, project-id.yaml).
 
 pytest.mark.integration: never gates CI (rec-4071), a local proof. Two cursors of one DuckDB instance share a file-backed
-DuckLake catalog aliased ops_catalog, provisioned by provision_telemetry_catalog itself so the live gate is not
+DuckLake catalog aliased ops_catalog, created by create_telemetry_tables and provisioned by provision_telemetry_catalog themselves, so the live gate is not
 provisioning's first real-catalog run. Both register the same tenant and the same project_ref concurrently; one COMMIT
 conflicts on the counter-row UPDATE, run_telemetry_txn retries it, and both return one id. If ids diverge, Decision 200's
 reversal condition fires and the model returns to /plan. The fixture FAILS when the extension cannot load (a skip is a FAIL).
@@ -39,6 +39,7 @@ def con(tmp_path: Path, _allow_network_for_integration: None) -> Any:
     connection.execute("SET TimeZone='UTC'")
     connection.execute(f"ATTACH 'ducklake:{tmp_path / 'catalog.ducklake'}' AS ops_catalog (DATA_PATH '{tmp_path / 'data'}')")
     reg.clear_telemetry_caches()
+    run_telemetry_txn(connection, lambda c: prov.create_telemetry_tables(c, semantics=SEM))
     run_telemetry_txn(connection, lambda c: prov.provision_telemetry_catalog(c, semantics=SEM))
     yield connection
     connection.close()
@@ -48,9 +49,11 @@ def _rows(con: Any, table: str) -> int:
     return int(con.execute(f"SELECT count(*) FROM ops_catalog.{table}").fetchone()[0])
 
 
-def test_provisioning_is_create_only_on_a_real_catalog(con: Any) -> None:
-    again = run_telemetry_txn(con, lambda c: prov.provision_telemetry_catalog(c, semantics=SEM)).result
-    assert again.created == () and len(again.tables) == 9 and again.counters == {"ops_tenants": 0, "ops_projects": 0}
+def test_create_then_provision_on_a_real_catalog(con: Any) -> None:
+    again = run_telemetry_txn(con, lambda c: prov.create_telemetry_tables(c, semantics=SEM)).result
+    assert again.created == () and len(again.tables) == 9
+    seeded = run_telemetry_txn(con, lambda c: prov.provision_telemetry_catalog(c, semantics=SEM)).result
+    assert seeded.created == () and seeded.counters == {"ops_tenants": 0, "ops_projects": 0}
 
 
 def _race(con: Any, register_a: Any, register_b: Any) -> tuple[Any, Any, int]:

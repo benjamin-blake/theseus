@@ -54,7 +54,9 @@ class FakeCon:
         counts: dict[str, int] | None = None,
         counters: dict[str, list[int]] | None = None,
         extra_tables: tuple[str, ...] = (),
+        pg_row: tuple[Any, ...] = (0, True, False, False),
     ) -> None:
+        self.pg_row = pg_row
         self.sql: list[str] = []
         self.params: list[Any] = []
         self.existing = tuple(existing) + tuple(extra_tables)
@@ -66,6 +68,8 @@ class FakeCon:
     def execute(self, sql: str, params: Any = None) -> _Cur:
         self.sql.append(sql)
         self.params.append(params)
+        if "postgres_query" in sql:
+            return _Cur([self.pg_row])
         if "duckdb_tables()" in sql:
             return _Cur([(t,) for t in self.existing])
         if "ducklake_table WHERE" in sql:
@@ -97,24 +101,28 @@ def _all_existing(**kw: Any) -> FakeCon:
     return FakeCon(tuple(NINE), counters={"ops_tenants": [0], "ops_projects": [0]}, **kw)
 
 
-def test_provision_creates_and_partitions_every_table_before_any_write() -> None:
+def test_create_tables_creates_and_partitions_every_absent_table() -> None:
     con = FakeCon()
-    result = prov.provision_telemetry_catalog(con, semantics=SEM)
+    result = prov.create_telemetry_tables(con, semantics=SEM)
     ddl = con.statements("CREATE TABLE", "ALTER TABLE")
     creates = [s for s in ddl if s.startswith("CREATE")]
     assert len(creates) == 9 and len(ddl) == 18
-    first_write = min(i for i, s in enumerate(con.sql) if s.startswith(("INSERT", "DELETE")))
-    assert all(con.sql.index(s) < first_write for s in ddl)
     for create in creates:
         table = create.split(".")[1].split()[0]
         alter = next(s for s in ddl if s.startswith("ALTER") and f".{table} SET PARTITIONED BY" in s)
         assert ddl.index(create) < ddl.index(alter)
-    assert sorted(result.created) == sorted(set(NINE) | set(EVENTS))
+    assert sorted(result.created) == sorted(set(NINE) | set(EVENTS)) and list(result.tables) == NINE
 
 
-def test_event_tables_carry_not_null_and_the_session_day_partition() -> None:
+def test_create_tables_writes_no_row() -> None:
+    for con in (FakeCon(), _all_existing()):
+        prov.create_telemetry_tables(con, semantics=SEM)
+        assert not con.statements("INSERT", "DELETE", "UPDATE", "MERGE")
+
+
+def test_create_tables_event_tables_carry_not_null_and_the_session_day_partition() -> None:
     con = FakeCon()
-    prov.provision_telemetry_catalog(con, semantics=SEM)
+    prov.create_telemetry_tables(con, semantics=SEM)
     create = next(s for s in con.sql if s.startswith("CREATE TABLE ops_catalog.telemetry_sessions "))
     for column in (
         "event_id VARCHAR NOT NULL",
@@ -128,8 +136,57 @@ def test_event_tables_carry_not_null_and_the_session_day_partition() -> None:
     assert alter.endswith("SET PARTITIONED BY (year(session_started_at), month(session_started_at), day(session_started_at))")
 
 
+def test_create_tables_issues_no_drop_or_truncate() -> None:
+    for con in (FakeCon(), _all_existing()):
+        prov.create_telemetry_tables(con, semantics=SEM)
+        assert not [s for s in con.sql if re.search(r"\b(DROP|TRUNCATE)\b", s, re.IGNORECASE)]
+    with open(prov.__file__, encoding="utf-8") as fh:
+        source = fh.read().upper()
+    assert "DROP TABLE" not in source and "TRUNCATE TABLE" not in source and "FORCE_RECREATE" not in source
+
+
+def test_create_tables_never_re_alters_existing() -> None:
+    con = _all_existing(extra_tables=("unrelated_smoke_table",))
+    result = prov.create_telemetry_tables(con, semantics=SEM)
+    assert not con.statements("CREATE", "ALTER", "DROP") and result.created == ()
+    assert "unrelated_smoke_table" not in str(con.params)
+
+
+def test_create_tables_never_enables_inlining() -> None:
+    con = FakeCon()
+    prov.create_telemetry_tables(con, semantics=SEM)
+    assert not [s for s in con.sql if "inlining" in s.lower()]
+
+
+def test_create_tables_refuses_drift_before_any_ddl() -> None:
+    transforms = _declared_transforms()
+    transforms["ops_entity_counters"] = ()
+    con = FakeCon(tuple(t for t in NINE if t != "telemetry_agents"), transforms=transforms)
+    with pytest.raises(DuckLakeRuntimeError, match="ops_entity_counters: partitions"):
+        prov.create_telemetry_tables(con, semantics=SEM)
+    assert not con.statements("CREATE", "ALTER", "INSERT", "DELETE")
+
+
+def test_provision_issues_no_ddl() -> None:
+    con = _all_existing()
+    prov.provision_telemetry_catalog(con, semantics=SEM)
+    assert not con.statements("CREATE", "ALTER", "DROP", "TRUNCATE")
+    with open(prov.__file__, encoding="utf-8") as fh:
+        body = fh.read().split("def provision_telemetry_catalog", 1)[1].split("\ndef _guard", 1)[0]
+    assert "create_scd2_tables" not in body and "create_control_table" not in body and "CREATE TABLE" not in body
+
+
+def test_provision_refuses_absent_tables_before_any_write() -> None:
+    for existing in ((), tuple(t for t in NINE if t != "telemetry_agents")):
+        con = FakeCon(existing, counters={"ops_tenants": [0], "ops_projects": [0]})
+        with pytest.raises(DuckLakeRuntimeError, match="telemetry tables absent") as info:
+            prov.provision_telemetry_catalog(con, semantics=SEM)
+        assert "create_telemetry_tables" in str(info.value) and ("telemetry_agents" in str(info.value))
+        assert not con.statements("CREATE", "ALTER", "INSERT", "DELETE", "UPDATE")
+
+
 def test_seed_touches_only_the_two_telemetry_counter_rows() -> None:
-    con = FakeCon(counters={"ops_recommendations": [41]})
+    con = FakeCon(tuple(NINE), counters={"ops_recommendations": [41]})
     prov.provision_telemetry_catalog(con, semantics=SEM)
     writes = [(s.split()[0], p[0]) for s, p in zip(con.sql, con.params, strict=True) if s.startswith(("INSERT", "DELETE"))]
     assert writes == [
@@ -158,27 +215,12 @@ def test_duplicated_counter_row_is_repaired_at_the_floor() -> None:
     assert con.counters["ops_tenants"] == [0]
 
 
-def test_provision_issues_no_drop_or_truncate() -> None:
-    for con in (FakeCon(), _all_existing()):
-        prov.provision_telemetry_catalog(con, semantics=SEM)
-        assert not [s for s in con.sql if re.search(r"\b(DROP|TRUNCATE)\b", s, re.IGNORECASE)]
-    with open(prov.__file__, encoding="utf-8") as fh:
-        source = fh.read().upper()
-    assert "DROP TABLE" not in source and "TRUNCATE TABLE" not in source and "FORCE_RECREATE" not in source
-
-
-def test_existing_tables_are_never_re_altered() -> None:
-    con = _all_existing(extra_tables=("unrelated_smoke_table",))
-    result = prov.provision_telemetry_catalog(con, semantics=SEM)
-    assert not con.statements("CREATE", "ALTER", "DROP") and result.created == ()
-    assert "unrelated_smoke_table" not in str(con.params)
-
-
 def test_half_present_dimension_pair_fails_loud() -> None:
-    con = FakeCon((HISTORIES["ops_tenants"],))
-    with pytest.raises(DuckLakeRuntimeError, match="half-present"):
-        prov.provision_telemetry_catalog(con, semantics=SEM)
-    assert not con.statements("CREATE", "ALTER", "INSERT", "DELETE")
+    for fn in (prov.provision_telemetry_catalog, prov.create_telemetry_tables):
+        con = FakeCon((HISTORIES["ops_tenants"],))
+        with pytest.raises(DuckLakeRuntimeError, match="half-present"):
+            fn(con, semantics=SEM)
+        assert not con.statements("CREATE", "ALTER", "INSERT", "DELETE")
 
 
 def test_preexisting_table_with_drifted_partition_fails_before_any_seed() -> None:
@@ -199,21 +241,43 @@ def test_preexisting_table_with_drifted_columns_fails_before_any_seed() -> None:
     assert not con.statements("CREATE", "ALTER", "INSERT", "DELETE")
 
 
-def test_provision_never_enables_inlining() -> None:
-    con = FakeCon()
-    prov.provision_telemetry_catalog(con, semantics=SEM)
-    assert not [s for s in con.sql if "inlining" in s.lower()]
-
-
 def test_provision_reports_counters_and_tables() -> None:
-    con = FakeCon(counts={CURRENTS["ops_tenants"]: 0})
+    con = _all_existing(counts={CURRENTS["ops_tenants"]: 0})
     result = prov.provision_telemetry_catalog(con, semantics=SEM)
-    assert list(result.tables) == NINE and len(result.tables) == 9
+    assert list(result.tables) == NINE and len(result.tables) == 9 and result.created == ()
     assert result.counters == {"ops_tenants": 0, "ops_projects": 0}
 
 
-def test_inspect_partitions_reports_only_present_target_tables() -> None:
-    transforms = _declared_transforms()
-    transforms["telemetry_agents"] = ()
-    con = FakeCon(("telemetry_agents", "telemetry_sessions"), transforms=transforms, extra_tables=("unrelated_smoke_table",))
-    assert prov.inspect_partitions(con, set(con.existing), SEM) == {"telemetry_agents": False, "telemetry_sessions": True}
+def test_ownership_report_sql_and_fields() -> None:
+    con = FakeCon(pg_row=(2, False, True, True))
+    report = prov.ownership_report(con, meta_schema="ducklake_smoke", scoped_login="ducklake_telemetry_writer")
+    assert report == prov.OwnershipReport(2, False, True, True)
+    sql = next(s for s in con.sql if "postgres_query" in s)
+    assert "''ducklake_smoke''" in sql and "''ducklake_telemetry_writer''" in sql and "relkind IN" in sql
+    assert (
+        "has_schema_privilege" in sql
+        and "''public''" in sql
+        and "nspowner" in sql
+        and "__ducklake_metadata_ops_catalog" in sql
+    )
+    clean = prov.ownership_report(FakeCon(), meta_schema="ducklake_smoke")
+    assert clean == prov.OwnershipReport(0, True, False, False)
+
+
+def test_session_can_create_reads_current_user() -> None:
+    con = FakeCon(pg_row=(False,))
+    assert prov.session_can_create(con, meta_schema="ducklake_smoke") is False
+    assert "current_user" in next(s for s in con.sql if "postgres_query" in s)
+    assert prov.session_can_create(FakeCon(pg_row=(True,)), meta_schema="ducklake_smoke") is True
+
+
+def test_identifier_guard_refuses_unsafe_names() -> None:
+    for bad in ("x'; DROP SCHEMA y; --", "Upper", "1abc", "", "a" * 64, "has space"):
+        con = FakeCon()
+        with pytest.raises(DuckLakeRuntimeError, match="unsafe"):
+            prov.ownership_report(con, meta_schema=bad)
+        with pytest.raises(DuckLakeRuntimeError, match="unsafe"):
+            prov.ownership_report(con, meta_schema="ducklake_smoke", scoped_login=bad)
+        with pytest.raises(DuckLakeRuntimeError, match="unsafe"):
+            prov.session_can_create(con, meta_schema=bad)
+        assert not con.sql

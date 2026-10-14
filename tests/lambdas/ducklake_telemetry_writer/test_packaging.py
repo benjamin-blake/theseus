@@ -49,11 +49,48 @@ def test_telemetry_writer_manifest_bundles_the_kernel_and_modules() -> None:
 
 
 def test_new_common_modules_affect_only_the_telemetry_writer() -> None:
-    for rel in _COMMON_MODULES:
-        assert sorted(compute_affected_artifacts([rel])) == ["ducklake_telemetry_writer"], rel
+    """Corrected, not loosened (Decision 181): provision and txn also ship in maintenance-smoke (the owner verb)."""
+    both = ["ducklake_maintenance_smoke", "ducklake_telemetry_writer"]
+    assert sorted(compute_affected_artifacts(["src/common/ducklake_telemetry_provision.py"])) == both
+    assert sorted(compute_affected_artifacts(["src/common/ducklake_telemetry_txn.py"])) == both
+    assert sorted(compute_affected_artifacts(["src/common/ducklake_telemetry_registration.py"])) == [
+        "ducklake_telemetry_writer"
+    ]
     assert sorted(compute_affected_artifacts(["src/lambdas/ducklake_telemetry_writer/telemetry_actions.py"])) == [
         "ducklake_telemetry_writer"
     ]
+
+
+_SMOKE_CLOSURE = (
+    "src/lambdas/ducklake_maintenance_smoke/telemetry_actions.py",
+    "src/common/ducklake_telemetry_provision.py",
+    "src/common/ducklake_telemetry_txn.py",
+    "src/common/ducklake_partition_layout.py",
+    "src/common/ducklake_maintenance_scope.py",
+    *(f"src/telemetry/{name}.py" for name in _KERNEL),
+)
+
+
+def test_maintenance_smoke_manifest_bundles_the_create_verb_and_its_closure() -> None:
+    manifest = yaml.safe_load(
+        (_ROOT / "src" / "lambdas" / "ducklake_maintenance_smoke" / "manifest.yaml").read_text(encoding="utf-8")
+    )
+    for rel in _SMOKE_CLOSURE:
+        assert rel in manifest["includes"], rel
+    assert "ducklake_telemetry_registration.py" not in " ".join(manifest["includes"])
+    assert "create_telemetry_tables" in manifest["notes"] and "Decision 216" in manifest["notes"]
+
+
+def test_create_verb_module_affects_only_maintenance_smoke() -> None:
+    assert sorted(compute_affected_artifacts(["src/lambdas/ducklake_maintenance_smoke/telemetry_actions.py"])) == [
+        "ducklake_maintenance_smoke"
+    ]
+    excludes = yaml.safe_load((_ROOT / "src" / "lambdas" / "data-pipeline" / "manifest.yaml").read_text(encoding="utf-8"))[
+        "excludes"
+    ]
+    for rel in ("src/common/ducklake_telemetry_txn.py", "src/common/ducklake_telemetry_provision.py"):
+        assert rel in excludes, rel
+    assert "src/lambdas/ducklake_maintenance_smoke" in excludes
 
 
 def test_data_pipeline_excludes_every_ducklake_telemetry_module() -> None:

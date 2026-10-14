@@ -209,7 +209,10 @@ def test_substrate_rows_name_the_telemetry_writer() -> None:
     assert "telemetry-event-envelope.yaml" in " ".join(telemetry["contract_ref"]) and "blob port" in _text("storage-substrate")
     counters = tables["ops_entity_counters"]["write_boundary"]
     assert "telemetry writer" in " ".join(counters.split()) and "ducklake_smoke" in counters
-    assert _load("storage-substrate")["amendment_log"][0]["date"] == "2026-10-12"
+    substrate_log = _load("storage-substrate")["amendment_log"]
+    assert substrate_log[0]["date"] == "2026-10-14" and "PLAN-telemetry-owner-provisioning" in substrate_log[0]["summary"]
+    assert any(e["date"] == "2026-10-12" for e in substrate_log)  # the registration-verbs entry is still present
+    assert "create_telemetry_tables" in " ".join(telemetry["note"].split())
 
 
 def test_ports_pc01_names_the_telemetry_writer_edge() -> None:

@@ -73,6 +73,7 @@ def validate_request(request: TelemetryRequest) -> None:
 
 
 def provision_telemetry(request: TelemetryRequest, con: Any, deps: Deps) -> dict[str, Any]:
+    """Verify the owner-created tables and seed the two counter rows. Issues no DDL (the scoped login holds no CREATE)."""
     validate_request(request)
     outcome = run_telemetry_txn(
         con,
@@ -132,6 +133,14 @@ def _count_sessions(con: Any) -> tuple[int | None, str | None]:
         return None, type(exc).__name__
 
 
+def _can_create(con: Any, meta_schema: str) -> tuple[bool | None, str | None]:
+    """Whether this login holds CREATE on its metadata schema (it must not), or (None, class name) when unreadable."""
+    try:
+        return prov.session_can_create(con, meta_schema=meta_schema), None
+    except Exception as exc:  # noqa: BLE001 -- a measurement: never fails the probe, never echoes the message
+        return None, type(exc).__name__
+
+
 def _scalar(con: Any, sql: str, params: list[Any] | None = None) -> int:
     return int(con.execute(sql, params or []).fetchone()[0])
 
@@ -159,6 +168,7 @@ def telemetry_probe(request: TelemetryRequest, con: Any, deps: Deps) -> dict[str
             if counter_rows[name] == 1:
                 counters[name] = _scalar(con, f"SELECT current_value {where}", [name])
     sessions, reason = _count_sessions(con)
+    can_create, can_create_reason = _can_create(con, deps.meta_schema)
     return {
         "ok": True,
         "meta_schema": deps.meta_schema,
@@ -168,6 +178,8 @@ def telemetry_probe(request: TelemetryRequest, con: Any, deps: Deps) -> dict[str
         "catalog_backend": deps.catalog_backend,
         "catalog_sessions": sessions,
         "catalog_sessions_reason": reason,
+        "can_create": can_create,
+        "can_create_reason": can_create_reason,
         "tables": tables,
         "counters": counters,
         "counter_rows": counter_rows,

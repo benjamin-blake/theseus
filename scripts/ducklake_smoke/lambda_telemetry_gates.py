@@ -168,6 +168,10 @@ def _check_probe(url: str, profile: str | None, region: str) -> None:
         raise _fail("telemetry_probe is not bound to the smoke catalog")
     if body.get("catalog_login") != "ducklake_telemetry_writer":
         raise _fail("telemetry_probe catalog_login is not the scoped telemetry login")
+    if body.get("can_create") is not False:
+        raise _fail(
+            "telemetry_probe can_create is not false (true: the scoped login can create, Decision 216 cl.1; null: unreadable)"
+        )
     tables = body.get("tables")
     if not isinstance(tables, dict) or len(tables) != 9:
         raise _fail("telemetry_probe did not report the nine physical tables")

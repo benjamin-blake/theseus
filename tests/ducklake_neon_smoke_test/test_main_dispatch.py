@@ -148,3 +148,14 @@ def test_main_lambda_telemetry_dispatch(monkeypatch, capsys):
     assert smoke.main(["--lambda-telemetry", "--profile", "p", "--region", "r"]) == 0
     assert seen == {"profile": "p", "region": "r"}
     assert "LAMBDA_TELEMETRY OK" in capsys.readouterr().out
+
+
+def test_create_telemetry_flag_dispatches_the_gate(monkeypatch):
+    from scripts.ducklake_smoke import lambda_maintenance_gates
+
+    assert smoke.lambda_maintenance_create_telemetry is lambda_maintenance_gates.lambda_maintenance_create_telemetry
+    assert "lambda_maintenance_create_telemetry" in smoke._LAMBDA_GATES
+    seen = []
+    monkeypatch.setattr(smoke, "lambda_maintenance_create_telemetry", lambda **kw: seen.append(kw))
+    assert smoke.main(["--lambda-maintenance-create-telemetry"]) == 0
+    assert len(seen) == 1

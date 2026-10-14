@@ -26,8 +26,10 @@ name: deploy-ducklake-lambdas
 #      always ship, since it is what the reconcile ALTERs against). Builds + uploads ALL
 #      artifacts once (every function zip + the three layers), then deploys ONLY the two maintenance functions
 #      (maintenance, maintenance-smoke) via --ducklake-functions.
-#   2. maintenance-smoke (needs deploy-maintenance): the four --lambda-maintenance-* gates,
-#      narrowed to the two maintenance functions' deploy records. Runs on the SAME condition as
+#   2. maintenance-smoke (needs deploy-maintenance): the four --lambda-maintenance-* gates, then LAST (and with
+#      !cancelled(), so it runs whatever the four did) the owner-login --lambda-maintenance-create-telemetry step that
+#      creates the smoke telemetry tables (Decision 216, amending Decision 143 clause 2; the telemetry writer's scoped login
+#      holds no CREATE), narrowed to the two maintenance functions' deploy records. Runs on the SAME condition as
 #      deploy-maintenance shipping code (Decision 55 false-green avoidance: an ungated deploy must
 #      never be an unverified deploy).
 #   3. reconcile-gate (needs deploy-maintenance): static, zero-egress (Decision 88) merge-time
@@ -44,7 +46,8 @@ name: deploy-ducklake-lambdas
 #      writer + reader + catalog-dr + telemetry-writer from the artifacts deploy-maintenance already uploaded (avoids
 #      a double build/upload of the same artifacts, and desynchronising a deploy record's
 #      code_sha256 from the S3 bytes it names).
-#   5. smoke (needs deploy-serving): --lambda-attach + --lambda-reader, then --lambda-row-rules (rec-4158 plan B: chained
+#   5. smoke (needs deploy-serving AND maintenance-smoke, with !cancelled() so a red maintenance-smoke still lets the serving
+#      gates run and report; it never overlaps the owner step, and the two jobs never invoke the smoke catalog together): --lambda-attach + --lambda-reader, then --lambda-row-rules (rec-4158 plan B: chained
 #      on the reader step's one-line run body, so the R3 body baseline is untouched), then --lambda-telemetry (the
 #      telemetry writer's URL-only proof, incl. a denied direct invoke), narrowed to the serving functions' deploy records.
 #
@@ -259,6 +262,11 @@ jobs:
       - name: Smoke test -- maintenance-hot-merge (T2.18 c9 autonomous gate)
         run: .venv/bin/python -m scripts.ducklake_neon_smoke_test --lambda-maintenance-hot-merge
 
+      - id: create-telemetry-tables
+        name: Smoke test -- maintenance-create-telemetry (owner-login telemetry DDL)
+        if: ${{ !cancelled() }}
+        run: .venv/bin/python -m scripts.ducklake_neon_smoke_test --lambda-maintenance-create-telemetry
+
   reconcile-gate:
     needs: deploy-maintenance
     runs-on: ubuntu-latest
@@ -349,8 +357,8 @@ jobs:
           echo "deployed=true" >> "$GITHUB_OUTPUT"
 
   smoke:
-    needs: deploy-serving
-    if: needs.deploy-serving.outputs.deployed == 'true'
+    needs: [deploy-serving, maintenance-smoke]
+    if: ${{ !cancelled() && needs.deploy-serving.outputs.deployed == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

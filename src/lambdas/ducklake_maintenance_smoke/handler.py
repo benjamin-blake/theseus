@@ -2,9 +2,11 @@
 Decision 81 clause 1, runtime artifacts 3 -> 4).
 
 CI-invokable smoke-safe sibling of ducklake_maintenance (src/lambdas/ducklake_maintenance/handler.py).
-Dispatch table is EXACTLY {merge, gc, breaker_probe, hot_merge} -- the four non-destructive,
-disposable-smoke-catalog cadences, sharing src/common/ducklake_maintenance.py with the admin
-function. None of the admin function's production-destructive or operational verbs are reachable
+Dispatch table is EXACTLY {merge, gc, breaker_probe, hot_merge, create_telemetry_tables}
+(Decision 216, amending Decision 143 clause 2) -- the four non-destructive, disposable-smoke-catalog
+cadences, sharing src/common/ducklake_maintenance.py with the admin function, plus the create-only
+owner-login telemetry DDL verb (src/lambdas/ducklake_maintenance_smoke/telemetry_actions.py).
+None of the admin function's production-destructive or operational verbs are reachable
 here: the boundary is the resource shape -- a separate Lambda + IAM execution role scoped to the
 smoke S3 prefix only -- not an in-handler guard an agent-authored codebase could edit out (Fable
 frontier-architecture consult, bundled Decision: scope every identity by the worst verb it can
@@ -28,6 +30,7 @@ from typing import Any
 from src.common import ducklake_maintenance as maint
 from src.common import ducklake_maintenance_ops as gcops
 from src.common import ducklake_runtime as rt
+from src.lambdas.ducklake_maintenance_smoke import telemetry_actions
 
 DATA_PATH = os.environ.get("DUCKLAKE_DATA_PATH", rt.SMOKE_DATA_PATH)
 META_SCHEMA = os.environ.get("DUCKLAKE_META_SCHEMA", rt.SMOKE_META_SCHEMA)
@@ -145,7 +148,7 @@ def action_breaker_probe(event: dict[str, Any], _con: Any) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Dispatch -- EXACTLY the 4 smoke actions. No production-destructive or operational verb is
+# Dispatch -- EXACTLY the 5 smoke actions. No production-destructive or operational verb is
 # reachable here (blast-radius invariant; enforced by the resource split, not this dict alone).
 # ---------------------------------------------------------------------------
 
@@ -154,6 +157,7 @@ _ACTIONS: dict[str, Any] = {
     "gc": action_gc,
     "hot_merge": action_hot_merge,
     "breaker_probe": action_breaker_probe,
+    "create_telemetry_tables": telemetry_actions.action_create_telemetry_tables,
 }
 
 

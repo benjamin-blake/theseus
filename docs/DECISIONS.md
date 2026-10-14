@@ -2,6 +2,54 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 216: One owner per DuckLake metadata schema -- scoped catalog logins never hold CREATE, and telemetry tables are created under the owner login, by CI on the disposable smoke catalog (amends Decision 143 clause 2 and Decision 213 clause 3) (Decided)
+
+```yaml
+number: 216
+status: Decided
+decided_date: "2026-10-14"
+amends: [143, 213]
+significance:
+  value: numbered_decision
+  justification: "Durable identity-scope commitment with reversal conditions: widens Decision 143 cl.2's exact CI-reachable dispatch set and carves the smoke catalog out of Decision 213 cl.3's admin step; an amendment_forms annotation cannot widen a ratified exact set or add a carve-out (the Decision 204 cl.4 precedent), and no contract owns cross-function identity scope."
+```
+
+**Status:** Decided
+**Date:** 2026-10-14
+**Warehouse ID:** dec-216 (per Decision 84 backfill)
+
+**Problem:** DuckLake's CREATE TABLE also creates a physical Postgres table per table even with inlining off, so provisioning needs CREATE on the metadata schema; the telemetry writer's DML-only login could not run provision_telemetry (rec-4294's trigger), firing Decision 213's reversal condition scoped-login-blocks-verbs.
+
+**Decision:**
+1. Single owner: every object in a DuckLake metadata schema is owned by that schema's owner and all DuckLake-level DDL (create, alter, partition, extension migration) runs under the owner login; a scoped login never holds CREATE on any schema, public included.
+2. Smoke: ducklake_maintenance_smoke gains create_telemetry_tables (create-if-absent DDL for the declared telemetry tables, read-only drift checks, no row writes, no drop, nothing read from the event), run by the governed deploy pipeline's maintenance-smoke stage before the telemetry gate. Amends Decision 143 cl.2: its dispatch set is EXACTLY {merge, gc, breaker_probe, hot_merge, create_telemetry_tables}; reversible and disposable, so agent-autonomous under cl.3.
+3. Amends Decision 213 cl.3: creating a telemetry table is a schema migration. On the disposable smoke catalog it runs as clause 2's CI verb; on a production telemetry catalog it stays an admin step under the owner login, operator-invoked (Decision 126 admin tier), and an ADMIN-container agent path needs its own carve-out (rec-4292). The telemetry writer keeps provision_telemetry as DML only (verify presence and drift, seed the counter rows), so ops_entity_counters keeps one write path.
+4. Decision 213's scoped-login-blocks-verbs condition fired and is resolved by moving the verb, not by widening the grant set. "DML-only" contains which catalog a scoped login reaches, not DuckLake-level verbs: metadata DML already permits a DuckLake DROP TABLE, so verb containment stays the closed verb set, S3 without DeleteObject and the nightly dump (rec-4297 narrows the grants by measurement).
+
+**Rationale:** Measured on Postgres 16 with a Neon-shaped non-superuser owner: when the scoped login creates DuckLake's physical tables it owns them, and the owner login's reader, nightly DR dump and maintenance can read them only through neon_superuser's pg_read_all_data -- without it all three failed; a CREATE grant also lets the login plant tables and functions (the CVE-2018-1058 class). Postgres has no CREATE OR REPLACE privilege; replacing or dropping needs ownership. Owner-created tables stay reachable by the scoped login through default privileges, including after owner ALTERs. An independent review (2026-10-14) reached the same design. Rejected: granting CREATE; owner membership in the scoped role; an owner credential or SET ROLE for the writer (its worst verb becomes everything, Decision 143 cl.1); hand-run admin creation on smoke (a human in the deploy path, which Decision 143's rationale rejected).
+
+**Coverage (Decision 181 cl.2):** the smoke catalog -- the maintenance-smoke step's ownership report (foreign-owned relations, schema owner, scoped CREATE on the metadata schema and public; other schemas are an unenforced residual, the role SQL granting none) and the telemetry gate's can_create check from the writer's own session, on every deploy; the role SQL and DuckLake's DDL behaviour -- tests/common/test_ducklake_telemetry_catalog_ownership.py, run before merge and an unenforced CI residual until rec-4071 gates it; a production telemetry catalog -- an unenforced residual until slice 2c (rec-4292); DuckLake-level DROP through metadata DML -- a residual (rec-4297); the owner-login reader and a restore without pg_read_all_data -- a residual (rec-4300); the CI path's catalog identity -- the all-catalog owner login, smoke-pinned in code only (env pin and refusal, unit-tested) -- an unenforced residual until 2c's smoke-only migrator login (rec-4292).
+
+```yaml reversal-conditions
+decision: 216
+review_by: 2027-04-30
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: owner-identity-changes
+    kind: manual
+    description: "The catalog owner login is replaced, or a provider move changes ownership semantics: re-derive clause 1, with 2c's per-catalog owner role (rec-4292)."
+  - id: ducklake-ddl-on-dml-path
+    kind: manual
+    description: "A DuckLake version issues Postgres DDL on an append, registration or verify path, which tests/common/test_ducklake_telemetry_catalog_ownership.py detects: re-decide clause 1 for that path."
+  - id: telemetry-schema-churn
+    kind: manual
+    description: "Production telemetry schema changes become frequent enough that clause 3's admin step blocks delivery: consider a CI-run migrator login at 2c."
+```
+
+**Related:** Decision 143, 213, 126, 204, 81, 107, 55, 177, 181, 101.
+
+---
+
 ## Decision 215: The full local recommendations cache is retired; completeness reads are bounded named verbs that fail closed (amends Decision 88 clause 1(ii) and Decision 103) (Decided)
 
 ```yaml
@@ -165,6 +213,8 @@ conditions:
 **Related:** Decision 81 (amended), 91 (amended), 126 (amended), 143 cl.1/cl.3, 144 cl.1/cl.3, 200 cl.1, 202, 204 cl.2, 210, 181 cl.2, 165, 84 I-1, 98, 107, 157, 177.
 
 > **Update (2026-10-09):** PLAN-url-only-invoke-guard step 8 measured that a principal whose own InvokeFunction grant is URL-only sees 'no identity-based policy allows' on a direct invoke, never the boundary's name, so the telemetry writer's deploy gate asserts AccessDenied for its own principal. The boundary Deny is proven by tests/checks/iam_tf/test_url_only_invoke_guard.py on the policy text, which names the telemetry writer, and by the post-apply simulate's url-only rows on the shared writer's ARN (same statement, explicitDeny). The reversal stanza's condition-key-semantics-change was re-armed to match.
+
+[Amendment 2026-10-14, Decision 216: cl.3's admin step is carved out for the disposable smoke catalog; the reversal condition scoped-login-blocks-verbs fired and was resolved without widening the grant set.]
 
 ---
 
@@ -4946,6 +4996,8 @@ prefix with no new grant), Decision 125 + Decision 126 (governed code-deploy cha
 decoupling -- the smoke function's code deploys via the same `deploy-ducklake-lambdas.yml` channel),
 Decision 55 (loud-failure / no-workaround doctrine -- the split enforces the boundary structurally
 rather than papering over it with a guard).
+
+[Amendment 2026-10-14, Decision 216: cl.2's dispatch set gains create_telemetry_tables, create-only on the disposable smoke catalog.]
 
 ---
 

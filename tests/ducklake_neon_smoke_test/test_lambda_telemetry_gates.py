@@ -45,6 +45,7 @@ PROBE_OK = {
     "catalog_login": "ducklake_telemetry_writer",
     "catalog_backend": "neon",
     "catalog_sessions": 3,
+    "can_create": False,
     "tables": {t: {"present": True, "partitioned_as_declared": True} for t in TABLES},
     "counters": {"ops_tenants": 2, "ops_projects": 5},
     "counter_rows": {"ops_tenants": 1, "ops_projects": 1},
@@ -338,6 +339,20 @@ def test_probe_non_smoke_binding_fails(wired, override):
 def test_probe_other_failures(wired, override, needle):
     wired["probe"] = _Resp(200, {**PROBE_OK, **override})
     with pytest.raises(core.SmokeTestFailure, match=needle):
+        lambda_telemetry_gates.lambda_telemetry()
+
+
+@pytest.mark.parametrize("value", [True, None])
+def test_probe_can_create_true_fails(wired, value):
+    wired["probe"] = _Resp(200, {**PROBE_OK, "can_create": value})
+    with pytest.raises(core.SmokeTestFailure, match="can_create is not false"):
+        lambda_telemetry_gates.lambda_telemetry()
+
+
+def test_probe_can_create_null_fails(wired):
+    probe = {k: v for k, v in PROBE_OK.items() if k != "can_create"}
+    wired["probe"] = _Resp(200, probe)
+    with pytest.raises(core.SmokeTestFailure, match="can_create is not false"):
         lambda_telemetry_gates.lambda_telemetry()
 
 
