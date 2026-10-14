@@ -54,10 +54,11 @@ verbs:
     response_codes:
       200: "body {ok, function, actions, catalog: {meta_schema, data_path_is_smoke}}"
       403: "missing_caller_identity: the Function URL authorizer context carries no caller identity"
-      500: "telemetry_env_unset: a required environment pin is not set"
+      500: "telemetry_env_unset: a required environment pin is not set; unmapped: any other exception answers 500 {ok, error_type, error_class, request_id, action, elapsed_ms}, never its message"
     typed_errors:
       missing_caller_identity: "no signed caller identity (403)"
       telemetry_env_unset: "a required TELEMETRY_* environment variable is not set (500)"
+      unmapped: "an exception no row maps: 500 {error_class, request_id, action}, never the message; one ducklake_unmapped_error log line carries the redacted detail (500)"
   provision_telemetry:
     payload_schema_ref: >-
       event envelope {action: "provision_telemetry", component?}. No other key is accepted (a force_recreate or confirm key
@@ -69,12 +70,14 @@ verbs:
     response_codes:
       200: "body {ok, tables (the nine physical tables), counters {ops_tenants, ops_projects}}"
       400: "bad_request: an unknown key, or an invalid string with the field named, never the value"
-      500: "runtime: a target table is absent, a half-present SCD2 pair, or a table whose partitions or columns drift from the declared spec; nothing was written"
-      503: "occ_exhausted: the OCC retry budget was exhausted (retryable)"
+      500: "runtime: a target table is absent, a half-present SCD2 pair, or a table whose partitions or columns drift from the declared spec; nothing was written; unmapped: any other exception answers 500 {ok, error_type, error_class, request_id, action, elapsed_ms}, never its message"
+      503: "occ_exhausted: the OCC retry budget was exhausted (retryable); catalog_unavailable: a dead catalog connection (retryable)"
     typed_errors:
       bad_request: "an unknown request key, or a non-str, NUL-bearing or lone-surrogate string; names the field, never the value (400)"
       runtime: "loud-fail on an absent target table, a half-present pair or a drifted table (500)"
       occ_exhausted: "OCC retry budget exhausted; safe to retry (503)"
+      unmapped: "an exception no row maps: 500 {error_class, request_id, action}, never the message; one ducklake_unmapped_error log line carries the redacted detail (500)"
+      catalog_unavailable: "a dead catalog connection (also after the reopen-once where the handler reopens): retryable, 503 {error_class, request_id, action, reopened}"
   register_tenant:
     payload_schema_ref: >-
       event envelope {action: "register_tenant", component?}. Self only: the tenant is the signed caller's account; any
@@ -83,12 +86,14 @@ verbs:
     response_codes:
       200: "body {ok, tenant_id, created}; never the principal or a hash of it"
       400: "bad_request: an unknown key, or an invalid string with the field named, never the value"
-      500: "runtime: the ops_tenants counter row is not exactly one (run provision_telemetry)"
-      503: "occ_exhausted: the OCC retry budget was exhausted (retryable)"
+      500: "runtime: the ops_tenants counter row is not exactly one (run provision_telemetry); unmapped: any other exception answers 500 {ok, error_type, error_class, request_id, action, elapsed_ms}, never its message"
+      503: "occ_exhausted: the OCC retry budget was exhausted (retryable); catalog_unavailable: a dead catalog connection (retryable)"
     typed_errors:
       bad_request: "an unknown request key, or a non-str, NUL-bearing or lone-surrogate string; names the field, never the value (400)"
       runtime: "loud-fail, incl. a missing or duplicated counter row (500)"
       occ_exhausted: "OCC retry budget exhausted; safe to retry (503)"
+      unmapped: "an exception no row maps: 500 {error_class, request_id, action}, never the message; one ducklake_unmapped_error log line carries the redacted detail (500)"
+      catalog_unavailable: "a dead catalog connection (also after the reopen-once where the handler reopens): retryable, 503 {error_class, request_id, action, reopened}"
   register_project:
     payload_schema_ref: >-
       event envelope {action: "register_project", project_ref, name?, remote?, component?}. project_ref, name, remote and
@@ -101,8 +106,8 @@ verbs:
       400: "bad_request: an unknown key, a missing project_ref, or an invalid string with the field named, never the value"
       403: "tenant_unresolved: the caller's tenant is not registered (remedy: register_tenant)"
       422: "schema_gate or row_rule: a contract row rule rejected the record; nothing written; body names table, rule and column, never a value"
-      500: "runtime: the ops_projects counter row is not exactly one (run provision_telemetry)"
-      503: "occ_exhausted: the OCC retry budget was exhausted (retryable)"
+      500: "runtime: the ops_projects counter row is not exactly one (run provision_telemetry); unmapped: any other exception answers 500 {ok, error_type, error_class, request_id, action, elapsed_ms}, never its message"
+      503: "occ_exhausted: the OCC retry budget was exhausted (retryable); catalog_unavailable: a dead catalog connection (retryable)"
     typed_errors:
       bad_request: "an unknown request key, a missing project_ref, or a non-str, NUL-bearing or lone-surrogate string; names the field, never the value (400)"
       tenant_unresolved: "the signed caller has no registered tenant (403)"
@@ -110,13 +115,28 @@ verbs:
       row_rule: "a contract row rule rejected the record; nothing written (422)"
       runtime: "loud-fail, incl. a missing or duplicated counter row (500)"
       occ_exhausted: "OCC retry budget exhausted; safe to retry (503)"
+      unmapped: "an exception no row maps: 500 {error_class, request_id, action}, never the message; one ducklake_unmapped_error log line carries the redacted detail (500)"
+      catalog_unavailable: "a dead catalog connection (also after the reopen-once where the handler reopens): retryable, 503 {error_class, request_id, action, reopened}"
 audit_invariants:
   - "Telemetry verbs attach only the pinned catalog and take no catalog selector: meta_schema and data_path are never read from the event."
   - "No verb drops, truncates or recreates a table. The telemetry writer issues no Postgres DDL and holds no CREATE on any schema; its tables are created under the catalog owner (Decision 216)."
   - "principal_ref never appears in a response or log, and no response carries a hash of it (Decision 101)."
   - "A rejected request string never appears in a response or log: a refusal names the field, not the value."
-  - "An unknown `action` returns 400 with the sorted action allow-list (no silent no-op)."
+  - "An unknown `action` returns 400 with the sorted action allow-list (no silent no-op). A body that is not valid JSON or not a JSON object returns 400 bad_request."
+  - "No request that reaches the handler answers the Function URL's 502: an exception no row maps answers 500 unmapped {error_class, request_id, action}, never its message; a dead catalog connection answers 503 catalog_unavailable. Enforced by tests/lambdas/ducklake_telemetry_writer/test_handler.py (test_unexpected_exception_is_a_typed_500, test_unmapped_answer_never_echoes_the_message) and live by the post-deploy no-escaped-traceback check; process-level failures (timeout, out of memory, runtime exit) remain the runtime's 502 and count in Errors."
+  - "Declared residual: the ducklake_unmapped_error log line carries the exception message redacted and truncated to 300 characters, so a request value inside an unmapped exception's message can reach the log (residual against the rejected-string rule; strictly less than the runtime traceback it replaces)."
+  - "Declared residual: the async DuckLake handlers (maintenance, maintenance_smoke, catalog_dr) are EventBridge-invoked and keep Lambda's own retry behaviour for an escaped exception; rec-4303 owns them."
 amendment_log:
+  - date: "2026-10-14"
+    semantic_break: false
+    change_class: field_add
+    summary: >-
+      PLAN-ducklake-typed-unmapped-errors (rec-4282): every verb gains the typed unmapped (500) answer and the connectionful verbs
+      the typed catalog_unavailable (503) answer; the 500 and 503 response codes name them; an unparseable body answers 400
+      bad_request; audit_invariants state that no request answers the runtime's 502 and declare the log-line residual.
+    migration_story: >-
+      The untyped 502 an unmapped exception used to surface as is now a typed 500 or 503. Clients never retried the 502 as anything
+      but transient; the 503 catalog_unavailable stays retryable and every other typed 5xx gates.
   - date: "2026-10-14"
     semantic_break: true
     change_class: governance_note_add

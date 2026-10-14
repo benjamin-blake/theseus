@@ -5,8 +5,9 @@ ducklake_smoke catalog and that its caller cannot direct-invoke it (the live che
 core._function_url / core._sigv4_invoke through the module object (Decision 104). Plan 3 part 1's verb vectors
 (provision, register_tenant, register_project and telemetry_probe) follow the URL-only cases in the same gate.
 
-Failure text carries only a status code, a handler error_type or a botocore error code; never a response body, an
-error message, an ARN, an account id or a URL (Decision 101).
+Failure text carries only a status code, a handler error_type, an exception class name or a request id (each printed
+only when it matches its shape) or a botocore error code; never a response body, an error message, an ARN, an account id
+or a URL (Decision 101).
 """
 
 from __future__ import annotations
@@ -24,6 +25,8 @@ _ULID = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$")
 _FAN_OUT = 4
 _COUNTED = ("ops_tenants", "ops_projects")
 _BACKENDS = ("neon", "rds", "other")
+_CLASS_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,99}$")
+_UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 
 def _fail(message: str) -> core.SmokeTestFailure:
@@ -43,10 +46,25 @@ def _error_type(resp: Any) -> str:
     return value if isinstance(value, str) else "none"
 
 
+def _shaped(value: Any, shape: re.Pattern[str]) -> str:
+    return value if isinstance(value, str) and shape.match(value) else "none"
+
+
+def _diagnostics(resp: Any) -> str:
+    """ "error_class=X request_id=Y" from the body, else the runtime's x-amzn-RequestId header; "none" off-shape."""
+    body = _body(resp)
+    headers = getattr(resp, "headers", None) or {}
+    header_id = next((v for k, v in headers.items() if str(k).lower() == "x-amzn-requestid"), None)
+    request_id = _shaped(body.get("request_id"), _UUID)
+    if request_id == "none":
+        request_id = _shaped(header_id, _UUID)
+    return f"error_class={_shaped(body.get('error_class'), _CLASS_NAME)} request_id={request_id}"
+
+
 def _expect_ok(resp: Any, check: str) -> dict[str, Any]:
     body = _body(resp)
     if resp.status_code != 200 or body.get("ok") is not True:
-        raise _fail(f"{check} status={resp.status_code} error_type={_error_type(resp)}")
+        raise _fail(f"{check} status={resp.status_code} error_type={_error_type(resp)} {_diagnostics(resp)}")
     return body
 
 
@@ -84,7 +102,10 @@ def _check_attach(url: str, profile: str | None, region: str) -> None:
 def _check_unknown_action(url: str, profile: str | None, region: str) -> None:
     resp = core._sigv4_invoke(url, {"action": "no_such_action"}, profile=profile, region=region)
     if resp.status_code != 400 or _error_type(resp) != "unknown_action":
-        raise _fail(f"unknown action status={resp.status_code} error_type={_error_type(resp)} (want 400 unknown_action)")
+        raise _fail(
+            f"unknown action status={resp.status_code} error_type={_error_type(resp)} {_diagnostics(resp)} "
+            "(want 400 unknown_action)"
+        )
 
 
 def _check_direct_invoke_denied(profile: str | None, region: str) -> None:
@@ -195,7 +216,8 @@ def _check_self_only(url: str, profile: str | None, region: str) -> None:
     resp = _invoke(url, {"action": "register_tenant", "principal_ref": "x"}, profile, region)
     if resp.status_code != 400 or _error_type(resp) != "bad_request":
         raise _fail(
-            f"self-only register_tenant status={resp.status_code} error_type={_error_type(resp)} (want 400 bad_request)"
+            f"self-only register_tenant status={resp.status_code} error_type={_error_type(resp)} {_diagnostics(resp)} "
+            "(want 400 bad_request)"
         )
     print("TELEMETRY_SELF_ONLY_OK")
 

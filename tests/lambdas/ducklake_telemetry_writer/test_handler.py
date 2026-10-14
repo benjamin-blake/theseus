@@ -23,6 +23,7 @@ ACCOUNT = "acct-under-test"
 USER_ARN = "arn:aws:sts::acct-under-test:assumed-role/Some/secret-session"
 SECRET_ID = "agent-platform-ducklake-telemetry-writer-dsn"
 VERB_NAMES = ["provision_telemetry", "register_project", "register_tenant", "telemetry_probe"]
+_PW = "pass" + "word=hunter2"
 ALL_ACTIONS = sorted(["attach_check", "describe", *VERB_NAMES])
 
 
@@ -215,10 +216,71 @@ def test_runtime_error_is_500(monkeypatch: pytest.MonkeyPatch) -> None:
     assert resp["statusCode"] == 500 and _body(resp)["error_type"] == "runtime"
 
 
-def test_unexpected_exception_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_unexpected_exception_is_a_typed_500(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     monkeypatch.setattr(rt, "get_warm_connection", MagicMock(side_effect=KeyError("unmapped")))
-    with pytest.raises(KeyError):
-        h.handler(_event({"action": "attach_check"}))
+    resp = h.handler(_event({"action": "attach_check"}))
+    body = _body(resp)
+    assert resp["statusCode"] == 500
+    assert body["error_type"] == "unmapped" and body["error_class"] == "KeyError" and body["action"] == "attach_check"
+    assert body["request_id"] is None and "elapsed_ms" in body
+    line = json.loads(next(ln for ln in capsys.readouterr().out.splitlines() if "ducklake_unmapped_error" in ln))
+    assert line["function"] == "telemetry-writer" and line["error_class"] == "KeyError" and line["action"] == "attach_check"
+
+
+class _FakeDuckDBIOException(Exception):
+    pass
+
+
+_FakeDuckDBIOException.__name__ = "IOException"
+_FakeDuckDBIOException.__module__ = "_duckdb"
+
+
+@pytest.mark.parametrize("raised", [Exception, KeyError, _FakeDuckDBIOException])
+@pytest.mark.parametrize("site", ["warm_connection", "verb"])
+def test_unmapped_answer_never_echoes_the_message(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], raised: type[Exception], site: str
+) -> None:
+    acct = "1234" + "56789012"
+    secret = f"ATTACH failed host=h.example {_PW} s3://bucket/key arn:aws:iam::{acct}:role/r"
+    if site == "warm_connection":
+        monkeypatch.setattr(rt, "get_warm_connection", MagicMock(side_effect=raised(secret)))
+        action = "attach_check"
+    else:
+        _patch_runtime(monkeypatch)
+        _stub_verbs(monkeypatch, fn=lambda *_: (_ for _ in ()).throw(raised(secret)))
+        action = "register_tenant"
+    resp = h.handler(_event({"action": action}))
+    assert resp["statusCode"] == 500
+    assert _body(resp)["error_class"] == raised.__name__
+    for text in (resp["body"], capsys.readouterr().out):
+        assert "hunter2" not in text and acct not in text and "arn:aws" not in text
+
+
+def test_dead_connection_at_connect_is_503(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        rt, "get_warm_connection", MagicMock(side_effect=RuntimeError("server closed the connection unexpectedly"))
+    )
+    resp = h.handler(_event({"action": "attach_check"}))
+    body = _body(resp)
+    assert resp["statusCode"] == 503
+    assert body["error_type"] == "catalog_unavailable" and body["reopened"] is False
+    assert "server closed" not in resp["body"]
+
+
+def test_request_id_comes_from_the_lambda_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(rt, "get_warm_connection", MagicMock(side_effect=KeyError("x")))
+    ctx = MagicMock(aws_request_id="7c2a9f4e-1b3d-4e6a-8f50-3a9d2c7e1b64")
+    assert _body(h.handler(_event({"action": "attach_check"}), ctx))["request_id"] == ctx.aws_request_id
+
+
+def test_missing_identity_stays_403_ahead_of_the_terminal_answer() -> None:
+    resp = h.handler(_event("{not json", identity=False))
+    assert resp["statusCode"] == 403 and _body(resp)["error_type"] == "missing_caller_identity"
+
+
+def test_deeply_nested_body_is_400() -> None:
+    resp = h.handler(_event("[" * 100000))
+    assert resp["statusCode"] == 400 and _body(resp)["error_type"] == "bad_request"
 
 
 def _stub_verbs(monkeypatch: pytest.MonkeyPatch, fn: Any = None) -> list[Any]:

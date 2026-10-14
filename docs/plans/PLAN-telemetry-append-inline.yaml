@@ -148,7 +148,7 @@ scope:
     row: RowRuleGateError -> 422 row_rule {table, row, rule, column, exclude_before from the spec's rules};
     GateError -> 422 schema_gate {table, row, column, reason}; GrainConflictError -> 409 grain_conflict {table, event_id,
     row}; bodies built from attributes only, never str(exc). (3) The response builder calls telemetry_log.emit_request_line
-    once per answered request, success and every mapped error alike; its verb field is the dispatched action, or 'unknown'
+    once per answered request, success, every mapped error and the error_type unmapped 500 and catalog_unavailable 503 answers of PLAN-ducklake-typed-unmapped-errors alike; its verb field is the dispatched action, or 'unknown'
     when the action is not dispatched (never the caller's string). (4) TelemetryRequest.invoke_bytes is computed from the
     event's body field as delivered, before any base64 decoding, as len(json.dumps(body_field)) (ASCII-escaped, an upper
     bound for non-ASCII bodies), beside part 1's request_bytes. (5) The stub's body parse answers 400 bad_request for every
@@ -226,7 +226,8 @@ scope:
     Verb append_telemetry: payload_schema_ref (the request shape, component, the three caps, and the encoding-validity
     refusals: a lone surrogate anywhere, U+0000 in a key, project_ref, component or producer), response_codes and
     typed_errors (400 bad_request / write_order / mixed_producer, the token part 1's verbs use for a malformed body, 403 tenant_unresolved / project_unregistered,
-    409 grain_conflict, 413 payload_too_large / too_many_rows, 422 row_rule / schema_gate, 503 occ_exhausted, 500 runtime).
+    409 grain_conflict, 413 payload_too_large / too_many_rows, 422 row_rule / schema_gate, 503 occ_exhausted, 500 runtime; append_telemetry's typed_errors also gain unmapped (500) and
+    catalog_unavailable (503), PLAN-ducklake-typed-unmapped-errors).
     audit_invariants gain: one transaction per request; within a request data batches precede the sessions marker, a
     producer tripwire for the cross-request R7 order the producer owns (inside one transaction order has no visibility
     effect); the size cap is len(json.dumps(S)), S the request body string as delivered: ASCII-escaped, so it equals the
@@ -424,8 +425,8 @@ acceptance_criteria:
 - >-
   Every kernel rejection is a typed, value-free response: a row-rule break is 422 row_rule naming table, row, rule,
   column and exclude_before (the never_on_main vector answers pattern_when / name); a type, NOT NULL, ref or time-range
-  break is 422 schema_gate naming table, row, column and reason; no caller-triggerable rejection escapes as an unmapped
-  Lambda error, and no undeclared name the caller sent is echoed.
+  break is 422 schema_gate naming table, row, column and reason; no caller-triggerable rejection escapes as the runtime's 502 (an
+  unmapped exception answers the typed 500 unmapped), and no undeclared name the caller sent is echoed.
 - >-
   An unregistered drill:/synthetic: project_ref answers 403 project_unregistered before any transaction; concurrent
   first-sight appends of one project_ref converge on one project_id; a grain conflict is never retried as an OCC
@@ -435,7 +436,7 @@ acceptance_criteria:
   verbs' lines carry the EMF block, and after deploy RequestCount for append_telemetry exists in DuckLakeTelemetryWriter.
 - >-
   After the governed deploy of the merge commit, every append vector of the --lambda-telemetry gate passes in CI and in an
-  independent PlatformDev run, and the function's Errors metric is zero since the deploy.
+  independent PlatformDev run, and the function's AWS/Lambda Errors and Url5xxCount metrics are both zero since the deploy.
 verification_plan:
 - step: 1
   phase: pre-deploy
@@ -670,20 +671,21 @@ verification_plan:
   hermetic: false
 - step: 14
   phase: post-deploy
-  action: The C6 lines landed with no account id or ARN, EMF extracted RequestCount for append_telemetry, and the function's Errors metric is zero since the deploy.
+  action: The C6 lines landed with no account id or ARN, EMF extracted RequestCount for append_telemetry, and the function's Errors and Url5xxCount metrics are both zero since the deploy.
   command: >-
     test -s "$DEPLOY_JOBS_JSON" && bin/venv-python -c "import datetime as d,json,os,boto3;b=boto3.Session(profile_name='agent_platform',region_name='eu-west-2');acct=b.client('sts').get_caller_identity()['Account'];
     jobs=json.load(open(os.environ['DEPLOY_JOBS_JSON']));jobs=jobs.get('jobs') if isinstance(jobs,dict) else jobs;t=d.datetime.fromisoformat([x['completed_at'] for x in jobs if x['name'].startswith('deploy-serving')][0].replace('Z','+00:00'));
     ev=b.client('logs').filter_log_events(logGroupName='/aws/lambda/agent-platform-ducklake-telemetry-writer',filterPattern='{ $.verb = \"append_telemetry\" }',startTime=int(t.timestamp()*1000))['events'];
     m=[e['message'] for e in ev];assert m,'no C6 line';assert all(acct not in x and 'arn:' not in x for x in m),'identity in a C6 line';assert all('_aws' in json.loads(x) for x in m);
     cw=b.client('cloudwatch');assert cw.list_metrics(Namespace='DuckLakeTelemetryWriter',MetricName='RequestCount',Dimensions=[{'Name':'Verb','Value':'append_telemetry'}])['Metrics'],'no RequestCount';
-    s=sum(p['Sum'] for p in cw.get_metric_statistics(Namespace='AWS/Lambda',MetricName='Errors',Dimensions=[{'Name':'FunctionName','Value':'agent-platform-ducklake-telemetry-writer'}],StartTime=t,EndTime=d.datetime.now(d.timezone.utc),Period=3600,Statistics=['Sum'])['Datapoints']);assert
+    s=sum(p['Sum'] for mn in ('Errors','Url5xxCount') for p in cw.get_metric_statistics(Namespace='AWS/Lambda',MetricName=mn,Dimensions=[{'Name':'FunctionName','Value':'agent-platform-ducklake-telemetry-writer'}],StartTime=t,EndTime=d.datetime.now(d.timezone.utc),Period=3600,Statistics=['Sum'])['Datapoints']);assert
     s==0,s;print('C6_EMF_ERRORS_OK',len(m))"
   expected: Exit 0 and C6_EMF_ERRORS_OK printed with the count of append_telemetry lines.
   fix_if: >-
     An account id or ARN in a line -> STOP, revert, fix telemetry_log (Decision 101). No RequestCount after 15 minutes ->
-    check the _aws block against the EMF specification and the function's log format. Errors above zero -> an unmapped
-    exception reached Lambda: read the function's logs and map or fix it.
+    check the _aws block against the EMF specification and the function's log format. Errors above zero -> a runtime-level
+    failure (timeout, out of memory, runtime exit): read the function's logs; Url5xxCount above zero -> read the C6 line's
+    error_type.
   hermetic: false
 test_obligations:
 - source: src/telemetry/request.py
@@ -839,6 +841,7 @@ constraints:
 - The implementation merge redeploys every DuckLake function, so it waits for Benjamin's explicit word.
 - No rescue agents or workaround loops (Decision 55).
 context:
+- "rec-4294 / PLAN-ducklake-typed-unmapped-errors (2026-10-14): an exception no error-map row recognises now answers a typed 500 unmapped (and a dead catalog connection a 503 catalog_unavailable) instead of the runtime's 502, so the post-deploy zero check reads AWS/Lambda Errors and Url5xxCount; this plan's handler, contract and step 14 text assume that."
 - "Decision-scout: FLAGS_FOUND -- NOTE 91 cl.1 (agent verbs extend ducklake_writer/reader): the third function rests on the Decision PLAN-url-only-invoke-guard inserts (Decision 213, Decided, landed with #1432); resolved by a checklist precondition (T2.36 c2's re-grounding is the same dependency). First run's NOTE 210 cl.5 resolved by the plane-neutral grammar. CITE 199, 200, 207, 210, 81, 84, 88, 143, 184, 212, 79, 125, 126, 48, 101, 128, 181. Decisions triaged: 165 of 165. Roadmap items intersected: 7; CONFLICT: 0; RELATED: 5. Report: /mnt/project-files/telemetry-slice2/scout-plan3-part2.md."
 - "gates: decision-scout=FLAGS_FOUND (NOTE 91 and NOTE 210 resolved); plan-critique=REVISE r1 (F1-F13 fixed; F8 kept the coverage nodes in the mirror and graduated duckdb-free twins), REVISE r2 (N1-N11 fixed: bounded-precision measurements, EMF directive only when recorded, no undeclared-name echo, bad_request token, shared test fakes), REVISE r3 (F1-F5 fixed: lone-surrogate, DOUBLE-overflow and range-edge timestamp inputs mapped; step 3 pinned to the extended nodes; concurrent auto-registration vector; size-measure wording; AC2 wording), REVISE r4 confirming round (F1 blocking: U+0000 in producer or project_ref crashes the Postgres catalog query -- fixed; F2-F5 non-blocking fixed); escalated to the operator, who was offered one more round as the recommended choice and accepted it 2026-10-09; round 5 PROCEED, N1-N8 non-blocking folded in (probe input guard, handler-driven parse node, AC2 NUL wording, encoding-validity refusals named in the Class B contract and project-id.yaml, <>& in the near-cap vector, part 1 precondition checks, component grammar in C6)"
 - "Evidence 2026-10-09: Lambda's 6 MiB limit applies to the invocation event, where the body is re-escaped as a JSON string (+ about 2.2 KB); a raw 6.2 MB escape-free body passed and a 3.2 MB quote-dense one got AWS's 413 (/mnt/project-files/telemetry-slice2/evidence-invoke-payload-limit.md). The cap is therefore measured on len(json.dumps(S)), S the body string as sent, which the producer computes identically."

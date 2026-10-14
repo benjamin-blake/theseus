@@ -62,8 +62,7 @@ scope:
     duplicate_of is PUT once with urllib (Content-Type application/octet-stream, the grant's headers exactly, no other
     x-amz-* header, 120 s timeout, bounded parallelism); the returned rows have content removed from every spilled
     row. Idempotent. BlobDeliveryError(kind refused | defect | transient | proxy, status, s3_code) never carries a URL,
-    key or payload: begin_blobs 400/403 refused; begin_blobs 500/502 defect with no retry (the writer raised a paging
-    fault); 429 (the function's reserved concurrency is 5), 503 or a transport error retried 3 times with backoff then
+    key or payload: begin_blobs 400/403 refused; begin_blobs 500 defect with no retry (a typed 500 paging fault; a 502 is a runtime-level defect); 429 (the function's reserved concurrency is 5), 503 or a transport error retried 3 times with backoff then
     transient; PUT 403
     triggers one grant re-request then refused; PUT 400 (BadDigest, InvalidDigest, IncompleteBody) defect; PUT 5xx or
     timeout retried 3 times then transient; a 403 or 407 whose body is not S3 XML is proxy.
@@ -168,8 +167,8 @@ scope:
     built lazily from TELEMETRY_BLOB_ROOT, TELEMETRY_DATA_PATH, TELEMETRY_META_SCHEMA and AWS_REGION and passed in deps.
     (3) describe merges ducklake_telemetry_handshake.capabilities. (4) BlobIntegrityError, BlobGrantSelfCheckError and
     BlobStoreAccessError: emit the C6 line with status 500 and error_type blob_integrity / blob_grant_self_check /
-    blob_store_access, then re-raise, so the function's Errors alarm pages (a deploy or out-of-band-writer defect,
-    Decision 55; Fable consult Q2). TelemetryRequestError rows cover the 413/422/503 refusals with no new map row.
+    blob_store_access and answer that typed 500, no raise, so the function's alarm pages through Url5xxCount (a deploy or
+    out-of-band-writer defect, Decision 55; Fable consult Q2 as reversed by rec-4294 and PLAN-ducklake-typed-unmapped-errors). TelemetryRequestError rows cover the 413/422/503 refusals with no new map row.
 - file: src/lambdas/ducklake_telemetry_writer/telemetry_actions.py
   action: Modify
   purpose: >-
@@ -241,7 +240,8 @@ scope:
   action: Modify
   purpose: >-
     Verb begin_blobs (payload_schema_ref: the item shape, bounds, cap and string rules; response_codes 200/400/403/
-    413/503, and 502 for the three paging faults, which raise inside the handler; typed_errors bad_request, tenant_unresolved, project_unregistered, too_many_blobs,
+    413/503, and a typed 500 for the three paging faults (begin_blobs' typed_errors also gain unmapped (500) and
+    catalog_unavailable (503), PLAN-ducklake-typed-unmapped-errors); typed_errors bad_request, tenant_unresolved, project_unregistered, too_many_blobs,
     blob_store_unavailable). append_telemetry: blob delivery (a row with no content and no omission reason above the
     threshold is verified by HEAD and its content_uri written by the writer), 413 too_many_blobs, 422
     blob_not_verified (reasons missing, stale, unknown_project), 503 blob_store_unavailable, the caller content_uri
@@ -364,8 +364,8 @@ scope:
 - file: tests/lambdas/ducklake_telemetry_writer/test_handler.py
   action: Modify
   purpose: >-
-    Dispatch of begin_blobs; describe carries the capabilities; the three blob fault classes emit a C6 line with status
-    500 then re-raise. (Path as part 1 and part 2 leave it; see the checklist.)
+    Dispatch of begin_blobs; describe carries the capabilities; the three blob fault classes answer a typed 500 and emit a C6 line with status
+    500. (Path as part 1 and part 2 leave it; see the checklist.)
 - file: tests/lambdas/ducklake_telemetry_writer/test_telemetry_edge.py
   action: Modify
   purpose: begin_blobs edge (tenant 403, RequestError translation, response shape, no value echo); append passes the store.
@@ -512,7 +512,7 @@ acceptance_criteria:
   A size or checksum mismatch, a grant failing its signed-header self-check, or an S3 client error other than
   throttling, a 5xx or a timeout (those answer 503), including a HEAD denied for an object the exact-key list shows
   present, emits the C6 line with status 500
-  and raises, so the Errors alarm pages and the caller sees the Function URL's 502; a HEAD denied for a key the list
+  and answers a typed 500, so the alarm pages through Url5xxCount; a HEAD denied for a key the list
   shows absent is missing.
 - >-
   describe advertises blob_protocol version 1 and a per-table schema view derived from the bundled projection; the
@@ -529,7 +529,7 @@ acceptance_criteria:
 - >-
   After the governed deploy of the merge commit every blob vector passes in CI and in an independent PlatformDev run
   (if this session's proxy refuses the S3 endpoint, that run is recorded as environment-blocked with the proxy status
-  and the CI gate stands as the route's evidence), and the function's Errors metric is zero since the deploy.
+  and the CI gate stands as the route's evidence), and the function's AWS/Lambda Errors and Url5xxCount metrics are both zero since the deploy.
 verification_plan:
 - step: 1
   phase: pre-deploy
@@ -620,14 +620,14 @@ verification_plan:
     tests/lambdas/ducklake_telemetry_writer/test_telemetry_edge.py::test_begin_blobs_edge_response_and_refusals
     tests/lambdas/ducklake_telemetry_writer/test_handler.py::test_dispatch_includes_begin_blobs
     tests/lambdas/ducklake_telemetry_writer/test_handler.py::test_describe_carries_the_capabilities
-    tests/lambdas/ducklake_telemetry_writer/test_handler.py::test_blob_faults_log_then_raise
+    tests/lambdas/ducklake_telemetry_writer/test_handler.py::test_blob_faults_answer_a_typed_500
     tests/lambdas/ducklake_telemetry_writer/test_telemetry_log.py::test_begin_blobs_line_counts_with_emf
     tests/lambdas/ducklake_telemetry_writer/test_telemetry_log.py::test_lines_never_carry_a_presigned_url
     tests/lambdas/ducklake_telemetry_writer/test_telemetry_actions.py::test_probe_counts_blob_objects_for_one_session
     tests/lambdas/ducklake_telemetry_writer/test_packaging.py::test_manifest_bundles_the_blob_modules_only -q
   expected: Exit 0, 11 passed. Red before, because the nodes do not exist.
   expected_literals: []
-  fix_if: A URL or X-Amz-* name in a line -> fix telemetry_log, never the test; a fault answered with a typed response -> it must log then raise.
+  fix_if: A URL or X-Amz-* name in a line -> fix telemetry_log, never the test; a fault that escapes as a raise or answers a non-500 -> it must answer the typed 500 after its C6 line.
   hermetic: true
   graduation: graduate
   graduation_check_id: telemetry-blob-writer-edge
@@ -802,18 +802,19 @@ verification_plan:
   hermetic: false
 - step: 16
   phase: post-deploy
-  action: The begin_blobs C6 lines landed with counts and no URL, key, account id or ARN, EMF extracted RequestCount for begin_blobs, and the function's Errors metric is zero since the deploy.
+  action: The begin_blobs C6 lines landed with counts and no URL, key, account id or ARN, EMF extracted RequestCount for begin_blobs, and the function's Errors and Url5xxCount metrics are both zero since the deploy.
   command: >-
     test -s "$DEPLOY_JOBS_JSON" && bin/venv-python -c "import datetime as d,json,os,boto3;b=boto3.Session(profile_name='agent_platform',region_name='eu-west-2');acct=b.client('sts').get_caller_identity()['Account'];
     jobs=json.load(open(os.environ['DEPLOY_JOBS_JSON']));jobs=jobs.get('jobs') if isinstance(jobs,dict) else jobs;t=d.datetime.fromisoformat([x['completed_at'] for x in jobs if x['name'].startswith('deploy-serving')][0].replace('Z','+00:00'));
     ev=b.client('logs').filter_log_events(logGroupName='/aws/lambda/agent-platform-ducklake-telemetry-writer',filterPattern='{ $.verb = \"begin_blobs\" }',startTime=int(t.timestamp()*1000))['events'];
     m=[e['message'] for e in ev];assert m,'no begin_blobs line';assert all(acct not in x and 'arn:' not in x and 'X-Amz-' not in x and 'amazonaws.com' not in x for x in m),'leak';x=[json.loads(y) for y in m if json.loads(y).get('status')==200][0];assert '_aws' in x and 'granted' in x and 'declared_bytes_total' in x,x.keys();
-    cw=b.client('cloudwatch');assert cw.list_metrics(Namespace='DuckLakeTelemetryWriter',MetricName='RequestCount',Dimensions=[{'Name':'Verb','Value':'begin_blobs'}])['Metrics'],'no RequestCount';s=sum(p['Sum'] for p in cw.get_metric_statistics(Namespace='AWS/Lambda',MetricName='Errors',Dimensions=[{'Name':'FunctionName','Value':'agent-platform-ducklake-telemetry-writer'}],StartTime=t,EndTime=d.datetime.now(d.timezone.utc),Period=3600,Statistics=['Sum'])['Datapoints']);assert
+    cw=b.client('cloudwatch');assert cw.list_metrics(Namespace='DuckLakeTelemetryWriter',MetricName='RequestCount',Dimensions=[{'Name':'Verb','Value':'begin_blobs'}])['Metrics'],'no RequestCount';s=sum(p['Sum'] for mn in ('Errors','Url5xxCount') for p in cw.get_metric_statistics(Namespace='AWS/Lambda',MetricName=mn,Dimensions=[{'Name':'FunctionName','Value':'agent-platform-ducklake-telemetry-writer'}],StartTime=t,EndTime=d.datetime.now(d.timezone.utc),Period=3600,Statistics=['Sum'])['Datapoints']);assert
     s==0,s;print('C6_BLOB_ERRORS_OK',len(m))"
   expected: Exit 0 and C6_BLOB_ERRORS_OK with the count of begin_blobs lines.
   fix_if: >-
     A URL or identity in a line -> STOP, revert, fix telemetry_log (Decision 101); no RequestCount after 15 minutes ->
-    check the _aws block against the EMF specification; Errors above zero -> read the logs and root-cause.
+    check the _aws block against the EMF specification; Errors above zero -> a runtime-level failure, read the logs and
+    root-cause; Url5xxCount above zero -> read the C6 line's error_type.
   hermetic: false
 - step: 17
   phase: post-deploy
@@ -887,9 +888,9 @@ test_obligations:
   test_selector: tests/lambdas/ducklake_telemetry_writer/test_telemetry_log.py::test_lines_never_carry_a_presigned_url
   red_green_expectation: red before (node absent), green after
 - source: src/lambdas/ducklake_telemetry_writer/handler.py
-  behavior: The three blob fault classes log a status-500 C6 line and then raise.
+  behavior: The three blob fault classes log a status-500 C6 line and answer a typed 500.
   verification_step: 5
-  test_selector: tests/lambdas/ducklake_telemetry_writer/test_handler.py::test_blob_faults_log_then_raise
+  test_selector: tests/lambdas/ducklake_telemetry_writer/test_handler.py::test_blob_faults_answer_a_typed_500
   red_green_expectation: red before (node absent), green after
 - source: src/lambdas/ducklake_telemetry_writer/telemetry_actions.py
   behavior: The probe counts one session's blob objects through the writer's own List.
@@ -1052,7 +1053,7 @@ context:
 - "gates: decision-scout=FLAGS_FOUND (WARN 210 and three NOTEs resolved); plan-critique=REVISE r1 (F1 three exemption-dependent tests scoped with a shared as_written helper; F2 retired-surface sweep as a checklist gate and in step 10, fixtures and gate tests extended in place; F3 step 17 literal; F4 c4 guard covers every DuckLake bundle and SQL reads of s3://, plus coercion evidence; F5 residual qualifier; F6 PC-05 open under T4.23:c7, PC-01 left to part 1; F7 missing objects commit only as stored no-ops; F8 a 403 HEAD is disambiguated by an exact-key list; F9 pool 32 and checksum-query self-check; F10 STOP over 500; AC7 proxy disposition); REVISE r2 (R2-F1/F2 the c4 guard refuses object reads in every DuckLake bundle, admits 2b's named get_blob seam and keeps the strict allowlist for the writer bundle only; R2-F3 rec-4029 note; R2-F4 AC3 and the 403 gotcha; R2-F5 begin_blobs 500/502 is a defect; R2-F6 stale rec-4024 pointers; R2-F7 delivery-failure kind; R2-F8 step 16 reads a status-200 line); round 3 PROCEED (confirming), R3-F1 to R3-F7 non-blocking folded in (AC3 maps 5xx and timeouts to 503; one too_many_blobs token and a named 502; helper retries 429; step 17 checks rec-4029; step 10 history wording; rec-4029 gap reworded; telemetry-client router row)"
 - "Design inputs: /mnt/project-files/telemetry-slice2/plan4-blob-route/ADVICE.md (Fable, 2026-10-12, Q1-Q9) on top of fable-consult-blob/ADVICE.md (route adopted 2026-09-29) and the approved 2a-2 split (step6b-2a2-presentation.md row 4)."
 - "fork: where the claim-check-not-staging rule lives | chosen: writer contract audit invariant plus T2.36 c2/c4 re-grounding; no numbered Decision, no annotation on Decisions 84 or 199 (199's 2026-10-04 update closed cl.5; the grant route is a mechanism below the tier) | class: decided-with-notice | precedent: decision-entry.yaml routing_rule question 3; Fable Q1 | reversible: yes | persisted: ducklake_telemetry_writer.yaml, ROADMAP T2.36"
-- "fork: integrity fault handling | chosen: log the C6 line then raise so the Errors alarm pages (breaks the typed-500 convention for this one class) | class: decided-with-notice | precedent: Fable Q2, Decision 55 | reversible: yes | persisted: handler.py"
+- "fork: integrity fault handling | chosen: REVERSED by rec-4294 and PLAN-ducklake-typed-unmapped-errors (2026-10-14): the C6 line, then the typed 500, no raise; the alarm pages through Url5xxCount (originally: log the C6 line then raise so the Errors alarm pages) | class: decided-with-notice | precedent: Fable Q2, Decision 55 | reversible: yes | persisted: handler.py"
 - "fork: describe handshake | chosen: blob_protocol plus a per-table schema view from the bundled projection, not REVIEW.md C8's parser_versions and contract_version | class: decided-with-notice | precedent: Fable Q9 (a parser ceiling ties producer-only fixes to always-ask writer deploys; contract_version did not move on the 2026-10-04 semantic breaks) | reversible: yes | persisted: ducklake_telemetry_handshake.py"
 - "fork: local_directory content_blobs adapter | chosen: stays with its owner T4.23:c7 (ports.yaml, which postdates the 2a-2 split); tests use a double; the producer side's s3-only grant handling is coupling row PC-05, open, owned by T4.23:c7 (critique r1 F6: no Decision holds it, so not accepted) | class: decided-with-notice | precedent: ports.yaml owning_item | reversible: yes | persisted: ports.yaml"
 - "fork: producer helper home | chosen: new src/telemetry_client package, agreed with the slice 3b thread 2026-10-12 (Fable preferred src/telemetry; both satisfy the fences) | class: decided-with-notice | precedent: 3b thread agreement | reversible: yes | persisted: .importlinter, src/telemetry_client"

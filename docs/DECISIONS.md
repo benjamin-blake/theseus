@@ -4169,6 +4169,16 @@ Two structural facts justify the narrowing, independent of Decision 55's recover
 
 **Related:** Decision 149 (clause 3 -- owns `_assert_no_orphaned_current_rows`; this Decision narrows its guard failure-contract by forward reference), Decision 154 (structurally identical same-day precedent: a pre-condition infra failure stops latching a hard block, via a named marker plus itemised reversal conditions -- the marker shape is modelled on it), Decision 55 (anti-masking / fail-closed default -- the governing principle every point above is checked against; its "deterministic recovery remains valid" carve-out is explicitly NOT relied on here), Decision 84 (I-3 closed named-verb read boundary -- the orphan read stays on `reader.current_state`, no fallback path, no caller SQL, no new Lambda verb), Decision 72 (RCA-as-plan-source -- this Decision is filed from the required `/plan` review that AGENTS.md forbids bypassing with an inline patch), Decision 62 (2026-06-16 amendment -- weaker corroboration than an earlier plan draft claimed; cited only for establishing reader-502-driven check failure as a recognised problem class, not for ratifying an in-place skip), Decision 150 (significance bar / batch-wave convention this entry follows). Roadmap refs (not DECISIONS.md entries): rec-2876, rec-2878 (the bundled recommendations this Decision's carrying plan, PLAN-syspath-hygiene-advisory-read-tolerance, resolves).
 
+> **Amended (2026-10-14, PLAN-ducklake-typed-unmapped-errors / rec-4282, mints no new Decision number):** a dead catalog
+> connection now arrives as a typed 503 `catalog_unavailable`, not an untyped 502, and clause 2's never-transient sentence gains
+> that one error_type (`_TRANSIENT_ERROR_TYPES` in `scripts/ops_portal/reader_transient.py`, asserted equal to
+> `src/common/ducklake_handler_errors.py`'s `TRANSIENT_ERROR_TYPES`; every other error_type still gates). Deliberate fail-closed
+> narrowing: any other failure that shared the 502 (a DuckDB HTTPException or IOException on S3, Secrets Manager throttling)
+> now arrives as a typed 500 `unmapped`, is no longer retried and gates; a recurring transient class joins the dead-connection
+> predicate by a rec, never by widening the classifier. Consumers, for impact only: `scripts/ops_portal/decisions.py`,
+> `scripts/data_quality_execute.py` and two `scripts/preflight/ci_rca_gauges.py` sites (rec-4311); this licenses no call site
+> and clause 3 is unchanged.
+
 ## Decision 154: Pre-apply failures write a non-blocking infra_error marker, not a red convergence latch (amends Decision 92 by forward reference) (Decided)
 
 **Status:** Decided

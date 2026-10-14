@@ -69,12 +69,15 @@ verbs:
     response_codes:
       200: "rows returned; body {ok, table, rows, row_count}"
       413: "response_too_large: the Function-URL envelope exceeds MAX_RESPONSE_BYTES (6,000,000); body {ok: false, error_type, action, bytes, cap, hint}; never retried (Decision 215 cl.6)"
-      500: "DuckLakeRuntimeError (unknown/missing table; malformed filter) / VersionMismatchError"
+      500: "DuckLakeRuntimeError (unknown/missing table; malformed filter) / VersionMismatchError; unmapped: any other exception answers 500 {ok, error_type, error_class, request_id, action, elapsed_ms}, never its message"
+      503: "catalog_unavailable: a dead catalog connection (retryable)"
     typed_errors:
       filter_validation: "malformed filter (must carry BOTH column and value) -- rejected loudly rather than degrading to an unfiltered full-table read, rec-2170 (DuckLakeRuntimeError -> 500)"
       runtime: "unknown/missing table or runtime loud-fail (500)"
       version_mismatch: "DuckDB/extension version mismatch (500)"
       response_too_large: "serialised response envelope above the 6,000,000-byte guard (413, typed, never retried); use a narrower named verb or the claim-check export (rec-4237)"
+      unmapped: "an exception no row maps: 500 {error_class, request_id, action}, never the message; one ducklake_unmapped_error log line carries the redacted detail (500)"
+      catalog_unavailable: "a dead catalog connection (also after the reopen-once where the handler reopens): retryable, 503 {error_class, request_id, action, reopened}"
   read_ops_history:
     payload_schema_ref: >-
       event envelope {action: "read_ops_history", table, key?, limit?}. Returns append-history
@@ -82,11 +85,14 @@ verbs:
     response_codes:
       200: "rows returned; body {ok, table, rows, row_count}"
       413: "response_too_large: the Function-URL envelope exceeds MAX_RESPONSE_BYTES (6,000,000); body {ok: false, error_type, action, bytes, cap, hint}; never retried (Decision 215 cl.6)"
-      500: "DuckLakeRuntimeError (unknown/missing table) / VersionMismatchError"
+      500: "DuckLakeRuntimeError (unknown/missing table) / VersionMismatchError; unmapped: any other exception answers 500 {ok, error_type, error_class, request_id, action, elapsed_ms}, never its message"
+      503: "catalog_unavailable: a dead catalog connection (retryable)"
     typed_errors:
       runtime: "unknown/missing table or runtime loud-fail (500)"
       version_mismatch: "DuckDB/extension version mismatch (500)"
       response_too_large: "serialised response envelope above the 6,000,000-byte guard (413, typed, never retried); use a narrower named verb or the claim-check export (rec-4237)"
+      unmapped: "an exception no row maps: 500 {error_class, request_id, action}, never the message; one ducklake_unmapped_error log line carries the redacted detail (500)"
+      catalog_unavailable: "a dead catalog connection (also after the reopen-once where the handler reopens): retryable, 503 {error_class, request_id, action, reopened}"
   named_read:
     payload_schema_ref: >-
       event envelope {action: "named_read", verb, params?: {..}, limit?}. `verb` names a
@@ -97,12 +103,17 @@ verbs:
       DuckLakeRuntimeError for a non-paginable verb.
     response_codes:
       200: "rows returned; body {ok, verb, registry_version, read_version, rows, row_count}. read_version is an opaque per-verb digest (first 16 hex of sha256 over the verb's canonical definition, SELECT * verbs including their column projection), compared by equality only -- it implies no ordering; registry_version stays the registry-format stamp"
+      400: "named_read_input: a bound value or a registry error() guard refused caller input; body {ok: false, error_type, verb, error_class, error} with the redacted DuckDB message (first line, 300 characters); never retried. BinderException, ParserException and every other DuckDB class stay 500 unmapped"
       413: "response_too_large: the Function-URL envelope exceeds MAX_RESPONSE_BYTES (6,000,000); body {ok: false, error_type, action, bytes, cap, hint}; never retried (Decision 215 cl.6)"
-      500: "DuckLakeRuntimeError (empty/unknown verb; non-object params; limit on a non-paginable verb) / VersionMismatchError"
+      500: "DuckLakeRuntimeError (empty/unknown verb; non-object params; limit on a non-paginable verb) / VersionMismatchError; unmapped: any other exception answers 500 {ok, error_type, error_class, request_id, action, elapsed_ms}, never its message"
+      503: "catalog_unavailable: a dead catalog connection (retryable)"
     typed_errors:
       runtime: "missing/unknown verb, params not an object, or limit supplied for a non-paginable verb (500)"
       version_mismatch: "DuckDB/extension version mismatch (500)"
       response_too_large: "serialised response envelope above the 6,000,000-byte guard (413, typed, never retried); use a narrower named verb or the claim-check export (rec-4237)"
+      named_read_input: "a named verb refused caller input (a bound value or an error() guard raised InvalidInputException, ConversionException, OutOfRangeException or TypeMismatchException): 400 {verb, error_class, error} carrying the redacted DuckDB message (first line, 300 characters); never retried"
+      unmapped: "an exception no row maps: 500 {error_class, request_id, action}, never the message; one ducklake_unmapped_error log line carries the redacted detail (500)"
+      catalog_unavailable: "a dead catalog connection (also after the reopen-once where the handler reopens): retryable, 503 {error_class, request_id, action, reopened}"
   describe:
     payload_schema_ref: >-
       event envelope {action: "describe"}. Agent-facing verb (CD.10 / CD.15): returns the per-verb
@@ -112,8 +123,10 @@ verbs:
     response_codes:
       200: "body {ok, verbs: {<verb>: {table, description, params, paginable, params_schema, read_version, agent_facing}, ...}}; agent_facing (bool, default true) marks whether the verb is projected as an agent tool and is excluded from read_version"
       413: "response_too_large: the Function-URL envelope exceeds MAX_RESPONSE_BYTES (6,000,000); body {ok: false, error_type, action, bytes, cap, hint}; never retried (Decision 215 cl.6)"
+      500: "unmapped: an exception no row maps answers 500 {ok, error_type, error_class, request_id, action, elapsed_ms}, never its message"
     typed_errors:
       response_too_large: "serialised response envelope above the 6,000,000-byte guard (413, typed, never retried); use a narrower named verb or the claim-check export (rec-4237)"
+      unmapped: "an exception no row maps: 500 {error_class, request_id, action}, never the message; one ducklake_unmapped_error log line carries the redacted detail (500)"
 
   query_ops:
     payload_schema_ref: >-
@@ -126,22 +139,27 @@ verbs:
     response_codes:
       200: "rows returned; body {ok, table, rows, row_count}"
       413: "response_too_large: the Function-URL envelope exceeds MAX_RESPONSE_BYTES (6,000,000); body {ok: false, error_type, action, bytes, cap, hint}; never retried (Decision 215 cl.6)"
-      500: "DuckLakeRuntimeError (unknown/missing table; empty/non-SELECT/multi-statement sql) / VersionMismatchError"
+      500: "DuckLakeRuntimeError (unknown/missing table; empty/non-SELECT/multi-statement sql) / VersionMismatchError; unmapped: any other exception answers 500 {ok, error_type, error_class, request_id, action, elapsed_ms}, never its message"
+      503: "catalog_unavailable: a dead catalog connection (retryable)"
     typed_errors:
       runtime: "unknown/missing table, or sql that is empty / not a single read-only SELECT|WITH (500)"
       version_mismatch: "DuckDB/extension version mismatch (500)"
       response_too_large: "serialised response envelope above the 6,000,000-byte guard (413, typed, never retried); use a narrower named verb or the claim-check export (rec-4237)"
+      unmapped: "an exception no row maps: 500 {error_class, request_id, action}, never the message; one ducklake_unmapped_error log line carries the redacted detail (500)"
+      catalog_unavailable: "a dead catalog connection (also after the reopen-once where the handler reopens): retryable, 503 {error_class, request_id, action, reopened}"
 audit_invariants:
   - "Closed boundary: the read role is S3 GetObject only; a write attempt is denied at IAM/S3 (no write path through the reader; write_probe gate)."
   - "named_read executes ONLY pre-established registry SQL keyed by verb name; no caller SQL crosses the boundary on this path (Decision 84 I-3)."
   - "query_ops accepts a caller-supplied read-only SELECT/WITH (single-statement; assert_read_only_sql-enforced) for internal predicate-pushdown read paths. The FROM target is caller-controlled -- _history and other ops_* tables ARE reachable (e.g. the DQ runner reads _history via this verb); the boundary is read-only-SELECT + the S3-read-only IAM role, NOT current-projection-only. NB: the reader/runtime handler docstrings that state 'only the current projection is reachable' are STALE and inaccurate -- do NOT 'fix' the code to match that comment; doing so would break the DQ runner's _history reads and violate this contract."
   - "read_ops_current rejects a malformed `filter` (must carry BOTH column and value) loudly rather than degrading to an unfiltered full-table read (rec-2170 hardening)."
-  - "An unknown `action` returns 400 with the sorted action allow-list (dispatcher-level; not a per-verb outcome). Reads are idempotent and a dead Neon session is transparently reconnected once."
-  - "Reader client-input errors (unknown/missing table, malformed filter, empty/unknown named_read verb, empty/non-SELECT sql) surface as DuckLakeRuntimeError -> 500, not 4xx -- the reader's loud-fail taxonomy is server-error-coded (faithfully documented here; a finer 4xx split would be a code change, not a contract amendment). The one 4xx outcome of a verb is 413 response_too_large (Decision 215 cl.6); the dispatcher-level 400 for an unknown action is separate."
+  - "An unknown `action` returns 400 with the sorted action allow-list, and a body that is not valid JSON or not a JSON object returns 400 bad_request (both dispatcher-level; not per-verb outcomes). Reads are idempotent and a dead Neon session is transparently reconnected once; a session that stays dead answers 503 catalog_unavailable."
+  - "Reader client-input errors (unknown/missing table, malformed filter, empty/unknown named_read verb, empty/non-SELECT sql) surface as DuckLakeRuntimeError -> 500, not 4xx -- the reader's loud-fail taxonomy is server-error-coded (faithfully documented here; a finer 4xx split would be a code change, not a contract amendment). The 4xx outcomes of a verb are 413 response_too_large (Decision 215 cl.6) and, for named_read only, 400 named_read_input (a bound value or a registry error() guard refused caller input: InvalidInputException, ConversionException, OutOfRangeException or TypeMismatchException from DuckDB, answered with the redacted DuckDB message); BinderException and ParserException mean registry-versus-schema drift (callers send no SQL) and stay 500 unmapped. The dispatcher-level 400s are separate."
   - "Response-size guard: every action measures the whole Function-URL envelope (len(json.dumps(response).encode('utf-8')), since the body string is escaped again inside it) and above MAX_RESPONSE_BYTES = 6,000,000 returns 413 {ok: false, error_type: response_too_large, action, bytes, cap, hint} instead of an opaque 502 from the runtime's 6,291,556-byte cap; the measured size is logged as response_bytes on every invocation (200 and 413). Clients never retry a 413."
   - "KNOWN GAP: the current_state single-key filter path has an open correctness rec (rec-2170) where a non-merge-key equality filter can bind against the merge key. The verb semantics here document the intended contract; the fix is a code amendment, not a contract change."
   - "T2.26: a control-class table (read_boundary: none, e.g. ops_entity_counters, docs/contracts/ops_entity_counters.yaml) is not reachable through read_ops_current, read_ops_history, query_ops, or named_read -- registering a table for governance does not by itself grant application read access. It is readable only in-transaction by its owning writer, or via the admin ducklake_maintenance control_health verb (outside this contract's boundary)."
   - "Generic-read refusal: read_ops_current, read_ops_history and query_ops REFUSE (500, DuckLakeRuntimeError naming the write_boundary) a `table` whose ops_tables entry has write_boundary telemetry_append or registration (the four telemetry event tables, ops_tenants, ops_projects); telemetry and dimension reads arrive as named verbs in slice 2b. This is a narrow refusal list keyed on write_boundary, not a read-capability model: rec-3771 owns that design. Declared residual (Decision 181 cl.2): query_ops checks its `table` parameter only and its FROM target is caller-controlled, so the refusal is complete only while no catalog the reader attaches holds these tables -- true today; owner rec-4024 until slice 2c's rec is filed, before production provisioning."
+  - "No request that reaches the handler answers the Function URL's 502: an exception no row maps answers 500 unmapped {error_class, request_id, action}, never its message; a dead catalog connection that survives the reopen-once answers 503 catalog_unavailable. Enforced by the nodes of tests/test_ducklake_reader_handler.py named in the plan's verification step 3 (test_named_read_other_duckdb_error_is_unmapped_500, test_dead_connection_after_reopen_is_503, test_invocation_line_on_unparseable_body). Process-level failures (timeout, out of memory, Runtime.ExitError, an init failure) remain the runtime's 502 and count in Errors; rec-4296 owns the reader's process exits."
+  - "Declared residual: the ducklake_unmapped_error and ducklake_named_read_input log lines carry the exception message redacted and truncated to 300 characters, so a request value inside an exception's message can reach the log (strictly less than the runtime traceback they replace). The async DuckLake handlers (maintenance, maintenance_smoke, catalog_dr) are EventBridge-invoked and keep Lambda's own retry behaviour; rec-4303 owns them."
 amendment_log:
   - date: "2026-10-05"
     semantic_break: false
@@ -153,6 +171,18 @@ amendment_log:
       telemetry_append and registration tables is stated, with the query_ops FROM residual declared.
     migration_story: >-
       Additive: existing consumers ignore the new key. No consumer pins read_version yet.
+  - date: "2026-10-14"
+    semantic_break: false
+    change_class: field_add
+    summary: >-
+      PLAN-ducklake-typed-unmapped-errors (rec-4282): named_read gains 400 named_read_input for caller-input DuckDB classes;
+      every verb gains the typed unmapped (500) answer and the connectionful verbs the typed catalog_unavailable (503) answer; an
+      unparseable or non-object body answers 400 bad_request; the all-errors-are-500 invariant names named_read_input as the second
+      4xx verb outcome and a no-502 invariant is added.
+    migration_story: >-
+      Additive for clients: an exception that used to surface as the runtime's untyped 502 is now a typed 500 or 503, and a
+      caller-input error inside a named verb that used to be a 502 is now a 400. The client retries 503 catalog_unavailable and
+      never the 400 or the 500 unmapped; the agent SDK maps named_read_input to ReaderInputError.
   - date: "2026-10-10"
     semantic_break: false
     change_class: field_add

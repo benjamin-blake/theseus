@@ -220,6 +220,31 @@ def test_client_error_message_never_leaks(wired, capsys):
         assert "lambda-url" not in text
 
 
+_REQUEST_ID = "7c2a9f4e-1b3d-4e6a-8f50-3a9d2c7e1b64"
+
+
+def test_failure_text_carries_error_class_and_request_id(wired):
+    wired["attach"] = _Resp(500, {"ok": False, "error_type": "unmapped", "error_class": "KeyError", "request_id": _REQUEST_ID})
+    with pytest.raises(core.SmokeTestFailure) as info:
+        lambda_telemetry_gates.lambda_telemetry()
+    assert f"error_type=unmapped error_class=KeyError request_id={_REQUEST_ID}" in str(info.value)
+
+
+def test_bodyless_502_failure_text_carries_the_runtime_request_id(wired):
+    wired["attach"] = _Resp(502, None, text="Internal Server Error", headers={"x-amzn-RequestId": _REQUEST_ID})
+    with pytest.raises(core.SmokeTestFailure) as info:
+        lambda_telemetry_gates.lambda_telemetry()
+    assert f"error_type=none error_class=none request_id={_REQUEST_ID}" in str(info.value)
+
+
+def test_off_shape_diagnostics_print_none(wired):
+    wired["attach"] = _Resp(500, {"ok": False, "error_class": f"Bad Class {FAKE_ARN}", "request_id": FAKE_ACCT})
+    with pytest.raises(core.SmokeTestFailure) as info:
+        lambda_telemetry_gates.lambda_telemetry()
+    assert "error_class=none request_id=none" in str(info.value)
+    assert FAKE_ACCT not in str(info.value) and "arn:" not in str(info.value)
+
+
 def test_http_body_never_leaks(wired, capsys):
     wired["attach"] = _Resp(500, {"ok": False, "error": f"{FAKE_ACCT} {FAKE_ARN} {FAKE_HOST}"}, text=FAKE_ARN)
     with pytest.raises(core.SmokeTestFailure) as info:
