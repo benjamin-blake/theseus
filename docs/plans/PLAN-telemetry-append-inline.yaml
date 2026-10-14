@@ -111,13 +111,18 @@ scope:
     seen live on append_telemetry and provision_telemetry 2026-10-14). A new pure predicate, is_masked_commit_failure(exc):
     type(exc).__name__ == "TransactionException" (no duckdb import) and str(exc).lower() contains "failed to commit:
     could not remove file"; never a bare "forbidden" match, never every TransactionException. run_telemetry_txn retries
-    it only when raised by the COMMIT statement (the same text from a body statement propagates), after the terminal
+    it only when raised by the COMMIT statement (a flag set immediately before COMMIT; the same text from a body
+    statement propagates), after the terminal
     classes and inside the same attempt budget and backoff as an OCC collision, because every telemetry body is
     idempotent (insert-only MERGE, lookup-first registration, caches written after commit), not because the cause is
-    known to be a conflict. TxnOutcome gains masked_commit_retries (int, default 0, a subset of occ_retries);
-    OCCRetryExhaustedError gains a reason attribute ("occ" or "masked_commit", the last attempt's class) and still maps
-    to 503 occ_exhausted. The masked message is never logged, formatted or returned (it names the bucket); only the
-    count travels. ducklake_writes.is_occ_collision is unchanged (the shared writer has Delete).
+    known to be a conflict. TxnOutcome gains masked_commit_retries (int, default 0, a subset of occ_retries).
+    Exhaustion raises TelemetryOCCRetryExhaustedError(OCCRetryExhaustedError), defined in this module (ducklake_writes.py
+    is not touched), carrying reason ("occ" or "masked_commit", the last attempt's class) and masked_commit_retries; its
+    message stays the existing fixed text; it chains from exc for an OCC collision as today and from None for a masked
+    failure, so the bucket-naming text is never reachable from the exhaustion error; the handler's isinstance row still
+    maps it to 503 occ_exhausted. The masked message is never logged, formatted or returned; only the count travels.
+    ducklake_writes.is_occ_collision is unchanged (the shared writer has Delete; a blanket TransactionException match
+    would also absorb DuckLake's own retry-exhaustion and metadata failures, which must stay loud).
 - file: src/lambdas/ducklake_telemetry_writer/telemetry_edge.py
   action: Create
   purpose: >-
@@ -138,7 +143,9 @@ scope:
     register_tenant), append_request, then the response {ok, tenant_id, project_id,
     project_registration, tables: {table: {submitted, collapsed, inserted}}, occ_retries, commit_ms as an integer}.
     describe_entry()
-    gives the verb's description, params_schema and the three caps.
+    gives the verb's description, params_schema and the three caps. 2026-10-14 amendment (fix-forward; the file exists on main): action_append_telemetry copies
+    AppendOutcome.masked_commit_retries into stats.masked_commit_retries; the response body is unchanged (occ_retries
+    stays the total retry count).
 - file: src/lambdas/ducklake_telemetry_writer/telemetry_log.py
   action: Create
   purpose: >-
@@ -157,9 +164,11 @@ scope:
     series), but that directive and its members appear only when the sink recorded values (a pre-BEGIN 422 or a 409
     records none, and a directive without its members would invalidate the block and drop RequestCount too). Every
     millisecond value in the line is an integer and every ratio has 3 decimal places (a raw float repr can carry a
-    12-digit run that a leak scan would misread). 2026-10-14 amendment: the line also carries masked_commit_retries (an
-    integer from the verb's outcome, else null), a log field only: it is never passed to a metric sink and adds no EMF
-    member or series. describe and attach_check get the line without the block. append_telemetry makes no PutMetricData call; part
+    12-digit run that a leak scan would misread). 2026-10-14 amendment: RequestStats gains masked_commit_retries: int |
+    None = None and the line carries it (the edge sets it from AppendOutcome; the handler sets it from a
+    TelemetryOCCRetryExhaustedError on a 503), else null. It is a log field only: never passed to a metric sink, no EMF
+    member, no series. Part 1's other verbs log null; their masked retries count only inside part 1's existing
+    OccRetryCount PutMetricData series, which now counts every retry of either kind. describe and attach_check get the line without the block. append_telemetry makes no PutMetricData call; part
     1's other verbs keep their sink; ducklake_metrics.py is unchanged.
 - file: src/lambdas/ducklake_telemetry_writer/handler.py
   action: Modify
@@ -174,7 +183,9 @@ scope:
     event's body field as delivered, before any base64 decoding, as len(json.dumps(body_field)) (ASCII-escaped, an upper
     bound for non-ASCII bodies), beside part 1's request_bytes. (5) The stub's body parse answers 400 bad_request for every
     json.loads failure, RecursionError (deep nesting) and the int-digit-limit ValueError included; if the stub as built
-    catches only JSONDecodeError, this plan widens that one row.
+    catches only JSONDecodeError, this plan widens that one row. (6) 2026-10-14 amendment (fix-forward; the file exists on main): the OCCRetryExhaustedError branch
+    copies a TelemetryOCCRetryExhaustedError's masked_commit_retries into the request's stats before the C6 line, so a
+    masked-caused 503 is told apart in the log; the 503 body is unchanged.
 - file: src/lambdas/ducklake_telemetry_writer/telemetry_actions.py
   action: Modify
   purpose: >-
@@ -257,6 +268,11 @@ scope:
     identical re-send is a no-op and a differing row writes nothing
     (Decision 207); no body carries a caller value; the two temporary rec-4024 refusals; one C6 line per answered request
     with no account id, ARN or hash. One amendment_log entry. telemetry_probe stays out of contract scope.
+    2026-10-14 amendment: write_path's bounded OCC retry also names the masked commit-cleanup retry; the C6 audit
+    invariant's field list gains masked_commit_retries; a new audit invariant: a COMMIT whose error is masked by the
+    no-delete file cleanup ("Failed to commit: Could not remove file") is retried within the same bounded budget because
+    every body is idempotent, its count is logged apart, the masked message is never logged or returned, and the role
+    keeps no s3:DeleteObject (Decision 216 cl.4). One more amendment_log entry (semantic_break false).
 - file: docs/contracts/telemetry_transcripts.yaml
   action: Modify
   purpose: >-
@@ -321,9 +337,11 @@ scope:
   purpose: >-
     2026-10-14 amendment, recording fake connection: the masked failed-cleanup TransactionException raised by COMMIT is
     retried, counted in masked_commit_retries and occ_retries, and the retry commits; the same text raised by a body
-    statement propagates unretried; exhaustion on it raises OCCRetryExhaustedError with reason masked_commit; a plain
-    TransactionException from COMMIT without the signature still propagates; no captured log or exception text carries the
-    masked message.
+    statement propagates unretried, and that node also asserts is_masked_commit_failure is True for the raised
+    exception, so it proves the COMMIT-only rule rather than a predicate miss; exhaustion on it raises
+    TelemetryOCCRetryExhaustedError with reason masked_commit, masked_commit_retries counted and __cause__ None, and
+    neither str() nor repr() of it carries the masked message; a plain TransactionException from COMMIT without the
+    signature still propagates.
 - file: tests/common/test_ducklake_telemetry_append_integration.py
   action: Create
   purpose: >-
@@ -341,7 +359,8 @@ scope:
     Mirror test -- caps at their boundaries before any kernel or catalog work, RequestError translation by type, the
     response shape, describe_entry, no value echo, and an adversarial node (lone surrogates in content, project_ref and
     a VARCHAR; U+0000 in project_ref and producer; a 400-digit integer for a DOUBLE; range-edge offset timestamps; a
-    deeply nested body; a 5000-digit integer) asserting only mapped classes surface.
+    deeply nested body; a 5000-digit integer) asserting only mapped classes surface. 2026-10-14 amendment: stats carry
+    masked_commit_retries from the outcome and the response body is unchanged.
 - file: tests/lambdas/ducklake_telemetry_writer/test_telemetry_log.py
   action: Create
   purpose: >-
@@ -350,14 +369,15 @@ scope:
     verbs; caller_role is the role name only; a line built from a principal whose account id and ARN are
     constructed at runtime contains neither nor any 12-digit run outside the EMF Timestamp; the telemetry writer's
     Terraform function sets no JSON log format (EMF extraction needs the text format); masked_commit_retries is a line
-    field and never an EMF member (2026-10-14 amendment).
+    field and never an EMF member, and null when the request has no outcome count (2026-10-14 amendment).
 - file: tests/lambdas/ducklake_telemetry_writer/test_handler.py
   action: Modify
   purpose: >-
     Dispatch of append_telemetry, the three kernel error-map rows (row_rule and schema_gate asserted separately so a less
     specific row cannot shadow), invoke_bytes as the escaped body length, one C6 line per answered request, and the body
     parse row driven through handler() with raw JSON text (malformed, deeply nested, a 5000-digit integer) -> 400
-    bad_request, never an unmapped error.
+    bad_request, never an unmapped error. 2026-10-14 amendment: a masked-commit exhaustion answers 503 occ_exhausted and
+    its C6 line carries masked_commit_retries, with no masked text in the body or the line.
 - file: tests/lambdas/ducklake_telemetry_writer/test_telemetry_actions.py
   action: Modify
   purpose: >-
@@ -406,19 +426,23 @@ scope:
   purpose: Graduated shard for VP step 2 (check_id telemetry-append-kernel-errors).
 - file: config/agent/verification_registry/entries/telemetry-append-adapter.yaml
   action: Create
-  purpose: Graduated shard for VP step 4 (check_id telemetry-append-adapter).
+  purpose: >-
+    Graduated shard for VP step 4 (check_id telemetry-append-adapter). 2026-10-14 amendment (fix-forward; the file exists on main): it also carries step 4's three txn
+    nodes; validate_verification_registry's modified-record differential replays it (red on 73cd31e0, green after).
 - file: config/agent/verification_registry/entries/telemetry-append-writer-edge.yaml
   action: Create
   purpose: >-
     Graduated shard for VP step 5 (check_id telemetry-append-writer-edge); its guard_target includes
-    terraform/personal/ducklake_telemetry_writer.tf, which test_function_keeps_the_text_log_format reads.
+    terraform/personal/ducklake_telemetry_writer.tf, which test_function_keeps_the_text_log_format reads. 2026-10-14 amendment (fix-forward; the file exists on main): it
+    also carries step 5's three amendment nodes, replayed by the same modified-record differential.
 - file: config/agent/verification_registry/entries/telemetry-append-smoke-vectors.yaml
   action: Create
   purpose: Graduated shard for VP step 6 (check_id telemetry-append-smoke-vectors).
 - file: docs/plans/PLAN-telemetry-append-inline.yaml
   action: Create
   purpose: This plan.
-bundled_recommendations: []
+bundled_recommendations:
+- rec-4320
 followon_recs:
 - rec-4218
 - rec-4325
@@ -541,7 +565,7 @@ verification_plan:
     through test_prepare.py, and the full tier runs these nodes.
 - step: 4
   phase: pre-deploy
-  action: The adapter -- prepare before BEGIN, the sentinel never written, re-prepare only on an id change, cache after commit, reserved-ref 403 first.
+  action: The adapter -- prepare before BEGIN, the sentinel never written, re-prepare only on an id change, cache after commit, reserved-ref 403 first; the shared loop retries the masked commit-cleanup failure from COMMIT only.
   command: >-
     bin/venv-python -m pytest tests/common/test_ducklake_telemetry_append.py::test_rule_rejection_opens_no_transaction
     tests/common/test_ducklake_telemetry_append.py::test_first_sight_reprepares_only_when_the_id_differs
@@ -571,15 +595,18 @@ verification_plan:
     tests/lambdas/ducklake_telemetry_writer/test_telemetry_log.py::test_line_never_carries_account_id_or_arn
     tests/lambdas/ducklake_telemetry_writer/test_telemetry_log.py::test_function_keeps_the_text_log_format
     tests/lambdas/ducklake_telemetry_writer/test_telemetry_log.py::test_occ_directive_only_when_recorded
+    tests/lambdas/ducklake_telemetry_writer/test_telemetry_log.py::test_masked_commit_retries_is_a_line_field_never_an_emf_member
+    tests/lambdas/ducklake_telemetry_writer/test_telemetry_edge.py::test_stats_carry_masked_commit_retries_from_the_outcome
     tests/lambdas/ducklake_telemetry_writer/test_handler.py::test_dispatch_includes_append_telemetry
     tests/lambdas/ducklake_telemetry_writer/test_handler.py::test_error_map_rows_for_kernel_errors
     tests/lambdas/ducklake_telemetry_writer/test_handler.py::test_one_c6_line_per_answered_request
     tests/lambdas/ducklake_telemetry_writer/test_handler.py::test_invoke_bytes_is_the_escaped_body_length
     tests/lambdas/ducklake_telemetry_writer/test_handler.py::test_unparseable_bodies_through_handler_are_400
+    tests/lambdas/ducklake_telemetry_writer/test_handler.py::test_masked_exhaustion_logs_its_retry_count
     tests/lambdas/ducklake_telemetry_writer/test_telemetry_actions.py::test_probe_reports_grain_counts_for_one_session_day
     tests/lambdas/ducklake_telemetry_writer/test_telemetry_actions.py::test_probe_inputs_refused_before_any_catalog_read
     tests/lambdas/ducklake_telemetry_writer/test_packaging.py::test_manifest_bundles_the_append_modules -q
-  expected: Exit 0, 16 passed. Red before, because the nodes do not exist.
+  expected: Exit 0, 19 passed. Red before, because the nodes do not exist (the three 2026-10-14 amendment nodes are red on 73cd31e0).
   expected_literals: []
   fix_if: An unmapped kernel class -> add the error-map row; an account id, ARN or 12-digit run in a line -> fix telemetry_log, never the test.
   hermetic: true
@@ -627,7 +654,8 @@ verification_plan:
   action: The touched suites pass, the bundle imports cleanly and the import fences hold.
   command: >-
     bin/venv-python -m pytest tests/telemetry tests/turn_capture tests/common/test_ducklake_telemetry_append.py
-    tests/lambdas/ducklake_telemetry_writer tests/ducklake_neon_smoke_test -q && bin/venv-python -m scripts.lambda_manifest
+    tests/common/test_ducklake_telemetry_txn.py tests/common/test_ducklake_telemetry_registration.py
+    tests/test_ducklake_maintenance_smoke_handler.py tests/lambdas/ducklake_telemetry_writer tests/ducklake_neon_smoke_test -q && bin/venv-python -m scripts.lambda_manifest
     --check-bundles && .venv/bin/lint-imports
   expected: Exit 0 from all three; the telemetry writer bundle stages and imports its handler; no forbidden import chain.
   fix_if: A broken fence means the adapter is reachable from ducklake_runtime or scripts/ imports src.telemetry.append; remove that edge, never edit .importlinter.
@@ -724,6 +752,15 @@ verification_plan:
     check the _aws block against the EMF specification and the function's log format. Errors above zero -> a runtime-level
     failure (timeout, out of memory, runtime exit): read the function's logs; Url5xxCount above zero -> read the C6 line's
     error_type.
+  hermetic: false
+- step: 15
+  phase: post-deploy
+  action: rec-4320 (the CI-RCA rec for this defect, bundled by the 2026-10-14 amendment) is closed after the fix-forward's deploy run passes steps 11-14.
+  command: >-
+    bin/venv-python -c "from scripts.ops_data_portal import _fetch_rec_from_reader as f;r=f('rec-4320');assert r and
+    r['status']=='closed',(r or {}).get('status');print('REC_4320_CLOSED')"
+  expected: Exit 0 and REC_4320_CLOSED printed.
+  fix_if: Still open -> close it by the verdict-bound manual route in execution_steps (it is escape-classified, so a Resolves trailer is refused); never edit logs/*.jsonl.
   hermetic: false
 test_obligations:
 - source: src/telemetry/request.py
@@ -881,7 +918,12 @@ constraints:
   tests, lambda_telemetry_gates.py) under 500 SLOC; decompose rather than raise a budget (Decision 128).
 - 'No producer change: rec-4026 (slice 3b, parser_version 3) owns the producer and its chunking on len(json.dumps(S)) <= 5 MiB, S the exact body string sent.'
 - 'Real DuckLake tests are never skipped or dropped for environment limits (rec-4071; Benjamin 2026-09-25).'
-- The implementation merge redeploys every DuckLake function, so it waits for Benjamin's explicit word.
+- >-
+  The implementation merge redeploys every DuckLake function, so it waited for Benjamin's explicit word. Since his
+  2026-10-14 deploy rule (cmsg_012XgaFy8VaDQbxP5D8nC9588rE3MxHqZ9YY2vtDVY2Rpr), a CI-run DuckLake deploy merges on code
+  review PROCEED and green CI unless it also carries IAM or security, spend, Class A contract or Decision text,
+  public-surface artefacts or a manual or admin step; the 2026-10-14 fix-forward carries none of those (its contract is
+  the Class B ducklake_telemetry_writer.yaml).
 - No rescue agents or workaround loops (Decision 55).
 context:
 - "rec-4294 / PLAN-ducklake-typed-unmapped-errors (2026-10-14): an exception no error-map row recognises now answers a typed 500 unmapped (and a dead catalog connection a 503 catalog_unavailable) instead of the runtime's 502, so the post-deploy zero check reads AWS/Lambda Errors and Url5xxCount; this plan's handler, contract and step 14 text assume that."
@@ -896,8 +938,8 @@ context:
 - "fork: metric mechanism and spend | chosen: EMF in the C6 line, RequestCount by Verb for five verbs (about USD 1.50 a month) | class: asked | precedent: Fable consult part 2 Q4; operator accepted the spend 2026-10-08 | precedent_kind: answered-fork | reversible: yes | persisted: telemetry_log.py"
 - "Decided with notice: unknown request keys refused and undeclared names never echoed; an all-empty request is 400 bad_request; caps 5 MiB on the JSON-escaped body / 2000 / 5000 (plan 3 presentation 2026-10-06, measure fixed by the 2026-10-09 evidence); the binding and tenant caches are part 1's; data vectors write under part 1's registered synthetic: ref and one auto-registration vector fails unless bound to ducklake_smoke (writer-boundary consult 2c item 2); at-cap escape-dense and 2000-row vectors measure the ceilings; EMF namespace is the function's own (DuckLakeTelemetryWriter)."
 - "Moved by option D (#1430, Benjamin 2026-10-08): the verb lives on the separate telemetry writer, so this plan edits its handler, manifest and Class B contract, never the shared writer."
-- "Amendment 2026-10-14 (fix-forward after #1477, scope escalation from the build thread via the coordinator): the live gate's three-way concurrent first-sight append returned two unmapped 500s. Cause, from the writer's logs: a lost-race COMMIT cannot remove the files it wrote (the writer role has no s3:DeleteObject by design), so DuckDB raises 'Failed to commit: Could not remove file ...: Forbidden' instead of the conflict, and run_telemetry_txn did not retry it; provision_telemetry hit the same signature twice that day. Ruling: retry that exact masked signature, from COMMIT only, inside the OCC budget, counted apart (ducklake_telemetry_txn.py scope row); no IAM change and the vector stays. Rejected: granting delete (an IAM reversal of the operator's 2026-10-06 choice, now rec-4325 for the operator before production) and dropping the vector (it hides a production path). Blind consult: /mnt/project-files/telemetry-slice2/fable-consult-commit-cleanup/ (BRIEF.md, ADVICE.md). Its other findings: rec-4326 (s3:// redaction in the shared unmapped-error log) and rec-4327 (the catalog-wide project lock row). Live measurements from the #1477 deploy for rec-4218: append_commit_ms 1771, append_files_per_commit 4, near_cap_commit_ms 405, near_cap_inflation 1.632, rowcap_commit_ms 7877."
-- "ci-rca: none open (rec-4189 closed by #1428); re-check before the implementation merges."
+- "Amendment 2026-10-14 (fix-forward after #1477, scope escalation from the build thread via the coordinator): the live gate's three-way concurrent first-sight append returned two unmapped 500s. Cause, from the writer's logs: a lost-race COMMIT cannot remove the files it wrote (the writer role has no s3:DeleteObject by design), so DuckDB raises 'Failed to commit: Could not remove file ...: Forbidden' instead of the conflict, and run_telemetry_txn did not retry it; provision_telemetry hit the same signature twice that day. Ruling: retry that exact masked signature, from COMMIT only, inside the OCC budget, counted apart (ducklake_telemetry_txn.py scope row); no IAM change and the vector stays. Rejected: granting delete (an IAM reversal of the operator's 2026-10-06 choice, which Decision 216 cl.4 now ratifies as verb containment; rec-4325 carries it to the operator before production and would route through /plan with an amendment of Decision 216 cl.4) and dropping the vector (it hides a production path). Blind consult: /mnt/project-files/telemetry-slice2/fable-consult-commit-cleanup/ (BRIEF.md, ADVICE.md). Its other findings: rec-4326 (s3:// redaction in the shared unmapped-error log) and rec-4327 (the catalog-wide project lock row); its check that delete_orphaned_files sweeps the counter_name= partition directories is folded into rec-4325; serializing provision_telemetry in the pipeline is not needed once the masked retry converges concurrent provisions. Live measurements from the #1477 deploy for rec-4218: append_commit_ms 1771, append_files_per_commit 4, near_cap_commit_ms 405, near_cap_inflation 1.632, rowcap_commit_ms 7877."
+- "ci-rca: rec-4189 closed by #1428 before the build. rec-4320 (Critical, ci_rca, filed 2026-10-14 against #1477's deploy) is this plan's own defect and is bundled by the 2026-10-14 amendment; its filed corrective action (widen ducklake_writes.is_occ_collision) is declined, and its acceptance now names the step 4 node."
 - "Landed after the scout run: Decision 214 (#1437, the catalog stays on Neon, tuned and capped). No conflict: this plan changes no catalog backend, index or compute, and its commit-time measurements feed rec-4218 beside 214's wall-time signal."
 - "Resolved (critique r5 N6): part 1's U+0000 exposure is closed by its plan amendment #1434 (47b3475d): its verbs, lookup_project and resolve_or_register_project refuse a non-str, U+0000 or lone-surrogate string with 400 bad_request {field} via invalid_string_field, so the append path is guarded twice (request.py first). The shared writer and reader's same gap is rec-4219. request.py keeps its own stdlib walk (plane-neutral, it cannot import src.common) and its reason invalid_unicode with a position, because append strings sit inside nested rows and its other bad_request causes already carry a reason."
 - "Gotcha: part 1's run_telemetry_txn re-raises the AppendError family before is_occ_collision, which matches 'conflict' (a stored grain conflict's message contains TELEMETRY_GRAIN_CONFLICT)."
@@ -945,6 +987,17 @@ execution_steps:
   rebase on origin/main, step 10 on the committed clean tree, postflight evidence, push, PR, CI green. Confirm the
   infrastructure_dependencies ordering holds, then ask Benjamin for the merge (it redeploys every DuckLake function); on
   his word, squash-merge. Then run steps 11-14 against the deploy run for the merge commit.
+- >-
+  Fix-forward (2026-10-14 amendment), on a new branch from main after the amendment PR merges: is_masked_commit_failure,
+  the COMMIT-only retry and TelemetryOCCRetryExhaustedError in ducklake_telemetry_txn.py; AppendOutcome,
+  RequestStats, edge and handler wiring; the contract row; the two shard updates; their tests. Run steps 4, 5, 8 and 10.
+  Code review in a fresh context that also checks every touched file against the amended scope by hand (no scope gate
+  fires on an already-declared plan). Merge per the deploy constraint, WITHOUT a Resolves trailer: rec-4320 is
+  escape-classified, so a trailer is refused. Then run steps 11-14 against the fix-forward's deploy run (step 14's window
+  starts at that deploy) and close rec-4320 by the verdict-bound manual route: its acceptance already names the step 4
+  node; in a worktree of the merge SHA run rec_trailer_acceptance's census and evaluate and proceed only on isolation
+  True and verdict holds; then one update_rec with status closed, resolution, closure_artifact (the pytest node),
+  closure_fix_sha, acceptance_verdict and closing_sha; read it back. Then step 15.
 - 'Report: what was implemented, verification results, near_cap_commit_ms, append_files_per_commit and append_commit_ms for the payload-ceiling and ingestion-shape measurements.'
 work_areas: []
 rollback: >-
