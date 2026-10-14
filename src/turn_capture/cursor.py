@@ -80,8 +80,6 @@ class CaptureCursor:
 
 
 def _validate(raw: dict[str, Any]) -> None:
-    if raw["cursor_format"] != CURSOR_FORMAT:
-        raise CursorError("unsupported cursor_format")
     for key in _INT_FIELDS:
         if type(raw[key]) is not int or raw[key] < 0:
             raise CursorError(f"{key} must be a non-negative integer")

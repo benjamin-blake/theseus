@@ -102,6 +102,15 @@ def test_open_row_model_is_bounded_to_the_open_bound_and_skips_api_errors() -> N
     assert sessions(root + [prompt("u3", 5, "p3", "c")], final=False)[0].get("model_primary") is None
 
 
+def test_open_row_without_any_branch_omits_it() -> None:
+    root = [
+        prompt("u1", 1, "p1", "a", gitBranch=""),
+        assistant("a1", 2, "m1", [text_block("x")], gitBranch=""),
+        prompt("u2", 3, "p2", "b", gitBranch=""),
+    ]
+    assert "branch" not in by(sessions(root, final=False), event_kind="open")[0]
+
+
 def test_close_row_per_finalization_with_transcript_outcome() -> None:
     def close(root, final=True):
         return by(sessions(root, final=final), event_kind="close")

@@ -521,3 +521,22 @@ def test_a_stream_with_no_assistant_reply_emits_no_row_in_any_table() -> None:
     files, expected = load_case("no_reply_session.json")
     result = capture(files, final=True)
     assert expected == [] and all(rows == [] for _, rows in result.batches) and result.next_cursor is not None
+
+
+def test_prior_content_divergence_is_counted_and_not_resent(monkeypatch) -> None:
+    original = record_turn_module._build_all
+
+    def tagged(parsed, ctx, sidecars, diag):
+        built = original(parsed, ctx, sidecars, diag)
+        for rows in built.values():
+            for row in rows:
+                row["_lines"] = sum(parsed.lines_total.values())
+        return built
+
+    monkeypatch.setattr(record_turn_module, "_build_all", tagged)
+    base = [prompt("u1", 1, "p1", "go"), assistant("a1", 2, "m1", [text_block("x")]), prompt("u2", 3, "p2", "next")]
+    first = capture(make_files(base))
+    grown = base + [assistant("a2", 4, "m2", [text_block("y")]), prompt("u3", 5, "p3", "more")]
+    second = capture(make_files(grown), first.next_cursor)
+    assert second.diagnostics["prior_content_divergence"] > 0
+    assert not set(keyed(first)) & set(keyed(second))
