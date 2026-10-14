@@ -162,7 +162,7 @@ def run_python_checks(failed: list[str]) -> None:
         if step.kind == "check":
             _dispatch_check(step.name, failed)
         else:
-            scaffold_fns[step.name]()
+            validation_result.run_scaffold(step.name, failed, scaffold_fns[step.name])
 
 
 def main() -> None:
@@ -267,9 +267,7 @@ def main() -> None:
         if not failed:
             print("All checks passed.")
             sys.exit(0)
-        print("Failed checks:")
-        for f in failed:
-            print(f"  - {f}")
+        validation_result.print_failure_summary(failed)
         sys.exit(1)
 
     # --pre: diff-aware lint/format/mypy/affected-set pytest (Decision 135) + prompt validation, with 5-min budget
@@ -592,7 +590,7 @@ def main() -> None:
                 else:
                     print(f"skipped-by-glob: {step.name}")
             else:
-                scaffold_fns[step.name]()
+                validation_result.run_scaffold(step.name, failed, scaffold_fns[step.name])
             phase_times[step.name] = time.monotonic() - step_t0
 
         print("\n=== Validation Summary (scope: pre) ===")
@@ -600,9 +598,7 @@ def main() -> None:
             print("All checks passed.")
             sys.exit(0)
         else:
-            print("Failed checks:")
-            for f in failed:
-                print(f"  - {f}")
+            validation_result.print_failure_summary(failed)
             print("\nFix all failures before committing.")
             sys.exit(1)
 
@@ -622,9 +618,7 @@ def main() -> None:
         )
         sys.exit(0)
     else:
-        print("Failed checks:")
-        for f in failed:
-            print(f"  - {f}")
+        validation_result.print_failure_summary(failed)
         print("\nFix all failures before committing.")
         validation_result.write_completed_visible(
             started_at=full_started_at or validation_result.utc_now(), exit_code=1, failed_checks=failed
