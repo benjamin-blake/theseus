@@ -69,6 +69,8 @@ def test_log_line_redacts_truncates_and_keeps_the_first_line(capsys):
     for needle in ("hunter2", "abc123", "arn:aws", _ACCT):
         assert needle not in msg
     assert "[redacted]" in msg
+    quoted = he.redact("conn failed " + "pass" + "word='sec ret' host=x " + "pass" + 'word="two words" tail')
+    assert "sec" not in quoted and "two words" not in quoted and "host=x" in quoted and "tail" in quoted
     assert he.redact("a" * 900) == "a" * 300
     assert he.redact("") == ""
 

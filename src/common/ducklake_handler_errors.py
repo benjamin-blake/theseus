@@ -25,8 +25,8 @@ _FRAME_LIMIT = 10
 _CHAIN_LIMIT = 3
 _REDACTED = "[redacted]"
 _SECRET_PATTERNS = (
-    re.compile(r"password\s*=\s*[^\s&;,'\"]+", re.IGNORECASE),
-    re.compile(r"X-Amz-[A-Za-z0-9-]+\s*=\s*[^\s&;,'\"]+", re.IGNORECASE),
+    re.compile(r"password\s*=\s*(?:'[^']*'|\"[^\"]*\"|[^\s&;,]+)", re.IGNORECASE),
+    re.compile(r"X-Amz-[A-Za-z0-9-]+\s*=\s*(?:'[^']*'|\"[^\"]*\"|[^\s&;,]+)", re.IGNORECASE),
     re.compile(r"arn:[^\s,'\"]+", re.IGNORECASE),
     re.compile(r"\d{12,}"),
 )

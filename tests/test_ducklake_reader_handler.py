@@ -689,3 +689,9 @@ class TestResponseSizeGuard:
         resp = h._response(200, {"ok": True})
         assert h._guard_response_size(resp, {"action": "describe"}, meta) is resp
         assert meta["response_bytes"] == len(json.dumps(resp).encode("utf-8"))
+
+
+def test_size_guard_failure_is_an_unmapped_500(monkeypatch):
+    monkeypatch.setattr(h, "_guard_response_size", lambda *a, **k: (_ for _ in ()).throw(KeyError("guard")))
+    r = h.handler({"action": "describe"})
+    assert r["statusCode"] == 500 and json.loads(r["body"])["error_class"] == "KeyError"
