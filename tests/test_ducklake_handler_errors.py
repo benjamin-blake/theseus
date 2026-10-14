@@ -175,3 +175,17 @@ def test_serving_contracts_declare_the_terminal_answers(name):
         assert "named_read_input" in verbs["named_read"]["typed_errors"] and 400 in verbs["named_read"]["response_codes"]
     invariants = " ".join(contract["audit_invariants"])
     assert "502" in invariants and "unmapped" in invariants and "rec-4303" in invariants
+
+
+def test_named_read_input_log_line_is_redacted_and_carries_the_request_id(capsys):
+    he.log_named_read_input(
+        ValueError("narrow the query " + _SECRET), function="reader", verb="recs_related", request_id="req-3"
+    )
+    line = _lines(capsys.readouterr().out, "ducklake_named_read_input")[0]
+    assert (line["function"], line["verb"], line["error_class"], line["request_id"]) == (
+        "reader",
+        "recs_related",
+        "ValueError",
+        "req-3",
+    )
+    assert line["message"].startswith("narrow the query") and "hunter2" not in line["message"] and _ACCT not in line["message"]
