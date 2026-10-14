@@ -162,7 +162,8 @@ scope:
     provision_telemetry_catalog raises naming the absent tables and writes nothing; a DuckLake CREATE TABLE as the scoped
     login fails at commit); test_create_is_idempotent_and_refuses_drift (a second owner create returns created ();
     an owner ADD COLUMN on a telemetry table makes both create_telemetry_tables and provision_telemetry_catalog refuse
-    loudly).
+    loudly, AND a scoped append-style INSERT into that ALTERed table still succeeds with ownership_report clean, the
+    per-schema-version path the Decision's Rationale and its ducklake-ddl-on-dml-path condition rely on).
 - file: tests/common/test_ducklake_telemetry_provision.py
   action: Modify
   purpose: >-
@@ -215,9 +216,10 @@ scope:
 - file: tests/lambdas/ducklake_telemetry_writer/test_handler.py
   action: Modify
   purpose: >-
-    test_provision_absent_tables_maps_to_500_runtime: with provision_telemetry_catalog raising its absent-tables
-    DuckLakeRuntimeError, the handler answers 500 runtime naming the tables, never an uncaught raise (rec-4294's writer-side
-    pin, independent of the rec-4294 thread's unmapped-error row).
+    test_provision_absent_tables_maps_to_500_runtime: the REAL provision_telemetry_catalog over a recording fake with no
+    tables (never a patched raise, which the current handler already maps), so the handler answers 500 runtime naming the
+    absent tables, the fake records no CREATE, and nothing is raised (rec-4294's writer-side pin, independent of the
+    rec-4294 thread's unmapped-error row).
 - file: tests/ducklake_neon_smoke_test/test_lambda_telemetry_gates.py
   action: Modify
   purpose: >-
@@ -244,9 +246,11 @@ scope:
     provision_telemetry's payload_schema_ref: verify-and-seed only; the tables are created under the catalog owner by
     ducklake_maintenance_smoke create_telemetry_tables (Decision N); its 500 runtime row adds "a target table is absent"
     (the rec-4294 thread's plan adds its unmapped row to the same 500 key later). governance.write_path drops
-    "create-only DDL" from the writer. The audit invariant "provisioning is create-only" is strengthened to "the telemetry
+    "create-only DDL" from the writer, and contract.description's "Its first verbs provision the telemetry tables" says
+    the writer verifies and seeds tables the owner creates. The audit invariant "provisioning is create-only" is strengthened to "the telemetry
     writer issues no Postgres DDL and holds no CREATE on any schema; its tables are created under the catalog owner
-    (Decision N)". One amendment_log entry. The verb set is unchanged, so
+    (Decision N)". One amendment_log entry with change_class governance_note_add and semantic_break true, because
+    provision_telemetry's behaviour changes (contracts_enforcement.check_amendment_for_diff pairing). The verb set is unchanged, so
     test_contract_verbs_match_the_dispatched_production_verbs holds.
 - file: docs/contracts/storage-substrate.yaml
   action: Modify
@@ -447,8 +451,11 @@ verification_plan:
 - step: 8
   phase: pre-deploy
   action: On a real file-backed DuckLake catalog, create then provision, and the registration race still converges.
-  command: bin/venv-python -m pytest tests/common/test_ducklake_telemetry_registration_integration.py -m integration -q
-  expected: Exit 0 with every node passing (not skipped).
+  command: >-
+    bin/venv-python -m pytest tests/common/test_ducklake_telemetry_registration_integration.py -m integration -q -rs 2>&1 |
+    tee "${TMPDIR:-/tmp}/registration_int.log" && ! grep -Eq "[0-9]+ (skipped|failed|error)"
+    "${TMPDIR:-/tmp}/registration_int.log" && grep -Eq "[0-9]+ passed" "${TMPDIR:-/tmp}/registration_int.log"
+  expected: Exit 0 with every node passing and none skipped (the module's importorskip would otherwise pass vacuously).
   fix_if: Divergent ids fire Decision 200's reversal condition; stop and return the model to /plan.
   hermetic: false
   graduation: waive
@@ -674,7 +681,8 @@ context:
   annotation cannot widen a ratified exact set, the Decision 204 cl.4 precedent) with 2c framed in the Decision 126 admin
   tier; NOTE 81 resolved by keeping the counter seed on the writer. RELATED 107, 210, 84, 88, 212, 100, 214, 191, 125,
   91, 150/167, 181, 73/135, 189, 162. Decisions triaged: 168 of 168. Roadmap items intersected: 9; CONFLICT: 0; RELATED: 8.'
-- 'gates: decision-scout=FLAGS_FOUND (2 WARN, 1 NOTE, resolved); plan-critique=<verdict> after <N> round(s)'
+- 'gates: decision-scout=FLAGS_FOUND (2 WARN, 1 NOTE, resolved); plan-critique=PROCEED after 3 round(s); round 3
+  autonomous (r1 and r2 REVISE, all findings fixed; r3 confirming PROCEED, its notes folded in)'
 - 'Direction: Benjamin picked owner-in-CI (cmsg_012XgaFy8VaDQbxP5D8nC958UUrzEqExWB8DtaAJyJuSoA), kept the production verb
   for 2c and said "write the plan" (cmsg_012XgaFy8VaDQbxP5D8nC958FFGew7ApS3svojibuquStV), thread "Writer grant fix plan".
   His pick ratifies Decision N''s content as drafted here; the build still asks for his word on the final text before the
@@ -695,7 +703,10 @@ context:
   rec-4301 superseded into it. F6: the flat smoke test is 363 SLOC, so it is not moved. Critique r2 REVISE (R1 substrate
   amendment_log[0] pin, R2 ownership pre-check before any DDL, R3 every provision node given a disposition, R4 CI-path
   identity residual in Coverage; notes N1, N3-N6, N9, N10 taken; N2 by tightening rec-4071''s acceptance; N8 folded into
-  rec-4310): all fixed.'
+  rec-4310; N7 kept as is, since step 6 is multi-command and its nodes run in every tier; N11 informational, roadmap
+  drift outside this plan): all fixed. Critique r3 (confirming) PROCEED with F-J1 to F-J4 and F-M1 folded in; F-M2''s
+  stale prose in field_semantics.static.yaml and the data-pipeline manifest comments folded into rec-4310, rec-4209
+  annotated.'
 - 'Decided with notice: the PG test runs before merge locally (step 7, log in the PR body) and gates CI only once rec-4071
   lands; deploy-serving keeps its needs, so production deploys never wait on a smoke step; no role SQL REVOKE on public
   (PG15+ default, checked live by the ownership report); unknown event keys are ignored like the function''s other verbs,
@@ -766,7 +777,8 @@ execution_steps:
   scoped role; an owner credential or SET ROLE for the writer (its worst verb becomes everything, Decision 143 cl.1);
   hand-run admin creation on smoke (a human in the deploy path, which Decision 143's rationale rejected). Coverage
   (Decision 181 cl.2): the smoke catalog -- the maintenance-smoke step's ownership report (foreign-owned relations,
-  schema owner, scoped CREATE on the schema and public) and the telemetry gate's can_create check from the writer's own
+  schema owner, scoped CREATE on the metadata schema and public; other schemas are an unenforced residual, the role SQL
+  granting none) and the telemetry gate's can_create check from the writer's own
   session, on every deploy; the role SQL and DuckLake's DDL behaviour -- tests/common/test_ducklake_telemetry_catalog_ownership.py,
   run before merge and an unenforced CI residual until rec-4071 gates it; a production telemetry catalog -- an unenforced
   residual until slice 2c (rec-4292); DuckLake-level DROP through metadata DML -- a residual (rec-4297); the owner-login
