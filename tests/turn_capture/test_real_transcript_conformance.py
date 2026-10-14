@@ -13,7 +13,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import time
 from collections import Counter
 from pathlib import Path
@@ -26,8 +25,9 @@ from src.telemetry.identity import canonical_ref
 from src.telemetry.timestamps import TimestampError, epoch_ms, parse_iso8601_utc
 from src.turn_capture.record_turn import record_turn
 from src.turn_capture.scrub import scrub_text
-from src.turn_capture.transcript import ROOT, FsTree
+from src.turn_capture.transcript import FsTree
 from tests.fixtures.turn_capture_ducklake import create_tables, load_specs, open_local_lake
+from tests.fixtures.turn_capture_real import PrefixTree, discover, raw_inherited, snapshot
 
 pytestmark = pytest.mark.integration
 
@@ -39,30 +39,6 @@ USAGE = (
     ("tokens_cache_read", "cache_read_input_tokens"),
     ("tokens_cache_creation", "cache_creation_input_tokens"),
 )
-
-
-def _discover() -> list[Path]:
-    override = os.environ.get("TURN_CAPTURE_REAL_TRANSCRIPTS")
-    if not override:
-        return sorted(Path.home().glob(".claude/projects/*/*.jsonl"))
-    found: list[Path] = []
-    for item in override.split(os.pathsep):
-        path = Path(item).expanduser()
-        found += sorted(path.glob("*.jsonl")) if path.is_dir() else [path]
-    return found
-
-
-def _snapshot(paths: list[Path], into: Path) -> list[Path]:
-    out = []
-    for i, src in enumerate(paths):
-        dest = into / f"t{i}"
-        dest.mkdir(parents=True)
-        shutil.copy2(src, dest / src.name)
-        session_dir = src.parent / src.stem
-        if session_dir.is_dir():
-            shutil.copytree(session_dir, dest / src.stem)
-        out.append(dest / src.name)
-    return out
 
 
 def _hash(session_id: str) -> str:
@@ -85,6 +61,12 @@ def raw_lines(path: Path, limit: int | None = None) -> tuple[list[tuple[int, dic
         else:
             malformed += 1
     return records, malformed
+
+
+def own_records(path: Path) -> list[tuple[int, dict[str, Any]]]:
+    """The records a stream wrote itself: a fork's copied head is dropped (rule K-1, read independently)."""
+    skip, _ = raw_inherited(path)
+    return [(i, d) for i, d in raw_lines(path)[0] if i not in skip]
 
 
 def _timed(d: dict[str, Any]) -> bool:
@@ -111,6 +93,7 @@ class _Walk:
         self.answered: set[str] = set()
         self.responses: dict[tuple[int, str], dict[str, Any]] = {}
         self.in_group = False
+        self.assistant_turns: set[int] = set()
 
     def attachment(self, d: dict[str, Any]) -> None:
         name = str((d.get("attachment") or {}).get("hookName") or "")
@@ -140,7 +123,10 @@ class _Walk:
         message = d.get("message") or {}
         if not (isinstance(message.get("id"), str) and message["id"] and isinstance(message.get("content"), list)):
             return
-        if self.cur is None:
+        if self.cur is None or (message.get("model") == "<synthetic>" and d.get("isApiErrorMessage") is not True):
+            return
+        self.assistant_turns.add(self.turn)
+        if d.get("isApiErrorMessage") is True:
             return
         usage = message.get("usage")
         self.responses[(self.turn, message["id"])] = usage if isinstance(usage, dict) else {}
@@ -155,6 +141,9 @@ class _Walk:
                 self.n["opens"] += 1
 
     def finish(self) -> Counter[str]:
+        if not self.assistant_turns:
+            return Counter()
+        self.n["due"] = 1
         self.n["turns"], self.n["model_calls"] = len(self.seen), len(self.responses)
         self.n["synthetic"] = sum(1 for t in self.uses if t not in self.answered)
         for col, key in USAGE:
@@ -189,31 +178,19 @@ def _stream_files(root: Path) -> dict[str, Path]:
     return files
 
 
-class PrefixTree(FsTree):
-    def __init__(self, root_file: Path, limit: int) -> None:
-        super().__init__(root_file)
-        self.limit = limit
-
-    def read(self, key: str) -> bytes | None:
-        data = super().read(key)
-        if key != ROOT or data is None:
-            return data
-        return b"".join(line + b"\n" for line in data.split(b"\n")[: self.limit])
-
-
 def _keyed(result: Any) -> dict[tuple[str, str], dict[str, Any]]:
     return {(t, r["external_ref"]): r for t, rows in result.batches for r in rows}
 
 
 @pytest.fixture(scope="module")
 def runs(tmp_path_factory: pytest.TempPathFactory) -> list[dict[str, Any]]:
-    sources = _discover()
+    sources = discover()
     if not sources:
         pytest.fail(
             "no real Claude Code transcripts found: set TURN_CAPTURE_REAL_TRANSCRIPTS or run on a machine that has them"
         )
     out = []
-    for root in _snapshot(sources, tmp_path_factory.mktemp("real")):
+    for root in snapshot(sources, tmp_path_factory.mktemp("real")):
         started = time.perf_counter()
         result = record_turn(FsTree(root), None, project_ref=PROJECT_REF, session_final=True)
         out.append({"root": root, "sid": root.stem, "result": result, "secs": time.perf_counter() - started})
@@ -234,7 +211,7 @@ def test_output_reconciles_with_an_independent_raw_walk(runs: list[dict[str, Any
         for stream, path in _stream_files(run["root"]).items():
             records, bad = raw_lines(path)
             malformed += bad
-            want = walk(records)
+            want = walk(own_records(path))
             obs = [r for r in result.observations if r["session_ref"] == stream]
             opens = [r for r in obs if r["observation_type"] == "tool_call" and r["event_kind"] == "open"]
             closes = [r for r in obs if r["observation_type"] == "tool_call" and r["event_kind"] == "close"]
@@ -264,7 +241,10 @@ def test_rows_are_unique_valid_and_scrubbed(runs: list[dict[str, Any]]) -> None:
     for run in _live(runs):
         result, tag = run["result"], _hash(run["sid"])
         starts = {r["session_started_at"] for _, rows in result.batches for r in rows}
-        assert len(starts) == 1, f"{tag}: {len(starts)} session_started_at values in one tree"
+        if starts:
+            assert len(starts) == 1, f"{tag}: {len(starts)} session_started_at values in one tree"
+        else:
+            assert not walk(own_records(run["root"]))["due"], f"{tag}: a closed assistant turn emitted no row"
         seen = set()
         for table, rows in result.batches:
             for r in rows:
@@ -319,7 +299,7 @@ def test_persisted_outputs_have_one_full_row_and_results_store_the_visible_text(
         tag = _hash(run["sid"])
         rows = {r["external_ref"]: r for r in run["result"].transcripts}
         for path in _stream_files(run["root"]).values():
-            for _, d in raw_lines(path)[0]:
+            for _, d in own_records(path):
                 info = d.get("toolUseResult")
                 name, via_string = _persisted_name(info)
                 unmatched += isinstance(info, str) and not name
@@ -355,7 +335,7 @@ def test_pin_is_the_minimum_raw_timestamp_and_every_row_passes_the_kernel_rules(
         tag = _hash(run["sid"])
         stamps = [
             parse_iso8601_utc(d["timestamp"])
-            for _, d in raw_lines(run["root"])[0]
+            for _, d in own_records(run["root"])
             if isinstance(d.get("timestamp"), str) and _stamp(d)
         ]
         assert run["result"].next_cursor.session_started_at_ms == epoch_ms(min(stamps)), (
@@ -393,7 +373,8 @@ def _cut_points(root: Path) -> list[int]:
     total = root.read_bytes().count(b"\n")
     prompts = [i + 1 for i, d in records if d.get("type") == "user" and d.get("promptId") and not d.get("sourceToolUseID")]
     step = 50 if total <= MAX_FULL_CUT_LINES else max(50, total // 60)
-    return sorted({*prompts, *range(step, total, step), total})
+    boundary = raw_inherited(root)[1]
+    return sorted({c for c in (*prompts, *range(step, total, step), total, boundary) if c >= boundary and c > 0})
 
 
 def test_incremental_equals_full_at_every_prompt_and_line_cut(runs: list[dict[str, Any]]) -> None:
@@ -410,7 +391,8 @@ def test_incremental_equals_full_at_every_prompt_and_line_cut(runs: list[dict[st
                 assert row == full[key], f"{tag}: {key[0]} row differs between incremental (cut {limit}) and full parse"
                 seen[key] = row
         assert set(seen) == set(full), f"{tag}: incremental emitted {len(seen)} rows, full parse {len(full)}"
-        print(f"\nconformance: {tag}: {len(cuts)} incremental cuts (every prompt plus a line stride)")
+        forks = " (fork boundary leg proven)" if raw_inherited(run["root"])[1] else ""
+        print(f"\nconformance: {tag}: {len(cuts)} incremental cuts (every prompt plus a line stride){forks}")
 
 
 def test_finalized_prefix_at_true_session_ends_is_a_row_subset(runs: list[dict[str, Any]]) -> None:
@@ -422,12 +404,14 @@ def test_finalized_prefix_at_true_session_ends_is_a_row_subset(runs: list[dict[s
             is_resume = d.get("type") == "attachment" and str((d.get("attachment") or {}).get("hookName") or "").startswith(
                 "SessionStart:resume"
             )
-            if is_resume and not in_group and index > 0:
+            if is_resume and not in_group and index > 0 and index >= raw_inherited(run["root"])[1]:
                 ends.append(index)
             in_group = is_resume if d.get("type") == "attachment" else False
         for limit in ends:
             prefix = _keyed(record_turn(PrefixTree(run["root"], limit), None, project_ref=PROJECT_REF, session_final=True))
             for key, row in prefix.items():
+                if key[0] == "telemetry_sessions" and row["event_kind"] == "close":
+                    continue
                 assert key in full and full[key] == row, (
                     f"{tag}: a row of the finalized prefix at a resume boundary is absent or changed in the full parse"
                 )

@@ -95,10 +95,11 @@ fields:
     $ref: parent-observation-id.yaml#/contract/fields/parent_observation_id
     governance_notes_local: >-
       FOREIGN KEY self-reference building the in-session tree: a step's parent is its phase; a tool_call's parent is its turn. NULL = a root observation directly under the session. Derived using the enclosing node's own domain tag over this row's parent_observation_ref. A process_event's parent is
-      the tool_call the hook gated when that call is in the stream, else the enclosing turn, else NULL (a root). That parentage is a cross-row fact, so it is prose only here: its DQ intent belongs to rec-4101 (Decision 210 cl.2).
+      the tool_call the hook gated when that call is in the stream, else the enclosing turn, else NULL (a root). That parentage is a cross-row fact, so it is prose only here: its DQ intent belongs to rec-4101 (Decision 210 cl.2). The claude_code producer's gate:<check> and precommit:<hook> process_events are not hook-gated: each parents to the Bash tool_call whose output carried its marker.
     joins:
       - parent_observation_id_join_observations_self_tree
     amendment_log:
+      - {date: "2026-10-14", semantic_break: true, change_class: governance_note_add, summary: "PLAN-telemetry-parser-v3 (slice 3b plan P-B): gate and precommit process_events parent to the Bash tool_call whose output carried their marker."}
       - {date: "2026-10-05", semantic_break: true, change_class: governance_note_add, summary: "PLAN-telemetry-lifecycle-friction-amendment (C11): declared a process_event's parent (the gated tool_call, else the enclosing turn, else NULL); cross-row, so prose only, DQ intent owned by rec-4101."}
   observation_id:
     $ref: observation-id.yaml#/contract/fields/observation_id
@@ -113,7 +114,7 @@ fields:
     iceberg_type: string
     nullable: false
     description: >-
-      The node-kind discriminator: phase | step | turn | tool_call | process_event | model_call (Decision 95 collapse rule, extended with the T3.20 turn/tool_call kinds -- their own field additions are T3.20's build, not this contract's).
+      The node-kind discriminator: phase | step | turn | tool_call | process_event | model_call (Decision 95 collapse rule, extended with the T3.20 turn/tool_call kinds -- their field additions are realized: turn open and close carry sequence; tool_call open carries name, sequence and model, its close name, sequence, outcome, output_capture, output_bytes, output_sha256 and output_lines. The writer enforces each column's type, outcome and output_capture as required on a tool_call close with closed value sets, output_bytes, output_sha256 (hex pattern) and output_lines as required whenever output_capture names a readable output, all from this contract (Decision 210 cl.1)).
     semantics: >-
       Required discriminator. Open to accepted_values_extend for new node kinds, never silently narrowed. "span" is deliberately NOT a value (lexicon: use "observation").
     populated_by: the write boundary, per event_kind.
@@ -124,6 +125,7 @@ fields:
         enforced: false
         note: Open to accepted_values_extend, never silent narrowing.
     amendment_log:
+      - {date: "2026-10-14", semantic_break: true, change_class: governance_note_add, summary: "PLAN-telemetry-parser-v3 (slice 3b plan P-B): the realized turn/tool_call field set replaces the 'T3.20's build' residual."}
       - {date: "2026-09-24", semantic_break: true, change_class: accepted_values_extend, summary: "PLAN-telemetry-event-journal-contracts (Decision 199): extended accepted_values with turn and tool_call (T3.20's own field additions for those kinds are out of this plan's scope)."}
   name:
     type: str
@@ -133,10 +135,11 @@ fields:
       Human-readable label for the node: the phase name, the step title, the model purpose (label only -- see telemetry_agents/model for the model dimension), or the process_event CATEGORY.
     semantics: >-
       For process_event, name follows the grammar '<source>:<signature>' (e.g. hook:never_on_main, gate:validate_scope_boundary) -- the stable signature the reader's friction rules match against (the governed rules file in its named-read registry, owned by 2b), replacing the retired stored `tier`
-      column. name is required on process_event points. The grammar is write-enforced by dq_intent.pattern_when (Decision 210 cl.1), scoped to process_event rows so tool_call and model_call names stay unconstrained: the source is hook, gate or precommit, and a new source ships as a contract amendment plus a writer deploy before any producer emits it (cl.4).
+      column. name is required on process_event points. The grammar is write-enforced by dq_intent.pattern_when (Decision 210 cl.1), scoped to process_event rows so tool_call and model_call names stay unconstrained: the source is hook, gate or precommit, and a new source ships as a contract amendment plus a writer deploy before any producer emits it (cl.4). The claude_code producer emits gate:<check> and precommit:<hook> only from structured markers in a Bash tool_call's full output (validation markers, pre-commit's own per-hook failure lines), parented to that tool_call, with role gate_event.<n>; never from free text.
     populated_by: the write boundary.
     dq_intent: {not_null: {enforced: false}, required_when: {event_kind: [point], observation_type: [process_event]}, pattern_when: [{when: {observation_type: [process_event]}, pattern: '^(hook|gate|precommit):[A-Za-z0-9_][A-Za-z0-9_.-]{0,199}$'}]}
     amendment_log:
+      - {date: "2026-10-14", semantic_break: true, change_class: governance_note_add, summary: "PLAN-telemetry-parser-v3 (slice 3b plan P-B): gate:<check> and precommit:<hook> derive from structured markers only, in a Bash tool_call's full output."}
       - date: "2026-09-24"
         semantic_break: true
         change_class: governance_note_add
@@ -162,13 +165,14 @@ fields:
     nullable: true
     description: "Disposition of the node where applicable: success | error | blocked | interrupted."
     semantics: >-
-      Required on a tool_call's close row (the one kind with a mandatory terminal disposition in this model); optional elsewhere. Stored once, on the row that observes it.
+      Required on a tool_call's close row (the one kind with a mandatory terminal disposition in this model); optional elsewhere. Stored on each close row that observes it. An observation's current disposition, and the close its duration pairs with, is its latest close by event_timestamp, then source_ordinal, then event_id (the telemetry_sessions state ordering). A sub-agent's synthetic close at a finalization cut is not evidence that its agent run ended; the run's state is telemetry_agents'.
     populated_by: the write boundary, at close for span-shaped kinds.
     dq_intent:
       not_null: {enforced: false}
       required_when: {event_kind: [close], observation_type: [tool_call]}
       accepted_values: {values: [success, error, blocked, interrupted], enforced: false}
     amendment_log:
+      - {date: "2026-10-14", semantic_break: true, change_class: governance_note_add, summary: "PLAN-telemetry-parser-v3 (slice 3b plan P-B): stored on each close row that observes it; the latest close is the current disposition (a re-anchored entity carries two closes). No outcome value is added."}
       - date: "2026-09-24"
         semantic_break: true
         change_class: accepted_values_narrow
@@ -311,12 +315,13 @@ fields:
       total_cost_usd under subscription auth) is a raw notional API-price estimate kept per Decision 199, never a spend. Cross-backend parity compares turns and tokens per verified merge, the unit both shapes share.
     populated_by: >-
       the write boundary, at the model_call point event -- claude_cli rows are always fixed_non_rollover_allowance; litellm rows take the credential's declared billing_shape (a tier's in inference-provider.yaml, or the one otl init records for a BYOK key); a producer outside run_persona (T3.20 turn
-      capture, a scheduled agent) records the billing_shape of the credential it used, a Claude Code session capture being fixed_non_rollover_allowance.
+      capture, a scheduled agent) records the billing_shape of the credential it used, a Claude Code session capture being fixed_non_rollover_allowance. Claude Code session captures (producer claude_code) are fixed_non_rollover_allowance; metered API-key Claude Code use is out of scope (CI runs on the subscription OAuth token), so the producer never emits metered_marginal (rec-4147).
     dq_intent:
       not_null: {enforced: false}
       required_when: {event_kind: [point], observation_type: [model_call]}
       accepted_values: {values: [metered_marginal, fixed_non_rollover_allowance], enforced: false}
     amendment_log:
+      - {date: "2026-10-14", semantic_break: true, change_class: governance_note_add, summary: "PLAN-telemetry-parser-v3 (slice 3b plan P-B): claude_code captures are fixed_non_rollover_allowance; the producer never emits metered_marginal (rec-4147)."}
       - {date: "2026-09-28", semantic_break: false, change_class: field_add, summary: "PLAN-cli-persona-backend (Decision 206): new model_call billing-shape dimension; fixed-allowance rows carry no dollars."}
   acceptance_passed:
     type: bool

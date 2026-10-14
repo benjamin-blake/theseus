@@ -1,8 +1,10 @@
 """Pure builders for telemetry_sessions and telemetry_agents rows (root and every sub-agent session).
 
 Session rows are the generation marker (Decision 207 R3): the open row is emitted once a closed turn holding an
-assistant record exists, or at finalize; resume and compact rows wait for their stream's open row. Every agents
-column comes from TRANSCRIPT RECORDS only; a sub-agent's meta.json is never read for row content.
+assistant record exists (never earlier, so its content cannot depend on when a finalize happened); resume and
+compact rows wait for their stream's open row; the root stream also gets one close row per finalization (rules
+C-1..C-4). Every agents column comes from TRANSCRIPT RECORDS only; a sub-agent's meta.json is never read for row
+content.
 """
 
 from __future__ import annotations
@@ -12,8 +14,8 @@ from typing import Any
 
 from src.turn_capture.refs import role_ref, session_marker_ref
 from src.turn_capture.scrub import scrub_text
-from src.turn_capture.streams import ParsedTree, Rec, Spawn, Stream, emitting_streams
-from src.turn_capture.transcripts import Ctx, text_of
+from src.turn_capture.streams import ROOT, ParsedTree, Rec, Spawn, Stream, Turn, emitting_streams, is_api_error
+from src.turn_capture.transcripts import Ctx, is_sentinel, text_of
 
 AGENT_TYPE = "claude-code-subagent"
 WORKFLOWS = ("orient", "plan", "implement", "develop-executor", "audit", "overseer")
@@ -73,12 +75,13 @@ AGENT_COLUMNS = (
     "lambda_request_id",
     "workflow_run_id",
 )
+_ERROR_KIND = re.compile(r"[a-z][a-z0-9_]{0,63}")
 _COMMAND_NAME = re.compile(r"<command-name>/?([A-Za-z][A-Za-z0-9_-]*)</command-name>")
 
 
-def _first_model(stream: Stream) -> str | None:
+def _first_model(stream: Stream, bound: int | None = None) -> str | None:
     for rec in stream.recs:
-        if rec.kind == "assistant":
+        if rec.kind == "assistant" and not is_api_error(rec.data) and (bound is None or rec.line <= bound):
             model = rec.data["message"].get("model")
             return model if isinstance(model, str) else None
     return None
@@ -91,12 +94,43 @@ def _workflow(stream: Stream) -> str:
     return name if name in WORKFLOWS else "claude_code"
 
 
-def _open_bound(stream: Stream, final: bool) -> tuple[bool, int | None]:
-    """(open row is due, last record line the branch may be read from -- None means every record)."""
+def _open_bound(stream: Stream) -> int | None:
+    """The last record line of the first closed assistant-bearing turn (the open row reads nothing later), else None."""
     for turn in stream.turns:
         if turn.closed and turn.last_assistant is not None:
-            return True, max(r.line for r in turn.recs)
-    return final, None
+            return max(r.line for r in turn.recs)
+    return None
+
+
+def stream_due(stream: Stream) -> bool:
+    """Rule D-1: a stream's rows exist only once its open row is due."""
+    return _open_bound(stream) is not None
+
+
+def _interrupted(turn: Turn) -> bool:
+    prompt = turn.prompts[-1] if turn.prompts else None
+    results = [r for r in turn.recs if r.kind == "tool_result"]
+    info = results[-1].data.get("toolUseResult") if results else None
+    last = turn.last_assistant
+    return (
+        (prompt is not None and is_sentinel(text_of(prompt.data["message"]["content"])))
+        or (bool(results) and results[-1].data.get("toolDenialKind") == "user-rejected")
+        or (isinstance(info, dict) and info.get("interrupted") is True)
+        or any(use.result is None for use in turn.tool_uses)
+        or (last is not None and last.data.get("isAbortedMidStream") is True)
+    )
+
+
+def _close_outcome(turn: Turn) -> dict[str, str]:
+    """Rule C-3: cancelled when the last turn was interrupted, failed on an API-error record, else success."""
+    if _interrupted(turn):
+        return {"outcome": "cancelled"}
+    last = turn.last_assistant
+    if last is not None and is_api_error(last.data):
+        kind = last.data.get("error")
+        reason = {"failure_reason": kind} if isinstance(kind, str) and _ERROR_KIND.fullmatch(kind) else {}
+        return {"outcome": "failed", **reason}
+    return {"outcome": "success"}
 
 
 def _branch(stream: Stream, bound: int | None) -> str | None:
@@ -131,8 +165,8 @@ def build_sessions(parsed: ParsedTree, ctx: Ctx) -> list[dict[str, Any]]:
     parents = {sp.agent_id: parsed.streams[sp.parent].session_ref for sp in parsed.spawns}
     rows: list[dict[str, Any]] = []
     for stream in emitting_streams(parsed):
-        due, bound = _open_bound(stream, parsed.final)
-        if not due:
+        bound = _open_bound(stream)
+        if bound is None:
             continue
         pin = next((r for r in stream.recs if r.ts is not None), None)
         child = stream.key in parents
@@ -149,7 +183,7 @@ def build_sessions(parsed: ParsedTree, ctx: Ctx) -> list[dict[str, Any]]:
                 workflow="subagent" if child else _workflow(stream),
                 execution_attempt=1,
                 branch=_branch(stream, bound),
-                model_primary=_first_model(stream),
+                model_primary=_first_model(stream, bound),
             )
         )
         for n, rec in enumerate(stream.resumes):
@@ -170,6 +204,13 @@ def build_sessions(parsed: ParsedTree, ctx: Ctx) -> list[dict[str, Any]]:
             rows.append(
                 _row(ctx, rec, stream, role_ref(rec.uuid, 0, "compact"), "compact", rec.ts, rec.line, parents.get(stream.key))
             )
+        if parsed.final and stream.key == ROOT:
+            anchor = next((r for r in reversed(stream.recs) if r.data.get("uuid") and r.ts is not None), None)
+            if anchor is not None:
+                ext = role_ref(anchor.data["uuid"], 0, "close")
+                rows.append(
+                    _row(ctx, anchor, stream, ext, "close", anchor.ts, anchor.line, None, **_close_outcome(stream.turns[-1]))
+                )
     return rows
 
 
@@ -219,7 +260,7 @@ def build_agents(parsed: ParsedTree, ctx: Ctx) -> list[dict[str, Any]]:
         )
         error = None
         if res is not None and res.body.get("is_error") is True:
-            error = scrub_text(text_of(res.body.get("content"))[:2000]).text
+            error = scrub_text(text_of(res.body.get("content"))).text[:2000]
         ext = role_ref(spawn.close_rec.uuid, spawn.close_block, "agent_close")
         rows.append(
             _agent_row(

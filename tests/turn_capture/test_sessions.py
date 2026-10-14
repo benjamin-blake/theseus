@@ -14,6 +14,7 @@ from tests.fixtures.turn_capture_corpus import (
     SID,
     assistant,
     attachment,
+    build_secret,
     child,
     hook,
     make_ctx,
@@ -74,22 +75,90 @@ def test_open_marker_workflow_branch_and_model() -> None:
     )
 
 
-def test_open_waits_for_a_closed_turn_with_an_assistant_or_finalize() -> None:
+def test_open_waits_for_a_closed_turn_with_an_assistant() -> None:
     lone = [prompt("u1", 1, "p1", "a"), assistant("a1", 2, "m1", [text_block("x")])]
     assert sessions(lone, final=False) == []
-    assert len(sessions(lone, final=True)) == 1
+    assert [r["event_kind"] for r in sessions(lone, final=True)] == ["open", "close"]
     two = lone + [prompt("u2", 3, "p2", "b")]
-    assert len(sessions(two, final=False)) == 1
+    assert [r["event_kind"] for r in sessions(two, final=False)] == ["open"]
     no_reply = [prompt("u1", 1, "p1", "a", gitBranch="claude/only"), prompt("u2", 3, "p2", "b")]
-    assert sessions(no_reply, final=False) == []
-    final_open = sessions(no_reply, final=True)[0]
-    assert final_open["model_primary"] is None and final_open["branch"] == "claude/only"
-    assert (
-        sessions([{"type": "queue-operation", "timestamp": "2026-01-01T00:00:00.000Z"}], final=True)[0]["workflow"]
-        == "claude_code"
+    assert sessions(no_reply, final=False) == [] and sessions(no_reply, final=True) == []
+    assert sessions([{"type": "queue-operation", "timestamp": "2026-01-01T00:00:00.000Z"}], final=True) == []
+    assert sessions([prompt("u1", 1, "p1", "a")], final=True) == []
+
+
+def test_open_row_model_is_bounded_to_the_open_bound_and_skips_api_errors() -> None:
+    error = assistant(
+        "a1", 2, "00000000-0000-4000-8000-0000000000e1", [text_block("API Error")], model="<synthetic>", isApiErrorMessage=True
     )
-    no_pin_line = sessions([prompt("u1", 1, "p1", "a")], final=True)[0]
-    assert no_pin_line["source_ordinal"] == 0 and no_pin_line["branch"] == "claude/test"
+    root = [
+        prompt("u1", 1, "p1", "a"),
+        error,
+        prompt("u2", 3, "p2", "b"),
+        assistant("a2", 4, "m2", [text_block("y")], model="later"),
+    ]
+    rows = sessions(root, final=False)
+    assert "model_primary" not in by(rows, event_kind="open")[0]
+    assert sessions(root + [prompt("u3", 5, "p3", "c")], final=False)[0].get("model_primary") is None
+
+
+def test_open_row_without_any_branch_omits_it() -> None:
+    root = [
+        prompt("u1", 1, "p1", "a", gitBranch=""),
+        assistant("a1", 2, "m1", [text_block("x")], gitBranch=""),
+        prompt("u2", 3, "p2", "b", gitBranch=""),
+    ]
+    assert "branch" not in by(sessions(root, final=False), event_kind="open")[0]
+
+
+def test_close_row_per_finalization_with_transcript_outcome() -> None:
+    def close(root, final=True):
+        return by(sessions(root, final=final), event_kind="close")
+
+    done = [prompt("u1", 1, "p1", "a"), assistant("a1", 2, "m1", [text_block("x")]), {"type": "last-prompt"}]
+    (row,) = close(done)
+    assert (row["external_ref"], row["entity_ref"], row["outcome"], row["source_ordinal"]) == ("a1#0/close", SID, "success", 1)
+    assert row["event_timestamp"] != row["session_started_at"] and "failure_reason" not in row
+    assert close(done, final=False) == []
+    anchor = done[:2] + [{"type": "queue-operation", "uuid": "q9", "timestamp": "2026-01-01T00:00:09.000Z"}]
+    assert close(anchor)[0]["external_ref"] == "q9#0/close"
+    unparseable = done[:2] + [
+        {"type": "queue-operation", "uuid": "q9", "timestamp": "not a time"},
+        {"uuid": "", "timestamp": "x"},
+    ]
+    assert close(unparseable)[0]["external_ref"] == "a1#0/close"
+    sentinel = done[:2] + [prompt("u2", 3, "p2", [text_block("[Request interrupted by user]")])]
+    assert close(sentinel)[0]["outcome"] == "cancelled"
+    aborted = done[:2] + [prompt("u2", 3, "p2", "b"), assistant("a2", 4, "m2", [text_block("p")], isAbortedMidStream=True)]
+    assert close(aborted)[0]["outcome"] == "cancelled"
+    rejected = [
+        prompt("u1", 1, "p1", "a"),
+        assistant("a1", 2, "m1", [tool_use_block("t1", "Bash", {})]),
+        tool_result("r1", 3, "t1", "no", pid="p1", is_error=True, tur="x", toolDenialKind="user-rejected"),
+    ]
+    assert close(rejected)[0]["outcome"] == "cancelled"
+    flagged = rejected[:2] + [tool_result("r1", 3, "t1", "no", pid="p1", tur={"interrupted": True})]
+    assert close(flagged)[0]["outcome"] == "cancelled"
+    pending = rejected[:2]
+    assert close(pending)[0]["outcome"] == "cancelled"
+    denied = rejected[:2] + [
+        tool_result("r1", 3, "t1", "no", pid="p1", is_error=True, tur="x", toolDenialKind="permission-rule"),
+        assistant("a2", 4, "m2", [text_block("fine")]),
+    ]
+    assert close(denied)[0]["outcome"] == "success"
+    error = assistant("a3", 5, "mx", [text_block("boom")], model="<synthetic>", isApiErrorMessage=True, error="server_error")
+    failed = close(done[:2] + [prompt("u2", 3, "p2", "b"), error])[0]
+    assert (failed["outcome"], failed["failure_reason"]) == ("failed", "server_error")
+    odd = {**error, "error": "Has Spaces"}
+    assert "failure_reason" not in close(done[:2] + [prompt("u2", 3, "p2", "b"), odd])[0]
+    assert close(done, final=True)[0]["outcome"] == "success"
+    kid = sessions(_sync_root(), {"ag1": _child()})
+    assert [r["entity_ref"] for r in by(kid, event_kind="close")] == [SID]
+
+
+def test_open_row_waits_for_an_assistant_reply_in_a_subagent() -> None:
+    silent = [child(prompt("c1", 2.5, "p1", "t"), "ag1")]
+    assert by(sessions(_sync_root(), {"ag1": silent}), entity_ref=f"{SID}:ag1") == []
 
 
 def test_resume_and_compact_rows_wait_for_the_open_marker() -> None:
@@ -174,6 +243,12 @@ def test_subagent_session_and_agent_rows() -> None:
         "success",
         None,
     )
+
+
+def test_agent_error_scrubbed_before_truncation() -> None:
+    secret = build_secret("aws_access")
+    row = agents(_sync_root(is_error=True, content="x" * 1989 + " " + secret), {"ag1": _child()})[1]
+    assert "AKIA" not in row["error"] and secret[:8] not in row["error"]
 
 
 def test_agent_close_outcomes_and_background_rules() -> None:

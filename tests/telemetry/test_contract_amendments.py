@@ -438,3 +438,111 @@ def test_subagent_open_timestamp_and_open_marker_ref_declared() -> None:
         log = [e for e in doc.fields[name].amendment_log if e.date == "2026-10-05"]
         assert len(log) == 1 and log[0].change_class.value == "governance_note_add" and log[0].semantic_break, name
         assert "rec-4146" in log[0].summary, name
+
+
+_V3_DATE = "2026-10-14"
+_V3_PLAN = "PLAN-telemetry-parser-v3"
+
+
+def _v3_logged(entries) -> bool:
+    return any(
+        str(e.date) == _V3_DATE and e.change_class.value == "governance_note_add" and _V3_PLAN in (e.summary or "")
+        for e in entries
+    )
+
+
+def test_claude_code_capture_billing_shape_source_declared() -> None:
+    field = load_contract(_CONTRACTS_DIR / "telemetry_observations.yaml").fields["billing_shape"]
+    text = _norm(field.populated_by)
+    sentence = (
+        "claude code session captures (producer claude_code) are fixed_non_rollover_allowance; metered api-key claude code "
+        "use is out of scope (ci runs on the subscription oauth token), "
+        "so the producer never emits metered_marginal (rec-4147)"
+    )
+    assert sentence in text
+    assert _v3_logged(field.amendment_log)
+
+
+def test_external_ref_scope_under_forked_history_declared() -> None:
+    envelope = load_contract(_CONTRACTS_DIR / "telemetry-event-envelope.yaml")
+    external_ref = _norm(envelope.fields["external_ref"].semantics)
+    for phrase in (
+        "a forked or copied claude code session's copied records keep their uuids",
+        "are the parent session's events, never the fork's",
+        "recognising copies by forkedfrom or by their position before the fork's own sessionstart:fork hook group",
+        "so no ref is re-scoped (r10 untouched)",
+        "halts loudly (decision 207)",
+        "makes the next pass halt on its moved session pin",
+    ):
+        assert phrase in external_ref, phrase
+    pin = envelope.fields["session_started_at"]
+    assert "take no part in the pin" in _norm(pin.semantics)
+    assert "only the records it wrote itself count (see external_ref)" in _norm(pin.description)
+    assert _norm(pin.populated_by).endswith("earliest root-transcript timestamp of the session's own records.")
+    assert _v3_logged(envelope.fields["external_ref"].amendment_log) and _v3_logged(pin.amendment_log)
+
+
+def test_parser_v3_cut_rules_are_declared_in_the_envelope() -> None:
+    envelope = load_contract(_CONTRACTS_DIR / "telemetry-event-envelope.yaml")
+    governance = _norm(envelope.governance_notes)
+    assert "carries final usage, or at a recorded finalization cut, which treats the tree as final)" in governance
+    assert (
+        "incremental emission equals the emission set recomputed from the tree and its recorded finalization cuts"
+        in governance
+    )
+    assert "equals a full re-parse" not in governance
+    for phrase in (
+        "the cuts survive a parser_version reset like the pins, so a bump re-emits every finalization's close row",
+        "(cut_content_divergence)",
+        "is superseded, never retracted (reanchored_close)",
+        "not stored durably",
+    ):
+        assert phrase in governance, phrase
+    assert "with one carve-out" in governance and "re-pins only while the cursor has emitted no row" in governance
+    version = _norm(envelope.fields["parser_version"].semantics)
+    assert "and the recorded finalization cuts persisted with its cursor across a reset" in version
+    assert _v3_logged(envelope.amendment_log) and _v3_logged(envelope.fields["parser_version"].amendment_log)
+
+
+def test_parser_v3_session_close_rules_are_declared() -> None:
+    doc = load_contract(_CONTRACTS_DIR / "telemetry_sessions.yaml")
+    outcome = _norm(doc.fields["outcome"].governance_notes_local)
+    assert (
+        "cancelled when the last turn was interrupted" in outcome
+        and "failure_reason carries that record's error kind" in outcome
+    )
+    assert "emits no row in any telemetry table until it has one" in outcome
+    external_ref = _norm(doc.fields["external_ref"].governance_notes_local)
+    assert (
+        "at which the session's open row is due, unless an earlier finalization already wrote the same anchor" in external_ref
+    )
+    assert "one close row is written per finalization" in external_ref
+    for name in ("event_timestamp", "source_ordinal", "external_ref"):
+        assert "last root-stream record carrying a uuid and a parseable timestamp" in _norm(
+            doc.fields[name].governance_notes_local
+        ), name
+    assert "open row is due" in _norm(doc.governance_notes)
+    for name in ("outcome", "event_timestamp", "source_ordinal", "external_ref"):
+        assert _v3_logged(doc.fields[name].amendment_log), name
+    assert _v3_logged(doc.amendment_log)
+
+
+def test_parser_v3_observation_and_transcript_surface_is_declared() -> None:
+    doc = load_contract(_CONTRACTS_DIR / "telemetry_observations.yaml")
+    kind = _norm(doc.fields["observation_type"].description)
+    assert "their field additions are realized" in kind and "t3.20's build" not in kind
+    assert "turn open and close carry sequence" in kind and "(decision 210 cl.1)" in kind
+    name = _norm(doc.fields["name"].semantics)
+    assert "only from structured markers in a bash tool_call's full output" in name and "role gate_event.<n>" in name
+    parent = _norm(doc.fields["parent_observation_id"].governance_notes_local)
+    assert "not hook-gated" in parent and "dq intent belongs to rec-4101" in parent
+    outcome = _norm(doc.fields["outcome"].semantics)
+    assert "stored once" not in outcome and "stored on each close row that observes it" in outcome
+    assert "latest close by event_timestamp, then source_ordinal, then event_id" in outcome
+    for field in ("observation_type", "name", "parent_observation_id", "outcome"):
+        assert _v3_logged(doc.fields[field].amendment_log), field
+    transcripts = load_contract(_CONTRACTS_DIR / "telemetry_transcripts.yaml")
+    note = _norm(transcripts.governance_notes)
+    assert "claude_code parser_version 3 emits prompt (human), response, thinking and tool_input (agent)" in note
+    assert "attachment-derived system rows are not emitted; a fork's inherited records emit none" in note
+    assert _v3_logged(transcripts.amendment_log)

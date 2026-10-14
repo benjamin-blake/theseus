@@ -10,6 +10,8 @@ either whole (sidecar) or as 64 KiB chunks (sidecar_chunks), so a sidecar above 
 from __future__ import annotations
 
 import json
+import posixpath
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -132,11 +134,79 @@ def record_time(data: dict) -> datetime | None:
         return None
 
 
+FORK_HOOK = "SessionStart:fork"
+PIN_SCRIPT_STEM = "session_start_log_turn"
+PIN_FLAG = "--project-ref="
+_SCRIPT_TOKEN = re.compile(r"[^\s]+\.(py|sh)$")
+_PIN_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}")
+
+
+def _hook_attachment(data: dict) -> dict | None:
+    att = data.get("attachment")
+    if data.get("type") == "attachment" and isinstance(att, dict) and str(att.get("type") or "").startswith("hook_"):
+        return att
+    return None
+
+
+def inherited_lines(lines: list[RawLine]) -> set[int]:
+    """Line indexes of the root records a fork copied (rule K-1), over exactly the lines given (prefix purity).
+
+    A record is inherited iff it carries forkedFrom (/branch), or it lies before the first attachment of the LAST
+    SessionStart:fork hook group (--fork-session). A group ends at the next user or assistant record.
+    """
+    boundary, in_group = None, False
+    out: set[int] = set()
+    for item in lines:
+        data = item.data
+        if data is None:
+            continue
+        if "forkedFrom" in data:
+            out.add(item.line)
+        if data.get("type") in ("user", "assistant"):
+            in_group = False
+            continue
+        att = _hook_attachment(data)
+        if att is not None and str(att.get("hookName") or "").startswith(FORK_HOOK) and not in_group:
+            in_group, boundary = True, item.line
+    if boundary is not None:
+        out.update(item.line for item in lines if item.line < boundary)
+    return out
+
+
 def session_pin(lines: list[RawLine]) -> datetime | None:
-    """The EARLIEST parseable record timestamp among the root file's lines, of any type; None defers capture.
+    """The EARLIEST parseable timestamp among the root file's own records (inherited fork copies take no part).
 
     Not the first record in file order: SessionStart hook records are written after an earlier queue-operation record
     yet carry earlier timestamps.
     """
-    times = [when for item in lines if item.data is not None and (when := record_time(item.data)) is not None]
+    skip = inherited_lines(lines)
+    times = [
+        when
+        for item in lines
+        if item.data is not None and item.line not in skip and (when := record_time(item.data)) is not None
+    ]
     return min(times) if times else None
+
+
+def hook_script(command: object) -> tuple[str | None, list[str]]:
+    """(the first .py/.sh token's stem, all tokens) of a hook command, quotes stripped from each token (rule H-1)."""
+    tokens = [t.strip("'\"") for t in command.split()] if isinstance(command, str) else []
+    for token in tokens:
+        if _SCRIPT_TOKEN.match(token):
+            return posixpath.splitext(posixpath.basename(token))[0], tokens
+    return None, tokens
+
+
+def project_ref_pin(tree: TranscriptTree) -> str | None:
+    """The project_ref the earliest SessionStart capture-hook attachment recorded, else None (rules P-1..P-4)."""
+    lines = read_lines(tree.read(ROOT) or b"")
+    skip = inherited_lines(lines)
+    for item in lines:
+        att = _hook_attachment(item.data) if item.data is not None and item.line not in skip else None
+        if att is None or att.get("hookEvent") != "SessionStart":
+            continue
+        stem, tokens = hook_script(att.get("command"))
+        refs = [t[len(PIN_FLAG) :] for t in tokens if t.startswith(PIN_FLAG)]
+        if stem == PIN_SCRIPT_STEM and len(refs) == 1 and _PIN_REF.fullmatch(refs[0]):
+            return refs[0]
+    return None
