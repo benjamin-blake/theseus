@@ -5,7 +5,9 @@ from __future__ import annotations
 from scripts.agent_sdk.errors import (
     AgentToolError,
     ReaderBoundaryError,
+    ReaderInputError,
     ReaderRuntimeError,
+    ReaderUnavailableError,
     UnknownActionError,
     VersionMismatchError,
     map_reader_error,
@@ -68,3 +70,27 @@ def test_unknown_action_error_message_uses_reader_error_text():
     exc = _invoke_error(400, {"ok": False, "error": "unknown action 'bogus'", "actions": []})
     mapped = map_reader_error(exc)
     assert "unknown action 'bogus'" in str(mapped)
+
+
+def test_named_read_input_maps_to_reader_input_error():
+    exc = _invoke_error(
+        400, {"ok": False, "error_type": "named_read_input", "verb": "recs_related", "error": "narrow the query"}
+    )
+    mapped = map_reader_error(exc)
+    assert isinstance(mapped, ReaderInputError) and isinstance(mapped, AgentToolError)
+    assert "narrow the query" in str(mapped)
+
+
+def test_catalog_unavailable_maps_to_reader_unavailable_error():
+    exc = _invoke_error(
+        503, {"ok": False, "error_type": "catalog_unavailable", "error_class": "OperationalError", "reopened": True}
+    )
+    mapped = map_reader_error(exc)
+    assert isinstance(mapped, ReaderUnavailableError) and isinstance(mapped, AgentToolError)
+
+
+def test_unmapped_maps_to_boundary_error_naming_class_and_request_id():
+    exc = _invoke_error(500, {"ok": False, "error_type": "unmapped", "error_class": "KeyError", "request_id": "req-7"})
+    mapped = map_reader_error(exc)
+    assert isinstance(mapped, ReaderBoundaryError)
+    assert "KeyError" in str(mapped) and "req-7" in str(mapped)

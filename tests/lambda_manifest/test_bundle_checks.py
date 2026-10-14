@@ -365,3 +365,23 @@ def test_turn_capture_excluded_from_data_pipeline(tmp_path):
     stage_bundle(data_pipeline, stage_dir, skip_pip=True)
     staged_paths = [p for p in stage_dir.rglob("*") if "turn_capture" in p.parts]
     assert staged_paths == [], f"src/turn_capture leaked into data-pipeline.zip: {staged_paths}"
+
+
+# ---------------------------------------------------------------------------
+# PLAN-ducklake-typed-unmapped-errors: the terminal-answer helper ships with the three URL-only serving functions only.
+# The async handlers (maintenance, maintenance_smoke, catalog_dr) keep Lambda's own retry behaviour (follow-on rec-4303).
+# ---------------------------------------------------------------------------
+
+
+def test_handler_errors_module_bundled_by_serving_functions_only(tmp_path):
+    helper = "src/common/ducklake_handler_errors.py"
+    manifests = load_all()
+    for serving in ("ducklake_telemetry_writer", "ducklake_reader", "ducklake_writer"):
+        assert helper in set(manifests[serving].includes), f"{serving} must bundle {helper}"
+    assert helper in set(manifests["data-pipeline"].excludes), "data-pipeline must exclude the helper"
+    for asynchronous in ("ducklake_maintenance", "ducklake_maintenance_smoke", "ducklake_catalog_dr"):
+        assert helper not in set(manifests[asynchronous].includes), f"{asynchronous} must not bundle {helper} yet"
+    stage_dir = tmp_path / "stage"
+    stage_dir.mkdir()
+    stage_bundle(manifests["data-pipeline"], stage_dir, skip_pip=True)
+    assert list(stage_dir.rglob("ducklake_handler_errors.py")) == []

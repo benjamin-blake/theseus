@@ -567,10 +567,98 @@ def test_invocation_line_marks_both_reopen_paths(monkeypatch, capsys):
 
 
 def test_invocation_line_on_unparseable_body(capsys):
-    with pytest.raises(json.JSONDecodeError):
-        h.handler({"body": "{not json"})
+    r = h.handler({"body": "{not json"})
+    assert r["statusCode"] == 400 and json.loads(r["body"])["error_type"] == "bad_request"
     line = _invocation_lines(capsys.readouterr().out)[0]
-    assert (line["action"], line["status"]) == ("unknown", 500)
+    assert (line["action"], line["status"]) == ("unknown", 400)
+
+
+@pytest.mark.parametrize("raw", ["[1, 2]", '"text"', "7", "[" * 100000])
+def test_non_object_body_is_400(raw):
+    r = h.handler({"body": raw})
+    assert r["statusCode"] == 400 and json.loads(r["body"])["error_type"] == "bad_request"
+
+
+_PW = "pass" + "word=hunter2"
+
+
+def _duckdb_class(name, module="_duckdb"):
+    return type(name, (Exception,), {"__module__": module})
+
+
+def _named_read_raising(monkeypatch, exc):
+    monkeypatch.setattr(
+        h, "_warm_reader_connection", lambda force_reopen=False: (FakeCon(), {"connect_ms": 1.0, "reused": True})
+    )
+    monkeypatch.setattr(rt, "named_read", lambda con, **kw: (_ for _ in ()).throw(exc))
+    return h.handler({"action": "named_read", "verb": "rec_by_id", "params": {"id": "x"}})
+
+
+@pytest.mark.parametrize(
+    "cls", ["InvalidInputException", "ConversionException", "OutOfRangeException", "TypeMismatchException"]
+)
+def test_named_read_caller_input_error_is_400_with_its_message(monkeypatch, capsys, cls):
+    r = _named_read_raising(monkeypatch, _duckdb_class(cls)("narrow the query\nsecond line " + _PW))
+    body = json.loads(r["body"])
+    assert r["statusCode"] == 400
+    assert (body["error_type"], body["verb"], body["error_class"]) == ("named_read_input", "rec_by_id", cls)
+    assert body["error"] == "narrow the query" and "hunter2" not in r["body"]
+    out = capsys.readouterr().out
+    assert '"ducklake_named_read_input"' in out and "hunter2" not in out
+
+
+@pytest.mark.parametrize("cls", ["BinderException", "ParserException", "IOException", "HTTPException"])
+def test_named_read_other_duckdb_error_is_unmapped_500(monkeypatch, capsys, cls):
+    r = _named_read_raising(monkeypatch, _duckdb_class(cls)("s3://bucket/key " + _PW))
+    body = json.loads(r["body"])
+    assert r["statusCode"] == 500 and (body["error_type"], body["error_class"]) == ("unmapped", cls)
+    assert "hunter2" not in r["body"] and "s3://" not in r["body"]
+    assert '"ducklake_unmapped_error"' in capsys.readouterr().out
+
+
+def test_caller_input_class_name_from_another_module_is_unmapped(monkeypatch):
+    r = _named_read_raising(monkeypatch, _duckdb_class("InvalidInputException", "elsewhere")("x"))
+    assert r["statusCode"] == 500 and json.loads(r["body"])["error_type"] == "unmapped"
+
+
+def test_dead_connection_after_reopen_is_503(monkeypatch, capsys):
+    monkeypatch.setattr(h, "_open_reader_connection", lambda: FakeCon())
+    monkeypatch.setattr(
+        rt, "read_current", lambda con, **kw: (_ for _ in ()).throw(Exception("server closed the connection unexpectedly"))
+    )
+    r = h.handler({"action": "read_current"}, types.SimpleNamespace(aws_request_id="req-1"))
+    body = json.loads(r["body"])
+    assert r["statusCode"] == 503
+    assert (body["error_type"], body["reopened"], body["request_id"]) == ("catalog_unavailable", True, "req-1")
+    assert "server closed" not in r["body"]
+    assert _invocation_lines(capsys.readouterr().out)[0]["status"] == 503
+
+
+def test_unmapped_error_outside_a_connection_action_is_500(monkeypatch):
+    monkeypatch.setattr(rt, "describe_named_reads", lambda: (_ for _ in ()).throw(KeyError("boom")))
+    r = h.handler({"action": "describe"})
+    assert r["statusCode"] == 500 and json.loads(r["body"])["error_class"] == "KeyError"
+
+
+def test_real_duckdb_caller_input_errors_are_400(monkeypatch):
+    duckdb = pytest.importorskip("duckdb")
+    con = duckdb.connect()
+    for sql, bind in (("SELECT CAST(? AS INTEGER)", ["abc"]), ("SELECT error('narrow the query')", None)):
+
+        def _run(_con, *, verb, params, limit=None, _sql=sql, _bind=bind):
+            return con.execute(_sql, _bind).fetchall() if _bind else con.execute(_sql).fetchall()
+
+        monkeypatch.setattr(
+            h, "_warm_reader_connection", lambda force_reopen=False: (FakeCon(), {"connect_ms": 1.0, "reused": True})
+        )
+        monkeypatch.setattr(rt, "named_read", _run)
+        r = h.handler({"action": "named_read", "verb": "rec_by_id", "params": {"id": "x"}})
+        assert r["statusCode"] == 400 and json.loads(r["body"])["error_type"] == "named_read_input", sql
+    with pytest.raises(duckdb.ParserException):
+        con.execute("SELEC 1")
+    monkeypatch.setattr(rt, "named_read", lambda c, **kw: con.execute("SELEC 1"))
+    r = h.handler({"action": "named_read", "verb": "rec_by_id", "params": {"id": "x"}})
+    assert r["statusCode"] == 500 and json.loads(r["body"])["error_class"] == "ParserException"
 
 
 # ---------------------------------------------------------------------------

@@ -26,12 +26,34 @@ import time
 from typing import Any, Callable
 
 from src.common import ducklake_connect_probe as probe
+from src.common import ducklake_handler_errors as handler_errors
 from src.common import ducklake_runtime as rt
 from src.common.ducklake_metrics import log_invocation
 
 DATA_PATH = os.environ.get("DUCKLAKE_DATA_PATH", rt.SMOKE_DATA_PATH)
 META_SCHEMA = os.environ.get("DUCKLAKE_META_SCHEMA", rt.META_SCHEMA)
 EXTENSION_DIRECTORY = os.environ.get("DUCKLAKE_EXTENSION_DIRECTORY", rt.LAMBDA_EXTENSION_DIRECTORY)
+
+# DuckDB classes a bound value or a registry error() guard raises on caller input (duckdb 1.5.4, module _duckdb).
+# BinderException and ParserException are deliberately absent: callers send no SQL (Decision 84 I-3), so they mean
+# registry-versus-schema drift and stay a 500 unmapped.
+_CALLER_INPUT_CLASSES = frozenset(
+    {"InvalidInputException", "ConversionException", "OutOfRangeException", "TypeMismatchException"}
+)
+_DUCKDB_MODULES = frozenset({"_duckdb", "duckdb"})
+
+
+class NamedReadInputError(Exception):
+    """A named verb refused caller input (a bad bind or a registry error() guard): answered 400 named_read_input."""
+
+    def __init__(self, verb: str, cause: BaseException) -> None:
+        super().__init__(str(cause))
+        self.verb = verb
+        self.error_class = type(cause).__name__
+
+
+def _is_caller_input_error(exc: BaseException) -> bool:
+    return any(c.__name__ in _CALLER_INPUT_CLASSES and c.__module__ in _DUCKDB_MODULES for c in type(exc).__mro__)
 
 
 def _open_reader_connection() -> Any:
@@ -159,7 +181,13 @@ def action_named_read(event: dict[str, Any], con: Any) -> dict[str, Any]:
     params = event.get("params") or {}
     if not isinstance(params, dict):
         raise rt.DuckLakeRuntimeError("named_read 'params' must be an object of named bind values")
-    rows = rt.named_read(con, verb=verb, params=params, limit=event.get("limit"))
+    try:
+        rows = rt.named_read(con, verb=verb, params=params, limit=event.get("limit"))
+    except Exception as exc:
+        # The dead-connection check stays first so the reopen-once path is unchanged.
+        if rt.is_dead_connection_error(exc) or isinstance(exc, rt.DuckLakeRuntimeError) or not _is_caller_input_error(exc):
+            raise
+        raise NamedReadInputError(verb, exc) from exc
     return {
         "ok": True,
         "verb": verb,
@@ -324,7 +352,7 @@ def _handle(payload: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
         # Warm-reuse acquisition (D2): the connection is kept open for the next invocation (NOT closed
         # in a finally). A dead session (Neon scale-to-zero) surfaces as a connection error from the
         # action; reads are idempotent, so reopen ONCE and retry -- the reopen never leaks a 5xx for
-        # this expected transient. Any non-connection error still propagates (Decision 55).
+        # this expected transient. Any non-connection error reaches handler()'s terminal answer (Decision 55).
         con, conn_meta = _warm_reader_connection()
         payload["_connect_ms"] = conn_meta["connect_ms"]
         payload["_connect_reused"] = conn_meta["reused"]
@@ -341,6 +369,20 @@ def _handle(payload: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
             payload["_connect_reused"] = conn_meta["reused"]
             meta.update(connect_ms=conn_meta["connect_ms"], connect_reused=conn_meta["reused"], reopened=True)
             return _response(200, fn(payload, con))
+    except NamedReadInputError as exc:
+        handler_errors.log_named_read_input(
+            exc.__cause__ or exc, function="reader", verb=exc.verb, request_id=meta.get("request_id")
+        )
+        return _response(
+            400,
+            {
+                "ok": False,
+                "error_type": "named_read_input",
+                "verb": exc.verb,
+                "error_class": exc.error_class,
+                "error": handler_errors.redact(str(exc)),
+            },
+        )
     except rt.VersionMismatchError as exc:
         return _response(500, {"ok": False, "error_type": "version_mismatch", "error": str(exc)})
     except rt.DuckLakeRuntimeError as exc:
@@ -348,16 +390,44 @@ def _handle(payload: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
 
 
 def handler(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
-    """Entrypoint: dispatch, then log exactly one ducklake_invocation line on every path."""
+    """Entrypoint: dispatch, then log exactly one ducklake_invocation line on every path.
+
+    No exception escapes as the runtime's untyped 502: an unparseable or non-object body answers 400 bad_request, an
+    unmapped exception 500 unmapped and a dead catalog connection 503 catalog_unavailable (class and request id only).
+    """
     started = time.perf_counter()
     payload: dict[str, Any] = {}
-    meta: dict[str, Any] = {"connect_ms": None, "connect_reused": None, "reopened": False, "response_bytes": None}
+    meta: dict[str, Any] = {
+        "connect_ms": None,
+        "connect_reused": None,
+        "reopened": False,
+        "response_bytes": None,
+        "request_id": handler_errors.request_id(context),
+    }
     status = 500
     try:
-        payload = _parse_event(event)
+        try:
+            parsed = _parse_event(event)
+        except (ValueError, RecursionError):
+            parsed = None
+        if not isinstance(parsed, dict):
+            status, body = handler_errors.bad_request("reader", "unknown")
+            return _response(status, body)
+        payload = parsed
         response = _guard_response_size(_handle(payload, meta), payload, meta)
         status = response["statusCode"]
         return response
+    except Exception as exc:
+        action = payload.get("action")
+        status, body = handler_errors.terminal(
+            exc,
+            function="reader",
+            action=action if isinstance(action, str) and action in _ACTIONS else "unknown",
+            request_id=meta["request_id"],
+            elapsed_ms=(time.perf_counter() - started) * 1000.0,
+            reopened=bool(meta["reopened"]),
+        )
+        return _response(status, body)
     finally:
         action = payload.get("action")
         log_invocation(

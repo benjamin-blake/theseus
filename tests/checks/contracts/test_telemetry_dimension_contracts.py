@@ -87,7 +87,7 @@ def test_writer_contract_idempotency_corrected() -> None:
     assert "MERGE-idempotent" not in invariants
     assert "fresh write ULID per call" in invariants and "rec-4121" in invariants
     assert "write_boundary" in invariants and "telemetry_append" in invariants and "registration" in invariants
-    assert doc["amendment_log"] and doc["amendment_log"][0]["date"] == "2026-10-05"
+    assert any(e["date"] == "2026-10-05" for e in doc["amendment_log"])
 
 
 def test_dimension_joins_declared() -> None:
@@ -122,7 +122,7 @@ def test_reader_contracts_document_read_version() -> None:
     assert (
         "write_boundary" in invariants and "query_ops" in invariants and "rec-3771" in invariants and "rec-4024" in invariants
     )
-    assert reader["amendment_log"][0]["change_class"] == "field_add" and reader["amendment_log"][0]["date"] == "2026-10-05"
+    assert any(e["change_class"] == "field_add" and e["date"] == "2026-10-05" for e in reader["amendment_log"])
     engine = _text("read-engine")
     assert "read_version" in engine and "equality only" in engine
 

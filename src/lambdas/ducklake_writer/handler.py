@@ -22,6 +22,7 @@ import os
 import time
 from typing import Any, Callable
 
+from src.common import ducklake_handler_errors as handler_errors
 from src.common import ducklake_runtime as rt
 from src.common.ducklake_metrics import log_invocation
 from src.lambdas.ducklake_writer.smoke_actions import (
@@ -308,7 +309,7 @@ def _handle(payload: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
         # under retry (file_ops via the client-replayed idempotency ULID; update_ops/write_ops mint
         # a fresh write ULID per call, so a replay adds a history row while the current row converges, rec-4121),
         # and a connection death aborts the catalog txn so the
-        # first attempt left nothing committed. Any non-connection error still propagates (Decision 55).
+        # first attempt left nothing committed. Any non-connection error reaches handler()'s terminal answer (Decision 55).
         con, conn_meta = _warm_writer_connection()
         payload["_connect_ms"] = conn_meta["connect_ms"]
         payload["_connect_reused"] = conn_meta["reused"]
@@ -355,16 +356,38 @@ def _handle(payload: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
 
 
 def handler(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
-    """Entrypoint: dispatch, then log exactly one ducklake_invocation line on every path."""
+    """Entrypoint: dispatch, then log exactly one ducklake_invocation line on every path.
+
+    No exception escapes as the runtime's untyped 502: an unparseable or non-object body answers 400 bad_request, an
+    unmapped exception 500 unmapped and a dead catalog connection 503 catalog_unavailable (class and request id only).
+    """
     started = time.perf_counter()
     payload: dict[str, Any] = {}
     meta: dict[str, Any] = {"connect_ms": None, "connect_reused": None, "reopened": False}
     status = 500
     try:
-        payload = _parse_event(event)
+        try:
+            parsed = _parse_event(event)
+        except (ValueError, RecursionError):
+            parsed = None
+        if not isinstance(parsed, dict):
+            status, body = handler_errors.bad_request("writer", "unknown")
+            return _response(status, body)
+        payload = parsed
         response = _handle(payload, meta)
         status = response["statusCode"]
         return response
+    except Exception as exc:
+        action = payload.get("action")
+        status, body = handler_errors.terminal(
+            exc,
+            function="writer",
+            action=action if isinstance(action, str) and action in _ACTIONS else "unknown",
+            request_id=handler_errors.request_id(context),
+            elapsed_ms=(time.perf_counter() - started) * 1000.0,
+            reopened=bool(meta["reopened"]),
+        )
+        return _response(status, body)
     finally:
         action = payload.get("action")
         log_invocation(

@@ -19,6 +19,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from src.common import ducklake_handler_errors as handler_errors
 from src.common import ducklake_runtime as rt
 from src.common.ducklake_metrics import make_metric_sink
 from src.common.ducklake_scd2_schema import SchemaGateError, load_field_semantics
@@ -86,7 +87,7 @@ def _parse_body(event: dict[str, Any]) -> tuple[dict[str, Any], int]:
                 nbytes = len(raw)
                 body = raw.decode("utf-8")
             body = json.loads(body)
-    except (ValueError, binascii.Error) as exc:
+    except (ValueError, RecursionError, binascii.Error) as exc:
         raise _ClientError(400, "bad_request", "request body is not valid JSON") from exc
     if not isinstance(body, dict):
         raise _ClientError(400, "bad_request", "request body must be a JSON object")
@@ -178,13 +179,24 @@ def _response(status: int, payload: dict[str, Any]) -> dict[str, Any]:
     return {"statusCode": status, "headers": {"Content-Type": "application/json"}, "body": json.dumps(payload)}
 
 
+def _registered_action(action: Any) -> str:
+    """A registered action name or the fixed token "unknown", never the caller's string (the log_invocation rule)."""
+    return action if isinstance(action, str) and (action in _ACTIONS or action in actions.VERBS) else "unknown"
+
+
 def handler(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
-    """Authenticate the caller, parse the Function URL body, dispatch `action`; unmapped errors propagate."""
+    """Authenticate the caller, parse the Function URL body, dispatch `action`.
+
+    No exception escapes as the runtime's untyped 502: an unmapped one answers 500 `unmapped` and a dead catalog
+    connection 503 `catalog_unavailable`, each carrying the exception class and request id, never the message.
+    """
     t0 = time.perf_counter()
+    logged_action = "unknown"
     try:
         _require_caller(event)
         payload, nbytes = _parse_body(event)
         action = payload.get("action")
+        logged_action = _registered_action(action)
         if isinstance(action, str) and action in actions.VERBS:
             request = actions.TelemetryRequest(action, payload, _principal(event), nbytes)
             return _response(200, run_verb(request))
@@ -208,4 +220,11 @@ def handler(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
                         "elapsed_ms": round((time.perf_counter() - t0) * 1000, 2),
                     },
                 )
-        raise
+        status, body = handler_errors.terminal(
+            exc,
+            function="telemetry-writer",
+            action=logged_action,
+            request_id=handler_errors.request_id(context),
+            elapsed_ms=(time.perf_counter() - t0) * 1000,
+        )
+        return _response(status, body)
