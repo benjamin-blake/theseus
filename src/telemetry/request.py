@@ -68,9 +68,14 @@ class RequestError(ValueError):
 
 
 class _SpecLike(Protocol):
-    table: str
-    columns: Mapping[str, str]
-    rules: Any
+    @property
+    def table(self) -> str: ...
+
+    @property
+    def columns(self) -> Mapping[str, str]: ...
+
+    @property
+    def rules(self) -> Any: ...
 
 
 @dataclass(frozen=True)
