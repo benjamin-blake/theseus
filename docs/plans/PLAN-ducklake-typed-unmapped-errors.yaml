@@ -35,7 +35,8 @@ scope:
     the authority the Decision 155 classifier's literal is asserted equal to. (4) redact(text) -> str: replaces password=VALUE,
     X-Amz-*=VALUE, arn:... tokens and any run of 12 or more digits with a fixed marker, keeps the first line only and
     truncates to 300 characters. (5) bad_request(function, action) -> tuple[int, dict]: 400 {ok: false, error_type:
-    "bad_request", error: "request body is not a JSON object"}. `action` is always a registered action name or the token
+    "bad_request", error: "request body is not a JSON object"}. (6) A named_read_input log helper printing one
+    ducklake_named_read_input line {function, verb, error_class, request_id, message: redact(...)}. `action` is always a registered action name or the token
     "unknown", never the caller's string (the log_invocation rule, src/common/ducklake_metrics.py:71-76).
 - file: src/lambdas/ducklake_telemetry_writer/handler.py
   action: Modify
@@ -57,7 +58,9 @@ scope:
     TypeMismatchException from the duckdb/_duckdb module (the classes a bound value or a registry error() guard raises) is
     raised as a NamedReadInputError and answered
     400 {ok: false, error_type: "named_read_input", verb, error_class, error: the DuckDB message passed through the helper's
-    redact() (first line, 300 characters; defence in depth, since InvalidInputException is broad)}; every other DuckDB class falls through to 500 unmapped (class name only: BinderException and
+    redact() (first line, 300 characters; defence in depth, since InvalidInputException is broad)}, and the helper prints one
+    ducklake_named_read_input line {verb, error_class, request_id, redacted message} so a misclassified server-side
+    InvalidInputException can be found by request id; every other DuckDB class falls through to 500 unmapped (class name only: BinderException and
     ParserException mean registry-versus-schema drift, since callers send no SQL (Decision 84 I-3), and IOException,
     CatalogException, HTTPException and the rest carry URLs, hosts and paths). The dead-connection check stays first so the reopen-once path is
     unchanged. The "Any non-connection error still propagates (Decision 55)" comment is reworded to the new terminal posture.
@@ -163,8 +166,9 @@ scope:
     _TRANSIENT_ERROR_TYPES, asserted equal to src/common/ducklake_handler_errors.py's TRANSIENT_ERROR_TYPES, with a test that
     every other error_type the three serving contracts declare still gates. (d) Decision 167 question 3 and the Decision
     213/214/215 precedent, answered explicitly: those entries minted numbers because they replaced an invariant or added a
-    carve-out; this adds no carve-out and only narrows the tolerance toward Decision 55's fail-closed default, which is the
-    argument for an annotation; Benjamin chooses the annotation or a numbered form at PR B's merge. (e) The consumer list is
+    carve-out; this adds one error_type exception to clause 2's never-transient sentence, which preserves today's outcome for
+    a dead connection, and its net effect narrows the tolerance toward Decision 55's fail-closed default; that preserved
+    outcome is the argument for an annotation; Benjamin chooses the annotation or a numbered form at PR B's merge. (e) The consumer list is
     for impact only: it licenses no call site retroactively and clause 3's named-call-site rule is unchanged; rec-4311 owns
     the two scripts/preflight/ci_rca_gauges.py sites that no clause names. The annotation
     stays within the accretion norm (about 150 words); detail beyond (a)-(e) belongs in PR B's body.
@@ -181,7 +185,8 @@ scope:
     that get one C6 line; acceptance criteria :427 and :438 and
     VP step 14 (:671-688) assert AWS/Lambda Errors AND Url5xxCount are zero since the deploy (same get_metric_statistics call
     pattern), with fix_if reading "Errors above zero -> a runtime-level failure; Url5xxCount above zero -> read the C6 line's
-    error_type". A context line names rec-4294 and this plan.
+    error_type". The contract row (:223-229) adds that append_telemetry's typed_errors gain unmapped (500) and
+    catalog_unavailable (503). A context line names rec-4294 and this plan.
 - file: docs/plans/PLAN-telemetry-blob-route.yaml
   action: Modify
   purpose: >-
@@ -190,14 +195,20 @@ scope:
     through the alarm's Url5xxCount (handler row :164-171, test row :364-368, contract row :244 "502 for the three paging
     faults" -> typed 500, acceptance :512-516 and :532, producer helper text :65 "500/502 defect" -> "500 defect; a 502 is a
     runtime-level defect", step 5 node and fix_if :623/:630, step 16 :803-816 adds Url5xxCount == 0, test obligation
-    :889-893 renamed test_blob_faults_answer_a_typed_500). The fork line :1055 is marked reversed by rec-4294 and this plan.
+    :889-893 renamed test_blob_faults_answer_a_typed_500, with its behavior text at :890 rewritten from "log a status-500
+    C6 line and then raise" to "log a status-500 C6 line and answer a typed 500"; the contract row :244 also adds that
+    begin_blobs' typed_errors gain unmapped (500) and catalog_unavailable (503)). The fork line :1055 is marked reversed by
+    rec-4294 and this plan.
 - file: tests/test_ducklake_handler_errors.py
   action: Create
   purpose: >-
     Helper tests (mapped home of src/common/ducklake_handler_errors.py): typed 500 and 503 bodies; the body never carries the
     message (exception text with password=, s3://, arn:aws: and a 12-digit run); the log line's redaction, first-line and
     300-character truncation, frames without locals, chain names; action is a registered name or "unknown"; and the three
-    serving contracts declare unmapped/catalog_unavailable on the verbs the handlers can answer them on.
+    serving contracts declare unmapped/catalog_unavailable on the verbs the handlers can answer them on, deriving the verb
+    set from each contract (every verb declares unmapped; every connectionful verb, i.e. every verb but the connectionless
+    ones each handler names, also declares catalog_unavailable), never a hard-coded verb list, so a verb added later by
+    plan 3 part 2 or the blob route is held to the same rule its amended plan text states.
 - file: tests/lambdas/ducklake_telemetry_writer/test_handler.py
   action: Modify
   purpose: >-
@@ -679,7 +690,7 @@ constraints:
 - No rescue agents or workaround loops (Decision 55); a red post-deploy step is root-caused, never re-run to green.
 context:
 - "Decision-scout verdict FLAGS_FOUND (Decisions triaged: 168 of 168; Roadmap items intersected: 13; CONFLICT: 0; RELATED: 13). CITE: Decision 55, Decision 81, Decision 84, Decision 213, Decision 215, Decision 79, Decision 125, Decision 126, Decision 77, Decision 177, Decision 181, Decision 186, Decision 201. WARN Decision 155 resolved by the three-condition amendment (scope row docs/DECISIONS.md); NOTE Decision 88 resolved below; SPIRIT Decision 84 resolved (BinderException stays 500)."
-- "gates: decision-scout=FLAGS_FOUND (WARN 155, NOTE 88, SPIRIT 84 resolved); plan-critique=REVISE r1 (R1 rec-4294 moved to PLAN-telemetry-owner-provisioning, its acceptance cannot hold in the networkless evaluator, finding relayed; R2 paginated log scan; R3 full tier before PR A; N1-N9 folded in); REVISE r2 (B1 PR sequencing for registry rows and the implementation_declared flip; N1 RecursionError; N2 rollback order; N3 fixture headers; N4 merge-ask wording and annotation length; N6 rec-4296 routing); REVISE r3 (R3-B1 the Decision 155 text discloses the fail-closed narrowing and the retry loss; R3-N1 literal named; R3-N2 operator-run 5xx gates page; R3-N3 rec-4311 owns the unlicensed gauge sites)"
+- "gates: decision-scout=FLAGS_FOUND (WARN 155, NOTE 88, SPIRIT 84 resolved); plan-critique=REVISE r1 (R1 rec-4294 moved to PLAN-telemetry-owner-provisioning, its acceptance cannot hold in the networkless evaluator, finding relayed; R2 paginated log scan; R3 full tier before PR A; N1-N9 folded in); REVISE r2 (B1 PR sequencing for registry rows and the implementation_declared flip; N1 RecursionError; N2 rollback order; N3 fixture headers; N4 merge-ask wording and annotation length; N6 rec-4296 routing); REVISE r3 (R3-B1 the Decision 155 text discloses the fail-closed narrowing and the retry loss; R3-N1 literal named; R3-N2 operator-run 5xx gates page; R3-N3 rec-4311 owns the unlicensed gauge sites); PROCEED r4 (confirming), R4-N1 to R4-N5 folded in (rec-4311's acceptance repaired at planning to a node its own fix lands, so this plan's annotation cannot satisfy it; sibling contract rows; carve-out wording; named_read_input log line; :890 rewrite)"
 - "Decision 88 cl.1(i) reading: 'a dead session is the one expected reopen condition; any other error still raises' holds at the connection layer (the reopen predicate and its raise are unchanged); only the handler's terminal answer to a raise changes. The summed alarm pages on 503 catalog_unavailable and the writers' existing 503 occ_exhausted and 500 runtime/version_mismatch too; Benjamin signs that scope off with the spend. An operator-run gate that elicits a typed 5xx on purpose (for example --lambda-append-only assertion 3, scripts/ducklake_smoke/lambda_ops_gates.py:352-361, expecting a 500) also pages ducklake-writer-errors; both alarm_descriptions say so, so that page is not read as an incident."
 - "Decision 213: the telemetry writer's 403 missing_caller_identity stays ahead of body parsing and of every new answer; Decision 215 cl.6: the reader's 413 response_too_large stays a returned response ahead of the terminal except; every mapped row keeps precedence (Decisions 81, 207, 210)."
 - "rec-4294 trigger (scoped login lacks CREATE on the smoke metadata schema; DuckLake's failed S3 cleanup masks it as TransactionException ... Forbidden) is fixed by PLAN-telemetry-owner-provisioning (the Writer grant fix, which bundles and closes rec-4294); this plan owns the masking half."
