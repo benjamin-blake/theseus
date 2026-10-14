@@ -8,6 +8,7 @@ predicate is a pure function of HCL text with its own red case on synthetic HCL.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 
 import pytest
 
@@ -40,7 +41,7 @@ def alarm_defects(block: str, function: str) -> list[str]:
         except AssertionError:
             defects.append(f"{qid} missing")
             continue
-        if f'metric_name = "{metric}"' not in q or 'namespace   = "AWS/Lambda"' not in q:
+        if not re.search(rf'metric_name\s*=\s*"{metric}"', q) or not re.search(r'namespace\s*=\s*"AWS/Lambda"', q):
             defects.append(f"{qid} is not AWS/Lambda {metric}")
         if not re.search(r'stat\s*=\s*"Sum"', q) or not re.search(r"period\s*=\s*900", q):
             defects.append(f"{qid} is not Sum over 900")
@@ -48,7 +49,7 @@ def alarm_defects(block: str, function: str) -> list[str]:
             defects.append(f"{qid} not on {function}")
     try:
         e1 = _query_block(block, "e1")
-        if f'expression  = "{_EXPRESSION}"' not in e1 or not re.search(r"return_data\s*=\s*true", e1):
+        if not re.search(rf'expression\s*=\s*"{re.escape(_EXPRESSION)}"', e1) or not re.search(r"return_data\s*=\s*true", e1):
             defects.append("e1 is not the FILLed sum with return_data")
     except AssertionError:
         defects.append("e1 missing")
@@ -56,8 +57,11 @@ def alarm_defects(block: str, function: str) -> list[str]:
         defects.append("threshold is not > 0")
     if not re.search(r"evaluation_periods\s*=\s*1\b", block):
         defects.append("evaluation_periods is not 1")
-    if "aws_sns_topic.alerts.arn" not in block:
-        defects.append("alerts SNS action missing")
+    for action in ("alarm_actions", "ok_actions"):
+        if not re.search(rf"{action}\s*=\s*\[aws_sns_topic\.alerts\.arn\]", block):
+            defects.append(f"{action} alerts SNS action missing")
+    if not re.search(r'treat_missing_data\s*=\s*"notBreaching"', block):
+        defects.append("treat_missing_data is not notBreaching")
     if re.search(r"^\s*metric_name\s*=", re.sub(r"metric_query\s*\{.*", "", block, flags=re.S), re.M):
         defects.append("top-level metric_name still present")
     return defects
@@ -82,16 +86,35 @@ def test_alarm_expression_fills_both_operands() -> None:
         assert "FILL(m1, 0)" in e1 and "FILL(m2, 0)" in e1
 
 
-@pytest.mark.parametrize(
-    ("mutate", "expected"),
-    [
-        (lambda b: b.replace('"Url5xxCount"', '"Invocations"'), "m2 is not AWS/Lambda Url5xxCount"),
-        (lambda b: b.replace("FILL(m2, 0)", "m2"), "e1 is not the FILLed sum with return_data"),
-        (lambda b: b.replace("FILL(m1, 0)", "m1"), "e1 is not the FILLed sum with return_data"),
-        (lambda b: b.replace("return_data = true", "return_data = false"), "e1 is not the FILLed sum with return_data"),
-    ],
-)
-def test_pin_rejects_a_dropped_operand_or_fill(mutate, expected: str) -> None:
+_RED_CASES = [
+    (lambda b: b.replace('"Url5xxCount"', '"Invocations"'), "m2 is not AWS/Lambda Url5xxCount"),
+    (lambda b: b.replace("FILL(m2, 0)", "m2"), "e1 is not the FILLed sum with return_data"),
+    (lambda b: b.replace("FILL(m1, 0)", "m1"), "e1 is not the FILLed sum with return_data"),
+    (lambda b: b.replace("return_data = true", "return_data = false"), "e1 is not the FILLed sum with return_data"),
+    (lambda b: b.replace("threshold           = 0", "threshold           = 1"), "threshold is not > 0"),
+    (lambda b: b.replace("evaluation_periods  = 1", "evaluation_periods  = 2"), "evaluation_periods is not 1"),
+    (
+        lambda b: b.replace("ok_actions    = [aws_sns_topic.alerts.arn]", "ok_actions    = []"),
+        "ok_actions alerts SNS action missing",
+    ),
+    (
+        lambda b: b.replace("alarm_actions = [aws_sns_topic.alerts.arn]", "alarm_actions = []"),
+        "alarm_actions alerts SNS action missing",
+    ),
+    (lambda b: b.replace("notBreaching", "missing"), "treat_missing_data is not notBreaching"),
+    (lambda b: b.replace("period      = 900", "period      = 60"), "m1 is not Sum over 900"),
+    (
+        lambda b: b.replace(
+            "aws_lambda_function.ducklake_telemetry_writer.function_name", "aws_lambda_function.other.function_name"
+        ),
+        "m1 not on ducklake_telemetry_writer",
+    ),
+    (lambda b: 'metric_name = "Errors"\n' + b, "top-level metric_name still present"),
+]
+
+
+@pytest.mark.parametrize(("mutate", "expected"), _RED_CASES)
+def test_pin_rejects_a_dropped_operand_or_fill(mutate: Callable[[str], str], expected: str) -> None:
     block = _real_block(_TELEMETRY)
     assert alarm_defects(block, _TELEMETRY[2]) == []
     assert expected in alarm_defects(mutate(block), _TELEMETRY[2])
