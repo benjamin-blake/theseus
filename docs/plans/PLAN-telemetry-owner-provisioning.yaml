@@ -49,10 +49,13 @@ scope:
     nothing from the event but the action the handler dispatched (a decoy meta_schema, data_path or table key changes
     nothing). Its meta schema is the function's env pin (DUCKLAKE_META_SCHEMA, default rt.SMOKE_META_SCHEMA, read the way
     the handler reads it) and it refuses with DuckLakeRuntimeError unless that equals rt.SMOKE_META_SCHEMA, so this
-    CI-reachable function can never create tables in another catalog. Body: run_telemetry_txn(con, create_telemetry_tables)
-    with load_field_semantics(); then ownership_report for the scoped login; a nonzero foreign_owned, a false
-    schema_owner_is_current_user or either CREATE flag true raises DuckLakeRuntimeError carrying only the four report
-    fields. EVERYTHING after the env-pin check (the transaction AND the ownership read) is wrapped: any exception other than
+    CI-reachable function refuses in code to create tables in another catalog (its Postgres login is still the all-catalog
+    owner; a smoke-only migrator login is 2c's, rec-4292). Body: ownership_report for the scoped login FIRST, refusing
+    before any DDL unless foreign_owned is 0, schema_owner_is_current_user is true and both CREATE flags are false (so a
+    mis-owned live schema never gets split ownership planted in it); then run_telemetry_txn(con, create_telemetry_tables)
+    with load_field_semantics(); then ownership_report again, with the same refusal. A refusal raises DuckLakeRuntimeError
+    carrying only the four report fields and whether it was the pre- or post-check. EVERYTHING after the env-pin check
+    (both ownership reads and the transaction) is wrapped: any exception other than
     DuckLakeRuntimeError is printed with its traceback (CloudWatch only) and re-raised as DuckLakeRuntimeError naming only
     the exception class, so the Function URL never answers a bare 502 and a catalog host or path never reaches the public
     CI log. Response {ok, tables (the nine, sorted), created, ownership {the four fields}, elapsed_ms}.
@@ -79,11 +82,18 @@ scope:
     Decision N's authorizing text (Decision 181), and the unknown-action 400 node's action list gains the verb. New nodes,
     with rt and prov patched: test_create_telemetry_event_keys_are_never_read (decoy keys change nothing),
     test_create_telemetry_non_smoke_meta_schema_refuses_before_any_statement,
-    test_create_telemetry_single_owner_violation_raises_with_report_fields_only,
+    test_create_telemetry_owner_mismatch_refuses_before_any_ddl (a dirty pre-check issues no statement through
+    create_telemetry_tables), test_create_telemetry_single_owner_violation_raises_with_report_fields_only (post-check),
     test_create_telemetry_unmapped_txn_error_names_the_class_only and
     test_create_telemetry_ownership_read_failure_names_the_class_only (a sentinel host string in the original message is
     absent from the raised text), test_create_telemetry_response_shape, and
-    test_create_telemetry_handler_returns_500_runtime_never_raises.
+    test_create_telemetry_handler_returns_500_runtime_never_raises. If the additions would take it past 500 SLOC, the
+    shared fakes go into tests/fixtures/ducklake_maintenance_handler.py (already its FakeCon home) rather than any split.
+- file: tests/fixtures/ducklake_maintenance_handler.py
+  action: Modify
+  purpose: >-
+    Only if needed to keep tests/test_ducklake_maintenance_smoke_handler.py under 500 SLOC: a recording fake for the
+    ownership reads and the create transaction beside the existing FakeCon. No existing helper changes behaviour.
 - file: src/lambdas/ducklake_telemetry_writer/telemetry_actions.py
   action: Modify
   purpose: >-
@@ -143,7 +153,7 @@ scope:
     creates schema ducklake_smoke; the owner attaches DuckLake (local tmp_path data path, inlining 0), then applies the REAL
     src/lambdas/ducklake_maintenance/ducklake_telemetry_writer_role.sql as the owner and sets a test password. Nodes:
     test_role_sql_grants_the_scoped_login_no_create (USAGE yes; CREATE on ducklake_smoke and public no; a raw CREATE TABLE
-    as the scoped login is permission denied); test_owner_creates_then_scoped_login_verifies_seeds_and_writes[read_all |
+    as the scoped login is permission denied; session_can_create on the scoped login's own DuckDB connection is False); test_owner_creates_then_scoped_login_verifies_seeds_and_writes[read_all |
     no_read_all] (owner create_telemetry_tables creates nine; ownership_report clean; scoped provision_telemetry_catalog
     creates nothing and seeds the counters; register_tenant, register_project and an append-style INSERT succeed; as the
     owner the telemetry tables read, a whole-database pg_dump --format=custom exits 0, flush_inlined_data and
@@ -156,22 +166,30 @@ scope:
 - file: tests/common/test_ducklake_telemetry_provision.py
   action: Modify
   purpose: >-
-    Recording-fake coverage of the split (fast tier). The create nodes are renamed to create_telemetry_tables
-    (test_create_tables_creates_and_partitions_every_absent_table, test_create_tables_writes_no_row,
-    test_create_tables_issues_no_drop_or_truncate, test_create_tables_never_re_alters_existing,
-    test_create_tables_refuses_drift_before_any_ddl); provision nodes assert it issues no CREATE, ALTER or DROP
-    (test_provision_issues_no_ddl), refuses absent tables by name before any write
-    (test_provision_refuses_absent_tables_before_any_write) and keep the seed, half-pair and drift nodes;
-    test_ownership_report_sql_and_fields, test_session_can_create_reads_current_user and
-    test_identifier_guard_refuses_unsafe_names cover the new readers. Stays under 500 SLOC.
+    Recording-fake coverage of the split (fast tier). Disposition of every existing node: RETARGETED onto
+    create_telemetry_tables and renamed -- test_provision_creates_and_partitions_every_table_before_any_write ->
+    test_create_tables_creates_and_partitions_every_absent_table, test_event_tables_carry_not_null_and_the_session_day_partition
+    -> test_create_tables_event_tables_carry_not_null_and_the_session_day_partition (the calendar-day spelling, the
+    rec-4068 defect class), test_provision_issues_no_drop_or_truncate -> test_create_tables_issues_no_drop_or_truncate,
+    test_existing_tables_are_never_re_altered -> test_create_tables_never_re_alters_existing,
+    test_provision_never_enables_inlining -> test_create_tables_never_enables_inlining (Decision 107); KEPT on
+    provision_telemetry_catalog with a fake whose nine tables are present -- test_seed_touches_only_the_two_telemetry_counter_rows,
+    test_seed_never_lowers_a_counter, test_duplicated_counter_row_is_repaired_at_the_floor,
+    test_half_present_dimension_pair_fails_loud (also asserting create_telemetry_tables refuses it),
+    test_preexisting_table_with_drifted_partition_fails_before_any_seed,
+    test_preexisting_table_with_drifted_columns_fails_before_any_seed, test_provision_reports_counters_and_tables,
+    test_inspect_partitions_reports_only_present_target_tables. NEW -- test_create_tables_writes_no_row,
+    test_create_tables_refuses_drift_before_any_ddl, test_provision_issues_no_ddl,
+    test_provision_refuses_absent_tables_before_any_write, test_ownership_report_sql_and_fields,
+    test_session_can_create_reads_current_user and test_identifier_guard_refuses_unsafe_names. Stays under 500 SLOC.
 - file: config/agent/verification_registry/entries/telemetry-provision-ddl.yaml
   action: Modify
   purpose: >-
-    (Graduated by PLAN-telemetry-registration-verbs.) check_spec.command keeps the provision-side nodes that survive
-    (seed, half-pair, drift, counters and tables) and adds test_provision_issues_no_ddl and
-    test_provision_refuses_absent_tables_before_any_write in place of the creation nodes this plan renames;
-    guard_symbol stays provision_telemetry_catalog. The create nodes belong to step 1's new telemetry-owner-create-split
-    shard. The edit triggers validate_verification_registry's differential admission gate: the new nodes are absent on
+    (Graduated by PLAN-telemetry-registration-verbs.) check_spec.command keeps the seven KEPT provision nodes (seed x3,
+    half-pair, both drift nodes, counters and tables) and adds test_provision_issues_no_ddl and
+    test_provision_refuses_absent_tables_before_any_write in place of the five RETARGETED nodes, which move to step 1's
+    new telemetry-owner-create-split shard under their new names (so none of the twelve current guards is dropped);
+    guard_symbol stays provision_telemetry_catalog. The edit triggers validate_verification_registry's differential admission gate: the new nodes are absent on
     origin/main and pass at HEAD.
 - file: tests/common/test_ducklake_telemetry_registration_integration.py
   action: Modify
@@ -194,6 +212,12 @@ scope:
     test_telemetry_probe_reports_can_create (false from the fake's has_schema_privilege row; null with the class name when
     the read raises). The RecordingCon fake keys on "postgres_query", so it must tell the has_schema_privilege read apart
     from the session count.
+- file: tests/lambdas/ducklake_telemetry_writer/test_handler.py
+  action: Modify
+  purpose: >-
+    test_provision_absent_tables_maps_to_500_runtime: with provision_telemetry_catalog raising its absent-tables
+    DuckLakeRuntimeError, the handler answers 500 runtime naming the tables, never an uncaught raise (rec-4294's writer-side
+    pin, independent of the rec-4294 thread's unmapped-error row).
 - file: tests/ducklake_neon_smoke_test/test_lambda_telemetry_gates.py
   action: Modify
   purpose: >-
@@ -219,16 +243,25 @@ scope:
   purpose: >-
     provision_telemetry's payload_schema_ref: verify-and-seed only; the tables are created under the catalog owner by
     ducklake_maintenance_smoke create_telemetry_tables (Decision N); its 500 runtime row adds "a target table is absent"
-    (the rec-4294 thread's plan adds its unmapped row to the same 500 key later). governance.write_path and
-    contract.description drop "create-only DDL" from the writer. One audit invariant: the scoped login issues no Postgres
-    DDL and holds no CREATE on any schema (Decision N). One amendment_log entry. The verb set is unchanged, so
+    (the rec-4294 thread's plan adds its unmapped row to the same 500 key later). governance.write_path drops
+    "create-only DDL" from the writer. The audit invariant "provisioning is create-only" is strengthened to "the telemetry
+    writer issues no Postgres DDL and holds no CREATE on any schema; its tables are created under the catalog owner
+    (Decision N)". One amendment_log entry. The verb set is unchanged, so
     test_contract_verbs_match_the_dispatched_production_verbs holds.
 - file: docs/contracts/storage-substrate.yaml
   action: Modify
   purpose: >-
     Class D: telemetry_tables' note and reason say the tables are created in ducklake_smoke under the owner login by
     ducklake_maintenance_smoke create_telemetry_tables and verified and seeded by the telemetry writer's
-    provision_telemetry; status stays not_provisioned; pinned substrings kept; a new amendment_log entry.
+    provision_telemetry; status stays not_provisioned; pinned substrings kept (including "ducklake_smoke catalog only");
+    a new amendment_log entry PREPENDED at index 0, the file's newest-first convention.
+- file: tests/checks/contracts/test_telemetry_dimension_contracts.py
+  action: Modify
+  purpose: >-
+    test_substrate_rows_name_the_telemetry_writer's amendment_log[0] date pin moves to the new entry (index 0 is
+    2026-10-14 and names PLAN-telemetry-owner-provisioning; the 2026-10-12 entry is still present), and the node asserts
+    the telemetry row names create_telemetry_tables. A Decision 181 correction tracking a legitimate new entry, not a
+    loosening; every other pin is unchanged.
 - file: docs/DECISIONS.md
   action: Modify
   purpose: >-
@@ -247,7 +280,7 @@ scope:
     test_decision_entry_and_annotations: the entry exists and is at most 6,144 bytes; envelope number N, amends [143,
     213], significance numbered_decision; clauses 1-4; a Coverage (Decision 181 cl.2) line; tokens
     create_telemetry_tables, scoped-login-blocks-verbs, rec-4292, rec-4297 and rec-4071; the reversal stanza ids; the
-    dated annotations on 143 and 213.
+    trailing --- separator; the dated annotations on 143 and 213.
 bundled_recommendations:
 - rec-4294
 followon_recs:
@@ -289,6 +322,8 @@ verification_plan:
   action: Creation and provisioning are split, the creator writes no row, the provisioner issues no DDL, and the new readers build safe SQL.
   command: >-
     bin/venv-python -m pytest tests/common/test_ducklake_telemetry_provision.py::test_create_tables_creates_and_partitions_every_absent_table
+    tests/common/test_ducklake_telemetry_provision.py::test_create_tables_event_tables_carry_not_null_and_the_session_day_partition
+    tests/common/test_ducklake_telemetry_provision.py::test_create_tables_never_enables_inlining
     tests/common/test_ducklake_telemetry_provision.py::test_create_tables_writes_no_row
     tests/common/test_ducklake_telemetry_provision.py::test_create_tables_issues_no_drop_or_truncate
     tests/common/test_ducklake_telemetry_provision.py::test_create_tables_never_re_alters_existing
@@ -310,6 +345,7 @@ verification_plan:
   command: >-
     bin/venv-python -m pytest tests/test_ducklake_maintenance_smoke_handler.py::test_create_telemetry_event_keys_are_never_read
     tests/test_ducklake_maintenance_smoke_handler.py::test_create_telemetry_non_smoke_meta_schema_refuses_before_any_statement
+    tests/test_ducklake_maintenance_smoke_handler.py::test_create_telemetry_owner_mismatch_refuses_before_any_ddl
     tests/test_ducklake_maintenance_smoke_handler.py::test_create_telemetry_single_owner_violation_raises_with_report_fields_only
     tests/test_ducklake_maintenance_smoke_handler.py::test_create_telemetry_unmapped_txn_error_names_the_class_only
     tests/test_ducklake_maintenance_smoke_handler.py::test_create_telemetry_ownership_read_failure_names_the_class_only
@@ -324,9 +360,12 @@ verification_plan:
   expected_literals: []
 - step: 3
   phase: pre-deploy
-  action: The writer's probe reports can_create and both gates fail loudly on a bad ownership report.
+  action: >-
+    The writer's probe reports can_create, absent tables answer a typed 500, and both gates fail loudly on a bad ownership
+    report.
   command: >-
     bin/venv-python -m pytest tests/lambdas/ducklake_telemetry_writer/test_telemetry_actions.py::test_telemetry_probe_reports_can_create
+    tests/lambdas/ducklake_telemetry_writer/test_handler.py::test_provision_absent_tables_maps_to_500_runtime
     tests/ducklake_neon_smoke_test/test_lambda_telemetry_gates.py::test_probe_can_create_true_fails
     tests/ducklake_neon_smoke_test/test_lambda_telemetry_gates.py::test_probe_can_create_null_fails
     tests/ducklake_neon_smoke_test/test_lambda_telemetry_gates.py::test_registration_vectors_pass_on_a_consistent_writer
@@ -456,7 +495,9 @@ verification_plan:
     A failed job is this plan's to root-cause and fix forward, never a re-run to green (Decision 55). A drift refusal on a
     pre-existing smoke telemetry table is an admin repair (Decision 204 cl.2), reported to Benjamin.
     schema_owner_is_current_user false means the live ducklake_smoke schema is not owned by the owner login: stop and
-    report it, never reassign owners from code.
+    report it, never reassign owners from code. scoped_create_on_public true means the provider grants CREATE on public:
+    stop and report it to Benjamin; the remedy is a role SQL REVOKE CREATE ON SCHEMA public FROM PUBLIC with an admin
+    re-run of provision_telemetry_login (always-ask), filed as a rec.
   hermetic: false
   graduation: not-applicable
 - step: 14
@@ -585,9 +626,13 @@ test_obligations:
   behavior: The telemetry row names the owner step and keeps its pinned substrings.
   verification_step: 10
   test_selector: tests/checks/contracts/test_telemetry_dimension_contracts.py::test_substrate_rows_name_the_telemetry_writer
+  red_green_expectation: red before (the row does not name create_telemetry_tables and index 0 is 2026-10-12), green after
+- source: tests/checks/contracts/test_telemetry_dimension_contracts.py
+  behavior: The substrate pin tracks the newest amendment_log entry and the owner step.
+  verification_step: 10
+  test_selector: tests/checks/contracts/test_telemetry_dimension_contracts.py::test_substrate_rows_name_the_telemetry_writer
   waiver_reason: >-
-    Prose re-grounding of an existing row; the existing pinned-substring node and the Class D amendment_log leg of
-    validate_contract_drift guard it.
+    This file is the pin itself; its own change is proven by the node passing against the edited contract in step 10.
 - source: config/agent/verification_registry/entries/telemetry-provision-ddl.yaml
   behavior: The graduated provisioning check runs the surviving and new provision-side nodes.
   verification_step: 1
@@ -647,7 +692,10 @@ context:
 - 'Critique r1 REVISE (F1 workflow body baseline, F2 a bespoke CI job outside scripts.validate overlapping rec-4071, F3
   Decision N Coverage line, F4 the 502 wrap missed the ownership read, F5 required Decision markers, F6 notes): all fixed.
   F2 resolved by dropping the job and widening rec-4071 (priority High) to gate this module with its Postgres server;
-  rec-4301 superseded into it. F6: the flat smoke test is 363 SLOC, so it is not moved.'
+  rec-4301 superseded into it. F6: the flat smoke test is 363 SLOC, so it is not moved. Critique r2 REVISE (R1 substrate
+  amendment_log[0] pin, R2 ownership pre-check before any DDL, R3 every provision node given a disposition, R4 CI-path
+  identity residual in Coverage; notes N1, N3-N6, N9, N10 taken; N2 by tightening rec-4071''s acceptance; N8 folded into
+  rec-4310): all fixed.'
 - 'Decided with notice: the PG test runs before merge locally (step 7, log in the PR body) and gates CI only once rec-4071
   lands; deploy-serving keeps its needs, so production deploys never wait on a smoke step; no role SQL REVOKE on public
   (PG15+ default, checked live by the ownership report); unknown event keys are ignored like the function''s other verbs,
@@ -685,7 +733,7 @@ execution_steps:
 - >-
   Write Decision N into docs/DECISIONS.md with this content, in decision-entry.yaml's required-marker shape (the
   **Status:** and **Date:** markers, the fenced metadata envelope, Problem, Decision, Rationale, Coverage, the
-  reversal-conditions stanza and Related), N = origin/main max + 1, replacing N throughout. Title "## Decision N: One owner
+  reversal-conditions stanza, Related and the trailing --- block separator), N = origin/main max + 1, replacing N throughout. Title "## Decision N: One owner
   per DuckLake metadata schema -- scoped catalog logins never hold CREATE, and telemetry tables are created under the owner
   login, by CI on the disposable smoke catalog (amends Decision 143 clause 2 and Decision 213 clause 3) (Decided)";
   envelope {number N, status Decided, decided_date 2026-10-14, amends [143, 213], significance numbered_decision,
@@ -722,7 +770,9 @@ execution_steps:
   session, on every deploy; the role SQL and DuckLake's DDL behaviour -- tests/common/test_ducklake_telemetry_catalog_ownership.py,
   run before merge and an unenforced CI residual until rec-4071 gates it; a production telemetry catalog -- an unenforced
   residual until slice 2c (rec-4292); DuckLake-level DROP through metadata DML -- a residual (rec-4297); the owner-login
-  reader and a restore without pg_read_all_data -- a residual (rec-4300). Reversal conditions (fenced yaml
+  reader and a restore without pg_read_all_data -- a residual (rec-4300); the CI path's catalog identity -- the
+  all-catalog owner login, smoke-pinned in code only (env pin and refusal, unit-tested) -- an unenforced residual until
+  2c's smoke-only migrator login (rec-4292). Reversal conditions (fenced yaml
   reversal-conditions, decision N, review_by 2027-04-30, on_trigger "re-decide via /plan"): owner-identity-changes
   (manual: the catalog owner login is replaced, or a provider move changes ownership semantics -- re-derive clause 1, with
   2c's per-catalog owner role, rec-4292); ducklake-ddl-on-dml-path (manual: a DuckLake version issues Postgres DDL on an
@@ -749,7 +799,7 @@ execution_steps:
   Close rec-4294 (escape-classified manual route, the rec-4182 / #1420 precedent): call get_rec_write_guidance() first;
   repair its acceptance through scripts.ops_data_portal --update-rec to the decidable hermetic form "bin/venv-python -m
   pytest tests/common/test_ducklake_telemetry_provision.py::test_provision_refuses_absent_tables_before_any_write
-  tests/test_ducklake_maintenance_smoke_handler.py::test_create_telemetry_unmapped_txn_error_names_the_class_only -q" (it
+  tests/lambdas/ducklake_telemetry_writer/test_handler.py::test_provision_absent_tables_maps_to_500_runtime -q" (it
   pins the root cause: provisioning never issues DDL and fails typed, never a bare 502, on absent tables; the original live
   command is discharged verbatim by step 15, whose output goes in the resolution, Decision 181); confirm
   lint_acceptance_command(require_decidable=True, require_discrimination=True) passes; in
@@ -763,7 +813,8 @@ execution_steps:
 - 'Report: what was implemented, verification results, the live ownership report and the step 14/15 evidence.'
 work_areas: []
 rollback: >-
-  Revert the squash commit in a new PR; the governed channel redeploys the previous code. The owner-created smoke telemetry
-  tables stay (owner-owned, disposable), so the reverted writer's create-only provision_telemetry finds them all present,
-  creates nothing and the gate stays green; a revert before the first owner step ran restores the pre-fix red gate.
-  Decision N is superseded by a later Decision if the design is reversed, never deleted.
+  Revert the code, workflow, test and contract edits in a new PR (not docs/DECISIONS.md); the governed channel redeploys
+  the previous code. The owner-created smoke telemetry tables stay (owner-owned, disposable), so the reverted writer's
+  create-only provision_telemetry finds them all present, creates nothing and the gate stays green; a revert before the
+  first owner step ran restores the pre-fix red gate. Decision N stays in DECISIONS.md and is superseded by a later
+  Decision if the design is reversed, never deleted (Decision 177).
