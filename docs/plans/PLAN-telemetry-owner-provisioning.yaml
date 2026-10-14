@@ -269,7 +269,8 @@ scope:
     test_decision_entry_and_annotations: the entry exists and is at most 6,144 bytes; envelope number N, amends [143, 213], significance numbered_decision;
     clauses 1-4; tokens create_telemetry_tables, scoped-login-blocks-verbs, rec-4292 and rec-4297; the reversal stanza ids;
     the dated annotations on 143 and 213.
-bundled_recommendations: []
+bundled_recommendations:
+- rec-4294
 followon_recs:
 - rec-4297
 - rec-4298
@@ -301,6 +302,7 @@ acceptance_criteria:
 - The deploy pipeline runs create_telemetry_tables before merge in maintenance-smoke, and the smoke job runs after maintenance-smoke.
 - Decision N is on main amending Decisions 143 and 213, with dated annotations on both.
 - The deployed run prints MAINTENANCE_CREATE_TELEMETRY OK and, in the telemetry step, TELEMETRY_PROVISION_OK and TELEMETRY_PROBE_OK with no 502 (rec-4294's acceptance evidence).
+- rec-4294 is closed through the escape-classified manual route with a closure_artifact from this plan's tests and the live evidence in its resolution.
 verification_plan:
 - step: 1
   phase: pre-deploy
@@ -533,6 +535,20 @@ verification_plan:
   fix_if: An AccessDenied on the URL call is a grant fault for the direct-invoke thread; never widen locally.
   hermetic: false
   graduation: not-applicable
+- step: 16
+  phase: post-deploy
+  action: >-
+    rec-4294 is closed through the escape-classified manual route (no Resolves trailer; see execution_steps), and the
+    closure reads back.
+  command: mcp__ducklake-reads__recs_by_ids ids=rec-4294
+  expected: >-
+    status closed, a closure_artifact naming a test this merge touched, the merge sha as the fix sha, and a resolution
+    that quotes step 14's and step 15's markers.
+  fix_if: >-
+    A ClosureArtifactRequired or acceptance-verdict refusal means the route was not followed; repair the acceptance first
+    (never weaken it, Decision 181) and re-run the census and evaluate in the merge worktree.
+  hermetic: false
+  graduation: not-applicable
 test_obligations:
 - source: src/common/ducklake_telemetry_provision.py
   behavior: create_telemetry_tables writes no row; provision_telemetry_catalog issues no DDL and refuses absent tables before any write.
@@ -659,6 +675,9 @@ constraints:
 - >-
   Decision text goes in as a NEW entry plus dated annotations; never rewrite Decision 143's or 213's text (Decision 177).
 - >-
+  rec-4294 is escape-classified (context_v2_json escape_class no-edge, Decision 186): never put a Resolves trailer for it
+  in the squash commit; close it only through the manual route after steps 14 and 15 pass.
+- >-
   Coordination: the rec-4294 plan (telemetry-unmapped-errors) builds after this one and rebases onto it; it edits only the
   regions named in the scope rows for the contract and the gate. Plan 3 part 2's and plan 4's local integration fixtures
   call create_telemetry_tables before provision_telemetry_catalog when they are built.
@@ -677,9 +696,10 @@ context:
 - 'Why a new plan, not an amendment: PLAN-telemetry-registration-verbs is implemented (#1465, implementation_declared
   true), so a further PR under it would not resolve it for validate_scope_boundary or validate_vp_replay. Its post-deploy
   steps 13-16 run after this plan deploys (its build thread holds for this).'
-- 'ci-rca: rec-4294 (critical) is open. Related-work condition 3 (same failure): this plan removes its trigger; the
-  telemetry-unmapped-errors plan bundles rec-4294 and rec-4282 (the masking) and closes it on this plan''s step 14/15
-  evidence.'
+- 'ci-rca: rec-4294 (critical) is open and bundled here (Related-work condition 1/3: its trigger is this plan''s fix, and
+  its corrective action allows fixing the underlying catalog error). Agreed with the rec-4294 thread via the coordinator
+  2026-10-14: that plan (telemetry-unmapped-errors) bundles only rec-4282 and still fixes the writer''s and reader''s
+  untyped-502 masking.'
 - 'Evidence (/mnt/project-files/telemetry-slice2/grant-fix/): FINDINGS.md and pg_scoped_login_provision_probe.py (build
   thread), neon_like_owner_probe.py and .out (non-superuser owner, with and without pg_read_all_data), ADVICE.md (Fable,
   evidence-only brief, High), step6b-presentation.md.'
@@ -775,9 +795,22 @@ execution_steps:
   thread before squash-merging (cite his pick, cmsg_012XgaFy8VaDQbxP5D8nC958UUrzEqExWB8DtaAJyJuSoA); the DuckLake
   redeploy itself is under the standing CI deploy rule.
 - >-
-  After the merge, run steps 13-15 against the deploy run for the merge commit, then tell the coordinator so the
-  registration-verbs build thread runs its post-deploy steps 13-16 and the rec-4294 thread closes rec-4294 on this
-  evidence.
+  After the merge, run steps 13-15 against the deploy run for the merge commit.
+- >-
+  Close rec-4294 (escape-classified manual route, the rec-4182 / #1420 precedent): call get_rec_write_guidance() first;
+  repair its acceptance through scripts.ops_data_portal --update-rec to the decidable hermetic form "bin/venv-python -m
+  pytest tests/common/test_ducklake_telemetry_provision.py::test_provision_refuses_absent_tables_before_any_write
+  tests/lambdas/ducklake_maintenance_smoke/test_telemetry_actions.py::test_unmapped_error_becomes_runtime_naming_the_class_only
+  -q" (it pins the root cause: provisioning never issues DDL and fails typed, never a bare 502, on absent tables; the
+  original live command is discharged verbatim by step 15, whose output goes in the resolution, Decision 181); confirm
+  lint_acceptance_command(require_decidable=True, require_discrimination=True) passes; in
+  scripts.verification_graduation.git_worktree(merge_sha) run rec_trailer_acceptance census and evaluate and proceed only
+  on isolation True and verdict holds; then one update_rec: status closed, resolution (steps 14 and 15 markers),
+  closure_artifact pytest:tests/common/test_ducklake_telemetry_provision.py::test_provision_refuses_absent_tables_before_any_write,
+  closure_fix_sha the merge sha. Run step 16.
+- >-
+  Tell the coordinator, so the registration-verbs build thread runs its post-deploy steps 13-16 and the rec-4294 thread
+  knows the rec is closed.
 - 'Report: what was implemented, verification results, the live ownership report and the step 14/15 evidence.'
 work_areas: []
 rollback: >-
