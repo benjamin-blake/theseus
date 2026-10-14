@@ -87,15 +87,14 @@ verification_plan:
     reached the real git.
   command: >-
     R=$(git rev-parse --show-toplevel) && T=$(mktemp -d) && git worktree add -q --detach "$T" HEAD &&
-    cp tests/validate/test_gate_failure_summary.py "$T/tests/validate/" && git -C "$T" symbolic-ref HEAD refs/heads/main && (cd "$T" && "$R/bin/venv-python" -m pytest
+    cp "$R/tests/validate/test_gate_failure_summary.py" "$T/tests/validate/" && git -C "$T" symbolic-ref HEAD refs/heads/main && (cd "$T" && "$R/bin/venv-python" -m pytest
     tests/validate/test_gate_failure_summary.py -q); rc=$?; git worktree remove --force "$T"; exit $rc
   expected: >-
     Exit 0, 5 passed. Red before: the same command on origin/main's tree exits 1 with
     test_clean_run_and_terraform_only_print_no_marker failing on "[ERROR] validate.py refused to run on 'main'."
     (reproduced at planning time on ac0985e1).
   fix_if: >-
-    The acceptance node fails with the branch-guard refusal: phase 2 still reaches the real git (run the command from
-    the repository root, so the cp picks up the changed file).
+    The acceptance node fails with the branch-guard refusal: phase 2 still reaches the real git.
   hermetic: false
   graduation: not-applicable
 - step: 4
@@ -123,8 +122,12 @@ verification_plan:
     Exit 0 with rec-4302 closed; separately, the main-validate run on the merge commit is green (read with the
     mcp__github__ actions tools or the CI-green wake).
   fix_if: >-
-    rec-4302 still open: the squash trailer omitted it; close it through the ops portal citing the merge commit.
-    main-validate still red on this node: STOP and re-open planning (Decision 55).
+    rec-4302 still open: act only on ci.yml's trailer-closure job log at the merge sha, per the implement skill's
+    post-merge closeout fallback (.claude/commands/implement.md; git-ops.yaml resolves_trailer). A Decision 186 or 201
+    refusal marker for rec-4302 permits ONLY that log's printed close_proposed command, never a direct --update-rec
+    close. A closed/not-found/errored line, a transport failure or a merge-leg refusal permits the direct fallback citing
+    the merge commit. Anything else (an omitted trailer included): leave it open and report. main-validate still red on
+    this node: STOP and re-open planning (Decision 55).
   hermetic: false
 test_obligations: []
 constraints:
@@ -140,7 +143,7 @@ context:
 - >-
   Decision-scout verdict: NO_FLAGS. CITE: 72, 73, 55, 104, 135, 181, 163, 132, 189, 186, 201. Decisions triaged: 168 of
   168. Roadmap items intersected: 1; CONFLICT: 0; RELATED: 1.
-- "gates: decision-scout=NO_FLAGS; plan-critique=REVISE r1 (F1-F5 fixed)"
+- "gates: decision-scout=NO_FLAGS; plan-critique=REVISE r1 (F1-F5 fixed), REVISE r2 confirming (R2-F1..F3 fixed), escalated"
 - >-
   Root cause (rec-4302; reproduced on ac0985e1): phase 1's _run_main deletes CI and stops its patches, so phase 2's
   validate.main() reaches validate.py:235-243, whose real git branch --show-current reads main on main-validate. PR CI
@@ -150,9 +153,9 @@ context:
   in presubmit; the escape was branch-name dependence, which the module guard makes deterministic on every branch.
 - >-
   Declared residuals: the guard covers scripts.checks._common.run only; validation_result.py:67 and :172 call
-  subprocess.run directly (branch-independent git rev-parse probes). Nine other tests/validate modules and
-  tests/checks/registry/test_resolution.py call validate.main() with CI unset; they are green on main because each stubs
-  _common.run. A package-level guard (tests/validate/conftest.py, non-autouse by design, and a conftest edit widens
+  subprocess.run directly (branch-independent git rev-parse probes). Other tests/validate modules and
+  tests/checks/registry/test_resolution.py call validate.main() (most with CI unset); they are green on main because
+  each stubs _common.run or keeps CI set. A package-level guard (tests/validate/conftest.py, non-autouse by design, and a conftest edit widens
   --pre selection) is left to a follow-on only if the class recurs.
 - >-
   Precedent: PLAN-ci-rca-test-mock (corrective mock, scoped autouse guard, self-verifying meta-test); _pre_mock_run
@@ -168,7 +171,7 @@ execution_steps:
   Preventive first (TDD): add a module-level @pytest.fixture(autouse=True) that patches scripts.checks._common.run with
   a stub raising AssertionError(f"unstubbed scripts.checks._common.run({cmd!r}): stub it with _pre_mock_run") and
   yields inside the patch; add test_unstubbed_subprocess_is_refused, which imports scripts.checks._common and asserts
-  pytest.raises(AssertionError) on _common.run(["git", "branch", "--show-current"]). Run VP 2: the acceptance node now
+  pytest.raises(AssertionError, match="show-current") on _common.run(["git", "branch", "--show-current"]). Run VP 2: the acceptance node now
   fails on this branch with the guard's message (the red-before).
 - >-
   Corrective: in test_clean_run_and_terraform_only_print_no_marker, add patch("scripts.checks._common.run",
