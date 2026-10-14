@@ -16,8 +16,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import src.lambdas.ducklake_maintenance_smoke.handler as h
+from src.common import ducklake_telemetry_provision as prov
 from src.common.ducklake_maintenance import DuckLakeMaintenanceError
 from src.common.ducklake_runtime import DuckLakeRuntimeError, VersionMismatchError
+from src.lambdas.ducklake_maintenance_smoke import telemetry_actions as ta
 from tests.fixtures.ducklake_maintenance_handler import FakeCon, _response_body
 from tests.fixtures.terraform_hcl_blocks import find_resource_block
 
@@ -25,12 +27,12 @@ pytestmark = pytest.mark.unit
 
 
 # ---------------------------------------------------------------------------
-# Blast-radius invariant: dispatch is EXACTLY the 4 smoke actions
+# Blast-radius invariant: dispatch is EXACTLY the 5 smoke actions
 # ---------------------------------------------------------------------------
 
 
-def test_dispatch_table_is_exactly_the_four_smoke_actions():
-    assert set(h._ACTIONS) == {"merge", "gc", "hot_merge", "breaker_probe"}
+def test_dispatch_table_is_exactly_the_five_smoke_actions():
+    assert set(h._ACTIONS) == {"merge", "gc", "hot_merge", "breaker_probe", "create_telemetry_tables"}
 
 
 def test_dispatch_has_no_production_destructive_verb():
@@ -43,7 +45,7 @@ def test_handler_destructive_payload_returns_400_unknown_action():
     assert r["statusCode"] == 400
     body = _response_body(r)
     assert "unknown action" in body["error"]
-    assert set(body["actions"]) == {"merge", "gc", "hot_merge", "breaker_probe"}
+    assert set(body["actions"]) == {"merge", "gc", "hot_merge", "breaker_probe", "create_telemetry_tables"}
 
 
 def test_open_connection_takes_no_event_argument():
@@ -496,3 +498,125 @@ def test_handler_runtime_error_maps_to_500():
     assert r["statusCode"] == 500
     body = _response_body(r)
     assert body["error_type"] == "runtime"
+
+
+# ---------------------------------------------------------------------------
+# create_telemetry_tables (Decision 216): owner-login, create-only, smoke-pinned, typed failures
+# ---------------------------------------------------------------------------
+
+CLEAN = prov.OwnershipReport(0, True, False, False)
+NINE = tuple(f"t{i}" for i in range(9))
+
+
+class _Rec(FakeCon):
+    def __init__(self):
+        super().__init__()
+        self.sql: list[str] = []
+
+    def execute(self, sql, params=None):
+        self.sql.append(sql)
+        return super().execute(sql, params)
+
+
+def _patched(reports=(CLEAN, CLEAN), create=None):
+    report = MagicMock(side_effect=list(reports))
+    made = create or MagicMock(return_value=prov.CreateResult(NINE, NINE[:2]))
+    return (
+        patch.object(ta.prov, "ownership_report", report),
+        patch.object(ta.prov, "create_telemetry_tables", made),
+        report,
+        made,
+    )
+
+
+def _run(event=None, con=None, **kw):
+    p1, p2, report, made = _patched(**kw)
+    con = con or _Rec()
+    with p1, p2:
+        return ta.action_create_telemetry_tables(event or {"action": "create_telemetry_tables"}, con), con, report, made
+
+
+def test_create_telemetry_event_keys_are_never_read():
+    decoy = {"action": "create_telemetry_tables", "meta_schema": "ducklake_ops", "data_path": "s3://x/", "table": "ops_x"}
+    out, con, report, made = _run(decoy)
+    assert out["ok"] is True
+    assert [c.kwargs["meta_schema"] for c in report.call_args_list] == [h.rt.SMOKE_META_SCHEMA] * 2
+    assert "ducklake_ops" not in str(report.call_args_list) + str(made.call_args_list) + "".join(con.sql)
+
+
+def test_create_telemetry_non_smoke_meta_schema_refuses_before_any_statement(monkeypatch):
+    monkeypatch.setenv("DUCKLAKE_META_SCHEMA", "ducklake_ops")
+    p1, p2, report, made = _patched()
+    con = _Rec()
+    with p1, p2, pytest.raises(DuckLakeRuntimeError, match="pinned to the smoke metadata schema"):
+        ta.action_create_telemetry_tables({}, con)
+    assert con.sql == [] and not report.called and not made.called
+
+
+def test_create_telemetry_owner_mismatch_refuses_before_any_ddl():
+    for dirty in (
+        prov.OwnershipReport(1, True, False, False),
+        prov.OwnershipReport(0, False, False, False),
+        prov.OwnershipReport(0, True, True, False),
+        prov.OwnershipReport(0, True, False, True),
+    ):
+        p1, p2, _report, made = _patched(reports=(dirty,))
+        con = _Rec()
+        with p1, p2, pytest.raises(DuckLakeRuntimeError, match=r"single-owner check failed \(pre-DDL\)"):
+            ta.action_create_telemetry_tables({}, con)
+        assert not made.called and con.sql == []
+
+
+def test_create_telemetry_single_owner_violation_raises_with_report_fields_only():
+    p1, p2, _report, made = _patched(reports=(CLEAN, prov.OwnershipReport(2, True, False, True)))
+    with p1, p2, pytest.raises(DuckLakeRuntimeError) as info:
+        ta.action_create_telemetry_tables({}, _Rec())
+    text = str(info.value)
+    assert "post-DDL" in text and "'foreign_owned': 2" in text and "'scoped_create_on_public': True" in text
+    assert made.called and "Traceback" not in text
+
+
+@pytest.mark.parametrize("where", ["create", "ownership"])
+def test_create_telemetry_unmapped_txn_error_names_the_class_only(where, capsys):
+    sentinel = RuntimeError("connection to sentinel-host.example failed")
+    if where == "create":
+        p1, p2, _r, _m = _patched(create=MagicMock(side_effect=sentinel))
+    else:
+        p1, p2, _r, _m = _patched(reports=(sentinel,))
+    with p1, p2, pytest.raises(DuckLakeRuntimeError) as info:
+        ta.action_create_telemetry_tables({}, _Rec())
+    assert "RuntimeError" in str(info.value) and "sentinel-host" not in str(info.value)
+    assert "sentinel-host" in capsys.readouterr().err
+
+
+def test_create_telemetry_ownership_read_failure_names_the_class_only(capsys):
+    boom = ValueError("password for sentinel-host.example rejected")
+    p1, p2, _report, made = _patched(reports=(boom,))
+    with p1, p2, pytest.raises(DuckLakeRuntimeError) as info:
+        ta.action_create_telemetry_tables({}, _Rec())
+    assert str(info.value) == "create_telemetry_tables failed: ValueError" and not made.called
+    assert "sentinel-host" in capsys.readouterr().err
+
+
+def test_create_telemetry_response_shape():
+    out, con, _report, _made = _run()
+    assert set(out) == {"ok", "tables", "created", "ownership", "elapsed_ms"}
+    assert out["tables"] == sorted(NINE) and out["created"] == sorted(NINE[:2])
+    assert out["ownership"] == {
+        "foreign_owned": 0,
+        "schema_owner_is_current_user": True,
+        "scoped_create_on_schema": False,
+        "scoped_create_on_public": False,
+    }
+    assert con.sql[0] == "BEGIN TRANSACTION" and con.sql[-1] == "COMMIT"
+
+
+def test_create_telemetry_handler_returns_500_runtime_never_raises():
+    p1, p2, _report, _made = _patched(reports=(RuntimeError("sentinel-host.example"),))
+    with p1, p2, patch.object(h, "_open_connection", return_value=_Rec()):
+        r = h.handler({"action": "create_telemetry_tables"})
+    body = _response_body(r)
+    assert r["statusCode"] == 500 and body["error_type"] == "runtime" and "sentinel-host" not in r["body"]
+    p1, p2, _report, _made = _patched()
+    with p1, p2, patch.object(h, "_open_connection", return_value=_Rec()):
+        assert h.handler({"action": "create_telemetry_tables"})["statusCode"] == 200

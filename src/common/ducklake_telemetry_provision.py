@@ -1,17 +1,20 @@
-"""Create-only provisioning of the telemetry catalog tables (T2.36, slice 2a-2, plan 3 part 1).
+"""Owner-created, writer-verified telemetry tables (T2.36, slice 2a-2; the owner-provisioning fix, rec-4294).
 
-provision_telemetry_catalog is the body of ONE run_telemetry_txn transaction (DuckLake commits CREATE, SET PARTITIONED BY
-and row DML together). It creates and partitions only the tables that are absent, so an existing table is never
-re-ALTERed (no per-deploy snapshot or conflict with in-flight writers, Decision 88; re-laying a live partition spec stays
-an admin verb, Decision 204). Every pre-existing target table is checked read-only (partitions and columns) before anything
-is written; a half-present SCD2 pair, a partition drift or a column drift fails loud and writes nothing. The counter seed
-never lowers a value. There is no drop, truncate or force-recreate path on this function (Decision 55).
-
-It never sets inlining: the connection already carries ducklake_default_data_inlining_row_limit = 0 (Decision 107).
+DuckLake's CREATE TABLE also creates a physical Postgres table per table (ducklake_inlined_data_*), so DDL needs CREATE on the
+metadata schema, which the telemetry writer's scoped login never holds. The work is therefore split:
+- create_telemetry_tables runs under the catalog OWNER login (ducklake_maintenance_smoke's create_telemetry_tables verb, run by
+  the deploy pipeline): it creates and partitions only the ABSENT tables, writes no row, never drops, never re-ALTERs and never
+  sets inlining (Decision 107). A half-present SCD2 pair or a partition/column drift fails loud first and writes nothing.
+- provision_telemetry_catalog runs under the writer's scoped login and issues NO DDL: it refuses absent tables by name,
+  re-checks drift, and seeds the two counter rows without ever lowering a value (the counter table keeps one write path).
+- ownership_report and session_can_create read pg_catalog through DuckLake's attached metadata database, to prove the single
+  owner invariant (every relation owned by the schema owner, the scoped login holding no CREATE on the schema or public).
+There is no drop, truncate or force-recreate path anywhere here (Decision 55).
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -32,6 +35,24 @@ DIMENSIONS = ("ops_tenants", "ops_projects")
 SEEDED_COUNTERS = DIMENSIONS
 _ALWAYS_NOT_NULL = frozenset({"tenant_id", "project_id"})
 _META_SCHEMA = f"__ducklake_metadata_{CATALOG_ALIAS}"
+
+
+SCOPED_LOGIN = "ducklake_telemetry_writer"
+_IDENTIFIER = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
+
+
+@dataclass(frozen=True)
+class CreateResult:
+    tables: tuple[str, ...]
+    created: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class OwnershipReport:
+    foreign_owned: int
+    schema_owner_is_current_user: bool
+    scoped_create_on_schema: bool
+    scoped_create_on_public: bool
 
 
 @dataclass(frozen=True)
@@ -161,17 +182,20 @@ def _seed_counter(con: Any, name: str, floor: int) -> None:
     con.execute(f"INSERT INTO {CATALOG_ALIAS}.{ENTITY_COUNTERS_TABLE} VALUES (?, ?)", [name, value])
 
 
-def provision_telemetry_catalog(con: Any, *, semantics: dict[str, Any]) -> ProvisionResult:
-    """Provision the seven telemetry tables plus the counter table in the connection's pinned catalog (create-only)."""
-    existing = existing_tables(con)
+def _refuse_half_pairs(existing: set[str], semantics: dict[str, Any]) -> None:
     for name in DIMENSIONS:
         spec = resolve_table_spec(name, semantics)
-        halves = {spec.history_table in existing, str(spec.current_table) in existing}
-        if len(halves) == 2:
+        if len({spec.history_table in existing, str(spec.current_table) in existing}) == 2:
             raise DuckLakeRuntimeError(
                 f"{name}: exactly one of {spec.history_table}/{spec.current_table} exists -- a half-present SCD2 pair "
-                "is an admin repair (Decision 55); provisioning would re-ALTER the existing half"
+                "is an admin repair (Decision 55); creating the other half would re-ALTER the existing one"
             )
+
+
+def create_telemetry_tables(con: Any, *, semantics: dict[str, Any]) -> CreateResult:
+    """Create and partition only the ABSENT telemetry tables (owner login). Writes no row; never drops or re-ALTERs."""
+    existing = existing_tables(con)
+    _refuse_half_pairs(existing, semantics)
     check_existing_tables(con, existing, semantics)
 
     created: list[str] = []
@@ -191,6 +215,21 @@ def provision_telemetry_catalog(con: Any, *, semantics: dict[str, Any]) -> Provi
     if ENTITY_COUNTERS_TABLE not in existing:
         create_control_table(con, table=ENTITY_COUNTERS_TABLE)
         created.append(ENTITY_COUNTERS_TABLE)
+    return CreateResult(target_tables(semantics), tuple(created))
+
+
+def provision_telemetry_catalog(con: Any, *, semantics: dict[str, Any]) -> ProvisionResult:
+    """Verify the nine tables exist and match their declared spec, then seed the two counter rows. Issues NO DDL."""
+    existing = existing_tables(con)
+    _refuse_half_pairs(existing, semantics)
+    absent = [t for t in target_tables(semantics) if t not in existing]
+    if absent:
+        raise DuckLakeRuntimeError(
+            f"telemetry tables absent: {absent}. Tables are created only under the catalog owner by "
+            "ducklake_maintenance_smoke's create_telemetry_tables (the owner-provisioning Decision), before any write; "
+            "the telemetry writer's scoped login holds no CREATE"
+        )
+    check_existing_tables(con, existing, semantics)
 
     for name in SEEDED_COUNTERS:
         current = str(resolve_table_spec(name, semantics).current_table)
@@ -204,4 +243,44 @@ def provision_telemetry_catalog(con: Any, *, semantics: dict[str, Any]) -> Provi
         )
         for name in SEEDED_COUNTERS
     }
-    return ProvisionResult(target_tables(semantics), counters, tuple(created))
+    return ProvisionResult(target_tables(semantics), counters, ())
+
+
+def _guard(value: str, kind: str) -> str:
+    if not _IDENTIFIER.match(value):
+        raise DuckLakeRuntimeError(f"unsafe {kind} name refused before any SQL is built")
+    return value
+
+
+def _pg_row(con: Any, inner_sql: str) -> tuple[Any, ...]:
+    """The first row of inner_sql run on the postgres database DuckLake attaches for its metadata.
+
+    duckdb_databases() lists only the DuckLake catalog (type ducklake); the metadata catalog is reachable under its own
+    __ducklake_metadata_<alias> name, the one the partition-layout reads already use.
+    """
+    quoted = inner_sql.replace("'", "''")
+    row = con.execute(f"SELECT * FROM postgres_query('{_META_SCHEMA}', '{quoted}')").fetchone()
+    return tuple(row)
+
+
+def ownership_report(con: Any, *, meta_schema: str, scoped_login: str = SCOPED_LOGIN) -> OwnershipReport:
+    """Read-only: relations in meta_schema owned by someone other than the schema owner, the schema owner, scoped CREATE."""
+    schema, login = _guard(meta_schema, "meta schema"), _guard(scoped_login, "login")
+    row = _pg_row(
+        con,
+        "SELECT "
+        "(SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+        f"WHERE n.nspname = '{schema}' AND c.relkind IN ('r', 'p', 'S', 'v', 'm') "
+        "AND c.relowner <> n.nspowner) AS foreign_owned, "
+        f"(SELECT n.nspowner = (SELECT oid FROM pg_roles WHERE rolname = current_user) FROM pg_namespace n "
+        f"WHERE n.nspname = '{schema}') AS schema_owner_is_current_user, "
+        f"has_schema_privilege('{login}', '{schema}', 'CREATE') AS scoped_create_on_schema, "
+        f"has_schema_privilege('{login}', 'public', 'CREATE') AS scoped_create_on_public",
+    )
+    return OwnershipReport(int(row[0]), bool(row[1]), bool(row[2]), bool(row[3]))
+
+
+def session_can_create(con: Any, *, meta_schema: str) -> bool:
+    """Whether the connection's own login holds CREATE on the metadata schema (the writer must not)."""
+    schema = _guard(meta_schema, "meta schema")
+    return bool(_pg_row(con, f"SELECT has_schema_privilege(current_user, '{schema}', 'CREATE') AS can_create")[0])

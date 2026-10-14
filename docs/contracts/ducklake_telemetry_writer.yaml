@@ -12,7 +12,7 @@ contract:
     Telemetry-scoped DuckLake runtime Lambda invoked over an AWS_IAM (SigV4) Function URL, URL-only (direct invoke is denied
     in the permissions boundary, Decision 213). Env-pinned to the isolated ducklake_smoke catalog on a scoped catalog login;
     it takes no catalog selector and never reaches the ops verbs or the production ducklake_ops catalog. Its first verbs
-    provision the telemetry tables and register tenants and projects (Decision 200): tenant and project ids are ULIDs minted
+    verify and seed the telemetry tables (which the catalog owner creates, Decision 216) and register tenants and projects (Decision 200): tenant and project ids are ULIDs minted
     once per request, and the ops_entity_counters row is a lock only. The verbs cover provisioning and registration; the
     append verb arrives with slice 2a-2 plan 3 part 2. This contract documents the PRODUCTION verb surface only.
   governance:
@@ -25,9 +25,10 @@ contract:
     admin_only_features: []
     write_path: >-
       ducklake_telemetry_writer Lambda -> run_telemetry_txn (one transaction, bounded OCC retry) -> the isolated
-      ducklake_smoke catalog: provision_telemetry (create-only DDL plus the two counter seed rows), register_tenant and
-      register_project (SCD2 history MERGE plus current MERGE under a lock-only counter UPDATE). The function has no
-      destructive verb by design; dropping a table stays on the admin maintenance function.
+      ducklake_smoke catalog: provision_telemetry (verify the nine owner-created tables and seed the two counter rows; no DDL), register_tenant and
+      register_project (SCD2 history MERGE plus current MERGE under a lock-only counter UPDATE). The telemetry tables are
+      created under the catalog owner by ducklake_maintenance_smoke's create_telemetry_tables (Decision 216). The function has no
+      destructive verb by design and holds no CREATE; dropping a table stays on the admin maintenance function.
     id_allocator: >-
       ULIDs (tenant_id, project_id and the write ulid), minted once per request outside the retry loop; the
       ops_entity_counters row serializes concurrent registrations and allocates nothing (Decision 84 I-2, Decision 200).
@@ -60,18 +61,19 @@ verbs:
   provision_telemetry:
     payload_schema_ref: >-
       event envelope {action: "provision_telemetry", component?}. No other key is accepted (a force_recreate or confirm key
-      is refused like any unknown key). component is a str with no U+0000 and no code point in U+D800-U+DFFF. Create-only:
-      creates and partitions only the absent tables (the four telemetry event tables, the ops_tenants and ops_projects SCD2
-      pairs, ops_entity_counters), checks every pre-existing target table read-only against its declared partitions and
-      columns before any write, and seeds the ops_tenants and ops_projects counter rows without ever lowering a value.
+      is refused like any unknown key). component is a str with no U+0000 and no code point in U+D800-U+DFFF. Verify and
+      seed only, issuing no DDL: the nine target tables (the four telemetry event tables, the ops_tenants and ops_projects SCD2
+      pairs, ops_entity_counters) are created under the catalog owner by ducklake_maintenance_smoke's create_telemetry_tables
+      (Decision 216) before any write; this verb refuses absent tables by name, checks every target table read-only against its
+      declared partitions and columns, and seeds the ops_tenants and ops_projects counter rows without ever lowering a value.
     response_codes:
       200: "body {ok, tables (the nine physical tables), counters {ops_tenants, ops_projects}}"
       400: "bad_request: an unknown key, or an invalid string with the field named, never the value"
-      500: "runtime: a half-present SCD2 pair, or a pre-existing table whose partitions or columns drift from the declared spec; nothing was written"
+      500: "runtime: a target table is absent, a half-present SCD2 pair, or a table whose partitions or columns drift from the declared spec; nothing was written"
       503: "occ_exhausted: the OCC retry budget was exhausted (retryable)"
     typed_errors:
       bad_request: "an unknown request key, or a non-str, NUL-bearing or lone-surrogate string; names the field, never the value (400)"
-      runtime: "loud-fail on a half-present pair or a drifted pre-existing table (500)"
+      runtime: "loud-fail on an absent target table, a half-present pair or a drifted table (500)"
       occ_exhausted: "OCC retry budget exhausted; safe to retry (503)"
   register_tenant:
     payload_schema_ref: >-
@@ -110,9 +112,22 @@ verbs:
       occ_exhausted: "OCC retry budget exhausted; safe to retry (503)"
 audit_invariants:
   - "Telemetry verbs attach only the pinned catalog and take no catalog selector: meta_schema and data_path are never read from the event."
-  - "No verb drops, truncates or recreates a table; provisioning is create-only and a pre-existing table is never re-ALTERed."
+  - "No verb drops, truncates or recreates a table. The telemetry writer issues no Postgres DDL and holds no CREATE on any schema; its tables are created under the catalog owner (Decision 216)."
   - "principal_ref never appears in a response or log, and no response carries a hash of it (Decision 101)."
   - "A rejected request string never appears in a response or log: a refusal names the field, not the value."
   - "An unknown `action` returns 400 with the sorted action allow-list (no silent no-op)."
-amendment_log: []
+amendment_log:
+  - date: "2026-10-14"
+    semantic_break: true
+    change_class: governance_note_add
+    summary: >-
+      PLAN-telemetry-owner-provisioning (rec-4294, Decision 216): provision_telemetry no longer creates tables; it verifies the
+      nine owner-created tables, refuses absent ones by name (500 runtime) and seeds the counter rows. The tables are created
+      under the catalog owner login by ducklake_maintenance_smoke's create_telemetry_tables. governance.write_path, the
+      description and the "create-only" audit invariant are restated (the writer issues no DDL and holds no CREATE).
+      semantic_break=true because provision_telemetry's behaviour changes.
+    migration_story: >-
+      The verb set is unchanged. A caller that relied on provision_telemetry creating tables now gets a typed 500 naming the
+      absent tables until the owner step has run; the deploy pipeline runs it before the telemetry gate. No table existed
+      before this change (the first provision failed live), so nothing is stranded.
 previous_versions: []

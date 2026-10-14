@@ -100,6 +100,7 @@ from scripts.ducklake_smoke.lambda_ec_gates import (  # noqa: F401 -- re-exporte
 from scripts.ducklake_smoke.lambda_maintenance_gates import (  # noqa: F401 -- re-exported package surface
     lambda_catalog_dr,
     lambda_maintenance_breaker,
+    lambda_maintenance_create_telemetry,
     lambda_maintenance_gc,
     lambda_maintenance_hot_merge,
     lambda_maintenance_merge,
@@ -141,6 +142,7 @@ _LAMBDA_GATES: dict[str, Callable[..., None]] = {
     "lambda_maintenance_breaker": lambda_maintenance_breaker,
     "lambda_catalog_dr": lambda_catalog_dr,
     "lambda_maintenance_hot_merge": lambda_maintenance_hot_merge,
+    "lambda_maintenance_create_telemetry": lambda_maintenance_create_telemetry,
     "connect_probe": connect_probe,
     "lambda_append_only": lambda_append_only,
     "lambda_telemetry": lambda_telemetry,
@@ -230,6 +232,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         "--lambda-maintenance-hot-merge",
         action="store_true",
         help="[post-deploy] T2.18 FP-B hot_merge gate: invoke hot_merge, assert files merged, nothing deleted (VP12)",
+    )
+    group.add_argument(
+        "--lambda-maintenance-create-telemetry",
+        action="store_true",
+        help="[post-deploy] Decision 216: owner-login create_telemetry_tables on maintenance-smoke, single-owner report",
     )
     group.add_argument(
         "--connect-probe",

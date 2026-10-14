@@ -201,6 +201,7 @@ def test_catalog_backend_is_classified_without_echoing_the_host() -> None:
 
 def _probe_con(**answers: Any) -> RecordingCon:
     base: dict[str, Any] = {
+        "has_schema_privilege": [(False,)],
         "FROM duckdb_databases": [("meta_db",)],
         "postgres_query": [(4,)],
         "WHERE counter_name": [(1,)],
@@ -235,6 +236,24 @@ def test_telemetry_probe_before_provisioning_reports_absent_tables(monkeypatch: 
     assert out["counters"] == {"ops_tenants": None, "ops_projects": None}
     assert out["counter_rows"] == {"ops_tenants": 0, "ops_projects": 0}
     assert out["current_counts"] == {"ops_tenants": None, "ops_projects": None}
+
+
+def test_telemetry_probe_reports_can_create(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(actions.prov, "existing_tables", lambda con: set())
+    monkeypatch.setattr(actions.prov, "inspect_partitions", lambda con, existing, sem: {})
+    out = _call("telemetry_probe", _probe_con())
+    assert out["can_create"] is False and out["can_create_reason"] is None and out["catalog_sessions"] == 4
+    con = _probe_con()
+    assert any("has_schema_privilege(current_user, ''ducklake_smoke'', ''CREATE'')" in s for s in _call_sql(con))
+    assert _call("telemetry_probe", _probe_con(has_schema_privilege=[(True,)]))["can_create"] is True
+    unreadable = _call("telemetry_probe", _probe_con(has_schema_privilege=RuntimeError(f"host {SENTINEL} refused")))
+    assert unreadable["can_create"] is None and unreadable["can_create_reason"] == "RuntimeError"
+    assert SENTINEL not in json.dumps(unreadable)
+
+
+def _call_sql(con: RecordingCon) -> list[str]:
+    _call("telemetry_probe", con)
+    return con.sql
 
 
 def test_telemetry_probe_counter_row_count_other_than_one_reports_no_value(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -370,3 +370,32 @@ def test_catalog_backend_class_reaches_the_verb_without_the_host(
     resp = h.handler(_event({"action": "telemetry_probe"}))
     assert _body(resp)["backend"] == backend and seen[0][2].catalog_login == "ducklake_telemetry_writer"
     assert host not in resp["body"] or host == ""
+
+
+class _NoTables:
+    def __init__(self) -> None:
+        self.sql: list[str] = []
+
+    def execute(self, sql: str, params: Any = None) -> "_NoTables":
+        self.sql.append(sql)
+        return self
+
+    def fetchall(self) -> list[Any]:
+        return []
+
+    def fetchone(self) -> None:
+        return None
+
+
+def test_provision_absent_tables_maps_to_500_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The REAL provision_telemetry_catalog over a catalog with no tables: a typed 500, no DDL, nothing raised (rec-4294)."""
+    _patch_runtime(monkeypatch)
+    con = _NoTables()
+    monkeypatch.setattr(rt, "get_warm_connection", MagicMock(return_value=(con, {"reused": True, "reopened": False})))
+    resp = h.handler(_event({"action": "provision_telemetry"}))
+    body = _body(resp)
+    assert resp["statusCode"] == 500 and body["error_type"] == "runtime" and body["ok"] is False
+    assert "telemetry tables absent" in body["error"] and "telemetry_sessions" in body["error"]
+    assert "create_telemetry_tables" in body["error"]
+    assert not [s for s in con.sql if s.startswith(("CREATE", "ALTER", "INSERT", "DELETE"))]
+    assert con.sql[0] == "BEGIN TRANSACTION" and con.sql[-1] == "ROLLBACK"
