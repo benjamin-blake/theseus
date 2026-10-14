@@ -15,7 +15,7 @@ pytestmark = pytest.mark.unit
 
 _REPO = Path(__file__).resolve().parents[3]
 _CAP_BYTES = 6144
-_REVERSAL_IDS = ("owner-identity-changes", "ducklake-ddl-on-dml-path", "telemetry-schema-churn")
+_REVERSAL_IDS = ("owner-identity-changes", "ducklake-ddl-on-dml-path", "telemetry-schema-churn", "production-ci-ddl-mechanism")
 
 
 def _decision_number() -> int:
@@ -44,7 +44,7 @@ def test_decision_entry_and_annotations() -> None:
     decision = entry.split("**Decision:**", 1)[1].split("**Rationale:**", 1)[0]
     assert re.findall(r"^(\d)\. ", decision, re.MULTILINE) == ["1", "2", "3", "4"]
     assert re.search(r"^\*\*Coverage \(Decision 181 cl\.2\):\*\*", entry, re.MULTILINE)
-    for token in ("create_telemetry_tables", "scoped-login-blocks-verbs", "rec-4292", "rec-4297", "rec-4071"):
+    for token in ("create_telemetry_tables", "scoped-login-blocks-verbs", "rec-4292", "rec-4316", "rec-4297", "rec-4071"):
         assert token in entry, token
 
     stanza = re.search(r"```yaml reversal-conditions\n(.*?)\n```", entry, re.DOTALL)
