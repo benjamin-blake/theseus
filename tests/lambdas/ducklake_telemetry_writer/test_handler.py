@@ -13,6 +13,7 @@ import pytest
 
 from src.common import ducklake_runtime as rt
 from src.common import ducklake_telemetry_registration as reg
+from src.common import ducklake_telemetry_txn as txn
 from src.common.ducklake_scd2_schema import SchemaGateError
 from src.common.ducklake_telemetry_txn import TelemetryRequestError
 from src.common.ducklake_write_rules import RowRuleViolationError
@@ -584,3 +585,14 @@ def test_invoke_bytes_is_the_escaped_body_length(monkeypatch: pytest.MonkeyPatch
 def test_unparseable_bodies_through_handler_are_400(raw: str) -> None:
     resp = h.handler(_event(raw))
     assert resp["statusCode"] == 400 and _body(resp)["error_type"] == "bad_request"
+
+
+def test_masked_exhaustion_logs_its_retry_count(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    _patch_runtime(monkeypatch)
+    exhausted = txn.TelemetryOCCRetryExhaustedError("budget", reason="masked_commit", masked_commit_retries=2)
+    monkeypatch.setattr(h.edge, "action_append_telemetry", lambda *_a: (_ for _ in ()).throw(exhausted))
+    resp = h.handler(_event({"action": "append_telemetry"}))
+    (line,) = _c6_lines(capsys.readouterr().out)
+    assert resp["statusCode"] == 503 and _body(resp)["error_type"] == "occ_exhausted"
+    assert (line["status"], line["masked_commit_retries"], line["error_type"]) == (503, 2, "occ_exhausted")
+    assert "Could not remove" not in resp["body"] + json.dumps(line) and "OccRetryCount" not in line

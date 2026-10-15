@@ -24,7 +24,7 @@ from src.common import ducklake_runtime as rt
 from src.common.ducklake_metrics import make_metric_sink
 from src.common.ducklake_scd2_schema import SchemaGateError, load_field_semantics
 from src.common.ducklake_telemetry_registration import CallerPrincipal, clear_telemetry_caches
-from src.common.ducklake_telemetry_txn import TelemetryRequestError
+from src.common.ducklake_telemetry_txn import TelemetryOCCRetryExhaustedError, TelemetryRequestError
 from src.common.ducklake_write_rules import RowRuleViolationError
 from src.common.ducklake_writes import OCCRetryExhaustedError
 from src.lambdas.ducklake_telemetry_writer import telemetry_actions as actions
@@ -285,6 +285,8 @@ def _answer(event: dict[str, Any], context: Any, answer: _Answer) -> tuple[int, 
                 return status, {"ok": False, "error_type": error_type, **_kernel_fields(exc)}
         for cls, status, error_type in _ERROR_MAP:
             if isinstance(exc, cls):
+                if isinstance(exc, TelemetryOCCRetryExhaustedError):
+                    answer.stats.masked_commit_retries = exc.masked_commit_retries
                 return status, {
                     "ok": False,
                     "error_type": error_type,

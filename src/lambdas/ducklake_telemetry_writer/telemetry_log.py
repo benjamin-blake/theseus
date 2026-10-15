@@ -37,6 +37,7 @@ class RequestStats:
     project_id: str | None = None
     tables: dict[str, tuple[int, int]] = field(default_factory=dict)  # table -> (submitted, inserted)
     connect_reused: bool | None = None
+    masked_commit_retries: int | None = None  # a log field only: never a metric, no EMF member
     recorded: dict[str, float] = field(default_factory=dict)
 
     def sink(self, name: str, value: float) -> None:
@@ -99,6 +100,7 @@ def build_request_line(
         "occ_retries": int(recorded["OccRetryCount"]) if "OccRetryCount" in recorded else None,
         "commit_ms": int(round(commit_ms)) if commit_ms is not None else None,
         "connect_reused": stats.connect_reused,
+        "masked_commit_retries": stats.masked_commit_retries,
         "caller_role": principal.role_name if principal is not None else None,
     }
     if action in DATA_VERBS:
