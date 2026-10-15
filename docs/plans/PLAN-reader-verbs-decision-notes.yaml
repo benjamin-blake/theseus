@@ -1,0 +1,315 @@
+schema_version: 5
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: reader-verbs-decision-notes
+intent: >-
+  Keep three Decisions true once the telemetry reader verbs build lands (rec-4324): append one approved, dated Update
+  note each to Decision 199 (clause 1's window-verb reading), Decision 207 (the Coverage line's reader side is now
+  enforced code, not rec-4024's residual) and Decision 215 (clause 4's per-session reader count is six, observed not
+  restated), so the decision record matches the shipped read layer and the decision scout stops flagging window verbs.
+plan_type: IMPLEMENTATION
+verification_tier: V1
+plan_path: docs/plans/PLAN-reader-verbs-decision-notes.yaml
+phase: >-
+  T2.36 (Phase 4: telemetry re-lands on DuckLake), bookkeeping owed by PLAN-telemetry-reader-verbs (#1481, rec-4291
+  read layer) and parked by it in rec-4324. Closes no exit criterion: T2.36:c3 belongs to the reader verbs plan.
+closes_criteria: []
+scope:
+- file: docs/DECISIONS.md
+  action: Modify
+  purpose: >-
+    Three dated `> **Update (YYYY-MM-DD):**` lines, one each at the end of Decisions 199, 207 and 215 (after the
+    entry's last existing note, before its `---` separator), with the exact texts in execution step 3. Nothing else in
+    any entry changes.
+- file: config/agent/verification_registry/entries/reader-verbs-decision-notes.yaml
+  action: Create
+  purpose: Graduated presence guard for the three notes (VP step 3), check_id equal to the filename stem.
+- file: docs/decisions-index.json
+  action: Modify
+  purpose: >-
+    CONDITIONAL. A trial of the three notes on a copy of main 9df9535b left the index current (the notes sit after each
+    entry's Problem-sourced excerpt and add no typed edge), so it is expected byte-identical. Regenerate with
+    `bin/venv-python -m scripts.decisions_index --write` ONLY if VP step 5 reports drift, after finding why.
+bundled_recommendations:
+- rec-4324
+followon_recs: []
+infrastructure_dependencies: []
+acceptance_criteria:
+- >-
+  Decision 199's span ends with the approved clause-1 note: it names operator ruling reader-k2 (a) of 2026-10-04, keeps
+  the per-derivation bound (each reading only its own session's calendar-day partition), puts the cap in the reader
+  registry without a day count, points to telemetry_sessions.yaml WINDOW VERBS, and says later clause-1 changes need a
+  numbered Decision.
+- >-
+  Decision 207's span ends with the approved Coverage note naming src/common/ducklake_event_reads.py as the enforcing
+  code, the test node that guards it, the reader verbs build PR, rec-4024 no longer owning the reader side and rec-4025
+  unchanged.
+- >-
+  Decision 215's span ends with the approved clause-4 note: five reader invocations per session became six with the
+  creds-gated telemetry_health_count gauge, recs_read stays two, a 1.2x rise is short of reader-invocations-doubled,
+  and the count is observed through log_invocation and not annotated again.
+- >-
+  The diff against origin/main adds exactly three non-blank lines to docs/DECISIONS.md, each opening with
+  `> **Update (`, and removes none (Decision 177 append-only).
+- docs/decisions-index.json is current; no numbered Decision is added; no code, contract, roadmap or Lambda file changes.
+- >-
+  rec-4324's acceptance holds on the merge commit and rec-4324 is closed by the `Resolves: rec-4324` trailer.
+verification_plan:
+- step: 1
+  phase: pre-deploy
+  action: >-
+    Merge precondition, run before opening the PR for review and again before merging: the reader verbs build has
+    merged to main, so the module, gauge and test node the notes name exist.
+  command: >-
+    git fetch -q origin main && git cat-file -e origin/main:src/common/ducklake_event_reads.py && git cat-file -e
+    origin/main:scripts/preflight/telemetry_health.py && git grep -q telemetry_health_count origin/main --
+    scripts/preflight/telemetry_health.py && echo BUILD_ON_MAIN
+  expected: Prints BUILD_ON_MAIN.
+  fix_if: >-
+    Any part missing means the reader verbs build has not merged: stop and wait; never land the notes ahead of it. If it
+    merged with a different module path, gauge or verb name, the approved text no longer describes it: stop and send
+    the difference to the coordinator (send_message), which routes it to the planning thread for Benjamin's word.
+  hermetic: false
+  graduation: not-applicable
+- step: 2
+  phase: pre-deploy
+  action: >-
+    The reader verbs build's post-merge evidence: its deploy-ducklake-lambdas run on the merge commit concluded success,
+    and its step 15 (live telemetry gauge and window reads) passed. Record the build PR number for the notes' #NNNN and
+    the test node that guards the conflict report.
+  command: >-
+    echo 'Via MCP: mcp__github__list_pull_requests(owner="benjamin-blake", repo="theseus", state="closed") to find the
+    merged "feat(telemetry-reader-verbs)" PR; mcp__github__actions_list on deploy-ducklake-lambdas.yml for its merge
+    commit (conclusion success); read the build report (PR body or its thread) for the step 15 PASS line; confirm the
+    node with: git grep -n "def test_conflicted_keys_are_reported_never_resolved" origin/main --
+    tests/common/test_ducklake_event_read_dedupe.py'
+  expected: >-
+    The build PR is merged, its deploy run concluded success, step 15 passed, and the test node exists under that name
+    (or its renamed name is recorded for the 207 note).
+  fix_if: >-
+    A red deploy or a failed step 15 means the six-call and enforced-reader claims are not yet true: wait for the build
+    thread's fix. A renamed test node is the one permitted substitution in the 207 text; any other change goes to the
+    coordinator.
+  hermetic: false
+  graduation: not-applicable
+- step: 3
+  phase: pre-deploy
+  action: >-
+    Each note sits inside its own entry's span (the awk-equivalent slice from the entry's heading to its `---`
+    separator), so a note landing in the wrong entry or after the separator fails.
+  command: >-
+    bin/venv-python -c "t=open('docs/DECISIONS.md',encoding='utf-8').read();sp=lambda n:(lambda
+    s:s[:s.index(chr(10)+'---'+chr(10))])(t[t.index('## Decision %d:'%n):]);c={199:['operator ruling reader-k2 (a),
+    2026-10-04','each reading only its own session'],207:['ducklake_event_reads.py reports a differing pair as
+    conflicted','rec-4024 no longer owns it'],215:['five reader invocations per session became
+    six','telemetry_health_count']};m=[(n,k) for n in c for k in c[n] if k not in sp(n)];assert not m,m"
+  expected: >-
+    Exit 0. Measured at authoring time: exit 1 (AssertionError listing all six phrases) on main 9df9535b, exit 0 on a
+    scratch copy of main carrying the three approved notes.
+  fix_if: >-
+    An AssertionError lists the (decision, phrase) pairs missing from their span: the note is absent, landed in another
+    entry or after the separator, or its text was not copied verbatim. Fix placement or restore the approved text;
+    never widen the slice or drop a phrase.
+  hermetic: true
+  expected_literals: []
+  graduation: graduate
+  graduation_check_id: reader-verbs-decision-notes
+- step: 4
+  phase: pre-deploy
+  action: >-
+    Append-only: the diff against origin/main adds exactly three non-blank lines to docs/DECISIONS.md, each opening
+    with the pinned `> **Update (` spelling, and removes none (Decision 177).
+  command: >-
+    bin/venv-python -c "import subprocess as s;d=s.run(['git','diff','--unified=0','origin/main','--','docs/DECISIONS.md'],capture_output=True,text=True,check=True).stdout.splitlines();rm=[l
+    for l in d if l.startswith('-') and not l.startswith('--- a/')];ad=[l[1:] for l in d if l.startswith('+') and not
+    l.startswith('+++ b/') and l[1:].strip()];assert not rm,rm;assert len(ad)==3,ad;assert all(l.startswith('>
+    **Update (') for l in ad),ad;print('append-only:',len(ad),'notes')"
+  expected: Prints append-only with 3 notes and exits 0.
+  fix_if: >-
+    A removed line means an existing line was edited or a separator moved: restore it. A count other than three means
+    a note was wrapped across lines or an extra line was added: each note is one physical line.
+  hermetic: true
+  expected_literals:
+  - 'append-only: 3 notes'
+  graduation: waive
+  graduation_waiver_reason: >-
+    PR-relative (diffs against origin/main), so it has no subject once the PR merges; the standing presence of the
+    notes is step 3's graduated guard.
+- step: 5
+  phase: pre-deploy
+  action: >-
+    The decisions index stays current without regeneration, and the entry spans land where the trial measured them.
+  command: >-
+    bin/venv-python -m scripts.decisions_index --check && bin/venv-python -c "import re;t=open('docs/DECISIONS.md',encoding='utf-8').read();h=[(m.start(),int(m.group(1)))
+    for m in re.finditer(r'^## Decision (\d+):',t,re.M)];z={n:len(t[s:(h[i+1][0] if i+1<len(h) else len(t))].encode())
+    for i,(s,n) in enumerate(h)};print('spans',{n:z[n] for n in (199,207,215)})"
+  expected: >-
+    'Decisions index is current.' then spans near 199 7363, 207 6122, 215 5319 (trial on 9df9535b; a renamed test node
+    or a five-digit PR number moves 207 by a few bytes).
+  fix_if: >-
+    Index drift means a note perturbed a projected field: find which before regenerating with --write. A 207 span over
+    6144 only because of a longer renamed test node emits a non-blocking WARN: record it in the report and never trim
+    approved wording.
+  hermetic: true
+  expected_literals:
+  - Decisions index is current.
+  graduation: waive
+  graduation_waiver_reason: >-
+    The index leg duplicates validate_decisions_index_freshness (already in --pre and full); the span print is a
+    one-time measurement whose standing counterpart is validate_decisions_size's WARN-only accretion signal.
+- step: 6
+  phase: pre-deploy
+  action: rec-4324's own acceptance command passes on the working tree, so the Resolves trailer closes it.
+  command: grep -q 'reader-k2' docs/DECISIONS.md && grep -c 'ducklake_event_reads' docs/DECISIONS.md
+  expected: Exit 0, printing a count of at least 1.
+  fix_if: Exit 1 means a note is missing; step 3 names which.
+  hermetic: true
+  expected_literals: []
+  graduation: waive
+  graduation_waiver_reason: >-
+    A whole-file restatement of rec-4324's acceptance oracle, run once for the trailer close; step 3 is the
+    span-scoped standing guard over the same notes.
+- step: 7
+  phase: pre-deploy
+  action: >-
+    Full presubmit tier, per handoff_policy: validate_decisions_size (expect only the Decision 199 amendment-delta WARN),
+    validate_decision_currency, validate_decisions_index_freshness, validate_decision_entry_conformance,
+    validate_verification_registry (the VF-06 differential admission of the new row) and
+    validate_graduation_completeness.
+  command: bin/venv-python -m scripts.validate
+  expected: Exit 0.
+  fix_if: >-
+    A VF-06 "not admitted" means the registry row's command does not discriminate against origin/main: it must be the
+    span-scoped command of step 3, verbatim.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: >-
+    scripts.validate is the aggregate presubmit entrypoint; graduating it would recurse validation into its own
+    registry, which vp-red-before.yaml's recursion refusal declines.
+- step: 8
+  phase: post-deploy
+  action: >-
+    After the squash merge: rec-autoclose ran on the merge commit (it closes Resolves trailers and backfills
+    ops_decisions when docs/DECISIONS.md changes, Decision 84) and rec-4324 reads closed.
+  command: mcp__ducklake-reads__recs_by_ids ids=rec-4324
+  expected: >-
+    rec-4324 status closed; the rec-autoclose run on the merge commit concluded success (mcp__github__actions_list on
+    rec-autoclose.yml).
+  fix_if: >-
+    Still open with a green run: check the squash body carries `Resolves: rec-4324` and the acceptance held at the merge
+    commit (Decision 201); report it rather than closing by hand. A red rec-autoclose run is its own failure to report.
+  hermetic: false
+test_obligations:
+- source: docs/DECISIONS.md
+  behavior: Decisions 199, 207 and 215 each carry their approved dated note inside their own span.
+  verification_step: 3
+  command: >-
+    bin/venv-python -c "t=open('docs/DECISIONS.md',encoding='utf-8').read();sp=lambda n:(lambda
+    s:s[:s.index(chr(10)+'---'+chr(10))])(t[t.index('## Decision %d:'%n):]);c={199:['operator ruling reader-k2 (a),
+    2026-10-04','each reading only its own session'],207:['ducklake_event_reads.py reports a differing pair as
+    conflicted','rec-4024 no longer owns it'],215:['five reader invocations per session became
+    six','telemetry_health_count']};m=[(n,k) for n in c for k in c[n] if k not in sp(n)];assert not m,m"
+  red_green_expectation: >-
+    Red before: measured at authoring time, exit 1 with an AssertionError on main 9df9535b (assertion_failed, a
+    legitimate red-before outcome). Green after the three notes land.
+- source: config/agent/verification_registry/entries/reader-verbs-decision-notes.yaml
+  behavior: The graduated row names step 3's span-scoped command so the VF-06 differential gate can prove it discriminates.
+  verification_step: 7
+  command: bin/venv-python -m scripts.validate
+  waiver_reason: >-
+    This file is a verification record, not behavior-capable source. validate_verification_registry already enforces
+    its schema, check_id uniqueness, filename placement and the VF-06 differential leg; a separate test would restate it.
+- source: docs/decisions-index.json
+  behavior: The committed index stays current; the notes add no typed edge.
+  verification_step: 5
+  command: bin/venv-python -m scripts.decisions_index --check
+  waiver_reason: >-
+    A generated artefact with a registered freshness enforcer (validate_decisions_index_freshness, --pre and full);
+    the plan asserts the property at step 5 rather than adding a duplicate guard.
+constraints:
+- >-
+  The three texts in execution step 3 were approved verbatim by Benjamin on 2026-10-15
+  (cmsg_012XgaFy8VaDQbxP5D8nC9587zPkCFdx5BwFoNH9FbvcLU, "yes to all of your recommendations, write the plan", on
+  /mnt/project-files/rec-4324/step6b-presentation.md). Only the landing date, #NNNN (the reader verbs build PR number)
+  and, if the build renamed it, the 207 test node may differ. Any other wording change, or a build that no longer
+  matches a note, stops the work and goes to the coordinator (send_message) for Benjamin's word: Decision text is on
+  the always-ask list.
+- >-
+  Merge ordering: open the PR only after VP steps 1 and 2 pass (the reader verbs build merged, its deploy green, its
+  step 15 passed); the build itself waits on rec-4320's fix-forward. With the texts verbatim, merge under the standing
+  rule (code review PROCEED, green CI) with no further ask; the approval above covers this merge.
+- >-
+  Append-only (Decision 177, decision-entry.yaml amendment_forms): each note is ONE physical line using the pinned
+  `> **Update (` opener, preceded by one blank line, placed after the entry's last existing note and before its `---`
+  separator. Edit no existing line, metadata block, Coverage line, clause, Related list or earlier note.
+- >-
+  No new numbered Decision (significance.routing_rule; rec-3016 amendment_forms alternative). No contract, roadmap,
+  code, test or Lambda file changes; T2.52 and CD.52's T2.52 half are untouched; REPORT-w3-feedback-loop-staging.md
+  is not edited (feedback-loop gate).
+- >-
+  The squash commit body carries `Resolves: rec-4324` (Decision 201; rec-4324's acceptance must hold at that commit).
+- ASCII only, plain hyphens, no em dashes (AGENTS.md); On The Loop, not Theseus, in any new prose (PR body included).
+- No rescue agents or workaround loops (Decision 55).
+context:
+- >-
+  Decision-scout: FLAGS_FOUND. CITE 199, 207, 215, 177, 151, 181. CONTRADICT 151 NOTE (annotate, never negate: keep the
+  per-derivation single-partition bound verbatim; the ~3-clarification cap reads per clause; expect the 199 accretion
+  WARN) and SPIRIT 86 NOTE (no day count in the 199 text): both resolved in the approved text. RELATED 84, 88, 93, 81,
+  167, 150, 178, 201, 179, 160. Decisions triaged: 170 of 170. Roadmap items intersected: 3; CONFLICT: 0; RELATED: 3.
+- 'gates: decision-scout=FLAGS_FOUND (2 notes, resolved); plan-critique=pending'
+- >-
+  Direction (Benjamin, cmsg_012XgaFy8VaDQbxP5D8nC9587zPkCFdx5BwFoNH9FbvcLU): add the 199 note, which revisits his
+  2026-10-05 W3-1 choice (contract note only, PLAN-telemetry-lifecycle-friction-amendment) because the decision scout
+  reads Decisions, not contracts, and flagged clause 1 on the reader verbs plan; land after the reader verbs build;
+  use the terminal 215 form. Evidence: /mnt/project-files/rec-4324/ (step6b-presentation.md, ADVICE.md from the Fable
+  consult, SCOUT.md, fable-brief/BRIEF.md).
+- 'fork: Decision 199 reading as an Update note, a numbered Decision, or the contract note alone | chosen: Update note, last clause-1 note | class: asked | precedent: Benjamin 2026-10-15 | precedent_kind: answered-fork | reversible: yes | persisted: docs/DECISIONS.md Decision 199'
+- 'fork: land before, inside, or after the reader verbs build | chosen: separate PR after its merge and step 15 | class: asked | precedent: Benjamin 2026-10-15 | precedent_kind: answered-fork | reversible: yes | persisted: this plan constraints'
+- 'fork: Decision 215 plain correction or terminal observed-count form | chosen: terminal form | class: asked | precedent: Benjamin 2026-10-15 | precedent_kind: answered-fork | reversible: yes | persisted: docs/DECISIONS.md Decision 215'
+- 'fork: note spelling and placement | chosen: pinned Update opener, one line after the last note | class: consistency-only | precedent: decision-entry.yaml amendment_forms | precedent_kind: contract | reversible: yes | persisted: docs/DECISIONS.md'
+- 'fork: standing guard for the notes | chosen: one graduated span-scoped row | class: consistency-only | precedent: decision-215-residuals-repointed, decision-192-noncurrent-lifecycle-amendment registry rows | precedent_kind: contract | reversible: yes | persisted: config/agent/verification_registry/entries/reader-verbs-decision-notes.yaml'
+- >-
+  Trial on a scratch copy of main 9df9535b with the three notes: decisions index current; spans 199 7,363 (amendment-
+  delta WARN, already over the 6,144 norm; standing-pressure count unchanged at 30), 207 6,122, 215 5,319;
+  validate_decision_entry_conformance, validate_decision_currency and validate_supersession_annotations pass.
+- >-
+  ci-rca: rec-4320 (Critical, open since 2026-10-14T22:16Z, src/common/ducklake_telemetry_txn.py). Deferral rationale:
+  this docs-only plan touches none of its files or failure category, and its PR merges only after the reader verbs
+  build, which itself waits for rec-4320's fix-forward.
+- >-
+  Tier Item Freshness Gate skipped: soft-warn category ad_hoc_rec (rec-4324), no exit criterion claimed.
+pre_implementation_checklist:
+- Branch confirmed not on main
+- docs/PROJECT_CONTEXT.md read
+- 'Only the plan-cited decision sections: Decisions 199, 207, 215 (full entries) and 177'
+- VP steps 1 and 2 pass (the reader verbs build merged, deploy green, step 15 passed)
+- The three approved texts in execution step 3 copied exactly
+execution_steps:
+- >-
+  Run VP steps 1 and 2. If either fails, stop: the notes describe a build that is not yet on main. Record the reader
+  verbs build PR number (#NNNN) and confirm the 207 test node name.
+- >-
+  In docs/DECISIONS.md, for each of Decisions 199, 207 and 215, insert one blank line and then the note below as a
+  single physical line, immediately after the entry's last existing note line and before the blank line and `---`
+  separator that end the entry. Replace YYYY-MM-DD with the landing date and #NNNN with the build PR number.
+- |-
+  The approved texts (verbatim):
+  Decision 199: > **Update (YYYY-MM-DD):** clause 1 bounds derivations, not verbs: a window verb (sessions_window; operator ruling reader-k2 (a), 2026-10-04) is a bounded window of per-session derivations, each reading only its own session's calendar-day partition, capped per verb in the reader registry. Detail: telemetry_sessions.yaml WINDOW VERBS. Last clause-1 note; later ones need a numbered Decision.
+  Decision 207: > **Update (YYYY-MM-DD):** the Coverage line's reader side is now enforced, not a residual: src/common/ducklake_event_reads.py reports a differing pair as conflicted_grain_keys and derivation_conflicted, never nulling, dropping or erroring the derivation, guarded by tests/common/test_ducklake_event_read_dedupe.py::test_conflicted_keys_are_reported_never_resolved (PLAN-telemetry-reader-verbs, #NNNN). rec-4024 no longer owns it; rec-4025 is unchanged.
+  Decision 215: > **Update (YYYY-MM-DD):** clause 4's five reader invocations per session became six when PLAN-telemetry-reader-verbs (#NNNN) added preflight's creds-gated telemetry_health_count gauge; recs_read stays two calls, and a 1.2x rise is short of reader-invocations-doubled. The count is observed through log_invocation, not restated here: later changes to it are not annotated.
+- >-
+  Create config/agent/verification_registry/entries/reader-verbs-decision-notes.yaml: check_id
+  reader-verbs-decision-notes, primitive_slot command_exit_zero, guard_target docs/DECISIONS.md, guard_symbol null,
+  check_spec.command [bin/venv-python, -c, <step 3's Python program verbatim>], plan_slug reader-verbs-decision-notes,
+  graduated_at the landing date, graduated_by implement-agent (shape: decision-215-residuals-repointed.yaml).
+- >-
+  Execute the Verification Plan: steps 3-6, then step 7 (full tier). Loop until each passes; regenerate the index only
+  on step 5 drift. On an unrecoverable failure stop and RCA (Decision 55).
+- >-
+  Commit, push, open the PR (On The Loop in prose), run code review; on PROCEED and green CI squash-merge with
+  `Resolves: rec-4324` in the body. Then run step 8.
+- 'Report: the three notes as landed, the build PR they cite, VP results, the size WARN line, rec-4324 status.'
+rollback: >-
+  Revert the squash commit; the notes and the registry row leave together. rec-4324 reopens by update_rec if the revert
+  lands after rec-autoclose closed it.
