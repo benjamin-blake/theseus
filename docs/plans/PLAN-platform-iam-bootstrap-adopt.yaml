@@ -285,7 +285,7 @@ acceptance_criteria:
   - While both roots declare the seven addresses, the two copies agree on role arguments, trust shape, per-Sid Effect/Action/Resource/Condition and the effective tag set
   - Before merge, rec-4044 is closed and a terraform/bootstrap plan at the pre-merge origin/main exits 0
   - The admin adoption plan reads exactly seven imports and zero add, change or destroy across the whole bootstrap root (the rewired attachment included); the trust documents show no diff and the ExternalIds render as sensitive
-  - After the adoption apply, a bootstrap plan exits 0 and a before/after snapshot of both roles' complete IAM surface (role documents, inline and attached policy lists, the five inline documents, and the default-version document of every attached customer-managed policy) is identical, and all platform-security-* alarms stay OK
+  - After the adoption apply, a bootstrap plan exits 0 and a before/after snapshot of both roles' complete IAM surface (role documents, inline and attached policy lists, every live inline document, and the default-version document of every attached managed policy) is identical, and all platform-security-* alarms stay OK
   - After the adoption apply, an ADMIN terraform/personal plan exits 0 and the personal convergence record is green with no pending marker; no terraform/personal apply is performed
   - The IAM guards (fence test, observability read coverage, four registry shards -- platformdev-state-convergence-denies-intact re-authored to assert the exact four-Sid DenyState set) read the bootstrap copy and pass; the four modified shards and the two new shards are admitted by run_differential
   - docs/contracts/deploy-paths.yaml's admin procedure carries the self-access isolation step before POST-APPLY, and terraform/bootstrap/CLAUDE.md stays within its prose budget
@@ -298,11 +298,12 @@ verification_plan:
       all tests pass, including the red cases (a dropped import block, a missing prevent_destroy, a
       missing IAMFull or self-access precondition, an ExternalId variable that is not sensitive or has
       a default, a literal-ARN boundary in place of the resource reference, a boundary on
-      PlatformAdmin, a `-*` secret ARN, a drifted bucket/table/function/prefix/secret/user-name constant)
-      proving each assertion can fail; red before this plan is implemented (the module does not
-      exist), green after
+      PlatformAdmin, a wildcard-suffix secret ARN, the attachment's role reverted to the literal, a drifted
+      bucket/table/function/prefix/secret/user-name constant) proving each assertion can fail; red before
+      this plan is implemented (the module does not exist), green after
     fix_if: an address is missing, an import id is malformed, a protection is absent, or a constant diverges from its terraform/personal source
-    hermetic: false
+    hermetic: true
+    expected_literals: []
     graduation: graduate
     graduation_check_id: platform-iam-bootstrap-owns-roles-and-policies
   - step: 2
@@ -348,7 +349,8 @@ verification_plan:
     command: bin/venv-python -m pytest "tests/test_deploy_paths_admin_procedure.py::test_admin_procedure_has_self_access_isolation_step" -q
     expected: the new test passes -- a step names BootstrapStateProvisioning and IAMFull, forbids bundling them with any other change, and sits before POST-APPLY; red before (the test does not exist), green after
     fix_if: the step is missing, names only one of the two statements, or is ordered after POST-APPLY
-    hermetic: false
+    hermetic: true
+    expected_literals: []
     graduation: graduate
     graduation_check_id: deploy-paths-admin-self-access-isolation-step
   - step: 5
@@ -436,7 +438,7 @@ verification_plan:
     phase: pre-deploy
     action: PRE-MERGE GATE (ADMIN) -- baseline converged at the pre-merge origin/main, and a speculative (plan-only) adoption at the PR head that will be merged is exactly seven zero-change imports
     command: |-
-      B="${TMPDIR:-/tmp}/bootstrap-baseline" && S="${TMPDIR:-/tmp}/bootstrap-speculative" && M="${TMPDIR:-/tmp}/platform-iam-migration" && mkdir -p "$M" && test -n "$PR_HEAD_SHA" && git fetch origin main "$PR_HEAD_SHA" && git worktree add --detach "$B" origin/main && cp terraform/bootstrap/terraform.bootstrap.tfvars "$B/terraform/bootstrap/" && terraform -chdir="$B/terraform/bootstrap" init -input=false && terraform -chdir="$B/terraform/bootstrap" plan -input=false -lock=false -var-file=terraform.bootstrap.tfvars -detailed-exitcode > "$M/baseline.txt"; rc=$?; git worktree remove --force "$B"; test "$rc" -eq 0 && echo "BOOTSTRAP BASELINE CONVERGED at origin/main" && git worktree add --detach "$S" "$PR_HEAD_SHA" && cp terraform/bootstrap/terraform.bootstrap.tfvars "$S/terraform/bootstrap/" && terraform -chdir="$S/terraform/bootstrap" init -input=false && terraform -chdir="$S/terraform/bootstrap" plan -input=false -lock=false -var-file=terraform.bootstrap.tfvars -out="$M/speculative.tfplan" > "$M/speculative.txt" && terraform -chdir="$S/terraform/bootstrap" show -json "$M/speculative.tfplan" > "$M/speculative.json"; rc=$?; git worktree remove --force "$S"; test "$rc" -eq 0 && bin/venv-python -c "import json,os,sys; p=json.load(open(os.path.join(os.environ.get('TMPDIR','/tmp'),'platform-iam-migration','speculative.json'))); rc=p.get('resource_changes',[]); want={'aws_iam_role.platform_dev','aws_iam_role.platform_admin','aws_iam_role_policy.platform_dev_runtime','aws_iam_role_policy.platform_admin_ops','aws_iam_role_policy.platform_admin_datalake','aws_iam_role_policy.platform_admin_bootstrap_state','aws_iam_role_policy.platform_admin_ducklake_breakglass'}; imp={r['address'] for r in rc if r['change'].get('importing')}; moving=[(r['address'],r['change']['actions']) for r in rc if r['change']['actions'] not in (['no-op'],['read'])]; exposed=[r['address'] for r in rc if r['address'] in ('aws_iam_role.platform_dev','aws_iam_role.platform_admin') and (r['change'].get('after_sensitive') or {}).get('assume_role_policy') is not True]; sys.exit(f'STOP imports={sorted(imp)} changes={moving} trust_not_sensitive={exposed}') if imp!=want or moving or exposed else print('SPECULATIVE ADOPTION OK -- 7 zero-change imports at the PR head; both trust documents sensitive')"; rc=$?; rm -f "$M/speculative.tfplan" "$M/speculative.json"; test "$rc" -eq 0
+      B="${TMPDIR:-/tmp}/bootstrap-baseline" && S="${TMPDIR:-/tmp}/bootstrap-speculative" && M="${TMPDIR:-/tmp}/platform-iam-migration" && mkdir -p "$M" && test -n "$PR_HEAD_SHA" && git fetch origin main "$PR_HEAD_SHA" && git worktree add --detach "$B" origin/main && cp terraform/bootstrap/terraform.bootstrap.tfvars "$B/terraform/bootstrap/" && terraform -chdir="$B/terraform/bootstrap" init -input=false && terraform -chdir="$B/terraform/bootstrap" plan -input=false -lock=false -var-file=terraform.bootstrap.tfvars -detailed-exitcode > "$M/baseline.txt"; rc=$?; git worktree remove --force "$B"; test "$rc" -eq 0 && echo "BOOTSTRAP BASELINE CONVERGED at origin/main" && git worktree add --detach "$S" "$PR_HEAD_SHA" && cp terraform/bootstrap/terraform.bootstrap.tfvars "$S/terraform/bootstrap/" && terraform -chdir="$S/terraform/bootstrap" init -input=false && terraform -chdir="$S/terraform/bootstrap" plan -input=false -lock=false -var-file=terraform.bootstrap.tfvars -out="$M/speculative.tfplan" > "$M/speculative.txt" && terraform -chdir="$S/terraform/bootstrap" show -json "$M/speculative.tfplan" > "$M/speculative.json"; rc=$?; git worktree remove --force "$S"; test "$rc" -eq 0 && bin/venv-python -c "import json,os,sys; p=json.load(open(os.path.join(os.environ.get('TMPDIR','/tmp'),'platform-iam-migration','speculative.json'))); rc=p.get('resource_changes',[]); want={'aws_iam_role.platform_dev','aws_iam_role.platform_admin','aws_iam_role_policy.platform_dev_runtime','aws_iam_role_policy.platform_admin_ops','aws_iam_role_policy.platform_admin_datalake','aws_iam_role_policy.platform_admin_bootstrap_state','aws_iam_role_policy.platform_admin_ducklake_breakglass'}; imp={r['address'] for r in rc if r['change'].get('importing')}; moving=[(r['address'],r['change']['actions']) for r in rc if r['change']['actions'] not in (['no-op'],['read'])]; exposed=[r['address'] for r in rc if r['address'] in ('aws_iam_role.platform_dev','aws_iam_role.platform_admin') and (r['change'].get('after_sensitive') or {}).get('assume_role_policy') is not True]; sys.exit(f'STOP imports={sorted(imp)} changes={moving} trust_not_sensitive={exposed}') if imp!=want or moving or exposed else print('SPECULATIVE ADOPTION OK -- 7 zero-change imports at the PR head; both trust documents sensitive')"; rc=$?; rm -f "$M/speculative.tfplan" "$M/speculative.json"; if test "$rc" -eq 0; then rm -f "$M/baseline.txt" "$M/speculative.txt"; fi; test "$rc" -eq 0
     expected: >-
       both legs pass -- the baseline plan at the pre-merge origin/main exits 0 (undeclared-variable
       warnings for the three new tfvars keys are expected there), and the plan-only adoption at
@@ -445,9 +447,10 @@ verification_plan:
       (including an Owner-tag split between the two roots) is found BEFORE the import blocks go live
       on main. Nothing is applied; -lock=false keeps both reads off the state lock. Neither plan's
       rendering reaches the terminal (it carries account-bearing ARNs): the text goes to
-      baseline.txt / speculative.txt in scratch for fix_if triage, and the plaintext-bearing
-      speculative.tfplan / speculative.json are deleted at the end of this step whatever the
-      outcome; step 20 removes the rest.
+      baseline.txt / speculative.txt in scratch, the plaintext-bearing speculative.tfplan /
+      speculative.json are deleted at the end of this step whatever the outcome, and the two text
+      files are deleted on a pass and kept only on a failure for fix_if triage (step 20 removes them
+      then) -- the pre_merge_live_plan rule's "plan files are deleted in the same step".
     fix_if: >-
       Baseline exit 2 only on Owner/tags_all of existing bootstrap resources (read baseline.txt in
       the ADMIN session) -- step 8's owner_email differs from the value bootstrap was last applied
@@ -485,14 +488,15 @@ verification_plan:
     fix_if: set MERGE_SHA to the squash-merge SHA and check out origin/main
   - step: 13
     phase: post-deploy
-    action: BEFORE snapshot of both roles' complete IAM surface (all six permission sources across the two roles included), kept in scratch only
+    action: BEFORE snapshot of both roles' complete IAM surface (every live inline policy, including PlatformDev's uncodified AgentPlatformRuntime, and every attached managed policy), kept in scratch only
     command: |-
-      D="${TMPDIR:-/tmp}/platform-iam-migration/before" && mkdir -p "$D" && for r in PlatformDev PlatformAdmin; do aws iam get-role --role-name "$r" --profile agent_platform_admin --output json > "$D/role-$r.json" && aws iam list-role-policies --role-name "$r" --profile agent_platform_admin --output json > "$D/inline-$r.json" && aws iam list-attached-role-policies --role-name "$r" --profile agent_platform_admin --output json > "$D/attached-$r.json" && for a in $(aws iam list-attached-role-policies --role-name "$r" --profile agent_platform_admin --query 'AttachedPolicies[].PolicyArn' --output text); do v=$(aws iam get-policy --policy-arn "$a" --profile agent_platform_admin --query Policy.DefaultVersionId --output text) && aws iam get-policy-version --policy-arn "$a" --version-id "$v" --profile agent_platform_admin --output json > "$D/managed-$r-${a##*/}.json" || exit 1; done; done && for p in PlatformDev:DailyOps PlatformAdmin:AdminOps PlatformAdmin:PlatformDataLakeProvisioning PlatformAdmin:BootstrapStateProvisioning PlatformAdmin:DuckLakeBreakGlass; do aws iam get-role-policy --role-name "${p%%:*}" --policy-name "${p##*:}" --profile agent_platform_admin --output json > "$D/policy-${p%%:*}-${p##*:}.json"; done && test -s "$D/managed-PlatformAdmin-platform-security-detector-admin.json" && test "$(ls "$D" | wc -l)" -ge 12 && echo "BEFORE snapshot: $(ls "$D" | wc -l) documents captured"
+      D="${TMPDIR:-/tmp}/platform-iam-migration/before" && mkdir -p "$D" && for r in PlatformDev PlatformAdmin; do aws iam get-role --role-name "$r" --profile agent_platform_admin --output json > "$D/role-$r.json" && aws iam list-role-policies --role-name "$r" --profile agent_platform_admin --output json > "$D/inline-$r.json" && aws iam list-attached-role-policies --role-name "$r" --profile agent_platform_admin --output json > "$D/attached-$r.json" && for a in $(aws iam list-attached-role-policies --role-name "$r" --profile agent_platform_admin --query 'AttachedPolicies[].PolicyArn' --output text); do v=$(aws iam get-policy --policy-arn "$a" --profile agent_platform_admin --query Policy.DefaultVersionId --output text) && aws iam get-policy-version --policy-arn "$a" --version-id "$v" --profile agent_platform_admin --output json > "$D/managed-$r-${a##*/}.json" || exit 1; done; done && for r in PlatformDev PlatformAdmin; do for p in $(aws iam list-role-policies --role-name "$r" --profile agent_platform_admin --query PolicyNames --output text); do aws iam get-role-policy --role-name "$r" --policy-name "$p" --profile agent_platform_admin --output json > "$D/policy-$r-$p.json" || exit 1; done; done && for f in policy-PlatformDev-DailyOps policy-PlatformAdmin-AdminOps policy-PlatformAdmin-PlatformDataLakeProvisioning policy-PlatformAdmin-BootstrapStateProvisioning policy-PlatformAdmin-DuckLakeBreakGlass managed-PlatformAdmin-platform-security-detector-admin; do test -s "$D/$f.json" || exit 1; done && test "$(ls "$D" | wc -l)" -ge 13 && echo "BEFORE snapshot: $(ls "$D" | wc -l) documents captured"
     expected: >-
-      at least 12 documents captured (2 roles, 2 inline lists, 2 attached lists, 5 inline policies,
-      and the default-version document of every attached managed policy -- at least
-      platform-security-detector-admin, Decision 202's managed-policy source on PlatformAdmin); nothing printed but
-      the count, because every document carries the account id
+      at least 13 documents captured (2 roles, 2 inline lists, 2 attached lists, every live inline policy
+      document -- the five codified ones plus PlatformDev's out-of-band AgentPlatformRuntime today -- and the
+      default-version document of every attached managed policy, at least platform-security-detector-admin,
+      Decision 202's managed-policy source on PlatformAdmin), with the six codified sources asserted present;
+      nothing printed but the count, because every document carries the account id
     fix_if: an AccessDenied or NoSuchEntity -- stop and reconcile; the snapshot is the evidence the adoption changed nothing
   - step: 14
     phase: post-deploy
@@ -529,9 +533,9 @@ verification_plan:
     fix_if: exit 2 means config and live disagree after the import -- stop and reconcile before the sibling plan merges
   - step: 17
     phase: post-deploy
-    action: AFTER snapshot is identical to the BEFORE snapshot -- the adoption changed no permission from any of the six sources
+    action: AFTER snapshot is identical to the BEFORE snapshot -- the adoption changed no permission on either role, codified or not
     command: |-
-      A="${TMPDIR:-/tmp}/platform-iam-migration/after" && mkdir -p "$A" && for r in PlatformDev PlatformAdmin; do aws iam get-role --role-name "$r" --profile agent_platform_admin --output json > "$A/role-$r.json" && aws iam list-role-policies --role-name "$r" --profile agent_platform_admin --output json > "$A/inline-$r.json" && aws iam list-attached-role-policies --role-name "$r" --profile agent_platform_admin --output json > "$A/attached-$r.json" && for a in $(aws iam list-attached-role-policies --role-name "$r" --profile agent_platform_admin --query 'AttachedPolicies[].PolicyArn' --output text); do v=$(aws iam get-policy --policy-arn "$a" --profile agent_platform_admin --query Policy.DefaultVersionId --output text) && aws iam get-policy-version --policy-arn "$a" --version-id "$v" --profile agent_platform_admin --output json > "$A/managed-$r-${a##*/}.json" || exit 1; done; done && for p in PlatformDev:DailyOps PlatformAdmin:AdminOps PlatformAdmin:PlatformDataLakeProvisioning PlatformAdmin:BootstrapStateProvisioning PlatformAdmin:DuckLakeBreakGlass; do aws iam get-role-policy --role-name "${p%%:*}" --policy-name "${p##*:}" --profile agent_platform_admin --output json > "$A/policy-${p%%:*}-${p##*:}.json"; done && bin/venv-python -c "import json,os,sys; b=os.path.join(os.environ.get('TMPDIR','/tmp'),'platform-iam-migration'); norm=lambda d: (d.get('Role',{}).pop('RoleLastUsed',None), d)[1]; nb=sorted(os.listdir(os.path.join(b,'before'))); na=sorted(os.listdir(os.path.join(b,'after'))); sys.exit('DOCUMENT SET CHANGED '+repr(sorted(set(nb)^set(na)))) if nb!=na else None; diff=[n for n in nb if norm(json.load(open(os.path.join(b,'before',n))))!=norm(json.load(open(os.path.join(b,'after',n))))]; sys.exit('CHANGED '+repr(diff)) if diff or len(nb)<12 else print('SNAPSHOTS IDENTICAL -- '+str(len(nb))+' documents, no permission changed')"
+      A="${TMPDIR:-/tmp}/platform-iam-migration/after" && mkdir -p "$A" && for r in PlatformDev PlatformAdmin; do aws iam get-role --role-name "$r" --profile agent_platform_admin --output json > "$A/role-$r.json" && aws iam list-role-policies --role-name "$r" --profile agent_platform_admin --output json > "$A/inline-$r.json" && aws iam list-attached-role-policies --role-name "$r" --profile agent_platform_admin --output json > "$A/attached-$r.json" && for a in $(aws iam list-attached-role-policies --role-name "$r" --profile agent_platform_admin --query 'AttachedPolicies[].PolicyArn' --output text); do v=$(aws iam get-policy --policy-arn "$a" --profile agent_platform_admin --query Policy.DefaultVersionId --output text) && aws iam get-policy-version --policy-arn "$a" --version-id "$v" --profile agent_platform_admin --output json > "$A/managed-$r-${a##*/}.json" || exit 1; done; done && for r in PlatformDev PlatformAdmin; do for p in $(aws iam list-role-policies --role-name "$r" --profile agent_platform_admin --query PolicyNames --output text); do aws iam get-role-policy --role-name "$r" --policy-name "$p" --profile agent_platform_admin --output json > "$A/policy-$r-$p.json" || exit 1; done; done && bin/venv-python -c "import json,os,sys; b=os.path.join(os.environ.get('TMPDIR','/tmp'),'platform-iam-migration'); norm=lambda d: (d.get('Role',{}).pop('RoleLastUsed',None), d)[1]; nb=sorted(os.listdir(os.path.join(b,'before'))); na=sorted(os.listdir(os.path.join(b,'after'))); sys.exit('DOCUMENT SET CHANGED '+repr(sorted(set(nb)^set(na)))) if nb!=na else None; diff=[n for n in nb if norm(json.load(open(os.path.join(b,'before',n))))!=norm(json.load(open(os.path.join(b,'after',n))))]; sys.exit('CHANGED '+repr(diff)) if diff or len(nb)<13 else print('SNAPSHOTS IDENTICAL -- '+str(len(nb))+' documents, no permission changed')"
     expected: SNAPSHOTS IDENTICAL -- the same document set before and after (an attached policy appearing or disappearing fails as DOCUMENT SET CHANGED), RoleLastUsed is the only field normalised away (it moves with ordinary use); document names only are printed on failure, never contents
     fix_if: any document changed -- stop, compare locally in scratch, and RCA before the sibling plan merges
   - step: 18
@@ -548,36 +552,64 @@ verification_plan:
       terraform -chdir=terraform/personal init -input=false -backend-config=backend-sandbox.hcl && terraform -chdir=terraform/personal plan -input=false -lock=false -var-file=terraform.personal.tfvars -detailed-exitcode && bin/venv-python -c "import json,subprocess; r=json.loads(subprocess.run(['aws','s3','cp','s3://agent-platform-data-lake/convergence/personal/sandbox.json','-','--profile','agent_platform_admin'],check=True,capture_output=True,text=True).stdout); bad=[k for k in ('pending_gated','pending_codification','infra_error') if k in r]; assert r.get('status')=='green' and not bad, (r.get('status'), bad); print('PERSONAL STILL CONVERGED -- hand off to PLAN-platform-iam-personal-release')"
     expected: the personal plan exits 0 (measured directly, not inferred from a drift cycle) and the record is green with no pending marker -- the bootstrap import wrote no personal state; the plan runs with -lock=false so it never contends with CI's apply lock
     fix_if: >-
-      exit 2 or a pending marker -- measure, never infer (Decision 190): re-run the plan with -out in scratch and
-      read its show -json in the ADMIN session. Any resource_changes or resource_drift entry on the seven
+      exit 2 or a pending marker -- measure, never infer (Decision 190): re-run the plan with
+      -out="${TMPDIR:-/tmp}/platform-iam-migration/personal.tfplan", write its show -json to personal.json in
+      the same directory (both carry the ExternalIds in plaintext; step 20 removes that directory), and read
+      it in the ADMIN session. Any resource_changes or resource_drift entry on the seven
       addresses or their referents -- personal HCL and live disagree: stop, the dual copies have drifted.
       Otherwise, only resource_changes on other addresses (a merged change CI has not applied yet; the record
       reads pending_codification) -- wait for CI's apply to converge and re-run; resource_drift on other addresses
       (out-of-band drift) -- route it through docs/contracts/deploy-paths.yaml's reconcile row and re-run after it
-      converges. Either way the sibling plan does not merge until this step passes; delete the scratch plan files
+      converges. Either way the sibling plan does not merge until this step passes
   - step: 22
     phase: post-deploy
-    action: the Decision 202 detector stayed quiet -- the adoption made no IAM write the alarms would see
+    action: the Decision 202 detector stayed quiet across the apply, with IAM-event delivery proven in every period that brackets it
     command: |-
-      N=$(cat terraform/bootstrap/*.tf | grep -cE '^[[:space:]]*alarm_name[[:space:]]*=[[:space:]]*"platform-security-') && test "$N" -ge 5 && test $(( $(date -u +%s) - $(cat "${TMPDIR:-/tmp}/platform-iam-migration/applied_at") )) -ge 1200 && test "$(aws cloudwatch describe-alarms --alarm-name-prefix platform-security- --profile agent_platform_admin --query 'length(MetricAlarms)' --output text)" -eq "$N" && test "$(aws cloudwatch describe-alarms --alarm-name-prefix platform-security- --state-value ALARM --profile agent_platform_admin --query 'length(MetricAlarms)' --output text)" -eq 0 && H=$(aws cloudwatch get-metric-statistics --namespace PlatformSecurity --metric-name IamEventHeartbeat --start-time "$(date -u -d @"$(cat "${TMPDIR:-/tmp}/platform-iam-migration/applied_at")" +%Y-%m-%dT%H:%M:%SZ)" --end-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --period 3600 --statistics Sum --profile agent_platform_admin --query 'sum(Datapoints[].Sum)' --output text) && bin/venv-python -c "import sys; sys.exit(0 if float(sys.argv[1]) >= 1 else 'NO IAM EVENT DELIVERED SINCE THE APPLY -- quiet verdict untrusted')" "$H" && test "$(aws cloudwatch describe-alarm-history --history-item-type StateUpdate --start-date "$(date -u -d @"$(( $(cat "${TMPDIR:-/tmp}/platform-iam-migration/applied_at") - 900 ))" +%Y-%m-%dT%H:%M:%SZ)" --profile agent_platform_admin --query "length(AlarmHistoryItems[?starts_with(AlarmName, 'platform-security-') && contains(HistorySummary, 'to ALARM')])" --output text | awk '{s+=$1} END {print s+0}')" -eq 0 && echo "DETECTOR QUIET -- $N platform-security alarms declared and live, none in ALARM, none entered ALARM around the apply; IAM events delivered since the apply"
+      N=$(cat terraform/bootstrap/*.tf | grep -cE '^[[:space:]]*alarm_name[[:space:]]*=[[:space:]]*"platform-security-') && bin/venv-python - "$N" "$(cat "${TMPDIR:-/tmp}/platform-iam-migration/applied_at")" <<'EOF'
+      import sys, time, datetime as dt, boto3
+      n, a, P = int(sys.argv[1]), int(sys.argv[2]), 900
+      s = (a // P) * P - P
+      e = s + 3 * P
+      now = int(time.time())
+      f = lambda x: dt.datetime.fromtimestamp(x, dt.timezone.utc)
+      if now < e + 300:
+          sys.exit(f"WAIT -- re-run after {f(e + 300):%H:%M}Z, when the three 900 s periods bracketing the apply have closed")
+      cw = boto3.Session(profile_name="agent_platform_admin").client("cloudwatch")
+      al = [m for pg in cw.get_paginator("describe_alarms").paginate(AlarmNamePrefix="platform-security-") for m in pg["MetricAlarms"]]
+      if n < 5 or len(al) != n:
+          sys.exit(f"ALARM COUNT -- live {len(al)}, declared {n}")
+      bad = sorted(m["AlarmName"] for m in al if m["StateValue"] != "OK")
+      if bad:
+          sys.exit(f"NOT OK -- {bad}")
+      dp = cw.get_metric_statistics(Namespace="PlatformSecurity", MetricName="IamEventHeartbeat", StartTime=f(s), EndTime=f(e), Period=P, Statistics=["Sum"])["Datapoints"]
+      fed = sum(1 for d in dp if d["Sum"] >= 1)
+      if fed != 3:
+          sys.exit(f"DELIVERY GAP -- {3 - fed} of the 3 periods bracketing the apply had no delivered IAM event")
+      h = [i for pg in cw.get_paginator("describe_alarm_history").paginate(HistoryItemType="StateUpdate", StartDate=f(s), EndDate=f(now)) for i in pg["AlarmHistoryItems"] if i["AlarmName"].startswith("platform-security-") and "to ALARM" in i["HistorySummary"]]
+      if h:
+          sys.exit(f"{len(h)} platform-security transition(s) to ALARM since the bracket start")
+      print(f"DETECTOR QUIET -- {n} alarms declared and live, all OK, none entered ALARM since the bracket start; IAM events delivered in all 3 periods bracketing the apply")
+      EOF
     expected: >-
-      DETECTOR QUIET -- an import performs only IAM reads, so neither the IAM-change nor the denied-call
-      filter should fire. The command refuses to run until 20 minutes after step 15's applied_at (so the
-      5-minute metric periods have closed), the live alarm count must equal the platform-security-* alarm_name
-      declarations on merged main (5 today; a later alarm, e.g. rec-4204's, raises both sides), and the
-      IamEventHeartbeat metric must show at least one delivered IAM event since applied_at (the import's own
-      IAM reads and the canary feed it). The four change/denied/tamper/topic alarms treat missing data as
-      notBreaching, so without the delivery leg a trail-to-Logs outage would read as quiet. Only counts are
+      DETECTOR QUIET -- an import performs only IAM reads, so neither the IAM-change nor the denied-call filter
+      should fire. The verdict is bound to the apply window: the three 900 s periods (the heartbeat alarm's own
+      grain) that bracket step 15's applied_at -- the one before, the one containing it and the one after -- must
+      each show at least one delivered IamEventHeartbeat event (the canary feeds one every 5 minutes), so a
+      trail-to-Logs gap overlapping the apply cannot read as quiet even though the four change, denied, tamper
+      and topic alarms treat missing data as notBreaching. The live alarm count must equal the platform-security-*
+      alarm_name declarations on merged main (5 today; a later alarm such as rec-4204's raises both sides), every
+      alarm must be OK, and none may have entered ALARM since the bracket start. Only counts and alarm names are
       printed.
     fix_if: >-
-      a "test" fails before any AWS call because fewer than 20 minutes have passed -- wait and re-run (never
-      edit the window); the live count differs from the declared count -- a declared alarm is unapplied or an
-      undeclared one exists, stop and reconcile through its own human-gated loop; an alarm entered ALARM -- read its history in the ADMIN session; a change or denied-call alarm
-      means something wrote (or tried to write) IAM on the two roles during the walk: stop and RCA before
-      the sibling plan merges. NO IAM EVENT DELIVERED, or a heartbeat ALARM -- the detector may be blind, so the
-      quiet verdict is untrusted: STOP this step, triage per the platform-security-iam-event-heartbeat alarm's
-      alarm_description (canary schedule and executions, then AWS/Logs IncomingLogEvents on
-      platform-security-cloudtrail), and re-run once delivery is restored
+      WAIT -- the bracket has not closed; re-run at the printed time (never shorten the bracket). ALARM COUNT -- a
+      declared alarm is unapplied or an undeclared one exists: stop and reconcile through its own human-gated
+      loop. A transition to ALARM, or NOT OK on a change, denied-call or tamper alarm -- something wrote (or tried
+      to write) IAM during the walk: stop and RCA before the sibling plan merges. DELIVERY GAP, or the heartbeat
+      alarm not OK -- the detector may have been blind across the apply, so the quiet verdict cannot be
+      established and a re-run after delivery is restored does NOT cure it: STOP, triage per the
+      platform-security-iam-event-heartbeat alarm's alarm_description (canary schedule and executions, then
+      AWS/Logs IncomingLogEvents on platform-security-cloudtrail), and put the gap to the human for adjudication
+      before the sibling plan merges
   - step: 20
     phase: post-deploy
     action: CLEANUP (ADMIN) -- remove every scratch artifact that carries the ExternalIds or account-bearing documents; also run on any STOP
@@ -677,7 +709,7 @@ constraints:
   - The adoption apply runs from merged main in the ADMIN container, only after a human has reviewed step 14's presented plan and explicitly directed it (Decision 126)
   - The adoption must be zero-diff -- never change a permission, a trust document or a tag during adoption; any change is a separate, later plan
   - Never widen the CI apply role to write these identities (Decision 180 clauses 2-3 are permanent)
-  - "V3 merge gate resolved for an admin-only import (implement skill V3 Merge Gate and code-review skill V3 Post-Deploy Evidence; the Decision 48 tension PLAN-heartbeat-canary-plan-time-grant recorded): the import apply must run from merged main (the admin tier applies merged code only, Decision 126), so post-deploy evidence cannot precede merge. Pre-merge evidence is steps 8-11 -- before merge, post a counts-only PR comment (baseline exit code, speculative imports=7 / changes=0, rec-4044 status, convergence status, $PR_HEAD_SHA, and the URL of the green CI run at that head). The pre-merge code-review dispatch is told this constraint: for this plan its V3 Post-Deploy Evidence check is met before merge by that comment and after merge by the declared post-apply comment, so a High finding for the not-yet-possible post-deploy artifact is answered by citing this constraint, never by an improvised deviation or a pre-merge apply. Post-deploy evidence is steps 12-19 and 22 -- after the walk, post a counts-only comment on the merged PR naming the applied $MERGE_SHA (who accepted the apply and when, imports, snapshot document count and IDENTICAL verdict, follow-up plan exit codes, alarm counts, and the run URL an admin apply otherwise lacks: the S3 console object-version URL of agent-platform-bootstrap-tfstate/terraform.tfstate with its post-apply versionId, which names region, bucket and key but no account id); the plan is not complete until that comment exists. This is the plan-level instance of docs/contracts/deploy-paths.yaml admin_out_of_band.pre_merge_live_plan (approved 2026-10-15, PLAN-admin-root-premerge-plan-gate; steps 8-11 and 23 are its PRE-MERGE GATE and ENVIRONMENT CHECK), not a second statement of it. Neither comment carries an ARN, account id, ExternalId or policy document (Decision 101)."
+  - "V3 merge gate resolved for an admin-only import (implement skill V3 Merge Gate and code-review skill V3 Post-Deploy Evidence; the Decision 48 tension PLAN-heartbeat-canary-plan-time-grant recorded): the import apply must run from merged main (the admin tier applies merged code only, Decision 126), so post-deploy evidence cannot precede merge. Pre-merge evidence is steps 8-11 -- before merge, post a counts-only PR comment (baseline exit code, speculative imports=7 / changes=0, rec-4044 status, convergence status, $PR_HEAD_SHA, and the URL of the green CI run at that head). The pre-merge code-review dispatch is told this constraint: for this plan its V3 Post-Deploy Evidence check is met before merge by that comment and after merge by the declared post-apply comment, so a High finding for the not-yet-possible post-deploy artifact is answered by citing this constraint, never by an improvised deviation or a pre-merge apply. Post-deploy evidence is steps 12-19 and 22 -- after the walk, post a counts-only comment on the merged PR naming the applied $MERGE_SHA (who accepted the apply and when, imports, snapshot document count and IDENTICAL verdict, follow-up plan exit codes, alarm counts, and the run URL an admin apply otherwise lacks: the S3 console object-version URL of agent-platform-bootstrap-tfstate/terraform.tfstate with its post-apply versionId, which names region, bucket and key but no account id); the plan is not complete until that comment exists. This is the plan-level instance of docs/contracts/deploy-paths.yaml admin_out_of_band.pre_merge_live_plan (approved 2026-10-15, PLAN-admin-root-premerge-plan-gate; steps 8-11 and 23 are its PRE-MERGE GATE and ENVIRONMENT CHECK), not a second statement of it; if this PR merges before that plan's build adds the key, these steps carry the rule on their own and the pointer resolves when the key lands. Neither comment carries an ARN, account id, ExternalId or policy document (Decision 101)."
   - "Environment check before any hand-off assumption: the implementing session runs step 23 first; on ADMIN_CHAIN_OK it runs every step itself, and the walk is never deferred to a hypothetical other session"
   - "The PR declares IAM: merge on explicit human word after the pre-merge gates and green CI; step 15 runs only on explicit human direction of that exact apply command"
   - "Public-repo boundary (Decision 101): snapshots, plan files, plan JSON, the presented plan and the bootstrap tfvars stay in the ADMIN session, scratch or gitignored paths and are never pasted into chat, a PR or a commit -- every IAM document and ARN carries the account id, and adopt.json and the snapshots carry both ExternalIds in plaintext; step 20 removes the scratch artifacts, including after any STOP; the parity tests compare templates, never rendered ARNs"
