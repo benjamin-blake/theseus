@@ -130,7 +130,7 @@ acceptance_criteria:
     changed, 0 destroyed) and the CloudShell re-plan exits 0 (No changes).
   - >-
     After the reconcile, the live S3 state keys all five instances on theseus with no agent-platform string left in
-    them, and a fresh PR-time plan run (E2) reads import=0 add=0 destroy=0 replace=0 conflict=0 and either change=0
+    their identity attributes, and a fresh PR-time plan run (E2) reads import=0 add=0 destroy=0 replace=0 conflict=0 and either change=0
     gated=0 (verdict NO_CHANGES) or change=1 gated=1 (verdict VISIBILITY_GATED_ONLY) with ruleset_bypass_actors=hidden.
   - >-
     The closure PR lands the approved evidence_ledger rows, rec pointer, amendment_log row and dated CLAUDE.md line;
@@ -193,7 +193,7 @@ verification_plan:
     command: >-
       ! git diff origin/main -- terraform/github tests/checks/iam_tf/test_terraform_github_import_blocks.py
       config/agent/verification_registry/entries/terraform-github-import-blocks.yaml docs/contracts/github-org-transfer.yaml
-      | grep '^+' | grep -Eq '[0-9]{12}|arn:aws|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[a-z]{2,}|ghp_|github_pat_|ExternalId|secret-id [a-z]'
+      | grep '^+' | grep -v '^+++' | cut -c2- | grep -Eq '[0-9]{12}|arn:aws|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[a-z]{2,}|ghp_|github_pat_|ExternalId|secret-id [a-z]'
     expected: Exit 0 (no match).
     expected_literals: []
     fix_if: >-
@@ -349,7 +349,8 @@ verification_plan:
       E2 -- a PR-time plan run whose commit contains the merged build PR (after import, repo.tf's ignore_changes entry
       is load-bearing). Order A: re-run the build PR's run (mcp__github__actions_run_trigger rerun_workflow_run); its
       merge commit carries the build. Order B: never a bare re-run of the workflow PR's original run (it predates the
-      build); update the workflow PR from main so the push starts a fresh run, or use E3 (the closure PR's own run,
+      build); ask the coordinator to have the workflow PR updated from main so the push starts a fresh run, or use E3
+      (the closure PR's own run,
       step 15). If main has since changed other terraform/github config, use E3 or a fresh PR touching terraform/github.
       Fetch the new job log into $E2_LOG and check it.
     command: >-
@@ -539,7 +540,7 @@ context:
     Decision-scout verdict FLAGS_FOUND. CITE: 218, 172, 77, 126, 101, 201. NOTE on 119 (no local init of a
     third-party-provider root) resolved by verifying from the S3 state object, never terraform state list.
     Decisions triaged: 171 of 171. Roadmap items intersected: 2; CONFLICT: 0; RELATED: 2.
-  - "gates: decision-scout=FLAGS_FOUND (one NOTE, resolved); plan-critique=PENDING"
+  - "gates: decision-scout=FLAGS_FOUND (one NOTE, resolved); plan-critique=PROCEED after 6 rounds; round 6 on the escalated one-more-round option"
   - >-
     V3 resolution: E0 (step 6) and paste 0 at the CI-green head (step 9, read-only, including the dry run of the import)
     are the pre-merge live evidence the implement V3 Merge Gate and the code-review V3 check require, by analogy with
@@ -743,7 +744,8 @@ execution_steps:
     code owner (paste 0 runs this head's config under the operator's admin identity), hand the operator paste 0 at
     the CI-green head (VP step 9; it writes nothing shared) and require PASTE0_OK. Squash-merge only when code review is PROCEED, CI is green on the head,
     PASTE0_OK holds for a head with the same terraform/github content, and the operator has approved the PR on GitHub as
-    code owner (no Resolves trailer on this PR: rec-3136 closes with the closure PR). Then run VP step 8 and hand the
+    code owner (no Resolves trailer on this PR: rec-3136 closes with the closure PR; the attribution footer is added to
+    the squash commit message at merge, never to the PR body). Then run VP step 8 and hand the
     operator paste A with MERGE_SHA filled in.
   - |-
     Before merge, hand the operator paste 0 (VP step 9) with HEAD_SHA (the CI-green build PR head) filled in; the
@@ -927,7 +929,8 @@ execution_steps:
     the committed clean tree (full tier, then --verify-head); postflight evidence as in the build PR; push; the PR
     (body ends with a standalone "Resolves: rec-3136" line in a Key: value block); subscribe_pr_activity; wait for its
     terraform-github-plan run (E3) and run VP step 15; code review in a fresh context; the operator's code-owner
-    approval; squash-merge with the PR body as the commit message; VP step 16 from the closure job's event (never
+    approval; squash-merge with commit_message = the PR body plus the git-ops attribution footer added at merge (the
+    footer never goes in the PR body, which VP step 15 sweeps); VP step 16 from the closure job's event (never
     poll); then hand the operator VP step 17.
   - >-
     Execute the Verification Plan in the order execution_steps steps 7 to 12 name (VP step ids are labels, not an
@@ -945,5 +948,7 @@ rollback: >-
   --profile agent_platform_admin; then VP step 8's shape check (agent-platform) must pass again. After paste B: GitHub
   needs no rollback (the import only read it); restore the same way only if step 11 (POST_PLAN_EXIT not 0) or step 12
   (not STATE_KEYED theseus ... clean) fails. A non-clean E2 with clean steps 11 and 12 escalates without a restore, per
-  step 13's fix_if. Never apply to converge. Revert imports.tf and the variable by a normal PR only if the blocks themselves prove wrong; they are inert
-  while the addresses are in state.
+  step 13's fix_if. Never apply to converge. If the recorded version file is not available (another ADMIN session),
+  list the key's versions with aws s3api list-object-versions and pick the version that was current at step 8's time.
+  Revert imports.tf and the variable by a normal PR only if the blocks themselves prove wrong; they are inert while the
+  addresses are in state. After step 16, delete ${TMPDIR:-/tmp}/tfgithub-reconcile.
