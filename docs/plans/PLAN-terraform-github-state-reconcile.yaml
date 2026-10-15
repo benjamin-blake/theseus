@@ -52,6 +52,14 @@ scope:
       guard_target terraform/github/imports.tf, guard_symbol null, plan_slug terraform-github-state-reconcile,
       graduated_at the implementation date, graduated_by implement-agent, check_spec.node_id
       tests/checks/iam_tf/test_terraform_github_import_blocks.py::TestTerraformGithubImportBlocks.
+  - file: scripts/checks/contracts/_retired_identity.py
+    action: Modify
+    purpose: >-
+      Conditional, build PR only: if the literal sweep's identity readiness build (which creates this file and makes
+      validate_github_org_transfer refuse new files naming the retired identity) has merged before this build, add one
+      SURVIVOR_PINS entry for tests/checks/iam_tf/test_terraform_github_import_blocks.py with the reason "rec-3136
+      import-block guard". Not touched when this build lands first (the planned order); the readiness build then pins
+      the test itself.
   - file: docs/contracts/github-org-transfer.yaml
     action: Modify
     purpose: >-
@@ -416,6 +424,13 @@ test_obligations:
     waiver_reason: >-
       A verification record, not behaviour-capable source; validate_verification_registry already enforces its schema
       and differential admission.
+  - source: scripts/checks/contracts/_retired_identity.py
+    behavior: Conditional one-line SURVIVOR_PINS entry so the readiness check admits the new test file.
+    verification_step: 5
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: >-
+      A conditional data entry in a pin list the literal sweep's readiness build owns and tests; touched only if that
+      build merged first, and the fast tier's validate_github_org_transfer is then the check that proves the pin.
   - source: docs/contracts/github-org-transfer.yaml
     behavior: The reconcile evidence and the moved rec pointer are recorded in the transfer contract.
     verification_step: 15
@@ -497,7 +512,7 @@ context:
     Follow-on recs: rec-4355 filed at planning time (post-transfer re-key; the contract's terraform_github_root row
     moves to it); rec-3126 (governed terraform/github apply channel) updated with the CloudShell venue finding, the
     deploy-paths line and the main.tf/environments.tf "LOCAL apply" comments to correct; rec-4353 (existing: PlatformDev
-    can write tfstate/github/*; always-ask IAM, parked).
+    can write tfstate/github/*; always-ask IAM, parked). rec-4357 (sweep) owns the post-sweep ledger entry and phase flip.
   - >-
     Gotchas: CLAUDE.md budget 5253 bytes, about 5079 after the build PR with rec-4335's section (gated closure line about
     5237). The PAT's secret name is not in the repo. var.github_token has no default (pastes export TF_VAR_github_token).
@@ -642,7 +657,9 @@ execution_steps:
     "${var.repository_name}:${var.main_protection_ruleset_id}"; github_repository_environment:
     "${var.repository_name}:<environment>" where <environment> equals that resource's environment argument -- and a
     resource type missing from the table fails with its name; (c) no import id contains a literal owner or repository
-    name (benjamin-blake, otl-labs, theseus, agent-platform, ontheloop); (d) var.main_protection_ruleset_id is declared
+    name: read the names from docs/contracts/github-org-transfer.yaml identity.current and identity.target (owner and
+    repository) plus the historical name agent-platform, so the test file quotes no retired identity literal (the
+    literal sweep's readiness check refuses new files that do); (d) var.main_protection_ruleset_id is declared
     with type = number and a default. No count literals on the growing resource set (tests/CLAUDE.md count-coupling
     rule); derive both sides from the tree.
   - >-
@@ -817,6 +834,11 @@ execution_steps:
           PLAN-terraform-github-state-reconcile: prerequisites.terraform-github-state-reconciled is
           satisfied (rec-3136 closed; two evidence_ledger rows); breakage_map.terraform_github_root's
           post-transfer re-key now points at rec-4355.
+
+    5. The literal sweep's approved contract text says "terraform_github_root stays pending for rec-3136". If the sweep's
+       identity readiness build has already landed that sentence, change only its rec id to rec-4355 in this same
+       change (a rec-id pointer update, within the follow-on rec id variance) and say so in the PR body. If this closure
+       lands first, tell the coordinator: the readiness build then stops and its sentence goes back to the operator.
 
     Then, each outcome reported separately: github_readiness; rebase on origin/main; VP steps 2, 4 and 5; VP step 7 on
     the committed clean tree (full tier, then --verify-head); postflight evidence as in the build PR; push; the PR
