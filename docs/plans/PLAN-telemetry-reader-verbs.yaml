@@ -60,8 +60,11 @@ scope:
     event verbs to execute and event_read_version); describe_all (the ops rows from rt.describe_named_reads unchanged,
     plus one row per event verb that is a superset of the ops row shape -- table (its first table), description, params,
     paginable, agent_facing, params_schema, read_version -- plus kind event_journal, tables, catalog telemetry, binding and
-    max_window_days). The telemetry slot's opener sets memory_limit '300MB' on its connection, so two DuckDB instances fit
-    the reader's 1024 MB with the ops slot unchanged. Imported by the reader handler only.
+    max_window_days). The telemetry slot's opener sets memory_limit '300MB' on its connection; the ops slot keeps DuckDB's
+    default, so whether both fit the reader's 1024 MB is an expectation that step 16's Max Memory Used reading verifies
+    (and step 6's local run records peak RSS with both slots open). Import direction (no cycle): ducklake_event_read_verbs
+    imports EventRead from this module at module scope, and this module's routing helpers import EVENT_READS
+    function-locally. Imported by the reader handler only.
 - file: src/common/ducklake_event_read_sql.py
   action: Create
   purpose: >-
@@ -129,7 +132,9 @@ scope:
   purpose: >-
     Calls check_telemetry_health once per run in the warm-up phase beside fetch_recs_signal_inputs and, like it, only when
     creds_status is ok (otherwise the gauge is unavailable with null counts and no reader call; Phase B stays at zero reader
-    calls), prints one telemetry-store line naming the catalog, and writes the report's telemetry_health key. Reader invocations per session go from five to six (Decision 215 cl.4's reversal condition is a
+    calls), prints one telemetry-store line naming the catalog, and writes the report's telemetry_health key. The --health
+    entry point, whose help text still promises a telemetry health check, prints the same gauge after the data-quality
+    health and keeps exit 0; its help text is corrected to say what it runs. Reader invocations per session go from five to six (Decision 215 cl.4's reversal condition is a
     doubling; the dated note on that clause is rec-4324's).
 - file: scripts/ducklake_smoke/lambda_ec_gates.py
   action: Modify
@@ -168,8 +173,10 @@ scope:
   action: Modify
   purpose: >-
     Post-deploy bookkeeping PR only, after step 15 reads pass (tier-item-lifecycle.yaml bookkeeping_walk): flip T2.36:c3
-    open -> met with met_by this plan and a smoke-scope note (production re-verification with the slice 2c pin flip,
-    rec-4292), move T2.36 not_started -> in_progress, and add a dated progress_note naming what remains (c1, c2, c4, c5).
+    open -> met with met_by this plan (ExitCriterion takes no extra key, so no note on the criterion), move T2.36
+    not_started -> in_progress, and add a dated progress_note naming what remains (c1, c2, c4, c5) and stating that c3 is
+    met on ducklake_smoke only, sustained by the deploy pipeline's synthetic append rows, with production re-verification
+    owned by rec-4292 at the slice 2c pin flip.
 - file: tests/common/test_ducklake_event_reads.py
   action: Create
   purpose: Pure mechanism and routing tests (no duckdb at module scope), including the MCP projection of agent-facing verbs.
@@ -495,6 +502,7 @@ verification_plan:
     tests/session/preflight/test_telemetry_health.py::test_preflight_main_writes_telemetry_health_once
     tests/test_session_preflight_decomposition.py::TestReportSchemaFreeze
     tests/session/preflight/test_telemetry_health.py::test_no_reader_call_without_credentials
+    tests/session/preflight/test_telemetry_health.py::test_health_flag_prints_the_telemetry_gauge
     -q
   expected: Exit 0, every node passes. Red before because the module and nodes are absent.
   expected_literals: []
@@ -882,7 +890,10 @@ context:
   SPIRIT 200 (smoke-pin refusal plus deferral to rec-4292), T2.52 CONFLICT WARN (closes nothing there, no depends_on): all
   resolved. RELATED 95, 96, 97, 137, 143, 210, 212, 184, 214, 107, 125, 118, 168, 166, 181, 48, 140. Decisions triaged: 169
   of 169. Roadmap items intersected: 12; CONFLICT: 1; RELATED: 11.
-- "gates: decision-scout=FLAGS_FOUND (3 flags, resolved); plan-critique=PENDING (r1-r3 REVISE fixed; r4 confirming REVISE fixed, escalated: critique-escalation.md)"
+- >-
+  gates: decision-scout=FLAGS_FOUND (3 flags, resolved); plan-critique=PROCEED after 5 round(s): r1-r3 REVISE, all
+  fixed; r4 (confirming) REVISE, fixed and escalated to Benjamin (critique-escalation.md, card recommending one more
+  round); r5 PROCEED, its notes M1, J1-J3, J5 and J6 folded in.
 - >-
   Direction: Benjamin "yes to all, write the plan" (cmsg_012XgaFy8VaDQbxP5D8nC958GgNiPNy3uHRFLovP66hD4X): the split,
   sessions_window now, cost as reported-only. Evidence: /mnt/project-files/telemetry-slice2b/ (step6b-presentation.md,
@@ -950,7 +961,8 @@ execution_steps:
   merge it on green CI; then step 17. Append dated notes through scripts.ops_data_portal (get_rec_write_guidance first,
   fetch the rec just before update_rec and prepend to its full context; each note names the merge commit's short SHA): rec-4292 (slice 2c lifts the smoke-pin refusal
   with tenant-scoped reads, re-verifies c3 on production, and owns the query_ops object-store residual before production
-  reads) and rec-4291 (everything but get_blob delivered here).
+  reads, plus the unmeasured per-cold-container telemetry ATTACH egress line and a Decision 214 invariant (v) check that
+  the stats index stays valid on the telemetry schema) and rec-4291 (everything but get_blob delivered here).
 - 'Report: what was implemented, verification results incl. step 6 output and step 16 response sizes'
 work_areas: []
 rollback: >-
