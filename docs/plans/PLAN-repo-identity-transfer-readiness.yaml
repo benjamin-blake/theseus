@@ -107,6 +107,18 @@ scope:
 - file: tests/checks/contracts/test_validate_github_org_transfer.py
   action: Modify
   purpose: Add test_rec_3903_rows_are_evaluated_not_pending; adjust any pending-set expectation that named the four rows.
+- file: scripts/checks/contracts/_manifest.py
+  action: Modify
+  purpose: >-
+    validate_github_org_transfer's Entry becomes ungated in --pre (pre=True, pre_globs=None) unless the OIDC build
+    already registered it so: the rec-3903 evaluators read every tracked file, so no static glob encloses the read
+    set, and a gated Entry would skip exactly the PRs that add a literal or orphan a pin (precedent
+    validate_portal_drift, TestPortalDriftPromotedUngated). Widening the trigger is free under the direction rule.
+- file: tests/checks/contracts/test__manifest.py
+  action: Modify
+  purpose: >-
+    Add TestGithubOrgTransferUngated (dispatched in --pre; pre_globs is None) and remove the check's _CLOSURE_INPUTS
+    row, which a None-globs Entry would fail; no change if the OIDC build already did both.
 - file: docs/contracts/github-org-transfer.yaml
   action: Modify
   purpose: >-
@@ -125,8 +137,8 @@ acceptance_criteria:
   raises; the six scripts carry no hard-coded owner or repository and query the resolved repository.
 - >-
   validate_github_org_transfer evaluates rec-3903's four rows: every tracked file naming the retired identity outside
-  historical records and other recs' static-row files is pinned, a new file or a stale pin fails, and the two phase
-  rules hold; the four rows are no longer pending.
+  historical records and other recs' static-row files is pinned, a new file or a stale pin fails on every PR (the
+  check runs ungated in --pre), and the two phase rules hold; the four rows are no longer pending.
 - Every SWEEP_PINS path is in PLAN-retired-repo-identity-sweep's scope (else that plan is amended before this merges).
 - >-
   The contract carries the operator-approved amendment verbatim (allowed variance: the amendment_log date).
@@ -170,13 +182,13 @@ verification_plan:
     tests/ops/test_drain_glue_orphan_github.py::test_repo_identity_follows_github_repository
     tests/test_session_github_readiness.py::test_authenticated_read_targets_the_ci_repository
     tests/checks/misc/test_validate_ghas_probe.py::test_malformed_repository_falls_back_to_the_default
-  expected: Exit 0; every node (and every parametrized case, 14 in all) passes.
-  expected_literals:
-  - 14 passed
+  expected: Exit 0; every node and every parametrized case passes (pytest exits non-zero on any failure or missing node).
   fix_if: A failing node names the script still bound to a literal default or the resolver case that misbehaves.
   hermetic: true
   graduation: waive
-  graduation_waiver_reason: The named pytest nodes are themselves the standing guards and run in every --pre pytest_diff.
+  graduation_waiver_reason: >-
+    The named pytest nodes are themselves the standing guards; pytest_diff runs them whenever a PR touches their
+    modules or the code they cover.
 - step: 4
   phase: pre-deploy
   action: The six scripts no longer hard-code the owner or repository.
@@ -192,8 +204,9 @@ verification_plan:
   hermetic: true
   graduation: waive
   graduation_waiver_reason: >-
-    validate_github_org_transfer's retired-identity scan fails any unpinned match in these files on every PR, so a
-    re-added literal also needs a deliberate, reviewed pin; a registry row would duplicate that guard.
+    validate_github_org_transfer's retired-identity scan, ungated in --pre (VP step 15), fails any unpinned match in
+    these files on every PR, so a re-added literal also needs a deliberate, reviewed pin; a registry row would
+    duplicate that guard.
 - step: 5
   phase: pre-deploy
   action: The transfer contract's check passes on the live tree with the four rows evaluated.
@@ -233,13 +246,13 @@ verification_plan:
     tests/checks/contracts/test__retired_identity.py::test_dependabot_gate_must_name_the_target_from_pre_staged
     tests/checks/contracts/test__retired_identity.py::test_no_sweep_pin_may_remain_at_predecessor_removed
     tests/checks/contracts/test__retired_identity.py::test_unreadable_contract_or_git_failure_fails_closed
-  expected: Exit 0, 8 passed.
-  expected_literals:
-  - 8 passed
+  expected: Exit 0; every node passes.
   fix_if: A failing node names the discrimination case the scan gets wrong.
   hermetic: true
   graduation: waive
-  graduation_waiver_reason: The named pytest nodes are themselves the standing guards and run in every --pre pytest_diff.
+  graduation_waiver_reason: >-
+    The named pytest nodes are themselves the standing guards; pytest_diff runs them whenever a PR touches their
+    modules or the code they cover.
 - step: 8
   phase: pre-deploy
   action: Every sweep pin is in the sweep plan's scope, so that plan is complete before this merges.
@@ -339,6 +352,38 @@ verification_plan:
     budget-ingest and sensor-liveness steps; a URL error naming the repository means the resolver regressed -- revert
     and RCA (Decision 55). (Before transfer the old path is still canonical; after transfer this URL redirects.)
   hermetic: false
+- step: 15
+  phase: pre-deploy
+  action: validate_github_org_transfer is dispatched in --pre with no pre_globs, so the retired-identity scan runs on every PR.
+  command: >-
+    bin/venv-python -m pytest -q tests/checks/contracts/test__manifest.py::TestGithubOrgTransferUngated
+  expected: Exit 0; both nodes pass.
+  fix_if: A failure means the Entry is still gated or not in --pre; apply the _manifest.py step.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: The pytest class is itself the standing guard, beside its TestPortalDriftPromotedUngated precedent.
+- step: 16
+  phase: pre-deploy
+  action: >-
+    The two contract edits change nothing beyond what was approved: file-router differs from origin/main only by the
+    allowlisted file and the new amendment_log entry (the compaction is format-only), and github-org-transfer.yaml
+    only in planned_evaluator, owner_literal_defaults' locations and fix, and one new amendment_log entry.
+  command: >-
+    bin/venv-python -c "import yaml,subprocess,copy; o=lambda f:yaml.safe_load(subprocess.check_output(['git','show','origin/main:'+f],text=True,encoding='utf-8')); h=lambda f:yaml.safe_load(open(f,encoding='utf-8'));
+    a,b=o('docs/contracts/file-router.yaml'),h('docs/contracts/file-router.yaml'); new=[e for e in b['amendment_log'] if e not in a['amendment_log']]; assert len(new)==1 and [e for e in b['amendment_log'] if e!=new[0]]==a['amendment_log'];
+    al=b['scripts_root_allowlist']['allowed_files']; assert set(al)-set(a['scripts_root_allowlist']['allowed_files'])=={'repo_identity.py'} and len(al)==len(a['scripts_root_allowlist']['allowed_files'])+1;
+    x,y=copy.deepcopy(a),copy.deepcopy(b); [d.pop('amendment_log') for d in (x,y)]; x['scripts_root_allowlist'].pop('allowed_files'); y['scripts_root_allowlist'].pop('allowed_files'); assert x==y;
+    c,d=o('docs/contracts/github-org-transfer.yaml'),h('docs/contracts/github-org-transfer.yaml'); assert len(d['amendment_log'])==len(c['amendment_log'])+1 and d['amendment_log'][:-1]==c['amendment_log'];
+    rc={r['id']:r for r in c['breakage_map']}; rd={r['id']:r for r in d['breakage_map']}; assert rd['owner_literal_defaults']['locations'][1:]==rc['owner_literal_defaults']['locations'];
+    [(r.pop('fix'),r.pop('locations')) for r in (rc['owner_literal_defaults'],rd['owner_literal_defaults'])]; assert rc==rd;
+    [z.pop(k) for z in (c,d) for k in ('planned_evaluator','amendment_log','breakage_map')]; assert c==d; print('CONTRACT_EDITS_EXACT')"
+  expected: Exit 0 and CONTRACT_EDITS_EXACT printed.
+  fix_if: >-
+    A failed assertion names the unapproved change: restore it (the compaction must parse identically; no other key
+    may change). Approved wording itself is bound by VP steps 9 and 10.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: A PR-relative one-time diff check; it is vacuous once merged.
 test_obligations:
 - source: .github/workflows/dependabot-auto-merge.yml
   behavior: The auto-merge job gate is exactly the approved dual-name expression.
@@ -346,7 +391,7 @@ test_obligations:
   test_selector: tests/checks/ci_guards/test_validate_dependabot_automation.py::test_real_auto_merge_gate_accepts_both_full_names
   red_green_expectation: Red before (the gate is the single-name expression), green after.
 - source: scripts/repo_identity.py
-  behavior: GITHUB_REPOSITORY wins when well-formed; otherwise the fallback; never raises.
+  behavior: A well-formed GITHUB_REPOSITORY wins over the fallback (the fallback and never-raises cases are VP step 3's other nodes).
   verification_step: 3
   test_selector: tests/test_repo_identity.py::test_ci_repository_wins
   red_green_expectation: Red before (the module does not exist), green after.
@@ -430,6 +475,11 @@ constraints:
   SWEEP_PINS and SURVIVOR_PINS are top-level literal assignments (SWEEP_PINS: dict[str, str] = {...}) of string keys
   and values, readable by ast.literal_eval: PLAN-retired-repo-identity-sweep's VP step 2 parses SWEEP_PINS from
   origin/main that way.
+- >-
+  The retired identity appears in scripts/repo_identity.py, tests/test_repo_identity.py and the new
+  test_validate_ghas_probe test only as the literal full name "benjamin-blake/theseus" (no split owner/repo
+  literals), and fallback tests assert that literal rather than FALLBACK_FULL_NAME, so the sweep plan's substitution
+  rule and its VP step 15 pairing hold; consumer tests use example-org/example-repo.
 - Never skip, disable or quarantine a test; no rescue loops (Decision 55).
 context:
 - "Decision-scout verdict + CITE list: FLAGS_FOUND (Decisions triaged: 171 of 171; Roadmap items intersected: 4; CONFLICT: 0; RELATED: 4). CITE: 218, 172, 171, 198, 101, 169, 170, 166, 189, 201. Three NOTE flags adopted (171: one guard per identity, stated in the contract; 181: rec-3903 acceptance rewritten at least as strict, in the sweep plan; 168: the scan reads the contract)."
@@ -451,7 +501,10 @@ context:
   Survivors expected in SURVIVOR_PINS: docs/contracts/github-org-transfer.yaml (identity record), this module and its
   test, tests/checks/hygiene/test_validate_licence_consistency.py (later-slug fixtures), tests/test_convergence_classify.py
   (captured run URL), tests/convergence_health/budget_ingest/{conftest,test_collect}.py (synthetic repository field).
-  Any other match outside exemptions is a sweep pin and must be in the sweep plan's scope (step 8).
+  Any other match outside exemptions is either a forward-standing reference, pinned to its rec-3903 row and in the
+  sweep plan's scope (step 8), or test data, an absence assertion or the identity record, pinned as a survivor with
+  its reason. Migration plans landing after this build add a SURVIVOR_PINS line for any new test-data literal
+  (known: rec-3136's import-block test's forbidden-literal set; coordinator notified 2026-10-15).
 - >-
   Resolver tiers: GITHUB_REPOSITORY then the constant (Fable's git-remote tier dropped: no subprocess in the
   session-start hook). Known residual, unproven: local callers keep the fallback until the sweep (the last
@@ -473,7 +526,13 @@ execution_steps:
 - >-
   Run VP step 1; STOP if it fails. Read scripts/checks/contracts/validate_github_org_transfer.py and its test and
   confirm load_contract, ROW_EVALUATORS and PENDING_STATIC_ROWS exist with the shapes the OIDC pre-stage plan names;
-  if they differ, STOP and route a plan amendment through the coordinator (never reshape that check here).
+  if they differ, STOP and route a plan amendment through the coordinator (never reshape that check here). Also:
+  (i) if breakage_map.terraform_github_root.rec is not rec-3136, STOP and route through the coordinator: the
+  approved PLANNED_EVALUATOR_TAIL says it stays pending for rec-3136 and must be re-presented to the operator;
+  (ii) note how the check's own tests build their fixture contracts: any fixture whose synthetic breakage_map
+  carries the four rec-3903 static rows would now run their evaluators against a non-git tmp_path and fail closed,
+  so those tests restrict ROW_EVALUATORS to the OIDC entry (monkeypatch a copy) without weakening any assertion, and
+  test_rec_3903_rows_are_evaluated_not_pending proves the four rows on the real module (Decision 181).
 - >-
   .github/workflows/dependabot-auto-merge.yml: the job if becomes exactly
   "github.event.pull_request.user.login == 'dependabot[bot]' && (github.repository == 'benjamin-blake/theseus' || github.repository == 'otl-labs/ontheloop')".
@@ -503,7 +562,8 @@ execution_steps:
   f"https://api.github.com/repos/{repo_identity.full_name()}". validate_ghas_probe.py: _repo() returns
   repo_identity.full_name(); delete _DEFAULT_REPO. Add the named module-level tests (VP step 3), each setting
   GITHUB_REPOSITORY to example-org/example-repo and asserting every captured URL contains
-  repos/example-org/example-repo/ (or the constant equals it): the approvals test parametrized over its three
+  repos/example-org/example-repo (no trailing slash: github_readiness's URL ends there; or the constant equals it):
+  the approvals test parametrized over its three
   functions, the budget test covering collect_budget_episodes and ingest_budget_breaches (dry_run, injected callers
   and rec lists), and the new tests/convergence_health/test_sensor_liveness_repository.py parametrized over
   detect_stale_loops and stale_peers_for_probe.
@@ -524,7 +584,8 @@ execution_steps:
   line; (5) every pin with no match fails as stale; (6) identity.phase in pre_staged, transferred, proven or
   predecessor_removed requires the real dependabot job if to contain github.repository == '<target owner>/<target
   repository>' read from identity.target; (7) identity.phase predecessor_removed requires SWEEP_PINS empty.
-  Populate SWEEP_PINS and SURVIVOR_PINS from the live tree after the edits above (expected sets: the sweep plan's
+  Stage every new file (git add) first, since the scan reads tracked files only, then populate SWEEP_PINS and
+  SURVIVOR_PINS from the live tree after the edits above (expected sets: the sweep plan's
   scope files that carry the retired identity, and the survivors in context). Create
   tests/checks/contracts/test__retired_identity.py with the eight nodes in VP step 7 plus the live-tree pass, at
   100% coverage, using tmp git repositories and fixture contracts.
@@ -533,6 +594,12 @@ execution_steps:
   (for example ROW_EVALUATORS.update(...) or a merged literal, matching the module's style) and PENDING_STATIC_ROWS
   loses the four rec-3903 ids, keeping terraform_github_root -> rec-3136; add test_rec_3903_rows_are_evaluated_not_pending
   to its test file and adjust any expectation that listed them as pending. The scan lives in the helper.
+- >-
+  scripts/checks/contracts/_manifest.py: if validate_github_org_transfer's Entry has pre_globs, set pre_globs=None
+  (keep pre=True and its full_segment) with a comment naming the whole-tree read set; in
+  tests/checks/contracts/test__manifest.py remove its _CLOSURE_INPUTS row and add TestGithubOrgTransferUngated with
+  test_is_dispatched_in_pre and test_declares_no_pre_globs, modelled on TestPortalDriftPromotedUngated. If the OIDC
+  build already registered it ungated, only confirm VP step 15.
 - |
   APPROVED CONTRACT TEXT (operator Benjamin, 2026-10-15 21:29 UTC, thread message cmsg_017f94mmYqSe3q2p9o6tPW3UG2Az1j3ZgZBFjCpEvZ4PDb; allowed variance: the amendment_log dates only). FILE_ROUTER_SUMMARY is the docs/contracts/file-router.yaml entry's summary (see the repo_identity step).
   Apply to docs/contracts/github-org-transfer.yaml, on top of the OIDC pre-stage plan's merged amendment:
@@ -557,7 +624,7 @@ execution_steps:
 - >-
   Closure (implement skill Commit Flows; docs/contracts/git-ops.yaml), each outcome reported separately:
   bin/venv-python -m scripts.session.github_readiness; implementation_declared true in this plan; rebase on
-  origin/main; VP steps 1-12; VP step 13 on the committed clean tree, then --verify-head; write the implementation
+  origin/main; VP steps 1-12, 15 and 16; VP step 13 on the committed clean tree, then --verify-head; write the implementation
   retrospective with the scripts.session.postflight_evidence.CATEGORIES keys and run bin/venv-python -m
   scripts.session.postflight --evidence <that file>; push; open the PR; subscribe to its activity; drive CI green;
   merge on code-review PROCEED plus green CI (no rec is resolved: rec-3903 stays open for the sweep plan; no

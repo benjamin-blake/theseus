@@ -97,7 +97,10 @@ scope:
     ((ontheloop)); comment-only.
 - file: scripts/checks/contracts/_retired_identity.py
   action: Modify
-  purpose: SWEEP_PINS becomes empty, so the old identity is forbidden everywhere outside the named survivors.
+  purpose: >-
+    SWEEP_PINS becomes empty, so the old identity is forbidden everywhere outside the named survivors; SURVIVOR_PINS
+    gains config/agent/verification_registry/entries/roadmap-retired-brand-tokens-absent.yaml, whose approved clause
+    asserts the retired full name is absent and so must name it.
 - file: tests/checks/contracts/test__retired_identity.py
   action: Modify
   purpose: Add test_sweep_set_is_empty (red before, green after).
@@ -121,9 +124,11 @@ acceptance_criteria:
   auto-merge job ran rather than being skipped (or the post-deploy step records it as pending).
 - scripts/repo_identity.py falls back to otl-labs/ontheloop when GITHUB_REPOSITORY is unset or malformed.
 - >-
-  Every swept line differs from main only by benjamin-blake/theseus -> otl-labs/ontheloop (the two bin/setup-cloud-env.sh
-  comments and the validate_licence_consistency docstring line excepted, as approved); no person reference, frozen
-  internal identifier or historical record changed.
+  Every swept line differs from main only by benjamin-blake/theseus -> otl-labs/ontheloop, except the approved
+  edits (the two bin/setup-cloud-env.sh comments, validate_licence_consistency docstring line 13, the two
+  terraform/github/CLAUDE.md import lines, the dependabot gate, the two registry clauses) and the plan-authored comment
+  edits in validate_licence_consistency.py (docstring lines 28-29, inline comment line 63); no person reference,
+  frozen internal identifier or historical record changed.
 - The two verification-registry rows change in the same PR as the text they assert; each fails on origin/main and passes on HEAD.
 - rec-3903's acceptance is the operator-approved oracle, it holds at the closing sha, and rec-3903 is closed.
 verification_plan:
@@ -176,7 +181,9 @@ verification_plan:
   expected: Exit 0 and SWEEP_SET_EMPTY printed.
   fix_if: >-
     A non-empty set means a pinned file was not swept; a check failure names the file and line still carrying the
-    retired identity. Sweep it if it is in scope; otherwise STOP and route an amendment.
+    retired identity. Sweep it if it is a forward-standing reference in scope; if it is an absence assertion of the
+    retired identity (a test or registry clause that must name it), add it to SURVIVOR_PINS with that reason. Never
+    reword approved text; anything else, STOP and route an amendment.
   hermetic: true
   graduation: graduate
   graduation_check_id: retired-repo-identity-sweep-set-empty
@@ -474,7 +481,8 @@ constraints:
   docs/decisions-index.json, audits/, docs/audit-prompts/, tests/fixtures/; contract descriptive_literals row).
 - >-
   Frozen internal identifiers stay (Decision 101(b), Decision 171 clause 1, Decision 218 clause 1): only the full
-  name benjamin-blake/theseus moves, plus the two approved bin/setup-cloud-env.sh comments.
+  name benjamin-blake/theseus moves, plus the approved bare-name edits (the two bin/setup-cloud-env.sh comments and the
+  two terraform/github/CLAUDE.md import lines) and the plan-authored validate_licence_consistency.py comment edits.
 - >-
   Person references to the login stay (CODEOWNERS, the tf-gated-apply environment reviewer, the bypass actor;
   breakage_map.codeowners retained by rec-3903 on 2026-10-15).
@@ -535,7 +543,10 @@ execution_steps:
   route a scope amendment to the planning thread through the coordinator before editing anything. Also confirm, from
   the transfer contract's evidence_ledger or the transfer runbook's record, that the other predecessor removals
   (old PyPI publisher, old fine-grained PATs, classic terraform/github PAT, plan App, personal Claude App
-  installation) are recorded done; if any is not, STOP: the contract keeps this sweep last.
+  installation) are recorded done; if any is not, STOP: the contract keeps this sweep last. Also confirm from the
+  same record that the successor GHAS_PROBE_TOKEN and GitHub MCP PAT were narrowed to otl-labs/ontheloop (the
+  contract's fine_grained_pat fix allows all repositories or narrowed); if either is not, STOP and route to the
+  operator: the approved comments "repo-scoped to otl-labs/ontheloop only" and "(ontheloop)" would be false.
 - >-
   Substitution rule (operator-approved): in each of the following, replace each occurrence of benjamin-blake/theseus
   with otl-labs/ontheloop and change nothing else on the line (packages/* descriptions, repository URLs and docstrings;
@@ -568,7 +579,9 @@ execution_steps:
   becomes "agent-platform -> theseus under the same owner"; and, plan-authored so the docstring stays true once line
   38 changes, "line 38's `cd /home/user/agent-platform` is an on-disk checkout path" / "(rename-independent)" become
   "line 38's `cd /home/user/<checkout>` comment is an on-disk checkout path" / "(not a repository reference)", same
-  line count. bin/setup-cloud-env.sh: line 38's comment becomes
+  line count; and line 63's inline comment "# (`cd /home/user/agent-platform`) or the data-lake bucket" becomes
+  "# (the `cd /home/user/<checkout>` comment) or the data-lake bucket", same line count. bin/setup-cloud-env.sh: line
+  38's comment becomes
   "#     cd /home/user/ontheloop && bash bin/setup-cloud-env.sh" and line 61's "# (theseus), short-expiry GitHub token:"
   becomes "# (ontheloop), short-expiry GitHub token:". terraform/github/CLAUDE.md (operator-approved 22:07 UTC):
   "On a fresh state, import the existing `theseus` repository rather than recreating it, and" becomes "On a fresh
@@ -577,20 +590,23 @@ execution_steps:
   "terraform -chdir=terraform/github import github_repository.this ontheloop" -- skip either line if the terraform/github
   re-key (rec-4355) already changed it.
 - >-
-  tests/convergence_health/test_escalate.py: add test_stuck_approval_acceptance_names_the_new_repository asserting
-  escalate._ACCEPTANCE_STUCK_APPROVAL contains "repos/otl-labs/ontheloop/" and not "benjamin-blake".
+  tests/convergence_health/test_escalate.py: add the module-level test_stuck_approval_acceptance_names_the_new_repository
+  asserting escalate._ACCEPTANCE_STUCK_APPROVAL starts with
+  "gh api 'repos/otl-labs/ontheloop/actions/workflows/terraform-apply-sandbox.yml/runs" (an exact prefix, so the test
+  names no retired literal the guard would have to pin).
 - >-
-  scripts/checks/contracts/_retired_identity.py: SWEEP_PINS becomes an empty dict; SURVIVOR_PINS unchanged.
+  scripts/checks/contracts/_retired_identity.py: SWEEP_PINS becomes an empty dict; SURVIVOR_PINS gains
+  "config/agent/verification_registry/entries/roadmap-retired-brand-tokens-absent.yaml": "asserts the retired full name
+  is absent from the roadmap" and is otherwise unchanged (both stay top-level literal dicts).
   tests/checks/contracts/test__retired_identity.py: add test_sweep_set_is_empty asserting SWEEP_PINS == {}.
 - |
   APPROVED SWEEP TEXT (operator Benjamin: 2026-10-15 21:29 UTC cmsg_017f94mmYqSe3q2p9o6tPW3UG2Az1j3ZgZBFjCpEvZ4PDb and 22:07 UTC cmsg_017f94mmYqSe3q2p9o6tPW3U8GfzuBFLUy1qGDttCm5jx9; no variance).
-  rec-3903: through the ops portal (fetch with recs_by_ids first), run VP step 16 on REC_3903_ACCEPTANCE, then update_rec its acceptance to exactly REC_3903_ACCEPTANCE and append REC_3903_CONTEXT_NOTE (with the date) to its context. Do this BEFORE the merge: Decision 201 keys the closure verdict to the acceptance text at the closing sha.
+  rec-3903: through the ops portal (fetch with recs_by_ids first), run VP step 16 on REC_3903_ACCEPTANCE, then update_rec its acceptance to exactly REC_3903_ACCEPTANCE and append the plan-authored context note in the next step. Do this BEFORE the merge: Decision 201 keys the closure verdict to the acceptance text at the closing sha.
 
   REC_3903_ACCEPTANCE:
   ! git grep -n -E "benjamin-blake/theseus|[\"']benjamin-blake[\"']" -- scripts/ .github/workflows/ terraform/github/variables.tf ':!scripts/checks/contracts/_retired_identity.py' && bin/venv-python -m pytest -q tests/checks/contracts/test__retired_identity.py::test_sweep_set_is_empty
-  REC_3903_CONTEXT_NOTE:
-  [<date>, PLAN-retired-repo-identity-sweep] acceptance rewritten (operator-approved 2026-10-15): the old oracle matched person references and the agent-platform pins forever; the new one keeps every original path and adds the empty-sweep-set test. rec-3903's earlier note that validate_licence_consistency should gain the new forbidden slug is superseded: validate_github_org_transfer guards the retired identity (one guard per identity; the licence check keeps the earlier rename only).
-
+- >-
+  Plan-authored rec-3903 context note (not operator wording), appended through update_rec with its date: "[<date>, PLAN-retired-repo-identity-sweep] acceptance rewritten (operator-approved 2026-10-15): the old oracle matched person references and the agent-platform pins forever; the new one keeps every original path and adds the empty-sweep-set test. rec-3903's earlier note that validate_licence_consistency should gain the new forbidden slug is superseded: validate_github_org_transfer guards the retired identity (one guard per identity; the licence check keeps the earlier rename only)."
 - Execute the Verification Plan pre-deploy steps; loop until pass; on an unrecoverable failure STOP and RCA (Decision 55).
 - >-
   Closure (implement skill Commit Flows; docs/contracts/git-ops.yaml), each outcome reported separately:
@@ -598,14 +614,19 @@ execution_steps:
   origin/main; VP steps 1-9 and 13-16; VP step 10 on the committed clean tree, then --verify-head; write the
   implementation retrospective with the scripts.session.postflight_evidence.CATEGORIES keys and run
   bin/venv-python -m scripts.session.postflight --evidence <that file>; push; open the PR; subscribe to its activity;
-  drive CI green. The PR touches /terraform/github/ (terraform/github/CLAUDE.md), a .github/CODEOWNERS path, so it
-  waits at green CI for the operator's code-owner approval: ask for it in the build thread; never an admin-bypass
-  merge. Then squash-merge on code-review PROCEED plus green CI plus that approval, with the PR body as the commit
-  message carrying "Resolves: rec-3903"; then post-deploy VP steps 11 and 12.
+  drive CI green to code-review PROCEED. The PR touches /terraform/github/ (terraform/github/CLAUDE.md), a
+  .github/CODEOWNERS path, and agent PRs are authored as the operator, the sole code owner, who cannot approve their
+  own PR; under roadmap T2.50 c1 the only merge path is a deliberate, GitHub-audit-logged admin bypass (Decision 83).
+  So the build STOPS at green CI plus PROCEED and hands the merge to the operator in the build thread: the operator
+  either performs the squash merge or explicitly directs it in typed words, with the PR body as the commit message
+  carrying "Resolves: rec-3903" (or, if another code owner exists by then, that owner approves and the standing merge
+  rule applies). Never bypass on the build's own initiative. Then post-deploy VP steps 11 and 12.
 - >-
   Report each outcome separately (readiness, implementation_declared, rebase, VP results, full tier and
-  --verify-head, postflight evidence path, push, PR URL, CI, code-owner approval, merge, rec-3903 closure, VP step 12
-  proven or pending).
+  --verify-head, postflight evidence path, push, PR URL, CI, code review, the operator's merge (who merged and how),
+  rec-3903 closure, VP step 12 proven or pending).
 rollback: >-
   Revert the squash commit: every change is text in the repository and the redirect from the old path keeps working,
-  so a revert restores the previous state with no live effect. Re-open rec-3903 through the portal if it was closed.
+  so a revert restores the previous state with no live effect. If rec-4357 has already flipped identity.phase to
+  predecessor_removed, revert that flip first (the guard forbids sweep pins at that phase). Re-open rec-3903 through
+  the portal if it was closed.
