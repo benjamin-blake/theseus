@@ -40,8 +40,15 @@ scope:
   action: Modify
   purpose: >-
     "## V3 Post-Deploy Evidence" first paragraph: replace the approved old span with the approved new span, verbatim
-    (context), keeping the four-line wrapped layout. -10 bytes; no budget edit. The High-finding bullets below it are
-    unchanged.
+    (execution_steps), and shorten the section's closing V1/V2 sentence as given there, so the High-finding bullets read
+    correctly for an admin-only root (only bullet 1, evidence absent, applies). Net +2 bytes against 4 of headroom; no
+    budget edit. The bullets themselves are unchanged.
+- file: .claude/skills/plan-critique/SKILL.md
+  action: Modify
+  purpose: >-
+    Item 12c gains one sentence pointing at the rule (verbatim in execution_steps), so a critic judges the gate step's
+    declared expected outcome -- the coverage the contract's enforcement field names. +104 bytes against exactly 104 of
+    headroom; no budget edit.
 - file: scripts/checks/verification/validate_admin_root_premerge_gate.py
   action: Create
   purpose: >-
@@ -58,7 +65,8 @@ scope:
     verification_plan step with phase pre-deploy whose command contains "terraform", " plan", "-lock=false", the root
     string and "PR_HEAD_SHA"; (2) ENVIRONMENT CHECK -- a pre-deploy step whose command contains "get-caller-identity"
     and "ADMIN_CHAIN_OK"; (3) V3 RESOLUTION -- a context entry (string) whose stripped text starts with
-    "V3 resolution:". The four marker strings are module constants. An unparseable plan is one finding. Prints PASS/FAIL
+    "V3 resolution:". Module constants: GATE_MARKERS = ("terraform", " plan", "-lock=false", "PR_HEAD_SHA") (plus the
+    derived root), ENV_MARKERS = ("get-caller-identity", "ADMIN_CHAIN_OK"), V3_PREFIX = "V3 resolution:". An unparseable plan is one finding. Prints PASS/FAIL
     lines like its siblings and declares registry.examined(...) on every reachable exit (Decision 170). Module stays
     well under 500 SLOC.
 - file: scripts/checks/verification/_manifest.py
@@ -82,14 +90,17 @@ scope:
     post-deploy; gate command missing -lock=false; gate command missing PR_HEAD_SHA; gate command naming a different root;
     no ENVIRONMENT CHECK step; no "V3 resolution:" context line. Fail-closed: a taxonomy with no admin-only row and an
     unreadable taxonomy each produce a finding. Real data: the real taxonomy derives exactly ["terraform/bootstrap"].
-    Drift pin: each of the module's four marker constants appears in deploy-paths.yaml's pre_merge_live_plan rule text.
+    Drift pin: every literal in GATE_MARKERS, ENV_MARKERS and V3_PREFIX (seven) appears in deploy-paths.yaml's
+    pre_merge_live_plan rule text, whitespace-folded.
 - file: tests/test_deploy_paths_admin_procedure.py
   action: Modify
   purpose: >-
     Add tests: admin_out_of_band.pre_merge_live_plan exists with description, rule (4 entries, the first three starting
     "PRE-MERGE GATE (ADMIN)", "ENVIRONMENT CHECK", "V3 RESOLUTION"), enforcement naming validate_admin_root_premerge_gate,
-    and precedent; the newest amendment_log entry names pre_merge_live_plan; each of the planning, implement and
-    code-review SKILL.md files contains "admin_out_of_band.pre_merge_live_plan". Existing PRE-APPLY test unchanged.
+    and precedent; the newest amendment_log entry names pre_merge_live_plan; each of the planning, implement,
+    code-review and plan-critique SKILL.md files contains "admin_out_of_band.pre_merge_live_plan". All new tests live in
+    one class, TestPreMergeLivePlan (VP step 2's selector and the registry entry's node_id). Existing PRE-APPLY test
+    unchanged.
 - file: config/agent/verification_registry/entries/admin-root-premerge-gate-validator-tests.yaml
   action: Create
   purpose: >-
@@ -102,7 +113,7 @@ scope:
   purpose: >-
     Graduation record for VP step 2: primitive_slot test_selector, guard_target docs/contracts/deploy-paths.yaml,
     guard_symbol null, plan_slug admin-root-premerge-plan-gate, graduated_at the implementation date, graduated_by
-    implement-agent, check_spec.node_id tests/test_deploy_paths_admin_procedure.py.
+    implement-agent, check_spec.node_id tests/test_deploy_paths_admin_procedure.py::TestPreMergeLivePlan.
 bundled_recommendations:
 - rec-4140
 followon_recs:
@@ -111,7 +122,7 @@ followon_recs:
 infrastructure_dependencies: []
 acceptance_criteria:
 - deploy-paths.yaml carries admin_out_of_band.pre_merge_live_plan byte-for-byte as approved, plus a 2026-10-15 field_add amendment_log entry; validate_contract_drift passes.
-- The planning, implement and code-review skills carry the approved pointer text verbatim and every skill stays within config/prose_budgets.yaml with no budget edit (validate_prose_limits and validate_prose_budget_raises pass).
+- The planning, implement, code-review and plan-critique skills carry the approved pointer text verbatim and every skill stays within config/prose_budgets.yaml with no budget edit (validate_prose_limits and validate_prose_budget_raises pass).
 - validate_admin_root_premerge_gate is registered in the fast tier and flags each missing clause separately on a net-new plan touching terraform/bootstrap, passes a compliant plan, ignores plans not touching an admin-only root, and fails closed when no admin-only root can be derived.
 - Run against the merged PLAN-heartbeat-canary-plan-time-grant.yaml, the check finds its pre-merge gate step and reports exactly the two clauses that plan predates (ENVIRONMENT CHECK, V3 RESOLUTION).
 - rec-4140 is closed by the squash merge (Resolves trailer) and its acceptance command passes.
@@ -127,11 +138,11 @@ verification_plan:
   graduation_check_id: admin-root-premerge-gate-validator-tests
 - step: 2
   phase: pre-deploy
-  action: The contract key, its amendment_log entry and the three skill pointers
-  command: bin/venv-python -m pytest tests/test_deploy_paths_admin_procedure.py -q
-  expected: all tests pass, including the pre-existing PRE-APPLY ordering test
+  action: The contract key, its amendment_log entry and the four skill pointers
+  command: bin/venv-python -m pytest "tests/test_deploy_paths_admin_procedure.py::TestPreMergeLivePlan" -q
+  expected: every test in the class passes; before the change the class does not exist (exit 4, red). The pre-existing PRE-APPLY test runs in steps 6 and 7
   fix_if: a pointer or key is missing or misnamed -- restore the approved text
-  hermetic: false
+  hermetic: true
   graduation: graduate
   graduation_check_id: deploy-paths-pre-merge-live-plan-pointers
 - step: 3
@@ -157,11 +168,11 @@ verification_plan:
   graduation: not-applicable
 - step: 5
   phase: pre-deploy
-  action: Approved text landed verbatim
+  action: Approved contract key landed verbatim -- the APPROVED_KEY block parsed from this plan equals the landed key
   command: |-
-    bin/venv-python -c "import yaml; d=yaml.safe_load(open('docs/contracts/deploy-paths.yaml')); k=d['admin_out_of_band']['pre_merge_live_plan']; print('RULES', len(k['rule']), 'ENFORCEMENT', 'validate_admin_root_premerge_gate' in k['enforcement']); assert len(k['rule'])==4" && git diff origin/main --stat -- docs/contracts/deploy-paths.yaml .claude/skills/planning/SKILL.md .claude/skills/implement/SKILL.md .claude/skills/code-review/SKILL.md
-  expected: RULES 4 ENFORCEMENT True, and a diff limited to the four files; then compare the diff by eye against /mnt/project-files/admin-plan-rule/step6b-presentation.md (no wording drift)
-  fix_if: any wording differs from the approved text -- restore it; a needed change goes back to Benjamin
+    bin/venv-python -c "import yaml,textwrap; p=yaml.safe_load(open('docs/plans/PLAN-admin-root-premerge-plan-gate.yaml')); t=p['execution_steps'][0]; blk=t.split('APPROVED_KEY:\n',1)[1].split('\nThen prepend',1)[0]; want=yaml.safe_load(textwrap.dedent(blk))['pre_merge_live_plan']; got=yaml.safe_load(open('docs/contracts/deploy-paths.yaml'))['admin_out_of_band']['pre_merge_live_plan']; assert got==want, 'contract key differs from the approved text'; assert 'validate_admin_root_premerge_gate' in got['enforcement']; print('APPROVED KEY VERBATIM')"
+  expected: APPROVED KEY VERBATIM printed, exit 0; then compare the four skill spans by eye against execution_steps[1]-[4]
+  fix_if: any difference -- restore the approved text; a needed wording change goes back to Benjamin
   hermetic: false
   graduation: not-applicable
 - step: 6
@@ -171,8 +182,18 @@ verification_plan:
   expected: exit 0, validate_admin_root_premerge_gate listed and PASS (this plan touches no admin-only root)
   fix_if: any failure -- fix on the branch
   hermetic: false
-  graduation: not-applicable
+  graduation: waive
+  graduation_waiver_reason: A whole fast-tier run over diff-relative state; graduate steps may not invoke scripts.validate (recursion), and steps 1-2 carry the durable regressions.
 - step: 7
+  phase: pre-deploy
+  action: Full tier, then HEAD attestation, before commit and push (handoff_policy)
+  command: bin/venv-python -m scripts.validate && bin/venv-python -m scripts.checks.validation_result --verify-head
+  expected: the full tier exits 0 and the validation result attests the current HEAD's tree
+  fix_if: any failure -- fix and rerun the full tier from the start; never push on a partial or timed-out run
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: The full tier cannot graduate (recursion refusal) and depends on the whole tree at HEAD; it is the handoff gate, not a regression check.
+- step: 8
   phase: post-deploy
   action: Closure -- rec-4140 closed by the squash merge
   command: |-
@@ -195,22 +216,27 @@ test_obligations:
 - source: docs/contracts/deploy-paths.yaml
   behavior: the pre_merge_live_plan key, its three labelled clauses and its enforcement field exist
   verification_step: 2
-  test_selector: tests/test_deploy_paths_admin_procedure.py
+  test_selector: "tests/test_deploy_paths_admin_procedure.py::TestPreMergeLivePlan"
   red_green_expectation: red before (key absent), green after
 - source: .claude/skills/planning/SKILL.md
   behavior: the planning skill points at the rule
   verification_step: 2
-  test_selector: tests/test_deploy_paths_admin_procedure.py
+  test_selector: "tests/test_deploy_paths_admin_procedure.py::TestPreMergeLivePlan"
   red_green_expectation: red before (pointer absent), green after
 - source: .claude/skills/implement/SKILL.md
   behavior: the V3 Merge Gate names the admin-only-root substitution
   verification_step: 2
-  test_selector: tests/test_deploy_paths_admin_procedure.py
+  test_selector: "tests/test_deploy_paths_admin_procedure.py::TestPreMergeLivePlan"
+  red_green_expectation: red before (pointer absent), green after
+- source: .claude/skills/plan-critique/SKILL.md
+  behavior: plan-critique 12c points at the rule
+  verification_step: 2
+  test_selector: "tests/test_deploy_paths_admin_procedure.py::TestPreMergeLivePlan"
   red_green_expectation: red before (pointer absent), green after
 - source: .claude/skills/code-review/SKILL.md
   behavior: the V3 evidence check accepts the pre-merge plan evidence for admin-only roots
   verification_step: 2
-  test_selector: tests/test_deploy_paths_admin_procedure.py
+  test_selector: "tests/test_deploy_paths_admin_procedure.py::TestPreMergeLivePlan"
   red_green_expectation: red before (pointer absent), green after
 - source: config/ci_rca_taxonomy.yaml
   behavior: the new check has a ci-rca taxonomy row
@@ -228,7 +254,7 @@ test_obligations:
   command: bin/venv-python -m scripts.validate --pre
   red_green_expectation: red before (a graduate step with no registry row fails validate_graduation_completeness), green after
 constraints:
-- "Approved text is verbatim (Benjamin, 2026-10-15) -- the deploy-paths.yaml key and the three skill spans in execution_steps; allowed variance none except the amendment_log date and summary. Any other change goes back to Benjamin before merge."
+- "Approved text is verbatim (Benjamin, 2026-10-15, plus the critique round 1 additions approved separately) -- the deploy-paths.yaml key and the skill spans in execution_steps; allowed variance none except the amendment_log date and summary. Any other change goes back to Benjamin before merge."
 - No prose budget raise (Decision 128/165); no Decision text; no terraform, no AWS write.
 - Public repo (Decision 101) -- logical role names only; no account id, ARN or ExternalId anywhere.
 - Contract stays navigation + rule; apply-model and guard rules stay in environment-taxonomy.yaml (Decision 92 pt 5, Decision 86).
@@ -237,7 +263,7 @@ constraints:
 context:
 - "Decision-scout verdict: FLAGS_FOUND (WARN 163 -> resolved by the validator; WARN 181 cl.2 -> resolved by the enforcement field naming the check per clause, V3 change framed as a substitution; NOTE 126 -> the gate is read-only, runs on the operator's direction; NOTE 48 -> substitution wording, no Decision edit). CITE: Decision 101, 168, 127, 86, 128, 103. Decisions triaged: 170 of 170. Roadmap items intersected: 4; CONFLICT: 0; RELATED: 4"
 - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
-- "Step 6b (Benjamin, 2026-10-15, 'write the plan'): F1 validator now; F2 pointers in planning + implement + code-review; F3 admin-only taxonomy roots only (terraform/github -> rec-4335, to be built in the otl-labs ownership migration); F4 no Decision 48 edit. Evidence: /mnt/project-files/admin-plan-rule/ (step6b-presentation.md, ADVICE.md)."
+- "Step 6b (Benjamin, 2026-10-15, 'write the plan'): F1 validator now; F2 pointers in planning + implement + code-review; F3 admin-only taxonomy roots only (terraform/github -> rec-4335, to be built in the otl-labs ownership migration); F4 no Decision 48 edit. Evidence: /mnt/project-files/admin-plan-rule/ (step6b-presentation.md, ADVICE.md). Critique round 1 added two always-ask text changes (plan-critique 12c pointer; code-review V3 bullet scoping, critique F3/F4), approval PENDING -- the plan PR does not merge until Benjamin approves them in the thread."
 - "Incident: #1316 merged terraform/bootstrap HCL that could not be planned (provider plan-time states:ValidateStateMachineDefinition); #1323 fixed it with a read-only pre-merge ADMIN plan. Precedent gate steps: PLAN-heartbeat-canary-plan-time-grant steps 9-12, PLAN-platform-iam-bootstrap-adopt steps 8-11."
 - "Root cause (d), delegation prompts softening plan steps, is out of scope -> rec-4336."
 - "CI-RCA deferral: rec-4320 (Critical, telemetry writer TransactionException, src/common/ducklake_telemetry_txn.py) is unrelated (no shared file, Decision or failure category). Benjamin deferred it for this workstream on 2026-10-15 (owned by another project); this plan touches no telemetry surface."
@@ -310,12 +336,19 @@ execution_steps:
   a posted post-deploy evidence artifact: live invocation output AND a real run URL that coheres
   with the plan's post-deploy expected outcomes (Decision 103). Admin-only root
   (deploy-paths.yaml admin_out_of_band.pre_merge_live_plan): the posted pre-merge plan evidence for
-  the PR head is the artifact; no run URL needed.
+  the PR head is the artifact, judged by the gate step's expected outcome; only bullet 1
+  applies.
+  Also in the same section replace
+  OLD: Not applicable to V1/V2-tier plans -- skip this check for those and do not raise a finding.
+  NEW: Skip this check for V1/V2-tier plans; raise no finding.
+- |-
+  .claude/skills/plan-critique/SKILL.md -- append to the end of item 12c (after "recommend REVISE with the specific VP steps that need commands or tags added.") this sentence verbatim, preceded by one space:
+  Admin-only root in scope: REVISE unless deploy-paths.yaml admin_out_of_band.pre_merge_live_plan is met.
 - Create scripts/checks/verification/validate_admin_root_premerge_gate.py; register it in scripts/checks/verification/_manifest.py; add the config/ci_rca_taxonomy.yaml row.
 - Create tests/checks/verification/test_validate_admin_root_premerge_gate.py; extend tests/test_deploy_paths_admin_procedure.py; create the two verification-registry entries.
-- Execute Verification Plan steps 1-6 -- run each step; loop until pass; on unrecoverable failure stop and RCA (Decision 55). Full validate exits 0 before commit (handoff_policy).
+- Execute Verification Plan steps 1-7 -- run each step; loop until pass; on unrecoverable failure stop and RCA (Decision 55). Commit and push only after step 7 (full tier exit 0, then validation_result --verify-head) passes on the final tree.
 - "Open the PR; code review; squash-merge on code-review PROCEED + green CI with the PR body passed as the commit message carrying the Resolves trailer for rec-4140. The merge carries contract and skill text approved verbatim at step 6b (Benjamin, 2026-10-15); if any wording changed, hold for Benjamin."
-- After merge run VP step 7.
+- After merge run VP step 8.
 - 'Report: what was implemented, verification results, rec-4140 closure.'
 work_areas: []
 rollback: Revert the PR. Nothing live changes; the validator only reads plans and the taxonomy.
