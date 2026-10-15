@@ -30,6 +30,8 @@ Every non-governance doc class has a subtree home; put new files there, not at t
 
 Example: `docs/contracts/package-registry-reservation.yaml`'s `procedure:` block holds the
 PyPI/npm/crates.io namespace-reservation walkthrough (rec-3941).
+`docs/contracts/github-org-transfer.yaml`'s `procedure:` block holds the GitHub organisation
+transfer's pre-stage steps and transfer-window checklist (rec-3905).
 
 Audit OUTPUTS live in `audits/`, not under `docs/`. The discovery index is
 `docs/contracts/file-router.yaml`.

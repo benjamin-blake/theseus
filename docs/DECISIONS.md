@@ -2,6 +2,65 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 218: The repository moves to otl-labs/ontheloop in one transfer-and-rename, and Decision 172's pre-stage playbook covers the owner half (amends Decisions 171, 172, 198) (Decided)
+
+```yaml
+number: 218
+status: Decided
+decided_date: "2026-10-15"
+amends: [171, 172, 198]
+significance:
+  value: numbered_decision
+  justification: >-
+    The repository's public identity and the owner half of every CI trust subject change for the
+    life of the repository. Not a contract note: github-org-transfer.yaml owns the procedure, but
+    Decision 171 cl.1 named the repository by an explicit Decision, and Decision 198 cl.3's
+    identifier map is a ratified set an annotation cannot widen.
+```
+
+**Status:** Decided
+**Date:** 2026-10-15
+**Warehouse ID:** dec-218 (per Decision 84 backfill)
+
+**Problem:** On The Loop Labs Limited owns the platform (Decision 195) and its GitHub organisation
+is `otl-labs` (Decision 198 cl.3), but the repository still lives at `benjamin-blake/theseus`, a
+personal account and a retired brand. Decision 172 cl.2's playbook assumes the numeric ids are
+permanent; a transfer changes the OWNER half, login and id, which the playbook never covered.
+
+**Decision:**
+1. **Identity.** The repository is transferred to `otl-labs` and renamed `theseus` -> `ontheloop`
+   in ONE operation, so the immutable OIDC subject changes once. Decision 198 cl.3's identifier
+   map gains the repository row `otl-labs/ontheloop`. Every other Decision 101(b) internal
+   identifier stays FROZEN, as Decision 171 cl.1 re-affirmed.
+2. **Owner half (amends 172 cl.2).** Only the REPOSITORY numeric id is durable. Before any
+   transfer, the target owner's segment, login and numeric id, is pre-staged additively in both
+   roots' `local.github_repos`, exact match (172 cl.3); the old segment is removed only after
+   live proof under the new one (172 cl.4).
+3. **Procedure.** `docs/contracts/github-org-transfer.yaml` holds the prerequisites, breakage
+   map, phases, rollback stance and predecessor removal; rollback is forward-fix with every
+   predecessor live until proof, never a transfer back.
+
+**Rationale:** One combined identity change halves the trust edits, freezes and sweeps (rec-3925)
+and retires the last external use of the Theseus brand (Decision 198 cl.1).
+
+```yaml reversal-conditions
+decision: 218
+review_by: 2027-04-30
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: transfer-not-executed
+    kind: manual
+    description: "review_by passes with the repository still under the personal account: re-confirm or withdraw clause 1."
+  - id: org-handle-reopened
+    kind: manual
+    description: "Decision 198's org-handle-reopened condition fires: re-decide clause 1 before any pre-stage."
+```
+
+**Related:** Decisions 171, 172, 198 (amended), 195, 101, 94, 77, 92, 126, 177; rec-3905,
+rec-3915, rec-3902, rec-3903, rec-3136, rec-4335, rec-3925.
+
+---
+
 ## Decision 217: Scale-readiness commitments gated on executor concurrency above 1 (amends Decisions 73, 196, 205, 206) (Decided)
 
 ```yaml
@@ -1294,6 +1353,9 @@ clause 7 handle reconciliation), Decision 184 (Guerdon's forward intent destinat
 (BUSL-1.1 licensing this rename rides). rec-3922 (this plan's bundled rec), rec-3902/rec-3905
 (org-handle/transfer sequence), rec-3986/rec-3990/rec-3992/rec-3995 (deferred residue).
 
+> **Amended by Decision 218 (2026-10-15):** Clause 3's identifier map gains the repository row
+> `otl-labs/ontheloop`.
+
 ---
 
 ## Decision 197: Work-item mechanism boundary -- the mechanism ships, the data does not; roadmap tier items and recommendations converge on one work-item model behind a storage port, and the executor's pick surface is kind-generic from its first implementation (Decided)
@@ -1503,6 +1565,9 @@ keystone of).
 > decided: `otl-labs`. The `org-handle-decided` reversal condition above is PARTIALLY discharged
 > -- the handle is recorded here, but rec-3905 stays open for its own deliverable
 > (`docs/contracts/github-org-transfer.yaml`). See Decision 198 for the full identifier map.
+
+> **Update (2026-10-15):** The `org-handle-decided` reversal condition is fully discharged by
+> Decision 218: rec-3905 closes with `docs/contracts/github-org-transfer.yaml`.
 
 ---
 
@@ -3417,6 +3482,11 @@ conditions:
 > open condition list are recorded facts, not stale; routed to the operator to re-arm or close the
 > stanza, not resolved here.
 
+> **Amended by Decision 218 (2026-10-15):** Clause 2's playbook extends to an org transfer: the
+> owner-transfer case changes the OWNER login and numeric id, so the target owner's segment is
+> pre-staged additively before the transfer, exactly as for a rename. Only the repository id is
+> durable. Procedure: `docs/contracts/github-org-transfer.yaml`.
+
 ---
 
 ## Decision 171: The repository is renamed agent-platform -> theseus and relicensed Apache-2.0 -> BUSL-1.1, forward-only (Decided)
@@ -3454,6 +3524,10 @@ Decision 111's curated public-portal enumeration goes stale on merge -- three ne
 Asymmetric by half. The RENAME was reversible by an owner-executed rename-back only while the old-slug OIDC subjects stayed trusted; that window closed with Decision 172's contraction, and a further rename now follows Decision 172 point 2's pre-stage playbook. The LICENCE flip is not reversible for published versions -- a later, more permissive relicense is always available prospectively, but no published BUSL version can be unpublished. Re-decide if: (a) a copyright-provenance audit finds a contribution not covered by an assignment, in which case the dual-licensing posture must be settled BEFORE any commercial licence is sold, not after; or (b) the Additional Use Grant is read as narrowing despite point 4, in which case it reverts to "None" and the Terms stand alone.
 
 **Related:** Decision 101, Decision 111, Decision 127, Decision 128, Decision 167, Decision 172.
+
+> **Amended by Decision 218 (2026-10-15):** Clause 1's repository name is superseded: the
+> repository becomes `otl-labs/ontheloop` in one transfer-and-rename. The FROZEN internal
+> identifiers are unchanged.
 
 ---
 
