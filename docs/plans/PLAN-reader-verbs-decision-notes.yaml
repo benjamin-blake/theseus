@@ -66,9 +66,9 @@ verification_plan:
     Build-facts precondition, run before any edit and again before the squash-merge: the reader verbs build has merged
     to main and ships every fact the three notes state (the module and its per-verb window cap, sessions_window, the
     two conflict columns, the dedupe test, the preflight gauge and its verb). The WINDOW VERBS leg guards the existing
-    contract note the 199 text points to (on main since 2026-10-05), not a build fact.
+    contract note the 199 text points to (on main since 2026-10-06, #1416), not a build fact.
   command: >-
-    git fetch -q origin main && git cat-file -e origin/main:src/common/ducklake_event_reads.py && git grep -q max_window_days origin/main -- src/common/ducklake_event_reads.py && git grep -q sessions_window origin/main -- src/common/ducklake_event_read_verbs.py && git grep -q conflicted_grain_keys origin/main -- 'src/common/ducklake_event_read*.py' && git grep -q derivation_conflicted origin/main -- 'src/common/ducklake_event_read*.py' && git grep -q conflicted_grain_keys origin/main -- tests/common/test_ducklake_event_read_dedupe.py && git grep -q check_telemetry_health origin/main -- scripts/session/preflight.py && git grep -q telemetry_health_count origin/main -- scripts/preflight/telemetry_health.py && git grep -q 'WINDOW VERBS' origin/main -- docs/contracts/telemetry_sessions.yaml && echo BUILD_ON_MAIN
+    git fetch -q origin main && git cat-file -e origin/main:src/common/ducklake_event_reads.py && git grep -q max_window_days origin/main -- src/common/ducklake_event_reads.py && git grep -q sessions_window origin/main -- src/common/ducklake_event_read_verbs.py && git grep -q conflicted_grain_keys origin/main -- 'src/common/ducklake_event_read*.py' && git grep -q derivation_conflicted origin/main -- 'src/common/ducklake_event_read*.py' && git grep -qi conflict origin/main -- src/common/ducklake_event_reads.py && git grep -q conflicted_grain_keys origin/main -- tests/common/test_ducklake_event_read_dedupe.py && git grep -q check_telemetry_health origin/main -- scripts/session/preflight.py && git grep -q telemetry_health_count origin/main -- scripts/preflight/telemetry_health.py && git grep -q 'WINDOW VERBS' origin/main -- docs/contracts/telemetry_sessions.yaml && echo BUILD_ON_MAIN
   expected: Prints BUILD_ON_MAIN.
   fix_if: >-
     A failing leg means the reader verbs build has not merged, or merged in a shape the approved text no longer
@@ -102,13 +102,15 @@ verification_plan:
     The sixth reader call is live: re-run the reader verbs plan's step 15 command, so the preflight telemetry-store
     gauge reports pass through the deployed reader (agent_platform credentials).
   command: >-
-    rm -f logs/.preflight-report.json; bin/venv-python -m scripts.session.preflight > /dev/null 2>&1; bin/venv-python -c "import json;h=json.load(open('logs/.preflight-report.json')).get('telemetry_health') or {};print(h); assert h.get('status')=='pass' and h.get('catalog')=='ducklake_smoke', h;print('GAUGE_LIVE_PASS')"
-  expected: telemetry_health status pass on catalog ducklake_smoke, then GAUGE_LIVE_PASS.
+    rm -f logs/.preflight-report.json; bin/venv-python -m scripts.session.preflight > /dev/null 2>&1; bin/venv-python -c "import json;h=json.load(open('logs/.preflight-report.json')).get('telemetry_health') or {};print(h); assert h.get('status')=='pass' and h.get('catalog'), h;print('GAUGE_LIVE_PASS', h['catalog'])"
+  expected: >-
+    telemetry_health status pass, then GAUGE_LIVE_PASS with the catalog it read: ducklake_smoke until slice 2c
+    (rec-4292) re-pins it to production, which is recorded in the report, not a failure.
   fix_if: >-
     unavailable means no credentials or a reader error: confirm `aws sts get-caller-identity --profile agent_platform`
     and retry once; unpopulated or a red build-side step 15 is the build thread's to fix. Never land the 215 note
-    while the gauge is not live. If slice 2c (rec-4292) has already re-pinned the gauge to production, a pass on the
-    production catalog satisfies this step: record the catalog name instead of failing on it.
+    while the gauge is not live. A catalog other than ducklake_smoke before slice 2c has merged is a build defect to
+    report, not a pass.
   hermetic: false
   graduation: not-applicable
 - step: 4
@@ -139,9 +141,10 @@ verification_plan:
     Append-only and verbatim, on the rebased tree: the diff against origin/main adds exactly three non-blank lines to
     docs/DECISIONS.md and removes none (Decision 177); each Decision's span holds exactly one added line; and each line
     equals its approved template in execution_steps[2] of this plan once the date, the PR number and (207 only) the
-    test node are normalised. The test node the 207 note names must exist in the dedupe test file.
+    test node are normalised. Each note is its entry's last non-blank line before `---`, and the test node the 207 note
+    names must exist in the dedupe test file.
   command: >-
-    bin/venv-python -c "import subprocess as s,re,yaml;d=s.run(['git','diff','--unified=0','origin/main','--','docs/DECISIONS.md'],capture_output=True,text=True,check=True).stdout.splitlines();rm=[l for l in d if l.startswith('-') and not l.startswith('--- a/')];ad=[l[1:] for l in d if l.startswith('+') and not l.startswith('+++ b/') and l[1:].strip()];assert not rm,rm;assert len(ad)==3,ad;st=yaml.safe_load(open('docs/plans/PLAN-reader-verbs-decision-notes.yaml',encoding='utf-8'))['execution_steps'][2];tp=dict((int(k.split()[1]),v) for k,v in (l.split(': ',1) for l in st.splitlines() if l.startswith('Decision ')));nz=lambda x:re.sub(r'test_ducklake_event_read_dedupe\.py::test_\w+','test_ducklake_event_read_dedupe.py::test_conflicted_keys_are_reported_never_resolved',re.sub(r'#\d+\)','#NNNN)',re.sub(r'^> \*\*Update \(\d{4}-\d{2}-\d{2}\)','> **Update (YYYY-MM-DD)',x)));t=open('docs/DECISIONS.md',encoding='utf-8').read();sp=lambda n:(lambda q:q[:q.index(chr(10)+'---'+chr(10))])(t[t.index('## Decision %d:'%n):]);got={n:[l for l in ad if l in sp(n)] for n in tp};assert all(len(v)==1 for v in got.values()),got;bad=[n for n in tp if nz(got[n][0])!=tp[n]];assert not bad,bad;nm=re.search(r'::(test_\w+)',got[207][0]).group(1);assert 'conflict' in nm and 'def '+nm+'(' in open('tests/common/test_ducklake_event_read_dedupe.py',encoding='utf-8').read(),nm;print('append-only and verbatim: 3 notes')"
+    bin/venv-python -c "import subprocess as s,re,yaml;d=s.run(['git','diff','--unified=0','origin/main','--','docs/DECISIONS.md'],capture_output=True,text=True,check=True).stdout.splitlines();rm=[l for l in d if l.startswith('-') and not l.startswith('--- a/')];ad=[l[1:] for l in d if l.startswith('+') and not l.startswith('+++ b/') and l[1:].strip()];assert not rm,rm;assert len(ad)==3,ad;st=yaml.safe_load(open('docs/plans/PLAN-reader-verbs-decision-notes.yaml',encoding='utf-8'))['execution_steps'][2];tp=dict((int(k.split()[1]),v) for k,v in (l.split(': ',1) for l in st.splitlines() if l.startswith('Decision ')));nz=lambda x:re.sub(r'test_ducklake_event_read_dedupe\.py::test_\w+','test_ducklake_event_read_dedupe.py::test_conflicted_keys_are_reported_never_resolved',re.sub(r'#\d+\)','#NNNN)',re.sub(r'^> \*\*Update \(\d{4}-\d{2}-\d{2}\)','> **Update (YYYY-MM-DD)',x)));t=open('docs/DECISIONS.md',encoding='utf-8').read();sp=lambda n:(lambda q:q[:q.index(chr(10)+'---'+chr(10))])(t[t.index('## Decision %d:'%n):]);got={n:[l for l in ad if l in sp(n)] for n in tp};assert all(len(v)==1 for v in got.values()),got;assert all([x for x in sp(n).splitlines() if x.strip()][-1]==got[n][0] for n in tp),'a note is not its entry last line';bad=[n for n in tp if nz(got[n][0])!=tp[n]];assert not bad,bad;nm=re.search(r'::(test_\w+)',got[207][0]).group(1);assert 'conflict' in nm and 'def '+nm+'(' in open('tests/common/test_ducklake_event_read_dedupe.py',encoding='utf-8').read(),nm;print('append-only and verbatim: 3 notes')"
   expected: >-
     Prints the append-only and verbatim line and exits 0. Measured at authoring time on a scratch copy of this branch:
     exit 1 with no notes; exit 0 with the three notes and a dedupe test file defining the node; exit 1 naming [199]
@@ -197,7 +200,8 @@ verification_plan:
   action: >-
     Full presubmit tier on the committed, rebased, clean tree (git-ops.yaml handoff_sequence), then the head
     attestation: validate_decisions_size (expect the Decision 199 amendment-delta WARN and the pre-existing
-    standing-pressure aggregate WARN, its count unchanged at 30),
+    standing-pressure aggregate WARN, 30 at planning; 31 only if another PR grew Decision 199 first, reported as
+    expected drift),
     validate_decision_currency, validate_decisions_index_freshness, validate_decision_entry_conformance,
     validate_verification_registry (the VF-06 differential admission of the new row) and
     validate_graduation_completeness.
@@ -230,12 +234,15 @@ verification_plan:
 - step: 10
   phase: post-deploy
   action: >-
-    rec-4024's record agrees with the 207 note (execution step 7): if rec-4024 is still open, its context names the
-    merge commit's short SHA, exported as MERGE_SHORT_SHA.
+    rec-4024's record agrees with the 207 note (execution step 7) and kept its history: if rec-4024 is still open, its
+    context starts with the new dated note, names the merge commit's short SHA (exported as MERGE_SHORT_SHA), and
+    still carries its earlier anchors.
   command: >-
-    bin/venv-python -c "import os;from src.common.ducklake_reader_client import make_reader,fetch_recs_by_ids;r,m=fetch_recs_by_ids(make_reader(profile='agent_platform'),['rec-4024']);x=r[0];assert x['status']!='open' or os.environ['MERGE_SHORT_SHA'] in (x.get('context') or ''),x['status'];print('REC_4024_OK',x['status'])"
+    bin/venv-python -c "import os;from src.common.ducklake_reader_client import make_reader,fetch_recs_by_ids;r,m=fetch_recs_by_ids(make_reader(profile='agent_platform'),['rec-4024']);x=r[0];c=x.get('context') or '';assert x['status']!='open' or (c.startswith('[') and 'reader-side coverage moved' in c.split(chr(10))[0] and os.environ['MERGE_SHORT_SHA'] in c and '[ORIGINAL CONTEXT FOLLOWS]' in c and 'SLICE 1 DELIVERED' in c),x['status'];print('REC_4024_OK',x['status'])"
   expected: REC_4024_OK with its status (closed by plan 4's build, or open with the note naming the merge SHA).
-  fix_if: An assertion means the update_rec note was not written or names another SHA; append it through the portal.
+  fix_if: >-
+    An assertion on an open rec-4024 means the note is missing, not first, names another SHA, or the write dropped
+    the earlier context: restore the prior context from rec_history and rewrite as execution step 7 says.
   hermetic: false
 test_obligations:
 - source: docs/DECISIONS.md
@@ -294,7 +301,7 @@ context:
   per-derivation single-partition bound verbatim; the ~3-clarification cap reads per clause; expect the 199 accretion
   WARN) and SPIRIT 86 NOTE (no day count in the 199 text): both resolved in the approved text. RELATED 84, 88, 93, 81,
   167, 150, 178, 201, 179, 160. Decisions triaged: 170 of 170. Roadmap items intersected: 3; CONFLICT: 0; RELATED: 3.
-- 'gates: decision-scout=FLAGS_FOUND (2 notes, resolved); plan-critique=REVISE r1 (R1-R5 fixed), REVISE r2 (R1 deploy-run binding, R2 test-node fidelity fixed; S1-S5 folded in), confirming round pending'
+- 'gates: decision-scout=FLAGS_FOUND (2 notes, resolved); plan-critique=REVISE r1 (R1-R5 fixed), REVISE r2 (R1 deploy-run binding, R2 test-node fidelity fixed; S1-S5 folded in), REVISE r3 (R1 rec-4024 prepend and anchor check fixed; S1-S3, N1, N2 folded in), confirming round pending'
 - >-
   Direction (Benjamin, cmsg_012XgaFy8VaDQbxP5D8nC9587zPkCFdx5BwFoNH9FbvcLU): add the 199 note, which revisits his
   2026-10-05 W3-1 choice (contract note only, PLAN-telemetry-lifecycle-friction-amendment) because the decision scout
@@ -342,7 +349,8 @@ execution_steps:
   check_spec.command [bin/venv-python, -c, <step 4's Python program verbatim>], plan_slug reader-verbs-decision-notes,
   graduated_at the landing date, graduated_by implement-agent (shape: decision-215-residuals-repointed.yaml).
 - >-
-  Follow the implement skill's pre-handoff steps and Commit Flow, in this order: github_readiness; set
+  Follow the implement skill's pre-handoff steps and Commit Flow, in this order: github_readiness; the
+  test_coverage_checker diagnostic (expected to report nothing, since no source file is in scope); set
   implementation_declared true in this plan; `--pre`; postflight evidence; commit; `git fetch origin main` and
   `git rebase origin/main`; VP steps 4-7 on the rebased tree (step 5 diffs against origin/main, so it runs after the
   rebase); VP step 8 (full tier, then --verify-head) on the committed clean tree; push as its own tool call; open the PR
@@ -352,9 +360,12 @@ execution_steps:
   Code review; on PROCEED and green CI, re-run VP step 1, then squash-merge with `Resolves: rec-4324` in the body.
   Then run VP steps 9 and 10 (step 10 after execution step 7's note).
 - >-
-  If rec-4024 is still open after the merge, append a dated context note to it through scripts.ops_data_portal
-  update_rec: Decision 207's reader-side coverage moved to PLAN-telemetry-reader-verbs (src/common/ducklake_event_reads.py,
-  name the merge commit's short SHA), so the rec agrees with the Decision (Decision 181 cl.2).
+  If rec-4024 is still open after the merge, add a dated note so the rec agrees with the 207 note (Decision 181
+  cl.2): call get_rec_write_guidance first, fetch rec-4024 with recs_by_ids immediately before the write, and write
+  through scripts.ops_data_portal update_rec a context that is the new note followed by the FULL existing context
+  unchanged (update_rec replaces context wholesale, scripts/ops_data_portal.py:503). The note starts
+  "[YYYY-MM-DD reader-side coverage moved, rec-4324]" and says Decision 207's reader side is now enforced by
+  PLAN-telemetry-reader-verbs (src/common/ducklake_event_reads.py), naming this PR's merge short SHA.
 - >-
   Report: the three notes as landed, the build PR and SHA they rest on, readiness, each VP result, the Decision 199
   size WARN line and its margin to the 1.2x line, review verdict, the push and PR outcome, and rec-4324's status,
