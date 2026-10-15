@@ -67,7 +67,7 @@ scope:
 - file: docs/contracts/telemetry_observations.yaml
   action: Modify
   purpose: >-
-    Same re-spelling (36 not_null legs) plus `enforced` removed from the eight accepted_values legs that carry it; the
+    Same re-spelling (40 not_null legs) plus `enforced` removed from the eight accepted_values legs that carry it; the
     same governance_notes rewording; amendment entries.
 - file: docs/contracts/telemetry_transcripts.yaml
   action: Modify
@@ -129,7 +129,14 @@ scope:
     every leg this plan re-spells (measured on a prototype of the full re-spelling).
 - file: scripts/field_semantics_rule_projection.py
   action: Modify
-  purpose: Docstring only -- the enforced flag no longer exists; an exempt leg ships only as write_time_exemptions (unchanged behaviour).
+  purpose: >-
+    Docstring: the enforced flag no longer exists; an exempt leg ships only as write_time_exemptions (unchanged
+    behaviour). Gains the two sidecar guards the generator calls (kept here, not in schema_to_field_semantics.py,
+    whose mapped test file is at 499 of 500 SLOC): validate_sidecar_rules(entries) runs RowRules.from_projection over
+    each spliced dormant and smoke block, so a malformed sidecar rule fails the generator, not a Lambda; and
+    refuse_contract_overlap(table_ids, contracts_dir) fails when docs/contracts/<id>.yaml exists for a dormant or
+    smoke id, so a table can never have two rule sources (the hand-over to a contract moves the id between the
+    generator's tuples and deletes the sidecar block in one change).
 - file: scripts/contracts.py
   action: Modify
   purpose: >-
@@ -149,17 +156,14 @@ scope:
 - file: scripts/schema_to_field_semantics.py
   action: Modify
   purpose: >-
-    Two generator guards: (1) the spliced dormant and smoke blocks are validated with RowRules.from_projection, as
-    contract tables already are, so a malformed sidecar rule fails the generator, not a Lambda; (2) the generator
-    fails when docs/contracts/<id>.yaml exists for a dormant or smoke id, so a table can never have two rule sources
-    (the hand-over to a contract moves the id between the generator's tuples and deletes the sidecar block in one
-    change).
+    generate() calls the two sidecar guards from scripts.field_semantics_rule_projection on the dormant and smoke ids
+    before splicing them (a few lines; no other change).
 - file: config/lambda/ducklake/field_semantics.static.yaml
   action: Modify
   purpose: >-
     dormant_ops_tables.ops_priority_queue and .ops_execution_plans gain `write_boundary: dormant` (the existing
     registry-driven refusal key; status tags unchanged). contract_table_ops gains a non-shipped `row_rule_source`
-    disposition on the three contract-less tables: ops_priority_queue {disposition: pending_contract, owner: "T4.3:c5",
+    disposition on the three contract-less tables: ops_priority_queue {disposition: pending_contract, owner: "T4.3:c6",
     reason}, ops_execution_plans {disposition: pending_contract, owner: "T4.5:c2", reason}, ops_smoke_events
     {disposition: smoke_harness, reason: the T1.14 append-only kernel proof; shape rules only}.
 - file: config/lambda/ducklake/field_semantics.yaml
@@ -186,8 +190,9 @@ scope:
   action: Modify
   purpose: >-
     --lambda-row-rules gains a dormant case per dormant table (module-level constants, as ROW_RULES_CASES): write_ops
-    with a test- record answers 400 naming dormant, and read_ops_current on that key returns no row. It runs on every
-    deploy through the workflow's existing smoke step.
+    with a deliberately schema-invalid test- record (an unknown field) must answer 400 naming dormant. A regressed
+    boundary cannot write: the record fails the schema gate with 422 instead, which the gate also treats as a failure.
+    It runs on every deploy through the workflow's existing smoke step.
 # --- the declaration guard (decomposed, widened) ------------------------------------------------------------------
 - file: scripts/checks/contracts/validate_ops_rule_source.py
   action: Modify
@@ -210,7 +215,10 @@ scope:
     array_element_format and pattern_when patterns. Producer-side kinds need an exemption. Exemptions: class in
     {cross_row, repository_state, temporary}, a reason, an owner (a rec id for cross_row and temporary, an existing
     repository path for repository_state), review_by (an ISO date) required on temporary and refused elsewhere, and
-    the exempted kind must be declared on the field. Moved from validate_ops_rule_source.py, then widened.
+    the exempted kind must be declared on the field -- a content-leg exemption (inline_within_threshold,
+    uri_above_threshold, within_cap, integrity) counts as declared on the field that carries
+    content_inline_threshold_bytes. `not_null: false` (or any non-bool, non-mapping value) is rejected: an optional
+    column has no not_null leg. Moved from validate_ops_rule_source.py, then widened.
 - file: scripts/checks/contracts/_rule_ratchet.py
   action: Create
   purpose: >-
@@ -219,7 +227,9 @@ scope:
     exempt in one PR, delete in a later one); (b) a value removed from an accepted_values leg unless that field's
     amendment_log gained, since the base, an entry with change_class accepted_values_narrow, semantic_break true and a
     migration_story naming every removed value (the census statement lives there; AmendmentLogEntry is extra=forbid);
-    (c) an exclude_before added to a leg that had none, or moved later, unless paired with (b)'s entry on that field;
+    (c) an exclude_before added to a leg that had none, or moved later -- unconditionally, as today (Decision 64's
+    2026-10-04 update and Decision 210's amendment: no date moves later), so a narrowing whose census is not zero waits
+    for the data to be fixed at the source;
     (d) an exemption added to a leg that existed un-exempted at the base, or an existing exemption's class changed from
     one class to another (adding a class to a class-less exemption is a grammar completion, not a loosening), unless
     the field gained an entry with semantic_break true; (e) a source registry id removed (moved, unchanged).
@@ -229,7 +239,9 @@ scope:
 - file: scripts/checks/contracts/_ops_rule_bindings.py
   action: Create
   purpose: >-
-    The ops_recommendations-only legs, moved unchanged: the status-vocabulary parity (STATUS_TRANSITIONS enforced set,
+    The ops_recommendations-only legs, moved with one change: the ops.yaml not_null parity reads the contract's not_null
+    by presence through scripts.contract_rules (today's `.get("enforced")` would fail all ten write_time not_null tests
+    on the re-spelled tree); otherwise unchanged -- the status-vocabulary parity (STATUS_TRANSITIONS enforced set,
     jsonl_store._VALID_STATUSES, the Recommendation status Literal, read by ast) and the ops.yaml write_time parity leg
     (the portal row-rule gate plan retires that leg with the flags).
 - file: scripts/checks/contracts/validate_write_time_enforcement_conformance.py
@@ -247,7 +259,8 @@ scope:
     is undeclared; legs on derivation timing read fields are reported as read-derived, not write rules; an SCD2 entry
     carries no table-level rule (rules_for passes none); (2) control table: the contract declares only not_null on
     nullable false columns; (3) contract-less table with write_boundary dormant and a pending_contract row_rule_source
-    whose owner resolves to a roadmap criterion; (4) smoke table: status smoke, id in the frozen set
+    whose owner resolves to a roadmap criterion (a targeted text lookup of the item's criterion id in
+    docs/ROADMAP-PLATFORM.yaml, never a full YAML load on the fast tier, Decision 208); (4) smoke table: status smoke, id in the frozen set
     {ops_smoke_events}, smoke_harness disposition; (5) the `tables:` block holds exactly history and current (the
     smoke harness pair, rules_for None). Also fails when a contract-less entry's columns carry any rule key beyond
     role, sql_type and nullable, when a sidecar table also has a contract, or when config/agent/data_quality/ops.yaml
@@ -280,7 +293,9 @@ scope:
     an owned exemption; no `enforced` key; an exemption may sit beside any row-local rule, with review_by on
     temporary); the ratchet's four arms; and the COVERAGE sentence re-pointed, scoped to row-local rules (scout NOTE,
     Decision 181): declarations -> validate_ops_rule_source over every contract-backed writer table; writer
-    enforcement -> the conformance check plus the --lambda-row-rules deploy gate; narrowing and new exemptions -> the
+    enforcement -> the conformance check (declared equals enforced per table) plus its adapter test, whose action set
+    is read from both writer handlers' registries so a new write verb fails until it has a case, and the
+    --lambda-row-rules deploy gate; narrowing and new exemptions -> the
     ratchet; contract-less tables -> dormant, refused by the writer, owners T4.3 and T4.5; the writer-owned cross-row
     rules (grain MERGE, status DAG, id allocation, referential) stay named residuals with rec-4121 and the
     dependency-reference monitor with rec-4166; ops_decisions' Phase 2 rules with rec-4167; the portal and ops.yaml
@@ -289,23 +304,23 @@ scope:
 - file: docs/contracts/storage-substrate.yaml
   action: Modify
   purpose: >-
-    ops_priority_queue and ops_execution_plans write_boundary prose names the dormant refusal and its owner (T4.3 c5,
+    ops_priority_queue and ops_execution_plans write_boundary prose names the dormant refusal and its owner (T4.3 c6,
     T4.5 c2); amendment_log entry (prose_improvement, Class D; no key is added).
 - file: docs/DECISIONS.md
   action: Modify
   purpose: >-
     One dated annotation appended to Decision 210 (Decision 177 pinned form), at most 370 bytes so the entry stays
     under the 6,144-byte cap (5,768 bytes at planning): "[Amendment <date>, rec-4158: the writer-conformance residual
-    is closed for row-local rules (validate_write_time_enforcement_conformance); a declared rule is enforced, so the
-    enforced key is retired; value removal and new exemptions ratchet. Detail: data-modeling-standard.yaml, rule
-    write-time-enforcement.]"
+    is closed for row-local rules on every writer verb (validate_write_time_enforcement_conformance); a declared rule
+    is enforced, so the enforced key is retired; value removal and new exemptions ratchet. Detail:
+    data-modeling-standard.yaml, rule write-time-enforcement.]"
 - file: docs/decisions-index.json
   action: Modify
   purpose: Regenerated by bin/venv-python -m scripts.decisions_index --write; never hand-edited.
 - file: docs/ROADMAP-PLATFORM.yaml
   action: Modify
   purpose: >-
-    T4.3 gains c5 (status open): "docs/contracts/ops_priority_queue.yaml declares the queue's row rules, they project
+    T4.3 gains c6 (status open; c5 is taken by the rehoming note T4.12 cites): "docs/contracts/ops_priority_queue.yaml declares the queue's row rules, they project
     into field_semantics.yaml and the ducklake_writer's dormant refusal on ops_priority_queue is lifted, before the
     producer's first write (Decision 210 cl.4, rec-4158)". T4.5 c2's text gains "; the ducklake_writer's dormant
     refusal on ops_execution_plans lifts only once this contract's rules project into field_semantics.yaml (Decision
@@ -316,10 +331,14 @@ scope:
   purpose: >-
     rec-4158's acceptance node test_every_write_decidable_rule_has_a_writer_validator: the registered conformance
     check on the real tree appends nothing and examines every inventory table. Plus
-    test_each_writer_adapter_rejects_every_declared_kind: for each writer adapter (write_scd2 and file_scd2 through
-    tests/fixtures/ducklake_fakes.py; the registration _write_dimension; the telemetry prepare path) and every rule kind
-    present in that table's RowRules -- derived from the RowRules fields, never a literal list -- a mutation of a
-    rule-clean record that breaks exactly that rule is rejected naming that rule and column.
+    test_each_writer_adapter_rejects_every_declared_kind, derived, never enumerated (Decisions 187, 191): the action
+    set is read from both handlers' own registries (the ducklake_writer handler's _ACTIONS and the telemetry writer
+    handler's _all_actions()); every action is either row-writing, and must have a case, or listed in the test's
+    declared non-row-writing set (provisioning, probes, describe, the smoke pair's write); an unclassified action fails.
+    For each row-writing action (write_ops, file_ops, update_ops through tests/fixtures/ducklake_fakes.py; the tenant
+    and project registration verbs; append_telemetry) and every rule kind present in its table's RowRules -- derived
+    from the RowRules fields, never a literal list -- a mutation of a rule-clean record that breaks exactly that rule
+    is rejected naming that rule and column.
 - file: tests/checks/contracts/test_validate_write_time_enforcement_conformance.py
   action: Create
   purpose: >-
@@ -345,7 +364,10 @@ scope:
     entry; leg removal without and with a base exemption; registry removal; legacy-spelled base contracts read alike.
 - file: tests/checks/contracts/test__ops_rule_bindings.py
   action: Create
-  purpose: The moved status-vocabulary and ops.yaml parity legs keep their current behaviour (moved from test_validate_ops_rule_source.py).
+  purpose: >-
+    The moved status-vocabulary and ops.yaml parity legs keep their behaviour (moved from
+    test_validate_ops_rule_source.py); test_not_null_parity_reads_presence asserts parity against `not_null: true` and
+    `{exclude_before: D}` and a failure when the contract carries no not_null.
 - file: tests/checks/contracts/test_validate_ops_rule_source.py
   action: Modify
   purpose: >-
@@ -368,16 +390,25 @@ scope:
   purpose: _override_loosens reads presence and still fires on a legacy enforced false over a referenced not_null.
 - file: tests/row_rules/test_rules.py
   action: Modify
-  purpose: test_row_local_exemption_is_recorded_and_unenforced; an exempt rule that also ships, or an exempt not_null on a nullable false column, raises RuleProjectionError.
-- file: tests/test_schema_to_field_semantics.py
+  purpose: >-
+    test_row_local_exemption_is_recorded_and_unenforced, parametrized over every exemptable kind; an exempt rule that
+    also ships, or an exempt not_null on a nullable false column, raises RuleProjectionError. The file is at 454 of 500
+    SLOC: keep the additions parametrized and compact; if they would cross 500, concern-split the file (Decision 131),
+    never raise a budget.
+- file: tests/test_field_semantics_rule_projection.py
   action: Modify
-  purpose: test_sidecar_table_with_a_contract_fails_the_generator; a malformed rule key in a spliced sidecar block fails the generator.
+  purpose: >-
+    test_sidecar_table_with_a_contract_fails_the_generator (generate() with a patched sidecar and contracts dir); a
+    malformed rule key in a spliced sidecar block fails the generator (189 SLOC today, room for both).
 - file: tests/lambdas/ducklake_writer/handler/test_ops_actions.py
   action: Modify
   purpose: test_dormant_tables_refuse_generic_writes_but_provision -- write_ops, file_ops and update_ops on each dormant table answer 400 naming dormant; create_ops_tables still provisions it.
 - file: tests/ducklake_neon_smoke_test/test_lambda_ops_gates.py
   action: Modify
-  purpose: test_dormant_refusal_cases_answer_400 -- the gate passes on a stubbed 400 and fails (repairing nothing, since nothing was written) on a 200.
+  purpose: >-
+    test_dormant_refusal_cases_answer_400 -- the gate passes on a stubbed 400 naming dormant and fails on a 422
+    schema_gate (the regressed-boundary answer; the schema-invalid probe record can never be written) and on any
+    other answer.
 - file: tests/checks/contracts/test_telemetry_event_journal_contracts.py
   action: Modify
   purpose: >-
@@ -386,6 +417,19 @@ scope:
 - file: tests/telemetry/test_contract_amendments.py
   action: Modify
   purpose: test_parser_version_bump_policy_declared re-pinned to the new spelling (measured).
+- file: tests/telemetry/test_contract_lifecycle_friction.py
+  action: Modify
+  purpose: >-
+    Re-pinned (lines ~258-263 assert the four telemetry governance_notes carry "`dq_intent.not_null.enforced` is true",
+    "write-enforced whatever their enforced value" and "rec-4158 plan c"): they now assert the reworded sentences. No
+    assertion weakened -- each pinned fact is re-pinned to its new wording.
+- file: tests/checks/contracts/test_ops_rule_source_records.py
+  action: Modify
+  purpose: >-
+    Re-pinned: source-lineage's tightening text (line ~151) and the standard statement's "rec-4158 plan c" (lines
+    ~61-80) move to the new wording ("a date never moves later" stays). New node
+    test_dormant_owners_carry_contract_first_criteria asserts T4.3 c6 and T4.5 c2 carry the contract-before-first-emit
+    text (AC7 evidence).
 - file: tests/checks/contracts/test_write_time_enforcement_decision.py
   action: Modify
   purpose: Anchors the new coverage sentence (conformance check, ratchet, dormant owners) and the Decision 210 annotation.
@@ -414,8 +458,19 @@ scope:
   action: Create
   purpose: Graduated registry row for VP step 11.
 bundled_recommendations: []
-followon_recs: []
-infrastructure_dependencies: []
+followon_recs: [rec-4158]
+infrastructure_dependencies:
+- >-
+  Lambda-packaged: all six DuckLake functions (writer, reader, telemetry-writer, catalog-dr, maintenance,
+  maintenance-smoke) bundle src/row_rules and config/lambda/ducklake/field_semantics.yaml, and the writer bundles its
+  handler, so compute_affected_artifacts names them. Deploy class terraform_personal_filemd5_coupled -> the governed
+  deploy-ducklake-lambdas.yml channel, triggered by the implementation PR's squash-merge (Decisions 125, 126); the local
+  build_lambda --ducklake-only --deploy stays break-glass only. No .tf, IAM, role, Function URL or environment change.
+- >-
+  data-pipeline (src/lambdas/data-pipeline/manifest.yaml, active) packages docs/ROADMAP-PLATFORM.yaml as an asset, so
+  compute_affected_artifacts reports it. No deploy is performed or needed: the roadmap edit is asset-only text with no
+  packaged code change, and the asset refreshes with the artifact's next governed deploy (Decision 198 precedent,
+  PLAN-ops-rule-source VP 7; asserted by VP step 17; rec-3990 tracks the asset deploy-trigger gap).
 acceptance_criteria:
 - >-
   No in-scope contract or baseline carries an `enforced` key on any rule leg; not_null is spelled `true` or
@@ -428,7 +483,7 @@ acceptance_criteria:
 - >-
   validate_ops_rule_source covers the nine contract-backed writer tables and their baselines; its ratchet fails on a
   value removal without a narrowing entry, a new or re-classed exemption without a semantic-break entry, a leg removal
-  without a prior exemption, and an added or later date without a narrowing entry.
+  without a prior exemption, and (unconditionally, as today) an added or later date.
 - >-
   The engine records an exemption on any row-local rule and does not enforce it; an exempt rule never ships as a rule;
   the event projection reads not_null by presence.
@@ -438,7 +493,7 @@ acceptance_criteria:
 - A past review_by on a temporary exemption fails the full tier and no --pre run.
 - >-
   The records carry the choice: the write-time-enforcement rule (grammar, ratchet, row-local coverage), one Decision
-  210 annotation under the per-entry cap, T4.3 c5 and T4.5 c2, ducklake_writer.yaml's dormant refusal, and rec-4158's
+  210 annotation under the per-entry cap, T4.3 c6 and T4.5 c2, ducklake_writer.yaml's dormant refusal, and rec-4158's
   dated note.
 verification_plan:
 - step: 1
@@ -483,7 +538,7 @@ verification_plan:
   phase: pre-deploy
   action: The ratchet fails each loosening or narrowing move without its marker and passes it with the marker.
   command: bin/venv-python -m pytest "tests/checks/contracts/test__rule_ratchet.py::test_loosening_and_narrowing_need_their_marker" -q
-  expected: Exit 0; every parametrized arm (value removal, added or later date, new or re-classed exemption, leg removal, registry removal) passes.
+  expected: Exit 0; every parametrized arm (value removal, new or re-classed exemption, leg removal, registry removal, and the unconditional added or later date) passes.
   fix_if: An arm that passes without its marker -> fix the ratchet; tightenings must stay free.
   hermetic: true
   graduation: graduate
@@ -531,7 +586,7 @@ verification_plan:
 - step: 10
   phase: pre-deploy
   action: The generator refuses a sidecar table that also has a contract, and validates spliced sidecar rules.
-  command: bin/venv-python -m pytest "tests/test_schema_to_field_semantics.py::test_sidecar_table_with_a_contract_fails_the_generator" -q
+  command: bin/venv-python -m pytest "tests/test_field_semantics_rule_projection.py::test_sidecar_table_with_a_contract_fails_the_generator" -q
   expected: Exit 0.
   fix_if: Fix the generator guards.
   hermetic: true
@@ -554,7 +609,7 @@ verification_plan:
   fix_if: Fix the gate cases.
   hermetic: true
   graduation: waive
-  graduation_waiver_reason: The live gate runs on every deploy (step 19 and the workflow's smoke job); a hermetic standing row on its stubbed form adds nothing beyond that.
+  graduation_waiver_reason: The live gate runs on every deploy (step 20 and the workflow's smoke job); a hermetic standing row on its stubbed form adds nothing beyond that.
 - step: 13
   phase: pre-deploy
   action: >-
@@ -567,8 +622,8 @@ verification_plan:
     ts=[t for t in fs if (root/'docs/contracts'/f'{t}.yaml').is_file()];d=pathlib.Path(tempfile.mkdtemp());
     [(d/'docs/contracts'/p.name).parent.mkdir(parents=True,exist_ok=True) or (d/'docs/contracts'/p.name).write_text(subprocess.run(['git','show','origin/main:docs/contracts/'+p.name],capture_output=True,text=True).stdout) for p in (root/'docs/contracts').glob('*.yaml')];
     (d/'config/agent/data_quality').mkdir(parents=True);(d/'config/agent/data_quality/source_registry.yaml').write_text(open('config/agent/data_quality/source_registry.yaml').read());
-    k=lambda r:(r.column,r.kind,tuple(sorted((x,str(v)) for x,v in r.params.items() if x!='note')),r.exclude_before,tuple(sorted((x,str(v)) for x,v in (r.exemption or {}).items() if x not in ('class','review_by'))));
-    bad=[t for t in ts if sorted(map(k,c.declared_rules(t)))!=sorted(map(k,c.declared_rules(t,contracts_dir=d/'docs/contracts',repo_root=d)))];
+    k=lambda t,r:(r.column,r.kind,tuple(sorted((x,str(v)) for x,v in r.params.items() if x!='note')),r.exclude_before,tuple(sorted((x,str(v)) for x,v in (r.exemption or {}).items() if not (t=='telemetry_transcripts' and r.column=='content' and x in ('class','review_by')))));
+    bad=[t for t in ts if sorted(k(t,r) for r in c.declared_rules(t))!=sorted(k(t,r) for r in c.declared_rules(t,contracts_dir=d/'docs/contracts',repo_root=d))];
     print('RULESETS_EQUAL' if not bad else bad);assert not bad,bad"
   expected: Exit 0 and RULESETS_EQUAL printed (git fetch origin main first).
   expected_literals:
@@ -623,6 +678,7 @@ verification_plan:
     tests/checks/contracts/test__ops_rule_bindings.py tests/checks/contracts/test_validate_write_time_enforcement_conformance.py
     tests/checks/contracts/test_write_time_enforcement_conformance.py tests/checks/contracts/test_write_time_enforcement_decision.py
     tests/checks/contracts/test_telemetry_event_journal_contracts.py tests/telemetry/test_contract_amendments.py
+    tests/telemetry/test_contract_lifecycle_friction.py tests/checks/contracts/test_ops_rule_source_records.py
     tests/test_contracts.py tests/test_contract_rules.py tests/test_field_semantics_event_projection.py
     tests/test_field_semantics_rule_projection.py -q
   expected: Exit 0.
@@ -634,18 +690,33 @@ verification_plan:
     graduated node-level steps carry the standing guards.
 - step: 17
   phase: pre-deploy
+  action: >-
+    Assert the ground for NO data-pipeline redeploy despite touching its packaged roadmap asset (Decision 198
+    precedent): its schedules stay disabled and the prod-lambdas workflow is not path-triggered by the roadmap.
+  command: >-
+    grep -q 'the schedule stays disabled' src/lambdas/data-pipeline/manifest.yaml && ! grep -q 'ROADMAP-PLATFORM'
+    .github/workflows/deploy-prod-lambdas.yml && echo INERT_OK
+  expected: Exit 0 and INERT_OK printed.
+  fix_if: >-
+    Schedules re-enabled -> the asset change needs the governed deploy-prod-lambdas workflow, never a local
+    build_lambda --deploy; the workflow path-triggering on the roadmap -> rec-3990 landed, retire this step.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: Green on the un-implemented tree too, a per-PR transient; its durable form is rec-3990.
+- step: 18
+  phase: pre-deploy
   action: Full validation tier before handoff (includes validate_pre_glob_closure, contract drift, the structural budgets and the decisions size cap).
   command: bin/venv-python -m scripts.validate
   expected: Exit 0.
   fix_if: Fix the named check; never raise a budget, skip a check or drop a pre_glob.
   hermetic: false
   graduation: not-applicable
-- step: 18
+- step: 19
   phase: post-deploy
   action: All six DuckLake deploy records name the commit that last touched the deploy paths (the governed workflow shipped this change).
   command: >-
     bin/venv-python -c "import json,subprocess,boto3;s=boto3.Session(profile_name='agent_platform').client('s3');
-    h=subprocess.check_output(['git','log','-1','--format=%H','origin/main','--','src/lambdas','src/common','config/lambda/ducklake','src/row_rules','src/telemetry']).decode().strip();
+    h=subprocess.check_output(['git','log','-1','--format=%H','origin/main','--',':(glob)src/lambdas/ducklake_*/**',':(glob)src/common/ducklake_*.py','config/lambda/ducklake','src/row_rules','src/telemetry']).decode().strip();
     f=['writer','reader','telemetry-writer','catalog-dr','maintenance','maintenance-smoke'];
     bad=[x for x in f if json.loads(s.get_object(Bucket='agent-platform-data-lake',Key=f'deploy-records/ducklake/agent-platform-ducklake-{x}.json')['Body'].read()).get('source_git_sha')!=h];
     print('DEPLOY_RECORDS_FRESH' if not bad else bad);assert not bad"
@@ -655,7 +726,7 @@ verification_plan:
     never a local build_lambda --deploy without the operator's direction (Decision 126). A later DuckLake merge ->
     compare against that sha.
   hermetic: false
-- step: 19
+- step: 20
   phase: post-deploy
   action: The deployed writer refuses the dormant tables and still enforces every row-rule class (the gate the workflow's smoke job ran).
   command: >-
@@ -668,7 +739,7 @@ verification_plan:
     A 200 on a dormant case -> STOP, revert the merge (the workflow redeploys the prior code) and RCA (Decision 55);
     a row-rule case regression -> the same.
   hermetic: false
-- step: 20
+- step: 21
   phase: post-deploy
   action: >-
     The governed deploy run for the merge commit concluded success, so every smoke gate it runs passed, including
@@ -684,7 +755,7 @@ verification_plan:
     failure -> read the run's failing job; a smoke failure means STOP, revert the merge and RCA (Decision 55); never
     re-run it into green. An empty list -> the workflow has not run for this commit yet, or a later merge superseded it.
   hermetic: false
-- step: 21
+- step: 22
   phase: post-deploy
   action: The positive path on production -- a rule-clean write, update and supersede on ops_recommendations.
   command: >-
@@ -695,12 +766,12 @@ verification_plan:
   expected: Exit 0 and OPS_RYW OK printed.
   fix_if: A row_rule 422 on the clean probe -> STOP, revert, RCA.
   hermetic: false
-- step: 22
+- step: 23
   phase: post-deploy
   action: Bookkeeping landed -- rec-4158 carries this plan's dated note and stays open for the portal row-rule gate plan.
   command: >-
     bin/venv-python -c "from scripts.ops_data_portal import _fetch_rec_from_reader as f;b=f('rec-4158') or {};
-    ok=b.get('status')=='open' and 'RULE DECLARATIONS AND WRITER CONFORMANCE DELIVERED' in (b.get('context') or '');
+    ok=b.get('status')=='open' and 'RULE DECLARATIONS AND WRITER CONFORMANCE DELIVERED' in (b.get('context') or '') and 'test_portal_gate_is_the_writer_gate' in (b.get('acceptance') or '');
     print('open', ok);assert ok"
   expected: Exit 0 and "open True" printed.
   fix_if: The note missing -> re-run the bookkeeping execution step through update_rec (get_rec_write_guidance first).
@@ -717,10 +788,10 @@ test_obligations:
   test_selector: tests/test_field_semantics_event_projection.py::test_not_null_by_presence_and_exempt_rule_not_projected
   red_green_expectation: red before (node absent), green after
 - source: scripts/field_semantics_rule_projection.py
-  behavior: Docstring only; the ops projection's exempt-leg handling is unchanged.
-  verification_step: 16
-  test_selector: tests/test_field_semantics_rule_projection.py
-  waiver_reason: Docstring-only edit; behaviour is guarded end to end by the conformance acceptance node (step 1).
+  behavior: The two sidecar guards (engine-validated sidecar rules; no table with both a sidecar block and a contract).
+  verification_step: 10
+  test_selector: tests/test_field_semantics_rule_projection.py::test_sidecar_table_with_a_contract_fails_the_generator
+  red_green_expectation: red before (node absent), green after
 - source: scripts/contracts.py
   behavior: _override_loosens reads presence and still refuses a legacy false override of a referenced not_null.
   verification_step: 16
@@ -734,7 +805,7 @@ test_obligations:
 - source: scripts/schema_to_field_semantics.py
   behavior: Spliced sidecar blocks are engine-validated; a sidecar id with a contract fails the generator.
   verification_step: 10
-  test_selector: tests/test_schema_to_field_semantics.py::test_sidecar_table_with_a_contract_fails_the_generator
+  test_selector: tests/test_field_semantics_rule_projection.py::test_sidecar_table_with_a_contract_fails_the_generator
   red_green_expectation: red before (node absent), green after
 - source: src/lambdas/ducklake_writer/handler.py
   behavior: write_ops, file_ops and update_ops refuse a dormant table; create_ops_tables provisions it.
@@ -764,7 +835,7 @@ test_obligations:
 - source: scripts/checks/contracts/_ops_rule_bindings.py
   behavior: The moved status-vocabulary and ops.yaml parity legs behave exactly as before.
   verification_step: 16
-  test_selector: tests/checks/contracts/test__ops_rule_bindings.py::test_status_vocabularies_agree
+  test_selector: tests/checks/contracts/test__ops_rule_bindings.py::test_not_null_parity_reads_presence
   red_green_expectation: red before (module absent), green after
 - source: scripts/checks/contracts/validate_write_time_enforcement_conformance.py
   behavior: Every writer-reachable table matches exactly one arm; declared equals enforced for contract tables.
@@ -798,7 +869,7 @@ test_obligations:
   waiver_reason: Declarative data; the grammar, ratchet and conformance nodes (steps 1, 4, 5) and step 13's rule-set equality are its evidence.
 - source: docs/contracts/ducklake_writer.yaml
   behavior: The dormant refusal is a declared verb invariant.
-  verification_step: 17
+  verification_step: 18
   command: bin/venv-python -m scripts.validate
   waiver_reason: Class B verb-contract prose; the handler node (step 9) and contract drift in the full tier are its evidence.
 - source: docs/contracts/data-modeling-standard.yaml
@@ -883,22 +954,22 @@ test_obligations:
   waiver_reason: Declarative data; the grammar, ratchet and conformance nodes (steps 1, 4, 5, 16) and step 13's rule-set equality are its evidence.
 - source: config/ci_rca_taxonomy.yaml
   behavior: Two new function_to_category rows.
-  verification_step: 17
+  verification_step: 18
   command: bin/venv-python -m scripts.validate
   waiver_reason: Registration data; validate_ci_rca_taxonomy coverage in the full tier is its evidence.
 - source: docs/contracts/storage-substrate.yaml
   behavior: Dormant write_boundary prose and its owners.
-  verification_step: 17
+  verification_step: 18
   command: bin/venv-python -m scripts.validate
   waiver_reason: Class D prose; validate_data_model_standard and contract drift in the full tier are its evidence.
 - source: docs/decisions-index.json
   behavior: Regenerated from DECISIONS.md.
-  verification_step: 17
+  verification_step: 18
   command: bin/venv-python -m scripts.validate
   waiver_reason: Generated artefact; the decisions-index freshness check in the full tier is its evidence.
 - source: docs/ROADMAP-PLATFORM.yaml
   behavior: A new criterion on the priority-queue producer item and re-worded plan-projection criterion.
-  verification_step: 17
+  verification_step: 18
   command: bin/venv-python -m scripts.validate
   waiver_reason: Roadmap data; validate_platform_roadmap (schema, ledger, line ceiling) in the full tier is its evidence.
 - source: config/agent/verification_registry/entries/write-time-conformance-every-rule-has-a-validator.yaml
@@ -1019,19 +1090,22 @@ execution_steps:
   Entries, taxonomy rows and mirror tests; re-run validate_pre_glob_closure and add exactly what it reports.
 - >-
   Records -- data-modeling-standard.yaml, storage-substrate.yaml, the Decision 210 annotation (measure its bytes),
-  decisions-index, T4.3 c5 and T4.5 c2.
-- Execute Verification Plan steps 1-17 -- loop until pass; on an unrecoverable failure stop and RCA (Decision 55).
+  decisions-index, T4.3 c6 and T4.5 c2.
+- Execute Verification Plan steps 1-18 -- loop until pass; on an unrecoverable failure stop and RCA (Decision 55).
 - Write the registry rows for the graduated steps (1, 2, 3, 4, 5, 6, 9, 11) with the check ids declared on each step.
 - >-
   Portal bookkeeping (get_rec_write_guidance first, Decision 66; fetch before update; prepend a dated note, never
   overwrite): rec-4158 gains '[<date> RULE DECLARATIONS AND WRITER CONFORMANCE DELIVERED via
-  PLAN-rule-declarations-and-writer-conformance]' naming what landed and that the portal row-rule gate plan remains.
+  PLAN-rule-declarations-and-writer-conformance]' naming what landed and that the portal row-rule gate plan remains,
+  and its acceptance moves to the portal plan's node
+  (bin/venv-python -m pytest tests/test_ops_data_portal_validators.py::test_portal_gate_is_the_writer_gate -q), since
+  this plan's merge makes the current node pass while the rec stays open for that plan.
 - >-
   CLOSURE (implement skill Commit Flows; docs/contracts/git-ops.yaml): readiness, set implementation_declared true,
-  rebase on origin/main, step 17 on the committed tree, postflight evidence, push, open the PR, subscribe. On green CI
+  rebase on origin/main, step 18 on the committed tree, postflight evidence, push, open the PR, subscribe. On green CI
   and code review PROCEED, STOP and ask the operator for the merge (Class A contract amendments, a Decision
   annotation, and a governed deploy). On his word squash-merge with the PR body as commit_message (no Resolves trailer:
-  rec-4158 stays open), watch the deploy workflow to completion, then run steps 18-22.
+  rec-4158 stays open), watch the deploy workflow to completion, then run steps 19-23.
 - 'Report: what was implemented, verification results'
 rollback: >-
   Revert the squash commit; the governed workflow redeploys the prior code and projection. The contracts return to the
