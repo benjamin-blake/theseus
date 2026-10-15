@@ -69,15 +69,15 @@ verbs:
       403: "tenant_unresolved (remedy: register_tenant); project_unregistered (a drill: or synthetic: project_ref that was never registered; remedy: register_project)"
       409: "grain_conflict {table, event_id, row}: a row differs from a stored or earlier row under one (producer, event_id, parser_version) grain key; nothing from the request is written; row is the 0-based index as sent, never an external_ref or a value"
       413: "payload_too_large (measure invoke_bytes), too_many_rows (measure rows_per_table or rows_per_request), too_many_blobs (more than 200 blob rows)"
-      422: "row_rule {table, row, rule, column, exclude_before?}; schema_gate {table, row, column, reason}; blob_not_verified {table, row, reason missing|stale|unknown_project}; nothing written; never a value"
+      422: "row_rule {table, row, rule, column, exclude_before?}; schema_gate {table, row, column, reason}; blob_not_verified {table, row, reason missing|stale|unknown_project|size_mismatch}; nothing written; never a value"
       500: "runtime; blob_integrity, blob_grant_self_check or blob_store_access (typed, paged through Url5xxCount); unmapped: any other exception answers 500 {ok, error_type, error_class, request_id, action, elapsed_ms}, never its message"
       503: "occ_exhausted: the OCC retry budget was exhausted (retryable); catalog_unavailable: a dead catalog connection (retryable); blob_store_unavailable: S3 throttled, 5xx or timed out (retryable)"
     typed_errors:
       bad_request: "a malformed request or an invalid string; names a reason and a position, never an undeclared name or a value (400)"
       too_many_blobs: "more than 200 blob rows, or begin_blobs items (413)"
-      blob_not_verified: "a blob row whose object is missing or older than 7 days and is not already stored, or whose project is unknown (422)"
+      blob_not_verified: "a blob row the writer will not commit (422), by reason. missing or stale (the object is absent or older than 7 days and the row is not already stored): run begin_blobs, upload, re-send. size_mismatch (a declared content_bytes that is not the object's length, or two rows naming one object with two declared sizes): re-measure the bytes that were hashed, fix the row's content_bytes and re-send, never re-upload; an unchanged request never succeeds. unknown_project: register the project"
       blob_store_unavailable: "the blob store throttled, answered 5xx or timed out after botocore's retries (503)"
-      blob_integrity: "a stored object whose length or SHA-256 differs from its key: a deploy or out-of-band-writer defect (500)"
+      blob_integrity: "a stored object whose SHA-256 is absent or differs from its key: a deploy or out-of-band-writer defect (500)"
       blob_grant_self_check: "a presigned URL that does not sign exactly content-length, host and the sha256 checksum (500)"
       blob_store_access: "an S3 client error other than throttling, 5xx or timeout, incl. a HEAD denied for an object the exact-key list shows present (500)"
       write_order: "the telemetry_sessions generation marker batch is not last; a producer tripwire for the cross-request order the producer owns (400)"
@@ -99,12 +99,15 @@ verbs:
       list of at most 200 objects with exactly {session_ref, session_started_at, content_sha256, content_bytes}: session_ref
       a non-empty valid ref, session_started_at on the wire grammar (three fraction digits), content_sha256 64 lowercase hex
       characters, content_bytes an integer above the inline threshold and at most the cap (both read from describe's
-      blob_protocol). The string rules of append_telemetry apply. Items with equal keys answer duplicate_of the first.
+      blob_protocol). The string rules of append_telemetry apply. Items with equal keys and equal content_bytes answer
+      duplicate_of the first; an equal-key item with a different content_bytes fails the request with 422 blob_not_verified,
+      reason size_mismatch, before anything is written.
     response_codes:
       200: "body {ok, tenant_id, project_id, project_registration, protocol_version, items [{existed, upload {method PUT, url, headers, expires_at} | null, duplicate_of}], counts}; the only response that carries a presigned URL"
       400: "bad_request: reason names the rule (below_threshold, above_cap, item_shape, unknown_key, ...), row the item index, never a value"
       403: "tenant_unresolved; project_unregistered (an unregistered drill: or synthetic: project_ref)"
       413: "too_many_blobs: more than 200 items"
+      422: "blob_not_verified {row, reason size_mismatch}: an item's content_bytes is not its object's length, or two items name one object with two sizes; nothing granted or written; never a value"
       500: "blob_integrity, blob_grant_self_check or blob_store_access; runtime; unmapped: any other exception answers 500 {ok, error_type, error_class, request_id, action, elapsed_ms}, never its message"
       503: "blob_store_unavailable (retryable); occ_exhausted and catalog_unavailable on a first-sight registration (retryable)"
     typed_errors:
@@ -113,7 +116,8 @@ verbs:
       project_unregistered: "an unregistered reserved-namespace project_ref (403)"
       too_many_blobs: "more than 200 items (413)"
       blob_store_unavailable: "the blob store throttled, answered 5xx or timed out (503)"
-      blob_integrity: "a stored object does not match its content-addressed key; the item is re-granted only when merely missing or stale (500)"
+      blob_not_verified: "an item whose declared content_bytes is not its object's length (reason size_mismatch): fix the item and re-send (422)"
+      blob_integrity: "a stored object whose SHA-256 is absent or differs from its key; the request fails and nothing is granted, since only a missing or stale object is re-granted (500)"
       blob_grant_self_check: "a presigned URL that does not sign exactly content-length, host and the sha256 checksum (500)"
       blob_store_access: "an S3 client error other than throttling, 5xx or timeout (500)"
       unmapped: "an exception no row maps: 500 {error_class, request_id, action}, never the message; one ducklake_unmapped_error log line carries the redacted detail (500)"
@@ -196,7 +200,8 @@ audit_invariants:
   - "The size cap is len(json.dumps(S)), S the request body string as delivered: ASCII-escaped, so it equals the measure Lambda's 6 MiB event limit applies to for an ASCII body and is an upper bound when the body carries non-ASCII (measured 2026-10-09)."
   - "No append_telemetry response or log line carries a caller value (a row value, an undeclared name, principal.ref): errors locate by table, row index, column and reason only."
   - "Claim-check rule (T2.36 c2/c4, Decision 199 cl.5): a producer PUTs payload bytes only under a begin_blobs grant (single object, content-addressed, SHA-256- and length-bound, at most 15 minutes), issued after the writer resolved the tenant and project and derived the key; append_telemetry verifies the object by HEAD and writes content_uri, so every write stays writer-authorised and writer-committed (Decision 81 cl.7 as read by Decision 213 cl.2) through the content_blobs port (Decision 212 cl.4). The writer never reads, puts or deletes object bytes; a failed append fails loudly and nothing is queued or replayed (Decision 84 I-4); no process ever ingests an object into the catalog; an unreferenced object is deleted by the maintenance sweep (rec-4033), never ingested. Enforced by the writer-bundle S3-surface test (head_object, presigned put_object and list_objects_v2 only); the CI role's bucket-wide S3 write is a named residual owned by rec-4292."
-  - "A blob row whose object is missing or older than 7 days commits only as the no-op of an identical stored row (else 422 blob_not_verified, nothing written), so an identical re-send inserts nothing whatever the object's age or presence; begin_blobs re-grants any missing or stale object. The 7 days is a writer mechanism constant cross-pinned to the code by a test; the stored-row check is a commit precondition for an unverifiable blob, not a data rule (Decision 210 cl.2(a))."
+  - "A blob row whose object is missing or older than 7 days commits only as the no-op of an identical stored row for a missing or stale object (else 422 blob_not_verified, nothing written), so an identical re-send inserts nothing whatever the object's age or presence; begin_blobs re-grants any missing or stale object and never an integrity fault. The 7 days is a writer mechanism constant cross-pinned to the code by a test; the stored-row check is a commit precondition for an unverifiable blob, not a data rule (Decision 210 cl.2(a))."
+  - "Every blob row this writer commits from 2026-10-15 on has content_bytes equal to its object's length: each row is either HEAD-verified on its own declared size or declares the same size as the verified first row of its content_uri, and no earlier row can differ, because the producer helper checks each payload's length before any call and no vector sends a same-object pair with two sizes. An identical re-send therefore never reaches size_mismatch. size_mismatch is decided before the transaction, so it precedes the stored-row grain check: a re-send under a stored grain key with a different content_bytes answers 422 size_mismatch, not 409 grain_conflict. Two rows under one grain key in one request remain the in-batch 409 (Decision 207)."
   - "begin_blobs touches the catalog only on a binding-cache miss and writes only a first-sight registration. No presigned URL, X-Amz-* credential value, key or digest is ever logged or returned beyond begin_blobs' own response. Blob integrity, grant self-check and blob-store access faults log the C6 line with status 500 and answer a typed 500, which pages through Url5xxCount."
   - "A COMMIT whose error is masked by the no-delete file cleanup (duckdb's TransactionException 'Failed to commit: Could not remove file') is retried within the same bounded attempt budget as an OCC collision, because every telemetry body is idempotent (insert-only MERGE, lookup-first registration, caches written after commit). Only a COMMIT-raised failure with that exact signature is retried; the same text from a body statement, or any other TransactionException, propagates. The count is logged apart as masked_commit_retries (a log field only: no metric, no EMF member); the masked message names the bucket and is never logged or returned; exhaustion answers 503 occ_exhausted. The role keeps no s3:DeleteObject (Decision 216 cl.4); orphan files are the maintenance role's to delete."
   - "Every answered request emits exactly one C6 log line (verb, component, status, error_type, per-table counts, request and invoke bytes, tenant_id, project_id, occ_retries, commit_ms, masked_commit_retries, caller_role), never an account id, an ARN or a hash of either; the six data verbs' lines carry an Embedded Metric Format block (namespace DuckLakeTelemetryWriter, RequestCount by Verb)."
@@ -209,6 +214,17 @@ audit_invariants:
   - "Declared residual: the ducklake_unmapped_error log line carries the exception message redacted and truncated to 300 characters, so a request value inside an unmapped exception's message can reach the log (residual against the rejected-string rule; strictly less than the runtime traceback it replaces)."
   - "Declared residual: the async DuckLake handlers (maintenance, maintenance_smoke, catalog_dr) are EventBridge-invoked and keep Lambda's own retry behaviour for an escaped exception; rec-4303 owns them."
 amendment_log:
+  - date: "2026-10-15"
+    semantic_break: true
+    change_class: field_add
+    summary: >-
+      PLAN-telemetry-blob-size-mismatch (rec-4342): adds 422 blob_not_verified reason size_mismatch to append_telemetry and
+      begin_blobs, with a remedy per reason; narrows blob_integrity to an absent or different SHA-256; begin_blobs stops
+      re-granting an integrity fault and its 200 counts lose mismatched; equal-key items must agree on content_bytes.
+    migration_story: >-
+      A size-only mismatch on append_telemetry moves from a paged 500 to 422. A mismatched object on begin_blobs moves from a
+      grant to 500 (what the contract already said). The counts field mismatched is dropped; no consumer reads it. The
+      remedy for size_mismatch is to re-measure and fix content_bytes, never to re-upload.
   - date: "2026-10-15"
     semantic_break: false
     change_class: prose_improvement

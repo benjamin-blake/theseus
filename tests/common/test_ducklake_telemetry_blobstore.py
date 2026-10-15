@@ -42,7 +42,7 @@ def store(client: Any) -> S3BlobStore:
 
 def test_verify_states_from_head() -> None:
     assert store(FakeS3Client(HEAD_OK)).verify(URI, SHA, 70000) == "verified"
-    assert store(FakeS3Client({**HEAD_OK, "ContentLength": 69999})).verify(URI, SHA, 70000) == "mismatch"
+    assert store(FakeS3Client({**HEAD_OK, "ContentLength": 69999})).verify(URI, SHA, 70000) == "size_mismatch"
     assert (
         store(FakeS3Client({**HEAD_OK, "ChecksumSHA256": sha256_hex_to_b64("cd" * 32)})).verify(URI, SHA, 70000) == "mismatch"
     )
@@ -58,6 +58,31 @@ def test_verify_states_from_head() -> None:
     key = BLOB_ROOT.prefix + URI
     assert store(FakeS3Client(HEAD_OK)).verify(URI, SHA, 70000, now=NOW + timedelta(days=30)) == "stale"
     assert FakeS3Client(HEAD_OK).calls == [] and key.startswith("telemetry-blobs/ducklake_smoke/")
+
+
+def test_checksum_outranks_length_and_length_outranks_stale() -> None:
+    checksums = {
+        "equal": sha256_hex_to_b64(SHA),
+        "absent": None,
+        "different": sha256_hex_to_b64("cd" * 32),
+        "composite": sha256_hex_to_b64(SHA) + "-2",
+    }
+    for name, value in checksums.items():
+        for length, size in (("equal", 70000), ("different", 69999)):
+            head = {**HEAD_OK, "ContentLength": size}
+            if value is None:
+                del head["ChecksumSHA256"]
+            else:
+                head["ChecksumSHA256"] = value
+            got = store(FakeS3Client(head)).verify(URI, SHA, 70000)
+            if (name, length) == ("equal", "equal"):
+                assert got == "verified"
+            elif name == "equal":
+                assert got == "size_mismatch"
+            else:
+                assert got == "mismatch", (name, length)
+    old = {**HEAD_OK, "ContentLength": 69999, "LastModified": NOW - timedelta(days=BLOB_COMMIT_MAX_AGE_DAYS, seconds=1)}
+    assert store(FakeS3Client(old)).verify(URI, SHA, 70000) == "size_mismatch"
 
 
 def test_head_403_is_missing_only_when_the_list_finds_nothing() -> None:

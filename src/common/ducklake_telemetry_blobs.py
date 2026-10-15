@@ -22,6 +22,7 @@ from src.common import ducklake_telemetry_registration as reg
 from src.common.ducklake_telemetry_blobstore import (
     MISMATCH,
     MISSING,
+    SIZE_MISMATCH,
     STALE,
     VERIFIED,
     BlobIntegrityError,
@@ -99,6 +100,19 @@ def _verify_all(store: Any, wanted: Sequence[tuple[str, str, int]], now: datetim
         raise TelemetryRequestError(503, "blob_store_unavailable", {}, "blob store unavailable") from None
 
 
+def _size_mismatch(fields: dict[str, Any]) -> TelemetryRequestError:
+    return TelemetryRequestError(422, "blob_not_verified", {**fields, "reason": SIZE_MISMATCH}, "blob not verified")
+
+
+def _settle_heads(states: Sequence[str], indexes: Sequence[int], fields: Callable[[int], dict[str, Any]]) -> None:
+    """A checksum fault (BlobIntegrityError, pages) outranks a HEAD-detected size mismatch (422 naming the first index)."""
+    if MISMATCH in states:
+        raise BlobIntegrityError("a stored object does not match its content-addressed key")
+    for index, state in zip(indexes, states, strict=True):
+        if state == SIZE_MISMATCH:
+            raise _size_mismatch(fields(index))
+
+
 def begin_blobs(
     con: Any,
     request: BeginBlobsRequest,
@@ -110,13 +124,16 @@ def begin_blobs(
     sleep: Callable[[float], None] = time.sleep,
     now: datetime | None = None,
 ) -> BeginBlobsOutcome:
+    declared: dict[tuple[str, datetime, str], int] = {}
     for index, item in enumerate(request.items):
         try:
-            canonical_ref(item.session_ref)
+            ref = canonical_ref(item.session_ref)
         except IdentityError:
             raise TelemetryRequestError(
                 400, "bad_request", {"reason": "session_ref", "row": index, "column": "session_ref"}
             ) from None
+        if declared.setdefault((ref, item.session_started_at, item.content_sha256), item.content_bytes) != item.content_bytes:
+            raise _size_mismatch({"row": index})
     project_id = known_project_id(con, tenant_id, request.project_ref, semantics)
     created = False
     if project_id is None:
@@ -151,6 +168,7 @@ def begin_blobs(
         store, [(uris[i], request.items[i].content_sha256, request.items[i].content_bytes) for i in distinct], moment
     )
     head_ms = int(round((time.perf_counter() - started) * 1000))
+    _settle_heads(states, distinct, lambda index: {"row": index})
     by_index = dict(zip(distinct, states, strict=True))
     answers: list[BeginBlobsItem] = []
     for index, uri in enumerate(uris):
@@ -169,7 +187,6 @@ def begin_blobs(
         "distinct_keys": len(distinct),
         "existed": sum(1 for s in states if s == VERIFIED),
         "granted": sum(1 for s in states if s != VERIFIED),
-        "mismatched": sum(1 for s in states if s == MISMATCH),
         "stale": sum(1 for s in states if s == STALE),
         "declared_bytes_total": sum(sizes),
         "declared_bytes_max": max(sizes),
@@ -215,17 +232,21 @@ def verify_blob_rows(
 ) -> list[Unverified]:
     """HEAD each distinct object of the blob rows (bounded parallel); the rows whose object is missing or stale.
 
-    A size or checksum mismatch raises BlobIntegrityError (a deploy or out-of-band-writer defect, never a caller fault).
+    Each row is judged on its own declared content_bytes. Before any HEAD, a later row that names an earlier row's object
+    with another content_bytes is 422 blob_not_verified (size_mismatch), naming that row. After the HEADs, a checksum
+    mismatch raises BlobIntegrityError (a deploy or out-of-band-writer defect, never a caller fault) and outranks a
+    HEAD-detected size_mismatch, which is the same 422 naming the first such row.
     """
     moment = now or datetime.now(timezone.utc)
     distinct: dict[str, int] = {}
     for index in indexes:
-        distinct.setdefault(rows[index]["content_uri"], index)
+        first = distinct.setdefault(rows[index]["content_uri"], index)
+        if rows[first]["content_bytes"] != rows[index]["content_bytes"]:
+            raise _size_mismatch({"table": TRANSCRIPTS, "row": index})
     order = list(distinct.items())
     states = _verify_all(store, [(uri, rows[i]["content_sha256"], rows[i]["content_bytes"]) for uri, i in order], moment)
     state_of = {uri: state for (uri, _), state in zip(order, states, strict=True)}
-    if MISMATCH in state_of.values():
-        raise BlobIntegrityError("a stored object does not match its content-addressed key")
+    _settle_heads(states, [i for _, i in order], lambda index: {"table": TRANSCRIPTS, "row": index})
     return [
         Unverified(i, state_of[rows[i]["content_uri"]])
         for i in indexes

@@ -52,7 +52,9 @@ def test_writer_contract_carries_begin_blobs_and_the_claim_check() -> None:
         typed
     )
     assert {"unmapped", "catalog_unavailable", "bad_request", "project_unregistered", "tenant_unresolved"} <= set(typed)
-    assert set(verbs["begin_blobs"]["response_codes"]) == {200, 400, 403, 413, 500, 503}
+    assert set(verbs["begin_blobs"]["response_codes"]) == {200, 400, 403, 413, 422, 500, 503}
+    assert "blob_not_verified" in typed and "size_mismatch" in verbs["begin_blobs"]["response_codes"][422]
+    assert "size_mismatch" in verbs["append_telemetry"]["response_codes"][422]
     append = verbs["append_telemetry"]
     assert {"too_many_blobs", "blob_not_verified", "blob_store_unavailable", "blob_integrity"} <= set(append["typed_errors"])
     assert "blob_not_verified" in append["response_codes"][422] and "too_many_blobs" in append["response_codes"][413]

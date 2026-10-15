@@ -22,7 +22,7 @@ from src.telemetry.blobs import GRANT_TTL_SECONDS, sha256_hex_to_b64
 
 BLOB_COMMIT_MAX_AGE_DAYS = 7
 BLOB_PREFIX_ROOT = "telemetry-blobs"
-VERIFIED, MISSING, STALE, MISMATCH = "verified", "missing", "stale", "mismatch"
+VERIFIED, MISSING, STALE, MISMATCH, SIZE_MISMATCH = "verified", "missing", "stale", "mismatch", "size_mismatch"
 _SIGNED_HEADERS = "content-length;host;x-amz-checksum-sha256"
 _MISSING_CODES = frozenset({"404", "NoSuchKey", "NotFound"})
 _UNAVAILABLE_CODES = frozenset(
@@ -60,7 +60,7 @@ class BlobStoreAccessError(Exception):
 
 
 class BlobIntegrityError(Exception):
-    """A stored object whose length or SHA-256 differs from the content-addressed key: pages, never retried."""
+    """A stored object whose SHA-256 is absent or differs from its content-addressed key: pages, never retried."""
 
 
 class BlobGrantSelfCheckError(Exception):
@@ -189,7 +189,11 @@ class S3BlobStore:
         return any(item.get("Key") == key for item in listed.get("Contents") or [])
 
     def verify(self, content_uri: str, sha_hex: str, size: int, *, now: datetime | None = None) -> str:
-        """verified | missing | stale | mismatch from one HEAD with ChecksumMode ENABLED.
+        """verified | missing | stale | mismatch | size_mismatch from one HEAD with ChecksumMode ENABLED.
+
+        Checked in order: missing; a stored checksum that is absent or differs from the key's digest (a multipart composite
+        value differs by construction) is mismatch; a length different from the declared size, with the checksum equal, is
+        size_mismatch; then stale; then verified.
 
         A 404 is missing. A 403 is followed by one exact-key List (the role's List is prefix-conditioned, so a HEAD of an
         absent key most likely answers 403): absent -> missing, present -> BlobStoreAccessError, never missing.
@@ -205,8 +209,10 @@ class S3BlobStore:
                     raise BlobStoreAccessError("blob store access error (HEAD denied for a present object)") from None
                 return MISSING
             raise _classify(exc) from None
-        if head.get("ContentLength") != size or head.get("ChecksumSHA256") != sha256_hex_to_b64(sha_hex):
+        if head.get("ChecksumSHA256") != sha256_hex_to_b64(sha_hex):
             return MISMATCH
+        if head.get("ContentLength") != size:
+            return SIZE_MISMATCH
         modified = head.get("LastModified")
         moment = now or self._clock()
         if isinstance(modified, datetime) and moment - modified > timedelta(days=BLOB_COMMIT_MAX_AGE_DAYS):
@@ -272,6 +278,7 @@ __all__ = [
     "MISMATCH",
     "MISSING",
     "S3BlobStore",
+    "SIZE_MISMATCH",
     "STALE",
     "VERIFIED",
     "make_s3_client",

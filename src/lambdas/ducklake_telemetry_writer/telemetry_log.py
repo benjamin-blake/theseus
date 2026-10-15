@@ -12,7 +12,7 @@ part 1's sink already creates), but that directive and its members appear only w
 directive whose members are absent invalidates the block and drops RequestCount with it. The Lambda text log format is
 required for extraction (the function sets no JSON log format; a test pins that).
 
-A begin_blobs line carries counts and declared bytes only (items, distinct_keys, existed, granted, mismatched, stale,
+A begin_blobs line carries counts and declared bytes only (items, distinct_keys, existed, granted, stale,
 declared_bytes_total, declared_bytes_max, head_ms); an append_telemetry line carries blob_rows and blob_head_ms. Never a
 presigned URL, key or digest (Decision 101; REVIEW.md C7).
 """
@@ -37,7 +37,6 @@ BLOB_COUNT_FIELDS = (
     "distinct_keys",
     "existed",
     "granted",
-    "mismatched",
     "stale",
     "declared_bytes_total",
     "declared_bytes_max",

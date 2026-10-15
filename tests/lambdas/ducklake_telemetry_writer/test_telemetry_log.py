@@ -158,14 +158,14 @@ def test_masked_commit_retries_is_a_line_field_never_an_emf_member() -> None:
 
 
 def test_begin_blobs_line_counts_with_emf() -> None:
-    counts = dict(zip(log.BLOB_COUNT_FIELDS, range(1, 10), strict=True))
+    counts = dict(zip(log.BLOB_COUNT_FIELDS, range(1, len(log.BLOB_COUNT_FIELDS) + 1), strict=True))
     stats = log.RequestStats(tenant_id="T" * 26, project_id="P" * 26, blob_counts=counts)
     stats.sink("OccRetryCount", 1.0)
     stats.sink("CommitLatencyMs", 9.0)
     line = log.build_request_line(
         "begin_blobs", 200, None, payload={}, principal=None, request_bytes=1, invoke_bytes=1, stats=stats
     )
-    assert {name: line[name] for name in log.BLOB_COUNT_FIELDS} == counts
+    assert {name: line[name] for name in log.BLOB_COUNT_FIELDS} == counts and "mismatched" not in line
     assert line["_aws"]["CloudWatchMetrics"] == [
         {
             "Namespace": "DuckLakeTelemetryWriter",

@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
-from src.common.ducklake_telemetry_blobstore import MISMATCH, MISSING, STALE, VERIFIED, Grant
+from src.common.ducklake_telemetry_blobstore import MISMATCH, MISSING, SIZE_MISMATCH, STALE, VERIFIED, Grant
 from src.telemetry.blobs import sha256_hex_to_b64, spill_item
 
 X_AMZ = "X-Amz-"
@@ -67,8 +67,10 @@ class MemoryBlobStore:
         data = self.blobs.get(content_uri)
         if data is None:
             return MISSING
-        if len(data) != size or hashlib.sha256(data).hexdigest() != sha_hex:
+        if hashlib.sha256(data).hexdigest() != sha_hex:
             return MISMATCH
+        if len(data) != size:
+            return SIZE_MISMATCH
         return STALE if content_uri in self.stale else VERIFIED
 
     def grant_put(self, content_uri: str, sha_hex: str, size: int, *, now: datetime | None = None) -> Grant:

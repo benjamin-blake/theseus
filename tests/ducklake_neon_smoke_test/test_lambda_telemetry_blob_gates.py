@@ -7,11 +7,13 @@ output, failure text included."""
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from typing import Any
 
 import pytest
 
 from scripts.ducklake_smoke import core, lambda_telemetry_blob_gates
+from scripts.ducklake_smoke import telemetry_blob_vectors as vec
 from src.telemetry_client import blob_delivery as bd
 from tests.fixtures.ducklake_smoke_fakes import _Resp
 from tests.fixtures.telemetry_append_fakes import LiveFake
@@ -24,6 +26,7 @@ MARKERS = (
     "TELEMETRY_BLOB_DELIVERED_OK",
     "TELEMETRY_BLOB_RESEND_EXISTED_OK",
     "TELEMETRY_BLOB_UNVERIFIED_OK",
+    "TELEMETRY_BLOB_SIZE_MISMATCH_OK",
     "TELEMETRY_BLOB_S3_REJECTS_OK",
     "TELEMETRY_BLOB_BOUNDS_OK",
     "TELEMETRY_BLOB_AUTOREGISTER_OK",
@@ -90,6 +93,27 @@ def test_vectors_pass_on_a_consistent_writer(wired: Wired, capsys: pytest.Captur
     assert wired.live.store.blobs, "the delivered object is stored"
 
 
+def _misdeclared(payload: dict[str, Any]) -> bool:
+    if payload["action"] == "begin_blobs":
+        return any(i["content_bytes"] == vec.BLOB_BYTES + 1 for i in payload["items"])
+    if payload["action"] == "append_telemetry":
+        return any(r.get("content_bytes") == vec.BLOB_BYTES + 1 for b in payload["batches"] for r in b["rows"])
+    return False
+
+
+def test_size_mismatch_vector_refuses_on_both_verbs(wired: Wired, capsys: pytest.CaptureFixture[str]) -> None:
+    run()
+    assert "TELEMETRY_BLOB_SIZE_MISMATCH_OK" in capsys.readouterr().out
+    sent = [p for p in wired.sent if _misdeclared(p)]
+    assert [p["action"] for p in sent] == ["append_telemetry", "begin_blobs"]
+    assert vec.THRESHOLD_BYTES < vec.BLOB_BYTES + 1 <= vec.CAP_BYTES
+    row = vec.blob_transcript_row("t", 0, datetime(2026, 1, 1, tzinfo=timezone.utc), vec.fresh_content("t"))
+    assert vec.misdeclared(row)["content_bytes"] == row["content_bytes"] + 1
+    assert {k: v for k, v in vec.misdeclared(row).items() if k != "content_bytes"} == {
+        k: v for k, v in row.items() if k != "content_bytes"
+    }
+
+
 def test_resend_that_uploads_fails(wired: Wired) -> None:
     calls = {"n": 0}
 
@@ -151,6 +175,9 @@ def test_put_failure_names_the_s3_code(wired: Wired, monkeypatch: pytest.MonkeyP
         ("put_accepts_anything", "same-length wrong-bytes PUT"),
         ("store_forgets", "append of a delivered blob row status=422"),
         ("unverified_commits", "unverified append status=200"),
+        ("size_mismatch_pages", "size-mismatch append status=500"),
+        ("size_mismatch_commits", "size-mismatch append status=200"),
+        ("size_mismatch_grants", "size-mismatch begin_blobs status=200"),
         ("bounds_pass", "too_many_items"),
         ("signed_headers", "does not sign exactly"),
     ],
@@ -194,6 +221,18 @@ def test_each_divergence_fails_loudly(wired: Wired, monkeypatch: pytest.MonkeyPa
             return None
 
         wired.override = trust_everything
+    elif break_ == "size_mismatch_pages":
+        wired.override = lambda payload: (
+            _Resp(500, {"ok": False, "error_type": "blob_integrity"}) if _misdeclared(payload) else None
+        )
+    elif break_ == "size_mismatch_commits":
+        wired.override = lambda payload: (
+            _Resp(200, {"ok": True}) if payload["action"] == "append_telemetry" and _misdeclared(payload) else None
+        )
+    elif break_ == "size_mismatch_grants":
+        wired.override = lambda payload: (
+            _Resp(200, {"ok": True, "items": []}) if payload["action"] == "begin_blobs" and _misdeclared(payload) else None
+        )
     elif break_ == "bounds_pass":
         wired.override = lambda payload: _Resp(200, {"ok": True}) if len(payload.get("items", [])) > 200 else None
     else:

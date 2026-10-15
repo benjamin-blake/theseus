@@ -84,7 +84,6 @@ def test_begin_blobs_dedupes_and_counts(monkeypatch: pytest.MonkeyPatch) -> None
         "distinct_keys": 3,
         "existed": 0,
         "granted": 3,
-        "mismatched": 0,
         "stale": 0,
         "declared_bytes_total": 70000 + 90000 + 70000,
         "declared_bytes_max": 90000,
@@ -99,14 +98,43 @@ def test_begin_blobs_dedupes_and_counts(monkeypatch: pytest.MonkeyPatch) -> None
     assert (caught.value.status, caught.value.error_type) == (503, "blob_store_unavailable")
 
 
-def test_stale_or_mismatched_object_is_regranted(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_only_missing_or_stale_objects_are_regranted(monkeypatch: pytest.MonkeyPatch) -> None:
     AdapterKit(lookup_result=(RESOLVED, "registered")).install(monkeypatch)
-    shas = {"verified": "1" * 64, "stale": "2" * 64, "mismatch": "3" * 64, "missing": "4" * 64}
+    shas = {"verified": "1" * 64, "stale": "2" * 64, "missing": "4" * 64}
     store = FakeBlobStore({uri(sha): state for state, sha in shas.items()})
     out = run([item(sha) for sha in shas.values()], store)
-    assert [i.existed for i in out.items] == [True, False, False, False] and [i.grant is None for i in out.items][0]
-    assert (out.counts["existed"], out.counts["granted"], out.counts["stale"], out.counts["mismatched"]) == (1, 3, 1, 1)
-    assert [g[0] for g in store.grants] == [uri(shas["stale"]), uri(shas["mismatch"]), uri(shas["missing"])]
+    assert [i.existed for i in out.items] == [True, False, False] and out.items[0].grant is None
+    assert (out.counts["existed"], out.counts["granted"], out.counts["stale"]) == (1, 2, 1) and "mismatched" not in out.counts
+    assert [g[0] for g in store.grants] == [uri(shas["stale"]), uri(shas["missing"])]
+
+
+def test_begin_blobs_integrity_mismatch_is_500_and_grants_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    AdapterKit(lookup_result=(RESOLVED, "registered")).install(monkeypatch)
+    store = FakeBlobStore({uri("3" * 64): "mismatch", uri("5" * 64): "size_mismatch", uri("4" * 64): "missing"})
+    with pytest.raises(BlobIntegrityError):
+        run([item("4" * 64), item("5" * 64), item("3" * 64)], store)
+    assert store.grants == []
+
+
+def test_begin_blobs_size_mismatch_is_422_and_grants_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    AdapterKit(lookup_result=(RESOLVED, "registered")).install(monkeypatch)
+    store = FakeBlobStore({uri("5" * 64): "size_mismatch", uri("6" * 64): "size_mismatch", uri("4" * 64): "missing"})
+    with pytest.raises(TelemetryRequestError) as caught:
+        run([item("4" * 64), item("5" * 64), item("6" * 64)], store)
+    assert (caught.value.status, caught.value.error_type) == (422, "blob_not_verified")
+    assert caught.value.fields == {"row": 1, "reason": "size_mismatch"} and store.grants == []
+
+
+def test_begin_blobs_same_uri_different_size_is_422(monkeypatch: pytest.MonkeyPatch) -> None:
+    kit = AdapterKit(lookup_result=None).install(monkeypatch)
+    store = FakeBlobStore()
+    with pytest.raises(TelemetryRequestError) as caught:
+        run([item(), item("b" * 64), item(size=70001)], store)
+    assert (caught.value.status, caught.value.error_type) == (422, "blob_not_verified")
+    assert caught.value.fields == {"row": 2, "reason": "size_mismatch"}
+    assert store.heads == [] and store.grants == [] and "BEGIN" not in kit.events
+    AdapterKit(lookup_result=(RESOLVED, "registered")).install(monkeypatch)
+    assert run([item(), item(session="other", size=70001)], FakeBlobStore()).counts["distinct_keys"] == 2
 
 
 def decoded(**over: Any) -> dict[str, Any]:
@@ -161,11 +189,32 @@ def test_verify_blob_rows_returns_unverified_and_raises_on_a_mismatch() -> None:
     assert len(shared.heads) == 1 and [u.row for u in both] == [0, 1]
     with pytest.raises(BlobIntegrityError):
         core.verify_blob_rows(rows, indexes, store=FakeBlobStore({rows[2]["content_uri"]: "mismatch"}), now=STARTED)
+    sized = FakeBlobStore({rows[1]["content_uri"]: "size_mismatch", rows[2]["content_uri"]: "size_mismatch"})
+    with pytest.raises(TelemetryRequestError) as refused:
+        core.verify_blob_rows(rows, indexes, store=sized, now=STARTED)
+    assert (refused.value.status, refused.value.error_type) == (422, "blob_not_verified")
+    assert refused.value.fields == {"table": "telemetry_transcripts", "row": 1, "reason": "size_mismatch"}
+    both_bad = FakeBlobStore({rows[1]["content_uri"]: "size_mismatch", rows[2]["content_uri"]: "mismatch"})
+    with pytest.raises(BlobIntegrityError):
+        core.verify_blob_rows(rows, indexes, store=both_bad, now=STARTED)
     down = FakeBlobStore()
     down.error = BlobStoreUnavailableError("x")
     with pytest.raises(TelemetryRequestError) as caught:
         core.verify_blob_rows(rows, indexes, store=down, now=STARTED)
     assert caught.value.status == 503
+
+
+def test_verify_blob_rows_same_uri_different_size_is_422() -> None:
+    rows = core.attach_blob_uris(blob_rows(2), tenant_id=TENANT, project_id=RESOLVED, threshold=THRESHOLD, cap=CAP)
+    twin = {**rows[0], "content_bytes": 70001}
+    store = FakeBlobStore()
+    with pytest.raises(TelemetryRequestError) as caught:
+        core.verify_blob_rows([rows[0], rows[1], twin], [0, 1, 2], store=store, now=STARTED)
+    assert (caught.value.status, caught.value.fields) == (
+        422,
+        {"table": "telemetry_transcripts", "row": 2, "reason": "size_mismatch"},
+    )
+    assert store.heads == []
 
 
 class Con:
