@@ -13,8 +13,8 @@ plan_type: IMPLEMENTATION
 verification_tier: V3
 plan_path: docs/plans/PLAN-telemetry-blob-size-mismatch.yaml
 phase: >-
-  T2.36 (friction telemetry; slice 2a-2's claim-check route, built by PLAN-telemetry-blob-route in #1491). Closes no exit
-  criterion: c4 is already met. Carrier rec-4342.
+  rec-4342 carrier (ad_hoc_rec): a code-review follow-up of the blob route build (#1491). Related tier item, named in
+  context only: T2.36's slice 2a-2 claim-check route, whose c4 is already met; this plan closes no criterion.
 closes_criteria: []
 scope:
 - file: src/common/ducklake_telemetry_blobstore.py
@@ -23,20 +23,23 @@ scope:
     verify() gains a fifth outcome, SIZE_MISMATCH = "size_mismatch", and checks in this order: missing (unchanged 404 and
     403-then-List handling); then a stored ChecksumSHA256 that is absent or differs from sha256_hex_to_b64(sha_hex) (a
     multipart composite value ending in -N differs by construction) is MISMATCH; then a ContentLength different from the
-    declared size, with the checksum equal, is SIZE_MISMATCH; then stale; then verified. The BlobIntegrityError docstring
-    becomes "a stored object whose SHA-256 is absent or differs from its content-addressed key". SIZE_MISMATCH joins
-    __all__. No other behavior changes.
+    declared size, with the checksum equal, is SIZE_MISMATCH; then stale; then verified. The verify() docstring names the
+    five outcomes; the BlobIntegrityError docstring becomes "a stored object whose SHA-256 is absent or differs from its
+    content-addressed key". SIZE_MISMATCH joins __all__. No other behavior changes.
 - file: src/common/ducklake_telemetry_blobs.py
   action: Modify
   purpose: >-
-    verify_blob_rows: any MISMATCH raises BlobIntegrityError first (integrity outranks a size mismatch across the request);
-    otherwise the first row whose object is SIZE_MISMATCH raises TelemetryRequestError(422, "blob_not_verified", {table:
-    telemetry_transcripts, row: that index, reason: "size_mismatch"}, "blob not verified") before any transaction, with no
-    stored-row exemption (the no-op of an identical stored row stays for missing and stale only). begin_blobs stops
-    re-granting a mismatched object: after the bounded HEADs, any MISMATCH raises BlobIntegrityError and any SIZE_MISMATCH
-    raises TelemetryRequestError(422, "blob_not_verified", {row: the first such item index, reason: "size_mismatch"}, "blob
-    not verified"), both before any grant is issued; missing and stale are re-granted as today. The counts drop
-    "mismatched" (a 200 can no longer carry a mismatch). Module and function docstrings say the same.
+    Every blob row (append) and item (begin_blobs) is judged on its own declared content_bytes. The HEADs stay one per
+    distinct content_uri, judged against the first row or item of that URI. After them, in this order: any MISMATCH
+    raises BlobIntegrityError (integrity outranks everything below). Then the first row or item, by index, that is a size
+    mismatch raises TelemetryRequestError(422, "blob_not_verified", ...) with reason "size_mismatch". A row or item is a
+    size mismatch when its URI's HEAD answered SIZE_MISMATCH, or when its content_bytes differs from the first row or
+    item that shares its content_uri: one digest has one true length, so two declared lengths mean at least one is wrong,
+    and no extra HEAD is needed. The append body is {table: telemetry_transcripts, row, reason}; the begin_blobs body is
+    {row, reason}. Both are raised before any transaction or grant, with no stored-row exemption (the no-op of an
+    identical stored row stays for missing and stale only). begin_blobs therefore stops re-granting a mismatched object;
+    missing and stale are re-granted as today, and duplicate_of still answers a later item with the same URI and size.
+    The counts drop "mismatched" (a 200 can no longer carry one). Module and function docstrings say the same.
 - file: src/lambdas/ducklake_telemetry_writer/telemetry_log.py
   action: Modify
   purpose: BLOB_COUNT_FIELDS and the module docstring drop "mismatched"; the begin_blobs C6 line carries the other eight counts unchanged.
@@ -49,13 +52,23 @@ scope:
     re-send, never re-upload, an unchanged request never succeeds; unknown_project: register the project); blob_integrity
     becomes "a stored object whose SHA-256 is absent or differs from its key: a deploy or out-of-band-writer defect
     (500)". begin_blobs: the response codes gain 422 blob_not_verified {row, reason size_mismatch} (nothing granted) and
-    typed_errors gain blob_not_verified with that meaning; blob_integrity says the request fails and nothing is granted. The
-    stored-row invariant names missing and stale only, and the begin_blobs invariant says integrity faults are never
-    re-granted. A new invariant (Decision 207) states two things. First, size_mismatch is decided from the HEAD before
-    the transaction, so it precedes the grain check: a re-send under a stored grain key with a different content_bytes
-    answers 422 size_mismatch, not 409 grain_conflict. Second, an identical re-send never reaches size_mismatch, because
-    a stored blob row was committed only after a verified HEAD, so its content_bytes equals the object's length. One amendment_log entry (semantic_break false; migration_story: a caller fault that answered a paged 500
-    now answers 422, and begin_blobs now answers the 500 its contract already stated instead of re-granting).
+    typed_errors gain blob_not_verified with that meaning; blob_integrity says the request fails and nothing is granted.
+    The stored-row invariant keeps its sentence "commits only as the no-op of an identical stored row" and names missing
+    and stale only; the begin_blobs invariant says integrity faults are never re-granted. A new invariant (Decision 207)
+    states three things. Every stored blob row's content_bytes equals its object's length, because each row was either
+    HEAD-verified on its own declared size or declared the same size as the verified first row of its content_uri. So
+    an identical re-send never reaches size_mismatch. And size_mismatch is decided before the transaction, so it
+    precedes the grain check: a re-send under a stored grain key with a different content_bytes answers 422
+    size_mismatch, not 409 grain_conflict. One amendment_log entry: change_class field_add (a 422 on begin_blobs and a
+    reason value), semantic_break true because two observable answers change. A size-only mismatch on append moves from
+    a paged 500 to 422, and a mismatched object on begin_blobs moves from a grant to 500, which is what the contract
+    already said. contract_version stays 1 under provisional_v0, as the 2026-10-14 semantic_break entry did.
+- file: tests/checks/contracts/test_telemetry_blob_contracts.py
+  action: Modify
+  purpose: >-
+    test_writer_contract_carries_begin_blobs_and_the_claim_check: the begin_blobs response-code set gains 422, its
+    typed_errors include blob_not_verified, and both verbs' 422 rows name size_mismatch. test_commit_age_matches_the_contract
+    keeps its pin on "commits only as the no-op of an identical stored row". Claim-additive only.
 - file: scripts/ducklake_smoke/telemetry_blob_vectors.py
   action: Modify
   purpose: >-
@@ -64,13 +77,13 @@ scope:
 - file: scripts/ducklake_smoke/lambda_telemetry_blob_gates.py
   action: Modify
   purpose: >-
-    _check_size_mismatch(gate, project_ref, sent) runs right after _check_unverified, so the begin_blobs count that the
-    unverified_commits divergence keys on stays 3. For the object _check_delivered stored, it checks two things. First,
-    an append of the delivered wire row with content_bytes + 1 answers HTTP 422, error_type blob_not_verified, table
-    telemetry_transcripts, row 0 and reason size_mismatch, and the probe's grain counts are unchanged. Second, a
-    begin_blobs of its item with content_bytes + 1 answers 422 blob_not_verified, row 0 and reason size_mismatch. Any
-    other status fails the gate and names it. It prints TELEMETRY_BLOB_SIZE_MISMATCH_OK. No live vector elicits a 500,
-    because a typed 5xx pages.
+    _check_size_mismatch(gate, project_ref, sent, tag) takes the row and tag _check_delivered returns. It runs right after
+    _check_unverified, so the begin_blobs count that the unverified_commits divergence keys on stays 3. For the stored
+    object it checks two things. First, an append of the delivered wire row with content_bytes + 1 answers HTTP 422,
+    error_type blob_not_verified, table telemetry_transcripts, row 0 and reason size_mismatch, and
+    gate.probe(project_ref, tag)'s grain counts are unchanged. Second, a begin_blobs of its item with content_bytes + 1
+    answers 422 blob_not_verified, row 0 and reason size_mismatch. Any other status fails the gate and names it. It
+    prints TELEMETRY_BLOB_SIZE_MISMATCH_OK. No live vector elicits a 500, because a typed 5xx pages.
 - file: tests/common/test_ducklake_telemetry_blobstore.py
   action: Modify
   purpose: >-
@@ -83,16 +96,19 @@ scope:
   action: Modify
   purpose: >-
     test_stale_or_mismatched_object_is_regranted is renamed test_only_missing_or_stale_objects_are_regranted and keeps its
-    missing and stale grants. New: test_begin_blobs_integrity_mismatch_is_500_and_grants_nothing and
-    test_begin_blobs_size_mismatch_is_422_and_grants_nothing (status, error_type, row, reason, empty grants). The counts
-    test drops mismatched. test_verify_blob_rows_returns_unverified_and_raises_on_a_mismatch also asserts the 422
-    size_mismatch body and that a mismatch in any row outranks it.
+    missing and stale grants. New: test_begin_blobs_integrity_mismatch_is_500_and_grants_nothing,
+    test_begin_blobs_size_mismatch_is_422_and_grants_nothing and test_begin_blobs_same_uri_different_size_is_422 (status,
+    error_type, row, reason and empty grants in each). The counts test drops mismatched.
+    test_verify_blob_rows_returns_unverified_and_raises_on_a_mismatch also asserts the 422 size_mismatch body and that a
+    mismatch in any row outranks it. New test_verify_blob_rows_same_uri_different_size_is_422 covers a later row that
+    shares the first row's URI with another content_bytes: one HEAD, 422 naming that later row.
 - file: tests/common/test_ducklake_telemetry_append.py
   action: Modify
   purpose: >-
     New test_size_mismatch_is_422_and_opens_no_transaction: 422 blob_not_verified, reason size_mismatch and no BEGIN,
-    including when a row under the same grain key is already stored with the true content_bytes. That pins the 422
-    ahead of the 409 grain check, and the node is rec-4342's acceptance, so it keeps this exact name (Decision 201). New
+    including when a row under the same grain key is already stored with the true content_bytes. That pins the 422 ahead
+    of the 409 grain check, and the node is rec-4342's acceptance, so it keeps this exact name (Decision 201). New
+    test_same_uri_different_size_rows_are_422_and_write_nothing (two rows, one object, two declared sizes). New
     test_integrity_outranks_size_mismatch: one row of each answers the typed 500. test_integrity_mismatch_raises_unmapped
     is unchanged.
 - file: tests/fixtures/telemetry_blob_fakes.py
@@ -116,20 +132,22 @@ scope:
 - file: config/agent/verification_registry/entries/telemetry-blob-verb-and-verify.yaml
   action: Delete
   purpose: >-
-    Retired by git mv (Decision 176 point 5). check_id is immutable, and one of its nodes asserts the re-grant of a
-    mismatched object, which this plan reverses, so it cannot be edited in place. Its other twelve nodes move unchanged
-    into the two replacement checks graduated from steps 2 and 3.
+    Retired by git mv into entries/deprecated/ (the registry contract's retirement path: no status column and no other
+    lifecycle machinery). check_id is immutable, and its node test_stale_or_mismatched_object_is_regranted asserts a
+    re-grant this plan reverses, so it cannot be edited in place. Its other eleven nodes move unchanged into the
+    replacement checks graduated from steps 2 and 3.
 - file: config/agent/verification_registry/entries/deprecated/telemetry-blob-verb-and-verify.yaml
   action: Create
   purpose: The git mv destination of the retired shard, byte-identical content.
-- file: docs/contracts/verification-registry.yaml
-  action: Modify
+- file: config/agent/verification_registry/entries/telemetry-blobstore-adapter.yaml
+  action: Delete
   purpose: >-
-    A governance note and an amendment_log entry (governance_note_add): telemetry-blob-verb-and-verify was RETIRED by git
-    mv because its re-grant node's claim is reversed. The reversal follows the Class B writer contract's existing text
-    (blob_integrity is a 500, and only missing or stale items are re-granted) and rec-4342. It is a stricter behavior,
-    not a weakening to obtain green (Decision 181). The retired check is replaced by telemetry-blob-begin-mismatch and
-    telemetry-blob-append-size-mismatch, which carry every other node verbatim plus the successor nodes.
+    Retired the same way. Its node test_verify_states_from_head asserts that a length-only difference is mismatch, which
+    this plan reverses to size_mismatch. Its seven nodes, including that reclassified one, move into the replacement check
+    graduated from step 1.
+- file: config/agent/verification_registry/entries/deprecated/telemetry-blobstore-adapter.yaml
+  action: Create
+  purpose: The git mv destination of the retired shard, byte-identical content.
 bundled_recommendations:
 - rec-4342
 followon_recs:
@@ -149,7 +167,12 @@ acceptance_criteria:
   size_mismatch, stale, verified.
 - >-
   append_telemetry answers a size_mismatch blob row with 422 blob_not_verified {table, row, reason size_mismatch} before
-  any transaction, even when an identical row is stored. A mismatch in any row still answers the typed 500 blob_integrity.
+  any transaction, even when a row under the same grain key is stored. A mismatch in any row still answers the typed 500
+  blob_integrity.
+- >-
+  On both verbs, a later row or item that shares a content_uri with an earlier one but declares a different
+  content_bytes answers 422 size_mismatch naming the later index, with no extra HEAD, and nothing is written or
+  granted.
 - >-
   begin_blobs re-grants only missing or stale objects. A mismatch fails the request with the typed 500, and a
   size_mismatch answers 422 blob_not_verified {row, reason size_mismatch}. Neither issues a grant.
@@ -168,8 +191,16 @@ verification_plan:
     bin/venv-python -m pytest
     tests/common/test_ducklake_telemetry_blobstore.py::test_checksum_outranks_length_and_length_outranks_stale
     tests/common/test_ducklake_telemetry_blobstore.py::test_verify_states_from_head
+    tests/common/test_ducklake_telemetry_blobstore.py::test_head_403_is_missing_only_when_the_list_finds_nothing
+    tests/common/test_ducklake_telemetry_blobstore.py::test_throttle_and_5xx_are_unavailable
+    tests/common/test_ducklake_telemetry_blobstore.py::test_head_asks_for_checksum_mode
+    tests/common/test_ducklake_telemetry_blobstore.py::test_grant_self_check_refuses_an_unsigned_checksum
+    tests/common/test_ducklake_telemetry_blobstore.py::test_root_is_scoped_and_disjoint_from_the_data_path
+    tests/common/test_ducklake_telemetry_blobstore.py::test_no_ducklake_bundle_ingests_from_object_storage
     -q
-  expected: Exit 0, both nodes pass. Red before, because the matrix node is absent.
+  expected: >-
+    Exit 0, every node passes. Red before, because the matrix node is absent. It carries all seven nodes of the retired
+    telemetry-blobstore-adapter check.
   expected_literals: []
   fix_if: >-
     A matching checksum with a different length that answers mismatch, or a missing or composite checksum that answers
@@ -185,6 +216,8 @@ verification_plan:
     tests/common/test_ducklake_telemetry_blobs.py::test_only_missing_or_stale_objects_are_regranted
     tests/common/test_ducklake_telemetry_blobs.py::test_begin_blobs_integrity_mismatch_is_500_and_grants_nothing
     tests/common/test_ducklake_telemetry_blobs.py::test_begin_blobs_size_mismatch_is_422_and_grants_nothing
+    tests/common/test_ducklake_telemetry_blobs.py::test_begin_blobs_same_uri_different_size_is_422
+    tests/common/test_ducklake_telemetry_blobs.py::test_verify_blob_rows_same_uri_different_size_is_422
     tests/common/test_ducklake_telemetry_blobs.py::test_begin_blobs_dedupes_and_counts
     tests/common/test_ducklake_telemetry_blobs.py::test_verify_blob_rows_returns_unverified_and_raises_on_a_mismatch
     tests/common/test_ducklake_telemetry_blobs.py::test_begin_blobs_registers_first_sight_and_keys_use_the_committed_id
@@ -208,6 +241,7 @@ verification_plan:
     bin/venv-python -m pytest
     tests/common/test_ducklake_telemetry_append.py::test_size_mismatch_is_422_and_opens_no_transaction
     tests/common/test_ducklake_telemetry_append.py::test_integrity_outranks_size_mismatch
+    tests/common/test_ducklake_telemetry_append.py::test_same_uri_different_size_rows_are_422_and_write_nothing
     tests/common/test_ducklake_telemetry_append.py::test_integrity_mismatch_raises_unmapped
     tests/common/test_ducklake_telemetry_append.py::test_unverified_blob_commits_only_as_a_stored_no_op
     tests/common/test_ducklake_telemetry_append.py::test_blob_rows_get_the_writer_uri_and_head_after_prepare
@@ -216,11 +250,12 @@ verification_plan:
     tests/common/test_ducklake_telemetry_append.py::test_blob_rows_over_the_cap_are_413
     tests/common/test_ducklake_telemetry_append.py::test_store_unavailable_is_503_and_opens_no_transaction
     -q
-  expected: Exit 0, every node passes. Red before, because the two new nodes are absent.
+  expected: Exit 0, every node passes. Red before, because the three new nodes are absent.
   expected_literals: []
   fix_if: >-
     A size_mismatch that commits as a stored no-op, opens a transaction or answers 500 is wrong. So is a checksum fault
-    that a size_mismatch in another row hides.
+    that a size_mismatch in another row hides, or a later row whose declared size is never compared because it shares
+    a URI with an earlier one.
   hermetic: true
   graduation: graduate
   graduation_check_id: telemetry-blob-append-size-mismatch
@@ -262,13 +297,14 @@ verification_plan:
 - step: 6
   phase: pre-deploy
   action: >-
-    Stale-reference sweep for the retired check: it lives only under entries/deprecated/, and no live shard, test or
-    source names the old re-grant node.
+    Stale-reference sweep for the two retired checks: each lives only under entries/deprecated/, and no live shard, test
+    or source names the old re-grant node.
   command: >-
-    test -f config/agent/verification_registry/entries/deprecated/telemetry-blob-verb-and-verify.yaml && ! test -e
-    config/agent/verification_registry/entries/telemetry-blob-verb-and-verify.yaml && ! grep -rq
-    'test_stale_or_mismatched_object_is_regranted' config/agent/verification_registry/entries/*.yaml tests src scripts &&
-    echo SWEEP_OK
+    for c in telemetry-blob-verb-and-verify telemetry-blobstore-adapter; do test -f
+    "config/agent/verification_registry/entries/deprecated/$c.yaml" && ! test -e
+    "config/agent/verification_registry/entries/$c.yaml" || exit 1; done && ! grep -rq --exclude-dir=__pycache__
+    -e 'test_stale_or_mismatched_object_is_regranted' -e 'telemetry-blobstore-adapter' -e 'telemetry-blob-verb-and-verify'
+    config/agent/verification_registry/entries/*.yaml tests src scripts && echo SWEEP_OK
   expected: Exit 0 and SWEEP_OK.
   expected_literals: []
   fix_if: >-
@@ -281,20 +317,24 @@ verification_plan:
     live shard already fails on a node that does not exist.
 - step: 7
   phase: pre-deploy
-  action: The amended writer contract passes the contract-drift gate and the size cap.
+  action: The amended writer contract passes the contract-drift gate, the size cap and its own contract tests.
   command: >-
     bin/venv-python -c "from scripts.checks.contracts.validate_contract_drift import validate_contract_drift as
     v;f=[];v(f);assert not f, f;print('CONTRACTS_OK')" && bin/venv-python -c "from scripts.checks.structural._classify
     import effective_lines;n=effective_lines(open('docs/contracts/ducklake_telemetry_writer.yaml').read());print(n);assert
-    n<=500;print('SIZE_OK')" && grep -c 'size_mismatch' docs/contracts/ducklake_telemetry_writer.yaml
-  expected: Exit 0, CONTRACTS_OK and SIZE_OK printed, and size_mismatch appears in the contract.
+    n<=500;print('SIZE_OK')" && grep -c 'size_mismatch' docs/contracts/ducklake_telemetry_writer.yaml && bin/venv-python
+    -m pytest tests/checks/contracts/test_telemetry_blob_contracts.py::test_writer_contract_carries_begin_blobs_and_the_claim_check
+    tests/checks/contracts/test_telemetry_blob_contracts.py::test_commit_age_matches_the_contract -q
+  expected: >-
+    Exit 0, CONTRACTS_OK and SIZE_OK printed, size_mismatch appears in the contract, and both contract-test nodes pass.
   expected_literals: []
   fix_if: A drift finding, a contract over the cap, or no size_mismatch in the contract.
   hermetic: true
   graduation: waive
   graduation_waiver_reason: >-
-    The contract-drift and size checks already run in both tiers; the grep only proves the edit landed and has no
-    standing value as a regression guard.
+    The contract-drift and size checks already run in both tiers, and both contract-test nodes stay in the live
+    telemetry-blob-contracts check (claim-additive edits). The grep only proves the edit landed and has no standing value
+    as a regression guard.
 - step: 8
   phase: pre-deploy
   action: Fast tier, then the full tier on the committed, rebased, clean tree before handoff (Decision 163).
@@ -356,7 +396,7 @@ verification_plan:
   command: >-
     test -s "$DEPLOY_JOBS_JSON" && bin/venv-python -c "import datetime as d,json,os,boto3;b=boto3.Session(profile_name='agent_platform',region_name='eu-west-2');jobs=json.load(open(os.environ['DEPLOY_JOBS_JSON']));jobs=jobs.get('jobs')
     if isinstance(jobs,dict) else jobs;t=d.datetime.fromisoformat([x['completed_at'] for x in jobs if x['name'].startswith('deploy-serving')][0].replace('Z','+00:00'));s=int(t.timestamp()*1000);lg=b.client('logs');g='/aws/lambda/agent-platform-ducklake-telemetry-writer';f=lambda
-    p:lg.filter_log_events(logGroupName=g,filterPattern=p,startTime=s)['events'];bad=f('{ $.status = 500 }');nv=f('{ ($.status = 422) && ($.error_type = \"blob_not_verified\") }');print(len(bad),len(nv));assert
+    p:[e for pg in lg.get_paginator('filter_log_events').paginate(logGroupName=g,filterPattern=p,startTime=s) for e in pg['events']];bad=f('{ $.status = 500 }');nv=f('{ ($.status = 422) && ($.error_type = \"blob_not_verified\") }');print(len(bad),len(nv));assert
     not bad,'status-500 lines after the deploy';assert len(nv)>=3,len(nv);print('C6_SIZE_MISMATCH_OK')"
   expected: >-
     Exit 0 and C6_SIZE_MISMATCH_OK, with zero 500 lines and at least three 422 blob_not_verified lines: the unverified
@@ -408,24 +448,24 @@ test_obligations:
 - source: docs/contracts/ducklake_telemetry_writer.yaml
   behavior: size_mismatch, the remedies and the narrowed blob_integrity are documented.
   verification_step: 7
-  command: bin/venv-python -c "from scripts.checks.contracts.validate_contract_drift import validate_contract_drift as
+  command: grep -c 'size_mismatch' docs/contracts/ducklake_telemetry_writer.yaml
   waiver_reason: >-
-    Contract prose with an amendment_log entry, guarded by the contract-drift and amendment-log checks in both tiers;
-    its behavior is proven by steps 2, 3 and 12.
+    Contract prose with an amendment_log entry, guarded by the contract-drift and amendment-log checks in both tiers and by
+    the two contract-test nodes step 7 runs; its behavior is proven by steps 2, 3 and 12.
 - source: config/agent/verification_registry/entries/deprecated/telemetry-blob-verb-and-verify.yaml
   behavior: The retired check survives byte-identical under entries/deprecated/, where the loader never reads it.
   verification_step: 6
-  command: test -f config/agent/verification_registry/entries/deprecated/telemetry-blob-verb-and-verify.yaml
+  command: test -f "config/agent/verification_registry/entries/deprecated/$c.yaml"
   waiver_reason: >-
     A git mv destination with no behavior of its own; step 6 proves it exists and the live path is gone, and steps 2 and 3
     graduate the replacements.
-- source: docs/contracts/verification-registry.yaml
-  behavior: The retirement of telemetry-blob-verb-and-verify and its two replacements are recorded.
+- source: config/agent/verification_registry/entries/deprecated/telemetry-blobstore-adapter.yaml
+  behavior: The retired check survives byte-identical under entries/deprecated/, where the loader never reads it.
   verification_step: 6
-  command: test -f config/agent/verification_registry/entries/deprecated/telemetry-blob-verb-and-verify.yaml
+  command: test -f "config/agent/verification_registry/entries/deprecated/$c.yaml"
   waiver_reason: >-
-    A governance note and amendment_log entry, guarded by the contract-drift check in both tiers; step 6 proves the
-    retirement itself and steps 2 and 3 graduate the replacements.
+    A git mv destination with no behavior of its own; step 6 proves it exists and the live path is gone, and step 1
+    graduates the replacement.
 constraints:
 - >-
   The writer still never reads, puts or deletes object bytes and gains no S3 call; verify stays one HEAD (plus the
@@ -436,14 +476,14 @@ constraints:
 - No live vector elicits a 5xx, because a typed 5xx pages through Url5xxCount.
 - >-
   Merge under the standing rule (code review PROCEED and green CI): a CI-run DuckLake deploy with no IAM, spend, Class A
-  contract, Decision text or manual step. Act only on the final hand-back of each gate.
+  contract, Decision text or manual step. The only contract edited is the Class B writer contract; the two retired
+  shards move by git mv, the registry's own retirement path, and the Class A verification-registry.yaml is not edited.
+  Act only on the final hand-back of each gate.
 - No rescue agents or workaround loops (Decision 55); a red deploy or smoke job is fixed forward from its root cause.
 context:
 - >-
-  Origin: the blob route build (#1491, 63db2b30) raised it in review. The coordinator routed it here
-  (2026-10-15) under the scope-escalation rule, with a blind consult for the fork. Evidence:
-  /mnt/project-files/telemetry-slice2b/fable-blob-size/ (BRIEF.md, ADVICE.md). The build's own rec was never filed, so
-  rec-4342 is the carrier.
+  Origin: raised in the blob route build's review (#1491) and routed here by the coordinator (2026-10-15) under the
+  scope-escalation rule. Blind consult: /mnt/project-files/telemetry-slice2b/fable-blob-size/. Carrier rec-4342.
 - >-
   Why size alone is the caller's fault: the key is the SHA-256 and S3 validates the checksum on the grant's PUT, so a
   stored object with the key's checksum is exactly the content named; a different declared length can only be the
@@ -459,18 +499,26 @@ context:
   the operator-write runbook line go to rec-4292 (alarms before production); the read-time checksum and length check goes
   to rec-4291's get_blob plan.
 - >-
-  Overlap: none with the running reader verbs, rule declarations or cache token totals builds. The rule declarations
-  plan edits telemetry_transcripts.yaml, which this plan leaves alone.
+  Overlap: no file shared with the running reader verbs, rule declarations or cache token totals builds (rule
+  declarations edits telemetry_transcripts.yaml, left alone here). Consumer: PLAN-telemetry-capture-hooks RN-7 treats 422
+  blob_not_verified as re-run delivery once, then halt; with size_mismatch its re-delivery's begin_blobs 422 is a helper
+  defect, so the producer halts, which is compatible.
+- >-
+  Registry provenance: telemetry-blob-verb-and-verify and telemetry-blobstore-adapter are retired by git mv because a node
+  in each reverses its claim; steps 1 to 3 graduate replacements that carry every other node verbatim. The edits to nodes
+  of telemetry-blob-writer-edge, telemetry-blob-smoke-vectors and telemetry-blob-contracts change test bodies only,
+  claim-additively, and leave every shard record untouched. So no registry governance note is owed, and this plan and
+  its commits are the record.
 - >-
   Decision-scout: FLAGS_FOUND. CITE 210, 201, 126, 79. NOTE 207: the 422 precedes the 409 grain check, an identical
-  re-send cannot reach it, and the writer-contract invariant plus the append test pin both. NOTE 181: the shard is
-  retired and replaced rather than edited in place. Both resolved. RELATED 199, 55, 212, 88, 84, 213, 216, 176, 132,
+  re-send cannot reach it (each row's own size is judged), and the contract invariant plus the tests pin both. NOTE 181:
+  claim-reversed shards are retired and replaced, not edited in place. Both resolved. RELATED 199, 55, 212, 88, 84, 213, 216, 176, 132,
   189, 101, 118, 128. Decisions triaged: 170 of 170. Roadmap items intersected: 4; CONFLICT: 0; RELATED: 4.
 - >-
   No content-tier change: threshold, cap, key grammar and content_uri are unchanged, so Decision 199 cl.5 needs no Decision.
   The new size_mismatch outcome of the provisional content_blobs verify verb is what T4.23 c7's local adapter and the
   c16 port suite inherit (Decision 212).
-- 'gates: decision-scout=FLAGS_FOUND (2 NOTEs, resolved); plan-critique=PENDING'
+- 'gates: decision-scout=FLAGS_FOUND (2 NOTEs, resolved); plan-critique=PENDING (r1 REVISE, all findings fixed)'
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
@@ -487,9 +535,9 @@ execution_steps:
 - src/lambdas/ducklake_telemetry_writer/telemetry_log.py and its test (step 4).
 - >-
   scripts/ducklake_smoke/telemetry_blob_vectors.py and lambda_telemetry_blob_gates.py with the gate tests (step 5).
-  Retire telemetry-blob-verb-and-verify with git mv into entries/deprecated/ (content untouched) and add the
-  verification-registry.yaml governance note and amendment_log entry. Steps 2 and 3 graduate its replacements (step 6).
-- docs/contracts/ducklake_telemetry_writer.yaml (step 7).
+  Retire telemetry-blob-verb-and-verify and telemetry-blobstore-adapter with git mv into entries/deprecated/ (content
+  untouched); steps 1 to 3 graduate their replacements (step 6).
+- docs/contracts/ducklake_telemetry_writer.yaml and tests/checks/contracts/test_telemetry_blob_contracts.py (step 7).
 - Code review (the code-review skill in a fresh context); fix every blocking finding.
 - >-
   Closure (implement skill Commit Flows; docs/contracts/git-ops.yaml), each outcome reported separately: the readiness
@@ -500,8 +548,10 @@ execution_steps:
   After merge: steps 9 to 12 against the deploy run for the merge commit. Then append dated notes through
   scripts.ops_data_portal (get_rec_write_guidance first; fetch each rec just before update_rec and prepend to its full
   context; name the merge commit's short SHA and this slug). rec-4292: before production, add a non-paging warning
-  alarm on blob_not_verified size_mismatch or the 422 ratio, and a runbook line saying an operator write under the blob
-  prefix must be a checksum-signed PUT or it pages. rec-4291: get_blob reads with ChecksumMode enabled and refuses an
+  alarm on blob_not_verified size_mismatch or the 422 ratio; a runbook line saying an operator write under the blob
+  prefix must be a checksum-signed PUT or it pages; and the repair path for an integrity fault, now that begin_blobs
+  no longer re-grants it: an operator inspects the object and deletes that version (the bucket is versioned, so it
+  stays recoverable), after which the producer's next begin_blobs grants a fresh upload. rec-4291: get_blob reads with ChecksumMode enabled and refuses an
   object whose checksum or length disagrees with the row. Then step 13.
 - 'Report: what was implemented and the verification results, including step 11 output and the step 12 counts'
 work_areas: []
