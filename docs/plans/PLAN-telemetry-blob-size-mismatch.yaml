@@ -69,9 +69,9 @@ scope:
     size_mismatch is decided before the transaction, so it precedes the stored-row (in-transaction) grain check: a re-send
     under a stored grain key with a different content_bytes answers 422 size_mismatch, not 409 grain_conflict. Two rows
     under one grain key in one request remain prepare's in-batch 409. One amendment_log entry: change_class field_add (a 422 on begin_blobs and a
-    reason value), semantic_break true because two observable answers change. A size-only mismatch on append moves from
-    a paged 500 to 422, and a mismatched object on begin_blobs moves from a grant to 500, which is what the contract
-    already said. contract_version stays 1 under provisional_v0, as the 2026-10-14 semantic_break entry did.
+    reason value), semantic_break true because three observable answers change. A size-only mismatch on append moves
+    from a paged 500 to 422; a mismatched object on begin_blobs moves from a grant to 500, which is what the contract
+    already said; and begin_blobs' 200 counts lose mismatched (no consumer reads it). contract_version stays 1 under provisional_v0, as the 2026-10-14 semantic_break entry did.
 - file: tests/checks/contracts/test_telemetry_blob_contracts.py
   action: Modify
   purpose: >-
@@ -138,7 +138,7 @@ scope:
   purpose: >-
     MARKERS gains TELEMETRY_BLOB_SIZE_MISMATCH_OK. New test_size_mismatch_vector_refuses_on_both_verbs: the gate sent one
     append and one begin_blobs whose content_bytes is the delivered row's plus one, and the writer answered each with 422
-    blob_not_verified, reason size_mismatch. test_each_divergence_fails_loudly gains two cases. size_mismatch_pages: the
+    blob_not_verified, reason size_mismatch. test_each_divergence_fails_loudly gains three cases. size_mismatch_pages: the
     writer answers the misdeclared append with a 500, and the failure names "size-mismatch append status=500".
     size_mismatch_commits: the writer answers it with a 200, and the failure names "size-mismatch append status=200".
     size_mismatch_grants: the writer answers the misdeclared begin_blobs with a 200 grant, and the failure names
@@ -183,8 +183,8 @@ acceptance_criteria:
   size_mismatch, stale, verified.
 - >-
   append_telemetry answers a size_mismatch blob row with 422 blob_not_verified {table, row, reason size_mismatch} before
-  any transaction, even when a row under the same grain key is stored. A mismatch in any row still answers the typed 500
-  blob_integrity.
+  any transaction, even when a row under the same grain key is stored. A HEAD-detected mismatch in any row outranks a
+  HEAD-detected size_mismatch and answers the typed 500 blob_integrity.
 - >-
   A later item (begin_blobs), or a later row under a distinct grain key (append), that names the same object as an
   earlier one but declares a different content_bytes answers 422 size_mismatch naming the later index, before any HEAD.
@@ -453,10 +453,10 @@ test_obligations:
   test_selector: tests/lambdas/ducklake_telemetry_writer/test_telemetry_log.py::test_begin_blobs_line_counts_with_emf
   red_green_expectation: red before (the updated node against the old BLOB_COUNT_FIELDS, which still carries mismatched), green after
 - source: scripts/ducklake_smoke/lambda_telemetry_blob_gates.py
-  behavior: The live gate fails when the writer pages or commits a misdeclared blob row.
+  behavior: The live gate fails when the writer pages, commits or grants a misdeclared blob row or item.
   verification_step: 5
   test_selector: tests/ducklake_neon_smoke_test/test_lambda_telemetry_blob_gates.py::test_each_divergence_fails_loudly
-  red_green_expectation: red before (the two new cases are absent), green after
+  red_green_expectation: red before (the three new cases are absent), green after
 - source: scripts/ducklake_smoke/telemetry_blob_vectors.py
   behavior: misdeclared() keeps the row within bounds and moves only content_bytes.
   verification_step: 5
@@ -502,14 +502,11 @@ context:
   Origin: raised in the blob route build's review (#1491) and routed here by the coordinator (2026-10-15) under the
   scope-escalation rule. Blind consult: /mnt/project-files/telemetry-slice2b/fable-blob-size/. Carrier rec-4342.
 - >-
-  Why size alone is the caller's fault: the key is the SHA-256 and S3 validates the checksum on the grant's PUT, so a
-  stored object with the key's checksum is exactly the content named; a different declared length can only be the
-  caller's bookkeeping. A checksum that is absent or wrong can only come from a write outside the grant, so it keeps
-  paging, and begin_blobs keeps the object as evidence instead of re-granting it.
+  Why: the key is the SHA-256 and S3 validates it on the grant's PUT, so a size-only mismatch is the caller's
+  bookkeeping, while an absent or wrong checksum means a write outside the grant (paged; the object kept as evidence).
 - >-
-  Code-contract drift fixed in passing: begin_blobs re-granted mismatched objects (the plan's text and a unit test),
-  while the contract said blob_integrity is a 500 and only missing or stale items are re-granted. This plan follows the
-  contract.
+  Drift fixed in passing: begin_blobs re-granted mismatched objects although the contract says blob_integrity is a 500
+  and only missing or stale items are re-granted; this plan follows the contract.
 - >-
   Not adopted from the consult: per-item begin_blobs refusals with a stored_bytes value (a whole-request 422 keeps the
   response shape and blob_protocol version 1, and error bodies carry no values); the non-paging size_mismatch alarm and
@@ -536,7 +533,10 @@ context:
   No content-tier change: threshold, cap, key grammar and content_uri are unchanged, so Decision 199 cl.5 needs no Decision.
   The new size_mismatch outcome of the provisional content_blobs verify verb is what T4.23 c7's local adapter and the
   c16 port suite inherit (Decision 212).
-- 'gates: decision-scout=FLAGS_FOUND (2 NOTEs, resolved); plan-critique=PENDING (r1 and r2 REVISE, every finding fixed)'
+- >-
+  gates: decision-scout=FLAGS_FOUND (2 NOTEs, resolved); plan-critique=PROCEED after 3 round(s): r1 and r2 REVISE, every
+  finding fixed; r3 (confirming) PROCEED, its notes 1-3 folded in; its optional C6 reason field is left to the rec-4292
+  note.
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
