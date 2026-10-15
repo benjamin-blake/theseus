@@ -197,6 +197,14 @@ def test_project_ref_pin_reads_the_earliest_capture_hook_token() -> None:
     assert project_ref_pin(_pin_tree("echo hi", PIN.format("later/one"))) == "later/one"
 
 
+def test_project_ref_pin_quoted_flag_value() -> None:
+    assert project_ref_pin(_pin_tree('bash session_start_log_turn.sh --project-ref="a/b"')) == "a/b"
+    assert project_ref_pin(_pin_tree("bash session_start_log_turn.sh --project-ref='a/b'")) == "a/b"
+    assert project_ref_pin(_pin_tree("bash session_start_log_turn.sh '--project-ref=a/b'")) == "a/b"
+    assert project_ref_pin(_pin_tree('bash session_start_log_turn.sh --project-ref=""')) is None
+    assert project_ref_pin(_pin_tree("bash session_start_log_turn.sh --project-ref=''a/b")) is None
+
+
 def test_project_ref_pin_requires_exactly_one_valid_token_and_the_pinned_script() -> None:
     assert project_ref_pin(_pin_tree("bash session_start_log_turn.sh")) is None
     assert project_ref_pin(_pin_tree(PIN.format("a/b") + " --project-ref=c/d")) is None
