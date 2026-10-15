@@ -44,7 +44,7 @@ scope:
       Build PR: the approved wording (execution_steps step 4) -- CloudShell as the by-hand venue, the corrected AWS
       prerequisite, TF_VAR_github_token, --region and curl in the runbook, the duplicated NEVER paragraph removed for
       the 5253-byte prose budget, and a State reconcile section replacing First-time import (rec-3136's acceptance).
-      Closure PR: the approved dated result line (execution_steps step 11).
+      Closure PR: the approved dated result line (execution_steps step 12).
   - file: tests/checks/iam_tf/test_terraform_github_import_blocks.py
     action: Create
     purpose: >-
@@ -62,17 +62,17 @@ scope:
   - file: scripts/checks/contracts/_retired_identity.py
     action: Modify
     purpose: >-
-      Conditional, build PR only: if the literal sweep's identity readiness build (which creates this file and makes
-      validate_github_org_transfer refuse new files naming the retired identity) has merged before this build, add one
-      SURVIVOR_PINS entry for tests/checks/iam_tf/test_terraform_github_import_blocks.py with the reason "rec-3136
-      import-block guard". Not touched when this build lands first (the planned order); the readiness build then pins
-      the test itself.
+      Conditional, build PR only, on evidence: only if the literal sweep's identity readiness build (which creates this
+      file and makes validate_github_org_transfer refuse new files naming the retired identity) has merged and
+      scripts.validate --pre actually flags tests/checks/iam_tf/test_terraform_github_import_blocks.py, add one
+      SURVIVOR_PINS entry for it with the reason "rec-3136 import-block guard". The test reads its names from the
+      contract, so this should not be needed; otherwise this file is not touched.
   - file: docs/contracts/github-org-transfer.yaml
     action: Modify
     purpose: >-
       Closure PR only, after the OIDC pre-stage build merges: two evidence_ledger rows for
       prerequisites.terraform-github-state-reconciled, breakage_map.terraform_github_root rec pointer moved to the
-      post-transfer re-key follow-on rec, one amendment_log row. Exact text: execution_steps step 11.
+      post-transfer re-key follow-on rec, one amendment_log row. Exact text: execution_steps step 12.
 bundled_recommendations:
   - rec-3136
 followon_recs:
@@ -334,11 +334,12 @@ verification_plan:
   - step: 13
     phase: post-deploy
     action: >-
-      E2 -- a fresh PR-time plan run on the PR that gave E0 (Order A: the build PR; Order B: the workflow PR). A GitHub
-      re-run reuses the original merge commit, which is enough when only state changed since that run (imports.tf is a
-      no-op once the five are in state): mcp__github__actions_run_trigger rerun_workflow_run. If main has since changed
-      other terraform/github config, use E3 instead (the closure PR's own run, step 15) or a fresh PR touching
-      terraform/github. Fetch the new job log into $E2_LOG and check it.
+      E2 -- a PR-time plan run whose commit contains the merged build PR (after import, repo.tf's ignore_changes entry
+      is load-bearing). Order A: re-run the build PR's run (mcp__github__actions_run_trigger rerun_workflow_run); its
+      merge commit carries the build. Order B: never a bare re-run of the workflow PR's original run (it predates the
+      build); update the workflow PR from main so the push starts a fresh run, or use E3 (the closure PR's own run,
+      step 15). If main has since changed other terraform/github config, use E3 or a fresh PR touching terraform/github.
+      Fetch the new job log into $E2_LOG and check it.
     command: >-
       L="$(grep -o 'TF_GITHUB_PLAN_REPORT [A-Za-z0-9=_. -]*' "$E2_LOG" | tail -1)" && echo "$L"
       && { echo "$L" | grep -qE 'verdict=NO_CHANGES import=0 add=0 change=0 destroy=0 replace=0 gated=0 .*conflict=0'
@@ -351,7 +352,8 @@ verification_plan:
     fix_if: >-
       Any other change: compare its attribute names with step 11 (the PAT re-plan). A change the PAT plan does not show
       is an App visibility gap: escalate unless it is the declared bypass_actors row. A change both show: escalate;
-      never apply to converge.
+      never apply to converge. A re-run that fails to start or to check out its commit: use E3 or a fresh PR touching
+      terraform/github.
   - step: 14
     phase: post-deploy
     action: >-
@@ -388,7 +390,7 @@ verification_plan:
       && echo E3_OK
     expected: CLOSURE_OK with the row count and the follow-on rec id, then the E3 report line and E3_OK (same rule as step 13).
     fix_if: >-
-      Restore the approved texts from execution_steps step 11 (variance: dates, run URLs, the follow-on rec id, and the
+      Restore the approved texts from execution_steps step 12 (variance: dates, run URLs, the follow-on rec id, and the
       clean or visibility-gated variant as E2 observed). If the CLAUDE.md budget no longer fits the line because another
       change grew the file, escalate to the planning thread; never raise the budget.
   - step: 16
@@ -693,7 +695,8 @@ execution_steps:
     rebase on origin/main; VP steps 1-5; VP step 7 on the committed clean tree (full tier, then --verify-head); write
     /tmp/implementation-retrospective.json with the ten scripts.session.postflight_evidence.CATEGORIES keys and run
     bin/venv-python -m scripts.session.postflight --evidence /tmp/implementation-retrospective.json; push; open the PR
-    (Before/After/How body; never the PAT secret name); subscribe_pr_activity. The PR's terraform-github-plan run is
+    (Before/After/How body; never the PAT secret name; sweep the body with VP step 14's regex before merge);
+    subscribe_pr_activity. The PR's terraform-github-plan run is
     VP step 6 (wait for its event, never poll; Order B: see step 6's fix_if); post the counts-only E0 on the PR. Then
     dispatch code review (the code-review skill in a fresh context) with the context "V3 resolution:" line quoted in its
     prompt; fix every blocking finding. Then hand the operator paste 0 at the CI-green head (VP step 9; it writes
@@ -878,7 +881,10 @@ execution_steps:
     terraform-github-plan run (E3) and run VP step 15; code review in a fresh context; the operator's code-owner
     approval; squash-merge with the PR body as the commit message; VP step 16 from the closure job's event (never
     poll); then hand the operator VP step 17.
-  - Execute the Verification Plan in step order; loop until each step passes; on an unrecoverable V3 failure stop and RCA (Decision 55).
+  - >-
+    Execute the Verification Plan in the order execution_steps steps 7 to 12 name (VP step ids are labels, not an
+    execution order: paste 0, step 9, runs before merge and step 8 after it); loop until each step passes; on an
+    unrecoverable V3 failure stop and RCA (Decision 55).
   - >-
     Report each outcome separately (readiness, implementation_declared, rebase, VP results, full tier and --verify-head,
     postflight evidence, push, PRs, CI, E0, the operator pastes with dates, E2 variant, merges, closure job), plus the
@@ -889,6 +895,7 @@ rollback: >-
   tfstate/github/terraform.tfstate --copy-source
   "agent-platform-data-lake/tfstate/github/terraform.tfstate?versionId=$(cat "${TMPDIR:-/tmp}/tfgithub-reconcile/rollback-version")"
   --profile agent_platform_admin; then VP step 8's shape check (agent-platform) must pass again. After paste B: GitHub
-  needs no rollback (the import only read it); if E2 is not clean, restore the same way and escalate. Never apply to
-  converge. Revert imports.tf and the variable by a normal PR only if the blocks themselves prove wrong; they are inert
+  needs no rollback (the import only read it); restore the same way only if step 11 (POST_PLAN_EXIT not 0) or step 12
+  (not STATE_KEYED theseus ... clean) fails. A non-clean E2 with clean steps 11 and 12 escalates without a restore, per
+  step 13's fix_if. Never apply to converge. Revert imports.tf and the variable by a normal PR only if the blocks themselves prove wrong; they are inert
   while the addresses are in state.
