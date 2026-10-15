@@ -155,7 +155,8 @@ class _Sender:
         return responses.classify(status, body) == responses.OK
 
     def _acknowledged(self, body: Mapping[str, Any]) -> None:
-        tables = body.get("tables") if isinstance(body.get("tables"), Mapping) else {}
+        raw = body.get("tables")
+        tables: Mapping[Any, Any] = raw if isinstance(raw, Mapping) else {}
         counts: dict[str, dict[str, int]] = {}
         for table, numbers in tables.items():
             if isinstance(numbers, Mapping):

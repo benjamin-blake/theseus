@@ -55,7 +55,8 @@ def _records(sid: str, ref: str, start: datetime) -> tuple[list[dict[str, Any]],
 
     def reply(rec_uuid: str, t: float, mid: str, blocks: list[dict[str, Any]], **extra: Any) -> dict[str, Any]:
         usage = {"input_tokens": 10, "output_tokens": 20, "cache_read_input_tokens": 30, "cache_creation_input_tokens": 40}
-        message = {"id": mid, "type": "message", "role": "assistant", "model": "claude-smoke-1", "content": blocks}
+        message: dict[str, Any] = {"id": mid, "type": "message", "role": "assistant", "model": "claude-smoke-1"}
+        message["content"] = blocks
         message.update(stop_reason="end_turn", usage=usage)
         return base(rec_uuid, t, type="assistant", message=message, requestId="req_" + mid, **extra)
 
@@ -141,7 +142,8 @@ def _ok(client: WriterClient, payload: dict[str, Any]) -> Mapping[str, Any]:
 
 
 def _submitted(lines: list[dict[str, Any]]) -> tuple[Counter[str], Counter[str]]:
-    submitted, inserted = Counter(), Counter()
+    submitted: Counter[str] = Counter()
+    inserted: Counter[str] = Counter()
     for line in lines:
         for request in line.get("requests") or []:
             for table, numbers in request.items():
