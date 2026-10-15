@@ -53,8 +53,11 @@ scope:
     comes from the contract, never a portal copy; a handler runs on insert, on an upsert with no existing row
     (existing None: the producer-side rules apply as on insert), and on update only when the column's value differs
     from the existing row; an exempt kind with no handler fails closed. The update arm removes each dated leg together
-    with its exclude_before entry from the projection copy (RowRules.from_projection refuses a date naming an absent
-    rule). The array_element_reference handler is built once per gate_write call and holds one reader for the
+    with its exclude_before entry from the projection copy, deleting an emptied exclude_before mapping
+    (RowRules.from_projection refuses a date naming an absent rule and an empty mapping), and also drops any undated
+    two-column rule (not_before, at_most) whose other column is writer-derived, since the gate's call-time
+    created_timestamp is not the stored one; none is declared on an ops table today, so this keeps "never stricter"
+    true by construction rather than by inventory. The array_element_reference handler is built once per gate_write call and holds one reader for the
     whole element list, built lazily and not at all when every element is memoised (Decision 88 invariant (i), as the
     deleted builder closure did). Module docstring: a derived pre-check, never authoritative; the writer re-evaluates
     every rule (Decision 81 cl.5 as widened by Decision 210 cl.5).
@@ -89,7 +92,7 @@ scope:
     _validate_rec_payload (the --dry-run path of .github/workflows/cost-reconciliation.yml) imports the two deleted
     helpers from the facade; it becomes file_rec's own pre-check path minus the write: validate_source, then
     _derive_computed_fields on a copy (scripts.ops_portal.risk_scoring, local only), then gate_write("ops_recommendations",
-    copy, insert=True). Its docstring's divergence note (acceptance lint without require_discrimination) goes: the
+    copy, insert=True); Recommendation.model_validate({**fields, "id": "rec-0"}) stays. Its docstring's divergence note (acceptance lint without require_discrimination) goes: the
     gate's acceptance handler takes require_discrimination from the contract's declared leg, exactly as file_rec
     does.
 - file: scripts/ops_portal/closure_gate.py
@@ -113,9 +116,10 @@ scope:
   action: Modify
   purpose: >-
     The dependencies and tags current_test lines name the contract rule enforced by the writer (no DQ test); the
-    current_test strings that cite `write_time: true` drop it, and the status rationale that names
-    _load_write_time_validators (line ~200) names the writer and the portal's derived pre-check. Dated rationale history
-    lines stay as written. Net line count unchanged or lower (Decision 166).
+    current_test strings that cite `write_time: true` drop it. The status rationale that names
+    _load_write_time_validators (line ~200) sits in a dated decided_action, so it is not rewritten: one appended
+    dated sentence says the guard is now the writer and the portal's derived pre-check. Dated rationale history lines
+    stay as written. Net line count unchanged or lower (Decision 166).
 - file: scripts/data_quality_compile.py
   action: Modify
   purpose: >-
@@ -125,7 +129,8 @@ scope:
   action: Modify
   purpose: >-
     Created by the rule declarations build. The ops.yaml write_time parity leg (vacuous once the flags are gone) is replaced by: (i) no `write_time` key
-    anywhere in ops.yaml; (ii) DQ is never stricter than the contract -- an ops_recommendations accepted_values test's
+    anywhere in ops.yaml; (ii) DQ is never stricter than the contract, judged on the ops_recommendations table only
+    and on its DQ-enforced tests only (an `enforced: false` DQ test refuses nothing) -- an accepted_values test's
     values are a subset of the contract's, a not_null test sits only on a column the contract declares not_null, and a
     DQ exclude_before is never earlier than the contract leg's date. No pre_glob is dropped (Decision 187).
 # --- records ---------------------------------------------------------------------------------------------------------
@@ -177,8 +182,9 @@ scope:
     the contract's title min_length leg, enforced by the writer and, on insert, the portal gate, keeping "exclude_before
     2026-09-01" and rec-4158. c6 is re-worded in the same edit to what was realised (the loader is retired, not
     repointed: the portal runs the writer's own gate over the contract's projection) and flips to met through
-    closes_criteria on the verified VP pass (the /implement flow). Line budget: 9,804 at planning, up to about 10 more
-    from the rule declarations build, about 20 for the conversion, under the 10,000 ceiling.
+    closes_criteria on the verified VP pass (the /implement flow), which also moves T2.29 to in_progress with a
+    progress_note. Line budget: 9,804 at planning, up to about 10 more from the rule declarations build, about 20 for
+    the conversion and a few for the status and note, under the 10,000 ceiling.
 # --- verification registry: retire what disappears, re-point what survives (Decision 176) ---------------------------
 - file: config/agent/verification_registry/entries/deprecated/loader-context-min-length-80.yaml
   action: Create
@@ -251,7 +257,9 @@ scope:
     graduated and Decision 88 nodes, which keep their names and are re-pinned to drive gate_write:
     test_array_element_reference_rejects_absent_rec, test_array_element_reference_loud_fails_on_unreachable_reader,
     test_array_element_reference_holds_one_reader_per_write and
-    test_array_element_reference_skips_reader_when_all_elements_memoised. New: test_portal_gate_is_the_writer_gate
+    test_array_element_reference_skips_reader_when_all_elements_memoised, and
+    test_array_element_reference_memoises_positive_results_only (the surviving positive-only memo; only its loader
+    cache clear goes). New: test_portal_gate_is_the_writer_gate
     (rec-4158's new acceptance node), test_update_gate_is_never_stricter_than_the_writer,
     test_producer_side_rules_follow_the_contract_exemptions, test_each_retired_validator_is_replaced_by_its_contract_leg.
     353 SLOC today; stays under 500, concern-splitting (Decision 131) rather than raising if it would cross.
@@ -292,7 +300,9 @@ scope:
     with the input it rejected, the contract leg that replaces it on insert, and, where that leg is dated, its
     update-path replacement in the writer (tests/common/test_ducklake_write_rules.py::test_write_scd2_update_binds_dated_rule_only_when_column_changes
     and ::test_older_rows_verdicts_on_the_real_projection). A blank-string row maps to min_length or accepted_values,
-    since the engine's not_null refuses None only. Completeness against origin/main's ops.yaml is proven PR-relative
+    since the engine's not_null refuses None only; a None or blank on a nullable false input (title, status) and a
+    non-boolean automatable are refused by schema_gate, so those rows name schema_gate as the leg and their "leg
+    removed" mutation flips the copied column to nullable or widens its type. Completeness against origin/main's ops.yaml is proven PR-relative
     by step 12.
 - file: tests/checks/contracts/test_ops_rule_source_records.py
   action: Modify
@@ -300,12 +310,17 @@ scope:
     test_roadmap_is_regrounded (graduated row ops-rule-source-records) keeps its name: it reads T2.29's criteria by
     their structured text, asserts the re-grounded c5 still carries "exclude_before 2026-09-01" and rec-4158, and the
     re-worded c6 names the portal's gate over the contract's projection and is met (the old "_load_write_time_validators
-    ... rec-4158 plan C" pin re-pinned to the realised wording, never weakened).
+    ... rec-4158 plan C" pin re-pinned to the realised wording, never weakened). test_standard_records_the_ops_source
+    is re-pinned to the COVERAGE clause's new wording. New test_portal_gate_records_land (AC6): Decision 65's section
+    carries this plan's dated update naming the portal gate and the retired write_time flags, and ports.yaml carries
+    PC-05 at scripts/ops_portal/write_validators.py with owning_item dec-210 and status accepted.
 - file: tests/checks/contracts/test_write_time_enforcement_decision.py
   action: Modify
   purpose: >-
     The anchors on the COVERAGE sentence's portal-and-ops.yaml clause are re-pinned to the new wording (enforced
-    coverage, not a rec-4158 residual); every other anchor kept.
+    coverage, not a rec-4158 residual); every other anchor kept. The same clause is also anchored by
+    tests/checks/contracts/test_ops_rule_source_records.py::test_standard_records_the_ops_source (graduated rows
+    ops-rule-source-records and ops-row-rules-contracts), re-pinned in that file's row.
 - file: tests/fixtures/ops_rec_rows.py
   action: Create
   purpose: >-
@@ -354,10 +369,14 @@ scope:
   purpose: Existing-row fixtures become complete rule-clean rows.
 - file: tests/session/preflight/test_context_docs_data_quality.py
   action: Modify
-  purpose: The live-tree DQ coverage count follows the smaller ops.yaml.
+  purpose: >-
+    Conditional: its live-tree node is growth-safe (> 0) today; re-measure after the rule declarations build and the
+    ops.yaml change, and touch it only if a count it pins moves (measured in the prototype as one failure).
 - file: tests/checks/ops_governance/test_validate_dq_manifest_gate.py
   action: Modify
-  purpose: The live-tree enforced-test count follows the smaller ops.yaml.
+  purpose: >-
+    Conditional, as the row above: re-measure the live-tree enforced-test count after the ops.yaml change and touch the
+    file only if a pinned value moves.
 - file: tests/checks/contracts/test__ops_rule_bindings.py
   action: Modify
   purpose: >-
@@ -376,7 +395,10 @@ scope:
   purpose: The node comparing the census file pattern with the deleted _validate_file_path compares it with the engine's compiled pattern from the projection instead.
 - file: tests/checks/ci_guards/test_validate_ops_portal_patch_targets.py
   action: Modify
-  purpose: The roster pin follows the check.
+  purpose: >-
+    New test_facade_patch_of_gate_write_is_flagged: a test exercising file_decision (and one exercising
+    update_decision) that patches scripts.ops_data_portal.gate_write is flagged by the check, red before the roster
+    gains gate_write.
 - file: config/agent/verification_registry/entries/portal-gate-is-the-writer-gate.yaml
   action: Create
   purpose: Graduated registry row for VP step 1.
@@ -418,7 +440,9 @@ acceptance_criteria:
   4): on insert the gate refuses what the old check refused; on update a dated leg is the writer's, named per row; the
   ledger is complete against origin/main's ops.yaml (step 12).
 - ops.yaml carries no write_time key and no write-time-only test; the DQ compiler raises on any such test type; DQ is never stricter than the contract.
-- T2.29 c6 is met and c5 re-grounded; Decision 65 carries the dated update; ports.yaml records the coupling.
+- >-
+  T2.29 c6 is met and c5 re-grounded; Decision 65 carries the dated update; ports.yaml records the coupling
+  (tests/checks/contracts/test_ops_rule_source_records.py::test_roadmap_is_regrounded and ::test_portal_gate_records_land).
 - >-
   rec-4158, rec-3217 and rec-2801 close on holds verdicts (step 13); the build report lists the close_proposed commands
   propose_or_close_rec composes for rec-746, rec-2807 and rec-759 (superseded) and rec-2805 (contradicted), for the
@@ -469,7 +493,7 @@ verification_plan:
     The removal ledger, proven by mutation: for each row of tests/fixtures/portal_removal_ledger.py (every retired
     portal check), gate_write(insert=True) refuses the input the old check refused, naming the contract rule, and
     accepts it once that leg is removed from a copied projection; for each row whose leg is dated, the named writer
-    node is collected and passes (the update-path replacement).
+    node passes, run as a pytest subprocess (never imported: the no-cross-test-import guard).
   command: bin/venv-python -m pytest "tests/test_ops_data_portal_validators.py::test_each_retired_validator_is_replaced_by_its_contract_leg" -q
   expected: Exit 0; every parametrized ledger row passes.
   fix_if: A row whose input the gate accepts -> a rule was lost; restore it at the contract, never in portal code (Decision 181 cl.1).
@@ -632,8 +656,8 @@ test_obligations:
 - source: scripts/checks/ci_guards/validate_ops_portal_patch_targets.py
   behavior: The roster follows the gate.
   verification_step: 7
-  test_selector: tests/checks/ci_guards/test_validate_ops_portal_patch_targets.py
-  waiver_reason: A roster constant; its own mirror test (step 7) is the evidence.
+  test_selector: tests/checks/ci_guards/test_validate_ops_portal_patch_targets.py::test_facade_patch_of_gate_write_is_flagged
+  red_green_expectation: red before (gate_write absent from the roster), green after
 - source: config/agent/data_quality/ops.yaml
   behavior: No write-time role; never stricter than the contract.
   verification_step: 5
@@ -778,7 +802,7 @@ test_obligations:
     A retired registry row: the evidence is the 100% git rename and the loader's structural exclusion of
     entries/deprecated/ (verification_graduation.py); the replacing node is step 3's.
 constraints:
-- No Lambda-packaged file and no generated projection changes (step 10); the writer stays the authority.
+- No Lambda-packaged code or generated projection changes (the roadmap asset data-pipeline packages excepted, step 10); the writer stays the authority.
 - The pre-check calls the writer's functions; it never re-implements a rule, and on update never evaluates a dated rule.
 - No assertion is weakened; every removed validator, test entry, check leg and registry row maps to a surviving node (steps 4-6; Decision 181 cl.1); retired rows move to entries/deprecated/ (Decision 176).
 - No pre_glob is dropped (Decision 187); no budget raised (Decisions 128, 166).
@@ -794,7 +818,7 @@ context:
   own flags: SPIRIT 210 (restated status fast-fail removed; Pydantic models deferred to CD.12, status parity kept);
   201/103 (rec-746, rec-2807, rec-759 superseded and rec-2805 contradicted go through close_proposed for the operator;
   rec-3217 and rec-2801 already satisfy their acceptance and close on holds verdicts); 212 (PC-05).
-- 'gates: decision-scout=FLAGS_FOUND (all resolved); plan-critique=<verdict> after <N> round(s)'
+- 'gates: decision-scout=FLAGS_FOUND (all resolved); plan-critique=PROCEED after 3 round(s) (r1 and r2 REVISE, every finding fixed and none recurring; r3 confirming PROCEED with non-blocking S1-S14 folded in)'
 - >-
   Operator direction (Benjamin, 2026-10-15, thread "Ops enforcement plan C"): every recommendation accepted after the
   Fable consults -- the portal runs the writer's own gate; updates evaluate undated rules only; two plans built one
