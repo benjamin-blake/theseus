@@ -42,7 +42,8 @@ scope:
   action: Modify
   purpose: >-
     CONDITIONAL. Created by the reader verbs build. Touch it only if agent_run_token_rollup's entry declares its output
-    columns or description text here; then add the two columns or name the four classes. Otherwise leave it unchanged.
+    columns here or its description names the returned token classes; then add the two columns or name the four classes.
+    Otherwise leave it unchanged.
 - file: src/common/ducklake_reader_client.py
   action: Modify
   purpose: VERB_FIELDS["agent_run_token_rollup"] gains tokens_cache_read_total and tokens_cache_creation_total after tokens_output_total.
@@ -55,11 +56,20 @@ scope:
   action: Modify
   purpose: >-
     Created by the reader verbs build. New node test_agent_run_token_rollup_carries_cache_classes: over model_call rows
-    with non-zero tokens in all four classes, including a duplicate delivery of one call, the rollup returns each total as
-    the per-class sum over the deduped rows, the duplicate counted once, and no cache tokens folded into
-    tokens_input_total. Second new node test_agent_run_token_rollup_empty_session_shares_one_convention: for a session
+    with non-zero tokens in all four classes the rollup returns each total as the per-class sum over the deduped rows, and
+    no cache tokens are folded into tokens_input_total. It includes (i) an identical re-delivery of one row (same producer
+    and event_id, R5b), counted once, and (ii) an R5c entity-collapse pair for one provider response (claude_code against
+    litellm, or an earlier against a later final-usage row) whose rows differ in tokens_cache_read and
+    tokens_cache_creation: every total takes the winning row's values, the same row tokens_input_total uses, so a per-class
+    MAX or a separate dedupe fails. Second new node test_agent_run_token_rollup_empty_session_shares_one_convention: for a session
     with no model_call rows the two new totals carry exactly the empty value tokens_input_total carries (NULL or 0, as the
     reader verbs build chose).
+- file: tests/fixtures/telemetry_read_db.py
+  action: Modify
+  purpose: >-
+    CONDITIONAL. Created by the reader verbs build. Touch it only if it builds model_call rows from a fixed column list or
+    defaults that would drop or zero the cache classes of fixture rows; then let fixture rows carry them. Otherwise leave
+    it unchanged.
 - file: tests/telemetry/fixtures/derivation_cases.yaml
   action: Modify
   purpose: >-
@@ -69,12 +79,13 @@ scope:
 - file: tests/checks/contracts/test_telemetry_event_journal_contracts.py
   action: Modify
   purpose: >-
-    New class TestTokenClassesDisjoint, node test_tokens_input_is_uncached_and_rollup_covers_four_classes: tokens_input's
-    semantics state that it excludes both cache classes, that total prompt is the sum of the three, and name its coverage
-    (tests/turn_capture/test_observations.py and rec-4028); both cache fields state they are disjoint from tokens_input;
-    each of the three fields' newest amendment_log entry is governance_note_add with semantic_break true; telemetry_agents
-    carries tokens_cache_read_total and
-    tokens_cache_creation_total with read-timed derivations from reader_verb:agent_run_token_rollup over their own
+    New class TestTokenClassesDisjoint, node test_tokens_input_is_uncached_and_rollup_covers_four_classes. It pins every
+    approved sentence of execution_steps[1] and [2] verbatim after whitespace and case normalisation (the module's _norm):
+    tokens_input's description, each appended semantics sentence on tokens_input, tokens_cache_read and
+    tokens_cache_creation (the coverage sentence included), the two new fields' descriptions and semantics, and the
+    four-total phrase in telemetry_agents' governance_notes. It also asserts each of the three observation fields' newest
+    amendment_log entry is governance_note_add with semantic_break true, and that tokens_cache_read_total and
+    tokens_cache_creation_total carry read-timed derivations from reader_verb:agent_run_token_rollup over their own
     observation column on model_call rows, realized false.
 - file: docs/contracts/ducklake_reader.yaml
   action: Modify
@@ -88,36 +99,42 @@ infrastructure_dependencies: []
 acceptance_criteria:
 - >-
   telemetry_observations.yaml's tokens_input description and semantics, and the appended tokens_cache_read and
-  tokens_cache_creation sentences, equal the approved texts in execution_steps[1] (the date in each amendment_log entry is
-  the landing date); no other field of that contract changes.
+  tokens_cache_creation sentences, equal the approved texts in execution_steps[1], pinned by step 2's node (the date in
+  each amendment_log entry is the landing date); no other field of that contract changes.
 - >-
   telemetry_agents.yaml carries tokens_cache_read_total and tokens_cache_creation_total as read-derived fields from
   reader_verb:agent_run_token_rollup with no physical column, and its governance_notes names all four totals.
 - >-
   agent_run_token_rollup returns tokens_input_total, tokens_output_total, tokens_cache_read_total and
   tokens_cache_creation_total, each the sum of its own class over the session's deduped model_call rows; a duplicate
-  delivery counts once and cache tokens never appear in tokens_input_total. A session with no model_call rows gets the
-  same empty value in all four totals.
+  re-delivery counts once, an R5c collapse takes the winning row's values in every class, and cache tokens never appear
+  in tokens_input_total. A session with no model_call rows gets the same empty value in all four totals.
 - VERB_FIELDS for agent_run_token_rollup equals the verb's output columns (the reader verbs build's parity node passes).
 - >-
   config/lambda/ducklake/field_semantics.yaml is unchanged: descriptions and read-derived fields are not projected, so the
   telemetry writer's row rules do not change.
 - >-
-  The governed deploy of the merge commit is green, and the deployed reader returns all four totals for a smoke session
-  with model_call rows.
+  The governed deploy of the merge commit is green, and the deployed reader serves the merged agent_run_token_rollup
+  (its describe and named_read read_version equal the merged registry's) with the four totals on any row it returns.
 - rec-4333 is closed by the squash merge's Resolves trailer.
 verification_plan:
 - step: 1
   phase: pre-deploy
-  action: Precondition. The reader verbs build is merged and this branch contains it.
+  action: >-
+    Precondition. The reader verbs build is merged, deployed and live-verified (its post-deploy bookkeeping set T2.36 c3
+    met_by telemetry-reader-verbs on main), this branch contains it, and the files and nodes this plan edits exist.
   command: >-
     git fetch origin main --quiet && git merge-base --is-ancestor origin/main HEAD && test -f
     src/common/ducklake_event_read_sql.py && grep -q agent_run_token_rollup src/common/ducklake_event_read_verbs.py &&
-    echo PRECONDITION_OK
+    grep -q "def test_agent_run_state_and_tokens_golden_cases" tests/common/test_ducklake_event_read_verbs.py && grep -q
+    "def test_verb_fields_match_event_verb_output_columns" tests/common/test_ducklake_event_read_verbs.py && git show
+    origin/main:docs/ROADMAP-PLATFORM.yaml | grep -q "met_by: telemetry-reader-verbs" && echo PRECONDITION_OK
   expected: PRECONDITION_OK.
   fix_if: >-
-    The reader verbs build is not on main yet: stop and wait for it (it waits on rec-4320's fix-forward). Do not create
-    the event-read modules here.
+    Not merged or not yet live-verified (no met_by line): stop and wait (that build waits on rec-4320's fix-forward). Merged
+    but the paths, node names or module shape differ from this plan (for example a facade split of the SQL module): stop
+    and escalate to the coordinator for a plan amendment; never adapt the scope inline. Never create the event-read
+    modules here.
   hermetic: false
   graduation: waive
   graduation_waiver_reason: >-
@@ -150,8 +167,10 @@ verification_plan:
     tests/common/ducklake_reader_client/test_verb_fields_parity.py -q
   expected: Exit 0, every node passes. The first two are red before because they are absent.
   fix_if: >-
-    A total off by one call's tokens means the sum runs before the entity collapse; sum over the same deduped rows as
-    tokens_input_total. Cache tokens in tokens_input_total means the SQL adds classes together; keep each sum to its own
+    A total off by one call's tokens, or a cache total that disagrees with the R5c winning row, means the sum runs before
+    the entity collapse or dedupes per class; sum over the same deduped, collapsed rows as tokens_input_total.
+    derivation_cases.yaml is shared across verbs: keep content-identical duplicates identical so other cases' conflict
+    expectations do not shift. Cache tokens in tokens_input_total means the SQL adds classes together; keep each sum to its own
     column. An empty session whose new totals differ from tokens_input_total's empty value (0 against NULL, or the
     reverse) means a COALESCE slipped onto one sum; use one convention for all four. A parity failure means VERB_FIELDS and
     the SQL disagree on columns or order; fix VERB_FIELDS.
@@ -220,22 +239,28 @@ verification_plan:
 - step: 8
   phase: post-deploy
   action: >-
-    Positive live derivation. Over a 7-day sessions_window_all_purposes call on the smoke catalog, the deployed reader
-    returns agent_run_token_rollup rows carrying all four totals for the first session with a non-zero token total (so an all-zero empty session cannot satisfy it).
+    The deployed reader serves the merged rollup. Its describe read_version for agent_run_token_rollup, and the
+    read_version stamped on a live named_read of it for a smoke session, both equal the merged registry's (describe_all
+    at MERGE_SHA), and any row it returns carries the four totals. The smoke append vectors write turn and process_event
+    observations only (scripts/ducklake_smoke/telemetry_append_vectors.py), so the totals are usually empty there; a
+    non-zero reading is printed only when one exists. Seeding model_call smoke rows would change the telemetry writer's
+    smoke gate and is out of scope.
   command: >-
     export DUCKLAKE_READER_URL=$(aws ssm get-parameter --profile agent_platform --region eu-west-2 --name
     /agent-platform/ducklake/reader_url --query Parameter.Value --output text) && AWS_PROFILE=agent_platform bin/venv-python
-    -c "import datetime as d,json;from scripts.ducklake_smoke import core; u=core._function_url('reader');
-    n=d.datetime.now(d.timezone.utc);t=n.date(); w=core._sigv4_invoke(u,{'action':'named_read','verb':'sessions_window_all_purposes','params':{'day_from':str(t-d.timedelta(days=6)),'day_to':str(t),'as_of':n.isoformat()}}).json();
-    assert w['ok'] and w['row_count']>=1, w.get('row_count'); k=('tokens_input_total','tokens_output_total','tokens_cache_read_total','tokens_cache_creation_total');
-    rows=[r for s in w['rows'][:20] for r in core._sigv4_invoke(u,{'action':'named_read','verb':'agent_run_token_rollup','params':{'session_id':s['session_id']}}).json().get('rows',[])];
-    hit=[r for r in rows if any((r.get(x) or 0)>0 for x in k)]; assert hit, 'no session with a non-zero token total'; r=hit[0];
-    assert all(x in r for x in k), sorted(r); print(json.dumps({x:r[x] for x in k}));print('LIVE_ROLLUP_OK')"
-  expected: One JSON line with the four totals for a smoke session, then LIVE_ROLLUP_OK.
+    -c "import datetime as d,json;from scripts.ducklake_smoke import core;from src.common import ducklake_event_reads as ev;
+    v='agent_run_token_rollup';want=ev.describe_all()[v]['read_version'];u=core._function_url('reader');
+    got=core._sigv4_invoke(u,{'action':'describe'}).json()['verbs'][v]['read_version'];assert got==want,(got,want);
+    n=d.datetime.now(d.timezone.utc);t=n.date();w=core._sigv4_invoke(u,{'action':'named_read','verb':'sessions_window_all_purposes','params':{'day_from':str(t-d.timedelta(days=6)),'day_to':str(t),'as_of':n.isoformat()}}).json();
+    assert w['ok'] and w['row_count']>=1, w.get('row_count');r=core._sigv4_invoke(u,{'action':'named_read','verb':v,'params':{'session_id':w['rows'][0]['session_id']}}).json();
+    assert r['ok'] and r.get('read_version')==want,(r.get('read_version'),want);k=('tokens_input_total','tokens_output_total','tokens_cache_read_total','tokens_cache_creation_total');
+    assert all(x in row for row in r['rows'] for x in k),r['rows'];print(json.dumps([{x:row[x] for x in k} for row in r['rows']]));print('LIVE_ROLLUP_OK')"
+  expected: One JSON line with the returned rows' four totals (usually empty values on smoke), then LIVE_ROLLUP_OK.
   fix_if: >-
-    A missing key means the deployed reader predates the merge or the SQL change did not reach the bundle; check the
-    deploy run's head SHA. No session with model_call rows in the window means the smoke rows carry none; record that in the
-    report and rely on step 3's golden proof, never fabricate rows.
+    A read_version mismatch means the deployed reader predates the merge or the SQL change did not reach the bundle;
+    check the deploy run's head SHA, never relax the comparison. A missing key on a returned row means the SQL and
+    VERB_FIELDS disagree with the deployed bundle. If describe_all or the stamped read_version key is named differently in
+    the reader verbs build, use its names for the same comparison and say so in the report.
   hermetic: false
   graduation: not-applicable
 - step: 9
@@ -301,16 +326,17 @@ constraints:
   byte-identical (VP step 4).
 - No hit-rate verb (rec-4331), provider usage mapping (rec-4028), 1-hour cache-write column (rec-4292) or resume-journal Decision (rec-4332).
 - >-
-  SLOC (Decision 128/166): if the two VERB_FIELDS entries push src/common/ducklake_reader_client.py past its budget (500
-  when unregistered), or either contract past its line cap, stop and escalate to the coordinator; a decomposition is out
-  of this scope and a budget raise is never the fix.
+  SLOC (Decision 128/166): if this change pushes src/common/ducklake_reader_client.py, src/common/ducklake_event_read_sql.py
+  or tests/common/test_ducklake_event_read_verbs.py past its budget (500 when unregistered), or either contract past its
+  line cap, stop and escalate to the coordinator; a decomposition is out of this scope and a budget raise is never the
+  fix.
 - No rescue agents or workaround loops (Decision 55).
 context:
 - >-
   Decision-scout: FLAGS_FOUND. Decisions triaged: 170 of 170. Roadmap items intersected: 4; CONFLICT: 0; RELATED: 4.
   CITE: 199, 84, 207, 150, 79, 126. Resolved: 118 WARN (contract-drift category 6) by semantic_break true with a
   migration_story; 181 NOTE by the coverage sentence. Related: 210, 216, 217, 206, 88, 128, 166.
-- "gates: decision-scout=FLAGS_FOUND (2 flags resolved); plan-critique=PROCEED after 2 round(s); round 2 autonomous"
+- "gates: decision-scout=FLAGS_FOUND (2 flags resolved); plan-critique=<pending round 3>"
 - >-
   Sequencing: build after the reader verbs build (PLAN-telemetry-reader-verbs) is merged and deployed green; that build
   waits on rec-4320's fix-forward. Before slice 4 (rec-4025), which reconciles derived totals against modelUsage.
@@ -397,7 +423,9 @@ execution_steps:
   src/common/ducklake_reader_client.py VERB_FIELDS, and the conditional rows if step 1 found them needed.
 - >-
   tests/telemetry/fixtures/derivation_cases.yaml and tests/common/test_ducklake_event_read_verbs.py: give the token golden
-  cases non-zero cache classes and expected totals, and add the new node with a duplicate-delivery case.
+  cases non-zero cache classes and expected totals, and add the two new nodes as scope describes (the R5b re-delivery,
+  the R5c collapse pair with differing cache values, and the empty session). Touch tests/fixtures/telemetry_read_db.py
+  only under its CONDITIONAL row.
 - >-
   Execute the Verification Plan: steps 1-6 before the PR; loop until each passes. The squash merge body carries
   "Resolves: rec-4333". Steps 7-9 after the merge. On an unrecoverable V3 failure stop and RCA (Decision 55).
