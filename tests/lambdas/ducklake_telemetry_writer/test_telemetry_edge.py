@@ -187,3 +187,15 @@ def test_exclude_before_and_describe_entry() -> None:
         "max_rows_per_request": 5000,
     }
     assert set(entry) == {"description", "params_schema", "caps"}
+
+
+def test_stats_carry_masked_commit_retries_from_the_outcome(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.common.ducklake_telemetry_append import AppendOutcome
+    from src.telemetry.append import AppendResult
+
+    outcome = AppendOutcome(TENANT, RESOLVED, "existing", {"telemetry_sessions": AppendResult(1, 0, 1)}, 3, 7.0, 2)
+    monkeypatch.setattr(edge, "append_request", lambda *a, **k: outcome)
+    request, deps = make(body_of(("telemetry_sessions", [session_row()])))
+    out = edge.action_append_telemetry(request, object(), deps)
+    assert deps.stats.masked_commit_retries == 2
+    assert out["occ_retries"] == 3 and "masked_commit_retries" not in out and out["commit_ms"] == 7

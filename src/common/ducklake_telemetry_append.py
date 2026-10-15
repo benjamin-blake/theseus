@@ -44,6 +44,7 @@ class AppendOutcome:
     tables: dict[str, AppendResult]
     occ_retries: int
     commit_ms: float
+    masked_commit_retries: int = 0
 
 
 def _known_project_id(con: Any, request: AppendRequest, tenant_id: str, semantics: dict[str, Any]) -> str | None:
@@ -127,4 +128,5 @@ def append_request(
         tables=results,
         occ_retries=outcome.occ_retries,
         commit_ms=outcome.commit_ms,
+        masked_commit_retries=outcome.masked_commit_retries,
     )

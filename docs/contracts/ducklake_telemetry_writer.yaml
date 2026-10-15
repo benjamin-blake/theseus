@@ -25,7 +25,7 @@ contract:
       - PlatformDev
     admin_only_features: []
     write_path: >-
-      ducklake_telemetry_writer Lambda -> run_telemetry_txn (one transaction, bounded OCC retry) -> the isolated
+      ducklake_telemetry_writer Lambda -> run_telemetry_txn (one transaction, bounded OCC retry that also covers the masked commit-cleanup failure) -> the isolated
       ducklake_smoke catalog: provision_telemetry (verify the nine owner-created tables and seed the two counter rows; no DDL), register_tenant and
       register_project (SCD2 history MERGE plus current MERGE under a lock-only counter UPDATE). The telemetry tables are
       created under the catalog owner by ducklake_maintenance_smoke's create_telemetry_tables (Decision 216). The function has no
@@ -160,7 +160,8 @@ audit_invariants:
   - "The size cap is len(json.dumps(S)), S the request body string as delivered: ASCII-escaped, so it equals the measure Lambda's 6 MiB event limit applies to for an ASCII body and is an upper bound when the body carries non-ASCII (measured 2026-10-09)."
   - "No append_telemetry response or log line carries a caller value (a row value, an undeclared name, principal.ref): errors locate by table, row index, column and reason only."
   - "Two refusals are temporary and owned by rec-4024: a caller content_uri (400 blob_route_unavailable) and inline content above the threshold while the exemption stands (413 inline_within_threshold). The blob route removes both."
-  - "Every answered request emits exactly one C6 log line (verb, component, status, error_type, per-table counts, request and invoke bytes, tenant_id, project_id, occ_retries, commit_ms, caller_role), never an account id, an ARN or a hash of either; the five data verbs' lines carry an Embedded Metric Format block (namespace DuckLakeTelemetryWriter, RequestCount by Verb)."
+  - "A COMMIT whose error is masked by the no-delete file cleanup (duckdb's TransactionException 'Failed to commit: Could not remove file') is retried within the same bounded attempt budget as an OCC collision, because every telemetry body is idempotent (insert-only MERGE, lookup-first registration, caches written after commit). Only a COMMIT-raised failure with that exact signature is retried; the same text from a body statement, or any other TransactionException, propagates. The count is logged apart as masked_commit_retries (a log field only: no metric, no EMF member); the masked message names the bucket and is never logged or returned; exhaustion answers 503 occ_exhausted. The role keeps no s3:DeleteObject (Decision 216 cl.4); orphan files are the maintenance role's to delete."
+  - "Every answered request emits exactly one C6 log line (verb, component, status, error_type, per-table counts, request and invoke bytes, tenant_id, project_id, occ_retries, commit_ms, masked_commit_retries, caller_role), never an account id, an ARN or a hash of either; the five data verbs' lines carry an Embedded Metric Format block (namespace DuckLakeTelemetryWriter, RequestCount by Verb)."
   - "Telemetry verbs attach only the pinned catalog and take no catalog selector: meta_schema and data_path are never read from the event."
   - "No verb drops, truncates or recreates a table. The telemetry writer issues no Postgres DDL and holds no CREATE on any schema; its tables are created under the catalog owner (Decision 216)."
   - "principal_ref never appears in a response or log, and no response carries a hash of it (Decision 101)."
@@ -170,6 +171,16 @@ audit_invariants:
   - "Declared residual: the ducklake_unmapped_error log line carries the exception message redacted and truncated to 300 characters, so a request value inside an unmapped exception's message can reach the log (residual against the rejected-string rule; strictly less than the runtime traceback it replaces)."
   - "Declared residual: the async DuckLake handlers (maintenance, maintenance_smoke, catalog_dr) are EventBridge-invoked and keep Lambda's own retry behaviour for an escaped exception; rec-4303 owns them."
 amendment_log:
+  - date: "2026-10-15"
+    semantic_break: false
+    change_class: prose_improvement
+    summary: >-
+      PLAN-telemetry-append-inline fix-forward (rec-4320): write_path names the masked commit-cleanup retry; the C6 audit
+      invariant lists masked_commit_retries; a new audit invariant states the COMMIT-only retry inside the existing bounded
+      budget, that the masked message is never logged or returned, and that the role keeps no s3:DeleteObject.
+    migration_story: >-
+      A lost-race commit that used to answer 500 unmapped now retries and, on exhaustion, answers the existing 503
+      occ_exhausted. No verb, request or success response changes.
   - date: "2026-10-14"
     semantic_break: false
     change_class: prose_improvement

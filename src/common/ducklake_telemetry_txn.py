@@ -5,6 +5,13 @@ errors are classified BEFORE ducklake_writes.is_occ_collision is consulted: that
 "conflict", and a kernel GrainConflictError message carries "TELEMETRY_GRAIN_CONFLICT: conflicting row", so a terminal
 error retried as a collision would loop on a deterministic refusal.
 
+The writer role has no s3:DeleteObject by design (orphan deletion belongs to the maintenance role), so when DuckLake aborts
+a commit it cannot remove the files the transaction wrote and COMMIT raises duckdb's TransactionException "Failed to commit:
+Could not remove file ...: Forbidden" in place of the original cause (a lost race on the counter-row lock). That failure is
+retried only when COMMIT raised it, inside the same attempt budget and backoff as an OCC collision, because every telemetry
+body is idempotent (insert-only MERGE, lookup-first registration, caches written after commit). The masked text names the
+bucket and is never logged, formatted or returned: only the count travels.
+
 Imports ducklake_writes, ducklake_scd2_schema and src.telemetry.gate only: never the
 ducklake_runtime facade (Decision 80), and nothing in ducklake_runtime's closure imports this module (the
 scripts-never-import-telemetry-append fence).
@@ -46,6 +53,26 @@ class TxnOutcome:
     result: Any
     occ_retries: int
     commit_ms: float
+    masked_commit_retries: int = 0  # a subset of occ_retries
+
+
+class TelemetryOCCRetryExhaustedError(OCCRetryExhaustedError):
+    """The retry budget ran out. reason is the last attempt's class ("occ" or "masked_commit"); only the count and a fixed
+    message travel, never the masked commit text."""
+
+    def __init__(self, message: str, *, reason: str, masked_commit_retries: int) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.masked_commit_retries = masked_commit_retries
+
+
+def is_masked_commit_failure(exc: BaseException) -> bool:
+    """True for the TransactionException DuckLake raises when an aborted commit cannot remove its own files.
+
+    Matched by class name (no duckdb import) and the exact message prefix; never a bare "forbidden" match and never every
+    TransactionException, so DuckLake's own retry-exhaustion and metadata failures stay loud.
+    """
+    return type(exc).__name__ == "TransactionException" and "failed to commit: could not remove file" in str(exc).lower()
 
 
 def invalid_string_field(values: Mapping[str, object]) -> str | None:
@@ -80,30 +107,48 @@ def run_telemetry_txn(
     """
     terminal_classes = _BASE_TERMINAL + terminal
     occ_retries = 0
+    masked_retries = 0
     start = time.perf_counter()
     attempt = 0
     while True:
         attempt += 1
+        committing = False
         try:
             con.execute("BEGIN TRANSACTION")
             result = body(con)
+            committing = True
             con.execute("COMMIT")
         except terminal_classes:
             _safe_rollback(con)
             raise
         except Exception as exc:  # noqa: BLE001 -- classify, then retry-or-raise
             _safe_rollback(con)
-            if not is_occ_collision(exc):
+            masked = committing and is_masked_commit_failure(exc)
+            if not masked and not is_occ_collision(exc):
                 raise
             if attempt < max_attempts:
                 occ_retries += 1
+                masked_retries += int(masked)
                 _occ_backoff(attempt, sleep=sleep)
                 continue
             _emit_write_metrics(metric_sink, occ_retries, (time.perf_counter() - start) * 1000.0)
-            raise OCCRetryExhaustedError(
-                f"OCC retry budget exhausted after {attempt} attempts in a telemetry transaction. "
-                "Stop and RCA the contention (Decision 55) -- do NOT relax the budget."
-            ) from exc
-        commit_ms = (time.perf_counter() - start) * 1000.0
-        _emit_write_metrics(metric_sink, occ_retries, commit_ms)
-        return TxnOutcome(result=result, occ_retries=occ_retries, commit_ms=commit_ms)
+            if not masked:
+                raise _exhausted(attempt, "occ", masked_retries) from exc
+        else:
+            commit_ms = (time.perf_counter() - start) * 1000.0
+            _emit_write_metrics(metric_sink, occ_retries, commit_ms)
+            return TxnOutcome(
+                result=result, occ_retries=occ_retries, commit_ms=commit_ms, masked_commit_retries=masked_retries
+            )
+        # Reached only for a masked failure on the last attempt: raised outside the except block so neither __cause__ nor
+        # __context__ can reach the bucket-naming text.
+        raise _exhausted(attempt, "masked_commit", masked_retries)
+
+
+def _exhausted(attempt: int, reason: str, masked_retries: int) -> TelemetryOCCRetryExhaustedError:
+    return TelemetryOCCRetryExhaustedError(
+        f"OCC retry budget exhausted after {attempt} attempts in a telemetry transaction. "
+        "Stop and RCA the contention (Decision 55) -- do NOT relax the budget.",
+        reason=reason,
+        masked_commit_retries=masked_retries,
+    )

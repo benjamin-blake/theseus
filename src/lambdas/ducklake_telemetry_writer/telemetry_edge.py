@@ -140,6 +140,7 @@ def action_append_telemetry(request: Any, con: Any, deps: Any) -> dict[str, Any]
     if stats is not None:
         stats.project_id = outcome.project_id
         stats.tables = {t: (r.submitted, r.inserted) for t, r in outcome.tables.items()}
+        stats.masked_commit_retries = outcome.masked_commit_retries
     return {
         "ok": True,
         "tenant_id": outcome.tenant_id,

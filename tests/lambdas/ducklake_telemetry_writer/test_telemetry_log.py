@@ -124,3 +124,27 @@ def test_line_never_carries_account_id_or_arn(capsys: pytest.CaptureFixture[str]
 def test_function_keeps_the_text_log_format() -> None:
     terraform = (_ROOT / "terraform" / "personal" / "ducklake_telemetry_writer.tf").read_text(encoding="utf-8")
     assert "logging_config" not in terraform and "log_format" not in terraform
+
+
+def test_masked_commit_retries_is_a_line_field_never_an_emf_member() -> None:
+    assert line_for("append_telemetry")["masked_commit_retries"] is None
+    stats = log.RequestStats(masked_commit_retries=2)
+    stats.sink("OccRetryCount", 2.0)
+    stats.sink("CommitLatencyMs", 5.0)
+    line = log.build_request_line(
+        "append_telemetry", 200, None, payload={}, principal=None, request_bytes=1, invoke_bytes=1, stats=stats
+    )
+    assert line["masked_commit_retries"] == 2
+    metrics = [m["Name"] for d in line["_aws"]["CloudWatchMetrics"] for m in d["Metrics"]]
+    assert (
+        "masked_commit_retries" not in metrics
+        and "MaskedCommitRetries" not in line
+        and "masked_commit_retries" not in line["_aws"]
+    )
+    zero = log.RequestStats(masked_commit_retries=0)
+    assert (
+        log.build_request_line(
+            "register_tenant", 200, None, payload={}, principal=None, request_bytes=1, invoke_bytes=1, stats=zero
+        )["masked_commit_retries"]
+        == 0
+    )
