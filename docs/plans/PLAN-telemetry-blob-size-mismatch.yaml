@@ -51,7 +51,10 @@ scope:
     (500)". begin_blobs: the response codes gain 422 blob_not_verified {row, reason size_mismatch} (nothing granted) and
     typed_errors gain blob_not_verified with that meaning; blob_integrity says the request fails and nothing is granted. The
     stored-row invariant names missing and stale only, and the begin_blobs invariant says integrity faults are never
-    re-granted. One amendment_log entry (semantic_break false; migration_story: a caller fault that answered a paged 500
+    re-granted. A new invariant (Decision 207) states two things. First, size_mismatch is decided from the HEAD before
+    the transaction, so it precedes the grain check: a re-send under a stored grain key with a different content_bytes
+    answers 422 size_mismatch, not 409 grain_conflict. Second, an identical re-send never reaches size_mismatch, because
+    a stored blob row was committed only after a verified HEAD, so its content_bytes equals the object's length. One amendment_log entry (semantic_break false; migration_story: a caller fault that answered a paged 500
     now answers 422, and begin_blobs now answers the 500 its contract already stated instead of re-granting).
 - file: scripts/ducklake_smoke/telemetry_blob_vectors.py
   action: Modify
@@ -87,9 +90,11 @@ scope:
 - file: tests/common/test_ducklake_telemetry_append.py
   action: Modify
   purpose: >-
-    New test_size_mismatch_is_422_and_opens_no_transaction (422 blob_not_verified, reason size_mismatch, no BEGIN, even
-    when an identical row is stored) and test_integrity_outranks_size_mismatch (one row of each answers the typed 500).
-    test_integrity_mismatch_raises_unmapped is unchanged.
+    New test_size_mismatch_is_422_and_opens_no_transaction: 422 blob_not_verified, reason size_mismatch and no BEGIN,
+    including when a row under the same grain key is already stored with the true content_bytes. That pins the 422
+    ahead of the 409 grain check, and the node is rec-4342's acceptance, so it keeps this exact name (Decision 201). New
+    test_integrity_outranks_size_mismatch: one row of each answers the typed 500. test_integrity_mismatch_raises_unmapped
+    is unchanged.
 - file: tests/fixtures/telemetry_blob_fakes.py
   action: Modify
   purpose: >-
@@ -109,10 +114,22 @@ scope:
     writer answers the misdeclared append with a 500, and the failure names "size-mismatch append status=500".
     size_mismatch_commits: the writer answers it with a 200, and the failure names "size-mismatch append status=200".
 - file: config/agent/verification_registry/entries/telemetry-blob-verb-and-verify.yaml
+  action: Delete
+  purpose: >-
+    Retired by git mv (Decision 176 point 5). check_id is immutable, and one of its nodes asserts the re-grant of a
+    mismatched object, which this plan reverses, so it cannot be edited in place. Its other twelve nodes move unchanged
+    into the two replacement checks graduated from steps 2 and 3.
+- file: config/agent/verification_registry/entries/deprecated/telemetry-blob-verb-and-verify.yaml
+  action: Create
+  purpose: The git mv destination of the retired shard, byte-identical content.
+- file: docs/contracts/verification-registry.yaml
   action: Modify
   purpose: >-
-    The graduated shard's command names test_only_missing_or_stale_objects_are_regranted in place of the renamed node; every
-    other node stays.
+    A governance note and an amendment_log entry (governance_note_add): telemetry-blob-verb-and-verify was RETIRED by git
+    mv because its re-grant node's claim is reversed. The reversal follows the Class B writer contract's existing text
+    (blob_integrity is a 500, and only missing or stale items are re-granted) and rec-4342. It is a stricter behavior,
+    not a weakening to obtain green (Decision 181). The retired check is replaced by telemetry-blob-begin-mismatch and
+    telemetry-blob-append-size-mismatch, which carry every other node verbatim plus the successor nodes.
 bundled_recommendations:
 - rec-4342
 followon_recs:
@@ -170,8 +187,13 @@ verification_plan:
     tests/common/test_ducklake_telemetry_blobs.py::test_begin_blobs_size_mismatch_is_422_and_grants_nothing
     tests/common/test_ducklake_telemetry_blobs.py::test_begin_blobs_dedupes_and_counts
     tests/common/test_ducklake_telemetry_blobs.py::test_verify_blob_rows_returns_unverified_and_raises_on_a_mismatch
+    tests/common/test_ducklake_telemetry_blobs.py::test_begin_blobs_registers_first_sight_and_keys_use_the_committed_id
+    tests/common/test_ducklake_telemetry_blobs.py::test_begin_blobs_reserved_ref_is_403_before_any_head
+    tests/common/test_ducklake_telemetry_blobs.py::test_content_uri_session_segment_equals_the_kernel_session_id
     -q
-  expected: Exit 0, every node passes. Red before, because the renamed and new nodes are absent.
+  expected: >-
+    Exit 0, every node passes. Red before, because the renamed and new nodes are absent. With step 3 it carries every node
+    of the retired telemetry-blob-verb-and-verify check.
   expected_literals: []
   fix_if: >-
     A grant issued for a mismatched object, or any begin_blobs answer other than 500 for a checksum fault and 422
@@ -188,6 +210,11 @@ verification_plan:
     tests/common/test_ducklake_telemetry_append.py::test_integrity_outranks_size_mismatch
     tests/common/test_ducklake_telemetry_append.py::test_integrity_mismatch_raises_unmapped
     tests/common/test_ducklake_telemetry_append.py::test_unverified_blob_commits_only_as_a_stored_no_op
+    tests/common/test_ducklake_telemetry_append.py::test_blob_rows_get_the_writer_uri_and_head_after_prepare
+    tests/common/test_ducklake_telemetry_append.py::test_unknown_project_blob_row_is_422_before_any_head
+    tests/common/test_ducklake_telemetry_append.py::test_missing_blob_for_an_unstored_row_is_422_and_writes_nothing
+    tests/common/test_ducklake_telemetry_append.py::test_blob_rows_over_the_cap_are_413
+    tests/common/test_ducklake_telemetry_append.py::test_store_unavailable_is_503_and_opens_no_transaction
     -q
   expected: Exit 0, every node passes. Red before, because the two new nodes are absent.
   expected_literals: []
@@ -234,20 +261,24 @@ verification_plan:
   graduation_check_id: telemetry-blob-size-mismatch-gate
 - step: 6
   phase: pre-deploy
-  action: The graduated shard names the renamed node and not the old one.
+  action: >-
+    Stale-reference sweep for the retired check: it lives only under entries/deprecated/, and no live shard, test or
+    source names the old re-grant node.
   command: >-
-    grep -q 'test_only_missing_or_stale_objects_are_regranted'
-    config/agent/verification_registry/entries/telemetry-blob-verb-and-verify.yaml &&
-    ! grep -q 'test_stale_or_mismatched_object_is_regranted'
-    config/agent/verification_registry/entries/telemetry-blob-verb-and-verify.yaml && echo SHARD_OK
-  expected: Exit 0 and SHARD_OK.
+    test -f config/agent/verification_registry/entries/deprecated/telemetry-blob-verb-and-verify.yaml && ! test -e
+    config/agent/verification_registry/entries/telemetry-blob-verb-and-verify.yaml && ! grep -rq
+    'test_stale_or_mismatched_object_is_regranted' config/agent/verification_registry/entries/*.yaml tests src scripts &&
+    echo SWEEP_OK
+  expected: Exit 0 and SWEEP_OK.
   expected_literals: []
-  fix_if: A shard that still names the old node fails the registry replay in the full tier.
+  fix_if: >-
+    A live reference to the old node or check: move it to the replacement check, or retire it the same way. Never edit the
+    deprecated copy.
   hermetic: true
   graduation: waive
   graduation_waiver_reason: >-
-    Duplicates the verification registry's own replay of every shard in the full tier, which already fails on a node that
-    does not exist.
+    A one-time retirement sweep. The registry loader excludes entries/deprecated/, and the full tier's replay of every
+    live shard already fails on a node that does not exist.
 - step: 7
   phase: pre-deploy
   action: The amended writer contract passes the contract-drift gate and the size cap.
@@ -381,6 +412,13 @@ test_obligations:
   waiver_reason: >-
     Contract prose with an amendment_log entry, guarded by the contract-drift and amendment-log checks in both tiers;
     its behavior is proven by steps 2, 3 and 12.
+- source: docs/contracts/verification-registry.yaml
+  behavior: The retirement of telemetry-blob-verb-and-verify and its two replacements are recorded.
+  verification_step: 6
+  command: test -f config/agent/verification_registry/entries/deprecated/telemetry-blob-verb-and-verify.yaml
+  waiver_reason: >-
+    A governance note and amendment_log entry, guarded by the contract-drift check in both tiers; step 6 proves the
+    retirement itself and steps 2 and 3 graduate the replacements.
 constraints:
 - >-
   The writer still never reads, puts or deletes object bytes and gains no S3 call; verify stays one HEAD (plus the
@@ -416,8 +454,16 @@ context:
 - >-
   Overlap: none with the running reader verbs, rule declarations or cache token totals builds. The rule declarations
   plan edits telemetry_transcripts.yaml, which this plan leaves alone.
-- 'Decision-scout: SCOUT_VERDICT_PENDING'
-- 'gates: decision-scout=SCOUT_VERDICT_PENDING; plan-critique=PENDING'
+- >-
+  Decision-scout: FLAGS_FOUND. CITE 210, 201, 126, 79. NOTE 207: the 422 precedes the 409 grain check, an identical
+  re-send cannot reach it, and the writer-contract invariant plus the append test pin both. NOTE 181: the shard is
+  retired and replaced rather than edited in place. Both resolved. RELATED 199, 55, 212, 88, 84, 213, 216, 176, 132,
+  189, 101, 118, 128. Decisions triaged: 170 of 170. Roadmap items intersected: 4; CONFLICT: 0; RELATED: 4.
+- >-
+  No content-tier change: threshold, cap, key grammar and content_uri are unchanged, so Decision 199 cl.5 needs no Decision.
+  The new size_mismatch outcome of the provisional content_blobs verify verb is what T4.23 c7's local adapter and the
+  c16 port suite inherit (Decision 212).
+- 'gates: decision-scout=FLAGS_FOUND (2 NOTEs, resolved); plan-critique=PENDING'
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
@@ -433,8 +479,9 @@ execution_steps:
   then green.
 - src/lambdas/ducklake_telemetry_writer/telemetry_log.py and its test (step 4).
 - >-
-  scripts/ducklake_smoke/telemetry_blob_vectors.py and lambda_telemetry_blob_gates.py with the gate tests (step 5); the
-  renamed node in the graduated shard (step 6).
+  scripts/ducklake_smoke/telemetry_blob_vectors.py and lambda_telemetry_blob_gates.py with the gate tests (step 5).
+  Retire telemetry-blob-verb-and-verify with git mv into entries/deprecated/ (content untouched) and add the
+  verification-registry.yaml governance note and amendment_log entry. Steps 2 and 3 graduate its replacements (step 6).
 - docs/contracts/ducklake_telemetry_writer.yaml (step 7).
 - Code review (the code-review skill in a fresh context); fix every blocking finding.
 - >-
