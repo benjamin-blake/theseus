@@ -17,6 +17,7 @@ from tests.fixtures.terraform_hcl_blocks import tf_dir_file_texts
 
 _ROOT = Path(__file__).resolve().parents[3]
 _PERSONAL = _ROOT / "terraform" / "personal"
+_BOOTSTRAP = _ROOT / "terraform" / "bootstrap"
 _SQL = _ROOT / "src" / "lambdas" / "ducklake_maintenance" / "ducklake_telemetry_writer_role.sql"
 _ARN = "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-"
 _BASES = {f"{_ARN}{fn}" for fn in ("writer", "reader", "telemetry-writer")}
@@ -199,9 +200,19 @@ def test_real_boundary_carries_the_three_denies() -> None:
 
 
 def test_real_identity_grants_are_url_only() -> None:
-    texts = tf_dir_file_texts(_PERSONAL)
-    stmts = [s for text in texts.values() for s in _json_statements(text) + _block_statements(text)]
-    assert grant_problems(stmts, _function_locals(texts)) == []
+    # Concatenate per-root statement lists -- tf_dir_file_texts keys by bare filename, so a dict
+    # merge of the two roots' texts would let the bootstrap platform_dev_policies.tf silently hide
+    # the personal one (or vice versa). The guarded-Sid superset assertion holds over the union, so
+    # this stays green after the sibling plan releases the personal copy.
+    personal_texts, bootstrap_texts = tf_dir_file_texts(_PERSONAL), tf_dir_file_texts(_BOOTSTRAP)
+    stmts = [
+        s
+        for texts in (personal_texts, bootstrap_texts)
+        for text in texts.values()
+        for s in _json_statements(text) + _block_statements(text)
+    ]
+    fn_locals = {**_function_locals(personal_texts), **_function_locals(bootstrap_texts)}
+    assert grant_problems(stmts, fn_locals) == []
     guarded = {s["sid"] for s in stmts if _named_forms(s["resources"], {}) and ("Bool", _VIA_URL, ["true"]) in s["conditions"]}
     assert {"DuckLakeInvokeViaUrlOnly", "DuckLakeInvokeCIViaUrlOnly", "DuckLakeWriterInvokeViaUrlOnly"} <= guarded
 
@@ -220,8 +231,28 @@ def test_real_bootstrap_reads_list_the_telemetry_writer_role() -> None:
 
 
 def test_real_platform_dev_names_all_six_forms() -> None:
-    texts = tf_dir_file_texts(_PERSONAL)
+    # terraform/bootstrap is the durable owner (PLAN-platform-iam-bootstrap-adopt); the parity
+    # module covers the personal copy while both roots declare it.
+    texts = tf_dir_file_texts(_BOOTSTRAP)
     assert _dev_problems(texts["platform_dev_policies.tf"], _function_locals(texts)) == []
+
+
+def test_bootstrap_dailyops_without_condition_is_reported() -> None:
+    bootstrap_texts = tf_dir_file_texts(_BOOTSTRAP)
+    mutated = dict(bootstrap_texts)
+    mutated["platform_dev_policies.tf"] = mutated["platform_dev_policies.tf"].replace(
+        """        Condition = {
+          Bool = {
+            "lambda:InvokedViaFunctionUrl" = "true"
+          }
+        }
+""",
+        "",
+        1,
+    )
+    assert mutated["platform_dev_policies.tf"] != bootstrap_texts["platform_dev_policies.tf"]
+    stmts = [s for text in mutated.values() for s in _json_statements(text) + _block_statements(text)]
+    assert grant_problems(stmts, _function_locals(mutated)) != []
 
 
 def test_real_maintenance_role_reads_the_scoped_secret() -> None:

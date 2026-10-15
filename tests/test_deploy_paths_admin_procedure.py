@@ -41,6 +41,24 @@ def test_admin_procedure_has_preapply_grant_surface_step() -> None:
     assert pre_apply_idx < post_apply_idx, "PRE-APPLY step must precede the POST-APPLY step"
 
 
+def test_admin_procedure_has_self_access_isolation_step() -> None:
+    """A step must name both BootstrapStateProvisioning and IAMFull, forbid bundling them with any
+    other change, and sit before the POST-APPLY simulate step (PLAN-platform-iam-bootstrap-adopt)."""
+    steps = _procedure_steps()
+
+    isolation_idx = next(
+        (i for i, s in enumerate(steps) if "BootstrapStateProvisioning" in s and "IAMFull" in s),
+        None,
+    )
+    assert isolation_idx is not None, "no procedure step names both BootstrapStateProvisioning and IAMFull"
+    isolation_step = steps[isolation_idx]
+    assert "no other change" in isolation_step, "the self-access isolation step must forbid bundling other changes"
+
+    post_apply_idx = next((i for i, s in enumerate(steps) if s.lstrip().startswith("POST-APPLY")), None)
+    assert post_apply_idx is not None, "the existing POST-APPLY simulate step did not survive"
+    assert isolation_idx < post_apply_idx, "the self-access isolation step must precede the POST-APPLY step"
+
+
 class TestPreMergeLivePlan:
     """rec-4140 / admin_out_of_band.pre_merge_live_plan: the standing rule's contract key, its
     amendment_log entry, and the four skill pointers (planning, implement, code-review,
