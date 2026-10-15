@@ -36,10 +36,13 @@ def load(name: str) -> ModuleType:
     return module
 
 
-def test_the_committed_switch_is_off() -> None:
+def test_the_committed_switch_is_on_and_still_guarded() -> None:
     data = yaml.safe_load((REPO / switch.SWITCH_FILE).read_text(encoding="utf-8"))
-    assert data == {"enabled": False}
-    assert switch.capture_mode(REMOTE, REPO) == switch.OFF
+    assert data == {"enabled": True}
+    assert switch.capture_mode(REMOTE, REPO) == switch.ON
+    assert switch.capture_mode({}, REPO) == switch.OFF
+    assert switch.capture_mode({**REMOTE, "GITHUB_ACTIONS": "true"}, REPO) == switch.OFF
+    assert switch.capture_mode({**REMOTE, "OTL_TURN_CAPTURE": "off"}, REPO) == switch.OFF
 
 
 @pytest.mark.parametrize(
@@ -99,8 +102,9 @@ def test_switch_off_keeps_every_hook_inert(tmp_path: Path, capfd: pytest.Capture
 
     stop, end = load("stop_log_turn"), load("session_end_log_turn")
     off_repo = repo(tmp_path, "enabled: true\n")
+    switch_off = repo(tmp_path / "switch_off", "enabled: false\n")
     cases = [
-        (REMOTE, REPO),
+        (REMOTE, switch_off),
         ({**REMOTE, "GITHUB_ACTIONS": "true"}, off_repo),
         ({**REMOTE, "OTL_TURN_CAPTURE": "off"}, off_repo),
         ({}, off_repo),
