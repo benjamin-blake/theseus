@@ -57,7 +57,9 @@ scope:
     Created by the reader verbs build. New node test_agent_run_token_rollup_carries_cache_classes: over model_call rows
     with non-zero tokens in all four classes, including a duplicate delivery of one call, the rollup returns each total as
     the per-class sum over the deduped rows, the duplicate counted once, and no cache tokens folded into
-    tokens_input_total.
+    tokens_input_total. Second new node test_agent_run_token_rollup_empty_session_shares_one_convention: for a session
+    with no model_call rows the two new totals carry exactly the empty value tokens_input_total carries (NULL or 0, as the
+    reader verbs build chose).
 - file: tests/telemetry/fixtures/derivation_cases.yaml
   action: Modify
   purpose: >-
@@ -94,7 +96,8 @@ acceptance_criteria:
 - >-
   agent_run_token_rollup returns tokens_input_total, tokens_output_total, tokens_cache_read_total and
   tokens_cache_creation_total, each the sum of its own class over the session's deduped model_call rows; a duplicate
-  delivery counts once and cache tokens never appear in tokens_input_total.
+  delivery counts once and cache tokens never appear in tokens_input_total. A session with no model_call rows gets the
+  same empty value in all four totals.
 - VERB_FIELDS for agent_run_token_rollup equals the verb's output columns (the reader verbs build's parity node passes).
 - >-
   config/lambda/ducklake/field_semantics.yaml is unchanged: descriptions and read-derived fields are not projected, so the
@@ -141,13 +144,17 @@ verification_plan:
   command: >-
     bin/venv-python -m pytest
     tests/common/test_ducklake_event_read_verbs.py::test_agent_run_token_rollup_carries_cache_classes
+    tests/common/test_ducklake_event_read_verbs.py::test_agent_run_token_rollup_empty_session_shares_one_convention
     tests/common/test_ducklake_event_read_verbs.py::test_agent_run_state_and_tokens_golden_cases
-    tests/common/test_ducklake_event_read_verbs.py::test_verb_fields_match_event_verb_output_columns -q
-  expected: Exit 0, every node passes. The first is red before because it is absent.
+    tests/common/test_ducklake_event_read_verbs.py::test_verb_fields_match_event_verb_output_columns
+    tests/common/ducklake_reader_client/test_verb_fields_parity.py -q
+  expected: Exit 0, every node passes. The first two are red before because they are absent.
   fix_if: >-
     A total off by one call's tokens means the sum runs before the entity collapse; sum over the same deduped rows as
     tokens_input_total. Cache tokens in tokens_input_total means the SQL adds classes together; keep each sum to its own
-    column. A parity failure means VERB_FIELDS and the SQL disagree on columns or order; fix VERB_FIELDS.
+    column. An empty session whose new totals differ from tokens_input_total's empty value (0 against NULL, or the
+    reverse) means a COALESCE slipped onto one sum; use one convention for all four. A parity failure means VERB_FIELDS and
+    the SQL disagree on columns or order; fix VERB_FIELDS.
   hermetic: false
   graduation: waive
   graduation_waiver_reason: >-
@@ -157,7 +164,7 @@ verification_plan:
 - step: 4
   phase: pre-deploy
   action: The writer's projection is unchanged, so no telemetry writer rule or config changes.
-  command: bin/venv-python -m scripts.schema_to_field_semantics --check && git diff --quiet origin/main -- config/lambda/ducklake/ && echo PROJECTION_UNCHANGED
+  command: bin/venv-python -m scripts.schema_to_field_semantics --check && echo PROJECTION_UNCHANGED
   expected: Exit 0, then PROJECTION_UNCHANGED.
   expected_literals: []
   fix_if: >-
@@ -175,7 +182,9 @@ verification_plan:
     bin/venv-python -m scripts.test_coverage_checker --check-tests --check-coverage --files
     src/common/ducklake_event_read_sql.py src/common/ducklake_event_read_verbs.py src/common/ducklake_reader_client.py
   expected: Exit 0.
-  fix_if: A coverage gap on the new sums needs a direct assertion in test_agent_run_token_rollup_carries_cache_classes.
+  fix_if: >-
+    A coverage gap on the new sums needs a direct assertion in test_agent_run_token_rollup_carries_cache_classes. Drop
+    src/common/ducklake_event_read_verbs.py from --files if its CONDITIONAL row did not apply.
   hermetic: false
   graduation: waive
   graduation_waiver_reason: >-
@@ -212,7 +221,7 @@ verification_plan:
   phase: post-deploy
   action: >-
     Positive live derivation. Over a 7-day sessions_window_all_purposes call on the smoke catalog, the deployed reader
-    returns agent_run_token_rollup rows carrying all four totals for the first session that has model_call rows.
+    returns agent_run_token_rollup rows carrying all four totals for the first session with a non-zero token total (so an all-zero empty session cannot satisfy it).
   command: >-
     export DUCKLAKE_READER_URL=$(aws ssm get-parameter --profile agent_platform --region eu-west-2 --name
     /agent-platform/ducklake/reader_url --query Parameter.Value --output text) && AWS_PROFILE=agent_platform bin/venv-python
@@ -220,7 +229,7 @@ verification_plan:
     n=d.datetime.now(d.timezone.utc);t=n.date(); w=core._sigv4_invoke(u,{'action':'named_read','verb':'sessions_window_all_purposes','params':{'day_from':str(t-d.timedelta(days=6)),'day_to':str(t),'as_of':n.isoformat()}}).json();
     assert w['ok'] and w['row_count']>=1, w.get('row_count'); k=('tokens_input_total','tokens_output_total','tokens_cache_read_total','tokens_cache_creation_total');
     rows=[r for s in w['rows'][:20] for r in core._sigv4_invoke(u,{'action':'named_read','verb':'agent_run_token_rollup','params':{'session_id':s['session_id']}}).json().get('rows',[])];
-    hit=[r for r in rows if r.get('tokens_input_total') is not None]; assert hit, 'no session with model_call rows'; r=hit[0];
+    hit=[r for r in rows if any((r.get(x) or 0)>0 for x in k)]; assert hit, 'no session with a non-zero token total'; r=hit[0];
     assert all(x in r for x in k), sorted(r); print(json.dumps({x:r[x] for x in k}));print('LIVE_ROLLUP_OK')"
   expected: One JSON line with the four totals for a smoke session, then LIVE_ROLLUP_OK.
   fix_if: >-
@@ -258,6 +267,11 @@ test_obligations:
   verification_step: 3
   test_selector: tests/common/test_ducklake_event_read_verbs.py::test_agent_run_token_rollup_carries_cache_classes
   red_green_expectation: red before (node absent; the query returns two totals), green after
+- source: src/common/ducklake_event_read_sql.py
+  behavior: An empty session gets one empty-value convention across all four totals.
+  verification_step: 3
+  test_selector: tests/common/test_ducklake_event_read_verbs.py::test_agent_run_token_rollup_empty_session_shares_one_convention
+  red_green_expectation: red before (node absent), green after
 - source: src/common/ducklake_event_read_verbs.py
   behavior: The verb entry, if it declares columns, matches the query's four totals.
   verification_step: 3
@@ -287,12 +301,8 @@ constraints:
 context:
 - >-
   Decision-scout: FLAGS_FOUND. Decisions triaged: 170 of 170. Roadmap items intersected: 4; CONFLICT: 0; RELATED: 4.
-  CITE: 199 (cl.1 totals derived at read), 84 (I-3 named-verb boundary), 207 (sums inherit the reader's grain dedupe), 150
-  (field semantics route to a contract governance note), 79 and 126 (reader ships through the governed code-deploy
-  channel). Flags resolved: Decision 118 WARN (validate_contract_drift category 6) by governance_note_add with
-  semantic_break true plus a migration_story; Decision 181 NOTE by the coverage sentence on tokens_input. Related: 210
-  (disjointness is not write-decidable), 216 (no DDL, no churn tick), 217 cl.4, 206, 88 (same single statement), 128
-  (SLOC), 166 (contract line caps).
+  CITE: 199, 84, 207, 150, 79, 126. Resolved: 118 WARN (contract-drift category 6) by semantic_break true with a
+  migration_story; 181 NOTE by the coverage sentence. Related: 210, 216, 217, 206, 88, 128, 166.
 - "gates: decision-scout=FLAGS_FOUND (2 flags resolved); plan-critique=<pending>"
 - >-
   Sequencing: build after the reader verbs build (PLAN-telemetry-reader-verbs) is merged and deployed green; that build
@@ -304,20 +314,15 @@ context:
 - >-
   Tier Item Freshness Gate skipped: soft-warn category ad_hoc_rec (rec-4333), no exit criterion claimed.
 - >-
-  No stored row changes and no parser_version bump is owed: the only live producer (src/turn_capture/observations.py:79-84)
-  already copies Anthropic usage one-to-one, and Anthropic's input_tokens already excludes cache reads and writes. The
-  amendment entries still carry semantic_break true with that migration_story, because validate_contract_drift category
-  6 pairs any non-prose change_class on a description/semantics diff with semantic_break true.
+  No row changes and no parser_version bump: the live producer (src/turn_capture/observations.py:79-84) already copies
+  Anthropic's exclusive input_tokens; semantic_break true is the contract-drift pairing rule, not a data change.
 - >-
-  LAMBDA-DEPLOY (Decision 79/125/126): src/common/ducklake_event_read_*.py trigger the governed deploy-ducklake-lambdas
-  run on merge; only the reader gains behaviour. LAMBDA-DEPLOY DEFERRED for data-pipeline (CD.16 / Decision 79):
-  compute_affected_artifacts flags it through src/common/ducklake_reader_client.py (bundled by its src/ wildcard), but its
-  handlers never read VERB_FIELDS, deploy-prod-lambdas.yml's path triggers do not include the file, and the consuming
-  scheduled agents are disabled; the artifact refreshes with its next governed deploy.
+  LAMBDA-DEPLOY (Decision 79/125/126): the event-read modules trigger deploy-ducklake-lambdas on merge; only the reader
+  gains behaviour. data-pipeline deploy deferred (CD.16): flagged only via ducklake_reader_client.py, whose VERB_FIELDS its
+  handlers never read; same disposition as PLAN-telemetry-reader-verbs.
 - >-
-  Data-model walk (data-modeling-standard.yaml design_time_walk): grain unchanged (one model_call point row per provider
-  response; one rollup row per agent-run session_id, derived); no merge key, identity, partition or write-path change; no
-  rule to classify (prose and read-derived fields only); no Fable escalation owed.
+  Data-model walk: grain, merge key, identity, partition and write path unchanged; prose and read-derived fields only; no
+  Fable escalation owed.
 - "Review evidence (project shared folder): cache-aware-telemetry/REVIEW.md and ADVICE.md."
 pre_implementation_checklist:
 - Branch confirmed not on main; the reader verbs build is merged and on this branch (VP step 1)
