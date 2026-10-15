@@ -43,6 +43,11 @@ def item_for(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def misdeclared(fields: dict[str, Any]) -> dict[str, Any]:
+    """A copy of a wire row or begin_blobs item whose content_bytes is one more than the object's true length."""
+    return {**fields, "content_bytes": fields["content_bytes"] + 1}
+
+
 def begin_body(project_ref: str, items: list[dict[str, Any]], component: str = "deploy-smoke") -> dict[str, Any]:
     return {"action": "begin_blobs", "project_ref": project_ref, "component": component, "items": items}
 

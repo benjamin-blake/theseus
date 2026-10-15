@@ -255,6 +255,59 @@ def test_integrity_mismatch_raises_unmapped(monkeypatch: pytest.MonkeyPatch) -> 
     assert "BEGIN" not in kit.events
 
 
+def test_size_mismatch_is_422_and_opens_no_transaction(monkeypatch: pytest.MonkeyPatch) -> None:
+    kit = AdapterKit(lookup_result=(RESOLVED, "registered")).install(monkeypatch)
+    uris = [
+        blobs.content_uri_for(TENANT, RESOLVED, "sess", datetime(2026, 1, 1, 12, tzinfo=timezone.utc), f"{i:064x}")
+        for i in range(2)
+    ]
+    keys = []
+    attached = blobs.attach_blob_uris(
+        blob_request(2).batches[0][1], tenant_id=TENANT, project_id=RESOLVED, threshold=65536, cap=8388608
+    )
+    for row in attached:
+        batch = adapter.prepare_batch(specs()["telemetry_transcripts"], [row], tenant_id=TENANT, project_id=RESOLVED, now=NOW)
+        keys.append((batch.rows[0]["producer"], batch.rows[0]["event_id"], batch.rows[0]["parser_version"]))
+    for con in (StoredCon(), StoredCon(keys)):
+        with pytest.raises(TelemetryRequestError) as caught:
+            run_blob(blob_request(2), FakeBlobStore({uris[1]: "size_mismatch"}), con)
+        assert (caught.value.status, caught.value.error_type) == (422, "blob_not_verified")
+        assert caught.value.fields == {"table": "telemetry_transcripts", "row": 1, "reason": "size_mismatch"}
+        assert con.reads == []
+    assert "BEGIN" not in kit.events
+
+
+def test_same_uri_different_size_rows_are_422_and_write_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    kit = AdapterKit(lookup_result=(RESOLVED, "registered")).install(monkeypatch)
+    rows = [
+        {
+            k: v
+            for k, v in transcript_row(
+                external_ref=f"t#{i}", entity_ref=f"t#{i}", content_sha256="a" * 64, content_bytes=70000 + i
+            ).items()
+            if k != "content"
+        }
+        for i in range(2)
+    ]
+    store = FakeBlobStore()
+    with pytest.raises(TelemetryRequestError) as caught:
+        run_blob(parse(REAL_REF, ("telemetry_transcripts", rows)), store)
+    assert (caught.value.status, caught.value.error_type) == (422, "blob_not_verified")
+    assert caught.value.fields == {"table": "telemetry_transcripts", "row": 1, "reason": "size_mismatch"}
+    assert store.heads == [] and "BEGIN" not in kit.events
+
+
+def test_integrity_outranks_size_mismatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    kit = AdapterKit(lookup_result=(RESOLVED, "registered")).install(monkeypatch)
+    uris = [
+        blobs.content_uri_for(TENANT, RESOLVED, "sess", datetime(2026, 1, 1, 12, tzinfo=timezone.utc), f"{i:064x}")
+        for i in range(2)
+    ]
+    with pytest.raises(BlobIntegrityError):
+        run_blob(blob_request(2), FakeBlobStore({uris[0]: "size_mismatch", uris[1]: "mismatch"}))
+    assert "BEGIN" not in kit.events
+
+
 def test_blob_rows_over_the_cap_are_413(monkeypatch: pytest.MonkeyPatch) -> None:
     kit = AdapterKit(lookup_result=(RESOLVED, "registered")).install(monkeypatch)
     store = FakeBlobStore()

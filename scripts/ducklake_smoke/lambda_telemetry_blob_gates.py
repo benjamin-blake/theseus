@@ -167,6 +167,30 @@ def _check_unverified(gate: _Gate, project_ref: str) -> None:
     print("TELEMETRY_BLOB_UNVERIFIED_OK")
 
 
+def _check_size_mismatch(gate: _Gate, project_ref: str, sent: dict[str, Any], tag: str) -> None:
+    before = gate.probe(project_ref, tag).get("grain_counts")
+    resp = gate.post(vec.append_body(project_ref, [vec.misdeclared(sent["wire"][0])]))
+    if resp.status_code != 422 or _error_type(resp) != "blob_not_verified":
+        raise _fail(
+            f"size-mismatch append status={resp.status_code} error_type={_error_type(resp)} {_diagnostics(resp)} (want 422)"
+        )
+    body = _body(resp)
+    if body.get("table") != _TABLE or body.get("row") != 0 or body.get("reason") != "size_mismatch":
+        raise _fail("size-mismatch append did not name the table, row and reason size_mismatch")
+    if gate.probe(project_ref, tag).get("grain_counts") != before:
+        raise _fail("a size-mismatch append changed the stored rows")
+    resp = gate.post(vec.begin_body(project_ref, [vec.misdeclared(vec.item_for(sent["row"]))]))
+    if resp.status_code != 422 or _error_type(resp) != "blob_not_verified":
+        raise _fail(
+            f"size-mismatch begin_blobs status={resp.status_code} error_type={_error_type(resp)} "
+            f"{_diagnostics(resp)} (want 422)"
+        )
+    body = _body(resp)
+    if body.get("row") != 0 or body.get("reason") != "size_mismatch":
+        raise _fail("size-mismatch begin_blobs did not name the row and reason size_mismatch")
+    print("TELEMETRY_BLOB_SIZE_MISMATCH_OK")
+
+
 def _check_s3_rejects(gate: _Gate, project_ref: str) -> None:
     tag = uuid.uuid4().hex
     content = vec.fresh_content(tag)
@@ -231,6 +255,7 @@ def lambda_telemetry_blob(url: str, project_ref: str, *, profile: str | None = N
     append_ms, sent, tag = _check_delivered(gate, timed, project_ref, protocol)
     _check_resend(gate, timed, project_ref, protocol, sent, tag)
     _check_unverified(gate, project_ref)
+    _check_size_mismatch(gate, project_ref, sent, tag)
     _check_s3_rejects(gate, project_ref)
     _check_bounds(gate, project_ref)
     _check_autoregister(gate)
