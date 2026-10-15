@@ -39,3 +39,56 @@ def test_admin_procedure_has_preapply_grant_surface_step() -> None:
     assert "scripts.ci.iam_simulate" in steps[post_apply_idx], "POST-APPLY step must still name the live-simulate gate"
 
     assert pre_apply_idx < post_apply_idx, "PRE-APPLY step must precede the POST-APPLY step"
+
+
+class TestPreMergeLivePlan:
+    """rec-4140 / admin_out_of_band.pre_merge_live_plan: the standing rule's contract key, its
+    amendment_log entry, and the four skill pointers (planning, implement, code-review,
+    plan-critique). No exact rule-length assertion (tests/CLAUDE.md count-coupling rule)."""
+
+    SKILL_PATHS = (
+        Path(".claude/skills/planning/SKILL.md"),
+        Path(".claude/skills/implement/SKILL.md"),
+        Path(".claude/skills/code-review/SKILL.md"),
+        Path(".claude/skills/plan-critique/SKILL.md"),
+    )
+
+    def _doc(self) -> dict:
+        return yaml.safe_load(CONTRACT_PATH.read_text(encoding="utf-8"))
+
+    def test_key_exists_with_description(self) -> None:
+        key = self._doc()["admin_out_of_band"]["pre_merge_live_plan"]
+        assert isinstance(key.get("description"), str) and key["description"].strip()
+
+    def test_rule_clause_order(self) -> None:
+        rule = self._doc()["admin_out_of_band"]["pre_merge_live_plan"]["rule"]
+        assert isinstance(rule, list) and len(rule) >= 3
+        assert rule[0].lstrip().startswith("PRE-MERGE GATE (ADMIN)")
+        assert rule[1].lstrip().startswith("ENVIRONMENT CHECK")
+        assert rule[2].lstrip().startswith("V3 RESOLUTION")
+
+    def test_rule_has_decision_101_counts_only_entry(self) -> None:
+        rule = self._doc()["admin_out_of_band"]["pre_merge_live_plan"]["rule"]
+        assert any("Decision 101" in entry for entry in rule), "no rule entry names Decision 101"
+
+    def test_enforcement_names_the_validator(self) -> None:
+        key = self._doc()["admin_out_of_band"]["pre_merge_live_plan"]
+        assert "validate_admin_root_premerge_gate" in key.get("enforcement", "")
+
+    def test_precedent_present(self) -> None:
+        key = self._doc()["admin_out_of_band"]["pre_merge_live_plan"]
+        assert isinstance(key.get("precedent"), str) and key["precedent"].strip()
+
+    def test_newest_amendment_log_entry_names_the_key(self) -> None:
+        amendments = self._doc()["amendment_log"]
+        assert isinstance(amendments, list) and amendments
+        assert "pre_merge_live_plan" in amendments[0]["summary"]
+
+    def test_pre_existing_pre_apply_test_unchanged(self) -> None:
+        """Confirms this class's addition did not disturb the pre-existing PRE-APPLY test."""
+        test_admin_procedure_has_preapply_grant_surface_step()
+
+    def test_each_skill_points_at_the_rule(self) -> None:
+        for path in self.SKILL_PATHS:
+            text = path.read_text(encoding="utf-8")
+            assert "admin_out_of_band.pre_merge_live_plan" in text, f"{path} missing the pointer"

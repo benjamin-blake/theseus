@@ -156,7 +156,7 @@ If the Verification Plan contains V3 post-deploy steps, execute the full sequenc
 2. Present the deploy output.
 3. WAIT for human confirmation of deployment success.
 4. Execute post-deploy VP steps.
-5. **Post the post-deploy evidence to the PR** (body or comment) before merge: the live invocation output AND a run URL (e.g. the CloudWatch/Step Functions/Lambda invocation URL, or the GitHub Actions run URL). This replaces grep-your-own-transcription as the machine-checkable record of a V3 claim (Decision 103: closure needs a proof, not a self-assertion). Do NOT merge a V3 plan without this posted evidence artifact -- code-review checks for it (see the code-review skill's V3 Post-Deploy Evidence check).
+5. **Post the post-deploy evidence to the PR** (body or comment) before merge: the live invocation output AND a run URL (e.g. a CloudWatch, Lambda or GitHub Actions run URL; Decision 103: closure needs a proof, not a self-assertion). Admin-only root: the posted pre-merge plan evidence for the PR head is this artifact and the post-merge walk is acceptance (deploy-paths.yaml admin_out_of_band.pre_merge_live_plan). Do NOT merge a V3 plan without this posted evidence artifact -- code-review checks for it (see the code-review skill's V3 Post-Deploy Evidence check).
 Only when ALL steps pass can you proceed to code review.
 
 

@@ -152,10 +152,11 @@ Any finding that claims a command or validation gate fails must include the exac
 ## V3 Post-Deploy Evidence
 
 Applies only when the plan's `verification_tier` is V3. Verify the PR (body or comments) carries
-a posted post-deploy evidence artifact: live invocation output AND a real run URL (e.g. a
-CloudWatch/Step Functions/Lambda invocation URL, or a GitHub Actions run URL) that coheres with
-the plan's post-deploy expected outcomes (Decision 103 -- closure needs a proof, not a
-self-assertion, replacing grep-your-own-transcription).
+a posted post-deploy evidence artifact: live invocation output AND a real run URL that coheres
+with the plan's post-deploy expected outcomes (Decision 103). Admin-only root
+(deploy-paths.yaml admin_out_of_band.pre_merge_live_plan): the posted pre-merge plan evidence for
+the PR head is the artifact, judged by the gate step's expected outcome; bullets 1 and 3
+apply.
 
 Raise a **High-priority finding** (drives `Verdict: REVISE` per the deterministic rule below) if:
 - The evidence artifact is absent from the PR entirely, or
@@ -164,7 +165,7 @@ Raise a **High-priority finding** (drives `Verdict: REVISE` per the deterministi
 - It contradicts the plan's post-deploy expected outcomes (e.g. the invocation output shows an
   error or an unexpected result the plan did not anticipate).
 
-Not applicable to V1/V2-tier plans -- skip this check for those and do not raise a finding.
+Skip this check for V1/V2-tier plans; raise no finding.
 
 ---
 

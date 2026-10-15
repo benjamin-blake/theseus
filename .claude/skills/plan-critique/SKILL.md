@@ -53,7 +53,7 @@ artifacts the plan's `infrastructure_dependencies`/VP steps name; a set mismatch
 `active` per `src/lambdas/<slug>/manifest.yaml` missing a build, deploy, smoke-test or model-ID
 step => REVISE naming it. Stubs need no deploy (Decision 79).
 
-12c. **Verification Plan executable command check (IMPLEMENTATION plans only):** Every `verification_plan` entry MUST have a `command` field containing a literal executable shell command or Python one-liner (the `PlanDocument` schema rejects empty commands; your job is to judge whether the command actually exercises the feature rather than being a structural-only check). FAIL if any VP step is prose-only with no executable command. For V3 plans, every VP step's `phase` must be `pre-deploy` or `post-deploy`. If either check fails, recommend REVISE with the specific VP steps that need commands or tags added.
+12c. **Verification Plan executable command check (IMPLEMENTATION plans only):** Every `verification_plan` entry MUST have a `command` field containing a literal executable shell command or Python one-liner (the `PlanDocument` schema rejects empty commands; your job is to judge whether the command actually exercises the feature rather than being a structural-only check). FAIL if any VP step is prose-only with no executable command. For V3 plans, every VP step's `phase` must be `pre-deploy` or `post-deploy`. If either check fails, recommend REVISE with the specific VP steps that need commands or tags added. Admin-only root in scope: REVISE unless deploy-paths.yaml admin_out_of_band.pre_merge_live_plan is met.
 
 12c-1. **Test-obligation adequacy:** For schema-version-4 IMPLEMENTATION plans, recommend REVISE
 when a behavior-changing scope file lacks a linked obligation, its test is structural-only or
