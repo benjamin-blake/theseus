@@ -67,6 +67,18 @@ scope:
       scripts.validate --pre actually flags tests/checks/iam_tf/test_terraform_github_import_blocks.py, add one
       SURVIVOR_PINS entry for it with the reason "rec-3136 import-block guard". The test reads its names from the
       contract, so this should not be needed; otherwise this file is not touched.
+  - file: scripts/checks/contracts/validate_github_org_transfer.py
+    action: Modify
+    purpose: >-
+      Closure PR only, conditional: the OIDC pre-stage build creates this check with PENDING_STATIC_ROWS mapping
+      terraform_github_root -> rec-3136. When the closure moves the contract row to rec-4355, change that one mapping
+      value to rec-4355 in the same change (no other edit; the agreed extension of the check for this row now belongs
+      to rec-4355). Not touched if the file or the mapping is absent.
+  - file: tests/checks/contracts/test_validate_github_org_transfer.py
+    action: Modify
+    purpose: >-
+      Closure PR only, conditional: if this test pins the terraform_github_root -> rec-3136 mapping value, change it to
+      rec-4355 with the check. Not touched otherwise.
   - file: docs/contracts/github-org-transfer.yaml
     action: Modify
     purpose: >-
@@ -253,7 +265,7 @@ verification_plan:
       && aws s3api head-object --bucket agent-platform-data-lake --key tfstate/github/terraform.tfstate --profile agent_platform_admin --query VersionId --output text > "$R/rollback-version"
       && test -s "$R/rollback-version"
       && aws s3 cp s3://agent-platform-data-lake/tfstate/github/terraform.tfstate "$R/state-before.json" --profile agent_platform_admin --only-show-errors
-      && bin/venv-python -c "import json,sys; w=sys.argv[1]; s=json.load(sys.stdin); K={('github_repository','this'):'name',('github_repository_ruleset','main_protection'):'repository',('github_actions_repository_permissions','this'):'repository',('github_workflow_repository_permissions','this'):'repository',('github_repository_environment','tf_gated_apply'):'repository'}; I={('github_repository','this'):w,('github_actions_repository_permissions','this'):w,('github_workflow_repository_permissions','this'):w,('github_repository_environment','tf_gated_apply'):w+':tf-gated-apply'}; F={(r['type'],r['name']):r['instances'][0]['attributes'] for r in s.get('resources',[]) if r.get('mode')=='managed' and (r['type'],r['name']) in K}; ok=[k for k,a in F.items() if a.get(K[k])==w and a.get('id')==I.get(k,a.get('id'))]; st=w!='agent-platform' and any('agent-platform' in json.dumps(a) for a in F.values()); print('STATE_KEYED',w,'count=%d'%len(ok),'resources=%d'%len(F),'stale' if st else 'clean'); assert len(ok)==5 and len(F)==5 and not st" agent-platform < "$R/state-before.json"
+      && bin/venv-python -c "import json,sys; w=sys.argv[1]; s=json.load(sys.stdin); K={('github_repository','this'):'name',('github_repository_ruleset','main_protection'):'repository',('github_actions_repository_permissions','this'):'repository',('github_workflow_repository_permissions','this'):'repository',('github_repository_environment','tf_gated_apply'):'repository'}; I={('github_repository','this'):w,('github_actions_repository_permissions','this'):w,('github_workflow_repository_permissions','this'):w,('github_repository_environment','tf_gated_apply'):w+':tf-gated-apply'}; F={(r['type'],r['name']):r['instances'][0]['attributes'] for r in s.get('resources',[]) if r.get('mode')=='managed' and (r['type'],r['name']) in K}; ok=[k for k,a in F.items() if a.get(K[k])==w and a.get('id')==I.get(k,a.get('id'))]; st=w!='agent-platform' and any('agent-platform' in str(v) for a in F.values() for k2,v in a.items() if k2 in ('id','name','repository','full_name') or k2.endswith('_url')); print('STATE_KEYED',w,'count=%d'%len(ok),'resources=%d'%len(F),'stale' if st else 'clean'); assert len(ok)==5 and len(F)==5 and not st" agent-platform < "$R/state-before.json"
       && git show origin/main:terraform/github/variables.tf > "$R/variables.tf"
       && bin/venv-python -c "import json,re,sys; s=json.load(open(sys.argv[1])); rid=[r['instances'][0]['attributes']['id'] for r in s['resources'] if r.get('mode')=='managed' and r['type']=='github_repository_ruleset'][0]; d=re.search(r'main_protection_ruleset_id.*?default\s*=\s*(\d+)', open(sys.argv[2]).read(), re.S).group(1); assert rid==d, 'ruleset id in state differs from the variable default'; print('RULESET_ID_MATCH')" "$R/state-before.json" "$R/variables.tf"
     expected: >-
@@ -326,7 +338,7 @@ verification_plan:
     action: ADMIN, read-only -- verify from the live state object, not from the operator's report.
     command: >-
       aws s3 cp s3://agent-platform-data-lake/tfstate/github/terraform.tfstate - --profile agent_platform_admin --only-show-errors
-      | bin/venv-python -c "import json,sys; w=sys.argv[1]; s=json.load(sys.stdin); K={('github_repository','this'):'name',('github_repository_ruleset','main_protection'):'repository',('github_actions_repository_permissions','this'):'repository',('github_workflow_repository_permissions','this'):'repository',('github_repository_environment','tf_gated_apply'):'repository'}; I={('github_repository','this'):w,('github_actions_repository_permissions','this'):w,('github_workflow_repository_permissions','this'):w,('github_repository_environment','tf_gated_apply'):w+':tf-gated-apply'}; F={(r['type'],r['name']):r['instances'][0]['attributes'] for r in s.get('resources',[]) if r.get('mode')=='managed' and (r['type'],r['name']) in K}; ok=[k for k,a in F.items() if a.get(K[k])==w and a.get('id')==I.get(k,a.get('id'))]; st=w!='agent-platform' and any('agent-platform' in json.dumps(a) for a in F.values()); print('STATE_KEYED',w,'count=%d'%len(ok),'resources=%d'%len(F),'stale' if st else 'clean'); assert len(ok)==5 and len(F)==5 and not st" theseus
+      | bin/venv-python -c "import json,sys; w=sys.argv[1]; s=json.load(sys.stdin); K={('github_repository','this'):'name',('github_repository_ruleset','main_protection'):'repository',('github_actions_repository_permissions','this'):'repository',('github_workflow_repository_permissions','this'):'repository',('github_repository_environment','tf_gated_apply'):'repository'}; I={('github_repository','this'):w,('github_actions_repository_permissions','this'):w,('github_workflow_repository_permissions','this'):w,('github_repository_environment','tf_gated_apply'):w+':tf-gated-apply'}; F={(r['type'],r['name']):r['instances'][0]['attributes'] for r in s.get('resources',[]) if r.get('mode')=='managed' and (r['type'],r['name']) in K}; ok=[k for k,a in F.items() if a.get(K[k])==w and a.get('id')==I.get(k,a.get('id'))]; st=w!='agent-platform' and any('agent-platform' in str(v) for a in F.values() for k2,v in a.items() if k2 in ('id','name','repository','full_name') or k2.endswith('_url')); print('STATE_KEYED',w,'count=%d'%len(ok),'resources=%d'%len(F),'stale' if st else 'clean'); assert len(ok)==5 and len(F)==5 and not st" theseus
     expected: >-
       Prints STATE_KEYED theseus count=5 resources=5 clean: every one of the five instances keyed on theseus with the
       expected ids, and no agent-platform string left in them.
@@ -381,6 +393,8 @@ verification_plan:
       assert row['rec'].startswith('rec-') and row['rec']!='rec-3136', row['rec'];
       assert any('PLAN-terraform-github-state-reconcile' in a['summary'] for a in c['amendment_log']);
       t=pathlib.Path('terraform/github/CLAUDE.md').read_text(encoding='utf-8'); assert 'Reconciled 20' in t;
+      import importlib.util as u; m=None if u.find_spec('scripts.checks.contracts.validate_github_org_transfer') is None else __import__('scripts.checks.contracts.validate_github_org_transfer',fromlist=['x']);
+      pend=getattr(m,'PENDING_STATIC_ROWS',{}) if m else {}; assert pend.get('terraform_github_root',row['rec'])==row['rec'], pend.get('terraform_github_root');
       print('CLOSURE_OK', len(rows), row['rec'])"
       && L="$(grep -o 'TF_GITHUB_PLAN_REPORT [A-Za-z0-9=_. -]*' "$E3_LOG" | tail -1)" && echo "$L"
       && { echo "$L" | grep -qE 'verdict=NO_CHANGES import=0 add=0 change=0 destroy=0 replace=0 gated=0 .*conflict=0'
@@ -450,6 +464,28 @@ test_obligations:
     waiver_reason: >-
       A conditional data entry in a pin list the literal sweep's readiness build owns and tests; touched only if that
       build merged first, and the fast tier's validate_github_org_transfer is then the check that proves the pin.
+  - source: scripts/checks/contracts/validate_github_org_transfer.py
+    behavior: Conditional one-value change so the check's pending-row owner matches the contract's rec pointer.
+    verification_step: 15
+    command: >-
+      bin/venv-python -c "import yaml,pathlib; c=yaml.safe_load(open('docs/contracts/github-org-transfer.yaml',encoding='utf-8'));
+      rows=[r for r in c['evidence_ledger'] if r['gate']=='prerequisites.terraform-github-state-reconciled'];
+      assert len(rows)>=2, rows; row=[b for b in c['breakage_map'] if b['id']=='terraform_github_root'][0];
+      assert row['rec'].startswith('rec-') and row['rec']!='rec-3136', row['rec'];
+      assert any('PLAN-terraform-github-state-reconcile' in a['summary'] for a in c['amendment_log']);
+      t=pathlib.Path('terraform/github/CLAUDE.md').read_text(encoding='utf-8'); assert 'Reconciled 20' in t;
+      import importlib.util as u; m=None if u.find_spec('scripts.checks.contracts.validate_github_org_transfer') is None else __import__('scripts.checks.contracts.validate_github_org_transfer',fromlist=['x']);
+      pend=getattr(m,'PENDING_STATIC_ROWS',{}) if m else {}; assert pend.get('terraform_github_root',row['rec'])==row['rec'], pend.get('terraform_github_root');
+      print('CLOSURE_OK', len(rows), row['rec'])"
+      && L="$(grep -o 'TF_GITHUB_PLAN_REPORT [A-Za-z0-9=_. -]*' "$E3_LOG" | tail -1)" && echo "$L"
+      && { echo "$L" | grep -qE 'verdict=NO_CHANGES import=0 add=0 change=0 destroy=0 replace=0 gated=0 .*conflict=0'
+      || { echo "$L" | grep -qE 'verdict=VISIBILITY_GATED_ONLY import=0 add=0 change=1 destroy=0 replace=0 gated=1 .*conflict=0'
+      && grep -q 'ruleset_bypass_actors=hidden' "$E3_LOG"; }; }
+      && ! grep -Eq '(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)|arn:aws|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[a-z]{2,}|ghp_|github_pat_|ExternalId' "$CLOSURE_PR_BODY"
+      && echo E3_OK
+    waiver_reason: >-
+      A conditional data value in a check the OIDC pre-stage build owns and tests; VP step 15 asserts the mapping
+      equals the contract's pointer, and the owning test file runs in the closure PR's fast tier.
   - source: docs/contracts/github-org-transfer.yaml
     behavior: The reconcile evidence and the moved rec pointer are recorded in the transfer contract.
     verification_step: 15
@@ -460,6 +496,8 @@ test_obligations:
       assert row['rec'].startswith('rec-') and row['rec']!='rec-3136', row['rec'];
       assert any('PLAN-terraform-github-state-reconcile' in a['summary'] for a in c['amendment_log']);
       t=pathlib.Path('terraform/github/CLAUDE.md').read_text(encoding='utf-8'); assert 'Reconciled 20' in t;
+      import importlib.util as u; m=None if u.find_spec('scripts.checks.contracts.validate_github_org_transfer') is None else __import__('scripts.checks.contracts.validate_github_org_transfer',fromlist=['x']);
+      pend=getattr(m,'PENDING_STATIC_ROWS',{}) if m else {}; assert pend.get('terraform_github_root',row['rec'])==row['rec'], pend.get('terraform_github_root');
       print('CLOSURE_OK', len(rows), row['rec'])"
       && L="$(grep -o 'TF_GITHUB_PLAN_REPORT [A-Za-z0-9=_. -]*' "$E3_LOG" | tail -1)" && echo "$L"
       && { echo "$L" | grep -qE 'verdict=NO_CHANGES import=0 add=0 change=0 destroy=0 replace=0 gated=0 .*conflict=0'
@@ -533,7 +571,9 @@ context:
     Gotchas: CLAUDE.md budget 5253 bytes, about 5079 after the build PR with rec-4335's section (gated closure line about
     5237). The PAT's secret name is not in the repo. var.github_token has no default (pastes export TF_VAR_github_token).
     Pastes are bash heredocs with one command per line, so set -e stops on any failure. Never reseed the CLAUDE.md prose
-    budget down in the build PR (validate_prose_limits advises it); the closure line needs the headroom.
+    budget down in the build PR (validate_prose_limits advises it); the closure line needs the headroom. $PASTE*_REPORT
+    hold reported text; $E*_LOG, $*_COMMENT and $*_PR_BODY are file paths. The Terraform zip is checked against
+    SHA256SUMS over TLS only (no .sig): corruption, not compromise; provider bytes are pinned by the lock file.
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
@@ -699,8 +739,9 @@ execution_steps:
     subscribe_pr_activity. The PR's terraform-github-plan run is
     VP step 6 (wait for its event, never poll; Order B: see step 6's fix_if); post the counts-only E0 on the PR. Then
     dispatch code review (the code-review skill in a fresh context) with the context "V3 resolution:" line quoted in its
-    prompt; fix every blocking finding. Then hand the operator paste 0 at the CI-green head (VP step 9; it writes
-    nothing shared) and require PASTE0_OK. Squash-merge only when code review is PROCEED, CI is green on the head,
+    prompt; fix every blocking finding. Once code review is PROCEED and the operator has approved the PR on GitHub as
+    code owner (paste 0 runs this head's config under the operator's admin identity), hand the operator paste 0 at
+    the CI-green head (VP step 9; it writes nothing shared) and require PASTE0_OK. Squash-merge only when code review is PROCEED, CI is green on the head,
     PASTE0_OK holds for a head with the same terraform/github content, and the operator has approved the PR on GitHub as
     code owner (no Resolves trailer on this PR: rec-3136 closes with the closure PR). Then run VP step 8 and hand the
     operator paste A with MERGE_SHA filled in.
@@ -738,7 +779,9 @@ execution_steps:
     TF="$HOME/bin/terraform"
     D="$HOME/tfgithub/repo/terraform/github"
     X="$HOME/tfgithub/dry"
-    $TF -chdir="$D" init -input=false >/dev/null
+    test "$(grep -c '^provider ' "$D/.terraform.lock.hcl")" = 1
+    if grep -qE 'data "external"|provisioner|local-exec' "$D"/*.tf; then echo UNEXPECTED_EXECUTION_SURFACE; exit 1; fi
+    $TF -chdir="$D" init -input=false -lockfile=readonly >/dev/null
     echo INIT_OK
     if $TF -chdir="$D" plan -input=false -lock=false -out=baseline.tfplan >/dev/null 2>&1; then
       $TF -chdir="$D" show -json baseline.tfplan | jq -r "$COUNTS_JQ"
@@ -752,7 +795,7 @@ execution_steps:
     if grep -q 'backend "s3"' "$X/main.tf"; then echo BACKEND_NOT_STRIPPED; exit 1; fi
     $TF -chdir="$D" state pull > "$X/terraform.tfstate"
     test -s "$X/terraform.tfstate"
-    $TF -chdir="$X" init -input=false >/dev/null
+    $TF -chdir="$X" init -input=false -lockfile=readonly >/dev/null
     $TF -chdir="$X" state rm github_repository.this github_repository_ruleset.main_protection github_actions_repository_permissions.this github_workflow_repository_permissions.this github_repository_environment.tf_gated_apply >/dev/null
     $TF -chdir="$X" plan -input=false -out=dry.tfplan >/dev/null
     C="$($TF -chdir="$X" show -json dry.tfplan | jq -r "$COUNTS_JQ")"
@@ -775,7 +818,7 @@ execution_steps:
     git init -q repo
     git -C repo fetch -q --depth 1 https://github.com/benjamin-blake/theseus.git "$MERGE_SHA"
     git -C repo checkout -q FETCH_HEAD
-    $TF -chdir="$D" init -input=false >/dev/null
+    $TF -chdir="$D" init -input=false -lockfile=readonly >/dev/null
     TOKEN="$(aws secretsmanager get-secret-value --region eu-west-2 --secret-id "$PAT_SECRET_ID" --query SecretString --output text)"
     test -n "$TOKEN"
     export TF_VAR_github_token="$TOKEN"
@@ -829,9 +872,9 @@ execution_steps:
 
     1. terraform/github/CLAUDE.md: append one line directly after the "Plan:" line of the State reconcile section (blank
        line before it). Clean variant:
-    Reconciled <YYYY-MM-DD>: the PR-time plan reads 0 to change (<E2 run URL>).
+    Reconciled <YYYY-MM-DD>: PR-time plan run <E2 run id> reads 0 to change.
        Visibility-gated variant:
-    Reconciled <YYYY-MM-DD>: the PR-time plan reads 0 to change bar one visibility-gated row (<E2 run URL>).
+    Reconciled <YYYY-MM-DD>: PR-time plan run <E2 run id> reads 0 to change bar one visibility-gated row.
 
     2. docs/contracts/github-org-transfer.yaml: replace "evidence_ledger: []" with:
     evidence_ledger:
@@ -874,6 +917,11 @@ execution_steps:
        identity readiness build has already landed that sentence, change only its rec id to rec-4355 in this same
        change (a rec-id pointer update, within the follow-on rec id variance) and say so in the PR body. If this closure
        lands first, tell the coordinator: the readiness build then stops and its sentence goes back to the operator.
+
+    6. If scripts/checks/contracts/validate_github_org_transfer.py exists with PENDING_STATIC_ROWS mapping
+       terraform_github_root to rec-3136, change that value to rec-4355 (and the same value in
+       tests/checks/contracts/test_validate_github_org_transfer.py if it pins it), so the code and the contract name
+       the same owner.
 
     Then, each outcome reported separately: github_readiness; rebase on origin/main; VP steps 2, 4 and 5; VP step 7 on
     the committed clean tree (full tier, then --verify-head); postflight evidence as in the build PR; push; the PR
