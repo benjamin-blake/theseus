@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import runpy
 import sys
@@ -16,6 +17,13 @@ from tests.fixtures.session_preflight_module import MODULE_PATH
 from tests.fixtures.session_preflight_module import preflight as _preflight
 
 _CATALOG = "ducklake_smoke"
+_CONTEXT = {
+    "roadmap_phase": "unknown",
+    "open_decisions_count": 0,
+    "recent_sessions": [],
+    "strategic_review_due": False,
+    "recommendations_count": 0,
+}
 
 
 def _reader(counts: dict[str, int], *, catalog: str = _CATALOG) -> MagicMock:
@@ -91,7 +99,7 @@ def _run_main(tmp_path: Path, *, creds: str, reader: MagicMock) -> tuple[dict, M
         "main_files_changed_since_branch": [],
     }
     report_path = tmp_path / ".preflight-report.json"
-    with (
+    patches = [
         patch("scripts.preflight._common._make_reader", return_value=reader),
         patch("scripts.preflight.env_git.check_venv", return_value=True),
         patch("scripts.preflight.env_git.get_git_status", return_value=("agent/test", False, [])),
@@ -102,12 +110,22 @@ def _run_main(tmp_path: Path, *, creds: str, reader: MagicMock) -> tuple[dict, M
         patch("scripts.preflight.aws_infra.check_credentials", return_value=creds),
         patch("scripts.preflight.aws_infra._handle_credentials_startup", return_value=creds),
         patch("scripts.preflight.context_docs.parse_last_session", return_value=""),
+        patch("scripts.preflight.context_docs.print_data_quality_health"),
+        patch("scripts.preflight.context_docs.read_context_files", return_value=_CONTEXT),
+        patch("scripts.preflight.context_docs.check_data_quality_coverage", return_value={}),
+        patch("scripts.preflight.context_docs._check_endstate_drift", return_value={}),
+        patch("scripts.preflight.context_docs._scan_provisional_contracts", return_value=[]),
+        patch("scripts.preflight.decision_conditions.preflight_bucket", return_value={}),
+        patch("scripts.preflight.decision_conditions.print_decision_conditions"),
         patch("scripts.preflight.ci_rca_signals._check_ci_rca_liveness", return_value=None),
         patch("scripts.preflight.ci_rca_signals._check_convergence_sensor_liveness", return_value=None),
         patch("session_preflight.platform_roadmap.compute_state_dict", new=live_state_dict),
         patch("session_preflight.PREFLIGHT_REPORT", report_path),
         patch("builtins.print"),
-    ):
+    ]
+    with contextlib.ExitStack() as stack:
+        for entry in patches:
+            stack.enter_context(entry)
         _preflight.main()
     return json.loads(report_path.read_text(encoding="utf-8")), reader
 

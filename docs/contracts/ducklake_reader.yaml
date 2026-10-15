@@ -152,7 +152,7 @@ audit_invariants:
   - "Closed boundary: the read role is S3 GetObject only; a write attempt is denied at IAM/S3 (no write path through the reader; write_probe gate)."
   - "named_read executes ONLY pre-established registry SQL keyed by verb name; no caller SQL crosses the boundary on this path (Decision 84 I-3)."
   - "query_ops accepts a caller-supplied read-only SELECT/WITH (single-statement; assert_read_only_sql-enforced) for internal predicate-pushdown read paths. The FROM target is caller-controlled -- _history and other ops_* tables ARE reachable (e.g. the DQ runner reads _history via this verb); the boundary is read-only-SELECT + the S3-read-only IAM role, NOT current-projection-only. NB: the reader/runtime handler docstrings that state 'only the current projection is reachable' are STALE and inaccurate -- do NOT 'fix' the code to match that comment; doing so would break the DQ runner's _history reads and violate this contract."
-  - "Event-journal verbs (rec-4291, registry v6): named verbs in the reader-only EVENT_READS registry derive telemetry state, duration, roll-ups, friction, reported cost and a metadata-only health count at read (Decision 199 cl.1) and are served from a second warm connection, the telemetry slot (ATTACHed as telemetry_catalog from TELEMETRY_META_SCHEMA and TELEMETRY_DATA_PATH, opened lazily, reopened on its own dead-session condition); every other action, query_ops included, binds the ops slot and never opens the telemetry slot. Until slice 2c lifts it together with tenant-scoped reads (Decision 200 cl.2, rec-4292), every event verb refuses with a 500 runtime answer naming rec-4292 unless the pin names the smoke catalog; the agent-facing descriptions say they read the smoke catalog only. as_of is required and timezone-aware (the boundary never substitutes server time); session_id must be a canonical 26-character ULID whose time prefix decodes the one calendar-day partition read; a window verb takes day_from and day_to within its declared max_window_days (7 for sessions_window and sessions_window_all_purposes). A refused value answers 400 named_read_input naming the parameter and never echoing the value, before any connection or SQL. Rows are derived, never raw, and carry generations (V* per producer), conflicted_grain_keys and derivation_conflicted: a grain conflict is reported, never resolved (Decision 207). sessions_window excludes drill and synthetic projects structurally; sessions_window_all_purposes and telemetry_health_count are not agent-facing."
+  - "Event-journal verbs (rec-4291, registry v6; the reader half of rec-4024): named verbs in the reader-only EVENT_READS registry derive telemetry state, duration, roll-ups, friction, reported cost and a metadata-only health count at read (Decision 199 cl.1) and are served from a second warm connection, the telemetry slot (ATTACHed as telemetry_catalog from TELEMETRY_META_SCHEMA and TELEMETRY_DATA_PATH, opened lazily, reopened on its own dead-session condition); every other action, query_ops included, binds the ops slot and never opens the telemetry slot. Until slice 2c lifts it together with tenant-scoped reads (Decision 200 cl.2, rec-4292), every event verb refuses with a 500 runtime answer naming rec-4292 unless the pin names the smoke catalog; the agent-facing descriptions say they read the smoke catalog only. as_of is required and timezone-aware (the boundary never substitutes server time); session_id must be a canonical 26-character ULID whose time prefix decodes the one calendar-day partition read; a window verb takes day_from and day_to within its declared max_window_days (7 for sessions_window and sessions_window_all_purposes). A refused value answers 400 named_read_input naming the parameter and never echoing the value, before any connection or SQL. Rows are derived, never raw, and carry generations (V* per producer), conflicted_grain_keys and derivation_conflicted: a grain conflict is reported, never resolved (Decision 207). sessions_window excludes drill and synthetic projects structurally; sessions_window_all_purposes and telemetry_health_count are not agent-facing."
   - "read_ops_current rejects a malformed `filter` (must carry BOTH column and value) loudly rather than degrading to an unfiltered full-table read (rec-2170 hardening)."
   - "An unknown `action` returns 400 with the sorted action allow-list, and a body that is not valid JSON or not a JSON object returns 400 bad_request (both dispatcher-level; not per-verb outcomes). Reads are idempotent and a dead Neon session is transparently reconnected once; a session that stays dead answers 503 catalog_unavailable."
   - "Reader client-input errors (unknown/missing table, malformed filter, empty/unknown named_read verb, empty/non-SELECT sql) surface as DuckLakeRuntimeError -> 500, not 4xx -- the reader's loud-fail taxonomy is server-error-coded (faithfully documented here; a finer 4xx split would be a code change, not a contract amendment). The 4xx outcomes of a verb are 413 response_too_large (Decision 215 cl.6) and, for named_read only, 400 named_read_input (a bound value or a registry error() guard refused caller input: InvalidInputException, ConversionException, OutOfRangeException or TypeMismatchException from DuckDB, answered with the redacted DuckDB message); BinderException and ParserException mean registry-versus-schema drift (callers send no SQL) and stay 500 unmapped. The dispatcher-level 400s are separate."
@@ -163,6 +163,16 @@ audit_invariants:
   - "No request that reaches the handler answers the Function URL's 502: an exception no row maps answers 500 unmapped {error_class, request_id, action}, never its message; a dead catalog connection that survives the reopen-once answers 503 catalog_unavailable. Enforced by the nodes of tests/test_ducklake_reader_handler.py named in the plan's verification step 3 (test_named_read_other_duckdb_error_is_unmapped_500, test_dead_connection_after_reopen_is_503, test_invocation_line_on_unparseable_body). Process-level failures (timeout, out of memory, Runtime.ExitError, an init failure) remain the runtime's 502 and count in Errors; rec-4296 owns the reader's process exits."
   - "Declared residual: the ducklake_unmapped_error and ducklake_named_read_input log lines carry the exception message redacted and truncated to 300 characters, so a request value inside an exception's message can reach the log (strictly less than the runtime traceback they replace). The async DuckLake handlers (maintenance, maintenance_smoke, catalog_dr) are EventBridge-invoked and keep Lambda's own retry behaviour; rec-4303 owns them."
 amendment_log:
+  - date: "2026-10-05"
+    semantic_break: false
+    change_class: field_add
+    summary: >-
+      PLAN-telemetry-table-registration (slice 2a-2 plan 1, review item C1): NAMED_READS location pointers move to
+      src/common/ducklake_named_reads.py; the describe per-verb entry and the named_read 200 response gain read_version (an opaque
+      per-verb digest compared by equality only; registry_version stays the registry-format stamp); the generic-read refusal of
+      telemetry_append and registration tables is stated, with the query_ops FROM residual declared.
+    migration_story: >-
+      Additive: existing consumers ignore the new key. No consumer pins read_version yet.
   - date: "2026-10-15"
     semantic_break: false
     change_class: field_add
@@ -174,16 +184,6 @@ amendment_log:
       catalog-alias path is closed by construction, the object-store table-function path stays declared (owner rec-4292).
     migration_story: >-
       Additive: existing consumers ignore the new describe keys and the nine new verbs; ops verbs keep their read_version digests.
-  - date: "2026-10-05"
-    semantic_break: false
-    change_class: field_add
-    summary: >-
-      PLAN-telemetry-table-registration (slice 2a-2 plan 1, review item C1): NAMED_READS location pointers move to
-      src/common/ducklake_named_reads.py; the describe per-verb entry and the named_read 200 response gain read_version (an opaque
-      per-verb digest compared by equality only; registry_version stays the registry-format stamp); the generic-read refusal of
-      telemetry_append and registration tables is stated, with the query_ops FROM residual declared.
-    migration_story: >-
-      Additive: existing consumers ignore the new key. No consumer pins read_version yet.
   - date: "2026-10-14"
     semantic_break: false
     change_class: field_add

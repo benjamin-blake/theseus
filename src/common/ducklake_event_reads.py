@@ -280,10 +280,11 @@ def acquirer_for(
     then binds the telemetry slot (opened lazily on its first verb).
     """
     verb = payload.get("verb") if action == "named_read" else None
-    if not is_event_verb(verb):
+    if not isinstance(verb, str) or verb not in _event_reads():
         return ops
     meta_schema, data_path = require_smoke_pin()
-    bind_values(_event_reads()[verb], payload.get("params") or {})
+    params = payload.get("params")
+    bind_values(_event_reads()[verb], {} if params is None else params)
     opener = _telemetry_opener(meta_schema, data_path, extension_directory)
 
     def acquire(force_reopen: bool = False) -> tuple[Any, dict[str, Any]]:

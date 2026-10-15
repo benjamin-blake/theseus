@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from typing import Any
 
 from scripts.ducklake_smoke import core
 from src.common import ducklake_runtime
@@ -201,7 +202,7 @@ def _telemetry_read_checks(*, profile: str | None, region: str) -> None:
 
     url = core._function_url("reader")
 
-    def call(payload: dict) -> object:
+    def call(payload: dict) -> Any:
         return core._sigv4_invoke(url, payload, profile=profile, region=region)
 
     def fail(reason: str, detail: object) -> None:

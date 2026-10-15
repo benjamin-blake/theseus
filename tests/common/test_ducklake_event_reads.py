@@ -292,3 +292,10 @@ def test_render_refuses_an_unbound_placeholder() -> None:
     broken = dataclasses.replace(_STATE, sql=_STATE.sql + " {nope}")
     with pytest.raises(rt.DuckLakeRuntimeError, match="unbound"):
         ev.render_sql(broken)
+
+
+def test_falsy_non_object_params_are_refused_before_any_acquire(smoke_pin: None) -> None:
+    for params in ([], "", 0):
+        with pytest.raises(ev.EventReadInputError):
+            ev.acquirer_for("named_read", {"verb": "telemetry_health_count", "params": params}, None, "/e")
+    assert callable(ev.acquirer_for("named_read", {"verb": "telemetry_health_count"}, None, "/e"))
