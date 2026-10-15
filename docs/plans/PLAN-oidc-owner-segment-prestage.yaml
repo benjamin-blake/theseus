@@ -38,8 +38,9 @@ scope:
     action: Modify
     purpose: >-
       Add TestTargetOwnerSegment::test_both_roots_stage_the_target_segment: each root carries exactly one entry
-      whose owner is otl-labs and repository ontheloop, whose repository id equals the current entry's, and
-      whose owner id is digits and differs from the current owner's. It pins NAMES and repo-id equality, never
+      whose owner is otl-labs and repository ontheloop, whose repository id equals the durable _EXPECTED_REPO_ID
+      constant (so the node survives predecessor removal), and whose owner id is digits and differs from
+      _EXPECTED_OWNER_ID. It pins NAMES and repo-id equality, never
       the org id (operator ruling, contract identity.target.owner_numeric_id). Make
       test_both_roots_declare_the_immutable_entry find the current entry by owner, not list position. Update
       the module docstring for the two-entry pre-staged state.
@@ -69,7 +70,9 @@ scope:
     action: Modify
     purpose: >-
       One bare-literal Entry for validate_github_org_transfer (Decision 169): pre=True, pre_globs naming the
-      contract, both Terraform files and the check module; full_segment full_after_lint.
+      contract, both Terraform files, the check module and its first-party import closure
+      (scripts/checks/_common.py, scripts/checks/registry.py and any helper it imports), which
+      validate_pre_glob_closure enforces; full_segment full_after_lint.
   - file: config/ci_rca_taxonomy.yaml
     action: Modify
     purpose: "function_to_category row: validate_github_org_transfer -> schema_drift."
@@ -89,10 +92,10 @@ scope:
   - file: docs/contracts/github-org-transfer.yaml
     action: Modify
     purpose: >-
-      The five operator-approved edits, verbatim (context names the approval): evaluator agent_surface ->
+      The six operator-approved edits, verbatim (context names the approvals): evaluator agent_surface ->
       check validate_github_org_transfer; a second amendment_log entry; identity.staged_phase: pre_staged;
-      planned_evaluator rewritten; breakage_map.oidc_trust_segment.fix names the admin split-apply.
-      identity.phase stays pre_transfer.
+      planned_evaluator rewritten; breakage_map.oidc_trust_segment.fix names the admin split-apply;
+      tracking.decision_172_review records the re-arm. identity.phase stays pre_transfer.
   - file: docs/DECISIONS.md
     action: Modify
     purpose: >-
@@ -101,6 +104,16 @@ scope:
       old-owner-segment-removed-with-proof; future-rename-not-prestaged and on_trigger unchanged), legal under
       Decision 177 clause 4, plus one appended "> **Update (...):**" line at the end of the entry. No other
       entry changes; no new numbered Decision.
+  - file: config/agent/verification_registry/entries/github-org-transfer-contract.yaml
+    action: Modify
+    purpose: >-
+      The existing graduated row greps 'agent_surface: docs/CLAUDE.md', which Edit 1 removes; repoint that grep
+      to 'check: validate_github_org_transfer' so the standing check stays true (its other greps unchanged).
+  - file: tests/checks/contracts/test__manifest.py
+    action: Modify
+    purpose: >-
+      Add validate_github_org_transfer's read set (the contract, both Terraform files, the check module,
+      scripts/checks/_common.py, scripts/checks/registry.py) to _CLOSURE_INPUTS, the convention for gated Entries.
   - file: config/agent/verification_registry/entries/oidc-trust-target-owner-segment-staged.yaml
     action: Create
     purpose: "Graduated row for VP step 2 (test_selector, plan_slug oidc-owner-segment-prestage)."
@@ -141,12 +154,15 @@ infrastructure_dependencies:
     convergence_marker_vocabulary). Merge right after a drift tick and finish VP 15-21 in one sitting. A missed
     window is recoverable: the dispatch then refuses on red and the acknowledge-and-retry dispatch naming the
     red commit (after reviewing its rec) carries the same plan. Each tick in the window files a
-    "Terraform drift check found a pending-..." tf_drift rec that nothing auto-closes (VP 27 closes them).
+    "Terraform drift check found a pending-..." tf_drift rec that nothing auto-closes, and convergence-health may file a tf_convergence_stale rec that closes
+    itself once the backlog drains (VP 26 checks both).
   - >-
     No permission, boundary or policy change: trust only, additive. Not a grant-surface change, so the
     POST-APPLY iam_simulate gate and the PRE-APPLY narrowing check do not apply. The platform-security
-    detector does not fire (terraform/bootstrap/platform_security_alarms.tf:24 matches only PlatformDev,
-    PlatformAdmin and two policies). Largest projected trust document ~1,260 characters (planner) against
+    role-change detector does not fire (terraform/bootstrap/platform_security_alarms.tf:24 matches only
+    PlatformDev, PlatformAdmin and two policies); platform-security-denied-iam-write (:27) fires on any
+    AccessDenied IAM write, which the planned sequence never makes but a mistaken approval of the stale push
+    run, or a skipped split-apply, would (VP 18-19 fix_if). Largest projected trust document ~1,260 characters (planner) against
     IAM's 2,048 default.
   - >-
     Security of the new entry: only a repository whose id is 1252427466 can present it, and repository ids
@@ -154,7 +170,7 @@ infrastructure_dependencies:
     the transfer (caught by the contract's transfer_window_checklist step 7 before unfreeze).
   - >-
     ADMIN container with the S3 provider mirror (Decision 120): the personal-root read-only plan (VP 13) and
-    the split-apply (VP 18) need TF_CLI_CONFIG_FILE pointing at a synced mirror. Planning-time check
+    the split-apply (VP 17) need TF_CLI_CONFIG_FILE pointing at a synced mirror. Planning-time check
     (2026-10-15): the mirror syncs and terraform/personal initialises with -backend-config=backend-sandbox.hcl.
 acceptance_criteria:
   - >-
@@ -178,7 +194,7 @@ acceptance_criteria:
   - >-
     validate_github_org_transfer is registered, runs in both tiers and is green; the contract's evaluator is
     that check; the contract and Decision 172 texts match the operator-approved drafts verbatim apart from the
-    allowed date and PR-number variance.
+    allowed date and PR-number variance (step 28).
   - >-
     rec-3167 and rec-3128 close at merge (Resolves trailer); rec-3902 closes only after the live proof, by
     update_rec with the evidence path (Decision 201).
@@ -263,7 +279,7 @@ verification_plan:
   - step: 5
     phase: pre-deploy
     hermetic: true
-    action: The contract carries the four approved edits and still validates against the contract schema.
+    action: The contract carries the approved edits and still validates against the contract schema.
     command: >-
       bin/venv-python -c "import yaml; from scripts.contracts_schema import ContractMeta;
       c=yaml.safe_load(open('docs/contracts/github-org-transfer.yaml')); ContractMeta.model_validate(c['contract']);
@@ -271,6 +287,9 @@ verification_plan:
       assert log[-1]['change_class']=='field_add' and log[-1]['semantic_break'] is False;
       assert c['planned_evaluator'].startswith('validate_github_org_transfer (rec-3902) enforces invariant (1)');
       assert 'identity.staged_phase' in c['planned_evaluator'];
+      assert '2027-04-30' in c['tracking']['decision_172_review'];
+      import subprocess; row=yaml.safe_load(open('config/agent/verification_registry/entries/github-org-transfer-contract.yaml'));
+      subprocess.run(row['check_spec']['command'], check=True);
       o=[r for r in c['breakage_map'] if r['id']=='oidc_trust_segment'][0];
       assert 'admin' in o['fix'] and 'split-apply of github_ci_planner and github_ci_deploy' in o['fix'];
       print('contract-amendment-applied')"
@@ -294,7 +313,7 @@ verification_plan:
       assert s['decision']==172 and str(s['review_by'])=='2027-04-30', s;
       assert [c['id'] for c in s['conditions']]==['old-owner-segment-removed-with-proof','future-rename-not-prestaged'], s;
       assert all(c['kind']=='manual' for c in s['conditions']);
-      assert 'Reversal stanza re-armed by PLAN-oidc-owner-segment-prestage' in e;
+      assert 'Reversal stanza re-armed by PLAN-oidc-owner-segment-prestage' in ' '.join(e.replace('\n> ',' ').split());
       print('decision-172-rearmed')" &&
       bin/venv-python -m scripts.decisions_index --check
     expected: The marker prints and the index freshness check exits 0.
@@ -335,10 +354,12 @@ verification_plan:
     phase: pre-deploy
     hermetic: false
     action: >-
-      Full tier before commit/PR (handoff_policy, Decision 163). It runs for about ten minutes: run it in the
-      background with a timeout of 30 minutes or more; a timeout blocks, it never passes.
-    command: bin/venv-python -m scripts.validate
-    expected: Exit 0 with an empty failed-checks list.
+      Full tier on the COMMITTED clean tree after the rebase, then --verify-head (docs/contracts/git-ops.yaml
+      handoff_sequence; Decision 163's 2026-09-26 Update; Decision 203's push gate refuses a push whose evidence
+      does not attest HEAD). It runs for about ten minutes: run it in the background with a timeout of 30
+      minutes or more; a timeout blocks, it never passes. Every fix or rebase commit needs a fresh run.
+    command: bin/venv-python -m scripts.validate && bin/venv-python -m scripts.checks.validation_result --verify-head
+    expected: Exit 0 with an empty failed-checks list, then --verify-head attests HEAD's tree.
     fix_if: Forward-fix on the branch (Decision 55).
     graduation: waive
     graduation_waiver_reason: >-
@@ -361,10 +382,11 @@ verification_plan:
     action: >-
       HUMAN input, agent check. The operator reads the otl-labs numeric id at https://api.github.com/orgs/otl-labs
       (fields login, id, type) and pastes it in the build thread (contract procedure.pre_stage step 1). Record
-      that message's id; export OTL_ORG_ID from it. This session cannot read /orgs (the proxy is scoped to the
+      that message's id; write OTL_ORG_ID=<id> into the session-local state file (constraints). This session cannot read /orgs (the proxy is scoped to the
       repository), so the operator's read is the only pre-transfer source; the transfer checklist re-proves it.
     command: >-
-      test -n "$OTL_ORG_ID" && bin/venv-python -c "import os,re,pathlib; i=os.environ['OTL_ORG_ID'];
+      set -a && . "$HOME/.oidc-prestage/state.env" && set +a && test -n "$OTL_ORG_ID" && bin/venv-python -c
+      "import os,re,pathlib; i=os.environ['OTL_ORG_ID'];
       assert i.isdigit() and i!='217728084', 'bad OTL_ORG_ID';
       want='otl-labs@'+i+'/ontheloop@1252427466';
       get=lambda p: re.findall(r'\"([^\"]+)\"', re.search(r'github_repos\s*=\s*\[([^\]]*)\]',
@@ -390,7 +412,8 @@ verification_plan:
       PLAN-platform-iam-bootstrap-adopt step 8). Post the counts-only result and the sha on the PR; a new head
       re-runs it.
     command: >-
-      B="${TMPDIR:-/tmp}/oidc-bootstrap-baseline" && S="${TMPDIR:-/tmp}/oidc-bootstrap-spec" && test -n
+      set -a && . "$HOME/.oidc-prestage/state.env" && set +a && B="${TMPDIR:-/tmp}/oidc-bootstrap-baseline" &&
+      S="${TMPDIR:-/tmp}/oidc-bootstrap-spec" && test -n
       "$PR_HEAD_SHA" && git fetch origin main "$PR_HEAD_SHA" && git worktree add --detach "$B" origin/main && cp
       terraform/bootstrap/terraform.bootstrap.tfvars "$B/terraform/bootstrap/" && terraform -chdir="$B/terraform/bootstrap"
       init -input=false >/dev/null && AWS_PROFILE=agent_platform_admin terraform -chdir="$B/terraform/bootstrap" plan
@@ -432,7 +455,8 @@ verification_plan:
       as bin/setup-cloud-env.sh does) and the personal tfvars (materialise_tfvars.sh). Cross-check the CI
       speculative-plan PR comment: "0 to add, 4 to change, 0 to destroy".
     command: >-
-      P="${TMPDIR:-/tmp}/oidc-personal-spec" && test -n "$PR_HEAD_SHA" && test -n "$TF_CLI_CONFIG_FILE" && git
+      set -a && . "$HOME/.oidc-prestage/state.env" && set +a && P="${TMPDIR:-/tmp}/oidc-personal-spec" && test -n
+      "$PR_HEAD_SHA" && test -n "$TF_CLI_CONFIG_FILE" && git
       worktree add --detach "$P" "$PR_HEAD_SHA" && cp terraform/personal/terraform.personal.tfvars
       "$P/terraform/personal/" && export AWS_PROFILE=agent_platform_admin AWS_DEFAULT_REGION=eu-west-2 && terraform
       -chdir="$P/terraform/personal" init -input=false -backend-config=backend-sandbox.hcl >/dev/null && terraform
@@ -482,57 +506,62 @@ verification_plan:
     phase: post-deploy
     action: >-
       MERGE on the operator's typed word ("merge") after the code-owner review. Squash with the PR body as the
-      commit message carrying "Resolves: rec-3167, rec-3128" (NOT rec-3902). Export MERGE_SHA. Confirm the push
-      run of terraform-apply-sandbox for MERGE_SHA shows apply-sandbox routed (guard exit 2) and gated-apply
-      waiting. Do NOT approve it.
+      commit message carrying "Resolves: rec-3167, rec-3128" (NOT rec-3902). Append MERGE_SHA and the push run's
+      id (PUSH_RUN_ID) to the state file. Confirm the push run of terraform-apply-sandbox for MERGE_SHA shows
+      apply-sandbox routed (guard exit 2) and gated-apply waiting. Do NOT approve it.
     command: >-
       echo "MCP: merge_pull_request(merge_method='squash', commit_message=<PR body>); actions_list(list_workflow_runs,
       resource_id='terraform-apply-sandbox.yml', branch='main') -> the run for MERGE_SHA: apply-sandbox success with
-      a routed guard, gated-apply status waiting. Record PUSH_RUN_ID."
-    expected: One waiting gated-apply job on the push run; nothing applied yet.
+      a routed guard, gated-apply status waiting. Record MERGE_SHA and PUSH_RUN_ID in the state file."
+    expected: One waiting gated-apply job on the push run; nothing applied yet. The MCP results are the evidence.
     fix_if: >-
       If apply-sandbox did not route (applied directly), STOP: the guard misclassified a trust diff; RCA before
       anything else.
   - step: 16
     phase: post-deploy
     action: >-
-      BOOTSTRAP APPLY (operator's word on the exact command; Decision 126). Plan at MERGE_SHA in a throwaway
-      worktree, present the counts, and on the word apply the SAME saved plan. Export BOOTSTRAP_APPLY_TS. Then
-      run the live trust proof (step 22's command) with ROLES=apply.
+      BOOTSTRAP APPLY (operator's word on the exact command; Decision 126). The command below plans at MERGE_SHA
+      in a throwaway worktree and prints the counts; PRESENT them. Then, as its own call and only after the
+      operator's word, apply the SAME saved plan: AWS_PROFILE=agent_platform_admin terraform
+      -chdir="${TMPDIR:-/tmp}/oidc-bootstrap-apply/terraform/bootstrap" apply
+      "${TMPDIR:-/tmp}/oidc-bootstrap-apply/apply.tfplan" && echo "BOOTSTRAP_APPLY_TS=$(date -u
+      +%Y-%m-%dT%H:%M:%S+00:00)" >> "$HOME/.oidc-prestage/state.env" -- then remove the worktree and run step 21
+      with ROLES=apply.
     command: >-
-      W="${TMPDIR:-/tmp}/oidc-bootstrap-apply" && git fetch origin main && git worktree add --detach "$W" "$MERGE_SHA"
-      && cp terraform/bootstrap/terraform.bootstrap.tfvars "$W/terraform/bootstrap/" && terraform
-      -chdir="$W/terraform/bootstrap" init -input=false >/dev/null && AWS_PROFILE=agent_platform_admin terraform
-      -chdir="$W/terraform/bootstrap" plan -input=false -var-file=terraform.bootstrap.tfvars -out="$W/apply.tfplan"
-      -no-color | grep -E '^Plan:|^  # '
-      # PRESENT; on the operator's word: AWS_PROFILE=agent_platform_admin terraform -chdir="$W/terraform/bootstrap"
-      apply "$W/apply.tfplan" && export BOOTSTRAP_APPLY_TS=$(date -u +%Y-%m-%dT%H:%M:%S+00:00) && git worktree remove
-      --force "$W"
+      set -a && . "$HOME/.oidc-prestage/state.env" && set +a && W="${TMPDIR:-/tmp}/oidc-bootstrap-apply" && git fetch
+      origin main && git worktree add --detach "$W" "$MERGE_SHA" && cp terraform/bootstrap/terraform.bootstrap.tfvars
+      "$W/terraform/bootstrap/" && terraform -chdir="$W/terraform/bootstrap" init -input=false >/dev/null &&
+      AWS_PROFILE=agent_platform_admin terraform -chdir="$W/terraform/bootstrap" plan -input=false
+      -var-file=terraform.bootstrap.tfvars -out="$W/apply.tfplan" -no-color | grep -E '^Plan:|^  # '
     expected: >-
       "aws_iam_role.github_ci_apply will be updated in-place" and "Plan: 0 to add, 1 to change, 0 to destroy";
-      after apply, ROLES=apply proves both forms for both segments.
+      after the apply, step 21 with ROLES=apply prints BOTH-SEGMENTS.
     fix_if: >-
       Any destroy, replace or second address: STOP, do not apply. A failed apply leaves the current segment in
-      place (additive), so CI is unaffected; RCA, never a silent retry.
+      place (additive), so CI keeps working; RCA, never a silent retry (a failed cutover step halts this
+      workstream).
   - step: 17
     phase: post-deploy
     action: >-
-      SPLIT-APPLY (operator's word on the exact command; Decision 183 point 4, deploy-paths SPLIT-APPLY). In the
-      ADMIN container with the mirror, plan terraform/personal at MERGE_SHA with -target on planner and deploy,
-      present, and on the word apply the saved plan. Export SPLIT_APPLY_TS. Then the live trust proof with
-      ROLES="planner deploy".
+      SPLIT-APPLY (operator's word on the exact command; Decision 183 point 4, deploy-paths SPLIT-APPLY). The
+      command below plans terraform/personal at MERGE_SHA in the ADMIN container with the mirror, targeted on
+      planner and deploy, and prints the counts; PRESENT them. Then, as its own call and only after the
+      operator's word, apply the SAME saved plan: set -a && . "$HOME/.oidc-prestage/state.env" && set +a &&
+      AWS_PROFILE=agent_platform_admin AWS_DEFAULT_REGION=eu-west-2 terraform
+      -chdir="${TMPDIR:-/tmp}/oidc-split-apply/terraform/personal" apply "${TMPDIR:-/tmp}/oidc-split-apply/split.tfplan"
+      && echo "SPLIT_APPLY_TS=$(date -u +%Y-%m-%dT%H:%M:%S+00:00)" >> "$HOME/.oidc-prestage/state.env" -- then
+      remove the worktree and run step 21 with ROLES="planner deploy".
     command: >-
-      W="${TMPDIR:-/tmp}/oidc-split-apply" && test -n "$TF_CLI_CONFIG_FILE" && git worktree add --detach "$W"
-      "$MERGE_SHA" && cp terraform/personal/terraform.personal.tfvars "$W/terraform/personal/" && export
-      AWS_PROFILE=agent_platform_admin AWS_DEFAULT_REGION=eu-west-2 && terraform -chdir="$W/terraform/personal" init
-      -input=false -backend-config=backend-sandbox.hcl >/dev/null && terraform -chdir="$W/terraform/personal" plan
-      -input=false -var-file=terraform.personal.tfvars -target=aws_iam_role.github_ci_planner
-      -target=aws_iam_role.github_ci_deploy -out="$W/split.tfplan" -no-color | grep -E '^Plan:|^  # '
-      # PRESENT; on the operator's word: terraform -chdir="$W/terraform/personal" apply "$W/split.tfplan" && export
-      SPLIT_APPLY_TS=$(date -u +%Y-%m-%dT%H:%M:%S+00:00) && git worktree remove --force "$W"
+      set -a && . "$HOME/.oidc-prestage/state.env" && set +a && W="${TMPDIR:-/tmp}/oidc-split-apply" && test -n
+      "$TF_CLI_CONFIG_FILE" && git worktree add --detach "$W" "$MERGE_SHA" && cp
+      terraform/personal/terraform.personal.tfvars "$W/terraform/personal/" && export AWS_PROFILE=agent_platform_admin
+      AWS_DEFAULT_REGION=eu-west-2 && terraform -chdir="$W/terraform/personal" init -input=false
+      -backend-config=backend-sandbox.hcl >/dev/null && terraform -chdir="$W/terraform/personal" plan -input=false
+      -var-file=terraform.personal.tfvars -target=aws_iam_role.github_ci_planner -target=aws_iam_role.github_ci_deploy
+      -out="$W/split.tfplan" -no-color | grep -E '^Plan:|^  # '
     expected: >-
       Exactly github_ci_deploy and github_ci_planner "updated in-place", "Plan: 0 to add, 2 to change, 0 to
-      destroy"; after apply, ROLES="planner deploy" proves both segments on every statement.
+      destroy"; after the apply, step 21 with ROLES="planner deploy" prints BOTH-SEGMENTS.
     fix_if: >-
       Any other address in the targeted plan: STOP. A lock error means a pipeline run holds the state: wait,
       never force-unlock without the operator.
@@ -546,63 +575,74 @@ verification_plan:
     command: >-
       echo "MCP: actions_get(get_workflow_run, PUSH_RUN_ID) -> status completed, conclusion cancelled;
       actions_list(list_workflow_runs, terraform-apply-sandbox.yml, status=waiting) -> none."
-    expected: The push run is cancelled and the concurrency group is free.
+    expected: The push run is cancelled and the concurrency group is free. The MCP results are the evidence.
     fix_if: >-
-      If it was approved by mistake, expect a failed apply and a red record: recover with the
-      acknowledge-and-retry dispatch naming the red commit after reviewing its rec (deploy-paths reconcile row).
+      If it was approved by mistake: its stale plan fails (and its planner/deploy trust write would AccessDeny,
+      firing platform-security-denied-iam-write, terraform/bootstrap/platform_security_alarms.tf:27); the record
+      goes red. Recover with the acknowledge-and-retry dispatch naming the red commit after reviewing its rec
+      (deploy-paths reconcile row) and tell the operator the alarm email is expected.
   - step: 19
     phase: post-deploy
     action: >-
       DISPATCH terraform-apply-sandbox.yml on main with NO input (operator's word). Its fresh plan at main HEAD
       must route exactly the branch and pr trust updates. Read the apply-sandbox job log and present the plan
       counts; the operator verifies the same counts in the run before approving (rec-2816 approval
-      legibility). Record DISPATCH_RUN_ID; after the gated-apply job succeeds, export GATED_APPLY_TS (its
-      completion time).
+      legibility). Append DISPATCH_RUN_ID to the state file; after the gated-apply job succeeds, append
+      GATED_APPLY_TS (its completion time).
     command: >-
       echo "MCP: actions_run_trigger(method='run_workflow', workflow_id='terraform-apply-sandbox.yml', ref='main') ->
       DISPATCH_RUN_ID; get_job_logs(apply-sandbox) must show github_ci_branch and github_ci_pr 'updated in-place'
       and 'Plan: 0 to add, 2 to change, 0 to destroy' and a routed guard; the operator approves gated-apply in
       GitHub; gated-apply concludes success."
-    expected: The gated-apply job applies exactly the two branch and pr updates and writes a green record.
+    expected: >-
+      The gated-apply job applies exactly the branch and pr updates and writes a green record. The MCP results
+      and job logs are the evidence.
     fix_if: >-
-      A guard PASS (applied without the gate) or any extra address: STOP and RCA. Any diff beyond branch and pr
-      means state moved since step 17; do not approve. FALLBACK, only if the dispatch route itself fails (the
-      run never reaches the gated job): an admin -target split-apply of branch and pr exactly as step 17, on
-      the operator's word, then a blank dispatch that plans zero changes and writes the green record.
+      A guard PASS (applied without the gate) or any extra address: STOP and RCA. A diff that still lists planner
+      or deploy means step 17 did not land: do not approve (their trust write would AccessDeny and fire
+      platform-security-denied-iam-write). FALLBACK, only if the dispatch route itself fails (the run never
+      reaches the gated job): an admin -target split-apply of branch and pr exactly as step 17, on the
+      operator's word, then a blank dispatch that plans zero changes and writes the green record.
   - step: 20
     phase: post-deploy
     action: >-
-      Convergence record green and written by THIS dispatch, and the apply role proven live in both forms after
-      its own trust change.
+      Convergence record green and written by THIS dispatch; the apply role proven live in both forms after its
+      own trust change. The GATE is job evidence: the dispatch run's apply-sandbox job (ref main form) and
+      gated-apply job (environment form) both succeeded after BOOTSTRAP_APPLY_TS, and neither assume step
+      tolerates failure (terraform-apply-sandbox.yml:142-146, 847-851). RoleLastUsed corroborates.
     command: >-
-      aws s3 cp s3://agent-platform-data-lake/convergence/personal/sandbox.json - --profile agent_platform_admin |
-      bin/venv-python -c "import json,sys,os,datetime as dt; d=json.load(sys.stdin);
-      assert d['status']=='green', d['status']; assert str(d['run_id'])==os.environ['DISPATCH_RUN_ID'], 'record not written by the dispatch';
+      set -a && . "$HOME/.oidc-prestage/state.env" && set +a && aws s3 cp
+      s3://agent-platform-data-lake/convergence/personal/sandbox.json - --profile agent_platform_admin |
+      bin/venv-python -c "import json,sys,os; d=json.load(sys.stdin); assert d['status']=='green', d['status'];
+      assert str(d['run_id'])==os.environ['DISPATCH_RUN_ID'], 'record not written by the dispatch';
       print('convergence-green-from-dispatch')" && aws iam get-role --role-name agent-platform-github-ci-apply
-      --profile agent_platform_admin --query 'Role.RoleLastUsed.LastUsedDate' --output text | bin/venv-python -c "import
-      sys,os,datetime as dt; raw=sys.stdin.read().strip(); assert raw not in ('','None'), raw;
+      --profile agent_platform_admin --query 'Role.RoleLastUsed.LastUsedDate' --output text | bin/venv-python -c
+      "import sys,os,datetime as dt; raw=sys.stdin.read().strip(); assert raw not in ('','None'), raw;
       assert dt.datetime.fromisoformat(raw)>dt.datetime.fromisoformat(os.environ['BOOTSTRAP_APPLY_TS']), raw;
       print('apply-role-live-after-bootstrap', raw)"
     expected: >-
-      Both markers. With the dispatch run's apply-sandbox job (ref main form) and gated-apply job (environment
-      form) both successful after BOOTSTRAP_APPLY_TS, this proves both Decision 94 forms live on the current
-      path. IAM last-used data lags: re-read after 15 minutes, up to three times.
+      Both markers, with both jobs of DISPATCH_RUN_ID green. IAM last-used data lags: re-read every 15 minutes
+      for up to 4 hours.
     fix_if: >-
-      A record not bound to DISPATCH_RUN_ID means another run wrote it; find which. A timestamp that never
-      advances while both jobs succeeded is a lag artefact only if the jobs' assume steps succeeded; read their
-      logs.
+      A record not bound to DISPATCH_RUN_ID means another run wrote it; find which. A timestamp that has not
+      advanced after the 4-hour window while both jobs succeeded is recorded as a reporting discrepancy, not a
+      failure; a failed assume step in either job is a regression: STOP and RCA.
   - step: 21
     phase: post-deploy
     action: >-
-      LIVE TRUST PROOF, all five roles (also run with ROLES=apply at step 16 and ROLES="planner deploy" at step
-      17). Every statement carries the current and the target segment with identical suffix sets, and the
-      suffix sets equal the expected per-role forms. Output names roles and suffixes only, never an id or ARN.
+      LIVE TRUST PROOF, all five roles (also run with ROLES=apply after step 16 and ROLES="planner deploy" after
+      step 17). Every statement carries the current and the target segment with identical suffix sets equal to
+      the expected per-role forms. The target segment is read from the merged list on origin/main (step 11
+      proved it equals the operator's read), so the org id never enters this command's text. Output names roles
+      and suffixes only, never an id or ARN.
     command: >-
-      ROLES="${ROLES:-apply branch pr planner deploy}"; rc=0; for r in $ROLES; do aws iam get-role --role-name
-      "agent-platform-github-ci-$r" --profile agent_platform_admin --query 'Role.AssumeRolePolicyDocument.Statement'
-      --output json | bin/venv-python -c "import json,os,sys; r=sys.argv[1];
+      git fetch -q origin main && T="$(git show origin/main:terraform/personal/oidc.tf | grep -o
+      'otl-labs@[0-9]*/ontheloop@1252427466')" && test -n "$T" && export T && ROLES="${ROLES:-apply branch pr
+      planner deploy}"; rc=0; for r in $ROLES; do aws iam get-role --role-name "agent-platform-github-ci-$r"
+      --profile agent_platform_admin --query 'Role.AssumeRolePolicyDocument.Statement' --output json |
+      bin/venv-python -c "import json,os,sys; r=sys.argv[1];
       E={'apply':[['environment:tf-gated-apply','ref:refs/heads/main']],'branch':[['ref:refs/heads/agent/*','ref:refs/heads/main']],'pr':[['pull_request','ref:refs/pull/*']],'planner':[['ref:refs/heads/main'],['pull_request','ref:refs/pull/*']],'deploy':[['ref:refs/heads/main']]};
-      cur='repo:benjamin-blake@217728084/theseus@1252427466:'; tgt='repo:otl-labs@'+os.environ['OTL_ORG_ID']+'/ontheloop@1252427466:';
+      cur='repo:benjamin-blake@217728084/theseus@1252427466:'; tgt='repo:'+os.environ['T']+':';
       subs=lambda st: [x for c in (st.get('Condition') or {}).values() for k,v in c.items() if k.endswith(':sub') for x in ([v] if isinstance(v,str) else v)];
       res=[(sorted(s[len(cur):] for s in subs(st) if s.startswith(cur)), sorted(s[len(tgt):] for s in subs(st) if s.startswith(tgt)), len(subs(st))) for st in json.load(sys.stdin)];
       ok=[c for c,t,n in res]==E[r] and all(c==t and n==2*len(c) for c,t,n in res);
@@ -616,89 +656,101 @@ verification_plan:
   - step: 22
     phase: post-deploy
     action: >-
-      PROBE PR for the PR-context identities (reversible; standing authority for drafts). Reset this session's
-      branch to main, commit one comment line in terraform/personal/oidc.tf with a non-feat subject
-      ("probe(oidc-owner-segment-prestage): ..."), open a DRAFT PR, and wait for terraform-apply-sandbox's
-      speculative-plan (planner, PR statement) and advisory-status jobs and ci.yml's terraform-validate job (both
-      assume github_ci_pr). Then close the PR unmerged. Every PR-context assume is continue-on-error, so the
-      job conclusion proves nothing: the evidence is the assume step's outcome in the job log plus the
-      speculative plan having persisted its plan.bin for the probe head (terraform-apply-sandbox.yml:620-658).
+      PROBE PR for the PR-context identities (reversible; standing authority for drafts). The build PR has
+      merged, so restart this session's branch from main (git fetch origin main && git checkout -B <branch>
+      origin/main), commit one comment line in terraform/personal/oidc.tf with a non-feat subject
+      ("probe(oidc-owner-segment-prestage): ..."), then follow the same handoff sequence as the build (full tier
+      on the committed clean tree, --verify-head; Decision 203's gate refuses any push without it) and push with
+      --force-with-lease as its own call. Open a DRAFT PR and wait for terraform-apply-sandbox's speculative-plan
+      (planner, PR statement) and advisory-status jobs and ci.yml's terraform-validate job (both assume
+      github_ci_pr). Then close the PR unmerged. Every PR-context assume is continue-on-error, so the GATE is
+      each assume step's outcome in its job log plus the speculative plan having persisted its plan.bin for the
+      probe head (terraform-apply-sandbox.yml:620-658); RoleLastUsed corroborates.
     command: >-
-      echo "MCP: get_job_logs for speculative-plan, advisory-status and terraform-validate -> none contains
-      OIDC_ASSUME_FAILED or a failed configure-aws-credentials step; speculative-plan reports no changes and a
-      persisted plan.bin." && aws iam get-role --role-name agent-platform-github-ci-pr --profile agent_platform_admin --query
-      'Role.RoleLastUsed.LastUsedDate' --output text | bin/venv-python -c "import sys,os,datetime as dt;
-      raw=sys.stdin.read().strip(); assert raw not in ('','None'), raw;
-      assert dt.datetime.fromisoformat(raw)>dt.datetime.fromisoformat(os.environ['GATED_APPLY_TS']), raw;
-      print('pr-role-live-after-change', raw)"
+      set -a && . "$HOME/.oidc-prestage/state.env" && set +a && echo "MCP: get_job_logs for speculative-plan,
+      advisory-status and terraform-validate -> no OIDC_ASSUME_FAILED and no failed configure-aws-credentials
+      step; speculative-plan reports no changes and a persisted plan.bin." && aws iam get-role --role-name
+      agent-platform-github-ci-pr --profile agent_platform_admin --query 'Role.RoleLastUsed.LastUsedDate' --output
+      text | bin/venv-python -c "import sys,os,datetime as dt; raw=sys.stdin.read().strip(); assert raw not in
+      ('','None'), raw; assert dt.datetime.fromisoformat(raw)>dt.datetime.fromisoformat(os.environ['GATED_APPLY_TS']),
+      raw; print('pr-role-live-after-change', raw)"
     expected: >-
-      All three jobs assumed their roles (no failure marker in the logs) and pr-role-live-after-change prints.
-      During the freeze the probe is the only open PR, so the advance is attributable to it.
+      All three jobs assumed their roles (job logs) and pr-role-live-after-change prints within the 4-hour
+      re-read window. During the freeze the probe is the only open PR, so the advance is attributable to it.
     fix_if: >-
       An OIDC_ASSUME_FAILED marker is a live trust regression on the current path: STOP, restore the previous
       trust through the same channel, RCA. Never merge the probe PR.
   - step: 23
     phase: post-deploy
     action: >-
-      PLANNER main statement and role liveness. terraform-drift.yml fails loudly on a failed assume
-      (OIDC_ASSUME_FAILED is an error there), so a successful scheduled run that started after SPLIT_APPLY_TS
-      proves the main statement.
+      PLANNER main statement. terraform-drift.yml fails loudly on a failed assume (OIDC_ASSUME_FAILED is an error
+      there), so the GATE is a successful scheduled run created after SPLIT_APPLY_TS; RoleLastUsed corroborates.
     command: >-
-      echo "MCP: actions_list(list_workflow_runs, terraform-drift.yml) -> a run with created_at > SPLIT_APPLY_TS and
-      conclusion success; record its id." && aws iam get-role --role-name agent-platform-github-ci-planner --profile
-      agent_platform_admin --query 'Role.RoleLastUsed.LastUsedDate' --output text | bin/venv-python -c "import
-      sys,os,datetime as dt; raw=sys.stdin.read().strip(); assert raw not in ('','None'), raw;
+      set -a && . "$HOME/.oidc-prestage/state.env" && set +a && echo "MCP: actions_list(list_workflow_runs,
+      terraform-drift.yml) -> a run with created_at > SPLIT_APPLY_TS and conclusion success; record its id." && aws
+      iam get-role --role-name agent-platform-github-ci-planner --profile agent_platform_admin --query
+      'Role.RoleLastUsed.LastUsedDate' --output text | bin/venv-python -c "import sys,os,datetime as dt;
+      raw=sys.stdin.read().strip(); assert raw not in ('','None'), raw;
       assert dt.datetime.fromisoformat(raw)>dt.datetime.fromisoformat(os.environ['SPLIT_APPLY_TS']), raw;
       print('planner-live-after-change', raw)"
-    expected: A successful drift run after the split-apply and planner-live-after-change.
+    expected: A successful drift run after the split-apply, and planner-live-after-change within the re-read window.
     fix_if: >-
-      A red drift run with OIDC_ASSUME_FAILED after the split-apply is a regression: STOP and RCA.
+      A red drift run with OIDC_ASSUME_FAILED after the split-apply is a regression: STOP and RCA. A lagging
+      timestamp alongside a green drift run is a reporting discrepancy; record it.
   - step: 24
     phase: post-deploy
     action: >-
-      DEPLOY role liveness: dispatch deploy-prod-lambdas.yml on main (operator's word; governed code-deploy
-      channel, byte-identical code, both functions schedule-disabled). Its smoke job asserts deploy-record
-      freshness (source_git_sha == github.sha). Export DEPLOY_SHA.
+      DEPLOY role (and branch role) liveness: after GATED_APPLY_TS, dispatch deploy-prod-lambdas.yml on main
+      (operator's word; governed code-deploy channel, byte-identical code, both functions schedule-disabled).
+      Append DEPLOY_SHA (the run's head sha) to the state file. Its deploy job assumes github_ci_deploy and its
+      smoke job assumes github_ci_branch (deploy-prod-lambdas.yml:176-182) with no tolerance, and the smoke job
+      asserts deploy-record freshness. The GATE is the run's two green jobs plus the deploy record; RoleLastUsed
+      corroborates.
     command: >-
-      echo "MCP: actions_run_trigger(run_workflow, deploy-prod-lambdas.yml, ref=main) -> deploy and smoke success."
-      && aws s3 cp s3://agent-platform-data-lake/deploy-records/prod/agent-platform-findings-processor.json -
-      --region eu-west-2 --profile agent_platform_admin | bin/venv-python -c "import json,sys,os; d=json.load(sys.stdin);
+      set -a && . "$HOME/.oidc-prestage/state.env" && set +a && echo "MCP: actions_run_trigger(run_workflow,
+      deploy-prod-lambdas.yml, ref=main) -> deploy and smoke success; record the run id." && aws s3 cp
+      s3://agent-platform-data-lake/deploy-records/prod/agent-platform-findings-processor.json - --region eu-west-2
+      --profile agent_platform_admin | bin/venv-python -c "import json,sys,os; d=json.load(sys.stdin);
       assert d['source_git_sha']==os.environ['DEPLOY_SHA'], 'stale deploy record'; print('deploy-record-fresh')" &&
       aws iam get-role --role-name agent-platform-github-ci-deploy --profile agent_platform_admin --query
       'Role.RoleLastUsed.LastUsedDate' --output text | bin/venv-python -c "import sys,os,datetime as dt;
       raw=sys.stdin.read().strip(); assert raw not in ('','None'), raw;
       assert dt.datetime.fromisoformat(raw)>dt.datetime.fromisoformat(os.environ['SPLIT_APPLY_TS']), raw;
       print('deploy-live-after-change', raw)"
-    expected: >-
-      deploy-record-fresh and deploy-live-after-change. The deploy record is the gate; RoleLastUsed corroborates
-      with lag.
+    expected: deploy-record-fresh and deploy-live-after-change (within the re-read window), with both jobs green.
     fix_if: >-
       A stale record means the deploy no-opped: read the "Classify assume-role outcome" step; a failed assume is
       a regression, STOP.
   - step: 25
     phase: post-deploy
-    action: BRANCH role liveness from its scheduled exercisers (main-canary, convergence-health and others).
+    action: >-
+      BRANCH role liveness. The GATE is step 24's smoke job (github_ci_branch, no tolerance) having run after
+      GATED_APPLY_TS, or any scheduled workflow assuming it after then; RoleLastUsed corroborates.
     command: >-
-      aws iam get-role --role-name agent-platform-github-ci-branch --profile agent_platform_admin --query
-      'Role.RoleLastUsed.LastUsedDate' --output text | bin/venv-python -c "import sys,os,datetime as dt;
-      raw=sys.stdin.read().strip(); assert raw not in ('','None'), raw;
-      assert dt.datetime.fromisoformat(raw)>dt.datetime.fromisoformat(os.environ['GATED_APPLY_TS']), raw;
-      print('branch-live-after-change', raw)"
-    expected: branch-live-after-change; record the exerciser run id. Re-run hourly up to three times.
+      set -a && . "$HOME/.oidc-prestage/state.env" && set +a && aws iam get-role --role-name
+      agent-platform-github-ci-branch --profile agent_platform_admin --query 'Role.RoleLastUsed.LastUsedDate'
+      --output text | bin/venv-python -c "import sys,os,datetime as dt; raw=sys.stdin.read().strip(); assert raw
+      not in ('','None'), raw; assert dt.datetime.fromisoformat(raw)>dt.datetime.fromisoformat(os.environ['GATED_APPLY_TS']),
+      raw; print('branch-live-after-change', raw)"
+    expected: branch-live-after-change; record the exerciser run id (step 24's run).
     fix_if: >-
-      No advance after a named exerciser demonstrably ran: read its assume step; a failure is a regression.
+      No advance after the 4-hour window while the exerciser's assume step succeeded: record a reporting
+      discrepancy. A failed assume step is a regression: STOP and RCA.
   - step: 26
     phase: post-deploy
     action: >-
       Window hygiene. After the first drift tick following GATED_APPLY_TS, the record has no pending_codification
       or pending_gated marker and stays green. Close every open tf_drift rec titled "Terraform drift check found a
-      pending-" created after the merge, through ops_data_portal update_rec, citing DISPATCH_RUN_ID.
+      pending-" created after the merge, through ops_data_portal update_rec, citing DISPATCH_RUN_ID; confirm any
+      tf_convergence_stale "stale unapplied backlog" rec convergence-health filed in the window closed itself
+      once the backlog drained (scripts/convergence_health/assess.py), or close it the same way.
     command: >-
       aws s3 cp s3://agent-platform-data-lake/convergence/personal/sandbox.json - --profile agent_platform_admin |
       bin/venv-python -c "import json,sys; d=json.load(sys.stdin); bad=[k for k in ('pending_codification','pending_gated','infra_error') if k in d];
       assert d['status']=='green' and not bad, (d['status'],bad); print('record-clean-after-window')" && echo "ducklake-reads
-      recs_by_title_prefix('Terraform drift check found a pending-') -> every row created after the merge is closed."
-    expected: record-clean-after-window, and no open window-era tf_drift rec.
+      recs_by_title_prefix('Terraform drift check found a pending-') and the convergence-health stale-backlog rec
+      -> every row created after the merge is closed."
+    expected: record-clean-after-window, and no open window-era tf_drift or stale-backlog rec.
     fix_if: >-
       A surviving marker means the drift plan still sees a delta: run step 21 again and compare with main.
   - step: 27
@@ -706,8 +758,9 @@ verification_plan:
     action: >-
       Close rec-3902 with the evidence (role, timestamp and run id per role; the evidence file path), then verify
       rec-3902, rec-3167 and rec-3128 are closed. Write /mnt/project-files/oidc-prestage/EVIDENCE.md and post the
-      same counts-only summary as a comment on the merged PR naming MERGE_SHA. The contract's evidence_ledger
-      entry for this gate is written by the plan that flips identity.phase, citing that file.
+      same counts-only summary as a comment on the merged PR naming MERGE_SHA. Delete the state file. The
+      contract's evidence_ledger entry for this gate is written by the plan that flips identity.phase, citing
+      that file.
     command: >-
       bin/venv-python -m scripts.ops_data_portal --update-rec rec-3902 --status closed --resolution "Pre-staged
       the otl-labs owner segment in both roots; bootstrap apply, admin split-apply (planner, deploy) and gated
@@ -716,12 +769,50 @@ verification_plan:
       src.common.ducklake_reader_client import fetch_recs_by_ids, make_reader; rows, missing =
       fetch_recs_by_ids(make_reader(profile='agent_platform_admin'), ['rec-3902','rec-3167','rec-3128']);
       assert not missing, missing; bad=[r['id'] for r in rows if r['status']!='closed']; assert not bad, bad;
-      print('recs-closed')"
-    expected: recs-closed.
+      print('recs-closed')" && rm -f "$HOME/.oidc-prestage/state.env"
+    expected: recs-closed, and the state file removed.
     fix_if: >-
       A portal write that cannot complete fails loudly (Decision 84 I-4): restore connectivity and re-run; never
       hand-edit a log. If rec-3167 or rec-3128 stayed open, the Resolves trailer was dropped from the squash
       body: close them with the same --update-rec form.
+  - step: 28
+    phase: pre-deploy
+    hermetic: false
+    action: >-
+      VERBATIM CHECK of the operator-approved texts (acceptance criterion 5): every approved "After" block (and
+      the amendment_log and staged_phase blocks) of draft/contract-amendment.md appears verbatim in the contract
+      once the date placeholder takes the entry's real date, and the Decision 172 stanza and Update paragraph of
+      draft/DECISION-172-rearm.md appear in DECISIONS.md (the Update paragraph compared whitespace-normalised,
+      since it is re-wrapped to the entry's style). The drafts live in the shared folder, so this runs in the
+      build session, not in CI.
+    command: |-
+      bin/venv-python - <<'PY'
+      import re, pathlib, yaml
+      D = pathlib.Path('/mnt/project-files/oidc-prestage/draft')
+      c = pathlib.Path('docs/contracts/github-org-transfer.yaml').read_text()
+      date = yaml.safe_load(c)['amendment_log'][-1]['date']
+      for sec in pathlib.Path(D / 'contract-amendment.md').read_text().split('\n## Edit ')[1:]:
+          part = sec.split('After:', 1)[1] if 'After:' in sec else sec
+          blk = re.search(r'```yaml\n(.*?)```', part, re.S).group(1).replace('2026-10-DD', date)
+          assert blk in c, 'contract edit not verbatim: Edit ' + sec.split(':', 1)[0]
+      d = pathlib.Path('docs/DECISIONS.md').read_text()
+      e = d[d.index('## Decision 172:'):]
+      e = e[:e.index('\n---\n')]
+      r = pathlib.Path(D / 'DECISION-172-rearm.md').read_text()
+      after = re.findall(r'```yaml reversal-conditions\n.*?```', r, re.S)[1]
+      assert after in e, 'stanza not verbatim'
+      upd = ' '.join(l[2:] for l in r.split('## Edit 2')[1].splitlines() if l.startswith('> '))
+      norm = lambda s: re.sub(r'\s+', ' ', s).strip()
+      got = norm(' '.join(l[2:] for l in e.splitlines() if l.startswith('> ')))
+      want = re.escape(norm(upd)).replace(re.escape('2026-10-DD'), r'2026-\d\d-\d\d')
+      assert re.search(want, got), 'Update paragraph not verbatim'
+      print('approved-texts-verbatim')
+      PY
+    expected: approved-texts-verbatim.
+    fix_if: >-
+      Re-copy the named block from the draft. Never edit the draft to match the build: a wording change goes to
+      the operator first.
+    graduation: not-applicable
 test_obligations:
   - source: terraform/personal/oidc.tf
     behavior: The personal root stages exactly one otl-labs/ontheloop entry with the durable repository id.
@@ -765,6 +856,13 @@ test_obligations:
     red_green_expectation: >-
       Red before (review_by 2026-11-15 and the discharged condition), green after. The evidence is step 6's own
       command, named by a substring of it.
+  - source: config/agent/verification_registry/entries/github-org-transfer-contract.yaml
+    behavior: The existing contract row's standing check stays true after the evaluator change.
+    verification_step: 5
+    command: github-org-transfer-contract.yaml
+    red_green_expectation: >-
+      Red before the row's repoint once Edit 1 lands (its agent_surface grep fails when step 5 runs the row's
+      command), green after.
   - source: config/agent/verification_registry/entries/oidc-trust-target-owner-segment-staged.yaml
     behavior: Step 2's guard runs as a standing regression check.
     verification_step: 9
@@ -776,6 +874,14 @@ test_obligations:
     command: bin/venv-python -m scripts.validate
     red_green_expectation: Red before the row (validate_graduation_completeness), green after.
 constraints:
+  - >-
+    CARRIER: shell state does not persist between tool calls (AGENTS.md), so every value a later step reads
+    (OTL_ORG_ID, PR_HEAD_SHA, MERGE_SHA, PUSH_RUN_ID, BOOTSTRAP_APPLY_TS, SPLIT_APPLY_TS, DISPATCH_RUN_ID,
+    GATED_APPLY_TS, DEPLOY_SHA, TF_CLI_CONFIG_FILE) lives in the session-local file
+    "$HOME/.oidc-prestage/state.env" (mode 600, outside the repository and the shared folder, deleted at step
+    27); each step's command sources it first, and each producing step appends KEY=value. The org id may sit in
+    that file and in this session's own command text and transcript, which already carry the operator's message;
+    post-merge steps read the target segment from the merged list instead.
   - >-
     Every live mutation is its own step on the operator's typed word, in the build thread, on the exact command
     shown: the bootstrap apply, the split-apply, the cancel, the dispatch and its approval, the deploy dispatch
@@ -817,7 +923,7 @@ context:
     Decision 218, Decision 172, Decision 177, Decision 94, Decision 143, Decision 183, Decision 126, Decision 77,
     Decision 92, Decision 190, Decision 168, Decision 170, Decision 101. RELATED -- 171, 195, 198, 180, 144, 120,
     202, 201, 125, 79, 132, 176, 189, 169, 150, 167, 163, 48, 98.
-  - "gates: decision-scout=FLAGS_FOUND (NOTE adopted, no pivot); plan-critique=PENDING"
+  - "gates: decision-scout=FLAGS_FOUND (NOTE adopted, no pivot); plan-critique=PENDING (round 1 REVISE, 4 required fixes applied)"
   - >-
     V3 resolution: the counts-only pre-merge gate evidence posted for the current $PR_HEAD_SHA (steps 10-14)
     substitutes for the pre-merge post-deploy evidence the implement V3 Merge Gate and the code-review V3 check
@@ -831,9 +937,8 @@ context:
     2A (check now, staged_phase), bundling rec-3167 and rec-3128, and both texts. Variance: dates, PR numbers.
     Forks and evidence: step6b-presentation.md, ADVICE.md, CROSS-THREAD-DEPENDENCIES.md beside them.
   - >-
-    SPLIT-APPLY STANDING: Decision 219 clause 4 (approved text in PLAN-platform-iam-personal-release, lands
-    with that build) keeps the split for "trust on agent-platform-* roles other than branch and pr" -- this
-    plan's case. deploy-paths.yaml's SPLIT-APPLY step says reject the waiting run; this plan cancels it
+    SPLIT-APPLY STANDING: Decision 183 point 4 and deploy-paths SPLIT-APPLY authorise it; Decision 219 clause 4
+    (approved in PLAN-platform-iam-personal-release, not yet on main) names this exact case. deploy-paths.yaml's SPLIT-APPLY step says reject the waiting run; this plan cancels it
     instead (ci-rca.yml:59 files a rec on a failed main run); rec-2794 owns correcting that text.
   - >-
     FREEZE (operator, 2026-10-15): all other repository work stops before this apply and stays stopped until
@@ -858,32 +963,45 @@ pre_implementation_checklist:
   - Acceptance criteria understood and verifiable
 execution_steps:
   - >-
-    Ask the operator, in the build thread, for the otl-labs numeric id (read at https://api.github.com/orgs/otl-labs)
-    and export OTL_ORG_ID from their message; record the message id. Do not echo the id anywhere.
+    Create the session-local state file (constraints): mkdir -p "$HOME/.oidc-prestage" && umask 077 && touch
+    "$HOME/.oidc-prestage/state.env". Ask the operator, in the build thread, for the otl-labs numeric id (read at
+    https://api.github.com/orgs/otl-labs) and write OTL_ORG_ID=<id> into the state file; record the message id.
+    Record TF_CLI_CONFIG_FILE there once the provider mirror is synced. Never echo the id in a reply.
   - >-
     tests/checks/iam_tf/test_oidc_trust_slug_invariants.py -- add TestTargetOwnerSegment and the position-free
     current-entry lookup; confirm step 2 fails before the .tf edits.
   - >-
     tests/checks/contracts/test_validate_github_org_transfer.py, then
-    scripts/checks/contracts/validate_github_org_transfer.py, the _manifest.py Entry and the ci_rca_taxonomy row;
-    confirm step 3 fails before the module exists.
+    scripts/checks/contracts/validate_github_org_transfer.py, the _manifest.py Entry (pre_globs with the import
+    closure), the test__manifest.py _CLOSURE_INPUTS row and the ci_rca_taxonomy row; confirm step 3 fails before
+    the module exists.
   - >-
     terraform/personal/oidc.tf and terraform/bootstrap/github_ci_apply.tf in ONE commit: append the target entry,
-    re-ground the comments (keep "CONTRACTED STEADY STATE" as history; drop rec-3167's overclaim), and set the
-    github_ci_apply description to name both Decision 94 forms, e.g. "GitHub Actions sandbox apply (Decisions 77,
-    94): refs/heads/main and environment:tf-gated-apply via OIDC" (rec-3128's acceptance greps for
-    description.*environment:tf-gated-apply).
+    re-ground the comments (keep "CONTRACTED STEADY STATE" as history; drop rec-3167's overclaim; never name the
+    retired github_ci_plan or github_ci_drift roles, which registry row no-retired-ci-role-overview-comments
+    forbids), and set the github_ci_apply description to name both Decision 94 forms, e.g. "GitHub Actions
+    sandbox apply (Decisions 77, 94): refs/heads/main and environment:tf-gated-apply via OIDC" (rec-3128's
+    acceptance greps for description.*environment:tf-gated-apply).
   - >-
     docs/contracts/github-org-transfer.yaml and docs/DECISIONS.md: paste the approved drafts verbatim; set the
-    dates; append the Update line at the END of Decision 172's span, before its "---".
-  - The two verification-registry entry files for steps 2 and 3, following the existing row shape.
+    dates; append the Update line at the END of Decision 172's span, before its "---". Update the
+    github-org-transfer-contract registry row's grep from the agent_surface line to the check line.
+  - The two new verification-registry entry files for steps 2 and 3, following the existing row shape.
   - >-
-    Rebase onto origin/main, run steps 1-9 until green, commit (feat(oidc-owner-segment-prestage): ...), push,
-    open the PR (body states the operator hand-off: steps 11-27; never the org id), subscribe to it, request the
-    operator's code-owner review.
+    CLOSURE, each outcome reported separately (implement skill Commit Flows; docs/contracts/git-ops.yaml
+    handoff_sequence): bin/venv-python -m scripts.session.github_readiness; set implementation_declared: true in
+    this plan; run steps 1-8 and 28; commit (feat(oidc-owner-segment-prestage): ...); git fetch origin main &&
+    git rebase origin/main; step 9 (full tier on the committed clean tree, then --verify-head); write
+    /tmp/implementation-retrospective.json with the ten scripts.session.postflight_evidence.CATEGORIES keys and
+    run bin/venv-python -m scripts.session.postflight --evidence /tmp/implementation-retrospective.json; push
+    (git push -u origin HEAD as its own call; --force-with-lease after a rewriting rebase); open the PR (body
+    states the operator hand-off, steps 11-27, never the org id; no rec-3902 trailer); subscribe to it; request
+    the operator's code-owner review; dispatch code review in a fresh context with the context "V3 resolution:"
+    line quoted, and fix every blocking finding.
   - >-
-    Run steps 10-13 against the CI-green head and post counts-only evidence. Then wait for the operator's freeze
-    declaration and run step 14. Merge only on the operator's "merge".
+    Run steps 10-13 against the CI-green head (record PR_HEAD_SHA in the state file) and post counts-only
+    evidence. Then wait for the operator's freeze declaration and run step 14. Merge only on the operator's
+    "merge" with code review PROCEED and CI green.
   - >-
     Post-merge, steps 15-21 in order inside the drift window, each mutation on its own word; then 22-27.
     On any unrecoverable V3 failure, stop and RCA (Decision 55); a failed cutover step halts this workstream.
@@ -895,5 +1013,7 @@ rollback: >-
   and CI keeps working on the current path; RCA, then resume from the failed step. Full rollback (only if the
   target entry itself is wrong and must go): a PR reverting both lists in one commit, then the same channels in
   the same order -- bootstrap apply, split-apply of planner and deploy, cancel the push run's waiting gate,
-  dispatch and approve branch and pr. The same revert PR removes identity.staged_phase, so
-  validate_github_org_transfer then expects [current] alone and stays green. A wrong org id is corrected the same way with the right id, not reverted.
+  dispatch and approve branch and pr. The same revert PR removes identity.staged_phase (so
+  validate_github_org_transfer then expects [current] alone), TestTargetOwnerSegment and the
+  oidc-trust-target-owner-segment-staged registry row, or the revert itself goes red. A wrong org id is corrected
+  the same way with the right id, not reverted.
