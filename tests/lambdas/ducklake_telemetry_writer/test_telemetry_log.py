@@ -13,7 +13,14 @@ from src.common.ducklake_telemetry_registration import CallerPrincipal
 from src.lambdas.ducklake_telemetry_writer import telemetry_log as log
 
 _ROOT = Path(__file__).resolve().parents[3]
-_DATA_VERBS = ("append_telemetry", "register_tenant", "register_project", "provision_telemetry", "telemetry_probe")
+_DATA_VERBS = (
+    "append_telemetry",
+    "begin_blobs",
+    "register_tenant",
+    "register_project",
+    "provision_telemetry",
+    "telemetry_probe",
+)
 _PRINCIPAL = CallerPrincipal(kind="aws_account", ref="acct", role_name="PlatformDev")
 
 
@@ -112,7 +119,7 @@ def test_line_never_carries_account_id_or_arn(capsys: pytest.CaptureFixture[str]
             stats=log.RequestStats(tenant_id="T" * 26, project_id="P" * 26),
         )
     out = capsys.readouterr().out
-    assert account not in out and arn not in out and "arn:" not in out and out.count("\n") == 7
+    assert account not in out and arn not in out and "arn:" not in out and out.count("\n") == 8
     for text in out.splitlines():
         parsed = json.loads(text)
         scrubbed = {k: v for k, v in parsed.items() if k != "_aws"}
@@ -148,3 +155,40 @@ def test_masked_commit_retries_is_a_line_field_never_an_emf_member() -> None:
         )["masked_commit_retries"]
         == 0
     )
+
+
+def test_begin_blobs_line_counts_with_emf() -> None:
+    counts = dict(zip(log.BLOB_COUNT_FIELDS, range(1, 10), strict=True))
+    stats = log.RequestStats(tenant_id="T" * 26, project_id="P" * 26, blob_counts=counts)
+    stats.sink("OccRetryCount", 1.0)
+    stats.sink("CommitLatencyMs", 9.0)
+    line = log.build_request_line(
+        "begin_blobs", 200, None, payload={}, principal=None, request_bytes=1, invoke_bytes=1, stats=stats
+    )
+    assert {name: line[name] for name in log.BLOB_COUNT_FIELDS} == counts
+    assert line["_aws"]["CloudWatchMetrics"] == [
+        {
+            "Namespace": "DuckLakeTelemetryWriter",
+            "Dimensions": [["Verb"]],
+            "Metrics": [{"Name": "RequestCount", "Unit": "Count"}],
+        }
+    ]
+    assert (line["Verb"], line["RequestCount"]) == ("begin_blobs", 1) and "OccRetryCount" not in line
+    append = line_for("append_telemetry")
+    assert (append["blob_rows"], append["blob_head_ms"]) == (None, None) and "granted" not in append
+    assert "granted" not in line_for("register_tenant")
+
+
+def test_lines_never_carry_a_presigned_url() -> None:
+    from tests.fixtures.telemetry_blob_fakes import presigned_url
+
+    url = presigned_url("tenant/project/session/digest")
+    payload = {"component": "hook-stop", "items": [{"upload": {"url": url}}]}
+    stats = log.RequestStats(blob_counts={"items": 1, "granted": 1})
+    text = json.dumps(
+        log.build_request_line(
+            "begin_blobs", 200, None, payload=payload, principal=None, request_bytes=1, invoke_bytes=1, stats=stats
+        )
+    )
+    for banned in ("X-Amz-Signature", "X-Amz-Security-Token", "X-Amz-Credential", "ASIA", "https://", "digest"):
+        assert banned not in text, banned

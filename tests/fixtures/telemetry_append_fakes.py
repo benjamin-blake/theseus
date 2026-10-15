@@ -13,14 +13,17 @@ from unittest.mock import MagicMock
 
 from src.common import ducklake_runtime as rt
 from src.common import ducklake_telemetry_append as adapter
+from src.common import ducklake_telemetry_blobs as blobs_core
 from src.common import ducklake_telemetry_registration as reg
-from src.common.ducklake_telemetry_txn import TxnOutcome
+from src.common.ducklake_telemetry_txn import TelemetryRequestError, TxnOutcome
 from src.lambdas.ducklake_telemetry_writer import handler as h
 from src.lambdas.ducklake_telemetry_writer import telemetry_edge as edge
 from src.telemetry.append import AppendResult
 from src.telemetry.gate import GrainConflictError
 from src.telemetry.identity import derive_entity_key
 from src.telemetry.request import AppendRequest, TableShape, parse_append_request
+from src.telemetry_client import blob_delivery as bd
+from tests.fixtures.telemetry_blob_fakes import MemoryBlobStore
 from tests.fixtures.turn_capture_ducklake import load_specs
 
 TENANT = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
@@ -99,6 +102,7 @@ class AdapterKit:
         monkeypatch.setattr(reg, "lookup_project", self._lookup)
         monkeypatch.setattr(reg, "resolve_or_register_project", self._resolve)
         monkeypatch.setattr(adapter, "run_telemetry_txn", self._txn)
+        monkeypatch.setattr(blobs_core, "run_telemetry_txn", self._txn)
         monkeypatch.setattr(adapter, "execute_prepared", self._execute)
         return self
 
@@ -143,6 +147,7 @@ class LiveFake(AdapterKit):
         self.files: dict[str, int] = {}
         self.lock = threading.Lock()
         self.data_path_is_smoke = True
+        self.store = MemoryBlobStore()
 
     def activate(self, monkeypatch: Any) -> LiveFake:
         self.install(monkeypatch)
@@ -154,9 +159,23 @@ class LiveFake(AdapterKit):
         )
         monkeypatch.setattr(reg, "lookup_tenant", lambda con, kind, ref, semantics=None: TENANT)
         monkeypatch.setitem(h.actions.VERBS, "telemetry_probe", self._probe)
+        monkeypatch.setattr(h, "_BLOB_STORE", self.store)
+        monkeypatch.setattr(bd, "urllib_put", self.store.put)
+        monkeypatch.setattr(blobs_core, "require_stored", self._require_stored)
         edge.reset_cache()
         reg.clear_telemetry_caches()
         return self
+
+    def _require_stored(self, con: Any, catalog: str, prepared: Any, unverified: Any) -> None:
+        """The commit precondition over the in-memory rows: an unverified blob row must already be stored."""
+        first_of = {index: event_id for event_id, index in prepared.source_index.items()}
+        for item in unverified:
+            event_id = first_of.get(item.row)
+            project_id = next((r["project_id"] for r in prepared.rows if r["event_id"] == event_id), None)
+            if event_id is not None and (project_id, blobs_core.TRANSCRIPTS, event_id) not in self.stored:
+                raise TelemetryRequestError(
+                    422, "blob_not_verified", {"table": blobs_core.TRANSCRIPTS, "row": item.row, "reason": item.reason}
+                )
 
     def register(self, project_ref: str, project_id: str) -> None:
         self.projects[project_ref] = project_id
@@ -238,4 +257,7 @@ class LiveFake(AdapterKit):
                     entry["rows"] += 1
                     entry["keys"] += 1
             out["grain_counts"] = counts
+            out["blob_objects"] = self.store.count_objects(
+                blobs_core.session_prefix(TENANT, project_id, body["session_ref"], started)
+            )
         return out

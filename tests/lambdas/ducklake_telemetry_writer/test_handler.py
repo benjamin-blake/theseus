@@ -6,6 +6,7 @@ import base64
 import importlib
 import json
 import logging
+import re
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -15,6 +16,7 @@ from src.common import ducklake_runtime as rt
 from src.common import ducklake_telemetry_registration as reg
 from src.common import ducklake_telemetry_txn as txn
 from src.common.ducklake_scd2_schema import SchemaGateError
+from src.common.ducklake_telemetry_blobstore import BlobGrantSelfCheckError, BlobIntegrityError, BlobStoreAccessError
 from src.common.ducklake_telemetry_txn import TelemetryRequestError
 from src.common.ducklake_write_rules import RowRuleViolationError
 from src.common.ducklake_writes import OCCRetryExhaustedError
@@ -26,7 +28,7 @@ USER_ARN = "arn:aws:sts::acct-under-test:assumed-role/Some/secret-session"
 SECRET_ID = "agent-platform-ducklake-telemetry-writer-dsn"
 VERB_NAMES = ["provision_telemetry", "register_project", "register_tenant", "telemetry_probe"]
 _PW = "pass" + "word=hunter2"
-ALL_ACTIONS = sorted(["append_telemetry", "attach_check", "describe", *VERB_NAMES])
+ALL_ACTIONS = sorted(["append_telemetry", "attach_check", "begin_blobs", "describe", *VERB_NAMES])
 
 
 @pytest.fixture(autouse=True)
@@ -596,3 +598,25 @@ def test_masked_exhaustion_logs_its_retry_count(monkeypatch: pytest.MonkeyPatch,
     assert resp["statusCode"] == 503 and _body(resp)["error_type"] == "occ_exhausted"
     assert (line["status"], line["masked_commit_retries"], line["error_type"]) == (503, 2, "occ_exhausted")
     assert "Could not remove" not in resp["body"] + json.dumps(line) and "OccRetryCount" not in line
+
+
+def test_dispatch_includes_begin_blobs(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_runtime(monkeypatch)
+    monkeypatch.setattr(h.edge, "action_begin_blobs", lambda request, con, deps: {"ok": True, "echo": request.action})
+    assert _body(h.handler(_event({"action": "begin_blobs", "items": []}))) == {"ok": True, "echo": "begin_blobs"}
+
+
+def test_describe_carries_the_capabilities() -> None:
+    body = _body(h.handler(_event({"action": "describe"})))
+    assert body["blob_protocol"]["version"] == 1 and "begin_blobs" in body["verbs"] and len(body["schema"]) == 4
+
+
+@pytest.mark.parametrize("fault", [BlobIntegrityError, BlobGrantSelfCheckError, BlobStoreAccessError])
+def test_blob_faults_answer_a_typed_500(monkeypatch: pytest.MonkeyPatch, capsys: Any, fault: type) -> None:
+    _patch_runtime(monkeypatch)
+    monkeypatch.setattr(h.edge, "action_begin_blobs", MagicMock(side_effect=fault("secret-key")))
+    resp = h.handler(_event({"action": "begin_blobs"}))
+    line = json.loads(next(ln for ln in capsys.readouterr().out.splitlines() if '"verb":"begin_blobs"' in ln))
+    want = re.sub(r"(?<!^)(?=[A-Z])", "_", fault.__name__.removesuffix("Error")).lower()  # BlobIntegrity -> blob_integrity
+    assert (resp["statusCode"], _body(resp)["error_type"], line["status"], line["error_type"]) == (500, want, 500, want)
+    assert "secret-key" not in resp["body"] and "secret-key" not in json.dumps(line)

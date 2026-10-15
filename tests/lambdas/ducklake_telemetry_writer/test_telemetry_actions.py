@@ -16,6 +16,7 @@ from src.common.ducklake_scd2_schema import load_field_semantics
 from src.common.ducklake_telemetry_txn import TelemetryRequestError
 from src.lambdas.ducklake_telemetry_writer import handler as h
 from src.lambdas.ducklake_telemetry_writer import telemetry_actions as actions
+from tests.fixtures.telemetry_blob_fakes import FakeBlobStore
 
 ACCOUNT = "acct-under-test"
 SENTINEL = "sentinel-value-7"
@@ -62,6 +63,7 @@ def _deps(**kw: Any) -> actions.Deps:
         "catalog_backend": "neon",
         "connect_reused": True,
         "sleep": lambda _s: None,
+        "blob_store": FakeBlobStore(),
     }
     return actions.Deps(**{**base, **kw})
 
@@ -290,7 +292,14 @@ def test_contract_verbs_match_the_dispatched_production_verbs() -> None:
     contract = yaml.safe_load(CONTRACT.read_text(encoding="utf-8"))
     production = set(h._all_actions()) - {"attach_check", "telemetry_probe"}
     assert set(contract["verbs"]) == production
-    assert production == {"describe", "append_telemetry", "provision_telemetry", "register_tenant", "register_project"}
+    assert production == {
+        "describe",
+        "append_telemetry",
+        "begin_blobs",
+        "provision_telemetry",
+        "register_tenant",
+        "register_project",
+    }
     assert contract["contract"]["id"] == "ducklake_telemetry_writer" and contract["contract"]["class"] == "B"
     for verb in ("provision_telemetry", "register_tenant", "register_project"):
         text = contract["verbs"][verb]["payload_schema_ref"]
@@ -347,6 +356,19 @@ def test_probe_reports_grain_counts_for_one_session_day(monkeypatch: pytest.Monk
     none = _call("telemetry_probe", _session_probe(monkeypatch, registered=False), **_SESSION)
     assert none["grain_counts"] is None and none["project_registered"] is False and set(none["data_files"]) == events
     assert "grain_counts" not in _call("telemetry_probe", _session_probe(monkeypatch))
+
+
+def test_probe_counts_blob_objects_for_one_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    from datetime import datetime, timezone
+
+    from src.common import ducklake_telemetry_blobs as blobs
+
+    started = datetime(2026, 1, 1, 12, 34, 56, 789000, tzinfo=timezone.utc)
+    store = FakeBlobStore()
+    store.objects[blobs.session_prefix(_TENANT, _PROJECT, "sess", started)] = {"count": 1, "bytes": 70000}
+    out = _call("telemetry_probe", _session_probe(monkeypatch), _deps(blob_store=store), **_SESSION)
+    assert out["blob_objects"] == {"count": 1, "bytes": 70000} and "repo:example" not in json.dumps(out)
+    assert "blob_objects" not in _call("telemetry_probe", _session_probe(monkeypatch))
 
 
 def test_probe_inputs_refused_before_any_catalog_read() -> None:

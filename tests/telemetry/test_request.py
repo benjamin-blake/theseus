@@ -219,32 +219,19 @@ def test_wire_timestamps_need_exactly_three_fraction_digits() -> None:
     assert raw["batches"][0]["rows"][0]["event_timestamp"] == "2026-01-01T13:00:00.250+01:00"
 
 
-def test_inline_content_above_threshold_is_refused_only_while_exempt() -> None:
-    threshold = shapes()["telemetry_transcripts"].threshold
-    assert threshold is not None
-    edge = ("telemetry_transcripts", [transcript_row(content="x" * threshold)])
-    assert parse_append_request(body(edge), shapes()).batches[0][0] == "telemetry_transcripts"
+def test_inline_content_size_is_left_to_the_kernel_rule() -> None:
+    threshold = 65536
     over = ("telemetry_transcripts", [transcript_row(), transcript_row(content="é" * (threshold // 2 + 1))])
-    err = refused(body(over))
-    assert (err.error_type, err.rule, err.threshold, err.column, err.row) == (
-        "payload_too_large",
-        "inline_within_threshold",
-        threshold,
-        "content",
-        1,
-    )
-    unexempt = {
-        **shapes(),
-        "telemetry_transcripts": TableShape("telemetry_transcripts", frozenset(), "content", "content_uri", None),
-    }
-    assert parse_append_request(body(over), unexempt)
+    parsed = parse_append_request(body(over), shapes())
+    assert parsed.batches[0][0] == "telemetry_transcripts" and len(parsed.batches[0][1]) == 2
+    assert not hasattr(shapes()["telemetry_transcripts"], "threshold")
 
 
-def test_content_uri_is_refused_until_the_blob_route() -> None:
+def test_content_uri_is_refused_as_writer_derived() -> None:
     err = refused(body(("telemetry_transcripts", [transcript_row(content_uri="s3://x", content=None)])))
     assert (err.error_type, err.reason, err.column, err.table, err.row) == (
         "bad_request",
-        "blob_route_unavailable",
+        "writer_derived",
         "content_uri",
         "telemetry_transcripts",
         0,
@@ -257,7 +244,6 @@ def test_errors_never_carry_a_value() -> None:
         body((SECRET, [session_row()])),
         body(("telemetry_sessions", [session_row(session_started_at=SECRET)])),
         body(("telemetry_transcripts", [transcript_row(content_uri=SECRET)])),
-        body(("telemetry_transcripts", [transcript_row(content=SECRET * 8000)])),
         body(("telemetry_sessions", [session_row(workflow="a\ud800" + SECRET)])),
         body(("telemetry_sessions", [session_row(producer=SECRET + "\x00")])),
         body(("telemetry_sessions", [session_row(producer=SECRET)]), ("telemetry_agents", [session_row(producer="p")])),

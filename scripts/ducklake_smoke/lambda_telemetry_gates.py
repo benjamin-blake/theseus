@@ -4,7 +4,8 @@ One post-deploy gate, --lambda-telemetry, proves the telemetry writer serves onl
 ducklake_smoke catalog and that its caller cannot direct-invoke it (the live check behind Decision 213). Gates call
 core._function_url / core._sigv4_invoke through the module object (Decision 104). Plan 3 part 1's verb vectors
 (provision, register_tenant, register_project and telemetry_probe) follow the URL-only cases in the same gate, then part 2's
-append_telemetry vectors (lambda_telemetry_append_gates) under part 1's registered synthetic project.
+append_telemetry vectors (lambda_telemetry_append_gates) under part 1's registered synthetic project, then plan 4's
+claim-check vectors (lambda_telemetry_blob_gates).
 
 Failure text carries only a status code, a handler error_type, an exception class name or a request id (each printed
 only when it matches its shape) or a botocore error code; never a response body, an error message, an ARN, an account id
@@ -242,4 +243,7 @@ def lambda_telemetry(*, profile: str | None = None, region: str = "eu-west-2") -
     from scripts.ducklake_smoke import lambda_telemetry_append_gates  # noqa: PLC0415 -- it imports this module's helpers
 
     lambda_telemetry_append_gates.lambda_telemetry_append(url, project_ref, profile=profile, region=region)
+    from scripts.ducklake_smoke import lambda_telemetry_blob_gates  # noqa: PLC0415 -- it imports this module's helpers
+
+    lambda_telemetry_blob_gates.lambda_telemetry_blob(url, project_ref, profile=profile, region=region)
     print("LAMBDA_TELEMETRY OK unsigned=403 describe=200 attach_check=ok unknown_action=400 direct_invoke=denied")

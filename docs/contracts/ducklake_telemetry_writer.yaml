@@ -14,8 +14,8 @@ contract:
     it takes no catalog selector and never reaches the ops verbs or the production ducklake_ops catalog. Its first verbs
     verify and seed the telemetry tables (which the catalog owner creates, Decision 216) and register tenants and projects (Decision 200): tenant and project ids are ULIDs minted
     once per request, and the ops_entity_counters row is a lock only. The verbs cover provisioning, registration and
-    append_telemetry (slice 2a-2 plan 3 part 2): inline rows for one project in one transaction. This contract documents the
-    PRODUCTION verb surface only.
+    append_telemetry (slice 2a-2 plan 3 part 2): rows for one project in one transaction, plus begin_blobs (plan 4), the
+    claim-check route for a payload above the inline threshold. This contract documents the PRODUCTION verb surface only.
   governance:
     auth_type: >-
       AWS_IAM SigV4-signed Function URL, invoked URL-only. The caller's account is taken from the signed identity at the
@@ -27,7 +27,8 @@ contract:
     write_path: >-
       ducklake_telemetry_writer Lambda -> run_telemetry_txn (one transaction, bounded OCC retry that also covers the masked commit-cleanup failure) -> the isolated
       ducklake_smoke catalog: provision_telemetry (verify the nine owner-created tables and seed the two counter rows; no DDL), register_tenant and
-      register_project (SCD2 history MERGE plus current MERGE under a lock-only counter UPDATE). The telemetry tables are
+      register_project (SCD2 history MERGE plus current MERGE under a lock-only counter UPDATE); begin_blobs issues grants and
+      writes only a first-sight project registration. The telemetry tables are
       created under the catalog owner by ducklake_maintenance_smoke's create_telemetry_tables (Decision 216). The function has no
       destructive verb by design and holds no CREATE; dropping a table stays on the admin maintenance function.
     id_allocator: >-
@@ -58,25 +59,33 @@ verbs:
       exactly three fraction digits and an offset. Encoding validity is refused: a lone surrogate (U+D800-U+DFFF) in any
       string, and U+0000 in any key, the project_ref, the component or a row's producer. Caps: the JSON-escaped body
       len(json.dumps(S)), S the request body string as delivered, at most 5242880 bytes; at most 2000 rows per table and
-      5000 per request. Two refusals are temporary, owned by rec-4024 and removed by the blob route: a row carrying
-      content_uri, and inline content above the contract threshold while the inline_within_threshold exemption stands.
+      5000 per request. A row carrying content_uri is refused (bad_request, reason writer_derived): the writer derives it. A
+      blob row (a transcript with no content, no content_omitted_reason, a well-formed content_sha256 and content_bytes above
+      the contract threshold up to the cap) is verified by HEAD and its content_uri written by the writer; at most 200 blob
+      rows per request. Inline content above the threshold is the kernel's row rule (422).
     response_codes:
       200: "body {ok, tenant_id, project_id, project_registration (created|existing), tables {table: {submitted, collapsed, inserted}}, occ_retries, commit_ms (integer)}; an identical re-send answers 200 with inserted 0"
-      400: "bad_request (reason names the rule; table and row when known; never a value), write_order (the telemetry_sessions batch is not last), mixed_producer (more than one producer or parser_version in the request)"
+      400: "bad_request (reason names the rule, incl. writer_derived for a caller content_uri; table and row when known; never a value), write_order (the telemetry_sessions batch is not last), mixed_producer (more than one producer or parser_version in the request)"
       403: "tenant_unresolved (remedy: register_tenant); project_unregistered (a drill: or synthetic: project_ref that was never registered; remedy: register_project)"
       409: "grain_conflict {table, event_id, row}: a row differs from a stored or earlier row under one (producer, event_id, parser_version) grain key; nothing from the request is written; row is the 0-based index as sent, never an external_ref or a value"
-      413: "payload_too_large (measure invoke_bytes, or rule inline_within_threshold with the threshold), too_many_rows (measure rows_per_table or rows_per_request)"
-      422: "row_rule {table, row, rule, column, exclude_before?}; schema_gate {table, row, column, reason}; nothing written; never a value"
-      500: "runtime; unmapped: any other exception answers 500 {ok, error_type, error_class, request_id, action, elapsed_ms}, never its message"
-      503: "occ_exhausted: the OCC retry budget was exhausted (retryable); catalog_unavailable: a dead catalog connection (retryable)"
+      413: "payload_too_large (measure invoke_bytes), too_many_rows (measure rows_per_table or rows_per_request), too_many_blobs (more than 200 blob rows)"
+      422: "row_rule {table, row, rule, column, exclude_before?}; schema_gate {table, row, column, reason}; blob_not_verified {table, row, reason missing|stale|unknown_project}; nothing written; never a value"
+      500: "runtime; blob_integrity, blob_grant_self_check or blob_store_access (typed, paged through Url5xxCount); unmapped: any other exception answers 500 {ok, error_type, error_class, request_id, action, elapsed_ms}, never its message"
+      503: "occ_exhausted: the OCC retry budget was exhausted (retryable); catalog_unavailable: a dead catalog connection (retryable); blob_store_unavailable: S3 throttled, 5xx or timed out (retryable)"
     typed_errors:
       bad_request: "a malformed request or an invalid string; names a reason and a position, never an undeclared name or a value (400)"
+      too_many_blobs: "more than 200 blob rows, or begin_blobs items (413)"
+      blob_not_verified: "a blob row whose object is missing or older than 7 days and is not already stored, or whose project is unknown (422)"
+      blob_store_unavailable: "the blob store throttled, answered 5xx or timed out after botocore's retries (503)"
+      blob_integrity: "a stored object whose length or SHA-256 differs from its key: a deploy or out-of-band-writer defect (500)"
+      blob_grant_self_check: "a presigned URL that does not sign exactly content-length, host and the sha256 checksum (500)"
+      blob_store_access: "an S3 client error other than throttling, 5xx or timeout, incl. a HEAD denied for an object the exact-key list shows present (500)"
       write_order: "the telemetry_sessions generation marker batch is not last; a producer tripwire for the cross-request order the producer owns (400)"
       mixed_producer: "more than one producer or parser_version in one request (400)"
       tenant_unresolved: "the signed caller has no registered tenant (403)"
       project_unregistered: "an unregistered reserved-namespace project_ref (403)"
       grain_conflict: "a differing row under an existing grain key; nothing written, never retried (409)"
-      payload_too_large: "over the body cap, or inline content above the threshold while its exemption stands (413)"
+      payload_too_large: "over the body cap (413)"
       too_many_rows: "over the per-table or per-request row cap (413)"
       row_rule: "a contract row rule rejected a row (422)"
       schema_gate: "a type, NOT NULL, reference, time-range or wire-timestamp rejection (422)"
@@ -84,12 +93,39 @@ verbs:
       occ_exhausted: "OCC retry budget exhausted; safe to retry (503)"
       unmapped: "an exception no row maps: 500 {error_class, request_id, action}, never the message; one ducklake_unmapped_error log line carries the redacted detail (500)"
       catalog_unavailable: "a dead catalog connection (also after the reopen-once where the handler reopens): retryable, 503 {error_class, request_id, action, reopened}"
+  begin_blobs:
+    payload_schema_ref: >-
+      event envelope {action: "begin_blobs", project_ref, component?, items}. No other key is accepted. items is a non-empty
+      list of at most 200 objects with exactly {session_ref, session_started_at, content_sha256, content_bytes}: session_ref
+      a non-empty valid ref, session_started_at on the wire grammar (three fraction digits), content_sha256 64 lowercase hex
+      characters, content_bytes an integer above the inline threshold and at most the cap (both read from describe's
+      blob_protocol). The string rules of append_telemetry apply. Items with equal keys answer duplicate_of the first.
+    response_codes:
+      200: "body {ok, tenant_id, project_id, project_registration, protocol_version, items [{existed, upload {method PUT, url, headers, expires_at} | null, duplicate_of}], counts}; the only response that carries a presigned URL"
+      400: "bad_request: reason names the rule (below_threshold, above_cap, item_shape, unknown_key, ...), row the item index, never a value"
+      403: "tenant_unresolved; project_unregistered (an unregistered drill: or synthetic: project_ref)"
+      413: "too_many_blobs: more than 200 items"
+      500: "blob_integrity, blob_grant_self_check or blob_store_access; runtime; unmapped: any other exception answers 500 {ok, error_type, error_class, request_id, action, elapsed_ms}, never its message"
+      503: "blob_store_unavailable (retryable); occ_exhausted and catalog_unavailable on a first-sight registration (retryable)"
+    typed_errors:
+      bad_request: "a malformed request, an invalid string or an item out of bounds; names a reason and an item index, never a value (400)"
+      tenant_unresolved: "the signed caller has no registered tenant (403)"
+      project_unregistered: "an unregistered reserved-namespace project_ref (403)"
+      too_many_blobs: "more than 200 items (413)"
+      blob_store_unavailable: "the blob store throttled, answered 5xx or timed out (503)"
+      blob_integrity: "a stored object does not match its content-addressed key; the item is re-granted only when merely missing or stale (500)"
+      blob_grant_self_check: "a presigned URL that does not sign exactly content-length, host and the sha256 checksum (500)"
+      blob_store_access: "an S3 client error other than throttling, 5xx or timeout (500)"
+      unmapped: "an exception no row maps: 500 {error_class, request_id, action}, never the message; one ducklake_unmapped_error log line carries the redacted detail (500)"
+      catalog_unavailable: "a dead catalog connection: retryable, 503 {error_class, request_id, action, reopened}"
   describe:
     payload_schema_ref: >-
-      event envelope {action: "describe"}. Connectionless: returns the sorted action list and the pinned catalog's
-      meta_schema and whether its data path is the smoke path. No connection is opened.
+      event envelope {action: "describe"}. Connectionless: returns the sorted action list, the pinned catalog's
+      meta_schema and whether its data path is the smoke path, blob_protocol (version, inline_threshold_bytes, cap_bytes,
+      max_items, grant_ttl_seconds) and a per-table schema view (caller_known_columns, not_null, accepted_values and a
+      fingerprint of exactly that view), all from the bundled projection. No connection is opened.
     response_codes:
-      200: "body {ok, function, actions, catalog: {meta_schema, data_path_is_smoke}}"
+      200: "body {ok, function, actions, verbs, catalog: {meta_schema, data_path_is_smoke}, blob_protocol, schema}"
       403: "missing_caller_identity: the Function URL authorizer context carries no caller identity"
       500: "telemetry_env_unset: a required environment pin is not set; unmapped: any other exception answers 500 {ok, error_type, error_class, request_id, action, elapsed_ms}, never its message"
     typed_errors:
@@ -159,9 +195,11 @@ audit_invariants:
   - "Within a request the data batches precede the telemetry_sessions marker batch. Inside one transaction the order has no visibility effect, so this is a producer tripwire for the cross-request order the producer owns (telemetry-event-envelope.yaml R7)."
   - "The size cap is len(json.dumps(S)), S the request body string as delivered: ASCII-escaped, so it equals the measure Lambda's 6 MiB event limit applies to for an ASCII body and is an upper bound when the body carries non-ASCII (measured 2026-10-09)."
   - "No append_telemetry response or log line carries a caller value (a row value, an undeclared name, principal.ref): errors locate by table, row index, column and reason only."
-  - "Two refusals are temporary and owned by rec-4024: a caller content_uri (400 blob_route_unavailable) and inline content above the threshold while the exemption stands (413 inline_within_threshold). The blob route removes both."
+  - "Claim-check rule (T2.36 c2/c4, Decision 199 cl.5): a producer PUTs payload bytes only under a begin_blobs grant (single object, content-addressed, SHA-256- and length-bound, at most 15 minutes), issued after the writer resolved the tenant and project and derived the key; append_telemetry verifies the object by HEAD and writes content_uri, so every write stays writer-authorised and writer-committed (Decision 81 cl.7 as read by Decision 213 cl.2) through the content_blobs port (Decision 212 cl.4). The writer never reads, puts or deletes object bytes; a failed append fails loudly and nothing is queued or replayed (Decision 84 I-4); no process ever ingests an object into the catalog; an unreferenced object is deleted by the maintenance sweep (rec-4033), never ingested. Enforced by the writer-bundle S3-surface test (head_object, presigned put_object and list_objects_v2 only); the CI role's bucket-wide S3 write is a named residual owned by rec-4292."
+  - "A blob row whose object is missing or older than 7 days commits only as the no-op of an identical stored row (else 422 blob_not_verified, nothing written), so an identical re-send inserts nothing whatever the object's age or presence; begin_blobs re-grants any missing or stale object. The 7 days is a writer mechanism constant cross-pinned to the code by a test; the stored-row check is a commit precondition for an unverifiable blob, not a data rule (Decision 210 cl.2(a))."
+  - "begin_blobs touches the catalog only on a binding-cache miss and writes only a first-sight registration. No presigned URL, X-Amz-* credential value, key or digest is ever logged or returned beyond begin_blobs' own response. Blob integrity, grant self-check and blob-store access faults log the C6 line with status 500 and answer a typed 500, which pages through Url5xxCount."
   - "A COMMIT whose error is masked by the no-delete file cleanup (duckdb's TransactionException 'Failed to commit: Could not remove file') is retried within the same bounded attempt budget as an OCC collision, because every telemetry body is idempotent (insert-only MERGE, lookup-first registration, caches written after commit). Only a COMMIT-raised failure with that exact signature is retried; the same text from a body statement, or any other TransactionException, propagates. The count is logged apart as masked_commit_retries (a log field only: no metric, no EMF member); the masked message names the bucket and is never logged or returned; exhaustion answers 503 occ_exhausted. The role keeps no s3:DeleteObject (Decision 216 cl.4); orphan files are the maintenance role's to delete."
-  - "Every answered request emits exactly one C6 log line (verb, component, status, error_type, per-table counts, request and invoke bytes, tenant_id, project_id, occ_retries, commit_ms, masked_commit_retries, caller_role), never an account id, an ARN or a hash of either; the five data verbs' lines carry an Embedded Metric Format block (namespace DuckLakeTelemetryWriter, RequestCount by Verb)."
+  - "Every answered request emits exactly one C6 log line (verb, component, status, error_type, per-table counts, request and invoke bytes, tenant_id, project_id, occ_retries, commit_ms, masked_commit_retries, caller_role), never an account id, an ARN or a hash of either; the six data verbs' lines carry an Embedded Metric Format block (namespace DuckLakeTelemetryWriter, RequestCount by Verb)."
   - "Telemetry verbs attach only the pinned catalog and take no catalog selector: meta_schema and data_path are never read from the event."
   - "No verb drops, truncates or recreates a table. The telemetry writer issues no Postgres DDL and holds no CREATE on any schema; its tables are created under the catalog owner (Decision 216)."
   - "principal_ref never appears in a response or log, and no response carries a hash of it (Decision 101)."
@@ -171,6 +209,19 @@ audit_invariants:
   - "Declared residual: the ducklake_unmapped_error log line carries the exception message redacted and truncated to 300 characters, so a request value inside an unmapped exception's message can reach the log (residual against the rejected-string rule; strictly less than the runtime traceback it replaces)."
   - "Declared residual: the async DuckLake handlers (maintenance, maintenance_smoke, catalog_dr) are EventBridge-invoked and keep Lambda's own retry behaviour for an escaped exception; rec-4303 owns them."
 amendment_log:
+  - date: "2026-10-15"
+    semantic_break: false
+    change_class: field_add
+    summary: >-
+      PLAN-telemetry-blob-route (T2.36 slice 2a-2 plan 4, rec-4024): adds the begin_blobs verb (writer-issued, 15-minute,
+      checksum- and length-bound presigned PUTs), append_telemetry blob delivery (content_uri derived by the writer after a
+      HEAD, 413 too_many_blobs, 422 blob_not_verified, 503 blob_store_unavailable, typed 500 blob faults, caller content_uri
+      refusal reason writer_derived, inline above the threshold now a 422 row rule) and describe's blob_protocol and schema
+      view; the temporary refusals are removed and the claim-check audit invariants added. The EMF block gains the sixth
+      series (RequestCount for begin_blobs).
+    migration_story: >-
+      Additive verb and codes. The only changed answers are two interim refusals nothing relied on: inline content above the
+      threshold (was 413, now 422) and a caller content_uri (reason renamed). No row above the threshold was ever stored.
   - date: "2026-10-15"
     semantic_break: false
     change_class: prose_improvement

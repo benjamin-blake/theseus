@@ -6,6 +6,7 @@ pytest.importorskip at MODULE level: the fast tier installs no duckdb (requireme
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
@@ -506,6 +507,11 @@ def _transcript_spec() -> EventTableSpec:
     return load_specs()["telemetry_transcripts"]
 
 
+def _exempt_spec() -> EventTableSpec:
+    spec = _transcript_spec()  # a representation change needs a threshold change, which one projection cannot hold
+    return replace(spec, rules=replace(spec.rules, exemptions={"inline_within_threshold": ("test", "test")}))
+
+
 def _transcript(payload: str, *, spilled: bool = False, ref: str = "u1#0", **over: Any) -> dict[str, Any]:
     digest = hashlib.sha256(payload.encode()).hexdigest()
     row: dict[str, Any] = {
@@ -540,7 +546,7 @@ def transcripts_con() -> Any:
 
 
 def test_transcript_representation_change_is_not_a_conflict(transcripts_con: Any) -> None:
-    spec = _transcript_spec()
+    spec = _exempt_spec()
     now = datetime(2026, 9, 25, 10, 1, tzinfo=timezone.utc)
     payload = "p" * 70_000
     kwargs = {"tenant_id": TENANT, "project_id": PROJECT, "catalog": "memory", "now": now}

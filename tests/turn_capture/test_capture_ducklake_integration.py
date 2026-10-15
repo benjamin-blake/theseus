@@ -21,7 +21,9 @@ from tests.fixtures.turn_capture_ducklake import TABLES, create_tables, load_spe
 
 pytestmark = pytest.mark.integration
 
-ROUTE_PENDING_BYTES = 65536  # the blob route that stores a larger payload lands in slice 2a-2 (rec-4024)
+ROUTE_PENDING_BYTES = (
+    65536  # the kernel facade has no blob route; the writer's begin_blobs and HEAD-verify store larger payloads
+)
 ROUTE_PENDING = {"large_tool_result_over_64k.json": 1}
 FKS = (
     ("telemetry_observations", "session_id", "telemetry_sessions", "session_id"),

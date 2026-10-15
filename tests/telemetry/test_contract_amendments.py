@@ -294,8 +294,8 @@ def test_tool_result_capture_policy_declared() -> None:
     assert intent["exactly_one_of"]["fields"] == ["content", "content_uri", "content_omitted_reason"]
     assert intent["representation_of"] == ["content_sha256", "content_bytes"]
     assert fields["content_uri"].dq_intent["representation_of"] == ["content_sha256", "content_bytes"]
-    exemption = intent["write_time_exemptions"]["inline_within_threshold"]
-    assert exemption["owner"] == "rec-4024" and "slice 2a-2" in exemption["reason"]
+    assert "write_time_exemptions" not in intent
+    assert "claim-check route" in _norm(content.semantics) and "begin_blobs" in _norm(content.semantics)
 
     omitted = fields["content_omitted_reason"]
     assert omitted.nullable is True and omitted.dq_intent["accepted_values"]["values"] == ["oversize"]

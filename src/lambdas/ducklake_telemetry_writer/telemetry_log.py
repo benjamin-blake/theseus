@@ -1,16 +1,20 @@
 """C6 for the telemetry writer (REVIEW.md C6; T2.36 plan 3 part 2): ONE JSON line per answered request, with a
-CloudWatch Embedded Metric Format block on the five data verbs.
+CloudWatch Embedded Metric Format block on the six data verbs.
 
 Fixed fields only. Never an account id, an ARN, a hash of either (Decision 101; ops_tenants.yaml) or a row value:
 caller_role is CallerPrincipal.role_name, tenant_id and project_id are the registry's ULIDs, and every millisecond value
 is an integer (a raw float repr can carry a 12-digit run that a leak scan would misread).
 
-EMF: namespace DuckLakeTelemetryWriter, metric RequestCount with dimension set [Verb] (five series), with the target
-members `Verb` and `RequestCount` at the line's top level beside the lowercase `verb` field. An append_telemetry line
-also carries OccRetryCount and CommitLatencyMs under an empty dimension set (the series part 1's sink already creates),
-but that directive and its members appear only when the recording sink saw values: a directive whose members are absent
-invalidates the block and drops RequestCount with it. The Lambda text log format is required for extraction (the
-function sets no JSON log format; a test pins that).
+EMF: namespace DuckLakeTelemetryWriter, metric RequestCount with dimension set [Verb] (six series; begin_blobs is the
+sixth, plan 4), with the target members `Verb` and `RequestCount` at the line's top level beside the lowercase `verb`
+field. An append_telemetry line also carries OccRetryCount and CommitLatencyMs under an empty dimension set (the series
+part 1's sink already creates), but that directive and its members appear only when the recording sink saw values: a
+directive whose members are absent invalidates the block and drops RequestCount with it. The Lambda text log format is
+required for extraction (the function sets no JSON log format; a test pins that).
+
+A begin_blobs line carries counts and declared bytes only (items, distinct_keys, existed, granted, mismatched, stale,
+declared_bytes_total, declared_bytes_max, head_ms); an append_telemetry line carries blob_rows and blob_head_ms. Never a
+presigned URL, key or digest (Decision 101; REVIEW.md C7).
 """
 
 from __future__ import annotations
@@ -25,7 +29,20 @@ from src.common.ducklake_telemetry_registration import CallerPrincipal
 from src.telemetry.request import COMPONENT_RE, DEFAULT_COMPONENT
 
 NAMESPACE = "DuckLakeTelemetryWriter"
-DATA_VERBS = frozenset({"append_telemetry", "register_tenant", "register_project", "provision_telemetry", "telemetry_probe"})
+DATA_VERBS = frozenset(
+    {"append_telemetry", "begin_blobs", "register_tenant", "register_project", "provision_telemetry", "telemetry_probe"}
+)
+BLOB_COUNT_FIELDS = (
+    "items",
+    "distinct_keys",
+    "existed",
+    "granted",
+    "mismatched",
+    "stale",
+    "declared_bytes_total",
+    "declared_bytes_max",
+    "head_ms",
+)
 _ID_RE = re.compile(r"^[0-9A-Z]{26}$")
 
 
@@ -38,6 +55,9 @@ class RequestStats:
     tables: dict[str, tuple[int, int]] = field(default_factory=dict)  # table -> (submitted, inserted)
     connect_reused: bool | None = None
     masked_commit_retries: int | None = None  # a log field only: never a metric, no EMF member
+    blob_rows: int | None = None
+    blob_head_ms: int | None = None
+    blob_counts: dict[str, int] = field(default_factory=dict)  # begin_blobs only
     recorded: dict[str, float] = field(default_factory=dict)
 
     def sink(self, name: str, value: float) -> None:
@@ -103,6 +123,10 @@ def build_request_line(
         "masked_commit_retries": stats.masked_commit_retries,
         "caller_role": principal.role_name if principal is not None else None,
     }
+    if action == "append_telemetry":
+        line.update(blob_rows=stats.blob_rows, blob_head_ms=stats.blob_head_ms)
+    if action == "begin_blobs":
+        line.update({name: stats.blob_counts.get(name) for name in BLOB_COUNT_FIELDS})
     if action in DATA_VERBS:
         line.update(_emf(action, recorded))
     return line
