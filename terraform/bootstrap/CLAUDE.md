@@ -6,7 +6,9 @@ repo-root `CLAUDE.md` and `terraform/CLAUDE.md` still apply.
 This module owns the `github_ci_apply` IAM role and its permissions boundary (authority budget),
 isolating the apply role's own IAM from `terraform/personal/` (CD.35 Wave 4 / T2.23). This breaks
 the self-grant cycle: the CD pipeline can no longer write the policy that governs the pipeline.
-It also owns the platform-security-* IAM-change detector (Decision 202).
+It also owns the platform-security-* IAM-change detector (Decision 202) and, since
+PLAN-platform-iam-bootstrap-adopt, PlatformDev and PlatformAdmin with their five inline policies
+-- see `docs/contracts/deploy-paths.yaml`'s `admin_out_of_band.procedure`.
 
 ## NEVER auto-apply this module
 
@@ -20,7 +22,9 @@ time, using the `agent_platform_admin` profile (PlatformAdmin, `iam:*`).
 - Terraform 1.10+ (`cat config/terraform-version`)
 - AWS credentials for the `agent_platform_admin` profile (PlatformAdmin, `iam:*`).
 - The bootstrap S3 state bucket must exist (see One-time provisioning below).
-- `account_id` and `owner_email` passed via `-var` or a gitignored tfvars file (never committed).
+- `account_id`, `owner_email`, `platform_dev_external_id` and `platform_admin_external_id`
+  (sensitive, no default) via `-var` or a gitignored tfvars file; recovery:
+  `docs/contracts/terraform-cc-web-operations.yaml`.
 
 ## One-time provisioning
 
@@ -69,6 +73,8 @@ Create a gitignored tfvars file (NEVER commit this file):
 # terraform/bootstrap/terraform.bootstrap.tfvars  (gitignored -- NEVER commit real values)
 account_id  = "<12-digit-account-id>"  # aws sts get-caller-identity --query Account --output text --profile agent_platform_admin
 owner_email = "<owner-email>"
+platform_dev_external_id   = "<value>"
+platform_admin_external_id = "<value>"
 ```
 
 ### 4. Verify the import plan -- STOP if plan shows replace or destroy
@@ -94,17 +100,10 @@ terraform -chdir=terraform/bootstrap apply \
   -var-file=terraform.bootstrap.tfvars
 ```
 
-## State-migration ordering (one-time, after first bootstrap apply)
+## Releasing a dual-declared address from terraform/personal
 
-Already done for this account -- `terraform/personal` no longer declares the pair. Retained for a
-from-scratch re-bootstrap: once the import succeeds, release them from personal state to avoid
-dual-management, and do it BEFORE the `oidc.tf` removal reaches CD (otherwise CD plans a destroy).
-
-```bash
-# Run AFTER bootstrap apply confirms the import succeeded (no replace/destroy):
-terraform -chdir=terraform/personal state rm aws_iam_role.github_ci_apply
-terraform -chdir=terraform/personal state rm aws_iam_role_policy.github_ci_apply
-```
+After a bootstrap import succeeds (no replace/destroy), release the address from personal with
+`removed` blocks, never `state rm` -- see `docs/contracts/deploy-paths.yaml`.
 
 ## Ongoing apply runbook
 
