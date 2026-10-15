@@ -262,6 +262,8 @@ scope:
     test_lambda_reader_ok and test_lambda_reader_boundary_broken_fails fake every non-read_current action as 200
     write_denied: update their fakes deliberately so describe, the health verb, the 400 and the unmapped 500 answer in the
     real shapes (the unmapped body without a message key), and boundary_broken still fails on the write boundary it targets.
+    test_lambda_reader_ok also asserts TELEMETRY_READS_OK in the output: with the facade test's patch below it is the only
+    hermetic proof that lambda_reader runs the telemetry checks (2026-10-15 amendment).
 - file: tests/ducklake_neon_smoke_test/test_facade.py
   action: Modify
   purpose: >-
@@ -544,7 +546,9 @@ verification_plan:
     tier cannot collect it; the full tier runs both files pre-handoff and on main.
 - step: 8
   phase: pre-deploy
-  action: The smoke gate's telemetry read checks pass on a consistent reader and fail on each regression.
+  action: >-
+    The smoke gate's telemetry read checks pass on a consistent reader and fail on each regression, and the lambda_ec_gates
+    interception test still intercepts through core._sigv4_invoke.
   command: >-
     bin/venv-python -m pytest
     tests/ducklake_neon_smoke_test/test_lambda_ec_gates.py::test_telemetry_read_checks_pass_on_a_consistent_reader
@@ -557,8 +561,8 @@ verification_plan:
     -q
   expected: >-
     Exit 0, every node passes. Red before because the new nodes are absent. The facade interception node (2026-10-15
-    amendment) passes before and after; it fails only on a tree whose lambda_reader runs the telemetry checks without that
-    test's patch.
+    amendment) passes before (unmodified) and after (patched); it fails on a tree whose lambda_reader runs the telemetry
+    checks without that test's patch, or where lambda_ec_gates has no _telemetry_read_checks (monkeypatch raising=True).
   expected_literals: []
   fix_if: >-
     A gate that passes when query_ops reaches telemetry_catalog, or on any non-200 (auth, throttling, 503), is too weak: the
