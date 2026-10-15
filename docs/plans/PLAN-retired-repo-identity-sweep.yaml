@@ -34,7 +34,9 @@ scope:
   purpose: The unset/malformed-environment fallback assertions name otl-labs/ontheloop.
 - file: tests/checks/misc/test_validate_ghas_probe.py
   action: Modify
-  purpose: TestDefaultRepoSlug's env-unset default assertion names otl-labs/ontheloop.
+  purpose: >-
+    TestDefaultRepoSlug's env-unset default assertion and the readiness plan's
+    test_malformed_repository_falls_back_to_the_default name otl-labs/ontheloop.
 - file: scripts/convergence_health/escalate.py
   action: Modify
   purpose: _ACCEPTANCE_STUCK_APPROVAL's gh api path names otl-labs/ontheloop.
@@ -170,8 +172,8 @@ verification_plan:
   hermetic: true
   graduation: waive
   graduation_waiver_reason: >-
-    A one-time bridge between the identity readiness plan's pins and this plan's scope; once the sweep set is empty
-    the comparison is vacuous, and step 3's graduated row is the standing guard.
+    A one-time bridge between the identity readiness plan's pins and this plan's scope; once origin/main's sweep set
+    is empty the command fails by design, and the standing guards are validate_github_org_transfer (ungated in --pre and in the full tier) and test__retired_identity.py::test_sweep_set_is_empty (pytest_diff and the full tier); graduated registry rows re-run only when added or modified.
 - step: 3
   phase: pre-deploy
   action: The sweep set is empty and the transfer contract's check passes on the swept tree.
@@ -199,7 +201,7 @@ verification_plan:
   graduation: waive
   graduation_waiver_reason: >-
     This is rec-3903's own acceptance (lint-clean and probeable per VP step 16), verified at closure by the
-    Decision 201 trailer gate; step 3's graduated row already guards the same invariant.
+    Decision 201 trailer gate; the standing guards are validate_github_org_transfer (ungated in --pre and in the full tier) and test__retired_identity.py::test_sweep_set_is_empty (pytest_diff and the full tier); graduated registry rows re-run only when added or modified.
 - step: 5
   phase: pre-deploy
   action: Behavior tests for the gate, the resolver fallback, the escalation acceptance, the trust triple and the empty sweep set.
@@ -209,12 +211,11 @@ verification_plan:
     tests/test_repo_identity.py::test_unset_environment_falls_back_to_the_constant
     tests/test_repo_identity.py::test_malformed_environment_falls_back_to_the_constant
     tests/checks/misc/test_validate_ghas_probe.py::TestDefaultRepoSlug::test_default_repo_is_the_renamed_slug_when_env_unset
+    tests/checks/misc/test_validate_ghas_probe.py::test_malformed_repository_falls_back_to_the_default
     tests/convergence_health/test_escalate.py::test_stuck_approval_acceptance_names_the_new_repository
     tests/test_ontheloop_placeholder_packages.py::test_publish_workflow_shape_and_trust_triple
     tests/checks/contracts/test__retired_identity.py::test_sweep_set_is_empty
-  expected: Exit 0; every node passes.
-  expected_literals:
-  - 7 passed
+  expected: Exit 0; every node and parametrized case passes (pytest exits non-zero on any failure or missing node).
   fix_if: A failing node names the file whose substitution is wrong or missing.
   hermetic: true
   graduation: waive
@@ -299,7 +300,7 @@ verification_plan:
   command: >-
     bin/venv-python -c "import json,urllib.request,subprocess,datetime; t=int(subprocess.check_output(['git','log','-1','--format=%ct','--grep=Resolves: rec-3903','origin/main'],text=True).strip());
     ep=lambda s:datetime.datetime.fromisoformat(s.replace('Z','+00:00')).timestamp();
-    runs=json.load(urllib.request.urlopen('https://api.github.com/repos/otl-labs/ontheloop/actions/workflows/dependabot-auto-merge.yml/runs?per_page=100',timeout=30))['workflow_runs'];
+    runs=json.load(urllib.request.urlopen('https://api.github.com/repos/otl-labs/ontheloop/actions/workflows/dependabot-auto-merge.yml/runs?per_page=100&actor=dependabot%5Bbot%5D',timeout=30))['workflow_runs'];
     after=sorted((r for r in runs if ep(r['created_at'])>t and (r.get('head_branch') or '').startswith('dependabot/') and r['status']=='completed'),key=lambda r:ep(r['created_at']));
     print('DEPENDABOT_RUNS_AFTER_MERGE', [(r['id'],r['conclusion']) for r in after]); assert after, 'pending';
     assert after[0]['conclusion'] in ('success','failure'), after[0]['conclusion']"
@@ -333,8 +334,7 @@ verification_plan:
   hermetic: true
   graduation: waive
   graduation_waiver_reason: >-
-    Positive spot checks bound to this sweep's approved text; step 3's graduated row is the standing guard that the
-    retired name stays out.
+    Positive spot checks bound to this sweep's approved text; the standing guards are validate_github_org_transfer (ungated in --pre and in the full tier) and test__retired_identity.py::test_sweep_set_is_empty (pytest_diff and the full tier); graduated registry rows re-run only when added or modified.
 - step: 14
   phase: pre-deploy
   action: Assert the ground for NO Lambda redeploy despite touching the data-pipeline packaged roadmap asset (Decision 198 precedent).
@@ -401,7 +401,7 @@ verification_plan:
     assert n(e['summary'])==n(A['PACKAGE_REGISTRY_SUMMARY']) and e['change_class']=='governance_note_add' and e['semantic_break'] is False;
     rw=yaml.safe_load(open('config/agent/verification_registry/entries/roadmap-retired-brand-tokens-absent.yaml',encoding='utf-8')); c=n(rw['check_spec']['command'][-1]);
     assert n(A['ROADMAP_ROW_CLAUSE']) in c and \"= 1\" not in c;
-    L=open('terraform/github/CLAUDE.md',encoding='utf-8').read().splitlines(); assert A['CLAUDE_MD_LINE_6'] in L;
+    L=open('terraform/github/CLAUDE.md',encoding='utf-8').read().splitlines(); assert A['CLAUDE_MD_LINE_6'] in L or (any('otl-labs/ontheloop' in x for x in L) and not any('benjamin-blake/theseus' in x for x in L));
     assert A['CLAUDE_MD_IMPORT_PROSE'] in L or not any('import the existing' in x for x in L);
     assert A['CLAUDE_MD_IMPORT_COMMAND'] in L or not any('import github_repository.this' in x for x in L); print('APPROVED_TEXT_VERBATIM')"
   expected: Exit 0 and APPROVED_TEXT_VERBATIM printed.
@@ -411,6 +411,23 @@ verification_plan:
   hermetic: true
   graduation: waive
   graduation_waiver_reason: A one-time check binding this sweep's approved text; it has no meaning once merged.
+- step: 18
+  phase: pre-deploy
+  action: >-
+    The comment-only files change exactly their approved lines: bin/setup-cloud-env.sh two lines,
+    scripts/checks/hygiene/validate_licence_consistency.py four lines, each as a one-for-one replacement.
+  command: >-
+    bin/venv-python -c "import subprocess; c=lambda f:[l for l in subprocess.check_output(['git','diff','-U0','origin/main','--',f],text=True,encoding='utf-8').splitlines() if l[:1] in '+-' and l[:3] not in ('+++','---')];
+    a=c('bin/setup-cloud-env.sh'); b=c('scripts/checks/hygiene/validate_licence_consistency.py');
+    n=lambda d,k:sum(1 for l in d if l[0]==k); print('CHANGED', n(a,'-'), n(a,'+'), n(b,'-'), n(b,'+'));
+    assert (n(a,'-'),n(a,'+'))==(2,2) and (n(b,'-'),n(b,'+'))==(4,4)"
+  expected: Exit 0 and CHANGED 2 2 4 4 printed.
+  fix_if: >-
+    Any other count means a line outside the approved comment edits changed: restore it. These files carry no other
+    sweep change.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: A PR-relative one-time diff bound; it is vacuous once merged.
 test_obligations:
 - source: .github/workflows/dependabot-auto-merge.yml
   behavior: The auto-merge job runs only for otl-labs/ontheloop.
@@ -493,12 +510,16 @@ test_obligations:
   behavior: Docstring-only rewording; the check's code is unchanged.
   verification_step: 13
   command: grep -q 'agent-platform -> theseus under the same owner' scripts/checks/hygiene/validate_licence_consistency.py
-  waiver_reason: A docstring edit changes no behavior; the existing mirror test still runs in --pre and proves the code is untouched.
+  waiver_reason: >-
+    Docstring and comment edits only: VP step 13 binds the new line-13 text and VP step 18 bounds the file's diff to
+    exactly four changed lines (13, 28, 29, 63), so no code line can change.
 - source: bin/setup-cloud-env.sh
   behavior: Comment-only change naming the post-rename checkout directory and token scope.
   verification_step: 13
   command: grep -q 'cd /home/user/ontheloop && bash bin/setup-cloud-env.sh' bin/setup-cloud-env.sh
-  waiver_reason: Shell comments carry no runtime behavior; step 6 proves only the two approved comment lines changed.
+  waiver_reason: >-
+    Shell comments carry no runtime behavior; VP step 13 binds the two approved comment texts and VP step 18 bounds the
+    file's diff to exactly those two changed lines.
 constraints:
 - >-
   Public repository (Decision 101): no account id, ARN, numeric GitHub id, token, e-mail or Neon id in any changed line.
@@ -508,7 +529,8 @@ constraints:
 - >-
   Frozen internal identifiers stay (Decision 101(b), Decision 171 clause 1, Decision 218 clause 1): only the full
   name benjamin-blake/theseus moves, plus the approved bare-name edits (the two bin/setup-cloud-env.sh comments and the
-  two terraform/github/CLAUDE.md import lines) and the plan-authored validate_licence_consistency.py comment edits.
+  two terraform/github/CLAUDE.md import lines), the approved validate_licence_consistency.py docstring line 13, and
+  that file's plan-authored comment edits (lines 28-29 and 63).
 - >-
   Person references to the login stay (CODEOWNERS, the tf-gated-apply environment reviewer, the bypass actor;
   breakage_map.codeowners retained by rec-3903 on 2026-10-15).
@@ -613,8 +635,9 @@ execution_steps:
   "On a fresh state, import the existing `theseus` repository rather than recreating it, and" becomes "On a fresh
   state, import the existing `ontheloop` repository rather than recreating it, and", and
   "terraform -chdir=terraform/github import github_repository.this theseus" becomes
-  "terraform -chdir=terraform/github import github_repository.this ontheloop" -- skip either line if the terraform/github
-  re-key (rec-4355) already changed it.
+  "terraform -chdir=terraform/github import github_repository.this ontheloop" -- skip either line if an earlier plan
+  already changed or removed it (the rec-3136 state-fix build replaces the "First-time import" section with a state
+  reconcile section; the rec-4355 re-key may also touch it).
 - >-
   tests/convergence_health/test_escalate.py: add the module-level test_stuck_approval_acceptance_names_the_new_repository
   asserting escalate._ACCEPTANCE_STUCK_APPROVAL starts with
@@ -647,7 +670,7 @@ execution_steps:
 - >-
   Closure (implement skill Commit Flows; docs/contracts/git-ops.yaml), each outcome reported separately:
   bin/venv-python -m scripts.session.github_readiness; implementation_declared true in this plan; rebase on
-  origin/main; VP steps 1-9 and 13-17; VP step 10 on the committed clean tree, then --verify-head; write the
+  origin/main; VP steps 1-9 and 13-18; VP step 10 on the committed clean tree, then --verify-head; write the
   implementation retrospective with the scripts.session.postflight_evidence.CATEGORIES keys and run
   bin/venv-python -m scripts.session.postflight --evidence <that file>; push; open the PR; subscribe to its activity;
   drive CI green to code-review PROCEED. The PR touches /terraform/github/ (terraform/github/CLAUDE.md), a

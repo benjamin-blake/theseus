@@ -106,7 +106,9 @@ scope:
     stays pending for rec-3136). The check's own invariant (1) is untouched.
 - file: tests/checks/contracts/test_validate_github_org_transfer.py
   action: Modify
-  purpose: Add test_rec_3903_rows_are_evaluated_not_pending; adjust any pending-set expectation that named the four rows.
+  purpose: >-
+    Add test_rec_3903_rows_are_evaluated_not_pending; fixture-contract tests monkeypatch both maps (execution step 1);
+    adjust any real-module expectation of either map's membership.
 - file: scripts/checks/contracts/_manifest.py
   action: Modify
   purpose: >-
@@ -246,6 +248,7 @@ verification_plan:
     tests/checks/contracts/test__retired_identity.py::test_sweep_pin_must_cite_a_rec_3903_row
     tests/checks/contracts/test__retired_identity.py::test_dependabot_gate_must_name_the_target_from_pre_staged
     tests/checks/contracts/test__retired_identity.py::test_no_sweep_pin_may_remain_at_predecessor_removed
+    tests/checks/contracts/test__retired_identity.py::test_sweep_pins_pass_at_proven_with_staged_predecessor_removed
     tests/checks/contracts/test__retired_identity.py::test_unreadable_contract_or_git_failure_fails_closed
   expected: Exit 0; every node passes.
   fix_if: A failing node names the discrimination case the scan gets wrong.
@@ -521,7 +524,8 @@ context:
 - >-
   Survivors expected in SURVIVOR_PINS: docs/contracts/github-org-transfer.yaml (identity record), this module and its
   test, tests/checks/hygiene/test_validate_licence_consistency.py (later-slug fixtures), tests/test_convergence_classify.py
-  (captured run URL), tests/convergence_health/budget_ingest/{conftest,test_collect}.py (synthetic repository field).
+  (captured run URL), tests/checks/contracts/test_validate_github_org_transfer.py (if its fixtures carry the retired
+  identity), tests/convergence_health/budget_ingest/{conftest,test_collect}.py (synthetic repository field).
   Any other match outside exemptions is either a forward-standing reference, pinned to its rec-3903 row and in the
   sweep plan's scope (step 8), or test data, an absence assertion or the identity record, pinned as a survivor with
   its reason. Migration plans landing after this build add a SURVIVOR_PINS line for any new test-data literal
@@ -553,9 +557,10 @@ execution_steps:
   (ii) note how the check's own tests build their fixture contracts: any fixture whose synthetic breakage_map
   carries the four rec-3903 static rows would now run their evaluators against a non-git tmp_path and fail closed,
   so those fixture tests monkeypatch BOTH maps back to the state they were written against -- ROW_EVALUATORS to the
-  OIDC entry only and PENDING_STATIC_ROWS to terraform_github_root plus the four rec-3903 rows -- with no assertion
-  changed (the check's no-silent-skip rule then holds for every fixture), and test_rec_3903_rows_are_evaluated_not_pending
-  proves the four rows on the real module (Decision 181).
+  OIDC entry only and PENDING_STATIC_ROWS to terraform_github_root plus the four rec-3903 rows -- with no fixture
+  assertion changed (the check's no-silent-skip rule then holds for every fixture); adjust any real-module expectation
+  of either map's membership to the four-row move, and test_rec_3903_rows_are_evaluated_not_pending proves the four
+  rows on the real module (Decision 181).
 - >-
   .github/workflows/dependabot-auto-merge.yml: the job if becomes exactly
   "github.event.pull_request.user.login == 'dependabot[bot]' && (github.repository == 'benjamin-blake/theseus' || github.repository == 'otl-labs/ontheloop')".
@@ -605,16 +610,19 @@ execution_steps:
   three patterns: (?<![\w.-])benjamin-blake/theseus(?![\w-]); a quoted benjamin-blake; and
   \b\w*(?:repo|REPO)\w*\s*[:=][^\n]{0,30}?["']theseus["']; (4) every non-exempt file with a match must be a key of
   SWEEP_PINS (value: a ROWS id) or SURVIVOR_PINS (value: a reason), else one failure per file naming its first
-  line; (5) every pin with no match fails as stale; (6) identity.phase in pre_staged, transferred, proven or
+  line; (5) every pin with no match fails as stale; rules (6) and (7) read identity.phase, never staged_phase
+  (removing the old OIDC segment stages predecessor_removed while phase is proven, before this last sweep);
+  (6) identity.phase in pre_staged, transferred, proven or
   predecessor_removed requires the real dependabot job if to contain github.repository == '<target owner>/<target
   repository>' read from identity.target; (7) identity.phase predecessor_removed requires SWEEP_PINS empty.
   Stage every new file (git add) first, since the scan reads tracked files only, then populate SWEEP_PINS and
   SURVIVOR_PINS from the live tree after the edits above (expected sets: the sweep plan's
   scope files that carry the retired identity, and the survivors in context). Create
-  tests/checks/contracts/test__retired_identity.py with the eight nodes in VP step 7 (test_new_unpinned_literal_fails
+  tests/checks/contracts/test__retired_identity.py with the nine nodes in VP step 7 (test_new_unpinned_literal_fails
   parametrized over the three forms, e.g. x = "benjamin-blake/theseus", owner: str = "benjamin-blake",
   _REPO_NAME = "theseus") plus the live-tree pass, at
-  100% coverage, using tmp git repositories and fixture contracts.
+  100% coverage, using tmp git repositories (git init and git add only, never commit: git grep reads the index, and a
+  commit identity's e-mail address would trip VP step 11) and fixture contracts.
 - >-
   validate_github_org_transfer.py: ROW_EVALUATORS gains the four entries from _retired_identity.ROW_EVALUATORS
   (for example ROW_EVALUATORS.update(...) or a merged literal, matching the module's style) and PENDING_STATIC_ROWS
