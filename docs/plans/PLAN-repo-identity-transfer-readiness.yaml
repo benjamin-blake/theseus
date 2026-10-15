@@ -110,15 +110,16 @@ scope:
 - file: scripts/checks/contracts/_manifest.py
   action: Modify
   purpose: >-
-    validate_github_org_transfer's Entry becomes ungated in --pre (pre=True, pre_globs=None) unless the OIDC build
-    already registered it so: the rec-3903 evaluators read every tracked file, so no static glob encloses the read
+    Conditional: validate_github_org_transfer's Entry must be ungated in --pre (pre=True, pre_globs=None). The OIDC
+    plan now registers it so from the start (TestGithubOrgTransferPromotedUngated), making this a no-op; if its build
+    landed gated, this build ungates it, because the rec-3903 evaluators read every tracked file, so no static glob encloses the read
     set, and a gated Entry would skip exactly the PRs that add a literal or orphan a pin (precedent
     validate_portal_drift, TestPortalDriftPromotedUngated). Widening the trigger is free under the direction rule.
 - file: tests/checks/contracts/test__manifest.py
   action: Modify
   purpose: >-
-    Add TestGithubOrgTransferUngated (dispatched in --pre; pre_globs is None) and remove the check's _CLOSURE_INPUTS
-    row, which a None-globs Entry would fail; no change if the OIDC build already did both.
+    Conditional, as above: only if the OIDC build landed the Entry gated, add TestGithubOrgTransferUngated (dispatched
+    in --pre; pre_globs is None) and remove the check's _CLOSURE_INPUTS row, which a None-globs Entry would fail.
 - file: docs/contracts/github-org-transfer.yaml
   action: Modify
   purpose: >-
@@ -266,7 +267,7 @@ verification_plan:
     amendment to the planning thread through the coordinator; merge this only after the amendment lands.
   hermetic: true
   graduation: waive
-  graduation_waiver_reason: A one-time bridge to the sweep plan; vacuous once the sweep empties SWEEP_PINS.
+  graduation_waiver_reason: A one-time bridge to the sweep plan; meaningless after the sweep empties SWEEP_PINS (the command would then fail, by design).
 - step: 9
   phase: pre-deploy
   action: The contract carries the approved amendment verbatim, bound to execution_steps' APPROVED CONTRACT TEXT block.
@@ -303,7 +304,9 @@ verification_plan:
     means the edit was not net +1 (tighten it; Decision 128, never a budget raise).
   hermetic: true
   graduation: waive
-  graduation_waiver_reason: validate_placement and validate_sloc_limits are registered checks in both tiers.
+  graduation_waiver_reason: >-
+    validate_placement, validate_structural_size_limits (docs/contracts size) and validate_sloc_limits (Python SLOC)
+    are registered checks in both tiers.
 - step: 11
   phase: pre-deploy
   action: >-
@@ -356,26 +359,32 @@ verification_plan:
   phase: pre-deploy
   action: validate_github_org_transfer is dispatched in --pre with no pre_globs, so the retired-identity scan runs on every PR.
   command: >-
-    bin/venv-python -m pytest -q tests/checks/contracts/test__manifest.py::TestGithubOrgTransferUngated
-  expected: Exit 0; both nodes pass.
+    bin/venv-python -c "from scripts.checks.contracts import _manifest as m; from scripts.checks import registry; e=next(x for x in m.ENTRIES if x.name=='validate_github_org_transfer');
+    assert e.pre and e.pre_globs is None, e.pre_globs; assert 'validate_github_org_transfer' in {s.name for s in registry.pre_sequence() if s.kind=='check'}; print('UNGATED_IN_PRE')"
+  expected: Exit 0 and UNGATED_IN_PRE printed.
   fix_if: A failure means the Entry is still gated or not in --pre; apply the _manifest.py step.
   hermetic: true
   graduation: waive
-  graduation_waiver_reason: The pytest class is itself the standing guard, beside its TestPortalDriftPromotedUngated precedent.
+  graduation_waiver_reason: >-
+    The manifest test class (the OIDC build's TestGithubOrgTransferPromotedUngated, or this plan's
+    TestGithubOrgTransferUngated if the build had to ungate it) is the standing guard.
 - step: 16
   phase: pre-deploy
   action: >-
     The two contract edits change nothing beyond what was approved: file-router differs from origin/main only by the
     allowlisted file and the new amendment_log entry (the compaction is format-only), and github-org-transfer.yaml
-    only in planned_evaluator, owner_literal_defaults' locations and fix, and one new amendment_log entry.
+    only in planned_evaluator (its OIDC-authored text before "Until then the pinned constants" unchanged, then the
+    approved tail), owner_literal_defaults' locations and fix, and one new amendment_log entry.
   command: >-
-    bin/venv-python -c "import yaml,subprocess,copy; o=lambda f:yaml.safe_load(subprocess.check_output(['git','show','origin/main:'+f],text=True,encoding='utf-8')); h=lambda f:yaml.safe_load(open(f,encoding='utf-8'));
+    bin/venv-python -c "import yaml,subprocess,copy,re; o=lambda f:yaml.safe_load(subprocess.check_output(['git','show','origin/main:'+f],text=True,encoding='utf-8')); h=lambda f:yaml.safe_load(open(f,encoding='utf-8'));
     a,b=o('docs/contracts/file-router.yaml'),h('docs/contracts/file-router.yaml'); new=[e for e in b['amendment_log'] if e not in a['amendment_log']]; assert len(new)==1 and [e for e in b['amendment_log'] if e!=new[0]]==a['amendment_log'];
     al=b['scripts_root_allowlist']['allowed_files']; assert set(al)-set(a['scripts_root_allowlist']['allowed_files'])=={'repo_identity.py'} and len(al)==len(a['scripts_root_allowlist']['allowed_files'])+1;
     x,y=copy.deepcopy(a),copy.deepcopy(b); [d.pop('amendment_log') for d in (x,y)]; x['scripts_root_allowlist'].pop('allowed_files'); y['scripts_root_allowlist'].pop('allowed_files'); assert x==y;
     c,d=o('docs/contracts/github-org-transfer.yaml'),h('docs/contracts/github-org-transfer.yaml'); assert len(d['amendment_log'])==len(c['amendment_log'])+1 and d['amendment_log'][:-1]==c['amendment_log'];
     rc={r['id']:r for r in c['breakage_map']}; rd={r['id']:r for r in d['breakage_map']}; assert rd['owner_literal_defaults']['locations'][1:]==rc['owner_literal_defaults']['locations'];
     [(r.pop('fix'),r.pop('locations')) for r in (rc['owner_literal_defaults'],rd['owner_literal_defaults'])]; assert rc==rd;
+    n=lambda q:' '.join(q.split()); pl=yaml.safe_load(open('docs/plans/PLAN-repo-identity-transfer-readiness.yaml',encoding='utf-8')); tx=[q for q in pl['execution_steps'] if q.startswith('APPROVED CONTRACT TEXT')][0];
+    A=dict(re.findall(r'(?ms)^([A-Z_]+):\n(.*?)(?=^[A-Z_]+:\n|\Z)',tx)); pe=n(c['planned_evaluator']); k=pe.index('Until then the pinned constants'); assert n(d['planned_evaluator'])==(pe[:k]+n(A['PLANNED_EVALUATOR_TAIL'])).strip();
     [z.pop(k) for z in (c,d) for k in ('planned_evaluator','amendment_log','breakage_map')]; assert c==d; print('CONTRACT_EDITS_EXACT')"
   expected: Exit 0 and CONTRACT_EDITS_EXACT printed.
   fix_if: >-
@@ -439,7 +448,9 @@ test_obligations:
   test_selector: tests/checks/misc/test_validate_ghas_probe.py::test_malformed_repository_falls_back_to_the_default
   red_green_expectation: Red before (the raw value is returned), green after.
 - source: scripts/checks/contracts/_retired_identity.py
-  behavior: An unpinned file naming the retired identity fails the check.
+  behavior: >-
+    An unpinned file naming the retired identity fails the check, for each of the three approved forms
+    (parametrized: the full name; a quoted owner; a quoted repository name bound to a repo-named identifier).
   verification_step: 7
   test_selector: tests/checks/contracts/test__retired_identity.py::test_new_unpinned_literal_fails
   red_green_expectation: Red before (the module does not exist), green after.
@@ -451,8 +462,13 @@ test_obligations:
 - source: scripts/checks/contracts/_manifest.py
   behavior: validate_github_org_transfer is dispatched in --pre with no pre_globs.
   verification_step: 15
-  test_selector: tests/checks/contracts/test__manifest.py::TestGithubOrgTransferUngated
-  red_green_expectation: Red before (the class does not exist and the OIDC Entry carries pre_globs), green after.
+  command: >-
+    bin/venv-python -c "from scripts.checks.contracts import _manifest as m; from scripts.checks import registry; e=next(x for x in m.ENTRIES if x.name=='validate_github_org_transfer');
+    assert e.pre and e.pre_globs is None, e.pre_globs; assert 'validate_github_org_transfer' in {s.name for s in registry.pre_sequence() if s.kind=='check'}; print('UNGATED_IN_PRE')"
+  waiver_reason: >-
+    Conditional row: the OIDC plan now registers the Entry ungated from the start (its thread, 2026-10-15 22:48 UTC,
+    with TestGithubOrgTransferPromotedUngated), so this build normally leaves the file untouched; VP step 15 asserts the
+    ungated state either way.
 - source: docs/contracts/github-org-transfer.yaml
   behavior: The contract records the approved amendment.
   verification_step: 9
@@ -536,8 +552,10 @@ execution_steps:
   approved PLANNED_EVALUATOR_TAIL says it stays pending for rec-3136 and must be re-presented to the operator;
   (ii) note how the check's own tests build their fixture contracts: any fixture whose synthetic breakage_map
   carries the four rec-3903 static rows would now run their evaluators against a non-git tmp_path and fail closed,
-  so those tests restrict ROW_EVALUATORS to the OIDC entry (monkeypatch a copy) without weakening any assertion, and
-  test_rec_3903_rows_are_evaluated_not_pending proves the four rows on the real module (Decision 181).
+  so those fixture tests monkeypatch BOTH maps back to the state they were written against -- ROW_EVALUATORS to the
+  OIDC entry only and PENDING_STATIC_ROWS to terraform_github_root plus the four rec-3903 rows -- with no assertion
+  changed (the check's no-silent-skip rule then holds for every fixture), and test_rec_3903_rows_are_evaluated_not_pending
+  proves the four rows on the real module (Decision 181).
 - >-
   .github/workflows/dependabot-auto-merge.yml: the job if becomes exactly
   "github.event.pull_request.user.login == 'dependabot[bot]' && (github.repository == 'benjamin-blake/theseus' || github.repository == 'otl-labs/ontheloop')".
@@ -566,7 +584,8 @@ execution_steps:
   _REPO_OWNER, _REPO_NAME = repo_identity.owner_and_name(). github_readiness.py: the URL becomes
   f"https://api.github.com/repos/{repo_identity.full_name()}". validate_ghas_probe.py: _repo() returns
   repo_identity.full_name(); delete _DEFAULT_REPO. Add the named module-level tests (VP step 3), each setting
-  GITHUB_REPOSITORY to example-org/example-repo and asserting every captured URL contains
+  GITHUB_REPOSITORY to example-org/example-repo, asserting the capture is non-empty (approvals.py swallows errors)
+  and every captured URL contains
   repos/example-org/example-repo (no trailing slash: github_readiness's URL ends there; or the constant equals it):
   the approvals test parametrized over its three
   functions, the budget test covering collect_budget_episodes and ingest_budget_breaches (dry_run, injected callers
@@ -592,7 +611,9 @@ execution_steps:
   Stage every new file (git add) first, since the scan reads tracked files only, then populate SWEEP_PINS and
   SURVIVOR_PINS from the live tree after the edits above (expected sets: the sweep plan's
   scope files that carry the retired identity, and the survivors in context). Create
-  tests/checks/contracts/test__retired_identity.py with the eight nodes in VP step 7 plus the live-tree pass, at
+  tests/checks/contracts/test__retired_identity.py with the eight nodes in VP step 7 (test_new_unpinned_literal_fails
+  parametrized over the three forms, e.g. x = "benjamin-blake/theseus", owner: str = "benjamin-blake",
+  _REPO_NAME = "theseus") plus the live-tree pass, at
   100% coverage, using tmp git repositories and fixture contracts.
 - >-
   validate_github_org_transfer.py: ROW_EVALUATORS gains the four entries from _retired_identity.ROW_EVALUATORS
@@ -603,8 +624,8 @@ execution_steps:
   scripts/checks/contracts/_manifest.py: if validate_github_org_transfer's Entry has pre_globs, set pre_globs=None
   (keep pre=True and its full_segment) with a comment naming the whole-tree read set; in
   tests/checks/contracts/test__manifest.py remove its _CLOSURE_INPUTS row and add TestGithubOrgTransferUngated with
-  test_is_dispatched_in_pre and test_declares_no_pre_globs, modelled on TestPortalDriftPromotedUngated. If the OIDC
-  build already registered it ungated, only confirm VP step 15.
+  test_is_dispatched_in_pre and test_declares_no_pre_globs, modelled on TestPortalDriftPromotedUngated. The OIDC plan
+  now registers it ungated with TestGithubOrgTransferPromotedUngated, so normally only confirm VP step 15.
 - |
   APPROVED CONTRACT TEXT (operator Benjamin, 2026-10-15 21:29 UTC, thread message cmsg_017f94mmYqSe3q2p9o6tPW3UG2Az1j3ZgZBFjCpEvZ4PDb; allowed variance: the amendment_log dates only). FILE_ROUTER_SUMMARY is the docs/contracts/file-router.yaml entry's summary (see the repo_identity step).
   Apply to docs/contracts/github-org-transfer.yaml, on top of the OIDC pre-stage plan's merged amendment:

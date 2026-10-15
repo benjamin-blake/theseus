@@ -218,7 +218,9 @@ verification_plan:
   fix_if: A failing node names the file whose substitution is wrong or missing.
   hermetic: true
   graduation: waive
-  graduation_waiver_reason: The named pytest nodes are themselves the standing guards and run in every --pre pytest_diff.
+  graduation_waiver_reason: >-
+    The named pytest nodes are themselves the standing guards; pytest_diff runs them when a PR touches their modules
+    or the code they cover, and the full tier runs them always.
 - step: 6
   phase: pre-deploy
   action: >-
@@ -295,7 +297,7 @@ verification_plan:
     the merge ran its auto-merge job (not skipped). Non-dependabot PRs always produce skipped runs, so they are
     filtered out; times compare as UTC epochs.
   command: >-
-    bin/venv-python -c "import json,urllib.request,subprocess,datetime; t=int(subprocess.check_output(['git','log','-1','--format=%ct','origin/main'],text=True).strip());
+    bin/venv-python -c "import json,urllib.request,subprocess,datetime; t=int(subprocess.check_output(['git','log','-1','--format=%ct','--grep=Resolves: rec-3903','origin/main'],text=True).strip());
     ep=lambda s:datetime.datetime.fromisoformat(s.replace('Z','+00:00')).timestamp();
     runs=json.load(urllib.request.urlopen('https://api.github.com/repos/otl-labs/ontheloop/actions/workflows/dependabot-auto-merge.yml/runs?per_page=100',timeout=30))['workflow_runs'];
     after=sorted((r for r in runs if ep(r['created_at'])>t and (r.get('head_branch') or '').startswith('dependabot/') and r['status']=='completed'),key=lambda r:ep(r['created_at']));
@@ -356,7 +358,8 @@ verification_plan:
   command: >-
     bin/venv-python -c "import subprocess; X=['docs/plans/','.github/workflows/dependabot-auto-merge.yml','tests/checks/ci_guards/test_validate_dependabot_automation.py',
     'config/agent/verification_registry/entries/roadmap-retired-brand-tokens-absent.yaml','docs/contracts/package-registry-reservation.yaml','scripts/checks/hygiene/validate_licence_consistency.py',
-    'bin/setup-cloud-env.sh','tests/convergence_health/test_escalate.py','scripts/checks/contracts/_retired_identity.py','tests/checks/contracts/test__retired_identity.py','terraform/github/CLAUDE.md'];
+    'bin/setup-cloud-env.sh','tests/convergence_health/test_escalate.py','scripts/checks/contracts/_retired_identity.py','tests/checks/contracts/test__retired_identity.py','terraform/github/CLAUDE.md',
+    'config/agent/verification_registry/entries/retired-repo-identity-sweep-set-empty.yaml'];
     d=subprocess.check_output(['git','diff','-U0','origin/main','--','.']+[':!'+x for x in X],text=True,encoding='utf-8'); L=d.splitlines();
     rm=sorted(l[1:].replace('benjamin-blake/theseus','otl-labs/ontheloop') for l in L if l.startswith('-') and not l.startswith('---'));
     ad=sorted(l[1:] for l in L if l.startswith('+') and not l.startswith('+++')); print('PAIRED', len(ad)); assert ad and rm==ad"
@@ -385,6 +388,29 @@ verification_plan:
   hermetic: true
   graduation: waive
   graduation_waiver_reason: A one-time check of the approved acceptance text; the portal's write-time lint is the standing guard.
+- step: 17
+  phase: pre-deploy
+  action: >-
+    The approved texts outside rec-3903's acceptance land verbatim: the package-registry-reservation amendment_log
+    summary, the roadmap registry row's new clause, and the terraform/github/CLAUDE.md lines (the two import lines
+    either carry the approved text or no longer exist because the terraform/github re-key rewrote that section).
+  command: >-
+    bin/venv-python -c "import yaml,re; n=lambda q:' '.join(q.split()); p=yaml.safe_load(open('docs/plans/PLAN-retired-repo-identity-sweep.yaml',encoding='utf-8'));
+    t=[x for x in p['execution_steps'] if x.startswith('APPROVED SWEEP TEXT')][0]; A={k:v.strip() for k,v in re.findall(r'(?ms)^([A-Z0-9_]+):\n(.*?)(?=^[A-Z0-9_]+:\n|\Z)',t)};
+    pr=yaml.safe_load(open('docs/contracts/package-registry-reservation.yaml',encoding='utf-8')); e=pr['amendment_log'][0];
+    assert n(e['summary'])==n(A['PACKAGE_REGISTRY_SUMMARY']) and e['change_class']=='governance_note_add' and e['semantic_break'] is False;
+    rw=yaml.safe_load(open('config/agent/verification_registry/entries/roadmap-retired-brand-tokens-absent.yaml',encoding='utf-8')); c=n(rw['check_spec']['command'][-1]);
+    assert n(A['ROADMAP_ROW_CLAUSE']) in c and \"= 1\" not in c;
+    L=open('terraform/github/CLAUDE.md',encoding='utf-8').read().splitlines(); assert A['CLAUDE_MD_LINE_6'] in L;
+    assert A['CLAUDE_MD_IMPORT_PROSE'] in L or not any('import the existing' in x for x in L);
+    assert A['CLAUDE_MD_IMPORT_COMMAND'] in L or not any('import github_repository.this' in x for x in L); print('APPROVED_TEXT_VERBATIM')"
+  expected: Exit 0 and APPROVED_TEXT_VERBATIM printed.
+  fix_if: >-
+    A failed assertion names the approved text that was reworded or missed: restore it verbatim from the APPROVED SWEEP
+    TEXT step. Any wording change goes back to the operator through the coordinator.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: A one-time check binding this sweep's approved text; it has no meaning once merged.
 test_obligations:
 - source: .github/workflows/dependabot-auto-merge.yml
   behavior: The auto-merge job runs only for otl-labs/ontheloop.
@@ -605,13 +631,23 @@ execution_steps:
 
   REC_3903_ACCEPTANCE:
   ! git grep -n -E "benjamin-blake/theseus|[\"']benjamin-blake[\"']" -- scripts/ .github/workflows/ terraform/github/variables.tf ':!scripts/checks/contracts/_retired_identity.py' && bin/venv-python -m pytest -q tests/checks/contracts/test__retired_identity.py::test_sweep_set_is_empty
+  PACKAGE_REGISTRY_SUMMARY:
+  PLAN-retired-repo-identity-sweep (rec-3903): pypi_trusted_publisher.repository names otl-labs/ontheloop after the transfer-and-rename (Decision 218).
+  ROADMAP_ROW_CLAUSE:
+  test "$(grep -c 'benjamin-blake/theseus' docs/ROADMAP-PLATFORM.yaml)" = 0 && test "$(grep -c 'otl-labs/ontheloop' docs/ROADMAP-PLATFORM.yaml)" -ge 1
+  CLAUDE_MD_LINE_6:
+  This module manages GitHub repository settings for `otl-labs/ontheloop` via the
+  CLAUDE_MD_IMPORT_PROSE:
+  On a fresh state, import the existing `ontheloop` repository rather than recreating it, and
+  CLAUDE_MD_IMPORT_COMMAND:
+  terraform -chdir=terraform/github import github_repository.this ontheloop
 - >-
   Plan-authored rec-3903 context note (not operator wording), appended through update_rec with its date: "[<date>, PLAN-retired-repo-identity-sweep] acceptance rewritten (operator-approved 2026-10-15): the old oracle matched person references and the agent-platform pins forever; the new one keeps every original path and adds the empty-sweep-set test. rec-3903's earlier note that validate_licence_consistency should gain the new forbidden slug is superseded: validate_github_org_transfer guards the retired identity (one guard per identity; the licence check keeps the earlier rename only)."
 - Execute the Verification Plan pre-deploy steps; loop until pass; on an unrecoverable failure STOP and RCA (Decision 55).
 - >-
   Closure (implement skill Commit Flows; docs/contracts/git-ops.yaml), each outcome reported separately:
   bin/venv-python -m scripts.session.github_readiness; implementation_declared true in this plan; rebase on
-  origin/main; VP steps 1-9 and 13-16; VP step 10 on the committed clean tree, then --verify-head; write the
+  origin/main; VP steps 1-9 and 13-17; VP step 10 on the committed clean tree, then --verify-head; write the
   implementation retrospective with the scripts.session.postflight_evidence.CATEGORIES keys and run
   bin/venv-python -m scripts.session.postflight --evidence <that file>; push; open the PR; subscribe to its activity;
   drive CI green to code-review PROCEED. The PR touches /terraform/github/ (terraform/github/CLAUDE.md), a
