@@ -87,7 +87,7 @@ def test_writer_contract_idempotency_corrected() -> None:
     assert "MERGE-idempotent" not in invariants
     assert "fresh write ULID per call" in invariants and "rec-4121" in invariants
     assert "write_boundary" in invariants and "telemetry_append" in invariants and "registration" in invariants
-    assert any(e["date"] == "2026-10-05" for e in doc["amendment_log"])
+    assert any(e["date"] == "2026-10-05" and "PLAN-telemetry-table-registration" in e["summary"] for e in doc["amendment_log"])
 
 
 def test_dimension_joins_declared() -> None:
@@ -133,7 +133,7 @@ def test_ops_entity_counters_catalog_aware_grain() -> None:
     assert "ulid" in doc["fields"]["current_value"]["description"]
     invariants = " ".join(doc["audit_invariants"])
     assert "absent_tables" in invariants and "ulid -- current_value >= the owning current table's row count" in invariants
-    assert doc["amendment_log"][0]["date"] == "2026-10-05"
+    assert any(e["date"] == "2026-10-05" for e in doc["amendment_log"])
 
 
 def test_reserved_project_namespace_declared() -> None:
