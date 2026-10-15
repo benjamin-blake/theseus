@@ -104,15 +104,25 @@ def write_tree(directory: Path, ref: str, *, start: datetime | None = None) -> P
     return root_file
 
 
-def expected_rows(root_file: Path, ref: str) -> dict[str, int]:
-    """What record_turn builds over the Stop pass then the SessionEnd pass, per table."""
+def expected_by_ref(root_file: Path, ref: str) -> dict[str, dict[str, int]]:
+    """What record_turn builds over the Stop pass then the SessionEnd pass, per session ref (root and sub-agents) and table."""
     first = record_turn(SnapshotTree(root_file), None, project_ref=ref)
     second = record_turn(SnapshotTree(root_file), first.next_cursor, project_ref=ref, session_final=True)
-    counts = Counter(dict.fromkeys(TABLES, 0))
+    counts: dict[str, Counter[str]] = {}
     for result in (first, second):
         for table, rows in result.batches:
-            counts[table] += len(rows)
-    return dict(counts)
+            for row in rows:
+                owner = row["entity_ref"] if table == "telemetry_sessions" else row["session_ref"]
+                counts.setdefault(owner, Counter(dict.fromkeys(TABLES, 0)))[table] += 1
+    return {owner: dict(per_table) for owner, per_table in counts.items()}
+
+
+def expected_rows(root_file: Path, ref: str) -> dict[str, int]:
+    """The per-table totals of expected_by_ref."""
+    total = Counter(dict.fromkeys(TABLES, 0))
+    for per_table in expected_by_ref(root_file, ref).values():
+        total.update(per_table)
+    return dict(total)
 
 
 def hook_entry(script: Path) -> Entry:
@@ -196,21 +206,30 @@ class Smoke:
         _ok(client, {"action": "register_tenant"})
         _ok(client, {"action": "register_project", "project_ref": ref, "name": "pc smoke"})
         root_file = write_tree(directory, ref)
-        expected = expected_rows(root_file, ref)
         state = CaptureState(state_dir(root_file, root_file.stem))
         first = self._drive(root_file, state)
         cursor = state.cursor_on_disk()
         if cursor is None or not cursor.finalized:
             raise SmokeFailure("the SessionEnd pass did not finalize the cursor")
         started = datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(milliseconds=cursor.session_started_at_ms)
-        probe = {"action": "telemetry_probe", "project_ref": ref, "session_ref": cursor.root_session_ref}
-        counts = _ok(self.client_factory(), {**probe, "session_started_at": render_datetime(started)}).get("grain_counts")
-        if not isinstance(counts, Mapping):
-            raise SmokeFailure("telemetry_probe returned no grain counts")
+        by_ref = expected_by_ref(root_file, ref)
+        expected = expected_rows(root_file, ref)
+        read_back: Counter[str] = Counter()
+        for session_ref, wanted in by_ref.items():
+            probe = {"action": "telemetry_probe", "project_ref": ref, "session_ref": session_ref}
+            counts = _ok(self.client_factory(), {**probe, "session_started_at": render_datetime(started)}).get("grain_counts")
+            if not isinstance(counts, Mapping):
+                raise SmokeFailure("telemetry_probe returned no grain counts")
+            for table in TABLES:
+                rows = (counts.get(table) or {}).get("rows")
+                if rows != wanted[table]:
+                    read_back[table] = -1
+                    self.out(f"{table} built={wanted[table]} read_back={rows} for one session ref")
+                elif read_back[table] >= 0:
+                    read_back[table] += rows
         for table in TABLES:
-            rows = (counts.get(table) or {}).get("rows")
-            self.out(f"{table} built={expected[table]} read_back={rows}")
-            if not expected[table] or rows != expected[table]:
+            self.out(f"{table} built={expected[table]} read_back={read_back[table]}")
+            if not expected[table] or read_back[table] != expected[table]:
                 raise SmokeFailure(f"{table} read-back differs from what record_turn built")
         blobs = sum(line.get("diag", {}).get(k, 0) for line in first for k in ("blobs_uploaded", "blobs_existed"))
         self.out(f"blob rows delivered={blobs}")

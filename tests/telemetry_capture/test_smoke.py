@@ -42,6 +42,8 @@ class Writer:
         self.projects: set[str] = set()
         self.refuse: str | None = None
         self.forget_on_probe = False
+        self.probes = 0
+        self.extra_rows = 0
 
     def __call__(self, method: str, url: str, data: bytes, headers: Any, timeout: float) -> tuple[int, bytes]:
         if method == "PUT":
@@ -76,8 +78,19 @@ class Writer:
             ]
             return 200, {"ok": True, "items": items}
         if action == "telemetry_probe":
-            counts = {t: {"rows": sum(1 for k in self.rows if k[0] == t), "keys": 0} for t in TABLES}
-            if self.forget_on_probe:
+            owner = payload["session_ref"]
+            counts = {
+                t: {
+                    "rows": sum(
+                        1 for k, r in self.rows.items() if k[0] == t and (r.get("session_ref") or r.get("entity_ref")) == owner
+                    ),
+                    "keys": 0,
+                }
+                for t in TABLES
+            }
+            counts["telemetry_sessions"]["rows"] += self.extra_rows
+            self.probes += 1
+            if self.forget_on_probe and self.probes == 2:
                 self.rows.clear()
             return 200, {"ok": True, "grain_counts": counts}
         assert payload["project_ref"] in self.projects
@@ -148,7 +161,7 @@ def test_smoke_fails_on_a_refused_registration_or_a_non_idempotent_replay(tmp_pa
     with pytest.raises(smoke.SmokeFailure, match="replay was not an identical-resend no-op"):
         run_smoke(tmp_path / "b", writer, [])
     replay_writer = Writer()
-    replay_writer.rows = {("telemetry_sessions", "x"): {}}
+    replay_writer.extra_rows = 1
     (tmp_path / "c").mkdir()
     with pytest.raises(smoke.SmokeFailure, match="read-back differs"):
         run_smoke(tmp_path / "c", replay_writer, [])
