@@ -20,12 +20,13 @@ scope:
   action: Modify
   purpose: 'Add classes TestPlanReport and TestWorkflowAndTaxonomy (cases in execution_steps[4]) to the file PLAN-terraform-github-plan-state-grant
     creates with TestPlannerStateGrant. Pure functions of repository text and fixture dicts: no network, terraform or AWS.
-    If the file would pass 500 SLOC, move the plan-JSON fixture builders to tests/fixtures/terraform_github_plan_fixtures.py
-    (next scope row); never raise a budget.'
+    If the file would pass 500 SLOC, move test helpers to tests/fixtures/terraform_github_plan_fixtures.py (next scope row);
+    never raise a budget.'
 - file: tests/fixtures/terraform_github_plan_fixtures.py
   action: Create
-  purpose: 'Only if the test file would pass 500 SLOC: plan-JSON fixture builders for TestPlanReport, imported by the test
-    file (tests/fixtures is the shared-helper home; no test_ prefix). Not created otherwise.'
+  purpose: 'Only if the test file would pass 500 SLOC: test helpers for this plan''s classes -- plan-JSON builders first,
+    then the HCL and workflow parsing helpers -- imported by the test file (tests/fixtures is the shared-helper home; precedent
+    tests/fixtures/terraform_hcl_blocks.py). The three classes stay in the test file. Not created otherwise.'
 - file: .github/workflows/terraform-github-plan.yml
   action: Create
   purpose: 'The WORKFLOW block in execution_steps[0], verbatim. Allowed variance: comment wording and step display names (keep
@@ -261,7 +262,7 @@ context:
   162 R3 -> baseline in scope; 101 -> plan text to /dev/null; 126 cl.1 -> row worded as a carve-out; 190 -> drift kept separate.
   CITE: Decision 218, 198, 77, 92, 144, 126, 83, 101, 119, 162, 48. Decisions triaged: 171 of 171. Roadmap items intersected:
   3; CONFLICT: 0; RELATED: 3'
-- 'gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)'
+- 'gates: decision-scout=FLAGS_FOUND; plan-critique=PROCEED after 4 round(s); round 4 autonomous'
 - 'V3 resolution: the workflow PR''s own report comment for its head (run URL, machine line, VISIBILITY line) is the V3 evidence
   the implement V3 Merge Gate and code-review V3 check require; VP step 8 is post-merge closure, not a merge precondition.'
 - 'Step 6b (Benjamin, 2026-10-15, thread message cmsg_017f94mmYqSe3q2p9o6tPW3UXPtLoJDpYr4dee7sinLKwW, ''happy with your recommendations.
@@ -326,12 +327,11 @@ execution_steps:
     # the App is read-only and installed on this one repository.
     #
     # Reading the report (terraform/github/CLAUDE.md points here): this job is the root's pre-merge live
-    # provider contact; agent sessions cannot plan this root themselves. Read its PR comment before merging.
-    # It posts counts, per-resource actions and changed attribute names on the PR, never values. Its
-    # VISIBILITY line says whether the App can
-    # see security_and_analysis and the ruleset's bypass_actors; while either is hidden, the operator's
-    # own plan is authoritative for that field. The job fails on a plan error and on any destroy or
-    # replace. The operator still applies the merged change by hand (terraform/github/CLAUDE.md runbook).
+    # provider contact; agent sessions cannot plan this root themselves. Read its PR comment before
+    # merging. It posts counts, per-resource actions and changed attribute names on the PR, never values.
+    # Its VISIBILITY line says whether the App can see security_and_analysis and the ruleset's
+    # bypass_actors; while either is hidden, the operator's own plan is authoritative for that field. The
+    # job fails on a plan error and on any destroy or replace. The operator still applies the merged change by hand (terraform/github/CLAUDE.md runbook).
     # Configuration: repository secret TF_GITHUB_PLAN_APP_PRIVATE_KEY; repository variables
     # TF_GITHUB_PLAN_APP_CLIENT_ID and TF_GITHUB_GATED_APPLY_REVIEWER_LOGINS (the reviewers' logins,
     # resolved to ids at run time).
@@ -341,6 +341,7 @@ execution_steps:
         paths:
           - 'terraform/github/**'
           - '.github/workflows/terraform-github-plan.yml'
+          - 'scripts/ci/terraform_github_plan_report.py'
 
     permissions:
       contents: read
@@ -599,9 +600,9 @@ execution_steps:
 
   Every PR touching this root runs `.github/workflows/terraform-github-plan.yml`; its header holds the rules.
 - |-
-  tests/test_terraform_github_pr_plan.py -- add two classes beside TestPlannerStateGrant (fixtures inline; if the file would pass 500 SLOC, move the plan-JSON builders to tests/fixtures/terraform_github_plan_fixtures.py; no cross-test imports):
+  tests/test_terraform_github_pr_plan.py -- add two classes beside TestPlannerStateGrant (fixtures inline; if the file would pass 500 SLOC, move test helpers to tests/fixtures/terraform_github_plan_fixtures.py -- the plan-JSON builders first, then the HCL and workflow parsing helpers (tests/fixtures/terraform_hcl_blocks.py is the precedent); the three classes stay in this file, since rec-4335's acceptance and the registry node ids pin them; no cross-test imports):
   TestPlanReport (imports scripts.ci.terraform_github_plan_report): a no-op plan with no resource_drift key is NO_CHANGES with all counts 0 and destructive false; a ruleset update whose only changed key is bypass_actors (before [], after one actor) with the probe hidden is labelled visibility-gated, still counts change=1 (raw), verdict VISIBILITY_GATED_ONLY; the same row with the probe visible, and with it unknown, is not gated (verdict CHANGES); bypass_actors plus any other changed key is not gated; a non-empty before bypass_actors is not gated; a bypass_actors-only update with before [] while the probe says visible raises the VISIBILITY CONFLICT line, conflict=1 and conflict=true, and is not gated; one gated row plus another update is verdict CHANGES with gated=1; an import-only row counts import=1, change=0; ["delete","create"] counts replace=1, add=1, destroy=1 and destructive true; ["delete"] is destructive; after_unknown holding only nested false adds no changed name and a nested true does; resource_drift entries count in drift only and are listed by address; mode "data" rows are ignored; sentinel strings placed in before, after, after_unknown, variables, prior_state and configuration never appear in the rendered output; load_visibility maps "false" to hidden, "true" to visible, anything else and a missing file to unknown; main() with an unreadable or non-object plan JSON exits 2 with empty stdout; main() with --github-output appends verdict=, destructive= and conflict= lines; the last stdout line starts "TF_GITHUB_PLAN_REPORT verdict="; the module imports only stdlib modules (ast walk against an allowlist).
-  TestWorkflowAndTaxonomy (yaml.safe_load; the "on" key loads as True): triggers are exactly pull_request with paths ['terraform/github/**', '.github/workflows/terraform-github-plan.yml'] and nothing else (no push, schedule, workflow_dispatch, pull_request_target, workflow_run); the job if requires head.repo.full_name == github.repository and github.actor != 'dependabot[bot]'; top-level permissions are exactly contents: read and job permissions exactly id-token: write, contents: read, pull-requests: write; the configure-aws-credentials step's role-to-assume references secrets.AWS_ACCOUNT_ID and ends role/agent-platform-github-ci-planner, its role-session-name is terraform-github-plan-pr and differs from local.convergence_writer_session_name read from terraform/personal/oidc.tf, and it has no continue-on-error; the create-github-app-token step's with keys are exactly client-id, private-key, permission-metadata, permission-administration, permission-actions, every permission value is read, and no owner or repositories input is set; the plan step's run carries -lock=false, -detailed-exitcode and "> /dev/null"; the probe step tests security_and_analysis with '!= null' and bypass_actors with has("bypass_actors"); no run body anywhere in the file contains "terraform apply", "terraform import", "state rm", "state mv", "state push", "force-unlock", "aws s3", or writes GITHUB_ENV, and no step uses actions/upload-artifact; an if: always() step removes plan.bin and plan.json; no step env value names reviewer ids (the ids flow only through the runner-temp file); "terraform-github-plan" does not appear in terraform/github/repo.tf; environment-taxonomy.yaml axis_a.github exists, its code_vs_infra names terraform/github, its apply_gating names terraform-github-plan.yml and "NEVER auto-apply" and does not start with "admin-only"; scripts.checks.verification.validate_admin_root_premerge_gate._derive_admin_only_roots on the real taxonomy returns no error and includes terraform/bootstrap but not terraform/github; terraform/github/CLAUDE.md contains ".github/workflows/terraform-github-plan.yml".
+  TestWorkflowAndTaxonomy (yaml.safe_load; the "on" key loads as True): triggers are exactly pull_request with paths ['terraform/github/**', '.github/workflows/terraform-github-plan.yml', 'scripts/ci/terraform_github_plan_report.py'] and nothing else (no push, schedule, workflow_dispatch, pull_request_target, workflow_run); the job if requires head.repo.full_name == github.repository and github.actor != 'dependabot[bot]'; top-level permissions are exactly contents: read and job permissions exactly id-token: write, contents: read, pull-requests: write; the configure-aws-credentials step's role-to-assume references secrets.AWS_ACCOUNT_ID and ends role/agent-platform-github-ci-planner, its role-session-name is terraform-github-plan-pr and differs from local.convergence_writer_session_name read from terraform/personal/oidc.tf, and it has no continue-on-error; the create-github-app-token step's with keys are exactly client-id, private-key, permission-metadata, permission-administration, permission-actions, every permission value is read, and no owner or repositories input is set; the plan step's run carries -lock=false, -detailed-exitcode and "> /dev/null"; the probe step tests security_and_analysis with '!= null' and bypass_actors with has("bypass_actors"); no run body anywhere in the file contains "terraform apply", "terraform import", "state rm", "state mv", "state push", "force-unlock", "aws s3", or writes GITHUB_ENV, and no step uses actions/upload-artifact; an if: always() step removes plan.bin and plan.json; no step env value names reviewer ids (the ids flow only through the runner-temp file); "terraform-github-plan" does not appear in terraform/github/repo.tf; environment-taxonomy.yaml axis_a.github exists, its code_vs_infra names terraform/github, its apply_gating names terraform-github-plan.yml and "NEVER auto-apply" and does not start with "admin-only"; scripts.checks.verification.validate_admin_root_premerge_gate._derive_admin_only_roots on the real taxonomy returns no error and includes terraform/bootstrap but not terraform/github; terraform/github/CLAUDE.md contains ".github/workflows/terraform-github-plan.yml".
   Create the step 1 and step 2 registry entries. Register the workflow's inline bodies in config/composite_action_body_baseline.yaml r3_workflows at their measured counts.
 - 'Sequence and closure (implement skill Commit Flows; docs/contracts/git-ops.yaml), each outcome reported separately. Start
   only after PLAN-terraform-github-plan-state-grant is merged and verified (its VP steps 3-4) and the operator confirms the
