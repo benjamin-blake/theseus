@@ -166,3 +166,30 @@ def test_verify_blob_rows_returns_unverified_and_raises_on_a_mismatch() -> None:
     with pytest.raises(TelemetryRequestError) as caught:
         core.verify_blob_rows(rows, indexes, store=down, now=STARTED)
     assert caught.value.status == 503
+
+
+class Con:
+    def __init__(self, stored: list[tuple[Any, ...]]) -> None:
+        self.stored, self.sql = stored, []
+
+    def execute(self, sql: str, params: Any = None) -> Con:
+        self.sql.append((sql, params))
+        return self
+
+    def fetchall(self) -> list[tuple[Any, ...]]:
+        return self.stored
+
+
+def test_require_stored_reads_once_and_names_the_first_unstored_row() -> None:
+    rows = core.attach_blob_uris(blob_rows(3), tenant_id=TENANT, project_id=RESOLVED, threshold=THRESHOLD, cap=CAP)
+    batch = prepare_batch(specs()["telemetry_transcripts"], rows, tenant_id=TENANT, project_id=RESOLVED, now=STARTED)
+    keys = [(r["producer"], r["event_id"], r["parser_version"]) for r in batch.rows]
+    bad = [core.Unverified(0, "missing"), core.Unverified(2, "stale")]
+    core.require_stored(Con(keys), "ops_catalog", batch, bad)
+    con = Con(keys[:2])
+    with pytest.raises(TelemetryRequestError) as caught:
+        core.require_stored(con, "ops_catalog", batch, bad)
+    assert caught.value.fields == {"table": "telemetry_transcripts", "row": 2, "reason": "stale"} and len(con.sql) == 1
+    core.require_stored(Con([]), "ops_catalog", batch, [])
+    core.require_stored(Con([]), "ops_catalog", batch, [core.Unverified(99, "missing")])
+    assert core.verify_blob_rows(rows, [], store=FakeBlobStore(), now=STARTED) == []

@@ -249,3 +249,14 @@ def test_begin_blobs_edge_response_and_refusals(monkeypatch: pytest.MonkeyPatch)
     reg.clear_telemetry_caches()
     monkeypatch.setattr(reg, "lookup_tenant", lambda con, kind, ref, semantics=None: None)
     assert (refusal([item]).status, refusal([item]).error_type) == (403, "tenant_unresolved")
+
+
+def test_describe_verbs_and_the_payload_rule_come_from_the_projection() -> None:
+    verbs = edge.describe_verbs()
+    assert set(verbs) == {"append_telemetry", "begin_blobs"} and verbs["begin_blobs"]["caps"] == {"max_items": 200}
+    specs, _ = edge._specs_and_shapes(SEMANTICS)
+    assert (edge.payload_rule(specs).threshold, edge.payload_rule(specs).cap) == (65536, 8388608)
+    bare = {"telemetry_transcripts": type("S", (), {"rules": type("R", (), {"content": None})()})()}
+    with pytest.raises(TelemetryRequestError) as caught:
+        edge.payload_rule(bare)  # type: ignore[arg-type]
+    assert (caught.value.status, caught.value.error_type) == (500, "projection_defect")

@@ -300,3 +300,53 @@ def test_real_head_stub_carries_checksum_mode(monkeypatch: pytest.MonkeyPatch) -
         )
         assert S3BlobStore(client, BLOB_ROOT, clock=lambda: NOW).verify(URI, SHA, 70000) == "verified"
         stub.assert_no_pending_responses()
+
+
+def test_make_s3_client_pins_the_config_and_tolerates_an_older_botocore(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+    import types
+
+    seen: list[dict[str, Any]] = []
+
+    class Config:
+        def __init__(self, **kw: Any) -> None:
+            if "request_checksum_calculation" in kw and seen:
+                raise TypeError("old botocore")
+            seen.append(kw)
+
+    boto3 = types.SimpleNamespace(client=lambda name, region_name, config: (name, region_name, config))
+    monkeypatch.setitem(sys.modules, "boto3", boto3)
+    monkeypatch.setitem(sys.modules, "botocore", types.ModuleType("botocore"))
+    monkeypatch.setitem(sys.modules, "botocore.config", types.SimpleNamespace(Config=Config))
+    name, region, _ = store_mod.make_s3_client("eu-west-2")
+    assert (name, region) == ("s3", "eu-west-2") and seen[0]["max_pool_connections"] == 32
+    assert seen[0]["s3"] == {"addressing_style": "virtual"} and seen[0]["request_checksum_calculation"] == "when_required"
+    store_mod.make_s3_client("eu-west-2")
+    assert "request_checksum_calculation" not in seen[1]
+
+
+def test_lazy_store_builds_once_and_delegates() -> None:
+    built: list[int] = []
+    inner = store(FakeS3Client(HEAD_OK, url=presigned_url("k")))
+
+    def factory() -> S3BlobStore:
+        built.append(1)
+        return inner
+
+    lazy = store_mod.LazyBlobStore(factory)
+    assert built == [] and lazy.verify(URI, SHA, 70000) == "verified"
+    assert lazy.grant_put(URI, SHA, 70000, now=NOW).headers["Content-Length"] == "70000"
+    assert lazy.count_objects("a/") == {"count": 0, "bytes": 0} and built == [1]
+    lazy.reset()
+    lazy.verify(URI, SHA, 70000)
+    assert built == [1, 1]
+
+
+def test_presign_errors_are_classified_without_the_key() -> None:
+    class Failing(FakeS3Client):
+        def generate_presigned_url(self, operation: str, **kwargs: Any) -> str:
+            raise ClientErrorLike("AccessDenied", 403)
+
+    with pytest.raises(BlobStoreAccessError) as caught:
+        store(Failing()).grant_put(URI, SHA, 70000)
+    assert "secret" not in str(caught.value)

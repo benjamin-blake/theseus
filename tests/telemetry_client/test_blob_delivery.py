@@ -265,3 +265,8 @@ def test_errors_never_carry_a_url() -> None:
         text = str(err) + repr(vars(err)) + repr(err.__cause__)
         for banned in ("https", "X-Amz", "secret-key", "Signature", "0" * 64, "1" * 64):
             assert banned not in text, (err.kind, banned)
+
+
+def test_an_unexpected_put_status_is_a_defect() -> None:
+    err = fails([row("g" * 150)], Writer(), Puts([(302, b"")]))
+    assert (err.kind, err.status) == ("defect", 302)

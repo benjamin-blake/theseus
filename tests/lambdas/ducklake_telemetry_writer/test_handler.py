@@ -606,9 +606,13 @@ def test_dispatch_includes_begin_blobs(monkeypatch: pytest.MonkeyPatch) -> None:
     assert _body(h.handler(_event({"action": "begin_blobs", "items": []}))) == {"ok": True, "echo": "begin_blobs"}
 
 
-def test_describe_carries_the_capabilities() -> None:
+def test_describe_carries_the_capabilities(monkeypatch: pytest.MonkeyPatch) -> None:
     body = _body(h.handler(_event({"action": "describe"})))
     assert body["blob_protocol"]["version"] == 1 and "begin_blobs" in body["verbs"] and len(body["schema"]) == 4
+    monkeypatch.setenv("TELEMETRY_BLOB_ROOT", "s3://b/telemetry-blobs/ducklake_smoke/")
+    monkeypatch.setenv("AWS_REGION", "r")
+    monkeypatch.setattr(h, "make_s3_client", lambda region: region)
+    assert (h._blob_store()._client, h._blob_store()._root.bucket) == ("r", "b")
 
 
 @pytest.mark.parametrize("fault", [BlobIntegrityError, BlobGrantSelfCheckError, BlobStoreAccessError])
