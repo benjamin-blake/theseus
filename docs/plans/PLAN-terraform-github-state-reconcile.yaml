@@ -31,6 +31,13 @@ scope:
       Append variable main_protection_ruleset_id (number, default the live ruleset id), and in
       gated_apply_reviewer_user_ids' description replace the `gh api /user --jq .id` hint the runbook no longer uses.
       Exact text in execution_steps step 3. No plan diff (descriptions and a new defaulted variable only).
+  - file: terraform/github/repo.tf
+    action: Modify
+    purpose: >-
+      Add ignore_vulnerability_alerts_during_read to github_repository.this's lifecycle.ignore_changes (exact text in
+      execution_steps step 3). Provider v6.12.1 declares it deprecated with Default false and neither Read nor Import
+      ever sets it, so after state rm plus import it is null and the plan would otherwise show an update (a repository
+      PATCH). No plan diff today: live state holds false, equal to the default.
   - file: terraform/github/CLAUDE.md
     action: Modify
     purpose: >-
@@ -106,7 +113,7 @@ acceptance_criteria:
     replace=0 and the five changed addresses are exactly the five name-keyed resources. Order B: the workflow PR's
     first run (failed, or with destroy or replace) names no address outside the five.
   - >-
-    Before any shared-state change, paste 0's dry run on a local copy of the state reads 5 to import, 0 to add, 0 to
+    Before merge, paste 0's dry run at the build PR head, on a local copy of the state, reads 5 to import, 0 to add, 0 to
     change, 0 to destroy; the operator's applied plan was import-only (Apply complete with 5 imported, 0 added, 0
     changed, 0 destroyed) and the CloudShell re-plan exits 0 (No changes).
   - >-
@@ -259,11 +266,13 @@ verification_plan:
       someone is mid-operation; wait and ask the operator. count below 5: the state changed since E0; stop and RCA
       before any paste. RULESET_ID_MATCH fails: the ruleset was recreated; escalate for a plan amendment of the default.
   - step: 9
-    phase: post-deploy
+    phase: pre-deploy
     action: >-
-      OPERATOR, AWS CloudShell, read-only for shared state -- paste 0 (readiness, baseline, and a dry run of the state
-      rm and import plan on a local copy of the state). The agent fills MERGE_SHA, the operator fills PAT_SECRET_ID;
-      the exact text is execution_steps step 8. The agent saves the operator's reported lines into $PASTE0_REPORT.
+      PRE-MERGE, OPERATOR, AWS CloudShell, read-only for shared state -- paste 0 (readiness, baseline, and a dry run of
+      the state rm and import plan on a local copy of the state) at the CI-green build PR head, so the import blocks meet
+      the live API before merge. The agent fills HEAD_SHA, the operator fills PAT_SECRET_ID; the exact text is
+      execution_steps step 8. The agent saves the operator's reported lines into $PASTE0_REPORT. A new head that changes
+      terraform/github re-runs it.
     command: >-
       printf '%s\n' "$PASTE0_REPORT" | grep -cxE 'TERRAFORM_OK|PAT_ADMIN_VISIBLE|INIT_OK|DRYRUN_IMPORT_ONLY' | grep -qx 4
       && printf '%s\n' "$PASTE0_REPORT" | grep -qxE "${E0_COUNTS_RE:-COUNTS import=0 add=0 change=5 destroy=0}" && echo PASTE0_OK
@@ -277,8 +286,11 @@ verification_plan:
       a new admin PAT is an always-ask credential mint, park it and wait. AccessDenied: the console identity cannot read
       the secret or the state; the operator chooses another identity (any IAM grant is always-ask). Baseline not
       matching, or no DRYRUN_IMPORT_ONLY: stop and escalate; never continue to paste A. A dry run that shows an import
-      plus an update on a defaulted attribute (for example auto_init) is a config gap: the fix is an explicit argument
+      plus an update on another defaulted attribute that Read never sets (the known one, ignore_vulnerability_alerts_during_read, is
+      already in ignore_changes) is a config gap: the fix is an explicit argument
       or ignore_changes entry through a plan amendment from the planning thread, never an apply.
+    hermetic: false
+    graduation: not-applicable
   - step: 10
     phase: post-deploy
     action: >-
@@ -412,6 +424,11 @@ test_obligations:
     verification_step: 1
     test_selector: tests/checks/iam_tf/test_terraform_github_import_blocks.py::TestTerraformGithubImportBlocks
     red_green_expectation: Red before (no such variable or test on origin/main); green after step 3.
+  - source: terraform/github/repo.tf
+    behavior: The deprecated, never-read attribute is ignored, so an import plans no update.
+    verification_step: 1
+    test_selector: tests/checks/iam_tf/test_terraform_github_import_blocks.py::TestTerraformGithubImportBlocks
+    red_green_expectation: Red before (the entry and the test are absent on origin/main); green after step 3.
   - source: terraform/github/CLAUDE.md
     behavior: Carries rec-3136's acceptance and the approved venue wording.
     verification_step: 2
@@ -484,17 +501,14 @@ context:
     Decisions triaged: 171 of 171. Roadmap items intersected: 2; CONFLICT: 0; RELATED: 2.
   - "gates: decision-scout=FLAGS_FOUND (one NOTE, resolved); plan-critique=PENDING"
   - >-
-    V3 resolution: the posted E0 evidence (step 6, counts only) substitutes for the pre-merge post-deploy evidence the
-    implement V3 Merge Gate and the code-review V3 check require, by analogy with deploy-paths.yaml
-    admin_out_of_band.pre_merge_live_plan (this root is never applied pre-merge); in Order B E0 comes from the workflow
-    PR, so the build PR's own config first meets the live API in paste 0 (read-only, post-merge). Behavioural
-    acceptance (Decision 48) is the post-merge walk, steps 8-14; its evidence is the counts-only comment on the merged
-    build PR naming the applied sha (step 14).
+    V3 resolution: E0 (step 6) and paste 0 at the CI-green head (step 9, read-only, including the dry run of the import)
+    are the pre-merge live evidence the implement V3 Merge Gate and the code-review V3 check require, by analogy with
+    deploy-paths.yaml admin_out_of_band.pre_merge_live_plan; this root is never applied pre-merge. Behavioural
+    acceptance (Decision 48) is the post-merge walk, steps 8 and 10-14; its evidence is the counts-only comment on the
+    merged build PR naming the applied sha (step 14).
   - >-
-    Live facts 2026-10-15 (read-only): all five state instances keyed on agent-platform; bucket versioning Enabled;
-    provider integrations/github v6.12.1 (Read sets name from d.Id(); the environment's diffRepository makes a
-    same-repository_id rename an in-place update); Terraform 1.10.5 ignores an import block whose address is already in
-    state, even with a different id (scratch experiment).
+    Live facts 2026-10-15: five state instances keyed on agent-platform; bucket versioning Enabled; provider v6.12.1 Read
+    sets name from d.Id(); Terraform 1.10.5 ignores an import block whose address is already in state (scratch test).
   - >-
     Venue: api.github.com is reachable from cloud sessions but the proxy substitutes its own GitHub credential (a bogus
     token returned 200; /actions/permissions 403), so plan, import and apply run only in AWS CloudShell. Import with the
@@ -516,7 +530,8 @@ context:
   - >-
     Gotchas: CLAUDE.md budget 5253 bytes, about 5079 after the build PR with rec-4335's section (gated closure line about
     5237). The PAT's secret name is not in the repo. var.github_token has no default (pastes export TF_VAR_github_token).
-    Pastes are bash heredocs with one command per line, so set -e stops on any failure.
+    Pastes are bash heredocs with one command per line, so set -e stops on any failure. Never reseed the CLAUDE.md prose
+    budget down in the build PR (validate_prose_limits advises it); the closure line needs the headroom.
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
@@ -573,6 +588,12 @@ execution_steps:
     and in gated_apply_reviewer_user_ids' description replace "Resolve before applying: `gh api /user --jq .id`
     (authenticated as the reviewer) or the GitHub MCP get_me tool." with "Resolve before applying: GET /user with the
     reviewer's PAT (terraform/github/CLAUDE.md runbook step 2) or the GitHub MCP get_me tool."
+
+    terraform/github/repo.tf: in github_repository.this's lifecycle.ignore_changes, after "archived,", add exactly:
+
+          # Deprecated, Default false and never read or imported by the provider: an import leaves it null and the
+          # plan would PATCH the repository to set it (rec-3136).
+          ignore_vulnerability_alerts_during_read,
   - |-
     Apply exactly this change to terraform/github/CLAUDE.md (operator-approved wording; VP step 3 compares the added and
     removed lines). YAML drops the leading space of blank context lines, so apply it with git apply --recount (or GNU
@@ -660,8 +681,9 @@ execution_steps:
     name: read the names from docs/contracts/github-org-transfer.yaml identity.current and identity.target (owner and
     repository) plus the historical name agent-platform, so the test file quotes no retired identity literal (the
     literal sweep's readiness check refuses new files that do); (d) var.main_protection_ruleset_id is declared
-    with type = number and a default. No count literals on the growing resource set (tests/CLAUDE.md count-coupling
-    rule); derive both sides from the tree.
+    with type = number and a default; (e) github_repository.this's lifecycle.ignore_changes contains
+    ignore_vulnerability_alerts_during_read. No count literals on the growing resource set (tests/CLAUDE.md
+    count-coupling rule); derive both sides from the tree.
   - >-
     Create config/agent/verification_registry/entries/terraform-github-import-blocks.yaml per the scope row
     (precedent: acceptance-lint-decidable-and-quote-aware.yaml, primitive_slot test_selector, with graduated_at).
@@ -674,15 +696,17 @@ execution_steps:
     (Before/After/How body; never the PAT secret name); subscribe_pr_activity. The PR's terraform-github-plan run is
     VP step 6 (wait for its event, never poll; Order B: see step 6's fix_if); post the counts-only E0 on the PR. Then
     dispatch code review (the code-review skill in a fresh context) with the context "V3 resolution:" line quoted in its
-    prompt; fix every blocking finding. Squash-merge only when code review is PROCEED, CI is green on the head and the
-    operator has approved the PR on GitHub as code owner (no Resolves trailer on this PR: rec-3136 closes with the
-    closure PR). Then run VP step 8.
+    prompt; fix every blocking finding. Then hand the operator paste 0 at the CI-green head (VP step 9; it writes
+    nothing shared) and require PASTE0_OK. Squash-merge only when code review is PROCEED, CI is green on the head,
+    PASTE0_OK holds for a head with the same terraform/github content, and the operator has approved the PR on GitHub as
+    code owner (no Resolves trailer on this PR: rec-3136 closes with the closure PR). Then run VP step 8 and hand the
+    operator paste A with MERGE_SHA filled in.
   - |-
-    Hand the operator paste 0 (VP step 9) with MERGE_SHA filled in; the operator fills PAT_SECRET_ID in CloudShell and
-    never pastes it back:
+    Before merge, hand the operator paste 0 (VP step 9) with HEAD_SHA (the CI-green build PR head) filled in; the
+    operator fills PAT_SECRET_ID in CloudShell and never pastes it back:
 
     bash -euo pipefail <<'PASTE0'
-    MERGE_SHA='<agent fills>'
+    HEAD_SHA='<agent fills>'
     PAT_SECRET_ID='<operator fills>'
     TFV=1.10.5
     COUNTS_JQ='[.resource_changes[]? | {a: (.change.actions | join(",")), i: (.change.importing != null)}] | "COUNTS import=\(map(select(.i)) | length) add=\(map(select(.a | test("create"))) | length) change=\(map(select(.a == "update")) | length) destroy=\(map(select(.a | test("delete"))) | length)"'
@@ -699,7 +723,7 @@ execution_steps:
     echo TERRAFORM_OK
     rm -rf repo dry
     git init -q repo
-    git -C repo fetch -q --depth 1 https://github.com/benjamin-blake/theseus.git "$MERGE_SHA"
+    git -C repo fetch -q --depth 1 https://github.com/benjamin-blake/theseus.git "$HEAD_SHA"
     git -C repo checkout -q FETCH_HEAD
     TOKEN="$(aws secretsmanager get-secret-value --region eu-west-2 --secret-id "$PAT_SECRET_ID" --query SecretString --output text)"
     test -n "$TOKEN"
@@ -737,10 +761,18 @@ execution_steps:
     Hand the operator paste A (VP step 10) and, separately after they review its output, paste B (VP step 11):
 
     bash -euo pipefail <<'PASTEA'
+    MERGE_SHA='<agent fills>'
     PAT_SECRET_ID='<operator fills>'
     COUNTS_JQ='[.resource_changes[]? | {a: (.change.actions | join(",")), i: (.change.importing != null)}] | "COUNTS import=\(map(select(.i)) | length) add=\(map(select(.a | test("create"))) | length) change=\(map(select(.a == "update")) | length) destroy=\(map(select(.a | test("delete"))) | length)"'
     TF="$HOME/bin/terraform"
     D="$HOME/tfgithub/repo/terraform/github"
+    export CHECKPOINT_DISABLE=1
+    cd "$HOME/tfgithub"
+    rm -rf repo
+    git init -q repo
+    git -C repo fetch -q --depth 1 https://github.com/benjamin-blake/theseus.git "$MERGE_SHA"
+    git -C repo checkout -q FETCH_HEAD
+    $TF -chdir="$D" init -input=false >/dev/null
     TOKEN="$(aws secretsmanager get-secret-value --region eu-west-2 --secret-id "$PAT_SECRET_ID" --query SecretString --output text)"
     test -n "$TOKEN"
     export TF_VAR_github_token="$TOKEN"
