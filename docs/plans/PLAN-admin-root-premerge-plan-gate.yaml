@@ -41,7 +41,7 @@ scope:
   purpose: >-
     "## V3 Post-Deploy Evidence" first paragraph: replace the approved old span with the approved new span, verbatim
     (execution_steps), and shorten the section's closing V1/V2 sentence as given there, so the High-finding bullets read
-    correctly for an admin-only root (only bullet 1, evidence absent, applies). Net +2 bytes against 4 of headroom; no
+    correctly for an admin-only root (bullet 1, evidence absent, and bullet 3, contradicts the expected outcome, apply; the run-URL bullet does not). Net +2 bytes against 4 of headroom; no
     budget edit. The bullets themselves are unchanged.
 - file: .claude/skills/plan-critique/SKILL.md
   action: Modify
@@ -54,7 +54,7 @@ scope:
   purpose: >-
     @registry.register("validate_admin_root_premerge_gate", owner="platform") def validate_admin_root_premerge_gate(failed,
     plan_paths=None, taxonomy_path=None) -> None. Roots: read docs/contracts/environment-taxonomy.yaml (yaml.safe_load),
-    take every axis_a row (a dict) whose apply_gating string starts with "admin-only", and extract the root with the
+    take every value of the axis_a mapping that is itself a mapping (axis_a is keyed by environment and also holds string notes) whose apply_gating string starts with "admin-only", and extract the root with the
     regex terraform/[A-Za-z0-9_-]+ from its code_vs_infra string (today: terraform/bootstrap). Fail CLOSED: an unreadable
     taxonomy or zero derived roots is a finding, never a pass. Plans: plan_paths when given (unfiltered, the
     validate_plan_scope_closure convention for fixture callers), else
@@ -171,10 +171,13 @@ verification_plan:
   action: Approved contract key landed verbatim -- the APPROVED_KEY block parsed from this plan equals the landed key
   command: |-
     bin/venv-python -c "import yaml,textwrap; p=yaml.safe_load(open('docs/plans/PLAN-admin-root-premerge-plan-gate.yaml')); t=p['execution_steps'][0]; blk=t.split('APPROVED_KEY:\n',1)[1].split('\nThen prepend',1)[0]; want=yaml.safe_load(textwrap.dedent(blk))['pre_merge_live_plan']; got=yaml.safe_load(open('docs/contracts/deploy-paths.yaml'))['admin_out_of_band']['pre_merge_live_plan']; assert got==want, 'contract key differs from the approved text'; assert 'validate_admin_root_premerge_gate' in got['enforcement']; print('APPROVED KEY VERBATIM')"
-  expected: APPROVED KEY VERBATIM printed, exit 0; then compare the four skill spans by eye against execution_steps[1]-[4]
+  expected: APPROVED KEY VERBATIM printed, exit 0
   fix_if: any difference -- restore the approved text; a needed wording change goes back to Benjamin
-  hermetic: false
-  graduation: not-applicable
+  hermetic: true
+  expected_literals:
+  - APPROVED KEY VERBATIM
+  graduation: waive
+  graduation_waiver_reason: Binds to this plan's historical APPROVED_KEY text and a contract key that future amendment_log entries may legitimately change; step 2 graduates the key's structural shape.
 - step: 6
   phase: pre-deploy
   action: Fast tier
@@ -268,6 +271,7 @@ context:
 - "Root cause (d), delegation prompts softening plan steps, is out of scope -> rec-4336."
 - "CI-RCA deferral: rec-4320 (Critical, telemetry writer TransactionException, src/common/ducklake_telemetry_txn.py) is unrelated (no shared file, Decision or failure category). Benjamin deferred it for this workstream on 2026-10-15 (owned by another project); this plan touches no telemetry surface."
 - "Byte headroom measured 2026-10-15 at origin/main 8692fb32: planning 849, implement 80, code-review 4. A concurrent skill edit on main can erase it; if VP step 4 fails after a rebase, stop and return to the planner (never trim or raise unilaterally)."
+- "Net-new plans only (git status A, the validate_plan_scope_closure convention), narrowing rec-4140's 'new or modified': merged admin-root plans that predate the rule (e.g. PLAN-heartbeat-canary-plan-time-grant) would otherwise redden on any unrelated edit; a modified plan is still judged by plan-critique 12c."
 - "rec-4140's acceptance is the step 1 test file (Decision 201): the squash body carries 'Resolves: rec-4140'."
 - "APPROVED deploy-paths.yaml key (insert under admin_out_of_band after scoped_login_provisioning; two-space indent as shown): see the APPROVED_KEY block in execution_steps[0]."
 pre_implementation_checklist:
@@ -336,8 +340,8 @@ execution_steps:
   a posted post-deploy evidence artifact: live invocation output AND a real run URL that coheres
   with the plan's post-deploy expected outcomes (Decision 103). Admin-only root
   (deploy-paths.yaml admin_out_of_band.pre_merge_live_plan): the posted pre-merge plan evidence for
-  the PR head is the artifact, judged by the gate step's expected outcome; only bullet 1
-  applies.
+  the PR head is the artifact, judged by the gate step's expected outcome; bullets 1 and 3
+  apply.
   Also in the same section replace
   OLD: Not applicable to V1/V2-tier plans -- skip this check for those and do not raise a finding.
   NEW: Skip this check for V1/V2-tier plans; raise no finding.
@@ -346,6 +350,7 @@ execution_steps:
   Admin-only root in scope: REVISE unless deploy-paths.yaml admin_out_of_band.pre_merge_live_plan is met.
 - Create scripts/checks/verification/validate_admin_root_premerge_gate.py; register it in scripts/checks/verification/_manifest.py; add the config/ci_rca_taxonomy.yaml row.
 - Create tests/checks/verification/test_validate_admin_root_premerge_gate.py; extend tests/test_deploy_paths_admin_procedure.py; create the two verification-registry entries.
+- Compare the four skill spans by eye against execution_steps[1]-[4] (step 5 proves the contract key mechanically).
 - Execute Verification Plan steps 1-7 -- run each step; loop until pass; on unrecoverable failure stop and RCA (Decision 55). Commit and push only after step 7 (full tier exit 0, then validation_result --verify-head) passes on the final tree.
 - "Open the PR; code review; squash-merge on code-review PROCEED + green CI with the PR body passed as the commit message carrying the Resolves trailer for rec-4140. The merge carries contract and skill text approved verbatim at step 6b (Benjamin, 2026-10-15); if any wording changed, hold for Benjamin."
 - After merge run VP step 8.
