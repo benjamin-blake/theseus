@@ -25,7 +25,17 @@ _CONTRACT = _ROOT / "docs" / "contracts" / "telemetry_observations.yaml"
 _SHIPPED = _ROOT / "config" / "lambda" / "ducklake" / "field_semantics.yaml"
 _GOLDEN = _ROOT / "tests" / "fixtures" / "turn_capture" / "golden"
 _NOW = datetime(2026, 10, 6, tzinfo=timezone.utc)
-_HOOK_EVENTS = ("PreToolUse", "PostToolUse", "SessionStart", "UserPromptSubmit", "Stop", "SubagentStop", "PreCompact")
+_HOOK_EVENTS = (
+    "PreToolUse",
+    "PostToolUse",
+    "SessionStart",
+    "SessionEnd",
+    "UserPromptSubmit",
+    "Stop",
+    "StopFailure",
+    "SubagentStop",
+    "PreCompact",
+)
 _TOOLS = ("Bash", "Edit", "Write", "mcp__github-full__create_pull_request", "mcp__github__push_files", "resume", "startup")
 
 
