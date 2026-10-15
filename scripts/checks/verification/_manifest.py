@@ -191,4 +191,19 @@ ENTRIES: tuple[Entry, ...] = (
         pre_globs=None,
         full_segment="full_after_lint",
     ),
+    Entry(
+        name="validate_admin_root_premerge_gate",
+        module="scripts.checks.verification.validate_admin_root_premerge_gate",
+        attr="validate_admin_root_premerge_gate",
+        pre=True,
+        pre_globs=(
+            "docs/plans/**",
+            "docs/contracts/environment-taxonomy.yaml",
+            "scripts/checks/verification/**",
+            "scripts/roadmap/plan_obligations.py",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ),
+        full_segment="full_after_lint",
+    ),
 )

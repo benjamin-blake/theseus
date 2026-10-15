@@ -29,6 +29,14 @@ contract:
     agent_surface: AGENTS.md
 
 amendment_log:
+  - date: "2026-10-15"
+    semantic_break: false
+    change_class: field_add
+    summary: >-
+      PLAN-admin-root-premerge-plan-gate (rec-4140): added admin_out_of_band.pre_merge_live_plan,
+      making the #1323 read-only pre-merge ADMIN terraform plan practice -- the fix for the #1316
+      incident (a terraform/bootstrap merge that could not be planned) -- a standing rule for any
+      plan touching an admin-only Terraform root.
   - date: "2026-10-11"
     semantic_break: false
     change_class: prose_improvement
@@ -248,6 +256,45 @@ admin_out_of_band:
         (it reads them from the owner DSN secret). A failed check names its cause in the response
         (error_type / error carry only a class and SQLSTATE); a re-run is idempotent but happens only on
         the human's word.
+  pre_merge_live_plan:
+    description: >-
+      Standing rule (incident #1316, fixed by #1323) for any plan whose scope changes a non-Markdown
+      file under a Terraform root whose environment-taxonomy.yaml axis_a apply_gating is admin-only
+      (today terraform/bootstrap); a Markdown-only change is exempt. Static checks never reach a provider, so the root's first live contact
+      must happen BEFORE merge. Rule and navigation only: apply-model and guard rules stay in
+      environment-taxonomy.yaml.
+    rule:
+      - >-
+        PRE-MERGE GATE (ADMIN): the plan carries a pre-deploy step that runs a read-only `terraform
+        plan -lock=false` of the root in a throwaway git worktree at the CI-green $PR_HEAD_SHA, with
+        a declared expected outcome (named counts, or failure only on named diagnostics). Plan files
+        are deleted in the same step; counts-only evidence and the sha are posted on the PR; a new
+        head re-runs the gate. The gate never applies or writes state, so it is not a bootstrap
+        change under Decision 126; like every admin-tier action it runs on the operator's direction,
+        and a standing operator authorisation for read-only admin calls counts.
+      - >-
+        ENVIRONMENT CHECK: before assuming any post-merge hand-off, the implementing session checks
+        its own credentials with `aws sts get-caller-identity --profile agent_platform_admin --query
+        Arn --output text 2>/dev/null | grep -q 'assumed-role/PlatformAdmin/' && echo ADMIN_CHAIN_OK
+        || echo ADMIN_CHAIN_ABSENT`. ADMIN_CHAIN_OK: the session runs the gate itself.
+        ADMIN_CHAIN_ABSENT: the PR waits at CI-green, the gate steps go to an ADMIN session, and the
+        merge is held until the evidence is on the PR.
+      - >-
+        V3 RESOLUTION: the plan's context carries a line starting "V3 resolution:" stating that the
+        posted pre-merge gate evidence for the current head substitutes for the pre-merge
+        post-deploy evidence the implement V3 Merge Gate and the code-review V3 check require; that
+        the behavioural acceptance (Decision 48) is the plan's named post-merge, human-directed apply
+        walk; and that the walk's evidence is a counts-only comment on the merged PR naming the
+        applied sha (CloudWatch history ages out and is not the record).
+      - "All posted evidence is counts-only: no account ids, ARNs, ExternalIds or hosts (Decision 101)."
+    enforcement: >-
+      validate_admin_root_premerge_gate (fast tier, net-new plans whose scope has a non-Markdown file
+      under such a root) checks all three clauses
+      structurally: a pre-deploy step running terraform plan -lock=false of the root at
+      $PR_HEAD_SHA, a pre-deploy step running the ADMIN_CHAIN_OK check, and the "V3 resolution:"
+      context line. It cannot judge the expected outcome or that evidence was posted; plan-critique
+      and code-review judge those.
+    precedent: "PLAN-platform-iam-bootstrap-adopt (steps 8-11), PLAN-platform-iam-personal-release, PLAN-heartbeat-canary-plan-time-grant (steps 9-12)."
   procedure:
     description: >-
       Operator-recovery steps for the human-gated interactive apply loop. Never self-directed
