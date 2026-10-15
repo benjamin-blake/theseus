@@ -169,7 +169,9 @@ scope:
 - file: src/row_rules/rules.py
   action: Modify
   purpose: >-
-    RowRules.from_projection records an exemption on any row-local column rule kind (accepted_values, min_length,
+    Exposes WAIVABLE_KINDS (public frozenset of the row-local column kinds below) beside EXEMPTABLE_LEGS and
+    PRODUCER_SIDE_KINDS, so the grammar reads the exemptable set from the engine. RowRules.from_projection records an
+    exemption on any row-local column rule kind (accepted_values, min_length,
     pattern, pattern_when, array_element_format, required_when, not_before, at_most, null_or_zero_when,
     max_after_write_seconds, and not_null on a nullable column) in a new `waived` mapping {(column, kind): (reason,
     owner)} and does not enforce it. It raises RuleProjectionError when the same column also carries that rule (an
@@ -228,8 +230,9 @@ scope:
     Stays the registered entry point (name, module and attr unchanged, Decision 187 point 5) and becomes orchestration
     only, below 200 SLOC (Decision 128 decompose-by-default; it is 390 SLOC today). Scope widens from ops_recommendations
     and ops_decisions to every contract-backed writer table: each ops_tables key of config/lambda/ducklake/field_semantics.yaml
-    that has docs/contracts/<table>.yaml (nine today) and the raw $ref baselines those contracts reach; the enforced
-    ban alone scans every contract under docs/contracts/. Docstring: the transitional part was the ops.yaml parity leg, which the portal row-rule gate plan
+    that has docs/contracts/<table>.yaml (nine today), taken over base and head together so a PR removing a table and
+    its contract cannot escape the ratchet, and the raw $ref baselines those contracts reach; the enforced ban alone
+    scans every contract under docs/contracts/. Docstring: the transitional part was the ops.yaml parity leg, which the portal row-rule gate plan
     retires; the declaration guard stays, and writer coverage is the conformance check's.
 - file: scripts/checks/contracts/_rule_grammar.py
   action: Create
@@ -238,7 +241,9 @@ scope:
     min_length, pattern, array_element_format, array_element_reference, acceptance_lint, not_before,
     write_time_exemptions); event tables the event projection's known keys; control tables not_null only. `enforced`
     is rejected on every leg of every contract under docs/contracts/ (a key scan, so a new contract cannot bring it
-    back). not_null is `true` or `{exclude_before: ISO}`.
+    back). not_null is `true` or `{exclude_before: ISO}`; a nullable false column must carry `not_null: true` (never
+    dated -- the projection and engine refuse a dated not_null there -- never absent), the successor of today's
+    "nullable false field" check, so a new SCD2 field on an existing contract is nullable with a dated not_null.
     Sub-key whitelists per ops kind without enforced; `note` allowed on accepted_values. ISO real dates, and the
     Decision 64 floor 2026-05-01 on ops_recommendations. RE2-and-Python regex subset for pattern,
     array_element_format and pattern_when patterns. Producer-side kinds need an exemption. Exemptions: class in
@@ -246,7 +251,10 @@ scope:
     repository path for repository_state), review_by (an ISO date) required on temporary and refused elsewhere, and
     the exempted kind must be declared on the field -- a content-leg exemption (inline_within_threshold,
     uri_above_threshold, within_cap, integrity) counts as declared on the field that carries
-    content_inline_threshold_bytes. The class is bound to the exempted kind, so no row-local rule can be parked
+    content_inline_threshold_bytes. The exemptable kinds are read from the engine, never listed: src.row_rules.rules
+    exposes its waivable column kinds as a public frozenset beside EXEMPTABLE_LEGS and PRODUCER_SIDE_KINDS, and an
+    exemption on any other kind (exactly_one_of, representation_of, content_inline_threshold_bytes) fails here rather
+    than at generation. The class is bound to the exempted kind, so no row-local rule can be parked
     without a date: a producer-side kind takes its own class from a grammar table keyed by
     src.row_rules.rules.PRODUCER_SIDE_KINDS (array_element_reference -> cross_row, an existence lookup outside the
     row; acceptance_lint -> repository_state, a rule no write can decide) or, as the mark-then-drop transition before
@@ -273,8 +281,9 @@ scope:
     (min_length, pattern, array_element_format, pattern_when, required_when, null_or_zero_when, at_most,
     max_after_write_seconds, a content threshold or cap; a pattern's direction is undecidable, so any change counts)
     or its exclude_before moved earlier -- needs a field entry since the base with semantic_break true whose
-    migration_story carries the census as the token `census: <N> violators (<ISO date>)` (any change_class; the
-    vocabulary has no params-specific member; the value-removal entry carries the same token); `note` and other meta
+    migration_story carries the census as the token `census: 0 violators (<ISO date>)` -- only a zero census passes,
+    since a narrowing that strands a stored row waits for the data to be fixed at the source (Decision 70) (any
+    change_class; the vocabulary has no params-specific member; the value-removal entry carries the same token); `note` and other meta
     keys are not params. The git snapshot seam (merge-base, git show) stays in the entry module, whose mirror test has
     _git_root cases; _rule_ratchet compares snapshots handed to it, so its own mirror test is git-free and covers it;
     (c) an exclude_before added to a leg that had none, moved later, or removed from a leg that stays -- unconditionally
@@ -292,7 +301,9 @@ scope:
     content_inline_threshold_bytes there. A temporary exemption's review_by moved later (a renewal) also needs a field
     entry since the base (governance_note_add) naming the new date and why; a review_by added where the base exemption
     had none is never a renewal (the base was class-less, so the pair is a grammar completion -- this plan's own
-    transcripts change). (e) a source registry id removed (moved,
+    transcripts change). Removing a temporary exemption from an undated rule that stays on an SCD2 table re-arms it
+    against every older row on update, so it needs the same semantic-break entry with the zero census token as arm
+    (b). (e) a source registry id removed (moved,
     unchanged). (f) a leg added on an SCD2 table (one whose rows are updated: no table_class event, not a control
     table) without an exclude_before -- a rule introduced later carries its own effective date (Decision 64's
     2026-10-04 update), so it binds older rows only on columns a write changes; event tables never update a row and
@@ -374,8 +385,8 @@ scope:
     leg); the ratchet's arms (leg removal needs a prior exemption; value
     removal, any other params narrowing or an earlier date needs a semantic-break entry carrying the census; a new or
     re-classed exemption, or a later review_by, needs an entry; a date is never added to a live leg, moved later or
-    removed -- "a date never moves later or is removed", Decision 64; a new SCD2 leg carries its own date; a registry
-    id is never removed); and the COVERAGE sentence
+    removed -- "a date never moves later or is removed", Decision 64; a new SCD2 leg carries its own date, so a new
+    field on an existing SCD2 contract is nullable with a dated not_null; a registry id is never removed); and the COVERAGE sentence
     re-pointed, scoped to row-local rules (scout NOTE, Decision 181): declarations -> validate_ops_rule_source over
     every contract-backed writer table; writer enforcement -> the conformance check (declared equals enforced per
     table) plus its adapter test, whose action set is read from every Lambda manifest's handlers so a new write verb or
@@ -487,8 +498,11 @@ scope:
   action: Create
   purpose: >-
     Unit cases for the moved status-vocabulary and ops.yaml parity legs; test_not_null_parity_reads_presence asserts
-    parity against `not_null: true` and `{exclude_before: D}` and a failure when the contract carries no not_null. The
-    existing nodes that graduated registry rows name stay where they are (see the test_validate_ops_rule_source row).
+    parity against `not_null: true` and `{exclude_before: D}` and a failure when the contract carries no not_null.
+    Because validate_test_coverage measures _ops_rule_bindings.py through this file alone, it also carries the moved
+    failure-mode cases: unreadable ops.yaml or status sources, malformed and unknown test entries, the retired
+    `expression` entry, and the ast read failures. The existing nodes that graduated registry rows name stay where
+    they are (see the test_validate_ops_rule_source row).
 - file: tests/checks/contracts/test_validate_ops_rule_source.py
   action: Modify
   purpose: >-
@@ -499,7 +513,10 @@ scope:
     field_semantics.yaml); test_real_tree_passes also asserts the examined table set equals the derived set (the
     ops_tables keys with a contract, nine today), and test_each_defect_fails gains defects planted in a telemetry
     contract (an `enforced` key on telemetry_sessions.yaml), a Class C baseline (session-id.yaml) and a file-backed
-    contract (exit-criteria-ledger.yaml), each failing through the entry check -- tightenings of graduated nodes;
+    contract (exit-criteria-ledger.yaml), each failing through the entry check -- tightenings of graduated nodes. Its
+    contradictory-not-null defect (`{enforced: False}` on ulid, expecting "nullable false field") keeps failing under
+    the ban with a new message, re-pinned, and gains a sibling defect (ulid's not_null deleted) failing as a nullable
+    false column without `not_null: true`;
     manifest pre_globs are a superset. test_exclude_before_cannot_move_later is tightened, never weakened: its
     `_earlier` mutation (both parts pass today, lines ~242-257) splits -- moving tags' date earlier with no entry now
     fails naming the narrowing and passes once the fixture adds a semantic-break field entry with the census, and
@@ -543,8 +560,8 @@ scope:
   action: Modify
   purpose: >-
     test_sidecar_table_with_a_contract_fails_the_generator (generate() with a patched sidecar and contracts dir) and
-    test_malformed_sidecar_rule_fails_the_generator (a malformed rule key in a spliced sidecar block); 189 SLOC today,
-    room for both.
+    test_malformed_sidecar_rule_fails_the_generator (a malformed rule key in a spliced sidecar block), plus each
+    guard's passing path for coverage; 189 SLOC today, room for all.
 - file: tests/lambdas/ducklake_writer/handler/test_ops_actions.py
   action: Modify
   purpose: test_dormant_tables_refuse_generic_writes_but_provision -- write_ops, file_ops and update_ops on each dormant table answer 400 naming dormant; create_ops_tables still provisions it.
@@ -565,8 +582,8 @@ scope:
 - file: tests/checks/contracts/test_telemetry_event_journal_contracts.py
   action: Modify
   purpose: >-
-    Re-pinned to the new spelling (row telemetry-event-journal-contract-shape). Measured: five nodes assert
-    `["not_null"]["enforced"] is True` -> `["not_null"] is True`; outcome's `["enforced"] is False` (line ~67) ->
+    Re-pinned to the new spelling (row telemetry-event-journal-contract-shape). Measured: seven assertions across four
+    nodes assert `["not_null"]["enforced"] is True` -> `["not_null"] is True`; outcome's `["enforced"] is False` (line ~67) ->
     `"not_null" not in outcome.dq_intent`; parent_observation_id's and observation_id's
     `.get("not_null", {}).get("enforced") is not True` (lines ~132, ~185), which would turn vacuous against a dated
     mapping -> `"not_null" not in ...dq_intent`.
@@ -1260,7 +1277,7 @@ context:
   duplicated; T4.3 gains a contract-first criterion on a critical-path item, accepted. CITE: 210, 64, 65, 79, 126, 128,
   170, 176, 177, 187, 201, 212. Decisions triaged: 170 of 170. Roadmap items intersected: 24; CONFLICT: 0; RELATED: 21.
   The plan also relies on 70, 118, 163, 181, 191 and 208 (critique rounds); the checklist below names the union.
-- 'gates: decision-scout=FLAGS_FOUND (all resolved); plan-critique=<verdict> after <N> round(s)'
+- 'gates: decision-scout=FLAGS_FOUND (all resolved); plan-critique=PROCEED after 7 round(s) (r1-r6 REVISE, every finding fixed and none recurring; the r4 confirming REVISE was escalated inside the planning thread under the 2026-10-14 escalation rule, choice one more round; r7 PROCEED with non-blocking S1-S8 folded in)'
 - >-
   Operator direction (Benjamin, 2026-10-15, thread "Ops enforcement plan C"): every fork went to three independent
   Fable consults first (his positions: a writer-reachable table with no rule source breaks Decision 210; `enforced` is
