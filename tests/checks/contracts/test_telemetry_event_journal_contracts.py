@@ -55,16 +55,16 @@ class TestSessionsEventJournalShape:
 
         # Shared envelope fields present and tightened NOT NULL.
         for field in ("event_id", "event_timestamp", "session_started_at", "tenant_id", "session_id"):
-            assert resolved[field].dq_intent["not_null"]["enforced"] is True, field
+            assert resolved[field].dq_intent["not_null"] is True, field
 
         # ingested_at retired in favour of the envelope's created_timestamp.
         assert "ingested_at" not in doc.fields
-        assert resolved["created_timestamp"].dq_intent["not_null"]["enforced"] is True
+        assert resolved["created_timestamp"].dq_intent["not_null"] is True
 
         # outcome is stored once (per-event-kind requirement), never table-wide not-null,
         # and "running" is no longer an accepted stored value.
         outcome = doc.fields["outcome"]
-        assert outcome.dq_intent["not_null"]["enforced"] is False
+        assert "not_null" not in outcome.dq_intent
         assert outcome.dq_intent["required_when"] == {"event_kind": ["close"]}
         assert "running" not in outcome.dq_intent["accepted_values"]["values"]
 
@@ -127,9 +127,9 @@ class TestObservationsEventJournalShape:
             assert retired not in doc.fields, retired
 
         # session_ref NOT NULL, parent_observation_ref nullable.
-        assert resolved["session_id"].dq_intent["not_null"]["enforced"] is True
+        assert resolved["session_id"].dq_intent["not_null"] is True
         parent_obs = resolved["parent_observation_id"]
-        assert parent_obs.dq_intent.get("not_null", {}).get("enforced") is not True
+        assert "not_null" not in parent_obs.dq_intent
 
 
 class TestTranscriptsContentModel:
@@ -150,7 +150,7 @@ class TestTranscriptsContentModel:
 
         for required_field in ("content_sha256", "content_bytes", "content_truncated"):
             assert doc.fields[required_field].nullable is False
-            assert doc.fields[required_field].dq_intent["not_null"]["enforced"] is True
+            assert doc.fields[required_field].dq_intent["not_null"] is True
 
         purpose_values = set(doc.fields["purpose"].dq_intent["accepted_values"]["values"])
         assert purpose_values == {"prompt", "response", "thinking", "tool_input", "tool_result", "tool_output", "system"}
@@ -159,8 +159,8 @@ class TestTranscriptsContentModel:
         origin_values = set(doc.fields["origin"].dq_intent["accepted_values"]["values"])
         assert origin_values == {"human", "harness", "agent", "tool"}
 
-        assert resolved["session_id"].dq_intent["not_null"]["enforced"] is True
-        assert resolved["observation_id"].dq_intent["not_null"]["enforced"] is True
+        assert resolved["session_id"].dq_intent["not_null"] is True
+        assert resolved["observation_id"].dq_intent["not_null"] is True
 
         for retired in ("local_path", "s3_key", "size_bytes", "created_at", "ingested_at"):
             assert retired not in doc.fields, retired
@@ -180,9 +180,9 @@ class TestAgentsEventJournalShape:
         entity_ref_note = doc.fields["session_id"]  # sanity: session_id present
         assert entity_ref_note is not None
 
-        assert resolved["session_id"].dq_intent["not_null"]["enforced"] is True
+        assert resolved["session_id"].dq_intent["not_null"] is True
         observation = resolved["observation_id"]
-        assert observation.dq_intent.get("not_null", {}).get("enforced") is not True
+        assert "not_null" not in observation.dq_intent
 
         for total_field in ("tokens_input_total", "tokens_output_total"):
             derivation = doc.fields[total_field].derivation
@@ -251,7 +251,7 @@ class TestTenantAndProjectIdentity:
             table_doc = _load(table)
             for key in ("tenant_id", "project_id"):
                 spec = table_doc.fields[key]
-                assert spec.dq_intent_local["not_null"]["enforced"] is True, f"{table}.{key}"
+                assert spec.dq_intent_local["not_null"] is True, f"{table}.{key}"
 
 
 class TestEntityKeyIdentityRule:

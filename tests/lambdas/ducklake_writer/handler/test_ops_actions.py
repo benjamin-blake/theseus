@@ -394,6 +394,26 @@ def test_generic_verbs_refuse_telemetry_and_registration_tables(monkeypatch):
     assert called == []
 
 
+_DORMANT_TABLES = ("ops_priority_queue", "ops_execution_plans")
+
+
+def test_dormant_tables_refuse_generic_writes_but_provision(monkeypatch):
+    """write_ops, file_ops and update_ops answer a directed 400 naming dormant before any runtime call; create_ops_tables
+    still provisions each dormant table (catalog reinit, restore and the DQ reads of the empty tables)."""
+    called = []
+    for name in ("write_scd2", "file_scd2"):
+        monkeypatch.setattr(rt, name, lambda *a, _n=name, **k: called.append(_n))
+    provisioned = []
+    monkeypatch.setattr(rt, "create_scd2_tables", lambda con, *, table, force_recreate: provisioned.append(table))
+    for table in _DORMANT_TABLES:
+        for action in (h.action_write_ops, h.action_update_ops, h.action_file_ops):
+            with pytest.raises(h.WriterActionError, match=r"dormant \(write_boundary=dormant\)"):
+                action({"table": table, "record": {}}, FakeCon())
+        assert h.action_create_ops_tables({"table": table}, FakeCon())["ok"] is True
+    assert called == []
+    assert provisioned == list(_DORMANT_TABLES)
+
+
 def test_generic_verbs_still_refuse_unknown_and_non_string_tables():
     for table in ("nope", None, ["ops_projects"]):
         with pytest.raises(h.WriterActionError, match="unknown or missing ops table"):

@@ -20,6 +20,7 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
+from scripts.contract_rules import not_null_declared
 from scripts.contracts_schema import (
     ContractClass,
     ContractDocument,
@@ -279,15 +280,13 @@ def _layer_overrides(name: str, target: FieldSpec, local: FieldSpec) -> FieldSpe
 def _override_loosens(referenced: dict[str, Any] | None, override: dict[str, Any]) -> bool:
     """True iff `override` weakens a constraint the referenced field already enforces.
 
-    Concrete rule: a referenced `not_null.enforced: true` cannot be overridden to false.
+    Concrete rule: a referenced not_null (declared by presence) cannot be overridden by a legacy `{enforced: false}`.
     """
     if not referenced:
         return False
-    ref_nn = referenced.get("not_null")
     ovr_nn = override.get("not_null")
-    if isinstance(ref_nn, dict) and isinstance(ovr_nn, dict):
-        if ref_nn.get("enforced") is True and ovr_nn.get("enforced") is False:
-            return True
+    if isinstance(ovr_nn, dict) and ovr_nn.get("enforced") is False:
+        return not_null_declared(referenced.get("not_null"))
     return False
 
 

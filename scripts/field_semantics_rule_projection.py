@@ -2,15 +2,17 @@
 
 scripts.contract_rules.declared_rules is the ONE reader (the live census compiles the same list), so the writer's
 rule set and the census's are the same by construction. Each non-exempt leg becomes a column key the shared engine
-(src/row_rules/rules.py) evaluates; a leg carrying an exemption ships only as write_time_exemptions[kind]. The enforced
-flag belongs to the DQ runner and never reaches the projection (plan C owns the platform-wide re-read).
+(src/row_rules/rules.py) evaluates; a leg carrying an exemption ships only as write_time_exemptions[kind]. There is no
+enforced flag: a declared rule is an enforced rule (Decision 210).
 """
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from pathlib import Path
+from typing import Any, Iterable, Mapping
 
-from scripts.contract_rules import DeclaredRule, declared_rules
+from scripts.contract_rules import CONTRACTS_DIR, DeclaredRule, declared_rules
+from src.row_rules.rules import RowRules
 
 
 def _rule_value(rule: DeclaredRule) -> Any:
@@ -45,3 +47,19 @@ def project_row_rules(table_id: str, columns: Mapping[str, Mapping[str, Any]]) -
         if rule.exclude_before is not None:
             spec.setdefault("exclude_before", {})[rule.kind] = str(rule.exclude_before)
     return out
+
+
+def validate_sidecar_rules(entries: Mapping[str, Mapping[str, Any]]) -> None:
+    """Run the engine's projection over each spliced sidecar entry, so a malformed rule fails the generator."""
+    for table_id, entry in entries.items():
+        RowRules.from_projection(entry.get("columns") or {}, entry.get("table_rules"))
+
+
+def refuse_contract_overlap(table_ids: Iterable[str], contracts_dir: Path = CONTRACTS_DIR) -> None:
+    """A sidecar table must never also have a contract: one table, one rule source (Decision 210)."""
+    for table_id in table_ids:
+        if (contracts_dir / f"{table_id}.yaml").is_file():
+            raise ValueError(
+                f"{table_id}: a sidecar (dormant or smoke) table also has docs/contracts/{table_id}.yaml -- "
+                "move the id from the sidecar tuples to the contract tuple and delete its sidecar block in one change"
+            )

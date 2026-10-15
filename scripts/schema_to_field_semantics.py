@@ -46,6 +46,7 @@ from typing import Any
 
 import yaml
 
+from scripts.field_semantics_rule_projection import refuse_contract_overlap, validate_sidecar_rules
 from src.common.ducklake_partition_spec import (
     parse_partition_by,
     resolve_partition_block,
@@ -349,11 +350,14 @@ def generate(*, include_prose: bool = False) -> dict[str, Any]:
         )
 
     dormant = sidecar.get("dormant_ops_tables", {})
+    smoke = sidecar.get("smoke_ops_tables", {})
+    refuse_contract_overlap((*_DORMANT_TABLE_IDS, *_SMOKE_TABLE_IDS), _CONTRACTS_DIR)
+    validate_sidecar_rules({t: dormant[t] for t in _DORMANT_TABLE_IDS if t in dormant})
+    validate_sidecar_rules({t: smoke[t] for t in _SMOKE_TABLE_IDS if t in smoke})
     for table_id in _DORMANT_TABLE_IDS:
         if table_id in dormant:
             ops_tables[table_id] = dormant[table_id]
 
-    smoke = sidecar.get("smoke_ops_tables", {})
     for table_id in _SMOKE_TABLE_IDS:
         if table_id in smoke:
             ops_tables[table_id] = smoke[table_id]

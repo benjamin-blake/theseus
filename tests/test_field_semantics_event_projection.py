@@ -437,9 +437,9 @@ def test_envelope_rules_layer_under_a_local_block(tmp_path: Path) -> None:
     directory = _fixture_copy(tmp_path, add_envelope_rule)
     intents = _intents(directory)
     assert intents["event_timestamp"] == {
-        "not_null": {"enforced": True}, "not_before": "session_started_at", "max_after_write_seconds": 300,
+        "not_null": True, "not_before": "session_started_at", "max_after_write_seconds": 300,
     }  # fmt: skip
-    assert intents["created_timestamp"] == {"not_null": {"enforced": True}}
+    assert intents["created_timestamp"] == {"not_null": True}
 
     def local_adds_and_changes(directory: Path, key: str, value) -> None:
         _edit_yaml(
@@ -456,6 +456,17 @@ def test_envelope_rules_layer_under_a_local_block(tmp_path: Path) -> None:
     local_adds_and_changes(changed, "max_after_write_seconds", 60)
     with pytest.raises(ValueError, match="changes the inherited rule 'max_after_write_seconds'"):
         _intents(changed)
+
+
+def test_not_null_by_presence_and_exempt_rule_not_projected() -> None:
+    why = {"class": "temporary", "reason": "r", "owner": "rec-1", "review_by": "2027-01-31"}
+    assert proj_mod._is_not_null({"not_null": True}, True)[0] is True
+    assert proj_mod._is_not_null({"not_null": {"exclude_before": "2026-10-01"}}, True)[0] is True
+    assert proj_mod._is_not_null({"not_null": {"enforced": False}}, True)[0] is False
+    assert proj_mod._is_not_null({}, True)[0] is False and proj_mod._is_not_null({}, False)[0] is True
+    assert proj_mod._is_not_null({"not_null": True, "write_time_exemptions": {"not_null": why}}, True)[0] is False
+    intent = {"accepted_values": {"values": ["a"]}, "pattern": "^a$", "write_time_exemptions": {"accepted_values": why}}
+    assert proj_mod._column_rules("t", "c", intent) == {"pattern": "^a$", "write_time_exemptions": {"accepted_values": why}}
 
 
 def test_effective_intents_fail_closed_on_unreadable_or_dangling_input(tmp_path: Path) -> None:

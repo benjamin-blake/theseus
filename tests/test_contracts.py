@@ -231,6 +231,18 @@ class TestRejectsMalformed:
         with pytest.raises(ContractValidationError, match="loosen"):
             resolve_refs(doc, tmp_path)
 
+    def test_loosening_override_rejected_over_a_true_target(self, tmp_path: Path) -> None:
+        target = _class_c_target()
+        target["fields"]["registry_key"]["dq_intent"] = {"not_null": True}
+        _write(tmp_path / "source-lineage.yaml", target)
+        doc = load_contract(_write(tmp_path / "a.yaml", _class_a_with_ref(dq_intent_local={"not_null": {"enforced": False}})))
+        with pytest.raises(ContractValidationError, match="loosen"):
+            resolve_refs(doc, tmp_path)
+        tighter = load_contract(
+            _write(tmp_path / "b.yaml", _class_a_with_ref(dq_intent_local={"not_null": {"exclude_before": "2026-10-01"}}))
+        )
+        assert resolve_refs(tighter, tmp_path)["source"].dq_intent["not_null"] == {"exclude_before": "2026-10-01"}
+
     def test_malformed_ref_no_fragment_rejected(self, tmp_path: Path) -> None:
         doc = load_contract(_write(tmp_path / "a.yaml", _class_a_with_ref(ref="docs/contracts/source-lineage.yaml")))
         with pytest.raises(ContractValidationError, match="no '#'"):
