@@ -262,6 +262,20 @@ scope:
     test_lambda_reader_ok and test_lambda_reader_boundary_broken_fails fake every non-read_current action as 200
     write_denied: update their fakes deliberately so describe, the health verb, the 400 and the unmapped 500 answer in the
     real shapes (the unmapped body without a message key), and boundary_broken still fails on the write boundary it targets.
+    test_lambda_reader_ok also asserts TELEMETRY_READS_OK in the output: with the facade test's patch below it is the only
+    hermetic proof that lambda_reader runs the telemetry checks (2026-10-15 amendment).
+- file: tests/ducklake_neon_smoke_test/test_facade.py
+  action: Modify
+  purpose: >-
+    2026-10-15 amendment (found by the build): test_core_sigv4_invoke_interception_lambda_ec_gates_family runs
+    smoke.lambda_reader with a fake that answers every non-read_current action 200 write_denied, so it fails once
+    lambda_reader runs the telemetry read checks. That test proves only that patching core._sigv4_invoke intercepts a
+    lambda_ec_gates gate (Decision 104), so it also patches lambda_ec_gates._telemetry_read_checks, the helper lambda_reader
+    calls for those checks, to a no-op: on the owning module, not smoke, so the file's smoke.<name> re-export scan is
+    unchanged, and with monkeypatch's default raising=True so a renamed helper fails the test. Its READER OK assertion is
+    unchanged. Not a weakening: the telemetry checks, including their calls through the same patched seam, are asserted by
+    step 8's test_lambda_ec_gates.py nodes; a third copy of the real-shape fake here would tie an interception test to the
+    gate's response shapes.
 bundled_recommendations: []
 followon_recs:
 - rec-4291
@@ -532,7 +546,9 @@ verification_plan:
     tier cannot collect it; the full tier runs both files pre-handoff and on main.
 - step: 8
   phase: pre-deploy
-  action: The smoke gate's telemetry read checks pass on a consistent reader and fail on each regression.
+  action: >-
+    The smoke gate's telemetry read checks pass on a consistent reader and fail on each regression, and the lambda_ec_gates
+    interception test still intercepts through core._sigv4_invoke.
   command: >-
     bin/venv-python -m pytest
     tests/ducklake_neon_smoke_test/test_lambda_ec_gates.py::test_telemetry_read_checks_pass_on_a_consistent_reader
@@ -541,8 +557,12 @@ verification_plan:
     tests/ducklake_neon_smoke_test/test_lambda_ec_gates.py::test_telemetry_read_checks_fail_when_a_bad_id_is_echoed
     tests/ducklake_neon_smoke_test/test_lambda_ec_gates.py::test_lambda_reader_ok
     tests/ducklake_neon_smoke_test/test_lambda_ec_gates.py::test_lambda_reader_boundary_broken_fails
+    tests/ducklake_neon_smoke_test/test_facade.py::test_core_sigv4_invoke_interception_lambda_ec_gates_family
     -q
-  expected: Exit 0, every node passes. Red before because the nodes are absent.
+  expected: >-
+    Exit 0, every node passes. Red before because the new nodes are absent. The facade interception node (2026-10-15
+    amendment) passes before (unmodified) and after (patched); it fails on a tree whose lambda_reader runs the telemetry
+    checks without that test's patch, or where lambda_ec_gates has no _telemetry_read_checks (monkeypatch raising=True).
   expected_literals: []
   fix_if: >-
     A gate that passes when query_ops reaches telemetry_catalog, or on any non-200 (auth, throttling, 503), is too weak: the
@@ -920,6 +940,9 @@ context:
   lambda-telemetry smoke step; plan amendment #1478 then a fix-forward build (append thread). Deferral rationale: this
   plan touches none of its files (src/common/ducklake_telemetry_txn.py) and shares only the post-deploy smoke job, so its
   merge waits for that build's green smoke job on main.
+- >-
+  2026-10-15 amendment (build escalation): test_facade.py's lambda_ec_gates interception test joins scope (a no-op patch
+  of the telemetry-checks helper) and step 8; nothing else changes.
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
@@ -943,7 +966,9 @@ execution_steps:
 - >-
   src/lambdas/ducklake_reader/handler.py: branch-free wiring; step 3's routing nodes red then green and both existing
   suites green.
-- Both manifests (step 9); scripts/preflight/telemetry_health.py and the preflight call (step 7); the gate checks (step 8).
+- >-
+  Both manifests (step 9); scripts/preflight/telemetry_health.py and the preflight call (step 7); the gate checks and
+  the facade interception test's patch (step 8).
 - docs/contracts/ducklake_reader.yaml (narrowed residual) and read-engine.yaml; step 10.
 - Code review (the code-review skill in a fresh context); fix every blocking finding.
 - >-
