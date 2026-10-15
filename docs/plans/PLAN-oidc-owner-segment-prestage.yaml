@@ -70,10 +70,10 @@ scope:
   - file: scripts/checks/contracts/_manifest.py
     action: Modify
     purpose: >-
-      One bare-literal Entry for validate_github_org_transfer (Decision 169): pre=True, pre_globs naming the
-      contract, both Terraform files, the check module and its first-party import closure
-      (scripts/checks/_common.py, scripts/checks/registry.py and any helper it imports), which
-      validate_pre_glob_closure enforces; full_segment full_after_lint.
+      One bare-literal Entry for validate_github_org_transfer (Decision 169): pre=True, pre_globs=None (ungated,
+      the validate_portal_drift precedent), because the rec-3903 extension agreed with the literal sweep plan
+      makes the check read every tracked file, which no static glob encloses; full_segment full_after_lint. The
+      check reads three files today, so running it on every --pre costs nothing.
   - file: config/ci_rca_taxonomy.yaml
     action: Modify
     purpose: "function_to_category row: validate_github_org_transfer -> schema_drift."
@@ -87,18 +87,22 @@ scope:
       staged_phase predecessor_removed with [target]; red at proven (no staged_phase) with [target]; red on an
       unknown owner, two repository ids, a cross-root mismatch, a non-immutable entry, a duplicate, a missing
       contract, an unknown phase value, a static breakage row neither evaluated nor pending, a row in both
-      ROW_EVALUATORS and PENDING_STATIC_ROWS, a named row absent from the contract, an unparseable contract, a
+      ROW_EVALUATORS and PENDING_STATIC_ROWS, a named row absent from the contract, staged_phase equal to
+      identity.phase, staged_phase preceding it, staged_phase set while identity.phase is the last value, an
+      unparseable contract, a
       missing or unparseable .tf file, a .tf file with no github_repos list, and a governing value no phase's
       exit_sets_phase names; green on the real tree;
       the three interface names exist with their documented shapes; and the check is registered under its
-      name.
+      name. Parametrize the phase matrix so the class stays one selector (the graduated node) and the file stays
+      well under 500 SLOC.
   - file: docs/contracts/github-org-transfer.yaml
     action: Modify
     purpose: >-
-      The six operator-approved edits, verbatim (context names the approvals; Edit 6's is pending): evaluator agent_surface ->
+      The seven operator-approved edits, verbatim (context names the approvals): evaluator agent_surface ->
       check validate_github_org_transfer; a second amendment_log entry; identity.staged_phase: pre_staged;
       planned_evaluator rewritten; breakage_map.oidc_trust_segment.fix names the admin split-apply;
-      tracking.decision_172_review records the re-arm. identity.phase stays pre_transfer.
+      tracking.decision_172_review points at the re-armed stanza; identity.current.trust_segment_ref and
+      identity.target.owner_numeric_id re-worded for the two-segment state. identity.phase stays pre_transfer.
   - file: docs/DECISIONS.md
     action: Modify
     purpose: >-
@@ -112,11 +116,17 @@ scope:
     purpose: >-
       The existing graduated row greps 'agent_surface: docs/CLAUDE.md', which Edit 1 removes; repoint that grep
       to 'check: validate_github_org_transfer' so the standing check stays true (its other greps unchanged).
+  - file: docs/contracts/verification-registry.yaml
+    action: Modify
+    purpose: >-
+      The operator-approved governance note and amendment_log entry (draft/verification-registry-note.md) that
+      record the in-place repoint of github-org-transfer-contract; governance_notes is the only provenance surface
+      for an in-place row edit (Decision 176).
   - file: tests/checks/contracts/test__manifest.py
     action: Modify
     purpose: >-
-      Add validate_github_org_transfer's read set (the contract, both Terraform files, the check module,
-      scripts/checks/_common.py, scripts/checks/registry.py) to _CLOSURE_INPUTS, the convention for gated Entries.
+      Add TestGithubOrgTransferPromotedUngated beside TestPortalDriftPromotedUngated: the Entry is dispatched in
+      --pre and declares no pre_globs (the convention for an ungated Entry).
   - file: config/agent/verification_registry/entries/oidc-trust-target-owner-segment-staged.yaml
     action: Create
     purpose: "Graduated row for VP step 2 (test_selector, plan_slug oidc-owner-segment-prestage)."
@@ -178,7 +188,7 @@ infrastructure_dependencies:
     the transfer (caught by the contract's transfer_window_checklist step 7 before unfreeze).
   - >-
     ADMIN container with the S3 provider mirror (Decision 120): the personal-root read-only plan (VP 13) and
-    the split-apply (VP 17) need TF_CLI_CONFIG_FILE pointing at a synced mirror. Planning-time check
+    the split-apply (VP 15) need TF_CLI_CONFIG_FILE pointing at a synced mirror. Planning-time check
     (2026-10-15): the mirror syncs and terraform/personal initialises with -backend-config=backend-sandbox.hcl.
 acceptance_criteria:
   - >-
@@ -209,8 +219,8 @@ acceptance_criteria:
     rec-3167 and rec-3128 close at merge (Resolves trailer); rec-3902 closes only after the live proof, by
     update_rec with the evidence path (Decision 201).
   - >-
-    The freeze was declared by the operator, in the build thread, before the merge, and its preconditions were
-    recorded (VP 14).
+    The freeze was declared by the operator, in the build thread, before the first live mutation (VP 15), and
+    its preconditions were recorded (VP 14).
 verification_plan:
   - step: 1
     phase: pre-deploy
@@ -297,7 +307,8 @@ verification_plan:
       assert log[-1]['change_class']=='field_add' and log[-1]['semantic_break'] is False;
       assert c['planned_evaluator'].startswith('validate_github_org_transfer (rec-3902) enforces invariant (1)');
       assert 'identity.staged_phase' in c['planned_evaluator'];
-      assert '2027-04-30' in c['tracking']['decision_172_review'];
+      assert 're-armed by the OIDC pre-stage plan' in c['tracking']['decision_172_review'];
+      assert '(the benjamin-blake entry)' in c['identity']['current']['trust_segment_ref'];
       import subprocess; row=yaml.safe_load(open('config/agent/verification_registry/entries/github-org-transfer-contract.yaml'));
       subprocess.run(row['check_spec']['command'], check=True);
       o=[r for r in c['breakage_map'] if r['id']=='oidc_trust_segment'][0];
@@ -492,11 +503,11 @@ verification_plan:
     phase: pre-deploy
     hermetic: false
     action: >-
-      FREEZE GATE, immediately before the merge. The operator has typed the freeze declaration in the build thread
+      FREEZE GATE, immediately before the VP 15 split-apply (the first live mutation). The operator has typed the freeze declaration in the build thread
       (record its message id). Then check: the convergence record is green with no pending_gated,
       pending_codification or infra_error marker; terraform-apply-sandbox and reconcile have no queued,
       in-progress or waiting run (GitHub MCP actions_list); no open PR other than this one touching
-      terraform/** will merge until step 21 is done; no Dependabot PR can auto-merge in the window (the operator
+      terraform/** will merge until VP 27 passes; no Dependabot PR can auto-merge in the window (the operator
       pauses dependabot-auto-merge or none is mergeable); the IAM refactor (rec-3838) is either fully applied or
       parked unmerged (step 12's converged baseline proves no bootstrap change is pending). Record the time of
       the last drift tick; start step 15 within a few minutes after one.
@@ -517,8 +528,9 @@ verification_plan:
     action: >-
       SPLIT-APPLY, BEFORE THE MERGE (operator's word on the exact command; Decision 183 point 4: the
       CI-unexecutable addresses are applied out-of-band FIRST so the governed path carries only the remainder).
-      Run only when step 14 has passed, code review is PROCEED, the PR head is final and the operator is present
-      to finish steps 16-19 in one sitting: this starts the 2-hour pending_codification clock (state ahead of
+      Run only when step 14 has passed, code review is PROCEED, the operator's code-owner approval is recorded on
+      PR_HEAD_SHA (terraform/bootstrap is a CODEOWNERS path), the PR head is final and the operator is present to
+      finish steps 16-19 in one sitting: this starts the 2-hour pending_codification clock (state ahead of
       main, Decision 190). The command plans terraform/personal at PR_HEAD_SHA in the ADMIN container with the
       mirror, targeted on planner and deploy, and prints the counts; PRESENT them. Then, as its own call and only
       after the operator's word, apply the SAME saved plan: set -a && . "$HOME/.oidc-prestage/state.env" && set
@@ -550,11 +562,18 @@ verification_plan:
       job overwrites tfplan/personal/<pr>/<sha>.bin and posts a new terraform-plan-digest status for the same sha
       (terraform-apply-sandbox.yml:620-660), which is what the merge's push run fetches and verifies.
     command: >-
-      echo "MCP: actions_run_trigger(method='rerun_workflow_run', run_id=<the PR head's terraform-apply-sandbox run>);
-      then get_job_logs(speculative-plan) must show github_ci_branch and github_ci_pr 'updated in-place' and 'Plan:
-      0 to add, 2 to change, 0 to destroy', a persisted plan.bin and a posted digest; and the PR's plan comment
-      shows the same counts."
-    expected: The re-run plan lists exactly the branch and pr trust updates. The MCP results and job log are the evidence.
+      set -a && . "$HOME/.oidc-prestage/state.env" && set +a && aws s3api head-object --bucket
+      agent-platform-data-lake --key "tfplan/personal/$PR_NUMBER/$PR_HEAD_SHA.bin" --profile agent_platform_admin
+      --query LastModified --output text | bin/venv-python -c "import sys,os,datetime as dt;
+      raw=sys.stdin.read().strip(); m=dt.datetime.fromisoformat(raw.replace('Z','+00:00'));
+      assert m>dt.datetime.fromisoformat(os.environ['SPLIT_APPLY_TS']), ('saved plan predates the split', raw);
+      print('saved-plan-refreshed-after-split', raw)"
+    expected: >-
+      saved-plan-refreshed-after-split, and the re-run's speculative-plan job log (MCP get_job_logs) shows
+      github_ci_branch and github_ci_pr "updated in-place" with "Plan: 0 to add, 2 to change, 0 to destroy" and
+      a posted digest. PR_NUMBER is recorded in the state file when the PR opens. The re-run reuses the original
+      event's merge-ref snapshot, which stays correct because the freeze keeps terraform/personal unchanged on
+      main until the merge.
     fix_if: >-
       planner or deploy still listed means step 15 did not land: do not merge. An assume failure on the planner
       PR statement here is a live regression from step 15: restore planner's previous trust (step 15's fix_if)
@@ -562,15 +581,19 @@ verification_plan:
   - step: 17
     phase: post-deploy
     action: >-
-      MERGE on the operator's typed word ("merge") after the code-owner review and inside the window. Squash with
-      the PR body as the commit message carrying "Resolves: rec-3167, rec-3128" (NOT rec-3902). Append MERGE_SHA and
+      MERGE on the operator's typed word ("merge") inside the window, bound to the re-planned head: GitHub MCP
+      merge_pull_request(merge_method='squash', sha=PR_HEAD_SHA) (the expectedHeadSha binding precedent in
+      PLAN-platform-iam-bootstrap-adopt), with the PR body as the commit message carrying "Resolves: rec-3167,
+      rec-3128" (NOT rec-3902). Append MERGE_SHA and
       the push run's id (PUSH_RUN_ID) to the state file. Confirm the push run of terraform-apply-sandbox for
       MERGE_SHA shows apply-sandbox routed (guard exit 2) with gated-apply waiting. Do not approve it yet.
     command: >-
-      echo "MCP: merge_pull_request(merge_method='squash', commit_message=<PR body>); actions_list(list_workflow_runs,
-      resource_id='terraform-apply-sandbox.yml', branch='main') -> the run for MERGE_SHA: apply-sandbox success with
-      a routed guard, gated-apply status waiting. Record MERGE_SHA and PUSH_RUN_ID in the state file."
-    expected: One waiting gated-apply job whose saved plan is the step 16 re-plan; nothing applied yet.
+      set -a && . "$HOME/.oidc-prestage/state.env" && set +a && git fetch -q origin main && git merge-base
+      --is-ancestor "$MERGE_SHA" origin/main && git log -1 --format=%B "$MERGE_SHA" | grep -q '^Resolves: rec-3167,
+      rec-3128$' && ! git log -1 --format=%B "$MERGE_SHA" | grep -q '^Resolves:.*rec-3902' && echo merge-bound-with-trailer
+    expected: >-
+      merge-bound-with-trailer; and the MCP run listing shows the push run for MERGE_SHA with apply-sandbox routed
+      and gated-apply waiting, its saved plan the step 16 re-plan; nothing applied yet.
     fix_if: >-
       If apply-sandbox did not route (applied directly), STOP: the guard misclassified a trust diff; RCA. A
       stale-saved-plan failure means state moved between steps 16 and 17: STOP, and recover with the
@@ -607,9 +630,15 @@ verification_plan:
       the branch and pr trust updates: rec-2816 approval legibility). Append GATED_APPLY_TS (the gated job's
       completion time) to the state file.
     command: >-
-      echo "MCP: get_job_logs(apply-sandbox of PUSH_RUN_ID) shows github_ci_branch and github_ci_pr 'updated in-place'
-      and 'Plan: 0 to add, 2 to change, 0 to destroy'; after the operator approves, gated-apply concludes success."
-    expected: The gated-apply job applies exactly the two updates and writes a green record.
+      set -a && . "$HOME/.oidc-prestage/state.env" && set +a && aws s3 cp
+      s3://agent-platform-data-lake/convergence/personal/sandbox.json - --profile agent_platform_admin |
+      bin/venv-python -c "import json,sys,os; d=json.load(sys.stdin); assert d['status']=='green', d['status'];
+      assert str(d['run_id'])==os.environ['PUSH_RUN_ID'], 'record not written by the push run';
+      print('convergence-green-from-push-run')"
+    expected: >-
+      Run once, right after the gated job concludes: convergence-green-from-push-run. Before approving, the
+      apply-sandbox job log of PUSH_RUN_ID (MCP get_job_logs) showed github_ci_branch and github_ci_pr "updated
+      in-place" and "Plan: 0 to add, 2 to change, 0 to destroy".
     fix_if: >-
       Any address beyond branch and pr: do not approve (a planner or deploy trust write would AccessDeny and fire
       platform-security-denied-iam-write, terraform/bootstrap/platform_security_alarms.tf:27); RCA. A failed apply
@@ -617,25 +646,20 @@ verification_plan:
   - step: 20
     phase: post-deploy
     action: >-
-      Convergence record green and written by the push run; the apply role proven live in its environment form
-      after its own trust change. The GATE is job evidence: the push run's gated-apply job succeeded after
-      BOOTSTRAP_APPLY_TS, and its assume step tolerates no failure (terraform-apply-sandbox.yml:847-851).
-      RoleLastUsed corroborates.
+      The apply role proven live in its environment form after its own trust change. The GATE is job evidence:
+      the push run's gated-apply job succeeded after BOOTSTRAP_APPLY_TS (VP 19), and its assume step tolerates no
+      failure (terraform-apply-sandbox.yml:847-851). This step is the corroborating RoleLastUsed read only, safe to
+      re-run.
     command: >-
-      set -a && . "$HOME/.oidc-prestage/state.env" && set +a && aws s3 cp
-      s3://agent-platform-data-lake/convergence/personal/sandbox.json - --profile agent_platform_admin |
-      bin/venv-python -c "import json,sys,os; d=json.load(sys.stdin); assert d['status']=='green', d['status'];
-      assert str(d['run_id'])==os.environ['PUSH_RUN_ID'], 'record not written by the push run';
-      print('convergence-green-from-push-run')" && aws iam get-role --role-name agent-platform-github-ci-apply
+      set -a && . "$HOME/.oidc-prestage/state.env" && set +a && aws iam get-role --role-name agent-platform-github-ci-apply
       --profile agent_platform_admin --query 'Role.RoleLastUsed.LastUsedDate' --output text | bin/venv-python -c
       "import sys,os,datetime as dt; raw=sys.stdin.read().strip(); assert raw not in ('','None'), raw;
       assert dt.datetime.fromisoformat(raw)>dt.datetime.fromisoformat(os.environ['BOOTSTRAP_APPLY_TS']), raw;
       print('apply-role-live-after-bootstrap', raw)"
     expected: >-
-      Both markers, with the gated-apply job green after BOOTSTRAP_APPLY_TS. IAM last-used data lags: re-read
-      every 15 minutes for up to 4 hours.
+      apply-role-live-after-bootstrap. IAM last-used data lags: re-read every 15 minutes for up to 4 hours.
     fix_if: >-
-      A record not bound to PUSH_RUN_ID means another run wrote it; find which. A timestamp that has not
+      A timestamp that has not
       advanced after the 4-hour window while the job succeeded is recorded as a reporting discrepancy, not a
       failure; a failed assume step is a regression: STOP and RCA.
   - step: 21
@@ -734,8 +758,9 @@ verification_plan:
       (operator's word; governed code-deploy channel; both functions schedule-disabled). Confirm first that main
       carries no undeployed change to those functions (compute_affected_artifacts since their last deploy record),
       so this ships byte-identical code. Append DEPLOY_SHA (the run's head sha) to the state file. Its deploy job
-      assumes github_ci_deploy and its smoke job assumes github_ci_branch (deploy-prod-lambdas.yml:176-182) with no
-      tolerance, and the smoke job asserts deploy-record freshness. The GATE is the run's two green jobs plus the
+      assumes github_ci_deploy (continue-on-error plus a "Classify assume-role outcome" step,
+      deploy-prod-lambdas.yml:100-114, so the deploy record, not the job colour, is the proof) and its smoke job
+      assumes github_ci_branch with no tolerance (:176-182) and asserts deploy-record freshness. The GATE is the run's two green jobs plus the
       deploy record; RoleLastUsed corroborates.
     command: >-
       set -a && . "$HOME/.oidc-prestage/state.env" && set +a && echo "MCP: actions_run_trigger(run_workflow,
@@ -812,39 +837,55 @@ verification_plan:
     phase: pre-deploy
     hermetic: false
     action: >-
-      VERBATIM CHECK of the operator-approved texts (acceptance criterion 5): every approved "After" block (and
-      the amendment_log and staged_phase blocks) of draft/contract-amendment.md appears verbatim in the contract
-      once the date placeholder takes the entry's real date, and the Decision 172 stanza and Update paragraph of
-      draft/DECISION-172-rearm.md appear in DECISIONS.md (the Update paragraph compared whitespace-normalised,
-      since it is re-wrapped to the entry's style). The drafts live in the shared folder, so this runs in the
-      build session, not in CI.
-    command: |-
+      VERBATIM CHECK of the operator-approved texts (acceptance criterion 5). First the three drafts must still
+      hash to the values pinned when the operator approved them (context), so the check compares against what was
+      approved, not a later edit of the shared file. Then every approved "After" block (and the blocks of
+      sections with no Before) of draft/contract-amendment.md appears verbatim in the contract once the date
+      placeholder takes the entry's real date; the Decision 172 stanza and Update paragraph of
+      draft/DECISION-172-rearm.md appear in DECISIONS.md (the Update compared whitespace-normalised, since it is
+      re-wrapped); and draft/verification-registry-note.md's amendment_log entry appears verbatim and its note
+      paragraph whitespace-normalised in docs/contracts/verification-registry.yaml. The drafts live in the shared
+      folder, so this runs in the build session, not in CI.
+    command: |-  # pragma: allowlist secret
       bin/venv-python - <<'PY'
-      import re, pathlib, yaml
+      import re, pathlib, yaml, hashlib
       D = pathlib.Path('/mnt/project-files/oidc-prestage/draft')
+      PIN = {
+          'contract-amendment.md': 'efbee5c1c0bcdd57bdd48871056fe3a5c0eb30ea33bfacf09e92035c19c3a1bb',  # pragma: allowlist secret
+          'DECISION-172-rearm.md': 'fa4a9215c88edd8f89f7bb8df721d36e6bfc8c7722ec9fb7071da407f0f27a69',  # pragma: allowlist secret
+          'verification-registry-note.md': 'cfcac4ffd8815119c0b91600bee965f5fadfb8ee304687414001a08474bb8bf1',  # pragma: allowlist secret
+      }
+      for name, digest in PIN.items():
+          assert hashlib.sha256((D / name).read_bytes()).hexdigest() == digest, 'draft changed since approval: ' + name
+      norm = lambda s: re.sub(r'\s+', ' ', s).strip()
       c = pathlib.Path('docs/contracts/github-org-transfer.yaml').read_text()
       date = yaml.safe_load(c)['amendment_log'][-1]['date']
-      for sec in pathlib.Path(D / 'contract-amendment.md').read_text().split('\n## Edit ')[1:]:
-          part = sec.split('After:', 1)[1] if 'After:' in sec else sec
-          blk = re.search(r'```yaml\n(.*?)```', part, re.S).group(1).replace('2026-10-DD', date)
-          assert blk in c, 'contract edit not verbatim: Edit ' + sec.split(':', 1)[0]
+      for sec in (D / 'contract-amendment.md').read_text().split('\n## Edit ')[1:]:
+          for part in sec.split('After:')[1:] or [sec]:
+              blk = re.search(r'```yaml\n(.*?)```', part, re.S).group(1).replace('2026-10-DD', date)
+              assert blk in c, 'contract edit not verbatim: Edit ' + sec.split(':', 1)[0]
       d = pathlib.Path('docs/DECISIONS.md').read_text()
       e = d[d.index('## Decision 172:'):]
       e = e[:e.index('\n---\n')]
-      r = pathlib.Path(D / 'DECISION-172-rearm.md').read_text()
-      after = re.findall(r'```yaml reversal-conditions\n.*?```', r, re.S)[1]
-      assert after in e, 'stanza not verbatim'
+      r = (D / 'DECISION-172-rearm.md').read_text()
+      assert re.findall(r'```yaml reversal-conditions\n.*?```', r, re.S)[1] in e, 'stanza not verbatim'
       upd = ' '.join(l[2:] for l in r.split('## Edit 2')[1].splitlines() if l.startswith('> '))
-      norm = lambda s: re.sub(r'\s+', ' ', s).strip()
       got = norm(' '.join(l[2:] for l in e.splitlines() if l.startswith('> ')))
       want = re.escape(norm(upd)).replace(re.escape('2026-10-DD'), r'2026-\d\d-\d\d')
       assert re.search(want, got), 'Update paragraph not verbatim'
+      v = pathlib.Path('docs/contracts/verification-registry.yaml').read_text()
+      note = (D / 'verification-registry-note.md').read_text()
+      vdate = yaml.safe_load(v)['amendment_log'][0]['date']
+      entry = re.search(r'```yaml\n(.*?)```', note.split('## Edit B')[1], re.S).group(1).replace('2026-10-DD', vdate)
+      assert entry in v, 'registry amendment_log entry not verbatim'
+      para = re.search(r'```text\n(.*?)```', note, re.S).group(1).replace('2026-10-DD', vdate)
+      assert norm(para) in norm(v), 'registry governance note not verbatim'
       print('approved-texts-verbatim')
       PY
     expected: approved-texts-verbatim.
     fix_if: >-
-      Re-copy the named block from the draft. Never edit the draft to match the build: a wording change goes to
-      the operator first.
+      A hash mismatch means a draft changed after approval: STOP and ask the coordinator, never re-pin on your
+      own. A verbatim miss: re-copy the named block from the draft; a wording change goes to the operator first.
     graduation: not-applicable
   - step: 30
     phase: pre-deploy
@@ -880,6 +921,11 @@ test_obligations:
     verification_step: 2
     test_selector: tests/checks/iam_tf/test_oidc_trust_slug_invariants.py::TestTargetOwnerSegment::test_both_roots_stage_the_target_segment
     red_green_expectation: Red before (no otl-labs entry), green after.
+  - source: terraform/bootstrap/github_ci_apply.tf
+    behavior: The apply role's description names both Decision 94 sub forms (rec-3128).
+    verification_step: 30
+    command: "'description.*environment:tf-gated-apply'"
+    red_green_expectation: Red before (the description says refs/heads/main ONLY), green after.
   - source: scripts/checks/contracts/validate_github_org_transfer.py
     behavior: The trust lists match the contract's current-or-next phase exactly, across both roots.
     verification_step: 3
@@ -910,6 +956,11 @@ test_obligations:
     red_green_expectation: >-
       Red before (review_by 2026-11-15 and the discharged condition), green after. The evidence is step 6's own
       command, named by a substring of it.
+  - source: docs/contracts/verification-registry.yaml
+    behavior: The in-place registry row repoint is recorded in governance_notes with its amendment_log entry.
+    verification_step: 29
+    command: docs/contracts/verification-registry.yaml
+    red_green_expectation: Red before (step 29 finds no approved note or entry), green after.
   - source: config/agent/verification_registry/entries/github-org-transfer-contract.yaml
     behavior: The existing contract row's standing check stays true after the evaluator change.
     verification_step: 5
@@ -932,8 +983,8 @@ constraints:
     CARRIER: shell state does not persist between tool calls (AGENTS.md), so every value a later step reads
     (OTL_ORG_ID, PR_HEAD_SHA, MERGE_SHA, PUSH_RUN_ID, BOOTSTRAP_APPLY_TS, SPLIT_APPLY_TS, DISPATCH_RUN_ID,
     GATED_APPLY_TS, DEPLOY_SHA, TF_CLI_CONFIG_FILE) lives in the session-local file
-    "$HOME/.oidc-prestage/state.env" (mode 600, outside the repository and the shared folder, deleted at step
-    27); each step's command sources it first, and each producing step appends KEY=value. The org id may sit in
+    "$HOME/.oidc-prestage/state.env" (mode 600, outside the repository and the shared folder, deleted at VP
+    28); each step's command sources it first, and each producing step appends KEY=value. The org id may sit in
     that file and in this session's own command text and transcript, which already carry the operator's message;
     post-merge steps read the target segment from the merged list instead.
   - >-
@@ -978,7 +1029,7 @@ context:
     Decision 218, Decision 172, Decision 177, Decision 94, Decision 143, Decision 183, Decision 126, Decision 77,
     Decision 92, Decision 190, Decision 168, Decision 170, Decision 101. RELATED -- 171, 195, 198, 180, 144, 120,
     202, 201, 125, 79, 132, 176, 189, 169, 150, 167, 163, 48, 98.
-  - "gates: decision-scout=FLAGS_FOUND (NOTE adopted, no pivot); plan-critique=PENDING (round 1 REVISE, 4 fixes; round 2 REVISE, 3 fixes: split before merge, rec oracles, Edit 6 word)"
+  - "gates: decision-scout=FLAGS_FOUND (NOTE adopted, no pivot); plan-critique=PENDING (REVISE x3, all findings fixed; see critique-escalation.md)"
   - >-
     V3 resolution: the counts-only pre-merge gate evidence posted for the current $PR_HEAD_SHA (steps 10-14)
     substitutes for the pre-merge post-deploy evidence the implement V3 Merge Gate and the code-review V3 check
@@ -986,30 +1037,29 @@ context:
     evidence is a counts-only comment on the merged PR naming the applied $MERGE_SHA plus
     /mnt/project-files/oidc-prestage/EVIDENCE.md (CloudWatch history ages out and is not the record).
   - >-
-    APPROVED TEXTS (copy verbatim): /mnt/project-files/oidc-prestage/draft/contract-amendment.md (as of
-    19:24Z) and draft/DECISION-172-rearm.md. Approval: Benjamin, 2026-10-15 21:38Z, this thread, "yes to all
-    and write the plan" (message cmsg_017f94mmYqSe3q2p9o6tPW3UJiLxGKhXGRuGJQSSF6B2pq): forks 1A (split-apply),
-    2A (check now, staged_phase), bundling rec-3167 and rec-3128, and both texts. Variance: dates, PR numbers.
-    Edit 6 (tracking.decision_172_review, added 21:59Z after critique): the operator's word is PENDING; this plan
-    does not merge until it is recorded here, or Edit 6 is dropped from the scope row, step 5 and the draft.
-    Forks and evidence: step6b-presentation.md, ADVICE.md, CROSS-THREAD-DEPENDENCIES.md beside them.
+    APPROVED TEXTS (copy verbatim; step 29 checks the pinned sha256): /mnt/project-files/oidc-prestage/draft/
+    contract-amendment.md, DECISION-172-rearm.md, verification-registry-note.md. Benjamin, 2026-10-15 21:38Z,
+    "yes to all and write the plan" (cmsg_017f94mmYqSe3q2p9o6tPW3UJiLxGKhXGRuGJQSSF6B2pq): forks 1A, 2A, the
+    bundled recs, Edits 1-5 and the Decision 172 text. PENDING the operator's word: Edits 6-7 and the registry
+    note (added after critique); the plan does not merge until that word is recorded here. Variance: dates.
   - >-
     SPLIT-APPLY STANDING: Decision 183 point 4 and deploy-paths SPLIT-APPLY authorise it; Decision 219 clause 4
-    (approved in PLAN-platform-iam-personal-release, not yet on main) names this exact case. deploy-paths.yaml's SPLIT-APPLY step says reject the waiting run; this plan cancels it
-    instead (ci-rca.yml:59 files a rec on a failed main run); rec-2794 owns correcting that text.
+    (approved in PLAN-platform-iam-personal-release, not yet on main) names this exact case. SPLIT-APPLY's "reject
+    any pending gated-apply run covering the same targeted resource" never triggers: the split precedes the merge
+    and VP 16 re-plans, so no pending run ever covers planner or deploy.
   - >-
     FREEZE (operator, 2026-10-15): all other repository work stops before this apply and stays stopped until
-    the transfer is proven; migration work continues. This plan's freeze point is the build PR's merge (step 14).
+    the transfer is proven; migration work continues. This plan's freeze point is VP 14, just before the VP 15
+    split-apply (the first live mutation), not the merge.
   - >-
     IAM REFACTOR (rec-3838): no shared file and no IAMRoleReconcile change, but shared state (operator
     bootstrap applies on one state, the same gated pipeline), so it must be fully applied or parked before
     step 14. Status at plan time: #1500 merged and applied (bootstrap plan at 401e3ccd: no changes); the
     personal-release build (gated forgets) is not built yet. Step 12's converged baseline catches leftovers.
   - >-
-    ORG ID: this session cannot read /orgs (repository-scoped proxy), so the operator's read is the only
-    pre-transfer source; the issuer-sourced cross-check before the transfer go/no-go is rec-4356.
-    rec-3903 and rec-3136 extend validate_github_org_transfer for their static rows; neither edits these files.
-  - "MEASURED 2026-10-15 (read-only, placeholder id): 5 GitHub-OIDC roles live; changes bootstrap 1, personal 4, split 2."
+    ORG ID: the operator's read is the only pre-transfer source (/orgs is outside this session's proxy); rec-4356
+    adds an issuer-sourced cross-check at the transfer go/no-go. rec-3903 and rec-3136 extend the new check later.
+    Measured 2026-10-15 (read-only): 5 GitHub-OIDC roles; changes bootstrap 1, personal 4, split 2.
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
@@ -1017,6 +1067,10 @@ pre_implementation_checklist:
   - terraform/CLAUDE.md, terraform/bootstrap/CLAUDE.md and docs/contracts/github-org-transfer.yaml read
   - All files in scope located and readable
   - The operator's org-id message and "write the plan" approval located by message id
+  - >-
+    The context records the operator's word on every pending wording item (Edit 6 and Edit 7 of
+    contract-amendment.md, and the verification-registry note) with its message id, and the pinned sha256 of
+    both drafts; if any is missing, STOP and ask the coordinator -- do not start the build
   - Acceptance criteria understood and verifiable
 execution_steps:
   - >-
@@ -1072,9 +1126,10 @@ rollback: >-
   and CI keeps working on the current path; RCA, then resume from the failed step. If the merge cannot follow
   the pre-merge split-apply inside the window, restore planner and deploy with the same targeted apply from
   origin/main (VP 15 fix_if). Full rollback (only if the
-  target entry itself is wrong and must go): a PR reverting both lists in one commit, then the same channels in
-  the same order -- bootstrap apply, split-apply of planner and deploy, cancel the push run's waiting gate,
-  dispatch and approve branch and pr. The same revert PR removes identity.staged_phase (so
+  target entry itself is wrong and must go): a revert PR, then the forward order mirrored -- split-apply planner
+  and deploy from the revert PR's final head, re-run its speculative plan, merge, bootstrap apply while the gate
+  waits, approve the gated job (no waiting run is ever cancelled or rejected). The same revert PR removes the
+  target entry from both lists, identity.staged_phase (so
   validate_github_org_transfer then expects [current] alone), TestTargetOwnerSegment and the
   oidc-trust-target-owner-segment-staged registry row, or the revert itself goes red. A wrong org id is corrected
   the same way with the right id, not reverted.
