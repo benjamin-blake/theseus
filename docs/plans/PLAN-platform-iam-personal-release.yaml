@@ -6,7 +6,7 @@ slug: "platform-iam-personal-release"
 intent: >-
   Second half of rec-3838: release PlatformDev, PlatformAdmin and their five inline policies from
   the CI-applied terraform/personal state through one human-gated forget that touches no live
-  object, so the CD pipeline never again plans these seven IAM addresses, which its identity cannot write. The plan also locks
+  object, so the CD pipeline never again plans these seven IAM addresses, whose trust and inline policies its identity cannot write. The plan also locks
   the one-state-per-applier rule for PlatformDev and PlatformAdmin in a standing guard, records it as a numbered Decision
   (one Terraform state per applier; amends Decisions 180 and 183, with forward pointers on 180, 183, 202 and 113), and makes rec-4043 (a separate admin principal) a gate on
   executor re-enable in the roadmap. Refreshed 2026-10-15 against main: Decision 213's URL-only invoke conditions stay
@@ -397,9 +397,9 @@ verification_plan:
     action: rec-3838 closed by the squash-merge Resolves trailer
     command: |-
       bin/venv-python -c "from src.common.ducklake_reader_client import fetch_recs_by_ids, make_reader; rows, missing = fetch_recs_by_ids(make_reader(profile='agent_platform_admin'), ['rec-3838']); assert not missing, 'rec-3838 not found'; s = rows[0]['status']; assert s == 'closed', 'rec-3838 is ' + s; print('rec-3838 closed')"
-    expected: rec-3838 is closed (rec-autoclose.yml on the Resolves trailer), read through the reader's recs_by_ids verb (Decision 215)
+    expected: rec-3838 is closed by ci.yml's trailer-census / trailer-acceptance-evaluate / trailer-closure jobs on the squash-merge Resolves trailer (Decision 201 holds verdict on its code-state acceptance at the merge sha; lands roughly 16-20 minutes after merge), read through the reader's recs_by_ids verb (Decision 215)
     fix_if: |-
-      still open -- confirm the squash body carried `Resolves: rec-3838` and that rec-autoclose ran; close via update_rec only with the closure artifact the trailer gate expects
+      still open -- wait out the trailer jobs' latency, then confirm the squash body carried `Resolves: rec-3838` and read the merge commit's ci.yml trailer-closure run (docs/contracts/git-ops.yaml resolves_trailer / trailer_acceptance_gate); close via update_rec only with the closure artifact and holds verdict the gate expects
   - step: 20
     phase: post-deploy
     action: close the tf_drift recs the approval window filed
@@ -410,7 +410,8 @@ verification_plan:
       closed. Reads go through the reader (recs_by_title_prefix binds a LIKE pattern, so the trailing %
       is required; it returns id/title/status/source, so created_timestamp comes from recs_by_ids).
       Both titles are covered: today the pending-codification branch fires first (rec-4050); once
-      rec-4050 lands the pending-gated branch files instead
+      rec-4050 lands the pending-gated branch files instead. fetch_recs_by_ids refuses more than 50 ids
+      (fails closed); if that many open matches ever exist, fetch them in chunks of 50
     fix_if: close each listed rec with update_rec (status closed), citing step 15's green record at the merge commit as the resolution; then re-run
   - step: 21
     phase: post-deploy
@@ -725,19 +726,21 @@ execution_steps:
       **Date:** DATE
       **Warehouse ID:** dec-218 (per Decision 84 backfill)
 
-      **Problem:** rec-3838. PlatformDev and PlatformAdmin, the two identities CI can never write
-      (Decision 180 clause 3), were declared in terraform/personal, the root CI plans and applies.
-      Every change to them forced Decision 183 point 4's operator split-apply, whose window red-latched
-      the sandbox convergence record twice in nine days and blocked three merges' applies on
-      2026-09-13 (rec-3797). Decision 180 clause 6 recorded the relocation as a rejected alternative
+      **Problem:** rec-3838. PlatformDev and PlatformAdmin, the two identities whose trust and inline
+      policies CI can never write (Decision 180 clauses 2-3; CI holds only four metadata verbs on
+      PlatformDev), were declared in terraform/personal, the root CI plans and applies. Every trust or
+      inline-policy change to them forced Decision 183 point 4's operator split-apply, whose window
+      red-latched the sandbox convergence record twice in nine days and blocked three merges' applies
+      on 2026-09-13 (rec-3797). Decision 180 clause 6 recorded the relocation as a rejected alternative
       "for now" under Decision 144 clause 3.
 
       **Intent:**
       A Terraform root's state holds only what that root's applier may mutate.
 
       **Decision:**
-      1. **Rule.** A Terraform root's state holds only resources its applier may mutate. An identity
-         CI cannot write by design is never declared in a CI-applied root.
+      1. **Rule.** A Terraform root's state holds only resources its applier may mutate in full. An
+         identity whose trust or inline policies CI cannot write by design is never declared in a
+         CI-applied root.
       2. **Placement.** PlatformDev, PlatformAdmin and their five inline policies (DailyOps, AdminOps,
          PlatformDataLakeProvisioning, BootstrapStateProvisioning, DuckLakeBreakGlass) are declared,
          imported and owned by terraform/bootstrap (PLAN-platform-iam-bootstrap-adopt).
@@ -772,8 +775,9 @@ execution_steps:
       **Coverage (Decision 181 cl.2):** clause 2 in terraform/personal -- the clause 5 guard, on every
       --pre run; bootstrap ownership -- the adopt plan's graduated TestBootstrapOwnsPlatformIam; live
       parity -- the release plan's before/after IAM snapshot (one-time). Residuals: Decision 113's
-      provisioning-site pointer (rec-4043); CI's IAMRolesRead ARNs and metadata-write grant on the two
-      roles (rec-4049); the three trust variables still declared in terraform/personal (rec-4048).
+      provisioning-site pointer (rec-4043); CI's IAMRolesRead ARNs on the two roles and its
+      metadata-write grant on PlatformDev (rec-4049); the three trust variables still declared in
+      terraform/personal (rec-4048).
 
       ```yaml reversal-conditions
       decision: 218
@@ -782,7 +786,7 @@ execution_steps:
       conditions:
         - id: ci-writable-again
           kind: manual
-          description: "A ratified Decision makes either identity CI-writable (reversing Decision 180 clause 3): re-decide clause 2's placement with it."
+          description: "A ratified Decision lets CI write either identity's trust or inline policies (reversing Decision 180 clauses 2-3): re-decide clause 2's placement with it."
         - id: bootstrap-drift-undetected
           kind: manual
           description: "A change to either role or any of the five policies is seen neither by Decision 202's detector nor by a scheduled bootstrap plan (rec-3358) within 24 h: re-examine clause 2."
@@ -819,5 +823,6 @@ rollback: >-
   them from terraform/bootstrap with `removed { lifecycle { destroy = false } }` via an admin
   apply. Retire the platform-iam-admin-root-only and deploy-paths-split-apply-excludes-platform-iam
   registry rows by git mv to config/agent/verification_registry/entries/deprecated/ (they would
-  otherwise go red). Never `state rm`, never a cross-backend `state mv`. Revert the Decision
-  annotations with a further dated Update, never an in-place edit (Decision 177).
+  otherwise go red). Never `state rm`, never a cross-backend `state mv`. Reversing the ownership
+  re-decides the new Decision through /plan (its reversal stanza's on_trigger): a superseding entry
+  plus dated Updates on it and on the four pointed-at entries, never an in-place edit (Decision 177).
