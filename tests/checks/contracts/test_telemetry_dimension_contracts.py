@@ -133,7 +133,7 @@ def test_ops_entity_counters_catalog_aware_grain() -> None:
     assert "ulid" in doc["fields"]["current_value"]["description"]
     invariants = " ".join(doc["audit_invariants"])
     assert "absent_tables" in invariants and "ulid -- current_value >= the owning current table's row count" in invariants
-    assert any(e["date"] == "2026-10-05" for e in doc["amendment_log"])
+    assert any(e["date"] == "2026-10-05" and "PLAN-telemetry-table-registration" in e["summary"] for e in doc["amendment_log"])
 
 
 def test_reserved_project_namespace_declared() -> None:
