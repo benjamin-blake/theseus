@@ -7,7 +7,9 @@ intent: >-
   Keep three Decisions true once the telemetry reader verbs build lands (rec-4324): append one approved, dated Update
   note each to Decision 199 (clause 1's window-verb reading), Decision 207 (the Coverage line's reader side is now
   enforced code, not rec-4024's residual) and Decision 215 (clause 4's per-session reader count is six, observed not
-  restated), so the decision record matches the shipped read layer and the decision scout stops flagging window verbs.
+  restated), so the decision record matches the shipped read layer and the decision scout stops flagging window verbs;
+  and drop the stale KNOWN GAPS entries (rec-2173, already closed; rec-4024, whose named verbs and dimension contracts
+  are built once the reader verbs build lands) from the telemetry_sessions and telemetry_observations contracts.
 plan_type: IMPLEMENTATION
 verification_tier: V1
 plan_path: docs/plans/PLAN-reader-verbs-decision-notes.yaml
@@ -25,12 +27,23 @@ scope:
 - file: config/agent/verification_registry/entries/reader-verbs-decision-notes.yaml
   action: Create
   purpose: Graduated presence guard for the three notes (VP step 4), check_id equal to the filename stem.
+- file: docs/contracts/telemetry_sessions.yaml
+  action: Modify
+  purpose: >-
+    KNOWN GAPS cleanup (Benjamin 2026-10-15, cmsg_012XgaFy8VaDQbxP5D8nC958QAs6KSJt5NZBpQ7z2JsAwN): drop the stale rec-2173
+    (closed) and rec-4024 (its named verbs and dimension contracts built) entries, and add one amendment_log entry, exactly as execution_steps[3]
+    says. No other key or field changes.
+- file: docs/contracts/telemetry_observations.yaml
+  action: Modify
+  purpose: >-
+    The same cleanup for its stale rec-4024 (writer/reader verbs) entry, with one amendment_log entry, exactly as
+    execution_steps[3] says. No other key or field changes.
 - file: docs/decisions-index.json
   action: Modify
   purpose: >-
     CONDITIONAL. A trial of the three notes on a copy of main 9df9535b left the index current (the notes sit after each
     entry's Problem-sourced excerpt and add no typed edge), so it is expected byte-identical. Regenerate with
-    `bin/venv-python -m scripts.decisions_index --write` ONLY if VP step 6 reports drift, after finding why.
+    `bin/venv-python -m scripts.decisions_index --write` ONLY if VP step 7 reports drift, after finding why.
 bundled_recommendations:
 - rec-4324
 followon_recs: []
@@ -56,7 +69,13 @@ acceptance_criteria:
 - >-
   The reader verbs build is merged, its governed deploy is green and the preflight gauge reads pass live before the PR
   merges (VP steps 1-3).
-- docs/decisions-index.json is current; no numbered Decision is added; no code, contract, roadmap or Lambda file changes.
+- >-
+  telemetry_sessions.yaml's KNOWN GAPS no longer names rec-2173 or rec-4024 and telemetry_observations.yaml's no longer
+  names rec-4024; every other entry, field and key is unchanged; each contract's amendment_log gains exactly the
+  approved first entry (VP step 6).
+- >-
+  docs/decisions-index.json is current; no numbered Decision is added; no code, roadmap or Lambda file changes, and no
+  contract change beyond the approved KNOWN GAPS cleanup.
 - >-
   rec-4324's acceptance holds on the merge commit and rec-4324 is closed by the `Resolves: rec-4324` trailer.
 verification_plan:
@@ -145,7 +164,7 @@ verification_plan:
     test node are normalised. Each note is its entry's last non-blank line before `---`, and the test node the 207 note
     names must exist in the dedupe test file.
   command: >-
-    bin/venv-python -c "import subprocess as s,re,yaml;d=s.run(['git','diff','--unified=0','origin/main','--','docs/DECISIONS.md'],capture_output=True,text=True,check=True).stdout.splitlines();rm=[l for l in d if l.startswith('-') and not l.startswith('--- a/')];ad=[l[1:] for l in d if l.startswith('+') and not l.startswith('+++ b/') and l[1:].strip()];assert not rm,rm;assert len(ad)==3,ad;st=yaml.safe_load(open('docs/plans/PLAN-reader-verbs-decision-notes.yaml',encoding='utf-8'))['execution_steps'][2];tp=dict((int(k.split()[1]),v) for k,v in (l.split(': ',1) for l in st.splitlines() if l.startswith('Decision ')));nz=lambda x:re.sub(r'test_ducklake_event_read_dedupe\.py::test_\w+','test_ducklake_event_read_dedupe.py::test_conflicted_keys_are_reported_never_resolved',re.sub(r'#\d+\)','#NNNN)',re.sub(r'^> \*\*Update \(\d{4}-\d{2}-\d{2}\)','> **Update (YYYY-MM-DD)',x)));t=open('docs/DECISIONS.md',encoding='utf-8').read();sp=lambda n:(lambda q:q[:q.index(chr(10)+'---'+chr(10))])(t[t.index('## Decision %d:'%n):]);got={n:[l for l in ad if l in sp(n)] for n in tp};assert all(len(v)==1 for v in got.values()),got;assert all([x for x in sp(n).splitlines() if x.strip()][-1]==got[n][0] for n in tp),'a note is not its entry last line';bad=[n for n in tp if nz(got[n][0])!=tp[n]];assert not bad,bad;nm=re.search(r'::(test_\w+)',got[207][0]).group(1);assert 'conflict' in nm and 'def '+nm+'(' in open('tests/common/test_ducklake_event_read_dedupe.py',encoding='utf-8').read(),nm;print('append-only and verbatim: 3 notes')"
+    bin/venv-python -c "import subprocess as s,re,yaml;d=s.run(['git','diff','--unified=0','origin/main','--','docs/DECISIONS.md'],capture_output=True,text=True,check=True).stdout.splitlines();rm=[l for l in d if l.startswith('-') and not l.startswith('--- a/')];ad=[l[1:] for l in d if l.startswith('+') and not l.startswith('+++ b/') and l[1:].strip()];assert not rm,rm;assert len(ad)==3,ad;assert not [l for l in ad if '#NNNN' in l or 'YYYY-MM-DD' in l],'placeholder left';st=yaml.safe_load(open('docs/plans/PLAN-reader-verbs-decision-notes.yaml',encoding='utf-8'))['execution_steps'][2];tp=dict((int(k.split()[1]),v) for k,v in (l.split(': ',1) for l in st.splitlines() if l.startswith('Decision ')));nz=lambda x:re.sub(r'test_ducklake_event_read_dedupe\.py::test_\w+','test_ducklake_event_read_dedupe.py::test_conflicted_keys_are_reported_never_resolved',re.sub(r'#\d+\)','#NNNN)',re.sub(r'^> \*\*Update \(\d{4}-\d{2}-\d{2}\)','> **Update (YYYY-MM-DD)',x)));t=open('docs/DECISIONS.md',encoding='utf-8').read();sp=lambda n:(lambda q:q[:q.index(chr(10)+'---'+chr(10))])(t[t.index('## Decision %d:'%n):]);got={n:[l for l in ad if l in sp(n)] for n in tp};assert all(len(v)==1 for v in got.values()),got;assert all([x for x in sp(n).splitlines() if x.strip()][-1]==got[n][0] for n in tp),'a note is not its entry last line';bad=[n for n in tp if nz(got[n][0])!=tp[n]];assert not bad,bad;nm=re.search(r'::(test_\w+)',got[207][0]).group(1);assert 'conflict' in nm and 'def '+nm+'(' in open('tests/common/test_ducklake_event_read_dedupe.py',encoding='utf-8').read(),nm;print('append-only and verbatim: 3 notes')"
   expected: >-
     Prints the append-only and verbatim line and exits 0. Measured at authoring time on a scratch copy of this branch:
     exit 1 with no notes; exit 0 with the three notes and a dedupe test file defining the node; exit 1 naming [199]
@@ -167,6 +186,32 @@ verification_plan:
 - step: 6
   phase: pre-deploy
   action: >-
+    The approved contract cleanup, on the rebased tree: in telemetry_sessions.yaml and telemetry_observations.yaml the
+    parsed governance_notes equals origin/main's with exactly the approved KNOWN GAPS entries (and the comma and space
+    after each) removed; amendment_log gains exactly one new first entry (date, semantic_break false, change_class
+    prose_improvement, the approved summary once #NNNN is normalised) over origin/main's list; every other key is
+    unchanged. Templates are read from execution_steps[3] of this plan.
+  command: >-
+    bin/venv-python -c "import subprocess as s,re,yaml;from functools import reduce;st=yaml.safe_load(open('docs/plans/PLAN-reader-verbs-decision-notes.yaml',encoding='utf-8'))['execution_steps'][3];L=st.splitlines();C=('telemetry_sessions','telemetry_observations');R={c:[l.partition(': ')[2] for l in L if l.partition(': ')[0]==c+' removes'] for c in C};S={c:[l.partition(': ')[2] for l in L if l.partition(': ')[0]==c+' summary'][0] for c in C};nz=lambda x:re.sub(r'#\d+\)','#NNNN)',x);B={c:yaml.safe_load(s.run(['git','show','origin/main:docs/contracts/%s.yaml'%c],capture_output=True,text=True,check=True).stdout) for c in C};H={c:yaml.safe_load(open('docs/contracts/%s.yaml'%c,encoding='utf-8')) for c in C};X=('governance_notes','amendment_log');ok=lambda c,e:all(B[c]['governance_notes'].count(f+', ')==1 for f in R[c]) and H[c]['governance_notes']==reduce(lambda a,f:a.replace(f+', ',''),R[c],B[c]['governance_notes']) and H[c]['amendment_log'][1:]==B[c]['amendment_log'] and set(e)=={'date','semantic_break','change_class','summary'} and bool(re.fullmatch(r'\d{4}-\d{2}-\d{2}',str(e['date']))) and e['semantic_break'] is False and e['change_class']=='prose_improvement' and '#NNNN' not in e['summary'] and nz(e['summary'])==S[c] and {k:v for k,v in H[c].items() if k not in X}=={k:v for k,v in B[c].items() if k not in X};bad=[c for c in C if not ok(c,H[c]['amendment_log'][0])];assert all(R[c] for c in C) and not bad,bad;print('contract edits verbatim: 2 contracts')"
+  expected: >-
+    Prints the contract-edits line and exits 0. Measured at authoring time on a scratch copy of main 79063637: exit 1
+    naming both contracts with no edit; exit 0 with the approved edits; exit 1 naming telemetry_observations when its
+    summary had one word changed.
+  fix_if: >-
+    A contract named means its KNOWN GAPS list, amendment_log or another key differs from the approved edit: copy the
+    removals and summary again from execution_steps[3], keep the new log entry first, and touch nothing else. A wrapped
+    or re-flowed governance_notes line is fine (the check compares parsed text). If origin/main changed either contract
+    since the rebase, rebase again (the Commit Flow restarts).
+  hermetic: true
+  expected_literals: []
+  graduation: waive
+  graduation_waiver_reason: >-
+    PR-relative (reads origin/main and this plan's approved templates), so it has no subject once the PR merges. No
+    standing guard covers a governance_notes edit's amendment_log entry (validate_contract_drift's amendment-log rule
+    fires only on contract.description and field description/semantics diffs), so this step is the only check of it.
+- step: 7
+  phase: pre-deploy
+  action: >-
     The decisions index stays current without regeneration, and the entry spans land where the trial measured them.
   command: >-
     bin/venv-python -m scripts.decisions_index --check && bin/venv-python -c "import re;t=open('docs/DECISIONS.md',encoding='utf-8').read();h=[(m.start(),int(m.group(1))) for m in re.finditer(r'^## Decision (\d+):',t,re.M)];z={n:len(t[s:(h[i+1][0] if i+1<len(h) else len(t))].encode()) for i,(s,n) in enumerate(h)};print('spans',{n:z[n] for n in (199,207,215)})"
@@ -185,7 +230,7 @@ verification_plan:
   graduation_waiver_reason: >-
     The index leg duplicates validate_decisions_index_freshness (already in --pre and full); the span print is a
     one-time measurement whose standing counterpart is validate_decisions_size's WARN-only accretion signal.
-- step: 7
+- step: 8
   phase: pre-deploy
   action: rec-4324's own acceptance command passes, so the Resolves trailer can close it (Decision 201).
   command: grep -q 'reader-k2' docs/DECISIONS.md && grep -c 'ducklake_event_reads' docs/DECISIONS.md
@@ -197,7 +242,7 @@ verification_plan:
   graduation_waiver_reason: >-
     A whole-file restatement of rec-4324's acceptance oracle, run once for the trailer close; step 4 is the
     span-scoped standing guard over the same notes.
-- step: 8
+- step: 9
   phase: pre-deploy
   action: >-
     Full presubmit tier on the committed, rebased, clean tree (git-ops.yaml handoff_sequence), then the head
@@ -205,8 +250,9 @@ verification_plan:
     standing-pressure aggregate WARN, 30 at planning; 31 only if another PR grew Decision 199 first, reported as
     expected drift),
     validate_decision_currency, validate_decisions_index_freshness, validate_decision_entry_conformance,
-    validate_verification_registry (the VF-06 differential admission of the new row) and
-    validate_graduation_completeness.
+    validate_verification_registry (the VF-06 differential admission of the new row), validate_contract_drift (structural, ref and
+    status-transition checks on the two contracts; its amendment-log rule does not reach governance_notes, VP step 6
+    does) and validate_graduation_completeness.
   command: bin/venv-python -m scripts.validate && bin/venv-python -m scripts.checks.validation_result --verify-head
   expected: Both exit 0.
   fix_if: >-
@@ -217,7 +263,7 @@ verification_plan:
   graduation_waiver_reason: >-
     scripts.validate is the aggregate presubmit entrypoint; graduating it would recurse validation into its own
     registry, which vp-red-before.yaml's recursion refusal declines.
-- step: 9
+- step: 10
   phase: post-deploy
   action: >-
     After the squash merge: ci.yml's trailer-census, trailer-acceptance-evaluate and trailer-closure jobs on the merge
@@ -234,10 +280,10 @@ verification_plan:
     update_rec fallback git-ops.yaml resolves_trailer sanctions; after an acceptance-verdict refusal never close by
     hand: use the printed close_proposed command and report it. A red backfill run is its own failure to report.
   hermetic: false
-- step: 10
+- step: 11
   phase: post-deploy
   action: >-
-    rec-4024's record agrees with the 207 note (execution step 7) and kept its history: if rec-4024 is still open, its
+    rec-4024's record agrees with the 207 note (execution step 8) and kept its history: if rec-4024 is still open, its
     context starts with the new dated note, names the merge commit's short SHA (exported as MERGE_SHORT_SHA), and
     still carries its earlier anchors.
   command: >-
@@ -245,7 +291,7 @@ verification_plan:
   expected: REC_4024_OK with its status (closed by plan 4's build, or open with the note naming the merge SHA).
   fix_if: >-
     An assertion on an open rec-4024 means the note is missing, not first, names another SHA, or the write dropped
-    the earlier context: restore the prior context from rec_history and rewrite as execution step 7 says.
+    the earlier context: restore the prior context from rec_history and rewrite as execution step 8 says.
   hermetic: false
 test_obligations:
 - source: docs/DECISIONS.md
@@ -262,18 +308,34 @@ test_obligations:
     legitimate red-before outcome). Green after the three notes land.
 - source: config/agent/verification_registry/entries/reader-verbs-decision-notes.yaml
   behavior: The graduated row names step 4's span-scoped command so the VF-06 differential gate can prove it discriminates.
-  verification_step: 8
+  verification_step: 9
   command: bin/venv-python -m scripts.validate
   waiver_reason: >-
     This file is a verification record, not behavior-capable source. validate_verification_registry already enforces
     its schema, check_id uniqueness, filename placement and the VF-06 differential leg; a separate test would restate it.
 - source: docs/decisions-index.json
   behavior: The committed index stays current; the notes add no typed edge.
-  verification_step: 6
+  verification_step: 7
   command: bin/venv-python -m scripts.decisions_index --check
   waiver_reason: >-
     A generated artefact with a registered freshness enforcer (validate_decisions_index_freshness, --pre and full);
-    the plan asserts the property at step 6 rather than adding a duplicate guard.
+    the plan asserts the property at step 7 rather than adding a duplicate guard.
+- source: docs/contracts/telemetry_sessions.yaml
+  behavior: Only the approved KNOWN GAPS entries leave governance_notes, with one approved amendment_log entry added.
+  verification_step: 6
+  command: >-
+    bin/venv-python -c "import subprocess as s,re,yaml;from functools import reduce;st=yaml.safe_load(open('docs/plans/PLAN-reader-verbs-decision-notes.yaml',encoding='utf-8'))['execution_steps'][3];L=st.splitlines();C=('telemetry_sessions','telemetry_observations');R={c:[l.partition(': ')[2] for l in L if l.partition(': ')[0]==c+' removes'] for c in C};S={c:[l.partition(': ')[2] for l in L if l.partition(': ')[0]==c+' summary'][0] for c in C};nz=lambda x:re.sub(r'#\d+\)','#NNNN)',x);B={c:yaml.safe_load(s.run(['git','show','origin/main:docs/contracts/%s.yaml'%c],capture_output=True,text=True,check=True).stdout) for c in C};H={c:yaml.safe_load(open('docs/contracts/%s.yaml'%c,encoding='utf-8')) for c in C};X=('governance_notes','amendment_log');ok=lambda c,e:all(B[c]['governance_notes'].count(f+', ')==1 for f in R[c]) and H[c]['governance_notes']==reduce(lambda a,f:a.replace(f+', ',''),R[c],B[c]['governance_notes']) and H[c]['amendment_log'][1:]==B[c]['amendment_log'] and set(e)=={'date','semantic_break','change_class','summary'} and bool(re.fullmatch(r'\d{4}-\d{2}-\d{2}',str(e['date']))) and e['semantic_break'] is False and e['change_class']=='prose_improvement' and '#NNNN' not in e['summary'] and nz(e['summary'])==S[c] and {k:v for k,v in H[c].items() if k not in X}=={k:v for k,v in B[c].items() if k not in X};bad=[c for c in C if not ok(c,H[c]['amendment_log'][0])];assert all(R[c] for c in C) and not bad,bad;print('contract edits verbatim: 2 contracts')"
+  red_green_expectation: >-
+    Red before: measured at authoring time, exit 1 (AssertionError naming both contracts) on main 79063637, since
+    neither carries the edit. Green after the approved edits land.
+- source: docs/contracts/telemetry_observations.yaml
+  behavior: Only the approved KNOWN GAPS entries leave governance_notes, with one approved amendment_log entry added.
+  verification_step: 6
+  command: >-
+    bin/venv-python -c "import subprocess as s,re,yaml;from functools import reduce;st=yaml.safe_load(open('docs/plans/PLAN-reader-verbs-decision-notes.yaml',encoding='utf-8'))['execution_steps'][3];L=st.splitlines();C=('telemetry_sessions','telemetry_observations');R={c:[l.partition(': ')[2] for l in L if l.partition(': ')[0]==c+' removes'] for c in C};S={c:[l.partition(': ')[2] for l in L if l.partition(': ')[0]==c+' summary'][0] for c in C};nz=lambda x:re.sub(r'#\d+\)','#NNNN)',x);B={c:yaml.safe_load(s.run(['git','show','origin/main:docs/contracts/%s.yaml'%c],capture_output=True,text=True,check=True).stdout) for c in C};H={c:yaml.safe_load(open('docs/contracts/%s.yaml'%c,encoding='utf-8')) for c in C};X=('governance_notes','amendment_log');ok=lambda c,e:all(B[c]['governance_notes'].count(f+', ')==1 for f in R[c]) and H[c]['governance_notes']==reduce(lambda a,f:a.replace(f+', ',''),R[c],B[c]['governance_notes']) and H[c]['amendment_log'][1:]==B[c]['amendment_log'] and set(e)=={'date','semantic_break','change_class','summary'} and bool(re.fullmatch(r'\d{4}-\d{2}-\d{2}',str(e['date']))) and e['semantic_break'] is False and e['change_class']=='prose_improvement' and '#NNNN' not in e['summary'] and nz(e['summary'])==S[c] and {k:v for k,v in H[c].items() if k not in X}=={k:v for k,v in B[c].items() if k not in X};bad=[c for c in C if not ok(c,H[c]['amendment_log'][0])];assert all(R[c] for c in C) and not bad,bad;print('contract edits verbatim: 2 contracts')"
+  red_green_expectation: >-
+    Red before: measured at authoring time, exit 1 (AssertionError naming both contracts) on main 79063637, since
+    neither carries the edit. Green after the approved edits land.
 constraints:
 - >-
   The three texts in execution_steps[2] were approved verbatim by Benjamin on 2026-10-15
@@ -283,16 +345,25 @@ constraints:
   matches a note, stops the work and goes to the coordinator (send_message) for Benjamin's word: Decision text is on
   the always-ask list.
 - >-
+  The KNOWN GAPS cleanup was approved by Benjamin on 2026-10-15 (cmsg_012XgaFy8VaDQbxP5D8nC958QAs6KSJt5NZBpQ7z2JsAwN,
+  folding it into this PR), and its exact wording in execution_steps[3], the telemetry_observations line included,
+  was approved by him on 2026-10-15 (cmsg_012XgaFy8VaDQbxP5D8nC958KrphGihZNSohiQSyycLSAB, "approve", on the wording in
+  cmsg_012XgaFy8VaDQbxP5D8nC958BLSpBGyiqh7tRMaYfzz82y). Only #NNNN and the date may differ; any other change goes
+  back to him through the coordinator before this PR merges. If rec-4024 or rec-2173
+  is listed differently on main by then, stop and send the difference to the coordinator.
+- >-
   Merge ordering: edit and open the PR only after VP steps 1-3 pass (the reader verbs build merged with the facts the
-  notes state, its deploy green, the gauge live); the build itself waits on rec-4320's fix-forward. With the texts verbatim, merge under the standing
-  rule (code review PROCEED, green CI) with no further ask; the approval above covers this merge.
+  notes state, its deploy green, the gauge live); the build itself waits on rec-4320's fix-forward. With the three
+  notes and the contract edits verbatim (both approved, constraints above), merge under the standing rule (code review
+  PROCEED, green CI) with no further ask.
 - >-
   Append-only (Decision 177, decision-entry.yaml amendment_forms): each note is ONE physical line using the pinned
   `> **Update (` opener, preceded by one blank line, placed after the entry's last existing note and before its `---`
   separator. Edit no existing line, metadata block, Coverage line, clause, Related list or earlier note.
 - >-
-  No new numbered Decision (significance.routing_rule; rec-3016 amendment_forms alternative). No contract, roadmap,
-  code, test or Lambda file changes; T2.52 and CD.52's T2.52 half are untouched; REPORT-w3-feedback-loop-staging.md
+  No new numbered Decision (significance.routing_rule; rec-3016 amendment_forms alternative). No roadmap, code, test or
+  Lambda file changes, and no contract change beyond the approved KNOWN GAPS cleanup in execution_steps[3] (Class A
+  contract text: always-ask, so a wording change goes to Benjamin like the notes); T2.52 and CD.52's T2.52 half are untouched; REPORT-w3-feedback-loop-staging.md
   is not edited (feedback-loop gate).
 - >-
   The squash commit body carries `Resolves: rec-4324` (Decision 201; rec-4324's acceptance must hold at that commit).
@@ -304,7 +375,7 @@ context:
   per-derivation single-partition bound verbatim; the ~3-clarification cap reads per clause; expect the 199 accretion
   WARN) and SPIRIT 86 NOTE (no day count in the 199 text): both resolved in the approved text. RELATED 84, 88, 93, 81,
   167, 150, 178, 201, 179, 160. Decisions triaged: 170 of 170. Roadmap items intersected: 3; CONFLICT: 0; RELATED: 3.
-- 'gates: decision-scout=FLAGS_FOUND (2 notes, resolved); plan-critique=REVISE r1 (R1-R5 fixed), REVISE r2 (R1 deploy-run binding, R2 test-node fidelity fixed; S1-S5 folded in), REVISE r3 (R1 rec-4024 prepend and anchor check fixed; S1-S3, N1, N2 folded in), r4 confirming REVISE (R1 Decision 177 rollback fixed; S1-S3 folded in), escalated (one more round recommended); r5 PROCEED (new series), S1 and S3 folded in'
+- 'gates: decision-scout=FLAGS_FOUND (2 notes, resolved); plan-critique=REVISE r1 (R1-R5 fixed), REVISE r2 (R1 deploy-run binding, R2 test-node fidelity fixed; S1-S5 folded in), REVISE r3 (R1 rec-4024 prepend and anchor check fixed; S1-S3, N1, N2 folded in), r4 confirming REVISE (R1 Decision 177 rollback fixed; S1-S3 folded in), escalated (one more round recommended); r5 PROCEED (new series), S1 and S3 folded in; amendment 2026-10-15 (KNOWN GAPS cleanup): REVISE a1 (R1 merge-gate wording, R2 coverage claim fixed; S2 rollback folded in), a2 PROCEED (S1 placeholder guard folded in)'
 - >-
   Direction (Benjamin, cmsg_012XgaFy8VaDQbxP5D8nC9587zPkCFdx5BwFoNH9FbvcLU): add the 199 note, which revisits his
   2026-10-05 W3-1 choice (contract note only, PLAN-telemetry-lifecycle-friction-amendment) because the decision scout
@@ -315,6 +386,11 @@ context:
 - 'fork: land before, inside, or after the reader verbs build | chosen: separate PR after its merge, green deploy and live gauge | class: asked | precedent: Benjamin 2026-10-15 | precedent_kind: answered-fork | reversible: yes | persisted: this plan constraints'
 - 'fork: Decision 215 plain correction or terminal observed-count form | chosen: terminal form | class: asked | precedent: Benjamin 2026-10-15 | precedent_kind: answered-fork | reversible: yes | persisted: docs/DECISIONS.md Decision 215'
 - 'fork: note spelling and placement | chosen: pinned Update opener, one line after the last note | class: consistency-only | precedent: decision-entry.yaml amendment_forms | precedent_kind: contract | reversible: yes | persisted: docs/DECISIONS.md'
+- >-
+  Direction (Benjamin, 2026-10-15): fold the KNOWN GAPS cleanup into this PR
+  (cmsg_012XgaFy8VaDQbxP5D8nC958QAs6KSJt5NZBpQ7z2JsAwN, "yes", on the coordinator's question) and its exact wording,
+  observations line included (cmsg_012XgaFy8VaDQbxP5D8nC958KrphGihZNSohiQSyycLSAB, "approve";
+  cmsg_012XgaFy8VaDQbxP5D8nC958DokeGfp3x95YAPjsPKLJ9e, "i also approve your addition recommendation").
 - 'fork: standing guard for the notes | chosen: one graduated span-scoped row | class: consistency-only | precedent: decision-215-residuals-repointed, decision-192-noncurrent-lifecycle-amendment registry rows | precedent_kind: contract | reversible: yes | persisted: config/agent/verification_registry/entries/reader-verbs-decision-notes.yaml'
 - >-
   Trial on a scratch copy of main 9df9535b with the three notes: decisions index current; spans 199 7,363 (amendment-
@@ -331,7 +407,7 @@ pre_implementation_checklist:
 - docs/PROJECT_CONTEXT.md read
 - 'Only the plan-cited decision sections: Decisions 199, 207, 215 (full entries) and 177'
 - VP steps 1-3 pass (the reader verbs build merged with the stated facts, deploy green, gauge live)
-- The three approved texts in execution_steps[2] copied exactly
+- The three approved texts in execution_steps[2] and the contract edits in execution_steps[3] copied exactly
 execution_steps:
 - >-
   Run VP steps 1-3 before any edit. If any fails, stop: the notes would describe a build that is not on main or not
@@ -339,29 +415,37 @@ execution_steps:
 - >-
   In docs/DECISIONS.md, for each of Decisions 199, 207 and 215, insert one blank line and then the note below as a
   single physical line, immediately after the entry's last existing note line and before the blank line and `---`
-  separator that end the entry. Replace YYYY-MM-DD with the landing date and #NNNN with the build PR number. Keep this
-  list item at index 2 of execution_steps: VP step 5 reads the templates from it.
+  separator that end the entry. Replace YYYY-MM-DD with the landing date and #NNNN with the build PR number. Keep the
+  next list item at index 2 of execution_steps: VP step 5 reads the templates from it.
 - |-
   The approved texts (verbatim):
   Decision 199: > **Update (YYYY-MM-DD):** clause 1 bounds derivations, not verbs: a window verb (sessions_window; operator ruling reader-k2 (a), 2026-10-04) is a bounded window of per-session derivations, each reading only its own session's calendar-day partition, capped per verb in the reader registry. Detail: telemetry_sessions.yaml WINDOW VERBS. Last clause-1 note; later ones need a numbered Decision.
   Decision 207: > **Update (YYYY-MM-DD):** the Coverage line's reader side is now enforced, not a residual: src/common/ducklake_event_reads.py reports a differing pair as conflicted_grain_keys and derivation_conflicted, never nulling, dropping or erroring the derivation, guarded by tests/common/test_ducklake_event_read_dedupe.py::test_conflicted_keys_are_reported_never_resolved (PLAN-telemetry-reader-verbs, #NNNN). rec-4024 no longer owns it; rec-4025 is unchanged.
   Decision 215: > **Update (YYYY-MM-DD):** clause 4's five reader invocations per session became six when PLAN-telemetry-reader-verbs (#NNNN) added preflight's creds-gated telemetry_health_count gauge; recs_read stays two calls, and a 1.2x rise is short of reader-invocations-doubled. The count is observed through log_invocation, not restated here: later changes to it are not annotated.
+- |-
+  The approved contract edits (verbatim; #NNNN is the reader verbs build PR; VP step 6 reads this item, keep it at index 3). In each contract, delete each removes entry and the comma and space after it from the governance_notes KNOWN GAPS list, and add one amendment_log entry at the top of the list in the file's flow style: {date: "YYYY-MM-DD", semantic_break: false, change_class: prose_improvement, summary: "<summary below>"}.
+  telemetry_sessions removes: rec-2173 (preflight telemetry health re-enable)
+  telemetry_sessions removes: rec-4024 (the writer/reader verbs and dimension contracts this contract's derivations name)
+  telemetry_sessions summary: PLAN-reader-verbs-decision-notes (rec-4324): KNOWN GAPS drops rec-2173 (closed) and rec-4024 (its writer and reader verbs and dimension contracts are built; the reader verbs by PLAN-telemetry-reader-verbs, #NNNN).
+  telemetry_observations removes: rec-4024 (writer/reader verbs)
+  telemetry_observations summary: PLAN-reader-verbs-decision-notes (rec-4324): KNOWN GAPS drops rec-4024 (its writer and reader verbs are built; the reader verbs by PLAN-telemetry-reader-verbs, #NNNN).
 - >-
   Create config/agent/verification_registry/entries/reader-verbs-decision-notes.yaml: check_id
   reader-verbs-decision-notes, primitive_slot command_exit_zero, guard_target docs/DECISIONS.md, guard_symbol null,
   check_spec.command [bin/venv-python, -c, <step 4's Python program verbatim>], plan_slug reader-verbs-decision-notes,
   graduated_at the landing date, graduated_by implement-agent (shape: decision-215-residuals-repointed.yaml).
 - >-
-  Run VP steps 4-7 on the working tree, then the implement skill's code review (its Workflow Step 5) on the diff.
+  Make the contract edits in execution_steps[3]. Run VP steps 4-8 on the working tree, then the implement skill's code review (its Workflow Step 5) on the diff.
   Then follow its Commit Flow in order: github_readiness; the test_coverage_checker diagnostic (expected to report
   nothing, since no source file is in scope); set implementation_declared true in this plan; `--pre`; postflight
-  evidence; commit; `git fetch origin main` and `git rebase origin/main`; VP steps 4-7 again on the rebased tree (step 5
-  diffs against origin/main); VP step 8 (full tier, then --verify-head) on the committed clean tree; push as its own
+  evidence; commit; `git fetch origin main` and `git rebase origin/main`; VP steps 4-8 again on the rebased tree (steps 5
+  and 6 diff against origin/main); VP step 9 (full tier, then --verify-head) on the committed clean tree; push as its own
   tool call; open the PR (On The Loop in prose). Any fix commit or re-rebase restarts from the rebase. On an
   unrecoverable failure stop and RCA (Decision 55).
 - >-
-  On code review PROCEED and green CI, re-run VP steps 1 and 5, then squash-merge with `Resolves: rec-4324` in the
-  body. Then run VP steps 9 and 10 (step 10 after execution step 7's note).
+  On code review PROCEED and green CI, re-run VP steps 1, 5 and 6 (texts still verbatim to the approved templates), then
+  squash-merge with `Resolves: rec-4324` in
+  the body. Then run VP steps 10 and 11 (step 11 after execution step 8's note).
 - >-
   If rec-4024 is still open after the merge, add a dated note so the rec agrees with the 207 note (Decision 181
   cl.2): call get_rec_write_guidance first, fetch rec-4024 with recs_by_ids immediately before the write, and write
@@ -370,7 +454,7 @@ execution_steps:
   "[YYYY-MM-DD reader-side coverage moved, rec-4324]" and says Decision 207's reader side is now enforced by
   PLAN-telemetry-reader-verbs (src/common/ducklake_event_reads.py), naming this PR's merge short SHA.
 - >-
-  Report: the three notes as landed, the build PR and SHA they rest on, readiness, each VP result, the Decision 199
+  Report: the three notes and the two contract edits as landed, the build PR and SHA they rest on, readiness, each VP result, the Decision 199
   size WARN line and its margin to the 1.2x line, the postflight evidence, review verdict, the push and PR outcome, and
   rec-4324's status, each reported separately.
 rollback: >-
@@ -378,5 +462,6 @@ rollback: >-
   precedent PLAN-scale-readiness-concurrency-commitments, PLAN-telemetry-owner-provisioning). A wrong note is corrected
   by a further dated `> **Update (` note carrying Benjamin's word (Decision text is always-ask); the graduated registry
   row stays because the note lines stay. rec-4024's prepended note is corrected the same way, by a further dated note
-  through update_rec, never by stripping it. rec-4324 reopens by update_rec only if a correction withdraws a note it
+  through update_rec, never by stripping it. A wrong contract edit is corrected by a further governance_notes edit with
+  its own new amendment_log entry on Benjamin's word (Class A), never by deleting the logged entry. rec-4324 reopens by update_rec only if a correction withdraws a note it
   claims.
