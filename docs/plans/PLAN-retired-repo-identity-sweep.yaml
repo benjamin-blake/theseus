@@ -52,7 +52,7 @@ scope:
   purpose: Its COMMERCIAL-LICENSE.md issues-URL assertion names otl-labs/ontheloop (same PR as the text, Decision 132/176).
 - file: config/agent/verification_registry/entries/roadmap-retired-brand-tokens-absent.yaml
   action: Modify
-  purpose: Asserts zero benjamin-blake/theseus and exactly one otl-labs/ontheloop in docs/ROADMAP-PLATFORM.yaml.
+  purpose: Asserts zero benjamin-blake/theseus and at least one otl-labs/ontheloop in docs/ROADMAP-PLATFORM.yaml.
 - file: docs/ROADMAP-PLATFORM.yaml
   action: Modify
   purpose: The OIDC tier item's exit criterion names otl-labs/ontheloop (precedent PLAN-repo-rename-relicense).
@@ -82,7 +82,9 @@ scope:
   purpose: Crate doc comment URL names otl-labs/ontheloop.
 - file: terraform/github/CLAUDE.md
   action: Modify
-  purpose: The module subject line names otl-labs/ontheloop (operator-approved wording; net -4 bytes against its prose budget).
+  purpose: >-
+    The module subject line names otl-labs/ontheloop, and the first-time import instructions name the repository
+    ontheloop (operator-approved 2026-10-15; net 0 bytes against its prose budget: -4 on line 6, +2 on each import line).
 - file: scripts/checks/hygiene/validate_licence_consistency.py
   action: Modify
   purpose: >-
@@ -101,8 +103,14 @@ scope:
   purpose: Add test_sweep_set_is_empty (red before, green after).
 bundled_recommendations:
 - rec-3903
-followon_recs: []
-infrastructure_dependencies: []
+followon_recs:
+- rec-4357
+infrastructure_dependencies:
+- >-
+  data-pipeline (src/lambdas/data-pipeline/manifest.yaml, active) packages docs/ROADMAP-PLATFORM.yaml as an asset,
+  so compute_affected_artifacts() reports it. NO deploy is performed or needed (Decision 198 and
+  PLAN-telemetry-event-journal-contracts precedent; asserted by VP step 14; rec-3990 tracks the asset deploy-trigger
+  gap). No other scope file is Lambda-packaged; no .tf file is in scope.
 acceptance_criteria:
 - >-
   scripts/checks/contracts/_retired_identity.py SWEEP_PINS is empty and validate_github_org_transfer passes: no
@@ -174,17 +182,17 @@ verification_plan:
   graduation_check_id: retired-repo-identity-sweep-set-empty
 - step: 4
   phase: pre-deploy
-  action: rec-3903's new acceptance (operator-approved) holds on the swept tree.
+  action: rec-3903's new acceptance (operator-approved, REC_3903_ACCEPTANCE) holds on the swept tree.
   command: >-
     ! git grep -n -E "benjamin-blake/theseus|[\"']benjamin-blake[\"']" -- scripts/ .github/workflows/ terraform/github/variables.tf
-    ':!scripts/checks/contracts/_retired_identity.py' && bin/venv-python -c "from scripts.checks.contracts import _retired_identity as r; assert not r.SWEEP_PINS"
+    ':!scripts/checks/contracts/_retired_identity.py' && bin/venv-python -m pytest -q tests/checks/contracts/test__retired_identity.py::test_sweep_set_is_empty
   expected: Exit 0 (no match; empty sweep set).
   fix_if: A match names a forward-standing old-identity literal the sweep missed; sweep it or route an amendment.
   hermetic: true
   graduation: waive
   graduation_waiver_reason: >-
-    This is rec-3903's own acceptance, verified at closure by the Decision 201 trailer gate; step 3's graduated row
-    already guards the same invariant.
+    This is rec-3903's own acceptance (lint-clean and probeable per VP step 16), verified at closure by the
+    Decision 201 trailer gate; step 3's graduated row already guards the same invariant.
 - step: 5
   phase: pre-deploy
   action: Behavior tests for the gate, the resolver fallback, the escalation acceptance, the trust triple and the empty sweep set.
@@ -208,11 +216,12 @@ verification_plan:
   phase: pre-deploy
   action: >-
     Only the retired full name changed: every removed line naming theseus named benjamin-blake/theseus, except the
-    two approved bin/setup-cloud-env.sh comments, so no frozen identifier, brand continuity text or person reference
-    was touched.
+    approved bin/setup-cloud-env.sh comment and the two approved terraform/github/CLAUDE.md import lines, so no frozen
+    identifier, brand continuity text or person reference was touched.
   command: >-
     test -z "$(git diff origin/main -U0 -- . ':!scripts/checks/contracts/_retired_identity.py' ':!tests/checks/contracts/test__retired_identity.py' ':!docs/plans/'
-    | grep '^-[^-]' | grep -i 'theseus' | grep -v 'benjamin-blake/theseus' | grep -v '(theseus), short-expiry')" &&
+    | grep '^-[^-]' | grep -i 'theseus' | grep -v 'benjamin-blake/theseus' | grep -v '(theseus), short-expiry'
+    | grep -v 'import the existing .theseus. repository' | grep -v 'github_repository.this theseus')" &&
     test -z "$(git diff --name-only origin/main | grep -E '^(\.github/CODEOWNERS|terraform/github/environments\.tf|\.github/workflows/tf-gated-apply-prototype\.yml|\.claude/|terraform/personal/|terraform/bootstrap/)')"
   expected: Exit 0 (both lists empty).
   fix_if: >-
@@ -237,7 +246,7 @@ verification_plan:
     Public-boundary sweep of every changed file (absorbs the contract build's partial-coverage follow-up): no
     12-digit id, e-mail address, token or ExternalId shape in any added line.
   command: >-
-    ! git diff origin/main | grep '^+' | grep -v '^+++' | grep -Eq '[0-9]{12}|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[a-z]{2,}|ghp_|github_pat_|ExternalId'
+    git rev-parse --verify -q origin/main >/dev/null && ! git diff origin/main -- . ':!docs/plans/' | grep '^+' | grep -v '^+++' | grep -Eq '[0-9]{12}|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[a-z]{2,}|ghp_|github_pat_|ExternalId'
   expected: Exit 0 (no match).
   fix_if: A match is a Decision 101 breach; remove the value.
   hermetic: true
@@ -275,16 +284,19 @@ verification_plan:
 - step: 12
   phase: post-deploy
   action: >-
-    Live proof of the target-only gate: the newest dependabot-auto-merge run created after the merge ran its
-    auto-merge job (not skipped).
+    Live proof of the target-only gate: the first completed dependabot-auto-merge run on a dependabot/ branch after
+    the merge ran its auto-merge job (not skipped). Non-dependabot PRs always produce skipped runs, so they are
+    filtered out; times compare as UTC epochs.
   command: >-
-    bin/venv-python -c "import json,urllib.request,subprocess; t=subprocess.check_output(['git','log','-1','--format=%cI','origin/main'],text=True).strip();
-    runs=json.load(urllib.request.urlopen('https://api.github.com/repos/otl-labs/ontheloop/actions/workflows/dependabot-auto-merge.yml/runs?per_page=5',timeout=30))['workflow_runs'];
-    after=[r for r in runs if r['created_at']>t]; print('RUNS_AFTER_MERGE', [(r['id'],r['conclusion']) for r in after]);
-    assert after and after[0]['conclusion'] in ('success','failure'), 'pending'"
+    bin/venv-python -c "import json,urllib.request,subprocess,datetime; t=int(subprocess.check_output(['git','log','-1','--format=%ct','origin/main'],text=True).strip());
+    ep=lambda s:datetime.datetime.fromisoformat(s.replace('Z','+00:00')).timestamp();
+    runs=json.load(urllib.request.urlopen('https://api.github.com/repos/otl-labs/ontheloop/actions/workflows/dependabot-auto-merge.yml/runs?per_page=100',timeout=30))['workflow_runs'];
+    after=sorted((r for r in runs if ep(r['created_at'])>t and (r.get('head_branch') or '').startswith('dependabot/') and r['status']=='completed'),key=lambda r:ep(r['created_at']));
+    print('DEPENDABOT_RUNS_AFTER_MERGE', [(r['id'],r['conclusion']) for r in after]); assert after, 'pending';
+    assert after[0]['conclusion'] in ('success','failure'), after[0]['conclusion']"
   expected: >-
-    Exit 0 with at least one run after the merge whose conclusion is success or failure (a failure from the policy
-    script still proves the gate matched); a skipped conclusion means the gate did not match.
+    Exit 0 with the first dependabot-branch run after the merge concluding success or failure (a failure from the
+    policy script still proves the gate matched); skipped means the gate did not match.
   fix_if: >-
     'pending' means no dependabot PR has opened since the merge: record the step as unproven in the PR and the
     rec-3903 resolution, and re-run at the next dependabot PR. A skipped run means the gate is wrong: STOP and RCA
@@ -303,9 +315,10 @@ verification_plan:
     ! grep -n 'benjamin-blake/theseus' packages/ontheloop-py/src/ontheloop/__init__.py && grep -q 'github.com/otl-labs/ontheloop' packages/ontheloop-py/src/ontheloop/__init__.py &&
     ! grep -n 'benjamin-blake/theseus' packages/ontheloop-rs/Cargo.toml && grep -q 'repository = "https://github.com/otl-labs/ontheloop"' packages/ontheloop-rs/Cargo.toml &&
     ! grep -n 'benjamin-blake/theseus' packages/ontheloop-rs/src/lib.rs && grep -q 'github.com/otl-labs/ontheloop' packages/ontheloop-rs/src/lib.rs &&
-    test "$(grep -c 'otl-labs/ontheloop' docs/ROADMAP-PLATFORM.yaml)" = 1 && test "$(grep -c 'benjamin-blake/theseus' docs/ROADMAP-PLATFORM.yaml)" = 0 &&
+    test "$(grep -c 'otl-labs/ontheloop' docs/ROADMAP-PLATFORM.yaml)" -ge 1 && test "$(grep -c 'benjamin-blake/theseus' docs/ROADMAP-PLATFORM.yaml)" = 0 &&
     grep -q 'agent-platform -> theseus under the same owner' scripts/checks/hygiene/validate_licence_consistency.py &&
-    grep -q 'cd /home/user/ontheloop && bash bin/setup-cloud-env.sh' bin/setup-cloud-env.sh && grep -q '(ontheloop), short-expiry GitHub token' bin/setup-cloud-env.sh
+    grep -q 'cd /home/user/ontheloop && bash bin/setup-cloud-env.sh' bin/setup-cloud-env.sh && grep -q '(ontheloop), short-expiry GitHub token' bin/setup-cloud-env.sh &&
+    ! grep -q 'github_repository.this theseus' terraform/github/CLAUDE.md && ! grep -q 'existing .theseus. repository' terraform/github/CLAUDE.md
   expected: Exit 0.
   fix_if: The first failing clause names the file whose substitution is missing or not verbatim.
   hermetic: true
@@ -313,6 +326,58 @@ verification_plan:
   graduation_waiver_reason: >-
     Positive spot checks bound to this sweep's approved text; step 3's graduated row is the standing guard that the
     retired name stays out.
+- step: 14
+  phase: pre-deploy
+  action: Assert the ground for NO Lambda redeploy despite touching the data-pipeline packaged roadmap asset (Decision 198 precedent).
+  command: >-
+    grep -q 'the schedule stays disabled' src/lambdas/data-pipeline/manifest.yaml && ! grep -q 'ROADMAP-PLATFORM' .github/workflows/deploy-prod-lambdas.yml
+  expected: Exit 0 -- schedules still disabled and the deploy channel does not path-trigger on the roadmap.
+  fix_if: >-
+    If schedules are re-enabled the V2 tier no longer holds -- escalate to V3 via the governed deploy-prod-lambdas
+    workflow, never a local build_lambda --deploy. If the workflow path-triggers on the roadmap, rec-3990 landed;
+    retire this step.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: >-
+    Green on the un-implemented tree (both facts hold today), so graduating would redden this plan's own PR under
+    red-before replay; its durable form is rec-3990.
+- step: 15
+  phase: pre-deploy
+  action: >-
+    Substitution pairing: outside the files with approved non-substitution edits, every removed line with
+    benjamin-blake/theseus replaced by otl-labs/ontheloop equals an added line, and nothing else changed.
+  command: >-
+    bin/venv-python -c "import subprocess; X=['docs/plans/','.github/workflows/dependabot-auto-merge.yml','tests/checks/ci_guards/test_validate_dependabot_automation.py',
+    'config/agent/verification_registry/entries/roadmap-retired-brand-tokens-absent.yaml','docs/contracts/package-registry-reservation.yaml','scripts/checks/hygiene/validate_licence_consistency.py',
+    'bin/setup-cloud-env.sh','tests/convergence_health/test_escalate.py','scripts/checks/contracts/_retired_identity.py','tests/checks/contracts/test__retired_identity.py','terraform/github/CLAUDE.md'];
+    d=subprocess.check_output(['git','diff','-U0','origin/main','--','.']+[':!'+x for x in X],text=True,encoding='utf-8'); L=d.splitlines();
+    rm=sorted(l[1:].replace('benjamin-blake/theseus','otl-labs/ontheloop') for l in L if l.startswith('-') and not l.startswith('---'));
+    ad=sorted(l[1:] for l in L if l.startswith('+') and not l.startswith('+++')); print('PAIRED', len(ad)); assert ad and rm==ad"
+  expected: Exit 0 and PAIRED with a positive count printed.
+  fix_if: >-
+    A mismatch means a swept line changed more than the full name (or a file outside the exclusion list gained a
+    non-substitution edit): restore the line to the approved substitution.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: A one-time diff check of this sweep against origin/main; it has no meaning once merged.
+- step: 16
+  phase: pre-deploy
+  action: >-
+    rec-3903's approved acceptance passes the write-time acceptance lint and the trailer census classifies it
+    probeable, so update_rec accepts it and the Resolves trailer can close the rec.
+  command: >-
+    bin/venv-python -c "import yaml,re; from pathlib import Path; from scripts.executor.acceptance_lint import lint_acceptance_command as L; from scripts.backlog_health import census as C;
+    p=yaml.safe_load(open('docs/plans/PLAN-retired-repo-identity-sweep.yaml',encoding='utf-8')); t=[x for x in p['execution_steps'] if x.startswith('APPROVED SWEEP TEXT')][0];
+    a=dict(re.findall(r'(?ms)^([A-Z0-9_]+):\n(.*?)(?=^[A-Z0-9_]+:\n|\Z)',t))['REC_3903_ACCEPTANCE'].strip();
+    ok,msg=L(a,require_discrimination=True,require_decidable=True); assert ok, msg; b=C.classify_command(a,repo_root=Path('.')); print('ACCEPTANCE_BUCKET', b); assert b==C.PROBEABLE, b"
+  expected: Exit 0 and the probeable bucket printed.
+  fix_if: >-
+    A lint error or a non-probeable bucket means the text cannot be written or closed as approved: STOP and route it
+    to the operator through the coordinator (never reword approved text here). Before the empty-set test exists the
+    census reports a missing node; run this after the test is added.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: A one-time check of the approved acceptance text; the portal's write-time lint is the standing guard.
 test_obligations:
 - source: .github/workflows/dependabot-auto-merge.yml
   behavior: The auto-merge job runs only for otl-labs/ontheloop.
@@ -346,7 +411,7 @@ test_obligations:
     bin/venv-python -c "from scripts.checks.verification.validate_verification_registry import validate_verification_registry as v; f=[]; v(f); assert not f, f; print('REGISTRY_OK')"
   red_green_expectation: The modified row fails against origin/main content and passes on HEAD (the differential gate runs it both ways).
 - source: config/agent/verification_registry/entries/roadmap-retired-brand-tokens-absent.yaml
-  behavior: The row asserts zero retired full names and exactly one otl-labs/ontheloop in the platform roadmap.
+  behavior: The row asserts zero retired full names and at least one otl-labs/ontheloop in the platform roadmap.
   verification_step: 7
   command: >-
     bin/venv-python -c "from scripts.checks.verification.validate_verification_registry import validate_verification_registry as v; f=[]; v(f); assert not f, f; print('REGISTRY_OK')"
@@ -359,7 +424,7 @@ test_obligations:
 - source: docs/ROADMAP-PLATFORM.yaml
   behavior: The OIDC exit criterion names otl-labs/ontheloop.
   verification_step: 13
-  command: test "$(grep -c 'otl-labs/ontheloop' docs/ROADMAP-PLATFORM.yaml)" = 1 && test "$(grep -c 'benjamin-blake/theseus' docs/ROADMAP-PLATFORM.yaml)" = 0
+  command: test "$(grep -c 'otl-labs/ontheloop' docs/ROADMAP-PLATFORM.yaml)" -ge 1 && test "$(grep -c 'benjamin-blake/theseus' docs/ROADMAP-PLATFORM.yaml)" = 0
   red_green_expectation: Red before (one retired name, no new name), green after.
 - source: packages/ontheloop-js-scoped/package.json
   behavior: Package metadata names otl-labs/ontheloop.
@@ -414,7 +479,9 @@ constraints:
   Person references to the login stay (CODEOWNERS, the tf-gated-apply environment reviewer, the bypass actor;
   breakage_map.codeowners retained by rec-3903 on 2026-10-15).
 - No package is republished; packages/* change in source only (a publish is an operator action).
-- No edit to terraform/, the OIDC trust files or the transfer contract (other plans own them).
+- >-
+  No edit to any terraform/**/*.tf file, the OIDC trust files or the transfer contract (other plans own them);
+  terraform/github/CLAUDE.md is in scope for text only.
 - Approved wording is verbatim; the only allowed variance is dates and line numbers. Anything else goes back to the operator through the coordinator.
 - Never skip, disable or quarantine a test; no rescue loops (Decision 55).
 context:
@@ -426,7 +493,10 @@ context:
   full design, sweep last, and the wording shown at step 6b (/mnt/project-files/literal-sweep/step6b-presentation.md
   revision 2): the substitution rule, the two bin/setup-cloud-env.sh comments, the validate_licence_consistency
   docstring line, both registry-row clauses, the package-registry-reservation amendment_log entry and rec-3903's
-  new acceptance, all copied verbatim into execution_steps. Variance: dates and line numbers only.
+  new acceptance, all copied verbatim into execution_steps. Variance: dates and line numbers only. 2026-10-15 22:07 UTC
+  cmsg_017f94mmYqSe3q2p9o6tPW3U8GfzuBFLUy1qGDttCm5jx9 ("yes to all") approved the critique-round-1 changes: the
+  lint-clean acceptance (APPROVED SWEEP TEXT), the roadmap row's "at least one", and the two
+  terraform/github/CLAUDE.md import lines.
 - >-
   Sequencing: builds only after the transfer is proven (step 1) and after PLAN-repo-identity-transfer-readiness,
   which created scripts/repo_identity.py and the retired-identity pins in validate_github_org_transfer. The sweep
@@ -442,6 +512,14 @@ context:
   verdict to the acceptance text at the closing sha).
 - >-
   Registry rows (Decision 132/176): edited in the same PR as the text they assert, or the differential gate rejects them.
+- >-
+  VP step 2 parses SWEEP_PINS with ast.literal_eval; PLAN-repo-identity-transfer-readiness's constraints pin it as a
+  top-level literal dict. Post-sweep bookkeeping (the sweep's evidence_ledger entry, the identity.phase flip to
+  predecessor_removed, clearing staged_phase) is owned by rec-4357, not this plan.
+- >-
+  Token comments: "repo-scoped to otl-labs/ontheloop only" (ghas-probe.yml) and "single-repo (ontheloop)"
+  (bin/setup-cloud-env.sh) hold because the contract's fine_grained_pat fix narrows the successor PATs right after
+  transfer, before this last-ordered sweep; the token expiry line belongs to whoever swaps the token (rec-4357 context).
 - >-
   Shared evidence: /mnt/project-files/literal-sweep/ (step6b-presentation.md, ADVICE.md, scout-report.md).
 pre_implementation_checklist:
@@ -471,42 +549,63 @@ execution_steps:
   "github.event.pull_request.user.login == 'dependabot[bot]' && github.repository == 'otl-labs/ontheloop'".
   tests/checks/ci_guards/test_validate_dependabot_automation.py: _JOB_IF becomes that exact string; the line-245
   fixture becomes "github.repository == 'otl-labs/ontheloop'"; test_real_auto_merge_gate_accepts_both_full_names is
-  replaced by test_real_auto_merge_gate_names_only_the_target, which reads the real workflow and asserts it contains
-  "github.repository == 'otl-labs/ontheloop'" and does not contain "benjamin-blake".
+  replaced by the module-level test_real_auto_merge_gate_names_only_the_target, which yaml-loads the real workflow and
+  asserts its jobs.auto-merge.if equals that exact string.
 - >-
   Registry rows: licensed-work-mark-and-historical-split.yaml's clause grep -q ''github.com/benjamin-blake/theseus/issues''
   COMMERCIAL-LICENSE.md becomes grep -q ''github.com/otl-labs/ontheloop/issues'' COMMERCIAL-LICENSE.md;
   roadmap-retired-brand-tokens-absent.yaml's clause test "$(grep -c 'benjamin-blake/theseus' docs/ROADMAP-PLATFORM.yaml)" = 1
-  becomes test "$(grep -c 'benjamin-blake/theseus' docs/ROADMAP-PLATFORM.yaml)" = 0 && test "$(grep -c 'otl-labs/ontheloop' docs/ROADMAP-PLATFORM.yaml)" = 1.
+  becomes test "$(grep -c 'benjamin-blake/theseus' docs/ROADMAP-PLATFORM.yaml)" = 0 && test "$(grep -c 'otl-labs/ontheloop' docs/ROADMAP-PLATFORM.yaml)" -ge 1
+  (operator 22:07 UTC: at least one, so an unrelated later mention cannot break the row).
   Nothing else in either row changes.
 - >-
-  docs/contracts/package-registry-reservation.yaml: append to amendment_log, after the newest entry,
+  docs/contracts/package-registry-reservation.yaml: insert as the FIRST amendment_log entry (the file lists newest first),
   {date: "<build date>", semantic_break: false, change_class: governance_note_add, summary: "PLAN-retired-repo-identity-sweep
   (rec-3903): pypi_trusted_publisher.repository names otl-labs/ontheloop after the transfer-and-rename (Decision 218)."}
   in the file's block style.
 - >-
   scripts/checks/hygiene/validate_licence_consistency.py docstring: "benjamin-blake/agent-platform -> benjamin-blake/theseus"
-  becomes "agent-platform -> theseus under the same owner". bin/setup-cloud-env.sh: line 38's comment becomes
+  becomes "agent-platform -> theseus under the same owner"; and, plan-authored so the docstring stays true once line
+  38 changes, "line 38's `cd /home/user/agent-platform` is an on-disk checkout path" / "(rename-independent)" become
+  "line 38's `cd /home/user/<checkout>` comment is an on-disk checkout path" / "(not a repository reference)", same
+  line count. bin/setup-cloud-env.sh: line 38's comment becomes
   "#     cd /home/user/ontheloop && bash bin/setup-cloud-env.sh" and line 61's "# (theseus), short-expiry GitHub token:"
-  becomes "# (ontheloop), short-expiry GitHub token:".
+  becomes "# (ontheloop), short-expiry GitHub token:". terraform/github/CLAUDE.md (operator-approved 22:07 UTC):
+  "On a fresh state, import the existing `theseus` repository rather than recreating it, and" becomes "On a fresh
+  state, import the existing `ontheloop` repository rather than recreating it, and", and
+  "terraform -chdir=terraform/github import github_repository.this theseus" becomes
+  "terraform -chdir=terraform/github import github_repository.this ontheloop" -- skip either line if the terraform/github
+  re-key (rec-4355) already changed it.
 - >-
   tests/convergence_health/test_escalate.py: add test_stuck_approval_acceptance_names_the_new_repository asserting
   escalate._ACCEPTANCE_STUCK_APPROVAL contains "repos/otl-labs/ontheloop/" and not "benjamin-blake".
 - >-
   scripts/checks/contracts/_retired_identity.py: SWEEP_PINS becomes an empty dict; SURVIVOR_PINS unchanged.
   tests/checks/contracts/test__retired_identity.py: add test_sweep_set_is_empty asserting SWEEP_PINS == {}.
-- >-
-  rec-3903: through the ops portal (fetch with recs_by_ids first), update_rec its acceptance to exactly
-  ! git grep -n -E "benjamin-blake/theseus|[\"']benjamin-blake[\"']" -- scripts/ .github/workflows/ terraform/github/variables.tf
-  ':!scripts/checks/contracts/_retired_identity.py' && bin/venv-python -c "from scripts.checks.contracts import _retired_identity as r; assert not r.SWEEP_PINS"
-  and append to its context "[<date>, PLAN-retired-repo-identity-sweep] acceptance rewritten (operator-approved
-  2026-10-15): the old oracle matched person references and the agent-platform pins forever; the new one keeps
-  every original path and adds the empty sweep set." Do this BEFORE the merge.
+- |
+  APPROVED SWEEP TEXT (operator Benjamin: 2026-10-15 21:29 UTC cmsg_017f94mmYqSe3q2p9o6tPW3UG2Az1j3ZgZBFjCpEvZ4PDb and 22:07 UTC cmsg_017f94mmYqSe3q2p9o6tPW3U8GfzuBFLUy1qGDttCm5jx9; no variance).
+  rec-3903: through the ops portal (fetch with recs_by_ids first), run VP step 16 on REC_3903_ACCEPTANCE, then update_rec its acceptance to exactly REC_3903_ACCEPTANCE and append REC_3903_CONTEXT_NOTE (with the date) to its context. Do this BEFORE the merge: Decision 201 keys the closure verdict to the acceptance text at the closing sha.
+
+  REC_3903_ACCEPTANCE:
+  ! git grep -n -E "benjamin-blake/theseus|[\"']benjamin-blake[\"']" -- scripts/ .github/workflows/ terraform/github/variables.tf ':!scripts/checks/contracts/_retired_identity.py' && bin/venv-python -m pytest -q tests/checks/contracts/test__retired_identity.py::test_sweep_set_is_empty
+  REC_3903_CONTEXT_NOTE:
+  [<date>, PLAN-retired-repo-identity-sweep] acceptance rewritten (operator-approved 2026-10-15): the old oracle matched person references and the agent-platform pins forever; the new one keeps every original path and adds the empty-sweep-set test. rec-3903's earlier note that validate_licence_consistency should gain the new forbidden slug is superseded: validate_github_org_transfer guards the retired identity (one guard per identity; the licence check keeps the earlier rename only).
+
 - Execute the Verification Plan pre-deploy steps; loop until pass; on an unrecoverable failure STOP and RCA (Decision 55).
 - >-
-  Open the PR, drive CI green, merge on code-review PROCEED plus green CI with the PR body as the squash commit
-  message carrying "Resolves: rec-3903"; then run the post-deploy steps.
-- 'Report: what was swept, verification results, and whether step 12 is proven or pending.'
+  Closure (implement skill Commit Flows; docs/contracts/git-ops.yaml), each outcome reported separately:
+  bin/venv-python -m scripts.session.github_readiness; implementation_declared true in this plan; rebase on
+  origin/main; VP steps 1-9 and 13-16; VP step 10 on the committed clean tree, then --verify-head; write the
+  implementation retrospective with the scripts.session.postflight_evidence.CATEGORIES keys and run
+  bin/venv-python -m scripts.session.postflight --evidence <that file>; push; open the PR; subscribe to its activity;
+  drive CI green. The PR touches /terraform/github/ (terraform/github/CLAUDE.md), a .github/CODEOWNERS path, so it
+  waits at green CI for the operator's code-owner approval: ask for it in the build thread; never an admin-bypass
+  merge. Then squash-merge on code-review PROCEED plus green CI plus that approval, with the PR body as the commit
+  message carrying "Resolves: rec-3903"; then post-deploy VP steps 11 and 12.
+- >-
+  Report each outcome separately (readiness, implementation_declared, rebase, VP results, full tier and
+  --verify-head, postflight evidence path, push, PR URL, CI, code-owner approval, merge, rec-3903 closure, VP step 12
+  proven or pending).
 rollback: >-
   Revert the squash commit: every change is text in the repository and the redirect from the old path keeps working,
   so a revert restores the previous state with no live effect. Re-open rec-3903 through the portal if it was closed.
