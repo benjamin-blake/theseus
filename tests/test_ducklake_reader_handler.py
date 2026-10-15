@@ -10,6 +10,7 @@ import pytest
 
 import src.lambdas.ducklake_reader.handler as h
 from src.common import ducklake_runtime as rt
+from src.common.ducklake_event_read_verbs import EVENT_READS
 from src.common.ducklake_version import pinned_duckdb_version
 
 pytestmark = pytest.mark.unit
@@ -410,7 +411,7 @@ def test_connect_probe_in_connectionless_actions():
 def test_action_describe_returns_named_reads_schema():
     out = h.action_describe({}, None)
     assert out["ok"] is True
-    assert set(out["verbs"]) == set(rt.NAMED_READS)
+    assert set(out["verbs"]) == set(rt.NAMED_READS) | set(EVENT_READS)
     assert "params" in out["verbs"]["rec_by_id"]
 
 

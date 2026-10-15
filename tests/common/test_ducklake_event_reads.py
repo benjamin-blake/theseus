@@ -1,0 +1,294 @@
+"""Pure mechanism and routing tests for src/common/ducklake_event_reads.py (no duckdb at module scope, fast-tier safe)."""
+
+from __future__ import annotations
+
+import dataclasses
+from datetime import datetime, timezone
+from typing import Any
+
+import pytest
+
+from src.common import ducklake_event_read_verbs as verbs
+from src.common import ducklake_event_reads as ev
+from src.common import ducklake_runtime as rt
+from src.common.ducklake_event_read_sql import AGENTS, OBSERVATIONS, SESSIONS, TRANSCRIPTS
+from src.common.ducklake_scd2_schema import NAMED_READS
+from src.telemetry.append import EventTableSpec
+from src.telemetry.identity import derive_entity_key
+
+_SESSION = derive_entity_key(
+    "telemetry_sessions:session_id",
+    "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    "01BRZ3NDEKTSV4RRFFQ69G5FBW",
+    "ref",
+    datetime(2026, 9, 25, 10, 30, tzinfo=timezone.utc),
+)
+_AS_OF = "2026-09-26T12:00:00+00:00"
+_STATE = verbs.EVENT_READS["session_state_and_duration"]
+_WINDOW = verbs.EVENT_READS["sessions_window"]
+
+
+@pytest.fixture
+def smoke_pin(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TELEMETRY_META_SCHEMA", rt.SMOKE_META_SCHEMA)
+    monkeypatch.setenv("TELEMETRY_DATA_PATH", rt.SMOKE_DATA_PATH)
+
+
+@pytest.fixture(autouse=True)
+def _reset_slots() -> Any:
+    rt.reset_warm_connection()
+    yield
+    rt.reset_warm_connection()
+
+
+class FakeCursor:
+    description = [("x",)]
+
+    def fetchall(self) -> list[tuple[Any, ...]]:
+        return [(1,)]
+
+
+class RecordingCon:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, Any]] = []
+
+    def execute(self, sql: str, params: Any = None) -> FakeCursor:
+        self.calls.append((sql, params))
+        return FakeCursor()
+
+
+def test_session_id_must_be_a_canonical_ulid() -> None:
+    for bad in (_SESSION.lower(), _SESSION[:-1], _SESSION + "0", "", 17, None, "ILOU" + _SESSION[4:]):
+        with pytest.raises(ev.EventReadInputError):
+            ev.bind_values(_STATE, {"session_id": bad, "as_of": _AS_OF})
+    assert ev.bind_values(_STATE, {"session_id": _SESSION, "as_of": _AS_OF})["session_id"] == _SESSION
+
+
+def test_as_of_must_be_tz_aware() -> None:
+    for bad in ("2026-09-26T12:00:00", "2026-09-26", "yesterday", 17, None, "2026-13-40T00:00:00Z"):
+        with pytest.raises(ev.EventReadInputError):
+            ev.bind_values(_STATE, {"session_id": _SESSION, "as_of": bad})
+    assert ev.bind_values(_STATE, {"session_id": _SESSION, "as_of": "2026-09-26T14:00:00+02:00"})["as_of"] == datetime(
+        2026, 9, 26, 12, tzinfo=timezone.utc
+    )
+
+
+def test_window_span_is_capped_per_verb() -> None:
+    base = {"as_of": _AS_OF}
+    ok = ev.bind_values(_WINDOW, {"day_from": "2026-09-25", "day_to": "2026-10-01", **base})
+    assert (ok["part_to"] - ok["part_from"]).days == _WINDOW.max_window_days
+    for first, last in (
+        ("2026-09-25", "2026-10-02"),
+        ("2026-09-26", "2026-09-25"),
+        ("2026-09-25", "2026-9-26"),
+        ("2026-02-30", "2026-03-01"),
+        ("x", "y"),
+    ):
+        with pytest.raises(ev.EventReadInputError):
+            ev.bind_values(_WINDOW, {"day_from": first, "day_to": last, **base})
+    tighter = dataclasses.replace(_WINDOW, max_window_days=2)
+    with pytest.raises(ev.EventReadInputError):
+        ev.bind_values(tighter, {"day_from": "2026-09-25", "day_to": "2026-09-27", **base})
+
+
+def test_errors_name_the_param_never_the_value() -> None:
+    bad_value = "NOT-A-ULID-" + "Z" * 9
+    with pytest.raises(ev.EventReadInputError) as caught:
+        ev.bind_values(_STATE, {"session_id": bad_value, "as_of": _AS_OF})
+    assert "session_id" in str(caught.value) and bad_value not in str(caught.value)
+    assert caught.value.verb == "session_state_and_duration" and caught.value.error_class == "EventReadInputError"
+    with pytest.raises(ev.EventReadInputError) as caught:
+        ev.bind_values(_STATE, {"session_id": _SESSION, "as_of": "private-value"})
+    assert "as_of" in str(caught.value) and "private-value" not in str(caught.value)
+    with pytest.raises(ev.EventReadInputError) as caught:
+        ev.bind_values(_STATE, {"session_id": _SESSION, "as_of": _AS_OF, "extra": "leak"})
+    assert "leak" not in str(caught.value)
+    with pytest.raises(ev.EventReadInputError):
+        ev.bind_values(_STATE, ["not", "an", "object"])
+
+
+def test_partition_bounds_decode_from_the_session_id() -> None:
+    values = ev.bind_values(_STATE, {"session_id": _SESSION, "as_of": _AS_OF})
+    assert values["part_from"] == datetime(2026, 9, 25, tzinfo=timezone.utc)
+    assert values["part_to"] == datetime(2026, 9, 26, tzinfo=timezone.utc)
+    window = ev.bind_values(_WINDOW, {"day_from": "2026-09-25", "day_to": "2026-09-26", "as_of": _AS_OF})
+    assert (window["part_from"], window["part_to"]) == (
+        datetime(2026, 9, 25, tzinfo=timezone.utc),
+        datetime(2026, 9, 27, tzinfo=timezone.utc),
+    )
+    sql = ev.render_sql(_STATE)
+    assert "session_started_at >= $part_from AND session_started_at < $part_to AND session_id = $session_id" in sql
+    assert "day(" not in sql
+
+
+def test_values_are_bound_never_interpolated() -> None:
+    con = RecordingCon()
+    ev.execute(con, verb="session_state_and_duration", params={"session_id": _SESSION, "as_of": _AS_OF})
+    sql, bound = con.calls[0]
+    assert _SESSION not in sql and "2026-09-26" not in sql and "2026-09-25" not in sql
+    assert set(bound) == {"session_id", "as_of", "part_from", "part_to"}
+    assert bound["session_id"] == _SESSION
+    con = RecordingCon()
+    ev.execute(con, verb="model_call_cost_estimate", params={"session_id": _SESSION}, limit="5")
+    assert con.calls[0][0].endswith(" LIMIT 5")
+    with pytest.raises(rt.DuckLakeRuntimeError, match="not paginable"):
+        ev.execute(con, verb="session_state_and_duration", params={"session_id": _SESSION, "as_of": _AS_OF}, limit=1)
+
+
+def test_refuses_unless_the_pin_is_the_smoke_catalog(monkeypatch: pytest.MonkeyPatch, smoke_pin: None) -> None:
+    assert ev.require_smoke_pin() == (rt.SMOKE_META_SCHEMA, rt.SMOKE_DATA_PATH)
+    monkeypatch.setenv("TELEMETRY_META_SCHEMA", "ducklake_ops")
+    with pytest.raises(rt.DuckLakeRuntimeError, match="rec-4292"):
+        ev.require_smoke_pin()
+    monkeypatch.setenv("TELEMETRY_META_SCHEMA", rt.SMOKE_META_SCHEMA)
+    monkeypatch.setenv("TELEMETRY_DATA_PATH", "s3://elsewhere/telemetry/")
+    with pytest.raises(rt.DuckLakeRuntimeError, match="rec-4292"):
+        ev.require_smoke_pin()
+    monkeypatch.delenv("TELEMETRY_META_SCHEMA")
+    with pytest.raises(rt.DuckLakeRuntimeError):
+        ev.require_smoke_pin()
+
+
+def test_read_version_moves_with_every_datum_sql_and_column(monkeypatch: pytest.MonkeyPatch) -> None:
+    base = ev.event_read_version("session_friction_rollup")
+    assert base == ev.event_read_version("session_friction_rollup")
+    assert len(base) == 16
+    entry = verbs.EVENT_READS["session_friction_rollup"]
+
+    def changed(**overrides: Any) -> str:
+        patched = dict(verbs.EVENT_READS) | {"session_friction_rollup": dataclasses.replace(entry, **overrides)}
+        monkeypatch.setattr(verbs, "EVENT_READS", patched)
+        return ev.event_read_version("session_friction_rollup")
+
+    seen = {base}
+    data = dict(entry.data)
+    for key, value in (("repeat_threshold", 4), ("classifier_version", 2), ("run_label", "other_label")):
+        seen.add(changed(data=data | {key: value}))
+    seen.add(changed(data=data | {"rules": data["rules"][:-1]}))
+    assert changed(sql=entry.sql + "   ") == base, "whitespace-only SQL edits must not re-version"
+    seen.add(changed(sql=entry.sql + " -- edit"))
+    seen.add(changed(params=("session_id", "x")))
+    seen.add(changed(paginable=True))
+    seen.add(changed(max_window_days=3))
+    assert len(seen) == 9, "every datum, the SQL, params, paginable flag and window cap must each re-version the verb"
+    semantics = ev.rt.load_field_semantics()
+    narrowed = {**semantics, "ops_tables": {**semantics["ops_tables"]}}
+    narrowed["ops_tables"][OBSERVATIONS] = {
+        **semantics["ops_tables"][OBSERVATIONS],
+        "columns": {k: v for k, v in semantics["ops_tables"][OBSERVATIONS]["columns"].items() if k != "metadata"},
+    }
+    monkeypatch.setattr(verbs, "EVENT_READS", dict(verbs.EVENT_READS))
+    assert ev.event_read_version("session_friction_rollup", narrowed) != ev.event_read_version("session_friction_rollup")
+
+
+@pytest.mark.parametrize("table", [SESSIONS, OBSERVATIONS, TRANSCRIPTS, AGENTS])
+def test_compared_columns_match_the_writer_compare_set(table: str) -> None:
+    entry = ev.rt.load_field_semantics()["ops_tables"][table]
+    spec = EventTableSpec.from_projection(table, entry)
+    assert set(ev.compared_columns(table)) == set(spec.columns) - spec.compare_excluded
+    assert {"created_timestamp", "producer_version"}.isdisjoint(ev.compared_columns(table))
+
+
+def test_acquirer_routes_only_event_verbs_to_the_telemetry_slot(smoke_pin: None) -> None:
+    def ops(force_reopen: bool = False) -> tuple[Any, dict[str, Any]]:
+        return "ops-con", {}
+
+    for action, payload in (
+        ("named_read", {"verb": "open_recs_tally", "params": {}}),
+        ("query_ops", {"table": "ops_recommendations", "sql": "SELECT 1", "verb": "session_state_and_duration"}),
+        ("read_ops_current", {"table": "ops_recommendations"}),
+        ("attach_check", {}),
+    ):
+        assert ev.acquirer_for(action, payload, ops, "/ext") is ops
+    event = ev.acquirer_for("named_read", {"verb": "telemetry_health_count", "params": {}}, ops, "/ext")
+    assert event is not ops
+
+
+def test_a_non_string_verb_routes_to_ops(smoke_pin: None) -> None:
+    def ops() -> tuple[Any, dict[str, Any]]:
+        return "ops-con", {}
+
+    for verb in (["session_state_and_duration"], {"a": 1}, 7, None, "", "unknown_verb"):
+        assert ev.acquirer_for("named_read", {"verb": verb}, ops, "/ext") is ops
+    assert ev.acquirer_for("named_read", {}, ops, "/ext") is ops
+
+
+def test_validation_and_pin_refusal_precede_any_acquire(monkeypatch: pytest.MonkeyPatch, smoke_pin: None) -> None:
+    opened: list[str] = []
+    monkeypatch.setattr(rt, "open_connection", lambda **kw: opened.append("open") or RecordingCon())
+    monkeypatch.setattr(rt, "fetch_dsn", lambda *a, **k: {})
+    with pytest.raises(ev.EventReadInputError):
+        ev.acquirer_for(
+            "named_read", {"verb": "session_state_and_duration", "params": {"session_id": "bad", "as_of": _AS_OF}}, None, "/e"
+        )
+    monkeypatch.setenv("TELEMETRY_META_SCHEMA", "ducklake_ops")
+    with pytest.raises(rt.DuckLakeRuntimeError):
+        ev.acquirer_for(
+            "named_read",
+            {"verb": "session_state_and_duration", "params": {"session_id": _SESSION, "as_of": _AS_OF}},
+            None,
+            "/e",
+        )
+    assert opened == []
+    monkeypatch.setenv("TELEMETRY_META_SCHEMA", rt.SMOKE_META_SCHEMA)
+    acquire = ev.acquirer_for(
+        "named_read", {"verb": "session_state_and_duration", "params": {"session_id": _SESSION, "as_of": _AS_OF}}, None, "/e"
+    )
+    assert opened == []  # lazily opened: acquiring the callable pays no ATTACH
+    con, meta = acquire()
+    assert opened == ["open"] and meta["reused"] is False
+    assert con.calls[0][0].startswith("SET memory_limit='300MB'")
+    assert acquire()[1]["reused"] is True and opened == ["open"]
+
+
+def test_event_verbs_are_described_with_their_class_bounds_and_audience() -> None:
+    described = ev.describe_all()
+    event = {v: described[v] for v in verbs.EVENT_READS}
+    assert all(row["kind"] == "event_journal" and row["catalog"] == "telemetry" for row in event.values())
+    assert event["sessions_window"]["max_window_days"] == verbs.MAX_WINDOW_DAYS
+    assert event["sessions_window"]["binding"] == "window" and event["telemetry_health_count"]["binding"] == "none"
+    assert {v for v, row in event.items() if not row["agent_facing"]} == {
+        "sessions_window_all_purposes",
+        "telemetry_health_count",
+    }
+    assert all("smoke catalog" in verbs.EVENT_READS[v].description for v in verbs.EVENT_READS)
+    assert all(row["read_version"] == ev.event_read_version(v) for v, row in event.items())
+    assert event["session_state_and_duration"]["tables"][0] == SESSIONS
+
+
+def test_event_and_ops_verb_names_are_disjoint() -> None:
+    assert not set(verbs.EVENT_READS) & set(NAMED_READS)
+    assert all(entry.verb == name for name, entry in verbs.EVENT_READS.items())
+
+
+def test_event_describe_rows_carry_every_ops_describe_key() -> None:
+    described = ev.describe_all()
+    ops_keys = set(next(iter(rt.describe_named_reads().values())))
+    for verb in verbs.EVENT_READS:
+        assert ops_keys <= set(described[verb]), verb
+    assert {"kind", "tables", "catalog", "binding", "max_window_days"} <= set(described["sessions_window"])
+
+
+def test_mcp_tool_registry_builds_from_describe_all_and_projects_only_agent_facing() -> None:
+    from scripts.agent_sdk.mcp_server import build_tool_registry  # noqa: PLC0415
+
+    described = ev.describe_all()
+    names = {tool.name for tool in build_tool_registry(described)}
+    event_agent_facing = {v for v, e in verbs.EVENT_READS.items() if e.agent_facing}
+    assert event_agent_facing <= names
+    assert not names & {"sessions_window_all_purposes", "telemetry_health_count"}
+    assert names == {v for v, meta in described.items() if meta["agent_facing"]}
+
+
+def test_serve_named_read_routes_ops_verbs_through_the_unchanged_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(rt, "named_read", lambda con, **kw: [{"n": 1}])
+    rows, version = ev.serve_named_read(object(), verb="count_by_status", params={}, limit=None)
+    assert rows == [{"n": 1}] and version == rt.read_version("count_by_status")
+    rows, version = ev.serve_named_read(RecordingCon(), verb="telemetry_health_count", params={}, limit=None)
+    assert version == ev.event_read_version("telemetry_health_count") and rows == [{"x": 1}]
+
+
+def test_render_refuses_an_unbound_placeholder() -> None:
+    broken = dataclasses.replace(_STATE, sql=_STATE.sql + " {nope}")
+    with pytest.raises(rt.DuckLakeRuntimeError, match="unbound"):
+        ev.render_sql(broken)

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 
 from scripts.ducklake_smoke import core
 from src.common import ducklake_runtime
@@ -188,8 +189,71 @@ def lambda_churn_incontainer(*, profile: str | None = None, region: str = "eu-we
     )
 
 
+_ABSENT_SESSION = "01ARZ3NDEKTSV4RRFFQ69G5FAV"  # a canonical ULID no real session derives to (2016 prefix)
+_MALFORMED_MARKER = "not-a-session-id-MARKER"
+_TELEMETRY_TABLES = {"telemetry_sessions", "telemetry_observations", "telemetry_transcripts", "telemetry_agents"}
+_CATALOG_MISSING_CLASSES = {"CatalogException", "BinderException"}
+
+
+def _telemetry_read_checks(*, profile: str | None, region: str) -> None:
+    """The reader's telemetry slot (rec-4291): describe, the health verb, an absent and a malformed session, and isolation."""
+    from src.common.ducklake_event_read_verbs import EVENT_READS  # noqa: PLC0415
+
+    url = core._function_url("reader")
+
+    def call(payload: dict) -> object:
+        return core._sigv4_invoke(url, payload, profile=profile, region=region)
+
+    def fail(reason: str, detail: object) -> None:
+        raise core.SmokeTestFailure(f"TELEMETRY_READS FAIL: {reason}: {detail}")
+
+    verbs = core._ok_json(call({"action": "describe"})).get("verbs", {})
+    for name, entry in EVENT_READS.items():
+        described = verbs.get(name) or {}
+        if described.get("kind") != "event_journal" or described.get("agent_facing") is not entry.agent_facing:
+            fail(f"describe does not list {name} as an event_journal verb with agent_facing={entry.agent_facing}", described)
+    health = core._ok_json(call({"action": "named_read", "verb": "telemetry_health_count", "params": {}}))
+    if {row.get("table_name") for row in health.get("rows", [])} != _TELEMETRY_TABLES:
+        fail("telemetry_health_count did not answer for all four tables", health)
+    as_of = datetime.now(timezone.utc).isoformat()
+    absent = core._ok_json(
+        call(
+            {
+                "action": "named_read",
+                "verb": "session_state_and_duration",
+                "params": {"session_id": _ABSENT_SESSION, "as_of": as_of},
+            }
+        )
+    )
+    if absent.get("row_count") != 0:
+        fail("a well-formed absent session_id returned rows", absent)
+    bad = call(
+        {
+            "action": "named_read",
+            "verb": "session_state_and_duration",
+            "params": {"session_id": _MALFORMED_MARKER, "as_of": as_of},
+        }
+    )
+    if bad.status_code != 400 or _MALFORMED_MARKER in bad.text or "named_read_input" not in bad.text:
+        fail("a malformed session_id must answer 400 named_read_input without echoing the value", bad.status_code)
+    probe = call(
+        {
+            "action": "query_ops",
+            "table": "ops_recommendations",
+            "sql": "SELECT count(*) FROM telemetry_catalog.telemetry_sessions",
+        }
+    )
+    probe_body = probe.json() if probe.status_code == 500 else {}
+    if probe_body.get("error_type") != "unmapped" or probe_body.get("error_class") not in _CATALOG_MISSING_CLASSES:
+        fail(
+            "query_ops must not reach the telemetry catalog (want HTTP 500, unmapped, a catalog error class)",
+            probe.status_code,
+        )
+    print("TELEMETRY_READS_OK")
+
+
 def lambda_reader(*, profile: str | None = None, region: str = "eu-west-2") -> None:
-    """EC1/boundary: reader returns current rows; the read role cannot write (closed boundary)."""
+    """EC1/boundary: reader returns current rows; the read role cannot write (closed boundary); the telemetry reads answer."""
     read_body = core._ok_json(
         core._sigv4_invoke(
             core._function_url("reader"), {"action": "read_current", "limit": 5}, profile=profile, region=region
@@ -201,6 +265,7 @@ def lambda_reader(*, profile: str | None = None, region: str = "eu-west-2") -> N
     if not (read_body.get("row_count", 0) >= 1 and probe.get("write_denied") is True):
         raise core.SmokeTestFailure(f"READER FAIL: read={read_body} write_probe={probe}")
     print(f"READER OK rows={read_body['row_count']} write_denied=true")
+    _telemetry_read_checks(profile=profile, region=region)
 
 
 def _warm_reuse_probe(role: str, *, profile: str | None, region: str, attempts: int = 6) -> dict:

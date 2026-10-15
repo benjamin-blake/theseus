@@ -423,3 +423,94 @@ def test_split_no_import_cycle():
 
     importlib.import_module("src.common.ducklake_scd2_schema")
     importlib.import_module("src.common.ducklake_runtime")
+
+
+# ---------------------------------------------------------------------------
+# Named warm-connection slots (rec-4291): the reader's telemetry catalog is a second, isolated warm connection.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _clean_slots():
+    rt.reset_warm_connection()
+    yield
+    rt.reset_warm_connection()
+
+
+def _slot_con(alive: bool = True):
+    from unittest.mock import MagicMock  # noqa: PLC0415
+
+    con = MagicMock(name="slot_con")
+    if not alive:
+        con.execute.side_effect = Exception("connection already closed")
+    return con
+
+
+def test_named_slots_are_independent(_clean_slots):
+    ops, telemetry = _slot_con(), _slot_con()
+    first, _ = rt.get_warm_connection(opener=lambda: ops)
+    second, meta = rt.get_warm_connection(opener=lambda: telemetry, slot="telemetry")
+    assert (first, second) == (ops, telemetry) and meta["reused"] is False
+    assert rt.get_warm_connection(opener=lambda: _slot_con())[0] is ops
+    assert rt.get_warm_connection(opener=lambda: _slot_con(), slot="telemetry")[0] is telemetry
+    ops.close.assert_not_called()
+    telemetry.close.assert_not_called()
+
+
+def test_dead_slot_reopens_without_evicting_the_other(_clean_slots):
+    ops, dead, fresh = _slot_con(), _slot_con(alive=False), _slot_con()
+    rt.get_warm_connection(opener=lambda: ops)
+    rt.get_warm_connection(opener=lambda: dead, slot="telemetry")
+    con, meta = rt.get_warm_connection(opener=lambda: fresh, slot="telemetry")
+    assert con is fresh and meta["reopened"] is True
+    dead.close.assert_called_once()
+    assert rt.get_warm_connection(opener=lambda: _slot_con())[0] is ops
+    ops.close.assert_not_called()
+    again, meta = rt.get_warm_connection(opener=lambda: _slot_con(), slot="telemetry", force_reopen=True)
+    assert meta["reopened"] is True and again is not fresh
+    assert rt.get_warm_connection(opener=lambda: _slot_con())[0] is ops
+
+
+def test_reset_drops_one_slot_or_all(_clean_slots):
+    ops, telemetry = _slot_con(), _slot_con()
+    rt.get_warm_connection(opener=lambda: ops)
+    rt.get_warm_connection(opener=lambda: telemetry, slot="telemetry")
+    rt.reset_warm_connection("telemetry")
+    telemetry.close.assert_called_once()
+    ops.close.assert_not_called()
+    assert rt._named_slots["telemetry"] == {}
+    assert rt._warm_connection["con"] is ops
+    rt.get_warm_connection(opener=lambda: _slot_con(), slot="telemetry")
+    rt.reset_warm_connection()
+    ops.close.assert_called_once()
+    assert rt._warm_connection == {} and rt._named_slots["telemetry"] == {}
+    broken = _slot_con()
+    broken.close.side_effect = Exception("already gone")
+    rt.get_warm_connection(opener=lambda: broken, slot="telemetry")
+    rt.reset_warm_connection()
+
+
+def test_open_connection_attaches_under_the_given_alias(monkeypatch):
+    con = FakeCon()
+    _patch_duckdb(monkeypatch, con)
+    rt.open_connection(dsn=_DSN, data_path="s3://x/y/", alias=rt.TELEMETRY_CATALOG_ALIAS)
+    attach = next(s for s, _ in con.executed if s.startswith("ATTACH 'ducklake:postgres:"))
+    assert f" AS {rt.TELEMETRY_CATALOG_ALIAS} (" in attach
+    default = FakeCon()
+    _patch_duckdb(monkeypatch, default)
+    rt.open_connection(dsn=_DSN, data_path="s3://x/y/")
+    assert any(f" AS {rt.CATALOG_ALIAS} (" in s for s, _ in default.executed)
+    opened: list[str] = []
+    monkeypatch.setattr(rt, "open_connection", lambda **kw: opened.append(kw["alias"]) or _slot_con())
+    rt.get_warm_connection(dsn=_DSN, slot="telemetry", alias=rt.TELEMETRY_CATALOG_ALIAS)
+    assert opened == [rt.TELEMETRY_CATALOG_ALIAS]
+    rt.reset_warm_connection()
+
+
+def test_ops_slot_storage_is_unchanged(_clean_slots):
+    """The ops slot keeps the module-level dict with con/key entries that test_ducklake_runtime_warm_connection.py reads."""
+    con = _slot_con()
+    rt.get_warm_connection(opener=lambda: con, data_path="s3://x/", meta_schema="m", extension_directory="/e")
+    assert rt._warm_connection["con"] is con
+    assert rt._warm_connection["key"] == ("s3://x/", "m", "/e")
+    assert "ops" not in rt._named_slots
