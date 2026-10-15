@@ -56,6 +56,7 @@ _NON_ROW_WRITING: dict[str, dict[str, str]] = {
         "describe": "read",
         "provision_telemetry": "provisioning: tables and counter seeds, no caller row",
         "telemetry_probe": "probe",
+        "begin_blobs": "issues claim-check upload grants; writes no row (the row arrives through append_telemetry)",
     },
     "src/lambdas/ducklake_reader/handler.py": dict.fromkeys(
         (
