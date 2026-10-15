@@ -140,8 +140,9 @@ scope:
     `{exclude_before: D}`, a rule (today's OR would yield `{exclude_before: D, enforced: False}`, which the presence
     reader must never see).
     `note` joins _LEG_META_KEYS (a documentation sub-key on telemetry accepted_values legs), so it never becomes a rule
-    parameter. A `not_null: true` leg normalises to empty params. A non-bool, non-mapping not_null still fails with a
-    message naming table, column and kind (rec-4168 behaviour kept). Docstrings drop "plan C owns the re-read".
+    parameter. A `not_null: true` leg normalises to empty params. Any other non-mapping not_null (a literal `false`
+    included: an optional column has no leg) fails with a ValueError naming table, column and kind (rec-4168
+    behaviour kept). Docstrings drop "plan C owns the re-read".
 - file: scripts/field_semantics_event_projection.py
   action: Modify
   purpose: >-
@@ -227,8 +228,8 @@ scope:
     Stays the registered entry point (name, module and attr unchanged, Decision 187 point 5) and becomes orchestration
     only, below 200 SLOC (Decision 128 decompose-by-default; it is 390 SLOC today). Scope widens from ops_recommendations
     and ops_decisions to every contract-backed writer table: each ops_tables key of config/lambda/ducklake/field_semantics.yaml
-    that has docs/contracts/<table>.yaml (nine today), plus the raw $ref baselines those contracts reach (for the
-    enforced ban). Docstring: the transitional part was the ops.yaml parity leg, which the portal row-rule gate plan
+    that has docs/contracts/<table>.yaml (nine today) and the raw $ref baselines those contracts reach; the enforced
+    ban alone scans every contract under docs/contracts/. Docstring: the transitional part was the ops.yaml parity leg, which the portal row-rule gate plan
     retires; the declaration guard stays, and writer coverage is the conformance check's.
 - file: scripts/checks/contracts/_rule_grammar.py
   action: Create
@@ -258,8 +259,10 @@ scope:
   action: Create
   purpose: >-
     The merge-base ratchet over every in-scope table, reading a base snapshot of every in-scope contract, every $ref
-    target it reaches and the source registry with the shared reader (both spellings). Fails on: (a) a leg removed unless it carried a write_time_exemptions entry at the base (mark-then-drop:
-    exempt in one PR, delete in a later one); (b) a value removed from an accepted_values leg unless that field's
+    target it reaches and the source registry with the shared reader (both spellings). Fails on: (a) a leg removed
+    unless it carried a class temporary exemption at the base (mark-then-drop: exempt in one PR, delete in a later
+    one); a standing cross_row or repository_state exemption is not a mark, so removing acceptance_lint or
+    array_element_reference first re-classes it to temporary (arm (d)), as today's ratchet refuses every removal; (b) a value removed from an accepted_values leg unless that field's
     amendment_log gained, since the base, an entry with change_class accepted_values_narrow, semantic_break true and a
     migration_story naming every removed value (the census statement lives there; AmendmentLogEntry is extra=forbid),
     and likewise any other narrowing of a surviving leg -- any change to its params other than adding accepted values
@@ -281,12 +284,16 @@ scope:
     inline_within_threshold, uri_above_threshold, within_cap and integrity are exempted by their own keys and would
     otherwise be invisible. A content-leg rule counts as existing at the base when the column carried
     content_inline_threshold_bytes there. A temporary exemption's review_by moved later (a renewal) also needs a field
-    entry since the base (governance_note_add) naming the new date and why. (e) a source registry id removed (moved,
+    entry since the base (governance_note_add) naming the new date and why; a review_by added where the base exemption
+    had none is never a renewal (the base was class-less, so the pair is a grammar completion -- this plan's own
+    transcripts change). (e) a source registry id removed (moved,
     unchanged). (f) a leg added on an SCD2 table (one whose rows are updated: no table_class event, not a control
     table) without an exclude_before -- a rule introduced later carries its own effective date (Decision 64's
     2026-10-04 update), so it binds older rows only on columns a write changes; event tables never update a row and
-    add legs freely.
-    Free: accepted values added, a dated new SCD2 leg, any new event-table leg. The dormancy arm keys on the entry module validate_ops_rule_source.py being absent at the
+    add legs freely. A contract absent at the base contributes no base legs, so a new contract's founding legs are free
+    (the T4.3 and T4.5 hand-overs: a table with no contract had no rule to strand; rows a dormant table already holds
+    are that plan's census).
+    Free: accepted values added, a dated new SCD2 leg, any new event-table leg, a new contract's founding legs. The dormancy arm keys on the entry module validate_ops_rule_source.py being absent at the
     base, which it never is after plan A, so the widened ratchet is live on this plan's own PR. Reason: scripts/contracts_enforcement.py
     check_amendment_for_diff compares only description and semantics, so a rule-only diff was unguarded.
 - file: scripts/checks/contracts/_ops_rule_bindings.py
@@ -375,7 +382,8 @@ scope:
   action: Modify
   purpose: >-
     ops_priority_queue and ops_execution_plans write_boundary prose names the dormant refusal and its owner (T4.3 c6,
-    T4.5 c2); amendment_log entry (prose_improvement, Class D; no key is added).
+    T4.5 c2); amendment_log entry (governance_note_add, semantic_break true: it records a behaviour change, as
+    ducklake_writer.yaml does; Class D; no key is added).
 - file: docs/DECISIONS.md
   action: Modify
   purpose: >-
@@ -418,7 +426,16 @@ scope:
     For each row-writing action (write_ops, file_ops, update_ops through tests/fixtures/ducklake_fakes.py; the tenant
     and project registration verbs; append_telemetry) and every rule kind present in its table's RowRules -- derived
     from the RowRules fields, never a literal list -- a mutation of a rule-clean record that breaks exactly that rule
-    is rejected naming that rule and column.
+    is rejected naming that rule and column. Tables per action, derived from the registry: write_ops and update_ops on
+    every contract-backed SCD2 table the generic verbs accept (ops_recommendations, ops_decisions; telemetry and
+    registration tables are refused there), file_ops on those with a writer-owned keyspace, register_tenant on
+    ops_tenants, register_project on ops_projects, append_telemetry on each event table. For not_null the mutation
+    nulls a column whose not_null reaches the engine (a declared leg on a nullable column, as
+    tests/common/test_ducklake_write_rules_integration.py does with source) where the table has one, and the rejection
+    must be the row-rule refusal naming not_null and the column; on a nullable false input the schema gate's 422
+    ("required input field ... missing or null", naming the column) counts, since it runs before check_write (Decision
+    210 cl.5 defence in depth); writer-minted columns (role derived or minted in the projection) are skipped, derived
+    from the role, because no payload can supply them.
 - file: tests/checks/contracts/test_validate_write_time_enforcement_conformance.py
   action: Create
   purpose: >-
@@ -447,12 +464,14 @@ scope:
   purpose: >-
     Each ratchet arm on a fixture base and head (git-free, via the module's snapshot seam): value removal without and
     with the narrowing entry; a date added to a live leg, moved later or removed from a surviving leg fails even with
-    an entry, and a date moved earlier passes; a new exemption without and with a semantic-break entry, including a
+    an entry; a new exemption without and with a semantic-break entry, including a
     content-leg exemption (within_cap added to a column that carried content_inline_threshold_bytes at the base) and a
     content-leg exemption's class changed; a min_length raised, a pattern changed and a date moved earlier, each
     without and with a semantic-break entry, while accepted values added pass; an undated leg added to an SCD2 table
     fails and a dated one passes, while an undated leg added to an event table passes; a review_by moved later without
-    and with an entry; leg removal without and with a base exemption; registry removal; legacy-spelled base contracts
+    and with an entry, and a first review_by on a base class-less exemption passes; leg removal without a base
+    exemption and with a base cross_row or repository_state exemption fails, with a base temporary exemption passes;
+    an undated founding leg of a contract absent at the base passes; registry removal; legacy-spelled base contracts
     read alike.
 - file: tests/checks/contracts/test__ops_rule_bindings.py
   action: Create
@@ -466,10 +485,15 @@ scope:
     Re-pinned to the decomposed modules (measured on the prototype: test_real_tree_passes, test_each_defect_fails,
     test_unreadable_or_absent_base_legs, test_exclude_before_cannot_move_later, test_registry_removal_fails_the_ratchet
     and test_retired_expression_write_time_tests_are_ignored assume the legacy spelling); the real tree passes over
-    nine tables; manifest pre_globs are a superset. test_exclude_before_cannot_move_later's `_earlier` mutation splits
-    in two: moving tags' date earlier still passes, and deleting effort.accepted_values.exclude_before (which passes
-    today, lines ~242-257) now fails naming the removed date -- a tightening of the check (Decision 64), so no
-    assertion is weakened. The nodes graduated registry rows name (test_real_tree_passes, test_each_defect_fails,
+    nine tables (the fixture `_FILES` widens to the nine contracts, their baselines and field_semantics.yaml);
+    manifest pre_globs are a superset. test_exclude_before_cannot_move_later is tightened, never weakened: its
+    `_earlier` mutation (both parts pass today, lines ~242-257) splits -- moving tags' date earlier with no entry now
+    fails naming the narrowing and passes once the fixture adds a semantic-break field entry with the census, and
+    deleting effort.accepted_values.exclude_before now fails naming the removed date (Decision 64). Its legacy-spelled
+    mutations are re-spelled: `_newly_enforced` becomes `{exclude_before: "2026-10-04"}` on a column with no base leg
+    (a dated new SCD2 leg, still passing), `_newly_dated` adds a date to status' `not_null: true` (still failing), and
+    the ops_decisions `.update(enforced=False)` mutation becomes deleting that not_null leg (still failing as a
+    removal). The nodes graduated registry rows name (test_real_tree_passes, test_each_defect_fails,
     test_exclude_before_cannot_move_later, test_portal_validators_agree_with_contract,
     test_registered_in_the_contracts_manifest, test_malformed_leg_shapes_fail_with_a_message,
     test_registry_removal_fails_the_ratchet) stay in this file under their names, driving the entry module.
@@ -553,9 +577,9 @@ scope:
 - file: tests/checks/contracts/test_write_time_enforcement_decision.py
   action: Modify
   purpose: >-
-    Anchors the new coverage sentence (conformance check, ratchet, dormant owners) and the Decision 210 annotation, and
-    asserts Decision 210's section stays at most 6,144 bytes (validate_decisions_size measures only new entries, and
-    210 is a baseline entry).
+    Anchors the new coverage sentence (conformance check, ratchet, dormant owners) and the Decision 210 annotation.
+    The 6,144-byte cap on Decision 210 is already asserted by
+    test_ops_rule_source_records.py::test_decision_annotations.
 - file: config/agent/verification_registry/entries/write-time-conformance-every-rule-has-a-validator.yaml
   action: Create
   purpose: Graduated registry row for VP step 1 (check_id as declared on the step).
@@ -601,8 +625,8 @@ infrastructure_dependencies:
 acceptance_criteria:
 - >-
   No contract under docs/contracts/ carries an `enforced` key on any rule leg; not_null is spelled `true` or
-  `{exclude_before: ISO}`; every field (contract or baseline) that declared only an optional not_null now carries
-  `dq_intent: {}` (no in-scope $ref field declares an optional not_null in dq_intent_local, measured); the rule
+  `{exclude_before: ISO}`; a field that declared only an optional not_null keeps an empty block where contract drift
+  requires the key (`dq_intent: {}`) and otherwise loses it; the rule
   set every table declares is unchanged (step 13) and config/lambda/ducklake/field_semantics.yaml changes only by the
   two dormant write_boundary keys and the transcripts exemption's class and review_by (step 14).
 - >-
@@ -1197,6 +1221,15 @@ constraints:
 - >-
   docs/contracts/data-modeling-standard.yaml is at 439 of its 500 effective lines: net additions stay under 40;
   compress the rule's own text rather than raise (Decision 128).
+- >-
+  Sequencing (whichever lands second adapts): blob route deletes the transcripts exemption and regenerates
+  field_semantics.yaml (regenerate, never hand-merge). PLAN-telemetry-cache-token-totals adds two read-derived
+  telemetry_agents fields with `dq_intent: {not_null: {enforced: false}}`: built after this plan, it writes `dq_intent:
+  {}` (the --pre ban refuses the key; its verbatim checks pin descriptions and semantics, not dq_intent); built before,
+  this build re-spells those two legs too (counts become 234 and 129). The coordinator carries this to that build.
+  PLAN-reader-verbs-decision-notes edits telemetry_sessions' and telemetry_observations' KNOWN GAPS lists; both
+  plans' contract checks are PR-relative, so the second rebases. Refusing ops_execution_plans makes T2.26 c9's
+  write-path VP un-rerunnable until T4.5 lands its contract (accepted).
 - No rescue agents or workaround loops (Decision 55).
 context:
 - >-
@@ -1234,17 +1267,13 @@ context:
   Not in scope: the writer's _contract_version "1" on contract-less tables (harmless while refused); the sidecar
   tables' status tags (the dormant arm keys on write_boundary, never on status, Decision 191); the Decision 212
   ports.yaml coupling (the portal importing writer modules), which is the portal row-rule gate plan's.
-- >-
-  Sequencing: telemetry plan 4 (blob route) deletes the transcripts exemption and also regenerates field_semantics.yaml;
-  whichever lands second regenerates, never hand-merges. Refusing ops_execution_plans makes T2.26 c9's write-path VP
-  un-rerunnable until T4.5 lands its contract (accepted).
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
 - 'Only the plan-cited decision sections read: 64, 65, 70, 79, 118, 126, 128, 163, 170, 176, 177, 181, 187, 191, 201, 208, 210, 212'
 - All files in scope located and readable
 - Acceptance criteria understood and verifiable
-- Check main for telemetry plan 4 (blob route) and any other field_semantics.yaml change before starting; rebase and regenerate if present
+- Check main for the blob-route, cache-token-totals and reader-verbs-decision-notes builds (the Sequencing constraint) and any other field_semantics.yaml or contract change before starting; rebase, regenerate and re-spell as that note says
 execution_steps:
 - >-
   Write the red tests first (the new nodes of steps 1-12) and confirm each fails on the unchanged tree.
