@@ -1,0 +1,238 @@
+"""Mirror test for scripts/telemetry_capture/__main__.py: the detached entry and every operator subcommand on fakes."""
+
+from __future__ import annotations
+
+import json
+import os
+import time
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from scripts.telemetry_capture import __main__ as cli
+from scripts.telemetry_capture.runner import PassResult
+from scripts.telemetry_capture.state import CaptureState, state_dir
+from scripts.telemetry_capture.transport import CaptureUnavailable
+from src.turn_capture.cursor import CaptureCursor
+from tests.fixtures.turn_capture_corpus import SID, assistant, hook, jsonl, prompt, text_block, tool_result, tool_use_block
+
+PIN = 'bash "$CLAUDE_PROJECT_DIR/.claude/hooks/session_start_log_turn.sh" --project-ref=example/project'
+
+
+class Client:
+    def __init__(self, answers: list[tuple[int, Any]]) -> None:
+        self.answers, self.payloads = answers, []
+
+    def invoke(self, payload: dict[str, Any]) -> tuple[int, Any]:
+        self.payloads.append(payload)
+        return self.answers.pop(0)
+
+
+def tree(tmp_path: Path) -> Path:
+    records = [hook("h0", 0.5, "SessionStart:startup", command=PIN)]
+    records += [
+        hook("h1", 0.6, "SessionStart:resume", command=PIN),
+        hook("h2", 0.7, "SessionStart:resume", command="bash x.sh"),
+    ]
+    use = {"persistedOutputPath": "/elsewhere/tool-results/out.txt", "stdout": "p"}
+    records += [
+        prompt("u1", 1, "p1", "go"),
+        assistant("a1", 2, "m1", [tool_use_block("tu1", "Bash", {"command": "x"})]),
+        tool_result("r1", 3, "tu1", "p", pid="p1", tur=use),
+        assistant("a2", 4, "m2", [text_block("done")]),
+    ]
+    root = tmp_path / f"{SID}.jsonl"
+    root.write_text(jsonl(records), encoding="utf-8")
+    (tmp_path / SID / "tool-results").mkdir(parents=True)
+    (tmp_path / SID / "tool-results" / "out.txt").write_text("full")
+    return root
+
+
+def state(root: Path) -> CaptureState:
+    return CaptureState(state_dir(root, root.stem))
+
+
+def save_cursor(root: Path) -> None:
+    cursor = CaptureCursor("claude_code", 3, SID, "example/project", "fixed_non_rollover_allowance", 1767225600500)
+    st = state(root)
+    st.dir.mkdir(parents=True, exist_ok=True)
+    st.state_file.write_text(json.dumps({"cursor": json.loads(cursor.to_json()), "root_tail_uuid": None}))
+
+
+def test_run_is_silent_and_always_exits_zero(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    seen: list[dict[str, Any]] = []
+
+    def fake(path, session_id, event, **kw):
+        seen.append({"path": path, "sid": session_id, "event": event, **kw})
+        raise RuntimeError("anything")
+
+    monkeypatch.setattr(cli, "run_pass", fake)
+    argv = ["run", "--event", "SessionEnd", "--transcript", "/t/s.jsonl", "--session-id", "s", "--final", "--lock-wait", "600"]
+    assert cli.main(argv, env={"A": "1"}) == 0
+    assert capsys.readouterr() == ("", "")
+    call = seen[0]
+    assert (call["path"], call["sid"], call["event"], call["final"], call["lock_wait"]) == (
+        Path("/t/s.jsonl"),
+        "s",
+        "SessionEnd",
+        True,
+        600.0,
+    )
+    assert call["env"] == {"A": "1"} and 1100 < call["budget"].remaining() <= 1200
+
+
+def test_pass_refuses_an_unpinned_tree_and_reports_the_outcome(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    out: list[str] = []
+    unpinned = tmp_path / "unpinned.jsonl"
+    unpinned.write_text(jsonl([prompt("u1", 1, "p1", "go")]), encoding="utf-8")
+    assert cli.main(["pass", "--tree", str(unpinned)], out=out.append) == 1 and out == [
+        "refused: the tree has no pinning SessionStart attachment"
+    ]
+    monkeypatch.setattr(cli, "run_pass", lambda *a, **kw: PassResult("sent", {"rows": {"t": 2}, "diag": {}}))
+    root = tree(tmp_path)
+    assert cli.main(["pass", "--tree", str(root), "--final"], out=out.append) == 0
+    assert json.loads(out[-1]) == {"outcome": "sent", "rows": {"t": 2}, "diag": {}}
+    monkeypatch.setattr(cli, "run_pass", lambda *a, **kw: PassResult("halted", {}))
+    assert cli.main(["pass", "--tree", str(root)], out=out.append) == 1
+
+
+def test_status_prints_counts_only(tmp_path: Path) -> None:
+    root = tree(tmp_path)
+    out: list[str] = []
+    assert cli.main(["status", "--tree", str(root)], out=out.append) == 0
+    assert json.loads(out[-1])["lines_consumed"] is None
+    save_cursor(root)
+    state(root).append_diagnostic({"event": "Stop", "outcome": "sent", "rows": {"t": 1}, "record_turn": {"x": 1}})
+    state(root).write_halt({"status": 409})
+    assert cli.main(["status", "--tree", str(root)], out=out.append) == 0
+    summary = json.loads(out[-1])
+    assert summary["halt"] == {"status": 409} and summary["last"] == {"event": "Stop", "outcome": "sent", "rows": {"t": 1}}
+
+
+def test_probe_reads_grain_counts_and_enforces_required_tables(tmp_path: Path) -> None:
+    root = tree(tmp_path)
+    out: list[str] = []
+    assert cli.main(["probe", "--tree", str(root)], out=out.append) == 1 and out[-1] == "probe: no cursor for this tree"
+    save_cursor(root)
+    counts = {"telemetry_observations": {"rows": 3, "keys": 3}, "telemetry_transcripts": {"rows": 0, "keys": 0}}
+    client = Client([(200, {"ok": True, "grain_counts": counts})] * 3 + [(500, {"ok": False})])
+    factory = lambda env, st, budget, **kw: client  # noqa: E731
+    assert (
+        cli.main(["probe", "--tree", str(root), "--require", "telemetry_observations"], client_factory=factory, out=out.append)
+        == 0
+    )
+    assert client.payloads[0] == {
+        "action": "telemetry_probe",
+        "project_ref": "example/project",
+        "session_ref": SID,
+        "session_started_at": "2026-01-01T00:00:00.500Z",
+    }
+    assert "telemetry_observations rows=3 keys=3" in out
+    required = ["probe", "--tree", str(root), "--require", "telemetry_observations,telemetry_transcripts"]
+    assert (
+        cli.main(required, client_factory=factory, out=out.append) == 1
+        and out[-1] == "probe: zero rows in telemetry_transcripts"
+    )
+    state(root).write_halt({"status": 409})
+    assert cli.main(["probe", "--tree", str(root)], client_factory=factory, out=out.append) == 1
+    assert cli.main(["probe", "--tree", str(root)], client_factory=factory, out=out.append) == 1
+    assert out[-1] == "probe: status 500, no grain counts"
+
+    def missing(*a, **kw):
+        raise CaptureUnavailable("no_credentials")
+
+    assert cli.main(["probe", "--tree", str(root)], client_factory=missing, out=out.append) == 1
+    assert out[-1] == "probe: no_credentials"
+
+
+def test_mark_and_observe_report_reclaim_evidence(tmp_path: Path) -> None:
+    root = tree(tmp_path)
+    boot = tmp_path / "boot_id"
+    boot.write_text("boot-1\n")
+    sidecar = tmp_path / SID / "tool-results" / "out.txt"
+    old = time.mktime(time.strptime("2025-01-01", "%Y-%m-%d"))
+    os.utime(sidecar, (old, old))
+    out: list[str] = []
+    assert cli.main(["observe", "--tree", str(root)], out=out.append, boot_id=boot) == 0
+    assert json.loads(out[0]) == {"session_end_passes": 0, "session_start_by_source": {"resume": 1, "startup": 1}}
+    assert out[1:] == ["tool_results_sidecars late=0 seen=1", "reclaim: unproven (no marker)"]
+    assert cli.main(["mark", "--tree", str(root)], out=out.append, boot_id=boot) == 0
+    state(root).append_diagnostic({"event": "SessionEnd", "outcome": "sent"})
+    os.utime(sidecar, None)
+    out.clear()
+    assert cli.main(["observe", "--tree", str(root)], out=out.append, boot_id=boot) == 0
+    assert json.loads(out[0])["session_end_passes"] == 1 and out[1] == "tool_results_sidecars late=1 seen=1"
+    assert out[2] == "reclaim: no reclaim seen, unproven; marker_present=True prefix_hash_equal=True"
+    boot.write_text("boot-2\n")
+    with root.open("a") as handle:
+        handle.write("{}\n")
+    assert cli.main(["observe", "--tree", str(root)], out=out.append, boot_id=boot) == 0
+    assert out[-1] == "reclaim: boot_id_changed=True marker_present=True prefix_hash_equal=True"
+    root.write_text("rewritten\n")
+    assert cli.main(["observe", "--tree", str(root)], out=out.append, boot_id=tmp_path / "absent") == 0
+    assert out[-1] == "reclaim: no reclaim seen, unproven; marker_present=True prefix_hash_equal=False"
+
+
+def test_clear_halt(tmp_path: Path) -> None:
+    root = tree(tmp_path)
+    out: list[str] = []
+    state(root).write_halt({"status": 409})
+    assert cli.main(["clear-halt", "--tree", str(root)], out=out.append) == 0
+    assert cli.main(["clear-halt", "--tree", str(root)], out=out.append) == 0
+    assert out == ["clear-halt: cleared", "clear-halt: no halt recorded"]
+
+
+def test_register_registers_the_tenant_then_the_project() -> None:
+    out: list[str] = []
+    client = Client([(200, {"ok": True, "created": False}), (200, {"ok": True, "created": True})])
+    argv = ["register", "--project-ref", "ontheloop", "--name", "n", "--remote", "https://example.invalid/r.git"]
+    assert cli.main(argv, client_factory=lambda env, st, budget, **kw: client, out=out.append) == 0
+    assert [p["action"] for p in client.payloads] == ["register_tenant", "register_project"]
+    assert client.payloads[1] == {
+        "action": "register_project",
+        "project_ref": "ontheloop",
+        "name": "n",
+        "remote": "https://example.invalid/r.git",
+    }
+    assert out == ["register_tenant: ok created=False", "register_project: ok created=True"]
+    failing = Client([(403, {"ok": False, "error_type": "forbidden"})])
+    assert cli.main(argv, client_factory=lambda *a, **kw: failing, out=out.append) == 1
+    assert out[-1] == "register_tenant: failed status=403 error_type=forbidden"
+
+    def missing(*a, **kw):
+        raise CaptureUnavailable("no_writer_url")
+
+    assert cli.main(argv, client_factory=missing, out=out.append) == 1 and out[-1] == "register: no_writer_url"
+
+
+def test_observe_reports_an_unreadable_prefix_as_unequal(tmp_path: Path) -> None:
+    root = tree(tmp_path)
+    boot = tmp_path / "boot_id"
+    boot.write_text("boot-1\n")
+    out: list[str] = []
+    assert cli.main(["mark", "--tree", str(root)], out=out.append, boot_id=boot) == 0
+    root.unlink()
+    assert cli.main(["observe", "--tree", str(root)], out=out.append, boot_id=boot) == 0
+    assert out[-1] == "reclaim: no reclaim seen, unproven; marker_present=True prefix_hash_equal=False"
+
+
+def test_detach_runner_starts_a_fully_detached_module_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import subprocess  # noqa: PLC0415
+
+    import scripts.telemetry_capture as package  # noqa: PLC0415
+
+    seen: dict[str, Any] = {}
+
+    def popen(argv, **kw):
+        seen.update(argv=argv, **kw)
+        return "child"
+
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: pytest.fail("never run"))
+    assert package.detach_runner("m.x", ["--event", "Stop"], tmp_path, env={"A": "1"}) == "child"
+    assert seen["argv"][1:] == ["-m", "m.x", "run", "--event", "Stop"] and seen["cwd"] == tmp_path
+    assert seen["env"] == {"A": "1"} and seen["start_new_session"] is True and seen["close_fds"] is True
+    assert seen["stdin"] == seen["stdout"] == seen["stderr"] == subprocess.DEVNULL
+    package.detach_runner("m.x", [], tmp_path)
+    assert seen["env"] is None

@@ -197,6 +197,11 @@ def hook_script(command: object) -> tuple[str | None, list[str]]:
     return None, tokens
 
 
+def _unquoted(value: str) -> str:
+    """hook_script strips token edges, so a quoted flag value arrives with its opening quote still attached (rec-4308)."""
+    return value[1:] if value[:1] in ("'", '"') else value
+
+
 def project_ref_pin(tree: TranscriptTree) -> str | None:
     """The project_ref the earliest SessionStart capture-hook attachment recorded, else None (rules P-1..P-4)."""
     lines = read_lines(tree.read(ROOT) or b"")
@@ -206,7 +211,7 @@ def project_ref_pin(tree: TranscriptTree) -> str | None:
         if att is None or att.get("hookEvent") != "SessionStart":
             continue
         stem, tokens = hook_script(att.get("command"))
-        refs = [t[len(PIN_FLAG) :] for t in tokens if t.startswith(PIN_FLAG)]
+        refs = [_unquoted(t[len(PIN_FLAG) :]) for t in tokens if t.startswith(PIN_FLAG)]
         if stem == PIN_SCRIPT_STEM and len(refs) == 1 and _PIN_REF.fullmatch(refs[0]):
             return refs[0]
     return None

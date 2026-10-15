@@ -307,6 +307,10 @@ def _turn_rows(ctx: Ctx, stream: Stream, turn: Turn, diag: Counter[str], sidecar
     for resp in turn.responses:
         owner, message = resp.owner, resp.owner.data["message"]
         usage = message.get("usage") if isinstance(message.get("usage"), dict) else {}
+        if not isinstance(message.get("usage"), dict):
+            diag["absent_usage"] += 1
+        if absent := sum(1 for _, key in _USAGE_KEYS if key not in usage):
+            diag["absent_usage_key"] += absent
         details = usage.get("output_tokens_details")
         thinking = (
             details.get("thinking_tokens")

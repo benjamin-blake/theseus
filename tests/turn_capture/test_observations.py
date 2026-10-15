@@ -82,6 +82,22 @@ def test_model_call_owned_by_last_record_one_per_response() -> None:
     assert (calls[1]["tokens_input"], calls[1]["tokens_output"]) == (0, 0) and diag["non_int_usage"] == 2
 
 
+def test_absent_usage_keys_are_counted() -> None:
+    root = [
+        prompt("u1", 1, "p1", "go"),
+        assistant("a1", 2, "m1", [text_block("x")], usage={"input_tokens": 1, "output_tokens": 2}),
+        assistant("a2", 3, "m2", [text_block("y")], usage={}),
+        assistant("a3", 4, "m3", [text_block("z")]),
+    ]
+    root[3]["message"].pop("usage")
+    rows, diag = build(root)
+    calls = by(rows, observation_type="model_call")
+    assert [c["tokens_input"] for c in calls] == [1, 0, 0]
+    assert diag["absent_usage_key"] == 2 + 4 + 4 and diag["absent_usage"] == 1 and "non_int_usage" not in diag
+    _, clean = build([prompt("u1", 1, "p1", "go"), assistant("a1", 2, "m1", [text_block("x")])])
+    assert "absent_usage_key" not in clean and "absent_usage" not in clean
+
+
 def test_thinking_tokens_and_metadata_shapes() -> None:
     usage = {"input_tokens": 1, "output_tokens": 9, "output_tokens_details": {"thinking_tokens": 7}}
     rows, _ = build(
