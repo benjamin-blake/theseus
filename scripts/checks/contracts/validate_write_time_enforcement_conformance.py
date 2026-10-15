@@ -16,6 +16,7 @@ src.row_rules.rules, src.common.ducklake_control_tables and PyYAML only.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -37,12 +38,8 @@ _ENGINE_ONLY_KINDS = frozenset({"content_inline_threshold_bytes", "full_output_c
 _SUPPORTED = WAIVABLE_KINDS | PRODUCER_SIDE_KINDS | _ENGINE_ONLY_KINDS | {"representation_of", "exactly_one_of"}
 
 
-def _frozen_condition(cond: Any) -> tuple[tuple[str, tuple[Any, ...]], ...]:
+def _frozen_condition(cond: Mapping[str, Any]) -> tuple[tuple[str, tuple[Any, ...]], ...]:
     return tuple(sorted((k, tuple(sorted(v, key=str))) for k, v in dict(cond).items()))
-
-
-def _condition_params(params: dict[str, Any]) -> tuple[tuple[str, tuple[Any, ...]], ...]:
-    return _frozen_condition(params)
 
 
 def _expected_and_actual(
@@ -70,7 +67,7 @@ def _expected_and_actual(
     )
     out["pattern_when"] = (
         {
-            r.column: tuple((_condition_params(e["when"]), e["pattern"]) for e in r.params["value"])
+            r.column: tuple((_frozen_condition(e["when"]), e["pattern"]) for e in r.params["value"])
             for r in by_kind("pattern_when")
         },
         {c: tuple((_frozen_condition(w), p.pattern) for w, p in entries) for c, entries in rules.pattern_when.items()},
@@ -81,7 +78,7 @@ def _expected_and_actual(
     )
     for kind, attr in (("required_when", "required_when"), ("null_or_zero_when", "null_or_zero_when")):
         out[kind] = (
-            {r.column: _condition_params(r.params) for r in by_kind(kind)},
+            {r.column: _frozen_condition(r.params) for r in by_kind(kind)},
             {c: _frozen_condition(cond) for c, cond in getattr(rules, attr).items()},
         )
     for kind in ("not_before", "at_most", "max_after_write_seconds"):
