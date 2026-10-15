@@ -68,6 +68,18 @@ scope:
       the addresses, so there is nothing left to compare. The graduated
       tests/checks/iam_tf/test_platform_iam_bootstrap_adoption.py is untouched and must stay green
       (its parity sources live in files this plan keeps).
+  - file: tests/checks/iam_tf/test_url_only_invoke_guard.py
+    action: Modify
+    purpose: >-
+      One-line fix found by re-simulating the release on main 2606b684 (the predecessor's build, #1500,
+      merged): test_real_identity_grants_are_url_only's guarded-Sid assertion calls _named_forms with an
+      empty locals map, so it recognises only terraform/personal's aws_lambda_function references. The
+      bootstrap DailyOps copy names the functions through name-only locals (local.ducklake_*_function),
+      which grant_problems already resolves through fn_locals. Pass fn_locals to the guarded-set
+      comprehension as well, so the "DuckLakeInvokeViaUrlOnly carries Bool lambda:InvokedViaFunctionUrl"
+      superset assertion holds on the bootstrap copy once the personal copy is deleted (Decision 213 cl.1).
+      Claim-preserving: the same three Sids must still carry the condition; no other line changes. Without
+      it the release turns the graduated url-only-invoke-guard row red.
   - file: tests/test_deploy_paths_admin_procedure.py
     action: Modify
     purpose: >-
@@ -216,10 +228,11 @@ verification_plan:
     action: the guards the predecessor re-anchored on the bootstrap copy stay green with the personal copies deleted (Decision 213's per-grant condition included)
     command: bin/venv-python -m pytest tests/checks/iam_tf/test_platform_iam_bootstrap_adoption.py tests/checks/iam_tf/test_url_only_invoke_guard.py tests/checks/iam_tf/test_cloudtrail_write_grant_scoped.py tests/checks/iam_tf/test_platform_dev_data_lake_read_fence.py tests/checks/iam_tf/test_validate_agent_observability_read_coverage.py -q
     expected: >-
-      all pass. A simulated release at 1b4b0498 (without the predecessor's changes) broke exactly six
-      tests in the last four modules, each because it read a personal copy; the predecessor re-anchors
-      all four on terraform/bootstrap (test_url_only_invoke_guard over both roots, so it now finds
-      PlatformDev's DuckLakeInvokeViaUrlOnly condition only in the bootstrap copy). TestBootstrapOwnsPlatformIam
+      all pass. Re-simulated on main 2606b684 with the predecessor's build merged: deleting the personal
+      copies breaks exactly one test, test_url_only_invoke_guard.py::test_real_identity_grants_are_url_only,
+      because its guarded-Sid set ignored the bootstrap copy's name-only locals; this plan's one-line fix
+      (scope row) makes it find PlatformDev's DuckLakeInvokeViaUrlOnly condition in the bootstrap copy.
+      With the fix, 1117 personal-root and IAM tests pass and no filtered registry row changes verdict. TestBootstrapOwnsPlatformIam
       passes with platform_roles.tf reduced to removed blocks; the transitional parity module no longer exists
     fix_if: a module still reads a file this plan deleted or emptied -- that is a predecessor re-anchoring gap; stop and escalate to the planning thread (an amendment), never re-anchor it here or delete a graduated test
     hermetic: true
@@ -536,6 +549,11 @@ test_obligations:
     verification_step: 1
     test_selector: tests/checks/iam_tf/test_platform_iam_admin_root_only.py
     red_green_expectation: red before, green after
+  - source: tests/checks/iam_tf/test_url_only_invoke_guard.py
+    behavior: The url-only guard's guarded-Sid superset assertion recognises the bootstrap DailyOps copy's name-only locals, so Decision 213 cl.1 stays guarded after the personal copy is deleted.
+    verification_step: 4
+    test_selector: "tests/checks/iam_tf/test_url_only_invoke_guard.py::test_real_identity_grants_are_url_only"
+    red_green_expectation: red on the release tree without the fix (simulated on 2606b684), green with it both before and after the personal copy is deleted
   - source: config/agent/verification_registry/entries/platform-iam-admin-root-only.yaml
     behavior: The graduated guard is admitted by run_differential (it fails at origin/main, where the module does not exist) and is found new-in-diff under this plan's slug.
     verification_step: 9
@@ -604,7 +622,7 @@ constraints:
 context:
   - "Decision-scout verdict + CITE list (refresh, 2026-10-15): FLAGS_FOUND. CITE: Decision 180, 183, 177, 213, 215, 202, 126, 190, 144, 113, 101, 120, 48, 201, 181, 67. Decisions triaged: 170 of 170. Roadmap items intersected: 5; CONFLICT: 0; RELATED: 5. Sole flag: Decision 167 [NOTE] -- the routing rule against recording the relocation as blockquote_update lines; facts outside the 2026-09-25 adjudication: Decision 202 cl.6 says Decision 180 clause 6 is not re-decided, so the Update lines are the corpus's only record of the reversal. Disposition: re-adjudicated to a numbered Decision (see the Decision 167 routing line). Original 2026-09-25 scout CITE also stands: 92."
   - "gates: refresh 2026-10-15 decision-scout=FLAGS_FOUND (1 round, Decision 167 NOTE); plan-critique=PROCEED after 4 round(s); round 4 autonomous (rounds 1-3 REVISE on approved-text accuracy, each fixed; rounds 2-4 carried a full approved-text fact check). Original approval 2026-09-25: decision-scout=FLAGS_FOUND (3 rounds; every flag human-dispositioned), plan-critique=PROCEED after 4 rounds."
-  - "Approval: Benjamin, 2026-10-15 17:36Z, thread 'Refresh personal-release plan': \"perfect, write the plan. I agree with Fable\" -- covers this design and every APPROVED TEXT block in execution_steps (the numbered-Decision route); allowed variance per constraints. Correction after critique round 1 (the new Decision says trust and inline policies, since Decision 180 clause 2 gives CI four PlatformDev metadata verbs): \"approve the correction\" (Benjamin, 2026-10-15 18:09Z). Evidence: /mnt/project-files/personal-release/ (step6b-presentation.md, approved-text.md, ADVICE.md, ADVICE-decision-record.md, scout-report.md)."
+  - "Approval: Benjamin, 2026-10-15 17:36Z, thread 'Refresh personal-release plan': \"perfect, write the plan. I agree with Fable\" -- covers this design and every APPROVED TEXT block in execution_steps (the numbered-Decision route); allowed variance per constraints. Correction after critique round 1 (the new Decision says trust and inline policies, since Decision 180 clause 2 gives CI four PlatformDev metadata verbs): \"approve the correction\" (Benjamin, 2026-10-15 18:09Z). Revised wording after critique rounds 2-3 (Decision 219, scoped rule; approved-text.md items 1-6): \"approved, please proceed!\" (Benjamin, 2026-10-15 21:06Z) -- this is the text in execution_steps. Evidence: /mnt/project-files/personal-release/ (step6b-presentation.md, approved-text.md, ADVICE.md, ADVICE-decision-record.md, scout-report.md)."
   - "V3 resolution: the counts-only pre-merge gate comment posted on the PR for the current $PR_HEAD_SHA (steps 22, 11-14 and 23) substitutes for the pre-merge post-deploy evidence the implement V3 Merge Gate and the code-review V3 check require; CI applies the forget through tf-gated-apply after merge, so the behavioural acceptance (Decision 48) is steps 15-21 and 24, and its evidence is a counts-only comment on the merged PR naming $MERGE_SHA and the gated-apply run URL from step 15 (CloudWatch history ages out and is not the record); the plan is not complete until that comment exists. A plan-level instance of PLAN-admin-root-premerge-plan-gate's pre_merge_live_plan shape for a CI-applied root (that rule names this plan as a precedent but does not bind it: no admin-only root file in scope); all evidence counts-only (Decision 101)."
   - "Refresh 2026-10-15 against main 31b8996b, simulations at 1b4b0498 (approved at 7b709260): carries Decision 213 (step 4 runs the four re-anchored guard modules; step 16 adds nine URL-only simulate rows), Decision 202 (exact seven-address state matching, snapshots of every live inline and attached managed document, live detector gates 23 and 24), Decision 215 (steps 12, 19 and 20 read through the reader), the retired deprecated/cloudtrail-read-only-no-write-verbs.yaml sweep exclusion, the T4.2 criterion id (c8-c14 now exist), the terraform/CLAUDE.md budget (11416) and its ratchet, the ENVIRONMENT CHECK (22) and the V3 resolution. Approved wording now lives verbatim in execution_steps (playbook always-ask: Decision and public-surface text)."
   - "ci-rca: no open ci-rca rec at the refresh preflight (2026-10-15; rec-4320 closed via #1486). Re-check at implementation preflight."
@@ -613,7 +631,7 @@ context:
   - "The new Decision's clause 3 records the relocation FACTS only for Decision 180 reversal condition (a), without declaring it fired; rec-4049's plan adjudicates it under the Decision 167 routing rule (both 2026-09-25 critique rounds flagged that reinterpretation as a re-decision). Decisions 183 and 202 go over the 6,144-byte per-entry cap with their one-line pointers (6,649 and 6,835 B in a dry run): validate_decisions_size reports WARN-tier amendment-delta lines only; the hard cap binds new entries, and the new entry measures 6,091 B with its separator (53 B under the cap; the build re-measures; any wording change must keep it under). A dry run of the entry and pointers on 1b4b0498 passed validate_decision_entry_conformance, validate_decisions_size, validate_supersession_annotations and validate_decision_currency; the index needs regenerating."
   - "No Lambda build/deploy/smoke-test (exemption justified): compute_affected_artifacts (re-run 2026-10-15) flags docs/ROADMAP-PLATFORM.yaml only as a bundled assets[] entry of the active data-pipeline artifact, not a handler or includes code file; src/data/handlers/scheduled_agent_handler.py reads it at runtime, but scheduled agents are disabled (T4.12) and one added open criterion changes no behaviour. Every other scope file is outside every Lambda manifest pattern."
   - "platform_roles.tf is kept as the removed-block file: deleting it would orphan the terraform/personal/platform_roles.tf key in config/structural_size_budgets.yaml, which structural-registry-section-scoped-extraction asserts, and re-anchoring that shard in place would be rejected as tautological by run_differential."
-  - "Hand-off contract with the predecessor: no file it creates names a terraform/personal/platform_*_policies.tf path (its constraint); it re-anchors every deletion-sensitive guard (url-only invoke over both roots, CloudTrail grant scope, DEP-13 fence, observability read coverage, four registry shards) and anchors TestBootstrapOwnsPlatformIam's parity sources on files this plan keeps. A simulated release at 1b4b0498 (personal files deleted, platform_roles.tf reduced to removed blocks) broke 6 of 1062 tests and 6 of 398 filtered registry shards, all in those re-anchored surfaces. Decision 113 gets a one-line location pointer to the new Decision; rec-4043 still owes it the two-principal amendment."
+  - "Hand-off contract with the predecessor: no file it creates names a terraform/personal/platform_*_policies.tf path (its constraint); it re-anchors every deletion-sensitive guard (url-only invoke over both roots, CloudTrail grant scope, DEP-13 fence, observability read coverage, four registry shards) and anchors TestBootstrapOwnsPlatformIam's parity sources on files this plan keeps. A simulated release at 1b4b0498 (personal files deleted, platform_roles.tf reduced to removed blocks) broke 6 of 1062 tests and 6 of 398 filtered registry shards, all in those re-anchored surfaces; re-simulated after the predecessor's build merged (2606b684), only test_url_only_invoke_guard's guarded-set line remained (the build used name-only locals), fixed in this plan's scope. Decision 113 gets a one-line location pointer to the new Decision; rec-4043 still owes it the two-principal amendment."
   - "deploy-paths.yaml and tests/test_deploy_paths_admin_procedure.py are co-edited by the predecessor (self-access isolation step) and PLAN-admin-root-premerge-plan-gate (merged #1494, d5f723e2: pre_merge_live_plan, TestPreMergeLivePlan). Its test_an_amendment_log_entry_names_the_key asserts the pre_merge_live_plan entry is PRESENT (amendment #1492), so this plan prepends its own entry newest-first; never edit that test."
   - "After the forget, the two roles leave the hourly config-vs-live drift plan; detection rests on the Decision 202 detector (gates 23 and 24) until rec-3358's scheduled bootstrap plan lands (itself gated on rec-4043)."
   - "Seven open recs name the deleted or emptied personal files as file and in their acceptance greps (rec-4043, rec-2768, rec-3947, rec-3948, rec-2912, rec-2696, rec-2290; several were already stale since the 2026-09-13 split); rec-4343 owns re-pointing them, so this PR stays on the relocation (Decision 59 LOCATION)."
@@ -635,6 +653,7 @@ execution_steps:
   - Delete terraform/personal/platform_dev_policies.tf, platform_admin_policies.tf and platform_admin_data_policies.tf
   - Create tests/checks/iam_tf/test_platform_iam_admin_root_only.py with its red cases (including attachments and *_exclusive resources) and graduate it as platform-iam-admin-root-only
   - Delete the transitional tests/checks/iam_tf/test_platform_iam_dual_copy_parity.py module
+  - "Modify tests/checks/iam_tf/test_url_only_invoke_guard.py, one line: in test_real_identity_grants_are_url_only the guarded-set comprehension calls _named_forms(s[\"resources\"], fn_locals) instead of _named_forms(s[\"resources\"], {})"
   - "APPROVED TEXT FOLLOWS (land verbatim; allowed variance only as constraints state). docs/contracts/deploy-paths.yaml -- replace the whole SPLIT-APPLY list item under admin_out_of_band.procedure.steps with: |
       - >-
         SPLIT-APPLY (PLAN-dispatch-gated-apply-unlatch, Decision 183): PlatformDev, PlatformAdmin
