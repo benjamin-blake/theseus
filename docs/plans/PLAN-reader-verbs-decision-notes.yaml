@@ -108,7 +108,8 @@ verification_plan:
     (rec-4292) re-pins it to production, which is recorded in the report, not a failure.
   fix_if: >-
     unavailable means no credentials or a reader error: confirm `aws sts get-caller-identity --profile agent_platform`
-    and retry once; unpopulated or a red build-side step 15 is the build thread's to fix. Never land the 215 note
+    and retry once only after restoring credentials, recording the restoration (a green retry with nothing changed is
+    NONDETERMINISTIC under VF-08, not a pass); unpopulated or a red build-side step 15 is the build thread's to fix. Never land the 215 note
     while the gauge is not live. A catalog other than ducklake_smoke before slice 2c has merged is a build defect to
     report, not a pass.
   hermetic: false
@@ -227,9 +228,10 @@ verification_plan:
     test -s "$CI_JOBS_JSON" && test -s "$AUTOCLOSE_JOBS_JSON" && bin/venv-python -c "import json,os;L=lambda e:(lambda j:{x['name']:x.get('conclusion') for x in (j.get('jobs') if isinstance(j,dict) else j)})(json.load(open(os.environ[e])));c=L('CI_JOBS_JSON');a=L('AUTOCLOSE_JOBS_JSON');print(c,a);assert all(any(n.startswith(w) and v=='success' for n,v in c.items()) for w in ('trailer-census','trailer-acceptance-evaluate','trailer-closure')),c;assert a and all(v=='success' for v in a.values()),a;from src.common.ducklake_reader_client import make_reader,fetch_recs_by_ids;r,m=fetch_recs_by_ids(make_reader(profile='agent_platform'),['rec-4324']);assert not m and r[0]['status']=='closed',(m,r and r[0]['status']);print('REC_4324_CLOSED')"
   expected: The three trailer jobs and every rec-autoclose job concluded success, then REC_4324_CLOSED.
   fix_if: >-
-    rec-4324 still open: read the trailer-closure (and trailer-acceptance-evaluate) job log for its refusal reason,
-    check the squash body carries `Resolves: rec-4324` and that the acceptance held at the merge commit; report it
-    rather than closing by hand. A red backfill run is its own failure to report.
+    rec-4324 still open: read the trailer-closure (and trailer-acceptance-evaluate) job log for its refusal reason and
+    check the squash body carries `Resolves: rec-4324`. After a transport failure or merge-leg refusal, use the manual
+    update_rec fallback git-ops.yaml resolves_trailer sanctions; after an acceptance-verdict refusal never close by
+    hand: use the printed close_proposed command and report it. A red backfill run is its own failure to report.
   hermetic: false
 - step: 10
   phase: post-deploy
@@ -301,7 +303,7 @@ context:
   per-derivation single-partition bound verbatim; the ~3-clarification cap reads per clause; expect the 199 accretion
   WARN) and SPIRIT 86 NOTE (no day count in the 199 text): both resolved in the approved text. RELATED 84, 88, 93, 81,
   167, 150, 178, 201, 179, 160. Decisions triaged: 170 of 170. Roadmap items intersected: 3; CONFLICT: 0; RELATED: 3.
-- 'gates: decision-scout=FLAGS_FOUND (2 notes, resolved); plan-critique=REVISE r1 (R1-R5 fixed), REVISE r2 (R1 deploy-run binding, R2 test-node fidelity fixed; S1-S5 folded in), REVISE r3 (R1 rec-4024 prepend and anchor check fixed; S1-S3, N1, N2 folded in), confirming round pending'
+- 'gates: decision-scout=FLAGS_FOUND (2 notes, resolved); plan-critique=REVISE r1 (R1-R5 fixed), REVISE r2 (R1 deploy-run binding, R2 test-node fidelity fixed; S1-S5 folded in), REVISE r3 (R1 rec-4024 prepend and anchor check fixed; S1-S3, N1, N2 folded in), r4 confirming REVISE (R1 Decision 177 rollback fixed; S1-S3 folded in), escalated with one more round recommended'
 - >-
   Direction (Benjamin, cmsg_012XgaFy8VaDQbxP5D8nC9587zPkCFdx5BwFoNH9FbvcLU): add the 199 note, which revisits his
   2026-10-05 W3-1 choice (contract note only, PLAN-telemetry-lifecycle-friction-amendment) because the decision scout
@@ -349,16 +351,16 @@ execution_steps:
   check_spec.command [bin/venv-python, -c, <step 4's Python program verbatim>], plan_slug reader-verbs-decision-notes,
   graduated_at the landing date, graduated_by implement-agent (shape: decision-215-residuals-repointed.yaml).
 - >-
-  Follow the implement skill's pre-handoff steps and Commit Flow, in this order: github_readiness; the
-  test_coverage_checker diagnostic (expected to report nothing, since no source file is in scope); set
-  implementation_declared true in this plan; `--pre`; postflight evidence; commit; `git fetch origin main` and
-  `git rebase origin/main`; VP steps 4-7 on the rebased tree (step 5 diffs against origin/main, so it runs after the
-  rebase); VP step 8 (full tier, then --verify-head) on the committed clean tree; push as its own tool call; open the PR
-  (On The Loop in prose). Any fix commit or re-rebase restarts from the rebase. On an unrecoverable failure stop and
-  RCA (Decision 55).
+  Run VP steps 4-7 on the working tree, then the implement skill's code review (its Workflow Step 5) on the diff.
+  Then follow its Commit Flow in order: github_readiness; the test_coverage_checker diagnostic (expected to report
+  nothing, since no source file is in scope); set implementation_declared true in this plan; `--pre`; postflight
+  evidence; commit; `git fetch origin main` and `git rebase origin/main`; VP steps 4-7 again on the rebased tree (step 5
+  diffs against origin/main); VP step 8 (full tier, then --verify-head) on the committed clean tree; push as its own
+  tool call; open the PR (On The Loop in prose). Any fix commit or re-rebase restarts from the rebase. On an
+  unrecoverable failure stop and RCA (Decision 55).
 - >-
-  Code review; on PROCEED and green CI, re-run VP step 1, then squash-merge with `Resolves: rec-4324` in the body.
-  Then run VP steps 9 and 10 (step 10 after execution step 7's note).
+  On code review PROCEED and green CI, re-run VP steps 1 and 5, then squash-merge with `Resolves: rec-4324` in the
+  body. Then run VP steps 9 and 10 (step 10 after execution step 7's note).
 - >-
   If rec-4024 is still open after the merge, add a dated note so the rec agrees with the 207 note (Decision 181
   cl.2): call get_rec_write_guidance first, fetch rec-4024 with recs_by_ids immediately before the write, and write
@@ -371,5 +373,9 @@ execution_steps:
   size WARN line and its margin to the 1.2x line, review verdict, the push and PR outcome, and rec-4324's status,
   each reported separately.
 rollback: >-
-  Revert the squash commit; the notes and the registry row leave together. rec-4324 reopens by update_rec if the revert
-  lands after the trailer-closure job closed it.
+  Pre-merge: close the PR. Post-merge: never revert or delete the three Decision notes (Decision 177 append-only;
+  precedent PLAN-scale-readiness-concurrency-commitments, PLAN-telemetry-owner-provisioning). A wrong note is corrected
+  by a further dated `> **Update (` note carrying Benjamin's word (Decision text is always-ask); the graduated registry
+  row stays because the note lines stay. rec-4024's prepended note is corrected the same way, by a further dated note
+  through update_rec, never by stripping it. rec-4324 reopens by update_rec only if a correction withdraws a note it
+  claims.
