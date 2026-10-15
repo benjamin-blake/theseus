@@ -27,26 +27,30 @@ scope:
       variable defaults. Exact text: execution_steps step 2.
   - file: terraform/github/variables.tf
     action: Modify
-    purpose: Append variable main_protection_ruleset_id (number, default the live ruleset id). Exact text in execution_steps step 3.
+    purpose: >-
+      Append variable main_protection_ruleset_id (number, default the live ruleset id), and in
+      gated_apply_reviewer_user_ids' description replace the `gh api /user --jq .id` hint the runbook no longer uses.
+      Exact text in execution_steps step 3. No plan diff (descriptions and a new defaulted variable only).
   - file: terraform/github/CLAUDE.md
     action: Modify
     purpose: >-
       Build PR: the approved wording (execution_steps step 4) -- CloudShell as the by-hand venue, the corrected AWS
-      prerequisite, TF_VAR_github_token and curl in the runbook, the duplicated NEVER paragraph removed for the
-      5253-byte prose budget, and a State reconcile section replacing First-time import (rec-3136's acceptance).
+      prerequisite, TF_VAR_github_token, --region and curl in the runbook, the duplicated NEVER paragraph removed for
+      the 5253-byte prose budget, and a State reconcile section replacing First-time import (rec-3136's acceptance).
       Closure PR: the approved dated result line (execution_steps step 11).
   - file: tests/checks/iam_tf/test_terraform_github_import_blocks.py
     action: Create
     purpose: >-
       Static guard over the real terraform/github tree (behaviour in execution_steps step 5): every managed resource has
-      exactly one import block, every id derives from var.repository_name, no literal owner or repository name, the
-      ruleset id comes from a declared number variable; each predicate has its own red case on synthetic HCL.
+      exactly one import block unless named in an explicit exemption set (empty today), each id is the exact expected
+      expression for its resource type, no literal owner or repository name, the ruleset id comes from a declared number
+      variable; each predicate has its own red case on synthetic HCL.
   - file: config/agent/verification_registry/entries/terraform-github-import-blocks.yaml
     action: Create
     purpose: >-
       Graduation record for VP step 1 (filename == check_id == graduation_check_id): primitive_slot test_selector,
       guard_target terraform/github/imports.tf, guard_symbol null, plan_slug terraform-github-state-reconcile,
-      graduated_by implement-agent, check_spec.node_id
+      graduated_at the implementation date, graduated_by implement-agent, check_spec.node_id
       tests/checks/iam_tf/test_terraform_github_import_blocks.py::TestTerraformGithubImportBlocks.
   - file: docs/contracts/github-org-transfer.yaml
     action: Modify
@@ -61,13 +65,13 @@ followon_recs:
 infrastructure_dependencies:
   - >-
     rec-4335's two plans (PLAN-terraform-github-plan-state-grant, then PLAN-terraform-github-pr-plan): the planner's
-    GetObject on tfstate/github/terraform.tfstate is applied, and the PR-time plan job (provisionally
-    .github/workflows/terraform-github-plan.yml) runs on same-repo PRs touching terraform/github/**, can be re-run on
-    the same head, and reports "TF_GITHUB_PLAN_REPORT verdict= import= add= change= destroy= replace= gated= drift=
-    conflict= exit=" plus a VISIBILITY line. Order A (expected): the workflow PR's first run is clean (about five
-    in-place updates) and merges; this build starts after it. Order B: that first run fails, or shows destroy or
-    replace only on the five old-keyed resources; the workflow PR stays open, the coordinator starts this build, and
-    the workflow PR's runs are E0 and (re-run) E2.
+    GetObject on tfstate/github/terraform.tfstate is applied, and the PR-time plan job
+    (.github/workflows/terraform-github-plan.yml) runs on same-repo PRs touching terraform/github/**, can be re-run, and
+    reports "TF_GITHUB_PLAN_REPORT verdict= import= add= change= destroy= replace= gated= drift= conflict= exit=" (raw
+    counts: a visibility-gated row also counts in change) plus "VISIBILITY: security_and_analysis= ruleset_bypass_actors=".
+    Order A (expected): the workflow PR's first run is clean (about five in-place updates) and merges; this build starts
+    after it. Order B: that first run fails, or shows destroy or replace only on the five old-keyed resources; the
+    workflow PR stays open, the coordinator starts this build, and the workflow PR's runs give E0 and E2.
   - >-
     The terraform/github state object (S3 agent-platform-data-lake, key tfstate/github/terraform.tfstate, versioning
     Enabled, use_lockfile) is written only by the operator's CloudShell paste A (state rm) and paste B (import apply),
@@ -83,27 +87,30 @@ infrastructure_dependencies:
   - 'No GitHub-side write: an import-only apply issues GitHub reads only; the only write is the S3 state object.'
 acceptance_criteria:
   - >-
-    terraform/github/imports.tf holds exactly one import block per managed resource in terraform/github, every id is
-    derived from var.repository_name (the ruleset id also from var.main_protection_ruleset_id), and no import id
-    carries a literal owner or repository name; the static test passes on the real tree and fails on each synthetic
-    red case.
+    terraform/github/imports.tf holds exactly one import block per managed resource in terraform/github (none exempt
+    today), each id is the exact expected expression for its resource type, and no import id carries a literal owner
+    or repository name; the static test passes on the real tree and fails on each synthetic red case.
   - >-
     terraform/github/CLAUDE.md carries the approved wording exactly, rec-3136's acceptance holds (it contains
     'state rm github_repository.this' and 'reconcil'), and the file stays within its config/prose_budgets.yaml budget.
   - >-
-    E0, before the reconcile: the PR-time terraform/github plan on the build PR reads import=0 add=0 change=5
-    destroy=0 replace=0, and the five changed addresses are exactly the five name-keyed resources.
+    E0, before the reconcile. Order A: the PR-time plan on the build PR reads import=0 add=0 change=5 destroy=0
+    replace=0 and the five changed addresses are exactly the five name-keyed resources. Order B: the workflow PR's
+    first run (failed, or with destroy or replace) names no address outside the five.
   - >-
-    The operator's applied plan was import-only: Apply complete with 5 imported, 0 added, 0 changed, 0 destroyed, and
-    the CloudShell re-plan exits 0 (No changes).
+    Before any shared-state change, paste 0's dry run on a local copy of the state reads 5 to import, 0 to add, 0 to
+    change, 0 to destroy; the operator's applied plan was import-only (Apply complete with 5 imported, 0 added, 0
+    changed, 0 destroyed) and the CloudShell re-plan exits 0 (No changes).
   - >-
     After the reconcile, the live S3 state keys all five instances on theseus with no agent-platform string left in
-    them, and a re-run of the PR-time plan (E2) reads import=0 add=0 change=0 destroy=0 replace=0, with gated at most
-    1 and only when its VISIBILITY line reports ruleset_bypass_actors hidden.
+    them, and a fresh PR-time plan run (E2) reads import=0 add=0 destroy=0 replace=0 conflict=0 and either change=0
+    gated=0 (verdict NO_CHANGES) or change=1 gated=1 (verdict VISIBILITY_GATED_ONLY) with ruleset_bypass_actors=hidden.
   - >-
     The closure PR lands the approved evidence_ledger rows, rec pointer, amendment_log row and dated CLAUDE.md line;
     rec-3136 is closed and its acceptance holds at the closing sha (Decision 201).
-  - No account id, ARN, secret name or value, e-mail address, token or ExternalId appears in any changed file, PR body or PR comment (Decision 101).
+  - >-
+    No account id, ARN, secret name or value, e-mail address, token or ExternalId appears in any changed file, PR body or
+    the evidence comment (Decision 101; VP steps 4, 14 and 15).
 verification_plan:
   - step: 1
     phase: pre-deploy
@@ -113,9 +120,11 @@ verification_plan:
     expected_literals:
       - passed
     fix_if: >-
-      A real-tree failure names the predicate: a resource without an import block, an import id with a literal name,
-      or a missing or non-number ruleset variable -- fix imports.tf or variables.tf to the execution_steps text. A red
-      case passing means the predicate is vacuous; fix the test.
+      A real-tree failure names the predicate: a resource without an import block (add one, or, only for a resource
+      whose remote object does not exist yet, list it in the test's exemption set with a reason), an id that differs
+      from its type's expected expression, a literal name, or a missing or non-number ruleset variable -- fix
+      imports.tf or variables.tf to the execution_steps text. A red case passing means the predicate is vacuous; fix
+      the test.
     hermetic: true
     graduation: graduate
     graduation_check_id: terraform-github-import-blocks
@@ -136,13 +145,13 @@ verification_plan:
       wording the post-transfer literal sweep (rec-3903) must later rewrite.
   - step: 3
     phase: pre-deploy
-    action: The CLAUDE.md change is exactly the approved diff (added and removed lines), nothing more.
+    action: The build PR's CLAUDE.md change is exactly the approved diff (added and removed lines), nothing more.
     command: >-
       bin/venv-python -c "import subprocess,yaml; p=yaml.safe_load(open('docs/plans/PLAN-terraform-github-state-reconcile.yaml',encoding='utf-8'));
       want=p['execution_steps'][3].split(chr(10)*2,1)[1]; pick=lambda d: [l for l in d.splitlines() if l.startswith(('+','-')) and not l.startswith(('+++','---'))];
       got=subprocess.run(['git','diff','origin/main','--','terraform/github/CLAUDE.md'],capture_output=True,text=True,check=True).stdout;
       assert pick(want)==pick(got), 'CLAUDE.md differs from the approved diff'; print('CLAUDE_MD_APPROVED', len(pick(got)))"
-    expected: Prints CLAUDE_MD_APPROVED followed by the changed-line count.
+    expected: Prints CLAUDE_MD_APPROVED followed by the changed-line count (build PR only; the closure PR adds one line).
     fix_if: >-
       Any difference is an unapproved wording change: restore the approved text. If main changed the same lines since
       planning, stop and escalate to the planning thread through the coordinator; never re-word to fit.
@@ -160,7 +169,10 @@ verification_plan:
       | grep '^+' | grep -Eq '[0-9]{12}|arn:aws|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[a-z]{2,}|ghp_|github_pat_|ExternalId|secret-id [a-z]'
     expected: Exit 0 (no match).
     expected_literals: []
-    fix_if: A match is a Decision 101 breach (or a real PAT secret name where the runbook keeps a placeholder); remove it.
+    fix_if: >-
+      A match is a Decision 101 breach (or a real PAT secret name where the runbook keeps a placeholder); remove it.
+      Evidence links are workflow-run URLs (/actions/runs/N, 11 digits today), never job URLs; if a run id ever reaches
+      12 digits, cite the run by its PR comment link instead.
     hermetic: true
     graduation: waive
     graduation_waiver_reason: The never-commit hook and secret scanning are the standing guards; this is the plan's one-time diff sweep.
@@ -177,8 +189,8 @@ verification_plan:
     phase: pre-deploy
     action: >-
       E0 drift evidence. Order A: the PR-time plan run on this build PR's head. Fetch its job log with
-      mcp__github__get_job_logs into $E0_LOG and its PR comment body with mcp__github__pull_request_read (get_comments)
-      into $E0_COMMENT, then check. Order B: see fix_if.
+      mcp__github__get_job_logs into $E0_LOG and its report comment body with mcp__github__pull_request_read
+      (get_comments) into $E0_COMMENT, then check. Order B: see fix_if.
     command: >-
       grep -o 'TF_GITHUB_PLAN_REPORT [A-Za-z0-9=_. -]*' "$E0_LOG" | tail -1 | grep -E 'import=0 add=0 change=5 destroy=0 replace=0'
       && for a in github_repository.this github_repository_ruleset.main_protection github_actions_repository_permissions.this
@@ -186,91 +198,100 @@ verification_plan:
       && echo E0_OK
     expected: >-
       The report line reads import=0 add=0 change=5 destroy=0 replace=0 and all five addresses are listed as updates:
-      github_repository.this on name, the other four on repository (bypass_actors may also be listed on the ruleset only
-      when the VISIBILITY line says ruleset_bypass_actors hidden; computed attributes shown as known after apply are
-      fine). Then E0_OK. Post the counts, head sha and run URL on the PR (counts only).
+      github_repository.this on name, the other four on repository (bypass_actors may also be listed on the ruleset
+      only when the VISIBILITY line says ruleset_bypass_actors=hidden; computed attributes shown as known after apply
+      are fine). Then E0_OK. Post the counts, head sha and the workflow-run URL on the PR (counts only).
     fix_if: >-
       Any other count or address, or any other changed argument, is pre-existing drift: STOP, do not merge, and escalate
       to the planning thread through the coordinator; config is reconciled to live by a plan amendment, never by an
-      apply. If the job did not run on this PR, or rec-4335 merged a different report format, escalate the same way (a
-      format difference is not a count difference). Order B (the coordinator relays it): E0 is instead the workflow
-      PR's first run, which may have failed or shown destroy or replace; accept it only if every address it names is
-      one of the five, record its counts or error class and run URL on this PR, and skip this command.
+      apply. If the job did not run on this PR, escalate the same way. Order B (the coordinator relays it): E0 is the
+      workflow PR's first run, which may have failed or shown destroy or replace; accept it only if every address it
+      names is one of the five, record its counts (or BASELINE_PLAN_FAILED if it failed) and run URL on this PR, set
+      E0_COUNTS for step 9 in the paste format (COUNTS import=I add=A change=C destroy=D, a replace counted in both add
+      and destroy), and skip this command.
     hermetic: false
     graduation: not-applicable
   - step: 7
     phase: pre-deploy
-    action: Full presubmit tier, per handoff_policy.
-    command: bin/venv-python -m scripts.validate
+    action: Full tier, then HEAD attestation, before each commit and push of each PR (build and closure; handoff_policy).
+    command: bin/venv-python -m scripts.validate && bin/venv-python -m scripts.checks.validation_result --verify-head
     expected: >-
-      Exit 0. Run it in the background with a timeout of at least 30 minutes; a timeout is a block, never a pass.
-    fix_if: Fix the named check's finding in the changed files only.
+      The full tier exits 0 and the validation result attests the current HEAD's tree. Run it in the background with a
+      timeout of at least 30 minutes; a timeout is a block, never a pass.
+    fix_if: Fix the named check's finding in the changed files only and rerun from the start; never push on a partial or timed-out run.
     hermetic: false
     graduation: waive
-    graduation_waiver_reason: scripts.validate is the aggregate presubmit entrypoint; graduating it would recurse the harness.
+    graduation_waiver_reason: The full tier cannot graduate (recursion refusal) and depends on the whole tree at HEAD; it is the handoff gate.
   - step: 8
     phase: post-deploy
     action: >-
       ADMIN, read-only -- preconditions for the live walk and the rollback point. MERGE_SHA is the build PR's
-      squash-merge sha.
+      squash-merge sha. If the first command prints nothing (no ADMIN chain), hand steps 8 and 12 to an ADMIN session and
+      wait.
     command: >-
-      R="${TMPDIR:-/tmp}/tfgithub-reconcile" && mkdir -p "$R" && test -n "$MERGE_SHA" && git fetch -q origin main
-      && git merge-base --is-ancestor "$MERGE_SHA" origin/main
+      aws sts get-caller-identity --profile agent_platform_admin --query Arn --output text 2>/dev/null | grep -q 'assumed-role/PlatformAdmin/'
+      && echo ADMIN_CHAIN_OK && R="${TMPDIR:-/tmp}/tfgithub-reconcile" && mkdir -p "$R" && test -n "$MERGE_SHA"
+      && git fetch -q origin main && git merge-base --is-ancestor "$MERGE_SHA" origin/main
       && ! aws s3api head-object --bucket agent-platform-data-lake --key tfstate/github/terraform.tfstate.tflock --profile agent_platform_admin >/dev/null 2>&1
       && aws s3api head-object --bucket agent-platform-data-lake --key tfstate/github/terraform.tfstate --profile agent_platform_admin --query VersionId --output text > "$R/rollback-version"
       && test -s "$R/rollback-version"
-      && aws s3 cp s3://agent-platform-data-lake/tfstate/github/terraform.tfstate - --profile agent_platform_admin --only-show-errors
-      | bin/venv-python -c "import json,sys; w=sys.argv[1]; s=json.load(sys.stdin); K={('github_repository','this'):'name',('github_repository_ruleset','main_protection'):'repository',('github_actions_repository_permissions','this'):'repository',('github_workflow_repository_permissions','this'):'repository',('github_repository_environment','tf_gated_apply'):'repository'}; I={('github_repository','this'):w,('github_actions_repository_permissions','this'):w,('github_workflow_repository_permissions','this'):w,('github_repository_environment','tf_gated_apply'):w+':tf-gated-apply'}; F={(r['type'],r['name']):r['instances'][0]['attributes'] for r in s.get('resources',[]) if r.get('mode')=='managed' and (r['type'],r['name']) in K}; ok=[k for k,a in F.items() if a.get(K[k])==w and a.get('id')==I.get(k,a.get('id'))]; st=w!='agent-platform' and any('agent-platform' in json.dumps(a) for a in F.values()); print('STATE_KEYED',w,'count=%d'%len(ok),'resources=%d'%len(F),'stale' if st else 'clean'); assert len(ok)==5 and len(F)==5 and not st" agent-platform
+      && aws s3 cp s3://agent-platform-data-lake/tfstate/github/terraform.tfstate "$R/state-before.json" --profile agent_platform_admin --only-show-errors
+      && bin/venv-python -c "import json,sys; w=sys.argv[1]; s=json.load(sys.stdin); K={('github_repository','this'):'name',('github_repository_ruleset','main_protection'):'repository',('github_actions_repository_permissions','this'):'repository',('github_workflow_repository_permissions','this'):'repository',('github_repository_environment','tf_gated_apply'):'repository'}; I={('github_repository','this'):w,('github_actions_repository_permissions','this'):w,('github_workflow_repository_permissions','this'):w,('github_repository_environment','tf_gated_apply'):w+':tf-gated-apply'}; F={(r['type'],r['name']):r['instances'][0]['attributes'] for r in s.get('resources',[]) if r.get('mode')=='managed' and (r['type'],r['name']) in K}; ok=[k for k,a in F.items() if a.get(K[k])==w and a.get('id')==I.get(k,a.get('id'))]; st=w!='agent-platform' and any('agent-platform' in json.dumps(a) for a in F.values()); print('STATE_KEYED',w,'count=%d'%len(ok),'resources=%d'%len(F),'stale' if st else 'clean'); assert len(ok)==5 and len(F)==5 and not st" agent-platform < "$R/state-before.json"
+      && git show origin/main:terraform/github/variables.tf > "$R/variables.tf"
+      && bin/venv-python -c "import json,re,sys; s=json.load(open(sys.argv[1])); rid=[r['instances'][0]['attributes']['id'] for r in s['resources'] if r.get('mode')=='managed' and r['type']=='github_repository_ruleset'][0]; d=re.search(r'main_protection_ruleset_id.*?default\s*=\s*(\d+)', open(sys.argv[2]).read(), re.S).group(1); assert rid==d, 'ruleset id in state differs from the variable default'; print('RULESET_ID_MATCH')" "$R/state-before.json" "$R/variables.tf"
     expected: >-
-      Prints STATE_KEYED agent-platform count=5 resources=5 clean: the merge is on main, no lock object exists, the current
-      state version is saved as the rollback point (never printed or posted), and the state is still in the
-      pre-reconcile shape.
+      Prints ADMIN_CHAIN_OK, STATE_KEYED agent-platform count=5 resources=5 clean, and RULESET_ID_MATCH: the merge is on
+      main, no lock object exists, the current state version is saved as the rollback point (never printed or posted),
+      the state is still in the pre-reconcile shape, and the ruleset import id the variable will produce matches the
+      live ruleset.
     fix_if: >-
-      A lock object: someone is mid-operation; wait and ask the operator. count below 5: the state changed since E0;
-      stop and RCA before any paste. Any AWS error: check the ADMIN chain (aws sts get-caller-identity --profile
-      agent_platform_admin), never switch to the PlatformDev profile.
+      No ADMIN_CHAIN_OK: run steps 8 and 12 from an ADMIN session, never with the PlatformDev profile. A lock object:
+      someone is mid-operation; wait and ask the operator. count below 5: the state changed since E0; stop and RCA
+      before any paste. RULESET_ID_MATCH fails: the ruleset was recreated; escalate for a plan amendment of the default.
   - step: 9
     phase: post-deploy
     action: >-
-      OPERATOR, AWS CloudShell, read-only -- paste 0 (readiness and baseline). The agent fills MERGE_SHA, the operator
-      fills PAT_SECRET_ID; the exact text is execution_steps step 8.
+      OPERATOR, AWS CloudShell, read-only for shared state -- paste 0 (readiness, baseline, and a dry run of the state
+      rm and import plan on a local copy of the state). The agent fills MERGE_SHA, the operator fills PAT_SECRET_ID;
+      the exact text is execution_steps step 8. The agent saves the operator's reported lines into $PASTE0_REPORT.
     command: >-
-      printf '%s\n' "$PASTE0_REPORT" | grep -cxE 'TERRAFORM_OK|PAT_ADMIN_VISIBLE|INIT_OK|COUNTS import=0 add=0 change=5 destroy=0|BASELINE_PLAN_FAILED'
-      | grep -qx 4 && echo PASTE0_OK
+      printf '%s\n' "$PASTE0_REPORT" | grep -cxE 'TERRAFORM_OK|PAT_ADMIN_VISIBLE|INIT_OK|DRYRUN_IMPORT_ONLY' | grep -qx 4
+      && printf '%s\n' "$PASTE0_REPORT" | grep -qxF "${E0_COUNTS:-COUNTS import=0 add=0 change=5 destroy=0}" && echo PASTE0_OK
     expected: >-
-      The operator reports four lines: TERRAFORM_OK, PAT_ADMIN_VISIBLE, INIT_OK and a baseline matching E0 -- COUNTS
-      import=0 add=0 change=5 destroy=0 in Order A, or, only in Order B when E0 itself failed, BASELINE_PLAN_FAILED.
-      Nothing is written anywhere (plan -lock=false, the plan file is deleted in the paste).
+      PASTE0_OK: the operator reported TERRAFORM_OK, PAT_ADMIN_VISIBLE, INIT_OK, a baseline line equal to E0 (COUNTS
+      import=0 add=0 change=5 destroy=0 in Order A; E0's counts or BASELINE_PLAN_FAILED in Order B) and
+      DRYRUN_IMPORT_ONLY. Nothing shared is written (plan -lock=false; the dry run uses a local copy).
     fix_if: >-
       Checksum mismatch: stop, do not run the binary. PAT_ADMIN_VISIBLE missing: the PAT is invalid or lacks admin;
       a new admin PAT is an always-ask credential mint, park it and wait. AccessDenied: the console identity cannot read
-      the secret or the state; the operator chooses another identity (any IAM grant is always-ask). COUNTS different
-      from E0: stop and escalate; never continue to paste A.
+      the secret or the state; the operator chooses another identity (any IAM grant is always-ask). Baseline different
+      from E0, or no DRYRUN_IMPORT_ONLY: stop and escalate; never continue to paste A.
   - step: 10
     phase: post-deploy
     action: >-
       OPERATOR, AWS CloudShell, state mutation -- paste A (backup, state rm of the five, saved plan asserted
-      import-only). Exact text: execution_steps step 9. The operator runs it only after steps 8 and 9 passed.
+      import-only). Exact text: execution_steps step 9. Run only after steps 8 and 9 passed. The agent saves the
+      reported lines into $PASTEA_REPORT.
     command: >-
       printf '%s\n' "$PASTEA_REPORT" | grep -cxE 'BACKUP_OK|COUNTS import=5 add=0 change=0 destroy=0|PLAN_IMPORT_ONLY'
       | grep -qx 3 && echo PASTEA_OK
     expected: >-
-      The operator reports BACKUP_OK, Successfully removed 5 resource instance(s), COUNTS import=5 add=0 change=0
-      destroy=0, PLAN_IMPORT_ONLY, and five "will be imported" address lines -- and stops there to review.
+      PASTEA_OK: the operator reported BACKUP_OK, Successfully removed 5 resource instance(s), COUNTS import=5 add=0
+      change=0 destroy=0, PLAN_IMPORT_ONLY and five "will be imported" address lines, and stopped there to review.
     fix_if: >-
-      No PLAN_IMPORT_ONLY: do NOT run paste B. Run paste R (execution_steps step 10) or, on the operator's word on the
-      exact command, the agent's S3 version restore (rollback field); confirm with step 8's check (agent-platform);
-      then escalate.
+      No PLAN_IMPORT_ONLY (or the paste stopped early): do NOT run paste B. Run paste R (execution_steps step 10) or, on
+      the operator's word on the exact command, the agent's S3 version restore (rollback field); confirm with step 8's
+      shape check (agent-platform); then escalate.
   - step: 11
     phase: post-deploy
     action: >-
       OPERATOR, AWS CloudShell, state mutation -- paste B (apply exactly the reviewed saved plan, then re-plan). Exact
-      text: execution_steps step 9's second block. Run only after reviewing paste A's output.
+      text: the second block of execution_steps step 9. Run only after reviewing paste A's output. The agent saves the
+      reported lines into $PASTEB_REPORT.
     command: >-
       printf '%s\n' "$PASTEB_REPORT" | grep -qF 'Resources: 5 imported, 0 added, 0 changed, 0 destroyed.'
       && printf '%s\n' "$PASTEB_REPORT" | grep -qx 'POST_PLAN_EXIT=0' && echo PASTEB_OK
-    expected: >-
-      The operator reports Apply complete! Resources: 5 imported, 0 added, 0 changed, 0 destroyed. and POST_PLAN_EXIT=0.
+    expected: PASTEB_OK -- Apply complete! Resources 5 imported, 0 added, 0 changed, 0 destroyed, and POST_PLAN_EXIT=0.
     fix_if: >-
       An apply error: stop; state may hold some of the five. Run step 12's check against theseus and against
       agent-platform to see which, restore the rollback version on the operator's word if mixed, and RCA (Decision 55);
@@ -282,8 +303,8 @@ verification_plan:
       aws s3 cp s3://agent-platform-data-lake/tfstate/github/terraform.tfstate - --profile agent_platform_admin --only-show-errors
       | bin/venv-python -c "import json,sys; w=sys.argv[1]; s=json.load(sys.stdin); K={('github_repository','this'):'name',('github_repository_ruleset','main_protection'):'repository',('github_actions_repository_permissions','this'):'repository',('github_workflow_repository_permissions','this'):'repository',('github_repository_environment','tf_gated_apply'):'repository'}; I={('github_repository','this'):w,('github_actions_repository_permissions','this'):w,('github_workflow_repository_permissions','this'):w,('github_repository_environment','tf_gated_apply'):w+':tf-gated-apply'}; F={(r['type'],r['name']):r['instances'][0]['attributes'] for r in s.get('resources',[]) if r.get('mode')=='managed' and (r['type'],r['name']) in K}; ok=[k for k,a in F.items() if a.get(K[k])==w and a.get('id')==I.get(k,a.get('id'))]; st=w!='agent-platform' and any('agent-platform' in json.dumps(a) for a in F.values()); print('STATE_KEYED',w,'count=%d'%len(ok),'resources=%d'%len(F),'stale' if st else 'clean'); assert len(ok)==5 and len(F)==5 and not st" theseus
     expected: >-
-      Prints STATE_KEYED theseus count=5 resources=5 clean: every one of the five instances keyed on theseus with the expected
-      ids, and no agent-platform string left in them.
+      Prints STATE_KEYED theseus count=5 resources=5 clean: every one of the five instances keyed on theseus with the
+      expected ids, and no agent-platform string left in them.
     fix_if: 'Anything else: restore the rollback version on the operator''s word and escalate.'
   - step: 13
     phase: post-deploy
@@ -291,35 +312,41 @@ verification_plan:
       E2 -- a fresh PR-time plan run on the PR that gave E0 (Order A: the build PR; Order B: the workflow PR). A GitHub
       re-run reuses the original merge commit, which is enough when only state changed since that run (imports.tf is a
       no-op once the five are in state): mcp__github__actions_run_trigger rerun_workflow_run. If main has since changed
-      any other terraform/github config, update that PR from main instead (the push starts a fresh run). Fetch the new
-      job log into $E2_LOG and check it.
+      other terraform/github config, use E3 instead (the closure PR's own run, step 15) or a fresh PR touching
+      terraform/github. Fetch the new job log into $E2_LOG and check it.
     command: >-
       L="$(grep -o 'TF_GITHUB_PLAN_REPORT [A-Za-z0-9=_. -]*' "$E2_LOG" | tail -1)" && echo "$L"
-      && echo "$L" | grep -qE 'import=0 add=0 change=0 destroy=0 replace=0 gated=[01] ' && echo "$L" | grep -q 'conflict=0'
-      && { echo "$L" | grep -q 'gated=0' || grep -Eq 'ruleset_bypass_actors[=: ]+hidden' "$E2_LOG"; } && echo E2_OK
+      && { echo "$L" | grep -qE 'verdict=NO_CHANGES import=0 add=0 change=0 destroy=0 replace=0 gated=0 .*conflict=0'
+      || { echo "$L" | grep -qE 'verdict=VISIBILITY_GATED_ONLY import=0 add=0 change=1 destroy=0 replace=0 gated=1 .*conflict=0'
+      && grep -q 'ruleset_bypass_actors=hidden' "$E2_LOG"; }; } && echo E2_OK
     expected: >-
-      E2_OK: 0 to import, add, change, destroy and replace, conflict 0; gated 0, or 1 only with ruleset_bypass_actors
-      hidden (the operator's step 11 re-plan, which sees it, is authoritative for that field and for
-      security_and_analysis).
+      E2_OK: verdict NO_CHANGES with every count 0, or verdict VISIBILITY_GATED_ONLY with change=1 gated=1 (raw counts:
+      the one gated row is the ruleset's bypass_actors) and ruleset_bypass_actors=hidden; conflict=0 either way. The
+      operator's step 11 re-plan, which sees bypass_actors and security_and_analysis, is authoritative for both fields.
     fix_if: >-
-      Any change: compare its attribute names with step 11 (the PAT re-plan). A change the PAT plan does not show is an
-      App visibility gap: record it as a declared exception only if it is bypass_actors, otherwise escalate. A change
-      both show: escalate; never apply to converge.
+      Any other change: compare its attribute names with step 11 (the PAT re-plan). A change the PAT plan does not show
+      is an App visibility gap: escalate unless it is the declared bypass_actors row. A change both show: escalate;
+      never apply to converge.
   - step: 14
     phase: post-deploy
     action: >-
-      Post the counts-only evidence comment on the merged build PR (V3 resolution), then save the PR's comments with
-      mcp__github__pull_request_read (get_comments) into $BUILD_PR_COMMENTS and check it is there.
-    command: grep -q 'STATE RECONCILE EVIDENCE' "$BUILD_PR_COMMENTS" && grep -q "$MERGE_SHA" "$BUILD_PR_COMMENTS" && echo EVIDENCE_POSTED
+      Post the counts-only evidence comment on the merged build PR (V3 resolution), then save that comment's body with
+      mcp__github__pull_request_read (get_comments) into $EVIDENCE_COMMENT and the PR body into $BUILD_PR_BODY, and
+      check them.
+    command: >-
+      grep -q 'STATE RECONCILE EVIDENCE' "$EVIDENCE_COMMENT" && grep -q "$MERGE_SHA" "$EVIDENCE_COMMENT"
+      && ! cat "$EVIDENCE_COMMENT" "$BUILD_PR_BODY" | grep -Eq '(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)|arn:aws|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[a-z]{2,}|ghp_|github_pat_|ExternalId'
+      && echo EVIDENCE_POSTED
     expected: >-
-      EVIDENCE_POSTED. The comment carries the marker line, the applied sha, E0 and E2 counts with run URLs, the
-      operator's paste A and paste B counts with the date, and nothing else from CloudShell.
-    fix_if: Post or correct the comment; never paste plan text, state content or any id other than the commit sha and run URLs.
+      EVIDENCE_POSTED. The comment carries the marker line STATE RECONCILE EVIDENCE, the applied sha, E0 and E2 report
+      lines with workflow-run URLs, and the operator's paste 0, A and B result lines with the date; nothing else from
+      CloudShell, and no value Decision 101 forbids in the comment or the PR body.
+    fix_if: Post or correct the comment or body; never paste plan text, state content or any id other than the commit sha and run URLs.
   - step: 15
     phase: post-deploy
     action: >-
-      Closure PR content, after the OIDC pre-stage build has merged: contract rows, rec pointer and the dated CLAUDE.md
-      line; its own PR-time plan run reads 0 to change (E3).
+      Closure PR, after the OIDC pre-stage build has merged: contract rows, rec pointer and the dated CLAUDE.md line,
+      and its own PR-time plan run (E3, log saved to $E3_LOG; PR body saved to $CLOSURE_PR_BODY).
     command: >-
       bin/venv-python -c "import yaml,pathlib; c=yaml.safe_load(open('docs/contracts/github-org-transfer.yaml',encoding='utf-8'));
       rows=[r for r in c['evidence_ledger'] if r['gate']=='prerequisites.terraform-github-state-reconciled'];
@@ -328,12 +355,16 @@ verification_plan:
       assert any('PLAN-terraform-github-state-reconcile' in a['summary'] for a in c['amendment_log']);
       t=pathlib.Path('terraform/github/CLAUDE.md').read_text(encoding='utf-8'); assert 'Reconciled 20' in t;
       print('CLOSURE_OK', len(rows), row['rec'])"
-    expected: >-
-      CLOSURE_OK with the row count and the follow-on rec id; the closure PR's PR-time plan run reads import=0 add=0
-      change=0 destroy=0 replace=0 (same gated rule as step 13).
+      && L="$(grep -o 'TF_GITHUB_PLAN_REPORT [A-Za-z0-9=_. -]*' "$E3_LOG" | tail -1)" && echo "$L"
+      && { echo "$L" | grep -qE 'verdict=NO_CHANGES import=0 add=0 change=0 destroy=0 replace=0 gated=0 .*conflict=0'
+      || { echo "$L" | grep -qE 'verdict=VISIBILITY_GATED_ONLY import=0 add=0 change=1 destroy=0 replace=0 gated=1 .*conflict=0'
+      && grep -q 'ruleset_bypass_actors=hidden' "$E3_LOG"; }; }
+      && ! grep -Eq '(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)|arn:aws|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[a-z]{2,}|ghp_|github_pat_|ExternalId' "$CLOSURE_PR_BODY"
+      && echo E3_OK
+    expected: CLOSURE_OK with the row count and the follow-on rec id, then the E3 report line and E3_OK (same rule as step 13).
     fix_if: >-
-      Restore the approved texts from execution_steps step 11 (variance: dates, run URLs, the follow-on rec id, the
-      bypass sentence present or absent as observed). If the CLAUDE.md budget no longer fits the line because another
+      Restore the approved texts from execution_steps step 11 (variance: dates, run URLs, the follow-on rec id, and the
+      clean or visibility-gated variant as E2 observed). If the CLAUDE.md budget no longer fits the line because another
       change grew the file, escalate to the planning thread; never raise the budget.
   - step: 16
     phase: post-deploy
@@ -348,13 +379,13 @@ verification_plan:
       scripts.ops_data_portal update_rec citing the closure merge sha and the E2 run URL.
   - step: 17
     phase: post-deploy
-    action: OPERATOR, AWS CloudShell -- remove the working directory (state backup, provider cache) once step 16 passes.
+    action: OPERATOR, AWS CloudShell -- remove the working directory (state copies, provider cache) once step 16 passes.
     command: rm -rf ~/tfgithub && test ! -e ~/tfgithub && echo CLEANED
     expected: The operator reports CLEANED.
     fix_if: Re-run it; nothing else depends on the directory after closure.
 test_obligations:
   - source: terraform/github/imports.tf
-    behavior: One import block per managed resource, ids derived from var.repository_name, no literal owner or repository name.
+    behavior: One import block per managed resource (explicit exemptions only), exact per-type id expressions, no literal owner or repository name.
     verification_step: 1
     test_selector: tests/checks/iam_tf/test_terraform_github_import_blocks.py::TestTerraformGithubImportBlocks
     red_green_expectation: >-
@@ -373,7 +404,7 @@ test_obligations:
   - source: config/agent/verification_registry/entries/terraform-github-import-blocks.yaml
     behavior: The graduation row names step 1's selector so the differential gate proves it discriminates.
     verification_step: 7
-    command: bin/venv-python -m scripts.validate
+    command: bin/venv-python -m scripts.validate && bin/venv-python -m scripts.checks.validation_result --verify-head
     waiver_reason: >-
       A verification record, not behaviour-capable source; validate_verification_registry already enforces its schema
       and differential admission.
@@ -388,12 +419,19 @@ test_obligations:
       assert any('PLAN-terraform-github-state-reconcile' in a['summary'] for a in c['amendment_log']);
       t=pathlib.Path('terraform/github/CLAUDE.md').read_text(encoding='utf-8'); assert 'Reconciled 20' in t;
       print('CLOSURE_OK', len(rows), row['rec'])"
+      && L="$(grep -o 'TF_GITHUB_PLAN_REPORT [A-Za-z0-9=_. -]*' "$E3_LOG" | tail -1)" && echo "$L"
+      && { echo "$L" | grep -qE 'verdict=NO_CHANGES import=0 add=0 change=0 destroy=0 replace=0 gated=0 .*conflict=0'
+      || { echo "$L" | grep -qE 'verdict=VISIBILITY_GATED_ONLY import=0 add=0 change=1 destroy=0 replace=0 gated=1 .*conflict=0'
+      && grep -q 'ruleset_bypass_actors=hidden' "$E3_LOG"; }; }
+      && ! grep -Eq '(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)|arn:aws|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[a-z]{2,}|ghp_|github_pat_|ExternalId' "$CLOSURE_PR_BODY"
+      && echo E3_OK
     red_green_expectation: Red before (evidence_ledger is empty on origin/main); green after the closure PR.
 constraints:
   - >-
-    Always-ask text is approved verbatim (see context for the approval message). Allowed variance: dates, run URLs, the
-    follow-on rec id, and the bypass_actors sentence present or absent as observed. Any other wording change, including
-    one critique or code review asks for, goes to the coordinator, then the operator, before merge.
+    Always-ask text is approved verbatim (see context for the approval messages). Allowed variance: dates, run URLs, the
+    follow-on rec id, and the clean or visibility-gated variant of the two closure texts as E2 observed. Any other
+    wording change, including one critique or code review asks for, goes to the coordinator, then the operator, before
+    merge.
   - >-
     No agent runs terraform apply, state rm, state push or import for terraform/github (Decision 126). The operator runs
     pastes 0, A, B (and R if needed) in AWS CloudShell. The agent's only live write is the rollback S3 version restore,
@@ -404,8 +442,8 @@ constraints:
     a local terraform init, validate or plan step for it (Decision 119); verification reads the S3 state object
     directly and the PR-time CI plan.
   - >-
-    Evidence is counts, dates, the merge sha and run URLs only (Decision 101): never post plan text, state content, the
-    PAT secret name, user ids or the S3 version id.
+    Evidence is counts, dates, the merge sha and workflow-run URLs only (Decision 101): never post plan text, state
+    content, the PAT secret name, user ids or the S3 version id.
   - >-
     No apply of terraform/github by anyone between the build PR merge and E2 other than paste B. If any plan in the walk
     shows a non-identity change: stop, never apply to converge, escalate for a plan amendment.
@@ -423,51 +461,52 @@ context:
     Decisions triaged: 171 of 171. Roadmap items intersected: 2; CONFLICT: 0; RELATED: 2.
   - "gates: decision-scout=FLAGS_FOUND (one NOTE, resolved); plan-critique=PENDING"
   - >-
-    V3 resolution: the posted E0 evidence for the build PR head (step 6, counts only) substitutes for the pre-merge
-    post-deploy evidence the implement V3 Merge Gate and the code-review V3 check require, by analogy with
-    deploy-paths.yaml admin_out_of_band.pre_merge_live_plan (this root is never applied pre-merge); the behavioural
-    acceptance (Decision 48) is the post-merge operator walk, steps 8-14; its evidence is the counts-only comment on
-    the merged build PR naming the applied sha (step 14).
+    V3 resolution: the posted E0 evidence (step 6, counts only) substitutes for the pre-merge post-deploy evidence the
+    implement V3 Merge Gate and the code-review V3 check require, by analogy with deploy-paths.yaml
+    admin_out_of_band.pre_merge_live_plan (this root is never applied pre-merge); in Order B E0 comes from the workflow
+    PR, so the build PR's own config first meets the live API in paste 0 (read-only, post-merge). Behavioural
+    acceptance (Decision 48) is the post-merge walk, steps 8-14; its evidence is the counts-only comment on the merged
+    build PR naming the applied sha (step 14).
   - >-
-    Live facts 2026-10-15 (read-only): all five state instances keyed on agent-platform (state last written
-    2026-06-22); bucket versioning Enabled; provider integrations/github v6.12.1 (Read sets name from d.Id(); the
-    environment's diffRepository makes a same-repository_id rename an in-place update); Terraform 1.10.5 silently
-    ignores an import block whose address is already in state, even with a different id (scratch experiment).
+    Live facts 2026-10-15 (read-only): all five state instances keyed on agent-platform; bucket versioning Enabled;
+    provider integrations/github v6.12.1 (Read sets name from d.Id(); the environment's diffRepository makes a
+    same-repository_id rename an in-place update); Terraform 1.10.5 ignores an import block whose address is already in
+    state, even with a different id (scratch experiment).
   - >-
     Venue: api.github.com is reachable from cloud sessions but the proxy substitutes its own GitHub credential (a bogus
-    token returned 200; /actions/permissions 403), so plan, import and apply run only in AWS CloudShell.
-  - Import with the admin PAT, never a read-only token (an import blind to security_and_analysis leaves it out of state).
+    token returned 200; /actions/permissions 403), so plan, import and apply run only in AWS CloudShell. Import with the
+    admin PAT, never a read-only token (an import blind to security_and_analysis leaves it out of state).
   - >-
     Advice: /mnt/project-files/terraform-github-state-fix/ADVICE.md (Fable: re-import over state edits or a rename
     apply; CloudShell now; variable-derived ids kept). Presentation: step6b-presentation.md in the same folder.
   - >-
     Approvals (2026-10-15): the operator chose "CloudShell re-import" on the decision card
     (cmsg_017f94mmYqSe3q2p9o6tPW3U8Tkv1WjV7FHsvbBvUMGiGx, 21:35Z) and said "write the plan"
-    (cmsg_017f94mmYqSe3q2p9o6tPW3USjCAWnc2CK3w3SXVcPcWGB, 21:35Z), approving verbatim the CLAUDE.md diff (execution_steps
-    step 4) and the closure-PR texts (step 11) as presented in step6b-presentation.md.
+    (cmsg_017f94mmYqSe3q2p9o6tPW3USjCAWnc2CK3w3SXVcPcWGB, 21:35Z), approving verbatim the CLAUDE.md diff and the
+    closure-PR texts as presented in step6b-presentation.md. Critique round 1 added the --region line, the gated and
+    Order B variants of the closure texts: OPERATOR_APPROVAL_PENDING.
   - >-
     Follow-on recs: rec-4355 filed at planning time (post-transfer re-key; the contract's terraform_github_root row
-    moves to it); rec-3126 (governed terraform/github apply channel) updated with the CloudShell venue finding and the
-    deploy-paths line to correct; rec-4353 (existing: PlatformDev can write tfstate/github/*; always-ask IAM, parked).
+    moves to it); rec-3126 (governed terraform/github apply channel) updated with the CloudShell venue finding, the
+    deploy-paths line and the main.tf/environments.tf "LOCAL apply" comments to correct; rec-4353 (existing: PlatformDev
+    can write tfstate/github/*; always-ask IAM, parked).
   - >-
-    Gotchas: CLAUDE.md budget 5253 bytes; with rec-4335's section the file is about 5056 after the build PR, so the
-    dated line fits (about 5175). The
-    terraform/github admin PAT's secret name is not in the repo (the runbook keeps a placeholder); the operator supplies
-    it. var.github_token has no default, so every paste exports TF_VAR_github_token. Pastes run inside bash heredocs so
-    a failure never closes the CloudShell terminal.
+    Gotchas: CLAUDE.md budget 5253 bytes, about 5079 after the build PR with rec-4335's section (gated closure line about
+    5237). The PAT's secret name is not in the repo. var.github_token has no default (pastes export TF_VAR_github_token).
+    Pastes are bash heredocs with one command per line, so set -e stops on any failure.
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
   - Only the plan-cited decision sections (218, 172, 77, 126, 101, 201, 119)
   - All files in scope located and readable
   - Acceptance criteria understood and verifiable
-  - rec-4335's PR-time plan job merged and live on main (start gate)
+  - 'Start gate met: Order A (rec-4335 workflow PR merged) or Order B (coordinator relays the held-open workflow PR)'
   - No open critical ci_rca rec (ducklake-reads ci_rca_open)
 execution_steps:
   - >-
     Start gate: confirm either Order A (rec-4335's workflow PR merged, its PR-time terraform/github plan job on main) or
     Order B (the coordinator relays that the workflow PR is held open for this fix, with its first run's URL); and no
-    open critical ci_rca rec. Otherwise wait and tell the coordinator.
+    open critical ci_rca rec. Otherwise wait and tell the coordinator. Restart the harness branch from origin/main.
   - |-
     Create terraform/github/imports.tf with exactly this text:
 
@@ -500,19 +539,23 @@ execution_steps:
       id = "${var.repository_name}:tf-gated-apply"
     }
   - |-
-    Append to terraform/github/variables.tf exactly this text (after repository_name's block is fine):
+    terraform/github/variables.tf: append exactly this block after repository_name's block:
 
     variable "main_protection_ruleset_id" {
       description = "Numeric id of the main-protection ruleset, used only by its import block. Re-read it from the API after a transfer: rulesets are not documented to carry over."
       type        = number
       default     = 17117072
     }
+
+    and in gated_apply_reviewer_user_ids' description replace "Resolve before applying: `gh api /user --jq .id`
+    (authenticated as the reviewer) or the GitHub MCP get_me tool." with "Resolve before applying: GET /user with the
+    reviewer's PAT (terraform/github/CLAUDE.md runbook step 2) or the GitHub MCP get_me tool."
   - |-
     Apply exactly this change to terraform/github/CLAUDE.md (operator-approved wording; VP step 3 compares the added and removed lines):
 
     --- a/terraform/github/CLAUDE.md
     +++ b/terraform/github/CLAUDE.md
-    @@ -15,27 +15,27 @@ The `terraform-apply-sandbox.yml` workflow path filter is `terraform/personal/**
+    @@ -15,27 +15,28 @@ The `terraform-apply-sandbox.yml` workflow path filter is `terraform/personal/**
      to any auto-apply workflow is FORBIDDEN (Decision 77 / `environment-taxonomy.yaml`):
      `terraform_apply_guard.py` is AWS-IAM-only and cannot inspect `github_*` resource diffs; a
      branch-protection change applied ungated could lock out the push-to-main flow the workflow depends
@@ -533,6 +576,7 @@ execution_steps:
      # 1. Export the GitHub PAT from Secrets Manager.
     -export GITHUB_TOKEN=$(aws secretsmanager get-secret-value \
     +export TF_VAR_github_token=$(aws secretsmanager get-secret-value \
+    +  --region eu-west-2 \
        --secret-id <GITHUB_PAT_SECRET_ARN> \
        --query SecretString \
     -  --output text \
@@ -546,7 +590,7 @@ execution_steps:
      #    Or use the GitHub MCP get_me tool in Claude Code on the web.
 
      # 3. Initialise (uses the S3 backend in agent-platform-data-lake).
-    @@ -70,25 +70,17 @@ Key constraints:
+    @@ -70,25 +71,17 @@ Key constraints:
      - The reviewer user ID is passed via `gated_apply_reviewer_user_ids` at apply time; it is
        **never** committed with a literal default.
 
@@ -576,93 +620,154 @@ execution_steps:
 
      ## Ruleset check-run names
 
-
   - >-
     Create tests/checks/iam_tf/test_terraform_github_import_blocks.py with class TestTerraformGithubImportBlocks: read
     every *.tf file under terraform/github (tf_dir_file_texts from tests/fixtures/terraform_hcl_blocks, pointed at
-    terraform/github); pure predicates over HCL text, each with its own red case on synthetic HCL: (a) the set of
-    managed addresses (resource "TYPE" "NAME") equals the set of import-block 'to' addresses, one block each; (b) every
-    import id references var.repository_name; (c) no import id contains a literal owner or repository name
-    (benjamin-blake, otl-labs, theseus, agent-platform, ontheloop); (d) the ruleset import id references
-    var.main_protection_ruleset_id and that variable is declared with type = number and a default. No count literals
-    on the growing resource set (tests/CLAUDE.md count-coupling rule); derive both sides from the tree.
+    terraform/github); pure predicates over HCL text, each with its own red case on synthetic HCL: (a) every managed
+    address (resource "TYPE" "NAME") has exactly one import block whose 'to' names it, except addresses in a
+    module-level EXEMPT dict (address -> reason; empty today; for a resource whose remote object does not exist yet),
+    and every import block's 'to' is a managed address; (b) each id equals the expected expression for its resource
+    type from a small table -- github_repository, github_actions_repository_permissions and
+    github_workflow_repository_permissions: var.repository_name; github_repository_ruleset:
+    "${var.repository_name}:${var.main_protection_ruleset_id}"; github_repository_environment:
+    "${var.repository_name}:<environment>" where <environment> equals that resource's environment argument -- and a
+    resource type missing from the table fails with its name; (c) no import id contains a literal owner or repository
+    name (benjamin-blake, otl-labs, theseus, agent-platform, ontheloop); (d) var.main_protection_ruleset_id is declared
+    with type = number and a default. No count literals on the growing resource set (tests/CLAUDE.md count-coupling
+    rule); derive both sides from the tree.
   - >-
     Create config/agent/verification_registry/entries/terraform-github-import-blocks.yaml per the scope row
-    (precedent: acceptance-lint-decidable-and-quote-aware.yaml, primitive_slot test_selector).
-  - |-
-    Run VP steps 1-5 and 7, open the build PR (body: Before/After/How; never the PAT secret name), wait for the PR-time
-    plan job, run VP step 6 and post its counts-only E0 evidence, run code review, and merge only after code-review
-    PROCEED, green CI and the operator's code-owner approval. Then run VP step 8.
+    (precedent: acceptance-lint-decidable-and-quote-aware.yaml, primitive_slot test_selector, with graduated_at).
+  - >-
+    Build PR sequence and closure (implement skill Commit Flows; docs/contracts/git-ops.yaml), each outcome reported
+    separately: bin/venv-python -m scripts.session.github_readiness; implementation_declared true in this plan;
+    rebase on origin/main; VP steps 1-5; VP step 7 on the committed clean tree (full tier, then --verify-head); write
+    /tmp/implementation-retrospective.json with the ten scripts.session.postflight_evidence.CATEGORIES keys and run
+    bin/venv-python -m scripts.session.postflight --evidence /tmp/implementation-retrospective.json; push; open the PR
+    (Before/After/How body; never the PAT secret name); subscribe_pr_activity. The PR's terraform-github-plan run is
+    VP step 6 (wait for its event, never poll; Order B: see step 6's fix_if); post the counts-only E0 on the PR. Then
+    dispatch code review (the code-review skill in a fresh context) with the context "V3 resolution:" line quoted in its
+    prompt; fix every blocking finding. Squash-merge only when code review is PROCEED, CI is green on the head and the
+    operator has approved the PR on GitHub as code owner (no Resolves trailer on this PR: rec-3136 closes with the
+    closure PR). Then run VP step 8.
   - |-
     Hand the operator paste 0 (VP step 9) with MERGE_SHA filled in; the operator fills PAT_SECRET_ID in CloudShell and
     never pastes it back:
 
     bash -euo pipefail <<'PASTE0'
-    MERGE_SHA='<agent fills>'; PAT_SECRET_ID='<operator fills>'; TFV=1.10.5
+    MERGE_SHA='<agent fills>'
+    PAT_SECRET_ID='<operator fills>'
+    TFV=1.10.5
+    COUNTS_JQ='[.resource_changes[]? | {a: (.change.actions | join(",")), i: (.change.importing != null)}] | "COUNTS import=\(map(select(.i)) | length) add=\(map(select(.a | test("create"))) | length) change=\(map(select(.a == "update")) | length) destroy=\(map(select(.a | test("delete"))) | length)"'
     case "$(uname -m)" in x86_64) ARCH=amd64 ;; aarch64) ARCH=arm64 ;; *) echo "unsupported arch"; exit 1 ;; esac
-    mkdir -p ~/bin ~/tfgithub && cd ~/tfgithub
+    mkdir -p "$HOME/bin" "$HOME/tfgithub"
+    cd "$HOME/tfgithub"
     curl -fsSLO "https://releases.hashicorp.com/terraform/${TFV}/terraform_${TFV}_linux_${ARCH}.zip"
     curl -fsSLO "https://releases.hashicorp.com/terraform/${TFV}/terraform_${TFV}_SHA256SUMS"
     grep " terraform_${TFV}_linux_${ARCH}.zip\$" "terraform_${TFV}_SHA256SUMS" | sha256sum -c - >/dev/null
-    unzip -o -q "terraform_${TFV}_linux_${ARCH}.zip" -d ~/bin && ~/bin/terraform version | grep -q "v${TFV}" && echo TERRAFORM_OK
-    rm -rf repo && git init -q repo && git -C repo fetch -q --depth 1 https://github.com/benjamin-blake/theseus.git "$MERGE_SHA" && git -C repo checkout -q FETCH_HEAD
-    export TF_VAR_github_token="$(aws secretsmanager get-secret-value --region eu-west-2 --secret-id "$PAT_SECRET_ID" --query SecretString --output text)"
-    curl -fsS -H "Authorization: Bearer $TF_VAR_github_token" https://api.github.com/repos/benjamin-blake/theseus | jq -e '.permissions.admin == true and .security_and_analysis != null' >/dev/null || { echo PAT_NOT_ADMIN_VISIBLE; exit 1; }
+    unzip -o -q "terraform_${TFV}_linux_${ARCH}.zip" -d "$HOME/bin"
+    "$HOME/bin/terraform" version | grep -q "v${TFV}"
+    echo TERRAFORM_OK
+    rm -rf repo dry
+    git init -q repo
+    git -C repo fetch -q --depth 1 https://github.com/benjamin-blake/theseus.git "$MERGE_SHA"
+    git -C repo checkout -q FETCH_HEAD
+    TOKEN="$(aws secretsmanager get-secret-value --region eu-west-2 --secret-id "$PAT_SECRET_ID" --query SecretString --output text)"
+    test -n "$TOKEN"
+    export TF_VAR_github_token="$TOKEN"
+    curl -fsS -H "Authorization: Bearer $TOKEN" https://api.github.com/repos/benjamin-blake/theseus | jq -e '.permissions.admin == true and .security_and_analysis != null' >/dev/null
     echo PAT_ADMIN_VISIBLE
-    export TF_VAR_gated_apply_reviewer_user_ids="[$(curl -fsS -H "Authorization: Bearer $TF_VAR_github_token" https://api.github.com/user | jq .id)]"
-    D=~/tfgithub/repo/terraform/github; TF=~/bin/terraform
-    $TF -chdir=$D init -input=false >/dev/null && echo INIT_OK
-    if $TF -chdir=$D plan -input=false -lock=false -out=baseline.tfplan >/dev/null 2>&1; then
-      $TF -chdir=$D show -json baseline.tfplan | jq -r '[.resource_changes[]? | {a: (.change.actions | join(",")), i: (.change.importing != null)}] | "COUNTS import=\(map(select(.i)) | length) add=\(map(select(.a | test("create"))) | length) change=\(map(select(.a == "update")) | length) destroy=\(map(select(.a | test("delete"))) | length)"'
+    RID="$(curl -fsS -H "Authorization: Bearer $TOKEN" https://api.github.com/user | jq -er .id)"
+    export TF_VAR_gated_apply_reviewer_user_ids="[$RID]"
+    TF="$HOME/bin/terraform"
+    D="$HOME/tfgithub/repo/terraform/github"
+    X="$HOME/tfgithub/dry"
+    $TF -chdir="$D" init -input=false >/dev/null
+    echo INIT_OK
+    if $TF -chdir="$D" plan -input=false -lock=false -out=baseline.tfplan >/dev/null 2>&1; then
+      $TF -chdir="$D" show -json baseline.tfplan | jq -r "$COUNTS_JQ"
     else
       echo BASELINE_PLAN_FAILED
     fi
-    rm -f $D/baseline.tfplan
+    rm -f "$D/baseline.tfplan"
+    mkdir "$X"
+    cp "$D"/*.tf "$D/.terraform.lock.hcl" "$X/"
+    awk '/^  backend "s3" \{/{skip=1} skip && /^  \}/{skip=0; next} !skip' "$D/main.tf" > "$X/main.tf"
+    if grep -q 'backend "s3"' "$X/main.tf"; then echo BACKEND_NOT_STRIPPED; exit 1; fi
+    $TF -chdir="$D" state pull > "$X/terraform.tfstate"
+    test -s "$X/terraform.tfstate"
+    $TF -chdir="$X" init -input=false >/dev/null
+    $TF -chdir="$X" state rm github_repository.this github_repository_ruleset.main_protection github_actions_repository_permissions.this github_workflow_repository_permissions.this github_repository_environment.tf_gated_apply >/dev/null
+    $TF -chdir="$X" plan -input=false -out=dry.tfplan >/dev/null
+    C="$($TF -chdir="$X" show -json dry.tfplan | jq -r "$COUNTS_JQ")"
+    rm -f "$X/dry.tfplan"
+    test "$C" = "COUNTS import=5 add=0 change=0 destroy=0" || { echo "DRYRUN $C"; exit 1; }
+    echo DRYRUN_IMPORT_ONLY
     PASTE0
   - |-
     Hand the operator paste A (VP step 10) and, separately after they review its output, paste B (VP step 11):
 
     bash -euo pipefail <<'PASTEA'
     PAT_SECRET_ID='<operator fills>'
-    D=~/tfgithub/repo/terraform/github; TF=~/bin/terraform
-    export TF_VAR_github_token="$(aws secretsmanager get-secret-value --region eu-west-2 --secret-id "$PAT_SECRET_ID" --query SecretString --output text)"
-    export TF_VAR_gated_apply_reviewer_user_ids="[$(curl -fsS -H "Authorization: Bearer $TF_VAR_github_token" https://api.github.com/user | jq .id)]"
-    $TF -chdir=$D state pull > ~/tfgithub/pre-reconcile.tfstate && test -s ~/tfgithub/pre-reconcile.tfstate && echo BACKUP_OK
-    $TF -chdir=$D state rm github_repository.this github_repository_ruleset.main_protection github_actions_repository_permissions.this github_workflow_repository_permissions.this github_repository_environment.tf_gated_apply
-    $TF -chdir=$D plan -input=false -out=reconcile.tfplan >/dev/null
-    $TF -chdir=$D show -no-color reconcile.tfplan | grep -E '^  # .* will be imported' || true
-    C="$($TF -chdir=$D show -json reconcile.tfplan | jq -r '[.resource_changes[]? | {a: (.change.actions | join(",")), i: (.change.importing != null)}] | "COUNTS import=\(map(select(.i)) | length) add=\(map(select(.a | test("create"))) | length) change=\(map(select(.a == "update")) | length) destroy=\(map(select(.a | test("delete"))) | length)"')"
-    echo "$C"; test "$C" = "COUNTS import=5 add=0 change=0 destroy=0" || { echo NOT_IMPORT_ONLY; exit 1; }
+    COUNTS_JQ='[.resource_changes[]? | {a: (.change.actions | join(",")), i: (.change.importing != null)}] | "COUNTS import=\(map(select(.i)) | length) add=\(map(select(.a | test("create"))) | length) change=\(map(select(.a == "update")) | length) destroy=\(map(select(.a | test("delete"))) | length)"'
+    TF="$HOME/bin/terraform"
+    D="$HOME/tfgithub/repo/terraform/github"
+    TOKEN="$(aws secretsmanager get-secret-value --region eu-west-2 --secret-id "$PAT_SECRET_ID" --query SecretString --output text)"
+    test -n "$TOKEN"
+    export TF_VAR_github_token="$TOKEN"
+    RID="$(curl -fsS -H "Authorization: Bearer $TOKEN" https://api.github.com/user | jq -er .id)"
+    export TF_VAR_gated_apply_reviewer_user_ids="[$RID]"
+    $TF -chdir="$D" state pull > "$HOME/tfgithub/pre-reconcile.tfstate"
+    test -s "$HOME/tfgithub/pre-reconcile.tfstate"
+    echo BACKUP_OK
+    $TF -chdir="$D" state rm github_repository.this github_repository_ruleset.main_protection github_actions_repository_permissions.this github_workflow_repository_permissions.this github_repository_environment.tf_gated_apply
+    $TF -chdir="$D" plan -input=false -out=reconcile.tfplan >/dev/null
+    $TF -chdir="$D" show -no-color reconcile.tfplan | grep -E '^  # .* will be imported' || true
+    C="$($TF -chdir="$D" show -json reconcile.tfplan | jq -r "$COUNTS_JQ")"
+    echo "$C"
+    test "$C" = "COUNTS import=5 add=0 change=0 destroy=0" || { echo NOT_IMPORT_ONLY; exit 1; }
     echo PLAN_IMPORT_ONLY
     PASTEA
 
     bash -euo pipefail <<'PASTEB'
     PAT_SECRET_ID='<operator fills>'
-    D=~/tfgithub/repo/terraform/github; TF=~/bin/terraform
-    $TF -chdir=$D apply -input=false reconcile.tfplan
-    rm -f $D/reconcile.tfplan
-    export TF_VAR_github_token="$(aws secretsmanager get-secret-value --region eu-west-2 --secret-id "$PAT_SECRET_ID" --query SecretString --output text)"
-    export TF_VAR_gated_apply_reviewer_user_ids="[$(curl -fsS -H "Authorization: Bearer $TF_VAR_github_token" https://api.github.com/user | jq .id)]"
-    rc=0; $TF -chdir=$D plan -input=false -lock=false -detailed-exitcode >/dev/null || rc=$?
-    echo "POST_PLAN_EXIT=$rc"; test "$rc" -eq 0
+    TF="$HOME/bin/terraform"
+    D="$HOME/tfgithub/repo/terraform/github"
+    $TF -chdir="$D" apply -input=false reconcile.tfplan
+    rm -f "$D/reconcile.tfplan"
+    TOKEN="$(aws secretsmanager get-secret-value --region eu-west-2 --secret-id "$PAT_SECRET_ID" --query SecretString --output text)"
+    test -n "$TOKEN"
+    export TF_VAR_github_token="$TOKEN"
+    RID="$(curl -fsS -H "Authorization: Bearer $TOKEN" https://api.github.com/user | jq -er .id)"
+    export TF_VAR_gated_apply_reviewer_user_ids="[$RID]"
+    rc=0
+    $TF -chdir="$D" plan -input=false -lock=false -detailed-exitcode >/dev/null || rc=$?
+    echo "POST_PLAN_EXIT=$rc"
+    test "$rc" -eq 0
     PASTEB
   - |-
     Paste R (rollback, only when VP step 10 or 11 says so, before or instead of any retry):
 
     bash -euo pipefail <<'PASTER'
-    D=~/tfgithub/repo/terraform/github; TF=~/bin/terraform
-    rm -f $D/reconcile.tfplan
-    $TF -chdir=$D state push -force ~/tfgithub/pre-reconcile.tfstate && $TF -chdir=$D state list
+    TF="$HOME/bin/terraform"
+    D="$HOME/tfgithub/repo/terraform/github"
+    rm -f "$D/reconcile.tfplan"
+    $TF -chdir="$D" state push -force "$HOME/tfgithub/pre-reconcile.tfstate"
+    $TF -chdir="$D" state list
     PASTER
   - >-
-    Run VP steps 12, 13 and 14 (E2 and the evidence comment). Report to the coordinator that the prerequisite is met.
+    Run VP steps 12, 13 and 14 (E2 and the evidence comment). Report to the coordinator that the prerequisite is met,
+    and which E2 variant (clean or visibility-gated) was observed.
   - |-
-    Closure PR, after the OIDC pre-stage build has merged (rebase first). Title: the terraform/github state reconcile
-    evidence. Body ends with a standalone line: Resolves: rec-3136. Apply exactly:
+    Closure PR, after the OIDC pre-stage build has merged: restart the harness branch from origin/main. Title: the
+    terraform/github state reconcile evidence. Apply exactly (use the gated variant of items 1 and 2 only when E2 read
+    verdict VISIBILITY_GATED_ONLY):
 
-    1. terraform/github/CLAUDE.md: append this line directly after the "Procedure:" line of the State reconcile section
-       (blank line before it):
+    1. terraform/github/CLAUDE.md: append one line directly after the "Plan:" line of the State reconcile section (blank
+       line before it). Clean variant:
     Reconciled <YYYY-MM-DD>: the PR-time plan reads 0 to change (<E2 run URL>).
+       Visibility-gated variant:
+    Reconciled <YYYY-MM-DD>: the PR-time plan reads 0 to change bar one visibility-gated row (<E2 run URL>).
 
     2. docs/contracts/github-org-transfer.yaml: replace "evidence_ledger: []" with:
     evidence_ledger:
@@ -681,9 +786,13 @@ execution_steps:
           CloudShell (5 imported, 0 added, 0 changed, 0 destroyed); the PR-time terraform/github plan
           then read 0 to import, 0 to add, 0 to change, 0 to destroy.
         evidence_path: "<E2 run URL>"
-    Only if E2 reported gated=1 with ruleset_bypass_actors hidden, the second observation ends with: The ruleset's
-    bypass_actors stays a declared exception: the plan App cannot read it, and the operator's CloudShell plan read No
-    changes.
+    Visibility-gated variant of the second observation:
+          Reconciled (rec-3136): state rm of the five addresses and an import-only apply from AWS
+          CloudShell (5 imported, 0 added, 0 changed, 0 destroyed); the PR-time terraform/github plan
+          then read 0 to import, 0 to add, 0 to destroy and 1 to change: the ruleset's bypass_actors,
+          which the plan App cannot read (visibility-gated). The operator's CloudShell plan read No changes.
+    In Order B, if E0 failed, the first observation instead reads: Drift recorded before the reconcile: the
+    PR-time terraform/github plan could not plan the five name-keyed resources still keyed on agent-platform.
 
     3. docs/contracts/github-org-transfer.yaml breakage_map row terraform_github_root: "rec: rec-3136" becomes
        "rec: rec-4355".
@@ -697,17 +806,23 @@ execution_steps:
           satisfied (rec-3136 closed; two evidence_ledger rows); breakage_map.terraform_github_root's
           post-transfer re-key now points at rec-4355.
 
-    Run VP steps 2, 4, 5 and 15, wait for the closure PR's PR-time plan run (E3, 0 to change), get the operator's
-    code-owner approval, squash-merge with the PR body as the commit message, then run VP step 16 and hand the
-    operator VP step 17.
-  - Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)
-  - 'Report: what was implemented, the E0/E2 counts and run URLs, the operator steps run with dates, rec-3136 closure, verification results'
+    Then, each outcome reported separately: github_readiness; rebase on origin/main; VP steps 2, 4 and 5; VP step 7 on
+    the committed clean tree (full tier, then --verify-head); postflight evidence as in the build PR; push; the PR
+    (body ends with a standalone "Resolves: rec-3136" line in a Key: value block); subscribe_pr_activity; wait for its
+    terraform-github-plan run (E3) and run VP step 15; code review in a fresh context; the operator's code-owner
+    approval; squash-merge with the PR body as the commit message; VP step 16 from the closure job's event (never
+    poll); then hand the operator VP step 17.
+  - Execute the Verification Plan in step order; loop until each step passes; on an unrecoverable V3 failure stop and RCA (Decision 55).
+  - >-
+    Report each outcome separately (readiness, implementation_declared, rebase, VP results, full tier and --verify-head,
+    postflight evidence, push, PRs, CI, E0, the operator pastes with dates, E2 variant, merges, closure job), plus the
+    E0, E2 and E3 report lines and run URLs.
 rollback: >-
   Before paste B: run paste R in CloudShell, or, on the operator's word on the exact command, the agent restores the
   recorded version from the ADMIN session: aws s3api copy-object --bucket agent-platform-data-lake --key
   tfstate/github/terraform.tfstate --copy-source
   "agent-platform-data-lake/tfstate/github/terraform.tfstate?versionId=$(cat "${TMPDIR:-/tmp}/tfgithub-reconcile/rollback-version")"
-  --profile agent_platform_admin; then VP step 8's check (agent-platform) must pass again. After paste B: GitHub needs
-  no rollback (the import only read it); if E2 is not clean, restore the same way and escalate. Never apply to
+  --profile agent_platform_admin; then VP step 8's shape check (agent-platform) must pass again. After paste B: GitHub
+  needs no rollback (the import only read it); if E2 is not clean, restore the same way and escalate. Never apply to
   converge. Revert imports.tf and the variable by a normal PR only if the blocks themselves prove wrong; they are inert
   while the addresses are in state.
