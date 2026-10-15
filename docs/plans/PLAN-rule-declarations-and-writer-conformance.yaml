@@ -36,10 +36,11 @@ scope:
 - file: docs/contracts/ops_decisions.yaml
   action: Modify
   purpose: >-
-    Same re-spelling (19 legs; the 13 optional-column legs become `dq_intent: {}`). Field semantics text that says
-    "dq_intent.not_null.enforced: false" now says the column carries no not_null rule, each with a field-level
-    prose_improvement entry (the contract-drift ritual requires one for any description/semantics change). Contract-level
-    amendment entry. rec-4167 still owns the Phase 2 rules.
+    Same re-spelling (19 legs; the 13 optional-column legs become `dq_intent: {}`) and a contract-level amendment
+    entry. No field description or semantics changes: the only "dq_intent.not_null.enforced: false" text sits in
+    historical amendment_log migration stories, and "DqXxx with enforced=False" names the ops.yaml/Pydantic DQ flag the
+    portal row-rule gate plan retires; both stay as written (an amendment log is history, never rewritten). rec-4167
+    still owns the Phase 2 rules.
 - file: docs/contracts/ops_tenants.yaml
   action: Modify
   purpose: Same re-spelling (10 legs) and a contract-level amendment entry.
@@ -189,10 +190,14 @@ scope:
 - file: scripts/ducklake_smoke/lambda_ops_gates.py
   action: Modify
   purpose: >-
-    --lambda-row-rules gains a dormant case per dormant table (module-level constants, as ROW_RULES_CASES): write_ops
-    with a deliberately schema-invalid test- record (an unknown field) must answer 400 naming dormant. A regressed
-    boundary cannot write: the record fails the schema gate with 422 instead, which the gate also treats as a failure.
-    It runs on every deploy through the workflow's existing smoke step.
+    lambda_row_rules, once its row-rule cases and their nothing-stored check pass, calls a new lambda_dormant_refusal
+    helper over DORMANT_REFUSAL_CASES (module-level, as ROW_RULES_CASES: every (table, verb) pair of the two dormant
+    tables and write_ops, file_ops and update_ops, six cases). Each sends a deliberately schema-invalid test- record (an
+    unknown field) and must answer 400 whose error names dormant; any other answer fails the gate. A regressed boundary
+    still cannot write: the record fails the schema gate (422) or, on update_ops, the referential check (409), so a
+    failed probe never leaves a row. The OK line keeps its "LAMBDA_ROW_RULES OK <n> cases" prefix and appends the
+    dormant count. It runs on every deploy through the workflow's existing --lambda-row-rules smoke step, whose
+    one-line chain (pinned by tests/verify_ci_workflow/test_ducklake_row_rules_wiring.py) is unchanged.
 # --- the declaration guard (decomposed, widened) ------------------------------------------------------------------
 - file: scripts/checks/contracts/validate_ops_rule_source.py
   action: Modify
@@ -227,13 +232,15 @@ scope:
     exempt in one PR, delete in a later one); (b) a value removed from an accepted_values leg unless that field's
     amendment_log gained, since the base, an entry with change_class accepted_values_narrow, semantic_break true and a
     migration_story naming every removed value (the census statement lives there; AmendmentLogEntry is extra=forbid);
-    (c) an exclude_before added to a leg that had none, or moved later -- unconditionally, as today (Decision 64's
-    2026-10-04 update and Decision 210's amendment: no date moves later), so a narrowing whose census is not zero waits
-    for the data to be fixed at the source;
+    (c) an exclude_before added to a leg that had none, moved later, or removed from a leg that stays -- unconditionally
+    (Decision 64's 2026-10-04 update: "no date moves later or is removed once declared"; today's ratchet guards only the
+    first two, and removing a date makes the rule bind every older row on update, the Decision 70 stranding shape), so a
+    narrowing whose census is not zero waits for the data to be fixed at the source, and a date leaves only with its leg
+    through arm (a);
     (d) an exemption added to a leg that existed un-exempted at the base, or an existing exemption's class changed from
     one class to another (adding a class to a class-less exemption is a grammar completion, not a loosening), unless
     the field gained an entry with semantic_break true; (e) a source registry id removed (moved, unchanged).
-    Tightenings are free. The dormancy arm keys on the entry module validate_ops_rule_source.py being absent at the
+    Other tightenings are free (a new leg, a date moved earlier). The dormancy arm keys on the entry module validate_ops_rule_source.py being absent at the
     base, which it never is after plan A, so the widened ratchet is live on this plan's own PR. Reason: scripts/contracts_enforcement.py
     check_amendment_for_diff compares only description and semantics, so a rule-only diff was unguarded.
 - file: scripts/checks/contracts/_ops_rule_bindings.py
@@ -269,8 +276,11 @@ scope:
   action: Create
   purpose: >-
     Full tier only (no pre=True): fails when a temporary exemption's review_by is in the past (UTC date), naming the
-    contract, field, kind and owner, so a lapsed staging exemption reaches the operator through ci-rca rather than
-    wedging an unrelated PR. Decision 170 accounting over temporary exemptions examined.
+    contract, field, kind, owner and the remedy. A lapsed date is meant to be loud: it reddens main's post-merge full
+    tier (ci-rca files a critical rec) and every implementing session's pre-handoff full tier (Decision 163 update)
+    until the owner acts. The remedy is one small PR: delete the exemption with its rule work done, or renew review_by
+    with a field amendment entry (governance_note_add) naming the new date and why. It stays off --pre so no PR's own
+    merge gate depends on the calendar. Decision 170 accounting over temporary exemptions examined.
 - file: scripts/checks/contracts/_manifest.py
   action: Modify
   purpose: >-
@@ -278,7 +288,8 @@ scope:
     config/lambda/ducklake/field_semantics.yaml (a superset, never a demotion, Decision 187). New Entries:
     validate_write_time_enforcement_conformance (pre=True; pre_globs docs/contracts/*.yaml,
     config/lambda/ducklake/field_semantics.yaml, config/lambda/ducklake/field_semantics.static.yaml,
-    config/agent/data_quality/ops.yaml, docs/ROADMAP-PLATFORM.yaml, scripts/contract_rules.py, src/row_rules/**,
+    config/agent/data_quality/ops.yaml, config/agent/data_quality/source_registry.yaml (declared_rules reads source
+    values from it), docs/ROADMAP-PLATFORM.yaml, scripts/contract_rules.py, src/row_rules/**,
     scripts/checks/contracts/**, scripts/checks/_common.py, scripts/checks/registry.py; full_segment full_after_lint)
     and validate_temporary_exemption_review (full_segment full_after_lint only). Re-run validate_pre_glob_closure and
     add exactly what it reports.
@@ -291,16 +302,18 @@ scope:
   purpose: >-
     Rule write-time-enforcement: the declaration grammar (a declared rule is enforced; staging only by exclude_before or
     an owned exemption; no `enforced` key; an exemption may sit beside any row-local rule, with review_by on
-    temporary); the ratchet's four arms; and the COVERAGE sentence re-pointed, scoped to row-local rules (scout NOTE,
-    Decision 181): declarations -> validate_ops_rule_source over every contract-backed writer table; writer
-    enforcement -> the conformance check (declared equals enforced per table) plus its adapter test, whose action set
-    is read from both writer handlers' registries so a new write verb fails until it has a case, and the
-    --lambda-row-rules deploy gate; narrowing and new exemptions -> the
-    ratchet; contract-less tables -> dormant, refused by the writer, owners T4.3 and T4.5; the writer-owned cross-row
-    rules (grain MERGE, status DAG, id allocation, referential) stay named residuals with rec-4121 and the
-    dependency-reference monitor with rec-4166; ops_decisions' Phase 2 rules with rec-4167; the portal and ops.yaml
-    -> the portal row-rule gate plan. Every phrase test_write_time_enforcement_decision.py anchors is kept.
-    amendment_log entry; updated_by.
+    temporary); the ratchet's arms (leg removal needs a prior exemption; value removal needs a narrowing entry; a new
+    or re-classed exemption needs a semantic-break entry; a date is never added to a live leg, moved later or removed --
+    "a date never moves later or is removed", Decision 64; a registry id is never removed); and the COVERAGE sentence
+    re-pointed, scoped to row-local rules (scout NOTE, Decision 181): declarations -> validate_ops_rule_source over
+    every contract-backed writer table; writer enforcement -> the conformance check (declared equals enforced per
+    table) plus its adapter test, whose action set is read from every Lambda manifest's handlers so a new write verb or
+    a new writer function fails until it is classified, and the --lambda-row-rules deploy gate; narrowing and new
+    exemptions -> the ratchet; contract-less tables -> dormant, refused by the writer, owners T4.3 and T4.5; the
+    writer-owned cross-row rules (grain MERGE, status DAG, id allocation, referential) stay named residuals with
+    rec-4121 and the dependency-reference monitor with rec-4166; ops_decisions' Phase 2 rules with rec-4167; the portal
+    and ops.yaml with rec-4158 (its portal row-rule gate plan; Decision 181 cl.2 names a rec). Every phrase
+    test_write_time_enforcement_decision.py anchors is kept. amendment_log entry; updated_by.
 - file: docs/contracts/storage-substrate.yaml
   action: Modify
   purpose: >-
@@ -322,19 +335,29 @@ scope:
   purpose: >-
     T4.3 gains c6 (status open; c5 is taken by the rehoming note T4.12 cites): "docs/contracts/ops_priority_queue.yaml declares the queue's row rules, they project
     into field_semantics.yaml and the ducklake_writer's dormant refusal on ops_priority_queue is lifted, before the
-    producer's first write (Decision 210 cl.4, rec-4158)". T4.5 c2's text gains "; the ducklake_writer's dormant
-    refusal on ops_execution_plans lifts only once this contract's rules project into field_semantics.yaml (Decision
-    210 cl.4, rec-4158)" (scout: fold, do not duplicate). Net additions under 10 lines (9,804 of 10,000 at planning).
+    producer's first write (Decision 210 cl.4, rec-4158)". T4.5 c2's text gains "; the table's row rules live in a
+    Class A table contract docs/contracts/ops_execution_plans.yaml (the path schema_to_field_semantics and the
+    write-time conformance check key on; plan-entities.yaml keeps the entity model and verb), and the
+    ducklake_writer's dormant refusal on ops_execution_plans lifts only once those rules project into
+    field_semantics.yaml (Decision 210 cl.4, rec-4158)" (scout: fold, do not duplicate; T4.5 may instead extend the
+    generator's table-to-contract mapping, a choice its own plan makes). The hand-over in either item moves the table id
+    from the generator's dormant tuple to its contract tuple and deletes the sidecar block in one change (the overlap
+    guard fails otherwise). Net additions under 10 lines (9,804 of 10,000 at planning).
 # --- tests ---------------------------------------------------------------------------------------------------------
 - file: tests/checks/contracts/test_write_time_enforcement_conformance.py
   action: Create
   purpose: >-
     rec-4158's acceptance node test_every_write_decidable_rule_has_a_writer_validator: the registered conformance
     check on the real tree appends nothing and examines every inventory table. Plus
-    test_each_writer_adapter_rejects_every_declared_kind, derived, never enumerated (Decisions 187, 191): the action
-    set is read from both handlers' own registries (the ducklake_writer handler's _ACTIONS and the telemetry writer
-    handler's _all_actions()); every action is either row-writing, and must have a case, or listed in the test's
-    declared non-row-writing set (provisioning, probes, describe, the smoke pair's write); an unclassified action fails.
+    test_each_writer_adapter_rejects_every_declared_kind, derived, never enumerated (Decisions 187, 191): the handler
+    set is every module named under `handlers:` in every src/lambdas/*/manifest.yaml (seven Lambda artifacts today),
+    and each handler's action set is read from its own registry (_all_actions() where defined, else _ACTIONS). Every
+    action is either row-writing, and must have a case, or in the test's declared non-row-writing map {action: reason}
+    (provisioning, maintenance, reads, probes, describe, the smoke pair's write); a handler with no action registry
+    (found by an ast scan, never imported: ducklake_catalog_dr and the two data-pipeline handlers today) must be in the
+    test's declared registry-less map with a reason. An unclassified action or handler fails, so a new write verb or a
+    new writer function fails until it is classified (this is what the Decision 210 annotation's "every writer verb"
+    rests on).
     For each row-writing action (write_ops, file_ops, update_ops through tests/fixtures/ducklake_fakes.py; the tenant
     and project registration verbs; append_telemetry) and every rule kind present in its table's RowRules -- derived
     from the RowRules fields, never a literal list -- a mutation of a rule-clean record that breaks exactly that rule
@@ -360,8 +383,9 @@ scope:
   action: Create
   purpose: >-
     Each ratchet arm on a fixture base and head (git-free, via the module's snapshot seam): value removal without and
-    with the narrowing entry; an added date with and without it; a new exemption without and with a semantic-break
-    entry; leg removal without and with a base exemption; registry removal; legacy-spelled base contracts read alike.
+    with the narrowing entry; a date added to a live leg, moved later or removed from a surviving leg fails even with
+    an entry, and a date moved earlier passes; a new exemption without and with a semantic-break entry; leg removal
+    without and with a base exemption; registry removal; legacy-spelled base contracts read alike.
 - file: tests/checks/contracts/test__ops_rule_bindings.py
   action: Create
   purpose: >-
@@ -374,7 +398,10 @@ scope:
     Re-pinned to the decomposed modules (measured on the prototype: test_real_tree_passes, test_each_defect_fails,
     test_unreadable_or_absent_base_legs, test_exclude_before_cannot_move_later, test_registry_removal_fails_the_ratchet
     and test_retired_expression_write_time_tests_are_ignored assume the legacy spelling); the real tree passes over
-    nine tables; manifest pre_globs are a superset. No assertion is weakened.
+    nine tables; manifest pre_globs are a superset. test_exclude_before_cannot_move_later's `_earlier` mutation splits
+    in two: moving tags' date earlier still passes, and deleting effort.accepted_values.exclude_before (which passes
+    today, lines ~242-257) now fails naming the removed date -- a tightening of the check (Decision 64), so no
+    assertion is weakened.
 - file: tests/test_contract_rules.py
   action: Modify
   purpose: >-
@@ -384,7 +411,8 @@ scope:
   action: Modify
   purpose: >-
     test_not_null_by_presence_and_exempt_rule_not_projected (new); test_envelope_rules_layer_under_a_local_block
-    re-pinned to the new spelling.
+    re-pinned to the new spelling. The file is at 463 of 500 SLOC: keep the addition compact; if it would cross 500,
+    concern-split the file (Decision 131), never raise a budget.
 - file: tests/test_contracts.py
   action: Modify
   purpose: _override_loosens reads presence and still fires on a legacy enforced false over a referenced not_null.
@@ -406,9 +434,17 @@ scope:
 - file: tests/ducklake_neon_smoke_test/test_lambda_ops_gates.py
   action: Modify
   purpose: >-
-    test_dormant_refusal_cases_answer_400 -- the gate passes on a stubbed 400 naming dormant and fails on a 422
-    schema_gate (the regressed-boundary answer; the schema-invalid probe record can never be written) and on any
-    other answer.
+    New node test_dormant_refusal_cases_answer_400, parametrized over the stub's answer: the dormant helper passes when
+    every DORMANT_REFUSAL_CASES pair answers 400 naming dormant, and fails on a 422 schema_gate or a 409 referential
+    (the regressed-boundary answers; the schema-invalid probe record can never be written), on a 200, and on a 400
+    that does not name dormant. Re-pin of the graduated test_lambda_row_rules_ok (registry row ops-row-rules-wiring),
+    derived from the case tuples and never weakened (Decision 181 cl.1): the _row_rules_invoke stub routes a call on a
+    dormant table to a 400 dormant answer that raises on any (table, verb) outside DORMANT_REFUSAL_CASES, as
+    _expected_422 still raises on an unmatched row-rules record; the literal write_ops count of 4 becomes the write_ops
+    count on the row-rules table equal to len(ROW_RULES_CASES) plus each dormant pair sent exactly once; "no update_ops
+    and the last call is read_ops_current" is kept for the row-rules table's calls; the "LAMBDA_ROW_RULES OK 4 cases"
+    assertion is unchanged. The file's other three row-rules nodes fail before the dormant helper runs and need no
+    change.
 - file: tests/checks/contracts/test_telemetry_event_journal_contracts.py
   action: Modify
   purpose: >-
@@ -457,6 +493,9 @@ scope:
 - file: config/agent/verification_registry/entries/temporary-exemption-review-date.yaml
   action: Create
   purpose: Graduated registry row for VP step 11.
+- file: config/agent/verification_registry/entries/row-rules-gate-refuses-dormant-tables.yaml
+  action: Create
+  purpose: Graduated registry row for VP step 12.
 bundled_recommendations: []
 followon_recs: [rec-4158]
 infrastructure_dependencies:
@@ -474,7 +513,8 @@ infrastructure_dependencies:
 acceptance_criteria:
 - >-
   No in-scope contract or baseline carries an `enforced` key on any rule leg; not_null is spelled `true` or
-  `{exclude_before: ISO}`; every field that declared only an optional not_null now carries `dq_intent: {}`; the rule
+  `{exclude_before: ISO}`; every field (contract or baseline) that declared only an optional not_null now carries
+  `dq_intent: {}` (no in-scope $ref field declares an optional not_null in dq_intent_local, measured); the rule
   set every table declares is unchanged (step 13) and config/lambda/ducklake/field_semantics.yaml changes only by the
   two dormant write_boundary keys and the transcripts exemption's class and review_by (step 14).
 - >-
@@ -483,13 +523,14 @@ acceptance_criteria:
 - >-
   validate_ops_rule_source covers the nine contract-backed writer tables and their baselines; its ratchet fails on a
   value removal without a narrowing entry, a new or re-classed exemption without a semantic-break entry, a leg removal
-  without a prior exemption, and (unconditionally, as today) an added or later date.
+  without a prior exemption, and (unconditionally, Decision 64) a date added to a live leg, moved later or removed.
 - >-
   The engine records an exemption on any row-local rule and does not enforce it; an exempt rule never ships as a rule;
   the event projection reads not_null by presence.
 - >-
   The deployed writer refuses write_ops, file_ops and update_ops on ops_priority_queue and ops_execution_plans (400
-  naming dormant) while create_ops_tables still provisions them, proven on every deploy by --lambda-row-rules.
+  naming dormant) while create_ops_tables still provisions them; all six (table, verb) refusals are proven on every
+  deploy by --lambda-row-rules, and provisioning by the handler node (step 9).
 - A past review_by on a temporary exemption fails the full tier and no --pre run.
 - >-
   The records carry the choice: the write-time-enforcement rule (grammar, ratchet, row-local coverage), one Decision
@@ -538,7 +579,7 @@ verification_plan:
   phase: pre-deploy
   action: The ratchet fails each loosening or narrowing move without its marker and passes it with the marker.
   command: bin/venv-python -m pytest "tests/checks/contracts/test__rule_ratchet.py::test_loosening_and_narrowing_need_their_marker" -q
-  expected: Exit 0; every parametrized arm (value removal, new or re-classed exemption, leg removal, registry removal, and the unconditional added or later date) passes.
+  expected: Exit 0; every parametrized arm (value removal, new or re-classed exemption, leg removal, registry removal, and the unconditional added, later or removed date) passes.
   fix_if: An arm that passes without its marker -> fix the ratchet; tightenings must stay free.
   hermetic: true
   graduation: graduate
@@ -603,13 +644,15 @@ verification_plan:
   graduation_check_id: temporary-exemption-review-date
 - step: 12
   phase: pre-deploy
-  action: The deploy gate's dormant cases pass on a 400 and fail on a 200.
+  action: >-
+    The deploy gate's six dormant cases pass only on a 400 naming dormant, and fail on a 422 schema_gate, a 409
+    referential, a 200 or a 400 that does not name dormant.
   command: bin/venv-python -m pytest "tests/ducklake_neon_smoke_test/test_lambda_ops_gates.py::test_dormant_refusal_cases_answer_400" -q
-  expected: Exit 0.
-  fix_if: Fix the gate cases.
+  expected: Exit 0; every parametrized answer passes.
+  fix_if: An answer the gate accepts other than a 400 naming dormant -> fix the gate's discrimination, never the test.
   hermetic: true
-  graduation: waive
-  graduation_waiver_reason: The live gate runs on every deploy (step 20 and the workflow's smoke job); a hermetic standing row on its stubbed form adds nothing beyond that.
+  graduation: graduate
+  graduation_check_id: row-rules-gate-refuses-dormant-tables
 - step: 13
   phase: pre-deploy
   action: >-
@@ -734,7 +777,7 @@ verification_plan:
     --output text --profile agent_platform --region eu-west-2)" DUCKLAKE_READER_URL="$(aws ssm get-parameter --name
     /agent-platform/ducklake/reader_url --query Parameter.Value --output text --profile agent_platform --region
     eu-west-2)" bin/venv-python -m scripts.ducklake_neon_smoke_test --lambda-row-rules --profile agent_platform
-  expected: Exit 0 and LAMBDA_ROW_RULES OK printed, naming the dormant cases.
+  expected: Exit 0 and LAMBDA_ROW_RULES OK printed, with the six dormant cases refused.
   fix_if: >-
     A 200 on a dormant case -> STOP, revert the merge (the workflow redeploys the prior code) and RCA (Decision 55);
     a row-rule case regression -> the same.
@@ -813,7 +856,7 @@ test_obligations:
   test_selector: tests/lambdas/ducklake_writer/handler/test_ops_actions.py::test_dormant_tables_refuse_generic_writes_but_provision
   red_green_expectation: red before (node absent), green after
 - source: scripts/ducklake_smoke/lambda_ops_gates.py
-  behavior: The per-deploy gate proves the dormant refusal live.
+  behavior: The per-deploy gate proves all six dormant refusals live and fails on any other answer.
   verification_step: 12
   test_selector: tests/ducklake_neon_smoke_test/test_lambda_ops_gates.py::test_dormant_refusal_cases_answer_400
   red_green_expectation: red before (node absent), green after
@@ -1012,6 +1055,11 @@ test_obligations:
   verification_step: 11
   test_selector: tests/checks/contracts/test_validate_temporary_exemption_review.py::test_past_review_by_fails
   waiver_reason: A registry row records the graduated node; the node itself (step 11) is the evidence.
+- source: config/agent/verification_registry/entries/row-rules-gate-refuses-dormant-tables.yaml
+  behavior: The graduated registry row for VP step 12.
+  verification_step: 12
+  test_selector: tests/ducklake_neon_smoke_test/test_lambda_ops_gates.py::test_dormant_refusal_cases_answer_400
+  waiver_reason: A registry row records the graduated node; the node itself (step 12) is the evidence.
 constraints:
 - >-
   No rule is added, removed or re-dated by the re-spelling (step 13); every exclude_before carries over (Decision 64);
@@ -1030,6 +1078,7 @@ context:
   annotation scoped to row-local rules; cross-row rules stay rec-4121 and rec-4166 residuals); T4.5 c2 folded, not
   duplicated; T4.3 gains a contract-first criterion on a critical-path item, accepted. CITE: 210, 64, 65, 79, 126, 128,
   170, 176, 177, 187, 201, 212. Decisions triaged: 170 of 170. Roadmap items intersected: 24; CONFLICT: 0; RELATED: 21.
+  The plan also relies on 70, 118, 163, 181 and 191 (critique rounds); the checklist below names the union.
 - 'gates: decision-scout=FLAGS_FOUND (all resolved); plan-critique=<verdict> after <N> round(s)'
 - >-
   Operator direction (Benjamin, 2026-10-15, thread "Ops enforcement plan C"): every fork went to three independent
@@ -1053,12 +1102,11 @@ context:
 - >-
   Coverage after this plan: declarations -> validate_ops_rule_source (nine tables); writer enforcement ->
   validate_write_time_enforcement_conformance + --lambda-row-rules; cross-row write-owned rules -> rec-4121 (named
-  residual); dependency references -> rec-4166; ops_decisions Phase 2 -> rec-4167; portal and ops.yaml -> the portal
-  row-rule gate plan; DQ reading the contracts -> T1.6 c7.
+  residual); dependency references -> rec-4166; ops_decisions Phase 2 -> rec-4167; portal and ops.yaml -> rec-4158
+  (the portal row-rule gate plan); DQ reading the contracts -> T1.6 c7.
 - >-
-  Not in scope, noted: the writer injects _contract_version "1" on contract-less tables (handler.py) -- harmless while
-  they are refused; the live/dormant status tags of the two sidecar tables are left as they are (the check keys on
-  write_boundary, never on status, Decision 191).
+  Not in scope: the writer's _contract_version "1" on contract-less tables (harmless while refused); the sidecar
+  tables' status tags (the check keys on write_boundary, never on status, Decision 191).
 - >-
   Sequencing: telemetry plan 4 (blob route) deletes the transcripts exemption and also regenerates field_semantics.yaml;
   whichever lands second regenerates, never hand-merges. Refusing ops_execution_plans makes T2.26 c9's write-path VP
@@ -1066,7 +1114,7 @@ context:
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
-- 'Only the plan-cited decision sections read: 210, 64, 65, 70, 118, 163, 170, 176, 177, 181, 187, 191, 212'
+- 'Only the plan-cited decision sections read: 64, 65, 70, 79, 118, 126, 128, 163, 170, 176, 177, 181, 187, 191, 201, 210, 212'
 - All files in scope located and readable
 - Acceptance criteria understood and verifiable
 - Check main for telemetry plan 4 (blob route) and any other field_semantics.yaml change before starting; rebase and regenerate if present
@@ -1083,7 +1131,10 @@ execution_steps:
   prose_improvement entry, add one contract-level entry per contract, and add the transcripts exemption's class and
   review_by. Run steps 13 and 14 and the contract-drift check before going on.
 - src/row_rules/rules.py waived exemptions; the event projection's exempt-rule omission; the generator's two guards.
-- The sidecar dispositions and dormant boundary; regenerate field_semantics.yaml; the handler refusal; ducklake_writer.yaml; the gate's dormant cases.
+- >-
+  The sidecar dispositions and dormant boundary; regenerate field_semantics.yaml; the handler refusal;
+  ducklake_writer.yaml; the gate's six dormant cases and the re-pin of the graduated test_lambda_row_rules_ok (derived
+  from the case tuples, never weakened).
 - >-
   Decompose validate_ops_rule_source into the entry module and its three helpers (move first, run the existing tests
   green, then widen and add the ratchet arms); then the conformance check and the review-date check, their manifest
@@ -1092,7 +1143,7 @@ execution_steps:
   Records -- data-modeling-standard.yaml, storage-substrate.yaml, the Decision 210 annotation (measure its bytes),
   decisions-index, T4.3 c6 and T4.5 c2.
 - Execute Verification Plan steps 1-18 -- loop until pass; on an unrecoverable failure stop and RCA (Decision 55).
-- Write the registry rows for the graduated steps (1, 2, 3, 4, 5, 6, 9, 11) with the check ids declared on each step.
+- Write the registry rows for the graduated steps (1, 2, 3, 4, 5, 6, 9, 11, 12) with the check ids declared on each step.
 - >-
   Portal bookkeeping (get_rec_write_guidance first, Decision 66; fetch before update; prepend a dated note, never
   overwrite): rec-4158 gains '[<date> RULE DECLARATIONS AND WRITER CONFORMANCE DELIVERED via
