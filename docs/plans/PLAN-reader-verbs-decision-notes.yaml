@@ -65,7 +65,8 @@ verification_plan:
   action: >-
     Build-facts precondition, run before any edit and again before the squash-merge: the reader verbs build has merged
     to main and ships every fact the three notes state (the module and its per-verb window cap, sessions_window, the
-    two conflict columns, the dedupe test, the preflight gauge and its verb, and the WINDOW VERBS note).
+    two conflict columns, the dedupe test, the preflight gauge and its verb). The WINDOW VERBS leg guards the existing
+    contract note the 199 text points to (on main since 2026-10-05), not a build fact.
   command: >-
     git fetch -q origin main && git cat-file -e origin/main:src/common/ducklake_event_reads.py && git grep -q max_window_days origin/main -- src/common/ducklake_event_reads.py && git grep -q sessions_window origin/main -- src/common/ducklake_event_read_verbs.py && git grep -q conflicted_grain_keys origin/main -- 'src/common/ducklake_event_read*.py' && git grep -q derivation_conflicted origin/main -- 'src/common/ducklake_event_read*.py' && git grep -q conflicted_grain_keys origin/main -- tests/common/test_ducklake_event_read_dedupe.py && git grep -q check_telemetry_health origin/main -- scripts/session/preflight.py && git grep -q telemetry_health_count origin/main -- scripts/preflight/telemetry_health.py && git grep -q 'WINDOW VERBS' origin/main -- docs/contracts/telemetry_sessions.yaml && echo BUILD_ON_MAIN
   expected: Prints BUILD_ON_MAIN.
@@ -79,16 +80,20 @@ verification_plan:
 - step: 2
   phase: pre-deploy
   action: >-
-    The reader verbs build's governed deploy succeeded on its merge commit, every job included. Read with
-    mcp__github__actions_list (list_workflow_runs, workflow deploy-ducklake-lambdas.yml, head_sha the build's merge
-    SHA), then list_workflow_jobs for that run, writing the jobs JSON to a scratch path exported as DEPLOY_JOBS_JSON.
-    Record the build PR number for the notes' #NNNN.
+    The reader verbs build's governed deploy is green on main. Export BUILD_MERGE_SHA (the squash commit of the build
+    PR that adds src/common/ducklake_event_reads.py, whose number fills the notes' #NNNN even if fix-forward PRs follow
+    it). With mcp__github__actions_list (list_workflow_runs, workflow deploy-ducklake-lambdas.yml, branch main) take the
+    run on BUILD_MERGE_SHA, or, if that run was red and the build thread fixed forward, the first later successful run;
+    export its head SHA as DEPLOY_RUN_SHA, then list_workflow_jobs for that run, writing the jobs JSON to a scratch path
+    exported as DEPLOY_JOBS_JSON.
   command: >-
-    test -s "$DEPLOY_JOBS_JSON" && bin/venv-python -c "import json,os;j=json.load(open(os.environ['DEPLOY_JOBS_JSON'])); jobs={x['name']:x.get('conclusion') for x in (j.get('jobs') if isinstance(j,dict) else j)};print(jobs); want=['deploy-maintenance','maintenance-smoke','reconcile-gate','deploy-serving','smoke']; assert all(any(n.startswith(w) and c=='success' for n,c in jobs.items()) for w in want),jobs;print('DEPLOY_OK')"
+    test -s "$DEPLOY_JOBS_JSON" && git fetch -q origin main && git merge-base --is-ancestor "$BUILD_MERGE_SHA" "$DEPLOY_RUN_SHA" && bin/venv-python -c "import json,os;j=json.load(open(os.environ['DEPLOY_JOBS_JSON'])); jobs={x['name']:x.get('conclusion') for x in (j.get('jobs') if isinstance(j,dict) else j)};print(jobs); want=['deploy-maintenance','maintenance-smoke','reconcile-gate','deploy-serving','smoke']; assert all(any(n.startswith(w) and c=='success' for n,c in jobs.items()) for w in want),jobs;print('DEPLOY_OK')"
   expected: Every named job concluded success (a skipped job fails this step), then DEPLOY_OK.
   fix_if: >-
     A red or skipped job means the redeployed reader, and so the six-call and enforced-reader claims, are not yet
-    live: wait for the build thread's fix. An empty file means the MCP read was not saved.
+    live: wait for the build thread's fix-forward and bind to the first green run whose head contains BUILD_MERGE_SHA
+    (never a re-run to green, Decision 55). A failed ancestry check means the chosen run predates the build. An empty
+    file means the MCP read was not saved.
   hermetic: false
   graduation: not-applicable
 - step: 3
@@ -102,7 +107,8 @@ verification_plan:
   fix_if: >-
     unavailable means no credentials or a reader error: confirm `aws sts get-caller-identity --profile agent_platform`
     and retry once; unpopulated or a red build-side step 15 is the build thread's to fix. Never land the 215 note
-    while the gauge is not live.
+    while the gauge is not live. If slice 2c (rec-4292) has already re-pinned the gauge to production, a pass on the
+    production catalog satisfies this step: record the catalog name instead of failing on it.
   hermetic: false
   graduation: not-applicable
 - step: 4
@@ -135,7 +141,7 @@ verification_plan:
     equals its approved template in execution_steps[2] of this plan once the date, the PR number and (207 only) the
     test node are normalised. The test node the 207 note names must exist in the dedupe test file.
   command: >-
-    bin/venv-python -c "import subprocess as s,re,yaml;d=s.run(['git','diff','--unified=0','origin/main','--','docs/DECISIONS.md'],capture_output=True,text=True,check=True).stdout.splitlines();rm=[l for l in d if l.startswith('-') and not l.startswith('--- a/')];ad=[l[1:] for l in d if l.startswith('+') and not l.startswith('+++ b/') and l[1:].strip()];assert not rm,rm;assert len(ad)==3,ad;st=yaml.safe_load(open('docs/plans/PLAN-reader-verbs-decision-notes.yaml',encoding='utf-8'))['execution_steps'][2];tp=dict((int(k.split()[1]),v) for k,v in (l.split(': ',1) for l in st.splitlines() if l.startswith('Decision ')));nz=lambda x:re.sub(r'test_ducklake_event_read_dedupe\.py::test_\w+','test_ducklake_event_read_dedupe.py::test_conflicted_keys_are_reported_never_resolved',re.sub(r'#\d+\)','#NNNN)',re.sub(r'^> \*\*Update \(\d{4}-\d{2}-\d{2}\)','> **Update (YYYY-MM-DD)',x)));t=open('docs/DECISIONS.md',encoding='utf-8').read();sp=lambda n:(lambda q:q[:q.index(chr(10)+'---'+chr(10))])(t[t.index('## Decision %d:'%n):]);got={n:[l for l in ad if l in sp(n)] for n in tp};assert all(len(v)==1 for v in got.values()),got;bad=[n for n in tp if nz(got[n][0])!=tp[n]];assert not bad,bad;nm=re.search(r'::(test_\w+)',got[207][0]).group(1);assert 'def '+nm+'(' in open('tests/common/test_ducklake_event_read_dedupe.py',encoding='utf-8').read(),nm;print('append-only and verbatim: 3 notes')"
+    bin/venv-python -c "import subprocess as s,re,yaml;d=s.run(['git','diff','--unified=0','origin/main','--','docs/DECISIONS.md'],capture_output=True,text=True,check=True).stdout.splitlines();rm=[l for l in d if l.startswith('-') and not l.startswith('--- a/')];ad=[l[1:] for l in d if l.startswith('+') and not l.startswith('+++ b/') and l[1:].strip()];assert not rm,rm;assert len(ad)==3,ad;st=yaml.safe_load(open('docs/plans/PLAN-reader-verbs-decision-notes.yaml',encoding='utf-8'))['execution_steps'][2];tp=dict((int(k.split()[1]),v) for k,v in (l.split(': ',1) for l in st.splitlines() if l.startswith('Decision ')));nz=lambda x:re.sub(r'test_ducklake_event_read_dedupe\.py::test_\w+','test_ducklake_event_read_dedupe.py::test_conflicted_keys_are_reported_never_resolved',re.sub(r'#\d+\)','#NNNN)',re.sub(r'^> \*\*Update \(\d{4}-\d{2}-\d{2}\)','> **Update (YYYY-MM-DD)',x)));t=open('docs/DECISIONS.md',encoding='utf-8').read();sp=lambda n:(lambda q:q[:q.index(chr(10)+'---'+chr(10))])(t[t.index('## Decision %d:'%n):]);got={n:[l for l in ad if l in sp(n)] for n in tp};assert all(len(v)==1 for v in got.values()),got;bad=[n for n in tp if nz(got[n][0])!=tp[n]];assert not bad,bad;nm=re.search(r'::(test_\w+)',got[207][0]).group(1);assert 'conflict' in nm and 'def '+nm+'(' in open('tests/common/test_ducklake_event_read_dedupe.py',encoding='utf-8').read(),nm;print('append-only and verbatim: 3 notes')"
   expected: >-
     Prints the append-only and verbatim line and exits 0. Measured at authoring time on a scratch copy of this branch:
     exit 1 with no notes; exit 0 with the three notes and a dedupe test file defining the node; exit 1 naming [199]
@@ -144,8 +150,9 @@ verification_plan:
     A removed line means an existing line was edited: restore it. A count other than three means a note was wrapped
     or an extra line added: each note is one physical line. A Decision number in the assertion means that note's text
     differs from its approved template beyond the date, PR number or test node: copy it again from execution_steps[2].
-    A missing test node means the 207 note names a node the build does not define: use the build's real node name
-    (the one permitted substitution).
+    A test-node assertion means the 207 note names a node the build does not define, or one that is not the
+    conflict-report test: use the build's real name for that test (the one permitted substitution, and only for a
+    rename of it).
   hermetic: true
   expected_literals: []
   graduation: waive
@@ -189,7 +196,8 @@ verification_plan:
   phase: pre-deploy
   action: >-
     Full presubmit tier on the committed, rebased, clean tree (git-ops.yaml handoff_sequence), then the head
-    attestation: validate_decisions_size (expect only the Decision 199 amendment-delta WARN),
+    attestation: validate_decisions_size (expect the Decision 199 amendment-delta WARN and the pre-existing
+    standing-pressure aggregate WARN, its count unchanged at 30),
     validate_decision_currency, validate_decisions_index_freshness, validate_decision_entry_conformance,
     validate_verification_registry (the VF-06 differential admission of the new row) and
     validate_graduation_completeness.
@@ -208,15 +216,26 @@ verification_plan:
   action: >-
     After the squash merge: ci.yml's trailer-census, trailer-acceptance-evaluate and trailer-closure jobs on the merge
     commit's main run closed rec-4324 (Decision 201), and rec-autoclose.yml's ops_decisions backfill run on the same
-    commit concluded success (Decision 84; it fires because docs/DECISIONS.md changed).
-  command: mcp__ducklake-reads__recs_by_ids ids=rec-4324
-  expected: >-
-    rec-4324 status closed; the three trailer jobs and the rec-autoclose backfill run concluded success
-    (mcp__github__actions_list on ci.yml and rec-autoclose.yml for the merge SHA).
+    commit concluded success (Decision 84; it fires because docs/DECISIONS.md changed). With mcp__github__actions_list
+    (list_workflow_runs on ci.yml and on rec-autoclose.yml for the merge SHA, then list_workflow_jobs), write the two
+    jobs JSONs to scratch paths exported as CI_JOBS_JSON and AUTOCLOSE_JOBS_JSON.
+  command: >-
+    test -s "$CI_JOBS_JSON" && test -s "$AUTOCLOSE_JOBS_JSON" && bin/venv-python -c "import json,os;L=lambda e:(lambda j:{x['name']:x.get('conclusion') for x in (j.get('jobs') if isinstance(j,dict) else j)})(json.load(open(os.environ[e])));c=L('CI_JOBS_JSON');a=L('AUTOCLOSE_JOBS_JSON');print(c,a);assert all(any(n.startswith(w) and v=='success' for n,v in c.items()) for w in ('trailer-census','trailer-acceptance-evaluate','trailer-closure')),c;assert a and all(v=='success' for v in a.values()),a;from src.common.ducklake_reader_client import make_reader,fetch_recs_by_ids;r,m=fetch_recs_by_ids(make_reader(profile='agent_platform'),['rec-4324']);assert not m and r[0]['status']=='closed',(m,r and r[0]['status']);print('REC_4324_CLOSED')"
+  expected: The three trailer jobs and every rec-autoclose job concluded success, then REC_4324_CLOSED.
   fix_if: >-
-    Still open: read the trailer-closure (and trailer-acceptance-evaluate) job log for its refusal reason, check the
-    squash body carries `Resolves: rec-4324` and that the acceptance held at the merge commit; report it rather than
-    closing by hand. A red backfill run is its own failure to report.
+    rec-4324 still open: read the trailer-closure (and trailer-acceptance-evaluate) job log for its refusal reason,
+    check the squash body carries `Resolves: rec-4324` and that the acceptance held at the merge commit; report it
+    rather than closing by hand. A red backfill run is its own failure to report.
+  hermetic: false
+- step: 10
+  phase: post-deploy
+  action: >-
+    rec-4024's record agrees with the 207 note (execution step 7): if rec-4024 is still open, its context names the
+    merge commit's short SHA, exported as MERGE_SHORT_SHA.
+  command: >-
+    bin/venv-python -c "import os;from src.common.ducklake_reader_client import make_reader,fetch_recs_by_ids;r,m=fetch_recs_by_ids(make_reader(profile='agent_platform'),['rec-4024']);x=r[0];assert x['status']!='open' or os.environ['MERGE_SHORT_SHA'] in (x.get('context') or ''),x['status'];print('REC_4024_OK',x['status'])"
+  expected: REC_4024_OK with its status (closed by plan 4's build, or open with the note naming the merge SHA).
+  fix_if: An assertion means the update_rec note was not written or names another SHA; append it through the portal.
   hermetic: false
 test_obligations:
 - source: docs/DECISIONS.md
@@ -275,7 +294,7 @@ context:
   per-derivation single-partition bound verbatim; the ~3-clarification cap reads per clause; expect the 199 accretion
   WARN) and SPIRIT 86 NOTE (no day count in the 199 text): both resolved in the approved text. RELATED 84, 88, 93, 81,
   167, 150, 178, 201, 179, 160. Decisions triaged: 170 of 170. Roadmap items intersected: 3; CONFLICT: 0; RELATED: 3.
-- 'gates: decision-scout=FLAGS_FOUND (2 notes, resolved); plan-critique=REVISE r1 (R1-R5 fixed: build-facts precondition, deploy JSON and live gauge steps, trailer-job closure evidence, Commit Flow order, verbatim-fidelity check), confirming round pending'
+- 'gates: decision-scout=FLAGS_FOUND (2 notes, resolved); plan-critique=REVISE r1 (R1-R5 fixed), REVISE r2 (R1 deploy-run binding, R2 test-node fidelity fixed; S1-S5 folded in), confirming round pending'
 - >-
   Direction (Benjamin, cmsg_012XgaFy8VaDQbxP5D8nC9587zPkCFdx5BwFoNH9FbvcLU): add the 199 note, which revisits his
   2026-10-05 W3-1 choice (contract note only, PLAN-telemetry-lifecycle-friction-amendment) because the decision scout
@@ -331,7 +350,7 @@ execution_steps:
   RCA (Decision 55).
 - >-
   Code review; on PROCEED and green CI, re-run VP step 1, then squash-merge with `Resolves: rec-4324` in the body.
-  Then run VP step 9.
+  Then run VP steps 9 and 10 (step 10 after execution step 7's note).
 - >-
   If rec-4024 is still open after the merge, append a dated context note to it through scripts.ops_data_portal
   update_rec: Decision 207's reader-side coverage moved to PLAN-telemetry-reader-verbs (src/common/ducklake_event_reads.py,
