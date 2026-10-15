@@ -30,8 +30,9 @@ scope:
   purpose: >-
     Two read-derived fields after tokens_output_total, tokens_cache_read_total and tokens_cache_creation_total (texts in
     execution_steps[2]), mirroring tokens_input_total and tokens_output_total: derivation timing read, derived_by
-    reader_verb:agent_run_token_rollup, no physical column, realized false. governance_notes names the four totals; one
-    contract-level amendment_log entry.
+    reader_verb:agent_run_token_rollup, no physical column, realized false. tokens_input_total gains one semantics
+    sentence (uncached only, disjoint from the two cache totals) with its amendment_log entry. governance_notes names the
+    four totals; one contract-level amendment_log entry.
 - file: src/common/ducklake_event_read_sql.py
   action: Modify
   purpose: >-
@@ -61,9 +62,9 @@ scope:
     and event_id, R5b), counted once, and (ii) an R5c entity-collapse pair for one provider response (claude_code against
     litellm, or an earlier against a later final-usage row) whose rows differ in tokens_cache_read and
     tokens_cache_creation: every total takes the winning row's values, the same row tokens_input_total uses, so a per-class
-    MAX or a separate dedupe fails. Second new node test_agent_run_token_rollup_empty_session_shares_one_convention: for a session
-    with no model_call rows the two new totals carry exactly the empty value tokens_input_total carries (NULL or 0, as the
-    reader verbs build chose).
+    MAX or a separate dedupe fails. Second new node test_agent_run_token_rollup_empty_session_shares_one_convention: for a
+    session with no model_call rows the rollup answers in the same shape the reader verbs build chose for
+    tokens_input_total (no row, or one row whose four totals all carry the same empty value, NULL or 0).
 - file: tests/fixtures/telemetry_read_db.py
   action: Modify
   purpose: >-
@@ -95,15 +96,29 @@ scope:
 bundled_recommendations:
 - rec-4333
 followon_recs: []
-infrastructure_dependencies: []
+infrastructure_dependencies:
+- >-
+  LAMBDA-DEPLOY (Decision 79/125/126): src/common/ducklake_event_read_sql.py and ducklake_event_read_verbs.py are in the
+  ducklake_reader bundle, so the governed deploy-ducklake-lambdas run on the merge commit redeploys the DuckLake functions
+  and runs their smoke gates; step 7 asserts every deploy and smoke job and step 8 the reader's read_version. Only the
+  reader gains behaviour. No Terraform or IAM.
+- >-
+  LAMBDA-DEPLOY DEFERRED (CD.16 / Decision 79), per-artifact reasoned disposition: compute_affected_artifacts flags
+  data-pipeline through src/common/ducklake_reader_client.py (bundled by its src/ wildcard). No build, deploy or smoke
+  test is owed: no data-pipeline handler reads VERB_FIELDS (its only other consumer is
+  scripts/checks/hygiene/validate_episode_lookup_projection.py), deploy-prod-lambdas.yml's path triggers exclude the file,
+  and the consuming scheduled agents are disabled; the artifact refreshes with its next governed deploy. Same disposition
+  as PLAN-telemetry-reader-verbs.
 acceptance_criteria:
 - >-
   telemetry_observations.yaml's tokens_input description and semantics, and the appended tokens_cache_read and
   tokens_cache_creation sentences, equal the approved texts in execution_steps[1], pinned by step 2's node (the date in
-  each amendment_log entry is the landing date); no other field of that contract changes.
+  each amendment_log entry is the landing date); no field's type, nullability, dq_intent or derivation changes (VP step
+  4).
 - >-
   telemetry_agents.yaml carries tokens_cache_read_total and tokens_cache_creation_total as read-derived fields from
-  reader_verb:agent_run_token_rollup with no physical column, and its governance_notes names all four totals.
+  reader_verb:agent_run_token_rollup with no physical column, tokens_input_total says it is uncached only, and its
+  governance_notes names all four totals.
 - >-
   agent_run_token_rollup returns tokens_input_total, tokens_output_total, tokens_cache_read_total and
   tokens_cache_creation_total, each the sum of its own class over the session's deduped model_call rows; a duplicate
@@ -211,7 +226,7 @@ verification_plan:
     gate covers it on main.
 - step: 6
   phase: pre-deploy
-  action: Lint and run the full tier, as the handoff policy requires before commit.
+  action: Lint and run the full tier on the committed, clean tree before the push, as the handoff policy requires.
   command: >-
     bin/venv-python -m ruff check src/common tests/common tests/checks/contracts && bin/venv-python -m scripts.validate
   expected: Exit 0 from both.
@@ -312,12 +327,14 @@ test_obligations:
   verification_step: 3
   test_selector: tests/common/test_ducklake_event_read_verbs.py::test_agent_run_token_rollup_carries_cache_classes
   waiver_reason: >-
-    CONDITIONAL documentation row that applies only if the contract enumerates the verb's columns; the behaviour it would
-    describe is tested by step 3's nodes and the edit itself by validate_contract_drift's amendment-log pass.
+    CONDITIONAL documentation row that applies only if the contract enumerates the verb's columns (today it does not);
+    the behaviour it would describe is tested by step 3's nodes, and the documentation edit itself has no mechanical
+    check, so the implementer reports whether the row applied.
 constraints:
 - >-
-  Contract texts are verbatim from execution_steps[1] and [2] (Benjamin approved the tokens_input wording on 2026-10-15);
-  any change to their meaning needs his word again.
+  Contract texts are verbatim from execution_steps[1] and [2] (Benjamin approved the tokens_input wording on 2026-10-15;
+  the coverage sentence, the tokens_input_total sentence and the cache-read zero sentence await his word, and the plan PR
+  does not merge without it); any change to their meaning needs his word again.
 - >-
   Do not edit docs/plans/PLAN-telemetry-reader-verbs.yaml or any reader verbs build file outside this scope; a needed
   change outside scope goes to the coordinator (scope escalation rule), never inline (Decision 59).
@@ -326,10 +343,10 @@ constraints:
   byte-identical (VP step 4).
 - No hit-rate verb (rec-4331), provider usage mapping (rec-4028), 1-hour cache-write column (rec-4292) or resume-journal Decision (rec-4332).
 - >-
-  SLOC (Decision 128/166): if this change pushes src/common/ducklake_reader_client.py, src/common/ducklake_event_read_sql.py
-  or tests/common/test_ducklake_event_read_verbs.py past its budget (500 when unregistered), or either contract past its
-  line cap, stop and escalate to the coordinator; a decomposition is out of this scope and a budget raise is never the
-  fix.
+  SLOC (Decision 128/166): if this change pushes any Python scope file (src/common/ducklake_reader_client.py,
+  src/common/ducklake_event_read_sql.py, src/common/ducklake_event_read_verbs.py, the three test modules and
+  tests/fixtures/telemetry_read_db.py) past its budget (500 when unregistered), or either contract past its line cap,
+  stop and escalate to the coordinator; a decomposition is out of this scope and a budget raise is never the fix.
 - No rescue agents or workaround loops (Decision 55).
 context:
 - >-
@@ -349,10 +366,6 @@ context:
 - >-
   No row changes and no parser_version bump: the live producer (src/turn_capture/observations.py:79-84) already copies
   Anthropic's exclusive input_tokens; semantic_break true is the contract-drift pairing rule, not a data change.
-- >-
-  LAMBDA-DEPLOY (Decision 79/125/126): the event-read modules trigger deploy-ducklake-lambdas on merge; only the reader
-  gains behaviour. data-pipeline deploy deferred (CD.16): flagged only via ducklake_reader_client.py, whose VERB_FIELDS its
-  handlers never read; same disposition as PLAN-telemetry-reader-verbs.
 - >-
   Data-model walk: grain, merge key, identity, partition and write path unchanged; prose and read-derived fields only; no
   Fable escalation owed.
@@ -380,7 +393,7 @@ execution_steps:
   tests/turn_capture/test_observations.py; every other producer is an unenforced residual owned by rec-4028; the writer
   cannot decide disjointness from one row (Decision 210 cl.1)." (c)
   tokens_cache_read.semantics: append "Prompt tokens served from the provider's prompt cache; disjoint from tokens_input and
-  tokens_cache_creation (see tokens_input)." (d) tokens_cache_creation.semantics: append "Prompt tokens written to the
+  tokens_cache_creation (see tokens_input). A provider with no cache-read class records 0." (d) tokens_cache_creation.semantics: append "Prompt tokens written to the
   provider's prompt cache; disjoint from tokens_input and tokens_cache_read (see tokens_input). A provider with no
   cache-write class records 0." (e) An amendment_log entry on each of the three fields: {date: <landing date>,
   semantic_break: true, change_class: governance_note_add, summary: "PLAN-telemetry-cache-token-totals (rec-4333): the four
@@ -389,7 +402,7 @@ execution_steps:
   whose input_tokens excludes cache reads and writes, and no reader consumes the classes yet."} (fields without an
   amendment_log gain one). semantic_break is true because a description/semantics diff under any change_class other than
   prose_improvement must say so (scripts/contracts_enforcement.py _amendment_entry_consistent, validate_contract_drift
-  category 6; the 2026-09-24 entries on these fields set the precedent). (f) A contract-level amendment_log entry, newest
+  category 6; the 2026-09-24 entries on tokens_input and tokens_output set the precedent). (f) A contract-level amendment_log entry, newest
   first: {date: <landing date>, semantic_break: true, change_class: governance_note_add, summary:
   "PLAN-telemetry-cache-token-totals (rec-4333): the four token classes are declared disjoint (tokens_input is uncached
   prompt tokens only). Per-field changes are on their own fields' logs.", migration_story: "No stored row changes; see the
@@ -410,13 +423,20 @@ execution_steps:
   cache-creation in place of cache-read (description "Total cache-creation tokens across the agent run. ...", semantics
   naming tokens_input_total and tokens_cache_read_total as the disjoint siblings, formula sum(tokens_cache_creation),
   input telemetry_observations.tokens_cache_creation). In governance_notes replace "tokens_input_total/tokens_output_total"
-  with "tokens_input_total, tokens_output_total, tokens_cache_read_total and tokens_cache_creation_total". Contract-level
+  with "tokens_input_total, tokens_output_total, tokens_cache_read_total and tokens_cache_creation_total".
+  tokens_input_total.semantics: keep the existing text and append "Uncached prompt tokens only (telemetry_observations.yaml
+  tokens_input); disjoint from tokens_cache_read_total and tokens_cache_creation_total.", with a field amendment_log entry
+  {date: <landing date>, semantic_break: true, change_class: governance_note_add, summary:
+  "PLAN-telemetry-cache-token-totals (rec-4333): the total sums uncached prompt tokens only.", migration_story: "No verb
+  output changes: the rollup already sums tokens_input, which this plan defines as uncached."}. Contract-level
   amendment_log entry, newest first: {date: <landing date>, semantic_break: false, change_class: field_add, summary:
   "PLAN-telemetry-cache-token-totals (rec-4333): tokens_cache_read_total and tokens_cache_creation_total, read-derived by
   agent_run_token_rollup; governance_notes names the four totals."}
 - >-
   tests/checks/contracts/test_telemetry_event_journal_contracts.py: add TestTokenClassesDisjoint with the node named in
-  scope, using the module's _norm and _load helpers (phrase assertions over whitespace-normalised, lower-cased text).
+  scope, using the module's _norm and _load helpers (phrase assertions over whitespace-normalised, lower-cased text). Find
+  each field's new amendment_log entry by its "PLAN-telemetry-cache-token-totals" summary, never by position (some logs
+  are not newest-first).
 - >-
   src/common/ducklake_event_read_sql.py: extend the agent_run_token_rollup query with the two sums, same CTE and dedupe,
   same empty-session convention as tokens_input_total, columns appended after tokens_output_total. Then
@@ -426,9 +446,17 @@ execution_steps:
   cases non-zero cache classes and expected totals, and add the two new nodes as scope describes (the R5b re-delivery,
   the R5c collapse pair with differing cache values, and the empty session). Touch tests/fixtures/telemetry_read_db.py
   only under its CONDITIONAL row.
+- Execute VP steps 1-5; loop until each passes.
+- Code review (the code-review skill in a fresh context); fix every blocking finding.
 - >-
-  Execute the Verification Plan: steps 1-6 before the PR; loop until each passes. The squash merge body carries
-  "Resolves: rec-4333". Steps 7-9 after the merge. On an unrecoverable V3 failure stop and RCA (Decision 55).
+  Closure (implement skill Commit Flows; docs/contracts/git-ops.yaml), each outcome reported separately: the readiness
+  check (scripts.session.github_readiness); the coverage diagnostic; set implementation_declared true; rebase on
+  origin/main; step 6 (the full tier) on the committed, clean tree, then scripts.checks.validation_result --verify-head;
+  the postflight evidence file and scripts.session.postflight --evidence; push; PR; CI green on the head. The squash body
+  carries "Resolves: rec-4333". Merge on code review PROCEED and green CI under the standing rule (a CI-run DuckLake
+  deploy with no IAM, spend or manual step, and Class A texts landed verbatim as approved), and only while the reader
+  verbs build's deploy is green on main.
+- After merge, steps 7-9 against the deploy run for the merge commit. On an unrecoverable V3 failure stop and RCA (Decision 55).
 - 'Report: what was implemented, each VP step''s output, and which conditional rows applied.'
 rollback: >-
   Revert the squash commit; the governed deploy then redeploys the reader without the two columns. No stored row changes
