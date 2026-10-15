@@ -336,7 +336,7 @@ class TestVerbEquivalence:
 
 
 class TestPhaseBAbsenceOfReaderCalls:
-    """main() issues exactly the two bounded recs reads (Decision 215) and Phase B adds ZERO reader verb calls."""
+    """main() issues the two bounded recs reads (Decision 215) plus one creds-gated telemetry gauge call; Phase B adds ZERO."""
 
     def test_main_phase_b_makes_no_reader_calls(self, tmp_path: Path) -> None:
         verb_calls: dict[str, int] = {}
@@ -388,7 +388,7 @@ class TestPhaseBAbsenceOfReaderCalls:
         ):
             _preflight.main()
 
-        assert verb_calls == {"open_recs_tally": 1, "preflight_signal_rows": 1}, verb_calls
+        assert verb_calls == {"open_recs_tally": 1, "preflight_signal_rows": 1, "telemetry_health_count": 1}, verb_calls
 
 
 class TestLiveDuckLakeCiRcaOpenFile:

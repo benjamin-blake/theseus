@@ -144,7 +144,23 @@ ALL_TABLE_COLUMNS: object = object()
 
 # Same-commit parity with src.common.ducklake_scd2_schema.NAMED_READS_VERSION, asserted by
 # test_verb_fields_parity.py::test_version_pin_matches_registry.
-_NAMED_READS_VERSION_PIN = 5
+_NAMED_READS_VERSION_PIN = 6
+
+# Every event-journal verb's trailing response stamps (Decision 207: generations and conflicts are reported, never resolved).
+_STAMP_FIELDS = ("generations", "conflicted_grain_keys", "derivation_conflicted")
+_STATE_FIELDS = (
+    "session_id",
+    "parent_session_id",
+    "project_id",
+    "session_started_at",
+    "state",
+    "outcome",
+    "duration_seconds",
+    "last_event_timestamp",
+    "as_of",
+    "idle_threshold_seconds",
+    *_STAMP_FIELDS,
+)
 
 VERB_FIELDS: dict[str, tuple[str, ...] | object] = {
     "open_recs": ("id", "title", "context", "created_timestamp", "automatable"),
@@ -192,6 +208,54 @@ VERB_FIELDS: dict[str, tuple[str, ...] | object] = {
     "decision_by_id": ALL_TABLE_COLUMNS,
     "decisions_max_updated": ("ts",),
     "priority_queue_current": ALL_TABLE_COLUMNS,
+    # Event-journal verbs (the reader-only EVENT_READS registry, registry v6): derived columns only, plus the response stamps.
+    "session_state_and_duration": _STATE_FIELDS,
+    "sessions_window": _STATE_FIELDS,
+    "sessions_window_all_purposes": _STATE_FIELDS,
+    "session_process_event_rollup": ("session_id", "process_event_total", "steps_completed_total", *_STAMP_FIELDS),
+    "session_friction_rollup": (
+        "session_id",
+        "rework_total",
+        "exception_total",
+        "label_counts",
+        "unmapped_count",
+        "classifier_version",
+        *_STAMP_FIELDS,
+    ),
+    "agent_run_state_and_duration": (
+        "agent_run_id",
+        "session_id",
+        "agent_type",
+        "state",
+        "outcome",
+        "duration_seconds",
+        "last_event_timestamp",
+        "as_of",
+        "idle_threshold_seconds",
+        *_STAMP_FIELDS,
+    ),
+    "agent_run_token_rollup": (
+        "session_id",
+        "tokens_input_total",
+        "tokens_output_total",
+        "model_call_count",
+        "usage_missing_count",
+        *_STAMP_FIELDS,
+    ),
+    "model_call_cost_estimate": (
+        "session_id",
+        "observation_id",
+        "event_timestamp",
+        "model",
+        "provider",
+        "billing_shape",
+        "tokens_input",
+        "tokens_output",
+        "cost_usd",
+        "cost_source",
+        *_STAMP_FIELDS,
+    ),
+    "telemetry_health_count": ("table_name", "record_count", "meta_schema"),
 }
 
 

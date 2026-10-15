@@ -327,6 +327,11 @@ class TestVerbDedup:
             patch("scripts.preflight.env_git._get_recent_main_commits", return_value=[]),
             patch("scripts.preflight.env_git.run_log_sync", return_value={"status": "skipped", "files": []}),
             patch("scripts.preflight.ci_rca_signals._check_ci_rca_liveness", return_value=None),
+            # The creds-gated warm-up gauge is a reader call by design (one per run, not Phase B): stubbed here.
+            patch(
+                "scripts.preflight.telemetry_health.check_telemetry_health",
+                return_value={"status": "pass", "catalog": "ducklake_smoke", "tables": {}},
+            ),
             patch("session_preflight.PREFLIGHT_REPORT", preflight_report),
             patch("builtins.print"),
         ):

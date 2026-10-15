@@ -37,6 +37,7 @@ from scripts.preflight import (
     prose_context,
     recs_cache,
     summary,
+    telemetry_health,
 )
 
 # Facade re-exports (Decision 80/104 pattern): every public function and every test-referenced
@@ -235,9 +236,12 @@ def main(roadmap_detail: str = "slim") -> int:
     if creds_status == "ok":
         landed_followons = recs_cache._landed_followon_rec_ids()
         recs_inputs = fetch_recs_signal_inputs(followon_ids=landed_followons)
+        telemetry_gauge = telemetry_health.check_telemetry_health()
     else:
         landed_followons = None
         recs_inputs = RecsSignalInputs("unavailable", error="credentials unavailable")
+        telemetry_gauge = telemetry_health.unavailable_gauge("credentials unavailable")
+    print(telemetry_health.format_gauge(telemetry_gauge), file=sys.stderr)
     recs_rows_cache = recs_inputs.signal_rows
     pq_cache = warm_rows.get("ops_priority_queue") if warm_reader_ok.get("ops_priority_queue") else None
     dec_cache = warm_rows.get("ops_decisions") if warm_reader_ok.get("ops_decisions") else None
@@ -381,6 +385,7 @@ def main(roadmap_detail: str = "slim") -> int:
         "ci_rca_back_validation": ci_rca_back_validation,
         "dedup_effectiveness_gauge": dedup_effectiveness_gauge,
         "dedup_effectiveness_escalation": dedup_effectiveness_escalation,
+        "telemetry_health": telemetry_gauge,
         "recent_main_commits": recent_main_commits,
         "friction_patterns": [],
         "log_sync_result": log_sync_result,
@@ -486,7 +491,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--health",
         action="store_true",
-        help=("Run only the telemetry health check. Exits non-zero on critical threshold."),
+        help=("Run only the data-quality health check and print the telemetry-store gauge. Exits 0."),
     )
     parser.add_argument(
         "--open-session",
@@ -519,6 +524,7 @@ if __name__ == "__main__":
 
     if args.health:
         context_docs.print_data_quality_health()
+        print(telemetry_health.format_gauge(telemetry_health.check_telemetry_health()))
         sys.exit(0)
 
     if args.open_session:

@@ -287,17 +287,101 @@ def test_lambda_churn_incontainer_budget_pass_still_no_raise(monkeypatch, capsys
     assert "CHURN_INCONTAINER" in capsys.readouterr().out
 
 
-def test_lambda_reader_ok(monkeypatch, capsys):
-    monkeypatch.setattr(core, "_function_url", lambda role: f"https://{role}")
+_TABLES = ["telemetry_agents", "telemetry_observations", "telemetry_sessions", "telemetry_transcripts"]
+_UNMAPPED_CATALOG = {"ok": False, "error_type": "unmapped", "error_class": "CatalogException"}
+
+
+def _json_resp(status, payload):
+    return _Resp(status, payload, text=json.dumps(payload))
+
+
+def _reader_fake(*, health_tables=None, absent_rows=0, bad=None, probe=None, describe_flags=None):
+    """A consistent reader: ops reads and the write boundary as before, plus the telemetry slot's real answer shapes."""
+    from src.common.ducklake_event_read_verbs import EVENT_READS  # noqa: PLC0415
+
+    flags = describe_flags or {name: entry.agent_facing for name, entry in EVENT_READS.items()}
 
     def fake_invoke(url, payload, **kw):
-        if payload["action"] == "read_current":
-            return _Resp(200, {"row_count": 3})
-        return _Resp(200, {"write_denied": True})
+        action = payload["action"]
+        if action == "read_current":
+            return _json_resp(200, {"row_count": 3})
+        if action == "write_probe":
+            return _json_resp(200, {"write_denied": True})
+        if action == "describe":
+            return _json_resp(200, {"verbs": {v: {"kind": "event_journal", "agent_facing": f} for v, f in flags.items()}})
+        if action == "query_ops":
+            return probe or _json_resp(500, _UNMAPPED_CATALOG)
+        if payload["verb"] == "telemetry_health_count":
+            rows = [{"table_name": t, "record_count": 0, "meta_schema": "ducklake_smoke"} for t in health_tables or _TABLES]
+            return _json_resp(200, {"rows": rows, "row_count": len(rows)})
+        if "MARKER" in payload["params"]["session_id"]:
+            return bad or _json_resp(
+                400, {"ok": False, "error_type": "named_read_input", "error": "session_id is not canonical"}
+            )
+        return _json_resp(200, {"rows": [], "row_count": absent_rows})
 
-    monkeypatch.setattr(core, "_sigv4_invoke", fake_invoke)
+    return fake_invoke
+
+
+def _patch_reader(monkeypatch, **kwargs):
+    monkeypatch.setattr(core, "_function_url", lambda role: f"https://{role}")
+    monkeypatch.setattr(core, "_sigv4_invoke", _reader_fake(**kwargs))
+
+
+def test_lambda_reader_ok(monkeypatch, capsys):
+    _patch_reader(monkeypatch)
     smoke.lambda_reader()
-    assert "READER OK rows=3 write_denied=true" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "READER OK rows=3 write_denied=true" in out and "TELEMETRY_READS_OK" in out
+
+
+def test_telemetry_read_checks_pass_on_a_consistent_reader(monkeypatch, capsys):
+    _patch_reader(monkeypatch)
+    from scripts.ducklake_smoke import lambda_ec_gates  # noqa: PLC0415
+
+    lambda_ec_gates._telemetry_read_checks(profile=None, region="eu-west-2")
+    assert capsys.readouterr().out.strip().endswith("TELEMETRY_READS_OK")
+
+
+def _failing(monkeypatch, match, **kwargs):
+    from scripts.ducklake_smoke import lambda_ec_gates  # noqa: PLC0415
+
+    _patch_reader(monkeypatch, **kwargs)
+    with pytest.raises(core.SmokeTestFailure, match=match):
+        lambda_ec_gates._telemetry_read_checks(profile=None, region="eu-west-2")
+
+
+def test_telemetry_read_checks_fail_when_query_ops_reaches_telemetry(monkeypatch):
+    _failing(monkeypatch, "query_ops must not reach", probe=_json_resp(200, {"ok": True, "rows": [{"count_star()": 0}]}))
+
+
+def test_isolation_check_needs_the_catalog_exception_not_any_error(monkeypatch):
+    for status, body in (
+        (500, {"error_type": "unmapped", "error_class": "ValueError"}),
+        (500, {"error_type": "runtime", "error_class": "CatalogException"}),
+        (503, {"error_type": "catalog_unavailable"}),
+        (403, {"message": "Forbidden"}),
+    ):
+        _failing(monkeypatch, "query_ops must not reach", probe=_json_resp(status, body))
+    from scripts.ducklake_smoke import lambda_ec_gates  # noqa: PLC0415
+
+    _patch_reader(monkeypatch, probe=_json_resp(500, {"error_type": "unmapped", "error_class": "BinderException"}))
+    lambda_ec_gates._telemetry_read_checks(profile=None, region="eu-west-2")
+
+
+def test_telemetry_read_checks_fail_when_a_bad_id_is_echoed(monkeypatch):
+    _failing(
+        monkeypatch,
+        "malformed session_id",
+        bad=_json_resp(400, {"error_type": "named_read_input", "error": "not-a-session-id-MARKER"}),
+    )
+    _failing(monkeypatch, "malformed session_id", bad=_json_resp(500, {"error_type": "unmapped"}))
+
+
+def test_telemetry_read_checks_fail_on_each_other_regression(monkeypatch):
+    _failing(monkeypatch, "describe does not list", describe_flags={"sessions_window": True})
+    _failing(monkeypatch, "all four tables", health_tables=_TABLES[:2])
+    _failing(monkeypatch, "absent session_id returned rows", absent_rows=2)
 
 
 def _warm_reuse_invoker():
@@ -358,11 +442,12 @@ def test_lambda_warm_reuse_fails_when_no_reuse(monkeypatch):
 
 def test_lambda_reader_boundary_broken_fails(monkeypatch):
     monkeypatch.setattr(core, "_function_url", lambda role: f"https://{role}")
+    consistent = _reader_fake()
 
     def fake_invoke(url, payload, **kw):
-        if payload["action"] == "read_current":
-            return _Resp(200, {"row_count": 3})
-        return _Resp(200, {"write_denied": False})  # boundary broken
+        if payload["action"] == "write_probe":
+            return _json_resp(200, {"write_denied": False})  # boundary broken
+        return consistent(url, payload, **kw)
 
     monkeypatch.setattr(core, "_sigv4_invoke", fake_invoke)
     with pytest.raises(smoke.SmokeTestFailure, match="READER FAIL"):

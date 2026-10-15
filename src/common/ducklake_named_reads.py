@@ -20,7 +20,8 @@ from typing import Any
 # crosses the boundary on this path. `{tbl}` = current projection, `{hist}` = history table.
 # ---------------------------------------------------------------------------
 
-NAMED_READS_VERSION = 5
+# 6: the registry format spans two verb classes (these ops verbs and the reader-only EVENT_READS); no verb here changed.
+NAMED_READS_VERSION = 6
 
 # Sources whose rows preflight's bounded read model carries (single source for the derivations and the SQL).
 PREFLIGHT_SIGNAL_SOURCES: tuple[str, ...] = (

@@ -11,7 +11,7 @@ Actions:
   read_ops_current     -- production: current projection of an ops_* table (optional single-key filter).
   read_ops_history     -- production: append-history rows of an ops_* table.
   query_ops            -- production: a read-only SELECT over an ops_* current projection (pushdown).
-  describe             -- production: per-verb parameter schema for every NAMED_READS entry (agent-facing).
+  describe             -- production: per-verb parameter schema for every NAMED_READS and EVENT_READS entry (agent-facing).
 
 PRODUCTION OPS PATH (T2.19 / Decision 81): the reader is the SOLE read authority for the ops_*
 governance tables -- the closed boundary. The read role is S3 GetObject only, so a write attempt is
@@ -26,6 +26,7 @@ import time
 from typing import Any, Callable
 
 from src.common import ducklake_connect_probe as probe
+from src.common import ducklake_event_reads as ev
 from src.common import ducklake_handler_errors as handler_errors
 from src.common import ducklake_runtime as rt
 from src.common.ducklake_metrics import log_invocation
@@ -53,7 +54,9 @@ class NamedReadInputError(Exception):
 
 
 def _is_caller_input_error(exc: BaseException) -> bool:
-    return any(c.__name__ in _CALLER_INPUT_CLASSES and c.__module__ in _DUCKDB_MODULES for c in type(exc).__mro__)
+    return isinstance(exc, ev.EventReadInputError) or any(
+        c.__name__ in _CALLER_INPUT_CLASSES and c.__module__ in _DUCKDB_MODULES for c in type(exc).__mro__
+    )
 
 
 def _open_reader_connection() -> Any:
@@ -182,7 +185,7 @@ def action_named_read(event: dict[str, Any], con: Any) -> dict[str, Any]:
     if not isinstance(params, dict):
         raise rt.DuckLakeRuntimeError("named_read 'params' must be an object of named bind values")
     try:
-        rows = rt.named_read(con, verb=verb, params=params, limit=event.get("limit"))
+        rows, version = ev.serve_named_read(con, verb=verb, params=params, limit=event.get("limit"))
     except Exception as exc:
         # The dead-connection check stays first so the reopen-once path is unchanged.
         if rt.is_dead_connection_error(exc) or isinstance(exc, rt.DuckLakeRuntimeError) or not _is_caller_input_error(exc):
@@ -192,7 +195,7 @@ def action_named_read(event: dict[str, Any], con: Any) -> dict[str, Any]:
         "ok": True,
         "verb": verb,
         "registry_version": rt.NAMED_READS_VERSION,
-        "read_version": rt.read_version(verb),
+        "read_version": version,
         "rows": _json_safe(rows),
         "row_count": len(rows),
     }
@@ -204,7 +207,7 @@ def action_describe(event: dict[str, Any], _con: Any) -> dict[str, Any]:
     Connectionless (pure metadata, Decision 88 bounded egress) -- registered in
     _CONNECTIONLESS_ACTIONS so it runs before any connection open.
     """
-    return {"ok": True, "verbs": rt.describe_named_reads()}
+    return {"ok": True, "verbs": ev.describe_all()}
 
 
 def action_read_ops_history(event: dict[str, Any], con: Any) -> dict[str, Any]:
@@ -353,7 +356,8 @@ def _handle(payload: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
         # in a finally). A dead session (Neon scale-to-zero) surfaces as a connection error from the
         # action; reads are idempotent, so reopen ONCE and retry -- the reopen never leaks a 5xx for
         # this expected transient. Any non-connection error reaches handler()'s terminal answer (Decision 55).
-        con, conn_meta = _warm_reader_connection()
+        acquire = ev.acquirer_for(action, payload, _warm_reader_connection, EXTENSION_DIRECTORY)
+        con, conn_meta = acquire()
         payload["_connect_ms"] = conn_meta["connect_ms"]
         payload["_connect_reused"] = conn_meta["reused"]
         meta.update(
@@ -364,12 +368,12 @@ def _handle(payload: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
         except Exception as exc:  # noqa: BLE001 -- narrowed immediately to the dead-connection case
             if not rt.is_dead_connection_error(exc):
                 raise
-            con, conn_meta = _warm_reader_connection(force_reopen=True)
+            con, conn_meta = acquire(force_reopen=True)
             payload["_connect_ms"] = conn_meta["connect_ms"]
             payload["_connect_reused"] = conn_meta["reused"]
             meta.update(connect_ms=conn_meta["connect_ms"], connect_reused=conn_meta["reused"], reopened=True)
             return _response(200, fn(payload, con))
-    except NamedReadInputError as exc:
+    except (NamedReadInputError, ev.EventReadInputError) as exc:
         handler_errors.log_named_read_input(
             exc.__cause__ or exc, function="reader", verb=exc.verb, request_id=meta.get("request_id")
         )

@@ -21,8 +21,19 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 
 
-def test_named_reads_version_is_5():
-    assert nr.NAMED_READS_VERSION == 5
+def test_registry_version_is_six():
+    assert nr.NAMED_READS_VERSION == 6
+
+
+def test_ops_verb_read_versions_unchanged_by_event_reads():
+    """The event-journal class lives in the reader-only registry: no ops digest or describe row moves (registry v6)."""
+    from src.common import ducklake_event_reads as ev  # noqa: PLC0415
+
+    pinned = TestRecsRelatedVerbV5._PINNED_DIGESTS
+    assert {v: nr.read_version(v) for v in pinned} == pinned
+    assert not set(nr.NAMED_READS) & set(ev._event_reads())
+    described = ev.describe_all()
+    assert {v: described[v] for v in nr.NAMED_READS} == nr.describe_named_reads()
 
 
 def test_rec_history_verb_registered():

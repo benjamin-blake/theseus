@@ -19,6 +19,7 @@ import pytest
 
 duckdb = pytest.importorskip("duckdb")
 
+from src.common.ducklake_event_read_verbs import EVENT_READS  # noqa: E402
 from src.common.ducklake_reader_client import _NAMED_READS_VERSION_PIN, ALL_TABLE_COLUMNS, VERB_FIELDS  # noqa: E402
 from src.common.ducklake_scd2_schema import NAMED_READS, NAMED_READS_VERSION, ScdTableSpec, resolve_table_spec  # noqa: E402
 
@@ -70,9 +71,9 @@ def test_verb_fields_match_registry_sql(verb: str) -> None:
 
 
 def test_verb_fields_covers_every_registered_verb() -> None:
-    assert set(VERB_FIELDS) == set(NAMED_READS), (
-        f"VERB_FIELDS/NAMED_READS drift: missing={set(NAMED_READS) - set(VERB_FIELDS)} "
-        f"extra={set(VERB_FIELDS) - set(NAMED_READS)}"
+    registered = set(NAMED_READS) | set(EVENT_READS)
+    assert set(VERB_FIELDS) == registered, (
+        f"VERB_FIELDS/registry drift: missing={registered - set(VERB_FIELDS)} extra={set(VERB_FIELDS) - registered}"
     )
 
 
