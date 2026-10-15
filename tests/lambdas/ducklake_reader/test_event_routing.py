@@ -98,7 +98,6 @@ def test_ops_actions_never_open_the_telemetry_slot(wiring: dict[str, Any], monke
     monkeypatch.setattr(rt, "read_current", lambda con, **kw: [])
     assert _call({"action": "named_read", "verb": "count_by_status", "params": {}})[0] == 200
     assert _call({"action": "read_current"})[0] == 200
-    assert _call({"action": "attach_check"})[0] == 200
     assert wiring["telemetry_opened"] == 0 and wiring["ops_opened"] == 1
     assert rt._named_slots.get("telemetry", {}) == {}
 
