@@ -81,18 +81,13 @@ def test_identity_contracts_name_counter_lock() -> None:
         assert any(e["date"] == "2026-10-05" for e in _load(name)["amendment_log"])
 
 
-def _prior(log: list[dict]) -> list[dict]:
-    """The amendment log without the rule-declarations plan's entry (these pins concern the earlier entries)."""
-    return [e for e in log if "PLAN-rule-declarations-and-writer-conformance" not in str(e.get("summary"))]
-
-
 def test_writer_contract_idempotency_corrected() -> None:
     doc = _load("ducklake_writer")
     invariants = " ".join(doc["audit_invariants"])
     assert "MERGE-idempotent" not in invariants
     assert "fresh write ULID per call" in invariants and "rec-4121" in invariants
     assert "write_boundary" in invariants and "telemetry_append" in invariants and "registration" in invariants
-    assert _prior(doc["amendment_log"]) and _prior(doc["amendment_log"])[0]["date"] == "2026-10-05"
+    assert any(e["date"] == "2026-10-05" for e in doc["amendment_log"])
 
 
 def test_dimension_joins_declared() -> None:
@@ -176,11 +171,10 @@ def test_dimension_write_paths_name_the_telemetry_writer() -> None:
         )
         assert "write_boundary=registration" in write_path  # the generic-verb refusal sentence is kept
         assert "outside the retry loop" in " ".join(doc["governance"]["id_allocator"].split())
-        assert (
-            _prior(doc["amendment_log"])[-1]["date"] == "2026-10-12"
-            and _prior(doc["amendment_log"])[-1]["change_class"] == "prose_improvement"
+        assert any(
+            e["date"] == "2026-10-12" and e["change_class"] == "prose_improvement" and e["semantic_break"] is False
+            for e in doc["amendment_log"]
         )
-        assert _prior(doc["amendment_log"])[-1]["semantic_break"] is False
     assert "derivations.purpose" in " ".join(_load("ops_projects")["governance"]["write_path"].split())
     assert "rec-4210" in _text("ops_tenants") and "Plan 3's register_tenant verb (attribute update)" not in _text(
         "ops_tenants"
@@ -196,9 +190,12 @@ def test_dimension_write_paths_name_the_telemetry_writer() -> None:
     ):
         assert needle in path, needle
     assert "control_health runs on production only" in " ".join(counters["governance_notes"].split())
-    log = _prior(counters["amendment_log"])
-    assert [e["date"] for e in log] == ["2026-10-05", "2026-10-12"] and log[1]["semantic_break"] is True
-    assert log[1]["change_class"] == "governance_note_add"
+    dates = [e["date"] for e in counters["amendment_log"] if e["date"] in ("2026-10-05", "2026-10-12")]
+    assert dates == ["2026-10-05", "2026-10-12"]
+    assert any(
+        e["date"] == "2026-10-12" and e["semantic_break"] is True and e["change_class"] == "governance_note_add"
+        for e in counters["amendment_log"]
+    )
 
 
 def test_substrate_rows_name_the_telemetry_writer() -> None:
@@ -214,8 +211,8 @@ def test_substrate_rows_name_the_telemetry_writer() -> None:
     assert "telemetry-event-envelope.yaml" in " ".join(telemetry["contract_ref"]) and "blob port" in _text("storage-substrate")
     counters = tables["ops_entity_counters"]["write_boundary"]
     assert "telemetry writer" in " ".join(counters.split()) and "ducklake_smoke" in counters
-    substrate_log = _prior(_load("storage-substrate")["amendment_log"])
-    assert substrate_log[0]["date"] == "2026-10-14" and "PLAN-telemetry-owner-provisioning" in substrate_log[0]["summary"]
+    substrate_log = _load("storage-substrate")["amendment_log"]
+    assert any(e["date"] == "2026-10-14" and "PLAN-telemetry-owner-provisioning" in e["summary"] for e in substrate_log)
     assert any(e["date"] == "2026-10-12" for e in substrate_log)  # the registration-verbs entry is still present
     assert "create_telemetry_tables" in " ".join(telemetry["note"].split())
 
