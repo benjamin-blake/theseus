@@ -23,6 +23,17 @@ from src.common import ducklake_handler_errors as handler_errors
 from src.common import ducklake_runtime as rt
 from src.common.ducklake_metrics import make_metric_sink
 from src.common.ducklake_scd2_schema import SchemaGateError, load_field_semantics
+from src.common.ducklake_telemetry_blobstore import (
+    BlobGrantSelfCheckError,
+    BlobIntegrityError,
+    BlobRoot,
+    BlobStoreAccessError,
+    BlobStoreUnavailableError,
+    LazyBlobStore,
+    S3BlobStore,
+    make_s3_client,
+)
+from src.common.ducklake_telemetry_handshake import capabilities
 from src.common.ducklake_telemetry_registration import CallerPrincipal, clear_telemetry_caches
 from src.common.ducklake_telemetry_txn import TelemetryOCCRetryExhaustedError, TelemetryRequestError
 from src.common.ducklake_write_rules import RowRuleViolationError
@@ -110,9 +121,24 @@ def action_describe(_payload: dict[str, Any]) -> dict[str, Any]:
         "ok": True,
         "function": "ducklake_telemetry_writer",
         "actions": _all_actions(),
-        "verbs": {"append_telemetry": edge.describe_entry()},
+        "verbs": edge.describe_verbs(),
         "catalog": {"meta_schema": meta_schema, "data_path_is_smoke": _is_smoke(data_path)},
+        **_capabilities(),
     }
+
+
+def _capabilities() -> dict[str, Any]:
+    """blob_protocol and the per-table schema view, from the bundled projection (connectionless)."""
+    specs, _ = edge._specs_and_shapes(load_field_semantics())
+    return capabilities(specs, edge.payload_rule(specs))
+
+
+def _blob_store() -> S3BlobStore:
+    root = BlobRoot.from_env(_env("TELEMETRY_BLOB_ROOT"), _env("TELEMETRY_DATA_PATH"), _env("TELEMETRY_META_SCHEMA"))
+    return S3BlobStore(make_s3_client(_env("AWS_REGION")), root)
+
+
+_BLOB_STORE = LazyBlobStore(_blob_store)
 
 
 def _warm_connection() -> tuple[Any, dict[str, Any]]:
@@ -154,27 +180,36 @@ def action_attach_check(_payload: dict[str, Any]) -> dict[str, Any]:
 def run_verb(request: actions.TelemetryRequest, stats: telemetry_log.RequestStats | None = None) -> dict[str, Any]:
     """Validate (before any connection), open the pinned connection, run the verb.
 
-    append_telemetry validates in its own edge (the request grammar) and records OccRetryCount and CommitLatencyMs for the
-    C6 line's EMF block instead of calling PutMetricData; the other verbs keep the function's metric sink.
+    append_telemetry and begin_blobs validate in their own edge (the request grammar) and record OccRetryCount and
+    CommitLatencyMs for the C6 line's EMF block instead of calling PutMetricData; the other verbs keep the function's
+    metric sink.
     """
-    append = request.action == "append_telemetry"
-    if not append:
+    own_edge = request.action in _EDGE_VERBS
+    if not own_edge:
         actions.validate_request(request)
     con, meta = _warm_connection()
     stats = stats if stats is not None else telemetry_log.RequestStats()
     stats.connect_reused = bool(meta["reused"])
     deps = actions.Deps(
         semantics=load_field_semantics(),
-        metric_sink=stats.sink if append else make_metric_sink(namespace=METRIC_NAMESPACE),
+        metric_sink=stats.sink if own_edge else make_metric_sink(namespace=METRIC_NAMESPACE),
         meta_schema=_env("TELEMETRY_META_SCHEMA"),
         data_path_is_smoke=_is_smoke(_env("TELEMETRY_DATA_PATH")),
         catalog_login=_CATALOG_LOGIN.get("login", ""),
         catalog_backend=_CATALOG_LOGIN.get("backend", "other"),
         connect_reused=bool(meta["reused"]),
         stats=stats,
+        blob_store=_BLOB_STORE,
     )
     return _verbs()[request.action](request, con, deps)
 
+
+_EDGE_VERBS = frozenset({"append_telemetry", "begin_blobs"})
+_BLOB_FAULTS: tuple[tuple[type[Exception], str], ...] = (
+    (BlobIntegrityError, "blob_integrity"),
+    (BlobGrantSelfCheckError, "blob_grant_self_check"),
+    (BlobStoreAccessError, "blob_store_access"),
+)
 
 _ACTIONS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "describe": action_describe,
@@ -183,7 +218,7 @@ _ACTIONS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
 
 
 def _verbs() -> dict[str, Callable[[actions.TelemetryRequest, Any, actions.Deps], dict[str, Any]]]:
-    return {**actions.VERBS, "append_telemetry": edge.action_append_telemetry}
+    return {**actions.VERBS, "append_telemetry": edge.action_append_telemetry, "begin_blobs": edge.action_begin_blobs}
 
 
 def _all_actions() -> list[str]:
@@ -213,6 +248,7 @@ _ERROR_MAP: tuple[tuple[type[Exception], int, str], ...] = (
     (RowRuleViolationError, 422, "row_rule"),
     (SchemaGateError, 422, "schema_gate"),
     (OCCRetryExhaustedError, 503, "occ_exhausted"),
+    (BlobStoreUnavailableError, 503, "blob_store_unavailable"),
     (rt.DuckLakeRuntimeError, 500, "runtime"),
 )
 
@@ -283,6 +319,9 @@ def _answer(event: dict[str, Any], context: Any, answer: _Answer) -> tuple[int, 
         for cls, status, error_type in _KERNEL_ERRORS:
             if isinstance(exc, cls):
                 return status, {"ok": False, "error_type": error_type, **_kernel_fields(exc)}
+        for cls, error_type in _BLOB_FAULTS:
+            if isinstance(exc, cls):
+                return 500, {"ok": False, "error_type": error_type, "error": error_type}
         for cls, status, error_type in _ERROR_MAP:
             if isinstance(exc, cls):
                 if isinstance(exc, TelemetryOCCRetryExhaustedError):

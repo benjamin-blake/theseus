@@ -26,6 +26,7 @@ from src.telemetry.timestamps import TimestampError, epoch_ms, parse_iso8601_utc
 from src.turn_capture.record_turn import record_turn
 from src.turn_capture.scrub import scrub_text
 from src.turn_capture.transcript import FsTree
+from tests.fixtures.telemetry_blob_fakes import as_written
 from tests.fixtures.turn_capture_ducklake import create_tables, load_specs, open_local_lake
 from tests.fixtures.turn_capture_real import PrefixTree, discover, raw_inherited, snapshot
 
@@ -342,8 +343,9 @@ def test_pin_is_the_minimum_raw_timestamp_and_every_row_passes_the_kernel_rules(
             f"{tag}: the pin is not the earliest timestamp"
         )
         for (table, rows), _ in zip(run["result"].batches, range(4), strict=True):
-            if rows:
-                prepare_batch(specs[table], rows, tenant_id=TENANT, project_id=PROJECT)
+            if rows:  # the core emits above-threshold content inline; spilling is the transport's job (as_written)
+                written = as_written(rows, specs["telemetry_transcripts"].rules.content.threshold)
+                prepare_batch(specs[table], written, tenant_id=TENANT, project_id=PROJECT)
 
 
 def _stamp(d: dict[str, Any]) -> bool:

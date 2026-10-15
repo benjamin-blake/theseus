@@ -9,10 +9,10 @@ of src.telemetry.append, not even under TYPE_CHECKING (import-linter counts thos
 Rules, in this order: encoding validity (a lone surrogate in any string, U+0000 in a key, the project_ref, the component
 or a row's producer); the body key allowlist; project_ref; component; batch shapes (a closed table set, each table once,
 rows a list of objects, the generation-marker table last when present, at least one row); one producer and one
-parser_version per request; the two temporary rec-4024 refusals (a caller content_uri, inline content above the
-threshold while its exemption stands); then wire timestamp decoding.
+parser_version per request; a caller content_uri (the writer derives it after verifying the object, writer_derived);
+then wire timestamp decoding. Inline content above the threshold is the kernel's row rule (422), not this grammar's.
 
-RequestError carries only error_type, table, row, column, rule, reason and threshold. An undeclared name the caller sent
+RequestError carries only error_type, table, row, column, rule, reason, threshold and cap. An undeclared name the caller sent
 (an unknown body key, table or column) and every row value are never carried.
 """
 
@@ -31,7 +31,6 @@ COMPONENT_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 ALLOWED_BODY_KEYS = frozenset({"action", "project_ref", "component", "batches"})
 _BATCH_KEYS = frozenset({"table", "rows"})
 _TIMESTAMP_TYPE = "TIMESTAMP WITH TIME ZONE"
-_INLINE_RULE = "inline_within_threshold"
 
 
 class RequestError(ValueError):
@@ -48,6 +47,7 @@ class RequestError(ValueError):
         rule: str | None = None,
         reason: str | None = None,
         threshold: int | None = None,
+        cap: int | None = None,
     ) -> None:
         self.error_type = error_type
         self.table = table
@@ -56,6 +56,7 @@ class RequestError(ValueError):
         self.rule = rule
         self.reason = reason
         self.threshold = threshold
+        self.cap = cap
         located = {
             "reason": reason,
             "table": table,
@@ -63,6 +64,7 @@ class RequestError(ValueError):
             "column": column,
             "rule": rule,
             "threshold": threshold,
+            "cap": cap,
         }
         super().__init__(error_type + "".join(f" {k}={v}" for k, v in located.items() if v is not None))
 
@@ -84,18 +86,13 @@ class TableShape:
 
     table: str
     timestamp_columns: frozenset[str]
-    inline_column: str | None = None
     uri_column: str | None = None
-    threshold: int | None = None  # set only while the inline_within_threshold exemption stands
 
     @classmethod
     def from_spec(cls, spec: _SpecLike) -> TableShape:
         timestamps = frozenset(name for name, sql_type in spec.columns.items() if sql_type == _TIMESTAMP_TYPE)
         content = spec.rules.content
-        if content is None:
-            return cls(spec.table, timestamps)
-        exempt = _INLINE_RULE in spec.rules.exemptions
-        return cls(spec.table, timestamps, content.inline, content.uri, content.threshold if exempt else None)
+        return cls(spec.table, timestamps, None if content is None else content.uri)
 
 
 @dataclass(frozen=True)
@@ -205,22 +202,14 @@ def _parse_batches(raw: Any, shapes: Mapping[str, TableShape]) -> list[tuple[str
     return batches
 
 
-def _refuse_temporary(batches: list[tuple[str, list[dict[str, Any]]]], shapes: Mapping[str, TableShape]) -> None:
+def _refuse_caller_uri(batches: list[tuple[str, list[dict[str, Any]]]], shapes: Mapping[str, TableShape]) -> None:
     for table, rows in batches:
-        shape = shapes[table]
+        column = shapes[table].uri_column
+        if column is None:
+            continue
         for index, row in enumerate(rows):
-            if shape.uri_column is not None and shape.uri_column in row:
-                raise _bad("blob_route_unavailable", table=table, row=index, column=shape.uri_column)
-            inline = row.get(shape.inline_column) if shape.inline_column is not None else None
-            if shape.threshold is not None and isinstance(inline, str) and len(inline.encode("utf-8")) > shape.threshold:
-                raise RequestError(
-                    "payload_too_large",
-                    table=table,
-                    row=index,
-                    column=shape.inline_column,
-                    rule=_INLINE_RULE,
-                    threshold=shape.threshold,
-                )
+            if column in row:
+                raise _bad("writer_derived", table=table, row=index, column=column)
 
 
 def _decode_timestamps(
@@ -259,7 +248,7 @@ def parse_append_request(body: Mapping[str, Any], shapes: Mapping[str, TableShap
     batches = _parse_batches(body.get("batches"), shapes)
     producer = _check_one_value(batches, "producer")
     parser_version = _check_one_value(batches, "parser_version")
-    _refuse_temporary(batches, shapes)
+    _refuse_caller_uri(batches, shapes)
     return AppendRequest(project_ref, component, _decode_timestamps(batches, shapes), producer, parser_version)
 
 

@@ -368,9 +368,7 @@ def test_representation_of_and_exemptions_projected() -> None:
     columns = _real_entry("telemetry_transcripts")["columns"]
     for name in ("content", "content_uri"):
         assert columns[name]["representation_of"] == ["content_sha256", "content_bytes"], name
-    exemptions = columns["content"]["write_time_exemptions"]
-    assert set(exemptions) == {"inline_within_threshold"}
-    assert exemptions["inline_within_threshold"]["owner"] == "rec-4024" and exemptions["inline_within_threshold"]["reason"]
+    assert "write_time_exemptions" not in columns["content"]
     assert "write_time_exemptions" not in columns["content_uri"]
 
 

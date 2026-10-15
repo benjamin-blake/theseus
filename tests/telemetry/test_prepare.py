@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import functools
 import hashlib
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -108,12 +109,27 @@ def test_compare_excluded_comes_from_projection() -> None:
     direct = EventTableSpec(table="telemetry_sessions", columns={"event_id": "VARCHAR"})
     assert direct.compare_excluded == structural and direct.rules.not_null == frozenset()
     assert loaded["telemetry_transcripts"].rules.content is not None
-    assert "inline_within_threshold" in loaded["telemetry_transcripts"].rules.exemptions
+    assert not loaded["telemetry_transcripts"].rules.exemptions
     sets = loaded["telemetry_observations"].rules
     assert sets.at_most == {"reasoning_tokens": "tokens_output"} and sets.not_before["event_timestamp"] == "session_started_at"
 
 
+def test_bundled_projection_refuses_inline_above_the_threshold() -> None:
+    threshold = specs()["telemetry_transcripts"].rules.content.threshold
+    assert prepare([transcript(payload="x" * threshold)]).submitted == 1
+    with pytest.raises(GateError) as caught:
+        prepare([transcript(payload="x" * (threshold + 1))])
+    assert isinstance(caught.value, RowRuleGateError) and caught.value.rule == "inline_within_threshold"
+
+
 def test_intra_batch_representation_change_collapses() -> None:
+    # a representation change needs a threshold change, which one projection cannot hold: exempt the leg in this spec only
+    base = specs()["telemetry_transcripts"]
+    exempt = replace(base, rules=replace(base.rules, exemptions={"inline_within_threshold": ("test", "test")}))
+
+    def prepare(rows):
+        return prepare_batch(exempt, rows, tenant_id=TENANT, project_id=PROJECT, now=NOW)
+
     payload = "z" * 70_000
     digest = hashlib.sha256(payload.encode()).hexdigest()
     inline = transcript(payload=payload)

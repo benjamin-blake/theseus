@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 import pytest
@@ -12,8 +13,9 @@ from src.common.ducklake_telemetry_txn import TelemetryRequestError
 from src.lambdas.ducklake_telemetry_writer import telemetry_actions as actions
 from src.lambdas.ducklake_telemetry_writer import telemetry_edge as edge
 from src.lambdas.ducklake_telemetry_writer.telemetry_log import RequestStats
-from src.telemetry.gate import GateError, GrainConflictError
+from src.telemetry.gate import GateError, GrainConflictError, RowRuleGateError
 from tests.fixtures.telemetry_append_fakes import RESOLVED, TENANT, AdapterKit, session_row, transcript_row
+from tests.fixtures.telemetry_blob_fakes import MISSING, FakeBlobStore
 
 SEMANTICS = load_field_semantics()
 SECRET = "SECRET-VALUE-9f3a"  # pragma: allowlist secret
@@ -92,7 +94,6 @@ def test_request_errors_translate_by_type() -> None:
             "mixed_producer",
             "producer",
         ),
-        (body_of(("telemetry_transcripts", [transcript_row(content="x" * 65537)])), 413, "payload_too_large", None),
         (body_of(("telemetry_sessions", [session_row(session_started_at="nope")])), 422, "schema_gate", "wire_timestamp"),
     ]
     for body, status, error_type, reason in cases:
@@ -100,8 +101,14 @@ def test_request_errors_translate_by_type() -> None:
         assert (err.status, err.error_type) == (status, error_type)
         assert err.fields.get("reason") == reason or reason is None
         assert SECRET not in str(err) + str(err.fields)
-    large = refused(cases[4][0])
-    assert large.fields["rule"] == "inline_within_threshold" and large.fields["threshold"] == 65536
+
+
+def test_inline_content_above_the_threshold_is_the_kernels_row_rule() -> None:
+    big = "x" * 65537
+    row = transcript_row(content=big, content_sha256=hashlib.sha256(big.encode()).hexdigest(), content_bytes=len(big))
+    with pytest.raises(RowRuleGateError) as caught:
+        run(body_of(("telemetry_transcripts", [row])))
+    assert (caught.value.rule, caught.value.table, caught.value.row) == ("inline_within_threshold", "telemetry_transcripts", 0)
 
 
 def test_tenant_is_read_once_and_unresolved_is_403(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -139,6 +146,7 @@ def test_response_shape_and_no_value_echo(monkeypatch: pytest.MonkeyPatch) -> No
         },
         "occ_retries": 0,
         "commit_ms": 1,
+        "blobs": {"rows": 0, "verified": 0},
     }
     assert isinstance(out["commit_ms"], int)
     assert deps.stats.tenant_id == TENANT and deps.stats.project_id == RESOLVED
@@ -199,3 +207,56 @@ def test_stats_carry_masked_commit_retries_from_the_outcome(monkeypatch: pytest.
     out = edge.action_append_telemetry(request, object(), deps)
     assert deps.stats.masked_commit_retries == 2
     assert out["occ_retries"] == 3 and "masked_commit_retries" not in out and out["commit_ms"] == 7
+
+
+def begin(items: list[Any], *, store: FakeBlobStore | None = None, **over: Any) -> dict[str, Any]:
+    body = {"action": "begin_blobs", "project_ref": "repo:example", "items": items, **over}
+    request, deps = make(body)
+    deps = actions.Deps(**{**vars(deps), "blob_store": store or FakeBlobStore(default=MISSING)})
+    return edge.action_begin_blobs(actions.TelemetryRequest("begin_blobs", body, request.principal, 100, 100), object(), deps)
+
+
+def test_begin_blobs_edge_response_and_refusals(monkeypatch: pytest.MonkeyPatch) -> None:
+    item = {
+        "session_ref": "sess",
+        "session_started_at": "2026-01-01T12:00:00.000Z",
+        "content_sha256": "a" * 64,
+        "content_bytes": 70000,
+    }
+    out = begin([item, dict(item), {**item, "content_sha256": "b" * 64}])
+    assert (out["ok"], out["tenant_id"], out["project_id"], out["protocol_version"]) == (True, TENANT, RESOLVED, 1)
+    assert out["project_registration"] == "created" and out["counts"]["distinct_keys"] == 2 and out["counts"]["granted"] == 2
+    first, dup, other = out["items"]
+    assert first["upload"]["method"] == "PUT" and set(first["upload"]) == {"method", "url", "headers", "expires_at"}
+    assert dup == {"existed": False, "upload": None, "duplicate_of": 0} and other["duplicate_of"] is None
+    assert begin([item], store=FakeBlobStore())["items"] == [{"existed": True, "upload": None, "duplicate_of": None}]
+
+    def refusal(items: Any, **over: Any) -> TelemetryRequestError:
+        with pytest.raises(TelemetryRequestError) as caught:
+            begin(items, **over)
+        assert SECRET not in str(caught.value) + str(caught.value.fields)
+        return caught.value
+
+    for bad, status, error_type, reason in [
+        ([], 400, "bad_request", "items"),
+        ([{**item, "content_sha256": SECRET}], 400, "bad_request", "content_sha256"),
+        ([{**item, "content_bytes": 65536}], 400, "bad_request", "below_threshold"),
+        ([item] * 201, 413, "too_many_blobs", "items_per_request"),
+    ]:
+        err = refusal(bad)
+        assert (err.status, err.error_type, err.fields["reason"]) == (status, error_type, reason)
+    assert refusal([item], **{SECRET: 1}).fields["reason"] == "unknown_key"
+    reg.clear_telemetry_caches()
+    monkeypatch.setattr(reg, "lookup_tenant", lambda con, kind, ref, semantics=None: None)
+    assert (refusal([item]).status, refusal([item]).error_type) == (403, "tenant_unresolved")
+
+
+def test_describe_verbs_and_the_payload_rule_come_from_the_projection() -> None:
+    verbs = edge.describe_verbs()
+    assert set(verbs) == {"append_telemetry", "begin_blobs"} and verbs["begin_blobs"]["caps"] == {"max_items": 200}
+    specs, _ = edge._specs_and_shapes(SEMANTICS)
+    assert (edge.payload_rule(specs).threshold, edge.payload_rule(specs).cap) == (65536, 8388608)
+    bare = {"telemetry_transcripts": type("S", (), {"rules": type("R", (), {"content": None})()})()}
+    with pytest.raises(TelemetryRequestError) as caught:
+        edge.payload_rule(bare)  # type: ignore[arg-type]
+    assert (caught.value.status, caught.value.error_type) == (500, "projection_defect")

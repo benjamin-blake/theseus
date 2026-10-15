@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 import pytest
 
 from src.common import ducklake_telemetry_append as adapter
+from src.common import ducklake_telemetry_blobs as blobs
 from src.common.ducklake_scd2_schema import DuckLakeRuntimeError, load_field_semantics
+from src.common.ducklake_telemetry_blobstore import BlobIntegrityError, BlobStoreUnavailableError
 from src.common.ducklake_telemetry_txn import TelemetryRequestError
 from src.telemetry.gate import GateError, GrainConflictError
 from tests.fixtures.telemetry_append_fakes import (
@@ -20,6 +23,7 @@ from tests.fixtures.telemetry_append_fakes import (
     specs,
     transcript_row,
 )
+from tests.fixtures.telemetry_blob_fakes import FakeBlobStore
 
 SEMANTICS = load_field_semantics()
 REAL_REF = "repo:example"
@@ -121,3 +125,151 @@ def test_unregistered_reserved_ref_is_refused_before_any_transaction(monkeypatch
     registered = AdapterKit(lookup_result=(RESOLVED, "registered")).install(monkeypatch)
     assert run(parse("drill:registered", ("telemetry_sessions", [session_row()]))).project_id == RESOLVED
     assert "BEGIN" in registered.events
+
+
+class StoredCon:
+    """A connection double for require_stored: records the one read and answers it with the given stored grain keys."""
+
+    def __init__(self, stored: list[tuple[Any, ...]] | None = None) -> None:
+        self.stored, self.reads = stored or [], []
+
+    def execute(self, sql: str, params: Any = None) -> Any:
+        self.reads.append((sql, params))
+        return self
+
+    def fetchall(self) -> list[tuple[Any, ...]]:
+        return self.stored
+
+
+def blob_request(count: int = 1, ref: str = REAL_REF) -> Any:
+    rows = [
+        {
+            k: v
+            for k, v in transcript_row(
+                external_ref=f"t#{i}", entity_ref=f"t#{i}", content_sha256=f"{i:064x}", content_bytes=70000
+            ).items()
+            if k != "content"
+        }
+        for i in range(count)
+    ]
+    return parse(ref, ("telemetry_transcripts", rows))
+
+
+def run_blob(request: Any, store: FakeBlobStore, con: Any = None) -> adapter.AppendOutcome:
+    kw = {"tenant_id": TENANT, "specs": specs(), "semantics": SEMANTICS, "now": NOW, "store": store}
+    return adapter.append_request(con if con is not None else StoredCon(), request, **kw)
+
+
+class OrderedStore(FakeBlobStore):
+    def __init__(self, events: list[str], **kw: Any) -> None:
+        super().__init__(**kw)
+        self.events = events
+
+    def verify(self, content_uri: str, sha_hex: str, size: int, *, now: Any = None) -> str:
+        self.events.append("head")
+        return super().verify(content_uri, sha_hex, size, now=now)
+
+
+def test_blob_rows_get_the_writer_uri_and_head_after_prepare(monkeypatch: pytest.MonkeyPatch) -> None:
+    kit = AdapterKit(lookup_result=(RESOLVED, "registered")).install(monkeypatch)
+    real = adapter.prepare_batch
+    seen: list[Any] = []
+
+    def recording(spec: Any, rows: Any, **kw: Any) -> Any:
+        kit.events.append("prepare")
+        seen.extend(rows)
+        return real(spec, rows, **kw)
+
+    monkeypatch.setattr(adapter, "prepare_batch", recording)
+    store = OrderedStore(kit.events)
+    out = run_blob(blob_request(2), store)
+    uris = [
+        blobs.content_uri_for(TENANT, RESOLVED, "sess", datetime(2026, 1, 1, 12, tzinfo=timezone.utc), f"{i:064x}")
+        for i in range(2)
+    ]
+    assert [r["content_uri"] for r in seen] == uris and sorted(store.heads) == sorted(uris)
+    assert kit.events[:5] == ["lookup", "prepare", "head", "head", "BEGIN"]
+    assert kit.events.index("prepare") < kit.events.index("head") < kit.events.index("BEGIN")
+    assert (out.blob_rows, out.blobs_verified, out.tables["telemetry_transcripts"].inserted) == (2, 2, 2)
+    assert isinstance(out.blob_head_ms, int)
+    plain = run_blob(parse(REAL_REF, ("telemetry_transcripts", [transcript_row()])), store)
+    assert (plain.blob_rows, plain.blob_head_ms) == (0, 0) and len(store.heads) == 2
+    with pytest.raises(DuckLakeRuntimeError, match="blob store"):
+        adapter.append_request(object(), blob_request(), tenant_id=TENANT, specs=specs(), semantics=SEMANTICS, now=NOW)
+
+
+def test_unknown_project_blob_row_is_422_before_any_head(monkeypatch: pytest.MonkeyPatch) -> None:
+    kit = AdapterKit().install(monkeypatch)
+    store = FakeBlobStore()
+    with pytest.raises(TelemetryRequestError) as caught:
+        run_blob(blob_request(2), store)
+    assert (caught.value.status, caught.value.error_type) == (422, "blob_not_verified")
+    assert caught.value.fields == {"table": "telemetry_transcripts", "row": 0, "reason": "unknown_project"}
+    assert store.heads == [] and kit.events == ["lookup"]
+
+
+def test_missing_blob_for_an_unstored_row_is_422_and_writes_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    kit = AdapterKit(lookup_result=(RESOLVED, "registered")).install(monkeypatch)
+    con = StoredCon()
+    for state in ("missing", "stale"):
+        store = FakeBlobStore(default=state)
+        with pytest.raises(TelemetryRequestError) as caught:
+            run_blob(blob_request(2), store, con)
+        assert caught.value.status == 422 and caught.value.fields == {
+            "table": "telemetry_transcripts", "row": 0, "reason": state,
+        }  # fmt: skip
+    assert len(con.reads) == 2 and not [e for e in kit.events if e.startswith("execute")] and "COMMIT" not in kit.events
+
+
+def test_unverified_blob_commits_only_as_a_stored_no_op(monkeypatch: pytest.MonkeyPatch) -> None:
+    kit = AdapterKit(lookup_result=(RESOLVED, "registered")).install(monkeypatch)
+    request = blob_request(2)
+    keys = []
+    attached = blobs.attach_blob_uris(
+        request.batches[0][1], tenant_id=TENANT, project_id=RESOLVED, threshold=65536, cap=8388608
+    )
+    for row in attached:
+        batch = adapter.prepare_batch(specs()["telemetry_transcripts"], [row], tenant_id=TENANT, project_id=RESOLVED, now=NOW)
+        keys.append((batch.rows[0]["producer"], batch.rows[0]["event_id"], batch.rows[0]["parser_version"]))
+    con = StoredCon(keys)
+    uris = [
+        blobs.content_uri_for(TENANT, RESOLVED, "sess", datetime(2026, 1, 1, 12, tzinfo=timezone.utc), f"{i:064x}")
+        for i in range(2)
+    ]
+    store = FakeBlobStore({uris[0]: "missing", uris[1]: "stale"})
+    out = run_blob(request, store, con)
+    assert (out.blob_rows, out.blobs_verified) == (2, 0) and "COMMIT" in kit.events
+    sql, params = con.reads[0]
+    assert "FROM ops_catalog.telemetry_transcripts" in sql and "session_started_at >= ?" in sql and "event_id IN (?, ?)" in sql
+    assert params[2:] == [k[1] for k in keys]
+    partial = StoredCon(keys[:1])
+    with pytest.raises(TelemetryRequestError) as caught:
+        run_blob(request, store, partial)
+    assert caught.value.fields == {"table": "telemetry_transcripts", "row": 1, "reason": "stale"}
+
+
+def test_integrity_mismatch_raises_unmapped(monkeypatch: pytest.MonkeyPatch) -> None:
+    kit = AdapterKit(lookup_result=(RESOLVED, "registered")).install(monkeypatch)
+    with pytest.raises(BlobIntegrityError):
+        run_blob(blob_request(), FakeBlobStore(default="mismatch"))
+    assert "BEGIN" not in kit.events
+
+
+def test_blob_rows_over_the_cap_are_413(monkeypatch: pytest.MonkeyPatch) -> None:
+    kit = AdapterKit(lookup_result=(RESOLVED, "registered")).install(monkeypatch)
+    store = FakeBlobStore()
+    assert run_blob(blob_request(200), store).blob_rows == 200
+    store.heads.clear()
+    with pytest.raises(TelemetryRequestError) as caught:
+        run_blob(blob_request(201), store)
+    assert (caught.value.status, caught.value.error_type) == (413, "too_many_blobs") and store.heads == []
+    assert kit.events.count("BEGIN") == 1
+
+
+def test_store_unavailable_is_503_and_opens_no_transaction(monkeypatch: pytest.MonkeyPatch) -> None:
+    kit = AdapterKit(lookup_result=(RESOLVED, "registered")).install(monkeypatch)
+    store = FakeBlobStore()
+    store.error = BlobStoreUnavailableError("x")
+    with pytest.raises(TelemetryRequestError) as caught:
+        run_blob(blob_request(), store)
+    assert (caught.value.status, caught.value.error_type) == (503, "blob_store_unavailable") and "BEGIN" not in kit.events

@@ -53,7 +53,7 @@ def test_golden_payload_clears_the_kernel() -> None:
             vec.GOLDEN_ROWS[table],
         )
     assert all(isinstance(specs[t], EventTableSpec) for t in vec.GOLDEN_ROWS)
-    assert shapes["telemetry_transcripts"].threshold == vec.INLINE_THRESHOLD_BYTES
+    assert specs["telemetry_transcripts"].rules.content.threshold == vec.INLINE_THRESHOLD_BYTES
 
 
 def test_each_negative_vector_fails_as_expected(live: LiveFake) -> None:

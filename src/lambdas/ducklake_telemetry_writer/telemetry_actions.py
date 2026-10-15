@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
+from src.common import ducklake_telemetry_blobs as blobs
 from src.common import ducklake_telemetry_provision as prov
 from src.common import ducklake_telemetry_registration as reg
 from src.common.ducklake_scd2_schema import CATALOG_ALIAS, resolve_table_spec
@@ -57,6 +58,7 @@ class Deps:
     connect_reused: bool
     sleep: Callable[[float], None] = time.sleep
     stats: Any = None
+    blob_store: Any = None
 
 
 def classify_backend(host: str) -> str:
@@ -206,7 +208,13 @@ def _grain_counts(con: Any, request: TelemetryRequest, deps: Deps, started_at: d
             params,
         )
         counts[table] = {"rows": rows, "keys": keys}
-    return {"project_registered": True, "grain_counts": counts, "data_files": files}
+    prefix = blobs.session_prefix(tenant_id, found[0], request.body["session_ref"], started_at)
+    return {
+        "project_registered": True,
+        "grain_counts": counts,
+        "data_files": files,
+        "blob_objects": deps.blob_store.count_objects(prefix),
+    }
 
 
 def telemetry_probe(request: TelemetryRequest, con: Any, deps: Deps) -> dict[str, Any]:

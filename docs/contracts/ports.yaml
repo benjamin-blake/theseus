@@ -20,6 +20,17 @@ contract:
     check: validate_ports_contract
 
 amendment_log:
+  - date: "2026-10-15"
+    semantic_break: false
+    change_class: field_add
+    summary: >-
+      PLAN-telemetry-blob-route (slice 2a-2 plan 4, Class D): content_blobs' provisional required_verbs become grant_put,
+      verify and get_blob (get_blob owned by the slice 2b rec-4291); the s3 adapter is implemented at
+      src/common/ducklake_telemetry_blobstore.py; coupling PC-05 records that the producer helper consumes the s3
+      adapter's presigned_put grants alone, so the free-tier local plane cannot store a payload above 64 KiB until the
+      local_directory adapter adds its grant kind. Verbs stay provisional until T4.23:c16's suite lands.
+    migration_story: >-
+      Prose and registry rows only; no code or contract consumer reads the old verb names.
   - date: "2026-10-12"
     semantic_break: false
     change_class: field_add
@@ -160,11 +171,11 @@ ports:
     oracle: {kind: adapter, ref: local_directory, status: pending}
     conformance_suite: {status: pending, owning_item: "T4.23:c16"}
   - id: content_blobs
-    required_verbs: [put_blob, get_blob]
+    required_verbs: [grant_put, verify, get_blob]
     verbs_status: provisional
     adapters:
       - {id: local_directory, tier: supported, status: pending, owning_item: "T4.23:c7"}
-      - {id: s3, tier: supported, status: pending, owning_item: rec-4024}
+      - {id: s3, tier: supported, status: implemented, location: src/common/ducklake_telemetry_blobstore.py}
     oracle: {kind: adapter, ref: local_directory, status: pending}
     conformance_suite: {status: pending, owning_item: "T4.23:c16"}
   - id: orchestration_host
@@ -268,6 +279,16 @@ coupling_findings:
       read the ducklake_reader's named verbs.
     status: accepted
     owning_item: dec-084
+  - id: PC-05
+    ports: [content_blobs, ops_verbs]
+    location: src/telemetry_client/blob_delivery.py
+    description: >-
+      The claim-check grant protocol is realised for the s3 adapter only: the producer helper
+      (src/telemetry_client/blob_delivery.py) consumes presigned_put grants alone and presumes the s3 adapter behind the
+      function_url begin_blobs verb. Until the local_directory adapter adds its own grant kind, the free-tier local plane
+      cannot store a payload above 64 KiB.
+    status: open
+    owning_item: "T4.23:c7"
 
 structural_assumptions:
   - id: SA-01

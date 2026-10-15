@@ -26,6 +26,9 @@ _COMMON_MODULES = (
     "src/common/ducklake_telemetry_registration.py",
     "src/common/ducklake_telemetry_provision.py",
     "src/common/ducklake_telemetry_append.py",
+    "src/common/ducklake_telemetry_blobstore.py",
+    "src/common/ducklake_telemetry_blobs.py",
+    "src/common/ducklake_telemetry_handshake.py",
 )
 _KERNEL = ("__init__", "append", "gate", "identity", "timestamps")
 
@@ -117,3 +120,21 @@ def test_manifest_bundles_the_append_modules() -> None:
     assert sorted(compute_affected_artifacts(["src/common/ducklake_telemetry_append.py"])) == ["ducklake_telemetry_writer"]
     assert sorted(compute_affected_artifacts(["src/telemetry/request.py"])) == ["ducklake_telemetry_writer"]
     assert "append_telemetry" in _telemetry_manifest()["notes"]
+
+
+def test_manifest_bundles_the_blob_modules_only() -> None:
+    manifest = _telemetry_manifest()
+    blob_modules = (
+        "src/telemetry/blobs.py",
+        "src/common/ducklake_telemetry_blobstore.py",
+        "src/common/ducklake_telemetry_blobs.py",
+        "src/common/ducklake_telemetry_handshake.py",
+    )
+    for rel in blob_modules:
+        assert rel in manifest["includes"] and (_ROOT / rel).is_file(), rel
+        assert sorted(compute_affected_artifacts([rel])) == ["ducklake_telemetry_writer"], rel
+    assert not [rel for rel in manifest["includes"] if rel.startswith("src/telemetry_client")]
+    assert "begin_blobs" in manifest["notes"]
+    pipeline = yaml.safe_load((_ROOT / "src" / "lambdas" / "data-pipeline" / "manifest.yaml").read_text(encoding="utf-8"))
+    for rel in (*blob_modules[1:], "src/telemetry_client"):
+        assert rel in pipeline["excludes"], rel

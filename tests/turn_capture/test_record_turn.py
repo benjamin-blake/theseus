@@ -24,6 +24,7 @@ from src.turn_capture.render import render_rows_json
 from src.turn_capture.scrub import scrub_text
 from src.turn_capture.streams import ROOT, parse_tree
 from src.turn_capture.transcript import MemTree
+from tests.fixtures.telemetry_blob_fakes import as_written
 from tests.fixtures.turn_capture_corpus import (
     PROJECT,
     PROJECT_REF,
@@ -319,12 +320,13 @@ def test_duplicate_source_refs_are_counted_and_first_wins() -> None:
 
 def test_every_emitted_row_passes_kernel_rules() -> None:
     specs = load_specs()
+    threshold = specs["telemetry_transcripts"].rules.content.threshold
     for name in case_names():
         files, _ = load_case(name)
         with case_cap(name):
             batches = capture(files, final=True).batches
         for table, rows in batches:
-            prepare_batch(specs[table], rows, tenant_id=TENANT, project_id=PROJECT)
+            prepare_batch(specs[table], as_written(rows, threshold), tenant_id=TENANT, project_id=PROJECT)
 
 
 def test_full_output_cap_constant_and_case_override() -> None:

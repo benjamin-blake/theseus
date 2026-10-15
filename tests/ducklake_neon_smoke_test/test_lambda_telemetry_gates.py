@@ -26,6 +26,17 @@ DESCRIBE_OK = {
     "ok": True,
     "actions": ["attach_check", "describe"],
     "catalog": {"meta_schema": core.META_SCHEMA, "data_path_is_smoke": True},
+    "blob_protocol": {
+        "version": 1,
+        "inline_threshold_bytes": 65536,
+        "cap_bytes": 8388608,
+        "max_items": 200,
+        "grant_ttl_seconds": 900,
+    },
+    "schema": {
+        t: {"caller_known_columns": ["c"], "not_null": [], "accepted_values": {}, "fingerprint": "f"}
+        for t in ("telemetry_sessions", "telemetry_observations", "telemetry_transcripts", "telemetry_agents")
+    },
 }
 ATTACH_OK = {
     "ok": True,
@@ -112,7 +123,7 @@ def wired(monkeypatch):
             with lock:
                 n = counts["tenant"] = counts["tenant"] + 1
             return _Resp(200, {"ok": True, "tenant_id": state["tenant_ids"][min(n, 2) - 1], "created": n == 1})
-        if action == "append_telemetry" or (action == "telemetry_probe" and "project_ref" in payload):
+        if action in ("append_telemetry", "begin_blobs") or (action == "telemetry_probe" and "project_ref" in payload):
             return state["live"].invoke(url, payload)
         if action == "register_project":
             with lock:
@@ -278,7 +289,7 @@ def test_registration_vectors_pass_on_a_consistent_writer(wired, capsys):
     calls = _register_project_calls(wired)
     assert len(calls) == 4 and len({c["project_ref"] for c in calls}) == 1
     assert calls[0]["project_ref"].startswith("synthetic:deploy-smoke-") and len(calls[0]["project_ref"]) == 23 + 32
-    assert [p["action"] for p, _ in wired["sent"] if "project_ref" not in p].count("telemetry_probe") == 4
+    assert [p["action"] for p, _ in wired["sent"] if "project_ref" not in p].count("telemetry_probe") == 5
     assert [p["action"] for p, _ in wired["sent"]].count("provision_telemetry") == 2
 
 
@@ -429,3 +440,24 @@ def test_append_vectors_run_after_registration_with_the_registered_ref(wired, ca
         assert marker in out, marker
     assert registered not in out and registered.split(":", 1)[1] not in out
     assert out.strip().splitlines()[-1] == SUCCESS_LINE
+
+
+def test_blob_vectors_run_after_the_append_vectors(wired, capsys):
+    lambda_telemetry_gates.lambda_telemetry()
+    out = capsys.readouterr().out
+    sent = [p for p, _ in wired["sent"]]
+    registered = _register_project_calls(wired)[0]["project_ref"]
+    last_append = max(i for i, p in enumerate(sent) if p["action"] == "append_telemetry" and p["project_ref"] != registered)
+    first_blob = next(i for i, p in enumerate(sent) if p["action"] == "begin_blobs")
+    assert sent[first_blob]["project_ref"] == registered and first_blob < last_append + 1000
+    first_append = next(i for i, p in enumerate(sent) if p["action"] == "append_telemetry")
+    assert first_append < first_blob
+    for marker in (
+        "TELEMETRY_BLOB_PROTOCOL_OK",
+        "TELEMETRY_BLOB_AUTOREGISTER_OK",
+        "blob_grant_ms=",
+        "blob_put_ms=",
+        "blob_append_ms=",
+    ):
+        assert marker in out, marker
+    assert registered not in out and out.strip().splitlines()[-1] == SUCCESS_LINE
