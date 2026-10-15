@@ -79,10 +79,13 @@ class TestPreMergeLivePlan:
         key = self._doc()["admin_out_of_band"]["pre_merge_live_plan"]
         assert isinstance(key.get("precedent"), str) and key["precedent"].strip()
 
-    def test_newest_amendment_log_entry_names_the_key(self) -> None:
+    def test_an_amendment_log_entry_names_the_key(self) -> None:
+        """Presence, not position: a later plan (e.g. bootstrap-adopt, personal-release) may
+        prepend its own amendment_log entry, which would otherwise displace this one from index
+        0 without this plan's own entry ever having gone missing."""
         amendments = self._doc()["amendment_log"]
         assert isinstance(amendments, list) and amendments
-        assert "pre_merge_live_plan" in amendments[0]["summary"]
+        assert any("pre_merge_live_plan" in entry.get("summary", "") for entry in amendments)
 
     def test_pre_existing_pre_apply_test_unchanged(self) -> None:
         """Confirms this class's addition did not disturb the pre-existing PRE-APPLY test."""
