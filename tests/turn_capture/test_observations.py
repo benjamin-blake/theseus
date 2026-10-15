@@ -94,6 +94,8 @@ def test_absent_usage_keys_are_counted() -> None:
     calls = by(rows, observation_type="model_call")
     assert [c["tokens_input"] for c in calls] == [1, 0, 0]
     assert diag["absent_usage_key"] == 2 + 4 + 4 and diag["absent_usage"] == 1 and "non_int_usage" not in diag
+    _, clean = build([prompt("u1", 1, "p1", "go"), assistant("a1", 2, "m1", [text_block("x")])])
+    assert "absent_usage_key" not in clean and "absent_usage" not in clean
 
 
 def test_thinking_tokens_and_metadata_shapes() -> None:
