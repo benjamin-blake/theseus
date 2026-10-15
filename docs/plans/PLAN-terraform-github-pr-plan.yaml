@@ -13,8 +13,8 @@ intent: 'Give terraform/github a live, read-only terraform plan on every PR that
 plan_type: IMPLEMENTATION
 verification_tier: V3
 plan_path: docs/plans/PLAN-terraform-github-pr-plan.yaml
-phase: 'ad_hoc_rec (soft-warn exception category) -- resolves rec-4335 (Medium), a prerequisite named by docs/contracts/github-org-transfer.yaml
-  (Decision 218). No tier_item criterion claimed. Adjacent: T2.54 (the new axis_a row is data for validate_admin_root_premerge_gate).'
+phase: ad_hoc_rec (soft-warn exception category) -- resolves rec-4335 (Medium), a prerequisite named by docs/contracts/github-org-transfer.yaml
+  (Decision 218). No tier_item criterion claimed.
 scope:
 - file: tests/test_terraform_github_pr_plan.py
   action: Modify
@@ -28,10 +28,9 @@ scope:
     file (tests/fixtures is the shared-helper home; no test_ prefix). Not created otherwise.'
 - file: .github/workflows/terraform-github-plan.yml
   action: Create
-  purpose: 'The WORKFLOW block in execution_steps[0], verbatim. Allowed variance: comment wording, step display names (keep
-    the baseline keys in step with them), and a newer major of an action only if the pinned one does not resolve. Any change
-    to triggers, the job if, permissions, the role, the session name, the token permissions, the plan flags, the visibility
-    probe or the file-deletion step goes back to the planner.'
+  purpose: 'The WORKFLOW block in execution_steps[0], verbatim. Allowed variance: comment wording and step display names (keep
+    the baseline keys in step with them). Any change to triggers, the job if, permissions, the role, the session name, the
+    token permissions, the plan flags, the visibility probe or the file-deletion step goes back to the planner.'
 - file: scripts/ci/terraform_github_plan_report.py
   action: Create
   purpose: 'The stdlib-only reporter specified in execution_steps[1]: raw counts, verdict, per-resource address, action and
@@ -242,8 +241,8 @@ test_obligations:
   red_green_expectation: red before (a graduate step with no registry row fails validate_graduation_completeness), green after
 constraints:
 - 'Approved text is verbatim: APPROVED_ROW, APPROVED_AMENDMENT (variance: date only) and APPROVED_SECTION (the CLAUDE.md pointer).
-  The WORKFLOW block is planner-owned and verbatim too (variance: comments, step display names, an action major only if the
-  pinned one does not resolve). Anything else goes back to the operator through the planner.'
+  The WORKFLOW block is planner-owned and verbatim too (variance: comments and step display names). Anything else goes back
+  to the operator through the planner.'
 - 'No IAM change here: the planner''s state read is PLAN-terraform-github-plan-state-grant''s, and the workflow PR is pushed
   only after that grant is applied and verified.'
 - No terraform/github .tf change, no apply of any root by an agent, no state write; the workflow never applies, imports or
@@ -326,8 +325,10 @@ execution_steps:
     # secrets-in-a-pull_request-job note): a same-repo PR author can edit this file and read the App key;
     # the App is read-only and installed on this one repository.
     #
-    # Reading the report (terraform/github/CLAUDE.md points here): it posts counts, per-resource actions
-    # and changed attribute names on the PR, never values. Its VISIBILITY line says whether the App can
+    # Reading the report (terraform/github/CLAUDE.md points here): this job is the root's pre-merge live
+    # provider contact; agent sessions cannot plan this root themselves. Read its PR comment before merging.
+    # It posts counts, per-resource actions and changed attribute names on the PR, never values. Its
+    # VISIBILITY line says whether the App can
     # see security_and_analysis and the ruleset's bypass_actors; while either is hidden, the operator's
     # own plan is authoritative for that field. The job fails on a plan error and on any destroy or
     # replace. The operator still applies the merged change by hand (terraform/github/CLAUDE.md runbook).
@@ -549,7 +550,7 @@ execution_steps:
     VISIBILITY CONFLICT iff visibility["ruleset_bypass_actors"] == "visible" and some github_repository_ruleset update row's
       changed names == ["bypass_actors"] with change.before.get("bypass_actors") in (None, []): the probe says visible but
       the refreshed state holds no actor, so the visibility claim is unproven. The row stays ungated; conflict = true.
-  Per resource_drift[] entry (Decision 190: kept separate from resource_changes): drift += 1; address listed by name only.
+  Per resource_drift[] entry (Decision 190: kept separate from resource_changes; terraform omits the key when empty, so an absent resource_drift reads as []): drift += 1; address listed by name only.
 
   verdict: NO_CHANGES when no row is listed; VISIBILITY_GATED_ONLY when every listed row is gated; otherwise CHANGES.
   destructive: true when destroy + replace > 0. conflict: true when a VISIBILITY CONFLICT fired.
@@ -599,19 +600,22 @@ execution_steps:
   Every PR touching this root runs `.github/workflows/terraform-github-plan.yml`; its header holds the rules.
 - |-
   tests/test_terraform_github_pr_plan.py -- add two classes beside TestPlannerStateGrant (fixtures inline; if the file would pass 500 SLOC, move the plan-JSON builders to tests/fixtures/terraform_github_plan_fixtures.py; no cross-test imports):
-  TestPlanReport (imports scripts.ci.terraform_github_plan_report): a no-op plan is NO_CHANGES with all counts 0 and destructive false; a ruleset update whose only changed key is bypass_actors (before [], after one actor) with the probe hidden is labelled visibility-gated, still counts change=1 (raw), verdict VISIBILITY_GATED_ONLY; the same row with the probe visible, and with it unknown, is not gated (verdict CHANGES); bypass_actors plus any other changed key is not gated; a non-empty before bypass_actors is not gated; a bypass_actors-only update with before [] while the probe says visible raises the VISIBILITY CONFLICT line, conflict=1 and conflict=true, and is not gated; one gated row plus another update is verdict CHANGES with gated=1; an import-only row counts import=1, change=0; ["delete","create"] counts replace=1, add=1, destroy=1 and destructive true; ["delete"] is destructive; after_unknown holding only nested false adds no changed name and a nested true does; resource_drift entries count in drift only and are listed by address; mode "data" rows are ignored; sentinel strings placed in before, after, after_unknown, variables, prior_state and configuration never appear in the rendered output; load_visibility maps "false" to hidden, "true" to visible, anything else and a missing file to unknown; main() with an unreadable or non-object plan JSON exits 2 with empty stdout; main() with --github-output appends verdict=, destructive= and conflict= lines; the last stdout line starts "TF_GITHUB_PLAN_REPORT verdict="; the module imports only stdlib modules (ast walk against an allowlist).
+  TestPlanReport (imports scripts.ci.terraform_github_plan_report): a no-op plan with no resource_drift key is NO_CHANGES with all counts 0 and destructive false; a ruleset update whose only changed key is bypass_actors (before [], after one actor) with the probe hidden is labelled visibility-gated, still counts change=1 (raw), verdict VISIBILITY_GATED_ONLY; the same row with the probe visible, and with it unknown, is not gated (verdict CHANGES); bypass_actors plus any other changed key is not gated; a non-empty before bypass_actors is not gated; a bypass_actors-only update with before [] while the probe says visible raises the VISIBILITY CONFLICT line, conflict=1 and conflict=true, and is not gated; one gated row plus another update is verdict CHANGES with gated=1; an import-only row counts import=1, change=0; ["delete","create"] counts replace=1, add=1, destroy=1 and destructive true; ["delete"] is destructive; after_unknown holding only nested false adds no changed name and a nested true does; resource_drift entries count in drift only and are listed by address; mode "data" rows are ignored; sentinel strings placed in before, after, after_unknown, variables, prior_state and configuration never appear in the rendered output; load_visibility maps "false" to hidden, "true" to visible, anything else and a missing file to unknown; main() with an unreadable or non-object plan JSON exits 2 with empty stdout; main() with --github-output appends verdict=, destructive= and conflict= lines; the last stdout line starts "TF_GITHUB_PLAN_REPORT verdict="; the module imports only stdlib modules (ast walk against an allowlist).
   TestWorkflowAndTaxonomy (yaml.safe_load; the "on" key loads as True): triggers are exactly pull_request with paths ['terraform/github/**', '.github/workflows/terraform-github-plan.yml'] and nothing else (no push, schedule, workflow_dispatch, pull_request_target, workflow_run); the job if requires head.repo.full_name == github.repository and github.actor != 'dependabot[bot]'; top-level permissions are exactly contents: read and job permissions exactly id-token: write, contents: read, pull-requests: write; the configure-aws-credentials step's role-to-assume references secrets.AWS_ACCOUNT_ID and ends role/agent-platform-github-ci-planner, its role-session-name is terraform-github-plan-pr and differs from local.convergence_writer_session_name read from terraform/personal/oidc.tf, and it has no continue-on-error; the create-github-app-token step's with keys are exactly client-id, private-key, permission-metadata, permission-administration, permission-actions, every permission value is read, and no owner or repositories input is set; the plan step's run carries -lock=false, -detailed-exitcode and "> /dev/null"; the probe step tests security_and_analysis with '!= null' and bypass_actors with has("bypass_actors"); no run body anywhere in the file contains "terraform apply", "terraform import", "state rm", "state mv", "state push", "force-unlock", "aws s3", or writes GITHUB_ENV, and no step uses actions/upload-artifact; an if: always() step removes plan.bin and plan.json; no step env value names reviewer ids (the ids flow only through the runner-temp file); "terraform-github-plan" does not appear in terraform/github/repo.tf; environment-taxonomy.yaml axis_a.github exists, its code_vs_infra names terraform/github, its apply_gating names terraform-github-plan.yml and "NEVER auto-apply" and does not start with "admin-only"; scripts.checks.verification.validate_admin_root_premerge_gate._derive_admin_only_roots on the real taxonomy returns no error and includes terraform/bootstrap but not terraform/github; terraform/github/CLAUDE.md contains ".github/workflows/terraform-github-plan.yml".
   Create the step 1 and step 2 registry entries. Register the workflow's inline bodies in config/composite_action_body_baseline.yaml r3_workflows at their measured counts.
 - 'Sequence and closure (implement skill Commit Flows; docs/contracts/git-ops.yaml), each outcome reported separately. Start
   only after PLAN-terraform-github-plan-state-grant is merged and verified (its VP steps 3-4) and the operator confirms the
-  console steps (context OPERATOR STEPS). Restart the harness branch from main, implement execution_steps[0]-[4], then code
-  review (the code-review skill in a fresh context; fix every blocking finding). Closure: the readiness check, implementation_declared
-  true in this plan, rebase on origin/main, VP steps 1-5, VP step 6 on the committed clean tree then --verify-head, the postflight
-  evidence (bin/venv-python -m scripts.session.postflight --evidence), push, the PR, subscribe_pr_activity on it. The PR''s
-  own terraform-github-plan run is VP step 7: write the evidence file, post the counts-only result in the build thread, and
-  follow step 7''s fix_if for any failure. Squash-merge only when code review is PROCEED, CI is green on the head and the
-  operator has approved the PR on GitHub as code owner, with "Resolves: rec-4335" in a Key: value block of the squash body;
-  then VP step 8 from the trailer-closure job''s event (never poll), and tell the coordinator so the rec-3136 build can start.'
+  console steps (context OPERATOR STEPS). Restart the harness branch from main and implement execution_steps[0]-[4]. Closure:
+  bin/venv-python -m scripts.session.github_readiness, implementation_declared true in this plan, rebase on origin/main, VP
+  steps 1-5, VP step 6 on the committed clean tree then --verify-head, then write /tmp/implementation-retrospective.json with
+  the ten scripts.session.postflight_evidence.CATEGORIES keys and run bin/venv-python -m scripts.session.postflight --evidence
+  /tmp/implementation-retrospective.json, push, the PR, subscribe_pr_activity on it. The PR''s own terraform-github-plan run
+  is VP step 7 (wait for its event, never poll): write the evidence file, post the counts-only result in the build thread,
+  and follow step 7''s fix_if for any failure. Then dispatch code review (the code-review skill in a fresh context) with the
+  context ''V3 resolution:'' line quoted in its prompt, so its V3 Post-Deploy Evidence check reads the run''s report comment;
+  fix every blocking finding. Squash-merge only when code review is PROCEED, CI is green on the head and the operator has
+  approved the PR on GitHub as code owner, with "Resolves: rec-4335" in a Key: value block of the squash body; then VP step
+  8 from the trailer-closure job''s event (never poll), and tell the coordinator so the rec-3136 build can start.'
 - Execute the Verification Plan in step order; loop until each step passes; on an unrecoverable V3 failure stop and RCA (Decision
   55).
 - Report each closure outcome separately (readiness, implementation_declared, rebase, VP results, full tier and --verify-head,
