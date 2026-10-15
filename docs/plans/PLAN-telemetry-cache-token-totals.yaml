@@ -59,10 +59,12 @@ scope:
     Created by the reader verbs build. New node test_agent_run_token_rollup_carries_cache_classes: over model_call rows
     with non-zero tokens in all four classes the rollup returns each total as the per-class sum over the deduped rows, and
     no cache tokens are folded into tokens_input_total. It includes (i) an identical re-delivery of one row (same producer
-    and event_id, R5b), counted once, and (ii) an R5c entity-collapse pair for one provider response (claude_code against
-    litellm, or an earlier against a later final-usage row) whose rows differ in tokens_cache_read and
-    tokens_cache_creation: every total takes the winning row's values, the same row tokens_input_total uses, so a per-class
-    MAX or a separate dedupe fails. Second new node test_agent_run_token_rollup_empty_session_shares_one_convention: for a
+    and event_id, R5b), counted once, and (ii) an R5c entity-collapse pair for one provider response: a claude_code row and
+    a litellm row (different producers, so different event_ids, one observation_id). The claude_code row wins (R5c
+    producer precedence) and carries the lower tokens_cache_read and the higher tokens_cache_creation of the two, so every
+    total must take the winning row's values, the same row tokens_input_total uses, and a per-class MAX, a per-class MIN
+    or a separate dedupe each fails. (Two rows from one producer for one response share an event_id, which is an R5b grain
+    conflict with an unspecified winner, not an R5c case; do not use one here.) Second new node test_agent_run_token_rollup_empty_session_shares_one_convention: for a
     session with no model_call rows the rollup answers in the same shape the reader verbs build chose for
     tokens_input_total (no row, or one row whose four totals all carry the same empty value, NULL or 0).
 - file: tests/fixtures/telemetry_read_db.py
@@ -83,9 +85,11 @@ scope:
     New class TestTokenClassesDisjoint, node test_tokens_input_is_uncached_and_rollup_covers_four_classes. It pins every
     approved sentence of execution_steps[1] and [2] verbatim after whitespace and case normalisation (the module's _norm):
     tokens_input's description, each appended semantics sentence on tokens_input, tokens_cache_read and
-    tokens_cache_creation (the coverage sentence included), the two new fields' descriptions and semantics, and the
-    four-total phrase in telemetry_agents' governance_notes. It also asserts each of the three observation fields' newest
-    amendment_log entry is governance_note_add with semantic_break true, and that tokens_cache_read_total and
+    tokens_cache_creation (the coverage sentence included), the two new fields' descriptions and semantics, the appended
+    tokens_input_total sentence, and the four-total phrase in telemetry_agents' governance_notes. It also asserts that the
+    amendment_log entry this plan adds on each of the three observation fields and on tokens_input_total (found by its
+    "PLAN-telemetry-cache-token-totals" summary, never by position) is governance_note_add with semantic_break true, and
+    that tokens_cache_read_total and
     tokens_cache_creation_total carry read-timed derivations from reader_verb:agent_run_token_rollup over their own
     observation column on model_call rows, realized false.
 - file: docs/contracts/ducklake_reader.yaml
@@ -256,8 +260,9 @@ verification_plan:
   action: >-
     The deployed reader serves the merged rollup. Its describe read_version for agent_run_token_rollup, and the
     read_version stamped on a live named_read of it for a smoke session, both equal the merged registry's (describe_all
-    at MERGE_SHA), and any row it returns carries the four totals. The smoke append vectors write turn and process_event
-    observations only (scripts/ducklake_smoke/telemetry_append_vectors.py), so the totals are usually empty there; a
+    at MERGE_SHA), and any row it returns carries the four totals. The smoke append vectors' golden body writes turn
+    observations only (a process_event appears only in a vector the writer rejects;
+    scripts/ducklake_smoke/telemetry_append_vectors.py), so the totals are usually empty there; a
     non-zero reading is printed only when one exists. Seeding model_call smoke rows would change the telemetry writer's
     smoke gate and is out of scope.
   command: >-
@@ -269,8 +274,10 @@ verification_plan:
     n=d.datetime.now(d.timezone.utc);t=n.date();w=core._sigv4_invoke(u,{'action':'named_read','verb':'sessions_window_all_purposes','params':{'day_from':str(t-d.timedelta(days=6)),'day_to':str(t),'as_of':n.isoformat()}}).json();
     assert w['ok'] and w['row_count']>=1, w.get('row_count');r=core._sigv4_invoke(u,{'action':'named_read','verb':v,'params':{'session_id':w['rows'][0]['session_id']}}).json();
     assert r['ok'] and r.get('read_version')==want,(r.get('read_version'),want);k=('tokens_input_total','tokens_output_total','tokens_cache_read_total','tokens_cache_creation_total');
-    assert all(x in row for row in r['rows'] for x in k),r['rows'];print(json.dumps([{x:row[x] for x in k} for row in r['rows']]));print('LIVE_ROLLUP_OK')"
-  expected: One JSON line with the returned rows' four totals (usually empty values on smoke), then LIVE_ROLLUP_OK.
+    assert all(x in row for row in r['rows'] for x in k),r['rows'];print(json.dumps({'row_count':len(r['rows']),'totals':[{x:row[x] for x in k} for row in r['rows']]}));print('LIVE_ROLLUP_OK')"
+  expected: >-
+    One JSON line with row_count and the returned rows' four totals (usually empty values on smoke), then LIVE_ROLLUP_OK.
+    The report says whether the key check ran (row_count above 0); read_version equality is the substantive proof.
   fix_if: >-
     A read_version mismatch means the deployed reader predates the merge or the SQL change did not reach the bundle;
     check the deploy run's head SHA, never relax the comparison. A missing key on a returned row means the SQL and
@@ -399,7 +406,8 @@ execution_steps:
   semantic_break: true, change_class: governance_note_add, summary: "PLAN-telemetry-cache-token-totals (rec-4333): the four
   token classes are disjoint; tokens_input is uncached prompt tokens only and total prompt is the sum of the three,
   derived at read.", migration_story: "No stored row changes: the claude_code producer already copies Anthropic usage,
-  whose input_tokens excludes cache reads and writes, and no reader consumes the classes yet."} (fields without an
+  whose input_tokens excludes cache reads and writes, and the only reader, agent_run_token_rollup, already sums
+  tokens_input as stored, so no verb output changes."} (fields without an
   amendment_log gain one). semantic_break is true because a description/semantics diff under any change_class other than
   prose_improvement must say so (scripts/contracts_enforcement.py _amendment_entry_consistent, validate_contract_drift
   category 6; the 2026-09-24 entries on tokens_input and tokens_output set the precedent). (f) A contract-level amendment_log entry, newest
