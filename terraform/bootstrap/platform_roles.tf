@@ -9,12 +9,14 @@
 # carry (Account = "personal", ManagedBy = "Terraform"), so tags_all is unchanged by the move.
 #
 # IMPORT BEFORE APPLY -- both roles pre-exist (imported from terraform/personal's state, which
-# pre-existed from breakglass creation):
-#   terraform -chdir=terraform/bootstrap import aws_iam_role.platform_dev PlatformDev
-#   terraform -chdir=terraform/bootstrap import aws_iam_role.platform_admin PlatformAdmin
+# pre-existed from breakglass creation). The import {} blocks below do this declaratively as part
+# of the presented-plan apply; never run a CLI `terraform import` against this root -- that would
+# write state outside the presented-plan gate (Decision 126).
 #
-# SAFETY -- the adoption plan must show NO change on either trust document (lockout risk: this
-# root's apply runs under the PlatformAdmin identity being adopted). See
+# SAFETY -- the adoption plan must show no VALUE change on either trust document (lockout risk:
+# this root's apply runs under the PlatformAdmin identity being adopted). A cosmetic "updated
+# in-place" on assume_role_policy, with Terraform's own "The value is unchanged" annotation, is
+# expected the first time the ExternalId variables transition to sensitive -- see
 # docs/contracts/deploy-paths.yaml admin_out_of_band.procedure for the human-gated walk.
 
 import {
