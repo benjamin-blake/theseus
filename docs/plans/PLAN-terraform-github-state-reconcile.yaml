@@ -206,9 +206,11 @@ verification_plan:
       to the planning thread through the coordinator; config is reconciled to live by a plan amendment, never by an
       apply. If the job did not run on this PR, escalate the same way. Order B (the coordinator relays it): E0 is the
       workflow PR's first run, which may have failed or shown destroy or replace; accept it only if every address it
-      names is one of the five, record its counts (or BASELINE_PLAN_FAILED if it failed) and run URL on this PR, set
-      E0_COUNTS for step 9 in the paste format (COUNTS import=I add=A change=C destroy=D, a replace counted in both add
-      and destroy), and skip this command.
+      names is one of the five, record its counts and run URL on this PR (a run that planned and then failed at the
+      destroy or replace gate has counts; only a run that could not plan records BASELINE_PLAN_FAILED), set
+      E0_COUNTS_RE for step 9 (the counts in the paste format, COUNTS import=I add=A change=C destroy=D with a replace
+      counted in both add and destroy; or the failed-E0 pattern in step 9's expected), and skip this command. An Order B
+      E0 with destroy or replace has no approved closure wording: escalate to the planning thread before the closure PR.
     hermetic: false
     graduation: not-applicable
   - step: 7
@@ -256,16 +258,19 @@ verification_plan:
       the exact text is execution_steps step 8. The agent saves the operator's reported lines into $PASTE0_REPORT.
     command: >-
       printf '%s\n' "$PASTE0_REPORT" | grep -cxE 'TERRAFORM_OK|PAT_ADMIN_VISIBLE|INIT_OK|DRYRUN_IMPORT_ONLY' | grep -qx 4
-      && printf '%s\n' "$PASTE0_REPORT" | grep -qxF "${E0_COUNTS:-COUNTS import=0 add=0 change=5 destroy=0}" && echo PASTE0_OK
+      && printf '%s\n' "$PASTE0_REPORT" | grep -qxE "${E0_COUNTS_RE:-COUNTS import=0 add=0 change=5 destroy=0}" && echo PASTE0_OK
     expected: >-
-      PASTE0_OK: the operator reported TERRAFORM_OK, PAT_ADMIN_VISIBLE, INIT_OK, a baseline line equal to E0 (COUNTS
-      import=0 add=0 change=5 destroy=0 in Order A; E0's counts or BASELINE_PLAN_FAILED in Order B) and
-      DRYRUN_IMPORT_ONLY. Nothing shared is written (plan -lock=false; the dry run uses a local copy).
+      PASTE0_OK: the operator reported TERRAFORM_OK, PAT_ADMIN_VISIBLE, INIT_OK, a baseline line matching
+      E0_COUNTS_RE (Order A default: COUNTS import=0 add=0 change=5 destroy=0; Order B: E0's counts, or, when E0
+      failed, "COUNTS import=0 add=0 change=5 destroy=0|BASELINE_PLAN_FAILED", since the admin PAT may plan where the
+      App could not) and DRYRUN_IMPORT_ONLY. Nothing shared is written (plan -lock=false; the dry run uses a local copy).
     fix_if: >-
       Checksum mismatch: stop, do not run the binary. PAT_ADMIN_VISIBLE missing: the PAT is invalid or lacks admin;
       a new admin PAT is an always-ask credential mint, park it and wait. AccessDenied: the console identity cannot read
-      the secret or the state; the operator chooses another identity (any IAM grant is always-ask). Baseline different
-      from E0, or no DRYRUN_IMPORT_ONLY: stop and escalate; never continue to paste A.
+      the secret or the state; the operator chooses another identity (any IAM grant is always-ask). Baseline not
+      matching, or no DRYRUN_IMPORT_ONLY: stop and escalate; never continue to paste A. A dry run that shows an import
+      plus an update on a defaulted attribute (for example auto_init) is a config gap: the fix is an explicit argument
+      or ignore_changes entry through a plan amendment from the planning thread, never an apply.
   - step: 10
     phase: post-deploy
     action: >-
@@ -370,13 +375,16 @@ verification_plan:
     phase: post-deploy
     action: rec-3136 closed by the closure PR's Resolves trailer, with its acceptance holding at the closing sha.
     command: >-
-      bin/venv-python -c "from scripts.ops_data_portal import _fetch_rec_from_reader as f; r=f('rec-3136'); print(r['status']);
-      assert r['status']=='closed', r['status']" && grep -q 'state rm github_repository.this' terraform/github/CLAUDE.md
+      AWS_PROFILE=agent_platform bin/venv-python -c "from scripts.ops_data_portal import _fetch_rec_from_reader as f; r=f('rec-3136');
+      print((r or {}).get('status')); assert r and r['status']=='closed', (r or {}).get('status')" && grep -q 'state rm github_repository.this' terraform/github/CLAUDE.md
       && grep -q 'reconcil' terraform/github/CLAUDE.md
     expected: Prints closed; both greps hold on main.
     fix_if: >-
-      Still open: the squash body lacked a standalone 'Resolves: rec-3136' line; close it through
-      scripts.ops_data_portal update_rec citing the closure merge sha and the E2 run URL.
+      Still open: read the trailer-closure job log first (docs/contracts/git-ops.yaml resolves_trailer, Decision 201).
+      A transport failure or a merge-leg refusal: the manual scripts.ops_data_portal --update-rec rec-3136 --status
+      closed route is sanctioned, citing the closure merge sha and the E2 run URL. An acceptance-verdict refusal: use
+      only the printed close_proposed command from that log; never close around the gate. A missing or malformed
+      trailer: escalate through the coordinator rather than closing by hand.
   - step: 17
     phase: post-deploy
     action: OPERATOR, AWS CloudShell -- remove the working directory (state copies, provider cache) once step 16 passes.
@@ -551,7 +559,9 @@ execution_steps:
     (authenticated as the reviewer) or the GitHub MCP get_me tool." with "Resolve before applying: GET /user with the
     reviewer's PAT (terraform/github/CLAUDE.md runbook step 2) or the GitHub MCP get_me tool."
   - |-
-    Apply exactly this change to terraform/github/CLAUDE.md (operator-approved wording; VP step 3 compares the added and removed lines):
+    Apply exactly this change to terraform/github/CLAUDE.md (operator-approved wording; VP step 3 compares the added and
+    removed lines). YAML drops the leading space of blank context lines, so apply it with git apply --recount (or GNU
+    patch -p1), or from the identical /mnt/project-files/terraform-github-state-fix/claude-md-wording.diff:
 
     --- a/terraform/github/CLAUDE.md
     +++ b/terraform/github/CLAUDE.md
@@ -666,7 +676,9 @@ execution_steps:
     curl -fsSLO "https://releases.hashicorp.com/terraform/${TFV}/terraform_${TFV}_SHA256SUMS"
     grep " terraform_${TFV}_linux_${ARCH}.zip\$" "terraform_${TFV}_SHA256SUMS" | sha256sum -c - >/dev/null
     unzip -o -q "terraform_${TFV}_linux_${ARCH}.zip" -d "$HOME/bin"
-    "$HOME/bin/terraform" version | grep -q "v${TFV}"
+    export CHECKPOINT_DISABLE=1
+    "$HOME/bin/terraform" version > "$HOME/tfgithub/tfversion.txt"
+    grep -q "v${TFV}" "$HOME/tfgithub/tfversion.txt"
     echo TERRAFORM_OK
     rm -rf repo dry
     git init -q repo
