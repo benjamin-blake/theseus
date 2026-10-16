@@ -238,6 +238,8 @@ VERB_FIELDS: dict[str, tuple[str, ...] | object] = {
         "session_id",
         "tokens_input_total",
         "tokens_output_total",
+        "tokens_cache_read_total",
+        "tokens_cache_creation_total",
         "model_call_count",
         "usage_missing_count",
         *_STAMP_FIELDS,

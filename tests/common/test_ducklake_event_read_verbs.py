@@ -137,6 +137,63 @@ def test_agent_run_state_and_tokens_golden_cases(case: dict[str, Any], expect: d
     _run(case, expect)
 
 
+def _model_call(event_id: str, observation_id: str, at: str, so: int, **tokens: Any) -> dict[str, Any]:
+    return {
+        "session": "root",
+        "event_id": event_id,
+        "event_kind": "point",
+        "observation_id": observation_id,
+        "observation_type": "model_call",
+        "at": at,
+        "so": so,
+        **tokens,
+    }
+
+
+def _rollup_case(case_id: str, observations: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "id": case_id,
+        "sessions": {"root": {"started_at": "2026-09-25T10:00:00+00:00"}},
+        "rows": {
+            "telemetry_sessions": [
+                {"session": "root", "event_id": "e1", "event_kind": "open", "at": "2026-09-25T10:00:00+00:00", "so": 0}
+            ],
+            "telemetry_observations": observations,
+        },
+    }
+
+
+def _rollup(case: dict[str, Any]) -> list[dict[str, Any]]:
+    con, ids = _load(case)
+    return ev.execute(con, verb="agent_run_token_rollup", params={"session_id": ids["root"]})
+
+
+def test_agent_run_token_rollup_carries_cache_classes() -> None:
+    plain = {"tokens_input": 100, "tokens_output": 10, "tokens_cache_read": 30, "tokens_cache_creation": 4}
+    winner = {"tokens_input": 200, "tokens_output": 20, "tokens_cache_read": 50, "tokens_cache_creation": 9}
+    loser = {"tokens_input": 999, "tokens_output": 99, "tokens_cache_read": 70, "tokens_cache_creation": 2}
+    observations = [
+        _model_call("m1", "m1", "2026-09-25T10:10:00+00:00", 1, **plain),
+        _model_call("m1", "m1", "2026-09-25T10:10:00+00:00", 1, **plain),
+        _model_call("m2", "m2", "2026-09-25T10:30:00+00:00", 2, **winner),
+        {**_model_call("m2l", "m2", "2026-09-25T10:31:00+00:00", 2, **loser), "producer": "litellm"},
+    ]
+    (row,) = _rollup(_rollup_case("cache_classes", observations))
+    assert row["tokens_input_total"] == 300
+    assert row["tokens_output_total"] == 30
+    assert row["tokens_cache_read_total"] == 80
+    assert row["tokens_cache_creation_total"] == 13
+    assert row["model_call_count"] == 2
+
+
+def test_agent_run_token_rollup_empty_session_shares_one_convention() -> None:
+    (row,) = _rollup(_rollup_case("cache_empty", []))
+    totals = {
+        row[k] for k in ("tokens_input_total", "tokens_output_total", "tokens_cache_read_total", "tokens_cache_creation_total")
+    }
+    assert len(totals) == 1 and totals <= {None, 0}
+
+
 @pytest.mark.parametrize(("case", "expect"), _expects({"sessions_window", "sessions_window_all_purposes"}))
 def test_sessions_window_real_projects_only_and_ordered(case: dict[str, Any], expect: dict[str, Any]) -> None:
     _run(case, expect)

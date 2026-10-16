@@ -185,11 +185,12 @@ fields:
     iceberg_type: bigint
     nullable: true
     description: Total input tokens consumed across the agent run. DERIVED at read via the child session's own model_call observations -- replaces the contract_version 1 stored tokens_input.
-    semantics: A read-time aggregate over telemetry_observations rows sharing this run's session_id; no physical column.
+    semantics: "A read-time aggregate over telemetry_observations rows sharing this run's session_id; no physical column. Uncached prompt tokens only (telemetry_observations.yaml tokens_input); disjoint from tokens_cache_read_total and tokens_cache_creation_total."
     populated_by: a named reader verb (rec-4024), bounded to this run's calendar-day partition.
     dq_intent: {not_null: {enforced: false}}
     derivation: {timing: read, derived_by: "reader_verb:agent_run_token_rollup", formula: "sum(tokens_input) over telemetry_observations WHERE session_id = this.session_id AND observation_type = 'model_call'", inputs: [telemetry_observations.session_id, telemetry_observations.observation_type, telemetry_observations.tokens_input], realized: false}
     amendment_log:
+      - {date: "2026-10-16", semantic_break: true, change_class: governance_note_add, summary: "PLAN-telemetry-cache-token-totals (rec-4333): the total sums uncached prompt tokens only.", migration_story: "No verb output changes: the rollup already sums tokens_input, which this plan defines as uncached."}
       - date: "2026-09-24"
         semantic_break: true
         change_class: governance_note_add
@@ -216,6 +217,28 @@ fields:
           to tokens_output_total (derived at read), mirroring tokens_input_total.
           semantic_break=true: the write pattern changed.
         migration_story: No live populator existed; rec-4024 builds directly to this derivation.
+  tokens_cache_read_total:
+    type: int
+    iceberg_type: bigint
+    nullable: true
+    description: "Total cache-read tokens across the agent run. DERIVED at read via the child session's own model_call observations, same mechanism as tokens_input_total."
+    semantics: "A read-time aggregate over telemetry_observations rows sharing this run's session_id; no physical column. Disjoint from tokens_input_total and tokens_cache_creation_total (telemetry_observations.yaml tokens_input), so the run's total prompt is the sum of the three."
+    populated_by: "a named reader verb (agent_run_token_rollup), bounded to this run's calendar-day partition."
+    dq_intent: {not_null: {enforced: false}}
+    derivation: {timing: read, derived_by: "reader_verb:agent_run_token_rollup", formula: "sum(tokens_cache_read) over telemetry_observations WHERE session_id = this.session_id AND observation_type = 'model_call'", inputs: [telemetry_observations.session_id, telemetry_observations.observation_type, telemetry_observations.tokens_cache_read], realized: false}
+    amendment_log:
+      - {date: "2026-10-16", semantic_break: false, change_class: field_add, summary: "PLAN-telemetry-cache-token-totals (rec-4333): read-derived total of the session's model_call tokens_cache_read, returned by agent_run_token_rollup."}
+  tokens_cache_creation_total:
+    type: int
+    iceberg_type: bigint
+    nullable: true
+    description: "Total cache-creation tokens across the agent run. DERIVED at read via the child session's own model_call observations, same mechanism as tokens_input_total."
+    semantics: "A read-time aggregate over telemetry_observations rows sharing this run's session_id; no physical column. Disjoint from tokens_input_total and tokens_cache_read_total (telemetry_observations.yaml tokens_input), so the run's total prompt is the sum of the three."
+    populated_by: "a named reader verb (agent_run_token_rollup), bounded to this run's calendar-day partition."
+    dq_intent: {not_null: {enforced: false}}
+    derivation: {timing: read, derived_by: "reader_verb:agent_run_token_rollup", formula: "sum(tokens_cache_creation) over telemetry_observations WHERE session_id = this.session_id AND observation_type = 'model_call'", inputs: [telemetry_observations.session_id, telemetry_observations.observation_type, telemetry_observations.tokens_cache_creation], realized: false}
+    amendment_log:
+      - {date: "2026-10-16", semantic_break: false, change_class: field_add, summary: "PLAN-telemetry-cache-token-totals (rec-4333): read-derived total of the session's model_call tokens_cache_creation, returned by agent_run_token_rollup."}
   duration_seconds:
     type: int
     iceberg_type: bigint
@@ -297,7 +320,7 @@ governance_notes: >-
   canonical addition is session_id (+ optional observation_id), rooting every agent row to its
   session, now shaped as an open+close row pair keyed by the DERIVED agent_run_id (Decision 199,
   amending Decision 95 clause 4, Decision 96 clauses 1 and 3, and Decision 97 clauses 1-4). Token
-  totals and duration are DERIVED at read (tokens_input_total/tokens_output_total via the child
+  totals and duration are DERIVED at read (tokens_input_total, tokens_output_total, tokens_cache_read_total and tokens_cache_creation_total via the child
   session's own model_call observations; duration_seconds by pairing open/close rows) -- replacing
   the contract_version 1 stored tokens_input/tokens_output/duration_seconds. findings_count/
   recs_created/queue_entries_written stay STORED (observed once, at close, not aggregates over
@@ -307,6 +330,7 @@ governance_notes: >-
   write-enforced whatever their enforced value (Decision 210, #1405), and the flag otherwise keeps its DQ-runner meaning, whose platform-wide re-read is rec-4158 plan C. Not provisioned in production (slice 2c). KNOWN GAP: rec-2173 (preflight telemetry health) and
   the broader Phase 4 re-provisioning (rec-4024) are CODE follow-ons, not this contract.
 amendment_log:
+  - {date: "2026-10-16", semantic_break: false, change_class: field_add, summary: "PLAN-telemetry-cache-token-totals (rec-4333): tokens_cache_read_total and tokens_cache_creation_total, read-derived by agent_run_token_rollup; governance_notes names the four totals."}
   - {date: "2026-10-05", semantic_break: false, change_class: prose_improvement, summary: "PLAN-telemetry-lifecycle-friction-amendment (C9, fork 2 (a)): provider and trigger drop the enforcement-deferred premise, duration_seconds names the agent-run pair as the sub-agent session's state, and projects_to, write_path and the NULLABILITY AXES note are corrected. Per-field changes are on their own fields' logs."}
   - date: "2026-09-26"
     semantic_break: false
