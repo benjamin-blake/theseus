@@ -213,6 +213,7 @@ ENTRIES: tuple[Entry, ...] = (
             "docs/DECISIONS_ARCHIVE.md",
             "scripts/platform_roadmap*.py",
             "scripts/decisions_md.py",
+            "scripts/contract_rules.py",
             "scripts/checks/contracts/**",
             "scripts/checks/_common.py",
             "scripts/checks/registry.py",
