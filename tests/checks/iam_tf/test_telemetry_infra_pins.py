@@ -1,11 +1,12 @@
 """Standing guard for the telemetry writer infrastructure (PLAN-telemetry-writer-infra, then PLAN-telemetry-writer-function).
 
 Pins, over the real terraform/personal tree: the telemetry catalog env on the telemetry writer and the reader (isolated
-ducklake_smoke catalog until a Decision moves it, slice 2c), the telemetry-writer-only catalog-scoped blob root, the
-telemetry writer's blob grant (Get/Put on the fenced root plus a prefix-conditioned List, never a delete), the reader's lack
-of any blob grant, the untouched ops catalog env on the shared writer and reader, the shared writer's lack of any telemetry
-state, the telemetry writer's scoped catalog login and its distance from the production ducklake/ prefix, and the
-telemetry-blobs lifecycle rule. Every predicate is a pure function of HCL text with its own red case on synthetic HCL.
+ducklake_smoke catalog until a Decision moves it, slice 2c), the catalog-scoped blob root on the telemetry writer and the
+reader (never the shared writer), the telemetry writer's blob grant (Get/Put on the fenced root plus a prefix-conditioned
+List, never a delete), the reader's GetObject-only grant on the same fenced prefix (no List, Put or Delete, no other
+catalog), the untouched ops catalog env on the shared writer and reader, the shared writer's lack of any telemetry state,
+the telemetry writer's scoped catalog login and its distance from the production ducklake/ prefix, and the telemetry-blobs
+lifecycle rule. Every predicate is a pure function of HCL text with its own red case on synthetic HCL.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from tests.fixtures.terraform_hcl_blocks import (
 _BUCKET = "probe-bucket"
 _ARN = f"arn:aws:s3:::{_BUCKET}"
 _PROBE_KEY = f"{_ARN}/telemetry-blobs/ducklake_smoke/probe-key"
+_OTHER_CATALOG_KEY = f"{_ARN}/telemetry-blobs/another_catalog/probe-key"
 _PROD_KEY = f"{_ARN}/ducklake/probe-key"
 _PROD_LIST_PROBE = "ducklake/probe-key"
 _SCOPED_SECRET = "aws_secretsmanager_secret.ducklake_telemetry_writer_dsn"  # pragma: allowlist secret
@@ -119,16 +121,16 @@ def assert_pins_target_smoke(text: str) -> None:
         )
 
 
-def assert_blob_root_only_on_writer(text: str) -> None:
+def assert_blob_root_on_writer_and_reader(text: str) -> None:
     locs = _locals(text)
-    assert _env(text, _TELEMETRY).get("TELEMETRY_BLOB_ROOT") == "local.ducklake_telemetry_blob_root", (
-        "telemetry writer TELEMETRY_BLOB_ROOT must be local.ducklake_telemetry_blob_root"
-    )
+    for fn in _PIN_FUNCTIONS:
+        assert _env(text, fn).get("TELEMETRY_BLOB_ROOT") == "local.ducklake_telemetry_blob_root", (
+            f"{fn} TELEMETRY_BLOB_ROOT must be local.ducklake_telemetry_blob_root"
+        )
     root = _resolve('"${local.ducklake_telemetry_blob_root}"', locs)
     expected = f"s3://{_BUCKET}/telemetry-blobs/{locs.get('ducklake_telemetry_meta_schema')}/"
     assert root == expected, f"blob root {root!r} must be catalog-scoped ({expected!r}): {_PIN_MOVE_HINT}"
-    for fn in ("ducklake_reader", "ducklake_writer"):
-        assert "TELEMETRY_BLOB_ROOT" not in _env(text, fn), f"{fn} must not carry a blob root"
+    assert "TELEMETRY_BLOB_ROOT" not in _env(text, "ducklake_writer"), "ducklake_writer must not carry a blob root"
 
 
 def assert_no_delete_on_prefix(text: str) -> None:
@@ -158,16 +160,25 @@ def assert_writer_blob_grant_shape(text: str) -> None:
     assert_no_delete_on_prefix(text)
 
 
-def assert_reader_has_no_blob_grant(text: str) -> None:
+def assert_reader_blob_grant_is_get_object_only(text: str) -> None:
+    expected = f"{_ARN}/telemetry-blobs/{_locals(text).get('ducklake_telemetry_meta_schema')}/*"
+    touching = {}
     for sid, s in _role_statements(text, "ducklake_reader").items():
         if s["effect"] != "Allow":
             continue
         s3_grant = s["not_action"] or any(a == "*" or a.lower().startswith("s3:") for a in s["actions"])
         covers = any(fnmatchcase(_PROBE_KEY, r) for r in s["resources"])
         named = any(p.startswith("telemetry-blobs") for p in s["prefixes"])
-        assert not ((s3_grant and covers) or named), (
-            f"reader statement {sid} grants access to telemetry-blobs/ (2b adds it if needed)"
+        assert not (s3_grant and any(fnmatchcase(_OTHER_CATALOG_KEY, r) for r in s["resources"])), (
+            f"reader statement {sid} covers another catalog's telemetry-blobs/ prefix"
         )
+        if (s3_grant and covers) or named:
+            touching[sid] = s
+    assert len(touching) == 1, f"exactly one reader statement may touch telemetry-blobs/, got {sorted(touching)}"
+    sid, s = next(iter(touching.items()))
+    assert not s["not_action"] and s["actions"] == ["s3:GetObject"], f"reader blob statement {sid} actions {s['actions']}"
+    assert s["resources"] == [expected], f"reader blob statement {sid} resources {s['resources']}"
+    assert not s["prefixes"], f"reader blob statement {sid} must carry no s3:prefix condition"
 
 
 def assert_blob_lifecycle_rule(main_text: str, lambdas_text: str) -> None:
@@ -272,6 +283,12 @@ _OPS_RW = {
     "Resource": ["${aws_s3_bucket.data_lake.arn}/${local.ducklake_prod_data_prefix}/*"],
 }
 _OPS_RO = {**_OPS_RW, "Sid": "S3DataReadOnly", "Action": ["s3:GetObject"]}
+_READER_BLOB = {
+    "Sid": "TelemetryBlobRead",
+    "Action": ["s3:GetObject"],
+    "Resource": ["${aws_s3_bucket.data_lake.arn}/" + _FENCE],
+}
+_READER_STMTS = [_OPS_RO, _READER_BLOB]
 _TELEMETRY_STMTS = [_DSN, _CATALOG_RW, _CATALOG_LIST, _RW, _LIST]
 
 
@@ -291,7 +308,7 @@ def _stmt(s: dict) -> str:
 
 def _doc(
     writer_env: dict[str, str] | None = None,
-    reader_env: dict[str, str] | None = None,
+    reader_env: dict[str, str | None] | None = None,
     telemetry_env: dict[str, str] | None = None,
     writer_stmts: list[dict] | None = None,
     reader_stmts: list[dict] | None = None,
@@ -317,12 +334,21 @@ def _doc(
     }
     envs = {
         "ducklake_writer": {**ops, **(writer_env or {})},
-        "ducklake_reader": {**ops, **pins, **(reader_env or {})},
+        "ducklake_reader": {
+            k: v
+            for k, v in {
+                **ops,
+                **pins,
+                "TELEMETRY_BLOB_ROOT": "local.ducklake_telemetry_blob_root",
+                **(reader_env or {}),
+            }.items()
+            if v is not None
+        },
         _TELEMETRY: {**telemetry_base, **(telemetry_env or {})},
     }
     stmts = {
         "ducklake_writer": writer_stmts if writer_stmts is not None else [_OPS_RW],
-        "ducklake_reader": reader_stmts if reader_stmts is not None else [_OPS_RO],
+        "ducklake_reader": reader_stmts if reader_stmts is not None else _READER_STMTS,
         _TELEMETRY: telemetry_stmts if telemetry_stmts is not None else _TELEMETRY_STMTS,
     }
     parts = [
@@ -353,8 +379,8 @@ def test_telemetry_pins_target_the_smoke_catalog() -> None:
     assert_pins_target_smoke(_real()[0])
 
 
-def test_blob_root_only_on_the_writer() -> None:
-    assert_blob_root_only_on_writer(_real()[0])
+def test_blob_root_on_the_writer_and_reader() -> None:
+    assert_blob_root_on_writer_and_reader(_real()[0])
 
 
 def test_writer_blob_grant_shape() -> None:
@@ -370,8 +396,8 @@ def test_ops_catalog_env_is_untouched() -> None:
     assert_ops_catalog_env_untouched(_real()[0])
 
 
-def test_reader_has_no_blob_grant() -> None:
-    assert_reader_has_no_blob_grant(_real()[0])
+def test_reader_blob_grant_is_get_object_on_the_blob_prefix() -> None:
+    assert_reader_blob_grant_is_get_object_only(_real()[0])
 
 
 def test_telemetry_writer_reads_only_its_scoped_login() -> None:
@@ -398,14 +424,16 @@ def test_pin_guard_rejects_a_moved_pin() -> None:
             assert_pins_target_smoke(doc)
 
 
-def test_blob_root_guard_rejects_a_reader_root() -> None:
-    assert_blob_root_only_on_writer(_doc())
-    reader_root = _doc(reader_env={"TELEMETRY_BLOB_ROOT": "local.ducklake_telemetry_blob_root"})
+def test_blob_root_guard_rejects_a_moved_root() -> None:
+    assert_blob_root_on_writer_and_reader(_doc())
+    reader_missing = _doc(reader_env={"TELEMETRY_BLOB_ROOT": None})
+    reader_moved = _doc(reader_env={"TELEMETRY_BLOB_ROOT": "local.ducklake_prod_data_path"})
+    telemetry_moved = _doc(telemetry_env={"TELEMETRY_BLOB_ROOT": "local.elsewhere"})
     ops_writer_root = _doc(writer_env={"TELEMETRY_BLOB_ROOT": "local.ducklake_telemetry_blob_root"})
     unscoped = _doc(blob_root="s3://${aws_s3_bucket.data_lake.bucket}/${local.telemetry_blob_data_prefix}/")
-    for doc in (reader_root, ops_writer_root, unscoped):
+    for doc in (reader_missing, reader_moved, telemetry_moved, ops_writer_root, unscoped):
         with pytest.raises(AssertionError):
-            assert_blob_root_only_on_writer(doc)
+            assert_blob_root_on_writer_and_reader(doc)
 
 
 def _grant_variants() -> list[str]:
@@ -465,16 +493,35 @@ def test_ops_env_guard_rejects_a_moved_ops_catalog() -> None:
             assert_ops_catalog_env_untouched(_doc(reader_env=env))
 
 
-def test_reader_guard_rejects_a_blob_grant() -> None:
-    assert_reader_has_no_blob_grant(_doc())
+def test_reader_blob_guard_rejects_a_wider_grant() -> None:
+    assert_reader_blob_grant_is_get_object_only(_doc())
+    arn = "${aws_s3_bucket.data_lake.arn}"
     bad_stmts = [
-        {**_RW, "Sid": "ReaderBlob", "Action": ["s3:GetObject"]},
-        {**_OPS_RO, "Resource": ["${aws_s3_bucket.data_lake.arn}/*"]},
-        {**_LIST, "Sid": "ReaderList"},
+        {**_READER_BLOB, "Action": ["s3:GetObject", "s3:PutObject"]},
+        {**_READER_BLOB, "Action": ["s3:DeleteObject"]},
+        {**_READER_BLOB, "Action": ["s3:*"]},
+        {"Sid": "TelemetryBlobRead", "NotAction": ["s3:PutObject"], "Resource": _READER_BLOB["Resource"]},
+        {**_READER_BLOB, "Resource": [f"{arn}/*"]},
+        {**_READER_BLOB, "Resource": [f"{arn}/telemetry-blobs/another_catalog/*"]},
+        {**_READER_BLOB, "Resource": [f"{arn}/telemetry-blobs/*"]},
+        {**_LIST, "Sid": "TelemetryBlobRead", "Action": ["s3:ListBucket"]},
     ]
     for stmt in bad_stmts:
         with pytest.raises(AssertionError):
-            assert_reader_has_no_blob_grant(_doc(reader_stmts=[_OPS_RO, stmt]))
+            assert_reader_blob_grant_is_get_object_only(_doc(reader_stmts=[_OPS_RO, stmt]))
+    extra = [
+        _OPS_RO,
+        _READER_BLOB,
+        {**_LIST, "Sid": "ReaderList", "Action": ["s3:ListBucket"]},
+    ]
+    other_catalog = [
+        _OPS_RO,
+        _READER_BLOB,
+        {"Sid": "OtherCatalog", "Action": ["s3:GetObject"], "Resource": [f"{arn}/telemetry-blobs/another_catalog/*"]},
+    ]
+    for stmts in (extra, other_catalog, [_OPS_RO], [_OPS_RO, _READER_BLOB, {**_READER_BLOB, "Sid": "Second"}]):
+        with pytest.raises(AssertionError):
+            assert_reader_blob_grant_is_get_object_only(_doc(reader_stmts=stmts))
 
 
 def test_scoped_login_guard_rejects_the_shared_login() -> None:
