@@ -96,12 +96,14 @@ scope:
 - file: tests/test_contracts.py
   action: Modify
   purpose: >-
-    New class TestLibyamlLoader: (1) test_load_all_contracts_parses_each_file_once_with_libyaml -- two ritual contracts
-    and one non-ritual file in tmp_path; exactly three libyaml constructions and no pure-Python one (red before: five
-    pure-Python parses); (2) test_single_file_loaders_use_libyaml -- load_contract and load_contract_meta each construct
-    one libyaml loader and no pure-Python one; (3) test_libyaml_loader_builds_like_safe_loader -- yaml.CSafeLoader and
-    yaml.SafeLoader expose equal yaml_constructors and yaml_implicit_resolvers, so a constructor registered on SafeLoader
-    alone fails here, not silently in production. The file is 443 SLOC on main after #1511; a plan-time draft of the
+    (1) In the existing TestLoadAll, test_each_ritual_yaml_parsed_once -- rec-2203's filed acceptance node, so that
+    acceptance holds unchanged: two ritual contracts and one non-ritual file in tmp_path; exactly three libyaml
+    constructions and no pure-Python one (red before: five pure-Python parses). New class TestLibyamlLoader: (2)
+    test_single_file_loaders_use_libyaml -- load_contract and load_contract_meta each construct one libyaml loader and
+    no pure-Python one; (3) test_libyaml_loader_builds_like_safe_loader -- after importing the switched consumers
+    (scripts.contracts, scripts.platform_roadmap_state, scripts.preflight.context_docs, scripts.contract_rules) so any
+    registration they make is in view, yaml.CSafeLoader and yaml.SafeLoader expose equal yaml_constructors and
+    yaml_implicit_resolvers, so a constructor registered on SafeLoader alone fails here, not silently in production. The file is 443 SLOC on main after #1511; a plan-time draft of the
     class adds about 21, so about 464, under the 500 limit, so no decomposition is expected (should it pass 500, stop and raise a plan amendment rather
     than touch a file outside scope).
 - file: tests/platform_roadmap_state/test_load.py
@@ -130,8 +132,8 @@ scope:
     and ._check_convergence_sensor_liveness (None; both shell out to gh), session_preflight.platform_roadmap.
     compute_state_dict ({}; tests memoise it per process, rec-4006) and session_preflight.PREFLIGHT_REPORT (tmp_path;
     the trailer probe mounts the repo read-only). It must NEVER patch _scan_provisional_contracts, _check_endstate_drift,
-    decision_conditions.preflight_bucket, check_data_quality_coverage or read_context_files: those are the measured
-    loaders. It asserts libyaml_frames includes contracts.py:load_all_contracts and
+    decision_conditions.preflight_bucket or check_data_quality_coverage: those are the measured YAML loaders. Its
+    docstring says it measures the credentials-unavailable branch of main(). It asserts libyaml_frames includes contracts.py:load_all_contracts and
     preflight/context_docs.py:_check_endstate_drift (both unconditional on main()'s path), then that the pure-Python
     bytes are at most PURE_PYTHON_YAML_BUDGET = 512 * 1024, the failure message listing each pure-Python entry's bytes
     and innermost scripts/ frames; any pure-Python entry whose size is None fails it outright. Its docstring says
@@ -172,7 +174,8 @@ scope:
   action: Create
   purpose: >-
     Registry shard for graduated VP step 1: check_id contracts-libyaml-parse-once, primitive_slot command_exit_zero,
-    check_spec.command step 1's class selector, guard_target scripts/contracts.py, guard_symbol load_all_contracts,
+    check_spec.command step 1's node and class selectors, guard_target scripts/contracts.py, guard_symbol
+    load_all_contracts,
     plan_slug preflight-yaml-parse-cost, graduated_by implement-agent.
 - file: config/agent/verification_registry/entries/roadmap-load-libyaml.yaml
   action: Create
@@ -202,6 +205,7 @@ bundled_recommendations:
 - rec-4365
 - rec-3208
 - rec-3638
+- rec-2203
 followon_recs:
 - rec-4370
 - rec-4371
@@ -227,9 +231,9 @@ acceptance_criteria:
   rec-3638: a non-null ci_rca_liveness_alert prints one stderr line at session open.
 - >-
   Before merge, rec-4365's and rec-3208's stored acceptance is each rec's own VP step 10 node list, decidable, and
-  rec-4365 carries the pre-stamped closure_artifact shard:preflight-yaml-parse-budget; rec-3638's filed acceptance
-  holds unchanged; all three pass in the trailer probe's isolation. After merge the Resolves trailer closes rec-4365,
-  rec-3208 and rec-3638.
+  rec-4365 carries the pre-stamped closure_artifact shard:preflight-yaml-parse-budget; rec-3638's and rec-2203's filed
+  acceptances hold unchanged; all four pass in the trailer probe's isolation. After merge the Resolves trailer closes
+  rec-4365, rec-3208, rec-3638 and rec-2203.
 - >-
   The post-merge main-validate run on the merge commit is green and its coverage step measured
   scripts/session/preflight.py; no ci_rca rec attributable to this merge (a file in its diff, or rec-4365's fingerprint)
@@ -238,8 +242,8 @@ verification_plan:
 - step: 1
   phase: pre-deploy
   action: Contract loaders parse once, with libyaml, building what SafeLoader builds.
-  command: bin/venv-python -m pytest tests/test_contracts.py::TestLibyamlLoader -q
-  expected: Exit 0, 3 passed. Red before, the class is absent (pytest exit 4).
+  command: bin/venv-python -m pytest tests/test_contracts.py::TestLoadAll::test_each_ritual_yaml_parsed_once tests/test_contracts.py::TestLibyamlLoader -q
+  expected: Exit 0, 3 passed. Red before, the node and the class are absent (pytest exit 4).
   fix_if: >-
     More than one parse per file: load_all_contracts still calls load_contract. A pure-Python construction: a call site
     still uses yaml.safe_load. Never loosen the counts.
@@ -412,27 +416,28 @@ verification_plan:
 - step: 10
   phase: pre-deploy
   action: >-
-    All three Resolves recs' acceptances are stored and hold where the trailer will judge them. Each is a
+    All four Resolves recs' acceptances are stored and hold where the trailer will judge them. Each is a
     "bin/venv-python -m pytest <nodes> -q" command, which scripts.rec_trailer_acceptance_junit.classify_grammar routes
     STATIC (the -m of "-m pytest" is a selector token), so the trailer job re-executes it under
     scripts.backlog_health.probe.run_one (no network, read-only repo mount, 30s pytest cap), never the junit report.
     rec-4365's and rec-3208's amended acceptances (one node list per rec, each exercising that rec's own fix) and
-    rec-3638's filed acceptance each lint decidable and pass under run_one, and rec-4365 carries the pre-stamped closure
+    rec-3638's and rec-2203's filed acceptances each lint decidable and pass under run_one, and rec-4365 carries the pre-stamped closure
     artifact.
   command: >-
     bin/venv-python -c "import json; from pathlib import Path; from scripts.backlog_health import census, probe; from
     scripts.executor.acceptance_lint import lint_acceptance_command as lint; from src.common.ducklake_reader_client import
-    fetch_recs_by_ids, make_reader; rows, _ = fetch_recs_by_ids(make_reader(), ['rec-4365', 'rec-3208', 'rec-3638']);
-    by_id = {r['id']: r for r in rows}; assert set(by_id) == {'rec-4365', 'rec-3208', 'rec-3638'}, rows; budget =
+    fetch_recs_by_ids, make_reader; rows, _ = fetch_recs_by_ids(make_reader(), ['rec-4365', 'rec-3208', 'rec-3638',
+    'rec-2203']); by_id = {r['id']: r for r in rows}; assert set(by_id) == {'rec-4365', 'rec-3208', 'rec-3638',
+    'rec-2203'}, rows; budget =
     'tests/session/preflight/test_yaml_parse_budget.py::TestYamlParseBudget::test_one_main_call_keeps_pure_python_yaml_under_budget';
     spy = 'tests/session/preflight/test_yaml_parse_budget.py::TestYamlParseSpy::test_records_pure_and_libyaml_constructions';
-    want = {'rec-4365': f'bin/venv-python -m pytest {budget} {spy}
-    tests/test_contracts.py::TestLibyamlLoader::test_load_all_contracts_parses_each_file_once_with_libyaml -q',
+    once = 'tests/test_contracts.py::TestLoadAll::test_each_ritual_yaml_parsed_once'; want = {'rec-4365': f'bin/venv-python -m pytest {budget} {spy} {once} -q',
     'rec-3208': f'bin/venv-python -m pytest tests/platform_roadmap_state/test_live_state_cache.py::TestLiveStateMemo
     tests/session/preflight/test_yaml_parse_budget.py::TestPackageFixtureStubs::test_compute_state_dict_is_the_live_memo
     {budget} -q', 'rec-3638': 'bin/venv-python -m pytest
     tests/session/preflight/test_main_branches.py::TestCiRcaLivenessRenderer::test_alert_payload_is_rendered_to_stderr
-    -q'}; assert all(by_id[i]['acceptance'] == w for i, w in want.items()), rows; assert all(lint(w,
+    -q', 'rec-2203': f'bin/venv-python -m pytest {once} -q'}; assert all(by_id[i]['acceptance'] == w for i, w in
+    want.items()), rows; assert all(lint(w,
     require_decidable=True)[0] for w in want.values()), want; R = Path('.').resolve(); assert all(census.classify_command(w,
     repo_root=R) == census.PROBEABLE for w in want.values()), want; assert probe.isolation_available(R), 'probe
     isolation unavailable here: not an acceptance verdict'; assert
@@ -444,7 +449,7 @@ verification_plan:
     An old acceptance or no closure_artifact: run execution step 8's update_rec calls, then rerun. A probe fail on a
     main()-level node: it writes inside the repo (patch PREFLIGHT_REPORT to tmp_path) or reaches the network. A probe
     timeout: a named node exceeds the sandbox's 30s pytest cap. Never push the trailer while this step is red (Decision
-    201); rec-3638's filed acceptance is never edited to pass.
+    201); rec-3638's and rec-2203's filed acceptances are never edited to pass.
   hermetic: false
   graduation: not-applicable
 - step: 11
@@ -483,18 +488,22 @@ verification_plan:
   expected: Prints the merge sha, the window and attributable=[], exit 0, and the workflow run's conclusion is success.
   fix_if: >-
     The run has not concluded: wait for its completion event. No merge sha found: the squash title must start
-    feat(preflight-yaml-parse-cost). An attributable rec or a red run: the merge-protocol forward-fix path applies
-    (Decision 73). Unrelated recs in filed= are reported, not fixed here.
+    feat(preflight-yaml-parse-cost). A red run: still run the command and quote the coverage step's preflight.py
+    mapping line; this plan's proof fails only on an attributable rec or a missing or timed-out preflight.py
+    measurement, which take the merge-protocol forward-fix path (Decision 73). An unrelated red check or rec is
+    reported to the operator, not fixed here.
 - step: 13
   phase: post-deploy
-  action: rec-4365, rec-3208 and rec-3638 are closed by the squash commit's Resolves trailer.
+  action: rec-4365, rec-3208, rec-3638 and rec-2203 are closed by the squash commit's Resolves trailer.
   command: >-
     bin/venv-python -c "from src.common.ducklake_reader_client import fetch_recs_by_ids, make_reader; rows, _ =
-    fetch_recs_by_ids(make_reader(), ['rec-4365', 'rec-3208', 'rec-3638']); st = {r['id']: r['status'] for r in rows};
-    print(st); assert st == {'rec-4365': 'closed', 'rec-3208': 'closed', 'rec-3638': 'closed'}, st"
-  expected: Prints all three statuses as closed, exit 0.
+    fetch_recs_by_ids(make_reader(), ['rec-4365', 'rec-3208', 'rec-3638', 'rec-2203']); st = {r['id']: r['status'] for r
+    in rows}; print(st); assert st == {'rec-4365': 'closed', 'rec-3208': 'closed', 'rec-3638': 'closed', 'rec-2203':
+    'closed'}, st"
+  expected: Prints all four statuses as closed, exit 0.
   fix_if: >-
-    Still open: confirm the squash body carries 'Resolves: rec-4365, rec-3208, rec-3638' in a Key: value block, then read
+    Still open: confirm the squash body carries 'Resolves: rec-4365, rec-3208, rec-3638, rec-2203' in a Key: value block,
+    then read
     the trailer-closure job's verdict artifact. ClosureArtifactRequired despite the pre-stamp: confirm the verdict says
     holds, then close via ci-rca-lifecycle closure_dependency.manual_route with the same --closure-artifact and
     --closure-fix-sha <merge sha>. An AcceptanceVerdictRefused, or a fails / unmeasurable / TIMEOUT /
@@ -515,7 +524,7 @@ test_obligations:
 - source: scripts/contracts.py
   behavior: Each contract file is parsed once, with the libyaml loader, by every loader entry point.
   verification_step: 1
-  test_selector: tests/test_contracts.py::TestLibyamlLoader
+  test_selector: tests/test_contracts.py::TestLoadAll::test_each_ritual_yaml_parsed_once
   red_green_expectation: Red before (class absent; once written, five pure-Python parses for three files). Green after.
 - source: scripts/platform_roadmap_state.py
   behavior: load() parses the roadmap with the libyaml loader.
@@ -616,7 +625,7 @@ context:
   Decision-scout FLAGS_FOUND, two passes (the second on the sysmon delta), all folded below. CITE: 55, 73, 128, 159,
   163, 132, 176, 189, 186, 201, 66, 182. Decisions triaged: 171 of 171. Roadmap items intersected: 5; CONFLICT: 0;
   RELATED: 5
-- "gates: decision-scout=FLAGS_FOUND (2 passes); plan-critique=r1 REVISE (F1-F7 fixed); r2 REVISE (F1-F5, F7-F9 fixed, F6 declined with reason); r3 REVISE (F1-F10 fixed, F11-F12 declared); r4 confirming REVISE (F1-F3 and A1-A5 fixed); operator chose one more round; r5 REVISE (F1 and A1-A4 fixed); r6 PENDING"
+- "gates: decision-scout=FLAGS_FOUND (2 passes); plan-critique=r1 REVISE (F1-F7 fixed); r2 REVISE (F1-F5, F7-F9 fixed, F6 declined with reason); r3 REVISE (F1-F10 fixed, F11-F12 declared); r4 confirming REVISE (F1-F3 and A1-A5 fixed); operator chose one more round; r5 REVISE (F1 and A1-A4 fixed); r6 REVISE (F1 rec-2203 bundled, A1-A5 fixed); r7 PENDING"
 - "Related-Work check, condition 1 (same file): scope carries scripts/session/preflight.py, rec-4365's file."
 - >-
   Evidence and plan-time measurements: /mnt/project-files/rec-4365/ (ADVICE.md, scout-report.md, sysmon-parity.md,
@@ -640,11 +649,12 @@ context:
   so it becomes an oracle of that fix (TestLiveStateMemo plus the fixture-stub node) and of this plan's per-main()
   budget. rec-3638 rides this merge so the post-merge tier re-measures preflight.py in CI.
 - >-
-  Not bundled: rec-4361, rec-3630, rec-4277, rec-3615, rec-4261; rec-4372 (open Critical ci_rca on
-  terraform-apply-sandbox.yml, filed 2026-10-16T13:17Z) is unrelated to this failure and file set. The sysmon constant
-  stays separate from _pytest_diff.py's on purpose (a report-only check's private choice should not silently move a
-  blocking gate). Further residuals (Decision 181 cl.2): compute_followon_state's plan-corpus parse, about 9 MB and 7.5s
-  per production preflight, rec-4374; standing loader identity, folded into rec-4371.
+  Not bundled: rec-4361, rec-3630, rec-4277, rec-3615, rec-4261, rec-2204 (not on main()'s path); rec-4372 (open
+  Critical ci_rca on terraform-apply-sandbox.yml) is unrelated. rec-2203 rides this merge: contracts.py's row fixes it and
+  reuses its filed node. The sysmon constant stays apart from _pytest_diff.py's (a report-only check's private choice
+  must not silently move a blocking gate). Residuals (Decision 181 cl.2): compute_followon_state's and
+  recs_cache._landed_followon_rec_ids's plan-corpus parses (about 9 MB each per production preflight), rec-4374;
+  standing loader identity, rec-4371.
 - "fork: fix layer | chosen: production libyaml loader plus parse-once | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: scope"
 - "fork: regression guard | chosen: pure-Python YAML byte budget per main(), wall-clock gauge to rec-4370 | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: scope, followon_recs"
 - "fork: coverage child core | chosen: sysmon in this merge | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: scope"
@@ -678,7 +688,7 @@ execution_steps:
   rec-4365 and rec-3208, one status-preserving portal call each after get_rec_write_guidance(): bin/venv-python -m
   scripts.ops_data_portal --update-rec rec-4365 --acceptance '<VP step 10 want for rec-4365>' --closure-artifact
   'shard:preflight-yaml-parse-budget', and --update-rec rec-3208 --acceptance '<VP step 10 want for rec-3208>'. rec-3638
-  keeps its filed acceptance (step 5's node).
+  and rec-2203 keep their filed acceptances (step 5's node and step 1's TestLoadAll node).
 - Execute Verification Plan steps 1-10 -- loop until pass; on unrecoverable failure stop and RCA (Decision 55)
 - >-
   Code-review gate (implement skill), then the closure sequence, in order. (1) bin/venv-python -m
@@ -687,7 +697,7 @@ execution_steps:
   11's full tier on the committed, rebased, clean tree, then bin/venv-python -m scripts.checks.validation_result
   --verify-head exit 0; after any review-fix commit rerun both and VP step 10 (a renamed node invalidates a stored
   acceptance). (5) Push. (6) PR titled 'feat(preflight-yaml-parse-cost): ...' (step 12 finds the merge by that title) whose squash body carries 'Resolves:
-  rec-4365, rec-3208, rec-3638' in a Key: value block before the attribution footer (git-ops.yaml resolves_trailer). (7)
+  rec-4365, rec-3208, rec-3638, rec-2203' in a Key: value block before the attribution footer (git-ops.yaml resolves_trailer). (7)
   CI green. (8) Squash-merge, passing that body as the merge commit_message. Then post-deploy steps 12-14 in order.
 - >-
   Report readiness states, the validator verdict, the postflight evidence and the real push, PR, CI and merge outcomes
@@ -696,5 +706,7 @@ rollback: >-
   Revert the squash commit: the loaders return to the pure-Python parser, the coverage child returns to the default
   core, and the renderer goes. Execution step 8's pre-merge warehouse edits are not reverted by git: on a revert or an
   abandoned PR, restore rec-4365's and rec-3208's filed acceptances with status-preserving update_rec calls (the filed
-  text is in each rec's history) so neither names nodes absent on main. A rec closed by this plan is reopened only
+  text is in each rec's history) so neither names nodes absent on main, and correct rec-4365's pre-stamped
+  closure_artifact (status-preserving update_rec with a stated reason, Decision 186 pt 8) so it names no shard that
+  never landed. A rec closed by this plan is reopened only
   through update_rec with a reason, never by editing a cache.
