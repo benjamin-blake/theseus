@@ -8,7 +8,8 @@ tests/telemetry/fixtures/derivation_cases.yaml.
 
 from __future__ import annotations
 
-from datetime import datetime
+import hashlib
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -333,6 +334,10 @@ def test_verb_fields_match_event_verb_output_columns() -> None:
             "day_from": "2026-09-25",
             "day_to": "2026-09-25",
         }
+        if entry.data.get("response") == "content":
+            rows = _seeded_content_rows(con, session)
+            assert tuple(rows[0]) == VERB_FIELDS[verb], verb
+            continue
         sql = ev.render_sql(entry)
         values = ev.bind_values(entry, {k: v for k, v in params.items() if k in entry.params})
         used = {n for n in values if f"${n}" in sql}
@@ -349,3 +354,94 @@ def test_render_data_accepts_only_integers_identifiers_and_the_rules_list() -> N
     for bad in ("x; DROP TABLE t", "has space", 1.5, None):
         with pytest.raises(ValueError, match="bare identifier"):
             verbs.render_data({"key": bad})
+
+
+_CONTENT_EVENT = "01CRZ3NDEKTSV4RRFFQ69G5FA"
+
+
+def _content_params(session: str, event_suffix: str, **over: Any) -> dict[str, Any]:
+    base = {
+        "session_id": session,
+        "producer": "claude_code",
+        "event_id": _CONTENT_EVENT + event_suffix,
+        "parser_version": 3,
+        "offset": 0,
+        "max_bytes": 1024,
+    }
+    return {**base, **over}
+
+
+def _transcript(session: str, started: datetime, event_suffix: str, **over: Any) -> dict[str, Any]:
+    text = over.pop("text", "stored text")
+    return db.base_row(
+        event_id=_CONTENT_EVENT + event_suffix,
+        event_kind="point",
+        event_timestamp=started,
+        session_id=session,
+        session_started_at=started,
+        parser_version=3,
+        content=text,
+        content_sha256=hashlib.sha256(text.encode()).hexdigest(),
+        content_bytes=len(text.encode()),
+        **over,
+    )
+
+
+def _seeded_content_rows(con: Any, session: str) -> list[dict[str, Any]]:
+    entry = verbs.EVENT_READS["transcript_content"]
+    values = ev.bind_values(entry, _content_params(session, "V"))
+    db.insert_rows(con, "telemetry_transcripts", [_transcript(session, values["part_from"], "V")])
+    return ev.execute(con, verb="transcript_content", params=_content_params(session, "V"))
+
+
+def test_transcript_content_sql_resolves_on_a_real_catalog() -> None:
+    started = datetime(2026, 9, 25, 10, 30, tzinfo=timezone.utc)
+    session = derive_entity_key("telemetry_sessions:session_id", _TENANT, _PROJECT, "content", started)
+    other = derive_entity_key("telemetry_sessions:session_id", _TENANT, _PROJECT, "other", started)
+    entry = verbs.EVENT_READS["transcript_content"]
+    con = db.open_memory_catalog()
+    uri = "t/p/s/" + "ab" * 32
+    object_row = {**_transcript(session, started, "B", text="x" * 10), "content": None, "content_uri": uri}
+    db.insert_rows(
+        con,
+        "telemetry_transcripts",
+        [
+            _transcript(session, started, "A"),
+            _transcript(session, started, "A", created_timestamp="2026-09-25T11:00:00+00:00"),
+            object_row,
+            _transcript(session, started, "C", text="one"),
+            _transcript(session, started, "C", text="two"),
+            _transcript(session, started, "D", model="a"),
+            _transcript(session, started, "D", model="b"),
+            _transcript(session, started, "E", model=None),
+            _transcript(session, started, "E", model="b"),
+            {**_transcript(session, started, "G"), "parser_version": 2},
+            _transcript(other, started, "F"),
+        ],
+    )
+
+    def resolve(suffix: str, **over: Any) -> list[dict[str, Any]]:
+        params = _content_params(session, suffix, **over)
+        sql, values = ev.render_sql(entry), ev.bind_values(entry, params)
+        cursor = con.execute(sql, {n: values[n] for n in values if f"${n}" in sql})
+        columns = [d[0] for d in cursor.description]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+    assert resolve("Z") == []
+    assert resolve("F") == []  # another session's row is outside the partition and session binding
+    (a1, a2) = resolve("A")
+    assert a1["compared_versions"] == a2["compared_versions"] == 1 and a1["content"] == "stored text"
+    (b,) = resolve("B")
+    assert b["content"] is None and b["content_uri"] == uri and b["compared_versions"] == 1
+    for suffix in ("C", "D", "E"):
+        rows = resolve(suffix)
+        assert len(rows) == 2 and {r["compared_versions"] for r in rows} == {2}, suffix
+    assert len(resolve("G", parser_version=3)) == 0 and len(resolve("G", parser_version=2)) == 1
+    assert set(resolve("A")[0]) == {
+        "content",
+        "content_uri",
+        "content_sha256",
+        "content_bytes",
+        "content_omitted_reason",
+        "compared_versions",
+    }

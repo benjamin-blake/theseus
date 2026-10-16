@@ -1,16 +1,19 @@
-"""The content_blobs port's s3 adapter for the telemetry writer (T2.36, slice 2a-2, plan 4; ports.yaml content_blobs).
+"""The content_blobs port's s3 adapter for the telemetry writer and reader (T2.36, slice 2a-2, plan 4; ports.yaml).
 
 The writer never puts, reads or deletes object bytes. It issues short-lived presigned PUTs bound to a payload's SHA-256 and
 length (grant_put), proves an object by one HEAD (verify) and counts a session's objects through its own prefix-conditioned
-List (count_objects). boto3 and botocore are imported only inside make_s3_client, so this module imports in the fast tier;
-errors are classified from the botocore error shape (Error.Code, ResponseMetadata.HTTPStatusCode) and exception class names.
+List (count_objects). The reader's transcript_content verb reads a stored object's bytes (get_blob): one HEAD proves the
+checksum and length, then a ranged GET bound to that HEAD's ETag returns the bytes. boto3 and botocore are imported only
+inside make_s3_client, so this module imports in the fast tier; errors are classified from the botocore error shape
+(Error.Code, ResponseMetadata.HTTPStatusCode) and exception class names.
 
 Never logs, returns or raises a presigned URL, key, digest, account id or ARN beyond the Grant object itself; every error
-here carries a fixed message (Decision 101). Imported only by the telemetry writer's bundle (the T2.36 c4 guard).
+here carries a fixed message (Decision 101). Imported by the telemetry writer's and the reader's bundles (the T2.36 c4 guard).
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -22,6 +25,16 @@ from src.telemetry.blobs import GRANT_TTL_SECONDS, sha256_hex_to_b64
 
 BLOB_COMMIT_MAX_AGE_DAYS = 7
 BLOB_PREFIX_ROOT = "telemetry-blobs"
+_URI_RE = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}/[0-9A-HJKMNP-TV-Z]{26}/[0-9A-HJKMNP-TV-Z]{26}/[0-9a-f]{64}$")
+INTEGRITY_REASONS = (
+    "uri_malformed",
+    "checksum_absent",
+    "checksum_mismatch",
+    "length_mismatch",
+    "changed_during_read",
+    "forbidden_or_missing",
+    "missing",
+)
 VERIFIED, MISSING, STALE, MISMATCH, SIZE_MISMATCH = "verified", "missing", "stale", "mismatch", "size_mismatch"
 _SIGNED_HEADERS = "content-length;host;x-amz-checksum-sha256"
 _MISSING_CODES = frozenset({"404", "NoSuchKey", "NotFound"})
@@ -54,13 +67,29 @@ _UNAVAILABLE_CLASSES = frozenset(
 class BlobStoreUnavailableError(Exception):
     """Throttling, a 5xx or a timeout after botocore's own retries: the caller answers 503."""
 
+    code = ""
+    status = 0
+
 
 class BlobStoreAccessError(Exception):
     """Any other client error. Never read as an absent object; pages as a deploy or permission defect."""
 
+    code = ""
+    status = 0
+
 
 class BlobIntegrityError(Exception):
-    """A stored object whose SHA-256 is absent or differs from its content-addressed key: pages, never retried."""
+    """A stored object whose SHA-256 is absent or differs from its content-addressed key: pages, never retried.
+
+    reason is from INTEGRITY_REASONS; code and status carry the botocore Error.Code and HTTP status when get_blob raised it.
+    """
+
+    code = ""
+    status = 0
+
+    def __init__(self, message: str = "blob integrity fault", *, reason: str = "checksum_mismatch") -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 class BlobGrantSelfCheckError(Exception):
@@ -145,6 +174,10 @@ class LazyBlobStore:
         counted: dict[str, int] = self._get().count_objects(*args, **kwargs)
         return counted
 
+    def get_blob(self, *args: Any, **kwargs: Any) -> bytes:
+        data: bytes = self._get().get_blob(*args, **kwargs)
+        return data
+
     def reset(self) -> None:
         self._store = None
 
@@ -168,6 +201,25 @@ def _classify(exc: Exception) -> Exception:
 def _is_missing(exc: Exception) -> bool:
     code, status = _error_shape(exc)
     return code in _MISSING_CODES or status == 404
+
+
+def _read_fault(exc: Exception) -> Exception:
+    """get_blob's error for a failed S3 call: typed, with the botocore code and status and never the message."""
+    code, status = _error_shape(exc)
+    if status == 412 or code == "PreconditionFailed":
+        fault: Exception = BlobIntegrityError("blob integrity fault (changed_during_read)", reason="changed_during_read")
+    elif _is_missing(exc):
+        fault = BlobIntegrityError("blob integrity fault (missing)", reason="missing")
+    elif _is_forbidden(exc):
+        fault = BlobIntegrityError("blob integrity fault (forbidden_or_missing)", reason="forbidden_or_missing")
+    else:
+        fault = _classify(exc)
+    fault.code, fault.status = code, status  # type: ignore[attr-defined]
+    return fault
+
+
+def _integrity(reason: str) -> BlobIntegrityError:
+    return BlobIntegrityError(f"blob integrity fault ({reason})", reason=reason)
 
 
 def _is_forbidden(exc: Exception) -> bool:
@@ -219,6 +271,41 @@ class S3BlobStore:
             return STALE
         return VERIFIED
 
+    def get_blob(self, content_uri: str, sha_hex: str, size: int, *, offset: int, length: int) -> bytes:
+        """The bytes [offset, offset + length) of a stored object, read from the object one HEAD just verified.
+
+        The URI must be tenant/project/session/<sha_hex> in canonical form. One HEAD with ChecksumMode ENABLED proves the
+        stored SHA-256 and length against the row; the ranged GET carries IfMatch on that HEAD's ETag, so the bytes come from
+        the verified object (no s3:GetObjectVersion). Every fault is typed with a reason and never carries a key or message.
+        """
+        if _URI_RE.match(content_uri) is None or content_uri.rsplit("/", 1)[-1] != sha_hex:
+            raise _integrity("uri_malformed")
+        key = self._root.key(content_uri)
+        try:
+            head = self._client.head_object(Bucket=self._root.bucket, Key=key, ChecksumMode="ENABLED")
+        except Exception as exc:  # noqa: BLE001 -- classified; the message (a bucket/key) is dropped
+            raise _read_fault(exc) from None
+        stored = head.get("ChecksumSHA256")
+        if stored is None:
+            raise _integrity("checksum_absent")
+        if stored != sha256_hex_to_b64(sha_hex):
+            raise _integrity("checksum_mismatch")
+        etag = head.get("ETag")
+        if head.get("ContentLength") != size:
+            raise _integrity("length_mismatch")
+        if not etag:
+            raise _integrity("changed_during_read")
+        try:
+            got = self._client.get_object(
+                Bucket=self._root.bucket, Key=key, Range=f"bytes={offset}-{offset + length - 1}", IfMatch=etag
+            )
+            data: bytes = got["Body"].read()
+        except Exception as exc:  # noqa: BLE001 -- classified; the message (a bucket/key) is dropped
+            raise _read_fault(exc) from None
+        if len(data) != length:
+            raise _integrity("length_mismatch")
+        return data
+
     def grant_put(self, content_uri: str, sha_hex: str, size: int, *, now: datetime | None = None) -> Grant:
         """A 15-minute presigned PUT bound to the digest and length; refused (self-check) if it signs anything else."""
         key = self._root.key(content_uri)
@@ -268,6 +355,7 @@ class S3BlobStore:
 
 __all__ = [
     "BLOB_COMMIT_MAX_AGE_DAYS",
+    "INTEGRITY_REASONS",
     "BlobGrantSelfCheckError",
     "BlobIntegrityError",
     "BlobRoot",

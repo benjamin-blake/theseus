@@ -43,6 +43,8 @@ _PLACEHOLDER_TABLES = {
 _DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _BOUND_NAME = re.compile(r"\$([a-z_]+)")
 _SCOPE_SESSION = "session_started_at >= $part_from AND session_started_at < $part_to AND session_id = $session_id"
+_INT_MIN = {"parser_version": 1, "offset": 0, "max_bytes": 1}
+_PRODUCER_MAX = 200
 _SCOPE_WINDOW = "session_started_at >= $part_from AND session_started_at < $part_to"
 
 
@@ -70,6 +72,7 @@ class EventRead:
     description: str = ""
     paginable: bool = False
     agent_facing: bool = True
+    int_params: tuple[str, ...] = ()
 
 
 def _event_reads() -> dict[str, EventRead]:
@@ -106,15 +109,29 @@ def require_smoke_pin() -> tuple[str, str]:
     return meta_schema, data_path
 
 
-def _session_id(entry: EventRead, value: Any) -> str:
+def _ulid(entry: EventRead, name: str, value: Any) -> str:
     if not isinstance(value, str):
-        raise EventReadInputError(entry.verb, "session_id", "must be a string")
+        raise EventReadInputError(entry.verb, name, "must be a string")
     try:
         canonical = canonical_ulid(value)
     except IdentityError:
-        raise EventReadInputError(entry.verb, "session_id", "must be a canonical 26-character ULID") from None
+        raise EventReadInputError(entry.verb, name, "must be a canonical 26-character ULID") from None
     if canonical != value:
-        raise EventReadInputError(entry.verb, "session_id", "must be a canonical 26-character ULID")
+        raise EventReadInputError(entry.verb, name, "must be a canonical 26-character ULID")
+    return value
+
+
+def _producer(entry: EventRead, value: Any) -> str:
+    if not isinstance(value, str) or not value or len(value) > _PRODUCER_MAX or "\x00" in value:
+        raise EventReadInputError(entry.verb, "producer", f"must be a non-empty string of at most {_PRODUCER_MAX} characters")
+    return value
+
+
+def _integer(entry: EventRead, name: str, value: Any) -> int:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise EventReadInputError(entry.verb, name, "must be an integer")
+    if value < _INT_MIN.get(name, 0):
+        raise EventReadInputError(entry.verb, name, f"must be at least {_INT_MIN.get(name, 0)}")
     return value
 
 
@@ -146,9 +163,15 @@ def bind_values(entry: EventRead, params: Any) -> dict[str, Any]:
         raise EventReadInputError(entry.verb, "params", f"must be exactly {list(entry.params)}")
     values: dict[str, Any] = {}
     if "session_id" in entry.params:
-        session_id = _session_id(entry, params["session_id"])
+        session_id = _ulid(entry, "session_id", params["session_id"])
         start = _midnight(decode_time_prefix(session_id).date())
         values.update(session_id=session_id, part_from=start, part_to=start + timedelta(days=1))
+    if "producer" in entry.params:
+        values["producer"] = _producer(entry, params["producer"])
+    if "event_id" in entry.params:
+        values["event_id"] = _ulid(entry, "event_id", params["event_id"])
+    for name in entry.int_params:
+        values[name] = _integer(entry, name, params[name])
     if "as_of" in entry.params:
         values["as_of"] = _as_of(entry, params["as_of"])
     if "day_from" in entry.params:
@@ -239,6 +262,7 @@ def execute(con: Any, *, verb: str, params: Any, limit: Any = None) -> list[dict
 def execute_entry(con: Any, entry: EventRead, params: Any, limit: Any = None) -> list[dict[str, Any]]:
     values = bind_values(entry, params)
     sql = render_sql(entry)
+    content = entry.data.get("response") == "content"
     if limit is not None:
         if not entry.paginable:
             raise rt.DuckLakeRuntimeError(f"read verb {entry.verb!r} is not paginable: `limit` is not accepted")
@@ -246,7 +270,12 @@ def execute_entry(con: Any, entry: EventRead, params: Any, limit: Any = None) ->
     used = set(_BOUND_NAME.findall(sql))
     cursor = con.execute(sql, {name: value for name, value in values.items() if name in used})
     columns = [desc[0] for desc in cursor.description]
-    return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+    if content:
+        from src.common.ducklake_event_content import serve_content  # noqa: PLC0415 -- reader bundle only
+
+        return serve_content(rows, values)
+    return rows
 
 
 def serve_named_read(con: Any, *, verb: str, params: dict[str, Any], limit: Any) -> tuple[list[dict[str, Any]], str]:
@@ -301,10 +330,17 @@ def acquirer_for(
     return acquire
 
 
-def describe_all(semantics: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:
-    """Both registries for the agent-facing `describe`: the ops rows unchanged plus one superset row per event verb."""
+def _described_params(entry: EventRead) -> dict[str, Any]:
     from src.common.ducklake_named_reads import _params_schema  # noqa: PLC0415
 
+    schema = _params_schema(entry.params)
+    for name in entry.int_params:
+        schema["properties"][name] = {"type": "integer"}
+    return schema
+
+
+def describe_all(semantics: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:
+    """Both registries for the agent-facing `describe`: the ops rows unchanged plus one superset row per event verb."""
     verbs = rt.describe_named_reads() if semantics is None else rt.describe_named_reads(semantics)
     for verb, entry in _event_reads().items():
         verbs[verb] = {
@@ -313,7 +349,7 @@ def describe_all(semantics: dict[str, Any] | None = None) -> dict[str, dict[str,
             "params": list(entry.params),
             "paginable": entry.paginable,
             "agent_facing": entry.agent_facing,
-            "params_schema": _params_schema(entry.params),
+            "params_schema": _described_params(entry),
             "read_version": event_read_version(verb, semantics),
             "kind": KIND,
             "tables": list(entry.tables),

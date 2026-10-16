@@ -6,6 +6,8 @@ offline presign with fake credentials and a Stubber HEAD. Credential-shaped valu
 from __future__ import annotations
 
 import ast
+import hashlib
+import io
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -19,7 +21,9 @@ from src.common import ducklake_telemetry_blobstore as store_mod
 from src.common.ducklake_scd2_schema import DuckLakeRuntimeError
 from src.common.ducklake_telemetry_blobstore import (
     BLOB_COMMIT_MAX_AGE_DAYS,
+    INTEGRITY_REASONS,
     BlobGrantSelfCheckError,
+    BlobIntegrityError,
     BlobRoot,
     BlobStoreAccessError,
     BlobStoreUnavailableError,
@@ -362,6 +366,8 @@ def test_lazy_store_builds_once_and_delegates() -> None:
     assert built == [] and lazy.verify(URI, SHA, 70000) == "verified"
     assert lazy.grant_put(URI, SHA, 70000, now=NOW).headers["Content-Length"] == "70000"
     assert lazy.count_objects("a/") == {"count": 0, "bytes": 0} and built == [1]
+    delegated = store_mod.LazyBlobStore(lambda: store(ObjectClient()))
+    assert delegated.get_blob(OBJ_URI, OBJ_SHA, len(OBJ), offset=0, length=3) == OBJ[:3]
     lazy.reset()
     lazy.verify(URI, SHA, 70000)
     assert built == [1, 1]
@@ -375,3 +381,132 @@ def test_presign_errors_are_classified_without_the_key() -> None:
     with pytest.raises(BlobStoreAccessError) as caught:
         store(Failing()).grant_put(URI, SHA, 70000)
     assert "secret" not in str(caught.value)
+
+
+OBJ = bytes(range(256)) * 2
+OBJ_SHA = hashlib.sha256(OBJ).hexdigest()
+OBJ_URI = f"01ARZ3NDEKTSV4RRFFQ69G5FAV/01ARZ3NDEKTSV4RRFFQ69G5FAW/01ARZ3NDEKTSV4RRFFQ69G5FAX/{OBJ_SHA}"
+ETAG = '"0123456789abcdef"'
+OBJ_HEAD = {"ContentLength": len(OBJ), "ChecksumSHA256": sha256_hex_to_b64(OBJ_SHA), "ETag": ETAG, "LastModified": NOW}
+
+
+class ObjectClient(FakeS3Client):
+    """FakeS3Client plus a ranged get_object over OBJ; `get` is a response override or an exception to raise."""
+
+    def __init__(self, head: Any = None, get: Any = None) -> None:
+        super().__init__(OBJ_HEAD if head is None else head)
+        self.get = get
+
+    def get_object(self, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(("get_object", kwargs))
+        if isinstance(self.get, Exception):
+            raise self.get
+        if self.get is not None:
+            return self.get
+        first, last = (int(n) for n in kwargs["Range"].removeprefix("bytes=").split("-"))
+        return {"Body": io.BytesIO(OBJ[first : last + 1])}
+
+
+def read(client: Any, *, offset: int = 10, length: int = 10, uri: str = OBJ_URI, sha: str = OBJ_SHA) -> bytes:
+    return store(client).get_blob(uri, sha, len(OBJ), offset=offset, length=length)
+
+
+def test_get_blob_verifies_then_reads_the_range() -> None:
+    client = ObjectClient()
+    assert read(client) == OBJ[10:20]
+    key = BLOB_ROOT.prefix + OBJ_URI
+    assert client.calls == [
+        ("head_object", {"Bucket": "bucket", "Key": key, "ChecksumMode": "ENABLED"}),
+        ("get_object", {"Bucket": "bucket", "Key": key, "Range": "bytes=10-19", "IfMatch": ETAG}),
+    ]
+    assert read(ObjectClient(), offset=len(OBJ) - 4, length=4) == OBJ[-4:]
+
+
+def test_get_blob_integrity_reasons() -> None:
+    cases: dict[str, Any] = {
+        "checksum_absent": ObjectClient({k: v for k, v in OBJ_HEAD.items() if k != "ChecksumSHA256"}),
+        "checksum_mismatch": ObjectClient({**OBJ_HEAD, "ChecksumSHA256": sha256_hex_to_b64("cd" * 32)}),
+        "length_mismatch": ObjectClient({**OBJ_HEAD, "ContentLength": len(OBJ) + 1}),
+        "changed_during_read": ObjectClient(get=ClientErrorLike("PreconditionFailed", 412)),
+        "forbidden_or_missing": ObjectClient(ClientErrorLike("403", 403)),
+        "missing": ObjectClient(ClientErrorLike("NoSuchKey", 404)),
+    }
+    for reason, client in cases.items():
+        with pytest.raises(BlobIntegrityError) as caught:
+            read(client)
+        assert caught.value.reason == reason, reason
+    for client in (ObjectClient(get=ClientErrorLike("AccessDenied", 403)),):
+        with pytest.raises(BlobIntegrityError) as caught:
+            read(client)
+        assert caught.value.reason == "forbidden_or_missing" and caught.value.status == 403
+    with pytest.raises(BlobIntegrityError) as caught:
+        read(ObjectClient(get={"Body": io.BytesIO(b"short")}))
+    assert caught.value.reason == "length_mismatch"
+    with pytest.raises(BlobIntegrityError) as caught:
+        read(ObjectClient({k: v for k, v in OBJ_HEAD.items() if k != "ETag"}))
+    assert caught.value.reason == "changed_during_read"
+    for uri in ("t/p/s/" + OBJ_SHA, OBJ_URI.lower(), OBJ_URI + "/x", OBJ_URI[:-1] + "0", "../" + OBJ_URI):
+        client = ObjectClient()
+        with pytest.raises(BlobIntegrityError) as caught:
+            read(client, uri=uri)
+        assert caught.value.reason == "uri_malformed" and client.calls == []
+    assert set(cases) | {"uri_malformed"} == set(INTEGRITY_REASONS)
+
+
+def test_get_blob_store_faults_are_classified_without_the_message() -> None:
+    account = "1" * 12
+    arn = f"arn:aws:sts::{account}:assumed-role/reader/session"
+
+    class Leaky(Exception):
+        def __init__(self, code: str, status: int) -> None:
+            super().__init__(f"{arn} s3://secret-bucket/{BLOB_ROOT.prefix}{OBJ_URI} {account}")
+            self.response = {"Error": {"Code": code, "Message": arn}, "ResponseMetadata": {"HTTPStatusCode": status}}
+
+    expected: list[tuple[Any, str, int, type[Exception]]] = [
+        (Leaky("SlowDown", 503), "SlowDown", 503, BlobStoreUnavailableError),
+        (Leaky("InternalError", 500), "InternalError", 500, BlobStoreUnavailableError),
+        (Leaky("InvalidRequest", 400), "InvalidRequest", 400, BlobStoreAccessError),
+        (Leaky("AccessDenied", 403), "AccessDenied", 403, BlobIntegrityError),
+        (Leaky("NoSuchKey", 404), "NoSuchKey", 404, BlobIntegrityError),
+    ]
+    for exc, code, status, kind in expected:
+        for client in (ObjectClient(exc), ObjectClient(get=exc)):
+            with pytest.raises(kind) as caught:
+                read(client)
+            text = str(caught.value)
+            assert arn not in text and account not in text and "secret-bucket" not in text and OBJ_SHA not in text
+            assert (caught.value.code, caught.value.status) == (code, status)  # type: ignore[attr-defined]
+            assert caught.value.__cause__ is None
+
+
+def test_writer_integrity_raise_keeps_its_reason() -> None:
+    err = BlobIntegrityError("a stored object does not match its content-addressed key")
+    assert err.reason == "checksum_mismatch" and (err.code, err.status) == ("", 0)
+    assert str(err) == "a stored object does not match its content-addressed key"
+
+
+@pytest.mark.aws
+def test_real_ranged_get_stub_carries_range_and_if_match(monkeypatch: pytest.MonkeyPatch) -> None:
+    from botocore.stub import Stubber
+
+    client = _offline_client(monkeypatch)
+    key = BLOB_ROOT.prefix + OBJ_URI
+    with Stubber(client) as stub:
+        stub.add_response(
+            "head_object",
+            OBJ_HEAD,
+            expected_params={"Bucket": "bucket", "Key": key, "ChecksumMode": "ENABLED"},
+        )
+        stub.add_response(
+            "get_object",
+            {"Body": _StubBody(OBJ[10:20]), "ContentLength": 10},
+            expected_params={"Bucket": "bucket", "Key": key, "Range": "bytes=10-19", "IfMatch": ETAG},
+        )
+        assert read(client) == OBJ[10:20]
+        stub.assert_no_pending_responses()
+
+
+def _StubBody(data: bytes) -> Any:
+    from botocore.response import StreamingBody
+
+    return StreamingBody(io.BytesIO(data), len(data))

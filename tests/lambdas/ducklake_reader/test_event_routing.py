@@ -154,3 +154,111 @@ def test_describe_returns_both_registries(wiring: dict[str, Any]) -> None:
     assert set(rt.NAMED_READS) <= set(body["verbs"]) and "sessions_window" in body["verbs"]
     assert body["verbs"]["sessions_window"]["kind"] == "event_journal"
     assert wiring["telemetry_opened"] == 0 and wiring["ops_opened"] == 0
+
+
+_CONTENT_COLUMNS = ("content", "content_uri", "content_sha256", "content_bytes", "content_omitted_reason", "compared_versions")
+_BLOB_URI = "01ARZ3NDEKTSV4RRFFQ69G5FAV/01ARZ3NDEKTSV4RRFFQ69G5FAW/01ARZ3NDEKTSV4RRFFQ69G5FAX/" + "cd" * 32
+_BLOB_BYTES = b"transcript bytes " * 4
+
+
+class _ContentCon(FakeCon):
+    rows: list[tuple[Any, ...]] = []
+
+    def __init__(self, label: str, fail_first: bool = False) -> None:
+        super().__init__(label, fail_first)
+        self.description = [(name,) for name in _CONTENT_COLUMNS]
+
+    def fetchall(self) -> list[tuple[Any, ...]]:
+        return self.rows
+
+
+class _BlobFake:
+    def __init__(self, error: Exception | None = None) -> None:
+        self.error = error
+
+    def get_blob(self, uri: str, sha: str, size: int, *, offset: int, length: int) -> bytes:
+        if self.error is not None:
+            raise self.error
+        return _BLOB_BYTES[offset : offset + length]
+
+
+def _content_wiring(wiring: dict[str, Any], monkeypatch: pytest.MonkeyPatch, rows: list[tuple[Any, ...]], store: Any) -> None:
+    from src.common import ducklake_event_content as content
+
+    _ContentCon.rows = rows
+    monkeypatch.setattr(rt, "open_connection", lambda **kw: _ContentCon("telemetry"))
+    monkeypatch.setattr(content, "BLOB_STORE", store)
+
+
+def _content_request(**over: Any) -> dict[str, Any]:
+    params = {
+        "session_id": _SESSION,
+        "producer": "claude_code",
+        "event_id": "01CRZ3NDEKTSV4RRFFQ69G5FAV",
+        "parser_version": 3,
+        "offset": 0,
+        "max_bytes": 1000,
+    }
+    return {"action": "named_read", "verb": "transcript_content", "params": {**params, **over}}
+
+
+def _object_row(versions: int = 1) -> tuple[Any, ...]:
+    import hashlib
+
+    return (None, _BLOB_URI, hashlib.sha256(_BLOB_BYTES).hexdigest(), len(_BLOB_BYTES), None, versions)
+
+
+def test_transcript_content_through_the_handler(wiring: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    import base64
+
+    _content_wiring(wiring, monkeypatch, [_object_row()], _BlobFake())
+    status, body = _call(_content_request())
+    assert status == 200 and body["verb"] == "transcript_content" and body["row_count"] == 1
+    (row,) = body["rows"]
+    assert row["storage"] == "object" and base64.b64decode(row["data"]) == _BLOB_BYTES
+    assert row["length"] == row["content_bytes"] == len(_BLOB_BYTES) and "content_uri" not in row
+    assert _BLOB_URI not in json.dumps(body)
+    _content_wiring(wiring, monkeypatch, [], _BlobFake())
+    status, body = _call(_content_request())
+    assert status == 200 and body["rows"] == [] and body["row_count"] == 0
+
+
+def test_blob_faults_answer_typed_through_the_handler(wiring: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.common import ducklake_event_content as content
+    from src.common.ducklake_telemetry_blobstore import (
+        BlobIntegrityError,
+        BlobStoreAccessError,
+        BlobStoreUnavailableError,
+        LazyBlobStore,
+    )
+
+    arn = "arn:aws:iam::" + "1" * 12 + ":role/reader"
+    cases: list[tuple[int, str, str]] = [
+        (500, "blob_integrity", "length_mismatch"),
+        (500, "blob_integrity", "forbidden_or_missing"),
+        (503, "blob_unavailable", "store_unavailable"),
+        (500, "blob_misconfigured", "store_access"),
+    ]
+    errors: list[Exception] = [
+        BlobIntegrityError(arn, reason="length_mismatch"),
+        BlobIntegrityError(arn, reason="forbidden_or_missing"),
+        BlobStoreUnavailableError(arn),
+        BlobStoreAccessError(arn),
+    ]
+    for error, (want_status, want_type, want_reason) in zip(errors, cases):
+        _content_wiring(wiring, monkeypatch, [_object_row()], _BlobFake(error))
+        status, body = _call(_content_request())
+        assert status == want_status
+        assert set(body) == {"ok", "error_type", "reason", "request_id", "action"}
+        assert (body["error_type"], body["reason"], body["ok"]) == (want_type, want_reason, False)
+        assert arn not in json.dumps(body) and _BLOB_URI not in json.dumps(body)
+    _content_wiring(wiring, monkeypatch, [_object_row(versions=2)], _BlobFake())
+    status, body = _call(_content_request())
+    assert (status, body["error_type"], body["reason"]) == (500, "grain_conflict", "differing_rows")
+    monkeypatch.delenv("TELEMETRY_BLOB_ROOT", raising=False)
+    _content_wiring(wiring, monkeypatch, [_object_row()], LazyBlobStore(content._build_store))
+    status, body = _call(_content_request())
+    assert (status, body["error_type"], body["reason"]) == (500, "blob_misconfigured", "not_configured")
+    _content_wiring(wiring, monkeypatch, [_object_row()], _BlobFake())
+    status, body = _call(_content_request(offset=len(_BLOB_BYTES)))
+    assert status == 400 and body["error_type"] == "named_read_input" and str(len(_BLOB_BYTES)) not in body["error"]

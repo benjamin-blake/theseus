@@ -250,6 +250,7 @@ def test_event_verbs_are_described_with_their_class_bounds_and_audience() -> Non
     assert {v for v, row in event.items() if not row["agent_facing"]} == {
         "sessions_window_all_purposes",
         "telemetry_health_count",
+        "transcript_content",
     }
     assert all("smoke catalog" in verbs.EVENT_READS[v].description for v in verbs.EVENT_READS)
     assert all(row["read_version"] == ev.event_read_version(v) for v, row in event.items())
@@ -299,3 +300,86 @@ def test_falsy_non_object_params_are_refused_before_any_acquire(smoke_pin: None)
         with pytest.raises(ev.EventReadInputError):
             ev.acquirer_for("named_read", {"verb": "telemetry_health_count", "params": params}, None, "/e")
     assert callable(ev.acquirer_for("named_read", {"verb": "telemetry_health_count"}, None, "/e"))
+
+
+_CONTENT = verbs.EVENT_READS["transcript_content"]
+_EVENT = "01CRZ3NDEKTSV4RRFFQ69G5FAV"
+
+
+def _content_params(**over: Any) -> dict[str, Any]:
+    base = {
+        "session_id": _SESSION,
+        "producer": "claude_code",
+        "event_id": _EVENT,
+        "parser_version": 3,
+        "offset": 0,
+        "max_bytes": 1024,
+    }
+    return {**base, **over}
+
+
+def test_transcript_content_is_registered_not_agent_facing() -> None:
+    assert _CONTENT.binding == "session" and _CONTENT.agent_facing is False and _CONTENT.tables == (TRANSCRIPTS,)
+    assert _CONTENT.params == ("session_id", "producer", "event_id", "parser_version", "offset", "max_bytes")
+    assert _CONTENT.int_params == ("parser_version", "offset", "max_bytes") and not _CONTENT.paginable
+    sql = " ".join(ev.render_sql(_CONTENT).split())
+    assert "producer = $producer AND event_id = $event_id AND parser_version = $parser_version" in sql
+    assert "as_of" not in sql and "v_star" not in sql and "QUALIFY" not in sql and "compared_versions" in sql
+    row = ev.describe_all()["transcript_content"]
+    props = row["params_schema"]["properties"]
+    assert [p for p, t in props.items() if t == {"type": "integer"}] == ["parser_version", "offset", "max_bytes"]
+    assert props["producer"] == {"type": "string"} and row["agent_facing"] is False
+    assert ev.event_read_version("transcript_content") == row["read_version"]
+    others = {v: ev.event_read_version(v) for v in verbs.EVENT_READS if v != "transcript_content"}
+    assert len(set(others.values())) == len(others)
+
+
+def test_content_params_are_validated_without_echo() -> None:
+    assert ev.bind_values(_CONTENT, _content_params())["parser_version"] == 3
+    refusals = [
+        ("producer", 7),
+        ("producer", ""),
+        ("producer", "x" * 201),
+        ("producer", "bad\x00name"),
+        ("event_id", "not-a-ulid"),
+        ("event_id", 5),
+        ("parser_version", "3"),
+        ("parser_version", True),
+        ("parser_version", 0),
+        ("offset", "0"),
+        ("offset", False),
+        ("offset", -1),
+        ("max_bytes", "9"),
+        ("max_bytes", 0),
+        ("max_bytes", 1.5),
+    ]
+    for name, value in refusals:
+        with pytest.raises(ev.EventReadInputError) as caught:
+            ev.bind_values(_CONTENT, _content_params(**{name: value}))
+        assert f"'{name}'" in str(caught.value)
+        assert str(value) not in str(caught.value) or str(value) in {"", "0", "True", "False"}
+    with pytest.raises(ev.EventReadInputError):
+        ev.bind_values(_CONTENT, {k: v for k, v in _content_params().items() if k != "offset"})
+
+
+def test_content_verb_hands_resolved_rows_to_the_content_module(monkeypatch: pytest.MonkeyPatch, smoke_pin: None) -> None:
+    from src.common import ducklake_event_content as content
+
+    class Cursor:
+        description = [("content",), ("compared_versions",)]
+
+        def fetchall(self) -> list[tuple[Any, ...]]:
+            return [("hello", 1)]
+
+    class Con:
+        def execute(self, sql: str, params: Any = None) -> Cursor:
+            self.params = params
+            return Cursor()
+
+    seen: list[Any] = []
+    monkeypatch.setattr(content, "serve_content", lambda rows, values: seen.append((rows, values)) or [{"ok": 1}])
+    con = Con()
+    assert ev.execute(con, verb="transcript_content", params=_content_params()) == [{"ok": 1}]
+    rows, values = seen[0]
+    assert rows == [{"content": "hello", "compared_versions": 1}] and values["offset"] == 0
+    assert sorted(con.params) == ["event_id", "parser_version", "part_from", "part_to", "producer", "session_id"]

@@ -258,6 +258,16 @@ VERB_FIELDS: dict[str, tuple[str, ...] | object] = {
         *_STAMP_FIELDS,
     ),
     "telemetry_health_count": ("table_name", "record_count", "meta_schema"),
+    "transcript_content": (
+        "storage",
+        "encoding",
+        "offset",
+        "length",
+        "content_bytes",
+        "content_sha256",
+        "data",
+        "omitted_reason",
+    ),
 }
 
 

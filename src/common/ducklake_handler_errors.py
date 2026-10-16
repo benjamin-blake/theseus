@@ -5,7 +5,8 @@ handler answers a typed 500 `unmapped` (class name and request id only, never th
 connection, a typed retryable 503 `catalog_unavailable`. One structured log line per answer carries the detail
 (redacted, first line, truncated) so an operator can find it by request id. ATTACH errors embed the libpq password,
 so no response body ever carries an exception message (Decision 101); the one message a handler may pass through is the
-reader's named_read_input, and only through redact().
+reader's named_read_input, and only through redact(). A TypedFault is the other exception: it carries its own status,
+error type and closed-set reason, so it answers those and nothing else.
 
 Leaf module: stdlib plus src.common.ducklake_runtime only, no import-time side effects.
 """
@@ -30,6 +31,22 @@ _SECRET_PATTERNS = (
     re.compile(r"arn:[^\s,'\"]+", re.IGNORECASE),
     re.compile(r"\d{12,}"),
 )
+
+
+class TypedFault(Exception):
+    """A fault whose whole answer is fixed: status, error_type and a reason from a closed set, never a message.
+
+    cause_code and cause_status are the upstream error's code and HTTP status (botocore Error.Code and
+    ResponseMetadata.HTTPStatusCode), copied by the raiser so the log line can name them without any exception text.
+    """
+
+    def __init__(self, status: int, error_type: str, reason: str, *, cause_code: str = "", cause_status: int = 0) -> None:
+        super().__init__(error_type)
+        self.status = status
+        self.error_type = error_type
+        self.reason = reason
+        self.cause_code = cause_code
+        self.cause_status = cause_status
 
 
 def redact(text: str) -> str:
@@ -110,6 +127,28 @@ def catalog_unavailable(
     }
 
 
+def typed_fault(exc: TypedFault, *, function: str, action: str, request_id: str | None) -> tuple[int, dict[str, Any]]:
+    """The typed answer for a TypedFault. Reads attributes only: never str(exc), __cause__ or __context__."""
+    line = {
+        "event": "ducklake_typed_fault",
+        "function": function,
+        "action": action,
+        "error_type": exc.error_type,
+        "reason": exc.reason,
+        "request_id": request_id,
+        "cause_code": exc.cause_code,
+        "cause_status": exc.cause_status,
+    }
+    print(json.dumps(line, separators=(",", ":")))
+    return exc.status, {
+        "ok": False,
+        "error_type": exc.error_type,
+        "reason": exc.reason,
+        "request_id": request_id,
+        "action": action,
+    }
+
+
 def terminal(
     exc: BaseException,
     *,
@@ -119,7 +158,9 @@ def terminal(
     elapsed_ms: float,
     reopened: bool = False,
 ) -> tuple[int, dict[str, Any]]:
-    """Dispatch on the dead-connection predicate: 503 catalog_unavailable, else 500 unmapped."""
+    """A TypedFault answers its own status; else the dead-connection predicate: 503 catalog_unavailable, else 500 unmapped."""
+    if isinstance(exc, TypedFault):
+        return typed_fault(exc, function=function, action=action, request_id=request_id)
     if rt.is_dead_connection_error(exc):
         return catalog_unavailable(exc, function=function, action=action, request_id=request_id, reopened=reopened)
     return unmapped(exc, function=function, action=action, request_id=request_id, elapsed_ms=elapsed_ms)
