@@ -271,6 +271,8 @@ conditions:
 > removed by rec-4240. The Coverage residuals rec-4235 owned (the cache-reference CI ban and the audit dedup
 > instructions) now belong to rec-4279 (Decision 181 point 2). This body is otherwise unedited.
 
+> **Update (2026-10-16):** clause 4's five reader invocations per session became six when PLAN-telemetry-reader-verbs (#1496) added preflight's creds-gated telemetry_health_count gauge; recs_read stays two calls, and a 1.2x rise is short of reader-invocations-doubled. The count is observed through log_invocation, not restated here: later changes to it are not annotated.
+
 ---
 
 ## Decision 214: The DuckLake catalog stays on Neon, tuned now and capped next, with measured triggers to move (amends Decision 107 and Decision 88) (Decided)
@@ -722,6 +724,8 @@ OUT OF SCOPE: Type-1 current projections (derived, rebuildable from history, Dec
 **Related:** Decision 81 cl.3 and cl.8 (dated annotation added), Decision 84 I-2 (dated annotation added), Decision 88 cl.1 (egress budget), Decision 100 (native-primitive spirit; reversal trigger), Decision 191 cl.1 (write_mode scoping), Decision 199 cl.1-2 (telemetry physical grain refines this), T2.52 c1 (derived materializations out of scope); rec-4061, rec-4062 (bundled), rec-4121, rec-4122, rec-4063, rec-4024, rec-4025 (coverage owners).
 
 > **Update (2026-10-04):** representation-only columns (dq_intent representation_of) are excluded from an insert-grain table's compared content, because the payload identity they represent is compared instead -- a class term, never a table name, and still an equality compare that rejects loudly, not the content-hash tiebreak this entry rejects. Detail: data-modeling-standard.yaml rule grain-enforced-at-write (PLAN-telemetry-write-conformance).
+
+> **Update (2026-10-16):** the Coverage line's reader side is now enforced, not a residual: src/common/ducklake_event_reads.py reports a differing pair as conflicted_grain_keys and derivation_conflicted, never nulling, dropping or erroring the derivation, guarded by tests/common/test_ducklake_event_read_dedupe.py::test_conflicted_keys_are_reported_never_resolved (PLAN-telemetry-reader-verbs, #1496). rec-4024 no longer owns it; rec-4025 is unchanged.
 
 ---
 
@@ -1216,6 +1220,8 @@ conditions:
 > **Update (2026-09-28):** Decision 206 adds persona_backend (litellm | claude_cli) and billing_shape (metered_marginal | fixed_non_rollover_allowance) to telemetry_observations' model_call rows; cost_usd derives only for metered_marginal, and cost-per-verified-merge derives at read per (persona, backend). The field semantics live in the contract.
 
 > **Update (2026-10-04):** clause 5's content is the model-visible payload, the full persisted tool output is its own bounded tool_output row, and a full output above the 8 MiB cap is a typed omission row (content_omitted_reason). Detail: telemetry_transcripts.yaml (PLAN-telemetry-write-conformance). This is the last clause-5 annotation: a further change to the content tier goes to a numbered Decision (decision-entry.yaml intent_accretion_note).
+
+> **Update (2026-10-16):** clause 1 bounds derivations, not verbs: a window verb (sessions_window; operator ruling reader-k2 (a), 2026-10-04) is a bounded window of per-session derivations, each reading only its own session's calendar-day partition, capped per verb in the reader registry. Detail: telemetry_sessions.yaml WINDOW VERBS. Last clause-1 note; later ones need a numbered Decision.
 
 ---
 

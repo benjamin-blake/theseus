@@ -382,9 +382,10 @@ def test_decision_annotations_for_hash_compare_and_omission() -> None:
         return text[start : text.index("\n---\n", start)]
 
     d207, d199 = section(207), section(199)
-    assert "> **Update (2026-10-04):** representation-only columns" in d207 and d207.rstrip().endswith(
-        "(PLAN-telemetry-write-conformance)."
-    )
+    marker = "> **Update (2026-10-04):** representation-only columns"
+    note = next((line for line in d207.splitlines() if line.startswith(marker)), "")
+    assert note.rstrip().endswith("(PLAN-telemetry-write-conformance).")
+    assert d207.index(note) > d207.index("**Related:**")
     assert "not the content-hash tiebreak this entry rejects" in d207
     assert "> **Update (2026-10-04):** clause 5's content is the model-visible payload" in d199
     assert "typed omission row" in d199 and "last clause-5 annotation" in d199
