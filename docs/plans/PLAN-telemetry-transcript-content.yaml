@@ -36,7 +36,8 @@ scope:
     test_reader_blob_guard_rejects_a_wider_grant: red cases for PutObject, ListBucket, DeleteObject, a bucket-wide
     resource and another catalog's prefix. test_blob_root_only_on_the_writer becomes test_blob_root_on_the_writer_and_reader
     (both functions carry TELEMETRY_BLOB_ROOT from the same local), and test_blob_root_guard_rejects_a_reader_root
-    becomes test_blob_root_guard_rejects_a_moved_root. It stays under 500 SLOC (445 today).
+    becomes test_blob_root_guard_rejects_a_moved_root. It stays under 500 SLOC (445 today): the new predicate replaces
+    the old one, so the net growth is the extra red cases (Decision 128; never a budget raise).
 - file: config/agent/verification_registry/entries/telemetry-infra-pins.yaml
   action: Delete
   purpose: >-
@@ -85,7 +86,10 @@ scope:
     "blob_misconfigured", "not_configured"); inline and omitted rows are still served. Store errors map to
     BlobContentFault: BlobIntegrityError gives (500, "blob_integrity", its reason), "forbidden_or_missing" included;
     BlobStoreUnavailableError gives (503, "blob_unavailable", "store_unavailable"); BlobStoreAccessError gives (500,
-    "blob_misconfigured", "store_access"). BlobContentFault subclasses ducklake_handler_errors.TypedFault.
+    "blob_misconfigured", "store_access"). BlobContentFault subclasses ducklake_handler_errors.TypedFault. Each page
+    re-resolves the row on the warm telemetry slot, so an 8 MiB object costs at most three catalog reads (Decision 88
+    cl.1). Refusing a conflicted row, rather than serving one flagged version, is this verb's application of Decision
+    207's reader rule: bytes cannot carry a conflict stamp.
 - file: src/common/ducklake_event_reads.py
   action: Modify
   purpose: >-
@@ -138,10 +142,20 @@ scope:
     honestly: caller SQL naming a table function over s3:// can now read a blob object whose full key it knows (the
     role has no List), owner rec-4292 before production reads. The same IAM-signed principals can already read that
     content through transcript_content, so no new principal gains access; only the row check and future tenant scoping
-    are bypassed. One amendment_log entry (field_add).
+    are bypassed. That falls short of Decision 143 cl.1 (scope an identity by its worst reachable verb, outside the
+    handler), so the residual names its owner and exit: rec-4292, before production reads, gives telemetry reads their own
+    reader identity (the Decision 213 cl.2 pattern) or closes the query_ops path. One amendment_log entry (field_add).
 - file: docs/contracts/read-engine.yaml
   action: Modify
   purpose: PR B. The declared verb grouping lists transcript_content with the event-journal verbs; one amendment_log entry.
+- file: docs/contracts/ports.yaml
+  action: Modify
+  purpose: >-
+    PR B (Decision 212 cl.3). A coupling finding PC-06 on content_blobs and ops_verbs, at
+    src/common/ducklake_event_content.py: the reader builds the s3 adapter directly from TELEMETRY_BLOB_ROOT, so the
+    free-tier local plane cannot serve an object row's bytes until the local_directory adapter and an adapter selection
+    exist. Status open, owning item T4.23:c7. The s3 adapter's get_blob is now implemented; verbs stay provisional until
+    T4.23:c16. One amendment_log entry.
 - file: scripts/ducklake_smoke/telemetry_blob_vectors.py
   action: Modify
   purpose: >-
@@ -383,10 +397,12 @@ verification_plan:
     v;f=[];v(f);assert not f, f;print('CONTRACTS_OK')" && bin/venv-python -c "from scripts.checks.structural._classify
     import effective_lines;n=[effective_lines(open(f).read()) for f in
     ('docs/contracts/ducklake_reader.yaml','docs/contracts/read-engine.yaml')];print(n);assert max(n)<=500;print('SIZE_OK')"
-    && bin/venv-python -m pytest tests/checks/contracts/test_validate_read_engine_verbs.py -q
-  expected: Exit 0, CONTRACTS_OK and SIZE_OK printed, and the verb-grouping tests pass.
+    && bin/venv-python -m pytest tests/checks/contracts/test_validate_read_engine_verbs.py -q && bin/venv-python -c "from
+    scripts.checks.contracts.validate_ports_contract import validate_ports_contract as v;f=[];v(f);assert not
+    f,f;print('PORTS_OK')"
+  expected: Exit 0, CONTRACTS_OK, SIZE_OK and PORTS_OK printed, and the verb-grouping tests pass.
   expected_literals: []
-  fix_if: A drift finding, a contract over the cap, or a verb grouping that misses transcript_content.
+  fix_if: A drift finding, a contract over the cap, a verb grouping that misses transcript_content, or a ports finding.
   hermetic: true
   graduation: waive
   graduation_waiver_reason: The drift, size and verb-grouping checks already run in both tiers; this step only confirms the edits pass them.
@@ -553,6 +569,13 @@ test_obligations:
   waiver_reason: >-
     Contract prose with an amendment_log entry, guarded by the drift and amendment-log checks in both tiers; its
     behavior is proven by steps 3, 5 and 12.
+- source: docs/contracts/ports.yaml
+  behavior: The PC-06 coupling and the implemented get_blob are recorded.
+  verification_step: 8
+  command: bin/venv-python -c "from scripts.checks.contracts.validate_ports_contract import validate_ports_contract as v;f=[];v(f);assert not f,f;print('PORTS_OK')"
+  waiver_reason: >-
+    A Class D registry row guarded by validate_ports_contract and the drift check in both tiers, which step 8 runs; no
+    code reads the finding.
 - source: docs/contracts/read-engine.yaml
   behavior: The verb grouping includes transcript_content.
   verification_step: 8
@@ -582,6 +605,10 @@ constraints:
   or an account id (Decision 101). Error bodies name a reason from a closed set.
 - No vector or live step elicits a 5xx on purpose. The reader has no paging alarm; adding one is rec-4292's, before production.
 - >-
+  PR A merges only after Benjamin answers the planning thread's card on the widened query_ops residual (cmsg_012XgaFy8VaDQbxP5D8nC958Qs8bbX8DKSdeYD1zPXNgdH). If he accepts
+  it until slice 2c (the recommended option), the build proceeds as written. If he chooses to close it first, this plan
+  is amended before PR A merges.
+- >-
   PR B merges only after PR A's apply is green (IAM before code; terraform/CLAUDE.md). Both merge under the standing rule
   (code review PROCEED and green CI): the IAM change is Benjamin's approved grant, the contracts are Class B, and there
   is no spend, Decision text or manual step. Act only on the final hand-back of each gate.
@@ -598,8 +625,8 @@ context:
   stream). Base64 avoids double-escaping blow-up and keeps a split multi-byte character exact; 3 MiB chunks give about
   4.19 MB on the wire, so the 8 MiB cap is three calls.
 - >-
-  Not adopted from the consult: a presigned GET URL (a bearer credential carrying the signing key id that would move the
-  boundary out of the verb catalogue); 404 and 409 status codes (an unknown key answers zero rows like every event verb,
+  Not adopted from the consult: a presigned GET URL. It is S3's native large-object primitive (Decision 100), but it is
+  a bearer credential carrying the signing key id and would move the boundary out of the verb catalogue; 404 and 409 status codes (an unknown key answers zero rows like every event verb,
   and a conflict, impossible under write-time grain enforcement, is a 500 blob_integrity); VersionId pinning (needs
   s3:GetObjectVersion, beyond the approved grant; IfMatch on the ETag gives the same guarantee); a config-gated describe
   (PR A applies before PR B deploys); a reader paging alarm in this slice (rec-4292 owns alarms before production).
@@ -609,8 +636,12 @@ context:
 - >-
   Overlap: none with the open rule declarations build (#1511) or the decision notes build. The cache token totals plan
   edits ducklake_event_read_sql.py and ducklake_event_read_verbs.py and its test, so whichever build lands second rebases.
-- 'Decision-scout: PENDING'
-- 'gates: decision-scout=PENDING; plan-critique=PENDING'
+- >-
+  Decision-scout: FLAGS_FOUND. CITE 84, 88, 199, 207, 212, 213, 215, 126, 144, 176. NOTE 143: the widened query_ops
+  residual names its owner and exit (rec-4292) and goes to Benjamin as a card. NOTE 100: the presigned-GET rejection
+  cites it. Both resolved. RELATED 81, 91, 79, 125, 92, 216, 200, 184, 132, 181, 189, 201, 128, 118, 101, 48, 55.
+  Decisions triaged: 171 of 171. Roadmap items intersected: 5; CONFLICT: 0; RELATED: 4.
+- 'gates: decision-scout=FLAGS_FOUND (2 NOTEs, resolved); plan-critique=PENDING'
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
