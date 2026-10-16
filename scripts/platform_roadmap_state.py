@@ -9,6 +9,7 @@ from typing import Any
 
 import yaml
 
+from scripts.contract_rules import parse_yaml
 from scripts.platform_roadmap_gate_rules import _INACTIVE_FOR_TIER, GateRuleEvaluator
 from scripts.platform_roadmap_models import _TIER_SHORTCUT_RE, RoadmapDocument, TierItem
 
@@ -77,8 +78,7 @@ def _pending_gating_cds_for_item(
 
 def load(path: str | Path) -> RoadmapDocument:
     """Parse the YAML roadmap at path and return a validated RoadmapDocument."""
-    with Path(path).open(encoding="utf-8") as fh:
-        data = yaml.safe_load(fh)
+    data = parse_yaml(Path(path).read_text(encoding="utf-8"))
     return RoadmapDocument.model_validate(data)
 
 

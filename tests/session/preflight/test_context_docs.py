@@ -13,14 +13,15 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-import yaml
 
+from scripts.contract_rules import parse_yaml
 from scripts.preflight import _common as preflight_common
 
 boto3 = pytest.importorskip("boto3")
 
 from tests.fixtures.session_preflight_module import MODULE_PATH as _MODULE_PATH  # noqa: E402
 from tests.fixtures.session_preflight_module import preflight as _preflight  # noqa: E402
+from tests.fixtures.yaml_parse_spy import install as install_yaml_parse_spy  # noqa: E402
 
 
 class TestSlimRoadmapState:
@@ -298,6 +299,40 @@ class TestEndstateDrift:
         assert result["new_ids"] == []
 
 
+class TestEndstateDriftParser:
+    """rec-4365: both _check_endstate_drift roadmap parses use the libyaml loader."""
+
+    _OLD_IDS = ["T1.1", "T1.2"]
+
+    def test_roadmap_parses_use_libyaml(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        old_hash = hashlib.sha256("\n".join(sorted(self._OLD_IDS)).encode()).hexdigest()
+        context = f"Derived from ROADMAP-PLATFORM.yaml @ abc1234 (2026-06-28).\nroadmap_tier_id_set sha256: {old_hash}\n"
+        old_roadmap_yaml = (
+            "tier_items:\n  - id: T1.1\n    name: Item 1\n    status: not_started\n"
+            "  - id: T1.2\n    name: Item 2\n    status: not_started\n"
+        )
+        new_roadmap_yaml = old_roadmap_yaml + "  - id: ZZ9.99\n    name: New Item\n    status: not_started\n"
+        (tmp_path / "docs").mkdir(parents=True)
+        (tmp_path / "docs" / "PROJECT_CONTEXT.md").write_text(context, encoding="utf-8")
+        (tmp_path / "docs" / "ROADMAP-PLATFORM.yaml").write_text(new_roadmap_yaml, encoding="utf-8")
+
+        git_result = MagicMock()
+        git_result.returncode = 0
+        git_result.stdout = old_roadmap_yaml
+
+        log = install_yaml_parse_spy(monkeypatch)
+        with (
+            patch("scripts.preflight._common.ROOT", tmp_path),
+            patch("session_preflight.subprocess.run", return_value=git_result),
+        ):
+            result = _preflight._check_endstate_drift()
+
+        assert result["stale"] is True
+        assert result["reason"] == "stamp_ref_new_ids_named"
+        assert len(log.entries) == 2
+        assert log.pure_entries == []
+
+
 class TestEndstateStampRefResolves:
     """docs/PROJECT_CONTEXT.md's Source stamp ref half resolves through _check_endstate_drift's
     own matcher, so the drift check reaches its git-show attribution branch instead of reporting
@@ -388,7 +423,7 @@ class TestEndstateStampRefResolves:
             cwd=root,
         )
         assert show.returncode == 0, show.stderr
-        items = (yaml.safe_load(show.stdout) or {}).get("tier_items", [])
+        items = (parse_yaml(show.stdout) or {}).get("tier_items", [])
         old_ids = sorted({str(i["id"]) for i in items if isinstance(i, dict) and "id" in i})
         digest = hashlib.sha256("\n".join(old_ids).encode()).hexdigest()
         stamped = re.search(r"roadmap_tier_id_set sha256:\s*([a-f0-9]{64})", self._real_stamp_line())

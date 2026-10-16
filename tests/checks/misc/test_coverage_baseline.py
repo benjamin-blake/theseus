@@ -154,6 +154,24 @@ class TestMeasureAndCheck:
         after_pytest = argv[argv.index("pytest") :]
         assert after_pytest[after_pytest.index("-m") + 1] == expected, argv
 
+    def test_child_runs_on_the_sysmon_core(self, tmp_path: Path) -> None:
+        """rec-4365: the per-file coverage child runs with COVERAGE_CORE=sysmon, read from
+        coverage_baseline.COVERAGE_CORE rather than the literal -- so a renamed constant value
+        is still what the child actually sees."""
+        source, test_file = _probe_files(tmp_path)
+        mock_subprocess = _mock_subprocess()
+
+        coverage_baseline.measure_and_check(
+            [source],
+            root=tmp_path,
+            map_source_to_test=lambda p: test_file,
+            is_empty_dir=lambda p: False,
+            subprocess_module=mock_subprocess,
+        )
+        child_env = mock_subprocess.Popen.call_args.kwargs["env"]
+        assert child_env["COVERAGE_CORE"] == coverage_baseline.COVERAGE_CORE
+        assert coverage_baseline.COVERAGE_CORE == "sysmon"
+
     def test_unmatched_report_yields_none_and_error(self, tmp_path: Path) -> None:
         source, test_file = _probe_files(tmp_path)
 
