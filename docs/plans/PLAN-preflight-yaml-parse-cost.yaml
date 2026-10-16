@@ -80,10 +80,11 @@ scope:
   action: Create
   purpose: >-
     Shared spy (tests/fixtures is exempt from the cross-test-import guard, Decision 131). install(monkeypatch) wraps
-    yaml.SafeLoader.__init__ and yaml.CSafeLoader.__init__ and returns a log of (loader kind, stream size, calling
-    scripts/ path relative to scripts/, e.g. contracts.py or preflight/context_docs.py, plus line) per construction; a
-    str or bytes stream counts its length, a file object its fstat size. pure_bytes, pure_sites and libyaml_sites
-    summarise the log.
+    yaml.reader.Reader.__init__ (shared by every pure-Python loader -- SafeLoader, Loader, FullLoader, BaseLoader -- and
+    never used by the C loaders) and yaml.CSafeLoader.__init__, and returns a log of (loader kind, stream size, calling
+    site as a path relative to the repo root's scripts/ directory resolved from _common.ROOT, e.g. contracts.py or
+    preflight/context_docs.py, plus line) per construction; a str or bytes stream counts its length, a file object its
+    fstat size. pure_bytes, pure_sites, libyaml_sizes and libyaml_sites summarise the log.
 - file: tests/test_contracts.py
   action: Modify
   purpose: >-
@@ -92,7 +93,9 @@ scope:
     pure-Python parses); (2) test_single_file_loaders_use_libyaml -- load_contract and load_contract_meta each construct
     one libyaml loader and no pure-Python one; (3) test_libyaml_loader_builds_like_safe_loader -- yaml.CSafeLoader and
     yaml.SafeLoader expose equal yaml_constructors and yaml_implicit_resolvers, so a constructor registered on SafeLoader
-    alone fails here, not silently in production. The file is 432 SLOC and must stay at or under 500.
+    alone fails here, not silently in production. The file is 432 SLOC; a plan-time draft of the class measured 453,
+    under the 500 limit, so no decomposition is expected (should it pass 500, stop and raise a plan amendment rather
+    than touch a file outside scope).
 - file: tests/platform_roadmap_state/test_load.py
   action: Create
   purpose: >-
@@ -124,14 +127,17 @@ scope:
     (both unconditional on main()'s path), then that the pure-Python bytes are at most PURE_PYTHON_YAML_BUDGET = 512 *
     1024, the failure message listing each pure-Python call site and its bytes. Plan-time prototype with this seam list:
     4.85 MB before (fails), 143 KB after, libyaml sites contracts.py, platform_roadmap_state.py and context_docs.py. Any
-    single pure-Python parse of the roadmap (732 KB) or of the contracts corpus (1.28 MB) exceeds the bound.
+    single pure-Python parse of the roadmap (747 KB) or of the contracts corpus (1.28 MB) exceeds the bound.
     Deterministic, no wall clock (Decision 182's rationale).
 - file: tests/session/preflight/test_main_branches.py
   action: Modify
   purpose: >-
     rec-3638's filed acceptance node, TestCiRcaLivenessRenderer::test_alert_payload_is_rendered_to_stderr: main() with
     _check_ci_rca_liveness stubbed to {"run_url": ..., "elapsed_minutes": 45.0} prints the alert line to stderr
-    (capsys), and prints nothing for it when the stub returns None. Red before: the renderer does not exist.
+    (capsys), and prints nothing for it when the stub returns None. Like its siblings it patches
+    session_preflight.PREFLIGHT_REPORT to tmp_path, check_credentials to "unavailable" and the gh-calling
+    _check_convergence_sensor_liveness to None, so it passes inside the trailer probe (read-only repo mount, no
+    network, 30s pytest cap). Red before: the renderer does not exist.
 - file: config/agent/verification_registry/entries/preflight-yaml-parse-budget.yaml
   action: Create
   purpose: >-
@@ -139,6 +145,30 @@ scope:
     preflight-yaml-parse-budget (filename equals check_id, Decision 176), primitive_slot command_exit_zero,
     check_spec.command step 4's pytest node, guard_target scripts/session/preflight.py, guard_symbol main (the code the
     guard defends), plan_slug preflight-yaml-parse-cost, graduated_by implement-agent.
+- file: config/agent/verification_registry/entries/contracts-libyaml-parse-once.yaml
+  action: Create
+  purpose: >-
+    Registry shard for graduated VP step 1: check_id contracts-libyaml-parse-once, primitive_slot command_exit_zero,
+    check_spec.command step 1's class selector, guard_target scripts/contracts.py, guard_symbol load_all_contracts,
+    plan_slug preflight-yaml-parse-cost, graduated_by implement-agent.
+- file: config/agent/verification_registry/entries/endstate-drift-libyaml.yaml
+  action: Create
+  purpose: >-
+    Registry shard for graduated VP step 3: check_id endstate-drift-libyaml, primitive_slot command_exit_zero,
+    check_spec.command step 3's node, guard_target scripts/preflight/context_docs.py, guard_symbol _check_endstate_drift,
+    plan_slug preflight-yaml-parse-cost, graduated_by implement-agent.
+- file: config/agent/verification_registry/entries/preflight-ci-rca-liveness-rendered.yaml
+  action: Create
+  purpose: >-
+    Registry shard for graduated VP step 5: check_id preflight-ci-rca-liveness-rendered, primitive_slot
+    command_exit_zero, check_spec.command step 5's node, guard_target scripts/preflight/summary.py, guard_symbol
+    print_ci_rca_liveness_alert, plan_slug preflight-yaml-parse-cost, graduated_by implement-agent.
+- file: config/agent/verification_registry/entries/coverage-child-sysmon-core.yaml
+  action: Create
+  purpose: >-
+    Registry shard for graduated VP step 6: check_id coverage-child-sysmon-core, primitive_slot command_exit_zero,
+    check_spec.command step 6's node, guard_target scripts/checks/misc/coverage_baseline.py, guard_symbol
+    measure_and_check, plan_slug preflight-yaml-parse-cost, graduated_by implement-agent.
 bundled_recommendations:
 - rec-4365
 - rec-3208
@@ -164,12 +194,14 @@ acceptance_criteria:
 - >-
   rec-3638: a non-null ci_rca_liveness_alert prints one stderr line at session open.
 - >-
-  Before merge, rec-4365's and rec-3208's stored acceptance is each rec's own VP step 9 node list, decidable, and
-  rec-4365 carries the pre-stamped closure_artifact shard:preflight-yaml-parse-budget. After merge the Resolves trailer closes rec-4365,
+  Before merge, rec-4365's and rec-3208's stored acceptance is each rec's own VP step 10 node list, decidable, and
+  rec-4365 carries the pre-stamped closure_artifact shard:preflight-yaml-parse-budget; rec-3638's filed acceptance
+  holds unchanged; all three pass in the trailer probe's isolation. After merge the Resolves trailer closes rec-4365,
   rec-3208 and rec-3638.
 - >-
-  The post-merge main-validate run on the merge commit is green and its coverage step maps scripts/session/preflight.py;
-  no ci_rca rec was filed since the merge and ci_rca_open no longer returns rec-4365.
+  The post-merge main-validate run on the merge commit is green and its coverage step measured
+  scripts/session/preflight.py; no ci_rca rec attributable to this merge (a file in its diff, or rec-4365's fingerprint)
+  was filed since the merge commit, and ci_rca_open no longer returns rec-4365.
 verification_plan:
 - step: 1
   phase: pre-deploy
@@ -180,11 +212,8 @@ verification_plan:
     More than one parse per file: load_all_contracts still calls load_contract. A pure-Python construction: a call site
     still uses yaml.safe_load. Never loosen the counts.
   hermetic: true
-  graduation: waive
-  graduation_waiver_reason: >-
-    The class runs in every tier's affected set whenever scripts/contracts.py changes. Step 4's graduated guard covers
-    only load_all_contracts (the one loader on main()'s path); this class is the sole guard for load_contract,
-    load_contract_meta and parse-once, and it is a standing pytest node, so a registry row would only duplicate it.
+  graduation: graduate
+  graduation_check_id: contracts-libyaml-parse-once
   expected_literals:
   - 3 passed
 - step: 2
@@ -209,11 +238,8 @@ verification_plan:
   expected: Exit 0, 1 passed. Red before, the node is absent (pytest exit 4).
   fix_if: Only one parse is reached; the tmp stamp does not mismatch or the git-show stub is not on the call path.
   hermetic: true
-  graduation: waive
-  graduation_waiver_reason: >-
-    Step 4's graduated guard covers the current-roadmap parse on every main(), but the git-show parse only while the
-    PROJECT_CONTEXT stamp is stale (it is today). This node drives both sites deterministically and runs whenever the
-    package's tests are selected, so a registry row would only duplicate it.
+  graduation: graduate
+  graduation_check_id: endstate-drift-libyaml
   expected_literals:
   - 1 passed
 - step: 4
@@ -243,10 +269,8 @@ verification_plan:
   expected: Exit 0, 1 passed. Red before, the node is absent (pytest exit 4).
   fix_if: The line is missing; the call site is not on main()'s path after the report key is set.
   hermetic: true
-  graduation: waive
-  graduation_waiver_reason: >-
-    rec-3638's own filed acceptance; its trailer verdict is read from the push run's junit, and the node runs whenever
-    the package's tests are selected, so a registry row would add nothing.
+  graduation: graduate
+  graduation_check_id: preflight-ci-rca-liveness-rendered
   expected_literals:
   - 1 passed
 - step: 6
@@ -260,10 +284,8 @@ verification_plan:
     The env kwarg lacks the key; child_env is built after the Popen call or a copy is passed. Never assert on the
     literal alone; read coverage_baseline.COVERAGE_CORE.
   hermetic: true
-  graduation: waive
-  graduation_waiver_reason: >-
-    The node runs in every tier's affected set whenever coverage_baseline.py changes, the only way the child's
-    environment can change; step 7's one-time parity proof covers the measurement itself.
+  graduation: graduate
+  graduation_check_id: coverage-child-sysmon-core
   expected_literals:
   - 1 passed
 - step: 7
@@ -292,6 +314,27 @@ verification_plan:
 - step: 8
   phase: pre-deploy
   action: >-
+    DIAGNOSTIC identity proof for the loader switch beyond preflight: load_contract and load_contract_meta also feed
+    validate_contract_drift and scripts/schema_to_field_semantics.py, and platform_roadmap_state.load feeds the
+    roadmap, candidate-decision, liveness, ports and fallback validators. Every docs/contracts/*.yaml,
+    docs/ROADMAP-PLATFORM.yaml and config/agent/**/*.yaml parses to type-strictly equal objects under SafeLoader and
+    CSafeLoader (bool versus int and str versus date never compare equal here).
+  command: >-
+    bin/venv-python -c "import glob, yaml; from pathlib import Path; eq = lambda a, b: type(a) is type(b) and ((a.keys()
+    == b.keys() and all(eq(a[k], b[k]) for k in a)) if isinstance(a, dict) else (len(a) == len(b) and all(eq(x, y) for x,
+    y in zip(a, b))) if isinstance(a, list) else a == b); files = sorted(glob.glob('docs/contracts/*.yaml') +
+    ['docs/ROADMAP-PLATFORM.yaml'] + glob.glob('config/agent/**/*.yaml', recursive=True)); bad = [f for f in files if not
+    eq(yaml.load(Path(f).read_text(encoding='utf-8'), Loader=yaml.SafeLoader), yaml.load(Path(f).read_text(encoding='utf-8'),
+    Loader=yaml.CSafeLoader))]; assert not bad, bad; print(f'LOADER_IDENTITY_OK files={len(files)}')"
+  expected: Exit 0 and LOADER_IDENTITY_OK with the file count.
+  fix_if: >-
+    A differing file: report it and its first differing key; the libyaml switch stops for that loader's consumers until
+    the difference is understood. Never drop a file from the set.
+  hermetic: false
+  graduation: not-applicable
+- step: 9
+  phase: pre-deploy
+  action: >-
     DIAGNOSTIC: the preflight.py coverage child through scripts.test_coverage_checker's real measurement path at the REAL
     300s cap (no override), reporting wall time. CC-web runs this package at about CI's speed (CI was killed at 300s
     about 58% through; locally the unfixed package took 524s). Run it in the background.
@@ -315,33 +358,41 @@ verification_plan:
   graduation_waiver_reason: >-
     A minutes-long measurement whose standing form is the full tier's own preflight.py coverage child, which this
     merge triggers post-merge because scripts/session/preflight.py is in the diff; step 4 guards the cost driver.
-- step: 9
+- step: 10
   phase: pre-deploy
   action: >-
+    All three Resolves recs' acceptances are stored and hold where the trailer will judge them. Each is a
+    "bin/venv-python -m pytest <nodes> -q" command, which scripts.rec_trailer_acceptance_junit.classify_grammar routes
+    STATIC (the -m of "-m pytest" is a selector token), so the trailer job re-executes it under
+    scripts.backlog_health.probe.run_one (no network, read-only repo mount, 30s pytest cap), never the junit report.
     rec-4365's and rec-3208's amended acceptances (one node list per rec, each exercising that rec's own fix) and
-    rec-4365's pre-stamped closure artifact are stored, each acceptance lints decidable, and each passes inside the
-    trailer probe's isolation (scripts.backlog_health.probe.run_one).
+    rec-3638's filed acceptance each lint decidable and pass under run_one, and rec-4365 carries the pre-stamped closure
+    artifact.
   command: >-
     bin/venv-python -c "import json; from pathlib import Path; from scripts.backlog_health import probe; from
     scripts.executor.acceptance_lint import lint_acceptance_command as lint; from src.common.ducklake_reader_client import
-    fetch_recs_by_ids, make_reader; rows, _ = fetch_recs_by_ids(make_reader(), ['rec-4365', 'rec-3208']); by_id =
-    {r['id']: r for r in rows}; assert set(by_id) == {'rec-4365', 'rec-3208'}, rows; budget =
+    fetch_recs_by_ids, make_reader; rows, _ = fetch_recs_by_ids(make_reader(), ['rec-4365', 'rec-3208', 'rec-3638']);
+    by_id = {r['id']: r for r in rows}; assert set(by_id) == {'rec-4365', 'rec-3208', 'rec-3638'}, rows; budget =
     'tests/session/preflight/test_yaml_parse_budget.py::TestYamlParseBudget::test_one_main_call_keeps_pure_python_yaml_under_budget';
     want = {'rec-4365': f'bin/venv-python -m pytest {budget}
     tests/test_contracts.py::TestLibyamlLoader::test_load_all_contracts_parses_each_file_once_with_libyaml -q',
     'rec-3208': f'bin/venv-python -m pytest tests/platform_roadmap_state/test_load.py::TestLoadParser::test_load_parses_with_libyaml
-    {budget} -q'}; assert all(by_id[i]['acceptance'] == w for i, w in want.items()), rows; assert all(lint(w,
+    {budget} -q', 'rec-3638': 'bin/venv-python -m pytest
+    tests/session/preflight/test_main_branches.py::TestCiRcaLivenessRenderer::test_alert_payload_is_rendered_to_stderr
+    -q'}; assert all(by_id[i]['acceptance'] == w for i, w in want.items()), rows; assert all(lint(w,
     require_decidable=True)[0] for w in want.values()), want; assert
     json.loads(by_id['rec-4365']['context_v2_json']).get('closure_artifact') == 'shard:preflight-yaml-parse-budget',
-    by_id['rec-4365']; v = [probe.run_one(w, repo_root=Path('.').resolve()) for w in want.values()]; assert v ==
-    [probe.PASS, probe.PASS], v; print('ACCEPTANCE_HOLDS')"
+    by_id['rec-4365']; v = {i: probe.run_one(w, repo_root=Path('.').resolve()) for i, w in want.items()}; assert
+    set(v.values()) == {probe.PASS}, v; print('ACCEPTANCE_HOLDS')"
   expected: Exit 0 and ACCEPTANCE_HOLDS.
   fix_if: >-
-    An old acceptance or no closure_artifact: run execution step 8's update_rec calls, then rerun. A probe timeout: a
-    named node exceeds the sandbox's 30s pytest cap. Never push the trailer while this step is red (Decision 201).
+    An old acceptance or no closure_artifact: run execution step 8's update_rec calls, then rerun. A probe fail on a
+    main()-level node: it writes inside the repo (patch PREFLIGHT_REPORT to tmp_path) or reaches the network. A probe
+    timeout: a named node exceeds the sandbox's 30s pytest cap. Never push the trailer while this step is red (Decision
+    201); rec-3638's filed acceptance is never edited to pass.
   hermetic: false
   graduation: not-applicable
-- step: 10
+- step: 11
   phase: pre-deploy
   action: >-
     Full validation tier before handoff (Decision 163) on the committed, rebased, clean tree, then bin/venv-python -m
@@ -354,23 +405,32 @@ verification_plan:
     assertion. A timed-out or incomplete run is BLOCKED: rerun from the start, never hand it to CI.
   hermetic: false
   graduation: not-applicable
-- step: 11
+- step: 12
   phase: post-deploy
   action: >-
     PRECONDITION: main-validate's run for the merge commit (mcp__github__actions_list, list_workflow_runs, ci.yml, branch
     main, matching head_sha) reports completed and success, and its log shows validate_test_coverage mapping
     scripts/session/preflight.py with neither a "[info] no coverage data for scripts/session/preflight.py" line nor a
-    "scripts/session/preflight.py: coverage check timed out" line. Only then run the command, which proves no ci_rca
-    rec was filed since the merge.
+    "scripts/session/preflight.py: coverage check timed out" line. Only then run the command. It binds the window to
+    the merge commit itself (found by its squash title), resolves every ci_rca rec filed since then, and fails only on
+    recs attributable to this merge: a file in the merge's diff, or rec-4365's fingerprint (a recurrence). Unrelated
+    ci_rca recs are printed for /orient, never failed on.
   command: >-
-    bin/venv-python -c "import sys; from src.common.ducklake_reader_client import make_reader; rows =
-    make_reader().named('ci_rca_since', since_ts=sys.argv[1]); print(rows); assert rows == [], rows" "$(git fetch -q origin
-    main && git log -1 --format=%cI origin/main)"
-  expected: Prints [] and the workflow run's conclusion is success.
+    M=$(git fetch -q origin main && git log -1 --format=%H --fixed-strings --grep='feat(preflight-yaml-parse-cost)'
+    origin/main) && test -n "$M" && bin/venv-python -c "import json, subprocess, sys; from src.common.ducklake_reader_client
+    import fetch_recs_by_ids, make_reader; m = sys.argv[1]; git = lambda *a: subprocess.run(['git', *a],
+    capture_output=True, text=True, check=True).stdout; ts = git('log', '-1', '--format=%cI', m).strip(); files =
+    set(git('diff-tree', '--no-commit-id', '--name-only', '-r', m).split()); r = make_reader(); ids = [x['id'] for x in
+    r.named('ci_rca_since', since_ts=ts)]; fp = json.loads(fetch_recs_by_ids(r,
+    ['rec-4365'])[0][0]['context_v2_json'])['fingerprint']; rows = fetch_recs_by_ids(r, ids)[0] if ids else []; mine =
+    [x['id'] for x in rows if x.get('file') in files or json.loads(x.get('context_v2_json') or '{}').get('fingerprint')
+    == fp]; print(f'merge={m} since={ts} filed={ids} attributable={mine}'); assert not mine, mine" "$M"
+  expected: Prints the merge sha, the window and attributable=[], exit 0, and the workflow run's conclusion is success.
   fix_if: >-
-    The run has not concluded: wait for its completion event. origin/main moved past the merge: pass the merge
-    commit's own %cI. A new ci_rca rec or a red run: the merge-protocol forward-fix path applies (Decision 73).
-- step: 12
+    The run has not concluded: wait for its completion event. No merge sha found: the squash title must start
+    feat(preflight-yaml-parse-cost). An attributable rec or a red run: the merge-protocol forward-fix path applies
+    (Decision 73). Unrelated recs in filed= are reported, not fixed here.
+- step: 13
   phase: post-deploy
   action: rec-4365, rec-3208 and rec-3638 are closed by the squash commit's Resolves trailer.
   command: >-
@@ -383,7 +443,7 @@ verification_plan:
     the trailer-closure job's verdict artifact. ClosureArtifactRequired despite the pre-stamp: confirm the verdict says
     holds, then close via ci-rca-lifecycle closure_dependency.manual_route with the same --closure-artifact and
     --closure-fix-sha <merge sha>. An AcceptanceVerdictRefused is never closed manually.
-- step: 13
+- step: 14
   phase: post-deploy
   action: The planning hard block is cleared -- ci_rca_open no longer returns rec-4365.
   command: >-
@@ -392,8 +452,8 @@ verification_plan:
     'rec-4365' not in ids, ids"
   expected: Prints the open ci_rca ids (fewer than five, not rec-4365), exit 0.
   fix_if: >-
-    'LIMIT 5 reached': step 12's per-rec status is the proof and the extra recs go to /orient triage. rec-4365 still
-    open: return to step 12's fix_if.
+    'LIMIT 5 reached': step 13's per-rec status is the proof and the extra recs go to /orient triage. rec-4365 still
+    open: return to step 13's fix_if.
 test_obligations:
 - source: scripts/contracts.py
   behavior: Each contract file is parsed once, with the libyaml loader, by every loader entry point.
@@ -425,16 +485,44 @@ test_obligations:
   verification_step: 6
   test_selector: tests/checks/misc/test_coverage_baseline.py::TestMeasureAndCheck::test_child_runs_on_the_sysmon_core
   red_green_expectation: Red before (node absent; once written, the child env has no COVERAGE_CORE). Green after.
+- source: config/agent/verification_registry/entries/contracts-libyaml-parse-once.yaml
+  behavior: Registry shard for the graduated step-1 class.
+  verification_step: 11
+  command: bin/venv-python -m scripts.validate
+  waiver_reason: >-
+    Verification-registry metadata. validate_verification_registry's differential admission gate (the class is absent on
+    origin/main) and validate_graduation_completeness are its standing checks.
+- source: config/agent/verification_registry/entries/endstate-drift-libyaml.yaml
+  behavior: Registry shard for the graduated step-3 node.
+  verification_step: 11
+  command: bin/venv-python -m scripts.validate
+  waiver_reason: >-
+    Verification-registry metadata. validate_verification_registry's differential admission gate (the node is absent on
+    origin/main) and validate_graduation_completeness are its standing checks.
+- source: config/agent/verification_registry/entries/preflight-ci-rca-liveness-rendered.yaml
+  behavior: Registry shard for the graduated step-5 node.
+  verification_step: 11
+  command: bin/venv-python -m scripts.validate
+  waiver_reason: >-
+    Verification-registry metadata. validate_verification_registry's differential admission gate (the node is absent on
+    origin/main) and validate_graduation_completeness are its standing checks.
+- source: config/agent/verification_registry/entries/coverage-child-sysmon-core.yaml
+  behavior: Registry shard for the graduated step-6 node.
+  verification_step: 11
+  command: bin/venv-python -m scripts.validate
+  waiver_reason: >-
+    Verification-registry metadata. validate_verification_registry's differential admission gate (the node is absent on
+    origin/main) and validate_graduation_completeness are its standing checks.
 - source: config/agent/verification_registry/entries/preflight-yaml-parse-budget.yaml
   behavior: Registry shard for the graduated step-4 guard and rec-4365's closure artifact.
-  verification_step: 10
+  verification_step: 11
   command: bin/venv-python -m scripts.validate
   waiver_reason: >-
     Verification-registry metadata. validate_verification_registry's differential admission gate (the node is absent on
     origin/main) and validate_graduation_completeness are its standing checks.
 constraints:
 - >-
-  Scope is the fourteen files above (Decision 59). Untouched: compute_followon_state's per-plan parse
+  Scope is the eighteen files above (Decision 59). Untouched: compute_followon_state's per-plan parse
   (scripts/platform_roadmap_state.py:115), scripts/data_quality_compile.py, scripts/preflight/decision_conditions.py,
   tests/session/preflight/conftest.py, scripts/test_coverage_checker.py, scripts/checks/_pytest_diff.py, the coverage
   child's argv, and every config/coverage_baseline.yaml entry. The child's environment changes only by COVERAGE_CORE.
@@ -460,13 +548,14 @@ context:
   Decision-scout FLAGS_FOUND, two passes (the second on the sysmon delta), all folded below. CITE: 55, 73, 128, 159,
   163, 132, 176, 189, 186, 201, 66, 182. Decisions triaged: 171 of 171. Roadmap items intersected: 5; CONFLICT: 0;
   RELATED: 5
-- "gates: decision-scout=FLAGS_FOUND (2 passes); plan-critique=r1 REVISE (F1-F7 fixed, F11-F12 adopted); r2 PENDING"
+- "gates: decision-scout=FLAGS_FOUND (2 passes); plan-critique=r1 REVISE (F1-F7 fixed); r2 REVISE (F1-F5, F7-F9 fixed, F6 declined with reason); r3 PENDING"
 - "Related-Work check, condition 1 (same file): scope carries scripts/session/preflight.py, rec-4365's file."
 - >-
   Evidence and plan-time measurements: /mnt/project-files/rec-4365/ (ADVICE.md, scout-report.md, sysmon-parity.md,
   step6b-presentation.md). CI runs this package at about CC-web's speed, not the 0.58-0.65x the rec-4273 plan assumed,
-  so step 8 is a valid local proxy at the real cap. Whole-suite parity at plan time: 543 files, one difference, explained
-  by a file the first run created (sysmon-parity.md).
+  so step 9 is a valid local proxy at the real cap. Whole-suite parity at plan time: 543 files, one difference, explained
+  by a file the first run created (sysmon-parity.md). Step 8's loader identity check passed at plan time over
+  1,288 files.
 - >-
   Decision 181 notes (scout): rec-4365's filed acceptance can never pass (--cov-fail-under=100 applies to the
   scripts/session total, 14.4% from this package); the symptom check stays the post-merge coverage child at the
@@ -480,7 +569,11 @@ context:
   rec-3208 closes here: its compute_state_dict cost is memoised per test process (rec-4006) and load() moves to libyaml
   (its option b); its acceptance greps the deleted product_roadmap module (Decision 103 stale target), so it becomes the
   load node plus the budget node. rec-3638 rides this merge so the post-merge tier re-measures preflight.py in CI.
-- "Not bundled: rec-4361, rec-3630, rec-4277, rec-3615, rec-4261."
+- >-
+  Not bundled: rec-4361, rec-3630, rec-4277, rec-3615, rec-4261; rec-4372 (open Critical ci_rca on
+  terraform-apply-sandbox.yml, filed 2026-10-16T13:17Z) is unrelated to this failure and file set. Kept separate on
+  purpose: the sysmon constant beside _pytest_diff.py's (a report-only check's private choice should not silently move a
+  blocking gate) and the one-line loader idiom in three modules (a shared helper would need a new scripts/ root module).
 - "fork: fix layer | chosen: production libyaml loader plus parse-once | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: scope"
 - "fork: regression guard | chosen: pure-Python YAML byte budget per main(), wall-clock gauge to rec-4370 | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: scope, followon_recs"
 - "fork: coverage child core | chosen: sysmon in this merge | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: scope"
@@ -512,19 +605,19 @@ execution_steps:
 - Run bin/venv-python -m pytest tests/session/preflight -n 4 -q and confirm the whole package is green.
 - >-
   rec-4365 and rec-3208, one status-preserving portal call each after get_rec_write_guidance(): bin/venv-python -m
-  scripts.ops_data_portal --update-rec rec-4365 --acceptance '<VP step 9 want for rec-4365>' --closure-artifact
-  'shard:preflight-yaml-parse-budget', and --update-rec rec-3208 --acceptance '<VP step 9 want for rec-3208>'. rec-3638
+  scripts.ops_data_portal --update-rec rec-4365 --acceptance '<VP step 10 want for rec-4365>' --closure-artifact
+  'shard:preflight-yaml-parse-budget', and --update-rec rec-3208 --acceptance '<VP step 10 want for rec-3208>'. rec-3638
   keeps its filed acceptance (step 5's node).
-- Execute Verification Plan steps 1-9 -- loop until pass; on unrecoverable failure stop and RCA (Decision 55)
+- Execute Verification Plan steps 1-10 -- loop until pass; on unrecoverable failure stop and RCA (Decision 55)
 - >-
   Code-review gate (implement skill), then the closure sequence, in order. (1) bin/venv-python -m
   scripts.session.github_readiness, each state reported on its own. (2) Set implementation_declared: true. (3) Postflight
   evidence: bin/venv-python -m scripts.session.postflight --evidence /tmp/implementation-retrospective.json. (4) VP step
-  10's full tier on the committed, rebased, clean tree, then bin/venv-python -m scripts.checks.validation_result
-  --verify-head exit 0; after any review-fix commit rerun both and VP step 9 (a renamed node invalidates a stored
-  acceptance). (5) Push. (6) PR whose squash body carries 'Resolves:
+  11's full tier on the committed, rebased, clean tree, then bin/venv-python -m scripts.checks.validation_result
+  --verify-head exit 0; after any review-fix commit rerun both and VP step 10 (a renamed node invalidates a stored
+  acceptance). (5) Push. (6) PR titled 'feat(preflight-yaml-parse-cost): ...' (step 12 finds the merge by that title) whose squash body carries 'Resolves:
   rec-4365, rec-3208, rec-3638' in a Key: value block before the attribution footer (git-ops.yaml resolves_trailer). (7)
-  CI green. (8) Squash-merge, passing that body as the merge commit_message. Then post-deploy steps 11-13 in order.
+  CI green. (8) Squash-merge, passing that body as the merge commit_message. Then post-deploy steps 12-14 in order.
 - >-
   Report readiness states, the validator verdict, the postflight evidence and the real push, PR, CI and merge outcomes
   separately, plus each VP step's result.
