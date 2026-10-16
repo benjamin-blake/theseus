@@ -130,7 +130,8 @@ scope:
     action: Modify
     purpose: >-
       Add TestGithubOrgTransferPromotedUngated beside TestPortalDriftPromotedUngated: the Entry is dispatched in
-      --pre and declares no pre_globs (the convention for an ungated Entry).
+      --pre (registry.pre_sequence()) and in the full tier (registry.full_sequence()), and declares no pre_globs
+      (the convention for an ungated Entry).
   - file: config/agent/verification_registry/entries/oidc-trust-target-owner-segment-staged.yaml
     action: Create
     purpose: "Graduated row for VP step 2 (test_selector, plan_slug oidc-owner-segment-prestage)."
@@ -218,10 +219,11 @@ acceptance_criteria:
   - >-
     validate_github_org_transfer is registered, runs in both tiers and is green; the contract's evaluator is
     that check; the contract and Decision 172 texts match the operator-approved drafts verbatim apart from the
-    allowed date and PR-number variance (step 29).
+    allowed date variance (step 29).
   - >-
     rec-3167 and rec-3128 close at merge (Resolves trailer); rec-3902 closes only after the live proof, by
-    update_rec with the evidence path (Decision 201).
+    update_rec with the evidence path, after its stored acceptance oracle passes at MERGE_SHA (VP 28; Decision
+    103 lifecycle; the rec-3161 manual-close precedent).
   - >-
     The freeze was declared by the operator, in the build thread, before the first live mutation (VP 15), and
     its preconditions were recorded (VP 14).
@@ -514,15 +516,21 @@ verification_plan:
       terraform/** will merge until VP 27 passes; no Dependabot PR can auto-merge in the window (the operator
       pauses dependabot-auto-merge or none is mergeable); the IAM refactor (rec-3838) is either fully applied or
       parked unmerged (step 12's converged baseline proves no bootstrap change is pending). Record the time of
-      the last drift tick; start step 15 within a few minutes after one.
+      the last drift tick; start step 15 within a few minutes after one. Record PRE_WINDOW_RECS (the open
+      window-hygiene recs that predate the window) so step 27 can tell window-era rows apart.
     command: >-
       bin/venv-python -c "import json,subprocess; r=json.loads(subprocess.run(['aws','s3','cp',
       's3://agent-platform-data-lake/convergence/personal/sandbox.json','-','--profile','agent_platform_admin'],check=True,capture_output=True,text=True).stdout);
       bad=[k for k in ('pending_gated','pending_codification','infra_error') if k in r];
       assert r.get('status')=='green' and not bad, (r.get('status'), bad); print('CONVERGENCE GREEN, no pending marker')"
+      && bin/venv-python -c "from src.common.ducklake_reader_client import make_reader;
+      r=make_reader(profile='agent_platform_admin'); P=('Terraform drift check found a pending-%','Sandbox
+      convergence green with stale unapplied backlog%'); ids=sorted({x['id'] for p in P for x in
+      r.named('recs_by_title_prefix', title_prefix=p) if x['status'] in ('open','in_progress')});
+      print('PRE_WINDOW_RECS='+','.join(ids))" >> "$HOME/.oidc-prestage/state.env" && echo pre-window-recs-recorded
     expected: >-
-      CONVERGENCE GREEN, no pending marker; plus the recorded MCP listings (no active apply run, no competing
-      terraform PR) and the operator's freeze message id.
+      CONVERGENCE GREEN, no pending marker, pre-window-recs-recorded; plus the recorded MCP listings (no active
+      apply run, no competing terraform PR) and the operator's freeze message id.
     fix_if: >-
       Any active run or marker: wait for it to drain or resolve it through its own owner; never merge into a
       busy pipeline. No freeze declaration: do not merge.
@@ -541,7 +549,8 @@ verification_plan:
       +a && AWS_PROFILE=agent_platform_admin AWS_DEFAULT_REGION=eu-west-2 terraform
       -chdir="${TMPDIR:-/tmp}/oidc-split-apply/terraform/personal" apply "${TMPDIR:-/tmp}/oidc-split-apply/split.tfplan"
       && echo "SPLIT_APPLY_TS=$(date -u +%Y-%m-%dT%H:%M:%S+00:00)" >> "$HOME/.oidc-prestage/state.env" -- then
-      remove the worktree and run step 21 with ROLES="planner deploy".
+      remove the worktree and run step 21 with REF="$PR_HEAD_SHA" ROLES="planner deploy" (main does not carry the
+      segment yet).
     command: >-
       set -a && . "$HOME/.oidc-prestage/state.env" && set +a && W="${TMPDIR:-/tmp}/oidc-split-apply" && test -n
       "$TF_CLI_CONFIG_FILE" && git fetch origin "$PR_HEAD_SHA" && git worktree add --detach "$W" "$PR_HEAD_SHA" && cp
@@ -552,7 +561,7 @@ verification_plan:
       -out="$W/split.tfplan" -no-color | grep -E '^Plan:|^  # '
     expected: >-
       Exactly github_ci_deploy and github_ci_planner "updated in-place", "Plan: 0 to add, 2 to change, 0 to
-      destroy"; after the apply, step 21 with ROLES="planner deploy" prints BOTH-SEGMENTS.
+      destroy"; after the apply, step 21 with REF="$PR_HEAD_SHA" ROLES="planner deploy" prints BOTH-SEGMENTS.
     fix_if: >-
       Any other address in the targeted plan: STOP. A lock error means a pipeline run holds the state: wait,
       never force-unlock without the operator. If the merge cannot follow inside the window (a review change, the
@@ -671,12 +680,12 @@ verification_plan:
     action: >-
       LIVE TRUST PROOF, all five roles (also run with ROLES="planner deploy" after step 15 and ROLES=apply after
       step 18). Every statement carries the current and the target segment with identical suffix sets equal to the
-      expected per-role forms. The target segment is read from the list at the ref in REF (PR_HEAD_SHA after step
-      15, origin/main afterwards; step 11 proved it equals the operator's read), so the org id never enters this
+      expected per-role forms. The target segment is read from the list at the ref in REF (default: MERGE_SHA once
+      recorded, else PR_HEAD_SHA; step 11 proved it equals the operator's read), so the org id never enters this
       command's text. Output names roles and suffixes only, never an id or ARN.
     command: >-
       set -a && . "$HOME/.oidc-prestage/state.env" && set +a && git fetch -q origin main && T="$(git show
-      "${REF:-origin/main}":terraform/personal/oidc.tf | grep -o 'otl-labs@[0-9]*/ontheloop@1252427466')" && test -n
+      "${REF:-${MERGE_SHA:-$PR_HEAD_SHA}}":terraform/personal/oidc.tf | grep -o 'otl-labs@[0-9]*/ontheloop@1252427466')" && test -n
       "$T" && export T && ROLES="${ROLES:-apply branch pr planner deploy}"; rc=0; for r in $ROLES; do aws iam
       get-role --role-name "agent-platform-github-ci-$r" --profile agent_platform_admin --query
       'Role.AssumeRolePolicyDocument.Statement' --output json | bin/venv-python -c "import json,os,sys; r=sys.argv[1];
@@ -808,29 +817,44 @@ verification_plan:
     command: >-
       aws s3 cp s3://agent-platform-data-lake/convergence/personal/sandbox.json - --profile agent_platform_admin |
       bin/venv-python -c "import json,sys; d=json.load(sys.stdin); bad=[k for k in ('pending_codification','pending_gated','infra_error') if k in d];
-      assert d['status']=='green' and not bad, (d['status'],bad); print('record-clean-after-window')" && echo "ducklake-reads
-      recs_by_title_prefix('Terraform drift check found a pending-') and the convergence-health stale-backlog rec
-      -> every row created after the split-apply is closed."
-    expected: record-clean-after-window, and no open window-era tf_drift or stale-backlog rec.
+      assert d['status']=='green' and not bad, (d['status'],bad); print('record-clean-after-window')" && set -a && .
+      "$HOME/.oidc-prestage/state.env" && set +a && bin/venv-python -c "import os; from
+      src.common.ducklake_reader_client import make_reader; r=make_reader(profile='agent_platform_admin');
+      pre=set(filter(None, os.environ['PRE_WINDOW_RECS'].split(','))); P=('Terraform drift check found a
+      pending-%','Sandbox convergence green with stale unapplied backlog%'); left=sorted(x['id'] for p in P for x in
+      r.named('recs_by_title_prefix', title_prefix=p) if x['status'] in ('open','in_progress') and x['id'] not in
+      pre); assert not left, ('window-era recs still open', left); print('window-recs-closed')"
+    expected: >-
+      record-clean-after-window and window-recs-closed (every open drift or stale-backlog rec predates the window,
+      per PRE_WINDOW_RECS from step 14).
     fix_if: >-
       A surviving marker means the drift plan still sees a delta: run step 21 again and compare with main.
   - step: 28
     phase: post-deploy
     action: >-
-      Close rec-3902 with the evidence (role, timestamp and run id per role; the evidence file path), then verify
-      rec-3902, rec-3167 and rec-3128 are closed. Write /mnt/project-files/oidc-prestage/EVIDENCE.md and post the
-      same counts-only summary as a comment on the merged PR naming MERGE_SHA. Delete the state file. The
-      contract's evidence_ledger entry for this gate is written by the plan that flips identity.phase, citing that
-      file.
-    command: >-
-      bin/venv-python -m scripts.ops_data_portal --update-rec rec-3902 --status closed --resolution "Pre-staged
-      the otl-labs owner segment in both roots; admin split-apply (planner, deploy), gated apply (branch, pr) and
-      bootstrap apply done; all five roles proven live on the current path. Evidence: oidc-prestage/EVIDENCE.md and
-      the merged PR comment." && bin/venv-python -c "from src.common.ducklake_reader_client import
-      fetch_recs_by_ids, make_reader; rows, missing = fetch_recs_by_ids(make_reader(profile='agent_platform_admin'),
-      ['rec-3902','rec-3167','rec-3128']); assert not missing, missing; bad=[r['id'] for r in rows if
-      r['status']!='closed']; assert not bad, bad; print('recs-closed')" && rm -f "$HOME/.oidc-prestage/state.env"
-    expected: recs-closed, and the state file removed.
+      Write /mnt/project-files/oidc-prestage/EVIDENCE.md and post the same counts-only summary as a comment on
+      the merged PR naming MERGE_SHA. Then run rec-3902's stored acceptance oracle (pinned below verbatim from
+      the warehouse, read 2026-10-16) in a worktree at MERGE_SHA, after confirming the stored text still equals
+      the pin; only then close rec-3902 with the evidence (role, timestamp and run id per role; the evidence file
+      path) and verify rec-3902, rec-3167 and rec-3128 are closed. Delete the state file. The contract's
+      evidence_ledger entry for this gate is written by the plan that flips identity.phase, citing that file.
+    command: |-
+      set -a && . "$HOME/.oidc-prestage/state.env" && set +a && test -s /mnt/project-files/oidc-prestage/EVIDENCE.md && git fetch -q origin main && git merge-base --is-ancestor "$MERGE_SHA" origin/main && bin/venv-python - <<'PY' && bin/venv-python -m scripts.ops_data_portal --update-rec rec-3902 --status closed --resolution "Pre-staged the otl-labs owner segment in both roots; admin split-apply (planner, deploy), gated apply (branch, pr) and bootstrap apply done; all five roles proven live on the current path. Evidence: oidc-prestage/EVIDENCE.md and the merged PR comment." && bin/venv-python -c "from src.common.ducklake_reader_client import fetch_recs_by_ids, make_reader; rows, missing = fetch_recs_by_ids(make_reader(profile='agent_platform_admin'), ['rec-3902','rec-3167','rec-3128']); assert not missing, missing; bad=[r['id'] for r in rows if r['status']!='closed']; assert not bad, bad; print('recs-closed')" && rm -f "$HOME/.oidc-prestage/state.env"
+      import os, subprocess, tempfile
+      from src.common.ducklake_reader_client import fetch_recs_by_ids, make_reader
+      ORACLE = r"grep -q 'onthelooplabs@\|otl-labs@' terraform/personal/oidc.tf && grep -q 'onthelooplabs@\|otl-labs@' terraform/bootstrap/github_ci_apply.tf"
+      rows, missing = fetch_recs_by_ids(make_reader(profile='agent_platform_admin'), ['rec-3902'])
+      assert not missing and rows[0]['acceptance'] == ORACLE, 'rec-3902 acceptance changed since planning: route to the planning thread'
+      w = tempfile.mkdtemp(prefix='oidc-oracle-')
+      subprocess.run(['git', 'worktree', 'add', '--detach', w, os.environ['MERGE_SHA']], check=True, capture_output=True)
+      try:
+          rc = subprocess.run(['bash', '-c', ORACLE], cwd=w).returncode
+      finally:
+          subprocess.run(['git', 'worktree', 'remove', '--force', w], check=True)
+      assert rc == 0, 'rec-3902 acceptance oracle fails at MERGE_SHA'
+      print('rec-3902-oracle-holds')
+      PY
+    expected: rec-3902-oracle-holds, recs-closed, and the state file removed.
     fix_if: >-
       A portal write that cannot complete fails loudly (Decision 84 I-4): restore connectivity and re-run; never
       hand-edit a log. If rec-3167 or rec-3128 stayed open, read the trailer-closure job's per-rec marker in ci.yml's
@@ -985,7 +1009,7 @@ test_obligations:
 constraints:
   - >-
     CARRIER: shell state does not persist between tool calls (AGENTS.md), so every value a later step reads
-    (OTL_ORG_ID, PR_HEAD_SHA, MERGE_SHA, PUSH_RUN_ID, BOOTSTRAP_APPLY_TS, SPLIT_APPLY_TS, DISPATCH_RUN_ID,
+    (OTL_ORG_ID, PR_NUMBER, PR_HEAD_SHA, PRE_WINDOW_RECS, MERGE_SHA, PUSH_RUN_ID, BOOTSTRAP_APPLY_TS, SPLIT_APPLY_TS, DISPATCH_RUN_ID,
     GATED_APPLY_TS, DEPLOY_SHA, TF_CLI_CONFIG_FILE) lives in the session-local file
     "$HOME/.oidc-prestage/state.env" (mode 600, outside the repository and the shared folder, deleted at VP
     28); each step's command sources it first, and each producing step appends KEY=value. The org id may sit in
@@ -1009,8 +1033,8 @@ constraints:
     Never widen IAMRoleReconcile or any CI-role grant to avoid the split (deploy-paths SPLIT-APPLY; Decision
     143 clause 1). terraform/bootstrap/github_ci_apply_policy.tf is out of scope.
   - >-
-    Contract and Decision 172 texts land verbatim as approved (drafts named in context); allowed variance: the
-    dates and PR numbers. Any other wording change, including one code review asks for, goes back to the
+    Contract and Decision 172 texts land verbatim as approved (drafts named in context); allowed variance: dates
+    only (step 29). Any other wording change, including one code review asks for, goes back to the
     operator through the coordinator before merge. No new numbered Decision.
   - >-
     This PR's merge needs the operator's typed "merge" (it carries IAM, contract and Decision text: always-ask),
@@ -1102,7 +1126,9 @@ execution_steps:
   - >-
     docs/contracts/github-org-transfer.yaml and docs/DECISIONS.md: paste the approved drafts verbatim; set the
     dates; append the Update line at the END of Decision 172's span, before its "---". Update the
-    github-org-transfer-contract registry row's grep from the agent_surface line to the check line.
+    github-org-transfer-contract registry row's grep from the agent_surface line to the check line, and paste
+    draft/verification-registry-note.md's governance note and amendment_log entry into
+    docs/contracts/verification-registry.yaml verbatim (set the date only).
   - The two new verification-registry entry files for steps 2 and 3, following the existing row shape.
   - >-
     CLOSURE, each outcome reported separately (implement skill Commit Flows; docs/contracts/git-ops.yaml
@@ -1112,7 +1138,8 @@ execution_steps:
     /tmp/implementation-retrospective.json with the ten scripts.session.postflight_evidence.CATEGORIES keys and
     run bin/venv-python -m scripts.session.postflight --evidence /tmp/implementation-retrospective.json; push
     (git push -u origin HEAD as its own call; --force-with-lease after a rewriting rebase); open the PR (body
-    states the operator hand-off, steps 11-28, never the org id; no rec-3902 trailer); subscribe to it; request
+    states the operator hand-off, steps 11-28, never the org id; no rec-3902 trailer) and append
+    PR_NUMBER=<number> to the state file; subscribe to it; request
     the operator's code-owner review; dispatch code review in a fresh context with the context "V3 resolution:"
     line quoted, and fix every blocking finding.
   - >-
@@ -1136,6 +1163,7 @@ rollback: >-
   and deploy from the revert PR's final head, re-run its speculative plan, merge, bootstrap apply while the gate
   waits, approve the gated job (no waiting run is ever cancelled or rejected). The same revert PR removes the
   target entry from both lists, identity.staged_phase (so
-  validate_github_org_transfer then expects [current] alone), TestTargetOwnerSegment and the
-  oidc-trust-target-owner-segment-staged registry row, or the revert itself goes red. A wrong org id is corrected
+  validate_github_org_transfer then expects [current] alone), TestTargetOwnerSegment, and retires the
+  oidc-trust-target-owner-segment-staged registry row by git mv into entries/deprecated/ (Decision 176 point 5),
+  or the revert itself goes red. A wrong org id is corrected
   the same way with the right id, not reverted.
