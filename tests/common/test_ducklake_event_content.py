@@ -222,3 +222,14 @@ def test_max_chunk_envelope_stays_under_the_response_cap(store: FakeStore) -> No
     guarded = handler._guard_response_size(handler._response(200, body), {"action": "named_read"}, meta)
     assert guarded["statusCode"] == 200 and meta["response_bytes"] < handler.MAX_RESPONSE_BYTES
     assert json.loads(guarded["body"])["rows"][0]["length"] == CHUNK
+
+
+def test_a_valid_root_builds_the_s3_store_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    made: list[str] = []
+    monkeypatch.setattr(content, "make_s3_client", lambda region: made.append(region) or object())
+    monkeypatch.setenv("TELEMETRY_BLOB_ROOT", "s3://bucket/telemetry-blobs/ducklake_smoke/")
+    monkeypatch.setenv("TELEMETRY_DATA_PATH", "s3://bucket/ducklake-neon-smoke/")
+    monkeypatch.setenv("TELEMETRY_META_SCHEMA", "ducklake_smoke")
+    monkeypatch.setenv("AWS_REGION", "eu-west-2")
+    built = content._build_store()
+    assert type(built).__name__ == "S3BlobStore" and made == ["eu-west-2"]
