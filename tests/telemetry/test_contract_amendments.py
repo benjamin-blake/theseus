@@ -120,7 +120,7 @@ def test_parser_version_bump_policy_declared() -> None:
         doc = load_contract(_CONTRACTS_DIR / f"{table_name}.yaml")
         producer_field = doc.fields["producer"]
         assert producer_field.dq_intent_local is not None
-        assert producer_field.dq_intent_local["not_null"]["enforced"] is True
+        assert producer_field.dq_intent_local["not_null"] is True
         assert any(entry.semantic_break for entry in producer_field.amendment_log)
 
     assert "part of the telemetry grain key" in _norm(producer.description) or "grain key" in _norm(producer.description)

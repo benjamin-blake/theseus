@@ -75,7 +75,7 @@ def test_standard_records_the_ops_source() -> None:
         "validate_ops_rule_source",
         "ops writer (src/common/ducklake_write_rules.py over src/row_rules/rules.py",
         "--lambda-row-rules smoke gate",
-        "rec-4158 plan c",
+        "validate_write_time_enforcement_conformance",
         "rec-4167",
         "rec-4166",
         "decision 181 cl.2",
@@ -148,7 +148,8 @@ def _items_by_id(node, found=None) -> dict:
 def test_source_lineage_note_matches() -> None:
     lineage = yaml.safe_load((_CONTRACTS / "source-lineage.yaml").read_text(encoding="utf-8"))
     note = _norm(lineage["fields"]["registry_key"]["governance_notes"])
-    assert "write_time:true" not in note and 'not_null enforced:true + exclude_before:"2026-05-01"' in note
+    assert "write_time:true" not in note and "enforced" not in note.replace("not enforced", "")
+    assert 'ops_recommendations adds not_null with exclude_before "2026-05-01" through dq_intent_local' in note
 
 
 def test_title_is_not_nullable() -> None:
@@ -172,3 +173,32 @@ def test_writer_contract_names_row_rule() -> None:
         assert "row_rule" in doc["verbs"][verb]["response_codes"][422], verb
     assert any("row rules" in line.lower() and "before any merge" in line.lower() for line in doc["audit_invariants"])
     assert any(e["change_class"] == "field_add" and e["semantic_break"] is True for e in doc["amendment_log"])
+
+
+def test_dormant_refusal_is_recorded_with_its_owners() -> None:
+    roadmap = (_ROOT / "docs" / "ROADMAP-PLATFORM.yaml").read_text(encoding="utf-8")
+    flat = _norm(roadmap)
+    assert (
+        _norm("docs/contracts/ops_priority_queue.yaml declares the queue's row rules, they project into field_semantics.yaml")
+        in flat
+    )
+    assert (
+        "dormant refusal on ops_priority_queue is lifted, before the producer's first write (decision 210 cl.4, rec-4158)"
+        in flat
+    )
+    assert "row rules live in a class a table contract docs/contracts/ops_execution_plans.yaml" in flat
+    assert "dormant refusal on ops_execution_plans lifts only once those rules project into field_semantics.yaml" in flat
+    writer = yaml.safe_load((_CONTRACTS / "ducklake_writer.yaml").read_text(encoding="utf-8"))
+    invariant = next(line for line in writer["audit_invariants"] if line.startswith("Dormant refusal"))
+    for anchor in ("write_ops, update_ops and file_ops REFUSE", "ops_priority_queue", "ops_execution_plans", "naming dormant"):
+        assert anchor in invariant, anchor
+    assert "create_ops_tables still provisions them" in invariant and "T4.3 c6" in invariant and "T4.5 c2" in invariant
+    assert any(e["semantic_break"] is True and "dormant refusal" in e["summary"] for e in writer["amendment_log"])
+    substrate = _norm((_CONTRACTS / "storage-substrate.yaml").read_text(encoding="utf-8"))
+    assert "dormant: write_ops, file_ops and update_ops refuse this table" in substrate
+    assert "owner t4.3 c6" in substrate and "owner t4.5 c2" in substrate
+    counters = yaml.safe_load((_CONTRACTS / "ops_entity_counters.yaml").read_text(encoding="utf-8"))
+    assert any(
+        line.startswith("Writer-internal disposition") and "DDL NOT NULL" in line and "control_health" in line
+        for line in counters["audit_invariants"]
+    )

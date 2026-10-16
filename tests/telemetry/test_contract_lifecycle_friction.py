@@ -256,11 +256,12 @@ def test_no_stale_enforcement_premise() -> None:
         assert "not provisioned in production" in _norm(raw["governance"]["write_path"]), table
         notes = _norm(raw["governance_notes"])
         assert (
-            "a column is not null at write when `nullable` is false or `dq_intent.not_null.enforced` is true, "
+            "a column is not null at write when `nullable` is false or dq_intent declares not_null, "
             "unless the field carries `required_when`, which then governs" in notes
         ), table
-        assert "required_when, accepted_values and pattern are write-enforced whatever their enforced value" in notes, table
-        assert "_is_not_null" in raw["governance_notes"] and "rec-4158 plan c" in notes, table
+        assert "every declared rule is write-enforced (decision 210)" in notes, table
+        assert "a staged rule is spelled with exclude_before or an owned exemption" in notes, table
+        assert "_is_not_null" in raw["governance_notes"] and "whatever their enforced value" not in notes, table
         assert _new_entries(load_contract(_CONTRACTS_DIR / f"{table}.yaml").amendment_log), table
         for line in (_CONTRACTS_DIR / f"{table}.yaml").read_text(encoding="utf-8").splitlines():
             if line.lstrip().startswith("#"):

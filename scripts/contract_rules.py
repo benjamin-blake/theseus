@@ -21,7 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 CONTRACTS_DIR = REPO_ROOT / "docs" / "contracts"
 REGISTRY_KEY_REF = ("source-lineage.yaml", "registry_key")
 
-_LEG_META_KEYS = frozenset({"exclude_before", "enforced"})
+_LEG_META_KEYS = frozenset({"exclude_before", "enforced", "note"})
 _EXEMPTION_REQUIRED = ("reason", "owner")
 
 
@@ -35,9 +35,17 @@ class DeclaredRule:
     exemption: Mapping[str, Any] | None = None
 
 
+_SAFE_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+
+
+def parse_yaml(text: str) -> Any:
+    """yaml.safe_load through libyaml when the build has it (the contract tree is parsed hundreds of times per run)."""
+    return yaml.load(text, Loader=_SAFE_LOADER)  # noqa: S506 -- a safe loader, chosen for speed
+
+
 def load_yaml(path: Path) -> dict[str, Any]:
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        data = parse_yaml(path.read_text(encoding="utf-8"))
     except OSError as exc:
         raise ValueError(f"cannot read contract file {path}: {exc}") from exc
     if not isinstance(data, dict):
@@ -50,29 +58,56 @@ def split_ref(ref: str) -> tuple[str, str]:
     return Path(file_part).name, fragment.rstrip("/").rsplit("/", 1)[-1]
 
 
-def _not_null_leg(table_id: str, column: str, value: Any) -> dict[str, Any]:
+def not_null_declared(value: Any) -> bool:
+    """A not_null leg declares a rule by presence: `true` or a mapping. The legacy `{enforced: false}` (readable so a
+    merge-base snapshot parses) and an absent leg declare none; any other legacy mapping is a rule."""
+    if value is None or value is False:
+        return False
+    if isinstance(value, Mapping):
+        return value.get("enforced") is not False
+    return value is True
+
+
+def _not_null_leg(table_id: str, column: str, value: Any) -> dict[str, Any] | bool:
     if value is None:
         return {}
+    if isinstance(value, bool) and value:
+        return True
     if not isinstance(value, Mapping):
-        raise ValueError(f"{table_id}.{column}: rule kind 'not_null' must be a mapping, got {type(value).__name__}")
+        raise ValueError(f"{table_id}.{column}: rule kind 'not_null' must be true or a mapping, got {value!r}")
     return dict(value)
+
+
+def _kept_subkeys(leg: dict[str, Any] | bool) -> dict[str, Any]:
+    if isinstance(leg, bool):
+        return {}
+    return {k: v for k, v in leg.items() if k != "enforced"}
 
 
 def layer_rules(table_id: str, name: str, inherited: dict[str, Any], local: dict[str, Any]) -> dict[str, Any]:
     """Layer a $ref field's local dq_intent over its raw target's: a local key may add a rule or tighten not_null, never
-    drop an inherited rule, and a rule key both declare with different values fails closed. A not_null leg keeps its
-    sub-keys (an exclude_before survives) while enforced is OR-ed."""
+    drop an inherited rule, and a rule key both declare with different values fails closed. Not_null is read by
+    presence on both sides before merging; the result is the presence form (no key, `True`, or a mapping of the kept
+    sub-keys without `enforced`)."""
     merged = dict(inherited)
+    merged.pop("not_null", None)
     for key, value in local.items():
         if key == "not_null":
-            local_leg = _not_null_leg(table_id, name, value)
-            inherited_leg = _not_null_leg(table_id, name, inherited.get("not_null"))
-            enforced = bool(local_leg.get("enforced")) or bool(inherited_leg.get("enforced"))
-            merged["not_null"] = {**inherited_leg, **local_leg, "enforced": enforced}
-        elif key in inherited and inherited[key] != value:
+            continue
+        if key in inherited and inherited[key] != value:
             raise ValueError(f"{table_id}.{name}: dq_intent_local changes the inherited rule {key!r}")
-        else:
-            merged[key] = value
+        merged[key] = value
+    legs = []
+    for source in (inherited, local):
+        raw = source.get("not_null")
+        leg = _not_null_leg(table_id, name, raw)
+        if raw is not None and not_null_declared(raw):
+            legs.append(leg)
+    if legs:
+        kept: dict[str, Any] = {}
+        for leg in legs:
+            kept.update(_kept_subkeys(leg))
+        merged["not_null"] = kept or True
     return merged
 
 
@@ -161,9 +196,8 @@ def declared_rules(
     repo_root: Path = REPO_ROOT,
     registry_key_ref: tuple[str, str] = REGISTRY_KEY_REF,
 ) -> tuple[DeclaredRule, ...]:
-    """Every rule the contract declares, field by field in contract order. A not_null leg whose enforced flag is false
-    declares nothing (it keeps its DQ-runner meaning: no rule); any other leg is a declared rule whatever its enforced
-    value, because that flag belongs to the DQ runner and plan C owns the platform-wide re-read."""
+    """Every rule the contract declares, field by field in contract order. A declared rule is an enforced rule: not_null
+    is read by presence (the legacy `{enforced: false}` spelling declares none); every other leg is a rule."""
     if not (contracts_dir / f"{table_id}.yaml").is_file():
         raise ValueError(f"no contract for table {table_id!r} in {contracts_dir}")
     intents = read_intents(table_id, {}, contracts_dir=contracts_dir, repo_root=repo_root, registry_key_ref=registry_key_ref)
@@ -173,8 +207,10 @@ def declared_rules(
         for kind, value in intent.items():
             if kind == "write_time_exemptions":
                 continue
-            if kind == "not_null" and not _not_null_leg(table_id, column, value).get("enforced"):
-                continue
-            params, exclude_before = _normalise_leg(value)
+            if kind == "not_null":
+                _not_null_leg(table_id, column, value)
+                if not not_null_declared(value):
+                    continue
+            params, exclude_before = ({}, None) if kind == "not_null" and value is True else _normalise_leg(value)
             rules.append(DeclaredRule(table_id, column, kind, params, exclude_before, exemptions.get(kind)))
     return tuple(rules)

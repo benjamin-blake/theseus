@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 import src.row_rules.rules as rules_module
-from src.row_rules.rules import RowRuleError, RowRules, RuleProjectionError, check_row
+from src.row_rules.rules import WAIVABLE_KINDS, RowRuleError, RowRules, RuleProjectionError, check_row
 
 T0 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 CREATED = T0 + timedelta(seconds=10)
@@ -526,3 +526,50 @@ def test_pattern_when_always_binds_older_rows_and_unhashable_conditions_fail_clo
         check_row(TABLE, {"kind": "a", "label": "bad"}, rules, CREATED, prior={"kind": "a", "label": "bad"})
     with pytest.raises(RuleProjectionError, match="required_when"):
         RowRules.from_projection({**WHEN_COLUMNS, "other": {"nullable": True, "required_when": {"kind": [["a"]]}}})
+
+
+_WAIVED_RULES = {
+    "not_null": True,
+    "accepted_values": ["a"],
+    "min_length": 3,
+    "pattern": "^a$",
+    "pattern_when": [{"when": {"k": ["a"]}, "pattern": "^a$"}],
+    "array_element_format": "^a$",
+    "required_when": {"k": ["a"]},
+    "not_before": "k",
+    "at_most": "k",
+    "null_or_zero_when": {"k": ["a"]},
+    "max_after_write_seconds": 5,
+}
+_OWNED = {"reason": "staged", "owner": "rec-1"}
+
+
+def _waived_columns(kind: str, *, ships: bool, nullable: bool = True) -> dict:
+    column = {"nullable": nullable, "write_time_exemptions": {kind: _OWNED}}
+    if ships:
+        column[kind] = _WAIVED_RULES[kind]
+    return {"k": {"nullable": True, "accepted_values": ["a", "b"]}, "c": column}
+
+
+def test_waived_rules_cover_every_exemptable_kind() -> None:
+    assert set(_WAIVED_RULES) == WAIVABLE_KINDS
+
+
+@pytest.mark.parametrize("kind", sorted(WAIVABLE_KINDS))
+def test_row_local_exemption_is_recorded_and_unenforced(kind: str) -> None:
+    rules = RowRules.from_projection(_waived_columns(kind, ships=False))
+    assert rules.waived == {("c", kind): ("staged", "rec-1")}
+    assert not rules.not_null - {"c"} and "c" not in rules.not_null
+    assert "c" not in rules.accepted_values and "c" not in rules.min_length and "c" not in rules.patterns
+    check_row(TABLE, {"k": "a", "c": None}, rules, CREATED)
+
+
+@pytest.mark.parametrize("kind", sorted(WAIVABLE_KINDS))
+def test_an_exempt_rule_that_also_ships_raises(kind: str) -> None:
+    with pytest.raises(RuleProjectionError, match="exempt and must not also ship"):
+        RowRules.from_projection(_waived_columns(kind, ships=True))
+
+
+def test_not_null_cannot_be_exempted_on_a_nullable_false_column() -> None:
+    with pytest.raises(RuleProjectionError, match="nullable:false"):
+        RowRules.from_projection(_waived_columns("not_null", ships=False, nullable=False))

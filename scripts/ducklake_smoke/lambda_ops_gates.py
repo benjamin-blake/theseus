@@ -117,6 +117,33 @@ ROW_RULES_CASES: tuple[tuple[str, dict[str, object], str], ...] = (
 )
 
 
+DORMANT_TABLES = ("ops_priority_queue", "ops_execution_plans")
+DORMANT_VERBS = ("write_ops", "file_ops", "update_ops")
+# every (table, verb) pair the writer must refuse until the table's Class A contract lands (Decision 210 cl.4)
+DORMANT_REFUSAL_CASES: tuple[tuple[str, str], ...] = tuple((t, v) for t in DORMANT_TABLES for v in DORMANT_VERBS)
+
+
+def lambda_dormant_refusal(writer_url: str, *, profile: str | None = None, region: str = "eu-west-2") -> int:
+    """Each dormant (table, verb) pair must answer 400 naming dormant; any other answer fails the gate.
+
+    The probe record carries an unknown field, so a regressed boundary still cannot write: write_ops and update_ops fail
+    the schema gate first (422 schema_gate) and file_ops fails before it on the missing writer-owned keyspace (500
+    runtime), so a failed probe never leaves a row.
+    """
+    for table, verb in DORMANT_REFUSAL_CASES:
+        record = {"id": f"test-dormant-{uuid4().hex[:12]}", "unknown_probe_field": "x"}
+        resp = core._sigv4_invoke(
+            writer_url, {"action": verb, "table": table, "record": record}, profile=profile, region=region
+        )
+        error = str(resp.json().get("error", "")) if resp.status_code == 400 else ""
+        if resp.status_code != 400 or "dormant" not in error:
+            raise core.SmokeTestFailure(
+                f"LAMBDA_ROW_RULES FAIL: {verb} on dormant {table} answered {resp.status_code} instead of 400 naming dormant: "
+                f"{resp.text[:200]}"
+            )
+    return len(DORMANT_REFUSAL_CASES)
+
+
 def lambda_row_rules(*, profile: str | None = None, region: str = "eu-west-2") -> None:
     """rec-4158 plan B per-deploy gate: the deployed writer rejects each rule class and writes nothing.
 
@@ -174,7 +201,11 @@ def lambda_row_rules(*, profile: str | None = None, region: str = "eu-west-2") -
             )
     if stored_rows():
         repair_and_fail("a rejected write left a row in current")
-    print(f"LAMBDA_ROW_RULES OK {len(ROW_RULES_CASES)} cases rejected 422 row_rule, nothing stored key={key}")
+    dormant = lambda_dormant_refusal(writer_url, profile=profile, region=region)
+    print(
+        f"LAMBDA_ROW_RULES OK {len(ROW_RULES_CASES)} cases rejected 422 row_rule, nothing stored key={key}; "
+        f"{dormant} dormant (table, verb) cases refused 400"
+    )
 
 
 def ops_churn_regate(*, profile: str | None = None, region: str = "eu-west-2") -> None:

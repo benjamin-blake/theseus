@@ -118,13 +118,31 @@ def test_catalog_restore_drill_probe_lost_fails(monkeypatch):
         smoke.catalog_restore_drill()
 
 
-def _row_rules_invoke(monkeypatch, *, answer, stored=0):
-    """Wire the gate to a scripted writer/reader; returns the list of (action, record) calls."""
+class _Calls(list):
+    """The row-rules table's (action, record) calls; calls on a dormant table land in .dormant as (table, action)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.dormant: list[tuple[str, str]] = []
+
+
+def _dormant_400(table, verb):
+    return _Resp(400, {"ok": False, "error_type": "action", "error": f"{table!r} is dormant (write_boundary=dormant)"})
+
+
+def _row_rules_invoke(monkeypatch, *, answer, stored=0, dormant=_dormant_400):
+    """Wire the gate to a scripted writer/reader; returns the row-rules table's (action, record) calls."""
     monkeypatch.setattr(core, "_function_url", lambda role: f"https://{role}")
-    calls: list[tuple[str, dict]] = []
+    calls = _Calls()
 
     def fake_invoke(url, payload, **kw):
         action = payload["action"]
+        table = payload.get("table")
+        if table in lambda_ops_gates.DORMANT_TABLES:
+            if (table, action) not in lambda_ops_gates.DORMANT_REFUSAL_CASES:
+                raise AssertionError(f"unexpected call on a dormant table: {table} {action}")
+            calls.dormant.append((table, action))
+            return dormant(table, action)
         calls.append((action, payload.get("record", {})))
         if action == "write_ops":
             return answer(payload["record"])
@@ -146,9 +164,34 @@ def _expected_422(record):
 def test_lambda_row_rules_ok(monkeypatch, capsys):
     calls = _row_rules_invoke(monkeypatch, answer=_expected_422)
     smoke.lambda_row_rules()
-    assert "LAMBDA_ROW_RULES OK 4 cases" in capsys.readouterr().out
-    assert [a for a, _ in calls].count("write_ops") == 4
+    out = capsys.readouterr().out
+    assert f"LAMBDA_ROW_RULES OK {len(lambda_ops_gates.ROW_RULES_CASES)} cases" in out
+    assert f"{len(lambda_ops_gates.DORMANT_REFUSAL_CASES)} dormant (table, verb) cases refused 400" in out
+    assert [a for a, _ in calls].count("write_ops") == len(lambda_ops_gates.ROW_RULES_CASES)
     assert calls[-1][0] == "read_ops_current" and "update_ops" not in [a for a, _ in calls]
+    assert sorted(calls.dormant) == sorted(lambda_ops_gates.DORMANT_REFUSAL_CASES)  # each pair sent exactly once
+
+
+_DORMANT_FAILURES = {
+    "schema_gate": lambda t, v: _Resp(422, {"ok": False, "error_type": "schema_gate", "error": "dormant"}),
+    "runtime": lambda t, v: _Resp(500, {"ok": False, "error_type": "runtime", "error": "dormant"}),
+    "referential": lambda t, v: _Resp(409, {"ok": False, "error_type": "referential", "error": "dormant"}),
+    "accepted": lambda t, v: _Resp(200, {"ok": True}),
+    "400_not_naming_dormant": lambda t, v: _Resp(400, {"ok": False, "error": "unknown or missing ops table"}),
+}
+
+
+def test_dormant_refusal_cases_answer_400(monkeypatch):
+    calls = _row_rules_invoke(monkeypatch, answer=_expected_422)
+    assert lambda_ops_gates.lambda_dormant_refusal("https://writer") == len(lambda_ops_gates.DORMANT_REFUSAL_CASES) == 6
+    assert sorted(calls.dormant) == sorted(lambda_ops_gates.DORMANT_REFUSAL_CASES)
+    for name, answer in _DORMANT_FAILURES.items():
+        _row_rules_invoke(monkeypatch, answer=_expected_422, dormant=answer)
+        with pytest.raises(smoke.SmokeTestFailure, match="instead of 400 naming dormant"):
+            lambda_ops_gates.lambda_dormant_refusal("https://writer")
+        _row_rules_invoke(monkeypatch, answer=_expected_422, dormant=answer)
+        with pytest.raises(smoke.SmokeTestFailure, match="LAMBDA_ROW_RULES FAIL"):
+            smoke.lambda_row_rules()
 
 
 def test_lambda_row_rules_fails_on_accepted_write(monkeypatch):

@@ -23,7 +23,7 @@ import re
 from pathlib import Path
 from typing import Any, Callable
 
-from scripts.contract_rules import check_rule_keys, read_intents
+from scripts.contract_rules import check_rule_keys, not_null_declared, read_intents
 from src.common.ducklake_partition_spec import PartitionSpecError, parse_partition_by, validate_partition_spec
 from src.telemetry.identity import KEY_PLANS
 
@@ -57,6 +57,7 @@ _COLUMN_RULE_KEYS = (
 )
 _TABLE_RULE_KEYS = ("exactly_one_of", "content_inline_threshold_bytes", "full_output_cap_bytes", "integrity")
 _KNOWN_DQ_KEYS = frozenset({"not_null", "accepted_values", *_COLUMN_RULE_KEYS, *_TABLE_RULE_KEYS})
+KNOWN_DQ_KEYS = _KNOWN_DQ_KEYS
 
 _DAY_GRAIN_TRIPLE_RE = re.compile(r"^year\((?P<col>\w+)\), month\((?P=col)\), day\((?P=col)\)$")
 
@@ -122,10 +123,11 @@ def _check_rule_keys(table_id: str, name: str, intent: dict[str, Any]) -> None:
 
 def _column_rules(table_id: str, name: str, intent: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
-    if "accepted_values" in intent:
+    exempt = intent.get("write_time_exemptions") or {}
+    if "accepted_values" in intent and "accepted_values" not in exempt:
         out["accepted_values"] = list(intent["accepted_values"]["values"])
     for key in _COLUMN_RULE_KEYS:
-        if key in intent:
+        if key in intent and (key == "write_time_exemptions" or key not in exempt):
             out[key] = intent[key]
     return out
 
@@ -180,8 +182,10 @@ def _event_role(name: str, derived_columns: frozenset[str]) -> str:
 def _is_not_null(dq_intent: dict[str, Any] | None, nullable: bool | None) -> tuple[bool, Any]:
     dq_intent = dq_intent or {}
     required_when = dq_intent.get("required_when")
-    enforced = bool((dq_intent.get("not_null") or {}).get("enforced"))
-    is_not_null = (nullable is False or enforced) and not required_when
+    declared = not_null_declared(dq_intent.get("not_null")) and "not_null" not in (
+        dq_intent.get("write_time_exemptions") or {}
+    )
+    is_not_null = (nullable is False or declared) and not required_when
     return is_not_null, required_when
 
 

@@ -532,6 +532,10 @@ exclude_before and any column a write changes; no date moves later. An exemption
 repository_state rule, which no write can ever decide, names the producer that enforces it. Detail:
 data-modeling-standard.yaml, rule write-time-enforcement.]
 
+[Amendment 2026-10-15, rec-4158: the writer-conformance residual is closed for row-local rules on every writer verb
+(validate_write_time_enforcement_conformance); a declared rule is enforced, so the enforced key is retired; value removal
+and new exemptions ratchet. Detail: data-modeling-standard.yaml, rule write-time-enforcement.]
+
 ---
 
 ## Decision 209: Open-core paywall on organisational scale, never capability -- a multi-tenant, metadata-only control plane over a customer-owned data plane, and three monorepos placed by platform-vs-product and visibility (amends Decision 184 clause 1, Decision 178 and Decision 101 point (f)) (Decided)

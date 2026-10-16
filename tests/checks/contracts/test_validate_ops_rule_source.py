@@ -12,16 +12,37 @@ from typing import Callable
 import pytest
 import yaml
 
+from scripts.checks.contracts import _rule_grammar as grammar
 from scripts.checks.contracts import validate_ops_rule_source as check_mod
 from scripts.checks.contracts._manifest import ENTRIES
 from scripts.contract_rules import declared_rules
 from scripts.ops_portal.write_validators import _validate_context_length, _validate_file_path
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
+_WRITER_TABLES = (
+    "ops_recommendations",
+    "ops_decisions",
+    "ops_entity_counters",
+    "ops_tenants",
+    "ops_projects",
+    "telemetry_sessions",
+    "telemetry_observations",
+    "telemetry_transcripts",
+    "telemetry_agents",
+)
+_BASELINES = (
+    "source-lineage",
+    "session-id",
+    "tenant-id",
+    "project-id",
+    "observation-id",
+    "parent-observation-id",
+    "telemetry-event-envelope",
+)
+_FILE_BACKED = ("exit-criteria-ledger", "verification-registry")
 _FILES = (
-    "docs/contracts/ops_recommendations.yaml",
-    "docs/contracts/ops_decisions.yaml",
-    "docs/contracts/source-lineage.yaml",
+    *(f"docs/contracts/{name}.yaml" for name in (*_WRITER_TABLES, *_BASELINES, *_FILE_BACKED)),
+    "config/lambda/ducklake/field_semantics.yaml",
     "config/agent/data_quality/ops.yaml",
     "config/agent/data_quality/source_registry.yaml",
     "src/common/ducklake_scd2_schema.py",
@@ -88,7 +109,12 @@ def test_real_tree_passes(capsys: pytest.CaptureFixture[str]) -> None:
     failed: list[str] = []
     check_mod.validate_ops_rule_source(failed)
     assert failed == []
-    assert "PASS" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "PASS" in out
+    fs = yaml.safe_load((_REPO_ROOT / "config/lambda/ducklake/field_semantics.yaml").read_text(encoding="utf-8"))
+    derived = {t for t in fs["ops_tables"] if (_REPO_ROOT / "docs/contracts" / f"{t}.yaml").is_file()}
+    assert set(_WRITER_TABLES) <= derived
+    assert f"across {len(derived)} tables" in out
 
 
 def _set(field: str, key: str, value) -> Callable[[dict], None]:
@@ -138,12 +164,13 @@ def _stale_exemption(doc: dict) -> None:
 
 
 _DEFECTS: list[tuple[str, Callable[[dict], None], str]] = [
-    ("vocabulary", _set("title", "mystery", 1), "outside the ops vocabulary"),
+    ("vocabulary", _set("title", "mystery", 1), "outside the scd2 vocabulary"),
     ("subkey", _bad_leg("title", "min_length", bogus=1), "unknown sub-key"),
     ("lookaround", _set("id", "pattern", "^(?=a)b$"), "outside the RE2-and-Python subset"),
     ("backreference", _set("id", "pattern", r"^(a)\1$"), "backreference"),
     ("invalid-regex", _set("id", "pattern", "^(a$"), "not a valid regex"),
-    ("contradictory-not-null", _set("ulid", "not_null", {"enforced": False}), "nullable false field"),
+    ("contradictory-not-null", _set("ulid", "not_null", {"enforced": False}), "`enforced` key is retired"),
+    ("nullable-false-without-not-null", _remove_key("ulid", "not_null"), "nullable false column without `not_null: true`"),
     ("floor", _bad_leg("title", "min_length", exclude_before="2026-04-01"), "earlier than the Decision 64 anchor"),
     ("non-iso-date", _bad_leg("title", "min_length", exclude_before="May 2026"), "not an ISO date"),
     ("impossible-date", _bad_leg("title", "min_length", exclude_before="2026-13-45"), "not a real calendar date"),
@@ -165,9 +192,24 @@ _DEFECTS: list[tuple[str, Callable[[dict], None], str]] = [
     ("parity-blank-rejecting", _remove_key("title", "min_length"), "blank-rejecting"),
     ("parity-path-syntax", _remove_key("file", "pattern"), "ops.yaml file.path_syntax"),
     ("parity-producer-side", _remove_key("acceptance", "acceptance_lint"), "no declared acceptance_lint"),
-    ("parity-not-null", _set("risk", "not_null", {"enforced": False}), "ops.yaml risk.not_null"),
+    ("parity-not-null", _remove_key("risk", "not_null"), "ops.yaml risk.not_null"),
     ("status-vocabulary", _status_values, "status vocabulary"),
 ]
+
+
+_PLANTED = (
+    (
+        "telemetry-contract",
+        "telemetry_sessions",
+        lambda d: d["fields"]["producer"]["dq_intent_local"].update(not_null={"enforced": True}),
+    ),
+    ("class-c-baseline", "session-id", lambda d: d["fields"]["session_id"]["dq_intent"].update(not_null={"enforced": False})),
+    (
+        "file-backed-contract",
+        "exit-criteria-ledger",
+        lambda d: next(iter(d["fields"].values()))["dq_intent"].update(not_null={"enforced": True}),
+    ),
+)
 
 
 def test_each_defect_fails(tmp_path: Path) -> None:
@@ -177,6 +219,11 @@ def test_each_defect_fails(tmp_path: Path) -> None:
         _edit_recs(root, change)
         failed = _run(root)
         assert any(message in item for item in failed), (name, failed)
+    for name, table, change in _PLANTED:
+        root = _make_root(tmp_path / name)
+        _edit(root, f"docs/contracts/{table}.yaml", change)
+        failed = _run(root)
+        assert any(f"{table}.yaml" in item and "`enforced` key is retired" in item for item in failed), (name, failed)
 
 
 def test_unreadable_inputs_fail_closed(tmp_path: Path) -> None:
@@ -234,7 +281,7 @@ def _later(doc: dict) -> None:
 
 
 def _newly_dated(doc: dict) -> None:
-    _fields(doc)["status"]["dq_intent"]["not_null"]["exclude_before"] = "2026-06-01"
+    _fields(doc)["status"]["dq_intent"]["not_null"] = {"exclude_before": "2026-06-01"}
 
 
 def _removed(doc: dict) -> None:
@@ -243,32 +290,51 @@ def _removed(doc: dict) -> None:
 
 def _earlier(doc: dict) -> None:
     _fields(doc)["tags"]["dq_intent"]["array_element_format"]["exclude_before"] = "2026-09-01"
+
+
+def _earlier_with_census(doc: dict) -> None:
+    _earlier(doc)
+    _fields(doc)["tags"].setdefault("amendment_log", []).append(
+        {
+            "date": "2026-10-15",
+            "semantic_break": True,
+            "change_class": "prose_improvement",
+            "migration_story": "tags date moved earlier; census: 0 violators (2026-10-15)",
+        }
+    )
+
+
+def _date_deleted(doc: dict) -> None:
     del _fields(doc)["effort"]["dq_intent"]["accepted_values"]["exclude_before"]
 
 
-def _newly_enforced(doc: dict) -> None:
-    _fields(doc)["verification"]["dq_intent"]["not_null"] = {"enforced": True, "exclude_before": "2026-10-04"}
+def _newly_dated_new_leg(doc: dict) -> None:
+    _fields(doc)["verification"]["dq_intent"]["not_null"] = {"exclude_before": "2026-10-04"}
 
 
 def test_exclude_before_cannot_move_later(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     root = _git_root(tmp_path / "armed")
     assert _run(root) == []
-    _edit_recs(root, _earlier)
+    _edit_recs(root, _earlier_with_census)
     assert _run(root) == []
-    _edit_recs(root, _newly_enforced)
+    _edit_recs(root, _newly_dated_new_leg)
     assert _run(root) == []
-    for change, message in ((_later, "moved later"), (_newly_dated, "moved later"), (_removed, "was removed")):
+    armed = _git_root(tmp_path / "armed-earlier")
+    _edit_recs(armed, _earlier)
+    assert any("ratchet: ops_recommendations.tags" in item and "moved earlier" in item for item in _run(armed))
+    for change, message in (
+        (_later, "moved later"),
+        (_newly_dated, "moved later"),
+        (_removed, "was removed"),
+        (_date_deleted, "exclude_before was removed"),
+    ):
         armed = _git_root(tmp_path / f"armed-{change.__name__}")
         _edit_recs(armed, change)
         failed = _run(armed)
         assert any("ratchet: ops_recommendations." in item and message in item for item in failed), (change.__name__, failed)
-    # ops_decisions legs are ratcheted too: an enforced leg flipped off is a removal
+    # ops_decisions legs are ratcheted too: a deleted not_null leg is a removal
     decisions = _git_root(tmp_path / "decisions")
-    _edit(
-        decisions,
-        "docs/contracts/ops_decisions.yaml",
-        lambda d: d["fields"]["title"]["dq_intent"]["not_null"].update(enforced=False),
-    )
+    _edit(decisions, "docs/contracts/ops_decisions.yaml", lambda d: d["fields"]["title"]["dq_intent"].pop("not_null"))
     assert any("ratchet: ops_decisions.title.not_null was removed" in item for item in _run(decisions))
     capsys.readouterr()
     dormant = _git_root(tmp_path / "dormant", base_has_check=False)
@@ -325,6 +391,8 @@ def test_registered_in_the_contracts_manifest() -> None:
         "docs/contracts/ops_recommendations.yaml",
         "docs/contracts/ops_decisions.yaml",
         "docs/contracts/source-lineage.yaml",
+        "docs/contracts/*.yaml",
+        "config/lambda/ducklake/field_semantics.yaml",
         "config/agent/data_quality/ops.yaml",
         "config/agent/data_quality/source_registry.yaml",
         "scripts/contract_rules.py",
@@ -339,11 +407,11 @@ def test_registered_in_the_contracts_manifest() -> None:
 
 
 def test_regex_subset_helper_scans_escapes_and_classes() -> None:
-    assert check_mod._regex_subset_error(r"^[^\\]*$") is None
-    assert check_mod._regex_subset_error(r"^a\\1$") is None
-    assert "backreference" in check_mod._regex_subset_error(r"^(a)\1$")
-    assert "lookaround" in check_mod._regex_subset_error("^(?<!a)b$")
-    assert "lookaround" in check_mod._regex_subset_error("^(?P<n>a)(?P=n)$")
+    assert grammar.regex_subset_error(r"^[^\\]*$") is None
+    assert grammar.regex_subset_error(r"^a\\1$") is None
+    assert "backreference" in grammar.regex_subset_error(r"^(a)\1$")
+    assert "lookaround" in grammar.regex_subset_error("^(?<!a)b$")
+    assert "lookaround" in grammar.regex_subset_error("^(?P<n>a)(?P=n)$")
 
 
 def test_retired_expression_write_time_tests_are_ignored(tmp_path: Path) -> None:
@@ -363,9 +431,11 @@ def test_malformed_leg_shapes_fail_with_a_message(tmp_path: Path) -> None:
     assert any("title: min_length leg must be a mapping, got int" in item for item in failed), failed
 
     root = _make_root(tmp_path / "b")
-    _edit_recs(root, lambda d: _fields(d)["title"]["dq_intent"].update(not_null=True))
+    _edit_recs(root, lambda d: _fields(d)["title"]["dq_intent"].update(not_null=False))
     failed = _run(root)
-    assert any("title: not_null leg must be a mapping, got bool" in item for item in failed), failed
+    assert any("title: not_null leg must be true or an exclude_before mapping, got False" in item for item in failed), failed
+    _edit_recs(root, lambda d: _fields(d)["title"]["dq_intent"].update(not_null="yes"))
+    assert any("title: not_null leg must be true or an exclude_before mapping, got 'yes'" in item for item in _run(root))
 
     root = _make_root(tmp_path / "c")
     _edit(

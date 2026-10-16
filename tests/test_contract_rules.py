@@ -18,6 +18,7 @@ from scripts.contract_rules import (
     declared_rules,
     layer_rules,
     load_yaml,
+    not_null_declared,
     read_intents,
     registry_values,
     split_ref,
@@ -118,17 +119,23 @@ def test_source_values_come_from_the_registry() -> None:
         (rules_mod.REPO_ROOT / "config/agent/data_quality/source_registry.yaml").read_text(encoding="utf-8")
     )
     assert intents["source"]["accepted_values"]["values"] == [e["canonical_id"] for e in registry["entries"]]
-    assert intents["source"]["not_null"] == {"enforced": True, "exclude_before": _D}
+    assert intents["source"]["not_null"] == {"exclude_before": _D}
 
 
 def test_layering_keeps_leg_subkeys() -> None:
-    merged = layer_rules(
+    legacy = layer_rules(
         "t", "c", {"not_null": {"enforced": False, "note": "x"}}, {"not_null": {"enforced": True, "exclude_before": _D}}
     )
-    assert merged["not_null"] == {"enforced": True, "note": "x", "exclude_before": _D}
+    assert legacy["not_null"] == {"exclude_before": _D}
     kept = layer_rules("t", "c", {"not_null": {"enforced": True}}, {"not_null": {"enforced": False, "exclude_before": _D}})
-    assert kept["not_null"] == {"enforced": True, "exclude_before": _D}
-    assert layer_rules("t", "c", {}, {"not_null": None})["not_null"] == {"enforced": False}
+    assert kept["not_null"] is True
+    assert "not_null" not in layer_rules("t", "c", {}, {"not_null": None})
+    assert "not_null" not in layer_rules("t", "c", {"not_null": {"enforced": False}}, {})
+    assert layer_rules("t", "c", {}, {"not_null": {"exclude_before": _D}})["not_null"] == {"exclude_before": _D}
+    assert layer_rules("t", "c", {"not_null": True}, {"not_null": {"exclude_before": _D}})["not_null"] == {
+        "exclude_before": _D
+    }
+    assert layer_rules("t", "c", {}, {"not_null": True})["not_null"] is True
     assert layer_rules("t", "c", {"a": 1}, {"b": 2}) == {"a": 1, "b": 2}
     assert layer_rules("t", "c", {"a": 1}, {"a": 1}) == {"a": 1}
     with pytest.raises(ValueError, match="changes the inherited rule 'a'"):
@@ -247,9 +254,34 @@ def test_scalar_not_null_leg_fails_with_a_message(tmp_path: Path) -> None:
     contracts = tmp_path / "contracts"
     contracts.mkdir()
     (contracts / "demo.yaml").write_text(
-        yaml.safe_dump({"fields": {"name": {"dq_intent": {"not_null": True}}}}), encoding="utf-8"
+        yaml.safe_dump({"fields": {"name": {"dq_intent": {"not_null": False}}}}), encoding="utf-8"
     )
-    with pytest.raises(ValueError, match=r"demo\.name: rule kind 'not_null' must be a mapping, got bool"):
+    with pytest.raises(ValueError, match=r"demo\.name: rule kind 'not_null' must be true or a mapping, got False"):
         declared_rules("demo", contracts_dir=contracts, repo_root=tmp_path)
-    with pytest.raises(ValueError, match=r"demo\.name: rule kind 'not_null' must be a mapping, got str"):
+    with pytest.raises(ValueError, match=r"demo\.name: rule kind 'not_null' must be true or a mapping, got 'yes'"):
         layer_rules("demo", "name", {}, {"not_null": "yes"})
+
+
+def test_not_null_presence_and_legacy_spelling_read_alike(tmp_path: Path) -> None:
+    def rules_of(not_null: object) -> dict:
+        intent = {} if not_null is None else {"not_null": not_null}
+        (tmp_path / "fx.yaml").write_text(yaml.safe_dump({"fields": {"c": {"dq_intent": intent}}}), encoding="utf-8")
+        return {r.kind: r for r in declared_rules("fx", contracts_dir=tmp_path, repo_root=tmp_path)}
+
+    assert rules_of(None) == {}
+    assert rules_of(None) == {} and not_null_declared(False) is False and not_null_declared(None) is False
+    assert rules_of({"enforced": False}) == {}
+    for spelling in (True, {"enforced": True}):
+        got = rules_of(spelling)["not_null"]
+        assert dict(got.params) == {} and got.exclude_before is None
+    for spelling in ({"exclude_before": _D}, {"enforced": True, "exclude_before": _D}):
+        got = rules_of(spelling)["not_null"]
+        assert dict(got.params) == {} and got.exclude_before == _D
+    (tmp_path / "fx.yaml").write_text(
+        yaml.safe_dump(
+            {"fields": {"c": {"dq_intent": {"accepted_values": {"values": ["a"], "note": "n", "enforced": False}}}}}
+        ),
+        encoding="utf-8",
+    )
+    (rule,) = declared_rules("fx", contracts_dir=tmp_path, repo_root=tmp_path)
+    assert dict(rule.params) == {"values": ["a"]}

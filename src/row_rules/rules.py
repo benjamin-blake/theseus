@@ -51,6 +51,21 @@ PRODUCER_SIDE_KINDS = frozenset({"acceptance_lint", "array_element_reference"})
 _TABLE_KEYS = frozenset({"exactly_one_of", "payload"})
 _CONTENT_KEYS = frozenset({"inline", "uri", "sha", "size", "threshold", "cap", "integrity"})
 EXEMPTABLE_LEGS = frozenset({"inline_within_threshold", "uri_above_threshold", "within_cap", "integrity"})
+WAIVABLE_KINDS = frozenset(
+    {
+        "not_null",
+        "accepted_values",
+        "min_length",
+        "pattern",
+        "pattern_when",
+        "array_element_format",
+        "required_when",
+        "not_before",
+        "at_most",
+        "null_or_zero_when",
+        "max_after_write_seconds",
+    }
+)
 
 
 class RowRuleError(ValueError):
@@ -98,6 +113,7 @@ class RowRules:
     content: ContentRule | None = None
     exemptions: Mapping[str, tuple[str, str]] = field(default_factory=dict)
     representation_only: frozenset[str] = frozenset()
+    waived: Mapping[tuple[str, str], tuple[str, str]] = field(default_factory=dict)
 
     @classmethod
     def from_projection(
@@ -122,6 +138,7 @@ class RowRules:
         skew: dict[str, int] = {}
         exemptions: dict[str, tuple[str, str]] = {}
         representation_only: set[str] = set()
+        waived: dict[tuple[str, str], tuple[str, str]] = {}
         for name, spec in columns.items():
             unknown = set(spec) - _COLUMN_KEYS
             if unknown:
@@ -149,7 +166,7 @@ class RowRules:
                 skew[name] = _seconds(name, spec["max_after_write_seconds"])
             if "representation_of" in spec:
                 representation_only.add(name)
-            _collect_exemptions(name, spec, exemptions, producer)
+            _collect_exemptions(name, spec, exemptions, producer, waived)
             if "exclude_before" in spec:
                 dated[name] = _exclude_before(name, spec)
         groups = tuple(tuple(group) for group in table_rules.get("exactly_one_of", ()))
@@ -176,6 +193,7 @@ class RowRules:
             content=content,
             exemptions=exemptions,
             representation_only=frozenset(representation_only),
+            waived=waived,
         )
 
 
@@ -220,15 +238,23 @@ def _collect_exemptions(
     spec: Mapping[str, Any],
     exemptions: dict[str, tuple[str, str]],
     producer: dict[tuple[str, str], tuple[str, str]],
+    waived: dict[tuple[str, str], tuple[str, str]],
 ) -> None:
     for leg, why in (spec.get("write_time_exemptions") or {}).items():
         producer_side = leg in PRODUCER_SIDE_KINDS
-        if not producer_side and (leg not in EXEMPTABLE_LEGS or leg in exemptions):
+        waivable = leg in WAIVABLE_KINDS
+        if not producer_side and not waivable and (leg not in EXEMPTABLE_LEGS or leg in exemptions):
             raise RuleProjectionError(f"{column}: write_time_exemptions names unknown or duplicate leg {leg!r}")
         if not (isinstance(why, Mapping) and why.get("reason") and why.get("owner")):
             raise RuleProjectionError(f"{column}: exemption {leg!r} needs a reason and an owner")
         recorded = (str(why["reason"]), str(why["owner"]))
-        if producer_side:
+        if waivable:
+            if leg in spec:
+                raise RuleProjectionError(f"{column}: {leg} is exempt and must not also ship as a rule")
+            if leg == "not_null" and spec.get("nullable") is False:
+                raise RuleProjectionError(f"{column}: not_null cannot be exempted on a nullable:false column")
+            waived[(column, leg)] = recorded
+        elif producer_side:
             producer[(column, leg)] = recorded
         else:
             exemptions[leg] = recorded

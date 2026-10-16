@@ -190,7 +190,7 @@ def action_create_ops_tables(event: dict[str, Any], con: Any) -> dict[str, Any]:
             "counter_seed": None,
         }
 
-    _require_ops_table(table, direction="write")
+    _require_ops_table(table, direction="write", provisioning=True)
     _check_force_recreate_confirm(table, event, force)
     rt.create_scd2_tables(con, table=table, force_recreate=force)
     spec = rt.resolve_table_spec(table)
@@ -218,9 +218,10 @@ def action_describe(event: dict[str, Any], _con: Any) -> dict[str, Any]:
 
 
 _GENERIC_REFUSED_BOUNDARIES = frozenset({"telemetry_append", "registration"})
+_DORMANT_BOUNDARY = "dormant"
 
 
-def _require_ops_table(table: Any, *, direction: str) -> None:
+def _require_ops_table(table: Any, *, direction: str, provisioning: bool = False) -> None:
     """Loud-fail if *table* is not a configured ops_* table, or is a control-class table not
     reachable through the generic write verbs (closed-boundary table allow-list).
 
@@ -228,7 +229,8 @@ def _require_ops_table(table: Any, *, direction: str) -> None:
     class-specific, never a general per-direction capability field (that is rec-3771, deliberately
     out of this plan) -- so write_ops/file_ops/update_ops loud-fail instead of falling through
     write_scd2 into the SCD2 branch against a spec with current_table=None. create_ops_tables is
-    the one legitimate exception and branches BEFORE ever reaching this function.
+    the one legitimate exception and branches BEFORE ever reaching this function. A dormant table (Decision 210
+    cl.4) is refused by the generic verbs but still provisioned: create_ops_tables passes provisioning=True.
     """
     if rt.is_control_table(table):
         raise WriterActionError(
@@ -237,6 +239,12 @@ def _require_ops_table(table: Any, *, direction: str) -> None:
             "(docs/contracts/ops_entity_counters.yaml)"
         )
     boundary = rt.table_write_boundary(table) if isinstance(table, str) else None
+    if boundary == _DORMANT_BOUNDARY and not provisioning:
+        raise WriterActionError(
+            f"{table!r} is dormant (write_boundary={boundary}): the generic {direction} verbs refuse it until its Class A "
+            "contract lands and its row rules project into field_semantics.yaml (Decision 210 cl.4); create_ops_tables "
+            "still provisions it"
+        )
     if boundary in _GENERIC_REFUSED_BOUNDARIES:
         raise WriterActionError(
             f"{table!r} is not reachable through the generic {direction} verbs: written only by the "

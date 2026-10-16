@@ -44,9 +44,7 @@ fields:
       never silently dropped) -- see governance_notes' GENERATIONS AND READ-SIDE DEDUPE rule for
       how a reader then selects the authoritative row across generations and producers.
     populated_by: the write boundary, from external_ref (rec-4024's append_events verb).
-    dq_intent:
-      not_null:
-        enforced: false
+    dq_intent: {}
     amendment_log:
       - date: "2026-09-28"
         semantic_break: true
@@ -73,9 +71,7 @@ fields:
       by pairing its open and close rows (see data-modeling-standard.yaml's derived-state rule) --
       never stored on either row.
     populated_by: the emitting producer, per its own event grammar.
-    dq_intent:
-      not_null:
-        enforced: false
+    dq_intent: {}
   event_timestamp:
     type: datetime
     iceberg_type: timestamptz
@@ -92,8 +88,6 @@ fields:
       (write time) and from session_started_at (the partition basis, the ROOT session's own pin).
     populated_by: the emitting producer, decoded from its own source record.
     dq_intent:
-      not_null:
-        enforced: false
       not_before: session_started_at
       max_after_write_seconds: 300
     amendment_log:
@@ -147,9 +141,7 @@ fields:
       old value); once any row is emitted under the pin, such a record is a producer HALT, never
       re-pinned and never emitted. For a forked or copied Claude Code session, records the fork did not write (forkedFrom, or before its own SessionStart:fork hook group) take no part in the pin: it is the earliest timestamp among the records the session wrote itself.
     populated_by: the emitting producer, pinned once per session at the earliest root-transcript timestamp of the session's own records.
-    dq_intent:
-      not_null:
-        enforced: false
+    dq_intent: {}
     amendment_log:
       - {date: "2026-10-14", semantic_break: true, change_class: governance_note_add, summary: "PLAN-telemetry-parser-v3 (slice 3b plan P-B): rec-4149: for a forked or copied Claude Code session only the records it wrote itself count toward the pin."}
       - date: "2026-09-26"
@@ -197,9 +189,7 @@ fields:
       originating events) still sort deterministically on source_ordinal.
     semantics: A read-side ordering aid only; never part of any identity hash.
     populated_by: the emitting producer, from its own source record's position.
-    dq_intent:
-      not_null:
-        enforced: false
+    dq_intent: {}
   external_ref:
     type: str
     iceberg_type: string
@@ -216,9 +206,7 @@ fields:
       carrying it (final usage numbers win) -- see entity_ref below for how model_call rows still
       de-duplicate to one row per API response despite each producer's event_id differing. A forked or copied Claude Code session's copied records keep their uuids and are the parent session's events, never the fork's: the claude_code producer (parser version 3) emits a fork's rows only for the records it wrote, recognising copies by forkedFrom or by their position before the fork's own SessionStart:fork hook group, so no ref is re-scoped (R10 untouched). If neither signal is present, the fork's first pass collides with its source in the same partition and halts loudly (Decision 207); a pass that ran before the fork's own SessionStart:fork record existed makes the next pass halt on its moved session pin.
     populated_by: the emitting producer.
-    dq_intent:
-      not_null:
-        enforced: false
+    dq_intent: {}
     amendment_log:
       - {date: "2026-10-14", semantic_break: true, change_class: governance_note_add, summary: "PLAN-telemetry-parser-v3 (slice 3b plan P-B): rec-4149: a fork's copied records are the parent's events; the claude_code producer emits a fork's rows only for the records it wrote."}
       - date: "2026-09-28"
@@ -245,9 +233,7 @@ fields:
       project + entity_ref arrive at the identical ULID with no coordination -- this is what lets a
       child row's FK equal its parent's own key without the parent propagating anything.
     populated_by: the emitting producer.
-    dq_intent:
-      not_null:
-        enforced: false
+    dq_intent: {}
   producer:
     type: str
     iceberg_type: string
@@ -262,9 +248,7 @@ fields:
       comparable only between rows sharing producer -- versions from different producers are
       incomparable and never sort against each other.
     populated_by: the emitting producer, self-identifying.
-    dq_intent:
-      not_null:
-        enforced: false
+    dq_intent: {}
     amendment_log:
       - date: "2026-09-28"
         semantic_break: true
@@ -280,9 +264,7 @@ fields:
     description: Version string of the emitting producer (distinct from parser_version below, which is integer and dedupe-authoritative).
     semantics: Provenance only; never consulted by the read-side dedupe rule.
     populated_by: the emitting producer.
-    dq_intent:
-      not_null:
-        enforced: false
+    dq_intent: {}
   parser_version:
     type: int
     iceberg_type: bigint
@@ -310,9 +292,7 @@ fields:
       re-emission cannot re-key the tree. A non-replayable producer (R8) emits no open marker,
       never re-emits, and a bump retires nothing.
     populated_by: the emitting producer, a hand-maintained per-producer constant (never a build identity).
-    dq_intent:
-      not_null:
-        enforced: false
+    dq_intent: {}
     amendment_log:
       - {date: "2026-10-14", semantic_break: true, change_class: governance_note_add, summary: "PLAN-telemetry-parser-v3 (slice 3b plan P-B): the cursor's recorded finalization cuts persist across a reset like the pins."}
       - date: "2026-09-28"
@@ -344,9 +324,7 @@ fields:
       Replaces the retired per-table ingested_at column (same concept, promoted to the shared
       envelope so every telemetry table carries one write-time field under one name).
     populated_by: the write boundary, at append time.
-    dq_intent:
-      not_null:
-        enforced: false
+    dq_intent: {}
     amendment_log:
       - date: "2026-09-28"
         semantic_break: true
@@ -456,4 +434,15 @@ amendment_log:
       sentence reworded from "day(session_started_at) partition" to "calendar-day partition";
       accompanies the field-level amendment_log entry on session_started_at (CD.25 category-6
       gate). Decision 199 always meant a calendar day; no table exists yet.
+  - date: "2026-10-15"
+    semantic_break: false
+    change_class: prose_improvement
+    summary: >-
+      PLAN-rule-declarations-and-writer-conformance (rec-4158, Decision 210): the dq_intent `enforced` key is retired
+      from every rule leg. not_null is declared by presence (`true`, or `{exclude_before: D}`); an optional column or a
+      loosest-baseline field carries no not_null leg; the other legs lose the key. A declared rule is an enforced rule.
+    migration_story: >-
+      Declarations re-spelled only. No rule is added, removed or re-dated: the declared rule set, read through
+      scripts.contract_rules, is identical before and after, and the generated field_semantics.yaml projection of
+      this contract is unchanged.
 previous_versions: []

@@ -178,12 +178,20 @@ audit_invariants:
   - "Idempotency: file_ops replays the client idempotency_ulid to return the originally-allocated id on a response-lost retry; write_ops / update_ops mint a fresh write ULID per call, so a replay adds a history row while the current row converges on the merge key (rec-4121 residual: history MERGE-on-ULID does not reject differing content)."
   - "An unknown `action` returns 400 with the sorted action allow-list (no silent no-op), and a body that is not valid JSON or not a JSON object returns 400 bad_request."
   - "Table allow-list: write_ops, update_ops, file_ops and create_ops_tables REFUSE (400, WriterActionError naming the write_boundary) every ops_tables entry whose write_boundary is telemetry_append or registration -- the four telemetry event tables, ops_tenants and ops_projects are written only by the telemetry verbs (slice 2a-2 plan 3), so no generic path can write or create them in any catalog."
+  - "Dormant refusal (Decision 210 cl.4, rec-4158): write_ops, update_ops and file_ops REFUSE (400, WriterActionError naming dormant) ops_priority_queue and ops_execution_plans -- every ops_tables entry whose write_boundary is dormant -- until the table's Class A contract lands and its row rules project into field_semantics.yaml (owners T4.3 c6 and T4.5 c2); create_ops_tables still provisions them, so catalog reinit, restore and the DQ reads of the empty tables are unaffected. The per-deploy --lambda-row-rules gate proves all six (table, verb) refusals."
   - "_contract_version is stamped on every record at write time (default '1' when absent), per CD.25."
   - "KNOWN GAP: no delete_ops verb yet (rec-2158); postmortem DELETE cannot transit the closed boundary. A future delete_ops verb is a field_add amendment to this contract."
   - "update_ops against a write_mode: append_only ops table raises AppendOnlyUpdateError (a DuckLakeRuntimeError subclass) -> 500 (require_exists=True; Decision 70 write-once). write_ops (require_exists=False) and file_ops do NOT raise -- write_ops performs a bare history append with no current-projection MERGE. The production scd2 ops tables are not append_only, so this is a latent path today (e.g. ops_smoke_events)."
   - "T2.26: write_ops / file_ops / update_ops each refuse a control-class table (write_boundary=writer_internal, e.g. ops_entity_counters) -- resolve_table_spec raises a directed SchemaGateError before any of them could fall through into the SCD2 branch against current_table=None. create_ops_tables is the ONE legitimate provisioning path for a control-class table (a single CREATE + SET PARTITIONED BY, no history/current pair, no counter_seed)."
   - "Row rules (Decision 210, rec-4158 plan B): write_ops, update_ops and file_ops evaluate the Class A contract's projected row rules (src/common/ducklake_write_rules.py over src/row_rules/rules.py, read from field_semantics.yaml) under the older-rows rule before any MERGE; a rejection is a terminal 422 row_rule that writes nothing and is never retried."
 amendment_log:
+  - date: "2026-10-15"
+    semantic_break: true
+    change_class: governance_note_add
+    summary: >-
+      PLAN-rule-declarations-and-writer-conformance (Decision 210 cl.4, rec-4158): the table allow-list invariant gains the dormant refusal -- write_ops, file_ops and update_ops answer 400 naming dormant for ops_priority_queue and ops_execution_plans; create_ops_tables still provisions them.
+    migration_story: >-
+      Payloads the verbs used to accept are now refused (Decision 118). No deployed caller writes either table: save_execution_plan is CD.17-frozen and the priority queue has no warehouse producer.
   - date: "2026-10-05"
     semantic_break: true
     change_class: field_add

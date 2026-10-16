@@ -21,8 +21,10 @@ import pytest
 import yaml
 
 import scripts.field_semantics_rule_projection as projection
+import scripts.schema_to_field_semantics as generator
 from scripts.contract_rules import CONTRACTS_DIR, DeclaredRule, declared_rules
 from scripts.schema_to_field_semantics import generate
+from src.row_rules.rules import RuleProjectionError
 
 _BASE_COLUMN_KEYS = frozenset({"role", "sql_type", "nullable", "description", "semantics"})
 
@@ -230,3 +232,22 @@ def test_rule_invariants_catch_undeclared_and_dropped_rules() -> None:
     for mutate in (undeclared_on_ruleless, undeclared_kind_on_rule_table, dropped_dispatch):
         with pytest.raises(AssertionError):
             _rule_invariants(_wrapped(mutate), plain)
+
+
+def test_sidecar_table_with_a_contract_fails_the_generator() -> None:
+    projection.refuse_contract_overlap(("ops_priority_queue", "ops_execution_plans", "ops_smoke_events"), CONTRACTS_DIR)
+    with patch.object(generator, "_DORMANT_TABLE_IDS", ("ops_priority_queue", "ops_decisions")):
+        with pytest.raises(ValueError, match=r"ops_decisions: a sidecar \(dormant or smoke\) table also has docs/contracts/"):
+            generate()
+
+
+def test_malformed_sidecar_rule_fails_the_generator(tmp_path) -> None:
+    sidecar = yaml.safe_load(generator._SIDECAR_PATH.read_text(encoding="utf-8"))
+    projection.validate_sidecar_rules(sidecar["dormant_ops_tables"])
+    projection.validate_sidecar_rules(sidecar["smoke_ops_tables"])
+    sidecar["dormant_ops_tables"]["ops_priority_queue"]["columns"]["rank"]["min_length"] = -1
+    broken = tmp_path / "sidecar.yaml"
+    broken.write_text(yaml.safe_dump(sidecar), encoding="utf-8")
+    with patch.object(generator, "_SIDECAR_PATH", broken):
+        with pytest.raises(RuleProjectionError, match="min_length must be a non-negative integer"):
+            generate()
