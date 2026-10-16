@@ -396,3 +396,82 @@ class TestObservationsPersonaBackend:
         assert "billing_shape" in cost_usd.derivation["inputs"]
         assert "fixed_non_rollover_allowance" in cost_usd.derivation["formula"]
         assert "cost_usd_reported" in cost_usd.derivation["formula"]
+
+
+class TestTokenClassesDisjoint:
+    def test_tokens_input_is_uncached_and_rollup_covers_four_classes(self) -> None:
+        obs = yaml.safe_load((_CONTRACTS_DIR / "telemetry_observations.yaml").read_text("utf-8"))["fields"]
+        agents_doc = yaml.safe_load((_CONTRACTS_DIR / "telemetry_agents.yaml").read_text("utf-8"))
+        agents = agents_doc["fields"]
+
+        assert _norm(obs["tokens_input"]["description"]) == _norm(
+            "Uncached input (prompt) tokens for this model_call: the prompt tokens the provider reports as neither a "
+            "cache read nor a cache write, stored once on its single point row."
+        )
+        semantics = _norm(obs["tokens_input"]["semantics"])
+        for sentence in (
+            (
+                "One of the four token classes stored on model_call (Decision 199, replacing the phase/step roll-up path). "
+                "bigint."
+            ),
+            (
+                "The four token classes are disjoint. tokens_input excludes tokens_cache_read and tokens_cache_creation, so a "
+                "model_call's total prompt is tokens_input + tokens_cache_read + tokens_cache_creation, derived at read and "
+                "never stored. An inclusive export such as OpenTelemetry's gen_ai.usage.input_tokens is that sum. Anthropic's "
+                "input_tokens already means this; a producer for a provider that reports an inclusive prompt total subtracts "
+                "the cached tokens it reports (rec-4028 owns the per-provider mapping)."
+            ),
+            (
+                "Coverage (Decision 181 cl.2): the claude_code producer's one-to-one mapping is enforced by "
+                "tests/turn_capture/test_observations.py; every other producer is an unenforced residual owned by rec-4028; "
+                "the writer cannot decide disjointness from one row (Decision 210 cl.1)."
+            ),
+        ):
+            assert _norm(sentence) in semantics
+        assert _norm(
+            "Prompt tokens served from the provider's prompt cache; disjoint from tokens_input and "
+            "tokens_cache_creation (see tokens_input). A provider with no cache-read class records 0."
+        ) in _norm(obs["tokens_cache_read"]["semantics"])
+        assert _norm(
+            "Prompt tokens written to the provider's prompt cache; disjoint from tokens_input and "
+            "tokens_cache_read (see tokens_input). A provider with no cache-write class records 0."
+        ) in _norm(obs["tokens_cache_creation"]["semantics"])
+
+        assert _norm(
+            "Uncached prompt tokens only (telemetry_observations.yaml tokens_input); disjoint from "
+            "tokens_cache_read_total and tokens_cache_creation_total."
+        ) in _norm(agents["tokens_input_total"]["semantics"])
+        assert _norm(
+            "tokens_input_total, tokens_output_total, tokens_cache_read_total and tokens_cache_creation_total"
+        ) in _norm(agents_doc["governance_notes"])
+
+        for fields, name in (
+            (obs, "tokens_input"),
+            (obs, "tokens_cache_read"),
+            (obs, "tokens_cache_creation"),
+            (agents, "tokens_input_total"),
+        ):
+            entries = [e for e in fields[name]["amendment_log"] if "PLAN-telemetry-cache-token-totals" in e["summary"]]
+            assert len(entries) == 1, name
+            assert entries[0]["semantic_break"] is True and entries[0]["change_class"] == "governance_note_add", name
+
+        for name, column, sibling in (
+            ("tokens_cache_read_total", "tokens_cache_read", "tokens_cache_creation_total"),
+            ("tokens_cache_creation_total", "tokens_cache_creation", "tokens_cache_read_total"),
+        ):
+            spec = agents[name]
+            derivation = spec["derivation"]
+            assert derivation["timing"] == "read" and derivation["realized"] is False
+            assert derivation["derived_by"] == "reader_verb:agent_run_token_rollup"
+            assert f"telemetry_observations.{column}" in derivation["inputs"]
+            assert f"sum({column})" in derivation["formula"] and "'model_call'" in derivation["formula"]
+            assert "tokens_input_total" in spec["semantics"] and sibling in spec["semantics"]
+            label = "cache-read" if column == "tokens_cache_read" else "cache-creation"
+            assert _norm(spec["description"]) == _norm(
+                f"Total {label} tokens across the agent run. DERIVED at read via the child session's own model_call "
+                "observations, same mechanism as tokens_input_total."
+            )
+            assert _norm("so the run's total prompt is the sum of the three.") in _norm(spec["semantics"])
+            entries = [e for e in spec["amendment_log"] if "PLAN-telemetry-cache-token-totals" in e["summary"]]
+            assert len(entries) == 1
+            assert entries[0]["change_class"] == "field_add" and entries[0]["semantic_break"] is False

@@ -206,13 +206,14 @@ fields:
     type: int
     iceberg_type: bigint
     nullable: true
-    description: Input/prompt tokens for this model_call, stored once on its single point row.
-    semantics: One of the four token classes stored on model_call (Decision 199, replacing the phase/step roll-up path). bigint.
+    description: "Uncached input (prompt) tokens for this model_call: the prompt tokens the provider reports as neither a cache read nor a cache write, stored once on its single point row."
+    semantics: "One of the four token classes stored on model_call (Decision 199, replacing the phase/step roll-up path). bigint. The four token classes are disjoint. tokens_input excludes tokens_cache_read and tokens_cache_creation, so a model_call's total prompt is tokens_input + tokens_cache_read + tokens_cache_creation, derived at read and never stored. An inclusive export such as OpenTelemetry's gen_ai.usage.input_tokens is that sum. Anthropic's input_tokens already means this; a producer for a provider that reports an inclusive prompt total subtracts the cached tokens it reports (rec-4028 owns the per-provider mapping). Coverage (Decision 181 cl.2): the claude_code producer's one-to-one mapping is enforced by tests/turn_capture/test_observations.py; every other producer is an unenforced residual owned by rec-4028; the writer cannot decide disjointness from one row (Decision 210 cl.1)."
     populated_by: the write boundary, at the model_call point event.
     dq_intent:
       not_null: {enforced: false}
       required_when: {event_kind: [point], observation_type: [model_call]}
     amendment_log:
+      - {date: "2026-10-16", semantic_break: true, change_class: governance_note_add, summary: "PLAN-telemetry-cache-token-totals (rec-4333): the four token classes are disjoint; tokens_input is uncached prompt tokens only and total prompt is the sum of the three, derived at read.", migration_story: "No stored row changes: the claude_code producer already copies Anthropic usage, whose input_tokens excludes cache reads and writes, and the only reader, agent_run_token_rollup, already sums tokens_input as stored, so no existing verb output value changes."}
       - {date: "2026-09-24", semantic_break: true, change_class: governance_note_add, summary: "PLAN-telemetry-event-journal-contracts (Decision 199): population narrowed from the retired phase/step token roll-up path to the model_call point row only; added dq_intent.required_when."}
   tokens_output:
     type: int
@@ -231,21 +232,25 @@ fields:
     iceberg_type: bigint
     nullable: true
     description: Cache-read tokens for this model_call.
-    semantics: "NEW token class (Decision 199) -- one row per provider response id needs all four classes to reconcile provider-reported cost. bigint."
+    semantics: "NEW token class (Decision 199) -- one row per provider response id needs all four classes to reconcile provider-reported cost. bigint. Prompt tokens served from the provider's prompt cache; disjoint from tokens_input and tokens_cache_creation (see tokens_input). A provider with no cache-read class records 0."
     populated_by: the write boundary, at the model_call point event.
     dq_intent:
       not_null: {enforced: false}
       required_when: {event_kind: [point], observation_type: [model_call]}
+    amendment_log:
+      - {date: "2026-10-16", semantic_break: true, change_class: governance_note_add, summary: "PLAN-telemetry-cache-token-totals (rec-4333): the four token classes are disjoint; tokens_input is uncached prompt tokens only and total prompt is the sum of the three, derived at read.", migration_story: "No stored row changes: the claude_code producer already copies Anthropic usage, whose input_tokens excludes cache reads and writes, and the only reader, agent_run_token_rollup, already sums tokens_input as stored, so no existing verb output value changes."}
   tokens_cache_creation:
     type: int
     iceberg_type: bigint
     nullable: true
     description: Cache-creation tokens for this model_call.
-    semantics: NEW token class (Decision 199), the fourth of the four classes stored once per model_call. bigint.
+    semantics: "NEW token class (Decision 199), the fourth of the four classes stored once per model_call. bigint. Prompt tokens written to the provider's prompt cache; disjoint from tokens_input and tokens_cache_read (see tokens_input). A provider with no cache-write class records 0."
     populated_by: the write boundary, at the model_call point event.
     dq_intent:
       not_null: {enforced: false}
       required_when: {event_kind: [point], observation_type: [model_call]}
+    amendment_log:
+      - {date: "2026-10-16", semantic_break: true, change_class: governance_note_add, summary: "PLAN-telemetry-cache-token-totals (rec-4333): the four token classes are disjoint; tokens_input is uncached prompt tokens only and total prompt is the sum of the three, derived at read.", migration_story: "No stored row changes: the claude_code producer already copies Anthropic usage, whose input_tokens excludes cache reads and writes, and the only reader, agent_run_token_rollup, already sums tokens_input as stored, so no existing verb output value changes."}
   cost_usd_reported:
     type: float
     iceberg_type: double
@@ -440,6 +445,7 @@ governance_notes: >-
   from a Class C baseline keeps `nullable: true` at the column axis with `not_null.enforced: true` at the DQ axis; the event projection emits NOT NULL from the DQ axis for such keys. Not provisioned in production (slice 2c). KNOWN GAPS: rec-4024 (writer/reader verbs), rec-4032 (the later
   materialised friction-labels form of the reader's rules file), rec-4031 (the cost_usd effective-dated price-mapping reader).
 amendment_log:
+  - {date: "2026-10-16", semantic_break: true, change_class: governance_note_add, summary: "PLAN-telemetry-cache-token-totals (rec-4333): the four token classes are declared disjoint (tokens_input is uncached prompt tokens only). Per-field changes are on their own fields' logs.", migration_story: "No stored row changes; see the field entries."}
   - {date: "2026-10-05", semantic_break: false, change_class: prose_improvement, summary: "PLAN-telemetry-lifecycle-friction-amendment (feedback-loop review C10, C11, C12): severity closed and required on process_event points, name required there with its grammar a declared residual (owner rec-4176), process_event parentage declared, cost_usd inputs effective-dated, friction pointers moved off the rec-4032 labels table to the reader's rules file, and the stale enforcement/provisioning premise reworded. Per-field changes are on their own fields' logs."}
   - {date: "2026-10-04", semantic_break: false, change_class: field_add, summary: "PLAN-telemetry-write-conformance (slice 2a-1): six typed columns -- tool_call close output_capture/output_bytes/output_sha256/output_lines and model_call reasoning_visibility/reasoning_tokens -- with their required_when, pattern, at_most and null_or_zero_when rules (operator-approved 2026-09-29)."}
   - {date: "2026-09-26", semantic_break: false, change_class: prose_improvement, summary: "PLAN-telemetry-kernel-identity-append (rec-4073, rec-4065): governance.partition_by respelled to the role-prefixed form of the calendar-day triple 'history=year(session_started_at), month(session_started_at), day(session_started_at)' (the shared ops grammar; DuckLake's bare day() is day-of-month); the generator projection delegates to parse_partition_by. No runtime migration: no live telemetry writer."}

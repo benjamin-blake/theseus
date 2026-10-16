@@ -190,10 +190,13 @@ PROCESS_EVENT_ROLLUP_SQL = compose(
 AGENT_RUN_TOKEN_ROLLUP_SQL = compose(
     (SESSIONS, OBSERVATIONS),
     _IDS + ", cnt AS (SELECT session_id, sum(tokens_input) AS tokens_input_total, sum(tokens_output) AS tokens_output_total, "
+    "sum(tokens_cache_read) AS tokens_cache_read_total, sum(tokens_cache_creation) AS tokens_cache_creation_total, "
     "count(*) AS model_call_count, "
     "count(*) FILTER (WHERE tokens_input IS NULL OR tokens_output IS NULL) AS usage_missing_count "
     "FROM o WHERE observation_type = 'model_call' GROUP BY session_id) SELECT ids.session_id AS session_id, "
     "cnt.tokens_input_total AS tokens_input_total, cnt.tokens_output_total AS tokens_output_total, "
+    "cnt.tokens_cache_read_total AS tokens_cache_read_total, "
+    "cnt.tokens_cache_creation_total AS tokens_cache_creation_total, "
     "coalesce(cnt.model_call_count, 0) AS model_call_count, coalesce(cnt.usage_missing_count, 0) AS usage_missing_count, "
     + STAMPS_SELECT
     + _ROLLUP_TAIL

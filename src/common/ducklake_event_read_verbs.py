@@ -114,8 +114,8 @@ EVENT_READS: dict[str, EventRead] = {
             params=("session_id",),
             binding="session",
             description=_derived_rows_note(
-                "Input and output token totals over one child session's model calls, one count per call after the entity "
-                "collapse."
+                "Uncached input, output, cache-read and cache-creation token totals over one child session's model calls, "
+                "one count per call after the entity collapse."
             ),
         ),
         EventRead(
