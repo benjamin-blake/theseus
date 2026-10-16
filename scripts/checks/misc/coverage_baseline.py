@@ -40,6 +40,10 @@ Linux" precedent.
 
 The child selects tests with `-m "not integration"`, the same expression the full-tier unit-test command uses, so a
 live-boundary test never runs inside a coverage measurement (rec-4273).
+
+Every per-file coverage child runs on coverage.py's sysmon core (rec-4365): PEP 669 monitoring
+disables line events for untraced code, where the C tracer still pays a per-event callback --
+the same choice and rationale as scripts/checks/_pytest_diff.py:68-82.
 """
 
 from __future__ import annotations
@@ -55,8 +59,16 @@ from scripts.checks import _common, _marker_guard, _process_group, registry
 
 _BASELINE_REL_PATH = "config/coverage_baseline.yaml"
 
-# Not raised to fit a slow target: rec-3208 owns that slowness, and a timeout is a recorded failure.
+# Not raised to fit a slow target: rec-4370 owns runtime drift from causes other than the YAML
+# parse cost rec-4365 fixed, and a timeout is a recorded failure.
 COVERAGE_TIMEOUT_SECONDS = 300
+
+# PEP 669 monitoring core (rec-4365): disables per-line callbacks for untraced code, where the
+# default C tracer still pays one per event. Scopes the switch to the coverage child alone via
+# the environment variable below -- never a [run] core setting in pyproject.toml, which would
+# also move CI's whole-tree unit-test --cov run. coverage.py falls back to its default core with
+# a warning, never an error, if sysmon is unusable.
+COVERAGE_CORE = "sysmon"
 
 
 def load_baseline(path=None) -> dict[str, float]:
@@ -117,6 +129,7 @@ def measure_and_check(source_files: list, *, root, map_source_to_test, is_empty_
 
         child_env = os.environ.copy()
         child_env["_COVERAGE_SUBPROCESS"] = "1"
+        child_env["COVERAGE_CORE"] = COVERAGE_CORE
 
         with subprocess_module.Popen(
             [

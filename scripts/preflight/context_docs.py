@@ -415,7 +415,7 @@ def _check_endstate_drift() -> dict:
     Never raises, never changes the preflight exit code.
     """
     try:
-        import yaml  # noqa: PLC0415
+        from scripts.contract_rules import parse_yaml  # noqa: PLC0415
 
         context_text = (_common.ROOT / "docs" / "PROJECT_CONTEXT.md").read_text(encoding="utf-8")
         stamp_match = re.search(r"roadmap_tier_id_set sha256:\s*([a-f0-9]{64})", context_text)
@@ -433,7 +433,7 @@ def _check_endstate_drift() -> dict:
             }
         stamped_hash = stamp_match.group(1)
 
-        roadmap = yaml.safe_load((_common.ROOT / "docs" / "ROADMAP-PLATFORM.yaml").read_text(encoding="utf-8"))
+        roadmap = parse_yaml((_common.ROOT / "docs" / "ROADMAP-PLATFORM.yaml").read_text(encoding="utf-8"))
         _items = roadmap.get("tier_items", [])
         current_ids = sorted({str(i["id"]) for i in _items if isinstance(i, dict) and "id" in i})
         current_hash = hashlib.sha256("\n".join(current_ids).encode()).hexdigest()
@@ -464,7 +464,7 @@ def _check_endstate_drift() -> dict:
                     cwd=str(_common.ROOT),
                 )
                 if result.returncode == 0:
-                    old_roadmap = yaml.safe_load(result.stdout) or {}
+                    old_roadmap = parse_yaml(result.stdout) or {}
                     _old_items = old_roadmap.get("tier_items", [])
                     old_ids = sorted({str(i["id"]) for i in _old_items if isinstance(i, dict) and "id" in i})
                     if hashlib.sha256("\n".join(old_ids).encode()).hexdigest() == stamped_hash:

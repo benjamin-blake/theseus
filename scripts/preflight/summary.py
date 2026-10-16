@@ -43,6 +43,21 @@ def print_convergence_sensor_liveness_alert(alert: dict | None) -> None:
         )
 
 
+def print_ci_rca_liveness_alert(alert: dict | None) -> None:
+    """Print the ci-rca-liveness alert (see ci_rca_signals._check_ci_rca_liveness).
+
+    Fires when main CI has been red for over 30 minutes with no matching ci_rca rec filed --
+    the counterpart to print_convergence_sensor_liveness_alert, but for ci-rca.yml's own
+    liveness rather than convergence-health.yml's."""
+    if alert is not None:
+        print(
+            f"CI-RCA liveness alert: main CI run {alert.get('run_url', '')} has been red for "
+            f"{alert.get('elapsed_minutes', '')} minutes with no ci_rca rec filed -- "
+            "dispatch ci-rca.yml or file one manually.",
+            file=sys.stderr,
+        )
+
+
 def print_budget_bypass_alert(alert: dict | None) -> None:
     """Print the fast-tier budget-bypass alert (see alerts._check_budget_bypass_alert)."""
     if alert is not None:

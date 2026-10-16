@@ -406,6 +406,7 @@ def main(roadmap_detail: str = "slim") -> int:
     report["followon_recs"] = recs_cache._derive_followon_recs(recs_rows_cache, landed=landed_followons)
     report["open_critical_recs"] = recs_cache._derive_open_critical_recs(recs_rows_cache)
     report["ci_rca_liveness_alert"] = ci_rca_liveness_alert
+    summary.print_ci_rca_liveness_alert(ci_rca_liveness_alert)
     report["convergence_sensor_liveness_alert"] = convergence_sensor_liveness_alert
     summary.print_convergence_sensor_liveness_alert(convergence_sensor_liveness_alert)
     report["convergence_rca_gap_alert"] = convergence_rca_gap_alert
