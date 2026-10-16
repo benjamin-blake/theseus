@@ -46,6 +46,7 @@ def _ops_yaml_tests(doc: dict[str, Any]) -> tuple[dict[str, list[tuple[str, dict
     malformed: list[str] = []
     for column, spec in columns.items():
         for test in (spec or {}).get("tests") or []:
+            params: Any
             if isinstance(test, str):
                 name, params = test, {}
             elif isinstance(test, dict) and len(test) == 1:
