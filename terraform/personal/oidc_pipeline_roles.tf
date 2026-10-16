@@ -151,6 +151,16 @@ data "aws_iam_policy_document" "github_ci_planner" {
   }
 
   statement {
+    # rec-4335: the PR-time terraform/github plan (terraform-github-plan.yml) reads that root's
+    # state. GetObject on the ONE state object only -- no PutObject (the plan runs -lock=false, so
+    # no .tflock write) and no other key under tfstate/github/.
+    sid       = "TfstateGithubRead"
+    effect    = "Allow"
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.data_lake.arn}/tfstate/github/terraform.tfstate"]
+  }
+
+  statement {
     # From github_ci_drift: WRITER-only invoke (Decision 84 closed reader/writer boundary) --
     # files the drift rec via the ops portal. The reader is explicitly excluded.
     sid     = "DuckLakeWriterInvoke"
