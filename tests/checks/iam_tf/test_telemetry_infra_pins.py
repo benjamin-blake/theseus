@@ -499,6 +499,8 @@ def test_reader_blob_guard_rejects_a_wider_grant() -> None:
     bad_stmts = [
         {**_READER_BLOB, "Action": ["s3:GetObject", "s3:PutObject"]},
         {**_READER_BLOB, "Action": ["s3:DeleteObject"]},
+        {**_READER_BLOB, "Action": ["s3:*"]},
+        {"Sid": "TelemetryBlobRead", "NotAction": ["s3:PutObject"], "Resource": _READER_BLOB["Resource"]},
         {**_READER_BLOB, "Resource": [f"{arn}/*"]},
         {**_READER_BLOB, "Resource": [f"{arn}/telemetry-blobs/another_catalog/*"]},
         {**_READER_BLOB, "Resource": [f"{arn}/telemetry-blobs/*"]},
