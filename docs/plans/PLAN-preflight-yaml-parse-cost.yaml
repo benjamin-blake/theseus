@@ -118,7 +118,7 @@ scope:
     older roadmap, _check_endstate_drift reaches both parse sites; both use libyaml and none is pure-Python. The
     existing test_stamp_ref_names_commit_hashing_to_the_stamped_fingerprint parses the 747 KB roadmap with
     yaml.safe_load inside the same coverage child (line 391); it switches to the same libyaml loader, assertion
-    unchanged.
+    unchanged, and the now-unused module-level import yaml goes (ruff F401).
 - file: tests/session/preflight/test_yaml_parse_budget.py
   action: Create
   purpose: >-
@@ -335,18 +335,21 @@ verification_plan:
     scripts/sync/recommendations.py scripts/checks/verification/validate_handoff_full_tier.py
     scripts/checks/roadmap/validate_candidate_decision_ratification.py; do t=$(bin/venv-python -c "import sys; from
     pathlib import Path; import scripts.test_coverage_checker as m; print(m.map_source_to_test(Path(sys.argv[1]).resolve()).relative_to(Path.cwd()))"
-    "$s") || exit 1; for k in ctrace sysmon; do rm -f /tmp/par-$k.json; _COVERAGE_SUBPROCESS=1 COVERAGE_CORE=$k
-    bin/venv-python -m pytest "$t" -m "not integration" --cov="$(dirname "$s")" --cov-report=json:/tmp/par-$k.json
-    --cov-fail-under=0 -q --no-header --randomly-seed=12345 > /tmp/par-$k.log 2>&1; test -s /tmp/par-$k.json || exit 1;
-    ! grep -q 'use core=sysmon' /tmp/par-$k.log || exit 1; done;
+    "$s") || exit 1; for k in ctrace sysmon; do rm -f /tmp/par-$k.json /tmp/par-$k.dbg; _COVERAGE_SUBPROCESS=1
+    COVERAGE_CORE=$k COVERAGE_DEBUG=sys COVERAGE_DEBUG_FILE=/tmp/par-$k.dbg bin/venv-python -m pytest "$t" -m "not
+    integration" --cov="$(dirname "$s")" --cov-report=json:/tmp/par-$k.json --cov-fail-under=0 -q --no-header
+    --randomly-seed=12345 > /tmp/par-$k.log 2>&1; test -s /tmp/par-$k.json || exit 1; done; grep -q 'core: CTracer'
+    /tmp/par-ctrace.dbg && grep -q 'core: SysMonitor' /tmp/par-sysmon.dbg || exit 1;
     bin/venv-python -c "import json, sys; a, b = (json.load(open(f'/tmp/par-{k}.json'))['files'] for k in ('ctrace',
     'sysmon')); keys = ('executed_lines', 'missing_lines', 'excluded_lines'); diff = sorted(f for f in a.keys() |
     b.keys() if any(a.get(f, {}).get(x) != b.get(f, {}).get(x) for x in keys)); print(sys.argv[1], f'files={len(a)}',
     f'diff={diff}'); assert not diff, diff" "$s" || exit 1; done && echo PARITY_OK
   expected: One line per source with diff=[] and its file count, then PARITY_OK.
   fix_if: >-
-    No JSON for a leg: the child produced no measurement; read /tmp/par-<core>.log. A "Can't use core=sysmon" warning:
-    coverage fell back to its default core, so the sysmon leg proved nothing; stop for the operator. A differing file:
+    No JSON for a leg: the child produced no measurement; read /tmp/par-<core>.log. A leg's coverage debug file
+    (/tmp/par-<core>.dbg) lacks its named core ("core: SysMonitor" or "core: CTracer"; the two "core: -none-" lines
+    do not count): coverage fell back silently -- pyproject's --disable-warnings swallows the fallback warning -- so
+    that leg proved nothing; stop for the operator. A differing file:
     rerun that child's two legs to rule out a nondeterministic or filesystem-dependent test path (sysmon-parity.md
     records one), then report the file and lines; a reproducible difference means sysmon is not a drop-in for that
     child and the core switch stops here for the operator. Never drop a source from the list.
@@ -383,16 +386,20 @@ verification_plan:
     300s cap (no override), reporting wall time. CC-web runs this package at about CI's speed (CI was killed at 300s
     about 58% through; locally the unfixed package took 524s). Run it in the background.
   command: >-
-    bin/venv-python -c "import subprocess, time; from pathlib import Path; import scripts.test_coverage_checker as t; from
-    scripts.checks.misc import coverage_baseline as cb; assert cb.COVERAGE_TIMEOUT_SECONDS == 300; p =
-    Path('scripts/session/preflight.py').resolve(); t0 = time.time(); pcts, errs = cb.measure_and_check([p],
+    bin/venv-python -c "import os, subprocess, time; from pathlib import Path; import scripts.test_coverage_checker as t;
+    from scripts.checks.misc import coverage_baseline as cb; assert cb.COVERAGE_TIMEOUT_SECONDS == 300; dbg =
+    Path('/tmp/pf-cov.dbg'); dbg.unlink(missing_ok=True); os.environ.update(COVERAGE_DEBUG='sys',
+    COVERAGE_DEBUG_FILE=str(dbg)); p = Path('scripts/session/preflight.py').resolve(); t0 = time.time(); pcts, errs =
+    cb.measure_and_check([p],
     root=Path.cwd(), map_source_to_test=t.map_source_to_test, is_empty_dir=t._is_empty_directory_target,
     subprocess_module=subprocess); w = time.time() - t0; print(f'wall={w:.0f}s cap=300s'); v = pcts.get(str(p)); assert
     isinstance(v, float), f'no measurement: {pcts} {errs}'; assert v >= 100.0 and not errs, (v, errs); assert w <=
-    150, f'{w:.0f}s leaves under 2x headroom against the 300s cap'; print('PREFLIGHT_COVERAGE_OK')"
+    150, f'{w:.0f}s leaves under 2x headroom against the 300s cap'; assert 'core: SysMonitor' in dbg.read_text(),
+    'the real child did not engage sysmon'; print('PREFLIGHT_COVERAGE_OK')"
   expected: >-
     Exit 0, a wall=Ns line with N at most 150, half the cap (plan-time prototype 92s on ctrace, 66s on sysmon), a real
-    measurement (a float, never None) at 100.0, and PREFLIGHT_COVERAGE_OK.
+    measurement (a float, never None) at 100.0, the real measure_and_check child running on sysmon (its coverage debug
+    file names core: SysMonitor), and PREFLIGHT_COVERAGE_OK.
   fix_if: >-
     A timeout: re-run step 4, whose failure message lists the remaining pure-Python call sites and bytes. No
     measurement: the child produced no .coverage.json; read its output tail. Below 100: a test change removed a covered
@@ -490,7 +497,9 @@ verification_plan:
     Still open: confirm the squash body carries 'Resolves: rec-4365, rec-3208, rec-3638' in a Key: value block, then read
     the trailer-closure job's verdict artifact. ClosureArtifactRequired despite the pre-stamp: confirm the verdict says
     holds, then close via ci-rca-lifecycle closure_dependency.manual_route with the same --closure-artifact and
-    --closure-fix-sha <merge sha>. An AcceptanceVerdictRefused is never closed manually.
+    --closure-fix-sha <merge sha>. An AcceptanceVerdictRefused, or a fails / unmeasurable / TIMEOUT /
+    ISOLATION_UNAVAILABLE verdict, is never closed manually: stop, quote the verdict artifact to the operator, and file
+    an RCA rec through the portal (Decision 55); rec-4365's hard block stands until that is resolved.
 - step: 14
   phase: post-deploy
   action: The planning hard block is cleared -- ci_rca_open no longer returns rec-4365.
@@ -501,7 +510,7 @@ verification_plan:
   expected: Prints the open ci_rca ids (fewer than five, not rec-4365), exit 0.
   fix_if: >-
     'LIMIT 5 reached': step 13's per-rec status is the proof and the extra recs go to /orient triage. rec-4365 still
-    open: return to step 13's fix_if.
+    open: follow step 13's fix_if once; if its verdict was refused, stop there as it says rather than looping.
 test_obligations:
 - source: scripts/contracts.py
   behavior: Each contract file is parsed once, with the libyaml loader, by every loader entry point.
@@ -607,7 +616,7 @@ context:
   Decision-scout FLAGS_FOUND, two passes (the second on the sysmon delta), all folded below. CITE: 55, 73, 128, 159,
   163, 132, 176, 189, 186, 201, 66, 182. Decisions triaged: 171 of 171. Roadmap items intersected: 5; CONFLICT: 0;
   RELATED: 5
-- "gates: decision-scout=FLAGS_FOUND (2 passes); plan-critique=r1 REVISE (F1-F7 fixed); r2 REVISE (F1-F5, F7-F9 fixed, F6 declined with reason); r3 REVISE (F1-F10 fixed, F11-F12 declared); r4 confirming REVISE (F1-F3 and A1-A5 fixed); escalated to the operator"
+- "gates: decision-scout=FLAGS_FOUND (2 passes); plan-critique=r1 REVISE (F1-F7 fixed); r2 REVISE (F1-F5, F7-F9 fixed, F6 declined with reason); r3 REVISE (F1-F10 fixed, F11-F12 declared); r4 confirming REVISE (F1-F3 and A1-A5 fixed); operator chose one more round; r5 REVISE (F1 and A1-A4 fixed); r6 PENDING"
 - "Related-Work check, condition 1 (same file): scope carries scripts/session/preflight.py, rec-4365's file."
 - >-
   Evidence and plan-time measurements: /mnt/project-files/rec-4365/ (ADVICE.md, scout-report.md, sysmon-parity.md,
@@ -663,7 +672,7 @@ execution_steps:
 - >-
   scripts/checks/misc/coverage_baseline.py and tests/checks/misc/test_coverage_baseline.py per their scope rows; confirm
   100% line coverage of coverage_baseline.py with bin/venv-python -m pytest tests/checks/misc/test_coverage_baseline.py
-  --cov=scripts/checks/misc --cov-report=term-missing; then the registry shard (graduated_at = implement date).
+  --cov=scripts/checks/misc --cov-report=term-missing; then all six registry shards (graduated_at = implement date).
 - Run bin/venv-python -m pytest tests/session/preflight -n 4 -q and confirm the whole package is green.
 - >-
   rec-4365 and rec-3208, one status-preserving portal call each after get_rec_write_guidance(): bin/venv-python -m
