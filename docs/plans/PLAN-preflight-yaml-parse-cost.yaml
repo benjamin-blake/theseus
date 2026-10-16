@@ -4,9 +4,9 @@ handoff_policy:
   timeout_disposition: blocked
 slug: preflight-yaml-parse-cost
 intent: >-
-  Clear the Critical CI-RCA hard block rec-4365 at root cause. Every preflight main() call parses about 4.85 MB of repo
-  YAML (docs/ROADMAP-PLATFORM.yaml four times, every docs/contracts/*.yaml with each ritual contract parsed twice) through
-  PyYAML's pure-Python SafeLoader. About 30 main()-level tests in tests/session/preflight each pay that, coverage tracing
+  Clear the Critical CI-RCA hard block rec-4365 at root cause. Under the package's test fixture, every preflight main()
+  call parses about 4.85 MB of repo YAML (docs/ROADMAP-PLATFORM.yaml four times, every docs/contracts/*.yaml with each
+  ritual contract parsed twice) through PyYAML's pure-Python SafeLoader. About 30 main()-level tests in tests/session/preflight each pay that, coverage tracing
   roughly triples it, and the corpus grows with every merge, so the preflight.py coverage child crossed its 300s cap on
   the #1496 merge. The hot loaders move to the libyaml C loader and contracts are parsed once; a deterministic guard
   bounds the pure-Python YAML one main() call may parse; and every per-file coverage child runs on coverage.py's sysmon
@@ -63,7 +63,9 @@ scope:
     rationale as scripts/checks/_pytest_diff.py:68-82, cited in one comment line, never restated). coverage.py falls back
     to its default core with a warning, never an error, if sysmon is unusable. The environment variable, not a
     [run] core setting in pyproject.toml, scopes the switch to the coverage child alone (pyproject would also move CI's
-    unit-test --cov=src run); coverage 7.15 reads COVERAGE_CORE in config.py:714-718. The comment above
+    unit-test --cov=src run); coverage 7.15 reads COVERAGE_CORE in config.py:714-718. Tests inside the child see the
+    variable, which overrides a generated config's core: tests/validate/test_pytest_diff_coverage.py's sysmon assertions
+    agree with it (they fail under COVERAGE_CORE=ctrace, sysmon-parity.md). The comment above
     COVERAGE_TIMEOUT_SECONDS names rec-4370 instead of rec-3208 as the owner of runtime drift (rec-3208 closes here).
     COVERAGE_TIMEOUT_SECONDS stays 300; the argv, the Popen seam and its kwargs are unchanged. The module docstring gains
     one sentence naming the core and rec-4365. Keeps 100% line coverage from its mapped test file.
@@ -79,8 +81,9 @@ scope:
   purpose: >-
     Shared spy (tests/fixtures is exempt from the cross-test-import guard, Decision 131). install(monkeypatch) wraps
     yaml.SafeLoader.__init__ and yaml.CSafeLoader.__init__ and returns a log of (loader kind, stream size, calling
-    scripts/ file:line) per construction; a str or bytes stream counts its length, a file object its fstat size.
-    pure_bytes and pure_sites summarise the pure-Python entries.
+    scripts/ path relative to scripts/, e.g. contracts.py or preflight/context_docs.py, plus line) per construction; a
+    str or bytes stream counts its length, a file object its fstat size. pure_bytes, pure_sites and libyaml_sites
+    summarise the log.
 - file: tests/test_contracts.py
   action: Modify
   purpose: >-
@@ -101,18 +104,28 @@ scope:
   purpose: >-
     New class TestEndstateDriftParser, node test_roadmap_parses_use_libyaml: with _common.ROOT pointed at a tmp tree
     whose PROJECT_CONTEXT.md stamp mismatches the tmp roadmap and names a ref, and subprocess.run stubbed to return an
-    older roadmap, _check_endstate_drift reaches both parse sites; both use libyaml and none is pure-Python.
+    older roadmap, _check_endstate_drift reaches both parse sites; both use libyaml and none is pure-Python. The
+    existing test_stamp_ref_names_commit_hashing_to_the_stamped_fingerprint parses the 747 KB roadmap with
+    yaml.safe_load inside the same coverage child (line 391); it switches to the same libyaml loader, assertion
+    unchanged.
 - file: tests/session/preflight/test_yaml_parse_budget.py
   action: Create
   purpose: >-
     The regression guard and rec-4365's closure-artifact node. TestYamlParseBudget::
-    test_one_main_call_keeps_pure_python_yaml_under_budget asserts yaml.__with_libyaml__, installs the spy, runs one
-    preflight main() under the package fixture (venv, git status and terraform pending patched as test_main_branches
-    does; compute_state_dict patched to {} because tests memoise it per process, rec-4006), then asserts at least one
-    libyaml parse happened and the pure-Python bytes are at most PURE_PYTHON_YAML_BUDGET = 512 * 1024, the failure
-    message listing each pure-Python call site and its bytes. Plan time: 4.85 MB before, 143 KB after; any single
-    pure-Python parse of the roadmap (732 KB) or of the contracts corpus (1.28 MB) exceeds the bound. Deterministic,
-    no wall clock (Decision 182's rationale).
+    test_one_main_call_keeps_pure_python_yaml_under_budget asserts yaml.__with_libyaml__, installs the spy, and runs one
+    preflight main() under the package fixture. It patches exactly: scripts.preflight.env_git.check_venv (True),
+    scripts.preflight.env_git.get_git_status, scripts.preflight.aws_infra.check_terraform_pending (False),
+    scripts.preflight.aws_infra.check_credentials ("unavailable"), scripts.preflight.ci_rca_signals._check_ci_rca_liveness
+    and ._check_convergence_sensor_liveness (None; both shell out to gh), session_preflight.platform_roadmap.
+    compute_state_dict ({}; tests memoise it per process, rec-4006) and session_preflight.PREFLIGHT_REPORT (tmp_path;
+    the trailer probe mounts the repo read-only). It must NEVER patch _scan_provisional_contracts, _check_endstate_drift,
+    decision_conditions.preflight_bucket, check_data_quality_coverage or read_context_files: those are the measured
+    loaders. It asserts the libyaml call-site set includes scripts/contracts.py and scripts/preflight/context_docs.py
+    (both unconditional on main()'s path), then that the pure-Python bytes are at most PURE_PYTHON_YAML_BUDGET = 512 *
+    1024, the failure message listing each pure-Python call site and its bytes. Plan-time prototype with this seam list:
+    4.85 MB before (fails), 143 KB after, libyaml sites contracts.py, platform_roadmap_state.py and context_docs.py. Any
+    single pure-Python parse of the roadmap (732 KB) or of the contracts corpus (1.28 MB) exceeds the bound.
+    Deterministic, no wall clock (Decision 182's rationale).
 - file: tests/session/preflight/test_main_branches.py
   action: Modify
   purpose: >-
@@ -124,8 +137,8 @@ scope:
   purpose: >-
     Registry shard for graduated VP step 4 and rec-4365's Decision 186 closure artifact. check_id
     preflight-yaml-parse-budget (filename equals check_id, Decision 176), primitive_slot command_exit_zero,
-    check_spec.command step 4's pytest node, guard_target tests/session/preflight/test_yaml_parse_budget.py, guard_symbol
-    TestYamlParseBudget, plan_slug preflight-yaml-parse-cost, graduated_by implement-agent.
+    check_spec.command step 4's pytest node, guard_target scripts/session/preflight.py, guard_symbol main (the code the
+    guard defends), plan_slug preflight-yaml-parse-cost, graduated_by implement-agent.
 bundled_recommendations:
 - rec-4365
 - rec-3208
@@ -137,7 +150,7 @@ infrastructure_dependencies: []
 acceptance_criteria:
 - >-
   One preflight main() call under the package fixture feeds at most 512 KiB to PyYAML's pure-Python loader (4.85 MB at
-  plan time), proven by the graduated guard node.
+  plan time) and parses the contracts and endstate-drift YAML with libyaml, proven by the graduated guard node.
 - >-
   load_all_contracts parses each contract file once; load_contract, load_contract_meta, platform_roadmap_state.load and
   both _check_endstate_drift parse sites use the libyaml loader; CSafeLoader and SafeLoader carry equal constructors
@@ -151,8 +164,8 @@ acceptance_criteria:
 - >-
   rec-3638: a non-null ci_rca_liveness_alert prints one stderr line at session open.
 - >-
-  Before merge, rec-4365's and rec-3208's stored acceptance is VP step 9's decidable node list and rec-4365 carries the
-  pre-stamped closure_artifact shard:preflight-yaml-parse-budget. After merge the Resolves trailer closes rec-4365,
+  Before merge, rec-4365's and rec-3208's stored acceptance is each rec's own VP step 9 node list, decidable, and
+  rec-4365 carries the pre-stamped closure_artifact shard:preflight-yaml-parse-budget. After merge the Resolves trailer closes rec-4365,
   rec-3208 and rec-3638.
 - >-
   The post-merge main-validate run on the merge commit is green and its coverage step maps scripts/session/preflight.py;
@@ -169,8 +182,9 @@ verification_plan:
   hermetic: true
   graduation: waive
   graduation_waiver_reason: >-
-    The class runs in every tier's affected set whenever scripts/contracts.py changes, and step 4's graduated guard
-    already fails if any contract parse returns to the pure-Python loader; a second registry row would duplicate both.
+    The class runs in every tier's affected set whenever scripts/contracts.py changes. Step 4's graduated guard covers
+    only load_all_contracts (the one loader on main()'s path); this class is the sole guard for load_contract,
+    load_contract_meta and parse-once, and it is a standing pytest node, so a registry row would only duplicate it.
   expected_literals:
   - 3 passed
 - step: 2
@@ -197,13 +211,16 @@ verification_plan:
   hermetic: true
   graduation: waive
   graduation_waiver_reason: >-
-    Step 4's graduated guard fails if either parse returns to the pure-Python loader (1.45 MB together per main());
-    this node is the precise unit proof, run whenever the package's tests are selected.
+    Step 4's graduated guard covers the current-roadmap parse on every main(), but the git-show parse only while the
+    PROJECT_CONTEXT stamp is stale (it is today). This node drives both sites deterministically and runs whenever the
+    package's tests are selected, so a registry row would only duplicate it.
   expected_literals:
   - 1 passed
 - step: 4
   phase: pre-deploy
-  action: One main() call stays under the pure-Python YAML budget (the regression guard and closure artifact).
+  action: >-
+    One main() call stays under the pure-Python YAML budget and parses contracts and endstate drift with libyaml (the
+    regression guard and closure artifact), with exactly the seam list in its scope row.
   command: >-
     bin/venv-python -m pytest
     tests/session/preflight/test_yaml_parse_budget.py::TestYamlParseBudget::test_one_main_call_keeps_pure_python_yaml_under_budget
@@ -279,14 +296,20 @@ verification_plan:
     300s cap (no override), reporting wall time. CC-web runs this package at about CI's speed (CI was killed at 300s
     about 58% through; locally the unfixed package took 524s). Run it in the background.
   command: >-
-    bin/venv-python -c "import time; from pathlib import Path; import scripts.test_coverage_checker as t; from
-    scripts.checks.misc import coverage_baseline as cb; assert cb.COVERAGE_TIMEOUT_SECONDS == 300; t0 = time.time(); e =
-    t.check_per_file_coverage([Path('scripts/session/preflight.py').resolve()]); print(f'wall={time.time() - t0:.0f}s
-    cap=300s'); assert e == [], e; print('PREFLIGHT_COVERAGE_OK')"
-  expected: Exit 0, a wall=Ns line with N well under 300 (plan-time prototype 92s), and PREFLIGHT_COVERAGE_OK.
+    bin/venv-python -c "import subprocess, time; from pathlib import Path; import scripts.test_coverage_checker as t; from
+    scripts.checks.misc import coverage_baseline as cb; assert cb.COVERAGE_TIMEOUT_SECONDS == 300; p =
+    Path('scripts/session/preflight.py').resolve(); t0 = time.time(); pcts, errs = cb.measure_and_check([p],
+    root=Path.cwd(), map_source_to_test=t.map_source_to_test, is_empty_dir=t._is_empty_directory_target,
+    subprocess_module=subprocess); print(f'wall={time.time() - t0:.0f}s cap=300s'); v = pcts.get(str(p)); assert
+    isinstance(v, float), f'no measurement: {pcts} {errs}'; assert v >= 100.0 and not errs, (v, errs);
+    print('PREFLIGHT_COVERAGE_OK')"
+  expected: >-
+    Exit 0, a wall=Ns line with N well under 300 (plan-time prototype 92s on ctrace, 66s on sysmon), a real measurement
+    (a float, never None) at 100.0, and PREFLIGHT_COVERAGE_OK.
   fix_if: >-
-    A timeout: re-run step 4 and the probe in tests/fixtures/yaml_parse_spy.py to find the remaining cost. A coverage
-    error: a test change removed a covered preflight.py path. Never raise COVERAGE_TIMEOUT_SECONDS.
+    A timeout: re-run step 4, whose failure message lists the remaining pure-Python call sites and bytes. No
+    measurement: the child produced no .coverage.json; read its output tail. Below 100: a test change removed a covered
+    preflight.py path. Never raise COVERAGE_TIMEOUT_SECONDS.
   hermetic: false
   graduation: waive
   graduation_waiver_reason: >-
@@ -295,19 +318,23 @@ verification_plan:
 - step: 9
   phase: pre-deploy
   action: >-
-    rec-4365's and rec-3208's amended acceptance and rec-4365's pre-stamped closure artifact are stored, the acceptance
-    lints decidable, and it passes inside the trailer probe's isolation (scripts.backlog_health.probe.run_one).
+    rec-4365's and rec-3208's amended acceptances (one node list per rec, each exercising that rec's own fix) and
+    rec-4365's pre-stamped closure artifact are stored, each acceptance lints decidable, and each passes inside the
+    trailer probe's isolation (scripts.backlog_health.probe.run_one).
   command: >-
     bin/venv-python -c "import json; from pathlib import Path; from scripts.backlog_health import probe; from
     scripts.executor.acceptance_lint import lint_acceptance_command as lint; from src.common.ducklake_reader_client import
-    fetch_recs_by_ids, make_reader; rows, _ = fetch_recs_by_ids(make_reader(), ['rec-4365', 'rec-3208']); assert
-    len(rows) == 2, rows; want = 'bin/venv-python -m pytest
-    tests/session/preflight/test_yaml_parse_budget.py::TestYamlParseBudget::test_one_main_call_keeps_pure_python_yaml_under_budget
-    tests/test_contracts.py::TestLibyamlLoader::test_load_all_contracts_parses_each_file_once_with_libyaml -q'; assert
-    all(r['acceptance'] == want for r in rows), rows; assert lint(want, require_decidable=True)[0], want; by_id = {r['id']:
-    r for r in rows}; assert json.loads(by_id['rec-4365']['context_v2_json']).get('closure_artifact') ==
-    'shard:preflight-yaml-parse-budget', by_id['rec-4365']; v = probe.run_one(want, repo_root=Path('.').resolve()); assert
-    v == probe.PASS, v; print('ACCEPTANCE_HOLDS')"
+    fetch_recs_by_ids, make_reader; rows, _ = fetch_recs_by_ids(make_reader(), ['rec-4365', 'rec-3208']); by_id =
+    {r['id']: r for r in rows}; assert set(by_id) == {'rec-4365', 'rec-3208'}, rows; budget =
+    'tests/session/preflight/test_yaml_parse_budget.py::TestYamlParseBudget::test_one_main_call_keeps_pure_python_yaml_under_budget';
+    want = {'rec-4365': f'bin/venv-python -m pytest {budget}
+    tests/test_contracts.py::TestLibyamlLoader::test_load_all_contracts_parses_each_file_once_with_libyaml -q',
+    'rec-3208': f'bin/venv-python -m pytest tests/platform_roadmap_state/test_load.py::TestLoadParser::test_load_parses_with_libyaml
+    {budget} -q'}; assert all(by_id[i]['acceptance'] == w for i, w in want.items()), rows; assert all(lint(w,
+    require_decidable=True)[0] for w in want.values()), want; assert
+    json.loads(by_id['rec-4365']['context_v2_json']).get('closure_artifact') == 'shard:preflight-yaml-parse-budget',
+    by_id['rec-4365']; v = [probe.run_one(w, repo_root=Path('.').resolve()) for w in want.values()]; assert v ==
+    [probe.PASS, probe.PASS], v; print('ACCEPTANCE_HOLDS')"
   expected: Exit 0 and ACCEPTANCE_HOLDS.
   fix_if: >-
     An old acceptance or no closure_artifact: run execution step 8's update_rec calls, then rerun. A probe timeout: a
@@ -332,7 +359,9 @@ verification_plan:
   action: >-
     PRECONDITION: main-validate's run for the merge commit (mcp__github__actions_list, list_workflow_runs, ci.yml, branch
     main, matching head_sha) reports completed and success, and its log shows validate_test_coverage mapping
-    scripts/session/preflight.py. Only then run the command, which proves no ci_rca rec was filed since the merge.
+    scripts/session/preflight.py with neither a "[info] no coverage data for scripts/session/preflight.py" line nor a
+    "scripts/session/preflight.py: coverage check timed out" line. Only then run the command, which proves no ci_rca
+    rec was filed since the merge.
   command: >-
     bin/venv-python -c "import sys; from src.common.ducklake_reader_client import make_reader; rows =
     make_reader().named('ci_rca_since', since_ts=sys.argv[1]); print(rows); assert rows == [], rows" "$(git fetch -q origin
@@ -418,7 +447,10 @@ constraints:
   Every touched file stays at or under 500 SLOC by decomposition, never a budget raise (Decision 128/130).
 - >-
   The loader is always getattr(yaml, "CSafeLoader", yaml.SafeLoader), never a bare CSafeLoader reference, and the
-  constant sits after the import block (ruff E402).
+  constant sits after the import block (ruff E402). libyaml is a required dependency (the pinned PyYAML wheels bundle
+  it) enforced by the guard's yaml.__with_libyaml__ assertion; the fallback only keeps an odd environment correct but
+  slow and gets no dedicated test, because exercising it means reloading three modules in-process, which breaks class
+  identity for other tests.
 - >-
   Call get_rec_write_guidance() before composing the amended acceptances (Decision 66). Recommendation reads go through
   named verbs only (Decision 215).
@@ -428,12 +460,13 @@ context:
   Decision-scout FLAGS_FOUND, two passes (the second on the sysmon delta), all folded below. CITE: 55, 73, 128, 159,
   163, 132, 176, 189, 186, 201, 66, 182. Decisions triaged: 171 of 171. Roadmap items intersected: 5; CONFLICT: 0;
   RELATED: 5
-- "gates: decision-scout=FLAGS_FOUND; plan-critique=PENDING"
+- "gates: decision-scout=FLAGS_FOUND (2 passes); plan-critique=r1 REVISE (F1-F7 fixed, F11-F12 adopted); r2 PENDING"
 - "Related-Work check, condition 1 (same file): scope carries scripts/session/preflight.py, rec-4365's file."
 - >-
   Evidence and plan-time measurements: /mnt/project-files/rec-4365/ (ADVICE.md, scout-report.md, sysmon-parity.md,
   step6b-presentation.md). CI runs this package at about CC-web's speed, not the 0.58-0.65x the rec-4273 plan assumed,
-  so step 8 is a valid local proxy at the real cap.
+  so step 8 is a valid local proxy at the real cap. Whole-suite parity at plan time: 543 files, one difference, explained
+  by a file the first run created (sysmon-parity.md).
 - >-
   Decision 181 notes (scout): rec-4365's filed acceptance can never pass (--cov-fail-under=100 applies to the
   scripts/session total, 14.4% from this package); the symptom check stays the post-merge coverage child at the
@@ -444,8 +477,9 @@ context:
   RCA's 80% wall-clock gauge ("cannot detect drift when its margin is nondeterministic", Decision 182). Under sysmon the
   untraced YAML parser no longer pays per-line callbacks, so step 4, not the timeout, is the regression detector.
 - >-
-  rec-3208 closes here (its option b is this fix; its acceptance greps the deleted product_roadmap module, Decision 103
-  stale target). rec-3638 rides this merge so the post-merge tier re-measures preflight.py in CI.
+  rec-3208 closes here: its compute_state_dict cost is memoised per test process (rec-4006) and load() moves to libyaml
+  (its option b); its acceptance greps the deleted product_roadmap module (Decision 103 stale target), so it becomes the
+  load node plus the budget node. rec-3638 rides this merge so the post-merge tier re-measures preflight.py in CI.
 - "Not bundled: rec-4361, rec-3630, rec-4277, rec-3615, rec-4261."
 - "fork: fix layer | chosen: production libyaml loader plus parse-once | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: scope"
 - "fork: regression guard | chosen: pure-Python YAML byte budget per main(), wall-clock gauge to rec-4370 | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: scope, followon_recs"
@@ -478,16 +512,17 @@ execution_steps:
 - Run bin/venv-python -m pytest tests/session/preflight -n 4 -q and confirm the whole package is green.
 - >-
   rec-4365 and rec-3208, one status-preserving portal call each after get_rec_write_guidance(): bin/venv-python -m
-  scripts.ops_data_portal --update-rec rec-4365 --acceptance '<VP step 9 want string>' --closure-artifact
-  'shard:preflight-yaml-parse-budget', and --update-rec rec-3208 --acceptance '<the same string>'. rec-3638 keeps its
-  filed acceptance (step 5's node).
+  scripts.ops_data_portal --update-rec rec-4365 --acceptance '<VP step 9 want for rec-4365>' --closure-artifact
+  'shard:preflight-yaml-parse-budget', and --update-rec rec-3208 --acceptance '<VP step 9 want for rec-3208>'. rec-3638
+  keeps its filed acceptance (step 5's node).
 - Execute Verification Plan steps 1-9 -- loop until pass; on unrecoverable failure stop and RCA (Decision 55)
 - >-
   Code-review gate (implement skill), then the closure sequence, in order. (1) bin/venv-python -m
   scripts.session.github_readiness, each state reported on its own. (2) Set implementation_declared: true. (3) Postflight
   evidence: bin/venv-python -m scripts.session.postflight --evidence /tmp/implementation-retrospective.json. (4) VP step
   10's full tier on the committed, rebased, clean tree, then bin/venv-python -m scripts.checks.validation_result
-  --verify-head exit 0; rerun both after any review-fix commit. (5) Push. (6) PR whose squash body carries 'Resolves:
+  --verify-head exit 0; after any review-fix commit rerun both and VP step 9 (a renamed node invalidates a stored
+  acceptance). (5) Push. (6) PR whose squash body carries 'Resolves:
   rec-4365, rec-3208, rec-3638' in a Key: value block before the attribution footer (git-ops.yaml resolves_trailer). (7)
   CI green. (8) Squash-merge, passing that body as the merge commit_message. Then post-deploy steps 11-13 in order.
 - >-
