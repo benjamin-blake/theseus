@@ -55,6 +55,10 @@ terraform -chdir=terraform/github apply \
   -var="gated_apply_reviewer_user_ids=[${REVIEWER_ID}]"
 ```
 
+## PR-time plan (rec-4335)
+
+Every PR touching this root runs `.github/workflows/terraform-github-plan.yml`; its header holds the rules.
+
 ## tf-gated-apply Environment
 
 The `tf-gated-apply` GitHub Environment (defined in `environments.tf`) gates the post-merge
