@@ -49,6 +49,22 @@ class TestValidateOpsPortalPatchTargets:
                 violations = _ops_portal_patch_violations([path])
             assert len(violations) == 1 and "gate_write" in violations[0], caller
 
+    def test_attribute_calls_dynamic_targets_and_unparseable_files_are_tolerated(self, tmp_path: Path) -> None:
+        """A moved caller invoked as an attribute is recognised, a non-literal patch target is skipped rather than
+        guessed, and a file that does not parse is skipped, not raised."""
+        flagged = self._write(
+            tmp_path,
+            "test_e.py",
+            "from unittest.mock import patch\n"
+            "def test_x(target):\n"
+            "    with patch(target), patch('scripts.ops_data_portal._ducklake_write'):\n"
+            "        portal.file_decision({'title': 'd'})\n",
+        )
+        broken = self._write(tmp_path, "test_f.py", "def test_x(:\n")
+        with patch("scripts.checks._common.ROOT", tmp_path):
+            violations = _ops_portal_patch_violations([flagged, broken])
+        assert len(violations) == 1 and "_ducklake_write" in violations[0]
+
     def test_ops_portal_patch_targets_corrected_submodule_patch_not_flagged(self, tmp_path: Path) -> None:
         body = (
             "from unittest.mock import patch\n"
