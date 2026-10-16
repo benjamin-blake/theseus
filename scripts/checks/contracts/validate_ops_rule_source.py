@@ -5,8 +5,8 @@ Scope is derived, never listed: each ops_tables key of config/lambda/ducklake/fi
 docs/contracts/<table>.yaml (the grammar and the ratchet read base and head together, so a PR removing a table and its
 contract cannot escape the ratchet), plus the raw $ref baselines those contracts reach; the retired `enforced` key is
 banned in every contract under docs/contracts/. Orchestration only: the grammar is _rule_grammar, the merge-base ratchet
-is _rule_ratchet, and the ops_recommendations-only legs (ops.yaml has no write-time role and is never stricter than the
-contract, plus the status vocabularies) are _ops_rule_bindings. Writer coverage is the conformance check's
+is _rule_ratchet, and the ops_recommendations-only parity legs (ops.yaml write_time tests and the status vocabularies)
+are _ops_rule_bindings -- the portal row-rule gate plan retires that last leg. Writer coverage is the conformance check's
 (validate_write_time_enforcement_conformance). The git seam stays here so the helpers are git-free.
 """
 
