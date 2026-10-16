@@ -82,7 +82,8 @@ scope:
     PR B. The transcript_content verb's work after its registry SQL has resolved the row. It is imported
     function-locally by ducklake_event_reads, and nothing in ducklake_runtime's import closure imports it. It reads the
     stored rows for the exact grain key; zero rows answers zero rows. Duplicates that agree on every compared column
-    (compared_versions 1) count as one. Rows that differ under one grain key in any compared column, payload or not
+    (compared_versions 1) count as one; when they store one payload differently (one inline, one object, same digest),
+    the inline row is served, so storage never flips between pages. Rows that differ under one grain key in any compared column, payload or not
     (compared_versions above 1; reachable through the concurrent-append race, Decision 207), raise
     BlobContentFault(500, "grain_conflict", "differing_rows") and never pick one: a catalog condition with its own
     error_type, so it is never counted as object corruption. Then by storage: (inline) the content column's UTF-8
@@ -225,7 +226,9 @@ scope:
 - file: scripts/ducklake_smoke/lambda_telemetry_blob_gates.py
   action: Modify
   purpose: >-
-    PR B. _check_readback runs after _check_size_mismatch. Through the reader's transcript_content, it reassembles
+    PR B. _check_readback runs after _check_s3_rejects, so it follows _check_size_mismatch and its own deliveries never
+    become a PUT that test_each_divergence_fails_loudly[put_accepts_anything] counts (that case lets only the first PUT
+    through). Through the reader's transcript_content, it reassembles
     three rows, each byte-equal to what was written and to the row's SHA-256 and length: the delivered blob row (one
     chunk), one inline transcript row appended for the purpose, and one multi-chunk object delivered for the purpose
     (two calls). It takes tenant_id and project_id from the append response and resolves the reader URL through
@@ -290,17 +293,22 @@ scope:
   purpose: >-
     PR B. MARKERS gains TELEMETRY_BLOB_READBACK_OK. New test_readback_reassembles_on_a_consistent_reader, against the
     in-memory writer and LiveFake's reader route (the shared fixture below), which serves the real content module. The
-    shared wired fixture already forwards every action to LiveFake, so every existing node reaches the reader route
-    unchanged. test_each_divergence_fails_loudly gains readback_wrong_bytes, readback_drops_a_chunk and readback_pages
+    wired fixture patches only core._sigv4_invoke, and _check_readback resolves the reader URL through
+    core._function_url("reader"), which raises without DUCKLAKE_READER_URL; the fixture therefore also sets
+    DUCKLAKE_READER_URL (monkeypatch.setenv), and every existing node then reaches the reader route. test_each_divergence_fails_loudly gains readback_wrong_bytes, readback_drops_a_chunk and readback_pages
     (a 500), each failing the gate by name through Wired.override.
 - file: tests/fixtures/telemetry_append_fakes.py
   action: Modify
   purpose: >-
     PR B. The one shared fake reader, since test modules never import each other. LiveFake.invoke answers action
-    named_read for verb transcript_content as the deployed reader would: the grain key's rows from self.stored, served
-    through the real ducklake_event_content with a get_blob adapter over self.store (the MemoryBlobStore verify checks,
-    then the byte range), typed faults answered through ducklake_handler_errors.terminal(). Any other named_read verb
-    answers 400 named_read_input. Every existing writer route is unchanged. It stays under 500 SLOC (226 today).
+    named_read by driving the real reader handler, as test_event_routing.py does, so the error mapping cannot drift:
+    the telemetry connection is a fake whose cursor answers the resolve SQL with the bound grain key's rows from
+    self.stored (the payload columns plus compared_versions), and the content module's blob store is a get_blob adapter
+    over self.store (the MemoryBlobStore verify checks, then the byte range). EventReadInputError then answers 400
+    named_read_input and typed faults answer through terminal(), exactly as deployed. _execute also keeps each row's
+    representation columns (content, content_uri), which compare_excluded leaves out of the stored compared dict, beside
+    it, so the grain-conflict compare is unchanged. Every existing writer route is unchanged. It stays under 500 SLOC
+    (226 today).
 - file: tests/ducklake_neon_smoke_test/test_lambda_telemetry_gates.py
   action: Modify
   purpose: >-
@@ -975,7 +983,7 @@ context:
   under an immutable check_id. The contract requires only the git mv. Earlier retirements also recorded a governance
   note in verification-registry.yaml, but that contract is Class A, and Class A text needs Benjamin's word under this
   project's rules; this plan, its commits and the replacements' plan_slug are the record instead.
-- 'gates: decision-scout=FLAGS_FOUND (2 NOTEs, resolved); plan-critique=PENDING (r1, r2 and r3 REVISE, every finding fixed)'
+- 'gates: decision-scout=FLAGS_FOUND (2 NOTEs, resolved); plan-critique=PROCEED (r4, after r1-r3 REVISE; r4 implementation notes folded in)'
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
