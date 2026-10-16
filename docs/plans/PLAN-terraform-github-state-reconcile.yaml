@@ -115,7 +115,10 @@ infrastructure_dependencies:
     The classic terraform/github admin PAT (repo, admin:repo_hook, read:org; Secrets Manager, name supplied by the
     operator at build time) is valid and sees security_and_analysis. If it is gone or expired, a replacement is an
     always-ask credential mint and the live walk waits.
-  - 'No GitHub-side write: an import-only apply issues GitHub reads only; the only write is the S3 state object.'
+  - >-
+    No GitHub-side write: an import-only apply issues GitHub reads only; the only write is the S3 state object. One
+    exception, only if VP step 9 reads LIVE_WORKFLOW_DEFAULT=write and on the operator's word: the operator's own UI
+    restore of the repository's default workflow permission to read-only, before paste A.
 acceptance_criteria:
   - >-
     terraform/github/imports.tf holds exactly one import block per managed resource in terraform/github (none exempt
@@ -289,10 +292,15 @@ verification_plan:
       PRE-MERGE, OPERATOR, AWS CloudShell, read-only for shared state -- paste 0 (readiness, baseline, and a dry run of
       the state rm and import plan on a local copy of the state) at the CI-green build PR head, so the import blocks meet
       the live API before merge. The agent fills HEAD_SHA, the operator fills PAT_SECRET_ID; the exact text is
-      execution_steps step 8. The agent saves the operator's reported lines into $PASTE0_REPORT. A new head that changes
-      terraform/github re-runs it.
+      execution_steps step 8. The agent saves the operator's reported lines into $PASTE0_REPORT, holding only the latest
+      run's lines (a re-run replaces them). A new head that changes terraform/github re-runs it. When E0 listed
+      default_workflow_permissions and PASTE0_OK holds, re-run this build PR's terraform-github-plan job at the same head
+      (E0b, mcp__github__actions_run_trigger rerun_workflow_run) and require step 6's command to pass on its log with
+      default_workflow_permissions absent from the newest report comment, before merge.
     command: >-
-      printf '%s\n' "$PASTE0_REPORT" | grep -cxE 'TERRAFORM_OK|PAT_ADMIN_VISIBLE|LIVE_WORKFLOW_DEFAULT=read|INIT_OK|DRYRUN_IMPORT_ONLY' | grep -qx 5
+      for l in TERRAFORM_OK PAT_ADMIN_VISIBLE LIVE_WORKFLOW_DEFAULT=read INIT_OK DRYRUN_IMPORT_ONLY; do
+      printf '%s\n' "$PASTE0_REPORT" | grep -qxF "$l" || exit 1; done
+      && test "$(printf '%s\n' "$PASTE0_REPORT" | grep -c '^LIVE_WORKFLOW_DEFAULT=')" = 1
       && printf '%s\n' "$PASTE0_REPORT" | grep -qxE "${E0_COUNTS_RE:-COUNTS import=0 add=0 change=5 destroy=0}" && echo PASTE0_OK
     expected: >-
       PASTE0_OK: the operator reported TERRAFORM_OK, PAT_ADMIN_VISIBLE, LIVE_WORKFLOW_DEFAULT=read (the live default
@@ -316,7 +324,13 @@ verification_plan:
       bin/venv-python -c "import yaml,pathlib; m=[f'{p.name}:{j}' for p in pathlib.Path('.github/workflows').glob('*.y*ml')
       for w in [yaml.safe_load(p.read_text(encoding='utf-8'))] for j,s in (w.get('jobs') or {}).items()
       if 'permissions' not in w and 'permissions' not in s]; print('JOBS_WITHOUT_PERMISSIONS', m); assert not m"
-      Never reconcile config to write and never add default_workflow_permissions to ignore_changes.
+      A non-empty list: name those jobs to the operator and escalate to the planning thread through the coordinator;
+      the restore waits until they declare explicit permissions. After a restore, add the line "LIVE_WORKFLOW_DEFAULT=write
+      found and restored <YYYY-MM-DD>" to step 14's evidence comment, and file a rec on how a Terraform-managed security
+      setting drifted (get_rec_write_guidance, then file_rec; Decision 55). Never reconcile config to write and never add
+      default_workflow_permissions to ignore_changes. E0b still lists default_workflow_permissions with
+      LIVE_WORKFLOW_DEFAULT=read: CI and the admin PAT disagree on a security setting (or it changed between E0 and paste
+      0); escalate before merge, since E2 would list it again after the state change.
     hermetic: false
     graduation: not-applicable
   - step: 10
@@ -362,8 +376,8 @@ verification_plan:
   - step: 13
     phase: post-deploy
     action: >-
-      E2 -- a PR-time plan run whose commit contains the merged build PR (after import, repo.tf's ignore_changes entry
-      is load-bearing). Order A: re-run the build PR's run (mcp__github__actions_run_trigger rerun_workflow_run); its
+      E2 -- a PR-time plan run whose commit contains the merged build PR (after import, repo.tf's ignore_changes entries
+      are load-bearing). Order A: re-run the build PR's run (mcp__github__actions_run_trigger rerun_workflow_run); its
       merge commit carries the build. Order B: never a bare re-run of the workflow PR's original run (it predates the
       build); ask the coordinator to have the workflow PR updated from main so the push starts a fresh run, or use E3
       (the closure PR's own run,
@@ -463,7 +477,7 @@ test_obligations:
       nor the App-read PR-time plan plans a repository update for them.
     verification_step: 1
     test_selector: tests/checks/iam_tf/test_terraform_github_import_blocks.py::TestTerraformGithubImportBlocks
-    red_green_expectation: Red before (the entry and the test are absent on origin/main); green after step 3.
+    red_green_expectation: Red before (the entries and the test are absent on origin/main); green after step 3.
   - source: terraform/github/CLAUDE.md
     behavior: Carries rec-3136's acceptance and the approved venue wording.
     verification_step: 2
@@ -545,7 +559,8 @@ constraints:
     content, the PAT secret name, user ids or the S3 version id.
   - >-
     No apply of terraform/github by anyone between the build PR merge and E2 other than paste B. If any plan in the walk
-    shows a non-identity change: stop, never apply to converge, escalate for a plan amendment.
+    shows a non-identity change: stop, never apply to converge, escalate for a plan amendment. Already amended for
+    (2026-10-16), so no further escalation: E0's default_workflow_permissions row (VP step 6) and step 9's routes for it.
   - >-
     Build start gate: Order A, rec-4335's workflow PR merged with its job live; Order B, the coordinator says the
     workflow PR is held open for this state fix (see infrastructure_dependencies). Closure-PR contract edits wait for
@@ -558,7 +573,7 @@ context:
     Decision-scout verdict FLAGS_FOUND. CITE: 218, 172, 77, 126, 101, 201. NOTE on 119 (no local init of a
     third-party-provider root) resolved by verifying from the S3 state object, never terraform state list.
     Decisions triaged: 171 of 171. Roadmap items intersected: 2; CONFLICT: 0; RELATED: 2.
-  - "gates: decision-scout=FLAGS_FOUND (one NOTE, resolved); plan-critique=PROCEED after 6 rounds; round 6 on the escalated one-more-round option"
+  - "gates: decision-scout=FLAGS_FOUND (one NOTE, resolved); plan-critique=PROCEED after 6 rounds; round 6 on the escalated one-more-round option; amendment 2026-10-16: round 7 REVISE (fixed)"
   - >-
     V3 resolution: E0 (step 6) and paste 0 at the CI-green head (step 9, read-only, including the dry run of the import)
     are the pre-merge live evidence the implement V3 Merge Gate and the code-review V3 check require, by analogy with
@@ -568,15 +583,7 @@ context:
   - >-
     Live facts 2026-10-15: five state instances keyed on agent-platform; bucket versioning Enabled; provider v6.12.1 Read
     sets name from d.Id(); Terraform 1.10.5 ignores an import block whose address is already in state (scratch test).
-  - >-
-    Live facts 2026-10-16 (amendment): the PR-time plan's first run (#1523; evidence
-    /mnt/project-files/terraform-github-pr-plan/evidence-first-run.md) read change=5 with no destroy or replace, but
-    beyond the rename it listed the four merge-commit message fields on github_repository.this and
-    default_workflow_permissions on github_workflow_repository_permissions.this. Provider v6.12.1 Read sets all five
-    from the API unconditionally (archived false). An admin-scoped read of the repository returns the four fields at
-    the provider defaults, so the CI read saw them otherwise (the App token's view or the old-name redirect, not
-    separable from a session); the ignore entries (step 3) hold under either cause. The workflow default is a security
-    setting the session cannot read (403): paste 0 reads it with the admin PAT and step 9 decides it.
+    Amendment 2026-10-16 (#1523 first-run findings): /mnt/project-files/terraform-github-state-fix/amendment-2026-10-16.md.
   - >-
     Venue: api.github.com is reachable from cloud sessions but the proxy substitutes its own GitHub credential (a bogus
     token returned 200; /actions/permissions 403), so plan, import and apply run only in AWS CloudShell. Import with the
@@ -776,7 +783,8 @@ execution_steps:
     prompt; fix every blocking finding. Once code review is PROCEED and the operator has approved the PR on GitHub as
     code owner (paste 0 runs this head's config under the operator's admin identity), hand the operator paste 0 at
     the CI-green head (VP step 9; it writes nothing shared) and require PASTE0_OK. Squash-merge only when code review is PROCEED, CI is green on the head,
-    PASTE0_OK holds for a head with the same terraform/github content, and the operator has approved the PR on GitHub as
+    PASTE0_OK holds for a head with the same terraform/github content, E0b passes when E0 listed
+    default_workflow_permissions (VP step 9), and the operator has approved the PR on GitHub as
     code owner (no Resolves trailer on this PR: rec-3136 closes with the closure PR; the attribution footer is added to
     the squash commit message at merge, never to the PR body). Then run VP step 8 and hand the
     operator paste A with MERGE_SHA filled in.
