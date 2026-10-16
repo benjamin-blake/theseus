@@ -24,24 +24,27 @@ scope:
 - file: scripts/contracts.py
   action: Modify
   purpose: >-
-    A module constant after the imports, _YAML_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader), with one comment
-    line saying why (the C parser is about 12x faster on this corpus and builds identical objects). load_contract,
-    load_contract_meta and load_all_contracts parse with yaml.load(text, Loader=_YAML_LOADER). load_all_contracts
-    validates the mapping it already parsed through a new private _validate_contract(data, path), which load_contract
-    also calls, so each file is read and parsed once (today load_contract re-reads and re-parses every ritual
-    contract). Error messages, the Class D skip, the non-ritual skip and every except clause are unchanged.
+    load_contract, load_contract_meta and load_all_contracts parse through scripts.contract_rules.parse_yaml, main's
+    existing libyaml helper (#1511: _SAFE_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)), which this module
+    already imports from; no second loader constant. load_all_contracts validates the mapping it already parsed through
+    a new private _validate_contract(data, path), which load_contract also calls, so each file is read and parsed once
+    (today load_contract re-reads and re-parses every ritual contract). Error messages, the Class D skip, the
+    non-ritual skip and every except clause (yaml.YAMLError still raised by parse_yaml) are unchanged. Other consumers
+    of these loaders: validate_contract_drift and scripts/schema_to_field_semantics.py (step 8 proves identical objects).
 - file: scripts/platform_roadmap_state.py
   action: Modify
   purpose: >-
-    load() parses with the same _YAML_LOADER idiom (module constant after the imports). compute_followon_state's
-    per-plan yaml.safe_load (line 115) is unchanged: tests/platform_roadmap_state/test_state_dict_and_feeds.py:378,596
-    spy on it, and tests memoise compute_state_dict once per process (rec-4006).
+    load() parses through scripts.contract_rules.parse_yaml (a stdlib-plus-yaml leaf module with no import contract
+    over it). compute_followon_state's per-plan yaml.safe_load (line 115) is unchanged:
+    tests/platform_roadmap_state/test_state_dict_and_feeds.py:378,596 spy on it, and tests memoise compute_state_dict
+    once per process (rec-4006); its production cost (about 9 MB, 7.5s per preflight) is rec-4374. Other consumers of
+    load(): the roadmap, candidate-decision, liveness, ports and fallback validators (step 8 proves identical objects).
 - file: scripts/preflight/context_docs.py
   action: Modify
   purpose: >-
-    _check_endstate_drift's two roadmap parses (the current file and the git-show of the stamped ref) use
-    getattr(yaml, "CSafeLoader", yaml.SafeLoader) through its existing function-local yaml import. No other change.
-    The file is 448 SLOC and must stay at or under 500.
+    _check_endstate_drift's two roadmap parses (the current file and the git-show of the stamped ref) go through
+    scripts.contract_rules.parse_yaml, imported function-locally like the existing yaml import there. No other
+    change. The file is 448 SLOC and must stay at or under 500.
 - file: scripts/preflight/summary.py
   action: Modify
   purpose: >-
@@ -65,7 +68,8 @@ scope:
     [run] core setting in pyproject.toml, scopes the switch to the coverage child alone (pyproject would also move CI's
     unit-test --cov=src run); coverage 7.15 reads COVERAGE_CORE in config.py:714-718. Tests inside the child see the
     variable, which overrides a generated config's core: tests/validate/test_pytest_diff_coverage.py's sysmon assertions
-    agree with it (they fail under COVERAGE_CORE=ctrace, sysmon-parity.md). The comment above
+    agree with it (they fail under COVERAGE_CORE=ctrace, sysmon-parity.md); inside a child they no longer
+    discriminate, but the plain unit-test run still does. The comment above
     COVERAGE_TIMEOUT_SECONDS names rec-4370 instead of rec-3208 as the owner of runtime drift (rec-3208 closes here).
     COVERAGE_TIMEOUT_SECONDS stays 300; the argv, the Popen seam and its kwargs are unchanged. The module docstring gains
     one sentence naming the core and rec-4365. Keeps 100% line coverage from its mapped test file.
@@ -81,10 +85,13 @@ scope:
   purpose: >-
     Shared spy (tests/fixtures is exempt from the cross-test-import guard, Decision 131). install(monkeypatch) wraps
     yaml.reader.Reader.__init__ (shared by every pure-Python loader -- SafeLoader, Loader, FullLoader, BaseLoader -- and
-    never used by the C loaders) and yaml.CSafeLoader.__init__, and returns a log of (loader kind, stream size, calling
-    site as a path relative to the repo root's scripts/ directory resolved from _common.ROOT, e.g. contracts.py or
-    preflight/context_docs.py, plus line) per construction; a str or bytes stream counts its length, a file object its
-    fstat size. pure_bytes, pure_sites, libyaml_sizes and libyaml_sites summarise the log.
+    never used by the C loaders) and yaml.CSafeLoader.__init__, and returns a log of (loader kind, stream size, stack)
+    per construction. The stack is every scripts/ frame on the call stack as "path:function", path relative to the
+    repo's scripts/ directory (e.g. contracts.py:load_all_contracts, preflight/context_docs.py:_check_endstate_drift,
+    contract_rules.py:parse_yaml), with the repo root captured once in install() from this fixture's own __file__
+    (parents[2]), never from a module ROOT a test may patch. A str or bytes stream counts its length, a file object its
+    fstat size. Recording is wrapped so it never raises (an unreadable size or stack logs 0 or an empty stack), and
+    the wrapper always delegates. pure_bytes, pure_entries, libyaml_sizes and libyaml_frames summarise the log.
 - file: tests/test_contracts.py
   action: Modify
   purpose: >-
@@ -93,8 +100,8 @@ scope:
     pure-Python parses); (2) test_single_file_loaders_use_libyaml -- load_contract and load_contract_meta each construct
     one libyaml loader and no pure-Python one; (3) test_libyaml_loader_builds_like_safe_loader -- yaml.CSafeLoader and
     yaml.SafeLoader expose equal yaml_constructors and yaml_implicit_resolvers, so a constructor registered on SafeLoader
-    alone fails here, not silently in production. The file is 432 SLOC; a plan-time draft of the class measured 453,
-    under the 500 limit, so no decomposition is expected (should it pass 500, stop and raise a plan amendment rather
+    alone fails here, not silently in production. The file is 443 SLOC on main after #1511; a plan-time draft of the
+    class adds about 21, so about 464, under the 500 limit, so no decomposition is expected (should it pass 500, stop and raise a plan amendment rather
     than touch a file outside scope).
 - file: tests/platform_roadmap_state/test_load.py
   action: Create
@@ -123,9 +130,11 @@ scope:
     compute_state_dict ({}; tests memoise it per process, rec-4006) and session_preflight.PREFLIGHT_REPORT (tmp_path;
     the trailer probe mounts the repo read-only). It must NEVER patch _scan_provisional_contracts, _check_endstate_drift,
     decision_conditions.preflight_bucket, check_data_quality_coverage or read_context_files: those are the measured
-    loaders. It asserts the libyaml call-site set includes scripts/contracts.py and scripts/preflight/context_docs.py
-    (both unconditional on main()'s path), then that the pure-Python bytes are at most PURE_PYTHON_YAML_BUDGET = 512 *
-    1024, the failure message listing each pure-Python call site and its bytes. Plan-time prototype with this seam list:
+    loaders. It asserts libyaml_frames includes contracts.py:load_all_contracts and
+    preflight/context_docs.py:_check_endstate_drift (both unconditional on main()'s path), then that the pure-Python
+    bytes are at most PURE_PYTHON_YAML_BUDGET = 512 * 1024, the failure message listing each pure-Python entry's bytes
+    and innermost scripts/ frames. Its docstring says compute_state_dict is stubbed and names rec-4374 as the owner of
+    that function's own pure-Python cost. Plan-time prototype with this seam list:
     4.85 MB before (fails), 143 KB after, libyaml sites contracts.py, platform_roadmap_state.py and context_docs.py. Any
     single pure-Python parse of the roadmap (747 KB) or of the contracts corpus (1.28 MB) exceeds the bound.
     Deterministic, no wall clock (Decision 182's rationale).
@@ -135,9 +144,11 @@ scope:
     rec-3638's filed acceptance node, TestCiRcaLivenessRenderer::test_alert_payload_is_rendered_to_stderr: main() with
     _check_ci_rca_liveness stubbed to {"run_url": ..., "elapsed_minutes": 45.0} prints the alert line to stderr
     (capsys), and prints nothing for it when the stub returns None. Like its siblings it patches
-    session_preflight.PREFLIGHT_REPORT to tmp_path, check_credentials to "unavailable" and the gh-calling
-    _check_convergence_sensor_liveness to None, so it passes inside the trailer probe (read-only repo mount, no
-    network, 30s pytest cap). Red before: the renderer does not exist.
+    session_preflight.PREFLIGHT_REPORT to tmp_path, check_credentials to "unavailable", the gh-calling
+    _check_convergence_sensor_liveness to None, session_preflight.platform_roadmap.compute_state_dict to {},
+    context_docs.read_context_files to {}, context_docs.parse_last_session to "" and
+    recs_cache._count_recommendations_reader to (0, 0, 0, []), so it passes inside the trailer probe's fresh process
+    (read-only repo mount, no network, 30s pytest cap, cold live_state_dict memo). Red before: the renderer does not exist.
 - file: config/agent/verification_registry/entries/preflight-yaml-parse-budget.yaml
   action: Create
   purpose: >-
@@ -151,6 +162,12 @@ scope:
     Registry shard for graduated VP step 1: check_id contracts-libyaml-parse-once, primitive_slot command_exit_zero,
     check_spec.command step 1's class selector, guard_target scripts/contracts.py, guard_symbol load_all_contracts,
     plan_slug preflight-yaml-parse-cost, graduated_by implement-agent.
+- file: config/agent/verification_registry/entries/roadmap-load-libyaml.yaml
+  action: Create
+  purpose: >-
+    Registry shard for graduated VP step 2: check_id roadmap-load-libyaml, primitive_slot command_exit_zero,
+    check_spec.command step 2's node, guard_target scripts/platform_roadmap_state.py, guard_symbol load, plan_slug
+    preflight-yaml-parse-cost, graduated_by implement-agent.
 - file: config/agent/verification_registry/entries/endstate-drift-libyaml.yaml
   action: Create
   purpose: >-
@@ -176,11 +193,13 @@ bundled_recommendations:
 followon_recs:
 - rec-4370
 - rec-4371
+- rec-4374
 infrastructure_dependencies: []
 acceptance_criteria:
 - >-
-  One preflight main() call under the package fixture feeds at most 512 KiB to PyYAML's pure-Python loader (4.85 MB at
-  plan time) and parses the contracts and endstate-drift YAML with libyaml, proven by the graduated guard node.
+  One preflight main() call under the package fixture, with compute_state_dict stubbed, feeds at most 512 KiB to
+  PyYAML's pure-Python loader (4.85 MB at plan time) and parses the contracts and endstate-drift YAML with libyaml,
+  proven by the graduated guard node. compute_state_dict's own plan-corpus parse is out of scope (rec-4374).
 - >-
   load_all_contracts parses each contract file once; load_contract, load_contract_meta, platform_roadmap_state.load and
   both _check_endstate_drift parse sites use the libyaml loader; CSafeLoader and SafeLoader carry equal constructors
@@ -189,8 +208,9 @@ acceptance_criteria:
   The preflight.py coverage child completes locally through scripts.test_coverage_checker at the real 300s cap with
   preflight.py at 100% (plan-time prototype: 92s on the C tracer, from 524s). COVERAGE_TIMEOUT_SECONDS is unchanged.
 - >-
-  Every per-file coverage child runs with COVERAGE_CORE=sysmon, and the executed, missing and excluded line sets of every
-  file measured by this merge's coverage children are identical between the ctrace and sysmon cores.
+  Every per-file coverage child runs with COVERAGE_CORE=sysmon, and for each child this merge triggers, plus the five
+  graduated registry guards that reach a real child, the executed, missing and excluded line sets are identical between
+  the ctrace and sysmon cores when that child's own argv runs under each.
 - >-
   rec-3638: a non-null ci_rca_liveness_alert prints one stderr line at session open.
 - >-
@@ -223,10 +243,8 @@ verification_plan:
   expected: Exit 0, 1 passed. Red before, the node is absent (pytest exit 4).
   fix_if: A pure-Python construction is recorded, or the minimal roadmap does not validate. Never patch load() itself.
   hermetic: true
-  graduation: waive
-  graduation_waiver_reason: >-
-    Step 4's graduated guard fails if load() returns to the pure-Python loader (its two calls per main() are 1.49 MB);
-    this node is the precise unit proof, run in every tier's affected set when the module changes.
+  graduation: graduate
+  graduation_check_id: roadmap-load-libyaml
   expected_literals:
   - 1 passed
 - step: 3
@@ -291,24 +309,31 @@ verification_plan:
 - step: 7
   phase: pre-deploy
   action: >-
-    DIAGNOSTIC line-parity proof for the core switch: the four test targets this merge's coverage children map to, plus
-    the targets of the three graduated registry guards that call measure_and_check (coverage-checker-at-100,
-    sync-ops-at-100, sync-recommendations-concern-split-recovery), run once per core in one process each with a fixed
-    seed and --cov=scripts, give identical executed, missing and excluded line sets for every measured file. Run it in
-    the background; each leg takes minutes.
+    DIAGNOSTIC per-child line-parity proof for the core switch. For each source whose coverage child this merge
+    triggers (preflight.py, contracts.py, platform_roadmap_state.py, coverage_baseline.py) and each source a graduated
+    registry guard measures through a real child (test_coverage_checker.py, sync/ops.py, sync/recommendations.py,
+    validate_handoff_full_tier.py, validate_candidate_decision_ratification.py), run that child's own argv
+    (map_source_to_test target, -m "not integration", --cov=<source parent>, fixed seed) once per core and compare
+    the executed, missing and excluded lines of every file it measures. Run it in the background; it takes minutes.
   command: >-
-    for c in ctrace sysmon; do COVERAGE_CORE=$c bin/venv-python -m pytest tests/session/preflight tests/test_contracts.py
-    tests/platform_roadmap_state tests/checks/misc/test_coverage_baseline.py tests/test_coverage_checker tests/sync/ops
-    tests/sync/recommendations -m "not integration" --cov=scripts
-    --cov-report=json:/tmp/parity-$c.json --cov-fail-under=0 -q --randomly-seed=12345 || exit 1; done && bin/venv-python -c "import json; a,
-    b = (json.load(open(f'/tmp/parity-{c}.json'))['files'] for c in ('ctrace', 'sysmon')); keys = ('executed_lines',
-    'missing_lines', 'excluded_lines'); diff = sorted(f for f in a.keys() | b.keys() if any(a.get(f, {}).get(k) !=
-    b.get(f, {}).get(k) for k in keys)); assert not diff, diff; print(f'PARITY_OK files={len(a)}')"
-  expected: Both runs pass, then PARITY_OK with the measured file count.
+    for s in scripts/session/preflight.py scripts/contracts.py scripts/platform_roadmap_state.py
+    scripts/checks/misc/coverage_baseline.py scripts/test_coverage_checker.py scripts/sync/ops.py
+    scripts/sync/recommendations.py scripts/checks/verification/validate_handoff_full_tier.py
+    scripts/checks/roadmap/validate_candidate_decision_ratification.py; do t=$(bin/venv-python -c "import sys; from
+    pathlib import Path; import scripts.test_coverage_checker as m; print(m.map_source_to_test(Path(sys.argv[1]).resolve()).relative_to(Path.cwd()))"
+    "$s") || exit 1; for k in ctrace sysmon; do rm -f /tmp/par-$k.json; _COVERAGE_SUBPROCESS=1 COVERAGE_CORE=$k
+    bin/venv-python -m pytest "$t" -m "not integration" --cov="$(dirname "$s")" --cov-report=json:/tmp/par-$k.json
+    --cov-fail-under=0 -q --no-header --randomly-seed=12345 > /dev/null 2>&1; test -s /tmp/par-$k.json || exit 1; done;
+    bin/venv-python -c "import json, sys; a, b = (json.load(open(f'/tmp/par-{k}.json'))['files'] for k in ('ctrace',
+    'sysmon')); keys = ('executed_lines', 'missing_lines', 'excluded_lines'); diff = sorted(f for f in a.keys() |
+    b.keys() if any(a.get(f, {}).get(x) != b.get(f, {}).get(x) for x in keys)); print(sys.argv[1], f'files={len(a)}',
+    f'diff={diff}'); assert not diff, diff" "$s" || exit 1; done && echo PARITY_OK
+  expected: One line per source with diff=[] and its file count, then PARITY_OK.
   fix_if: >-
-    A differing file: rerun both legs to rule out a nondeterministic test path, then report the file and lines; a
-    reproducible difference means sysmon is not a drop-in for that file and the core switch stops here for the
-    operator. Never drop a file from the comparison.
+    No JSON for a leg: the child produced no measurement; rerun it without the output redirect. A differing file:
+    rerun that child's two legs to rule out a nondeterministic or filesystem-dependent test path (sysmon-parity.md
+    records one), then report the file and lines; a reproducible difference means sysmon is not a drop-in for that
+    child and the core switch stops here for the operator. Never drop a source from the list.
   hermetic: false
   graduation: not-applicable
 - step: 8
@@ -343,12 +368,12 @@ verification_plan:
     scripts.checks.misc import coverage_baseline as cb; assert cb.COVERAGE_TIMEOUT_SECONDS == 300; p =
     Path('scripts/session/preflight.py').resolve(); t0 = time.time(); pcts, errs = cb.measure_and_check([p],
     root=Path.cwd(), map_source_to_test=t.map_source_to_test, is_empty_dir=t._is_empty_directory_target,
-    subprocess_module=subprocess); print(f'wall={time.time() - t0:.0f}s cap=300s'); v = pcts.get(str(p)); assert
-    isinstance(v, float), f'no measurement: {pcts} {errs}'; assert v >= 100.0 and not errs, (v, errs);
-    print('PREFLIGHT_COVERAGE_OK')"
+    subprocess_module=subprocess); w = time.time() - t0; print(f'wall={w:.0f}s cap=300s'); v = pcts.get(str(p)); assert
+    isinstance(v, float), f'no measurement: {pcts} {errs}'; assert v >= 100.0 and not errs, (v, errs); assert w <=
+    150, f'{w:.0f}s leaves under 2x headroom against the 300s cap'; print('PREFLIGHT_COVERAGE_OK')"
   expected: >-
-    Exit 0, a wall=Ns line with N well under 300 (plan-time prototype 92s on ctrace, 66s on sysmon), a real measurement
-    (a float, never None) at 100.0, and PREFLIGHT_COVERAGE_OK.
+    Exit 0, a wall=Ns line with N at most 150, half the cap (plan-time prototype 92s on ctrace, 66s on sysmon), a real
+    measurement (a float, never None) at 100.0, and PREFLIGHT_COVERAGE_OK.
   fix_if: >-
     A timeout: re-run step 4, whose failure message lists the remaining pure-Python call sites and bytes. No
     measurement: the child produced no .coverage.json; read its output tail. Below 100: a test change removed a covered
@@ -369,7 +394,7 @@ verification_plan:
     rec-3638's filed acceptance each lint decidable and pass under run_one, and rec-4365 carries the pre-stamped closure
     artifact.
   command: >-
-    bin/venv-python -c "import json; from pathlib import Path; from scripts.backlog_health import probe; from
+    bin/venv-python -c "import json; from pathlib import Path; from scripts.backlog_health import census, probe; from
     scripts.executor.acceptance_lint import lint_acceptance_command as lint; from src.common.ducklake_reader_client import
     fetch_recs_by_ids, make_reader; rows, _ = fetch_recs_by_ids(make_reader(), ['rec-4365', 'rec-3208', 'rec-3638']);
     by_id = {r['id']: r for r in rows}; assert set(by_id) == {'rec-4365', 'rec-3208', 'rec-3638'}, rows; budget =
@@ -380,9 +405,11 @@ verification_plan:
     {budget} -q', 'rec-3638': 'bin/venv-python -m pytest
     tests/session/preflight/test_main_branches.py::TestCiRcaLivenessRenderer::test_alert_payload_is_rendered_to_stderr
     -q'}; assert all(by_id[i]['acceptance'] == w for i, w in want.items()), rows; assert all(lint(w,
-    require_decidable=True)[0] for w in want.values()), want; assert
+    require_decidable=True)[0] for w in want.values()), want; R = Path('.').resolve(); assert all(census.classify_command(w,
+    repo_root=R) == census.PROBEABLE for w in want.values()), want; assert probe.isolation_available(R), 'probe
+    isolation unavailable here: not an acceptance verdict'; assert
     json.loads(by_id['rec-4365']['context_v2_json']).get('closure_artifact') == 'shard:preflight-yaml-parse-budget',
-    by_id['rec-4365']; v = {i: probe.run_one(w, repo_root=Path('.').resolve()) for i, w in want.items()}; assert
+    by_id['rec-4365']; v = {i: probe.run_one(w, repo_root=R) for i, w in want.items()}; assert
     set(v.values()) == {probe.PASS}, v; print('ACCEPTANCE_HOLDS')"
   expected: Exit 0 and ACCEPTANCE_HOLDS.
   fix_if: >-
@@ -416,8 +443,7 @@ verification_plan:
     recs attributable to this merge: a file in the merge's diff, or rec-4365's fingerprint (a recurrence). Unrelated
     ci_rca recs are printed for /orient, never failed on.
   command: >-
-    M=$(git fetch -q origin main && git log -1 --format=%H --fixed-strings --grep='feat(preflight-yaml-parse-cost)'
-    origin/main) && test -n "$M" && bin/venv-python -c "import json, subprocess, sys; from src.common.ducklake_reader_client
+    M=$(git fetch -q origin main && git log -1 --format=%H --grep='^feat(preflight-yaml-parse-cost)' origin/main) && test -n "$M" && bin/venv-python -c "import json, subprocess, sys; from src.common.ducklake_reader_client
     import fetch_recs_by_ids, make_reader; m = sys.argv[1]; git = lambda *a: subprocess.run(['git', *a],
     capture_output=True, text=True, check=True).stdout; ts = git('log', '-1', '--format=%cI', m).strip(); files =
     set(git('diff-tree', '--no-commit-id', '--name-only', '-r', m).split()); r = make_reader(); ids = [x['id'] for x in
@@ -492,6 +518,13 @@ test_obligations:
   waiver_reason: >-
     Verification-registry metadata. validate_verification_registry's differential admission gate (the class is absent on
     origin/main) and validate_graduation_completeness are its standing checks.
+- source: config/agent/verification_registry/entries/roadmap-load-libyaml.yaml
+  behavior: Registry shard for the graduated step-2 node.
+  verification_step: 11
+  command: bin/venv-python -m scripts.validate
+  waiver_reason: >-
+    Verification-registry metadata. validate_verification_registry's differential admission gate (the node is absent on
+    origin/main) and validate_graduation_completeness are its standing checks.
 - source: config/agent/verification_registry/entries/endstate-drift-libyaml.yaml
   behavior: Registry shard for the graduated step-3 node.
   verification_step: 11
@@ -522,7 +555,7 @@ test_obligations:
     origin/main) and validate_graduation_completeness are its standing checks.
 constraints:
 - >-
-  Scope is the eighteen files above (Decision 59). Untouched: compute_followon_state's per-plan parse
+  Scope is the nineteen files above (Decision 59). Untouched: compute_followon_state's per-plan parse
   (scripts/platform_roadmap_state.py:115), scripts/data_quality_compile.py, scripts/preflight/decision_conditions.py,
   tests/session/preflight/conftest.py, scripts/test_coverage_checker.py, scripts/checks/_pytest_diff.py, the coverage
   child's argv, and every config/coverage_baseline.yaml entry. The child's environment changes only by COVERAGE_CORE.
@@ -534,11 +567,10 @@ constraints:
 - >-
   Every touched file stays at or under 500 SLOC by decomposition, never a budget raise (Decision 128/130).
 - >-
-  The loader is always getattr(yaml, "CSafeLoader", yaml.SafeLoader), never a bare CSafeLoader reference, and the
-  constant sits after the import block (ruff E402). libyaml is a required dependency (the pinned PyYAML wheels bundle
-  it) enforced by the guard's yaml.__with_libyaml__ assertion; the fallback only keeps an odd environment correct but
-  slow and gets no dedicated test, because exercising it means reloading three modules in-process, which breaks class
-  identity for other tests.
+  Every switched site parses through scripts.contract_rules.parse_yaml; no new loader constant or yaml.load call
+  appears in scope. libyaml is a required dependency (the pinned PyYAML wheels bundle it) enforced by the guard's
+  yaml.__with_libyaml__ assertion; parse_yaml's getattr fallback (#1511's code, not this plan's) only keeps an odd
+  environment correct but slow and gets no dedicated test here.
 - >-
   Call get_rec_write_guidance() before composing the amended acceptances (Decision 66). Recommendation reads go through
   named verbs only (Decision 215).
@@ -548,7 +580,7 @@ context:
   Decision-scout FLAGS_FOUND, two passes (the second on the sysmon delta), all folded below. CITE: 55, 73, 128, 159,
   163, 132, 176, 189, 186, 201, 66, 182. Decisions triaged: 171 of 171. Roadmap items intersected: 5; CONFLICT: 0;
   RELATED: 5
-- "gates: decision-scout=FLAGS_FOUND (2 passes); plan-critique=r1 REVISE (F1-F7 fixed); r2 REVISE (F1-F5, F7-F9 fixed, F6 declined with reason); r3 PENDING"
+- "gates: decision-scout=FLAGS_FOUND (2 passes); plan-critique=r1 REVISE (F1-F7 fixed); r2 REVISE (F1-F5, F7-F9 fixed, F6 declined with reason); r3 REVISE (F1-F10 fixed, F11-F12 declared); r4 PENDING"
 - "Related-Work check, condition 1 (same file): scope carries scripts/session/preflight.py, rec-4365's file."
 - >-
   Evidence and plan-time measurements: /mnt/project-files/rec-4365/ (ADVICE.md, scout-report.md, sysmon-parity.md,
@@ -571,9 +603,10 @@ context:
   load node plus the budget node. rec-3638 rides this merge so the post-merge tier re-measures preflight.py in CI.
 - >-
   Not bundled: rec-4361, rec-3630, rec-4277, rec-3615, rec-4261; rec-4372 (open Critical ci_rca on
-  terraform-apply-sandbox.yml, filed 2026-10-16T13:17Z) is unrelated to this failure and file set. Kept separate on
-  purpose: the sysmon constant beside _pytest_diff.py's (a report-only check's private choice should not silently move a
-  blocking gate) and the one-line loader idiom in three modules (a shared helper would need a new scripts/ root module).
+  terraform-apply-sandbox.yml, filed 2026-10-16T13:17Z) is unrelated to this failure and file set. The sysmon constant
+  stays separate from _pytest_diff.py's on purpose (a report-only check's private choice should not silently move a
+  blocking gate). Further residuals (Decision 181 cl.2): compute_followon_state's plan-corpus parse, about 9 MB and 7.5s
+  per production preflight, rec-4374; standing loader identity, folded into rec-4371.
 - "fork: fix layer | chosen: production libyaml loader plus parse-once | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: scope"
 - "fork: regression guard | chosen: pure-Python YAML byte budget per main(), wall-clock gauge to rec-4370 | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: scope, followon_recs"
 - "fork: coverage child core | chosen: sysmon in this merge | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: scope"
