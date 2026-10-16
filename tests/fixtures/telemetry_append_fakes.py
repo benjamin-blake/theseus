@@ -1,5 +1,8 @@
 """Shared fakes for the append_telemetry tests (T2.36, plan 3 part 2): an adapter kit with fake part 1 primitives and
-a fake telemetry writer that answers append_telemetry and the grain_counts probe. No duckdb, no network."""
+a fake telemetry writer that answers append_telemetry and the grain_counts probe. No duckdb, no network.
+
+LiveFake also serves the reader's transcript_content: it drives the real reader handler over a fake telemetry connection that
+answers the resolve SQL from the stored rows, with the content module's blob store reading the in-memory object store."""
 
 from __future__ import annotations
 
@@ -11,11 +14,14 @@ from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import MagicMock
 
+from src.common import ducklake_event_content as content_mod
 from src.common import ducklake_runtime as rt
 from src.common import ducklake_telemetry_append as adapter
 from src.common import ducklake_telemetry_blobs as blobs_core
 from src.common import ducklake_telemetry_registration as reg
+from src.common.ducklake_telemetry_blobstore import MISSING, BlobIntegrityError
 from src.common.ducklake_telemetry_txn import TelemetryRequestError, TxnOutcome
+from src.lambdas.ducklake_reader import handler as reader_h
 from src.lambdas.ducklake_telemetry_writer import handler as h
 from src.lambdas.ducklake_telemetry_writer import telemetry_edge as edge
 from src.telemetry.append import AppendResult
@@ -131,6 +137,63 @@ class AdapterKit:
         return AppendResult(prepared.submitted, prepared.collapsed, len(prepared.rows))
 
 
+_CONTENT_COLUMNS = ("content", "content_uri", "content_sha256", "content_bytes", "content_omitted_reason", "compared_versions")
+
+
+class _ReadCursor:
+    description = [(name,) for name in _CONTENT_COLUMNS]
+
+    def __init__(self, rows: list[tuple[Any, ...]]) -> None:
+        self._rows = rows
+
+    def fetchall(self) -> list[tuple[Any, ...]]:
+        return self._rows
+
+
+class _ReadConnection:
+    """The reader's telemetry connection: answers the transcript_content resolve SQL from the writer fake's stored rows."""
+
+    def __init__(self, live: LiveFake) -> None:
+        self.live = live
+
+    def execute(self, sql: str, params: Any = None) -> _ReadCursor:
+        want = params or {}
+        rows: list[tuple[Any, ...]] = []
+        for key, row in self.live.stored.items():
+            _, table, event_id = key
+            if table != "telemetry_transcripts" or row["_session"] != want["session_id"] or event_id != want["event_id"]:
+                continue
+            if row["producer"] != want["producer"] or row["parser_version"] != want["parser_version"]:
+                continue
+            kept = self.live.reprs.get(key, {})
+            rows.append(
+                (
+                    kept.get("content"),
+                    kept.get("content_uri"),
+                    row.get("content_sha256"),
+                    row.get("content_bytes"),
+                    row.get("content_omitted_reason"),
+                    1,
+                )
+            )
+        return _ReadCursor(rows)
+
+
+class _StoreReader:
+    """The content module's blob store over the in-memory object store: the checks verify makes, then the byte range."""
+
+    def __init__(self, store: MemoryBlobStore) -> None:
+        self.store = store
+
+    def get_blob(self, uri: str, sha: str, size: int, *, offset: int, length: int) -> bytes:
+        state = self.store.verify(uri, sha, size)
+        if state == MISSING:
+            raise BlobIntegrityError("x", reason="forbidden_or_missing")
+        if state in ("mismatch", "size_mismatch"):
+            raise BlobIntegrityError("x", reason="checksum_mismatch" if state == "mismatch" else "length_mismatch")
+        return self.store.blobs[uri][offset : offset + length]
+
+
 _ACCOUNT = "acct-under-test"
 _USER_ARN = "arn:aws:sts::acct-under-test:assumed-role/Some/secret-session"
 
@@ -148,6 +211,8 @@ class LiveFake(AdapterKit):
         self.lock = threading.Lock()
         self.data_path_is_smoke = True
         self.store = MemoryBlobStore()
+        self.reprs: dict[tuple[str, str, str], dict[str, Any]] = {}
+        self.read_connection = _ReadConnection(self)
 
     def activate(self, monkeypatch: Any) -> LiveFake:
         self.install(monkeypatch)
@@ -155,8 +220,14 @@ class LiveFake(AdapterKit):
         monkeypatch.setenv("TELEMETRY_DATA_PATH", rt.SMOKE_DATA_PATH)
         monkeypatch.setenv("TELEMETRY_DSN_SECRET_ID", "secret")
         monkeypatch.setattr(
-            rt, "get_warm_connection", lambda **kw: (MagicMock(), {"reused": True, "reopened": False, "connect_ms": 0.0})
+            rt,
+            "get_warm_connection",
+            lambda **kw: (
+                self.read_connection if kw.get("slot") == "telemetry" else MagicMock(),
+                {"reused": True, "reopened": False, "connect_ms": 0.0},
+            ),
         )
+        monkeypatch.setattr(content_mod, "BLOB_STORE", _StoreReader(self.store))
         monkeypatch.setattr(reg, "lookup_tenant", lambda con, kind, ref, semantics=None: TENANT)
         monkeypatch.setitem(h.actions.VERBS, "telemetry_probe", self._probe)
         monkeypatch.setattr(h, "_BLOB_STORE", self.store)
@@ -190,7 +261,7 @@ class LiveFake(AdapterKit):
             "isBase64Encoded": False,
             "requestContext": {"authorizer": {"iam": {"accountId": _ACCOUNT, "userArn": _USER_ARN}}},
         }
-        response = h.handler(event)
+        response = (reader_h if payload.get("action") == "named_read" else h).handler(event)
         return _Resp(response["statusCode"], json.loads(response["body"]))
 
     def _lookup(self, con: Any, tenant_id: str, project_ref: str, *, semantics: Any = None) -> tuple[str, str] | None:
@@ -205,11 +276,11 @@ class LiveFake(AdapterKit):
 
     def _txn(self, con: Any, body: Any, *, metric_sink: Any = None, **kw: Any) -> TxnOutcome:
         with self.lock:
-            saved = (dict(self.projects), dict(self.stored), dict(self.files))
+            saved = (dict(self.projects), dict(self.stored), dict(self.files), dict(self.reprs))
             try:
                 result = body(con)
             except BaseException:
-                self.projects, self.stored, self.files = saved
+                self.projects, self.stored, self.files, self.reprs = saved
                 raise
             if metric_sink is not None:
                 metric_sink("OccRetryCount", 0.0)
@@ -226,6 +297,7 @@ class LiveFake(AdapterKit):
             old = self.stored.get(key)
             if old is None:
                 self.stored[key] = {**compared, "_session": row["session_id"]}
+                self.reprs[key] = {"content": row.get("content"), "content_uri": row.get("content_uri")}
                 inserted += 1
             elif {k: v for k, v in old.items() if k != "_session"} != compared:
                 raise GrainConflictError(

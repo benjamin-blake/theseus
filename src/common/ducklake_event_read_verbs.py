@@ -158,6 +158,22 @@ EVENT_READS: dict[str, EventRead] = {
             ),
         ),
         EventRead(
+            verb="transcript_content",
+            tables=(sql.TRANSCRIPTS,),
+            sql=sql.TRANSCRIPT_CONTENT_SQL,
+            params=("session_id", "producer", "event_id", "parser_version", "offset", "max_bytes"),
+            binding="session",
+            data={"response": "content"},
+            int_params=("parser_version", "offset", "max_bytes"),
+            agent_facing=False,
+            description=(
+                "One stored transcript row's exact payload bytes by its full grain key (session_id, producer, event_id, "
+                "parser_version), as standard base64 pages of at most 3 MiB: loop while offset + length < content_bytes, "
+                "concatenate the decoded pages, then check the length and SHA-256 against the row. Storage omitted carries "
+                "no data. " + _SMOKE_ONLY
+            ),
+        ),
+        EventRead(
             verb="telemetry_health_count",
             tables=_ALL,
             sql=sql.TELEMETRY_HEALTH_SQL,

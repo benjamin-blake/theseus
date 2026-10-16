@@ -123,7 +123,9 @@ def wired(monkeypatch):
             with lock:
                 n = counts["tenant"] = counts["tenant"] + 1
             return _Resp(200, {"ok": True, "tenant_id": state["tenant_ids"][min(n, 2) - 1], "created": n == 1})
-        if action in ("append_telemetry", "begin_blobs") or (action == "telemetry_probe" and "project_ref" in payload):
+        if action in ("append_telemetry", "begin_blobs", "named_read") or (
+            action == "telemetry_probe" and "project_ref" in payload
+        ):
             return state["live"].invoke(url, payload)
         if action == "register_project":
             with lock:
@@ -455,6 +457,7 @@ def test_blob_vectors_run_after_the_append_vectors(wired, capsys):
     for marker in (
         "TELEMETRY_BLOB_PROTOCOL_OK",
         "TELEMETRY_BLOB_AUTOREGISTER_OK",
+        "TELEMETRY_BLOB_READBACK_OK",
         "blob_grant_ms=",
         "blob_put_ms=",
         "blob_append_ms=",

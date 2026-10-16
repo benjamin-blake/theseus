@@ -385,3 +385,23 @@ def test_handler_errors_module_bundled_by_serving_functions_only(tmp_path):
     stage_dir.mkdir()
     stage_bundle(manifests["data-pipeline"], stage_dir, skip_pip=True)
     assert list(stage_dir.rglob("ducklake_handler_errors.py")) == []
+
+
+# ---------------------------------------------------------------------------
+# PLAN-telemetry-transcript-content: the reader serves transcript_content, so its bundle carries the content module and the
+# blob store adapter with their imports. ducklake_event_content is imported function-locally and --check-bundles does not
+# run in --pre, so no pre-merge import check would see a missing include.
+# ---------------------------------------------------------------------------
+
+
+def test_reader_bundle_carries_the_transcript_content_modules():
+    manifests = load_all()
+    reader = set(manifests["ducklake_reader"].includes)
+    for module in (
+        "src/common/ducklake_event_content.py",
+        "src/common/ducklake_telemetry_blobstore.py",
+        "src/telemetry/blobs.py",
+        "src/telemetry/request.py",
+    ):
+        assert module in reader, f"ducklake_reader must bundle {module}"
+    assert "src/common/ducklake_event_content.py" in set(manifests["data-pipeline"].excludes)

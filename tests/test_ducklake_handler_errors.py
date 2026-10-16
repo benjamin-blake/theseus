@@ -189,3 +189,50 @@ def test_named_read_input_log_line_is_redacted_and_carries_the_request_id(capsys
         "req-3",
     )
     assert line["message"].startswith("narrow the query") and "hunter2" not in line["message"] and _ACCT not in line["message"]
+
+
+def test_typed_fault_answers_status_type_and_reason_only(capsys):
+    fault = he.TypedFault(503, "blob_unavailable", "store_unavailable", cause_code="SlowDown", cause_status=503)
+    status, body = he.terminal(fault, function="reader", action="named_read", request_id="req-9", elapsed_ms=1.0)
+    assert status == 503
+    assert body == {
+        "ok": False,
+        "error_type": "blob_unavailable",
+        "reason": "store_unavailable",
+        "request_id": "req-9",
+        "action": "named_read",
+    }
+    assert [e["event"] for e in _lines(capsys.readouterr().out, "ducklake_typed_fault")] == ["ducklake_typed_fault"]
+    other = he.TypedFault(500, "grain_conflict", "differing_rows")
+    assert he.terminal(other, function="reader", action="named_read", request_id=None, elapsed_ms=1.0)[0] == 500
+    capsys.readouterr()
+
+
+def test_typed_fault_log_never_carries_the_message(capsys):
+    try:
+        try:
+            raise Exception(_SECRET)
+        except Exception as cause:
+            raise he.TypedFault(
+                500, "blob_integrity", "forbidden_or_missing", cause_code="AccessDenied", cause_status=403
+            ) from cause
+    except he.TypedFault as fault:
+        fault.args = (_SECRET,)
+        status, body = he.terminal(fault, function="reader", action="named_read", request_id="r", elapsed_ms=1.0)
+    out = capsys.readouterr().out
+    lines = _lines(out, "ducklake_typed_fault")
+    assert status == 500 and len(lines) == 1
+    assert lines[0] == {
+        "event": "ducklake_typed_fault",
+        "function": "reader",
+        "action": "named_read",
+        "error_type": "blob_integrity",
+        "reason": "forbidden_or_missing",
+        "request_id": "r",
+        "cause_code": "AccessDenied",
+        "cause_status": 403,
+    }
+    for text in (out, json.dumps(body)):
+        for needle in ("hunter2", "abc123", "arn:aws", _ACCT, "s3://", "Exception"):
+            assert needle not in text
+    assert he.TypedFault(500, "x", "y").cause_status == 0

@@ -271,3 +271,14 @@ TELEMETRY_HEALTH_SQL = (
     "WHERE t.end_snapshot IS NULL AND t.table_name IN ('telemetry_sessions', 'telemetry_observations', "
     "'telemetry_transcripts', 'telemetry_agents') ORDER BY t.table_name"
 )
+
+# transcript_content's resolve step: every stored row of the exact grain key (any parser_version, no generation retirement or
+# dedupe), the payload columns the content module serves from, and compared_versions -- the count of distinct row values over
+# the compared columns (one row value, so a NULL-versus-value difference counts, as in conflict_select).
+TRANSCRIPT_CONTENT_SQL = (
+    "WITH k AS (SELECT * FROM {transcripts} WHERE {scope} AND producer = $producer AND event_id = $event_id "
+    "AND parser_version = $parser_version), "
+    "c AS (SELECT count(DISTINCT row({cmp_transcripts})) AS compared_versions FROM k) "
+    "SELECT k.content, k.content_uri, k.content_sha256, k.content_bytes, k.content_omitted_reason, c.compared_versions "
+    "FROM k CROSS JOIN c ORDER BY k.created_timestamp, k.content_uri"
+)
