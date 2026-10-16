@@ -168,9 +168,9 @@ fields:
     semantics: >-
       ROOT session: the state of its latest lifecycle row, ordered by event_timestamp, then source_ordinal, then close ranked last on a tie, then event_id, over every producer's rows after each producer's own R5 dedupe (the envelope's generation rule); annotate rows are excluded. That state is
       running unless the latest row is a close, in which case it is that close's outcome (success | failed | cancelled). abandoned: not terminal, and as_of minus the session's last event_timestamp across its rows in all four telemetry tables exceeds a governed idle threshold. The idle threshold
-      lives in the reader's named-read registry as versioned data, seeded at 24 h and owned by 2b (rec-4024); a later resume makes the session running again and nothing is stored. SUB-AGENT session (parent_session_id not NULL): state and duration come from its telemetry_agents agent-run open/close
+      lives in the reader's named-read registry as versioned data, seeded at 24 h and owned by 2b (PLAN-telemetry-reader-verbs, #1496); a later resume makes the session running again and nothing is stored. SUB-AGENT session (parent_session_id not NULL): state and duration come from its telemetry_agents agent-run open/close
       pair. An open with no close is running, or abandoned past the same idle threshold; a close maps its agent-run outcome into state as success -> success and failed, timeout or throttled -> failed (the detail stays on telemetry_agents.outcome).
-    populated_by: a named reader verb (rec-4024), bounded to this session's calendar-day partition; the idle threshold is reader registry data, never a column.
+    populated_by: a named reader verb (PLAN-telemetry-reader-verbs, #1496), bounded to this session's calendar-day partition; the idle threshold is reader registry data, never a column.
     dq_intent: {not_null: {enforced: false}, accepted_values: {values: [running, abandoned, success, failed, cancelled], enforced: false}}
     derivation: {timing: read, derived_by: reader_verb:session_state_and_duration, formula: "ROOT (parent_session_id IS NULL): the latest lifecycle row (annotate excluded) ordered by event_timestamp, source_ordinal, close last on a tie, event_id, after R5 dedupe; running unless it is a close, then its outcome; abandoned when not terminal and as_of - max(event_timestamp over this session's rows in the four telemetry tables) exceeds the governed idle threshold. SUB-AGENT: its telemetry_agents agent-run open/close pair; open with no close is running (abandoned past the idle threshold); at close success -> success, failed|timeout|throttled -> failed", inputs: [session_id, parent_session_id, event_kind, event_timestamp, source_ordinal, event_id, outcome, telemetry_agents.session_id, telemetry_agents.event_kind, telemetry_agents.event_timestamp, telemetry_agents.outcome, telemetry_observations.session_id, telemetry_observations.event_timestamp, telemetry_transcripts.session_id, telemetry_transcripts.event_timestamp], realized: false}
     amendment_log:
@@ -207,7 +207,7 @@ fields:
     description: >-
       Count of process_event observations in the session. DERIVED at read (roll-up naming: *_total) from telemetry_observations rows with observation_type=process_event sharing this session_id -- replaces the contract_version 1 stored tally process_event_count.
     semantics: A read-time aggregate; no physical column (data-modeling-standard.yaml derived-state rule).
-    populated_by: a named reader verb (rec-4024), bounded to this session's calendar-day partition.
+    populated_by: a named reader verb (PLAN-telemetry-reader-verbs, #1496), bounded to this session's calendar-day partition.
     dq_intent: {not_null: {enforced: false}}
     derivation: {timing: read, derived_by: reader_verb:session_process_event_rollup, formula: "count of telemetry_observations rows WHERE session_id = this.session_id AND observation_type = 'process_event'", inputs: [telemetry_observations.session_id, telemetry_observations.observation_type], realized: false}
   rework_total:
@@ -219,9 +219,9 @@ fields:
       retired.
     semantics: >-
       A key self-improvement-loop friction signal; no physical column. The facts are process_events at severity error, warning or critical, plus tool_call closes with outcome error or blocked, read after R5 dedupe. rework_total counts runs: at least repeat_threshold consecutive error closes of the
-      same tool inside one turn; a same-tool blocked close breaks a run. The rules (signatures, dispositions, labels, classes, repeat_threshold) live in a governed, versioned rules file bundled into the reader's named-read registry as data, owned by 2b (rec-4024); classifier_version is stamped on
+      same tool inside one turn; a same-tool blocked close breaks a run. The rules (signatures, dispositions, labels, classes, repeat_threshold) live in a governed, versioned rules file bundled into the reader's named-read registry as data, owned by 2b (PLAN-telemetry-reader-verbs, #1496); classifier_version is stamped on
       every response and is never a column.
-    populated_by: a named reader verb (rec-4024), bounded to this session's calendar-day partition.
+    populated_by: a named reader verb (PLAN-telemetry-reader-verbs, #1496), bounded to this session's calendar-day partition.
     dq_intent: {not_null: {enforced: false}}
     derivation: {timing: read, derived_by: reader_verb:session_friction_rollup, formula: "count of runs of at least repeat_threshold consecutive tool_call closes with outcome error for the same tool (name) inside one turn (parent_observation_id), ordered by event_timestamp then source_ordinal, a same-tool blocked close breaking a run; repeat_threshold comes from the reader's rules file", inputs: [telemetry_observations.session_id, telemetry_observations.observation_type, telemetry_observations.event_kind, telemetry_observations.observation_id, telemetry_observations.name, telemetry_observations.severity, telemetry_observations.outcome, telemetry_observations.parent_observation_id, telemetry_observations.event_timestamp, telemetry_observations.source_ordinal], realized: false}
     amendment_log:
@@ -235,7 +235,7 @@ fields:
     semantics: >-
       A key self-improvement-loop friction signal; no physical column. exception_total counts the facts (process_events at severity error, warning or critical, plus tool_call closes with outcome error or blocked) that the reader's rules file labels exception-class. Each fact gets one label (an exact
       signature beats the generic rule), and a blocked tool_call whose own hook block is already a fact is not counted twice. classifier_version is stamped on every response and is never a column.
-    populated_by: a named reader verb (rec-4024), bounded to this session's calendar-day partition.
+    populated_by: a named reader verb (PLAN-telemetry-reader-verbs, #1496), bounded to this session's calendar-day partition.
     dq_intent: {not_null: {enforced: false}}
     derivation: {timing: read, derived_by: reader_verb:session_friction_rollup, formula: "count of facts (process_event points at severity error, warning or critical, and tool_call closes with outcome error or blocked) that the reader's rules file labels exception-class, one label per fact (an exact signature beats the generic rule), a blocked tool_call whose own hook block is already a fact not counted twice", inputs: [telemetry_observations.session_id, telemetry_observations.observation_type, telemetry_observations.event_kind, telemetry_observations.observation_id, telemetry_observations.name, telemetry_observations.severity, telemetry_observations.outcome, telemetry_observations.parent_observation_id, telemetry_observations.event_timestamp, telemetry_observations.source_ordinal], realized: false}
     amendment_log:
@@ -247,7 +247,7 @@ fields:
     description: Wall-clock session duration in seconds. DERIVED at read; NULL until a close row exists (a root session's latest close, a sub-agent session's agent-run close).
     semantics: >-
       ROOT session: the latest close's event_timestamp minus session_started_at, wall-clock, including any idle gap between a close and a later resume. SUB-AGENT session: its agent-run close minus open (telemetry_agents.duration_seconds). Computed by the same reader verb that derives `state`.
-    populated_by: a named reader verb (rec-4024).
+    populated_by: a named reader verb (PLAN-telemetry-reader-verbs, #1496).
     dq_intent: {not_null: {enforced: false}}
     derivation: {timing: read, derived_by: reader_verb:session_state_and_duration, formula: "ROOT: (latest close.event_timestamp - session_started_at).total_seconds(), the latest close being this session's last event_kind=close row by event_timestamp, source_ordinal, event_id; SUB-AGENT: telemetry_agents.duration_seconds of its agent-run pair (close minus open)", inputs: [event_timestamp, session_started_at, event_kind, parent_session_id, source_ordinal, event_id, telemetry_agents.session_id, telemetry_agents.event_kind, telemetry_agents.event_timestamp], realized: false}
     amendment_log:
@@ -361,7 +361,7 @@ fields:
     description: >-
       Steps actually completed in the session. DERIVED at read (roll-up naming: *_total) from telemetry_observations step-kind close rows sharing this session_id -- replaces the contract_version 1 stored tally steps_completed.
     semantics: steps_completed_total/steps_total is the session completion ratio; no physical column.
-    populated_by: a named reader verb (rec-4024), bounded to this session's calendar-day partition.
+    populated_by: a named reader verb (PLAN-telemetry-reader-verbs, #1496), bounded to this session's calendar-day partition.
     dq_intent: {not_null: {enforced: false}}
     derivation: {timing: read, derived_by: reader_verb:session_process_event_rollup, formula: "count of telemetry_observations rows WHERE session_id = this.session_id AND observation_type = 'step' AND event_kind = 'close'", inputs: [telemetry_observations.session_id, telemetry_observations.observation_type, telemetry_observations.event_kind], realized: false}
   scope_drift_files:
