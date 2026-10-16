@@ -11,7 +11,7 @@ intent: >-
   and drop the stale KNOWN GAPS entries (rec-2173, already closed; rec-4024, whose named verbs and dimension contracts
   are built once the reader verbs build lands) from the telemetry_sessions and telemetry_observations contracts.
 plan_type: IMPLEMENTATION
-verification_tier: V1
+verification_tier: V2
 plan_path: docs/plans/PLAN-reader-verbs-decision-notes.yaml
 phase: >-
   T2.36 (Phase 4: telemetry re-lands on DuckLake), bookkeeping owed by PLAN-telemetry-reader-verbs (#1481, rec-4291
@@ -38,6 +38,20 @@ scope:
   purpose: >-
     The same cleanup for its stale rec-4024 (writer/reader verbs) entry, with one amendment_log entry, exactly as
     execution_steps[3] says. No other key or field changes.
+- file: tests/telemetry/test_contract_amendments.py
+  action: Modify
+  purpose: >-
+    test_decision_annotations_for_hash_compare_and_omission asserts Decision 207's whole span ends with the 2026-10-04
+    note's "(PLAN-telemetry-write-conformance).", so any sanctioned append-only note (Decision 177, amendment_forms)
+    fails it. Replace that positional assertion with a line-scoped one, exactly these four lines: `marker = "> **Update
+    (2026-10-04):** representation-only columns"`, `note = next((line for line in d207.splitlines() if
+    line.startswith(marker)), "")`, `assert note.rstrip().endswith("(PLAN-telemetry-write-conformance).")`, `assert
+    d207.index(note) > d207.index("**Related:**")`. The 2026-10-04 note must still exist, end with its provenance and sit
+    after the entry's Related line (a trailing annotation, never a mid-body splice; precedent
+    tests/checks/contracts/test_ops_rule_source_records.py); nothing else in the file changes. This corrects an
+    over-constraint that Decision 177's append-only dialect never promised, not a CONTENT weakening
+    (implement-scope-boundary.yaml invariants.content): presence and provenance stay asserted and the trailing order is
+    added.
 - file: docs/decisions-index.json
   action: Modify
   purpose: >-
@@ -74,8 +88,11 @@ acceptance_criteria:
   names rec-4024; every other entry, field and key is unchanged; each contract's amendment_log gains exactly the
   approved first entry (VP step 6).
 - >-
-  docs/decisions-index.json is current; no numbered Decision is added; no code, roadmap or Lambda file changes, and no
-  contract change beyond the approved KNOWN GAPS cleanup.
+  test_contract_amendments.py's Decision 207 assertion is line-scoped exactly as its scope row says, and VP step 9
+  passes with the notes in place.
+- >-
+  docs/decisions-index.json is current; no numbered Decision is added; no code (beyond that one test assertion),
+  roadmap or Lambda file changes, and no contract change beyond the approved KNOWN GAPS cleanup.
 - >-
   rec-4324's acceptance holds on the merge commit and rec-4324 is closed by the `Resolves: rec-4324` trailer.
 verification_plan:
@@ -245,6 +262,23 @@ verification_plan:
 - step: 9
   phase: pre-deploy
   action: >-
+    The test that pins Decision 207's 2026-10-04 note passes with the three notes in place, through the line-scoped
+    assertion in the test_contract_amendments.py scope row.
+  command: bin/venv-python -m pytest tests/telemetry/test_contract_amendments.py::test_decision_annotations_for_hash_compare_and_omission -q
+  expected: The node passes (1 passed).
+  fix_if: >-
+    A failure on the section-end assertion means the old positional assertion is still there: apply the scope row's
+    exact four lines. An AssertionError (or a ValueError if the Related line is gone) on the provenance or the
+    Related-line order means a note edit touched or moved an existing line (Decision 177): restore it.
+  hermetic: true
+  expected_literals: []
+  graduation: waive
+  graduation_waiver_reason: >-
+    The node already runs in the standing pytest tiers (--pre and full); graduating it would register a duplicate guard
+    for the same assertion.
+- step: 10
+  phase: pre-deploy
+  action: >-
     Full presubmit tier on the committed, rebased, clean tree (git-ops.yaml handoff_sequence), then the head
     attestation: validate_decisions_size (expect the Decision 199 amendment-delta WARN and the pre-existing
     standing-pressure aggregate WARN, 30 at planning; 31 only if another PR grew Decision 199 first, reported as
@@ -263,7 +297,7 @@ verification_plan:
   graduation_waiver_reason: >-
     scripts.validate is the aggregate presubmit entrypoint; graduating it would recurse validation into its own
     registry, which vp-red-before.yaml's recursion refusal declines.
-- step: 10
+- step: 11
   phase: post-deploy
   action: >-
     After the squash merge: ci.yml's trailer-census, trailer-acceptance-evaluate and trailer-closure jobs on the merge
@@ -280,7 +314,7 @@ verification_plan:
     update_rec fallback git-ops.yaml resolves_trailer sanctions; after an acceptance-verdict refusal never close by
     hand: use the printed close_proposed command and report it. A red backfill run is its own failure to report.
   hermetic: false
-- step: 11
+- step: 12
   phase: post-deploy
   action: >-
     rec-4024's record agrees with the 207 note (execution step 8) and kept its history: if rec-4024 is still open, its
@@ -308,7 +342,7 @@ test_obligations:
     legitimate red-before outcome). Green after the three notes land.
 - source: config/agent/verification_registry/entries/reader-verbs-decision-notes.yaml
   behavior: The graduated row names step 4's span-scoped command so the VF-06 differential gate can prove it discriminates.
-  verification_step: 9
+  verification_step: 10
   command: bin/venv-python -m scripts.validate
   waiver_reason: >-
     This file is a verification record, not behavior-capable source. validate_verification_registry already enforces
@@ -336,6 +370,16 @@ test_obligations:
   red_green_expectation: >-
     Red before: measured at authoring time, exit 1 (AssertionError naming both contracts) on main 79063637, since
     neither carries the edit. Green after the approved edits land.
+- source: tests/telemetry/test_contract_amendments.py
+  behavior: >-
+    Decision 207's 2026-10-04 representation-only note stays present, ends with its provenance and sits after the
+    entry's Related line, whatever dated notes follow it.
+  verification_step: 9
+  test_selector: tests/telemetry/test_contract_amendments.py::test_decision_annotations_for_hash_compare_and_omission
+  red_green_expectation: >-
+    Red before: with the three notes applied to origin/main 078487b2 (the reader verbs build merged, #1496), the node
+    fails on the section-end assertion (measured 2026-10-16, the only failure across the 120 test modules that read
+    docs/DECISIONS.md or the two contracts). Green after the line-scoped assertion, on that tree and on main.
 constraints:
 - >-
   The three texts in execution_steps[2] were approved verbatim by Benjamin on 2026-10-15
@@ -361,8 +405,8 @@ constraints:
   `> **Update (` opener, preceded by one blank line, placed after the entry's last existing note and before its `---`
   separator. Edit no existing line, metadata block, Coverage line, clause, Related list or earlier note.
 - >-
-  No new numbered Decision (significance.routing_rule; rec-3016 amendment_forms alternative). No roadmap, code, test or
-  Lambda file changes, and no contract change beyond the approved KNOWN GAPS cleanup in execution_steps[3] (Class A
+  No new numbered Decision (significance.routing_rule; rec-3016 amendment_forms alternative). No roadmap, code or Lambda
+  file changes, no test change beyond the one assertion in the test_contract_amendments.py scope row, and no contract change beyond the approved KNOWN GAPS cleanup in execution_steps[3] (Class A
   contract text: always-ask, so a wording change goes to Benjamin like the notes); T2.52 and CD.52's T2.52 half are untouched; REPORT-w3-feedback-loop-staging.md
   is not edited (feedback-loop gate).
 - >-
@@ -375,7 +419,7 @@ context:
   per-derivation single-partition bound verbatim; the ~3-clarification cap reads per clause; expect the 199 accretion
   WARN) and SPIRIT 86 NOTE (no day count in the 199 text): both resolved in the approved text. RELATED 84, 88, 93, 81,
   167, 150, 178, 201, 179, 160. Decisions triaged: 170 of 170. Roadmap items intersected: 3; CONFLICT: 0; RELATED: 3.
-- 'gates: decision-scout=FLAGS_FOUND (2 notes, resolved); plan-critique=REVISE r1 (R1-R5 fixed), REVISE r2 (R1 deploy-run binding, R2 test-node fidelity fixed; S1-S5 folded in), REVISE r3 (R1 rec-4024 prepend and anchor check fixed; S1-S3, N1, N2 folded in), r4 confirming REVISE (R1 Decision 177 rollback fixed; S1-S3 folded in), escalated (one more round recommended); r5 PROCEED (new series), S1 and S3 folded in; amendment 2026-10-15 (KNOWN GAPS cleanup): REVISE a1 (R1 merge-gate wording, R2 coverage claim fixed; S2 rollback folded in), a2 PROCEED (S1 placeholder guard folded in)'
+- 'gates: decision-scout=FLAGS_FOUND (2 notes, resolved); plan-critique=REVISE r1 (R1-R5 fixed), REVISE r2 (R1 deploy-run binding, R2 test-node fidelity fixed; S1-S5 folded in), REVISE r3 (R1 rec-4024 prepend and anchor check fixed; S1-S3, N1, N2 folded in), r4 confirming REVISE (R1 Decision 177 rollback fixed; S1-S3 folded in), escalated (one more round recommended); r5 PROCEED (new series), S1 and S3 folded in; amendment 2026-10-15 (KNOWN GAPS cleanup): REVISE a1 (R1 merge-gate wording, R2 coverage claim fixed; S2 rollback folded in), a2 PROCEED (S1 placeholder guard folded in); amendment 2026-10-16 (test assertion scope row, build escalation): REVISE b1 (R1 tier V2, R2 Related-line order kept; S1, S2 folded in), b2 PROCEED (S2, S3 folded in)'
 - >-
   Direction (Benjamin, cmsg_012XgaFy8VaDQbxP5D8nC9587zPkCFdx5BwFoNH9FbvcLU): add the 199 note, which revisits his
   2026-10-05 W3-1 choice (contract note only, PLAN-telemetry-lifecycle-friction-amendment) because the decision scout
@@ -435,17 +479,18 @@ execution_steps:
   check_spec.command [bin/venv-python, -c, <step 4's Python program verbatim>], plan_slug reader-verbs-decision-notes,
   graduated_at the landing date, graduated_by implement-agent (shape: decision-215-residuals-repointed.yaml).
 - >-
-  Make the contract edits in execution_steps[3]. Run VP steps 4-8 on the working tree, then the implement skill's code review (its Workflow Step 5) on the diff.
+  Make the contract edits in execution_steps[3] and the test_contract_amendments.py assertion change exactly as its
+  scope row says. Run VP steps 4-9 on the working tree, then the implement skill's code review (its Workflow Step 5) on the diff.
   Then follow its Commit Flow in order: github_readiness; the test_coverage_checker diagnostic (expected to report
   nothing, since no source file is in scope); set implementation_declared true in this plan; `--pre`; postflight
-  evidence; commit; `git fetch origin main` and `git rebase origin/main`; VP steps 4-8 again on the rebased tree (steps 5
-  and 6 diff against origin/main); VP step 9 (full tier, then --verify-head) on the committed clean tree; push as its own
+  evidence; commit; `git fetch origin main` and `git rebase origin/main`; VP steps 4-9 again on the rebased tree (steps 5
+  and 6 diff against origin/main); VP step 10 (full tier, then --verify-head) on the committed clean tree; push as its own
   tool call; open the PR (On The Loop in prose). Any fix commit or re-rebase restarts from the rebase. On an
   unrecoverable failure stop and RCA (Decision 55).
 - >-
   On code review PROCEED and green CI, re-run VP steps 1, 5 and 6 (texts still verbatim to the approved templates), then
   squash-merge with `Resolves: rec-4324` in
-  the body. Then run VP steps 10 and 11 (step 11 after execution step 8's note).
+  the body. Then run VP steps 11 and 12 (step 12 after execution step 8's note).
 - >-
   If rec-4024 is still open after the merge, add a dated note so the rec agrees with the 207 note (Decision 181
   cl.2): call get_rec_write_guidance first, fetch rec-4024 with recs_by_ids immediately before the write, and write
