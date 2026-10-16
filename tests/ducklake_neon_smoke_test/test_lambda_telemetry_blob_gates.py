@@ -180,6 +180,27 @@ def test_put_failure_names_the_s3_code(wired: Wired, monkeypatch: pytest.MonkeyP
     assert "kind=proxy status=403" in failure(wired)
 
 
+def _readback_override(wired: Wired, break_: str) -> Any:
+    def reader_answer(payload: dict[str, Any]) -> Any:
+        if payload["action"] != "named_read" or payload["params"]["offset"] >= vec.MULTI_CHUNK_BYTES:
+            return None
+        if break_ == "readback_pages":
+            return _Resp(500, {"ok": False, "error_type": "blob_integrity", "reason": "checksum_mismatch"})
+        if break_ == "readback_drops_a_chunk" and payload["params"]["offset"] != vec.CHUNK_BYTES:
+            return None
+        body = wired.live.invoke("u", payload).json()
+        page = body["rows"][0]
+        if break_ == "readback_drops_a_chunk":
+            page.update(length=0, data="")
+        else:
+            raw = bytearray(base64.b64decode(page["data"]))
+            raw[0] ^= 1
+            page["data"] = base64.b64encode(bytes(raw)).decode("ascii")
+        return _Resp(200, body)
+
+    return reader_answer
+
+
 @pytest.mark.parametrize(
     ("break_", "needle"),
     [
@@ -250,26 +271,8 @@ def test_each_divergence_fails_loudly(wired: Wired, monkeypatch: pytest.MonkeyPa
         wired.override = lambda payload: (
             _Resp(200, {"ok": True, "items": []}) if payload["action"] == "begin_blobs" and _misdeclared(payload) else None
         )
-    elif break_ in ("readback_wrong_bytes", "readback_drops_a_chunk", "readback_pages"):
-
-        def reader_answer(payload: dict[str, Any]) -> Any:
-            if payload["action"] != "named_read" or payload["params"]["offset"] >= vec.MULTI_CHUNK_BYTES:
-                return None
-            if break_ == "readback_pages":
-                return _Resp(500, {"ok": False, "error_type": "blob_integrity", "reason": "checksum_mismatch"})
-            if break_ == "readback_drops_a_chunk" and payload["params"]["offset"] != vec.CHUNK_BYTES:
-                return None
-            body = wired.live.invoke("u", payload).json()
-            page = body["rows"][0]
-            if break_ == "readback_drops_a_chunk":
-                page.update(length=0, data="")
-            else:
-                raw = bytearray(base64.b64decode(page["data"]))
-                raw[0] ^= 1
-                page["data"] = base64.b64encode(bytes(raw)).decode("ascii")
-            return _Resp(200, body)
-
-        wired.override = reader_answer
+    elif break_.startswith("readback_"):
+        wired.override = _readback_override(wired, break_)
     elif break_ == "bounds_pass":
         wired.override = lambda payload: _Resp(200, {"ok": True}) if len(payload.get("items", [])) > 200 else None
     else:
