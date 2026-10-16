@@ -29,6 +29,7 @@ ENTRIES: tuple[Entry, ...] = (
         pre=True,
         pre_globs=(
             "src/row_rules/**",
+            "scripts/contract_rules.py",
             "logs/.recommendations-log.jsonl",
             "scripts/executor/**",
             "scripts/s3_log_store.py",

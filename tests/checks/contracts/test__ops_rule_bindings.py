@@ -1,6 +1,5 @@
-"""Unit cases for scripts/checks/contracts/_ops_rule_bindings.py: the ops.yaml write_time parity and the status
-vocabulary legs, moved verbatim from validate_ops_rule_source (rec-4158) with one change -- the not_null parity reads
-presence through scripts.contract_rules."""
+"""Unit cases for scripts/checks/contracts/_ops_rule_bindings.py: ops.yaml has no write-time role and is never stricter
+than the contract (one-way), and the status vocabulary legs (rec-4158)."""
 
 from __future__ import annotations
 
@@ -16,6 +15,8 @@ from scripts.checks.contracts import _rule_grammar as grammar
 
 _REPO = Path(__file__).resolve().parents[3]
 _OPS = "config/agent/data_quality/ops.yaml"
+_EARLIER_NN = "exclude_before is earlier than the contract's not_null date"
+_EARLIER_AV = "exclude_before is earlier than the contract's accepted_values"
 _SOURCES = (_OPS, "src/common/ducklake_scd2_schema.py", "scripts/executor/jsonl_store.py")
 
 
@@ -43,59 +44,52 @@ def test_the_real_tree_agrees(recs) -> None:
     assert bindings.binding_errors(_REPO, *recs) == []
 
 
-def test_not_null_parity_reads_presence(tmp_path: Path) -> None:
-    root = _ops_with(tmp_path, "risk", [{"not_null": {"write_time": True}}])
-    raw = {"risk": {"iceberg_type": "string"}}
-    blank_rejecting = {"accepted_values": {"values": ["low"]}}
-    for declared in (True, {"exclude_before": "2026-10-01"}, {"enforced": True}):
-        assert bindings._parity_errors(root, raw, {"risk": {"not_null": declared, **blank_rejecting}}) == [], declared
-    for undeclared in ({}, {"not_null": {"enforced": False}}):
-        errors = bindings._parity_errors(root, raw, {"risk": {**undeclared, **blank_rejecting}})
-        assert any("ops.yaml risk.not_null: no equal not_null rule in the contract" in e for e in errors), undeclared
-    errors = bindings._parity_errors(root, raw, {"risk": {"not_null": True}})
-    assert any("a VARCHAR column needs a blank-rejecting rule" in e for e in errors)
+def test_ops_yaml_has_no_write_time_role_and_is_never_stricter(tmp_path: Path, recs) -> None:
+    fields, intents = recs
+    assert "write_time" not in (_REPO / _OPS).read_text(encoding="utf-8")
+    assert bindings._ops_yaml_errors(_REPO, intents) == []
+    # a write_time key anywhere is refused
+    doc = {"tables": {"ops_recommendations": {"columns": {"title": {"tests": [{"not_null": {"write_time": False}}]}}}}}
+    (tmp_path / _OPS).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / _OPS).write_text(yaml.safe_dump(doc), encoding="utf-8")
+    assert any("`write_time` key remains" in e for e in bindings._ops_yaml_errors(tmp_path, intents))
 
 
 @pytest.mark.parametrize(
-    ("tests", "message"),
+    ("column", "tests", "message"),
     [
-        (["a_bare_name", {}], "test entry {} must be a name or a single-key mapping"),
-        ([{"made_up": {"write_time": True}}], "write_time test kind 'made_up' has no contract mapping"),
-        ([{"expression": {"write_time": True}}], None),
-        ([{"not_null": {"write_time": False}}], None),
+        ("risk", [{"not_null": {"exclude_before": "2026-05-01"}}], None),
+        ("risk", [{"not_null": {"exclude_before": "2026-06-01"}}], None),
+        (
+            "risk",
+            [{"not_null": {"exclude_before": "2026-01-01"}}],
+            _EARLIER_NN,
+        ),
+        ("risk", [{"not_null": {}}], _EARLIER_NN),
+        ("risk", [{"not_null": {"enforced": False}}], None),
+        ("ghost", [{"not_null": {}}], "column the contract does not declare"),
+        ("ghost", [{"expression": {"sql": "1 = 1"}}], None),
+        ("risk", [{"accepted_values": {"values": ["low"], "exclude_before": "2026-05-01"}}], None),
+        ("risk", [{"accepted_values": {"values": ["low", "extreme"], "exclude_before": "2026-05-01"}}], "not a subset"),
+        ("risk", [{"accepted_values": {"values": ["low"]}}], _EARLIER_AV),
+        ("title", ["a_bare_name_is_not_a_rule", {}], "test entry {} must be a name or a single-key mapping"),
+        ("risk", ["not_null"], "exclude_before"),
+        ("risk", [{"expression": {"sql": "1 = 1"}}], None),
     ],
 )
-def test_ops_yaml_entries(tmp_path: Path, recs, tests: list[Any], message: str | None) -> None:
-    errors = bindings._parity_errors(_ops_with(tmp_path, "title", tests), *recs)
+def test_ops_yaml_is_never_stricter_than_the_contract(tmp_path: Path, recs, column, tests: list[Any], message) -> None:
+    errors = bindings._ops_yaml_errors(_ops_with(tmp_path, column, tests), recs[1])
     if message is None:
         assert errors == []
     else:
         assert any(message in e for e in errors), errors
 
 
-def test_a_column_the_contract_does_not_declare(tmp_path: Path, recs) -> None:
-    root = _ops_with(tmp_path, "ghost", [{"not_null": {"write_time": True}}])
-    assert any("column the contract does not declare" in e for e in bindings._parity_errors(root, *recs))
-
-
-def test_parity_of_each_test_kind(tmp_path: Path, recs) -> None:
-    fields, intents = recs
-    tests = [
-        {"min_length": {"write_time": True, "value": 1}},
-        {"accepted_values": {"write_time": True, "values": ["nope"]}},
-        {"array_element_format": {"write_time": True, "pattern": "^x$"}},
-        {"path_syntax": {"write_time": True}},
-        {"acceptance_lint": {"write_time": True}},
-    ]
-    errors = bindings._parity_errors(_ops_with(tmp_path, "title", tests), fields, {"title": {"not_null": True}})
-    for expected in (
-        "ops.yaml title.min_length: value differs",
-        "ops.yaml title.accepted_values: values differ",
-        "ops.yaml title.array_element_format: pattern differs",
-        "ops.yaml title.path_syntax: no equal pattern rule",
-        "ops.yaml title.acceptance_lint: no declared acceptance_lint",
-    ):
-        assert any(expected in e for e in errors), (expected, errors)
+def test_not_null_with_no_declared_contract_leg_is_stricter(tmp_path: Path, recs) -> None:
+    _, intents = recs
+    no_leg = {**intents, "risk": {k: v for k, v in intents["risk"].items() if k != "not_null"}}
+    errors = bindings._ops_yaml_errors(_ops_with(tmp_path, "risk", [{"not_null": {}}]), no_leg)
+    assert any("ops.yaml risk.not_null: stricter than the contract" in e for e in errors), errors
 
 
 def test_status_sources_fail_closed(tmp_path: Path, recs) -> None:

@@ -61,26 +61,17 @@ def test_unrecognised_test_type_raises():
         _compile_column_test("db.t", "t", "c", {"unknown": {}})
 
 
-def test_write_time_only_types_skip_without_raising():
-    """path_syntax and acceptance_lint are declared write-time-only -- recognised and skipped by
-    design (they are not SQL-compilable), never a silent drop of an unrecognised type."""
-    assert _compile_column_test("db.t", "t", "c", {"path_syntax": {"write_time": True}}) is None
-    assert _compile_column_test("db.t", "t", "c", {"acceptance_lint": {"write_time": True}}) is None
-
-
-def test_array_element_reference_compiles_to_no_check():
-    """array_element_reference is declared write-time-only -- the compiler recognises it and
-    emits no SQL, rather than raising the unrecognised-test-type ValueError (rec-3307 referential
-    half, PLAN-dependency-referential-integrity)."""
-    assert _compile_column_test("db.t", "t", "c", {"array_element_reference": {"write_time": True}}) is None
-    assert _compile_column_test("db.t", "t", "c", "array_element_reference") is None
-
-
-def test_write_time_only_string_form_also_skips():
-    """The bare-string test-name branch also recognises the declared write-time-only set (not
-    just the dict-test branch) -- config never uses string form for these types today, but the
-    compiler's own defensive symmetry between the two branches is worth its own assertion."""
-    assert _compile_column_test("db.t", "t", "c", "path_syntax") is None
+@pytest.mark.parametrize(
+    "test_type",
+    ["path_syntax", "acceptance_lint", "array_element_format", "min_length", "array_element_reference"],
+)
+def test_former_write_time_only_types_now_raise(test_type):
+    """No write-time test can return to a DQ file: each former write-time-only type is an unrecognised test type (the
+    portal enforces these through the writer's own gate over the Class A contract, rec-4158)."""
+    with pytest.raises(ValueError, match=f"unrecognised test type '{test_type}'"):
+        _compile_column_test("db.t", "t", "c", {test_type: {}})
+    with pytest.raises(ValueError, match=f"unrecognised test type '{test_type}'"):
+        _compile_column_test("db.t", "t", "c", test_type)
 
 
 def test_compile_column_test_non_str_non_dict_returns_none():

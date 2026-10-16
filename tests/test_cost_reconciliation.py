@@ -301,6 +301,19 @@ class TestReconcileDedupe:
         )
         _validate_rec_payload(fields)  # must not raise
 
+    def test_validate_rec_payload_runs_the_portal_gate(self) -> None:
+        """The dry-run validator is file_rec's own pre-check path: a too-short context and an absolute file path are
+        refused naming the contract rule."""
+        fields = build_rec_fields(
+            TriggerResult(key="s3_share_of_bill", label="S3 share", tripped=True, measured=60.0, threshold=50.0, unit="%"),
+            "2026-06",
+            str(TRIPPED),
+        )
+        with pytest.raises(ValueError, match="at least 80 stripped characters"):
+            _validate_rec_payload({**fields, "context": "too short"})
+        with pytest.raises(ValueError, match=r"ops_recommendations\.file: must match"):
+            _validate_rec_payload({**fields, "file": "/abs/ROADMAP.yaml"})
+
 
 # ---------------------------------------------------------------------------
 # TestPublicBoundary

@@ -276,8 +276,8 @@ def assert_closure_obligation(
     corrections) ungated, since the obligation was already discharged at the first hop. `failed`
     is deliberately NOT in the bound set -- it is a live, non-resolved status.
 
-    The predicate is evaluated over existing_ctx UNION merged_ctx: context_v2_json is not in
-    scripts.ops_data_portal::_UPDATE_CONTENT_VALIDATED_FIELDS and carries no monotonicity guard,
+    The predicate is evaluated over existing_ctx UNION merged_ctx: context_v2_json carries no
+    contract rule and no monotonicity guard,
     so update_rec(id, {"status": "closed", "context_v2_json": "{}"}) must still be refused --
     reading merged_ctx alone would let the closing write erase its own classification.
     """

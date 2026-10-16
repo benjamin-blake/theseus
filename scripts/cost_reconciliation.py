@@ -369,28 +369,21 @@ def build_rec_fields(trigger: TriggerResult, month: str, snapshot_path: str) -> 
 
 
 def _validate_rec_payload(fields: dict[str, Any]) -> None:
-    """Validate a rec payload against file_rec's write-time validator surface.
+    """Validate a rec payload through file_rec's own pre-check path, minus the write.
 
-    Diverges from file_rec on one point (PLAN-probe-discrimination-vacuity-alarm): file_rec
-    passes require_discrimination=True to lint_acceptance_command(); this call keeps the
-    default False (Constraints: only the ops_data_portal.py:358 direct call opts in). The
-    acceptance command this module composes above (`bin/venv-python -m
-    scripts.cost_reconciliation --invoice ... --month ...`) is neither a lone grep/rg nor a bare
-    pytest path, so it is unaffected by the arm either way -- but this validator would not catch
-    a future acceptance shape that IS non-discriminating, since it never opts in.
+    validate_source, derivation on a copy, then gate_write over the contract's projection: the acceptance
+    lint takes require_discrimination from the contract's declared leg, exactly as file_rec does.
     """
-    from scripts.executor.acceptance_lint import lint_acceptance_command  # noqa: PLC0415
     from scripts.executor.jsonl_store import Recommendation  # noqa: PLC0415
     from scripts.executor.rec_write_guidance import validate_source  # noqa: PLC0415
-    from scripts.ops_data_portal import _validate_context_length, _validate_file_path  # noqa: PLC0415
+    from scripts.ops_portal.risk_scoring import _derive_computed_fields  # noqa: PLC0415
+    from scripts.ops_portal.write_validators import gate_write  # noqa: PLC0415
 
     validate_source(fields["source"])
-    _validate_file_path(fields["file"])
-    _validate_context_length(fields["context"])
-    ok, msg = lint_acceptance_command(fields["acceptance"])
-    if not ok:
-        raise ValueError(msg)
-    Recommendation.model_validate({**fields, "id": "rec-0"})
+    derived = dict(fields)
+    _derive_computed_fields(derived)
+    gate_write("ops_recommendations", derived, insert=True)
+    Recommendation.model_validate({**derived, "id": "rec-0"})
 
 
 def find_open_cost_rec_for(trigger_key: str) -> Optional[str]:

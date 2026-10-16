@@ -23,6 +23,7 @@ duckdb = pytest.importorskip("duckdb")
 
 from scripts.ops_portal import ci_rca_schema as _ci_rca_schema_mod  # noqa: E402
 from tests.fixtures.ops_portal_records import VALID_FIELDS as _VALID_FIELDS  # noqa: E402
+from tests.fixtures.ops_rec_rows import reader_rec_row  # noqa: E402
 
 _CI_RCA_FIELDS = {
     **_VALID_FIELDS,
@@ -187,11 +188,7 @@ class TestProposeOrCloseRec:
         it silently, and performs no write."""
         import scripts.ops_data_portal as p
 
-        existing = {
-            "id": "rec-010",
-            "status": "open",
-            "context_v2_json": json.dumps({"escape_class": "no-edge"}),
-        }
+        existing = reader_rec_row(id="rec-010", context_v2_json=json.dumps({"escape_class": "no-edge"}))
         with (
             patch("scripts.ops_data_portal._fetch_rec_from_reader", return_value=existing),
             patch("scripts.ops_data_portal._ducklake_write") as mock_write,

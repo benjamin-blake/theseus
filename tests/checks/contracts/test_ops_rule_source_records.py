@@ -79,8 +79,12 @@ def test_standard_records_the_ops_source() -> None:
         "rec-4167",
         "rec-4166",
         "decision 181 cl.2",
+        "the portal -> write_validators.py gate_write, the writer's own gate run as a derived pre-check",
+        "inserts every rule, updates and upserts undated rules only",
+        "ops.yaml -> dq backstops only, held never stricter than the contract by validate_ops_rule_source",
     ):
         assert phrase in statement, phrase
+    assert "(its portal row-rule gate plan)" not in statement
 
 
 def test_ops_recommendations_names_one_authority() -> None:
@@ -123,13 +127,44 @@ def test_roadmap_is_regrounded() -> None:
     assert "Annotated" not in c7 and "scripts/contract_rules.py" in c7
     t229 = items["T2.29"]
     assert "ops_recommendations Class A contract" in t229["intent"] and "validate_ops_rule_source" in t229["intent"]
-    criteria = t229["exit_criteria"]
-    assert any("exclude_before 2026-09-01" in c and "rec-4158" in c for c in criteria)
-    assert any("_load_write_time_validators" in c and "rec-4158 plan C" in c and "Annotated" not in c for c in criteria)
+    criteria = {c["id"]: c for c in t229["exit_criteria"]}
+    assert len(criteria) == len(t229["exit_criteria"]) and "c1" in criteria and "c9" in criteria
+    c5 = criteria["c5"]["text"]
+    assert "exclude_before 2026-09-01" in c5 and "rec-4158" in c5
+    c6 = criteria["c6"]
+    assert c6["status"] == "met" and c6["met_by"] == "ops-portal-row-rule-gate"
+    for anchor in ("gate_write", "writer's own gate", "Class A contract's projection", "retired, not repointed", "rec-4158"):
+        assert anchor in c6["text"], anchor
+    assert "Annotated" not in c6["text"] and "rec-4158 plan C" not in c6["text"]
     assert any(
-        c.startswith("get_rec_write_guidance()") and "Class A contract (docs/contracts/ops_recommendations.yaml)" in c
-        for c in criteria
+        c["text"].startswith("get_rec_write_guidance()")
+        and "Class A contract (docs/contracts/ops_recommendations.yaml)" in c["text"]
+        for c in criteria.values()
     )
+    assert t229["status"] == "in_progress" and "ops-portal-row-rule-gate" in t229["progress_note"]
+
+
+def test_portal_gate_records_land() -> None:
+    """AC6: Decision 65 carries this plan's dated update, and ports.yaml records the portal's pre-check coupling."""
+    update = re.search(
+        r"> \*\*Update \(2026-\d{2}-\d{2}\):\*\* \(rec-4158 portal row-rule gate.*?(?:\n\n|\Z)", _section(65), re.DOTALL
+    )
+    assert update, "Decision 65 must carry the portal row-rule gate update"
+    text = _norm(update.group(0))
+    for anchor in (
+        "write_time flags are retired",
+        "derived pre-check",
+        "never authoritative",
+        "undated rules only",
+        "t1.6 c7",
+    ):
+        assert anchor in text, anchor
+    ports = yaml.safe_load((_CONTRACTS / "ports.yaml").read_text(encoding="utf-8"))
+    coupling = next(c for c in ports["coupling_findings"] if c["location"] == "scripts/ops_portal/write_validators.py")
+    assert coupling["status"] == "accepted" and coupling["owning_item"] == "dec-210"
+    assert coupling["ports"] == ["work_item_storage", "ops_verbs"]
+    description = _norm(coupling["description"])
+    assert "repository projection equals the deployed one" in description and "which decision 210 cl.4 intends" in description
 
 
 def _items_by_id(node, found=None) -> dict:

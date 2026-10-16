@@ -9382,6 +9382,11 @@ state authority.
 > checks stay until T1.6 c7 retires the file, and the description/semantics text Decision 66 guidance reads moves to the contract
 > under T2.29 c7.
 
+> **Update (2026-10-16):** (rec-4158 portal row-rule gate, Decision 210 cl.3) `config/agent/data_quality/ops.yaml`'s write_time
+> flags are retired. The portal runs the DuckLake writer's own gate (schema_gate and check_write over the contract's projection)
+> as a derived pre-check, never authoritative: inserts evaluate every rule, updates and caller-keyed upserts the undated rules
+> only. ops.yaml keeps DQ backstops, never stricter than the contract (validate_ops_rule_source), until T1.6 c7 retires it.
+
 ## Decision 64: Bootstrap Cohort Anchor for ops_recommendations is 2026-05-01 (Decided)
 
 The bootstrap cohort for ops_recommendations consists of all records created before 2026-05-01

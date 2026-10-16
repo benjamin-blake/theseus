@@ -93,6 +93,8 @@ def test_coverage_sentence_and_decision_annotation_name_the_conformance_check() 
         "rec-4121",
         "rec-4166",
         "rec-4167",
+        "the portal -> write_validators.py gate_write, the writer's own gate run as a derived pre-check",
+        "ops.yaml -> dq backstops only",
     ):
         assert phrase in statement, phrase
     section = _norm(_section(decisions_text, _decision_number(rule["statement"])))
