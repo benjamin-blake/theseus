@@ -294,9 +294,13 @@ verification_plan:
       the live API before merge. The agent fills HEAD_SHA, the operator fills PAT_SECRET_ID; the exact text is
       execution_steps step 8. The agent saves the operator's reported lines into $PASTE0_REPORT, holding only the latest
       run's lines (a re-run replaces them). A new head that changes terraform/github re-runs it. When E0 listed
-      default_workflow_permissions and PASTE0_OK holds, re-run this build PR's terraform-github-plan job at the same head
-      (E0b, mcp__github__actions_run_trigger rerun_workflow_run) and require step 6's command to pass on its log with
-      default_workflow_permissions absent from the newest report comment, before merge.
+      default_workflow_permissions and PASTE0_OK holds, take E0b before merge: Order A, re-run this build PR's
+      terraform-github-plan run at the same head (mcp__github__actions_run_trigger rerun_workflow_run); Order B, ask the
+      coordinator for a re-run of the workflow PR's run. Save the re-run attempt's job log (job id from
+      mcp__github__actions_list) into $E0B_LOG (the job log carries the whole report, never plan text) and require
+      grep -q 'TF_GITHUB_PLAN_REPORT verdict=' "$E0B_LOG" && grep -qF github_workflow_repository_permissions.this "$E0B_LOG"
+      && ! grep -qF default_workflow_permissions "$E0B_LOG" && echo E0B_OK, plus in Order A the report line matching
+      'import=0 add=0 change=5 destroy=0 replace=0'. A re-run that cannot start, or whose log has no report line: escalate through the coordinator.
     command: >-
       for l in TERRAFORM_OK PAT_ADMIN_VISIBLE LIVE_WORKFLOW_DEFAULT=read INIT_OK DRYRUN_IMPORT_ONLY; do
       printf '%s\n' "$PASTE0_REPORT" | grep -qxF "$l" || exit 1; done
@@ -325,9 +329,11 @@ verification_plan:
       for w in [yaml.safe_load(p.read_text(encoding='utf-8'))] for j,s in (w.get('jobs') or {}).items()
       if 'permissions' not in w and 'permissions' not in s]; print('JOBS_WITHOUT_PERMISSIONS', m); assert not m"
       A non-empty list: name those jobs to the operator and escalate to the planning thread through the coordinator;
-      the restore waits until they declare explicit permissions. After a restore, add the line "LIVE_WORKFLOW_DEFAULT=write
-      found and restored <YYYY-MM-DD>" to step 14's evidence comment, and file a rec on how a Terraform-managed security
-      setting drifted (get_rec_write_guidance, then file_rec; Decision 55). Never reconcile config to write and never add
+      the restore waits until they declare explicit permissions. Whenever E0 listed default_workflow_permissions, add the
+      line "default_workflow_permissions found non-read at E0 <YYYY-MM-DD>; restored <YYYY-MM-DD>" (or "; read at paste 0"
+      when no restore was needed) to step 14's evidence comment, ask the operator whether they changed the setting, and
+      file a rec on how a Terraform-managed security setting drifted, carrying their answer (get_rec_write_guidance, then
+      file_rec; Decision 55). Never reconcile config to write and never add
       default_workflow_permissions to ignore_changes. E0b still lists default_workflow_permissions with
       LIVE_WORKFLOW_DEFAULT=read: CI and the admin PAT disagree on a security setting (or it changed between E0 and paste
       0); escalate before merge, since E2 would list it again after the state change.
@@ -559,8 +565,9 @@ constraints:
     content, the PAT secret name, user ids or the S3 version id.
   - >-
     No apply of terraform/github by anyone between the build PR merge and E2 other than paste B. If any plan in the walk
-    shows a non-identity change: stop, never apply to converge, escalate for a plan amendment. Already amended for
-    (2026-10-16), so no further escalation: E0's default_workflow_permissions row (VP step 6) and step 9's routes for it.
+    shows a non-identity change: stop, never apply to converge, escalate for a plan amendment. Pre-authorized by the
+    2026-10-16 amendment (no new plan amendment needed): E0's default_workflow_permissions row (VP step 6) and VP step
+    9's routes for it, including that step's own escalations; any other non-identity change still stops.
   - >-
     Build start gate: Order A, rec-4335's workflow PR merged with its job live; Order B, the coordinator says the
     workflow PR is held open for this state fix (see infrastructure_dependencies). Closure-PR contract edits wait for
@@ -573,7 +580,7 @@ context:
     Decision-scout verdict FLAGS_FOUND. CITE: 218, 172, 77, 126, 101, 201. NOTE on 119 (no local init of a
     third-party-provider root) resolved by verifying from the S3 state object, never terraform state list.
     Decisions triaged: 171 of 171. Roadmap items intersected: 2; CONFLICT: 0; RELATED: 2.
-  - "gates: decision-scout=FLAGS_FOUND (one NOTE, resolved); plan-critique=PROCEED after 6 rounds; round 6 on the escalated one-more-round option; amendment 2026-10-16: round 7 REVISE (fixed)"
+  - "gates: decision-scout=FLAGS_FOUND (one NOTE, resolved); plan-critique=PROCEED after 6 rounds; round 6 on the escalated one-more-round option; amendment 2026-10-16: rounds 7 and 8 REVISE (fixed), round 9 PROCEED"
   - >-
     V3 resolution: E0 (step 6) and paste 0 at the CI-green head (step 9, read-only, including the dry run of the import)
     are the pre-merge live evidence the implement V3 Merge Gate and the code-review V3 check require, by analogy with
