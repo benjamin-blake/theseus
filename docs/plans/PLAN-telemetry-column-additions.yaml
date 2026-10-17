@@ -49,8 +49,10 @@ scope:
   purpose: >-
     create_telemetry_tables gains the additive leg (Decision N cl.1). Order: existing tables -> _refuse_half_pairs ->
     partition drift and column drift are checked first, where the ONLY tolerated drift is a declared column that an
-    existing EVENT table (the four telemetry_* tables) lacks and that is nullable in its spec (not in spec.not_null and
-    not tenant_id/project_id); every other problem (a live column the spec does not declare, a missing NOT NULL column,
+    existing EVENT table (the four telemetry_* tables) lacks and that the CONTRACT leaves optional: its projection entry
+    is nullable true, it carries no not_null rule (one with exclude_before excepted) and no required_when rule, and it
+    is not in spec.not_null or tenant_id/project_id (spec.not_null is only the engine's NOT NULL set, narrower than the
+    contract's); every other problem (a live column the spec does not declare, a missing NOT NULL column,
     any partition drift, any column drift on a dimension or counter table, a half-present pair) raises the same loud
     DuckLakeRuntimeError before any DDL, naming tables and columns only. Then one ALTER TABLE
     ops_catalog.<table> ADD COLUMN <name> <sql_type> per missing column (declared type, no default, no NOT NULL), in
@@ -80,10 +82,13 @@ scope:
     test_create_tables_refuses_an_extra_live_column_before_any_ddl,
     test_create_tables_adds_no_column_to_a_dimension_or_counter_table,
     test_create_tables_adds_nothing_when_live_equals_declared and
+    test_create_tables_refuses_a_missing_required_when_column_before_any_ddl and
     test_provision_still_refuses_a_missing_nullable_column. Fixtures pinned: every refusal node ALSO removes one
-    tolerated nullable column from an event table, so the refusal is proven to fire before that column's ALTER, and
-    asserts no ALTER or CREATE statement was recorded; the dimension/counter node removes a nullable column from
-    ops_tenants' history table (with an event table also missing one) and asserts the same loud refusal and no DDL.
+    tolerated optional column from an event table, so the refusal is proven to fire before that column's ALTER, and
+    asserts no ALTER or CREATE statement was recorded; the not-null node removes telemetry_observations.observation_type
+    (contract nullable false, no engine NOT NULL), the required_when node removes telemetry_sessions.workflow, and the
+    dimension/counter node removes a nullable column from ops_tenants' history table (with an event table also missing
+    one). The recording FakeCon applies each ADD COLUMN to its column map, so the post-ALTER drift re-check sees it.
     Existing nodes are unchanged (the graduated test_create_tables_never_re_alters_existing still holds: equal columns
     issue no ALTER).
 - file: tests/test_ducklake_maintenance_smoke_handler.py
@@ -108,7 +113,9 @@ scope:
     src.telemetry.append.prepare_batch/execute_prepared, then run create_telemetry_tables with the real projection.
     Asserts: added lists the ten columns; the old rows survive and read NULL in them; partition specs are unchanged
     (inspect_partitions all true); provision_telemetry_catalog then passes; a new append carrying all ten columns lands
-    and reads back equal; an identical re-send inserts 0; a second create adds nothing.
+    and reads back equal; an identical re-send inserts 0; a second create adds nothing; then ducklake_flush_inlined_data
+    and ducklake_merge_adjacent_files run (maintenance-smoke runs merge and gc over these tables on every later deploy)
+    and the reads and inspect_partitions are re-asserted.
 - file: tests/common/test_ducklake_telemetry_catalog_ownership.py
   action: Modify
   purpose: >-
@@ -141,7 +148,7 @@ scope:
   purpose: >-
     NEW numbered Decision N (origin/main max + 1 at build time; 222 at plan time: 220 and 221 are on main and 219 is
     reserved by PLAN-platform-iam-personal-release's approved text), amends [216], at most
-    6,144 bytes, content pinned in execution step 8; dated trailing-bracket annotations on Decision 216 and Decision
+    6,144 bytes, content pinned in execution step 6; dated trailing-bracket annotations on Decision 216 and Decision
     143 naming it (Decision 177 dialect; neither entry's text is rewritten).
 - file: docs/decisions-index.json
   action: Modify
@@ -153,7 +160,9 @@ scope:
     clause 2)" docstring citation (never hard-coded; the test_owner_provisioning_decision.py precedent); the entry exists
     and is at most 6,144 bytes; envelope number N, amends [216], significance numbered_decision; clauses 1-3; a Coverage
     (Decision 181 cl.2) line; tokens create_telemetry_tables, ADD COLUMN, rec-4071 and rec-4316; the reversal stanza
-    ids; the trailing --- separator; the dated annotations on 216 and 143.
+    ids; the trailing --- separator; the dated annotations on 216 and 143, each above its entry's trailing ---; and
+    Decision 216's span still at most 6,144 bytes (tests/checks/decisions/test_owner_provisioning_decision.py asserts it
+    too and must stay green unchanged).
 bundled_recommendations: []
 followon_recs: []
 closes_criteria: []
@@ -179,15 +188,16 @@ acceptance_criteria:
   Both contracts declare the ten nullable columns with the pinned types and rules at contract_version 2, and
   field_semantics.yaml is their regenerated projection (VP 3, VP 4).
 - >-
-  create_telemetry_tables adds exactly the declared nullable columns an existing event table lacks and refuses every
-  other drift before any DDL; provision_telemetry_catalog still issues no DDL and still refuses any column drift (VP 1).
+  create_telemetry_tables adds exactly the declared columns an existing event table lacks that the contract leaves
+  optional (nullable, no not_null or required_when rule) and refuses every other drift before any DDL;
+  provision_telemetry_catalog still issues no DDL and still refuses any column drift (VP 1).
 - >-
   On a real DuckLake catalog the additive leg keeps old rows (NULL in the new columns), keeps partitions, and a row
   carrying the new columns appends, reads back and re-sends idempotently; on Postgres 16 the scoped login keeps writing
   after the owner's ADD COLUMN (VP 6, VP 7).
 - >-
   The maintenance-smoke verb reports the added columns and the deploy gate prints their count (VP 2).
-- Decision N is on main in the pinned shape and annotates Decisions 216 and 143 (VP 5).
+- Decision N is in docs/DECISIONS.md in the pinned shape, annotates Decisions 216 and 143, and Decision 216 stays within the 6,144-byte cap (VP 5).
 - >-
   After the governed deploy, the smoke catalog carries the columns: the owner step reported them and the writer's
   telemetry gate (exact live == declared) passed (VP 10, VP 11, VP 12).
@@ -199,6 +209,7 @@ verification_plan:
     bin/venv-python -m pytest
     tests/common/test_ducklake_telemetry_provision.py::test_create_tables_adds_declared_nullable_columns_an_event_table_lacks
     tests/common/test_ducklake_telemetry_provision.py::test_create_tables_refuses_a_missing_not_null_column_before_any_ddl
+    tests/common/test_ducklake_telemetry_provision.py::test_create_tables_refuses_a_missing_required_when_column_before_any_ddl
     tests/common/test_ducklake_telemetry_provision.py::test_create_tables_refuses_an_extra_live_column_before_any_ddl
     tests/common/test_ducklake_telemetry_provision.py::test_create_tables_adds_no_column_to_a_dimension_or_counter_table
     tests/common/test_ducklake_telemetry_provision.py::test_create_tables_adds_nothing_when_live_equals_declared
@@ -358,9 +369,12 @@ verification_plan:
   command: >-
     DUCKLAKE_TELEMETRY_WRITER_URL=$(aws ssm get-parameter --profile agent_platform --region eu-west-2 --name
     /agent-platform/ducklake/telemetry_writer_url --query Parameter.Value --output text) AWS_PROFILE=agent_platform
-    bin/venv-python -m scripts.ducklake_neon_smoke_test --lambda-telemetry 2>&1 | tee "${TMPDIR:-/tmp}/col_sm.log" | grep
-    -q TELEMETRY_PROVISION_OK && echo COLUMN_ADDITIONS_GATE_OK
-  expected: COLUMN_ADDITIONS_GATE_OK.
+    bin/venv-python -m scripts.ducklake_neon_smoke_test --lambda-telemetry > "${TMPDIR:-/tmp}/col_sm.log" 2>&1 && grep
+    -qF TELEMETRY_PROVISION_OK "${TMPDIR:-/tmp}/col_sm.log" && grep -qF 'LAMBDA_TELEMETRY OK' "${TMPDIR:-/tmp}/col_sm.log"
+    && echo COLUMN_ADDITIONS_GATE_OK
+  expected: >-
+    COLUMN_ADDITIONS_GATE_OK: the gate exited 0, its provision check saw live == declared, and its append vectors ran
+    against the altered tables.
   fix_if: Read the gate's failure line; a column drift line means the owner step did not run or the projection is stale.
   hermetic: false
 test_obligations:
@@ -370,7 +384,7 @@ test_obligations:
   test_selector: tests/common/test_ducklake_telemetry_provision.py::test_create_tables_adds_declared_nullable_columns_an_event_table_lacks
   red_green_expectation: red before (node absent; the current create refuses any column drift), green after
 - source: src/common/ducklake_telemetry_provision.py
-  behavior: A missing NOT NULL column is never added and fails loud.
+  behavior: A missing column the contract requires (not null or required_when) is never added and fails loud.
   verification_step: 1
   test_selector: tests/common/test_ducklake_telemetry_provision.py::test_create_tables_refuses_a_missing_not_null_column_before_any_ddl
   red_green_expectation: red before (node absent), green after
@@ -553,8 +567,8 @@ execution_steps:
   maintenance-smoke stage and telemetry gate; the only other path is an admin drop of the smoke tables, which loses the
   captured sessions and puts a human in the deploy path. Decision: 1. On the disposable smoke catalog,
   create_telemetry_tables also adds, under the owner login and inside its one transaction, every declared column an
-  existing telemetry event table lacks, provided the contract declares it nullable (ALTER TABLE ADD COLUMN, declared
-  type, no default). Any other drift -- a live column the contract does not declare, a missing NOT NULL column, a
+  existing telemetry event table lacks, provided the contract leaves it optional (nullable, with no not-null or
+  conditional-requiredness rule) (ALTER TABLE ADD COLUMN, declared type, no default). Any other drift -- a live column the contract does not declare, a missing NOT NULL column, a
   partition drift, a half-present dimension pair, any drift on a dimension or counter table -- still fails loud before
   any DDL. It never drops, renames or retypes a column and writes no row; Decision 143 cl.2's dispatch set is unchanged.
   2. A telemetry column ships contract first, as a nullable field_add, through the governed deploy, and no producer
@@ -576,19 +590,22 @@ execution_steps:
   blocks or re-partitions a telemetry table -- re-decide clause 1); change-beyond-additive (manual: a telemetry contract
   needs a column renamed, retyped or dropped -- a new migration Decision, never this clause); production-additive-path
   (manual: slice 2c needs CI to add columns to a production catalog -- re-decide clause 3 with rec-4316). Related: 216,
-  143, 213, 210, 204, 126, 55, 177, 181, 101. Then append "[Amendment <build day>, Decision N: cl.2's
-  create_telemetry_tables also adds declared nullable columns an existing event table lacks; cl.3's smoke carve-out
-  covers that ADD COLUMN.]" to Decision 216 and "[Amendment <build day>, Decision N: create_telemetry_tables may also add
-  declared nullable columns on the disposable smoke catalog; the dispatch set is unchanged.]" to Decision 143.
-  Regenerate docs/decisions-index.json, write the Decision test, run step 5.
+  143, 213, 210, 204, 126, 55, 177, 181, 101. Then add, above each entry's trailing --- separator, "[Amendment <build
+  day>, Decision N: cl.2 and cl.3 also cover adding declared nullable columns on the smoke catalog.]" to Decision 216
+  (at most 131 bytes: Decision 216 is 6,011 bytes against the 6,144-byte cap) and "[Amendment <build day>, Decision N:
+  create_telemetry_tables may also add declared nullable columns on the smoke catalog; dispatch set unchanged.]" to
+  Decision 143. Regenerate docs/decisions-index.json, write the Decision test, run step 5.
 - >-
   7. Execute the Verification Plan: steps 1-9 before the PR; loop until each passes; on an unrecoverable integration
   failure stop and RCA (Decision 55).
 - >-
-  8. Open the PR (body: what changes, the two integration logs, the Decision N text for Benjamin's word, and that the
-  producer plan waits on this deploy). Merge only after code review PROCEED, CI green and Benjamin's own word on the
-  Decision and the contract fields (fetch his message before merging); the coordinator sequences it against other
-  DuckLake deploys. Squash-merge.
+  8. Closure (implement skill Commit Flows; docs/contracts/git-ops.yaml), each outcome reported separately: the
+  readiness check (scripts.session.github_readiness); the coverage diagnostic; set implementation_declared true; rebase
+  on origin/main; step 9 (the full tier) on the committed, clean tree, then --verify-head; the postflight evidence file
+  and scripts.session.postflight --evidence; push; PR (body: what changes, the two integration logs, the Decision N text
+  for Benjamin's word, and that the producer plan waits on this deploy); CI green on the head. Merge only after code
+  review PROCEED, CI green and Benjamin's own word on the Decision and the contract fields (fetch his message before
+  merging); the coordinator sequences it against other DuckLake deploys. Squash-merge.
 - 9. Run steps 10-12 on the merge commit's deploy; post the result to the coordinator so the producer plan's build can merge.
 - 'Report: what was implemented, verification results, the deploy run, and the go-ahead for the producer plan.'
 work_areas: []
