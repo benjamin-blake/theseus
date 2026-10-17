@@ -1,8 +1,9 @@
 """`python -m scripts.telemetry_capture <cmd>`: the runner entry the hooks detach (`run`) and the operator CLI (rule OP-1).
 
 run (silent, exit 0 always); pass --tree [--final]; status --tree; probe --tree [--require t1,t2]; observe --tree;
-mark --tree; clear-halt --tree; register --project-ref --name --remote. No sweep exists: a pass starts on a tree only
-through its own hook or an explicit --tree. Operator output is counts and fixed tokens, never content or credentials.
+mark --tree; clear-halt --tree; verify --tree [--no-alarms] [--assert-zero CLASS]; register --project-ref --name --remote.
+No sweep exists: a pass starts on a tree only through its own hook or an explicit --tree. Operator output is counts and fixed
+tokens, never content or credentials.
 """
 
 from __future__ import annotations
@@ -27,6 +28,18 @@ from src.turn_capture.transcript import PIN_SCRIPT_STEM, ROOT, FsTree, hook_scri
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BOOT_ID = Path("/proc/sys/kernel/random/boot_id")
 OK_OUTCOMES = ("sent", "no_rows")
+VERIFY_COUNTS = (
+    "rows_equal missing_in_store unexpected_in_store column_mismatch key_mismatch duplicate_ref_rows race_duplicate_rows "
+    "r7_boundary_divergence other_generation_rows other_producer_rows root_checked ledger_records stored_ledger_tested "
+    "root_calls sync_spawns pinned_absent"
+).split()
+COMPARE_CLASSES = ("missing_in_store", "unexpected_in_store", "column_mismatch", "key_mismatch", "duplicate_ref_rows")
+DENOMINATOR_OF = {
+    "root_absent": "root_checked",
+    "nonfinal_root_call": "root_calls",
+    "spawn_usage_mismatch": "sync_spawns",
+    "sidecar_pinned_absent_present": "pinned_absent",
+}
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -38,13 +51,17 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--session-id", required=True)
     run.add_argument("--final", action="store_true")
     run.add_argument("--lock-wait", type=float, default=0.0)
-    for name in ("pass", "status", "probe", "observe", "mark", "clear-halt"):
+    for name in ("pass", "status", "probe", "observe", "mark", "clear-halt", "verify"):
         cmd = sub.add_parser(name)
         cmd.add_argument("--tree", required=True, type=Path)
         if name == "pass":
             cmd.add_argument("--final", action="store_true")
         if name == "probe":
             cmd.add_argument("--require", default="")
+        if name == "verify":
+            cmd.add_argument("--session-id", default=None)
+            cmd.add_argument("--no-alarms", action="store_true")
+            cmd.add_argument("--assert-zero", default=None)
     register = sub.add_parser("register")
     register.add_argument("--project-ref", required=True)
     register.add_argument("--name", required=True)
@@ -218,6 +235,56 @@ def _cmd_clear_halt(args: argparse.Namespace, out: Callable) -> int:
     return 0
 
 
+def _denominator_met(cls: str, counts: Mapping[str, int]) -> bool:
+    """Whether a completed check had any input for *cls*: a leg with no input is never green."""
+    if cls in COMPARE_CLASSES:
+        return counts.get("rows_equal", 0) >= 1 and counts.get("r7_boundary_divergence", 0) == 0
+    if cls.startswith("stored_ledger_"):
+        return counts.get("stored_ledger_tested", 0) >= 1
+    if cls.startswith("ledger_"):
+        return counts.get("ledger_records", 0) >= 1
+    return cls == "verify_incomplete" or counts.get(DENOMINATOR_OF.get(cls, ""), 0) >= 1
+
+
+def _verify_exit(result: Any, assert_zero: str | None) -> int:
+    if not result.completed:
+        return 2
+    if assert_zero is None:
+        return 1 if result.alarms else 0
+    if result.counts.get(assert_zero, 0) > 0:
+        return 1
+    return 0 if _denominator_met(assert_zero, result.counts) else 2
+
+
+def _cmd_verify(args: argparse.Namespace, reader_factory: Callable[[], Any] | None, out: Callable) -> int:
+    from scripts.telemetry_capture import verify  # noqa: PLC0415
+
+    if args.assert_zero is not None and args.assert_zero not in verify.ALARM_CLASSES:
+        out(f"verify: {args.assert_zero} is not an alarm class")
+        return 2
+    if reader_factory is None:
+        from src.common.ducklake_reader_client import make_reader  # noqa: PLC0415
+
+        reader_factory = make_reader
+    reader = reader_factory()
+    result = verify.run_verify(
+        args.tree,
+        args.session_id or args.tree.stem,
+        trigger="operator",
+        scheduling_record=None,
+        reader=reader,
+        portal=None,
+        budget=Budget.start(verify.VERIFY_BUDGET_S),
+        alarms=not args.no_alarms,
+    )
+    fields = {name: result.counts.get(name, 0) for name in VERIFY_COUNTS}
+    fields.update(reader_calls=result.reader_calls, elapsed_s=result.elapsed_s)
+    head = f"VERIFY status={result.status} compare_skipped={result.compare_skipped}"
+    tail = " ".join(f"{name}={value}" for name, value in fields.items())
+    out(f"{head} {tail} alarms={','.join(result.alarms) or 'none'}")
+    return _verify_exit(result, args.assert_zero)
+
+
 def _cmd_register(args: argparse.Namespace, env: Mapping[str, str], factory: ClientFactory, out: Callable) -> int:
     try:
         client = factory(env, None, Budget.start(MAX_TIMEOUT_S))
@@ -246,6 +313,7 @@ def main(
     client_factory: ClientFactory = default_client_factory,
     out: Callable[[str], Any] = print,
     boot_id: Path = BOOT_ID,
+    reader_factory: Callable[[], Any] | None = None,
 ) -> int:
     args = _parser().parse_args(argv)
     environ = dict(os.environ) if env is None else env
@@ -263,6 +331,8 @@ def main(
         return _cmd_mark(args, out, boot_id)
     if args.cmd == "clear-halt":
         return _cmd_clear_halt(args, out)
+    if args.cmd == "verify":
+        return _cmd_verify(args, reader_factory, out)
     return _cmd_register(args, environ, client_factory, out)
 
 

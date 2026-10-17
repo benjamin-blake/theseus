@@ -23,6 +23,25 @@ from src.turn_capture.transcript import ROOT, read_lines
 STATE_DIRNAME = "telemetry-capture"
 DIAGNOSTICS_KEEP = 500
 VALID, LOST, TAIL_MISMATCH = "valid", "cursor_lost", "cursor_tail_mismatch"
+RUNNER, CHECK, OPERATOR = "runner", "check", "operator"
+VERIFY_OWNERS = {
+    RUNNER: frozenset(
+        {"sent_passes", "checks_by_day", "producer_fingerprint", "producer_changed", "scheduled_at", "next_attempt_at"}
+    ),
+    CHECK: frozenset(
+        {
+            "last_ledger_line",
+            "held_ledger_line",
+            "settled_at",
+            "root_session_id",
+            "retry_s",
+            "incomplete_streak",
+            "alarm_at",
+            "next_attempt_at",
+        }
+    ),
+    OPERATOR: frozenset({"root_session_id", "alarm_at"}),
+}
 
 
 def state_dir(transcript_path: Path, session_id: str) -> Path:
@@ -48,6 +67,18 @@ class Loaded:
         return self.status == VALID
 
 
+def merge_verify_state(current: dict[str, Any], updates: dict[str, Any], owner: str) -> dict[str, Any]:
+    """*current* (freshly read) with only the *owner*'s fields taken from *updates*; a None update clears the field."""
+    merged = dict(current)
+    for name in VERIFY_OWNERS[owner]:
+        if name in updates:
+            if updates[name] is None:
+                merged.pop(name, None)
+            else:
+                merged[name] = updates[name]
+    return merged
+
+
 class Lock:
     def __init__(self, handle: Any) -> None:
         self._handle = handle
@@ -67,6 +98,7 @@ class CaptureState:
         self.diagnostics_file = directory / "diagnostics.jsonl"
         self.url_file = directory / "writer_url"
         self.marker_file = directory / "marker.json"
+        self.verify_file = directory / "verify.json"
 
     def _write(self, path: Path, text: str) -> None:
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -165,6 +197,18 @@ class CaptureState:
         kept = self.diagnostics()[-(DIAGNOSTICS_KEEP - 1) :]
         kept.append(record)
         self._write(self.diagnostics_file, "".join(json.dumps(item, sort_keys=True) + "\n" for item in kept))
+
+    def verify_state(self) -> dict[str, Any]:
+        """The in-session check's scheduling and settlement fields; a missing or malformed file reads as the empty state."""
+        try:
+            data = json.loads(self.verify_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def save_verify_state(self, state: dict[str, Any]) -> None:
+        """Only a holder of the tree lock writes it."""
+        self._write(self.verify_file, json.dumps(state, sort_keys=True) + "\n")
 
     def write_marker(self, marker: dict[str, Any]) -> None:
         self._write(self.marker_file, json.dumps(marker, sort_keys=True) + "\n")

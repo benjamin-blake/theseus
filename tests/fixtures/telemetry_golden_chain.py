@@ -76,9 +76,19 @@ def record(tree: str, files: dict[str, str], cursor: Any, final: bool) -> Captur
         return record_turn(mem_tree(files), cursor, project_ref=PROJECT_REF, session_final=final)
 
 
-def hold_back(result: CaptureResult) -> CaptureResult:
-    """The result without payloads above the inline threshold (they ride the blob route in production)."""
-    kept = [r for r in result.transcripts if not ("content" in r and r["content_bytes"] > HELD_BACK_BYTES)]
+def hold_back(result: CaptureResult, *, store_held_back_as_blob: bool = False) -> CaptureResult:
+    """The result without payloads above the inline threshold (they ride the blob route in production).
+
+    With store_held_back_as_blob each such row is kept the way the writer's blob route stores it: content null, a synthetic
+    content_uri, content_sha256 and content_bytes as emitted, so a verify over the chain sees every emitted row stored.
+    """
+    held = [r for r in result.transcripts if "content" in r and r["content_bytes"] > HELD_BACK_BYTES]
+    kept = [r for r in result.transcripts if r not in held]
+    if store_held_back_as_blob:
+        kept += [
+            {**{k: v for k, v in r.items() if k != "content"}, "content_uri": f"blob://synthetic/{r['content_sha256']}"}
+            for r in held
+        ]
     return dataclasses.replace(result, transcripts=kept)
 
 
@@ -237,12 +247,12 @@ def combined_expectations(tree: str, final: bool) -> list[dict[str, Any]]:
 
 @contextlib.contextmanager
 def loaded(
-    tree: str, final: bool = True, kind: str = "memory", tmp_path: Path | None = None
+    tree: str, final: bool = True, kind: str = "memory", tmp_path: Path | None = None, *, store_held_back_as_blob: bool = False
 ) -> Iterator[tuple[Any, dict[str, list[dict[str, Any]]], dict[str, str]]]:
     """A catalog holding one tree's batches: (connection, stored rows, selector -> session_id)."""
     con = open_catalog(kind, tmp_path)
     try:
-        append_batches(con, hold_back(emit(tree, final)))
+        append_batches(con, hold_back(emit(tree, final), store_held_back_as_blob=store_held_back_as_blob))
         rows = stored_rows(con)
         yield con, rows, session_ids(rows)
     finally:
