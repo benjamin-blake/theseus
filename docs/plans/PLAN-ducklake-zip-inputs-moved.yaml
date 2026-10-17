@@ -23,17 +23,23 @@ scope:
     scripts/build_lambda_config.py, scripts/build_lambda_packaging.py, scripts/build_lambda_deploy.py and
     scripts/lambda_manifest.py; and per named artifact its md5, its kind (layer when the name ends -layer.zip, else
     function), its entries as name -> uncompressed sha256 read from the built zip, and its inputs as path -> git blob
-    id. A function zip entry has an input only when it is a git-tracked file at that repo path AND the git blob hash
-    of the entry's uncompressed bytes equals the checkout's ls-files blob id (a proven verbatim copy,
-    scripts/lambda_manifest.py stage_bundle); any other entry has no input and can never be attributed. A layer's
-    input is config/lambda/ducklake/version.yaml (its pins live in the tooling). Blob ids come from git ls-files -s at
-    root, which works on a depth-1 checkout. attribute(reference, current) returns a verdict for every artifact whose
-    md5 differs: moved, with the moved paths, when any tooling blob differs; for a function zip, when every entry that
-    differs or exists on one side only has an input on at least one side and the two sides' blob ids for it differ
-    (absent counts as different); for a layer, when its input moved; otherwise unattributed, naming the first entry
-    that blocked attribution or saying only the container bytes differ. A reference whose schema differs from the
-    current one, or that lacks an artifact, is unattributed for every artifact (fail closed); a change to the record
-    format bumps schema. Iterates DUCKLAKE_ARTIFACT_NAMES' order.
+    id. A function artifact records the blob id of the manifest whose artifact field names it
+    (src/lambdas/<slug>/manifest.yaml). A function zip entry has an input only when it is a git-tracked file at that
+    repo path AND the git blob hash of the entry's uncompressed bytes equals the checkout's ls-files blob id (a proven
+    verbatim copy, scripts/lambda_manifest.py stage_bundle); any other entry has no input. A layer's input is
+    config/lambda/ducklake/version.yaml (its pins live in the tooling). Blob ids come from git ls-files -s at root,
+    which works on a depth-1 checkout. attribute(reference, current) returns a verdict for every artifact whose md5
+    differs: moved, with the moved paths, when any tooling blob differs; for a layer, when its input moved; for a
+    function zip, when every differing entry is attributed, where an entry present in both zips is attributed only
+    when it has an input on BOTH sides and the two blob ids differ; an entry only in the current zip only when it has
+    an input there AND either the manifest blob moved or the path lies under a directory include of the current
+    manifest; and an entry only in the reference only when it had an input there AND either the manifest blob moved or
+    the path is no longer tracked in the current checkout. A present entry lacking an input is never attributed. A
+    verdict is {"verdict": "moved" | "unattributed", "inputs": [...], "reason": str}; for a moved function zip, inputs
+    lists its differing entry paths (plus any moved tooling path); for a moved layer, its moved input or tooling
+    paths. Otherwise unattributed, naming the first entry that blocked attribution or saying only the container bytes
+    differ. A reference whose schema differs from the current one, or that lacks an artifact, is unattributed for
+    every artifact (fail closed); a change to the record format bumps schema. Iterates DUCKLAKE_ARTIFACT_NAMES' order.
 - file: scripts/ci/ducklake_artifacts.py
   action: Modify
   purpose: >-
@@ -110,7 +116,10 @@ scope:
     test_push_partly_attributed_mismatch_fails_closed, test_push_unset_merge_sha_fails_closed,
     test_push_inputs_record_not_describing_reference_fails_closed, test_push_schema_mismatch_fails_closed,
     test_push_malformed_inputs_record_fails_closed (any exception in record or attribution collapses to the sentinel),
-    test_push_identical_with_preexisting_pointer_fails_closed. Fetch nodes:
+    test_push_identical_with_preexisting_pointer_fails_closed (also a 403-shaped pointer read),
+    test_push_non_verbatim_entry_fails_closed (same blob, non-verbatim bytes on one side), and
+    test_push_merge_sha_equals_artifact_sha_fails_closed. Every push-path node pins or clears GITHUB_SHA with
+    monkeypatch (CI sets it). Fetch nodes:
     test_fetch_follows_pointer_one_hop, test_fetch_bad_pointer_fails_closed (malformed, self-referencing, a 403-shaped
     error) and test_fetch_pointer_target_missing_fails_closed, each failing before any copy. test_main_upload_only_writes_inputs_record
     (the build subprocess is exactly scripts.build_lambda --ducklake-only --profile "" --bucket <bucket> with no
@@ -122,13 +131,16 @@ scope:
   purpose: >-
     Unit tests for scripts/ci/ducklake_inputs.py over a temporary git repo: blob ids match git, untracked entries get no
     input, tooling blobs are recorded, and the attribution matrix (tooling moved; function entry moved, unchanged,
-    untracked, present on one side only; layer input moved and unchanged; container-only difference; schema mismatch),
+    untracked, present on one side only with and without a manifest move or directory include, a tracked entry whose blob
+    is unchanged but whose bytes are not a verbatim copy on one side (unattributed); layer input moved and unchanged;
+    container-only difference; schema mismatch),
     keeping the new module at 100% line coverage.
 - file: config/agent/verification_registry/entries/ducklake-zip-inputs-moved.yaml
   action: Create
   purpose: >-
-    Graduated shard for VP step 1: check_id ducklake-zip-inputs-moved, primitive_slot command_exit_zero running the
-    step-1 nodes, guard_target scripts/ci/ducklake_artifacts.py. rec-4372's closure artifact.
+    Graduated shard for VP step 1, following the existing ducklake shard convention: check_id ducklake-zip-inputs-moved,
+    primitive_slot command_exit_zero running the step-1 nodes, guard_target scripts/ci/ducklake_artifacts.py,
+    guard_symbol null, plan_slug, graduated_at and graduated_by. rec-4372's closure artifact.
 - file: docs/contracts/environment-taxonomy.yaml
   action: Modify
   purpose: |-
@@ -193,10 +205,11 @@ verification_plan:
     tests/test_ducklake_attribution.py::test_push_schema_mismatch_fails_closed
     tests/test_ducklake_attribution.py::test_push_malformed_inputs_record_fails_closed
     tests/test_ducklake_attribution.py::test_push_identical_with_preexisting_pointer_fails_closed
+    tests/test_ducklake_attribution.py::test_push_non_verbatim_entry_fails_closed
     tests/test_ducklake_attribution.py::test_fetch_follows_pointer_one_hop
     tests/test_ducklake_attribution.py::test_fetch_bad_pointer_fails_closed
     tests/test_ducklake_attribution.py::test_fetch_pointer_target_missing_fails_closed -q
-  expected: Exit 0, 13 passed. Red before, because the nodes do not exist; written first, the acceptance node fails on DUCKLAKE_ZIP_MISMATCH.
+  expected: Exit 0, 14 passed. Red before, because the nodes do not exist; written first, the acceptance node fails on DUCKLAKE_ZIP_MISMATCH.
   expected_literals: []
   fix_if: A raise on the moved case, an upload on any fail-closed case, or a zip written under the PR head prefix -> fix ducklake_artifacts.py or ducklake_inputs.py, never loosen a test.
   hermetic: true
@@ -366,10 +379,15 @@ test_obligations:
   test_selector: tests/test_ducklake_inputs.py
   red_green_expectation: red before (module and tests absent), green after
 - source: scripts/ci/ducklake_artifacts.py
-  behavior: A push-path mismatch whose every difference is a moved input proceeds on merge-tree zips under the merge prefix; any other mismatch fails closed before upload; fetch follows a valid pointer and refuses a bad one.
+  behavior: A push-path mismatch whose every difference is a moved input proceeds on merge-tree zips under the merge prefix and leaves the PR-time zips untouched.
   verification_step: 1
   test_selector: tests/test_ducklake_artifacts.py::test_prmerge_concurrent_same_file_zip_identity
   red_green_expectation: red before (node absent; written first it fails on DUCKLAKE_ZIP_MISMATCH), green after
+- source: scripts/ci/ducklake_artifacts.py
+  behavior: Every mismatch the record cannot attribute fails closed before any upload, a pre-existing pointer is refused, and fetch follows a valid pointer one hop and refuses a bad one.
+  verification_step: 2
+  test_selector: tests/test_ducklake_attribution.py
+  red_green_expectation: red before (file absent; each node written first fails on the unchanged source), green after
 - source: scripts/ci/ducklake_artifacts.py
   behavior: upload-only runs build_lambda's own build and dual-write unchanged, then records inputs.json, and fails loud if the record cannot be written.
   verification_step: 2
@@ -429,7 +447,7 @@ context:
   Decision-scout: FLAGS_FOUND -- WARN 154 (Update line names the pointer and new basis; taxonomy joins scope), WARN 48
   (V3, live VP 7-8), NOTE 181 (existing tests unchanged). CITE: 77, 158, 125, 126, 183, 162, 83, 55, 128, 132, 177,
   186. Decisions triaged: 171 of 171. Roadmap items intersected: 5; CONFLICT: 0; RELATED: 5.
-- "gates: decision-scout=FLAGS_FOUND (WARN 154, WARN 48, NOTE 181 resolved as above); plan-critique=REVISE r1 and r2 (all findings fixed), PENDING r3"
+- "gates: decision-scout=FLAGS_FOUND (WARN 154, WARN 48, NOTE 181 resolved as above); plan-critique=REVISE r1-r3 (all findings fixed), PENDING r4"
 - >-
   Incident (verified; rec-4372's narrative swaps the PR numbers): #1519 (head bae45827) planned 12:38Z; #1520 merged
   12:59Z editing src/common/ducklake_handler_errors.py; #1519 merged 13:08Z unre-planned; run 38905586484 failed closed.
@@ -456,14 +474,13 @@ context:
   Transition: a terraform/personal PR planned before this merge has no inputs.json (a moved input still fails closed);
   push to it or update its branch from main before merging, since a re-run reuses the old test-merge commit.
 - >-
-  Residuals (Decision 55): with a moved entry, that artifact's container bytes go unchecked in that run; any tooling
-  blob move in the window attributes every differing artifact wholesale (function zips and layers); an untracked layer
-  input (a CDN binary, a new wheel for a pinned version) stays fail-closed only without such a move; during an approval
-  wait the pointer and per-sha zips stay writable by the PR-context planner role (as the zips are today); a stale saved
-  plan.bin stays with rec-3957/rec-3568. Live proof VP 7-8: rec-4381 (first terraform/personal PR after merge).
+  Residuals (Decision 55): a moved entry leaves that artifact's container bytes unchecked; a tooling or version.yaml
+  move attributes every differing artifact (layers included) wholesale, so an untracked layer input (CDN binary, new
+  wheel) stays fail-closed only without one; during an approval wait the pointer and per-sha zips stay writable by the
+  PR-context planner role (as zips are today); a stale saved plan.bin stays with rec-3957/rec-3568. Live proof: rec-4381.
 - >-
-  Sequencing: rec-4248 (fetch copy-only) edits the same fetch_reviewed and reconcile.yml comments; the pointer must
-  survive it.
+  Sequencing: rec-4248 edits the same fetch_reviewed and the reconcile.yml fetch comments (stale here: they cite the
+  PR-time assert); the pointer must survive it.
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
