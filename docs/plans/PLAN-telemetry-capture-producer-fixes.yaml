@@ -91,16 +91,18 @@ scope:
     -q <ref>^{commit}) is decisive, its config/telemetry/capture.yaml read with git show <ref>:<path> and parsed as
     today, and a missing or malformed file at a resolving ref is OFF (never a fall-through, so deleting the file on main
     stops capture); only a ref that does not resolve falls through. Otherwise (or when neither ref resolves) the working
-    tree, as today. Every git call is bounded by 2 s; a timeout counts as unresolved. switch_enabled, capture_allowed (the
-    Stop and SessionEnd shims) and capture_mode (the runner) keep their signatures and all read it. OTL_TURN_CAPTURE=off,
+    tree, as today. Every git call is bounded by 2 s; a timeout counts as unresolved. switch_mode(env, repo_root) ->
+    (mode, source | None) applies today's environment precedence and then switch_state; source is None when no switch
+    read happens (OTL_TURN_CAPTURE=off, GITHUB_ACTIONS, the SMOKE override). switch_enabled, capture_allowed (the Stop and
+    SessionEnd shims) and capture_mode (the runner; it wraps switch_mode) keep their signatures. OTL_TURN_CAPTURE=off,
     GITHUB_ACTIONS and the SW-2 smoke override keep their precedence. Still stdlib and yaml only.
 - file: scripts/telemetry_capture/runner.py
   action: Modify
   purpose: >-
     Each pass's diagnostics line records the key switch_source:<source> (origin_main | main | working_tree) with count
-    1, so a session that fell back to its own checkout is visible (DG-1). The source comes from the same switch read
-    that decided the mode (switch.py's switch_mode(repo_root) -> (mode, source), which capture_mode wraps), never a
-    second git read. No other behaviour changes.
+    1, so a session that fell back to its own checkout is visible (DG-1); a pass with no switch read (the SMOKE override)
+    records switch_source:none. The source comes from the same read that decided the mode (switch.py's switch_mode),
+    never a second git read. test_diagnostics_record_the_switch_source pins both cases. No other behaviour changes.
 - file: scripts/telemetry_capture/transport.py
   action: Modify
   purpose: >-
@@ -314,8 +316,10 @@ scope:
     the transcript truth. The mutation node's named preconditions: SC-3 removes the only v3 close tie, so the
     re-authoring authors session_provenance_facts at pass final with its root's state expectation as the restored tie
     (the tree carries it; editing YAML cannot create one); hooks_resume_and_compact's pass-stop root reads terminal at
-    v4 (its segment close is its latest lifecycle row), so a replacement non-terminal session, for example
-    subagent_background_with_completion's root at pass stop, carries the second idle_threshold expectation set.
+    v4 (its segment close is its latest lifecycle row), so a replacement non-terminal session, resume_after_interrupt's
+    root at pass stop (its resume row is due once its group ends and follows the SC-1 close), or else
+    multiblock_response_interleaved_tool_results' root at pass stop (open row only), carries the second idle_threshold
+    expectation set, confirmed non-terminal from its v4 emitted rows at authoring.
 - file: tests/telemetry/fixtures/derived_golden_rollups.yaml
   action: Modify
   purpose: Re-authored by hand at parser_version 4 under the same rule as derived_golden_state.yaml.
@@ -927,7 +931,9 @@ execution_steps:
   commit concluded success (mcp__github__actions_list); rebase this branch onto main. If either fails, STOP and tell the
   coordinator. Confirm PLAN-telemetry-golden-harness's build is on main (test -f
   tests/telemetry/fixtures/derived_golden_state.yaml and scripts/telemetry_verify/derive.py); if not, STOP and tell
-  the coordinator (it must merge first).
+  the coordinator (it must merge first). Then read the merged tests/telemetry_verify/test_shape.py and test_ledger.py:
+  if a node asserts a producer-derived outcome or count on a verification tree that v4 changes (for example
+  background_status_mismatch 3 on subagent_background_failed), escalate to the coordinator now rather than at VP 6.
 - >-
   2. Rules PV-1..PV-4 (provenance.py, the pin hook). PV-1 line: "[session_start_log_turn] capture pin
   checkout=<v> base=<v> dirty=<v>", v a validated hex sha or unknown, dirty true|false|unknown; the parser accepts the
@@ -991,7 +997,8 @@ execution_steps:
   harness_session_key_unparsed, effort_unparsed, cache_split_exceeds_total, usage_not_final:root,
   usage_not_final:subagent, spawn_result_corrected, spawn_result_mismatch, notice_status:<token>,
   notice_status_malformed, notice_status_absent, background_completed_at_resume, notice_after_boundary,
-  segment_close_skipped, resume_before_close, failure_reason_dropped, credential_error, switch_source:<source>.
+  segment_close_skipped, resume_before_close, failure_reason_dropped, credential_error, switch_source:<source>
+  (switch_source:none when no switch read happened).
 - >-
   7. Contracts: the four contract notes as their scope rows pin, each with an amendment_log entry dated the build day;
   ports.yaml SA-02. Structural size (Decision 166 contracts class: 500 effective lines, 2,000-character lines;
