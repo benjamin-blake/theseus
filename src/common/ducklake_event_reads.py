@@ -43,9 +43,12 @@ _PLACEHOLDER_TABLES = {
 _DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _BOUND_NAME = re.compile(r"\$([a-z_]+)")
 _SCOPE_SESSION = "session_started_at >= $part_from AND session_started_at < $part_to AND session_id = $session_id"
-_INT_MIN = {"parser_version": 1, "offset": 0, "max_bytes": 1}
+_INT_MIN = {"parser_version": 1, "offset": 0, "max_bytes": 1, "max_rows": 1}
 _PRODUCER_MAX = 200
 _SCOPE_WINDOW = "session_started_at >= $part_from AND session_started_at < $part_to"
+_IDENT = re.compile(r"^[a-z][a-z0-9_]*$")
+_LIVE_CTE = {SESSIONS: "s", OBSERVATIONS: "o", AGENTS: "a", TRANSCRIPTS: "t"}
+_JOINS_PLACEHOLDER = "{telemetry_joins}"
 
 
 class EventReadInputError(Exception):
@@ -66,7 +69,7 @@ class EventRead:
     tables: tuple[str, ...]
     sql: str
     params: tuple[str, ...] = ()
-    binding: str = "none"  # session | window | none
+    binding: str = "none"  # session | window | tree | none
     max_window_days: int | None = None
     data: Mapping[str, Any] = field(default_factory=dict)
     description: str = ""
@@ -172,6 +175,10 @@ def bind_values(entry: EventRead, params: Any) -> dict[str, Any]:
         values["event_id"] = _ulid(entry, "event_id", params["event_id"])
     for name in entry.int_params:
         values[name] = _integer(entry, name, params[name])
+    if entry.binding == "tree":
+        from src.common.ducklake_event_read_verbs import MAX_TREE_ROWS  # noqa: PLC0415 -- the verbs module imports this one
+
+        values["max_rows"] = min(values["max_rows"], MAX_TREE_ROWS)
     if "as_of" in entry.params:
         values["as_of"] = _as_of(entry, params["as_of"])
     if "day_from" in entry.params:
@@ -202,6 +209,34 @@ def compared_columns(table: str, semantics: dict[str, Any] | None = None) -> tup
     return tuple(name for name in columns if name not in excluded)
 
 
+def telemetry_joins(semantics: dict[str, Any] | None = None) -> list[dict[str, str]]:
+    """The telemetry referential joins the generator projected from docs/contracts/_joins.yaml (read only when called)."""
+    semantics = semantics if semantics is not None else rt.load_field_semantics()
+    joins = semantics.get("telemetry_joins")
+    if not joins:
+        raise rt.DuckLakeRuntimeError("field_semantics carries no telemetry_joins projection")
+    return [dict(join) for join in joins]
+
+
+def _joins_cte(joins: list[dict[str, str]]) -> str:
+    """The jn and edges CTEs over the deduped live rows (s, o, a, t) of one window, one SELECT per join."""
+    edges = []
+    for join in joins:
+        child, parent = _LIVE_CTE.get(join["child_table"]), _LIVE_CTE.get(join["parent_table"])
+        names = (join["join_id"], join["child_column"], join["parent_column"])
+        if child is None or parent is None or not all(_IDENT.match(name) for name in names):
+            raise rt.DuckLakeRuntimeError(f"telemetry join {join.get('join_id')!r} names an unsupported table or column")
+        edges.append(
+            f"SELECT '{join['join_id']}' AS join_id, c.tenant_id AS tenant_id, c.project_id AS project_id, "
+            f"c.session_started_at AS session_started_at, EXISTS (SELECT 1 FROM {parent} p "
+            "WHERE p.tenant_id = c.tenant_id AND p.project_id = c.project_id AND p.session_started_at = c.session_started_at "
+            f"AND p.{join['parent_column']} = c.{join['child_column']}) AS has_parent FROM {child} c "
+            f"WHERE c.{join['child_column']} IS NOT NULL"
+        )
+    ids = " UNION ALL ".join(f"SELECT '{join['join_id']}' AS join_id" for join in joins)
+    return f"jn AS ({ids}), edges AS ({' UNION ALL '.join(edges)})"
+
+
 def render_sql(entry: EventRead, semantics: dict[str, Any] | None = None) -> str:
     """Render the verb's template: table names under the telemetry alias, scope, compared columns and registry data."""
     from src.common.ducklake_event_read_verbs import render_data  # noqa: PLC0415
@@ -218,6 +253,8 @@ def render_sql(entry: EventRead, semantics: dict[str, Any] | None = None) -> str
         **{f"cmp_{name}": ", ".join(compared_columns(table, semantics)) for name, table in _PLACEHOLDER_TABLES.items()},
         **render_data(entry.data),
     }
+    if _JOINS_PLACEHOLDER in sql:
+        replacements["telemetry_joins"] = _joins_cte(telemetry_joins(semantics))
     for key, text in replacements.items():
         sql = sql.replace("{" + key + "}", text)
     leftover = re.findall(r"\{[a-z_]+\}", sql)
@@ -234,7 +271,7 @@ def event_read_version(verb: str, semantics: dict[str, Any] | None = None) -> st
     """
     entry = _event_reads()[verb]
     semantics = semantics if semantics is not None else rt.load_field_semantics()
-    definition = {
+    definition: dict[str, Any] = {
         "verb": entry.verb,
         "tables": list(entry.tables),
         "params": list(entry.params),
@@ -245,6 +282,8 @@ def event_read_version(verb: str, semantics: dict[str, Any] | None = None) -> st
         "data": entry.data,
         "compared": {t: list(compared_columns(t, semantics)) for t in _EVENT_TABLES},
     }
+    if _JOINS_PLACEHOLDER in entry.sql:
+        definition["joins"] = telemetry_joins(semantics)
     canonical = json.dumps(definition, sort_keys=True, separators=(",", ":"), default=list)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 

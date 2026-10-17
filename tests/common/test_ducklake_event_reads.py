@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
@@ -248,8 +248,11 @@ def test_event_verbs_are_described_with_their_class_bounds_and_audience() -> Non
     assert event["sessions_window"]["max_window_days"] == verbs.MAX_WINDOW_DAYS
     assert event["sessions_window"]["binding"] == "window" and event["telemetry_health_count"]["binding"] == "none"
     assert {v for v, row in event.items() if not row["agent_facing"]} == {
+        "session_tree_rows",
         "sessions_window_all_purposes",
         "telemetry_health_count",
+        "telemetry_orphan_counts",
+        "telemetry_root_sessions",
         "transcript_content",
     }
     assert all("smoke catalog" in verbs.EVENT_READS[v].description for v in verbs.EVENT_READS)
@@ -383,3 +386,92 @@ def test_content_verb_hands_resolved_rows_to_the_content_module(monkeypatch: pyt
     rows, values = seen[0]
     assert rows == [{"content": "hello", "compared_versions": 1}] and values["offset"] == 0
     assert sorted(con.params) == ["event_id", "parser_version", "part_from", "part_to", "producer", "session_id"]
+
+
+_TREE = verbs.EVENT_READS["session_tree_rows"]
+_ORPHANS = verbs.EVENT_READS["telemetry_orphan_counts"]
+_ROOT = "01M3C03V80C6ZZ53H4MAGFS7Z4"
+
+
+def test_tree_binding_validates_and_clamps_max_rows() -> None:
+    values = ev.bind_values(_TREE, {"session_id": _ROOT, "offset": 0, "max_rows": 999999})
+    assert values["max_rows"] == verbs.MAX_TREE_ROWS == 2000 and values["offset"] == 0
+    assert values["part_to"] - values["part_from"] == timedelta(days=1) and values["session_id"] == _ROOT
+    assert ev.bind_values(_TREE, {"session_id": _ROOT, "offset": 40, "max_rows": 7})["max_rows"] == 7
+    for bad in (
+        {"session_id": _ROOT, "offset": 0, "max_rows": 0},
+        {"session_id": _ROOT, "offset": 0, "max_rows": True},
+        {"session_id": _ROOT, "offset": -1, "max_rows": 5},
+        {"session_id": _ROOT, "offset": "9", "max_rows": 5},
+        {"session_id": "not-a-ulid-SECRET", "offset": 0, "max_rows": 5},
+        {"session_id": _ROOT, "offset": 0},
+    ):
+        with pytest.raises(ev.EventReadInputError) as raised:
+            ev.bind_values(_TREE, bad)
+        assert "SECRET" not in str(raised.value)
+
+
+def test_telemetry_joins_come_from_the_projection() -> None:
+    projected = rt.load_field_semantics()["telemetry_joins"]
+    assert ev.telemetry_joins() == projected and projected
+    sql = ev.render_sql(_ORPHANS)
+    assert all(join["join_id"] in sql for join in projected) and "{telemetry_joins}" not in sql
+    with pytest.raises(rt.DuckLakeRuntimeError, match="telemetry_joins"):
+        ev.telemetry_joins({"ops_tables": {}})
+    hostile = [dict(projected[0], child_column="x; DROP TABLE t")]
+    with pytest.raises(rt.DuckLakeRuntimeError, match="unsupported"):
+        ev.render_sql(_ORPHANS, {**rt.load_field_semantics(), "telemetry_joins": hostile})
+
+
+def test_orphan_read_version_moves_with_a_projected_join() -> None:
+    semantics = rt.load_field_semantics()
+    changed = {**semantics, "telemetry_joins": [dict(semantics["telemetry_joins"][0], parent_column="session_id")]}
+    changed["telemetry_joins"] += semantics["telemetry_joins"][1:]
+    assert ev.event_read_version("telemetry_orphan_counts", changed) != ev.event_read_version(
+        "telemetry_orphan_counts", semantics
+    )
+    for verb in verbs.EVENT_READS:
+        if verb != "telemetry_orphan_counts":
+            assert ev.event_read_version(verb, changed) == ev.event_read_version(verb, semantics), verb
+
+
+_SEAM = """
+import builtins, io, pathlib
+def _refuse(name):
+    if "field_semantics.yaml" in str(name):
+        raise RuntimeError("field_semantics.yaml read at import")
+_open = builtins.open
+def guarded(file, *a, **k):
+    _refuse(file)
+    return _open(file, *a, **k)
+builtins.open = io.open = guarded
+_read_text, _path_open = pathlib.Path.read_text, pathlib.Path.open
+pathlib.Path.read_text = lambda self, *a, **k: (_refuse(self), _read_text(self, *a, **k))[1]
+pathlib.Path.open = lambda self, *a, **k: (_refuse(self), _path_open(self, *a, **k))[1]
+"""
+_IMPORT = """
+from src.common import ducklake_runtime as rt
+def refuse(*a, **k):
+    raise RuntimeError("load_field_semantics called at import")
+rt.load_field_semantics = refuse
+import src.common.ducklake_event_read_verbs, src.common.ducklake_event_reads as ev
+try:
+    ev.telemetry_joins()
+except RuntimeError:
+    print("IMPORT_READS_NO_FILE")
+"""
+
+
+def test_registry_import_reads_no_file(tmp_path: Any) -> None:
+    import os  # noqa: PLC0415
+    import subprocess  # noqa: PLC0415
+    import sys  # noqa: PLC0415
+    from pathlib import Path  # noqa: PLC0415
+
+    (tmp_path / "sitecustomize.py").write_text(_SEAM, encoding="utf-8")
+    root = Path(__file__).resolve().parents[2]
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(tmp_path), str(root)])}
+    done = subprocess.run(
+        [sys.executable, "-c", _IMPORT], cwd=root, env=env, capture_output=True, text=True, encoding="utf-8", timeout=60
+    )
+    assert done.returncode == 0 and "IMPORT_READS_NO_FILE" in done.stdout, done.stderr[-400:]
