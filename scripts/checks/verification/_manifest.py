@@ -36,6 +36,7 @@ ENTRIES: tuple[Entry, ...] = (
         pre=True,
         pre_globs=(
             "src/row_rules/**",
+            "scripts/contract_rules.py",
             "src/turn_capture/markers.py",
             "pyproject.toml",
             "scripts/checks/_pytest_diff.py",
@@ -88,6 +89,7 @@ ENTRIES: tuple[Entry, ...] = (
         pre=True,
         pre_globs=(
             "src/row_rules/**",
+            "scripts/contract_rules.py",
             "src/turn_capture/markers.py",
             "config/agent/verification_registry/**",
             "scripts/verification_graduation.py",
@@ -129,6 +131,7 @@ ENTRIES: tuple[Entry, ...] = (
         pre=True,
         pre_globs=(
             "src/row_rules/**",
+            "scripts/contract_rules.py",
             "src/turn_capture/markers.py",
             "scripts/verification_checks.py",
             "scripts/verification_graduation.py",

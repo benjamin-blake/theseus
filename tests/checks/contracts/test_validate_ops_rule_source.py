@@ -16,7 +16,8 @@ from scripts.checks.contracts import _rule_grammar as grammar
 from scripts.checks.contracts import validate_ops_rule_source as check_mod
 from scripts.checks.contracts._manifest import ENTRIES
 from scripts.contract_rules import declared_rules
-from scripts.ops_portal.write_validators import _validate_context_length, _validate_file_path
+from scripts.ops_portal.write_validators import gate_write
+from tests.fixtures.ducklake_fakes import ops_rec_fields
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _WRITER_TABLES = (
@@ -186,13 +187,8 @@ _DEFECTS: list[tuple[str, Callable[[dict], None], str]] = [
     ),
     ("exemption-not-a-mapping", _set("title", "write_time_exemptions", {"min_length": "text"}), "must be a mapping"),
     ("exemption-for-undeclared-rule", _stale_exemption, "names a rule the field does not declare"),
-    ("parity-min-length", _bad_leg("context", "min_length", value=79), "ops.yaml context.min_length"),
-    ("parity-accepted-values", _remove_key("effort", "accepted_values"), "ops.yaml effort.accepted_values"),
-    ("parity-array-format", _bad_leg("tags", "array_element_format", pattern="^x$"), "ops.yaml tags.array_element_format"),
-    ("parity-blank-rejecting", _remove_key("title", "min_length"), "blank-rejecting"),
-    ("parity-path-syntax", _remove_key("file", "pattern"), "ops.yaml file.path_syntax"),
-    ("parity-producer-side", _remove_key("acceptance", "acceptance_lint"), "no declared acceptance_lint"),
-    ("parity-not-null", _remove_key("risk", "not_null"), "ops.yaml risk.not_null"),
+    ("dq-accepted-values-superset", _bad_leg("effort", "accepted_values", values=["XS"]), "ops.yaml effort.accepted_values"),
+    ("dq-not-null-stricter", _remove_key("risk", "not_null"), "ops.yaml risk.not_null"),
     ("status-vocabulary", _status_values, "status vocabulary"),
 ]
 
@@ -251,14 +247,14 @@ def test_unreadable_inputs_fail_closed(tmp_path: Path) -> None:
     _edit(
         root,
         "config/agent/data_quality/ops.yaml",
-        lambda d: d["tables"]["ops_recommendations"]["columns"]["title"]["tests"].append({"made_up": {"write_time": True}}),
+        lambda d: d["tables"]["ops_recommendations"]["columns"]["title"]["tests"].append({"made_up": {"write_time": False}}),
     )
-    assert any("no contract mapping" in item for item in _run(root))
+    assert any("`write_time` key remains" in item for item in _run(root))
     root = _make_root(tmp_path / "f")
     _edit(
         root,
         "config/agent/data_quality/ops.yaml",
-        lambda d: d["tables"]["ops_recommendations"]["columns"].update(ghost={"tests": [{"not_null": {"write_time": True}}]}),
+        lambda d: d["tables"]["ops_recommendations"]["columns"].update(ghost={"tests": [{"not_null": {}}]}),
     )
     assert any("column the contract does not declare" in item for item in _run(root))
 
@@ -348,20 +344,22 @@ def test_exclude_before_cannot_move_later(tmp_path: Path, capsys: pytest.Capture
 
 
 def test_portal_validators_agree_with_contract() -> None:
+    """The portal's gate accepts a path exactly when the contract's file pattern matches, and a context exactly when its
+    stripped length meets the contract's min_length (rec-4158: gate_write drives the writer's own rules)."""
     rules = {(r.column, r.kind): r for r in declared_rules("ops_recommendations")}
     pattern = rules[("file", "pattern")].params["value"]
     corpus = ["a.py", "a/b/c.py", "/abs", "C:/x", "c:\\x", "a\\b", "C:x", "C:", "1:/x", "", "..", "./x", "x:/", "é/ü"]
 
-    def portal_accepts(path: str) -> bool:
+    def accepts(field: str, value: str) -> bool:
         try:
-            _validate_file_path(path)
+            gate_write("ops_recommendations", {**ops_rec_fields(), field: value}, insert=True)
         except ValueError:
             return False
         return True
 
     for path in corpus:
         if path:
-            assert (re.fullmatch(pattern, path) is not None) == portal_accepts(path), path
+            assert (re.fullmatch(pattern, path) is not None) == accepts("file", path), path
     minimum = rules[("context", "min_length")].params["value"]
     for text in (
         "x" * minimum,
@@ -370,12 +368,7 @@ def test_portal_validators_agree_with_contract() -> None:
         " " * 200,
         "\u3000" + "y" * (minimum - 1),
     ):
-        try:
-            _validate_context_length(text)
-            accepted = True
-        except ValueError:
-            accepted = False
-        assert accepted == (len(text.strip()) >= minimum), repr(text)
+        assert accepts("context", text) == (len(text.strip()) >= minimum), repr(text)
 
 
 def test_registered_in_the_contracts_manifest() -> None:
@@ -414,12 +407,12 @@ def test_regex_subset_helper_scans_escapes_and_classes() -> None:
     assert "lookaround" in grammar.regex_subset_error("^(?P<n>a)(?P=n)$")
 
 
-def test_retired_expression_write_time_tests_are_ignored(tmp_path: Path) -> None:
+def test_expression_tests_are_ignored(tmp_path: Path) -> None:
     root = _make_root(tmp_path)
     _edit(
         root,
         "config/agent/data_quality/ops.yaml",
-        lambda d: d["tables"]["ops_recommendations"]["columns"]["title"]["tests"].append({"expression": {"write_time": True}}),
+        lambda d: d["tables"]["ops_recommendations"]["columns"]["title"]["tests"].append({"expression": {"sql": "1 = 1"}}),
     )
     assert _run(root) == []
 

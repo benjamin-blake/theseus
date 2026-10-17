@@ -6,6 +6,11 @@
 # rollback path no longer exist -- data_quality_runner dispatches these tables' checks in DuckDB
 # dialect against the DuckLake `current` TABLE via the closed reader unconditionally, and
 # additionally emits the CD.33-clause-8 checks declared under `clause8_checks`.
+#
+# DQ BACKSTOP ONLY (Decision 210; rec-4158): every ops_recommendations test here that restates a contract rule is a
+# backstop of the DuckLake writer's enforcement, never stricter than the Class A contract (the rule source;
+# validate_ops_rule_source keeps that one-way). This file has no write-time role: the portal runs the writer's own
+# gate over the contract's projection. T1.6 c7 retires this file.
 
 database: agent_platform
 
@@ -54,16 +59,11 @@ tables:
           # Uniqueness is enforced at the _current view level.
       title:
         description: "Concise one-line description of the recommendation"
-        semantics: "Minimum 10 stripped characters enforced at write time via the min_length write_time test below (write_validators.py's YAML-driven loader). Near-duplicate titles across different file targets are legitimate."
+        semantics: "Minimum 10 stripped characters for rows created from 2026-09-01, enforced by the DuckLake writer from the Class A contract's title min_length rule (the portal runs the writer's own gate as a derived pre-check). Near-duplicate titles across different file targets are legitimate."
         tests:
           - not_null:
               enforced: true
               exclude_before: '2026-05-01'
-              write_time: true
-          - min_length:
-              value: 10
-              write_time: true
-              enforced: true
       source:
         description: "Agent type that filed this recommendation; harness-injected AGENT_TYPE identifier"
         semantics: "Lineage key: analytically equivalent to session_id for cross-table joins to telemetry on agent type. Never set by agents -- injected from AGENT_TYPE env var by the invocation harness. Validated against config/agent/data_quality/source_registry.yaml at write time in ops_data_portal -- unregistered values are rejected before reaching the warehouse. Human-initiated portal calls use source=manual."
@@ -71,7 +71,6 @@ tables:
           - not_null:
               enforced: true
               exclude_before: '2026-05-01'
-              write_time: true
       effort:
         description: "Estimated implementation size (t-shirt: XS/S/M/L/XL)"
         semantics: "Interim string label. Migration rec-627: convert to LOC-weighted integer; t-shirt labels derived in _current view from integer thresholds. Weights defined in config/agent/executor/capabilities.yaml."
@@ -79,12 +78,10 @@ tables:
           - not_null:
               enforced: true
               exclude_before: '2026-05-01'
-              write_time: true
           - accepted_values:
               values: [XS, S, M, L, XL]
               enforced: true
               exclude_before: '2026-05-01'
-              write_time: true
       priority:
         description: "Business urgency tier (Critical/High/Medium/Low)"
         semantics: "Interim string label. Migration rec-628: convert to int 1-4 (1=Critical, 4=Low); ORDER BY priority ASC gives urgency sort. Labels derived in _current view via CASE. Source-informed defaults at portal write time."
@@ -92,19 +89,16 @@ tables:
           - not_null:
               enforced: true
               exclude_before: '2026-05-01'
-              write_time: true
           - accepted_values:
               values: [Critical, High, Medium, Low]
               enforced: true
               exclude_before: '2026-05-01'
-              write_time: true
       status:
         description: "Recommendation lifecycle state"
         semantics: "Valid domain: open | closed | failed | declined | superseded. Pydantic Literal guard at write time (rec-594). SCD2 append-only: deletion requires setting status=superseded via ops_data_portal -- never direct JSONL edits."
         tests:
           - not_null:
               enforced: true
-              write_time: true
           - accepted_values:
               values: [open, closed, failed, declined, superseded]
               enforced: true
@@ -115,37 +109,26 @@ tables:
           - not_null:
               enforced: true
               exclude_before: '2026-05-01'
-              write_time: true
       file:
         description: "Repo-relative path to the primary source file this recommendation targets"
-        semantics: "Must use forward slashes. Must not be absolute. Validated at write time by ops_data_portal._validate_file_path. Recs targeting files-to-be-created are valid -- no existence check applied."
+        semantics: "Must use forward slashes. Must not be absolute. Enforced by the DuckLake writer from the Class A contract's file pattern rule (the portal's derived pre-check refuses it early). Recs targeting files-to-be-created are valid -- no existence check applied."
         tests:
           - not_null:
               enforced: true
               exclude_before: '2026-05-01'
-              write_time: true
-          - path_syntax:
-              write_time: true
-              enforced: true
       context:
         description: "Why this recommendation exists -- minimum 80 stripped characters"
-        semantics: "Must answer 'what problem does this solve and why now?'. Enforced at write time via ops_data_portal._validate_context_length (>= 80 stripped chars). Executor relies on this for planning; thin contexts produce low-quality execution."
+        semantics: "Must answer 'what problem does this solve and why now?'. Enforced by the DuckLake writer from the Class A contract's context min_length rule (>= 80 stripped chars; the portal's derived pre-check refuses it early). Executor relies on this for planning; thin contexts produce low-quality execution."
         tests:
           - not_null:
               enforced: true
               exclude_before: '2026-05-01'
-              write_time: true
           - expression:
               sql: "LENGTH(TRIM(context)) >= 80"
               description: "context must be at least 80 stripped characters"
               enforced: true
               exclude_before: '2026-05-01'
               python: "len(value.strip()) >= 80"
-          - min_length:
-              value: 80
-              write_time: true
-              enforced: true
-              exclude_before: '2026-05-01'
       acceptance:
         description: "Verifiable shell command that proves the recommendation is implemented"
         semantics: "Must pass lint_acceptance_command() from scripts/executor/acceptance_lint.py with require_discrimination=True. Prefer grep/pytest commands over prose descriptions. Banned patterns: python -c one-liners, absolute paths, line-number greps, fenced blocks. The probe must discriminate the pre-fix tree from the post-fix tree: a lone grep/rg for a plain literal with no negation, count assertion or chained second assertion is rejected, as is a bare pytest path with no ::node_id against an already-existing test file. Fix by adding a ::node_id, asserting a negation or count, chaining a second assertion, or pointing at a not-yet-created test file."
@@ -153,29 +136,12 @@ tables:
           - not_null:
               enforced: true
               exclude_before: '2026-05-01'
-              write_time: true
-          - acceptance_lint:
-              write_time: true
-              enforced: true
       dependencies:
         description: "List of rec-IDs that must complete before this recommendation is eligible"
         semantics: "Nullable array<string>. Each element must match ^rec-[0-9]+$ AND reference an existing rec (any status -- open, closed, or superseded alike) at write time through both file_rec and update_rec; null or empty list means no dependencies."
-        tests:
-          - array_element_format:
-              pattern: '^rec-[0-9]+$'
-              write_time: true
-              enforced: true
-          - array_element_reference:
-              write_time: true
-              enforced: true
       tags:
         description: "Free-form categorisation tags for ad-hoc filtering"
         semantics: "Nullable array<string>. Each element must match ^[a-z][a-z0-9-]*$ (kebab-case) at write time through both file_rec and update_rec, e.g. T2.56 -> t2-56; null or empty list means no tags."
-        tests:
-          - array_element_format:
-              pattern: '^[a-z][a-z0-9-]*$'
-              write_time: true
-              enforced: true
       risk:
         description: "Implementation risk tier (low/medium/high)"
         semantics: "Derived, never agent-set. Formula: R = (C x S) / M where C=max cyclomatic complexity of target file, S=effort scale factor, M=coverage% + 0.1 baseline. Thresholds: 0-5=low, 6-15=medium, 15+=high. Portal derives at write time from file + effort."
@@ -183,12 +149,10 @@ tables:
           - not_null:
               enforced: true
               exclude_before: '2026-05-01'
-              write_time: true
           - accepted_values:
               values: [low, medium, high]
               enforced: true
               exclude_before: '2026-05-01'
-              write_time: true
       created_timestamp:
         description: "Timestamp when this recommendation was first filed"
         semantics: "SCD2 invariant: identical across all versions of a given rec id; does not change on update. Enforced constraint: created_timestamp <= last_updated_timestamp."

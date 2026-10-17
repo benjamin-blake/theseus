@@ -18,7 +18,7 @@ duckdb = pytest.importorskip("duckdb")
 import scripts.contract_rule_census as census  # noqa: E402
 import scripts.field_semantics_rule_projection as projection  # noqa: E402
 from scripts.contract_rules import DeclaredRule, declared_rules  # noqa: E402
-from scripts.ops_portal.write_validators import _validate_file_path  # noqa: E402
+from src.common.ducklake_scd2_schema import resolve_table_spec  # noqa: E402
 from src.row_rules.rules import RowRuleError, RowRules, check_row  # noqa: E402
 
 _TEXT = [
@@ -126,19 +126,17 @@ def test_min_length_agrees_with_str_strip_including_unicode_whitespace(conn, min
     assert _gated_count(con, dated) == len(_engine_ids(rows, dated))
 
 
-def test_pattern_and_the_portal_file_path_validator_agree(conn) -> None:
+def test_pattern_and_the_engine_compiled_file_pattern_agree(conn) -> None:
     con, rows = conn
     contract_rule = _contract_rule("file", "pattern")
     pattern = contract_rule.params["value"]
     rule = dataclasses.replace(contract_rule, column="path", exclude_before=None)
     assert _violating_ids(con, rule) == _engine_ids(rows, rule)
 
+    engine_pattern = RowRules.from_projection(resolve_table_spec("ops_recommendations").fields).patterns["file"]
+
     def portal_rejects(path: str) -> bool:
-        try:
-            _validate_file_path(path)
-        except ValueError:
-            return True
-        return False
+        return engine_pattern.fullmatch(path) is None
 
     con.execute("CREATE TABLE p (n INTEGER, path VARCHAR)")
     alphabet = ["a", "Z", "1", "/", "\\", ":", "."]

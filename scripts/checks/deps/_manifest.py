@@ -75,6 +75,7 @@ ENTRIES: tuple[Entry, ...] = (
         # own Entry globs docs/contracts/check-manifest.yaml the same way).
         pre_globs=(
             "src/row_rules/**",
+            "scripts/contract_rules.py",
             "src/turn_capture/markers.py",
             "scripts/checks/deps/**",
             "scripts/checks/_pytest_diff.py",
