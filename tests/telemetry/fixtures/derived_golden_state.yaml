@@ -20,33 +20,40 @@
 # discriminates idle_threshold: the contract says idle time must EXCEED the threshold, so exactly equal still reads running
 # (telemetry_sessions.yaml state; derivation_cases.yaml c06). A terminal session reads its outcome at any as_of.
 # INTEGER CONVERSION. A fractional duration is truncated toward zero to whole seconds (the contract's int; rec-4405).
-parser_version: 3
+parser_version: 4
 trees:
   - tree: corpus:hooks_resume_and_compact
     pass: final
-    why: root open 1, resumes 3 and 9, compact 6, close 9 tied with the resume 9 on timestamp and ordinal so close ranks last
+    why: "root open 1, resume 3, compact 6, closes 2 and 8 (segment closes derived at the resume boundaries) and 9 (the finalization close); PLAN-telemetry-capture-producer-fixes: the trailing resume 9 is not due until its hook group ends (SC-3), so the close at 9 is the sole latest row and no tie remains"
     expect:
-      - {verb: session_state_and_duration, session: root, params: {as_of: "2026-01-01T12:00:00Z"}, rows: [{state: success, outcome: success, duration_seconds: 8, last_event_timestamp: "2026-01-01T00:00:09Z"}], why: "close ranks last on the (9, 11) tie; 9 - 1 = 8 s; last event is the 9 s rows"}
+      - {verb: session_state_and_duration, session: root, params: {as_of: "2026-01-01T12:00:00Z"}, rows: [{state: success, outcome: success, duration_seconds: 8, last_event_timestamp: "2026-01-01T00:00:09Z"}], why: "PLAN-telemetry-capture-producer-fixes (v4): the latest lifecycle row is the close at 9 (ordinal 11); 9 - 1 = 8 s; last event is the 9 s rows"}
       - {verb: session_state_and_duration, session: root, params: {as_of: "2026-01-03T00:00:00Z"}, rows: [{state: success, outcome: success, duration_seconds: 8}], why: terminal at any as_of}
       - {verb: sessions_window, params: {day_from: "2026-01-01", day_to: "2026-01-01", as_of: "2026-01-01T12:00:00Z"}, rows: [{state: success, outcome: success, duration_seconds: 8}], why: one root session of a real project}
       - {verb: sessions_window_all_purposes, params: {day_from: "2026-01-01", day_to: "2026-01-01", as_of: "2026-01-03T00:00:00Z"}, rows: [{state: success, outcome: success, duration_seconds: 8}], why: same root over every purpose}
   - tree: corpus:hooks_resume_and_compact
     pass: stop
-    why: no finalization yet, so no close row; the latest lifecycle row is the resume at 9 s, the root is not terminal
+    why: "PLAN-telemetry-capture-producer-fixes (v4): no finalization yet, but the resume boundary at 9 derives the segment close at 8 (SC-1), so the latest lifecycle row is that close and the root is terminal"
     expect:
-      - {verb: session_state_and_duration, session: root, params: {as_of: "2026-01-01T12:00:00Z"}, rows: [{state: running, outcome: null, duration_seconds: null, last_event_timestamp: "2026-01-01T00:00:09Z"}], why: latest row is a resume and 12 h idle is inside 24 h}
-      - {verb: session_state_and_duration, session: root, params: {as_of: "2026-01-02T00:00:09Z"}, rows: [{state: running, outcome: null, duration_seconds: null}], discriminates: idle_threshold, why: "idle exactly 86,400 s (last event 9 s + 1 day) does not EXCEED the threshold"}
-      - {verb: session_state_and_duration, session: root, params: {as_of: "2026-01-03T00:00:00Z"}, rows: [{state: abandoned, outcome: null, duration_seconds: null}], why: not terminal and idle 1.99 days exceeds 24 h}
-      - {verb: sessions_window, params: {day_from: "2026-01-01", day_to: "2026-01-01", as_of: "2026-01-02T00:00:09Z"}, rows: [{state: running, outcome: null, duration_seconds: null}], discriminates: idle_threshold, why: the window verb applies the same strict idle rule}
-      - {verb: sessions_window, params: {day_from: "2026-01-01", day_to: "2026-01-01", as_of: "2026-01-03T00:00:00Z"}, rows: [{state: abandoned, outcome: null, duration_seconds: null}], why: beyond the threshold}
-      - {verb: sessions_window_all_purposes, params: {day_from: "2026-01-01", day_to: "2026-01-01", as_of: "2026-01-01T12:00:00Z"}, rows: [{state: running, outcome: null, duration_seconds: null}], why: same root over every purpose}
+      - {verb: session_state_and_duration, session: root, params: {as_of: "2026-01-01T12:00:00Z"}, rows: [{state: success, outcome: success, duration_seconds: 7, last_event_timestamp: "2026-01-01T00:00:09Z"}], why: "PLAN-telemetry-capture-producer-fixes (v4): latest lifecycle row is the close at 8 (the compact is at 6); 8 - 1 = 7 s; the last event is the resume hook's process event at 9"}
+      - {verb: session_state_and_duration, session: root, params: {as_of: "2026-01-03T00:00:00Z"}, rows: [{state: success, outcome: success, duration_seconds: 7}], why: terminal at any as_of, so never abandoned}
+      - {verb: sessions_window, params: {day_from: "2026-01-01", day_to: "2026-01-01", as_of: "2026-01-01T12:00:00Z"}, rows: [{state: success, outcome: success, duration_seconds: 7}], why: one root, terminal}
+      - {verb: sessions_window_all_purposes, params: {day_from: "2026-01-01", day_to: "2026-01-01", as_of: "2026-01-03T00:00:00Z"}, rows: [{state: success, outcome: success, duration_seconds: 7}], why: same root over every purpose}
   - tree: corpus:resume_after_interrupt
     pass: final
-    why: open 1, resume 6, close 11 success
+    why: "PLAN-telemetry-capture-producer-fixes (v4): open 1, close 4 cancelled (segment close at the resume boundary), resume 6, close 11 success"
     expect:
       - {verb: session_state_and_duration, session: root, params: {as_of: "2026-01-01T12:00:00Z"}, rows: [{state: success, outcome: success, duration_seconds: 10, last_event_timestamp: "2026-01-01T00:00:11Z"}], why: latest row is the close at 11; 11 - 1 = 10 s}
       - {verb: session_state_and_duration, session: root, params: {as_of: "2026-01-03T00:00:00Z"}, rows: [{state: success, outcome: success, duration_seconds: 10}], why: terminal at any as_of}
       - {verb: sessions_window, params: {day_from: "2026-01-01", day_to: "2026-01-01", as_of: "2026-01-03T00:00:00Z"}, rows: [{state: success, outcome: success, duration_seconds: 10}], why: one root}
+  - tree: corpus:resume_after_interrupt
+    pass: stop
+    why: "PLAN-telemetry-capture-producer-fixes (v4): no finalization; the segment close at 4 (cancelled) precedes the resume at 6, so the latest lifecycle row is the resume and the root is not terminal; the last event is the second resume hook's process event at 7"
+    expect:
+      - {verb: session_state_and_duration, session: root, params: {as_of: "2026-01-01T12:00:00Z"}, rows: [{state: running, duration_seconds: 3, last_event_timestamp: "2026-01-01T00:00:07Z"}], why: "latest row is the resume at 6 after the close at 4, so running; duration is the latest close minus the pin, 4 - 1 = 3 s, including the gap to the later resume (telemetry_sessions.yaml duration_seconds)"}
+      - {verb: session_state_and_duration, session: root, params: {as_of: "2026-01-02T00:00:07Z"}, rows: [{state: running}], discriminates: idle_threshold, why: "idle exactly 86,400 s (last event 7 s + 1 day) does not EXCEED the threshold"}
+      - {verb: session_state_and_duration, session: root, params: {as_of: "2026-01-03T00:00:00Z"}, rows: [{state: abandoned}], why: not terminal and idle 1.99 days exceeds 24 h}
+      - {verb: sessions_window, params: {day_from: "2026-01-01", day_to: "2026-01-01", as_of: "2026-01-02T00:00:07Z"}, rows: [{state: running}], discriminates: idle_threshold, why: the window verb applies the same strict idle rule}
+      - {verb: sessions_window, params: {day_from: "2026-01-01", day_to: "2026-01-01", as_of: "2026-01-03T00:00:00Z"}, rows: [{state: abandoned}], why: beyond the threshold}
   - tree: corpus:close_cancelled_mid_stream
     pass: final
     why: open 1, close 6 outcome cancelled (stream aborted mid-turn)
@@ -158,6 +165,13 @@ trees:
       - {verb: session_state_and_duration, session: root, params: {as_of: "2026-01-01T12:00:00Z"}, rows: [{state: success, outcome: success, duration_seconds: 2, last_event_timestamp: "2026-01-01T00:00:03Z"}], why: 3 - 1 = 2 s}
       - {verb: session_state_and_duration, session: root, params: {as_of: "2026-01-03T00:00:00Z"}, rows: [{state: success, outcome: success, duration_seconds: 2}], why: terminal at any as_of}
       - {verb: sessions_window, params: {day_from: "2026-01-01", day_to: "2026-01-01", as_of: "2026-01-01T12:00:00Z"}, rows: [{state: success, outcome: success, duration_seconds: 2}], why: one root}
+  - tree: corpus:session_provenance_facts
+    pass: final
+    why: "PLAN-telemetry-capture-producer-fixes (v4): root pinned at 0.5; closes at 6, 12 and 22 (segment closes) and 40; the trailing compact group at 40 and the finalization close at 40 share timestamp and ordinal, so close ranks last on the tie"
+    expect:
+      - {verb: session_state_and_duration, session: root, params: {as_of: "2026-01-01T12:00:00Z"}, rows: [{state: success, outcome: success, duration_seconds: 39, last_event_timestamp: "2026-01-01T00:00:40Z"}], why: "close and compact tie at (40, 18) and close ranks last; 40 - 0.5 = 39.5 s truncated toward zero to 39 (rec-4405); last event is the 40 s rows"}
+      - {verb: session_state_and_duration, session: root, params: {as_of: "2026-01-03T00:00:00Z"}, rows: [{state: success, outcome: success, duration_seconds: 39}], why: terminal at any as_of}
+      - {verb: sessions_window, params: {day_from: "2026-01-01", day_to: "2026-01-01", as_of: "2026-01-01T12:00:00Z"}, rows: [{state: success, outcome: success, duration_seconds: 39}], why: only the root is listed, never its sub-agents}
   - tree: corpus:no_reply_session
     pass: final
     why: a session with no closed assistant turn emits no row in any table, so the day holds no session
@@ -174,17 +188,17 @@ trees:
       - {verb: sessions_window, params: {day_from: "2026-01-01", day_to: "2026-01-01", as_of: "2026-01-01T12:00:00Z"}, rows: [{state: success, outcome: success, duration_seconds: 10}], why: only the root}
   - tree: verification:subagent_background_failed
     pass: final
-    why: root open 1 close 20; three background children whose notices read failed, killed and an unrecognised token; at parser_version 3 each pair closes success
+    why: "root open 1 close 20; three background children whose notices read failed, killed and an unrecognised token; PLAN-telemetry-capture-producer-fixes (v4): each pair closes failed with the raw token in error (rec-4358)"
     expect:
       - {verb: session_state_and_duration, session: root, params: {as_of: "2026-01-01T12:00:00Z"}, rows: [{state: success, outcome: success, duration_seconds: 19, last_event_timestamp: "2026-01-01T00:00:20Z"}], why: 20 - 1 = 19 s}
-      - {verb: session_state_and_duration, session: "agent:agentF1", params: {as_of: "2026-01-01T12:00:00Z"}, rows: [{parent_session_id: {session: root}, state: success, outcome: success, duration_seconds: 8, last_event_timestamp: "2026-01-01T00:00:10Z"}], known_defect: rec-4358, why: "emitted value: the pair closes success at the notice (10 - 2 = 8 s) though the notice status is failed; the truth is asserted by the shape check"}
-      - {verb: session_state_and_duration, session: "agent:agentF2", params: {as_of: "2026-01-01T12:00:00Z"}, rows: [{state: success, outcome: success, duration_seconds: 7, last_event_timestamp: "2026-01-01T00:00:11Z"}], known_defect: rec-4358, why: "emitted value: close 11 - open 4 = 7 s, success though the notice reads killed"}
-      - {verb: session_state_and_duration, session: "agent:agentF3", params: {as_of: "2026-01-01T12:00:00Z"}, rows: [{state: success, outcome: success, duration_seconds: 6, last_event_timestamp: "2026-01-01T00:00:12Z"}], known_defect: rec-4358, why: "emitted value: close 12 - open 6 = 6 s, success though the notice status is unrecognised"}
-      - {verb: agent_run_state_and_duration, session: "agent:agentF1", params: {as_of: "2026-01-01T12:00:00Z"}, rows: [{agent_type: claude-code-subagent, state: success, outcome: success, duration_seconds: 8}], known_defect: rec-4358, why: the pair itself}
+      - {verb: session_state_and_duration, session: "agent:agentF1", params: {as_of: "2026-01-01T12:00:00Z"}, rows: [{parent_session_id: {session: root}, state: failed, outcome: failed, duration_seconds: 8, last_event_timestamp: "2026-01-01T00:00:10Z"}], why: "PLAN-telemetry-capture-producer-fixes (v4): the pair closes failed at the notice (failed -> failed); 10 - 2 = 8 s"}
+      - {verb: session_state_and_duration, session: "agent:agentF2", params: {as_of: "2026-01-01T12:00:00Z"}, rows: [{state: failed, outcome: failed, duration_seconds: 7, last_event_timestamp: "2026-01-01T00:00:11Z"}], why: "PLAN-telemetry-capture-producer-fixes (v4): the notice reads killed, an unmapped token, so the pair closes failed; 11 - 4 = 7 s"}
+      - {verb: session_state_and_duration, session: "agent:agentF3", params: {as_of: "2026-01-01T12:00:00Z"}, rows: [{state: failed, outcome: failed, duration_seconds: 6, last_event_timestamp: "2026-01-01T00:00:12Z"}], why: "PLAN-telemetry-capture-producer-fixes (v4): the unrecognised token closes failed; 12 - 6 = 6 s"}
+      - {verb: agent_run_state_and_duration, session: "agent:agentF1", params: {as_of: "2026-01-01T12:00:00Z"}, rows: [{agent_type: claude-code-subagent, state: failed, outcome: failed, duration_seconds: 8}], why: "PLAN-telemetry-capture-producer-fixes (v4): the pair itself, failed"}
       - {verb: sessions_window, params: {day_from: "2026-01-01", day_to: "2026-01-01", as_of: "2026-01-01T12:00:00Z"}, rows: [{state: success, outcome: success, duration_seconds: 19}], why: only the root}
   - tree: verification:resume_with_cost_state
     pass: final
-    why: root open 1, resume group at 100, turn 2, close 102 (1:42); sync children agentM1 pair 2 -> 10 and agentS1 pair 2 -> 15
+    why: "root open 1, close 16 (segment close at the resume boundary, PLAN-telemetry-capture-producer-fixes v4), resume group at 100, turn 2, close 102 (1:42); sync children agentM1 pair 2 -> 10 and agentS1 pair 2 -> 15"
     expect:
       - {verb: session_state_and_duration, session: root, params: {as_of: "2026-01-01T12:00:00Z"}, rows: [{state: success, outcome: success, duration_seconds: 101, last_event_timestamp: "2026-01-01T00:01:42Z"}], why: latest row is the close at 102 s; 102 - 1 = 101 s; the earlier resume at 100 does not decide}
       - {verb: session_state_and_duration, session: root, params: {as_of: "2026-01-03T00:00:00Z"}, rows: [{state: success, outcome: success, duration_seconds: 101}], why: terminal at any as_of}

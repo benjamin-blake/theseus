@@ -66,6 +66,11 @@ CASES = (
     "fork_session_nested.json",
     "hook_command_names.json",
     "no_reply_session.json",
+    "subagent_usage_final_and_spawn_correction.json",
+    "background_notice_statuses.json",
+    "resume_segment_closes.json",
+    "session_provenance_facts.json",
+    "model_call_request_fields.json",
 )
 
 

@@ -27,6 +27,7 @@ from tests.fixtures.turn_capture_corpus import (
     hook,
     make_files,
     prompt,
+    task_notice,
     text_block,
     tool_result,
     tool_use_block,
@@ -376,3 +377,55 @@ def test_synthetic_and_api_error_assistant_records() -> None:
     first, second = tree.streams[ROOT].turns
     assert first.last_assistant is not None and first.last_assistant.uuid == "e1" and first.responses == []
     assert [r.message_id for r in second.responses] == ["m2"] and tree.diag["synthetic_assistant_records"] == 1
+
+
+def _background_root(agent: str, *tail: dict) -> list[dict]:
+    return [*_spawn_root(agent, bg=True, notify=False), *tail]
+
+
+def test_background_spawn_collects_every_notice_in_order() -> None:
+    tail = (
+        task_notice("n1", 4, "b1", "completed"),
+        task_notice("n9", 4.5, "other", "failed"),
+        task_notice("n2", 5, "b1", "failed"),
+        task_notice("n3", 6, "b1", None),
+        task_notice("n4", 7, "b1", raw_status="<status>bad value</status>\n"),
+        task_notice("n5", 8, "b1", raw_status="<status>unclosed\n"),
+    )
+    tree = parsed(_background_root("b1", *tail), {"b1": _kid("b1")})
+    spawn = tree.spawns[0]
+    assert [n.uuid for n in spawn.notices] == ["n1", "n2", "n3", "n4", "n5"] and spawn.close_rec.uuid == "n1"
+    assert [streams.notice_status(n) for n in spawn.notices] == ["completed", "failed", None, "malformed", "malformed"]
+    assert spawn.complete and not spawn.completed_at_boundary
+    nested = _kid("b1") + [
+        child(assistant("c3", 3.6, "mc2", [tool_use_block("tuB", "Agent", {"run_in_background": True})]), "b1"),
+        child(tool_result("c4", 3.7, "tuB", "x", pid="p1", tur={"agentId": "g1", "isAsync": True}), "b1"),
+        child(task_notice("cn1", 3.8, "g1", "killed"), "b1"),
+        child(task_notice("cn2", 3.9, "g1", "completed"), "b1"),
+    ]
+    deep = parsed(_spawn_root("b1", bg=False, notify=False), {"b1": nested, "g1": _kid("g1")})
+    inner = next(sp for sp in deep.spawns if sp.agent_id == "g1")
+    assert [n.uuid for n in inner.notices] == ["cn1", "cn2"]
+
+
+def test_background_spawn_completes_at_a_later_resume_boundary() -> None:
+    resume = hook("rs", 10, "SessionStart:resume")
+    root = _background_root("b1", resume, prompt("u2", 11, "p2", "again"))
+    tree = parsed(root, {"b1": _kid("b1")})
+    spawn = tree.spawns[0]
+    assert spawn.complete and spawn.completed_at_boundary and spawn.close_rec is None and spawn.notices == []
+    assert tree.streams["b1"].turns[0].closed and tree.diag["background_completed_at_resume"] == 1
+    late = parsed(_background_root("b1", resume, task_notice("n1", 12, "b1", "completed")), {"b1": _kid("b1")})
+    assert late.spawns[0].completed_at_boundary and late.spawns[0].close_rec.uuid == "n1"
+    assert late.diag["notice_after_boundary"] == 1
+    before = parsed(_background_root("b1", task_notice("n1", 5, "b1"), resume), {"b1": _kid("b1")})
+    assert not before.spawns[0].completed_at_boundary and before.diag["background_completed_at_resume"] == 0
+    nested = _kid("b1") + [
+        child(assistant("c3", 3.6, "mc2", [tool_use_block("tuB", "Agent", {"run_in_background": True})]), "b1"),
+        child(tool_result("c4", 3.7, "tuB", "x", pid="p1", tur={"agentId": "g1", "isAsync": True}), "b1"),
+        child(hook("crs", 3.8, "SessionStart:resume"), "b1"),
+    ]
+    deep = parsed(_spawn_root("b1", bg=False, notify=False), {"b1": nested, "g1": _kid("g1")})
+    inner = next(sp for sp in deep.spawns if sp.agent_id == "g1")
+    assert not inner.complete and not inner.completed_at_boundary
+    assert tree.streams[ROOT].resume_ends == {tree.streams[ROOT].resumes[0].line: tree.streams[ROOT].recs[-1].line}

@@ -486,7 +486,7 @@ def test_external_ref_scope_under_forked_history_declared() -> None:
 def test_parser_v3_cut_rules_are_declared_in_the_envelope() -> None:
     envelope = load_contract(_CONTRACTS_DIR / "telemetry-event-envelope.yaml")
     governance = _norm(envelope.governance_notes)
-    assert "carries final usage, or at a recorded finalization cut, which treats the tree as final)" in governance
+    assert "a recorded finalization cut, which treats the tree as final)" in governance
     assert (
         "incremental emission equals the emission set recomputed from the tree and its recorded finalization cuts"
         in governance

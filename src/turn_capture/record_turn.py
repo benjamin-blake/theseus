@@ -30,8 +30,8 @@ from src.turn_capture.transcript import ROOT, TranscriptTree, read_lines, sessio
 from src.turn_capture.transcripts import Ctx, Sidecars, build_transcripts
 
 PRODUCER = "claude_code"
-PARSER_VERSION = 3
-PRODUCER_VERSION = "turn-capture-3b"
+PARSER_VERSION = 4
+PRODUCER_VERSION = "turn-capture-4"
 FULL_OUTPUT_CAP_BYTES = 8388608
 BILLING_SHAPES = ("fixed_non_rollover_allowance",)
 TABLES = ("telemetry_observations", "telemetry_transcripts", "telemetry_agents", "telemetry_sessions")
@@ -60,8 +60,8 @@ def _build_all(parsed: ParsedTree, ctx: Ctx, sidecars: Sidecars, diag: Counter[s
     built = {
         "telemetry_observations": build_observations(parsed, ctx, diag, sidecars),
         "telemetry_transcripts": build_transcripts(parsed, ctx, sidecars, diag),
-        "telemetry_agents": build_agents(parsed, ctx),
-        "telemetry_sessions": build_sessions(parsed, ctx),
+        "telemetry_agents": build_agents(parsed, ctx, diag),
+        "telemetry_sessions": build_sessions(parsed, ctx, diag),
     }
     deferred = {s.session_ref for s in parsed.streams.values() if not stream_due(s)}
     for table, rows in built.items():

@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import botocore.exceptions as botocore_exceptions
 import pytest
 
 from scripts.telemetry_capture import transport
@@ -185,6 +186,7 @@ def _fake_botocore(monkeypatch: pytest.MonkeyPatch, *, credentials: Any, ssm_val
         "botocore.awsrequest": types.SimpleNamespace(AWSRequest=AWSRequest),
         "botocore.config": types.SimpleNamespace(Config=Config),
     }
+    modules["botocore.exceptions"] = botocore_exceptions
     modules["botocore"] = types.SimpleNamespace(session=modules["botocore.session"])
     for name, module in modules.items():
         monkeypatch.setitem(sys.modules, name, module)
@@ -203,8 +205,8 @@ def test_make_client_installs_one_clamped_single_attempt_config(monkeypatch: pyt
     assert seen["sigv4"] == ("lambda", "eu-west-2")
 
 
-@pytest.mark.parametrize("credentials", [None, "raise"])
-def test_make_client_without_credentials_is_unavailable(monkeypatch: pytest.MonkeyPatch, credentials: Any) -> None:
+@pytest.mark.parametrize(("credentials", "token"), [(None, "no_credentials"), ("raise", "credential_error")])
+def test_make_client_without_credentials_is_unavailable(monkeypatch: pytest.MonkeyPatch, credentials: Any, token: str) -> None:
     def boom() -> Any:
         raise RuntimeError("sts down")
 
@@ -212,10 +214,39 @@ def test_make_client_without_credentials_is_unavailable(monkeypatch: pytest.Monk
     _fake_botocore(monkeypatch, credentials=creds, ssm_value=URL)
     with pytest.raises(CaptureUnavailable) as raised:
         transport.make_client({}, None, Budget.start(10.0))
-    assert raised.value.reason == "no_credentials"
+    assert raised.value.reason == token
     with pytest.raises(CaptureUnavailable) as raised:
         transport.make_client({}, None, Budget(0.0, lambda: 5.0))
     assert raised.value.reason == "deadline"
+
+
+def test_credential_chain_error_is_its_own_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom() -> Any:
+        raise RuntimeError("secret-profile-name sts down")
+
+    _fake_botocore(monkeypatch, credentials=types.SimpleNamespace(get_frozen_credentials=boom), ssm_value=URL)
+    with pytest.raises(CaptureUnavailable) as raised:
+        transport.make_client({}, None, Budget.start(10.0))
+    assert raised.value.reason == "credential_error"
+    assert "secret-profile-name" not in str(raised.value) and raised.value.__cause__ is None
+    for error in (
+        botocore_exceptions.ProxyConnectionError(proxy_url="http://127.0.0.1:1", error="refused"),
+        botocore_exceptions.EndpointConnectionError(endpoint_url="https://sts.invalid"),
+        botocore_exceptions.ConnectTimeoutError(endpoint_url="https://sts.invalid"),
+        botocore_exceptions.ConnectionClosedError(endpoint_url="https://sts.invalid"),
+    ):
+
+        def cut(error=error) -> Any:
+            raise error
+
+        _fake_botocore(monkeypatch, credentials=types.SimpleNamespace(get_frozen_credentials=cut), ssm_value=URL)
+        with pytest.raises(CaptureUnavailable) as lost:
+            transport.make_client({}, None, Budget.start(10.0))
+        assert lost.value.reason == "credential_transport" and lost.value.__cause__ is None
+    _fake_botocore(monkeypatch, credentials=None, ssm_value=URL)
+    with pytest.raises(CaptureUnavailable) as absent:
+        transport.make_client({}, None, Budget.start(10.0))
+    assert absent.value.reason == "no_credentials"
 
 
 def _row(ref: str, size: int = 10, blob: bool = False) -> dict[str, Any]:

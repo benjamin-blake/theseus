@@ -5,7 +5,7 @@
 #
 # AUTHORING RULE (as the state file): the contract formula applied BY HAND to the rows the CURRENT producer (parser_version
 # below) emits; never copied from a verb or oracle output; known_defect names the owner rec where the emitted rows carry a
-# known producer defect (rec-4354 non-final model_call usage).
+# known producer defect (none at parser_version 4: rec-4354's non-final usage is flagged on the row by usage_final false).
 # FORMULAS. tokens_*_total = sum over the session's model_call rows after R5c (one per observation_id; telemetry_agents.yaml
 # tokens_*_total); model_call_count = those rows; usage_missing_count = those with no token counts (none in these trees).
 # process_event_total = count of process_event observations; steps_completed_total = step-kind closes (telemetry_sessions.yaml).
@@ -15,7 +15,7 @@
 # own blocking hook is already a fact is not counted twice; rework needs 3 consecutive error closes of one tool in one turn
 # (a success or blocked close of the same tool breaks the run); classifier_version 1. label_counts rows compare sorted by label.
 # Cost: fixed_non_rollover_allowance rows derive cost_usd NULL with cost_source allowance (Decision 206), never 0.
-parser_version: 3
+parser_version: 4
 trees:
   - tree: corpus:hooks_resume_and_compact
     pass: final
@@ -119,11 +119,11 @@ trees:
       - {verb: agent_run_token_rollup, session: root, params: {}, rows: [{tokens_input_total: 10, tokens_output_total: 20, tokens_cache_read_total: 30, tokens_cache_creation_total: 40, model_call_count: 1, usage_missing_count: 0}], why: one call}
   - tree: verification:subagent_nonfinal_midstream
     pass: final
-    why: child agentV1 makes calls with output 20, 4 and 8 (the last two are streaming snapshots); the parent says the true final is 768
+    why: "child agentV1 makes calls with output 20, 4 and 8 (the last two are streaming snapshots); the parent says the true final is 768; PLAN-telemetry-capture-producer-fixes (v4): the last call, whose input classes equal the spawn result's, takes its usage (768, usage_source spawn_result), the mid-stream snapshot 4 stays as emitted and flagged usage_final false"
     expect:
       - {verb: agent_run_token_rollup, session: root, params: {}, rows: [{tokens_input_total: 20, tokens_output_total: 40, tokens_cache_read_total: 60, tokens_cache_creation_total: 80, model_call_count: 2, usage_missing_count: 0}], why: 2 x (10, 20, 30, 40)}
-      - {verb: agent_run_token_rollup, session: "agent:agentV1", params: {}, rows: [{tokens_input_total: 30, tokens_output_total: 32, tokens_cache_read_total: 90, tokens_cache_creation_total: 120, model_call_count: 3, usage_missing_count: 0}], known_defect: rec-4354, why: "emitted value 20 + 4 + 8 = 32; the transcript truth (the final call is 768) is asserted by the shape check"}
-      - {verb: model_call_cost_estimate, session: "agent:agentV1", params: {}, rows: [{event_timestamp: "2026-01-01T00:00:04Z", tokens_output: 20, cost_usd: null, cost_source: allowance}, {event_timestamp: "2026-01-01T00:00:07Z", tokens_output: 4, cost_usd: null, cost_source: allowance}, {event_timestamp: "2026-01-01T00:00:09Z", tokens_output: 8, cost_usd: null, cost_source: allowance}], known_defect: rec-4354, why: the snapshots are rows of their own, each priced allowance}
+      - {verb: agent_run_token_rollup, session: "agent:agentV1", params: {}, rows: [{tokens_input_total: 30, tokens_output_total: 792, tokens_cache_read_total: 90, tokens_cache_creation_total: 120, model_call_count: 3, usage_missing_count: 0}], why: "PLAN-telemetry-capture-producer-fixes (v4): output 20 + 4 + 768 = 792; the 4 is a mid-stream snapshot flagged usage_final false (a lower bound), the final call carries the spawn result's 768"}
+      - {verb: model_call_cost_estimate, session: "agent:agentV1", params: {}, rows: [{event_timestamp: "2026-01-01T00:00:04Z", tokens_output: 20, cost_usd: null, cost_source: allowance}, {event_timestamp: "2026-01-01T00:00:07Z", tokens_output: 4, cost_usd: null, cost_source: allowance}, {event_timestamp: "2026-01-01T00:00:09Z", tokens_output: 768, cost_usd: null, cost_source: allowance}], why: "PLAN-telemetry-capture-producer-fixes (v4): three rows of their own, each priced allowance; the last takes the spawn result's output 768"}
   - tree: verification:subagent_background_failed
     pass: final
     why: root four calls; three background children one call each
@@ -136,6 +136,6 @@ trees:
     expect:
       - {verb: agent_run_token_rollup, session: root, params: {}, rows: [{tokens_input_total: 30, tokens_output_total: 60, tokens_cache_read_total: 90, tokens_cache_creation_total: 120, model_call_count: 3, usage_missing_count: 0}], why: 3 x (10, 20, 30, 40) including the call after the resume}
       - {verb: session_process_event_rollup, session: root, params: {}, rows: [{process_event_total: 1, steps_completed_total: 0}], why: the SessionStart:resume hook}
-      - {verb: agent_run_token_rollup, session: "agent:agentM1", params: {}, rows: [{tokens_input_total: 30, tokens_output_total: 44, tokens_cache_read_total: 90, tokens_cache_creation_total: 120, model_call_count: 3, usage_missing_count: 0}], known_defect: rec-4354, why: "emitted value 20 + 4 + 20 = 44 (the mid-stream snapshot is 4)"}
+      - {verb: agent_run_token_rollup, session: "agent:agentM1", params: {}, rows: [{tokens_input_total: 30, tokens_output_total: 44, tokens_cache_read_total: 90, tokens_cache_creation_total: 120, model_call_count: 3, usage_missing_count: 0}], why: "PLAN-telemetry-capture-producer-fixes (v4): output 20 + 4 + 20 = 44; the last response is final (stop_reason end_turn) so no correction applies, and the mid-stream snapshot 4 stays as emitted, flagged usage_final false"}
       - {verb: agent_run_token_rollup, session: "agent:agentS1", params: {}, rows: [{tokens_input_total: 5, tokens_output_total: 7, tokens_cache_read_total: 11, tokens_cache_creation_total: 13, model_call_count: 2, usage_missing_count: 0}], why: (2, 3, 5, 6) + (3, 4, 6, 7)}
       - {verb: model_call_cost_estimate, session: "agent:agentS1", params: {}, rows: [{event_timestamp: "2026-01-01T00:00:13Z", model: claude-sub-1, tokens_input: 2, tokens_output: 3, cost_usd: null, cost_source: allowance}, {event_timestamp: "2026-01-01T00:00:14.500Z", model: claude-sub-1, tokens_input: 3, tokens_output: 4, cost_usd: null, cost_source: allowance}], why: the sub-agent's own two calls on its own model}

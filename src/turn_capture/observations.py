@@ -32,8 +32,9 @@ from src.turn_capture.streams import (
     block_base,
     emitting_streams,
 )
-from src.turn_capture.transcript import hook_script
+from src.turn_capture.transcript import ROOT, hook_script
 from src.turn_capture.transcripts import Ctx, Sidecars, canonical_json, line_count, persisted_output, text_of
+from src.turn_capture.usage import usage_columns
 
 OBSERVATION_COLUMNS = (
     "event_kind",
@@ -71,17 +72,17 @@ OBSERVATION_COLUMNS = (
     "output_lines",
     "reasoning_visibility",
     "reasoning_tokens",
+    "usage_final",
+    "usage_source",
+    "requested_model",
+    "reasoning_effort",
+    "cache_creation_1h_tokens",
+    "cache_creation_5m_tokens",
     "rec_id",
     "metadata",
 )
 _SIGNATURE = re.compile(SIGNATURE_PATTERN)
 _IDENTIFIER = re.compile(r"[a-z][a-z0-9_-]{0,63}")
-_USAGE_KEYS = (
-    ("tokens_input", "input_tokens"),
-    ("tokens_output", "output_tokens"),
-    ("tokens_cache_read", "cache_read_input_tokens"),
-    ("tokens_cache_creation", "cache_creation_input_tokens"),
-)
 
 
 def _row(
@@ -108,14 +109,6 @@ def _row(
 
 def _meta(**fields: Any) -> str:
     return canonical_json(fields)
-
-
-def _int_or_zero(value: Any, diag: Counter[str]) -> int:
-    if type(value) is int:
-        return value
-    if value is not None:
-        diag["non_int_usage"] += 1
-    return 0
 
 
 def _model(rec: Rec) -> str | None:
@@ -267,7 +260,9 @@ def _tool_rows(
     return rows
 
 
-def _turn_rows(ctx: Ctx, stream: Stream, turn: Turn, diag: Counter[str], sidecars: Sidecars) -> list[dict[str, Any]]:
+def _turn_rows(
+    ctx: Ctx, stream: Stream, turn: Turn, diag: Counter[str], sidecars: Sidecars, spawn_usage: dict[str, Any] | None
+) -> list[dict[str, Any]]:
     tref = turn_entity_ref(stream.session_ref, turn.prompt_id)
     first = turn.first
     rows = [
@@ -306,18 +301,8 @@ def _turn_rows(ctx: Ctx, stream: Stream, turn: Turn, diag: Counter[str], sidecar
         )
     for resp in turn.responses:
         owner, message = resp.owner, resp.owner.data["message"]
-        usage = message.get("usage") if isinstance(message.get("usage"), dict) else {}
-        if not isinstance(message.get("usage"), dict):
-            diag["absent_usage"] += 1
-        if absent := sum(1 for _, key in _USAGE_KEYS if key not in usage):
-            diag["absent_usage_key"] += absent
-        details = usage.get("output_tokens_details")
-        thinking = (
-            details.get("thinking_tokens")
-            if isinstance(details, dict) and type(details.get("thinking_tokens")) is int
-            else None
-        )
-        tokens = {col: _int_or_zero(usage.get(key), diag) for col, key in _USAGE_KEYS}
+        last_of_first = spawn_usage if turn is stream.turns[0] and resp is turn.responses[-1] else None
+        cols = usage_columns(resp, last_of_first, diag, subagent=stream.key != ROOT)
         rows.append(
             _row(
                 ctx,
@@ -331,9 +316,8 @@ def _turn_rows(ctx: Ctx, stream: Stream, turn: Turn, diag: Counter[str], sidecar
                 name="agent_turn",
                 model=_model(owner),
                 billing_shape=ctx.billing_shape,
-                **tokens,
-                reasoning_visibility=_reasoning(resp, thinking),
-                reasoning_tokens=thinking,
+                **cols,
+                reasoning_visibility=_reasoning(resp, cols["reasoning_tokens"]),
                 metadata=_meta(
                     request_id=owner.data.get("requestId") if isinstance(owner.data.get("requestId"), str) else None,
                     stop_reason=message.get("stop_reason") if isinstance(message.get("stop_reason"), str) else None,
@@ -407,12 +391,24 @@ def _hook_row(ctx: Ctx, stream: Stream, rec: Rec) -> dict[str, Any]:
     )
 
 
+def _sync_spawn_usage(parsed: ParsedTree) -> dict[str, dict[str, Any]]:
+    """Rule US-3 inputs: each sync spawn's result usage by child stream key (background spawns never contribute)."""
+    out: dict[str, dict[str, Any]] = {}
+    for spawn in parsed.spawns:
+        info = spawn.close_result.use_result if spawn.close_result is not None else None
+        usage = info.get("usage") if isinstance(info, dict) else None
+        if isinstance(usage, dict):
+            out[spawn.agent_id] = usage
+    return out
+
+
 def build_observations(parsed: ParsedTree, ctx: Ctx, diag: Counter[str], sidecars: Sidecars) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    spawn_usage = _sync_spawn_usage(parsed)
     for stream in emitting_streams(parsed):
         for turn in stream.turns:
             if turn.closed:
-                rows += _turn_rows(ctx, stream, turn, diag, sidecars)
+                rows += _turn_rows(ctx, stream, turn, diag, sidecars, spawn_usage.get(stream.key))
                 tref = turn_entity_ref(stream.session_ref, turn.prompt_id)
                 rows += build_gate_events(ctx, stream, turn, tref, sidecars, diag, _row)
         rows += [_hook_row(ctx, stream, rec) for rec in stream.hooks if rec.turn is None or rec.turn.closed]

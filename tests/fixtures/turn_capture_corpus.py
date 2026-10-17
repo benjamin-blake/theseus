@@ -68,6 +68,7 @@ def assistant(
     usage: dict[str, Any] | None = None,
     api_block: int | None = None,
     model: str = "claude-test-1",
+    stop_reason: str | None = "end_turn",
     **extra: Any,
 ) -> dict[str, Any]:
     use = (
@@ -81,7 +82,7 @@ def assistant(
         "role": "assistant",
         "model": model,
         "content": blocks,
-        "stop_reason": "end_turn",
+        "stop_reason": stop_reason,
         "usage": use,
     }
     rec = _base(uuid, t, type="assistant", message=message, requestId="req_" + mid, **extra)
@@ -136,6 +137,37 @@ def hook(
 
 def attachment(uuid: str, t: float, a_type: str, **fields: Any) -> dict[str, Any]:
     return _base(uuid, t, type="attachment", attachment={"type": a_type, **fields})
+
+
+def pin_attachment(
+    uuid: str, t: float, ref: str, facts: str | None, hook_name: str = "SessionStart:startup"
+) -> dict[str, Any]:
+    """The SessionStart pin hook's attachment: its command carries --project-ref, its stderr the checkout facts line."""
+    command = f'bash "$CLAUDE_PROJECT_DIR/.claude/hooks/session_start_log_turn.sh" --project-ref={ref}'
+    line = "[session_start_log_turn] capture pin" + (f" {facts}" if facts else "") + "\n"
+    return hook(uuid, t, hook_name, command=command, stderr=line)
+
+
+def pin_facts_text(checkout: str = "1", base: str = "2", dirty: str = "false") -> str:
+    """Synthetic low-entropy facts: a repeated hex digit is a 40-character sha, 'unknown' stays literal."""
+    sha = lambda v: v if v == "unknown" else v * 40  # noqa: E731
+    return f"checkout={sha(checkout)} base={sha(base)} dirty={dirty}"
+
+
+def remote_change(
+    uuid: str, t: float, url: str = "https://example.invalid/code/session_AAAA1111bbbb2222cccc3333"
+) -> dict[str, Any]:
+    return attachment(uuid, t, "remote_session_change", url=url)
+
+
+def task_notice(
+    uuid: str, t: float, agent_id: str, status: str | None = "completed", raw_status: str | None = None
+) -> dict[str, Any]:
+    """A background completion notice as a queued_command attachment; raw_status replaces the whole <status> element."""
+    middle = raw_status if raw_status is not None else ("" if status is None else f"<status>{status}</status>\n")
+    return attachment(
+        uuid, t, "queued_command", prompt=f"<task-notification>\n<task-id>{agent_id}</task-id>\n{middle}</task-notification>"
+    )
 
 
 def child(rec: dict[str, Any], agent_id: str) -> dict[str, Any]:

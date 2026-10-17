@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 
 import yaml
@@ -13,15 +14,18 @@ from tests.fixtures.turn_capture_corpus import (
     PROJECT_REF,
     SID,
     assistant,
-    attachment,
     build_secret,
     child,
     hook,
     make_ctx,
     make_files,
     parse_records,
+    pin_attachment,
+    pin_facts_text,
     prompt,
+    remote_change,
     rows_of,
+    task_notice,
     text_block,
     tool_result,
     tool_use_block,
@@ -190,9 +194,7 @@ def _sync_root(name="Agent", tur=None, is_error=None, content="child done", bg=F
         tool_result("r1", 3, "tuA", content, pid="p1", is_error=is_error, tur=tur),
     ]
     if notify:
-        root.append(
-            attachment("n1", 4, "queued_command", prompt="<task-notification>\n<task-id>ag1</task-id>\n</task-notification>")
-        )
+        root.append(task_notice("n1", 4, "ag1"))
     return root
 
 
@@ -286,3 +288,133 @@ def test_agent_rows_do_not_depend_on_meta_json() -> None:
     plain = record_turn(MemTree(files), None, project_ref=PROJECT_REF, session_final=True)
     meta = record_turn(MemTree(with_meta), None, project_ref=PROJECT_REF, session_final=True)
     assert plain.agents == meta.agents and plain.sessions == meta.sessions and len(plain.agents) == 2
+
+
+def _background(*notices):
+    return [*_sync_root(bg=True), *notices]
+
+
+def _closes(rows):
+    return [(r["external_ref"], r["outcome"], r.get("error")) for r in rows if r["event_kind"] == "close"]
+
+
+def test_background_spawn_outcome_follows_notice_status() -> None:
+    cases = [
+        (task_notice("n1", 4, "ag1", "completed"), ("n1#0/agent_close", "success", None), None),
+        (task_notice("n1", 4, "ag1", "timeout"), ("n1#0/agent_close", "timeout", None), None),
+        (
+            task_notice("n1", 4, "ag1", "failed"),
+            ("n1#0/agent_close", "failed", "notice_status:failed"),
+            "notice_status:failed",
+        ),
+        (
+            task_notice("n1", 4, "ag1", "killed"),
+            ("n1#0/agent_close", "failed", "notice_status:killed"),
+            "notice_status:killed",
+        ),
+        (
+            task_notice("n1", 4, "ag1", raw_status="<status>Not OK</status>\n"),
+            ("n1#0/agent_close", "failed", "notice_status:malformed"),
+            "notice_status_malformed",
+        ),
+        (task_notice("n1", 4, "ag1", None), ("n1#0/agent_close", "failed", "notice_status:absent"), "notice_status_absent"),
+    ]
+    for notice, expected, counter in cases:
+        diag: Counter[str] = Counter()
+        rows = rows_of(build_agents(parse_records(_background(notice), {"ag1": _child()}, False), make_ctx(), diag))
+        assert _closes(rows) == [expected]
+        assert (counter is None) == (not diag), (expected, dict(diag))
+        if counter:
+            assert diag[counter] == 1
+    twice = _background(task_notice("n1", 4, "ag1", "completed"), task_notice("n2", 5, "ag1", "failed"))
+    rows = agents(twice, {"ag1": _child()}, False)
+    assert _closes(rows) == [("n1#0/agent_close", "success", None), ("n2#0/agent_close", "failed", "notice_status:failed")]
+    assert _closes(agents(_background(), {"ag1": _child()}, True)) == []
+
+
+def test_unmatched_api_error_kind_is_counted() -> None:
+    def build(kind):
+        diag: Counter[str] = Counter()
+        root = [prompt("u1", 1, "p1", "go"), assistant("a1", 2, "m1", [text_block("e")], isApiErrorMessage=True, error=kind)]
+        return rows_of(build_sessions(parse_records(root, None, True), make_ctx(), diag)), diag
+
+    rows, diag = build("Rate Limit!")
+    close = by(rows, event_kind="close")[0]
+    assert close["outcome"] == "failed" and "failure_reason" not in close and diag["failure_reason_dropped"] == 1
+    rows, diag = build("rate_limit")
+    assert by(rows, event_kind="close")[0]["failure_reason"] == "rate_limit" and "failure_reason_dropped" not in diag
+    assert "failure_reason_dropped" not in build(None)[1]
+
+
+def _resumed(first_tail=()):
+    return [
+        prompt("u1", 1, "p1", "a"),
+        assistant("a1", 2, "m1", [text_block("x")]),
+        *first_tail,
+        hook("rs", 10, "SessionStart:resume"),
+        prompt("u2", 11, "p2", "b"),
+        assistant("a2", 12, "m2", [text_block("y")]),
+    ]
+
+
+def test_resume_boundary_derives_the_previous_segment_close() -> None:
+    rows = sessions(_resumed(), final=False)
+    assert [(r["event_kind"], r["external_ref"]) for r in rows] == [
+        ("open", f"{SID}#0/open"),
+        ("resume", "rs#0/resume"),
+        ("close", "a1#0/close"),
+    ]
+    assert by(rows, event_kind="close")[0]["outcome"] == "success"
+    assert by(rows, event_kind="close")[0]["source_ordinal"] < by(rows, event_kind="resume")[0]["source_ordinal"]
+    mid_tool = _resumed([assistant("a1b", 3, "m1b", [tool_use_block("t1", "Bash", {})])])
+    assert by(sessions(mid_tool, final=False), event_kind="close")[0]["outcome"] == "cancelled"
+    assert by(sessions(mid_tool, final=False), event_kind="close")[0]["external_ref"] == "a1b#0/close"
+    diag: Counter[str] = Counter()
+    early = [*_resumed()[:2], hook("rs", 1, "SessionStart:resume"), *_resumed()[3:]]
+    build_sessions(parse_records(early, None, False), make_ctx(), diag)
+    assert diag["resume_before_close"] == 1
+    final = sessions(_resumed(), final=True)
+    assert [r["external_ref"] for r in by(final, event_kind="close")] == ["a1#0/close", "a2#0/close"]
+
+
+def test_a_segment_without_an_assistant_turn_gets_no_close() -> None:
+    root = [prompt("u1", 1, "p1", "a"), hook("rs", 3, "SessionStart:resume"), prompt("u2", 4, "p2", "b")]
+    root.append(assistant("a2", 5, "m2", [text_block("y")]))
+    diag: Counter[str] = Counter()
+    rows = rows_of(build_sessions(parse_records(root, None, True), make_ctx(), diag))
+    assert [r["external_ref"] for r in by(rows, event_kind="close")] == ["a2#0/close"]
+    assert diag["segment_close_skipped"] == 1
+
+
+def test_resume_row_is_due_once_its_hook_group_ends() -> None:
+    open_group = [*_resumed()[:2], hook("rs", 10, "SessionStart:resume"), hook("rs2", 10.5, "SessionStart:resume")]
+    assert by(sessions(open_group, final=True), event_kind="resume") == []
+    merged = [*open_group, prompt("u2", 11, "p2", "b"), assistant("a2", 12, "m2", [text_block("y")])]
+    resumes = by(sessions(merged, final=True), event_kind="resume")
+    assert [r["external_ref"] for r in resumes] == ["rs#0/resume"]
+    assert [r["execution_attempt"] for r in resumes] == [2]
+
+
+def test_open_and_resume_rows_carry_their_segment_provenance() -> None:
+    root = [
+        pin_attachment("h0", 0.5, "ontheloop", pin_facts_text("1", "2", "false")),
+        remote_change("rc", 0.6),
+        prompt("u1", 1, "p1", "a"),
+        assistant("a1", 2, "m1", [text_block("x")]),
+        pin_attachment("rs", 10, "ontheloop", pin_facts_text("3", "unknown", "true"), "SessionStart:resume"),
+        prompt("u2", 11, "p2", "b"),
+        assistant("a2", 12, "m2", [text_block("y")]),
+    ]
+    diag: Counter[str] = Counter()
+    rows = rows_of(build_sessions(parse_records(root, None, False), make_ctx(), diag))
+    opened, resumed = by(rows, event_kind="open")[0], by(rows, event_kind="resume")[0]
+    assert opened["harness_session_key"] == "session_AAAA1111bbbb2222cccc3333"
+    assert (opened["checkout_sha"], opened["checkout_base_sha"], opened["checkout_dirty"]) == ("1" * 40, "2" * 40, False)
+    assert (resumed["checkout_sha"], resumed["checkout_dirty"]) == ("3" * 40, True)
+    assert "checkout_base_sha" not in resumed and "harness_session_key" not in resumed
+    assert dict(diag) == {"checkout_base_unknown": 1}
+    bare = [prompt("u1", 1, "p1", "a"), assistant("a1", 2, "m1", [text_block("x")])]
+    diag = Counter()
+    row = by(rows_of(build_sessions(parse_records(bare, None, True), make_ctx(), diag)), event_kind="open")[0]
+    assert not {"harness_session_key", "checkout_sha"} & set(row)
+    assert dict(diag) == {"pin_without_checkout": 1, "harness_session_key_absent": 1}

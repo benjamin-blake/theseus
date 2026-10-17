@@ -10,11 +10,23 @@ content.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from typing import Any
 
+from src.turn_capture.provenance import Facts, harness_session_key, open_provenance, resume_provenance
 from src.turn_capture.refs import role_ref, session_marker_ref
 from src.turn_capture.scrub import scrub_text
-from src.turn_capture.streams import ROOT, ParsedTree, Rec, Spawn, Stream, Turn, emitting_streams, is_api_error
+from src.turn_capture.streams import (
+    ROOT,
+    ParsedTree,
+    Rec,
+    Spawn,
+    Stream,
+    Turn,
+    emitting_streams,
+    is_api_error,
+    notice_status,
+)
 from src.turn_capture.transcripts import Ctx, is_sentinel, text_of
 
 AGENT_TYPE = "claude-code-subagent"
@@ -48,6 +60,10 @@ SESSION_COLUMNS = (
     "model_primary",
     "coverage_before",
     "coverage_after",
+    "harness_session_key",
+    "checkout_sha",
+    "checkout_base_sha",
+    "checkout_dirty",
 )
 AGENT_COLUMNS = (
     "event_kind",
@@ -121,7 +137,7 @@ def _interrupted(turn: Turn) -> bool:
     )
 
 
-def _close_outcome(turn: Turn) -> dict[str, str]:
+def _close_outcome(turn: Turn, diag: Counter[str]) -> dict[str, str]:
     """Rule C-3: cancelled when the last turn was interrupted, failed on an API-error record, else success."""
     if _interrupted(turn):
         return {"outcome": "cancelled"}
@@ -129,6 +145,8 @@ def _close_outcome(turn: Turn) -> dict[str, str]:
     if last is not None and is_api_error(last.data):
         kind = last.data.get("error")
         reason = {"failure_reason": kind} if isinstance(kind, str) and _ERROR_KIND.fullmatch(kind) else {}
+        if kind is not None and not reason:
+            diag["failure_reason_dropped"] += 1
         return {"outcome": "failed", **reason}
     return {"outcome": "success"}
 
@@ -161,7 +179,34 @@ def _row(
     return {k: v for k, v in row.items() if v is not None}
 
 
-def build_sessions(parsed: ParsedTree, ctx: Ctx) -> list[dict[str, Any]]:
+def _provenance(facts: Facts) -> dict[str, Any]:
+    return dict(zip(("checkout_sha", "checkout_base_sha", "checkout_dirty"), facts, strict=True))
+
+
+def _segment_closes(ctx: Ctx, stream: Stream, diag: Counter[str]) -> list[dict[str, Any]]:
+    """Rules SC-1/SC-2: one close per root resume boundary for the segment before it, derived from the tree."""
+    rows: list[dict[str, Any]] = []
+    start = -1
+    for boundary in stream.resumes:
+        turns = [t for t in stream.turns if start < t.first.line < boundary.line]
+        anchor = next(
+            (r for r in reversed(stream.recs) if r.line < boundary.line and r.data.get("uuid") and r.ts is not None), None
+        )
+        if anchor is None or not any(t.last_assistant is not None for t in turns):
+            diag["segment_close_skipped"] += 1
+        else:
+            ext = role_ref(anchor.data["uuid"], 0, "close")
+            rows.append(
+                _row(ctx, anchor, stream, ext, "close", anchor.ts, anchor.line, None, **_close_outcome(turns[-1], diag))
+            )
+            if boundary.ts is not None and anchor.ts is not None and boundary.ts < anchor.ts:
+                diag["resume_before_close"] += 1
+        start = boundary.line
+    return rows
+
+
+def build_sessions(parsed: ParsedTree, ctx: Ctx, diag: Counter[str] | None = None) -> list[dict[str, Any]]:
+    diag = Counter() if diag is None else diag
     parents = {sp.agent_id: parsed.streams[sp.parent].session_ref for sp in parsed.spawns}
     rows: list[dict[str, Any]] = []
     for stream in emitting_streams(parsed):
@@ -170,6 +215,7 @@ def build_sessions(parsed: ParsedTree, ctx: Ctx) -> list[dict[str, Any]]:
             continue
         pin = next((r for r in stream.recs if r.ts is not None), None)
         child = stream.key in parents
+        root = stream.key == ROOT
         rows.append(
             _row(
                 ctx,
@@ -184,9 +230,13 @@ def build_sessions(parsed: ParsedTree, ctx: Ctx) -> list[dict[str, Any]]:
                 execution_attempt=1,
                 branch=_branch(stream, bound),
                 model_primary=_first_model(stream, bound),
+                harness_session_key=harness_session_key(stream, bound, diag),
+                **_provenance(open_provenance(stream, root, diag)),
             )
         )
         for n, rec in enumerate(stream.resumes):
+            if rec.line not in stream.resume_ends:
+                continue
             rows.append(
                 _row(
                     ctx,
@@ -198,18 +248,31 @@ def build_sessions(parsed: ParsedTree, ctx: Ctx) -> list[dict[str, Any]]:
                     rec.line,
                     parents.get(stream.key),
                     execution_attempt=n + 2,
+                    **_provenance(resume_provenance(stream, rec, root, diag)),
                 )
             )
         for rec in stream.compacts:
             rows.append(
                 _row(ctx, rec, stream, role_ref(rec.uuid, 0, "compact"), "compact", rec.ts, rec.line, parents.get(stream.key))
             )
-        if parsed.final and stream.key == ROOT:
+        if root:
+            rows += _segment_closes(ctx, stream, diag)
+        if parsed.final and root:
             anchor = next((r for r in reversed(stream.recs) if r.data.get("uuid") and r.ts is not None), None)
             if anchor is not None:
                 ext = role_ref(anchor.data["uuid"], 0, "close")
                 rows.append(
-                    _row(ctx, anchor, stream, ext, "close", anchor.ts, anchor.line, None, **_close_outcome(stream.turns[-1]))
+                    _row(
+                        ctx,
+                        anchor,
+                        stream,
+                        ext,
+                        "close",
+                        anchor.ts,
+                        anchor.line,
+                        None,
+                        **_close_outcome(stream.turns[-1], diag),
+                    )
                 )
     return rows
 
@@ -243,7 +306,20 @@ def _agent_row(ctx: Ctx, spawn: Spawn, child: Stream, ext: str, kind: str, rec: 
     return {k: v for k, v in row.items() if v is not None}
 
 
-def build_agents(parsed: ParsedTree, ctx: Ctx) -> list[dict[str, Any]]:
+def _notice_close(notice: Rec, diag: Counter[str]) -> dict[str, str]:
+    """Rule BN-2: a background run's close outcome follows its notice status."""
+    status = notice_status(notice)
+    if status == "completed":
+        return {"outcome": "success"}
+    if status == "timeout":
+        return {"outcome": "timeout"}
+    token = "absent" if status is None else status
+    diag["notice_status_" + token if token in ("absent", "malformed") else "notice_status:" + token] += 1
+    return {"outcome": "failed", "error": "notice_status:" + token}
+
+
+def build_agents(parsed: ParsedTree, ctx: Ctx, diag: Counter[str] | None = None) -> list[dict[str, Any]]:
+    diag = Counter() if diag is None else diag
     rows: list[dict[str, Any]] = []
     for spawn in parsed.spawns:
         child = parsed.streams.get(spawn.agent_id)
@@ -251,20 +327,20 @@ def build_agents(parsed: ParsedTree, ctx: Ctx) -> list[dict[str, Any]]:
             continue
         use = spawn.tool_use
         rows.append(_agent_row(ctx, spawn, child, role_ref(use.rec.uuid, use.block, "agent_open"), "open", use.rec))
-        if spawn.close_rec is None:
+        if spawn.close_result is None:
+            for notice in spawn.notices:
+                ext = role_ref(notice.uuid, 0, "agent_close")
+                rows.append(_agent_row(ctx, spawn, child, ext, "close", notice, **_notice_close(notice, diag)))
             continue
         res = spawn.close_result
-        info = res.use_result if res is not None else None
-        failed = res is not None and (
-            res.body.get("is_error") is True or (isinstance(info, dict) and info.get("interrupted") is True)
-        )
+        info = res.use_result
+        failed = res.body.get("is_error") is True or (isinstance(info, dict) and info.get("interrupted") is True)
         error = None
-        if res is not None and res.body.get("is_error") is True:
+        if res.body.get("is_error") is True:
             error = scrub_text(text_of(res.body.get("content"))).text[:2000]
-        ext = role_ref(spawn.close_rec.uuid, spawn.close_block, "agent_close")
+        closing = res.rec
+        ext = role_ref(closing.uuid, spawn.close_block, "agent_close")
         rows.append(
-            _agent_row(
-                ctx, spawn, child, ext, "close", spawn.close_rec, outcome="failed" if failed else "success", error=error
-            )
+            _agent_row(ctx, spawn, child, ext, "close", closing, outcome="failed" if failed else "success", error=error)
         )
     return rows

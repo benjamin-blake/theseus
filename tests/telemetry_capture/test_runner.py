@@ -412,6 +412,38 @@ def test_smoke_override_needs_the_matching_synthetic_pin(tmp_path: Path) -> None
     assert run(tmp_path, writer, env={"OTL_TURN_CAPTURE_SMOKE_REF": ref}, repo_root=off_repo).outcome == "sent"
 
 
+def test_diagnostics_record_the_switch_source(tmp_path: Path) -> None:
+    write(tmp_path, make_files(records(1)))
+    result = run(tmp_path, Writer())
+    assert result.diag["diag"]["switch_source:working_tree"] == 1
+    ref = "synthetic:pc-smoke-0000abcd"
+    smoke_dir = tmp_path / "smoke"
+    smoke_dir.mkdir()
+    write(smoke_dir, make_files(records(1, ref=ref)))
+    smoked = run(smoke_dir, Writer(), env={"OTL_TURN_CAPTURE_SMOKE_REF": ref}, repo_root=repo(smoke_dir, enabled=False))
+    assert smoked.diag["diag"]["switch_source:none"] == 1
+    assert not any(key.startswith("switch_source:working") for key in smoked.diag["diag"])
+
+
+def test_first_stop_pass_after_resume_closes_the_previous_segment(tmp_path: Path) -> None:
+    resumed = [
+        hook("h0", 0.5, "SessionStart:startup", command=PIN.format(REF)),
+        prompt("u0", 1, "p0", "go"),
+        assistant("a0", 2, "m0", [text_block("ok")]),
+        hook("h1", 20, "SessionStart:resume", command=PIN.format(REF)),
+        prompt("u1", 21, "p1", "again"),
+        assistant("a1", 22, "m1", [text_block("ok")]),
+        prompt("u2", 30, "p2", "more"),
+    ]
+    root = write(tmp_path, make_files(resumed))
+    writer = Writer()
+    assert run(tmp_path, writer).outcome == "sent"
+    closes = [r for (table, _), r in writer.rows.items() if table == "telemetry_sessions" and r["event_kind"] == "close"]
+    assert [(c["outcome"], c["source_ordinal"]) for c in closes] == [("success", 2)]
+    loaded = state(tmp_path).load_cursor(root.read_bytes())
+    assert loaded.cursor is not None and loaded.cursor.finalize_cuts == []
+
+
 def test_sent_payloads_carry_no_secret_shaped_value(tmp_path: Path) -> None:
     files = secrets_files()
     pin = jsonl([hook("h0", 0.5, "SessionStart:startup", command=PIN.format(REF))])

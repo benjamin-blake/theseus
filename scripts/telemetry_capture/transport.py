@@ -44,7 +44,9 @@ Item = tuple[str, dict[str, Any]]
 
 
 class CaptureUnavailable(Exception):
-    """The pass cannot reach the writer: reason is a fixed token (no_credentials, no_writer_url, deadline)."""
+    """The pass cannot reach the writer: reason is a fixed token (no_credentials: an absent credential; credential_error:
+    the profile, STS or credential chain raised; credential_transport: the chain failed to connect, e.g. SessionEnd after
+    Claude Code stopped its local proxy; no_writer_url; deadline). A token never carries a message."""
 
     def __init__(self, reason: str) -> None:
         self.reason = reason
@@ -198,6 +200,12 @@ def make_client(
     from botocore.auth import SigV4Auth  # noqa: PLC0415
     from botocore.awsrequest import AWSRequest  # noqa: PLC0415
     from botocore.config import Config  # noqa: PLC0415
+    from botocore.exceptions import (  # noqa: PLC0415
+        ConnectionClosedError,
+        ConnectTimeoutError,
+        EndpointConnectionError,
+        ProxyConnectionError,
+    )
 
     timeout = budget.timeout()
     if timeout <= 0:
@@ -212,8 +220,10 @@ def make_client(
         credentials.get_frozen_credentials()
     except CaptureUnavailable:
         raise
-    except Exception:  # noqa: BLE001 -- profile, STS or credential-chain failure: one fixed reason
-        raise CaptureUnavailable("no_credentials") from None
+    except (ProxyConnectionError, EndpointConnectionError, ConnectTimeoutError, ConnectionClosedError):
+        raise CaptureUnavailable("credential_transport") from None
+    except Exception:  # noqa: BLE001 -- profile, STS or credential-chain failure: one fixed reason, no message
+        raise CaptureUnavailable("credential_error") from None
     ssm_region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or DEFAULT_REGION
 
     def ssm_get() -> str | None:
