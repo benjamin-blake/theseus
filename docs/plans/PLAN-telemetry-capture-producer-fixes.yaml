@@ -97,14 +97,16 @@ scope:
 - file: scripts/telemetry_capture/runner.py
   action: Modify
   purpose: >-
-    Each pass's diagnostics line records switch_source (origin_main | main | working_tree), so a session that fell back
-    to its own checkout is visible (DG-1). No other behaviour changes.
+    Each pass's diagnostics line records the key switch_source:<source> (origin_main | main | working_tree) with count
+    1, so a session that fell back to its own checkout is visible (DG-1). The source comes from the same switch read
+    that decided the mode (switch.py's switch_mode(repo_root) -> (mode, source), which capture_mode wraps), never a
+    second git read. No other behaviour changes.
 - file: scripts/telemetry_capture/transport.py
   action: Modify
   purpose: >-
     make_client keeps no_credentials for an absent credential (get_credentials() None) and reports credential_error when
     the profile, STS or credential chain raised (the SessionEnd cause rec-4407 must establish), both fixed tokens,
-    neither carrying a message.
+    neither carrying a message; CaptureUnavailable's docstring names credential_error.
 - file: scripts/telemetry_capture/smoke.py
   action: Modify
   purpose: >-
@@ -123,8 +125,8 @@ scope:
   purpose: >-
     Header comment only: the switch is read from origin/main, then main, then this checkout; setting enabled false on
     main (or deleting the file there) reaches a running session at its next fetch of main or its next SessionStart;
-    OTL_TURN_CAPTURE=off stays the per-session stop; hook and producer code still come from each session's checkout.
-    enabled: true is unchanged.
+    OTL_TURN_CAPTURE=off stays the per-session stop; hook and producer code still come from each session's checkout;
+    the credentials line names credential_error beside no_credentials. enabled: true is unchanged.
 - file: docs/contracts/telemetry_sessions.yaml
   action: Modify
   purpose: >-
@@ -309,15 +311,18 @@ scope:
     Re-authored by hand at parser_version 4 (PLAN-telemetry-golden-harness constraints[0] and [1]): the contract
     formulas applied to the v4 emitted rows, never copied from verb or oracle output; each changed entry's why cites
     this plan; the header moves to 4; a known_defect naming rec-4354 or rec-4358 is dropped where the v4 rows now carry
-    the transcript truth; if a v4 shape leaves no close tie or fewer than two idle_threshold expectations, the
-    re-authoring restores one (the mutation node's named precondition).
+    the transcript truth. The mutation node's named preconditions: SC-3 removes the only v3 close tie, so the
+    re-authoring authors session_provenance_facts at pass final with its root's state expectation as the restored tie
+    (the tree carries it; editing YAML cannot create one); hooks_resume_and_compact's pass-stop root reads terminal at
+    v4 (its segment close is its latest lifecycle row), so a replacement non-terminal session, for example
+    subagent_background_with_completion's root at pass stop, carries the second idle_threshold expectation set.
 - file: tests/telemetry/fixtures/derived_golden_rollups.yaml
   action: Modify
   purpose: Re-authored by hand at parser_version 4 under the same rule as derived_golden_state.yaml.
 - file: tests/fixtures/telemetry_verification_trees.py
   action: Modify
   purpose: >-
-    Optional: a trap tree now covered by an aligned v4 case (subagent_nonfinal_midstream ->
+    Optional; the default is to leave the traps in place. A trap tree now covered by an aligned v4 case (subagent_nonfinal_midstream ->
     subagent_usage_final_and_spawn_correction, subagent_background_failed -> background_notice_statuses,
     resume_with_cost_state -> resume_segment_closes) may move into the corpus, its builder deleted and its expectation
     re-pointed from verification:<tree> to corpus:<case>, only when no module but the two derived_golden files names
@@ -348,7 +353,10 @@ scope:
   purpose: >-
     Startup and resume pin lines with different HEADs, one with base=unknown, one pin line from an old hook (no facts),
     and two resumes with no prompt between (one merged hook group: its resume row takes the later pin, PV-3);
-    remote_session_change attachments in the root and a sub-agent file, and one whose url does not match.
+    remote_session_change attachments in the root and a sub-agent file, and one whose url does not match. Its last root
+    record is a single-attachment compact hook group after the last turn, so at pass final the eof close and the
+    compact row share event_timestamp and source_ordinal: the close tie the golden harness's mutation node needs, since
+    SC-3 removes the only v3 tie (hooks_resume_and_compact's trailing resume row).
 - file: tests/fixtures/turn_capture/golden/model_call_request_fields.json
   action: Create
   purpose: >-
@@ -610,8 +618,11 @@ verification_plan:
   fix_if: >-
     Regenerate expected_rows from record_turn only after the behaviour tests pass; a schedule failure is a purity defect
     in a new rule (most likely a resume row or segment close reading a record after its bound), never a test to relax.
-    A golden harness failure is resolved by re-deriving the derived_golden value by hand from the formula, never by
-    copying verb or oracle output.
+    A golden harness failure against an authored value is resolved by re-deriving it by hand from the formula, never by
+    copying verb or oracle output. An oracle-versus-verb disagreement with no authored value behind it, or any golden
+    harness file other than the two derived_golden files needing a change (scripts/telemetry_verify/**,
+    tests/telemetry_verify/**, tests/fixtures/telemetry_golden_chain.py, tests/telemetry/test_derived_layer_reconciliation.py),
+    means stop and escalate to the coordinator, never an inline edit.
   hermetic: true
   graduation: waive
   graduation_waiver_reason: >-
@@ -717,7 +728,8 @@ verification_plan:
   action: >-
     After the merge, a session STARTED on the merged main (not a rebased one: its open row reads the pin line its
     startup hook printed) captures at v4: record_turn over its own tree shows the new columns populated, and the probe
-    finds its rows with no halt.
+    finds its rows with no halt. Run it in that session's third turn or later: turn 1 must be closed for the open row
+    to be due (rule D-1) and turn 2's Stop pass must have sent the rows the probe reads.
   command: >-
     T="$(ls -t ~/.claude/projects/*/*.jsonl | head -1)" && bin/venv-python -c "import sys; from pathlib import Path;
     from src.turn_capture.transcript import FsTree, project_ref_pin; from src.turn_capture.record_turn import
@@ -979,7 +991,7 @@ execution_steps:
   harness_session_key_unparsed, effort_unparsed, cache_split_exceeds_total, usage_not_final:root,
   usage_not_final:subagent, spawn_result_corrected, spawn_result_mismatch, notice_status:<token>,
   notice_status_malformed, notice_status_absent, background_completed_at_resume, notice_after_boundary,
-  segment_close_skipped, resume_before_close, failure_reason_dropped, credential_error, switch_source.
+  segment_close_skipped, resume_before_close, failure_reason_dropped, credential_error, switch_source:<source>.
 - >-
   7. Contracts: the four contract notes as their scope rows pin, each with an amendment_log entry dated the build day;
   ports.yaml SA-02. Structural size (Decision 166 contracts class: 500 effective lines, 2,000-character lines;
@@ -993,15 +1005,18 @@ execution_steps:
   cases. Run steps 1-5 until green BEFORE regenerating any expected_rows; then regenerate every case's expected_rows from
   record_turn, review the diff by kind (new columns on every model_call and on open/resume rows, segment closes on
   resumed cases, background closes, resume rows of trailing hook groups dropped -- hooks_resume_and_compact.json's
-  rs3#0/resume is one) and confirm no other row changed; set the registry's v4 entry from the new golden_digest; if the
-  re-author both derived_golden files by hand and move an aligned trap only as their scope rows allow; run step 6.
+  rs3#0/resume is one) and confirm no other row changed; set the registry's v4 entry from the new golden_digest;
+  re-author both derived_golden files by hand, with the restored close tie and idle_threshold session their scope row
+  names, and move an aligned trap only as its scope row allows; run step 6.
 - >-
   9. Execute the Verification Plan steps 7-12 (step 12 only once the precondition holds); loop until each passes; on an
   unrecoverable V3 failure stop and RCA (Decision 55).
 - >-
   10. Send the coordinator, for slice 4: the golden cases and derived files this build changed, the VP 8 class counts,
   and this build session's own root session ref and harness_session_key (its v4 rows are untrusted and must be
-  excluded); and ask it to start, once the merge lands, a fresh session on the merged main to run step 13 (this
+  excluded); that the golden harness's declared classes background_status_mismatch and ledger_output_residual_nonfinal
+  cite rec-4358 and rec-4354 as owners, which this merge closes, so slice 4 re-points or reclassifies them; and ask it
+  to start, once the merge lands, a fresh session on the merged main to run step 13 in its third turn or later (this
   session cannot: its open row reads the old hook's pin line).
 - >-
   11. Closure (implement skill Commit Flows; docs/contracts/git-ops.yaml), each outcome reported separately: the
@@ -1012,8 +1027,8 @@ execution_steps:
   evidence the context's V3 resolution names); CI green on the head. Merge only after code review PROCEED, CI green and Benjamin's own word on the contract notes (fetch his message
   before merging). Squash-merge with "Resolves: rec-4354, rec-4358, rec-4359, rec-4382, rec-4309" in the commit body.
 - >-
-  12. Run step 14 here; step 13 runs in the session the coordinator starts on the merged main (step 10), never in a
-  rebased session. Post both results as one counts-only comment on the merged PR.
+  12. Run step 14 here; step 13 runs in the session the coordinator starts on the merged main (step 10), in its third
+  turn or later, never in a rebased session. Post both results as one counts-only comment on the merged PR.
 - 'Report: what was implemented, verification results (counts), and the residual owned by rec-4407.'
 work_areas: []
 rollback: >-
