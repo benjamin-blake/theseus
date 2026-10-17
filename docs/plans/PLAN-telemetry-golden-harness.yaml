@@ -176,7 +176,8 @@ scope:
 - file: tests/telemetry/test_derived_layer_reconciliation.py
   action: Create
   purpose: >-
-    rec-4025's acceptance module. Module-level pytest.importorskip("duckdb"), not integration-marked except the local
+    rec-4025's acceptance module. Module-level duckdb = pytest.importorskip("duckdb") (the assignment form
+    scripts/verification_graduation.py recognises; a bare call is not recognised), not integration-marked except the local
     DuckLake node. Nodes in execution_steps[6], including rec-4025's acceptance node test_golden_fixtures_reconcile.
 - file: docs/contracts/file-router.yaml
   action: Modify
@@ -243,19 +244,23 @@ acceptance_criteria:
 verification_plan:
 - step: 1
   phase: pre-deploy
-  action: Precondition. The branch is on current main and the files this plan builds on exist at the shapes it names.
+  action: >-
+    Precondition. The branch is on current main, the files this plan builds on exist at the shapes it names, and the
+    producer is still at parser_version 3 (constraints[1]).
   command: >-
     git fetch origin main --quiet && git merge-base --is-ancestor origin/main HEAD && test -f
     tests/fixtures/turn_capture_corpus.py && test -f tests/fixtures/telemetry_read_db.py && test -f
     tests/fixtures/turn_capture_ducklake.py && test -f tests/fixtures/turn_capture_real.py && grep -q "def append_events"
     src/telemetry/append.py && grep -q "def compared_columns" src/common/ducklake_event_reads.py && grep -q "FRICTION_RULES"
-    src/common/ducklake_event_read_verbs.py && grep -q "def execute" src/common/ducklake_event_reads.py && echo
-    PRECONDITION_OK
+    src/common/ducklake_event_read_verbs.py && grep -q "def execute" src/common/ducklake_event_reads.py && grep -q
+    "^PARSER_VERSION = 3$" src/turn_capture/record_turn.py && echo PRECONDITION_OK
   expected: PRECONDITION_OK.
   fix_if: >-
     The ancestry test failing means main moved: rebase the branch onto origin/main (git rebase origin/main) and re-run.
     A missing helper or symbol means main changed a file this plan builds on: stop and escalate to the coordinator for a
-    plan amendment, never adapt the scope inline.
+    plan amendment, never adapt the scope inline. PARSER_VERSION other than 3 means the producer fixes build merged
+    first (at the start or after a rebase): stop and escalate to the coordinator for a plan amendment; never author at
+    parser_version 4 here.
   hermetic: false
   graduation: waive
   graduation_waiver_reason: >-
@@ -589,8 +594,11 @@ constraints:
   verification:<tree> to corpus:<case> and deletes the trap builder, so each raw shape has one home. Shapes it changes
   at parser_version 4 (a close row at each root resume boundary; resume rows emitted once their hook group ends; a
   background child with no notice before a later root resume completes there; killed, failed or unknown notices read
-  as failed) are that plan's to re-author; this plan authors only the current producer's values and writes nothing for
-  parser_version 4.
+  as failed) are that plan's to re-author; this plan authors only parser_version 3 values and writes nothing for
+  parser_version 4, and its build runs only while PARSER_VERSION is 3 (VP step 1). The mutation node's discriminating
+  inputs are selected by property, not by tree name (execution_steps[6]), so re-authoring the two data files is the
+  whole hand-off: a parser_version 4 shape that leaves no close tie or fewer than two idle_threshold expectations fails
+  that node as a named precondition, and the re-authoring restores one.
 - >-
   No change under src/ (producer, kernel, reader, writer) and no change to the reader's SQL; a reader defect the harness
   finds is filed through the portal and escalated to the coordinator (scope escalation rule; Decision 59), never fixed
@@ -618,8 +626,9 @@ constraints:
   not touch the fixture.
 - >-
   Runtime: the full tier runs each test under a 120 s timeout with coverage and xdist (scripts/checks/_scaffolding.py),
-  so the whole-corpus nodes (VP steps 5 and 7) are parametrized per tree (a file::node selector still selects every
-  parameter) and each parameter stays well inside 120 s; the report gives the module's measured wall time.
+  so the whole-corpus nodes (VP steps 5 and 7) are parametrized per tree and the mutation node (VP step 6) per mutation
+  (a file::node selector still selects every parameter), and each parameter stays well inside 120 s; the report gives
+  the module's measured wall time and the slowest parameter of each of those three nodes.
 - >-
   SLOC (Decision 128): every new Python file in scope, the test module and both helpers included, stays under 500 SLOC;
   if one would not, split it within its own directory (a scripts/telemetry_verify submodule behind the facade, or a
@@ -633,7 +642,7 @@ context:
   contract is the rule source), 84 (I-3 the oracle never reads a catalog). Flags (205, 100, 61, 95) bind the verification
   monitor and in-session check plans and are resolved there. Report summary:
   /mnt/project-files/telemetry-slice4/decision-scout-report.md.
-- "gates: decision-scout=FLAGS_FOUND (4 flags, resolved by the slice design); plan-critique=REVISE round 1 (J1-J8, M1-M5, R1-R2 fixed), REVISE round 2 (J1-J12, M1 fixed), REVISE round 3 (J1-J7, M1-M2 fixed; J3 refines round 1's J3 fix, which did not require a non-terminal session, so it is a completion of that fix, not an oscillation); confirming round 4 REVISE (J1-J6, I6, M1-M4 fixed), escalated to Benjamin on card cmsg_012XgaFy8VaDQbxP5D8nC95848fJs4dgfPLzb5iusDQAku with one more round recommended"
+- "gates: decision-scout=FLAGS_FOUND (4 flags, resolved by the slice design); plan-critique=REVISE round 1 (J1-J8, M1-M5, R1-R2 fixed), REVISE round 2 (J1-J12, M1 fixed), REVISE round 3 (J1-J7, M1-M2 fixed; J3 refines round 1's J3 fix, which did not require a non-terminal session, so it is a completion of that fix, not an oscillation); confirming round 4 REVISE (J1-J6, I6, M1-M4 fixed), escalated to Benjamin on card cmsg_012XgaFy8VaDQbxP5D8nC95848fJs4dgfPLzb5iusDQAku with one more round recommended; round 5 REVISE (J1-J2, M1, I1-I3 fixed: three bounded text edits, no frame or scope change)"
 - >-
   Design inputs: /mnt/project-files/telemetry-slice4/step6b-presentation.md (approved), plan-ADVICE.md (Fable consult on
   F1-F8: F8 (c) one expectations file, three engines; this plan delivers the in-memory and local DuckLake legs, the
@@ -645,9 +654,8 @@ context:
   auxiliary Haiku model present only in the ledger; no captured cloud session has a close row (rec-4382), so the pass
   kind stop (no finalization) is today's production shape.
 - >-
-  ci-rca: rec-4372 (Critical, .github/workflows/terraform-apply-sandbox.yml, DUCKLAKE_ZIP_MISMATCH on apply). Deferral
-  rationale: this plan touches none of its files or its failure category (no Lambda bundle, no Terraform), and its fix
-  is planned (PLAN-ducklake-zip-inputs-moved, #1529).
+  ci-rca: none open (ci_rca_open returned 0 rows on 2026-10-17; rec-4372's fix merged as #1536). This plan touches no
+  Lambda bundle or Terraform in any case.
 - >-
   Tier Item Freshness Gate: T3.20 (in_progress, open c3, c6, c7): no open criterion silently holds; c3's text names a DQ
   runner path that cannot read telemetry and is re-grounded by the verification monitor plan, which closes it. T3.2 is
@@ -703,11 +711,13 @@ execution_steps:
   comment stating the authoring rule; parser_version (the integer the values were authored against); trees: a list of
   {tree: "corpus:<golden case file>" or "verification:<tree name>", pass: final or stop, why, expect: [one flow-mapping
   line per expectation: {verb, session: root or "agent:<agentId>" (absent for the window verbs), params, rows: [asserted
-  subset of columns], why, known_defect (optional rec id)}]}. as_of rule for every state verb (session_state_and_duration,
+  subset of columns], why, known_defect (optional rec id), discriminates (optional; idle_threshold on the exact-threshold
+  as_of expectations below)}]}. as_of rule for every state verb (session_state_and_duration,
   agent_run_state_and_duration, sessions_window): two absolute ISO values, one inside and one beyond the 24 h idle
   threshold of THAT session's own last event_timestamp across its rows in the four tables, and a third value exactly at
-  that last event plus 86,400 s on at least two NON-TERMINAL sessions: the pass-stop root of hooks_resume_and_compact
-  and the child of subagent_background_without_completion (the contract says the idle time must EXCEED the threshold,
+  that last event plus 86,400 s, tagged discriminates idle_threshold, on at least two NON-TERMINAL sessions (at
+  parser_version 3: the pass-stop root of hooks_resume_and_compact
+  and the child of subagent_background_without_completion) (the contract says the idle time must EXCEED the threshold,
   so that value reads running; telemetry_sessions.yaml:157, derivation_cases.yaml c06). A terminal session reads its
   outcome at any as_of, so an exact-threshold value there proves nothing. Author expectations for the derivation-relevant subset: hooks_resume_and_compact,
   resume_after_interrupt, close_cancelled_mid_stream, close_cancelled_running_tool, close_failed_api_error, subagent_sync,
@@ -756,12 +766,14 @@ execution_steps:
   test_every_tree_agrees_with_the_oracle_and_holds_invariants (every tree from case_names() plus every verification tree,
   each emitted session, every session-bound verb at the as_of rule's values, verb output equal to oracle output; every
   telemetry join from joins.py resolves for finalized trees; survivors equal emitted rows; no conflicted key; one generation at
-  PARSER_VERSION; VP step 5); test_harness_detects_planted_verb_defects (monkeypatch the EVENT_READS entry's sql for four
-  mutations, each run over the authored trees plus three discriminating inputs: the exact-threshold as_of on the two
-  non-terminal sessions the as_of rule names (the idle mutation), a directly inserted claude_code plus litellm
-  model_call pair sharing one observation_id (the R5c mutation), and hooks_resume_and_compact at pass final, whose close
-  and resume rows tie on event_timestamp and source_ordinal (the tie-order mutation; the only such tie in the corpus); and assert the reconciliation reports at
-  least one mismatch for each: the token rollup's sum(tokens_output) replaced by max(tokens_output); the state tie order
+  PARSER_VERSION; VP step 5); test_harness_detects_planted_verb_defects (parametrized per mutation; monkeypatch the
+  EVENT_READS entry's sql, each run over the authored trees plus three discriminating inputs selected by property, never
+  by tree name: every expectation tagged discriminates idle_threshold, at least two (the idle mutation); a directly
+  inserted claude_code plus litellm model_call pair sharing one observation_id (the R5c mutation); and every authored
+  tree and pass whose root's latest rows in the state formula's order (telemetry_sessions.yaml state derivation)
+  include a close tying another event kind on event_timestamp and source_ordinal, at least one (the tie-order mutation;
+  at parser_version 3 the only such tree is hooks_resume_and_compact at pass final); a missing input fails as a named
+  precondition before any mutation runs; and assert the reconciliation reports at least one mismatch for each: the token rollup's sum(tokens_output) replaced by max(tokens_output); the state tie order
   "(event_kind = 'close') DESC" replaced by ASC; the R5c collapse removed (o AS SELECT * FROM o_ev); the idle comparison
   ">" replaced by ">="; VP step 6); test_replay_order_and_late_delivery_leave_derived_values_unchanged (every batch twice
   inserts 0 the second time; reversed batch and row order; a non-final pass at every root line count from
@@ -787,8 +799,8 @@ execution_steps:
   check; set implementation_declared true; rebase on origin/main; VP step 13 (the full tier) on the committed, clean
   tree, then scripts.checks.validation_result --verify-head; the postflight evidence file and scripts.session.postflight
   --evidence; push; PR; CI green on the head. No Resolves trailer: rec-4025 stays open for the later slice 4 plans.
-  After the merge, update rec-4025 through the portal in one call: a context note with the merge SHA and what this plan
-  delivered, its file set to tests/telemetry_verify/test_monitor.py, and its acceptance re-pointed to tests/telemetry_verify/test_monitor.py::test_monitor_reports_rederivation_orphan_and_completeness_counts
+  After the merge, update rec-4025 through the portal in one call: a context note naming PLAN-telemetry-golden-harness,
+  the merge SHA and what this plan delivered, its file set to tests/telemetry_verify/test_monitor.py, and its acceptance re-pointed to tests/telemetry_verify/test_monitor.py::test_monitor_reports_rederivation_orphan_and_completeness_counts
   (the node the verification monitor plan creates), so the acceptance holds only at the closing commit (the Decision 201
   precedent); then VP step 14. Merge on code review PROCEED and green CI under the standing rule (no deploy, IAM, spend,
   contract or Decision text).
