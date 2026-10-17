@@ -29,7 +29,9 @@ scope:
     a verdict for every artifact whose md5 differs: moved, with the moved paths, when any tooling blob differs; for a
     function zip, when every entry that differs or exists on one side only has an input on at least one side and the
     two sides' blob ids for it differ (absent counts as different); for a layer, when its input moved; otherwise
-    unattributed, naming the first entry that blocked attribution or saying only the container bytes differ.
+    unattributed, naming the first entry that blocked attribution or saying only the container bytes differ. A
+    reference whose schema differs from the current one, or that lacks an artifact, is unattributed for every
+    artifact (fail closed); a change to the record format bumps schema. Iterates DUCKLAKE_ARTIFACT_NAMES' order.
 - file: scripts/ci/ducklake_artifacts.py
   action: Modify
   purpose: >-
@@ -44,8 +46,13 @@ scope:
     lambda-packages/<merge sha>/inputs.json, then write lambda-packages/<artifact_sha>/superseded-by.json naming the
     merge sha, the reason and the moved inputs; never write any zip under lambda-packages/<artifact_sha>/. Otherwise,
     or when inputs.json is missing or unreadable, or the merge sha is unset: raise DUCKLAKE_ZIP_MISMATCH exactly as
-    today (first line unchanged, entry diff after it, plus one line saying why it was not attributed), with no upload.
-    (3) fetch_reviewed first reads lambda-packages/<artifact_sha>/superseded-by.json: absent (NoSuchKey) -> unchanged;
+    today (first line unchanged, then the entry diff, then one last line saying why it was not attributed), with no
+    upload.
+    (3) fetch_reviewed first reads lambda-packages/<artifact_sha>/superseded-by.json. It is absent only when the error
+    carries the botocore ClientError response shape with Error.Code NoSuchKey or 404 (read duck-typed from
+    exc.response, so no botocore import is added); every fetch call site assumes the apply role, which holds
+    s3:ListBucket on the bucket (terraform/bootstrap/github_ci_apply_reads.tf DataLakeBucketManage), so a missing key is
+    a 404, and a 403 or any other error fails closed. Absent -> unchanged;
     present and naming a 40-hex sha other than artifact_sha -> fetch and copy from that sha's prefix instead, one hop
     only, printing both shas in DUCKLAKE_FETCH_OK; malformed, unreadable for any other reason, or self-referencing ->
     DucklakeArtifactError before any copy. The missing-object all-or-nothing check is unchanged. (4) rec-4198:
@@ -58,34 +65,50 @@ scope:
     "$ARTIFACT_SHA" "$BUCKET" --region "$REGION" --mode upload-only, so the inline body keeps its 22 effective lines
     (config/composite_action_body_baseline.yaml build-ducklake-artifacts::#0; no baseline edit, no raise marker). The
     mode input's description says upload-only also writes inputs.json and that assert attributes moved inputs; fetch
-    follows a superseded-by.json pointer.
+    follows a superseded-by.json pointer. A wiring node (tests/test_ducklake_attribution.py) parses this file and fails
+    unless the upload-only branch runs scripts.ci.ducklake_artifacts with --mode upload-only and no longer calls
+    scripts.build_lambda directly.
 - file: .github/workflows/terraform-apply-sandbox.yml
   action: Modify
   purpose: >-
     Comments only, no step, expression or body change: the apply-sandbox build_ducklake step comment describes the
     moved-inputs verdict and the merge-sha key, and the gated-apply fetch step comment says fetch follows the pointer.
+    The comments must not contain the literal mismatch sentinel (registry shard ducklake-build-assert-single-copy
+    requires zero occurrences in the workflows).
+- file: tests/fixtures/ducklake_artifact_fakes.py
+  action: Create
+  purpose: >-
+    The fake S3 client, fake body, missing-key error and zip helpers moved verbatim out of tests/test_ducklake_artifacts.py
+    so the new test module can share them (no cross-test imports). The missing-key error gains a botocore-shaped
+    response attribute (Error.Code NoSuchKey); the client gains put_object recording for inputs.json and the pointer.
 - file: tests/test_ducklake_artifacts.py
   action: Modify
   purpose: >-
-    test_prmerge_concurrent_same_file_zip_identity (rec-4372's filed acceptance node): a real PR-time writer zip built
-    from one version of a packaged file plus its inputs.json, and a merge build from the edited file; assert_and_upload
-    on push does not raise, uploads the seven zips only to the fixed key and lambda-packages/<merge sha>/, writes the
-    pointer and the merge record, writes no zip under the PR head prefix, and prints DUCKLAKE_ZIP_INPUTS_MOVED naming
-    the file. Fail-closed nodes: same inputs with different container bytes, a missing inputs.json, a layer mismatch
-    with no moved layer input, one moved entry plus one unattributed entry, an unset merge sha, and an inputs.json
-    whose md5s do not match the reference zips all raise DUCKLAKE_ZIP_MISMATCH with no upload. Fetch nodes: the pointer
-    is followed one hop; a malformed or self-referencing pointer and a pointer whose target objects are missing fail
-    closed before any copy. upload-only: main writes
-    inputs.json after the build. rec-4198: test_push_byte_mismatch_diff_error_cannot_mask_mismatch (its filed node). The
-    existing nodes keep passing unchanged. If the file would pass 500 SLOC (370 at planning), the fetch and upload-only
-    nodes move to tests/test_ducklake_inputs.py; the two filed acceptance nodes stay here.
+    Imports the moved helpers under their current names, so no existing test body or assertion changes (Decision 181).
+    Adds rec-4372's filed acceptance node test_prmerge_concurrent_same_file_zip_identity: a real PR-time writer zip
+    built from one version of a packaged file plus its inputs.json, and a merge build from the edited file;
+    assert_and_upload on push does not raise, uploads the seven zips only to the fixed key and
+    lambda-packages/<merge sha>/, writes the pointer and the merge record, writes no zip under the PR head prefix, and
+    prints DUCKLAKE_ZIP_INPUTS_MOVED naming the file. Adds rec-4198's filed node
+    test_push_byte_mismatch_diff_error_cannot_mask_mismatch. Stays under 500 SLOC (370 at planning, about 420 after).
+- file: tests/test_ducklake_attribution.py
+  action: Create
+  purpose: >-
+    Push-path and fetch behaviour of scripts/ci/ducklake_artifacts.py beyond the two filed nodes, over the shared fakes.
+    Fail-closed nodes (each raises DUCKLAKE_ZIP_MISMATCH with no upload): test_push_same_inputs_different_bytes_fails_closed,
+    test_push_mismatch_without_inputs_record_fails_closed, test_push_layer_mismatch_without_moved_input_fails_closed,
+    test_push_partly_attributed_mismatch_fails_closed, test_push_unset_merge_sha_fails_closed,
+    test_push_inputs_record_not_describing_reference_fails_closed, test_push_schema_mismatch_fails_closed. Fetch nodes:
+    test_fetch_follows_pointer_one_hop, test_fetch_bad_pointer_fails_closed (malformed, self-referencing, a 403-shaped
+    error) and test_fetch_pointer_target_missing_fails_closed, each failing before any copy. test_main_upload_only_writes_inputs_record
+    (inputs.json written after the build). test_upload_only_branch_invokes_artifacts_module (the action.yml wiring).
 - file: tests/test_ducklake_inputs.py
   action: Create
   purpose: >-
     Unit tests for scripts/ci/ducklake_inputs.py over a temporary git repo: blob ids match git, untracked entries get no
     input, tooling blobs are recorded, and the attribution matrix (tooling moved; function entry moved, unchanged,
-    untracked, present on one side only; layer input moved and unchanged; container-only difference), keeping the new
-    module at 100% line coverage.
+    untracked, present on one side only; layer input moved and unchanged; container-only difference; schema mismatch),
+    keeping the new module at 100% line coverage.
 - file: config/agent/verification_registry/entries/ducklake-zip-inputs-moved.yaml
   action: Create
   purpose: >-
@@ -107,13 +130,15 @@ scope:
   action: Modify
   purpose: |-
     Append, after Decision 154's **Related:** line (a blank line, then exactly this one line; allowed variance: the
-    date only; approved by Benjamin 2026-10-17, see context). No other Decision is edited (Decision 177 append-only).
+    date only; approved by Benjamin 2026-10-17, see context, with the 30-minute correction pending his word). No other
+    Decision is edited (Decision 177 append-only).
     APPROVED LINE:
-    > **Update (2026-10-17):** rec-4372 showed point 1's push-path canary premise was wrong: its window has no upper bound, running from the PR's last speculative plan to the merge (about 50 minutes there), so the PR-time reference goes stale when main changes a packaged file in between (#1519's zips predated #1520's edit to `src/common/ducklake_handler_errors.py`). The speculative-plan job now records each artifact's inputs at `lambda-packages/<PR head sha>/inputs.json`. When every difference at merge traces to an input that moved on main (`DUCKLAKE_ZIP_INPUTS_MOVED`), the push run applies the saved plan.bin unchanged, writes the rebuilt zips to the fixed key and `lambda-packages/<merge sha>/`, and leaves a `superseded-by.json` pointer beside the untouched PR-time zips. Point 1's fetch follows that pointer one hop: gated-apply and Reconcile copy bytes fixed at push time, before any approval wait, whose identity rests on the input attribution rather than a PR-time byte match. Any other difference, or a missing reference or record, still fails closed as `DUCKLAKE_ZIP_MISMATCH`; the check is now a same-inputs canary, and a pre-merge double-build canary stays with rec-4194.
+    > **Update (2026-10-17):** rec-4372 showed point 1's push-path canary premise was wrong: its window has no upper bound, running from the PR's last speculative plan to the merge (about 30 minutes there), so the PR-time reference goes stale when main changes a packaged file in between (#1519's zips predated #1520's edit to `src/common/ducklake_handler_errors.py`). The speculative-plan job now records each artifact's inputs at `lambda-packages/<PR head sha>/inputs.json`. When every difference at merge traces to an input that moved on main (`DUCKLAKE_ZIP_INPUTS_MOVED`), the push run applies the saved plan.bin unchanged, writes the rebuilt zips to the fixed key and `lambda-packages/<merge sha>/`, and leaves a `superseded-by.json` pointer beside the untouched PR-time zips. Point 1's fetch follows that pointer one hop: gated-apply and Reconcile copy bytes fixed at push time, before any approval wait, whose identity rests on the input attribution rather than a PR-time byte match. Any other difference, or a missing reference or record, still fails closed as `DUCKLAKE_ZIP_MISMATCH`; the check is now a same-inputs canary, and a pre-merge double-build canary stays with rec-4194.
 bundled_recommendations:
 - rec-4372
 - rec-4198
-followon_recs: []
+followon_recs:
+- rec-4381
 infrastructure_dependencies: []
 acceptance_criteria:
 - >-
@@ -139,11 +164,15 @@ verification_plan:
   action: A moved packaged file is attributed and the apply proceeds on merge-tree zips; unattributed differences still fail closed.
   command: >-
     bin/venv-python -m pytest tests/test_ducklake_artifacts.py::test_prmerge_concurrent_same_file_zip_identity
-    tests/test_ducklake_artifacts.py::test_push_same_inputs_different_bytes_fails_closed
-    tests/test_ducklake_artifacts.py::test_push_mismatch_without_inputs_record_fails_closed
-    tests/test_ducklake_artifacts.py::test_push_layer_mismatch_without_moved_input_fails_closed
-    tests/test_ducklake_artifacts.py::test_push_partly_attributed_mismatch_fails_closed -q
-  expected: Exit 0, 5 passed. Red before, because the nodes do not exist; written first, the acceptance node fails on DUCKLAKE_ZIP_MISMATCH.
+    tests/test_ducklake_attribution.py::test_push_same_inputs_different_bytes_fails_closed
+    tests/test_ducklake_attribution.py::test_push_mismatch_without_inputs_record_fails_closed
+    tests/test_ducklake_attribution.py::test_push_layer_mismatch_without_moved_input_fails_closed
+    tests/test_ducklake_attribution.py::test_push_partly_attributed_mismatch_fails_closed
+    tests/test_ducklake_attribution.py::test_push_unset_merge_sha_fails_closed
+    tests/test_ducklake_attribution.py::test_push_inputs_record_not_describing_reference_fails_closed
+    tests/test_ducklake_attribution.py::test_fetch_bad_pointer_fails_closed
+    tests/test_ducklake_attribution.py::test_fetch_pointer_target_missing_fails_closed -q
+  expected: Exit 0, 9 passed. Red before, because the nodes do not exist; written first, the acceptance node fails on DUCKLAKE_ZIP_MISMATCH.
   expected_literals: []
   fix_if: A raise on the moved case, an upload on any fail-closed case, or a zip written under the PR head prefix -> fix ducklake_artifacts.py or ducklake_inputs.py, never loosen a test.
   hermetic: true
@@ -151,10 +180,14 @@ verification_plan:
   graduation_check_id: ducklake-zip-inputs-moved
 - step: 2
   phase: pre-deploy
-  action: Fetch follows a pointer one hop and fails closed on a bad one; upload-only writes the record; the diagnostic cannot mask the mismatch.
+  action: >-
+    Every node of the three files: fetch follows a pointer one hop; upload-only writes the record and the action runs
+    it; the diagnostic cannot mask the mismatch; the record and attribution unit matrix; every existing node unchanged.
   command: >-
-    bin/venv-python -m pytest tests/test_ducklake_artifacts.py tests/test_ducklake_inputs.py -q
-  expected: Exit 0; every node passes, including test_push_byte_mismatch_diff_error_cannot_mask_mismatch and the existing fetch and assert nodes.
+    bin/venv-python -m pytest tests/test_ducklake_artifacts.py tests/test_ducklake_attribution.py tests/test_ducklake_inputs.py -q
+  expected: >-
+    Exit 0; every node passes, including test_push_byte_mismatch_diff_error_cannot_mask_mismatch,
+    test_upload_only_branch_invokes_artifacts_module and the existing fetch and assert nodes.
   expected_literals: []
   fix_if: Any failure -> fix the source; an existing node failing means an unscoped behaviour change, STOP and report.
   hermetic: true
@@ -314,12 +347,17 @@ test_obligations:
   test_selector: tests/test_ducklake_artifacts.py::test_prmerge_concurrent_same_file_zip_identity
   red_green_expectation: red before (node absent; written first it fails on DUCKLAKE_ZIP_MISMATCH), green after
 - source: .github/actions/build-ducklake-artifacts/action.yml
-  behavior: The upload-only mode records inputs.json after the build without growing the inline body.
-  verification_step: 4
-  command: bin/venv-python -m scripts.validate
+  behavior: The upload-only branch runs scripts.ci.ducklake_artifacts --mode upload-only (which writes inputs.json) instead of calling scripts.build_lambda directly.
+  verification_step: 2
+  test_selector: tests/test_ducklake_attribution.py::test_upload_only_branch_invokes_artifacts_module
+  red_green_expectation: red before (node absent; written first it fails on the direct scripts.build_lambda call), green after
+- source: tests/fixtures/ducklake_artifact_fakes.py
+  behavior: Shared fakes moved verbatim; the missing-key error carries the botocore response shape the fetch predicate reads.
+  verification_step: 2
+  command: bin/venv-python -m pytest tests/test_ducklake_artifacts.py tests/test_ducklake_attribution.py tests/test_ducklake_inputs.py -q
   waiver_reason: >-
-    The composite body has no executable unit of its own; upload-only's behaviour is main()'s, tested in step 2, and the
-    body size is enforced by validate_composite_action_shell_bodies in step 4.
+    Test support code with no behaviour of its own; every existing node passing unchanged through it (step 2) is its
+    proof, and the fetch absence nodes exercise the response shape.
 - source: .github/workflows/terraform-apply-sandbox.yml
   behavior: Comment-only edit; every step, expression and run body is unchanged, so the workflow's behaviour is unchanged.
   verification_step: 4
@@ -369,9 +407,9 @@ context:
   planned at 12:38Z on base feda680c; #1520 (code-only) merged 12:59Z editing src/common/ducklake_handler_errors.py;
   #1519 merged 13:08Z without a re-run; run 38905586484 failed closed; the 13:54Z dispatch applied green.
 - >-
-  Approval: Benjamin's "write the plan" in this plan's project thread (2026-10-17T13:19Z) took fork 1 proceed, fork 2
-  pointer, and the two APPROVED texts in scope verbatim (allowed variance: the date only). Evidence:
-  /mnt/project-files/rec-4372/ (BRIEF, ADVICE, scout-report, step6b-presentation, proposed-text with its fact-check).
+  Approval: Benjamin's "write the plan" (project thread, 2026-10-17T13:19Z): fork 1 proceed, fork 2 pointer, both
+  APPROVED texts verbatim (variance: the date). Critique r1 found "about 50 minutes" wrong (12:38:11Z plan to 13:08:29Z
+  merge): corrected to 30, pending his word. Evidence: /mnt/project-files/rec-4372/.
 - >-
   fork: on a mismatch whose every difference is a moved input, proceed or refuse | chosen: proceed on merge-tree zips
   | class: asked | precedent: Benjamin 2026-10-17; Fable ADVICE Q2 agreed | precedent_kind: answered-fork |
@@ -385,16 +423,18 @@ context:
   class: consistency-only | precedent: Decision 83 (non-wedging ruleset); merge queue needs an org-owned repo |
   precedent_kind: decision | reversible: yes | persisted: this plan; revisit after the otl-labs transfer
 - >-
-  rec-4372 is escape-classified (no-edge, no_premerge_gate_by_design): a Resolves trailer is refused
-  (ClosureArtifactRequired), so the squash names only rec-4198 and rec-4372 closes by ci-rca-lifecycle.yaml
-  closure_dependency.manual_route (precedent: rec-4189 via #1428). Its closure does not wait for steps 7-8.
+  rec-4372 is escape-classified (no_premerge_gate_by_design): a Resolves trailer is refused, so the squash names only
+  rec-4198 and rec-4372 closes by closure_dependency.manual_route (precedent rec-4189, #1428), not waiting for VP 7-8.
 - >-
   Transition: a terraform/personal PR whose speculative plan predates this merge has no inputs.json, so a moved input
-  still fails closed at its merge; push to or re-run such a PR's branch before merging it.
+  still fails closed at its merge; push to it or update its branch from main before merging (a re-run reuses the old
+  test-merge commit and the old action, so it writes no record).
 - >-
   Residuals (Decision 55, recorded not fixed): a moved entry's own reproducibility is not checked in that run; a layer
-  difference from an untracked input (a CDN binary, a new wheel file for a pinned version) stays fail-closed; a saved
-  plan.bin made stale by another terraform apply stays with rec-3957 and rec-3568.
+  difference from an untracked input (a CDN binary, a new wheel file for a pinned version) stays fail-closed only when
+  no tooling file and not version.yaml moved in the same window (those moves attribute the whole layer); a saved
+  plan.bin made stale by another terraform apply stays with rec-3957 and rec-3568. Live proof: VP 7-8, tracked by
+  rec-4381 (trigger: the first terraform/personal PR after this merge, likely the personal-release build).
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
@@ -404,8 +444,9 @@ pre_implementation_checklist:
 execution_steps:
 - Confirm the checklist; STOP if any scope file is missing or over budget.
 - >-
-  Write the red tests first (step 1's nodes, rec-4198's node) and confirm each fails on the unchanged tree for the
-  stated reason.
+  Move the shared fakes to tests/fixtures/ducklake_artifact_fakes.py and confirm tests/test_ducklake_artifacts.py still
+  passes unchanged. Then write the red tests first (step 1's nodes, rec-4198's node, the action wiring node) and
+  confirm each fails on the unchanged source for the stated reason.
 - 'scripts/ci/ducklake_inputs.py: record and attribution as scoped.'
 - 'scripts/ci/ducklake_artifacts.py: upload-only mode, the attributed push path, the pointer-following fetch and the rec-4198 guard, as scoped.'
 - 'action.yml: the one-line upload-only repoint and the description; the workflow comments.'
@@ -430,7 +471,11 @@ execution_steps:
   shard:ducklake-zip-inputs-moved, closure_fix_sha, acceptance_verdict and closing_sha. If census routes the acceptance
   to junit and evaluate yields no record, close by the verdict-free closure_dependency.manual_route instead. Then run
   VP steps 5 and 6.
-- 'Report: what was implemented, verification results, and the first push-path log line after merge when one exists (field confirmation, not a gate).'
+- >-
+  VP steps 7-8 run on the first terraform/personal PR after this merge (likely the personal-release build). If none
+  runs in this session, report that to the coordinator with rec-4381 as the tracker; never open a terraform PR only to
+  trigger them.
+- 'Report: what was implemented and the verification results.'
 rollback: >-
   Revert the squash commit: the push path returns to failing closed on every mismatch; inputs.json and
   superseded-by.json objects left in S3 are inert (nothing reads them after the revert).
