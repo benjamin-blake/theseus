@@ -134,8 +134,9 @@ scope:
     region. A one-line comment may say so (no region id in it). terraform fmt clean.
 - file: terraform/github/main.tf
   action: Modify
-  purpose: Delete the region line from the backend "s3" block, as for bootstrap. No other change in this root (the org-transfer
-    rewrite and PLAN-terraform-github-state-reconcile own the rest).
+  purpose: 'Delete the region line from the backend "s3" block, as for bootstrap, and make the header comment''s init hint
+    name the region source (init -backend-config region from config/aws-region; terraform/github/CLAUDE.md runbook). No other
+    change in this root (the org-transfer rewrite and PLAN-terraform-github-state-reconcile, open as #1534, own the rest).'
 - file: terraform/personal/backend-sandbox.hcl
   action: Modify
   purpose: Delete the region line; the header comment says the region comes from AWS_REGION in CI or a -backend-config region
@@ -145,24 +146,36 @@ scope:
   purpose: neon_region_id's description drops the bare region id ("co-locates with the data lake in the project region");
     its default (aws-eu-west-2) and every other variable are unchanged, so the plan is empty. aws_region's default stays,
     pinned to config/aws-region by the guard.
+- file: terraform/personal/neon_ducklake_catalog.tf
+  action: Modify
+  purpose: 'Comment-only: the example aws secretsmanager create-secret command in the header comment takes --region "$(tr
+    -d ''[:space:]'' < config/aws-region)" instead of the literal (guard rule (3) scans HCL comments). No code change, empty
+    plan.'
+- file: terraform/personal/main.tf
+  action: Modify
+  purpose: 'Comment-only: the backend comment''s "bucket/key/region/encrypt come from -backend-config=backend-sandbox.hcl"
+    becomes bucket/key/encrypt from that file and the region from AWS_REGION in CI or a -backend-config region from config/aws-region
+    by hand. No code change, empty plan.'
 - file: scripts/checks/ci_guards/validate_project_region.py
   action: Create
   purpose: 'Registered fast-tier check, filesystem-only (Decision 208). Rules: (1) config/aws-region is one valid region id;
-    (2) no AWS region or availability-zone id anywhere in the text of any file under .github/workflows/** and .github/actions/**,
-    comments included (region-agnostic: (?<![\w-])(af|ap|ca|cn|eu|il|me|mx|sa|us|us-gov)-(central|north|south|east|west|northeast|southeast|northwest|southwest)-\d[a-z]?(?![\w-]),
-    so the Neon id aws-eu-west-2 is not matched); (3) no such id in comment-stripped terraform/**/*.tf or *.hcl except the
-    default of variable "aws_region" in terraform/bootstrap/variables.tf and terraform/personal/variables.tf, each of which
-    must equal config/aws-region; no backend "s3" block or backend*.hcl sets region; (4) every configure-aws-credentials step''s
-    aws-region is ${{ env.AWS_REGION }} with an earlier ./.github/actions/aws-region step in the same job whose most recent
-    preceding checkout has neither ref nor path (the workflow''s own commit, never an older tree), or ${{ needs.<job>.outputs.aws_region
+    (2) no AWS region or availability-zone id anywhere in the raw text of any tracked file under .github/, comments included
+    (region-agnostic: (?<![\w-])(af|ap|ca|cn|eu|il|me|mx|sa|us|us-gov)-(central|north|south|east|west|northeast|southeast|northwest|southwest)-\d[a-z]?(?![\w-]),
+    so the Neon id aws-eu-west-2 is not matched); (3) no such id in the raw text, comments included, of terraform/**/*.tf
+    or *.hcl except the default of variable "aws_region" in terraform/bootstrap/variables.tf and terraform/personal/variables.tf,
+    each of which must equal config/aws-region; no backend "s3" block or backend*.hcl sets region; (4) every configure-aws-credentials
+    step''s aws-region is ${{ env.AWS_REGION }} with an earlier ./.github/actions/aws-region step in the same job whose most
+    recent preceding checkout has neither ref nor path (the workflow''s own commit, never an older tree), or ${{ needs.<job>.outputs.aws_region
     }} where that job is in needs and binds aws_region to a step using the action; (5) no workflow, job or step env sets AWS_REGION
     or AWS_DEFAULT_REGION. Failure text names file, job and step, never a value beyond the region id. Declares examined()
     with the number of files and sign-in steps scanned (Decision 170). Under 500 SLOC; split into a helper module if it grows.'
 - file: scripts/checks/ci_guards/_manifest.py
   action: Modify
-  purpose: One Entry(name="validate_project_region", module="scripts.checks.ci_guards.validate_project_region", attr="validate_project_region",
-    pre=True, pre_globs=(".github/workflows/**", ".github/actions/**", "terraform/**", "config/aws-region", "scripts/checks/ci_guards/validate_project_region.py",
-    "scripts/checks/_common.py", "scripts/checks/registry.py"), full_segment="full_after_lint") (Decision 169 bare literals).
+  purpose: 'One Entry(name="validate_project_region", module="scripts.checks.ci_guards.validate_project_region", attr="validate_project_region",
+    pre=True, pre_globs=(".github/**", "terraform/**", "config/aws-region", "scripts/checks/ci_guards/validate_project_region.py",
+    "scripts/checks/_common.py", "scripts/checks/registry.py", ...), full_segment="full_after_lint") (Decision 169 bare literals).
+    The pre_globs tuple is a minimum: add every module the check imports (for example _workflow_shell_bodies.py, _marker_guard.py,
+    scripts/decisions_md.py if reused) so validate_pre_glob_closure passes.'
 - file: config/ci_rca_taxonomy.yaml
   action: Modify
   purpose: 'function_to_category row validate_project_region: code_regression.'
@@ -171,9 +184,9 @@ scope:
   purpose: Mirror test (Decision 131). One red case per rule on tmp trees (a literal aws-region, a literal in a run body,
     an AZ id, a backend region line, a backend*.hcl region, a default differing from the file, an unwired sign-in, a reader
     step before checkout, a needs-output from a job that does not run the action, an env AWS_DEFAULT_REGION, an empty and
-    an invalid config/aws-region), a workflow comment holding a region id, an aws-region step whose preceding checkout carries
-    a ref, the Neon id and an HCL comment-only mention staying green, and test_real_tree_passes running the check on the real
-    repository with no failures and a non-zero examined count.
+    an invalid config/aws-region), a workflow comment holding a region id, a region id in a non-workflow .github file, an
+    HCL comment holding a region id, an aws-region step whose preceding checkout carries a ref, the Neon id staying green,
+    and test_real_tree_passes running the check on the real repository with no failures and a non-zero examined count.
 - file: tests/test_aws_region_action.py
   action: Create
   purpose: 'Drives resolve.sh under the literal composite argv ("bash", "--noprofile", "--norc", "-e", "-o", "pipefail"),
@@ -442,8 +455,9 @@ verification_plan:
     the merge time, conclusion success'''
   expected: Four success conclusions on runs created after the merge.
   fix_if: A failure at the aws-region or sign-in step is this change; fix forward. Deploy and dispatch-only workflows (deploy-*,
-    reconcile, provider-mirror-seed, tf-gated-apply-prototype) are proven structurally by the guard and live on their next
-    natural run; record that residual in the closing comment.
+    reconcile, provider-mirror-seed, tf-gated-apply-prototype) and the weekly or monthly schedules (backlog-health, dedup-probe,
+    ci-rca-inactivity-sweep, cost-reconciliation) are proven structurally by the guard and live on their next natural run;
+    list them as that residual in the closing comment and tell the coordinator, which tracks their first runs.
   hermetic: false
 - step: 14
   phase: post-deploy
@@ -610,6 +624,16 @@ test_obligations:
   verification_step: 3
   test_selector: tests/checks/ci_guards/test_validate_project_region.py::test_real_tree_passes
   red_green_expectation: red before (backend region lines, description literal), green after
+- source: terraform/personal/neon_ducklake_catalog.tf
+  behavior: No region literal in a backend block or file; only the pinned aws_region default remains.
+  verification_step: 3
+  test_selector: tests/checks/ci_guards/test_validate_project_region.py::test_real_tree_passes
+  red_green_expectation: red before (backend region lines, description literal), green after
+- source: terraform/personal/main.tf
+  behavior: No region literal in a backend block or file; only the pinned aws_region default remains.
+  verification_step: 3
+  test_selector: tests/checks/ci_guards/test_validate_project_region.py::test_real_tree_passes
+  red_green_expectation: red before (backend region lines, description literal), green after
 - source: docs/contracts/terraform-cc-web-operations.yaml
   behavior: Its referenced_repo_paths exist and its state_location names the region source; validate_terraform_cc_web_operations
     reads it.
@@ -669,9 +693,9 @@ context:
   | class: asked | precedent: Benjamin 2026-10-17 | precedent_kind: answered-fork | reversible: yes | persisted: this plan'
 - 'fork: rollout | chosen: one build PR (Fable proposed four) | class: asked | precedent: Benjamin 2026-10-17 | precedent_kind:
   answered-fork | reversible: yes | persisted: this plan'
-- 'Verified 2026-10-17 (Terraform 1.10.5, read-only): with no region attribute the S3 backend reads only AWS_REGION / AWS_DEFAULT_REGION,
+- 'Verified 2026-10-17 (Terraform 1.10.5, read-only): the S3 backend with no region attribute reads only AWS_REGION / AWS_DEFAULT_REGION,
   never the profile; an init-time -backend-config region persists. configure-aws-credentials v6 requires aws-region and exports
-  both env vars. No TF_VAR_aws_region export: the guard pins both defaults to the file (Decision 99 pattern).'
+  both. No TF_VAR_aws_region export: the guard pins both defaults (Decision 99 pattern).'
 - 'V3 resolution: the counts-only pre-merge gate evidence posted on the PR for the current $PR_HEAD_SHA (steps 7-10) substitutes
   for the pre-merge post-deploy evidence the implement V3 Merge Gate and the code-review V3 check require; the change carries
   no resource change, so there is no human-directed apply walk: the behavioural acceptance (Decision 48) is steps 12-14 (merge
@@ -679,17 +703,17 @@ context:
   is a counts-only comment on the merged PR naming $MERGE_SHA and the run URLs.'
 - 'Start conditions: the rec-4372 build has merged (#1536, 2026-10-17; re-measured after it: 534 / 547 / 356 effective lines,
   56 literals), and personal-release''s forget has converged with its post-merge steps done (its own VP commands init terraform/bootstrap
-  with no region, and its freeze bars other terraform/personal merges). No other open terraform/personal PR at merge. Unbuilt
-  PLAN-oidc-owner-segment-prestage and PLAN-terraform-github-state-reconcile (otl-labs move) init those roots with no region
-  and will fail loudly after this merges; the build tells the coordinator. Related-work (ci_rca rec-4372, open at planning,
-  source_file terraform-apply-sandbox.yml): same-file condition met; its fix lands first.'
+  with no region, and its freeze bars other terraform/personal merges). No other open terraform/personal PR at merge. Bare
+  inits of the three roots fail loudly after this merges: PLAN-oidc-owner-segment-prestage, PLAN-terraform-github-state-reconcile
+  (build PR #1534, which also edits terraform/github/CLAUDE.md next to the approved step-3 text) and PLAN-bootstrap-self-access-parsed-guards
+  (plan PR #1538, VP 10, 11, 13); the build lists these to the coordinator before merging. Related-work (ci_rca rec-4372,
+  open at planning, source_file terraform-apply-sandbox.yml): same-file condition met; its fix lands first.'
 - 'rec-4067''s acceptance: its first grep clause is vacuous today (the nested quotes drop the literal''s quotes); the build
   strengthens it to step 3''s command before the PR (Decision 181 allows strengthening only).'
 - 'CODEOWNERS: Benjamin''s code-owner approval is required (terraform-*.yml, reconcile.yml, terraform/bootstrap/, terraform/github/).
   Overlaps: personal-release (cc-web contract, a Decision 202 pointer), PLAN-terraform-github-state-reconcile and the otl-labs
   transfer (terraform/github); whoever lands second merges main and keeps both.'
-- 'Related: rec-4403 (config placement; the region moves to its home through the one action and guard), rec-4404 (follow-on).
-  Evidence: /mnt/project-files/rec-4067/ (ADVICE, scout-report, fact-check, proposed-text, step6b).'
+- 'Related: rec-4403 (config placement), rec-4404 (follow-on; also owns deploy-paths.yaml''s init note). Evidence: /mnt/project-files/rec-4067/.'
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
@@ -726,12 +750,16 @@ execution_steps:
   in the body, request Benjamin''s review (code owner), subscribe to its activity.'
 - At the CI-green head run steps 7-10 and post the counts-only gate line with $PR_HEAD_SHA on the PR; confirm step 11 via
   MCP. A new head re-runs 7-11.
-- 'Merge (squash, with an explicit commit_message whose trailer block reads Resolves: rec-4067) only on code review PROCEED,
-  green CI, Benjamin''s code-owner approval and the posted gate evidence.'
-- 'After the merge: tell the coordinator that hand-run inits of terraform/bootstrap and terraform/github now need -backend-config="region=$(tr
-  -d ''[:space:]'' < config/aws-region)" (for the unbuilt otl-labs-owned plans in context). Run steps 12-14 as their runs
-  arrive (step 13 waits for the schedules; arm a check-in rather than polling) and post the counts-only closing comment on
-  the merged PR with $MERGE_SHA, the run URLs and the deploy/dispatch-only residual.'
+- 'Before merging, send the coordinator the list of every open PR and every plan without implementation_declared whose commands
+  init terraform/bootstrap, terraform/github or terraform/personal with no region source (grep docs/plans/*.yaml and the open
+  PRs'' plan files; at planning: the three in context), so each is sequenced before this merge or patched to pass -backend-config
+  region; merge only once the coordinator has acknowledged. Then merge (squash, with an explicit commit_message whose trailer
+  block reads Resolves: rec-4067) only on code review PROCEED, green CI, Benjamin''s code-owner approval and the posted gate
+  evidence.'
+- 'After the merge: confirm to the coordinator that hand-run inits of the three roots now need -backend-config="region=$(tr
+  -d ''[:space:]'' < config/aws-region)". Run steps 12-14 as their runs arrive (step 13 waits for the schedules; arm a check-in
+  rather than polling) and post the counts-only closing comment on the merged PR with $MERGE_SHA, the run URLs and the deploy/dispatch-only
+  residual.'
 - 'Report: what was implemented and the verification results.'
 rollback: 'Revert the squash commit: the literals, backend region lines and runbook text return; the action, file and guard
   disappear together. No state or live resource changes in either direction (backend configuration only); a .terraform directory
