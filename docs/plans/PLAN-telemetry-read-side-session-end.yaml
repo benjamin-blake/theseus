@@ -26,9 +26,12 @@ scope:
   action: Modify
   purpose: >-
     Rules SE-1..SE-3 (execution step 2), ROOT branch only: a NEW constant ROOT_TURN_CTES (each session's latest root
-    turn open, that turn's latest close, and the latest close of any of its turns, from the deduped observations o)
-    composed ONLY into SESSION_STATE_SQL, SESSIONS_WINDOW_SQL and SESSIONS_WINDOW_ALL_SQL, and _STATE_SELECT's ROOT
-    CASE arms (the producer-close guard, the four-branch state, outcome and duration). STATE_CTES stays byte-identical
+    turn open, that turn's latest close, the latest close of any of its turns, all from the deduped observations o,
+    and pc, the session's latest producer close with its event_timestamp and coalesce(source_ordinal, -1) under cl's
+    ordering, the guard's key) composed ONLY into SESSION_STATE_SQL, SESSIONS_WINDOW_SQL and SESSIONS_WINDOW_ALL_SQL,
+    and _STATE_SELECT's ROOT CASE arms (the producer-close guard, the four-branch state, outcome and duration). The
+    module docstring's "written once" list and the stale state-rule comment above STATE_CTES are updated to name the
+    turn rule. STATE_CTES stays byte-identical
     (AGENT_RUN_STATE_SQL composes it, tests/common/test_ducklake_event_read_sql.py pins that), as do the sub-agent arms,
     the stamps (generations, conflicted_grain_keys, derivation_conflicted) and the per-session partition bound. Only the
     three session-state verbs' read_version moves (event_read_version hashes each verb's SQL).
@@ -40,7 +43,8 @@ scope:
 - file: docs/contracts/telemetry_sessions.yaml
   action: Modify
   purpose: >-
-    Class A (the build merge needs Benjamin's word): state's semantics carries SE-1 in prose; its `derivation` stays ONE
+    Class A (the build merge needs Benjamin's word): event_kind's accepted_values note no longer says a session is
+    running unless its latest lifecycle row is a close (it points at state); state's semantics carries SE-1 in prose; its `derivation` stays ONE
     flow-mapping line under the contracts class's 2,000-character limit (1,043 today), its formula rewritten tersely
     (the four ROOT branches, then the unchanged SUB-AGENT clause) and its inputs gaining telemetry_observations.
     observation_type, event_kind, observation_id, outcome and source_ordinal; outcome's governance note says a close
@@ -48,9 +52,14 @@ scope:
     and that the verb's outcome is SE-2; duration_seconds' description, semantics and formula carry SE-3 with
     truncation toward zero (rec-4405), keeping the sentences "latest close's event_timestamp minus session_started_at,
     wall-clock" (the latest close now being the later of the producer close and any root turn close) and "NULL until a
-    close row exists" true; the SESSION STATE governance paragraph names Decision N and keeps "a resume after a close
-    makes the session running again"; the parser v4 residual note on the last segment's close row keeps its words and
-    gains a trailing clause pointing at Decision N. Amendment_log entries. Stays inside the contracts class's 500
+    close row exists" true, and its derivation inputs gaining telemetry_observations.session_id, observation_type,
+    event_kind, event_timestamp, source_ordinal and event_id; the SESSION STATE governance paragraph's sentence "The
+    state is the session's latest lifecycle row" is rewritten to the turn rule naming Decision N, and the paragraph
+    keeps "a resume after a close makes the session running again"; the parser v4 residual note on the last segment's
+    close row keeps its words and gains the trailing clause "; since Decision N it instead reads from its turns: its
+    last turn's outcome once idle at rest, abandoned once idle mid-turn (rec-4407 closed)". Phrases other tests pin stay
+    true: "makes the session running again and nothing is stored" (test_contract_lifecycle_friction.py) and "open row
+    is due" (test_contract_amendments.py). Amendment_log entries. Stays inside the contracts class's 500
     effective lines by the relief order in execution step 4.
 - file: docs/contracts/telemetry_agents.yaml
   action: Modify
@@ -60,7 +69,7 @@ scope:
 - file: docs/DECISIONS.md
   action: Modify
   purpose: >-
-    NEW numbered Decision N (origin/main max + 1 at build time; 224 at plan time: 223 is on main and 219 is reserved),
+    NEW numbered Decision N (origin/main max + 1 at build time; 224 at plan time: 223 is on main, 219 is an unused gap),
     amends [199], at most 6,144 bytes, content pinned in execution step 5; a dated trailing annotation on Decision 199
     naming it (Decision 177 dialect; the entry's text is not rewritten).
 - file: docs/decisions-index.json
@@ -74,6 +83,7 @@ scope:
     c_mid_turn_idle_is_abandoned (with an earlier closed turn: duration reads that turn's close),
     c_producer_close_stands_without_a_later_turn, c_turn_after_a_producer_close_reads_from_the_turn,
     c_turn_open_tied_with_the_producer_close (the guard's "not after": the producer close stands),
+    c_turn_open_same_timestamp_later_ordinal_reads_from_the_turn (the guard's source_ordinal leg, mirroring c04b),
     c_producer_close_tied_with_a_turn_close, c_blocked_turn_takes_its_latest_close,
     c_turn_close_without_outcome_keeps_the_prior_rule (state by the prior rule, duration from that close) and
     c_duration_is_the_later_close_truncated. Existing cases unchanged (they carry no turn rows, so the prior rule
@@ -112,7 +122,9 @@ scope:
   action: Create
   purpose: >-
     test_sessions_state_declares_the_turn_branches: state's formula and semantics carry the four branches and their
-    tokens, outcome's note the producer-close guard, the amendment_log entries, and the residual note's pointer.
+    tokens, outcome's note the producer-close guard, the amendment_log entries, and the residual note's trailing
+    clause ("since Decision N it instead reads from its turns"); "running unless" appears in neither the event_kind
+    note nor the governance paragraph.
 - file: tests/checks/decisions/test_read_side_session_end_decision.py
   action: Create
   purpose: >-
@@ -400,16 +412,19 @@ execution_steps:
   the verification verbs registered in src/common/ducklake_event_read_verbs.py); rebase onto main. If either is missing,
   STOP and tell the coordinator.
 - >-
-  2. Rules SE-1..SE-3 (ducklake_event_read_sql.py, ROOT branch). Inputs after R4/R5 dedupe: tip = the latest lifecycle
-  row (annotate excluded) by event_timestamp, source_ordinal (NULL first), close last on a tie, event_id; Topen = the
+  2. Rules SE-1..SE-3 (ducklake_event_read_sql.py, ROOT branch). Inputs after R4/R5 dedupe; every ordering below puts a
+  NULL source_ordinal first (coalesce(source_ordinal, -1)). tip = the latest lifecycle row (annotate excluded) by
+  event_timestamp, source_ordinal, close last on a tie, event_id (STATE_CTES's lc, unchanged); pc = the latest producer
+  close by event_timestamp, source_ordinal, event_id (cl's ordering; when tip is a close, pc is that row); Topen = the
   session's latest observations row with observation_type turn and event_kind open by event_timestamp, source_ordinal,
   event_id; Tclose = the latest close sharing Topen's observation_id by the same ordering; idle = as_of minus the
   session's last event_timestamp over the four tables exceeds the governed threshold. SE-1 state: (1) tip is a close
-  and (Topen is none, or Topen's (event_timestamp, source_ordinal) is not after tip's) -> tip.outcome; (2) else Topen
-  and Tclose exist and Tclose.outcome is not NULL -> idle ? map(Tclose.outcome) : running, map = success -> success,
-  error -> failed, interrupted -> cancelled, blocked -> failed; (3) else Topen exists and Tclose is none -> idle ?
-  abandoned : running; (4) else -> idle ? abandoned : running (the prior rule). SE-2 outcome: the terminal value of
-  branch 1, or of branch 2 when idle; else NULL. SE-3 duration_seconds: Tany = the latest close of ANY of the session's
+  and (Topen is none, or (Topen.event_timestamp, Topen's source_ordinal) <= (pc.event_timestamp, pc's source_ordinal)
+  compared as a pair) -> tip.outcome; (2) else Topen and Tclose exist and Tclose.outcome is not NULL -> idle ?
+  map(Tclose.outcome) : running, map = success -> success, error -> failed, interrupted -> cancelled, blocked ->
+  failed; (3) else Topen exists and Tclose is none -> idle ? abandoned : running; (4) else -> idle ? abandoned :
+  running (the prior rule). SE-2 outcome: branch 1's stored outcome, or branch 2's MAPPED value (success, failed or
+  cancelled, never the raw error or interrupted) when idle; else NULL; the at-rest cases assert outcome. SE-3 duration_seconds: Tany = the latest close of ANY of the session's
   root turns (any outcome, NULL included; any parser version) by the same ordering; duration = the later of the latest
   producer close's and Tany's event_timestamp, minus session_started_at, truncated toward zero to whole seconds; NULL
   when neither exists. Tclose (state) and Tany (duration) differ only when the latest turn is open. The new CTEs live
@@ -467,7 +482,9 @@ execution_steps:
   committed, clean tree, then --verify-head; the postflight evidence file and scripts.session.postflight --evidence;
   push; PR (body: the rule, the Decision for Benjamin's word, the read_version line, the derived_golden changes); CI
   green. Merge only after code review PROCEED, CI green and Benjamin's own word on the Decision and the contract
-  formulas (fetch his message before merging), with no other DuckLake deploy in flight (coordinator). Before merging,
+  formulas (fetch his message before merging), with no other DuckLake deploy in flight and the push-triggered deploy
+  free to run at once, so the daily golden replay cron never replays the new expectations against the old reader
+  (coordinator). Before merging,
   read rec-4407 and rec-4405 with the recs_by_ids verb and confirm each acceptance names nodes this branch and
   PLAN-telemetry-stop-turn-close's build created, and that both pass on the head; re-point through the portal if not.
   Squash-merge with "Resolves: rec-4407, rec-4405" in the commit body (Decision 201: each rec's acceptance holds at
