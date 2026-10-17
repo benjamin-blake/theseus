@@ -27,7 +27,7 @@ def test_r7_declares_usage_final_and_resume_segment_closes() -> None:
     envelope = _contract("telemetry-event-envelope.yaml")
     r7 = _flat(envelope["governance_notes"])
     for token in (
-        "usage_final",
+        "declares in usage_final whether that usage is final",
         "usage_source",
         "a non-final row stays non-final until a parser_version bump re-parses it",
         "one session close per root resume boundary",
