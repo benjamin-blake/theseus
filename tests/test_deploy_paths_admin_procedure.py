@@ -59,6 +59,29 @@ def test_admin_procedure_has_self_access_isolation_step() -> None:
     assert isolation_idx < post_apply_idx, "the self-access isolation step must precede the POST-APPLY step"
 
 
+def test_split_apply_step_excludes_platform_iam() -> None:
+    """PLAN-platform-iam-personal-release (Decision 219): the SPLIT-APPLY step no longer names
+    PlatformDev/PlatformAdmin IAM as its trigger -- that IAM now lives in terraform/bootstrap and
+    changes through this loop with no split and no -target -- and the PRE-APPLY, self-access
+    isolation and POST-APPLY steps survive in order around it."""
+    steps = _procedure_steps()
+
+    split_apply_idx = next((i for i, s in enumerate(steps) if s.lstrip().startswith("SPLIT-APPLY")), None)
+    assert split_apply_idx is not None, "no procedure step begins with the SPLIT-APPLY token"
+    split_apply_step = steps[split_apply_idx]
+    assert "terraform/bootstrap" in split_apply_step
+    assert "no split" in split_apply_step
+    assert "any inline-policy write on PlatformDev" not in split_apply_step
+
+    pre_apply_idx = next((i for i, s in enumerate(steps) if s.lstrip().startswith("PRE-APPLY")), None)
+    isolation_idx = next((i for i, s in enumerate(steps) if "BootstrapStateProvisioning" in s and "IAMFull" in s), None)
+    post_apply_idx = next((i for i, s in enumerate(steps) if s.lstrip().startswith("POST-APPLY")), None)
+    assert None not in (pre_apply_idx, isolation_idx, post_apply_idx), "a surrounding step did not survive"
+    assert split_apply_idx < pre_apply_idx < isolation_idx < post_apply_idx, (
+        "SPLIT-APPLY, PRE-APPLY, the self-access isolation step and POST-APPLY must stay in that order"
+    )
+
+
 class TestPreMergeLivePlan:
     """rec-4140 / admin_out_of_band.pre_merge_live_plan: the standing rule's contract key, its
     amendment_log entry, and the four skill pointers (planning, implement, code-review,

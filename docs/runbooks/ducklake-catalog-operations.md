@@ -46,7 +46,7 @@ and every write transits `ducklake_writer`. The ONLY sanctioned out-of-band acce
 (e.g. a stuck snapshot, an orphaned-file question, a schema drift investigation).
 
 Authority for the break-glass read is the explicit, named `DuckLakeBreakGlass` inline policy on the
-`PlatformAdmin` role (`terraform/personal/platform_roles.tf`): `secretsmanager:GetSecretValue` on the Neon
+`PlatformAdmin` role (`terraform/bootstrap/platform_admin_data_policies.tf`): `secretsmanager:GetSecretValue` on the Neon
 DSN ARN + `s3:GetObject`/`s3:ListBucket` on the `ducklake-*` prefixes. It grants READ only -- a break-glass
 session cannot mutate the catalog data.
 

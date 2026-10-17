@@ -34,6 +34,15 @@ contract:
     check: validate_terraform_cc_web_operations
 
 amendment_log:
+  - date: "2026-10-17"
+    semantic_break: false
+    change_class: prose_improvement
+    summary: >-
+      PLAN-platform-iam-personal-release (rec-3838): PlatformDev and PlatformAdmin moved to
+      terraform/bootstrap, so the two ExternalId state-fallback sources and admin_tier_only name
+      the terraform/bootstrap state and terraform/bootstrap/platform_dev_policies.tf;
+      referenced_repo_paths gains the two bootstrap files. The three variables stay declared in
+      terraform/personal until rec-4048. No rule changed.
   - date: "2026-10-09"
     semantic_break: false
     change_class: prose_improvement
@@ -125,6 +134,8 @@ referenced_repo_paths:
   - scripts/checks/iam_tf/validate_convergence_writer_isolation.py
   - scripts/ci/redaction_check.py
   - terraform/bootstrap/github_ci_apply.tf
+  - terraform/bootstrap/platform_dev_policies.tf
+  - terraform/bootstrap/platform_roles.tf
   - terraform/personal/backend-sandbox.hcl
   - terraform/personal/oidc.tf
   - terraform/personal/platform_roles.tf
@@ -200,13 +211,17 @@ tfvars_and_remote_state_recovery:
       source: >-
         The `agent-platform-terraform-personal-tfvars` Secrets Manager entry; also present as
         the PlatformDev IAM role's `assume_role_policy` trust document `sts:ExternalId`
-        condition in the remote state. Admin-tier only (see `admin_tier_only` below).
+        condition in the terraform/bootstrap remote state (`agent-platform-bootstrap-tfstate`,
+        which among container profiles only PlatformAdmin can read; terraform/personal state no
+        longer holds the role, rec-3838). Admin-tier only (see `admin_tier_only` below).
     platform_admin_external_id:
       declared_in: terraform/personal/variables.tf
       source: >-
         The `agent-platform-terraform-personal-tfvars` Secrets Manager entry; also present as
         the PlatformAdmin IAM role's `assume_role_policy` trust document `sts:ExternalId`
-        condition in the remote state. Admin-tier only (see `admin_tier_only` below).
+        condition in the terraform/bootstrap remote state (`agent-platform-bootstrap-tfstate`,
+        which among container profiles only PlatformAdmin can read; terraform/personal state no
+        longer holds the role, rec-3838). Admin-tier only (see `admin_tier_only` below).
     alerts_email:
       declared_in: terraform/personal/sns_alerts.tf
       source: >-
@@ -252,10 +267,12 @@ tfvars_and_remote_state_recovery:
     which only `PlatformAdmin` holds (AdminOps' wildcard-resource `SecretsManagerAdmin` Sid) --
     `PlatformDev`'s own `GetSecretValue` grant is scoped to the two inference-credential secret
     ARNs only (`InferenceCredentialsRead`), never this one. The state-parsing fallback requires
-    reading `tfstate/personal/*` directly, and only `PlatformAdmin` (the `agent_platform_admin`
-    profile) may do so -- `PlatformDev` is explicitly denied `s3:GetObject` on
-    `tfstate/personal/*` (the `DenyStateRead` statement in
-    `terraform/personal/platform_dev_policies.tf`'s DailyOps policy). Both procedures -- whether
+    reading remote state directly -- `tfstate/personal/*` for the personal variables and the
+    terraform/bootstrap state for the two ExternalIds -- and among container profiles only
+    `PlatformAdmin` (the `agent_platform_admin` profile) may do so: `PlatformDev` is explicitly
+    denied `s3:GetObject` on `tfstate/personal/*` (the `DenyStateRead` statement in
+    `terraform/bootstrap/platform_dev_policies.tf`'s DailyOps policy) and holds no grant on the
+    bootstrap state bucket. Both procedures -- whether
     run as the raw command or via the shared `materialise_tfvars.sh` delegate, which stays
     profile-free and relies on the same ambient admin-tier credentials -- are therefore
     unreachable from the routine runtime identity by design -- either requires deliberately

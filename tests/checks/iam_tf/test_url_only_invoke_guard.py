@@ -213,7 +213,9 @@ def test_real_identity_grants_are_url_only() -> None:
     ]
     fn_locals = {**_function_locals(personal_texts), **_function_locals(bootstrap_texts)}
     assert grant_problems(stmts, fn_locals) == []
-    guarded = {s["sid"] for s in stmts if _named_forms(s["resources"], {}) and ("Bool", _VIA_URL, ["true"]) in s["conditions"]}
+    guarded = {
+        s["sid"] for s in stmts if _named_forms(s["resources"], fn_locals) and ("Bool", _VIA_URL, ["true"]) in s["conditions"]
+    }
     assert {"DuckLakeInvokeViaUrlOnly", "DuckLakeInvokeCIViaUrlOnly", "DuckLakeWriterInvokeViaUrlOnly"} <= guarded
 
 
