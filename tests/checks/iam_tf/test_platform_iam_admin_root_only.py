@@ -1,4 +1,4 @@
-"""Standing guard for the one-state-per-applier rule (Decision 219, rec-3838,
+"""Standing guard for the one-state-per-applier rule (Decision 222, rec-3838,
 PLAN-platform-iam-personal-release): terraform/personal declares no PlatformDev/PlatformAdmin
 IAM.
 
@@ -101,6 +101,9 @@ def _resolve(
     if _depth > 4:
         return None
     expr = expr.strip()
+    interp = re.fullmatch(r'"\$\{\s*([^{}]+?)\s*\}"', expr)
+    if interp is not None:
+        return _resolve(interp.group(1), local_literals, var_literals, data_role_names, _depth + 1)
     lit = re.fullmatch(r'"([^"]*)"', expr)
     if lit is not None:
         return lit.group(1)
@@ -317,6 +320,14 @@ class TestPlatformIamAdminRootOnly:
         )
         assert texts["platform_roles.tf"] != _personal_texts()["platform_roles.tf"]
         assert any("aws_iam_role.platform_admin has no removed block" in p for p in problems(texts))
+
+    def test_string_interpolated_self_reference_is_detected(self) -> None:
+        texts = dict(_personal_texts())
+        texts["platform_roles.tf"] += (
+            '\nresource "aws_iam_role_policy" "sneaky6" {\n  name   = "Sneaky"\n'
+            '  role   = "${aws_iam_role.platform_admin.name}"\n  policy = "{}"\n}\n'
+        )
+        assert any("PlatformAdmin" in p for p in problems(texts))
 
     def test_data_source_indirection_is_detected(self) -> None:
         texts = dict(_personal_texts())
