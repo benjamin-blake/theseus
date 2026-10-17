@@ -277,6 +277,15 @@ jobs:
         # closed rather than silently apply divergent bytes. workflow_dispatch (fresh plan) skips
         # the assert since there is no prior speculative-plan artifact to compare against.
         #
+        # rec-4372 (Decision 154 Update): that reference can go stale -- its window runs from the
+        # PR's last speculative plan to this merge, with no upper bound, and main can edit a
+        # packaged file in between. When every differing artifact's bytes trace to a tracked input
+        # that moved on main (scripts/ci/ducklake_artifacts.py assert_and_upload, keyed on
+        # GITHUB_SHA as the merge sha), this step applies the reviewed plan.bin unchanged on the
+        # merge-tree zips, uploaded to the fixed key and lambda-packages/<merge sha>/, and writes a
+        # superseded-by.json pointer beside the untouched PR-head zips. A pre-existing pointer at
+        # this sha refuses an identical-bytes re-upload (only the moved branch may create one).
+        #
         # T2.42 c3 (DEP-03): the byte-assert reads the per-artifact-sha key
         # (lambda-packages/<sha>/<name>, overwrite-immune per PR-head-sha) instead of the fixed
         # key -- a later, concurrent PR's push can no longer skew this PR's reviewed artifact bytes
@@ -579,6 +588,12 @@ jobs:
         # T2.42 c3 (DEP-03): LAMBDA_ARTIFACT_SHA pins upload_to_s3's per-sha dual-write to the SAME
         # PR-head-sha "Persist saved plan to S3" (below) keys tfplan/personal/<pr>/<sha>.bin by, so
         # the apply-sandbox push-path byte-assert reads back exactly this job's uploaded bytes.
+        #
+        # rec-4372: upload-only also records scripts.ci.ducklake_inputs.record_inputs() as
+        # lambda-packages/<PR head sha>/inputs.json -- each artifact's tracked git-blob inputs, so
+        # the merge-time push run can attribute a reference gone stale (main moved a packaged file
+        # after this plan) back to the input that moved, instead of failing closed on every byte
+        # mismatch.
         if: success() && steps.oidc_plan.outcome == 'success'
         uses: ./.github/actions/build-ducklake-artifacts
         with:
@@ -894,6 +909,12 @@ jobs:
         # (scripts/ci/ducklake_artifacts.py fetch_reviewed(), fail-closed on any missing per-sha
         # object -- Decision 77 no-TOCTOU is preserved by the ORIGINAL PR-time assert plus this
         # fetch's own fail-closed missing-object check, not by a repeated rebuild-assert here).
+        #
+        # rec-4372: fetch first reads lambda-packages/<artifact-sha>/superseded-by.json. Absent,
+        # the usual route, fetches from artifact-sha's own prefix as above. Present, it follows the
+        # pointer one hop to the merge sha the push run rebuilt from when the PR-time zips predated
+        # an input that moved on main -- identity there rests on that push run's input attribution,
+        # not on a byte match against the PR-time assert.
         if: success()
         uses: ./.github/actions/build-ducklake-artifacts
         with:
