@@ -46,7 +46,11 @@ scope:
     id afterwards.'
 - file: .github/workflows/ci-rca.yml
   action: Modify
-  purpose: 'job rca: add the aws-region step after checkout; the sign-in takes env.AWS_REGION. Common rule: no comment or
+  purpose: 'job rca checks out the FAILING commit (github.event.workflow_run.head_sha), which may predate config/aws-region,
+    so the action must not resolve from that tree: insert two unnamed steps BEFORE that checkout, `- uses: actions/checkout@v7`
+    (default ref, the workflow''s own commit) and `- uses: ./.github/actions/aws-region` (its GITHUB_ENV export survives the
+    re-checkout); the sign-in takes env.AWS_REGION. +2 effective lines (356 -> 358, cap 500). If a test or check pins the
+    rca job''s step 0 as the failing-commit checkout, STOP and escalate to the planning thread. Common rule: no comment or
     scalar in the file contains an AWS region id afterwards.'
 - file: .github/workflows/ci.yml
   action: Modify
@@ -91,10 +95,10 @@ scope:
   purpose: 'Delete the workflow-level AWS_DEFAULT_REGION entry. resolve-target: add a step with id region using ./.github/actions/aws-region
     right after its checkout, a job output aws_region bound to steps.region.outputs.aws_region, and its sign-in takes env.AWS_REGION.
     apply-reconcile, gated-apply-reconcile and file-reconcile-starved-rec (all already need resolve-target) take aws-region
-    from needs.resolve-target.outputs.aws_region and gain NO step: the two red-commit jobs resolve every local action from
-    RED_SHA, which predates config/aws-region (Decision 154 clause 2 unchanged). Net +2 effective lines: 534 -> 536, exactly
-    the config/structural_size_budgets.yaml ceiling. Common rule: no comment or scalar in the file contains an AWS region
-    id afterwards.'
+    from needs.resolve-target.outputs.aws_region and gain NO step: the two red-commit jobs resolve their local actions from
+    RED_SHA (only build-ducklake-artifacts comes from .dispatch-tooling), which may predate config/aws-region (Decision 154
+    clause 2 unchanged). Net +2 effective lines: 534 -> 536, exactly the config/structural_size_budgets.yaml ceiling. Common
+    rule: no comment or scalar in the file contains an AWS region id afterwards.'
 - file: .github/workflows/security-detector-liveness.yml
   action: Modify
   purpose: 'job probe: add the aws-region step after checkout; the sign-in takes env.AWS_REGION; delete the job-level AWS_DEFAULT_REGION
@@ -144,16 +148,16 @@ scope:
 - file: scripts/checks/ci_guards/validate_project_region.py
   action: Create
   purpose: 'Registered fast-tier check, filesystem-only (Decision 208). Rules: (1) config/aws-region is one valid region id;
-    (2) no AWS region or availability-zone id in any YAML string scalar under .github/workflows/** and .github/actions/**
-    (region-agnostic: (?<![\w-])(af|ap|ca|cn|eu|il|me|mx|sa|us|us-gov)-(central|north|south|east|west|northeast|southeast|northwest|southwest)-\d[a-z]?(?![\w-]),
+    (2) no AWS region or availability-zone id anywhere in the text of any file under .github/workflows/** and .github/actions/**,
+    comments included (region-agnostic: (?<![\w-])(af|ap|ca|cn|eu|il|me|mx|sa|us|us-gov)-(central|north|south|east|west|northeast|southeast|northwest|southwest)-\d[a-z]?(?![\w-]),
     so the Neon id aws-eu-west-2 is not matched); (3) no such id in comment-stripped terraform/**/*.tf or *.hcl except the
     default of variable "aws_region" in terraform/bootstrap/variables.tf and terraform/personal/variables.tf, each of which
     must equal config/aws-region; no backend "s3" block or backend*.hcl sets region; (4) every configure-aws-credentials step''s
-    aws-region is ${{ env.AWS_REGION }} with an earlier ./.github/actions/aws-region step in the same job that itself follows
-    a checkout, or ${{ needs.<job>.outputs.aws_region }} where that job is in needs and binds aws_region to a step using the
-    action; (5) no workflow, job or step env sets AWS_REGION or AWS_DEFAULT_REGION. Failure text names file, job and step,
-    never a value beyond the region id. Declares examined() with the number of files and sign-in steps scanned (Decision 170).
-    Under 500 SLOC; split into a helper module if it grows.'
+    aws-region is ${{ env.AWS_REGION }} with an earlier ./.github/actions/aws-region step in the same job whose most recent
+    preceding checkout has neither ref nor path (the workflow''s own commit, never an older tree), or ${{ needs.<job>.outputs.aws_region
+    }} where that job is in needs and binds aws_region to a step using the action; (5) no workflow, job or step env sets AWS_REGION
+    or AWS_DEFAULT_REGION. Failure text names file, job and step, never a value beyond the region id. Declares examined()
+    with the number of files and sign-in steps scanned (Decision 170). Under 500 SLOC; split into a helper module if it grows.'
 - file: scripts/checks/ci_guards/_manifest.py
   action: Modify
   purpose: One Entry(name="validate_project_region", module="scripts.checks.ci_guards.validate_project_region", attr="validate_project_region",
@@ -167,15 +171,18 @@ scope:
   purpose: Mirror test (Decision 131). One red case per rule on tmp trees (a literal aws-region, a literal in a run body,
     an AZ id, a backend region line, a backend*.hcl region, a default differing from the file, an unwired sign-in, a reader
     step before checkout, a needs-output from a job that does not run the action, an env AWS_DEFAULT_REGION, an empty and
-    an invalid config/aws-region), the Neon id and a comment-only mention staying green, and test_real_tree_passes running
-    the check on the real repository with no failures and a non-zero examined count.
+    an invalid config/aws-region), a workflow comment holding a region id, an aws-region step whose preceding checkout carries
+    a ref, the Neon id and an HCL comment-only mention staying green, and test_real_tree_passes running the check on the real
+    repository with no failures and a non-zero examined count.
 - file: tests/test_aws_region_action.py
   action: Create
   purpose: 'Drives resolve.sh under the literal composite argv ("bash", "--noprofile", "--norc", "-e", "-o", "pipefail"),
     Decision 162 R2, in a tmp tree laid out like the repo (tmp/.github/actions/aws-region/resolve.sh, tmp/config/aws-region)
     with tmp GITHUB_ENV and GITHUB_OUTPUT files: valid value exports both env vars and the output and prints REGION_OK; missing
     file and whitespace-only file print REGION_MISSING and exit 1 writing nothing; an invalid value prints REGION_INVALID
-    and exits 1. Wiring: action.yml''s only step is the anchored delegate and the output binds steps.resolve.outputs.aws_region.'
+    and exits 1. Wiring: action.yml''s only step is the anchored delegate and the output binds steps.resolve.outputs.aws_region;
+    test_build_ducklake_region_falls_back_to_aws_region asserts build-ducklake-artifacts'' region input has no default and
+    its step env REGION is ${{ inputs.region || env.AWS_REGION }}.'
 - file: tests/test_security_detector_liveness_workflow.py
   action: Modify
   purpose: 'The reserved-session-name red case''s mutation anchors move to the new sign-in text (aws-region: ${{ env.AWS_REGION
@@ -233,8 +240,9 @@ infrastructure_dependencies:
 - 'terraform/github: its PR-time read-only plan (terraform-github-plan.yml) runs on this PR; no hand apply is needed (no resource
   change).'
 acceptance_criteria:
-- config/aws-region is the only committed home of the project region outside the two aws_region variable defaults, which validate_project_region
-  pins equal to it.
+- Within .github/ (workflows and actions) and terraform/ HCL, config/aws-region is the only home of the project region apart
+  from the two aws_region variable defaults, which validate_project_region pins equal to it; every other surface (Python,
+  config files, runbook prose, the Neon id) is rec-4404's declared residual.
 - No workflow or composite action under .github/ contains an AWS region id in any scalar or comment; every configure-aws-credentials
   step takes aws-region from the aws-region action's AWS_REGION or reconcile's resolve-target output; no env entry sets AWS_REGION
   or AWS_DEFAULT_REGION.
@@ -276,16 +284,16 @@ verification_plan:
   action: 'The real tree holds the region in one file: the registered check passes, no workflow or action holds the literal
     anywhere (comments included, matching rec-4067''s own acceptance), and no backend sets a region.'
   command: bin/venv-python -m pytest tests/checks/ci_guards/test_validate_project_region.py::test_real_tree_passes -q && !
-    grep -rqE "eu-west-2" .github/ && ! grep -qE "^[[:space:]]*region[[:space:]]*=" terraform/bootstrap/main.tf terraform/github/main.tf
+    grep -rqE "eu-west-2" .github/ && ! grep -qE 'region[[:space:]]*=[[:space:]]*"' terraform/bootstrap/main.tf terraform/github/main.tf
     terraform/personal/backend-sandbox.hcl
   expected: Exit 0.
-  fix_if: 'A grep hit names the leftover literal or backend line: remove it (a comment counts for the raw grep). A node failure:
-    see step 1.'
+  fix_if: 'A grep hit names the leftover literal or backend line: remove it (a comment counts). The backend clause matches
+    a quoted literal only, so the provider''s region = var.aws_region stays green. A node failure: see step 1.'
   hermetic: true
   expected_literals: []
   graduation: waive
-  graduation_waiver_reason: Duplicates the registered check validate_project_region plus rec-4067's own acceptance, which
-    the closure job runs at merge.
+  graduation_waiver_reason: Duplicates the registered check validate_project_region (it scans .github/ text including comments,
+    and the backend files) plus rec-4067's own acceptance, which the closure job runs at merge.
 - step: 4
   phase: pre-deploy
   action: 'Fast tier green with the CI region environment the action now exports (pr-validate gains AWS_REGION beside AWS_DEFAULT_REGION):
@@ -307,7 +315,9 @@ verification_plan:
   expected: Exit 0, no file listed.
   fix_if: Run terraform fmt on the listed file and re-check.
   hermetic: false
-  graduation: not-applicable
+  graduation: waive
+  graduation_waiver_reason: 'Duplicates the standing fmt checks: ci.yml terraform-validate and scripts/checks/_terraform.py
+    run_terraform_creds_free run terraform fmt -check on every root.'
 - step: 6
   phase: pre-deploy
   action: 'The approved texts landed verbatim (Decision 202: only the date varies; the three runbook and contract texts: no
@@ -469,9 +479,9 @@ test_obligations:
   red_green_expectation: red before (file absent, literals present), green after
 - source: .github/actions/build-ducklake-artifacts/action.yml
   behavior: Its region falls back to AWS_REGION; no literal default.
-  verification_step: 3
-  test_selector: tests/checks/ci_guards/test_validate_project_region.py::test_real_tree_passes
-  red_green_expectation: red before (literal default), green after
+  verification_step: 2
+  test_selector: tests/test_aws_region_action.py::test_build_ducklake_region_falls_back_to_aws_region
+  red_green_expectation: red before (literal default, no fallback), green after
 - source: .github/workflows/backlog-health.yml
   behavior: Every sign-in takes its region from the aws-region action (or reconcile's resolve-target output) and no region
     literal or region env entry remains.
@@ -648,9 +658,9 @@ context:
   triaged: 171 of 171. Roadmap items intersected: 10; CONFLICT: 0; RELATED: 10.'
 - 'gates: decision-scout=FLAGS_FOUND (resolved as above); plan-critique=PENDING'
 - 'Approval: Benjamin in the planning thread, 2026-10-17: fork 2 at 17:03Z ("I agree with your recommendation for 2"); forks
-  1 and 3 and the APPROVED texts at 17:15Z ("I agree with your recommendations"), after the planner''s step 6b reply named
-  the exact texts; he acknowledged (17:20Z) the planner''s restatement that this is "write the plan" with the wording verbatim.
-  Variance: the date only. Fact-check of every cited clause: fact-check.md (one runbook line corrected before presentation).'
+  1, 3 and the APPROVED texts at 17:15Z ("I agree with your recommendations"); 17:20Z he acknowledged the restatement that
+  this is "write the plan" with the wording verbatim. Variance: the date only. Fact-check of every cited clause: fact-check.md
+  (one runbook line corrected before presentation).'
 - 'fork: where the region lives | chosen: committed config/aws-region (Fable ADVICE Q2; a repository variable reaches CI only,
   is not passed to fork PR runs, is undocumented for Dependabot runs and needs a hand-set GitHub setting the drifted terraform/github
   root cannot own, rec-3136) | class: asked | precedent: Benjamin 2026-10-17 | precedent_kind: answered-fork | reversible:
@@ -659,11 +669,9 @@ context:
   | class: asked | precedent: Benjamin 2026-10-17 | precedent_kind: answered-fork | reversible: yes | persisted: this plan'
 - 'fork: rollout | chosen: one build PR (Fable proposed four) | class: asked | precedent: Benjamin 2026-10-17 | precedent_kind:
   answered-fork | reversible: yes | persisted: this plan'
-- 'Verified 2026-10-17 on Terraform 1.10.5 (read-only, a state key that does not exist): with no region attribute the S3 backend
-  reads AWS_REGION or AWS_DEFAULT_REGION only, never the profile''s region (''Missing region value''), and an init-time -backend-config
-  region persists for later plan and apply. configure-aws-credentials v6 requires aws-region and exports AWS_REGION and AWS_DEFAULT_REGION.
-  No TF_VAR_aws_region export: the guard pins both defaults to the file (Decision 99 one-file SSOT plus lockstep gate; Fable
-  Q4 suggested it).'
+- 'Verified 2026-10-17 (Terraform 1.10.5, read-only): with no region attribute the S3 backend reads only AWS_REGION / AWS_DEFAULT_REGION,
+  never the profile; an init-time -backend-config region persists. configure-aws-credentials v6 requires aws-region and exports
+  both env vars. No TF_VAR_aws_region export: the guard pins both defaults to the file (Decision 99 pattern).'
 - 'V3 resolution: the counts-only pre-merge gate evidence posted on the PR for the current $PR_HEAD_SHA (steps 7-10) substitutes
   for the pre-merge post-deploy evidence the implement V3 Merge Gate and the code-review V3 check require; the change carries
   no resource change, so there is no human-directed apply walk: the behavioural acceptance (Decision 48) is steps 12-14 (merge
@@ -671,8 +679,10 @@ context:
   is a counts-only comment on the merged PR naming $MERGE_SHA and the run URLs.'
 - 'Start conditions: the rec-4372 build has merged (it edits terraform-apply-sandbox.yml comments and build-ducklake-artifacts/action.yml),
   and personal-release''s forget has converged with its post-merge steps done (its own VP commands init terraform/bootstrap
-  with no region, and its freeze bars other terraform/personal merges). No other open terraform/personal PR at merge. Related-work
-  (ci_rca rec-4372, open at planning, source_file terraform-apply-sandbox.yml): same-file condition met; its fix lands first.'
+  with no region, and its freeze bars other terraform/personal merges). No other open terraform/personal PR at merge. Unbuilt
+  PLAN-oidc-owner-segment-prestage and PLAN-terraform-github-state-reconcile (otl-labs move) init those roots with no region
+  and will fail loudly after this merges; the build tells the coordinator. Related-work (ci_rca rec-4372, open at planning,
+  source_file terraform-apply-sandbox.yml): same-file condition met; its fix lands first.'
 - 'rec-4067''s acceptance: its first grep clause is vacuous today (the nested quotes drop the literal''s quotes); the build
   strengthens it to step 3''s command before the PR (Decision 181 allows strengthening only).'
 - 'CODEOWNERS: Benjamin''s code-owner approval is required (terraform-*.yml, reconcile.yml, terraform/bootstrap/, terraform/github/).
@@ -689,28 +699,39 @@ pre_implementation_checklist:
 - Start conditions in context hold (rec-4372 build merged, personal-release converged)
 - Acceptance criteria understood and verifiable
 execution_steps:
-- Confirm the start conditions; rebase on main; re-measure reconcile.yml and terraform-apply-sandbox.yml effective lines (scripts.checks.structural._classify.effective_lines).
-  If either moved from 534 / 547, STOP and send the planning thread the numbers (the scoped shapes assume them).
+- Confirm the start conditions in context; rebase on main; re-measure reconcile.yml, terraform-apply-sandbox.yml and ci-rca.yml
+  effective lines (scripts.checks.structural._classify.effective_lines). If the first two moved from 534 / 547, STOP and send
+  the planning thread the numbers (the scoped shapes assume them).
 - Write the red tests first (tests/checks/ci_guards/test_validate_project_region.py, tests/test_aws_region_action.py) and
   confirm each fails on the unchanged tree for the stated reason.
-- Create config/aws-region and .github/actions/aws-region (action.yml, resolve.sh) as scoped; step 2 green.
+- Create config/aws-region and .github/actions/aws-region (action.yml, resolve.sh) as scoped; step 2 green except the build-ducklake-artifacts
+  wiring node.
 - Create validate_project_region, its manifest Entry and its taxonomy row; step 1 green except test_real_tree_passes.
-- Edit the 18 workflows and build-ducklake-artifacts/action.yml to the scoped shapes; update the liveness test's anchors;
-  never write a region id in a comment.
+- Edit the 18 workflows and build-ducklake-artifacts/action.yml to the scoped shapes (ci-rca's default-ref checkout first);
+  update the liveness test's anchors; never write a region id in a comment.
 - Edit the three backends and the neon_region_id description; terraform fmt.
 - 'Land the APPROVED texts verbatim: the Decision 202 Update paragraph (date = the planned merge date; re-date if the merge
   slips), the two CLAUDE.md edits and the cc-web contract (state_location, referenced_repo_paths, amendment_log); regenerate
   docs/decisions-index.json.'
-- Strengthen rec-4067's acceptance to step 3's command with one update_rec call after get_rec_write_guidance() (Decision 66),
-  stating why (the old first clause was vacuous).
-- 'Run steps 1-6 (step 4 runs the fast tier with the CI region env and then the full tier; also run the fast tier once without
-  the two env vars); run the code-review skill; open the PR with Resolves: rec-4067 in the body; subscribe to its activity.'
+- Run VP steps 1-3, 5 and 6 and the fast tier (with and without AWS_REGION / AWS_DEFAULT_REGION set). Only once step 3 is
+  green on the finished tree, strengthen rec-4067's acceptance to step 3's exact command with one update_rec call after get_rec_write_guidance()
+  (Decision 66), stating why (the old first clause was vacuous; Decision 181 allows strengthening only).
+- Code review via a fresh code-review subagent; fix every blocking finding and re-run steps 1-3, 5 and 6.
+- 'CLOSURE -- separate facts, in order (a)-(e) (implement skill Commit Flows; docs/contracts/git-ops.yaml), each reported
+  on its own. (a) READINESS: bin/venv-python -m scripts.session.github_readiness (unknown is never PASS). (b) Set implementation_declared
+  true, commit, git fetch origin main and git rebase origin/main (STOP on conflict; re-check the size ceilings after a rebase).
+  (c) VP step 4 (fast tier with the CI region env, then the full tier) on the committed, rebased, clean tree, then bin/venv-python
+  -m scripts.checks.validation_result --verify-head. (d) Write a scratchpad JSON holding exactly the scripts.session.postflight_evidence.CATEGORIES
+  keys, then bin/venv-python -m scripts.session.postflight --evidence that file. (e) Push, open the PR with Resolves: rec-4067
+  in the body, request Benjamin''s review (code owner), subscribe to its activity.'
 - At the CI-green head run steps 7-10 and post the counts-only gate line with $PR_HEAD_SHA on the PR; confirm step 11 via
   MCP. A new head re-runs 7-11.
-- Merge (squash, PR body as the commit message so the Resolves trailer survives) only on code review PROCEED, green CI, Benjamin's
-  code-owner approval and the posted gate evidence.
-- Run steps 12-14 as their runs arrive (step 13 waits for the schedules; arm a check-in rather than polling) and post the
-  counts-only closing comment on the merged PR with $MERGE_SHA, the run URLs and the deploy/dispatch residual.
+- 'Merge (squash, with an explicit commit_message whose trailer block reads Resolves: rec-4067) only on code review PROCEED,
+  green CI, Benjamin''s code-owner approval and the posted gate evidence.'
+- 'After the merge: tell the coordinator that hand-run inits of terraform/bootstrap and terraform/github now need -backend-config="region=$(tr
+  -d ''[:space:]'' < config/aws-region)" (for the unbuilt otl-labs-owned plans in context). Run steps 12-14 as their runs
+  arrive (step 13 waits for the schedules; arm a check-in rather than polling) and post the counts-only closing comment on
+  the merged PR with $MERGE_SHA, the run URLs and the deploy/dispatch-only residual.'
 - 'Report: what was implemented and the verification results.'
 rollback: 'Revert the squash commit: the literals, backend region lines and runbook text return; the action, file and guard
   disappear together. No state or live resource changes in either direction (backend configuration only); a .terraform directory
