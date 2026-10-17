@@ -142,3 +142,14 @@ def test_derived_golden_headers_match_parser_version() -> None:
     for name in ("derived_golden_state.yaml", "derived_golden_rollups.yaml"):
         header = yaml.safe_load((_TELEMETRY / "fixtures" / name).read_text(encoding="utf-8"))["parser_version"]
         assert header == PARSER_VERSION, f"{name}: re-author the expectations by hand before bumping PARSER_VERSION"
+
+
+def test_an_unknown_session_answers_no_rows_from_every_verb() -> None:
+    none = {"telemetry_sessions": [], "telemetry_observations": []}
+    when = "2026-09-25T12:00:00+00:00"
+    assert derive.session_state_and_duration(none, "ghost", when) == []
+    assert derive.agent_run_state_and_duration(none, "ghost", when) == []
+    assert derive.agent_run_token_rollup(none, "ghost") == []
+    assert derive.session_process_event_rollup(none, "ghost") == []
+    assert derive.session_friction_rollup(none, "ghost") == []
+    assert derive.model_call_cost_estimate(none, "ghost") == []

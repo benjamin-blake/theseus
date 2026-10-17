@@ -188,3 +188,24 @@ def test_synthetic_error_and_usageless_records_never_count_and_a_nested_child_is
     found = ledger.reconcile_ledger(mem_tree(files))
     assert [(f.model, f.cls) for f in found] == [("claude-test-1", "ledger_exact")]
     assert found[0].transcript["input"] == 30, "root + child + nested child; synthetic, error and usage-less records excluded"
+
+
+def test_a_record_without_a_message_has_no_model_key_and_a_repeated_spawn_counts_once() -> None:
+    assert ledger.model_key({"type": "assistant", "message": "text"}) is None
+    tool = tool_use_block("tuA", "Agent", {"description": "d", "prompt": "p"})
+    spawn = {"agentId": "k1", "isAsync": False}
+    root = [
+        prompt("u1", 1, "p1", "go"),
+        assistant("a1", 2, "m1", [tool]),
+        tool_result("r1", 3, "tuA", "done", pid="p1", tur=spawn),
+        tool_result("r2", 4, "tuA", "done again", pid="p1", tur=spawn),
+        _cost_state(
+            **{
+                "claude-test-1": dict(
+                    _LED, inputTokens=20, outputTokens=40, cacheReadInputTokens=60, cacheCreationInputTokens=80
+                )
+            }
+        ),
+    ]
+    files = make_files(root, {"k1": [child(assistant("k1a", 2.5, "mk", [text_block("work")]), "k1")]})
+    assert _classes(files) == {"claude-test-1": "ledger_exact"}
