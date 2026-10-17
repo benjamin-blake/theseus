@@ -30,7 +30,8 @@ scope:
     iceberg_type, description, semantics, populated_by and dq_intent exactly as execution step 1 pins:
     harness_session_key (string; pattern ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$), checkout_sha and checkout_base_sha
     (string; pattern ^([0-9a-f]{40}|[0-9a-f]{64})$), checkout_dirty (boolean). One contract-level amendment_log entry
-    (change_class field_add) dated the build day, with a migration_story. No other field's text changes.
+    (change_class field_add) dated the build day, with a migration_story. No other field's text changes, except the
+    structural relief execution step 1 names (older block-form amendment_log entries compacted to the one-line form).
 - file: docs/contracts/telemetry_observations.yaml
   action: Modify
   purpose: >-
@@ -38,7 +39,8 @@ scope:
     pins: usage_final (boolean), usage_source (string; accepted_values [record, spawn_result]), requested_model
     (string), reasoning_effort (string; pattern ^[a-z][a-z0-9_-]{0,31}$), cache_creation_1h_tokens and
     cache_creation_5m_tokens (bigint; at_most tokens_cache_creation). One contract-level amendment_log entry
-    (change_class field_add) with a migration_story. No other field's text changes.
+    (change_class field_add) with a migration_story. No other field's text changes, except the structural relief
+    execution step 1 names.
 - file: config/lambda/ducklake/field_semantics.yaml
   action: Modify
   purpose: >-
@@ -114,7 +116,8 @@ scope:
     New nodes test_create_telemetry_gate_prints_added_count (fed real-shaped "<table>.<column>" names, asserting none
     of them appears in stdout) and test_create_telemetry_gate_fails_without_an_added_list.
     SANCTIONED ASSERTION CHANGE: test_create_telemetry_gate_passes_on_a_clean_report's exact OK line gains "added=<m>",
-    and test_create_telemetry_missing_created_prints_zero's fixture gains an "added" list.
+    and the shared _CREATE_OK fixture gains "added": [] so every node built on it (the ownership, table-count, not-ok
+    and missing-created nodes) keeps its path once the gate requires the list.
 - file: tests/common/test_ducklake_telemetry_column_add_integration.py
   action: Create
   purpose: >-
@@ -124,9 +127,11 @@ scope:
     src.telemetry.append.prepare_batch/execute_prepared, then run create_telemetry_tables with the real projection.
     Asserts: added lists the ten columns; the old rows survive and read NULL in them; partition specs are unchanged
     (inspect_partitions all true); provision_telemetry_catalog then passes; a new append carrying all ten columns lands
-    and reads back equal; an identical re-send inserts 0; a second create adds nothing; then ducklake_flush_inlined_data
-    and ducklake_merge_adjacent_files run (maintenance-smoke runs merge and gc over these tables on every later deploy)
-    and the reads and inspect_partitions are re-asserted.
+    and reads back equal; an identical re-send inserts 0; a second create adds nothing. The create runs through
+    run_telemetry_txn, as the verb does. Then ducklake_flush_inlined_data and the catalog-wide GC calls
+    ducklake_expire_snapshots (older_than now), ducklake_cleanup_old_files and ducklake_delete_orphaned_files run, and
+    the reads and inspect_partitions are re-asserted: GC is catalog-wide and reaches these tables on every later deploy,
+    while the smoke merge is limited to the smoke pair (GC_TABLE_SCOPE).
 - file: tests/common/test_ducklake_telemetry_catalog_ownership.py
   action: Modify
   purpose: >-
@@ -261,18 +266,23 @@ verification_plan:
   graduation_check_id: telemetry-capture-columns-declared
 - step: 4
   phase: pre-deploy
-  action: The projection is regenerated from the contracts and every contract edit passes the contract-drift gate.
+  action: >-
+    The projection is regenerated from the contracts, every contract edit passes the contract-drift gate, and both
+    contracts stay inside the contracts class's structural limits.
   command: >-
     bin/venv-python -m scripts.schema_to_field_semantics --check && bin/venv-python -c "from
     scripts.checks.contracts.validate_contract_drift import validate_contract_drift as v;f=[];v(f);assert not f,
-    f;print('CONTRACTS_OK')"
-  expected: Exit 0 from the projection check, then CONTRACTS_OK.
-  fix_if: Regenerate with bin/venv-python -m scripts.schema_to_field_semantics; fix the amendment_log shape the drift gate names.
+    f;print('CONTRACTS_OK')" && bin/venv-python -c "from scripts.checks.structural.size_limits import
+    validate_structural_size_limits as v;f=[];v(f);assert not f, f;print('SIZE_OK')"
+  expected: Exit 0 from the projection check, then CONTRACTS_OK and SIZE_OK.
+  fix_if: >-
+    Regenerate with bin/venv-python -m scripts.schema_to_field_semantics; fix the amendment_log shape the drift gate
+    names; a size failure takes the next relief in execution step 1's order, never a budget raise or a split.
   hermetic: true
   graduation: waive
   graduation_waiver_reason: >-
-    Two commands; both already run as standing checks in scripts.validate (the field_semantics projection check and
-    validate_contract_drift), so a registry row would duplicate them.
+    Three commands; all already run as standing checks in scripts.validate (the field_semantics projection check,
+    validate_contract_drift and validate_structural_size_limits), so a registry row would duplicate them.
 - step: 5
   phase: pre-deploy
   action: Decision N is on main in the pinned shape and annotates the two Decisions it amends.
@@ -327,8 +337,9 @@ verification_plan:
     bin/venv-python -m pytest tests/checks/contracts/test_write_time_enforcement_conformance.py -q &&
     bin/venv-python -m scripts.test_coverage_checker --check-tests --check-coverage --files
     src/common/ducklake_telemetry_provision.py src/lambdas/ducklake_maintenance_smoke/telemetry_actions.py
-    scripts/ducklake_smoke/lambda_maintenance_gates.py
-  expected: Exit 0 from both.
+  expected: >-
+    Exit 0 from both. scripts/ducklake_smoke/lambda_maintenance_gates.py is not in the checker's source-to-test map, so
+    VP 2's nodes are its proof.
   fix_if: >-
     A new rule has no rejecting vector: give the clean record a valid value (never exclude the rule); cover the new
     branches in the mapped tests.
@@ -468,15 +479,14 @@ context:
   JSON bag) resolved in the producer plan and by typing every new fact here. RELATED 81, 95-97, 84, 61, 204, 167, 151,
   181, 132, 128, 125, 88, 118, 212, 184, 189. Decisions triaged: 171 of 171. Roadmap items intersected: 11; CONFLICT: 0;
   RELATED: 9.
-- 'gates: decision-scout=FLAGS_FOUND (1 WARN, 2 NOTE, resolved); plan-critique=PENDING'
+- 'gates: decision-scout=FLAGS_FOUND (1 WARN, 2 NOTE, resolved); plan-critique=PROCEED after 4 round(s) (E1-E5 folded in)'
 - >-
   Direction: Benjamin chose "A with typed columns" and said "write the plan" on 2026-10-17
   (cmsg_012XgaFy8VaDQbxP5D8nC958587eB33Uj5AJ9MenjVzU5S, thread "capture producer fixes plan"), after asking that no fact
   live in an unchecked free-form field. His pick ratifies Decision N's content as drafted here; the build still asks for
   his word on the final text before the merge (Class A contract and Decision ratification are always-ask).
 - >-
-  Inputs: /mnt/project-files/capture-producer-fixes/ (step6b-presentation.md, ADVICE.md, the Fable consult);
-  /mnt/project-files/telemetry-slice4/ADVICE.md findings 1-3, plan-ADVICE.md F1-F2.
+  Inputs: /mnt/project-files/capture-producer-fixes/ (ADVICE.md, Fable); telemetry-slice4/ADVICE.md findings 1-3.
 - >-
   Why columns, not a bag: check_existing_tables demands live columns == declared
   (src/common/ducklake_telemetry_provision.py:146-168) and there is no telemetry ALTER path, so any contract column add
@@ -494,8 +504,10 @@ context:
   allowance) and the CLI version (on every record; no consumer yet). Each would be its own field_add if a consumer
   appears.
 - >-
-  No bundled recs: rec-4354 and rec-4359 (and rec-4025's inputs) close through PLAN-telemetry-capture-producer-fixes,
-  whose acceptance nodes are producer-side. No unresolved ci_rca rec at finalization (rec-4372 closed by #1536).
+  Critique round 4 Q2, decided with notice: both cache-write columns stay (not 1h only with 5m derived at read), so a
+  sum mismatch stays visible to slice 4; the unenforced sum leg is rec-4408's, raised to Medium (Decision 210 cl.1).
+- >-
+  No bundled recs: rec-4354 and rec-4359 close through the producer plan (producer-side acceptance); no open ci_rca rec.
 - >-
   closes_criteria is empty on purpose: this is a rec-driven enabling plan outside tier-item-lifecycle.yaml's
   follow_on_plan_mode; it scopes no next slice toward an open criterion of T3.20 or T2.36 (critique round 3, 12l).
@@ -560,7 +572,13 @@ execution_steps:
   one contract-level amendment_log entry {date: <build day>, semantic_break: false, change_class: field_add, summary
   naming this plan and the columns, migration_story: "Nullable additions: every stored row stays valid and reads NULL;
   no producer emits them before PLAN-telemetry-capture-producer-fixes; the smoke tables gain them through Decision N's
-  owner step."}. Then run bin/venv-python -m scripts.schema_to_field_semantics and step 4.
+  owner step."}. Structural size (Decision 166 contracts class: 500 effective lines, 2,000-character lines; today
+  observations 454, sessions 445): write each new field's dq_intent in flow form and its notes as folded scalars, and
+  before adding, compact the file's older block-form amendment_log entries to the one-line flow form (the git-ops.yaml
+  precedent, #1535: observations 3 entries, -22 lines; sessions 4 entries, -24 lines); if a file still exceeds 500,
+  join its older multi-line folded notes into one line each under 2,000 characters. Wording never changes; never a
+  budget raise and never a split (the class's relief valve; collocation doctrine). Then run bin/venv-python -m
+  scripts.schema_to_field_semantics and step 4.
 - >-
   2. src/common/ducklake_telemetry_provision.py: implement the additive leg as the scope row pins (one helper computing
   (table, column, sql_type) additions from the live and declared column sets, refusing every other drift with the
@@ -594,8 +612,8 @@ execution_steps:
   captured sessions and puts a human in the deploy path. Decision: 1. On the disposable smoke catalog,
   create_telemetry_tables also adds, under the owner login and inside its one transaction, every declared column an
   existing telemetry event table lacks, provided the contract leaves it optional (nullable, with no not-null or
-  conditional-requiredness rule) (ALTER TABLE ADD COLUMN, declared type, no default); reversible and disposable, so
-  agent-autonomous under Decision 143 cl.3 as Decision 216 cl.2 is. Any other drift -- a live column the contract does not declare, a missing NOT NULL column, a
+  conditional-requiredness rule) (ALTER TABLE ADD COLUMN, declared type, no default); non-destructive, additive-only
+  and confined to the smoke catalog, so agent-autonomous under Decision 143 cl.3 as Decision 216 cl.2 is. Any other drift -- a live column the contract does not declare, a missing NOT NULL column, a
   partition drift, a half-present dimension pair, any drift on a dimension or counter table -- still fails loud before
   any DDL. It never drops, renames or retypes a column and writes no row; Decision 143 cl.2's dispatch set is unchanged.
   2. A telemetry column ships contract first, as a nullable field_add, through the governed deploy, and no producer
@@ -612,7 +630,8 @@ execution_steps:
   tests/common/test_ducklake_telemetry_column_add_integration.py, run before merge, an unenforced CI residual until
   rec-4071; the scoped login after an owner ADD COLUMN -- tests/common/test_ducklake_telemetry_catalog_ownership.py, the
   same residual; the live smoke catalog -- the maintenance-smoke step's added list and the telemetry gate's exact drift
-  check on every deploy. Reversal conditions (fenced yaml reversal-conditions, decision N, review_by 2027-04-30,
+  check on every deploy; clause 2's ordering -- the writer's undeclared-column 422 schema_gate is the loud backstop,
+  and the ordering itself is a coordinator- and instruction-enforced residual. Reversal conditions (fenced yaml reversal-conditions, decision N, review_by 2027-04-30,
   on_trigger "re-decide via /plan"): ducklake-alter-breaks-table (manual: a DuckLake version's ADD COLUMN corrupts,
   blocks or re-partitions a telemetry table -- re-decide clause 1); change-beyond-additive (manual: a telemetry contract
   needs a column renamed, retyped or dropped -- a new migration Decision, never this clause); production-additive-path
@@ -630,7 +649,9 @@ execution_steps:
   readiness check (scripts.session.github_readiness); the coverage diagnostic; set implementation_declared true; rebase
   on origin/main; step 9 (the full tier) on the committed, clean tree, then --verify-head; the postflight evidence file
   and scripts.session.postflight --evidence; push; PR (body: what changes, the two integration logs, the Decision N text
-  for Benjamin's word, and that the producer plan waits on this deploy); CI green on the head. Merge only after code
+  for Benjamin's word, that the producer plan waits on this deploy, and the two deploy risks: deploy-serving does not
+  wait for maintenance-smoke, so a failed owner step leaves appends answering 500 until a revert deploys, and live
+  appends may race the owner's ALTER, both sides retrying OCC collisions); CI green on the head. Merge only after code
   review PROCEED, CI green and Benjamin's own word on the Decision and the contract fields (fetch his message before
   merging); the coordinator sequences it against other DuckLake deploys. Squash-merge. Then record on rec-4292 and
   rec-4028 (update_rec notes) that the cache-write split is now typed columns and that a nullable column add on the

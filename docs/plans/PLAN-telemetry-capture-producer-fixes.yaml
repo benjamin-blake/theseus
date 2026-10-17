@@ -20,9 +20,11 @@ plan_path: docs/plans/PLAN-telemetry-capture-producer-fixes.yaml
 phase: >-
   T3.20 (agent-turn telemetry capture): producer correctness fixes from the slice 4 review, approved by Benjamin on
   2026-10-17 (soft-warn category ad_hoc_rec: a bundle of rec fixes). Closes no exit criterion (c3 is slice 4's orphan
-  monitor; c6 and c7 are outside capture correctness). Precondition: PLAN-telemetry-column-additions is merged AND its
-  governed deploy run is green (the writer refuses undeclared columns with a sticky halt). V3 because the build proves
-  the new rows against the live smoke-catalog writer; nothing here is Lambda-packaged and nothing deploys.
+  monitor; c6 and c7 are outside capture correctness). Preconditions: PLAN-telemetry-column-additions is merged AND its
+  governed deploy run is green (the writer refuses undeclared columns with a sticky halt), and PLAN-telemetry-golden-harness's
+  build is merged (it authors parser_version 3 values only and runs only while PARSER_VERSION is 3; coordinator
+  ordering, 2026-10-17). V3 because the build proves the new rows against the live smoke-catalog writer; nothing here
+  is Lambda-packaged and nothing deploys.
 scope:
 - file: src/turn_capture/provenance.py
   action: Create
@@ -30,7 +32,7 @@ scope:
     Session provenance, pure (stdlib and src.turn_capture only). pin_facts(att) parses the SessionStart pin hook's
     stderr line (rule PV-1) into (checkout_sha, checkout_base_sha, checkout_dirty), each None for "unknown" or absent;
     open_provenance(stream) reads the LAST pin attachment before the stream's first prompt record (PV-2);
-    resume_provenance(stream, resume_rec) reads the pin attachment inside that resume's hook group (PV-3; a hook group
+    resume_provenance(stream, resume_rec) reads the last pin attachment inside that resume's hook group (PV-3; a hook group
     ends at the next prompt or assistant record, streams._walk's own reset rule, the one definition PV-3, SC-3 and the
     raw walks share);
     harness_session_key(stream, bound) reads the first remote_session_change attachment at or before the open row's bound
@@ -134,7 +136,8 @@ scope:
     due rule (SC-3) on event_kind, including that a session ending inside a resume hook group gets no row for that
     resume; the four new fields' claude_code population (PV-1..PV-4); and the declared residual that a cloud session's
     LAST segment closes only through a SessionEnd pass that reaches the writer, which today stops before sending (owner
-    rec-4407), so it reads running then abandoned. Contract-level amendment_log entry.
+    rec-4407), so it reads running then abandoned. Contract-level amendment_log entry. Stays inside the contracts
+    class's 500 effective lines by execution step 7's relief order (no raise, no split).
 - file: docs/contracts/telemetry_agents.yaml
   action: Modify
   purpose: >-
@@ -168,9 +171,9 @@ scope:
   action: Create
   purpose: >-
     Mirror test for provenance.py (PV-1..PV-4, DG-1 counters), including malformed, unknown and absent facts, and
-    test_producer_patterns_equal_the_contract_rules: the producer's sha, session-key and effort patterns equal the
-    dq_intent patterns of the column-additions contracts, so a later contract tightening cannot make the producer send
-    refusable values (a refusal is a sticky halt).
+    test_producer_patterns_equal_the_contract_rules: the producer's SHA_PATTERN, SESSION_KEY_PATTERN and EFFORT_PATTERN
+    constants are string-equal to the dq_intent patterns the contracts declare (read from the contract files at test
+    time), so a later contract tightening cannot make the producer send refusable values (a refusal is a sticky halt).
 - file: tests/turn_capture/test_usage.py
   action: Create
   purpose: >-
@@ -303,19 +306,23 @@ scope:
 - file: tests/telemetry/fixtures/derived_golden_state.yaml
   action: Modify
   purpose: >-
-    Only if PLAN-telemetry-golden-harness's build merged first: re-authored at parser_version 4 by applying the contract
-    formulas to the v4 emitted rows (never copying verb or oracle output), each changed entry's why citing this plan
-    (that plan's constraints[1]); its fast-tier header check asserts parser_version == PARSER_VERSION.
+    Re-authored by hand at parser_version 4 (PLAN-telemetry-golden-harness constraints[0] and [1]): the contract
+    formulas applied to the v4 emitted rows, never copied from verb or oracle output; each changed entry's why cites
+    this plan; the header moves to 4; a known_defect naming rec-4354 or rec-4358 is dropped where the v4 rows now carry
+    the transcript truth; if a v4 shape leaves no close tie or fewer than two idle_threshold expectations, the
+    re-authoring restores one (the mutation node's named precondition).
 - file: tests/telemetry/fixtures/derived_golden_rollups.yaml
   action: Modify
-  purpose: Only if the golden harness build merged first; same rule as derived_golden_state.yaml.
+  purpose: Re-authored by hand at parser_version 4 under the same rule as derived_golden_state.yaml.
 - file: tests/fixtures/telemetry_verification_trees.py
   action: Modify
   purpose: >-
-    Only if the golden harness build merged first: a trap tree now covered by an aligned v4 case
-    (subagent_nonfinal_midstream -> subagent_usage_final_and_spawn_correction, subagent_background_failed ->
-    background_notice_statuses, resume_with_cost_state -> resume_segment_closes) may move into the corpus, its builder
-    deleted and its expectation re-pointed from verification:<tree> to corpus:<case>.
+    Optional: a trap tree now covered by an aligned v4 case (subagent_nonfinal_midstream ->
+    subagent_usage_final_and_spawn_correction, subagent_background_failed -> background_notice_statuses,
+    resume_with_cost_state -> resume_segment_closes) may move into the corpus, its builder deleted and its expectation
+    re-pointed from verification:<tree> to corpus:<case>, only when no module but the two derived_golden files names
+    that builder (grep); otherwise the trap stays. A golden harness test module needing a change is out of scope: stop
+    and escalate to the coordinator.
 - file: tests/fixtures/turn_capture/golden/index.json
   action: Modify
   purpose: Lists the five new cases after the existing 35.
@@ -339,7 +346,8 @@ scope:
 - file: tests/fixtures/turn_capture/golden/session_provenance_facts.json
   action: Create
   purpose: >-
-    Startup and resume pin lines with different HEADs, one with base=unknown, one pin line from an old hook (no facts);
+    Startup and resume pin lines with different HEADs, one with base=unknown, one pin line from an old hook (no facts),
+    and two resumes with no prompt between (one merged hook group: its resume row takes the later pin, PV-3);
     remote_session_change attachments in the root and a sub-agent file, and one whose url does not match.
 - file: tests/fixtures/turn_capture/golden/model_call_request_fields.json
   action: Create
@@ -467,6 +475,9 @@ infrastructure_dependencies:
   live writer declares the ten columns. Merging this plan earlier would make every rebased session's v4 rows draw a 422
   schema_gate, a sticky halt of that session's capture.
 - >-
+  Precondition: PLAN-telemetry-golden-harness's build merged (coordinator ordering, 2026-10-17). Its fast-tier header
+  check fails until both derived_golden files read parser_version 4, so this build re-authors them by hand (scope rows).
+- >-
   No Terraform, IAM, Lambda or workflow change; nothing here is Lambda-packaged (src/turn_capture is excluded from the
   data-pipeline bundle, registry check turn-capture-excluded-from-data-pipeline), so the merge deploys nothing. The code
   reaches each session at its next rebase or new session (the hooks load from the checkout; only the switch now follows
@@ -509,12 +520,12 @@ verification_plan:
     rec-4354 and the request fields -- partial usage is flagged, a sync last call is corrected only on an exact match,
     and the smoke tree builds every new column.
   command: >-
-    bin/venv-python -m pytest
+    bin/venv-python -m pytest tests/turn_capture/test_usage.py
     tests/turn_capture/test_observations.py::test_subagent_final_call_without_stop_reason_takes_spawn_result_usage
     tests/turn_capture/test_observations.py::test_non_final_usage_is_marked_and_counted
     tests/turn_capture/test_observations.py::test_model_call_records_requested_model_effort_and_cache_split
     tests/telemetry_capture/test_smoke.py::test_synthetic_tree_builds_every_new_column -q
-  expected: Exit 0, every node passes. Red before because the nodes are absent.
+  expected: Exit 0, every node passes. Red before because the module, its test and the nodes are absent.
   fix_if: A partial row reads final, a mismatched spawn result was applied, or a request field is missing.
   hermetic: true
   graduation: graduate
@@ -591,23 +602,31 @@ verification_plan:
     tests/turn_capture/test_record_turn.py::test_new_cases_are_built_from_their_builders
     tests/turn_capture/test_record_turn.py::test_rows_use_only_caller_known_columns
     tests/turn_capture/test_sessions.py::test_close_row_per_finalization_with_transcript_outcome
-    tests/telemetry/test_parser_version_registry.py -q
-  expected: Exit 0, every node passes.
+    tests/telemetry/test_parser_version_registry.py -q && bin/venv-python -m pytest tests/telemetry_verify
+    tests/telemetry/test_derived_layer_reconciliation.py -m "not integration" -q
+  expected: >-
+    Exit 0, every node passes, the golden harness's header check, golden reconcile, oracle agreement and mutation nodes
+    included.
   fix_if: >-
     Regenerate expected_rows from record_turn only after the behaviour tests pass; a schedule failure is a purity defect
     in a new rule (most likely a resume row or segment close reading a record after its bound), never a test to relax.
+    A golden harness failure is resolved by re-deriving the derived_golden value by hand from the formula, never by
+    copying verb or oracle output.
   hermetic: true
   graduation: waive
   graduation_waiver_reason: >-
-    Every node here is already a graduated standing check (turn-capture-golden-corpus, turn-capture-r7-incremental-equals-full,
+    Its nodes are already graduated standing checks (turn-capture-golden-corpus, turn-capture-r7-incremental-equals-full,
     turn-capture-finalize-resume-emits-each-row-once, turn-capture-close-row-per-finalization,
-    telemetry-parser-version-registry); its red state comes from the regenerated corpus and the sanctioned changes, not
-    from new nodes, so it cannot graduate again.
+    telemetry-parser-version-registry and the golden harness's own rows), except
+    test_new_cases_are_built_from_their_builders, an existing fast-tier corpus-registration node whose failure the
+    golden-corpus check also surfaces. Its red state comes from the regenerated corpus and the sanctioned changes, not
+    from a new behaviour.
 - step: 7
   phase: pre-deploy
   action: Every golden case loads into a local DuckLake with the column-additions projection and every FK resolves.
   command: >-
-    bin/venv-python -m pytest tests/turn_capture/test_capture_ducklake_integration.py -m integration -q -rs 2>&1 | tee
+    bin/venv-python -m pytest tests/turn_capture/test_capture_ducklake_integration.py
+    tests/telemetry/test_derived_layer_reconciliation.py::test_golden_fixtures_reconcile_on_local_ducklake -m integration -q -rs 2>&1 | tee
     "${TMPDIR:-/tmp}/capture_ducklake.log" && ! grep -Eq "[0-9]+ (skipped|failed|error)" "${TMPDIR:-/tmp}/capture_ducklake.log"
     && grep -Eq "[0-9]+ passed" "${TMPDIR:-/tmp}/capture_ducklake.log"
   expected: Exit 0 with every node passing and none skipped; the log goes in the PR description.
@@ -644,14 +663,18 @@ verification_plan:
     tests/telemetry_capture/test_switch.py::test_the_committed_switch_is_on_and_still_guarded -q && bin/venv-python -c
     "from scripts.checks.contracts.validate_contract_drift import validate_contract_drift as v;f=[];v(f);assert not f,
     f;print('CONTRACTS_OK')" && bin/venv-python -c "from scripts.checks.contracts.validate_ports_contract import
-    validate_ports_contract as v;f=[];v(f);assert not f, f;print('PORTS_OK')"
-  expected: The three nodes pass, then CONTRACTS_OK and PORTS_OK.
-  fix_if: Fix the amendment_log shape or the text the node names.
+    validate_ports_contract as v;f=[];v(f);assert not f, f;print('PORTS_OK')" && bin/venv-python -c "from
+    scripts.checks.structural.size_limits import validate_structural_size_limits as v;f=[];v(f);assert not f,
+    f;print('SIZE_OK')"
+  expected: The three nodes pass, then CONTRACTS_OK, PORTS_OK and SIZE_OK.
+  fix_if: >-
+    Fix the amendment_log shape or the text the node names; a size failure takes the next relief in execution step 7's
+    order, never a budget raise or a split.
   hermetic: true
   graduation: waive
   graduation_waiver_reason: >-
-    A one-time text check of the amended contracts, an existing node already green before, and two standing validators
-    that scripts.validate runs.
+    A one-time text check of the amended contracts, an existing node already green before, and three standing
+    validators that scripts.validate runs.
 - step: 10
   phase: pre-deploy
   action: Each changed module reaches 100% coverage from its mapped test; lint, imports and the 500-SLOC limit hold.
@@ -701,7 +724,8 @@ verification_plan:
     record_turn, PARSER_VERSION; t=FsTree(Path(sys.argv[1])); r=record_turn(t, None, project_ref=project_ref_pin(t) or
     'ontheloop'); s=[x for x in r.sessions if x['event_kind']=='open']; m=[x for x in r.observations if
     x['observation_type']=='model_call']; print('v', PARSER_VERSION, 'open_with_key', sum(1 for x in s if
-    x.get('harness_session_key')), 'open_with_checkout', sum(1 for x in s if x.get('checkout_sha')), 'calls', len(m),
+    x.get('harness_session_key')), 'open_with_checkout', sum(1 for x in s if x.get('checkout_sha')), 'open_with_base',
+    sum(1 for x in s if x.get('checkout_base_sha')), 'calls', len(m),
     'with_requested_model', sum(1 for x in m if x.get('requested_model')), 'not_final', sum(1 for x in m if
     x.get('usage_final') is False), 'resume_with_checkout', sum(1 for x in r.sessions if x['event_kind']=='resume' and
     x.get('checkout_sha'))); assert PARSER_VERSION == 4 and s and all(x.get('harness_session_key') for x in s if
@@ -709,7 +733,8 @@ verification_plan:
     if x['entity_ref']==t.session_id)" "$T" && bin/venv-python -m
     scripts.telemetry_capture probe --tree "$T" --require telemetry_observations,telemetry_transcripts,telemetry_sessions
   expected: >-
-    Prints the counts with parser 4; the root open row has harness_session_key and checkout_sha (asserted), every
+    Prints the counts with parser 4 (open_with_base measures the back-validation key's coverage); the root open row
+    has harness_session_key and checkout_sha (asserted), every
     model_call has requested_model; resume rows with checkout_sha are reported when the session has resumed; the probe
     exits 0 with rows above zero and no halt.
   fix_if: A count is zero where the raw tree carries the field (a silent failure); file a rec and fix forward.
@@ -717,7 +742,11 @@ verification_plan:
 - step: 14
   phase: post-deploy
   action: The bundled recs closed through the squash-merge Resolves trailer, and the residual's owner is open.
-  command: mcp__ducklake-reads__recs_by_ids ids=rec-4354,rec-4358,rec-4359,rec-4382,rec-4309,rec-4407
+  command: >-
+    AWS_PROFILE=agent_platform bin/venv-python -c "from src.common.ducklake_reader_client import fetch_recs_by_ids,
+    make_reader; rows, missing = fetch_recs_by_ids(make_reader(),
+    ['rec-4354','rec-4358','rec-4359','rec-4382','rec-4309','rec-4407']); st={r['id']: r['status'] for r in rows};
+    print(st, missing); assert not missing and st.pop('rec-4407') == 'open' and set(st.values()) == {'closed'}, st"
   expected: The first five read status closed, each naming this merge; rec-4407 reads open.
   fix_if: A rec stayed open; check the trailer and the ci.yml closure job's run; close it through the portal with its acceptance evidence.
   hermetic: false
@@ -861,8 +890,13 @@ context:
   harness_session_key on v4 root opens, NULL checkout share, unknown or absent notice statuses, resumes with no prior
   close, ledger gap explained by usage_final false, sessions captured against the harness lists).
 - >-
-  Golden coupling: if PLAN-telemetry-golden-harness's build merges first, this build re-authors its two derived golden
-  files at v4 and may move its aligned trap trees into the corpus (scope rows; coordinator relay of 2026-10-17).
+  Golden coupling: PLAN-telemetry-golden-harness's build merges first; this build re-authors its two derived_golden
+  files at v4 by hand and may move aligned trap trees into the corpus (scope rows; coordinator relays of 2026-10-17).
+- >-
+  V3 resolution: the pre-merge evidence for the implement Merge Gate and code-review is VP 12's PC_SMOKE PASS output
+  plus the URL of the sibling's green deploy-ducklake-lambdas run (it proves the live writer's column set; counts only,
+  Decision 101), both posted in the PR. VP 13 and VP 14 are post-merge acceptance, posted as one counts-only comment on
+  the merged PR.
 - >-
   Considered and declined (critic frame Q2): landing the switch, credential and pin-hook changes first in a separate PR.
   One build keeps one review and one parser bump; the gain is a few days' earlier spread.
@@ -872,22 +906,27 @@ pre_implementation_checklist:
 - docs/PROJECT_CONTEXT.md read
 - envelope R7, telemetry_sessions governance_notes and telemetry_agents outcome read
 - PLAN-telemetry-column-additions merged and its deploy run green (read its VP 10-12 result first)
+- PLAN-telemetry-golden-harness's build merged (scripts/telemetry_verify/ and both derived_golden files on main)
 - All files in scope located and readable
 - Acceptance criteria understood and verifiable
 execution_steps:
 - >-
   1. Precondition: confirm PLAN-telemetry-column-additions is on main and its deploy-ducklake-lambdas run on the merge
   commit concluded success (mcp__github__actions_list); rebase this branch onto main. If either fails, STOP and tell the
-  coordinator. Check whether PLAN-telemetry-golden-harness's build is on main (decides the three conditional scope rows).
+  coordinator. Confirm PLAN-telemetry-golden-harness's build is on main (test -f
+  tests/telemetry/fixtures/derived_golden_state.yaml and scripts/telemetry_verify/derive.py); if not, STOP and tell
+  the coordinator (it must merge first).
 - >-
   2. Rules PV-1..PV-4 (provenance.py, the pin hook). PV-1 line: "[session_start_log_turn] capture pin
   checkout=<v> base=<v> dirty=<v>", v a validated hex sha or unknown, dirty true|false|unknown; the parser accepts the
   facts only from a hook attachment whose hookEvent is SessionStart and whose command's script stem is
   session_start_log_turn (transcript.PIN_SCRIPT_STEM), matching
-  checkout=([0-9a-f]{40}([0-9a-f]{24})?|unknown) base=(same) dirty=(true|false|unknown); anything else yields three
-  NULLs and pin_without_checkout. PV-2 open row: the LAST such attachment before the stream's first prompt record
-  (stable: the open row is due only after that prompt's turn closed). PV-3 resume row: the such attachment inside that
-  resume's hook group (from the group's first attachment to the next prompt or assistant record). PV-4
+  checkout=(([0-9a-f]{40}|[0-9a-f]{64})|unknown) base=(same) dirty=(true|false|unknown), the sha alternatives built
+  from SHA_PATTERN; anything else yields three NULLs and pin_without_checkout. PV-2 open row: the LAST such attachment before the stream's first prompt record
+  (stable: the open row is due only after that prompt's turn closed). PV-3 resume row: the LAST such attachment inside
+  that resume's hook group (from the group's first attachment to the next prompt or assistant record); two resumes
+  with no prompt between merge into one group under streams._walk's reset rule, and the later start's checkout is the
+  code the next turn runs (stable: SC-3 makes the row due only once the group has ended). PV-4
   harness_session_key: the FIRST remote_session_change attachment at or before the open row's bound (sessions._open_bound),
   the url's last path segment, kept only when it matches the column pattern (else NULL, harness_session_key_unparsed);
   none at all -> NULL and harness_session_key_absent. Every stream's open row gets PV-4 (sub-agent files carry the
@@ -904,7 +943,10 @@ execution_steps:
   dict whose input_tokens, cache_read_input_tokens and cache_creation_input_tokens equal the record's: output_tokens,
   reasoning tokens (output_tokens_details.thinking_tokens) and the cache split are taken from it (the split under the
   same US-1 bound), usage_source spawn_result, usage_final true, spawn_result_corrected; a mismatch keeps the record
-  (spawn_result_mismatch). Never for background spawns or any other call. US-4: otherwise usage_source record and
+  (spawn_result_mismatch). Never for background spawns or any other call. The FIRST turn, not the last as ADVICE.md
+  wrote: the spawn result belongs to the run that created the child file, and the first turn's last response is
+  fixed once that turn closes, while a later continuation would move the last turn and change an emitted row (R7);
+  the input-class match guards it, and every observed sub-agent file holds one prompt run, so the two coincide. US-4: otherwise usage_source record and
   usage_final = (owner stop_reason is a string); false counts usage_not_final:root or :subagent. reasoning_visibility
   keeps its rule over the (possibly corrected) tokens.
 - >-
@@ -940,31 +982,38 @@ execution_steps:
   segment_close_skipped, resume_before_close, failure_reason_dropped, credential_error, switch_source.
 - >-
   7. Contracts: the four contract notes as their scope rows pin, each with an amendment_log entry dated the build day;
-  ports.yaml SA-02. Run step 9.
+  ports.yaml SA-02. Structural size (Decision 166 contracts class: 500 effective lines, 2,000-character lines;
+  telemetry_sessions.yaml is about 465 after the sibling): new amendment_log entries take the one-line flow form, and
+  notes extend existing lines where they can; if a file still exceeds 500, compact its remaining block-form
+  amendment_log entries to the one-line form (the git-ops.yaml precedent, #1535), then join older multi-line folded
+  notes into one line each under 2,000 characters. Wording never changes; never a budget raise and never a split. Run
+  step 9.
 - >-
   8. Tests and fixtures: the scope rows' new nodes, modules and sanctioned changes; corpus builders; the five new golden
   cases. Run steps 1-5 until green BEFORE regenerating any expected_rows; then regenerate every case's expected_rows from
   record_turn, review the diff by kind (new columns on every model_call and on open/resume rows, segment closes on
   resumed cases, background closes, resume rows of trailing hook groups dropped -- hooks_resume_and_compact.json's
   rs3#0/resume is one) and confirm no other row changed; set the registry's v4 entry from the new golden_digest; if the
-  golden harness build is on main, re-author its derived files and move aligned traps per the conditional scope rows;
-  run step 6.
+  re-author both derived_golden files by hand and move an aligned trap only as their scope rows allow; run step 6.
 - >-
   9. Execute the Verification Plan steps 7-12 (step 12 only once the precondition holds); loop until each passes; on an
   unrecoverable V3 failure stop and RCA (Decision 55).
 - >-
   10. Send the coordinator, for slice 4: the golden cases and derived files this build changed, the VP 8 class counts,
   and this build session's own root session ref and harness_session_key (its v4 rows are untrusted and must be
-  excluded).
+  excluded); and ask it to start, once the merge lands, a fresh session on the merged main to run step 13 (this
+  session cannot: its open row reads the old hook's pin line).
 - >-
   11. Closure (implement skill Commit Flows; docs/contracts/git-ops.yaml), each outcome reported separately: the
   readiness check (scripts.session.github_readiness); the coverage diagnostic; set implementation_declared true; rebase
   on origin/main; step 11 (the full tier) on the committed, clean tree, then --verify-head; the postflight evidence file
   and scripts.session.postflight --evidence; push; PR (body: the six fixes, the DG-2 checks, VP 7/8/12 logs and counts,
-  this session's own root session ref and harness_session_key, the contract notes for Benjamin's word); CI green on the
-  head. Merge only after code review PROCEED, CI green and Benjamin's own word on the contract notes (fetch his message
+  this session's own root session ref and harness_session_key, the contract notes for Benjamin's word, and the V3
+  evidence the context's V3 resolution names); CI green on the head. Merge only after code review PROCEED, CI green and Benjamin's own word on the contract notes (fetch his message
   before merging). Squash-merge with "Resolves: rec-4354, rec-4358, rec-4359, rec-4382, rec-4309" in the commit body.
-- 12. Run steps 13 and 14 (step 13 from a fresh or rebased session on the merged main).
+- >-
+  12. Run step 14 here; step 13 runs in the session the coordinator starts on the merged main (step 10), never in a
+  rebased session. Post both results as one counts-only comment on the merged PR.
 - 'Report: what was implemented, verification results (counts), and the residual owned by rec-4407.'
 work_areas: []
 rollback: >-
