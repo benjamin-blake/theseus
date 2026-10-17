@@ -137,6 +137,7 @@ _CONTROL_OPERATORS: frozenset[str] = frozenset({"&&", "||", "|", ";"})
 # Any single-dash cluster reaching a k or m: argparse expands combined short flags (`-vk foo`) and
 # accepts an attached value (`-mslow`). Over-matching a value-taking cluster only refuses junit.
 _SHORT_SELECTOR_RE = re.compile(r"^-[A-Za-z]*[km]")
+_PYTEST_MENTION_RE = re.compile(r"\bpytest\b")
 _NODE_ID_RE = re.compile(r"^\S+\.py::\S+$")
 
 
@@ -181,11 +182,14 @@ def _is_pytest_invocation(token: str) -> bool:
 
 def _pytest_arguments(segment: list[str]) -> list[str]:
     # Tokens before the invocation belong to the interpreter (the `-m` in `bin/venv-python -m
-    # pytest` is Python's module flag, not a marker selector). Only a leading `pytest` or one
-    # straight after `-m` counts as the invocation; otherwise the whole segment is scanned.
+    # pytest` is Python's module flag, not a marker selector). The scan is anchored only when the
+    # first token mentioning pytest is the invocation itself, leading the segment or following
+    # `-m`; anything else (`pytest-3`, `uv run --with pytest pytest`) scans the whole segment.
     for index, token in enumerate(segment):
-        if _is_pytest_invocation(token) and (index == 0 or segment[index - 1] == "-m"):
-            return segment[index + 1 :]
+        if _PYTEST_MENTION_RE.search(token):
+            if _is_pytest_invocation(token) and (index == 0 or segment[index - 1] == "-m"):
+                return segment[index + 1 :]
+            break
     return segment
 
 

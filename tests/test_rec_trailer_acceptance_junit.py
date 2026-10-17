@@ -288,6 +288,8 @@ class TestJunitGrammar:
             "bin/venv-python -mpytest -k foo tests/x.py::test_a --rootdir=a/pytest",
             "pytest-3 -k foo tests/x.py::test_a",
             "timeout -k 5 60 pytest tests/x.py::test_a",
+            "pytest-3 -k foo -m pytest tests/x.py::test_a",
+            "uv run --with pytest pytest -k foo tests/x.py::test_a",
         ):
             result = classify_grammar(cmd)
             assert result.arm == GRAMMAR_SELECTOR_FLAG, cmd
