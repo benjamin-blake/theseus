@@ -426,9 +426,7 @@ def test_conflicts_are_reported_and_generations_retire() -> None:
 
 
 @pytest.mark.integration
-def test_golden_fixtures_reconcile_on_local_ducklake(tmp_path: Any) -> None:
-    """The step 4 expectations on a real local DuckLake catalog (partitioned, inlining off, UTC)."""
-    problems: list[str] = []
-    for index, entry in enumerate(chain.expectation_trees()):
-        problems += [f"{entry['tree']} {entry['pass']}: {p}" for p in _reconcile_entry(entry, "lake", tmp_path / str(index))]
-    assert problems == []
+@pytest.mark.parametrize("entry", _entries())
+def test_golden_fixtures_reconcile_on_local_ducklake(entry: dict, tmp_path: Any) -> None:
+    """The step 4 expectations on a real local DuckLake catalog (partitioned, inlining off, UTC), one tree entry per case."""
+    assert _reconcile_entry(entry, "lake", tmp_path) == []
