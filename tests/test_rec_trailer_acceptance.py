@@ -247,6 +247,15 @@ class TestJunitRouting:
         entries = census(["rec-1"], rows=rows)
         assert entries[0]["route"] == ROUTE_STATIC
 
+    def test_long_node_id_list_routes_to_junit_not_out_of_grammar(self) -> None:
+        nodes = " ".join([_REAL_NODE] * 7)
+        assert len(nodes) > census_mod._MAX_SHAPE_LEN
+        long_junit = {"id": "a", "acceptance": f"bin/venv-python -m pytest {nodes} -q"}
+        long_chain = {"id": "b", "acceptance": f"true && pytest {nodes}"}
+        on_route, off_route = census(["a", "b"], rows=[long_junit, long_chain])
+        assert (on_route["bucket"], on_route["route"]) == (census_mod.PROBEABLE, ROUTE_JUNIT)
+        assert (off_route["bucket"], off_route["route"]) == (census_mod.UNPROBEABLE_SHAPE, ROUTE_STATIC)
+
     def test_bare_pytest_path_stays_static(self) -> None:
         rows = [{"id": "rec-1", "acceptance": "pytest tests/x.py"}]
         entries = census(["rec-1"], rows=rows)
