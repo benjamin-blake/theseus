@@ -23,6 +23,7 @@ from tests.fixtures.turn_capture_corpus import (
     assistant,
     attachment,
     build_secret,
+    child,
     hook,
     make_ctx,
     make_files,
@@ -424,3 +425,91 @@ def test_reasoning_visibility_and_tokens_on_model_call() -> None:
     for bad in ({"reasoning_visibility": "none", "reasoning_tokens": 1}, {"reasoning_tokens": 10}):
         with pytest.raises(GateError, match="null_or_zero_when|at_most"):
             prepare_batch(spec, [{**row, **bad}], tenant_id=TENANT, project_id=PROJECT)
+
+
+SPLIT = {"ephemeral_1h_input_tokens": 15, "ephemeral_5m_input_tokens": 25}
+
+
+def _sync_run(child_usage, child_stop, result_usage):
+    root = [
+        prompt("u1", 1, "p1", "go"),
+        assistant("a1", 2, "m1", [tool_use_block("tuA", "Agent", {"subagent_type": "Explore"})]),
+        tool_result("r1", 4, "tuA", "done", pid="p1", tur={"agentId": "ag1", "isAsync": False, "usage": result_usage}),
+        assistant("a2", 5, "m2", [text_block("end")]),
+        prompt("u2", 6, "p2", "next"),
+    ]
+    kid = [
+        child(prompt("c1", 2.5, "p1", "t"), "ag1"),
+        child(assistant("c2", 3, "mc1", [text_block("one")], stop_reason=None, usage={"input_tokens": 1}), "ag1"),
+        child(assistant("c3", 3.5, "mc2", [text_block("two")], stop_reason=child_stop, usage=child_usage), "ag1"),
+    ]
+    return build(root, {"ag1": kid})
+
+
+def test_subagent_final_call_without_stop_reason_takes_spawn_result_usage() -> None:
+    record = {"input_tokens": 10, "output_tokens": 3, "cache_read_input_tokens": 30, "cache_creation_input_tokens": 40}
+    final = {**record, "output_tokens": 77, "cache_creation": SPLIT}
+    rows, diag = _sync_run(record, None, final)
+    mid, last = by(rows, entity_ref="mc1")[0], by(rows, entity_ref="mc2")[0]
+    assert (last["tokens_output"], last["usage_source"], last["usage_final"], last["cache_creation_1h_tokens"]) == (
+        77,
+        "spawn_result",
+        True,
+        15,
+    )
+    assert (mid["usage_source"], mid["usage_final"], mid["tokens_input"]) == ("record", False, 1)
+    assert diag["spawn_result_corrected"] == 1 and diag["usage_not_final:subagent"] == 1
+    kept, diag = _sync_run(record, None, {**final, "input_tokens": 11})
+    last = by(kept, entity_ref="mc2")[0]
+    assert (last["tokens_output"], last["usage_source"], last["usage_final"]) == (3, "record", False)
+    assert diag["spawn_result_mismatch"] == 1 and diag["usage_not_final:subagent"] == 2
+    done, diag = _sync_run(record, "end_turn", final)
+    assert by(done, entity_ref="mc2")[0]["tokens_output"] == 3 and not diag["spawn_result_corrected"]
+
+
+def test_non_final_usage_is_marked_and_counted() -> None:
+    usage = {"input_tokens": 1, "output_tokens": 2, "cache_read_input_tokens": 3}
+    root = [
+        prompt("u1", 1, "p1", "go"),
+        assistant("a1", 2, "m1", [text_block("streaming")], usage=usage, stop_reason=None),
+        assistant("a2", 3, "m2", [text_block("final")], usage=usage),
+        prompt("u2", 4, "p2", "next"),
+    ]
+    rows, diag = build(root)
+    flags = {r["entity_ref"]: (r["usage_final"], r["usage_source"]) for r in by(rows, observation_type="model_call")}
+    assert flags == {"m1": (False, "record"), "m2": (True, "record")}
+    assert diag["usage_not_final:root"] == 1
+    for r in by(rows, observation_type="model_call"):
+        prepare_batch(load_specs()["telemetry_observations"], [dict(r)], tenant_id=TENANT, project_id=PROJECT)
+    assert all("usage_final" not in r for r in rows if r["observation_type"] != "model_call")
+
+
+def test_model_call_records_requested_model_effort_and_cache_split() -> None:
+    usage = {"input_tokens": 1, "output_tokens": 2, "cache_read_input_tokens": 3, "cache_creation_input_tokens": 40}
+    root = [
+        prompt("u1", 1, "p1", "go"),
+        assistant(
+            "a1",
+            2,
+            "m1",
+            [text_block("x")],
+            usage={**usage, "cache_creation": SPLIT},
+            requestedModel="claude-r[1m]",
+            effort="high",
+        ),
+        assistant("a2", 3, "m2", [text_block("y")], usage=usage),
+        assistant("a3", 4, "m3", [text_block("z")], usage={**usage, "cache_creation": SPLIT}, effort="Not Valid"),
+        assistant("a4", 5, "m4", [text_block("w")], usage={**usage, "cache_creation": {"ephemeral_1h_input_tokens": 41}}),
+        prompt("u2", 6, "p2", "next"),
+    ]
+    rows, diag = build(root)
+    calls = {r["entity_ref"]: r for r in by(rows, observation_type="model_call")}
+    assert (calls["m1"]["requested_model"], calls["m1"]["reasoning_effort"]) == ("claude-r[1m]", "high")
+    assert (calls["m1"]["cache_creation_1h_tokens"], calls["m1"]["cache_creation_5m_tokens"]) == (15, 25)
+    assert not {"requested_model", "reasoning_effort", "cache_creation_1h_tokens"} & set(calls["m2"])
+    assert "reasoning_effort" not in calls["m3"] and calls["m3"]["cache_creation_5m_tokens"] == 25
+    assert "cache_creation_1h_tokens" not in calls["m4"]
+    assert diag["effort_unparsed"] == 1 and diag["cache_split_exceeds_total"] == 1
+    spec = load_specs()["telemetry_observations"]
+    for row in calls.values():
+        prepare_batch(spec, [dict(row)], tenant_id=TENANT, project_id=PROJECT)

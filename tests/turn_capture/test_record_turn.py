@@ -57,6 +57,7 @@ from tests.fixtures.turn_capture_corpus import (
 )
 from tests.fixtures.turn_capture_ducklake import load_specs
 from tests.fixtures.turn_capture_v3_cases import V3_BUILDERS, check_schedule, keyed
+from tests.fixtures.turn_capture_v4_cases import V4_BUILDERS
 
 SECRET_KINDS = ("aws_access", "aws_secret", "aws_session", "anthropic", "github", "github_pat", "bearer")
 
@@ -188,7 +189,18 @@ def test_finalize_equals_virtual_prompt_at_eof() -> None:
         files, _ = load_case(name)
         with case_cap(name):
             final_rows = keyed(capture(files, final=True))
-        closes = [k for k in final_rows if k == ("telemetry_sessions", k[1]) and final_rows[k]["event_kind"] == "close"]
+        root_closes = [
+            k
+            for k, r in final_rows.items()
+            if k[0] == "telemetry_sessions" and r["event_kind"] == "close" and r["entity_ref"] == SID
+        ]
+        closes = sorted(root_closes, key=lambda k: final_rows[k]["source_ordinal"])[-1:]
+        child_closes = [
+            k
+            for k, r in final_rows.items()
+            if k[0] == "telemetry_sessions" and r["event_kind"] == "close" and k not in root_closes
+        ]
+        assert not child_closes, name
         opens = [
             k
             for k, r in final_rows.items()
@@ -205,7 +217,10 @@ def test_finalize_equals_virtual_prompt_at_eof() -> None:
                 )
         with case_cap(name):
             live_rows = {k: v for k, v in keyed(capture(virtual, final=False)).items() if not k[1].startswith("zz-")}
-        assert live_rows == {k: v for k, v in final_rows.items() if k not in closes}, name
+        ended_by_virtual = {k for k, v in live_rows.items() if v.get("event_kind") == "resume" and k not in final_rows}
+        assert {k: v for k, v in live_rows.items() if k not in ended_by_virtual} == {
+            k: v for k, v in final_rows.items() if k not in closes
+        }, name
 
 
 def _grown_files():
@@ -233,7 +248,7 @@ def test_finalize_then_grow_through_resume_re_emits_nothing() -> None:
     assert not any(k[1] == "late#0/tool_call_close" for k in new_keys)
     first_close = ("telemetry_sessions", "a1#0/close")
     assert first_close in old_keys and keyed(first)[first_close]["event_kind"] == "close"
-    assert set(keyed(capture(after, None, final=True))) == (old_keys | new_keys) - {first_close}
+    assert set(keyed(capture(after, None, final=True))) == old_keys | new_keys
     assert capture(after, second.next_cursor, final=True).observations == []
 
 
@@ -345,6 +360,7 @@ def test_new_cases_are_built_from_their_builders() -> None:
         "full_output_omitted_over_cap.json": full_output_omitted_over_cap_files,
         "reasoning_visibility_forms.json": reasoning_forms_files,
         **V3_BUILDERS,
+        **V4_BUILDERS,
     }
     for name, builder in builders.items():
         assert load_case(name)[0] == builder(), name
@@ -516,7 +532,7 @@ def test_finalization_cuts_are_recorded_once_and_survive_a_reset() -> None:
     stale = dataclasses.replace(first.next_cursor, parser_version=PARSER_VERSION - 1)
     re_emitted = capture(files, stale, final=True)
     assert [r["event_kind"] for r in re_emitted.sessions].count("close") == 1 and re_emitted.next_cursor.finalize_cuts == cuts
-    assert PRODUCER_VERSION == "turn-capture-3b" and PARSER_VERSION == 3
+    assert PRODUCER_VERSION == "turn-capture-4" and PARSER_VERSION == 4
 
 
 def test_a_stream_with_no_assistant_reply_emits_no_row_in_any_table() -> None:

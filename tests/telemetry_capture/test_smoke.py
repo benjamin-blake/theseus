@@ -141,6 +141,24 @@ def test_the_synthetic_tree_pins_the_ref_and_spans_all_four_tables(tmp_path: Pat
     assert any(len(r.get("content", "").encode()) > 65536 for r in built.transcripts)
 
 
+def test_synthetic_tree_builds_every_new_column(tmp_path: Path) -> None:
+    root = smoke.write_tree(tmp_path, REF)
+    built = record_turn(SnapshotTree(root), None, project_ref=REF, session_final=True)
+    opens = [r for r in built.sessions if r["event_kind"] == "open" and r["workflow"] != "subagent"]
+    assert len(opens) == 1 and opens[0]["harness_session_key"] == "session_smoke0000"
+    assert (opens[0]["checkout_sha"], opens[0]["checkout_base_sha"], opens[0]["checkout_dirty"]) == ("1" * 40, "2" * 40, False)
+    calls = [r for r in built.observations if r["observation_type"] == "model_call"]
+    assert calls and all(
+        r["requested_model"] == "claude-smoke-1[1m]"
+        and r["reasoning_effort"] == "high"
+        and (r["cache_creation_1h_tokens"], r["cache_creation_5m_tokens"]) == (15, 25)
+        and r["usage_final"] is True
+        for r in calls
+    )
+    corrected = [r for r in calls if r["usage_source"] == "spawn_result"]
+    assert len(corrected) == 1 and corrected[0]["tokens_output"] == 25
+
+
 def test_smoke_passes_against_a_conforming_writer(tmp_path: Path) -> None:
     out: list[str] = []
     writer = Writer()

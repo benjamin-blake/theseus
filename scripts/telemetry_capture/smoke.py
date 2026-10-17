@@ -53,11 +53,15 @@ def _records(sid: str, ref: str, start: datetime) -> tuple[list[dict[str, Any]],
         rec = {"uuid": rec_uuid, "timestamp": stamp(t), "sessionId": sid, "gitBranch": "smoke", "version": "2.1.0"}
         return {**rec, "cwd": "/smoke", **extra}
 
-    def reply(rec_uuid: str, t: float, mid: str, blocks: list[dict[str, Any]], **extra: Any) -> dict[str, Any]:
+    def reply(
+        rec_uuid: str, t: float, mid: str, blocks: list[dict[str, Any]], stop: str | None = "end_turn", **extra: Any
+    ) -> dict[str, Any]:
         usage = {"input_tokens": 10, "output_tokens": 20, "cache_read_input_tokens": 30, "cache_creation_input_tokens": 40}
+        usage["cache_creation"] = {"ephemeral_1h_input_tokens": 15, "ephemeral_5m_input_tokens": 25}
         message: dict[str, Any] = {"id": mid, "type": "message", "role": "assistant", "model": "claude-smoke-1"}
         message["content"] = blocks
-        message.update(stop_reason="end_turn", usage=usage)
+        message.update(stop_reason=stop, usage=usage)
+        extra = {"requestedModel": "claude-smoke-1[1m]", "effort": "high", **extra}
         return base(rec_uuid, t, type="assistant", message=message, requestId="req_" + mid, **extra)
 
     def tool_use(tool_id: str, name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
@@ -69,22 +73,35 @@ def _records(sid: str, ref: str, start: datetime) -> tuple[list[dict[str, Any]],
         return base(rec_uuid, t, type="user", message=message, promptId="p1", toolUseResult=use_result)
 
     command = f'bash "$CLAUDE_PROJECT_DIR/.claude/hooks/session_start_log_turn.sh" --project-ref={ref}'
+    facts = f"checkout={'1' * 40} base={'2' * 40} dirty=false"
+    stderr = f"[session_start_log_turn] capture pin {facts}\n"
     pin = {"type": "hook_success", "hookName": "SessionStart:startup", "hookEvent": "SessionStart", "exitCode": 0}
+    pin["stderr"] = stderr
+    remote = {"type": "remote_session_change", "url": "https://example.invalid/code/session_smoke0000"}
+    spawn_usage = {"input_tokens": 10, "output_tokens": 25, "cache_read_input_tokens": 30, "cache_creation_input_tokens": 40}
+    spawn_usage["cache_creation"] = {"ephemeral_1h_input_tokens": 15, "ephemeral_5m_input_tokens": 25}
     persisted = {"interrupted": False, "persistedOutputPath": f"/elsewhere/tool-results/{SIDECAR}", "stdout": "preview"}
     persisted["persistedOutputSize"] = len(SIDECAR_LINE) * SIDECAR_LINES
     root = [
         base("h1", 0, type="attachment", attachment={**pin, "command": command}),
+        base("rs1", 0.5, type="attachment", attachment=remote),
         base("u1", 1, type="user", promptId="p1", message={"role": "user", "content": "run the smoke"}),
         reply("a1", 2, "m1", [tool_use("tu1", "Bash", {"command": "cat big"})]),
         result("r1", 3, "tu1", "preview", persisted),
         reply("a2", 4, "m2", [tool_use("tuA", "Agent", {"description": "d", "prompt": "p", "subagent_type": "Explore"})]),
-        result("r2", 6, "tuA", "child done", {"agentId": "agent1", "isAsync": False, "status": "completed"}),
+        result(
+            "r2",
+            6,
+            "tuA",
+            "child done",
+            {"agentId": "agent1", "isAsync": False, "status": "completed", "usage": spawn_usage},
+        ),
         reply("a3", 7, "m3", [{"type": "text", "text": "smoke done"}]),
     ]
     child = {"agentId": "agent1", "isSidechain": True}
     children = [
         base("c1", 4.5, type="user", promptId="p1", message={"role": "user", "content": "task"}, **child),
-        reply("c2", 5, "mc1", [{"type": "text", "text": "child work"}], **child),
+        reply("c2", 5, "mc1", [{"type": "text", "text": "child work"}], None, **child),
     ]
     return root, children
 

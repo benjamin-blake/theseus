@@ -210,12 +210,14 @@ def _locked_pass(
     budget: Budget,
     env: Mapping[str, str],
     smoke_ref: str | None,
+    switch_source: str | None,
     client_factory: ClientFactory,
     detach_below: float | None,
     sleep: Callable[[float], None],
     rng: Callable[[], float],
 ) -> PassResult:
     diag: Counter[str] = Counter()
+    diag[f"switch_source:{switch_source or 'none'}"] += 1
     record: dict[str, Any] = {"event": event, "final": final, "at": int(time.time())}
     if state.halt() is not None:
         return _finish(state, record, "halted", diag)
@@ -292,7 +294,7 @@ def run_pass(
     rng: Callable[[], float] = random.random,
 ) -> PassResult:
     """RN-1..RN-8. "off" before any state is touched; "busy" when another pass holds the tree's lock."""
-    mode = switch.capture_mode(env, repo_root)
+    mode, switch_source = switch.switch_mode(env, repo_root)
     if mode == switch.OFF:
         return PassResult("off")
     root_file = Path(transcript_path)
@@ -312,6 +314,7 @@ def run_pass(
             budget=budget,
             env=env,
             smoke_ref=smoke_ref,
+            switch_source=switch_source,
             client_factory=client_factory,
             detach_below=detach_below,
             sleep=sleep,

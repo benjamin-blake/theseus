@@ -8,6 +8,7 @@ exists or the stream's eof closes it (session_final, or a sub-agent's completion
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -46,6 +47,8 @@ KNOWN_ATTACHMENT_TYPES = (
 RESUME_HOOK = "SessionStart:resume"
 COMPACT_HOOKS = ("SessionStart:compact", "PreCompact", "PostCompact")
 BACKGROUND_COMPLETION_TAG = "<task-notification>"
+_NOTICE_STATUS = re.compile(r"<status>(.*?)</status>", re.DOTALL)
+_STATUS_TOKEN = re.compile(r"[a-z_]{1,32}")
 HARNESS_INTERRUPT_SENTINELS = ("[Request interrupted by user]", "[Request interrupted by user for tool use]")
 HARNESS_DENIAL_PREFIXES: tuple[str, ...] = ()
 API_ERROR_FLAG_KEYS = ("isApiErrorMessage",)
@@ -133,6 +136,7 @@ class Stream:
     tool_uses: dict[str, ToolUse] = field(default_factory=dict)
     result_by_id: dict[str, Result] = field(default_factory=dict)
     pre_tool_blocks: dict[str, list[int]] = field(default_factory=dict)
+    resume_ends: dict[int, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -144,6 +148,8 @@ class Spawn:
     close_rec: Rec | None
     close_block: int
     close_result: Result | None
+    notices: list[Rec] = field(default_factory=list)
+    completed_at_boundary: bool = False
 
 
 @dataclass
@@ -274,6 +280,8 @@ def _walk(stream: Stream, closing: bool, diag: Counter[str]) -> None:
     groups = {"resume": False, "compact": False}
     for rec in stream.recs:
         if rec.kind in ("prompt", "assistant"):
+            if groups["resume"]:
+                stream.resume_ends[stream.resumes[-1].line] = rec.line
             groups = {"resume": False, "compact": False}
         if rec.kind == "prompt":
             cur, rec.kind = _open_turn(stream, cur, rec, seen, diag)
@@ -413,7 +421,30 @@ def is_background_completion(rec: Rec, agent_id: str) -> bool:
     return text is not None and text.startswith(BACKGROUND_COMPLETION_TAG) and f"<task-id>{agent_id}</task-id>" in text
 
 
-def _spawns_of(stream: Stream) -> list[Spawn]:
+def notice_status(rec: Rec) -> str | None:
+    """Rule BN-1: the <status> token of a completion notice, "malformed" for anything else in the tag, None without one."""
+    text = _completion_text(rec) or ""
+    if "<status" not in text:
+        return None
+    match = _NOTICE_STATUS.search(text)
+    return match.group(1) if match and _STATUS_TOKEN.fullmatch(match.group(1)) else "malformed"
+
+
+def _background_spawn(stream: Stream, use: ToolUse, agent_id: str, diag: Counter[str]) -> Spawn:
+    notices = [r for r in stream.recs if r.line > use.rec.line and is_background_completion(r, agent_id)]
+    spawn = Spawn(stream.key, use, agent_id, bool(notices), notices[0] if notices else None, 0, None, notices)
+    boundary = next((r for r in stream.resumes if r.line > use.rec.line), None) if stream.key == ROOT else None
+    if boundary is None:
+        return spawn
+    if not notices or notices[0].line > boundary.line:
+        spawn.complete, spawn.completed_at_boundary = True, True
+        diag["background_completed_at_resume"] += 1
+        if notices:
+            diag["notice_after_boundary"] += 1
+    return spawn
+
+
+def _spawns_of(stream: Stream, diag: Counter[str]) -> list[Spawn]:
     out: list[Spawn] = []
     for use in stream.tool_uses.values():
         result = use.result_any
@@ -427,8 +458,7 @@ def _spawns_of(stream: Stream) -> list[Spawn]:
             continue
         agent_id = info["agentId"]
         if info.get("isAsync"):
-            done = next((r for r in stream.recs if r.line > use.rec.line and is_background_completion(r, agent_id)), None)
-            out.append(Spawn(stream.key, use, agent_id, done is not None, done, 0, None))
+            out.append(_background_spawn(stream, use, agent_id, diag))
         else:
             out.append(Spawn(stream.key, use, agent_id, True, result.rec, result.block, result))
     return out
@@ -451,7 +481,7 @@ def parse_tree(tree: TranscriptTree, limits: dict[str, int] | None, final: bool)
     while queue:
         stream = queue.pop(0)
         streams[stream.key] = stream
-        for spawn in _spawns_of(stream):
+        for spawn in _spawns_of(stream, diag):
             if spawn.agent_id not in known or spawn.agent_id in claimed:
                 diag["missing_child_files" if spawn.agent_id not in known else "duplicate_spawns"] += 1
                 continue

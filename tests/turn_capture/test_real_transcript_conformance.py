@@ -95,11 +95,15 @@ class _Walk:
         self.responses: dict[tuple[int, str], dict[str, Any]] = {}
         self.in_group = False
         self.assistant_turns: set[int] = set()
+        self.owner_final: dict[tuple[int, str], bool] = {}
+        self.seg_assistant = False
 
     def attachment(self, d: dict[str, Any]) -> None:
         name = str((d.get("attachment") or {}).get("hookName") or "")
         if name.startswith("SessionStart:resume") and not self.in_group:
             self.in_group, self.cur = True, None
+            self.n["segment_closes"] += self.seg_assistant
+            self.seg_assistant = False
 
     def results(self, blocks: list[Any]) -> None:
         for b in blocks:
@@ -127,10 +131,14 @@ class _Walk:
         if self.cur is None or (message.get("model") == "<synthetic>" and d.get("isApiErrorMessage") is not True):
             return
         self.assistant_turns.add(self.turn)
+        self.seg_assistant = True
         if d.get("isApiErrorMessage") is True:
             return
         usage = message.get("usage")
         self.responses[(self.turn, message["id"])] = usage if isinstance(usage, dict) else {}
+        self.owner_final[(self.turn, message["id"])] = isinstance(message.get("stop_reason"), str) or (
+            d.get("isAbortedMidStream") is True
+        )
         for b in _blocks(d):
             if (
                 isinstance(b, dict)
@@ -141,7 +149,21 @@ class _Walk:
                 self.uses[b["id"]] = self.turn
                 self.n["opens"] += 1
 
-    def finish(self) -> Counter[str]:
+    def corrected_output(self, spawn_usage: dict[str, Any] | None) -> int:
+        """US-3 from the raw parent spawn result: the output-token delta for the first turn's last, non-final response."""
+        keys = [k for k in self.responses if k[0] == 1]
+        if spawn_usage is None or not keys or self.owner_final[keys[-1]]:
+            return 0
+        usage = self.responses[keys[-1]]
+        inputs = ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
+        if not all(type(spawn_usage.get(k)) is int and spawn_usage.get(k) == usage.get(k) for k in inputs):
+            return 0
+        new = spawn_usage.get("output_tokens")
+        return (new if type(new) is int else 0) - (
+            usage.get("output_tokens") if type(usage.get("output_tokens")) is int else 0
+        )
+
+    def finish(self, spawn_usage: dict[str, Any] | None = None) -> Counter[str]:
         if not self.assistant_turns:
             return Counter()
         self.n["due"] = 1
@@ -149,10 +171,11 @@ class _Walk:
         self.n["synthetic"] = sum(1 for t in self.uses if t not in self.answered)
         for col, key in USAGE:
             self.n[col] = sum(u.get(key, 0) for u in self.responses.values() if type(u.get(key, 0)) is int)
+        self.n["tokens_output"] += self.corrected_output(spawn_usage)
         return self.n
 
 
-def walk(records: list[tuple[int, dict[str, Any]]]) -> Counter[str]:
+def walk(records: list[tuple[int, dict[str, Any]]], spawn_usage: dict[str, Any] | None = None) -> Counter[str]:
     w = _Walk()
     for _, d in records:
         kind = d.get("type")
@@ -169,7 +192,7 @@ def walk(records: list[tuple[int, dict[str, Any]]]) -> Counter[str]:
             w.prompt(d)
         else:
             w.assistant(d)
-    return w.finish()
+    return w.finish(spawn_usage)
 
 
 def _stream_files(root: Path) -> dict[str, Path]:
@@ -177,6 +200,18 @@ def _stream_files(root: Path) -> dict[str, Path]:
     for path in sorted((root.parent / root.stem / "subagents").glob("agent-*.jsonl")):
         files[f"{root.stem}:{path.stem[len('agent-') :]}"] = path
     return files
+
+
+def spawn_usages(root: Path) -> dict[str, dict[str, Any]]:
+    """agent id -> the usage dict of its sync spawn result, read from every stream file's raw records."""
+    out: dict[str, dict[str, Any]] = {}
+    for path in _stream_files(root).values():
+        for _, d in own_records(path):
+            info = d.get("toolUseResult") if d.get("type") == "user" else None
+            if isinstance(info, dict) and isinstance(info.get("agentId"), str) and not info.get("isAsync"):
+                if isinstance(info.get("usage"), dict):
+                    out[info["agentId"]] = info["usage"]
+    return out
 
 
 def _keyed(result: Any) -> dict[tuple[str, str], dict[str, Any]]:
@@ -212,7 +247,8 @@ def test_output_reconciles_with_an_independent_raw_walk(runs: list[dict[str, Any
         for stream, path in _stream_files(run["root"]).items():
             records, bad = raw_lines(path)
             malformed += bad
-            want = walk(own_records(path))
+            agent = stream.split(":", 1)[1] if ":" in stream else None
+            want = walk(own_records(path), spawn_usages(run["root"]).get(agent) if agent else None)
             obs = [r for r in result.observations if r["session_ref"] == stream]
             opens = [r for r in obs if r["observation_type"] == "tool_call" and r["event_kind"] == "open"]
             closes = [r for r in obs if r["observation_type"] == "tool_call" and r["event_kind"] == "close"]
@@ -224,6 +260,9 @@ def test_output_reconciles_with_an_independent_raw_walk(runs: list[dict[str, Any
             }  # fmt: skip
             for key, value in got.items():
                 assert value == want[key], f"{tag} stream {_hash(stream)}: {key} produced {value} != raw {want[key]}"
+            if agent is None and want["due"]:
+                session_closes = [r for r in result.sessions if r["event_kind"] == "close" and r["entity_ref"] == stream]
+                assert len(session_closes) == want["segment_closes"] + 1, f"{tag}: segment closes != resume boundaries + eof"
             assert len({r["entity_ref"] for r in closes}) == len(closes), f"{tag}: a tool_call closed twice"
             assert len(closes) == want["closes"] + want["synthetic"], (
                 f"{tag} stream {_hash(stream)}: closes != in-span + synthetic"
@@ -467,6 +506,7 @@ def test_drift_dashboard(runs: list[dict[str, Any]]) -> None:
     unknown: Counter[str] = Counter()
     outcomes: Counter[str] = Counter()
     stops: Counter[str] = Counter()
+    null_stops: Counter[str] = Counter()
     workflows: Counter[str] = Counter()
     for run in runs:
         result = run["result"]
@@ -475,12 +515,15 @@ def test_drift_dashboard(runs: list[dict[str, Any]]) -> None:
             r["outcome"] for r in result.observations if r["observation_type"] == "tool_call" and r["event_kind"] == "close"
         )
         workflows.update(r["workflow"] for r in result.sessions if r["event_kind"] == "open")
-        for _, d in raw_lines(run["root"])[0]:
-            reason = (d.get("message") or {}).get("stop_reason") if d.get("type") == "assistant" else None
-            stops[str(reason)] += d.get("type") == "assistant"
+        for stream, path in _stream_files(run["root"]).items():
+            for _, d in raw_lines(path)[0]:
+                is_assistant = d.get("type") == "assistant"
+                reason = (d.get("message") or {}).get("stop_reason") if is_assistant else None
+                stops[str(reason)] += is_assistant
+                null_stops["subagent" if ":" in stream else "root"] += is_assistant and reason is None
         print(f"\nconformance: tree {_hash(run['sid'])}: parsed in {run['secs']:.2f}s, diagnostics {dict(result.diagnostics)}")
     print(
         f"\nconformance dashboard: unknown types {dict(unknown)}; outcomes {dict(outcomes)}; "
-        f"stop_reasons {dict(stops)}; workflows {dict(workflows)}"
+        f"stop_reasons {dict(stops)}; null stop_reason by stream kind {dict(null_stops)}; workflows {dict(workflows)}"
     )
     assert runs

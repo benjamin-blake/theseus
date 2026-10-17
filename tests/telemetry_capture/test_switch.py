@@ -131,3 +131,87 @@ def test_switch_off_keeps_every_hook_inert(tmp_path: Path, capfd: pytest.Capture
     assert sorted(p.name for p in root.parent.iterdir()) == [root.name]
     out, err = capfd.readouterr()
     assert (out, err) == ("", "")
+
+
+GIT_ID = ["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"]
+
+
+def _git(root: Path, *args: str) -> str:
+    done = subprocess.run(["git", *GIT_ID, "-C", str(root), *args], capture_output=True, text=True, check=True, timeout=30)
+    return done.stdout.strip()
+
+
+def _git_repo(tmp_path: Path, committed: str | None, working: str | None) -> Path:
+    """A git repository whose main branch commits *committed* (None: no switch file) and whose tree holds *working*."""
+    root = tmp_path / "gitrepo"
+    root.mkdir(parents=True)
+    _git(root, "init", "-q", "-b", "main")
+    (root / "config" / "telemetry").mkdir(parents=True)
+    path = root / "config" / "telemetry" / "capture.yaml"
+    if committed is not None:
+        path.write_text(committed, encoding="utf-8")
+    (root / "README").write_text("x\n", encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "base")
+    if working is not None:
+        path.write_text(working, encoding="utf-8")
+    elif path.exists():
+        path.unlink()
+    return root
+
+
+def _origin(root: Path) -> None:
+    _git(root, "update-ref", "refs/remotes/origin/main", _git(root, "rev-parse", "main"))
+
+
+def test_switch_follows_main_not_the_session_checkout(tmp_path: Path) -> None:
+    on_main = _git_repo(tmp_path / "a", "enabled: true\n", "enabled: false\n")
+    _origin(on_main)
+    assert switch.switch_state(on_main) == (True, "origin_main")
+    assert switch.capture_mode(REMOTE, on_main) == switch.ON
+    off_main = _git_repo(tmp_path / "b", "enabled: false\n", "enabled: true\n")
+    _origin(off_main)
+    assert switch.switch_state(off_main) == (False, "origin_main")
+    assert switch.capture_mode(REMOTE, off_main) == switch.OFF
+    missing = _git_repo(tmp_path / "c", None, "enabled: true\n")
+    _origin(missing)
+    assert switch.switch_state(missing) == (False, "origin_main")
+    broken = _git_repo(tmp_path / "d", ":\n- {", "enabled: true\n")
+    _origin(broken)
+    assert switch.switch_state(broken) == (False, "origin_main")
+    assert switch.switch_mode(REMOTE, on_main) == (switch.ON, "origin_main")
+    assert switch.switch_mode({}, on_main) == (switch.OFF, None)
+    assert switch.switch_mode(SMOKE, on_main) == (switch.SMOKE, None)
+    assert switch.switch_mode({**REMOTE, "OTL_TURN_CAPTURE": "off"}, on_main) == (switch.OFF, None)
+
+
+def test_switch_falls_back_to_local_main_then_the_working_tree(tmp_path: Path) -> None:
+    local = _git_repo(tmp_path / "a", "enabled: true\n", "enabled: false\n")
+    assert switch.switch_state(local) == (True, "main")
+    _git(local, "checkout", "-q", "-b", "work")
+    _git(local, "branch", "-m", "main", "trunk")
+    assert switch.switch_state(local) == (False, "working_tree")
+    plain = repo(tmp_path / "p", "enabled: true\n")
+    assert switch.switch_state(plain) == (True, "working_tree")
+
+
+def test_switch_read_failure_never_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = _git_repo(tmp_path / "a", "enabled: true\n", "enabled: false\n")
+    _origin(root)
+    inner = root / "config"
+    assert switch.switch_state(inner) == (False, "working_tree")
+    real_run = subprocess.run
+
+    def timeout(*args, **kw):
+        raise subprocess.TimeoutExpired("git", 2)
+
+    monkeypatch.setattr(switch.subprocess, "run", timeout)
+    assert switch.switch_state(root) == (False, "working_tree")
+
+    def absent(*args, **kw):
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(switch.subprocess, "run", absent)
+    assert switch.switch_state(repo(tmp_path / "b", "enabled: true\n")) == (True, "working_tree")
+    monkeypatch.setattr(switch.subprocess, "run", real_run)
+    assert switch.switch_state(tmp_path / "nowhere") == (False, "working_tree")
