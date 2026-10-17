@@ -155,7 +155,7 @@ scope:
   action: Modify
   purpose: 'Comment-only: the backend comment''s "bucket/key/region/encrypt come from -backend-config=backend-sandbox.hcl"
     becomes bucket/key/encrypt from that file and the region from AWS_REGION in CI or a -backend-config region from config/aws-region
-    by hand. No code change, empty plan.'
+    by hand, and the one-time migration hint gains the same region flag. No code change, empty plan.'
 - file: scripts/checks/ci_guards/validate_project_region.py
   action: Create
   purpose: 'Registered fast-tier check, filesystem-only (Decision 208). Rules: (1) config/aws-region is one valid region id;
@@ -272,8 +272,8 @@ verification_plan:
   phase: pre-deploy
   action: The guard's rules each fail on their red tree and pass on the real repository.
   command: bin/venv-python -m pytest tests/checks/ci_guards/test_validate_project_region.py -q
-  expected: Exit 0; every red case is detected, the Neon id and a comment-only mention stay green, and test_real_tree_passes
-    passes with a non-zero examined count.
+  expected: Exit 0; every red case is detected (comments count, in .github/ files and in HCL alike), the Neon id stays green,
+    and test_real_tree_passes passes with a non-zero examined count.
   fix_if: 'A red case passing means the rule is vacuous: fix the check, never the case. test_real_tree_passes failing names
     the file and job still holding a literal or an unwired sign-in.'
   hermetic: false
@@ -437,7 +437,7 @@ verification_plan:
   action: 'Merge runs on main at $MERGE_SHA are green: ci.yml (main-validate, trailer jobs), rec-autoclose, and terraform-apply-sandbox''s
     push run, which applied no changes and wrote a green convergence record at the merge commit.'
   command: 'test -n "$MERGE_SHA" && export MERGE_SHA && aws s3 cp s3://agent-platform-data-lake/convergence/personal/sandbox.json
-    - --profile agent_platform_admin | bin/venv-python -c "import json,os,sys; r=json.load(sys.stdin); ok=r.get(''status'')==''green''
+    - --profile agent_platform | bin/venv-python -c "import json,os,sys; r=json.load(sys.stdin); ok=r.get(''status'')==''green''
     and r.get(''commit_sha'')==os.environ[''MERGE_SHA''] and not any(k in r for k in (''pending_gated'',''pending_codification'',''infra_error''));
     print(''convergence green at merge'', ok); sys.exit(0 if ok else 1)" && echo ''VIA MCP: mcp__github__actions_list(method="list_workflow_runs",
     resource_id="ci.yml" | "rec-autoclose.yml" | "terraform-apply-sandbox.yml", workflow_runs_filter={"event": "push"}) for
@@ -455,9 +455,11 @@ verification_plan:
     the merge time, conclusion success'''
   expected: Four success conclusions on runs created after the merge.
   fix_if: A failure at the aws-region or sign-in step is this change; fix forward. Deploy and dispatch-only workflows (deploy-*,
-    reconcile, provider-mirror-seed, tf-gated-apply-prototype) and the weekly or monthly schedules (backlog-health, dedup-probe,
-    ci-rca-inactivity-sweep, cost-reconciliation) are proven structurally by the guard and live on their next natural run;
-    list them as that residual in the closing comment and tell the coordinator, which tracks their first runs.
+    reconcile, provider-mirror-seed, tf-gated-apply-prototype) the weekly or monthly schedules (backlog-health, dedup-probe,
+    ci-rca-inactivity-sweep, cost-reconciliation), ci-rca's rca job (first run on the next watched-workflow failure on main;
+    ci-rca never watches itself, so a break there files nothing) and terraform-apply-sandbox's gated-apply job (first guard-routed
+    merge) are proven structurally by the guard and live on their next natural run; list them as that residual in the closing
+    comment and tell the coordinator, which tracks their first runs.
   hermetic: false
 - step: 14
   phase: post-deploy
@@ -680,7 +682,7 @@ context:
   NOTE 100 (repository variable rejected: it reaches CI only and would be a second source), SPIRIT 202 (the two Terraform
   defaults stay as guard-pinned mirrors; retiring them is in rec-4404). CITE: 202, 181, 162, 170, 169, 126, 77, 177. Decisions
   triaged: 171 of 171. Roadmap items intersected: 10; CONFLICT: 0; RELATED: 10.'
-- 'gates: decision-scout=FLAGS_FOUND (resolved as above); plan-critique=PENDING'
+- 'gates: decision-scout=FLAGS_FOUND (resolved as above); plan-critique=REVISE r1-r3, all fixed; r4 pending'
 - 'Approval: Benjamin in the planning thread, 2026-10-17: fork 2 at 17:03Z ("I agree with your recommendation for 2"); forks
   1, 3 and the APPROVED texts at 17:15Z ("I agree with your recommendations"); 17:20Z he acknowledged the restatement that
   this is "write the plan" with the wording verbatim. Variance: the date only. Fact-check of every cited clause: fact-check.md
@@ -717,7 +719,7 @@ context:
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
-- 'Only the plan-cited decision sections read: 202, 181, 154, 162, 166, 77, 126'
+- 'Only the plan-cited decision sections read: 202, 181, 154, 162, 166, 170, 169, 177, 77, 126'
 - All files in scope located and readable; reconcile.yml and terraform-apply-sandbox.yml measured at 534 and 547 effective
   lines
 - Start conditions in context hold (rec-4372 build merged, personal-release converged)
