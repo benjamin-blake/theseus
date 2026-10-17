@@ -128,6 +128,14 @@ scope:
   action: Modify
   purpose: 'job gate-smoke-test has no checkout today: add actions/checkout@v7 and then the aws-region step before the sign-in,
     which takes env.AWS_REGION. Common rule: no comment or scalar in the file contains an AWS region id afterwards.'
+- file: .github/workflows/telemetry-golden-replay.yml
+  action: Modify
+  purpose: 'Added by amendment (the file landed on main in #1551 after approval; found by the build). Job replay checks out
+    the triggering deploy''s commit (github.event.workflow_run.head_sha), which may predate config/aws-region, so as in ci-rca
+    insert two unnamed steps BEFORE that checkout, `- uses: actions/checkout@v7` (default ref) and `- uses: ./.github/actions/aws-region`;
+    the sign-in takes env.AWS_REGION; delete the job-level env block (its only entry is AWS_DEFAULT_REGION); the aws lambda
+    get-function-url-config flag becomes --region "$AWS_REGION" (same line count; the resolve-ducklake-serving-function-urls
+    r3_workflows ceiling of 11 is unchanged). Common rule: no comment or scalar in the file contains an AWS region id afterwards.'
 - file: terraform/bootstrap/main.tf
   action: Modify
   purpose: Delete the region line from the backend "s3" block; the S3 backend then reads AWS_REGION or an init-time -backend-config
@@ -201,6 +209,12 @@ scope:
   action: Modify
   purpose: 'The reserved-session-name red case''s mutation anchors move to the new sign-in text (aws-region: ${{ env.AWS_REGION
     }}); the assertion and every other case are unchanged (no weakening, Decision 181).'
+- file: tests/test_telemetry_golden_replay_workflow.py
+  action: Modify
+  purpose: 'Added by amendment. test_permissions_role_masking_and_checkout selects the checkout whose ref carries workflow_run.head_sha
+    instead of the first checkout, keeping its fetch-depth and ref assertions unchanged, and gains three assertions: the job''s
+    first step is a checkout with no ref or path, its second step uses ./.github/actions/aws-region, and the sign-in''s aws-region
+    is ${{ env.AWS_REGION }}. Every other test is unchanged (Decision 181: no weakened assertion).'
 - file: terraform/bootstrap/CLAUDE.md
   action: Modify
   purpose: |-
@@ -272,8 +286,10 @@ acceptance_criteria:
 verification_plan:
 - step: 1
   phase: pre-deploy
-  action: The guard's rules each fail on their red tree and pass on the real repository.
-  command: bin/venv-python -m pytest tests/checks/ci_guards/test_validate_project_region.py -q
+  action: The guard's rules each fail on their red tree and pass on the real repository; the golden replay workflow test accepts
+    the default-ref checkout and region step ahead of its head_sha checkout.
+  command: bin/venv-python -m pytest tests/checks/ci_guards/test_validate_project_region.py tests/test_telemetry_golden_replay_workflow.py::test_permissions_role_masking_and_checkout
+    -q
   expected: Exit 0; every red case is detected (comments count, in .github/ files and in HCL alike), the Neon id stays green,
     and test_real_tree_passes passes with a non-zero examined count.
   fix_if: 'A red case passing means the rule is vacuous: fix the check, never the case. test_real_tree_passes failing names
@@ -458,10 +474,11 @@ verification_plan:
   expected: Four success conclusions on runs created after the merge.
   fix_if: A failure at the aws-region or sign-in step is this change; fix forward. Deploy and dispatch-only workflows (deploy-*,
     reconcile, provider-mirror-seed, tf-gated-apply-prototype) the weekly or monthly schedules (backlog-health, dedup-probe,
-    ci-rca-inactivity-sweep, cost-reconciliation), ci-rca's rca job (first run on the next watched-workflow failure on main;
-    ci-rca never watches itself, so a break there files nothing) and terraform-apply-sandbox's gated-apply job (first guard-routed
-    merge) are proven structurally by the guard and live on their next natural run; list them as that residual in the closing
-    comment and tell the coordinator, which tracks their first runs.
+    ci-rca-inactivity-sweep, cost-reconciliation), telemetry-golden-replay (daily, and after each DuckLake deploy), ci-rca's
+    rca job (first run on the next watched-workflow failure on main; ci-rca never watches itself, so a break there files nothing)
+    and terraform-apply-sandbox's gated-apply job (first guard-routed merge) are proven structurally by the guard and live
+    on their next natural run; list them as that residual in the closing comment and tell the coordinator, which tracks their
+    first runs.
   hermetic: false
 - step: 14
   phase: post-deploy
@@ -608,6 +625,12 @@ test_obligations:
   verification_step: 3
   test_selector: tests/checks/ci_guards/test_validate_project_region.py::test_real_tree_passes
   red_green_expectation: red before (literal regions, unwired sign-ins), green after
+- source: .github/workflows/telemetry-golden-replay.yml
+  behavior: Every sign-in takes its region from the aws-region action (or reconcile's resolve-target output) and no region
+    literal or region env entry remains.
+  verification_step: 3
+  test_selector: tests/checks/ci_guards/test_validate_project_region.py::test_real_tree_passes
+  red_green_expectation: red before (literal regions, unwired sign-ins), green after
 - source: terraform/personal/main.tf
   behavior: 'Comment-only: the backend comment names the region source; no code changes.'
   verification_step: 3
@@ -676,8 +699,8 @@ constraints:
 - 'Decision 101: all evidence counts-only; no account id, ARN or ExternalId in any output, comment or commit; plan text is
   discarded.'
 - 'Approved texts land verbatim (variance: the Decision 202 date only; folded-scalar wrapping in the contract).'
-- 'Every existing test keeps passing; only the liveness test''s mutation anchors move with the new text (Decision 181: no
-  weakened assertion).'
+- 'Every existing test keeps passing; only the liveness test''s mutation anchors and the golden replay test''s checkout selector
+  move with the new shape (Decision 181: no weakened assertion).'
 - Every scope file stays under 500 SLOC (Decision 128). No rescue agents or workaround loops (Decision 55).
 context:
 - 'Decision-scout: FLAGS_FOUND -- WARN 154 (answered: RED_SHA jobs take the region via resolve-target''s output; clause 2
@@ -685,8 +708,8 @@ context:
   NOTE 100 (repository variable rejected: it reaches CI only and would be a second source), SPIRIT 202 (the two Terraform
   defaults stay guard-pinned mirrors; rec-4404). CITE: 202, 181, 162, 170, 169, 126, 77, 177. Decisions triaged: 171 of 171.
   Roadmap items intersected: 10; CONFLICT: 0; RELATED: 10.'
-- 'gates: decision-scout=FLAGS_FOUND (resolved as above); plan-critique=PROCEED after 4 rounds (r1-r3 REVISE, fixed; r4 on
-  the escalation card''s recommended option; its notes folded in)'
+- 'gates: decision-scout=FLAGS_FOUND (resolved as above); plan-critique=PROCEED after 4 rounds (r4 on the escalation card''s
+  option); amendment critique pending'
 - 'Approval: Benjamin in the planning thread, 2026-10-17: fork 2 at 17:03Z ("I agree with your recommendation for 2"); forks
   1, 3 and the APPROVED texts at 17:15Z ("I agree with your recommendations"); 17:20Z he acknowledged the restatement that
   this is "write the plan" with the wording verbatim. Variance: the date only. Fact-check: fact-check.md.'
@@ -706,13 +729,13 @@ context:
   no resource change, so there is no human-directed apply walk: the behavioural acceptance (Decision 48) is steps 12-14 (merge
   push runs, the sandbox no-change apply''s green record, the first scheduled runs, rec-4067''s closure), and its evidence
   is a counts-only comment on the merged PR naming $MERGE_SHA and the run URLs.'
-- 'Start conditions: the rec-4372 build has merged (#1536, 2026-10-17; re-measured after it: 534 / 547 / 356 effective lines,
-  56 literals), and personal-release''s forget has converged with its post-merge steps done (its own VP commands init terraform/bootstrap
-  with no region, and its freeze bars other terraform/personal merges). No other open terraform/personal PR at merge. Bare
-  inits of the three roots fail loudly after this merges: PLAN-oidc-owner-segment-prestage, PLAN-terraform-github-state-reconcile
-  (build PR #1534, which also edits terraform/github/CLAUDE.md next to the approved step-3 text) and PLAN-bootstrap-self-access-parsed-guards
-  (plan PR #1538, VP 10, 11, 13); the build lists these to the coordinator before merging. Related-work (ci_rca rec-4372,
-  open at planning, source_file terraform-apply-sandbox.yml): same-file condition met; its fix lands first.'
+- 'Start conditions: the rec-4372 build has merged (#1536, 2026-10-17; re-measured after it: 534 / 547 / 356 effective lines;
+  59 literal lines in 20 .github files with #1551''s workflow), and personal-release''s forget has converged with its post-merge
+  steps done (its own VP commands init terraform/bootstrap with no region, and its freeze bars other terraform/personal merges).
+  No other open terraform/personal PR at merge. Bare inits of the three roots fail loudly after this merges: PLAN-oidc-owner-segment-prestage,
+  PLAN-terraform-github-state-reconcile (build PR #1534, which also edits terraform/github/CLAUDE.md next to the approved
+  step-3 text) and PLAN-bootstrap-self-access-parsed-guards (plan PR #1538, VP 10, 11, 13); the build lists these to the coordinator
+  before merging. Related-work rec-4372 (same file) closed by #1536.'
 - 'rec-4067''s acceptance: its first grep clause is vacuous today (the nested quotes drop the literal''s quotes); the build
   strengthens it to step 3''s command before the PR (Decision 181 allows strengthening only).'
 - 'CODEOWNERS: Benjamin''s code-owner approval is required (terraform-*.yml, reconcile.yml, terraform/bootstrap/, terraform/github/).
@@ -736,8 +759,9 @@ execution_steps:
 - Create config/aws-region and .github/actions/aws-region (action.yml, resolve.sh) as scoped; step 2 green except the build-ducklake-artifacts
   wiring node.
 - Create validate_project_region, its manifest Entry and its taxonomy row; step 1 green except test_real_tree_passes.
-- Edit the 18 workflows and build-ducklake-artifacts/action.yml to the scoped shapes (ci-rca's default-ref checkout first);
-  update the liveness test's anchors; never write a region id in a comment.
+- Edit the 19 workflows and build-ducklake-artifacts/action.yml to the scoped shapes (ci-rca's and telemetry-golden-replay's
+  default-ref checkout first); update the liveness test's anchors and the golden replay test's checkout selector; never write
+  a region id in a comment.
 - Edit the three backends and the neon_region_id description; terraform fmt.
 - 'Land the APPROVED texts verbatim: the Decision 202 Update paragraph (date = the planned merge date; re-date if the merge
   slips), the two CLAUDE.md edits and the cc-web contract (state_location, referenced_repo_paths, amendment_log); regenerate
