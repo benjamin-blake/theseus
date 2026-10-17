@@ -2,6 +2,53 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 222: The smoke catalog's owner-login table step may add a declared nullable column an existing telemetry table lacks (amends Decision 216 clauses 2 and 3) (Decided)
+
+```yaml
+number: 222
+status: Decided
+decided_date: "2026-10-17"
+amends: [216]
+significance:
+  value: numbered_decision
+  justification: "Widens Decision 216 cl.2's ratified create-if-absent DDL scope and cl.3's smoke carve-out from creating tables to adding columns; Decision 216's own justification records that an amendment_forms annotation cannot widen a ratified scope or carve-out (the Decision 204 cl.4 precedent), and no contract owns cross-function DDL scope."
+```
+
+**Status:** Decided
+**Date:** 2026-10-17
+**Warehouse ID:** dec-222 (per Decision 84 backfill)
+
+**Problem:** Telemetry contracts gain columns (PLAN-telemetry-column-additions: the session provenance and model_call usage columns the slice 4 review found missing), but create_telemetry_tables only creates absent tables and its drift check refuses any column difference, so a contract column add reds the deploy's maintenance-smoke stage and telemetry gate. The only other path is an admin drop of the smoke tables, which loses the captured sessions and puts a human in the deploy path.
+
+**Decision:**
+1. On the disposable smoke catalog, create_telemetry_tables also adds, under the owner login and inside its one transaction, every declared column an existing telemetry event table lacks, provided the contract leaves it optional (nullable, with no not-null or conditional-requiredness rule): ALTER TABLE ADD COLUMN, declared type, no default. It is non-destructive, additive-only and confined to the smoke catalog, so agent-autonomous under Decision 143 cl.3 as Decision 216 cl.2 is. Any other drift -- a live column the contract does not declare, a missing NOT NULL column, a partition drift, a half-present dimension pair, any drift on a dimension or counter table -- still fails loud before any DDL. It never drops, renames or retypes a column and writes no row; Decision 143 cl.2's dispatch set is unchanged.
+2. A telemetry column ships contract first, as a nullable field_add, through the governed deploy, and no producer emits it before that deploy is green: the writer refuses undeclared columns (Decision 210 cl.4 applied to columns).
+3. On a production telemetry catalog (slice 2c onward) adding a column stays an admin step under the owner login (Decision 216 cl.3); the telemetry-schema-churn condition keeps counting production changes only.
+
+**Rationale:** A nullable addition is the one schema change that keeps every stored row valid and every reader and writer path unchanged. DuckLake supports ADD COLUMN (the ops precedent, ducklake_tables.reconcile_table_columns) and owner ALTERs keep the scoped login's access through default privileges (Decision 216's measurement, re-run here). Rejected: an admin drop and re-create of the smoke tables; a JSON metadata column (values unchecked at write; the operator's choice, 2026-10-17); a separate maintenance verb (widens the exact dispatch set for nothing).
+
+**Coverage (Decision 181 cl.2):** the additive leg and its refusals -- tests/common/test_ducklake_telemetry_provision.py (fast tier, graduated); DuckLake's ADD COLUMN on a partitioned telemetry table with rows -- tests/common/test_ducklake_telemetry_column_add_integration.py, run before merge, an unenforced CI residual until rec-4071; the scoped login after an owner ADD COLUMN -- tests/common/test_ducklake_telemetry_catalog_ownership.py, the same residual; the live smoke catalog -- the maintenance-smoke step's added list and the telemetry gate's exact drift check on every deploy; clause 2's ordering -- the writer's undeclared-column 422 schema_gate is the loud backstop, and the ordering itself is a coordinator- and instruction-enforced residual (production additions: rec-4316).
+
+```yaml reversal-conditions
+decision: 222
+review_by: 2027-04-30
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: ducklake-alter-breaks-table
+    kind: manual
+    description: "A DuckLake version's ADD COLUMN corrupts, blocks or re-partitions a telemetry table: re-decide clause 1."
+  - id: change-beyond-additive
+    kind: manual
+    description: "A telemetry contract needs a column renamed, retyped or dropped: a new migration Decision, never this clause."
+  - id: production-additive-path
+    kind: manual
+    description: "Slice 2c needs CI to add columns to a production catalog: re-decide clause 3 together with rec-4316."
+```
+
+**Related:** Decision 216, 143, 213, 210, 204, 126, 55, 177, 181, 101.
+
+---
+
 ## Decision 221: Recursive self-improvement is proven against a judge the loop cannot edit -- three metric layers, a frozen control arm, pre-registration and public receipts on the designed feedback loop (Decided)
 
 ```yaml
@@ -325,6 +372,8 @@ conditions:
 ```
 
 **Related:** Decision 143, 213, 126, 204, 81, 107, 55, 177, 181, 101.
+
+[Amendment 2026-10-17, Decision 222: cl.2 and cl.3 also cover adding declared nullable columns on the smoke catalog.]
 
 ---
 
@@ -5323,6 +5372,8 @@ Decision 55 (loud-failure / no-workaround doctrine -- the split enforces the bou
 rather than papering over it with a guard).
 
 [Amendment 2026-10-14, Decision 216: cl.2's dispatch set gains create_telemetry_tables, create-only on the disposable smoke catalog.]
+
+[Amendment 2026-10-17, Decision 222: create_telemetry_tables may also add declared nullable columns on the smoke catalog; dispatch set unchanged.]
 
 ---
 

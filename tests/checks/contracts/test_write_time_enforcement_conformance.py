@@ -87,7 +87,17 @@ SCENARIOS: dict[str, list[dict[str, Any]]] = {
         }  # fmt: skip
     ],
     "telemetry_sessions": [
-        _session("s#0", event_kind="open", entity_ref="sess", workflow="implement", execution_attempt=1),
+        _session(
+            "s#0",
+            event_kind="open",
+            entity_ref="sess",
+            workflow="implement",
+            execution_attempt=1,
+            harness_session_key="session_01AbC",
+            checkout_sha="a" * 40,
+            checkout_base_sha="b" * 40,
+            checkout_dirty=False,
+        ),  # fmt: skip
         _session("s#1", event_kind="close", entity_ref="sess", outcome="success"),
         _session(
             "s#2",
@@ -114,7 +124,13 @@ SCENARIOS: dict[str, list[dict[str, Any]]] = {
             tokens_input=1,
             tokens_output=2,
             tokens_cache_read=0,
-            tokens_cache_creation=0,
+            tokens_cache_creation=5,
+            cache_creation_1h_tokens=3,
+            cache_creation_5m_tokens=2,
+            usage_final=True,
+            usage_source="record",
+            requested_model="claude-opus-5-5",
+            reasoning_effort="xhigh",
             billing_shape="metered_marginal",
             reasoning_visibility="full",
             reasoning_tokens=1,

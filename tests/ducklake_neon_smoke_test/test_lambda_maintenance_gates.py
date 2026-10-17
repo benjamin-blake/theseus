@@ -329,7 +329,13 @@ _CLEAN_OWNERSHIP = {
     "scoped_create_on_schema": False,
     "scoped_create_on_public": False,
 }
-_CREATE_OK = {"ok": True, "tables": [f"t{i}" for i in range(9)], "created": ["t1", "t2"], "ownership": _CLEAN_OWNERSHIP}
+_CREATE_OK = {
+    "ok": True,
+    "tables": [f"t{i}" for i in range(9)],
+    "created": ["t1", "t2"],
+    "added": [],
+    "ownership": _CLEAN_OWNERSHIP,
+}
 
 
 def _create_gate(monkeypatch, resp):
@@ -348,7 +354,7 @@ def test_create_telemetry_gate_passes_on_a_clean_report(monkeypatch, capsys):
     seen = _create_gate(monkeypatch, _Resp(200, _CREATE_OK))
     smoke.lambda_maintenance_create_telemetry()
     out = capsys.readouterr().out
-    assert out.strip() == "MAINTENANCE_CREATE_TELEMETRY OK created=2 foreign_owned=0 scoped_create=false"
+    assert out.strip() == "MAINTENANCE_CREATE_TELEMETRY OK created=2 added=0 foreign_owned=0 scoped_create=false"
     assert seen == {"role": "maintenance_smoke", "payload": {"action": "create_telemetry_tables"}}
     assert "fake-url" not in out
 
@@ -408,6 +414,25 @@ def test_create_telemetry_not_ok_fails(monkeypatch, resp):
 def test_create_telemetry_wrong_table_count_fails(monkeypatch):
     _create_gate(monkeypatch, _Resp(200, {**_CREATE_OK, "tables": ["t"]}))
     with pytest.raises(core.SmokeTestFailure, match="nine telemetry tables"):
+        smoke.lambda_maintenance_create_telemetry()
+
+
+def test_create_telemetry_gate_prints_added_count(monkeypatch, capsys):
+    added = ["telemetry_sessions.checkout_sha", "telemetry_observations.usage_final", "telemetry_observations.requested_model"]
+    _create_gate(monkeypatch, _Resp(200, {**_CREATE_OK, "added": added}))
+    smoke.lambda_maintenance_create_telemetry()
+    out = capsys.readouterr().out
+    assert out.strip() == "MAINTENANCE_CREATE_TELEMETRY OK created=2 added=3 foreign_owned=0 scoped_create=false"
+    assert not any(part in out for name in added for part in name.split("."))
+
+
+@pytest.mark.parametrize("added", ["absent", None, "telemetry_sessions.checkout_sha", [1]])
+def test_create_telemetry_gate_fails_without_an_added_list(monkeypatch, added):
+    body = {k: v for k, v in _CREATE_OK.items() if k != "added"}
+    if added != "absent":
+        body["added"] = added
+    _create_gate(monkeypatch, _Resp(200, body))
+    with pytest.raises(core.SmokeTestFailure, match="did not list added columns"):
         smoke.lambda_maintenance_create_telemetry()
 
 

@@ -399,6 +399,54 @@ fields:
     semantics: "NULL when the provider did not report it; never a local estimate."
     populated_by: the producer, at the model_call point event.
     dq_intent: {at_most: tokens_output, null_or_zero_when: {reasoning_visibility: [none]}}
+  usage_final:
+    type: bool
+    iceberg_type: boolean
+    nullable: true
+    description: "Whether this model_call's four token classes are the call's final usage."
+    semantics: "true when the source recorded the call as finished (Claude Code: the response record carries a stop_reason) or a final source replaced the record's usage (usage_source spawn_result); false marks the four classes as a lower bound, a snapshot taken while the response was still streaming (rec-4354), so a sum over such rows undercounts. NULL when the producer does not say (claude_code before parser_version 4). Set on model_call points only. Coverage (Decision 181 cl.2): model_call-only is not write-enforced (the grammar's null_or_zero_when reads false as 0); the claude_code producer is pinned by its tests (PLAN-telemetry-capture-producer-fixes), every other producer is an unenforced residual owned by rec-4028, and the write-time leg is owned by rec-4408."
+    populated_by: the producer, at the model_call point event.
+    dq_intent: {}
+  usage_source:
+    type: str
+    iceberg_type: string
+    nullable: true
+    description: "Where this model_call's token classes came from: record | spawn_result."
+    semantics: "record: the call's own source record. spawn_result: a sync sub-agent's last call whose own record was not final, taken from the parent's spawn result, which carries that call's final usage; used only when its three input classes equal the record's. Set on model_call points only; NULL when the producer does not say."
+    populated_by: the producer, at the model_call point event.
+    dq_intent: {accepted_values: {values: [record, spawn_result]}}
+  requested_model:
+    type: str
+    iceberg_type: string
+    nullable: true
+    description: "The model id the caller requested for this call, when the harness records it (Claude Code: requestedModel, e.g. claude-opus-5-5[1m])."
+    semantics: "model stays the id that served the call (Claude Code: message.model). Claude Code's own per-model usage ledger is keyed by the requested id, so per-model reconciliation joins on this column. NULL when not recorded."
+    populated_by: the producer, at the model_call point event.
+    dq_intent: {}
+  reasoning_effort:
+    type: str
+    iceberg_type: string
+    nullable: true
+    description: "The reasoning-effort setting in force for this call, when the harness records it (Claude Code: effort, e.g. xhigh)."
+    semantics: "A confounder for any before/after comparison of model behaviour. The set is open; a closed set would be declared here (Decision 210 cl.3). NULL when not recorded."
+    populated_by: the producer, at the model_call point event.
+    dq_intent: {pattern: '^[a-z][a-z0-9_-]{0,31}$'}
+  cache_creation_1h_tokens:
+    type: int
+    iceberg_type: bigint
+    nullable: true
+    description: "Provider-reported cache-write tokens of this model_call with a 1-hour cache lifetime: a subset of tokens_cache_creation, never a fifth billing class."
+    semantics: "Cache writes are priced by lifetime, so cost at read needs the split. NULL when the provider did not report it; never a local estimate. The pair's sum is at most tokens_cache_creation; only each column's own bound is write-enforced, because the row-rule grammar has no sum leg. Coverage (Decision 181 cl.2): the claude_code producer is pinned by its tests (PLAN-telemetry-capture-producer-fixes); every other producer is an unenforced residual owned by rec-4028; the write-time sum leg is owned by rec-4408."
+    populated_by: the producer, at the model_call point event.
+    dq_intent: {at_most: tokens_cache_creation}
+  cache_creation_5m_tokens:
+    type: int
+    iceberg_type: bigint
+    nullable: true
+    description: "Provider-reported cache-write tokens of this model_call with a 5-minute cache lifetime: a subset of tokens_cache_creation, never a fifth billing class."
+    semantics: "Cache writes are priced by lifetime, so cost at read needs the split. NULL when the provider did not report it; never a local estimate. The pair's sum is at most tokens_cache_creation; only each column's own bound is write-enforced, because the row-rule grammar has no sum leg. Coverage (Decision 181 cl.2): the claude_code producer is pinned by its tests (PLAN-telemetry-capture-producer-fixes); every other producer is an unenforced residual owned by rec-4028; the write-time sum leg is owned by rec-4408."
+    populated_by: the producer, at the model_call point event.
+    dq_intent: {at_most: tokens_cache_creation}
   rec_id:
     type: str
     iceberg_type: string
@@ -436,6 +484,7 @@ governance_notes: >-
   from a Class C baseline keeps `nullable: true` at the column axis with a declared `not_null` at the DQ axis; the event projection emits NOT NULL from the DQ axis for such keys. Not provisioned in production (slice 2c). KNOWN GAPS: rec-4032 (the later
   materialised friction-labels form of the reader's rules file), rec-4031 (the cost_usd effective-dated price-mapping reader).
 amendment_log:
+  - {date: "2026-10-17", semantic_break: false, change_class: field_add, summary: "PLAN-telemetry-column-additions: six nullable typed columns (usage_final, usage_source, requested_model, reasoning_effort, cache_creation_1h_tokens, cache_creation_5m_tokens).", migration_story: "Nullable additions: every stored row stays valid and reads NULL; no producer emits them before PLAN-telemetry-capture-producer-fixes; the smoke tables gain them through Decision 222's owner step."}
   - {date: "2026-10-16", semantic_break: false, change_class: prose_improvement, summary: "PLAN-reader-verbs-decision-notes (rec-4324): KNOWN GAPS drops rec-4024 (its writer and reader verbs are built; the reader verbs by PLAN-telemetry-reader-verbs, #1496)."}
   - {date: "2026-10-16", semantic_break: true, change_class: governance_note_add, summary: "PLAN-telemetry-cache-token-totals (rec-4333): the four token classes are declared disjoint (tokens_input is uncached prompt tokens only). Per-field changes are on their own fields' logs.", migration_story: "No stored row changes; see the field entries."}
   - {date: "2026-10-05", semantic_break: false, change_class: prose_improvement, summary: "PLAN-telemetry-lifecycle-friction-amendment (feedback-loop review C10, C11, C12): severity closed and required on process_event points, name required there with its grammar a declared residual (owner rec-4176), process_event parentage declared, cost_usd inputs effective-dated, friction pointers moved off the rec-4032 labels table to the reader's rules file, and the stale enforcement/provisioning premise reworded. Per-field changes are on their own fields' logs."}
@@ -444,17 +493,7 @@ amendment_log:
   - {date: "2026-09-25", semantic_break: false, change_class: prose_improvement, summary: "PLAN-telemetry-kernel-identity-append (rec-4065): governance.partition_by respelled from the bare day(session_started_at) to the calendar-day triple year(), month(), day(); DuckLake evaluates a bare day() as day-of-month. No table exists yet."}
   - {date: "2026-09-24", semantic_break: false, change_class: prose_improvement, summary: "PLAN-telemetry-event-journal-contracts (Decision 199): contract.description re-grounded to the event-journal shape with the shared envelope; per-field changes are on their own fields' logs. No live writer: Phase 4 (T2.36) builds to contract_version 2."}
   - {date: "2026-08-26", semantic_break: false, change_class: prose_improvement, summary: "Platform cleanse: references to the removed trading-product surfaces and the retired pre-DuckLake query-engine estate were removed or reworded; no live DuckLake field or verb semantics changed."}
-  - date: "2026-10-15"
-    semantic_break: false
-    change_class: prose_improvement
-    summary: >-
-      PLAN-rule-declarations-and-writer-conformance (rec-4158, Decision 210): the dq_intent `enforced` key is retired
-      from every rule leg. not_null is declared by presence (`true`, or `{exclude_before: D}`); an optional column or a
-      loosest-baseline field carries no not_null leg; the other legs lose the key. A declared rule is an enforced rule.
-    migration_story: >-
-      Declarations re-spelled only. No rule is added, removed or re-dated: the declared rule set, read through
-      scripts.contract_rules, is identical before and after, and the generated field_semantics.yaml projection of
-      this contract is unchanged.
+  - {date: "2026-10-15", semantic_break: false, change_class: prose_improvement, summary: "PLAN-rule-declarations-and-writer-conformance (rec-4158, Decision 210): the dq_intent `enforced` key is retired from every rule leg. not_null is declared by presence (`true`, or `{exclude_before: D}`); an optional column or a loosest-baseline field carries no not_null leg; the other legs lose the key. A declared rule is an enforced rule.", migration_story: "Declarations re-spelled only. No rule is added, removed or re-dated: the declared rule set, read through scripts.contract_rules, is identical before and after, and the generated field_semantics.yaml projection of this contract is unchanged."}
 previous_versions:
   - contract_version: 1
     ratified_at: "2026-06-24"

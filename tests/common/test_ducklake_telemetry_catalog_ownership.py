@@ -206,3 +206,57 @@ def test_create_is_idempotent_and_refuses_drift(stage: Any) -> None:
         _provision(scoped)
     _append(scoped, 3)
     assert _report(stage.owner) == prov.OwnershipReport(0, True, False, False)
+
+
+_NEW_COLUMNS = {
+    "telemetry_sessions": ("harness_session_key", "checkout_sha", "checkout_base_sha", "checkout_dirty"),
+    "telemetry_observations": (
+        "usage_final",
+        "usage_source",
+        "requested_model",
+        "reasoning_effort",
+        "cache_creation_1h_tokens",
+        "cache_creation_5m_tokens",
+    ),
+}
+
+
+def _reduced_semantics() -> dict[str, Any]:
+    import copy  # noqa: PLC0415
+
+    sem = copy.deepcopy(SEM)
+    for table, cols in _NEW_COLUMNS.items():
+        for col in cols:
+            del sem["ops_tables"][table]["columns"][col]
+    return sem
+
+
+def _append_with_new_columns(con: Any, n: int) -> None:
+    con.execute(
+        "INSERT INTO ops_catalog.telemetry_sessions (event_id, session_started_at, producer, parser_version, "
+        "created_timestamp, tenant_id, project_id, session_id, harness_session_key, checkout_sha, checkout_dirty) "
+        "VALUES (?, now(), 'p', 2, now(), 't', 'p', 's', 'session_x', ?, false)",
+        [f"n{n}", "a" * 40],
+    )
+
+
+def test_owner_adds_a_missing_nullable_column_and_the_scoped_login_still_writes(stage: Any) -> None:
+    reduced = _reduced_semantics()
+    created = run_telemetry_txn(stage.owner, lambda c: prov.create_telemetry_tables(c, semantics=reduced)).result
+    assert len(created.created) == 9 and created.added == ()
+
+    warm = stage.scoped()
+    run_telemetry_txn(warm, lambda c: prov.provision_telemetry_catalog(c, semantics=reduced))
+    _append(warm, 1)
+
+    added = _create(stage.owner)
+    assert len(added.added) == 10 and added.created == ()
+
+    for scoped in (warm, stage.scoped()):
+        assert _provision(scoped).created == ()
+        _append_with_new_columns(scoped, id(scoped))
+    owner = stage.reconnect_owner()
+    rows = owner.execute("SELECT count(*), count(checkout_sha) FROM ops_catalog.telemetry_sessions").fetchone()
+    assert tuple(rows) == (3, 2)
+    assert _report(owner) == prov.OwnershipReport(0, True, False, False)
+    assert _report(stage.scoped()) == prov.OwnershipReport(0, False, False, False)

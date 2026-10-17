@@ -87,6 +87,9 @@ class FakeCon:
             return _Cur([(self.counts.get(table, 0),)])
         if sql.startswith("SELECT current_value"):
             return _Cur([(v,) for v in self.counters.get(params[0], [])])
+        add = re.match(r"ALTER TABLE ops_catalog\.(\w+) ADD COLUMN (\w+) ", sql)
+        if add:
+            self.columns[add.group(1)].add(add.group(2))
         if sql.startswith("DELETE"):
             self.counters.pop(params[0], None)
         if sql.startswith("INSERT"):
@@ -288,3 +291,100 @@ def test_inspect_partitions_reports_only_present_target_tables() -> None:
     transforms["telemetry_agents"] = ()
     con = FakeCon(("telemetry_agents", "telemetry_sessions"), transforms=transforms, extra_tables=("unrelated_smoke_table",))
     assert prov.inspect_partitions(con, set(con.existing), SEM) == {"telemetry_agents": False, "telemetry_sessions": True}
+
+
+OPTIONAL_SESSION_COLS = {"harness_session_key", "checkout_sha", "checkout_base_sha", "checkout_dirty"}
+OPTIONAL_OBS_COLS = {
+    "usage_final",
+    "usage_source",
+    "requested_model",
+    "reasoning_effort",
+    "cache_creation_1h_tokens",
+    "cache_creation_5m_tokens",
+}
+
+
+def _lacking(**removed: set[str]) -> dict[str, set[str]]:
+    columns = {k: set(v) for k, v in prov._declared_columns(SEM).items()}
+    for table, cols in removed.items():
+        columns[table] -= cols
+    return columns
+
+
+def _ddl(con: FakeCon) -> list[str]:
+    return con.statements("CREATE", "ALTER", "DROP", "TRUNCATE")
+
+
+def test_create_tables_adds_declared_nullable_columns_an_event_table_lacks() -> None:
+    con = _all_existing(columns=_lacking(telemetry_sessions=OPTIONAL_SESSION_COLS, telemetry_observations=OPTIONAL_OBS_COLS))
+    result = prov.create_telemetry_tables(con, semantics=SEM)
+    expected = sorted(
+        [f"telemetry_sessions.{c}" for c in OPTIONAL_SESSION_COLS] + [f"telemetry_observations.{c}" for c in OPTIONAL_OBS_COLS]
+    )
+    assert list(result.added) == sorted(expected, key=lambda s: tuple(s.split("."))) and result.created == ()
+    ddl = _ddl(con)
+    assert len(ddl) == 10 and all(re.fullmatch(r"ALTER TABLE ops_catalog\.\w+ ADD COLUMN \w+ [A-Z]+", s) for s in ddl)
+    assert ddl == sorted(ddl, key=lambda s: tuple(s.split()[2:3] + s.split()[5:6]))
+    assert "ADD COLUMN checkout_dirty BOOLEAN" in " ".join(ddl) and "ADD COLUMN cache_creation_1h_tokens BIGINT" in " ".join(
+        ddl
+    )
+    assert not con.statements("INSERT", "DELETE", "UPDATE", "MERGE")
+    assert con.columns == prov._declared_columns(SEM)
+
+
+def test_create_tables_refuses_a_missing_not_null_column_before_any_ddl() -> None:
+    con = _all_existing(columns=_lacking(telemetry_sessions={"checkout_sha"}, telemetry_observations={"observation_type"}))
+    with pytest.raises(DuckLakeRuntimeError, match=r"telemetry_observations: columns missing \['observation_type'\]"):
+        prov.create_telemetry_tables(con, semantics=SEM)
+    assert not _ddl(con)
+
+
+def test_create_tables_refuses_a_missing_required_when_column_before_any_ddl() -> None:
+    con = _all_existing(columns=_lacking(telemetry_sessions={"workflow", "checkout_sha"}))
+    with pytest.raises(DuckLakeRuntimeError, match=r"telemetry_sessions: columns missing \['checkout_sha', 'workflow'\]"):
+        prov.create_telemetry_tables(con, semantics=SEM)
+    assert not _ddl(con)
+
+
+def test_create_tables_refuses_an_extra_live_column_before_any_ddl() -> None:
+    columns = _lacking(telemetry_sessions={"checkout_sha"})
+    columns["telemetry_observations"] |= {"stray"}
+    con = _all_existing(columns=columns)
+    with pytest.raises(DuckLakeRuntimeError, match=r"telemetry_observations: columns missing \[\] extra \['stray'\]"):
+        prov.create_telemetry_tables(con, semantics=SEM)
+    assert not _ddl(con)
+
+
+def test_create_tables_adds_no_column_to_a_dimension_or_counter_table() -> None:
+    for table in (HISTORIES["ops_tenants"], "ops_entity_counters"):
+        columns = _lacking(telemetry_sessions={"checkout_sha"})
+        victim = sorted(columns[table])[-1]
+        columns[table] -= {victim}
+        con = _all_existing(columns=columns)
+        with pytest.raises(DuckLakeRuntimeError, match=rf"{table}: columns missing \['{victim}'\]"):
+            prov.create_telemetry_tables(con, semantics=SEM)
+        assert not _ddl(con)
+
+
+def test_create_tables_adds_nothing_when_live_equals_declared() -> None:
+    con = _all_existing()
+    result = prov.create_telemetry_tables(con, semantics=SEM)
+    assert result.added == () and not _ddl(con)
+
+
+def test_create_tables_refuses_a_column_with_a_staged_not_null_rule() -> None:
+    sem = {**SEM, "ops_tables": {**SEM["ops_tables"]}}
+    entry = {**sem["ops_tables"]["telemetry_sessions"]}
+    entry["columns"] = {**entry["columns"], "checkout_sha": {**entry["columns"]["checkout_sha"], "not_null": True}}
+    sem["ops_tables"]["telemetry_sessions"] = entry
+    con = _all_existing(columns=_lacking(telemetry_sessions={"checkout_sha"}))
+    with pytest.raises(DuckLakeRuntimeError, match=r"telemetry_sessions: columns missing \['checkout_sha'\]"):
+        prov.create_telemetry_tables(con, semantics=sem)
+    assert not _ddl(con)
+
+
+def test_provision_still_refuses_a_missing_nullable_column() -> None:
+    con = _all_existing(columns=_lacking(telemetry_sessions={"checkout_sha"}))
+    with pytest.raises(DuckLakeRuntimeError, match=r"telemetry_sessions: columns missing \['checkout_sha'\]"):
+        prov.provision_telemetry_catalog(con, semantics=SEM)
+    assert not _ddl(con) and not con.statements("INSERT", "DELETE")
