@@ -270,8 +270,25 @@ class TestJunitGrammar:
             assert result.arm == GRAMMAR_SELECTOR_FLAG, cmd
             assert result.route == ROUTE_STATIC, cmd
 
-    def test_attached_selector_value_is_refused(self) -> None:
-        for cmd in ("pytest -mslow tests/x.py::test_a", "bin/venv-python -m pytest -kfoo tests/x.py::test_a"):
+    def test_attached_or_combined_short_selector_is_refused(self) -> None:
+        for cmd in (
+            "pytest -mslow tests/x.py::test_a",
+            "bin/venv-python -m pytest -kfoo tests/x.py::test_a",
+            "bin/venv-python -m pytest -vk foo tests/x.py::test_a",
+            "bin/venv-python -m pytest -xm slow tests/x.py::test_a",
+            "pytest -qk foo tests/x.py::test_a",
+        ):
+            result = classify_grammar(cmd)
+            assert result.arm == GRAMMAR_SELECTOR_FLAG, cmd
+            assert result.route == ROUTE_STATIC, cmd
+
+    def test_without_an_anchored_invocation_the_whole_segment_is_scanned(self) -> None:
+        for cmd in (
+            "py.test -k foo tests/x.py::test_a tests/pytest",
+            "bin/venv-python -mpytest -k foo tests/x.py::test_a --rootdir=a/pytest",
+            "pytest-3 -k foo tests/x.py::test_a",
+            "timeout -k 5 60 pytest tests/x.py::test_a",
+        ):
             result = classify_grammar(cmd)
             assert result.arm == GRAMMAR_SELECTOR_FLAG, cmd
             assert result.route == ROUTE_STATIC, cmd
