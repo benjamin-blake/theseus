@@ -49,6 +49,105 @@ conditions:
 
 ---
 
+## Decision 223: One Terraform state per applier -- PlatformDev, PlatformAdmin and their inline policies move to the admin-only terraform/bootstrap root (amends Decision 180 clause 6 and Decision 183 point 4) (Decided)
+
+```yaml
+number: 223
+status: Decided
+decided_date: "2026-10-17"
+amends: [180, 183]
+significance:
+  value: numbered_decision
+  justification: >-
+    Reverses a recorded rejection (Decision 180 clause 6) and narrows Decision 183 point 4,
+    with a standing guard and reversal conditions; amendment_forms cannot carry a re-decision
+    spanning two entries (Decision 183 and 217 precedent).
+```
+
+**Status:** Decided
+**Date:** 2026-10-17
+**Warehouse ID:** dec-223 (per Decision 84 backfill)
+
+**Problem:** rec-3838. PlatformDev and PlatformAdmin, the two identities whose trust and inline
+policies the CI apply role cannot write by design (Decision 180 clauses 2-3; it holds four
+metadata-write verbs on PlatformDev and the read quartet on both), were declared in
+terraform/personal, the root CI plans and applies. Every inline-policy change to them forced the
+operator split-apply (Decision 183 point 4), whose window red-latched the sandbox
+convergence record twice in nine days and blocked three merges' applies on 2026-09-13
+(rec-3797). Decision 180 clause 6 recorded the relocation as a rejected alternative "for now"
+under Decision 144 clause 3.
+
+**Intent:**
+A Terraform root's state holds only what its applier may mutate (a rule in clause 1, direction in clause 4).
+
+**Decision:**
+1. **Rule.** A managed IAM role whose inline policies the CI apply role cannot write by design
+   is declared in terraform/bootstrap, never in a CI-applied root. Of the roles terraform/personal
+   declared, that was exactly PlatformDev and PlatformAdmin (Decision 180 clauses 2-3); the apply
+   role and the Decision 202 roles already live in terraform/bootstrap. The general principle is
+   direction only; clause 4 names what terraform/personal still declares that CI cannot execute.
+2. **Placement.** PlatformDev, PlatformAdmin and their five inline policies (DailyOps, AdminOps,
+   PlatformDataLakeProvisioning, BootstrapStateProvisioning, DuckLakeBreakGlass) are declared
+   and owned by terraform/bootstrap. terraform/personal keeps only their `removed` blocks with
+   `destroy = false`; never `state rm`, never a cross-backend `state mv`. A change to any of the
+   seven is a terraform/bootstrap admin apply under Decision 126's human-gated tier, with no
+   `-target`.
+3. **Amends Decision 180 clause 6.** The rejected alternative is adopted in full. Decision 144
+   clause 3 is preserved: PlatformDev still declares the mandatory boundary, now in the same root
+   as the boundary policy; PlatformAdmin stays boundary-free. Clauses 1-5 are unchanged in text.
+   Reversal condition (a) is not adjudicated here: PlatformDev has left the CI-applied root and
+   remains Terraform-managed (Decision 180 clause 4's premise); whether that fires (a) and licenses
+   re-narrowing IAMRoleMetadataWrite is rec-4049's plan.
+4. **Amends Decision 183 point 4.** The admin split-apply no longer arises for the seven
+   addresses. The same split still applies to terraform/personal's remaining by-design
+   CI-unexecutable actions, including trust on agent-platform-* roles other than branch and pr,
+   OIDC provider lifecycle and the alerts subscription's Unsubscribe; rec-3583 owns flagging them
+   at plan time, not re-homing them. Reversal (b)'s terraform/CLAUDE.md recovery row was amended.
+5. **Guard.** tests/checks/iam_tf/test_platform_iam_admin_root_only.py holds clause 2:
+   terraform/personal declares no PlatformDev or PlatformAdmin role, inline policy, attachment
+   or exclusive set, and each relocated address has exactly one `destroy = false` removed block.
+6. **Not Decision 98's Path C.** Decision 98 point 1 (amended by Decision 144 clause 4) keeps
+   agent-platform-* peer CI roles in terraform/personal, where the CI apply role writes their
+   inline policies and only trust (beyond branch and pr) is admin-tier. That class is disjoint
+   from clause 1's;
+   Decision 98 stands.
+
+**Rationale:** Managing the split procedurally (Decision 183 point 4) kept a standing race
+between an operator `-target` apply and CI's saved plan; moving ownership to the root whose
+applier may write removes that race at its source and makes the admin tier (Decision 126) the
+single path for these identities. Drift detection for the two roles rests on Decision
+202's detector until rec-3358's scheduled bootstrap plan lands.
+
+**Coverage (Decision 181 cl.2):** clause 1 for the two names and clause 2 in terraform/personal
+-- the clause 5 guard, in the full tier and when --pre selects it;
+bootstrap ownership -- the adopt plan's TestBootstrapOwnsPlatformIam; live parity -- the release
+plan's before/after IAM snapshot (one-time); a future clause 1 member the guard does not name --
+unenforced residual until rec-3583's verdict. Owned loose ends: CI's read-quartet ARNs on the two
+roles (IAMRolesRead, IAMPlatformRolesRead) and its metadata-write grant on PlatformDev (rec-4049);
+the three trust variables still in terraform/personal (rec-4048); Decision 113's shared-principal
+Pattern B (rec-4043).
+
+```yaml reversal-conditions
+decision: 223
+review_by: 2027-04-30
+on_trigger: "re-decide via /plan; update or re-arm this stanza"
+conditions:
+  - id: ci-writable-again
+    kind: manual
+    description: "A ratified Decision lets CI write either identity's trust or inline policies: re-decide clause 2's placement with it."
+  - id: bootstrap-drift-undetected
+    kind: manual
+    description: "A change to any of the seven is seen neither by Decision 202's detector nor by a scheduled bootstrap plan (rec-3358) within 24 h: re-examine clause 2."
+  - id: separate-admin-principal
+    kind: manual
+    description: "rec-4043 lands a separate admin principal: re-check clause 2 and place any new managed role per clause 1."
+```
+
+**Related:** Decisions 180, 183 (amended), 98, 113, 126, 144, 181, 202; rec-3838, rec-4044;
+PLAN-platform-iam-bootstrap-adopt, PLAN-platform-iam-personal-release.
+
+---
+
 ## Decision 221: Recursive self-improvement is proven against a judge the loop cannot edit -- three metric layers, a frozen control arm, pre-registration and public receipts on the designed feedback loop (Decided)
 
 ```yaml
@@ -1247,6 +1346,8 @@ Roadmap refs: rec-4044, rec-4049, rec-4067.
 > Delete verb, no action wildcard; admin_grant_problems pins it. Re-narrow when AWS adds a resource
 > type for the action or the provider stops calling it at plan time.
 > PLAN-heartbeat-canary-plan-time-grant.
+>
+> **Update (2026-10-17):** Clause 6's "Decision 180 clause 6 is not re-decided" is overtaken: Decision 223 adopts that alternative, placing PlatformDev, PlatformAdmin and their inline policies in terraform/bootstrap. This entry's trail, grant, name family and region rule are unchanged.
 
 ---
 
@@ -2751,6 +2852,8 @@ letting the one human approval clear the whole incident.
 
 **Related:** 126, 154, 158, 178, T2.47, rec-3522, rec-3135, rec-2918, rec-3568.
 
+> **Update (2026-10-17):** Point 4's split-apply no longer arises for PlatformDev, PlatformAdmin or their inline policies, which Decision 223 places in terraform/bootstrap; the same split still applies to the remaining terraform/personal actions the CI apply role cannot execute by design (including trust on agent-platform-* roles other than branch and pr, OIDC provider lifecycle and SNS Unsubscribe), which rec-3583 owns flagging. Reversal (b)'s terraform/CLAUDE.md recovery row was amended in the same change.
+
 ---
 
 
@@ -3000,6 +3103,8 @@ enumeration precedent), Decision 143 (clause 1 worst-verb scoping, unaffected by
 grant), Decision 113 (the two-principal split clause 3's exclusion depends on), Decision 167 clause 2
 (the category-consistency gate `amendment_forms` was rejected against). Refs: rec-3327,
 docs/contracts/iam-simulate-fixture.yaml (the PlatformDev/PlatformAdmin rows this Decision licenses).
+
+> **Update (2026-10-17):** Clause 6's rejected alternative is adopted in full by Decision 223: PlatformDev, PlatformAdmin and their five inline policies are owned by terraform/bootstrap, and terraform/personal holds only their `destroy = false` removed blocks (rec-3838). Clauses 1-5 stand in text; Decision 144 clause 3 is preserved. Reversal condition (a) is not adjudicated there (PlatformDev stays Terraform-managed, clause 4's premise); rec-4049's plan does that.
 
 ---
 
@@ -7080,6 +7185,8 @@ personal account (e.g. a second account or an SSO requirement emerges for it).
 
 **Related:** Decision 105 (the ratification lane executing this), CD.10 (two-principal allow-list
 model the auth primitive change preserves).
+
+> **Update (2026-10-17):** Pattern B's two roles and their inline policies are now declared in terraform/bootstrap/platform_roles.tf and its platform_*_policies.tf siblings (Decision 223), not terraform/personal/platform_roles.tf; the two-principal semantic and the ExternalId conditions are unchanged.
 
 ---
 
