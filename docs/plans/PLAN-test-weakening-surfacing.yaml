@@ -6,8 +6,8 @@ slug: test-weakening-surfacing
 intent: >-
   Narrow the scope-boundary CONTENT invariant's sole residual (rec-3357: an assertion or numeric tolerance weakened in
   an in-scope file) honestly instead of claiming it closed: an added skip/xfail must cite a rec or declare itself an
-  environment guard (mechanical, exceptionless), every other syntactic weakening candidate is surfaced to the
-  independent code-review gate, an implement PR must record that review's disposition for every candidate
+  environment guard (mechanical, exceptionless), the listed syntactic weakening candidates are surfaced to the
+  independent code-review gate, an implement PR must record that review's disposition for every listed candidate
   (mechanical, exceptionless), and the part no check can decide (whether a disposition is right: the test-oracle
   problem) stays a residual, narrowed and re-owned by rec-4413.
 plan_type: IMPLEMENTATION
@@ -48,7 +48,10 @@ scope:
     decorators or calls, so this file adds no skip site of its own). Class TestAddedSkipsMustCiteOrDeclare: each site
     kind added without a rec token or env: label fails naming path:line; with either it passes. Class
     TestOnlyAddedSitesAreJudged: a site already on the base passes unchanged; a changed reason is judged as added; a
-    removed site passes; an existing skip carried into a new file by a rename or decomposition is not judged; an importorskip whose only string is the module name fails as uncited; an untracked ("??")
+    removed site passes; an existing skip carried into a new file by a rename or decomposition is not judged, but a
+    module-level skipif carried from a deleted file into a pre-existing test file fails uncited; a bare uncalled
+    @pytest.mark.skip, a pytestmark = pytest.mark.xfail without a call, a mark alias and an item.add_marker skip each
+    count as sites; an importorskip whose only string is the module name fails as uncited; an untracked ("??")
     test file is judged like an added one; an added expectedFailure's failure names the pytest.mark.xfail conversion;
     one ADDED-SKIP line prints per judged site. Plus: an unparseable head file fails, an unreachable base skips, examined() counts files read,
     and main() exits 1 on a violation and 0 when clean.
@@ -58,8 +61,10 @@ scope:
     Shared pure AST helpers for both domains' checks (the _marker_guard placement), no I/O, never raising on bad input
     (unparseable source -> empty result). skip_sites(source) -> list of SkipSite(kind, line, reason, scope). A SKIP SITE
     is a skip, skipif or xfail mark in any position (decorator, module- or class-level pytestmark,
-    pytest.param(..., marks=...)); a unittest skip, skipIf, skipUnless or expectedFailure decorator; or a pytest.skip,
-    pytest.xfail or pytest.importorskip call anywhere. Its REASON is the reason= keyword, else the first positional
+    pytest.param(..., marks=...), an alias assignment such as x = pytest.mark.skipif(...), or an
+    item.add_marker(...) argument), called or bare (a bare @pytest.mark.skip has an empty reason); a unittest skip,
+    skipIf, skipUnless or expectedFailure decorator; or a pytest.skip, pytest.xfail or pytest.importorskip call
+    anywhere. Its REASON is the reason= keyword, else the first positional
     string (the second for the skipif and xfail marks and the skipIf and skipUnless decorators, whose first is the
     condition; the pytest.skip and pytest.xfail calls take the reason first); for pytest.importorskip only reason= or
     the third positional counts (the first is the module name, never a reason); an f-string contributes its constant
@@ -68,9 +73,11 @@ scope:
     module-level site or one inside a fixture or helper. added_skip_sites(files) -> {path: [SkipSite]} over every
     changed test file at once (files maps path -> (base_source or None, head_source or None)), the single home both
     checks use: per file, the head's sites minus the base's (a multiset keyed by scope, kind and reason), less any
-    site CARRIED from another file, meaning one that matches (scope, kind and reason) a site the same diff removed
-    from another changed or deleted test file. A decomposition or rename that moves an existing skip therefore adds
-    none. applicable_skip_sites(source, key) -> the sites that apply to test key: its own scope, its class's and
+    site CARRIED from another file. A site is carried only when it matches (scope, kind and reason) a site the same
+    diff removed from another changed or deleted test file AND its scope did not exist in the destination file at
+    the base (a new file, a class new to that file, or a test key new to that file). A rename or decomposition that
+    moves an existing skip with its tests therefore adds none, while a skip carried onto tests that already existed
+    in the destination is added. applicable_skip_sites(source, key) -> the sites that apply to test key: its own scope, its class's and
     the module's "*". test_functions(source) -> {key: node} for module-level test*
     functions and test* methods of top-level Test* classes. assertions(node) -> Counter of normalized ast.dump for
     every assert statement's test and every call whose callee name starts with "assert" or is raises, warns, approx or
@@ -129,7 +136,8 @@ scope:
     pytest.skip added to a pre-existing file, test-moved-weaker for a moved test that gained a skip and for one moved
     into a new file under a module-level pytestmark skip, and one merged Candidate for two sites in one scope; out of a
     deleted file, a moved test that gained a skip, one with a lost assertion, and one removed outright (test-removed);
-    an existing skip carried by a rename yields no skip-added; negatives (an
+    an existing skip carried by a rename yields no skip-added, while a module-level skip carried into a
+    pre-existing test file yields skip-added for that file's "*" scope; negatives (an
     added test, a strengthened assertion, a reformatted but equal assertion, an unchanged constant, a test moved with
     equal assertions and skips, a non-numeric constant) yield nothing. Class TestReportOnly: the
     registered function prints every candidate and the disposition keys and leaves failed empty. Plus the
@@ -268,7 +276,9 @@ acceptance_criteria:
 - >-
   The contract's CONTENT map carries the two new mechanical rows and exactly one residual row, owned by rec-4413, with the
   approved text; Decision 181's text is unchanged.
-- rec-3357 is superseded with the approved resolution and rec-4413 is open.
+- >-
+  rec-3357 is superseded with the approved resolution; rec-4413 is open with the approved re-measure context
+  (APPROVED_REC4413_UPDATE, which names validate_test_skip_citations).
 verification_plan:
 - step: 1
   phase: pre-deploy
@@ -456,7 +466,9 @@ verification_plan:
     or {};print(a.get('status'),b.get('status'));assert a.get('status')=='superseded' and b.get('status')=='open'
     and 'validate_test_skip_citations' in (b.get('context') or '')"
   expected: Exit 0 and "superseded open" printed.
-  fix_if: rec-3357 still open -> run APPROVED_REC_UPDATE; only the PR number and merge sha may vary.
+  fix_if: >-
+    rec-3357 still open -> run APPROVED_REC_UPDATE (only the PR number and merge sha may vary); rec-4413's context
+    lacks validate_test_skip_citations -> run APPROVED_REC4413_UPDATE verbatim.
   hermetic: false
 test_obligations:
 - source: scripts/checks/hygiene/validate_test_skip_citations.py
@@ -549,7 +561,9 @@ constraints:
 - >-
   .claude/skills/code-review/SKILL.md ends at or under its 12,609-byte prose budget (12,601 as drafted); config/prose_budgets.yaml and
   .claude/skills/implement/SKILL.md are not edited (the review report carries the copy instruction to the builder).
-- Every scope file stays under 500 SLOC; decompose rather than raise (Decision 128).
+- >-
+  Every scope file stays under 500 SLOC (Decision 128). A Create file that would exceed it is not split into an
+  undeclared file: STOP and amend this plan's scope first (the contract's two-act procedure), then decompose.
 - No rescue agents or workaround loops (Decision 55).
 context:
 - >-
@@ -567,12 +581,9 @@ context:
   Decision. Decisions triaged: 171 of 171. Roadmap items intersected: 4; CONFLICT: 0; RELATED: 4.
 - "gates: decision-scout=FLAGS_FOUND (v1 and v2 flags resolved as above); plan-critique=CRITIQUE_VERDICT"
 - >-
-  Critique round 1 (REVISE): one shared skip-site finder, so skip-added lists every skip added to an existing test file;
-  base reads at the diff's own ref (_common.status_diff_base); importorskip's module name is never a reason; graduated
-  contract-shape pins (step 14). Measured since 2026-09-01: 10 of 527 merges added skip/xfail marks or calls and 17 added
-  importorskip, only 3 into existing test files. Round 2 (REVISE): one Candidate per key, moved-test skip scope,
-  added_skip_sites, self-asserting step 7, step 12. Round 3 (REVISE): deleted files as move sources, carried skips,
-  own-path retirement cites refused, SLOC STOP rule for the dispositions test. OWNED_SKIP_APPROVAL_PENDING.
+  Critique rounds 1-4 (REVISE; round 4 escalated) are folded into scope, VP and APPROVED_CONTRACT; dispositions are in
+  the PR body. Skip load since 2026-09-01: 10 of 527 merges added skip/xfail marks or calls and 17 added importorskip,
+  only 3 into existing test files. OWNED_SKIP_APPROVAL_PENDING.
 - >-
   CI-RCA: rec-4372 (Critical, terraform-apply-sandbox) closed 2026-10-17 via #1536 (d7baf884). This plan touches no
   terraform, workflow or deploy path; its build starts on the coordinator's dispatch.
@@ -649,7 +660,7 @@ execution_steps:
             recommendation as this invariant requires, or label itself an environment guard with an "env: " prefix.
             The check proves the token's presence only; whether the rec is real and the env label honest is judged in
             code review, where validate_weakening_candidates lists every skip added to an existing test file or gained
-            by a test moved out of one; any other skip in a new test file is judged by this check alone.
+            by a test moved out of one; any other added skip in a new test file is judged by this check alone.
         - surface: "a weakening candidate on an implement PR with no recorded disposition, one recorded as weakening, or one whose cite resolves to nothing"
           status: mechanical
           enforced_by: validate_weakening_dispositions
@@ -670,8 +681,9 @@ execution_steps:
             The DOMINANT form of weakening in practice, not one coverage row among peers. Narrowed from rec-3357: telling
             a corrected assertion or tolerance from a quietly loosened one is the test-oracle problem, which no
             deterministic check decides. validate_weakening_candidates (report-only, never fails) lists these syntactic
-            candidates in a diff -- a removed or changed assertion, a removed or weaker-moved test, a deleted test file, an
-            added skip, a widened tolerance, a changed numeric constant -- code review gives each a disposition from
+            candidates in a diff -- a removed or changed assertion, a removed or weaker-moved test, a deleted test file, a
+            skip added to an existing test file, a widened tolerance, a changed numeric constant in scripts/ or src/ --
+            code review gives each a disposition from
             review_dispositions above, raising High for a weakening or a missing one, and validate_weakening_dispositions
             makes recording every disposition, with a cite that resolves, mandatory on implement PRs. Whether a
             disposition is correct, and who wrote it, remains a reviewer obligation, not mechanical coverage. Measured 2026-09-01..2026-10-17: 66 of
@@ -720,6 +732,11 @@ execution_steps:
   7. In the closing paragraph, delete " Never append to `logs/.recommendations-log.jsonl` directly." (the bold
      span then ends after "to file each finding.").
   A byte-exact copy of the approved result: /mnt/project-files/rec-3357/code-review-SKILL.approved.md (sha256 in context).
+- |-
+  APPROVED_REC4413_UPDATE, run by the planning thread on the operator's approval, before this plan merges (its
+  timestamp is recorded in context); the build only re-runs it verbatim if VP 17 finds it missing:
+  bin/venv-python -m scripts.ops_data_portal --profile agent_platform --update-rec rec-4413 \
+    --context "Owns the narrowed residual row of the scope-boundary CONTENT invariant (Decision 181 point 2), taken over from rec-3357 by PLAN-test-weakening-surfacing. Telling a corrected assertion from a quietly loosened one is the test-oracle problem, so no check closes the row; added skips must cite a rec or carry an env: label, the listed weakening candidates go to code review, and an implement PR must record a disposition for every listed candidate in its plan's weakening_dispositions, with a cite that resolves. From 2027-01-18, run the validate_weakening_candidates and validate_test_skip_citations CLIs (--base X^ --head X) over each first-parent merge of the preceding quarter, and sample the recorded dispositions and the env: labels on added skips against their diffs: if a weakening slipped past review, the dispositions or env: labels are rote (a cite or label that does not support its claim), or candidates exceed 15 a week, plan a further instrument (a blocking flip on a narrowed category, or differential mutation testing on unchanged covered source). Also decide whether these unlisted shapes need their own candidate category: a marker that deselects a test from the unit tier (pytest.mark.integration), a numeric constant in a test file, an expected value changed outside an assertion (a local expected variable or a parametrize table), an assertion inside a non-test helper, fixture or conftest, and an indirect skip (an existing skipping fixture, helper or mark alias newly applied to an existing test). Otherwise record the residual as irreducible."
 - |-
   APPROVED_REC_UPDATE, run after the merge (variance: the PR number and merge sha only):
   bin/venv-python -m scripts.ops_data_portal --profile agent_platform --update-rec rec-3357 --status superseded \
