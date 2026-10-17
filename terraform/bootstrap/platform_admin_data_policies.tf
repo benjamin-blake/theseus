@@ -243,14 +243,21 @@ resource "aws_iam_role_policy" "platform_admin_bootstrap_state" {
 
     precondition {
       # Self-access guard: PlatformAdmin must still be able to read/write its own backend bucket and
-      # the one state object this root's apply depends on (checked via substring search, never the
-      # byte-size measure above -- personal-policies-carry-byte-preconditions owns exactly one such
-      # measure per file).
-      condition = (
-        strcontains(local.platform_admin_bootstrap_state_policy_json, "arn:aws:s3:::agent-platform-bootstrap-tfstate\"") &&
-        strcontains(local.platform_admin_bootstrap_state_policy_json, "arn:aws:s3:::agent-platform-bootstrap-tfstate/*\"")
-      )
-      error_message = "PlatformAdmin BootstrapStateProvisioning no longer names both the bootstrap-tfstate bucket ARN and its object ARN -- this is the self-access grant this root's own apply depends on."
+      # the one state object this root's apply depends on, checked by parsing the policy local
+      # itself, never the byte-size measure above (this file carries three such measures, one per
+      # policy -- personal-policies-carry-byte-preconditions does not scan this file).
+      condition = alltrue([
+        for arn, actions in {
+          "arn:aws:s3:::agent-platform-bootstrap-tfstate"   = ["s3:ListBucket"]
+          "arn:aws:s3:::agent-platform-bootstrap-tfstate/*" = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+          } : anytrue([
+            for s in jsondecode(local.platform_admin_bootstrap_state_policy_json).Statement :
+            s.Effect == "Allow" && !can(s.Condition)
+            && contains(flatten([try(s.Resource, [])]), arn)
+            && alltrue([for a in actions : contains(flatten([try(s.Action, [])]), a)])
+        ])
+      ])
+      error_message = "PlatformAdmin BootstrapStateProvisioning no longer has an unconditioned Allow of the bootstrap-tfstate bucket and object ARNs with their needed actions -- this is the self-access grant this root's own apply depends on."
     }
   }
 }

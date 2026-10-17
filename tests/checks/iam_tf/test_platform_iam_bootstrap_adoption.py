@@ -2,12 +2,13 @@
 bootstrap-adopt, rec-3838 plan 1 of 2) -- durable, graduated.
 
 Asserts the adoption is complete and protected: both roles and all five inline policies are
-declared with correctly-shaped import blocks, prevent_destroy and self-access preconditions are
-present where required, the trust documents carry their own sts:ExternalId condition, the
-ExternalId variables are sensitive with no default, the secret ARNs come from by-name data source
-lookups, PlatformAdmin's managed-policy attachment references the adopted role, and every
-constant this root copies from terraform/personal equals its source (compared as templates, never
-rendered ARNs -- Decision 101).
+declared with correctly-shaped import blocks, prevent_destroy is present where required, the two
+self-access preconditions parse the grant itself (an unconditioned Allow of the needed actions on
+the needed resources, never a substring of the rendered policy), the trust documents carry their
+own sts:ExternalId condition, the ExternalId variables are sensitive with no default, the secret
+ARNs come from by-name data source lookups, PlatformAdmin's managed-policy attachment references
+the adopted role, and every constant this root copies from terraform/personal equals its source
+(compared as templates, never rendered ARNs -- Decision 101).
 """
 
 from __future__ import annotations
@@ -67,6 +68,65 @@ def _preconditions(body: str) -> list[str]:
     return [_block_body(lc_body, m.end() - 1) for m in re.finditer(r"\bprecondition\s*\{", _mask(lc_body))]
 
 
+def _self_access_precondition(resource_body: str) -> str | None:
+    """The resource's self-access precondition -- the one that is not the <= 10240 B size measure."""
+    for p in _preconditions(resource_body):
+        if "10240" not in p:
+            return p
+    return None
+
+
+def _normalise_precondition(text: str) -> str:
+    """Comments stripped, error_message attribute removed, whitespace runs collapsed to one space."""
+    stripped = _strip_comments(text)
+    stripped = re.sub(r'error_message\s*=\s*"(?:[^"\\]|\\.)*"', "", stripped)
+    return re.sub(r"\s+", " ", stripped).strip()
+
+
+# Canonical condition HCL pinned by the plan's scope rows, normalised the same way the real tree's
+# precondition text is normalised below -- an exact-match oracle (Decision 181): any token-preserving
+# weakening (&& turned into ||, alltrue turned into anytrue, an inverted comparison) changes this
+# string's text and fails here, never silently in the ADMIN gate.
+_ADMIN_OPS_SELF_ACCESS_CONDITION = (
+    "condition = anytrue([ for s in jsondecode(local.platform_admin_ops_policy_json).Statement : "
+    'try(s.Sid, "") == "IAMFull" && s.Effect == "Allow" && !can(s.Condition) '
+    '&& contains(flatten([try(s.Action, [])]), "iam:*") '
+    '&& contains(flatten([try(s.Resource, [])]), "*") ])'
+)
+
+_BOOTSTRAP_STATE_SELF_ACCESS_CONDITION = (
+    "condition = alltrue([ for arn, actions in { "
+    '"arn:aws:s3:::agent-platform-bootstrap-tfstate" = ["s3:ListBucket"] '
+    '"arn:aws:s3:::agent-platform-bootstrap-tfstate/*" = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"] '
+    "} : anytrue([ for s in jsondecode(local.platform_admin_bootstrap_state_policy_json).Statement : "
+    's.Effect == "Allow" && !can(s.Condition) '
+    "&& contains(flatten([try(s.Resource, [])]), arn) "
+    "&& alltrue([for a in actions : contains(flatten([try(s.Action, [])]), a)]) ]) ])"
+)
+
+
+def _self_access_guard_problems(resource_body: str | None, *, resource_name: str, canonical_condition: str) -> list[str]:
+    out: list[str] = []
+    if resource_body is None:
+        return out
+    precond = _self_access_precondition(resource_body)
+    if precond is None:
+        out.append(f"{resource_name} is missing its self-access precondition")
+        return out
+    if "strcontains(" in _strip_comments(precond):
+        out.append(f"{resource_name}'s self-access precondition still uses strcontains( instead of parsing the grant")
+    if _normalise_precondition(precond) != canonical_condition:
+        out.append(f"{resource_name}'s self-access precondition no longer matches the pinned parsed-grant condition")
+    error_message_m = re.search(r'error_message\s*=\s*"((?:[^"\\]|\\.)*)"', _strip_comments(precond))
+    error_message = error_message_m.group(1) if error_message_m else ""
+    if resource_name not in error_message or "self-access grant" not in error_message:
+        out.append(
+            f"{resource_name}'s self-access precondition error_message is missing its resource name "
+            "or the phrase 'self-access grant'"
+        )
+    return out
+
+
 def _collect_bodies_and_imports(texts: dict[str, str]) -> tuple[dict[tuple[str, str], str], dict[str, str]]:
     bodies: dict[tuple[str, str], str] = {}
     import_ids: dict[str, str] = {}
@@ -105,8 +165,13 @@ def _protection_problems(bodies: dict[tuple[str, str], str]) -> list[str]:
     if admin_ops_body is not None:
         if not _has_prevent_destroy(admin_ops_body):
             out.append("aws_iam_role_policy.platform_admin_ops (AdminOps) is missing lifecycle prevent_destroy")
-        if not any("IAMFull" in p for p in _preconditions(admin_ops_body)):
-            out.append("aws_iam_role_policy.platform_admin_ops is missing its IAMFull-presence precondition")
+        out.extend(
+            _self_access_guard_problems(
+                admin_ops_body,
+                resource_name="PlatformAdmin AdminOps",
+                canonical_condition=_ADMIN_OPS_SELF_ACCESS_CONDITION,
+            )
+        )
 
     state_body = bodies.get(("aws_iam_role_policy", "platform_admin_bootstrap_state"))
     if state_body is not None:
@@ -115,15 +180,13 @@ def _protection_problems(bodies: dict[tuple[str, str], str]) -> list[str]:
                 "aws_iam_role_policy.platform_admin_bootstrap_state (BootstrapStateProvisioning) is missing "
                 "lifecycle prevent_destroy"
             )
-        preconds = _preconditions(state_body)
-        if not any(
-            re.search(r"agent-platform-bootstrap-tfstate\\\"", p) and "agent-platform-bootstrap-tfstate/*" in p
-            for p in preconds
-        ):
-            out.append(
-                "aws_iam_role_policy.platform_admin_bootstrap_state is missing its self-access precondition naming "
-                "both the bucket ARN and the object ARN"
+        out.extend(
+            _self_access_guard_problems(
+                state_body,
+                resource_name="PlatformAdmin BootstrapStateProvisioning",
+                canonical_condition=_BOOTSTRAP_STATE_SELF_ACCESS_CONDITION,
             )
+        )
     return out
 
 
@@ -311,15 +374,107 @@ class TestBootstrapOwnsPlatformIam:
         end = base.index("\n    }\n", start) + len("\n    }\n")
         texts["platform_admin_policies.tf"] = base[:start] + base[end:]
         assert texts["platform_admin_policies.tf"] != _bootstrap_texts()["platform_admin_policies.tf"]
-        assert any("IAMFull-presence precondition" in p for p in problems(texts))
+        assert any("PlatformAdmin AdminOps is missing its self-access precondition" in p for p in problems(texts))
 
-    def test_missing_self_access_precondition_is_detected(self) -> None:
+    def test_iamfull_allow_comparison_removed_is_detected(self) -> None:
+        texts = dict(_bootstrap_texts())
+        texts["platform_admin_policies.tf"] = texts["platform_admin_policies.tf"].replace(
+            'try(s.Sid, "") == "IAMFull" && s.Effect == "Allow" && !can(s.Condition)',
+            'try(s.Sid, "") == "IAMFull" && !can(s.Condition)',
+            1,
+        )
+        assert texts["platform_admin_policies.tf"] != _bootstrap_texts()["platform_admin_policies.tf"]
+        assert any(
+            "PlatformAdmin AdminOps" in p and "no longer matches the pinned parsed-grant condition" in p
+            for p in problems(texts)
+        )
+
+    def test_iamfull_error_message_without_self_access_grant_is_detected(self) -> None:
+        texts = dict(_bootstrap_texts())
+        texts["platform_admin_policies.tf"] = texts["platform_admin_policies.tf"].replace(
+            'error_message = "PlatformAdmin AdminOps no longer has an unconditioned Allow of iam:* on * in the '
+            'IAMFull statement -- this is the self-access grant that lets PlatformAdmin manage IAM at all."',
+            'error_message = "PlatformAdmin AdminOps no longer has an unconditioned Allow of iam:* on * in the '
+            'IAMFull statement."',
+            1,
+        )
+        assert texts["platform_admin_policies.tf"] != _bootstrap_texts()["platform_admin_policies.tf"]
+        assert any(
+            "PlatformAdmin AdminOps" in p and "error_message is missing its resource name" in p for p in problems(texts)
+        )
+
+    def test_bootstrap_state_bucket_arn_corrupted_is_detected(self) -> None:
         texts = dict(_bootstrap_texts())
         texts["platform_admin_data_policies.tf"] = texts["platform_admin_data_policies.tf"].replace(
-            'agent-platform-bootstrap-tfstate\\"") &&', 'x") &&', 1
+            '"arn:aws:s3:::agent-platform-bootstrap-tfstate"   = ["s3:ListBucket"]',
+            '"arn:aws:s3:::agent-platform-bootstrap-tfstate-x" = ["s3:ListBucket"]',
+            1,
         )
         assert texts["platform_admin_data_policies.tf"] != _bootstrap_texts()["platform_admin_data_policies.tf"]
-        assert any("self-access precondition" in p for p in problems(texts))
+        assert any(
+            "PlatformAdmin BootstrapStateProvisioning" in p and "no longer matches the pinned parsed-grant condition" in p
+            for p in problems(texts)
+        )
+
+    def test_bootstrap_state_condition_clause_removed_is_detected(self) -> None:
+        texts = dict(_bootstrap_texts())
+        texts["platform_admin_data_policies.tf"] = texts["platform_admin_data_policies.tf"].replace(
+            's.Effect == "Allow" && !can(s.Condition)\n            && contains(flatten([try(s.Resource, [])]), arn)',
+            's.Effect == "Allow"\n            && contains(flatten([try(s.Resource, [])]), arn)',
+            1,
+        )
+        assert texts["platform_admin_data_policies.tf"] != _bootstrap_texts()["platform_admin_data_policies.tf"]
+        assert any(
+            "PlatformAdmin BootstrapStateProvisioning" in p and "no longer matches the pinned parsed-grant condition" in p
+            for p in problems(texts)
+        )
+
+    def test_bootstrap_state_inner_alltrue_weakened_to_anytrue_is_detected(self) -> None:
+        texts = dict(_bootstrap_texts())
+        texts["platform_admin_data_policies.tf"] = texts["platform_admin_data_policies.tf"].replace(
+            "&& alltrue([for a in actions : contains(flatten([try(s.Action, [])]), a)])",
+            "&& anytrue([for a in actions : contains(flatten([try(s.Action, [])]), a)])",
+            1,
+        )
+        assert texts["platform_admin_data_policies.tf"] != _bootstrap_texts()["platform_admin_data_policies.tf"]
+        assert any(
+            "PlatformAdmin BootstrapStateProvisioning" in p and "no longer matches the pinned parsed-grant condition" in p
+            for p in problems(texts)
+        )
+
+    def test_bootstrap_state_strcontains_form_restored_is_detected(self) -> None:
+        texts = dict(_bootstrap_texts())
+        old_block = (
+            "      condition = alltrue([\n"
+            "        for arn, actions in {\n"
+            '          "arn:aws:s3:::agent-platform-bootstrap-tfstate"   = ["s3:ListBucket"]\n'
+            '          "arn:aws:s3:::agent-platform-bootstrap-tfstate/*" = ["s3:GetObject", "s3:PutObject", '
+            '"s3:DeleteObject"]\n'
+            "          } : anytrue([\n"
+            "            for s in jsondecode(local.platform_admin_bootstrap_state_policy_json).Statement :\n"
+            '            s.Effect == "Allow" && !can(s.Condition)\n'
+            "            && contains(flatten([try(s.Resource, [])]), arn)\n"
+            "            && alltrue([for a in actions : contains(flatten([try(s.Action, [])]), a)])\n"
+            "        ])\n"
+            "      ])"
+        )
+        strcontains_block = (
+            "      condition = (\n"
+            "        strcontains(local.platform_admin_bootstrap_state_policy_json, "
+            '"arn:aws:s3:::agent-platform-bootstrap-tfstate\\"") &&\n'
+            "        strcontains(local.platform_admin_bootstrap_state_policy_json, "
+            '"arn:aws:s3:::agent-platform-bootstrap-tfstate/*\\"")\n'
+            "      )"
+        )
+        base = texts["platform_admin_data_policies.tf"]
+        assert old_block in base
+        texts["platform_admin_data_policies.tf"] = base.replace(old_block, strcontains_block, 1)
+        assert texts["platform_admin_data_policies.tf"] != _bootstrap_texts()["platform_admin_data_policies.tf"]
+        assert any(
+            "PlatformAdmin BootstrapStateProvisioning" in p
+            and ("strcontains(" in p or "no longer matches the pinned parsed-grant condition" in p)
+            for p in problems(texts)
+        )
 
     def test_external_id_without_sensitive_is_detected(self) -> None:
         texts = dict(_bootstrap_texts())
