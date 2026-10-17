@@ -50,7 +50,7 @@ scope:
     create_telemetry_tables gains the additive leg (Decision N cl.1). Order: existing tables -> _refuse_half_pairs ->
     partition drift and column drift are checked first, where the ONLY tolerated drift is a declared column that an
     existing EVENT table (the four telemetry_* tables) lacks and that the CONTRACT leaves optional: its projection entry
-    is nullable true, it carries no not_null rule (one with exclude_before excepted) and no required_when rule, and it
+    is nullable true, it carries no not_null rule (staged or not) and no required_when rule, and it
     is not in spec.not_null or tenant_id/project_id (spec.not_null is only the engine's NOT NULL set, narrower than the
     contract's); every other problem (a live column the spec does not declare, a missing NOT NULL column,
     any partition drift, any column drift on a dimension or counter table, a half-present pair) raises the same loud
@@ -68,6 +68,17 @@ scope:
     becomes create-or-add-nullable-column (no drop, no rename or retype, no row write) and cites "(Decision N, amending
     Decision 216 clause 2)". Nothing else changes: env pin, the pre and post ownership checks and the class-only error
     wrapping stay as they are.
+- file: src/lambdas/ducklake_maintenance_smoke/handler.py
+  action: Modify
+  purpose: >-
+    Docstring only: "plus the create-only owner-login telemetry DDL verb" becomes "plus the owner-login telemetry DDL
+    verb (create-if-absent and the Decision N additive leg)". The "(Decision 216, amending Decision 143 clause 2)"
+    citation stays verbatim (test_owner_provisioning_decision.py resolves Decision 216 from it).
+- file: src/lambdas/ducklake_maintenance_smoke/manifest.yaml
+  action: Modify
+  purpose: >-
+    Comments only (lines 24 and 52): "create-only" becomes "create-if-absent plus additive nullable columns". No include,
+    path or field changes.
 - file: scripts/ducklake_smoke/lambda_maintenance_gates.py
   action: Modify
   purpose: >-
@@ -164,7 +175,8 @@ scope:
     Decision 216's span still at most 6,144 bytes (tests/checks/decisions/test_owner_provisioning_decision.py asserts it
     too and must stay green unchanged).
 bundled_recommendations: []
-followon_recs: []
+followon_recs:
+- rec-4408
 closes_criteria: []
 infrastructure_dependencies:
 - >-
@@ -388,6 +400,16 @@ test_obligations:
   verification_step: 1
   test_selector: tests/common/test_ducklake_telemetry_provision.py::test_create_tables_refuses_a_missing_not_null_column_before_any_ddl
   red_green_expectation: red before (node absent), green after
+- source: src/lambdas/ducklake_maintenance_smoke/handler.py
+  behavior: Docstring only; the Decision 216 citation stays verbatim.
+  verification_step: 2
+  test_selector: tests/test_ducklake_maintenance_smoke_handler.py::test_create_telemetry_response_lists_added_columns
+  waiver_reason: Docstring-only edit; no behaviour changes, and the Decision 216 test reads the unchanged citation.
+- source: src/lambdas/ducklake_maintenance_smoke/manifest.yaml
+  behavior: Comments only; the bundle is unchanged.
+  verification_step: 2
+  test_selector: tests/test_ducklake_maintenance_smoke_handler.py::test_create_telemetry_response_lists_added_columns
+  waiver_reason: Comment-only edit; no include, path or field changes, so the bundle and its checks are unchanged.
 - source: src/lambdas/ducklake_maintenance_smoke/telemetry_actions.py
   behavior: The verb's response lists the added columns.
   verification_step: 2
@@ -453,8 +475,8 @@ context:
   live in an unchecked free-form field. His pick ratifies Decision N's content as drafted here; the build still asks for
   his word on the final text before the merge (Class A contract and Decision ratification are always-ask).
 - >-
-  Inputs: /mnt/project-files/capture-producer-fixes/ (step6b-presentation.md, ADVICE.md from the Fable consult,
-  fable-brief/BRIEF.md); /mnt/project-files/telemetry-slice4/ADVICE.md findings 1-3, plan-ADVICE.md F1-F2.
+  Inputs: /mnt/project-files/capture-producer-fixes/ (step6b-presentation.md, ADVICE.md, the Fable consult);
+  /mnt/project-files/telemetry-slice4/ADVICE.md findings 1-3, plan-ADVICE.md F1-F2.
 - >-
   Why columns, not a bag: check_existing_tables demands live columns == declared
   (src/common/ducklake_telemetry_provision.py:146-168) and there is no telemetry ALTER path, so any contract column add
@@ -466,9 +488,6 @@ context:
   reasoning_effort is provider-neutral (Claude Code calls it effort). cache_creation_*_tokens follow reasoning_tokens:
   subsets of a token class, never extra classes.
 - >-
-  Two existing assertions change (strengthening, listed in scope): the graduated test_create_telemetry_response_shape
-  gains the added key, and the gate tests' exact OK line gains added=<m>.
-- >-
   Column freeze: these ten are the complete set of columns parser_version 4 emits, so the producer plan needs no second
   column add. The other facts the design inputs named are dropped from v4, not stored in a bag: per_turn_effort (equal
   to effort on every observed record), service_tier (standard on every observed record; no price under the fixed
@@ -477,6 +496,9 @@ context:
 - >-
   No bundled recs: rec-4354 and rec-4359 (and rec-4025's inputs) close through PLAN-telemetry-capture-producer-fixes,
   whose acceptance nodes are producer-side. No unresolved ci_rca rec at finalization (rec-4372 closed by #1536).
+- >-
+  closes_criteria is empty on purpose: this is a rec-driven enabling plan outside tier-item-lifecycle.yaml's
+  follow_on_plan_mode; it scopes no next slice toward an open criterion of T3.20 or T2.36 (critique round 3, 12l).
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
@@ -511,8 +533,10 @@ execution_steps:
   "true when the source recorded the call as finished (Claude Code: the response record carries a stop_reason) or a
   final source replaced the record's usage (usage_source spawn_result); false marks the four classes as a lower bound,
   a snapshot taken while the response was still streaming (rec-4354), so a sum over such rows undercounts. NULL when the
-  producer does not say (claude_code before parser_version 4). Set on model_call points only (not write-enforced; the
-  producer's tests pin it)."; populated_by "the
+  producer does not say (claude_code before parser_version 4). Set on model_call points only. Coverage (Decision 181
+  cl.2): model_call-only is not write-enforced (the grammar's null_or_zero_when reads false as 0); the claude_code
+  producer is pinned by its tests (PLAN-telemetry-capture-producer-fixes), every other producer is an unenforced
+  residual owned by rec-4028, and the write-time leg is owned by rec-4408."; populated_by "the
   producer, at the model_call point event."; dq_intent {}. usage_source (str/string) -- description "Where this
   model_call's token classes came from: record | spawn_result."; semantics "record: the call's own source record.
   spawn_result: a sync sub-agent's last call whose own record was not final, taken from the parent's spawn result, which
@@ -529,8 +553,10 @@ execution_steps:
   of this model_call with a 1-hour (resp. 5-minute) cache lifetime: a subset of tokens_cache_creation, never a fifth
   billing class."; semantics "Cache writes are priced by lifetime, so cost at read needs the split. NULL when the
   provider did not report it; never a local estimate. The pair's sum is at most tokens_cache_creation; only each
-  column's own bound is write-enforced (the row-rule grammar has no sum leg), a declared residual the producer's tests
-  pin."; dq_intent {at_most: tokens_cache_creation}. Each contract gains
+  column's own bound is write-enforced, because the row-rule grammar has no sum leg. Coverage (Decision 181 cl.2): the
+  claude_code producer is pinned by its tests (PLAN-telemetry-capture-producer-fixes); every other producer is an
+  unenforced residual owned by rec-4028; the write-time sum leg is owned by rec-4408."; dq_intent {at_most:
+  tokens_cache_creation}. Each contract gains
   one contract-level amendment_log entry {date: <build day>, semantic_break: false, change_class: field_add, summary
   naming this plan and the columns, migration_story: "Nullable additions: every stored row stays valid and reads NULL;
   no producer emits them before PLAN-telemetry-capture-producer-fixes; the smoke tables gain them through Decision N's
@@ -568,7 +594,8 @@ execution_steps:
   captured sessions and puts a human in the deploy path. Decision: 1. On the disposable smoke catalog,
   create_telemetry_tables also adds, under the owner login and inside its one transaction, every declared column an
   existing telemetry event table lacks, provided the contract leaves it optional (nullable, with no not-null or
-  conditional-requiredness rule) (ALTER TABLE ADD COLUMN, declared type, no default). Any other drift -- a live column the contract does not declare, a missing NOT NULL column, a
+  conditional-requiredness rule) (ALTER TABLE ADD COLUMN, declared type, no default); reversible and disposable, so
+  agent-autonomous under Decision 143 cl.3 as Decision 216 cl.2 is. Any other drift -- a live column the contract does not declare, a missing NOT NULL column, a
   partition drift, a half-present dimension pair, any drift on a dimension or counter table -- still fails loud before
   any DDL. It never drops, renames or retypes a column and writes no row; Decision 143 cl.2's dispatch set is unchanged.
   2. A telemetry column ships contract first, as a nullable field_add, through the governed deploy, and no producer
@@ -605,7 +632,9 @@ execution_steps:
   and scripts.session.postflight --evidence; push; PR (body: what changes, the two integration logs, the Decision N text
   for Benjamin's word, and that the producer plan waits on this deploy); CI green on the head. Merge only after code
   review PROCEED, CI green and Benjamin's own word on the Decision and the contract fields (fetch his message before
-  merging); the coordinator sequences it against other DuckLake deploys. Squash-merge.
+  merging); the coordinator sequences it against other DuckLake deploys. Squash-merge. Then record on rec-4292 and
+  rec-4028 (update_rec notes) that the cache-write split is now typed columns and that a nullable column add on the
+  smoke catalog is Decision N's CI step, no longer an admin repair.
 - 9. Run steps 10-12 on the merge commit's deploy; post the result to the coordinator so the producer plan's build can merge.
 - 'Report: what was implemented, verification results, the deploy run, and the go-ahead for the producer plan.'
 work_areas: []
