@@ -134,8 +134,8 @@ GRAMMAR_ARMS: dict[str, tuple[str, str]] = {
 }
 
 _CONTROL_OPERATORS: frozenset[str] = frozenset({"&&", "||", "|", ";"})
-_SELECTOR_TOKENS: frozenset[str] = frozenset({"-k", "-m", "--deselect"})
-_SELECTOR_PREFIXES: tuple[str, ...] = ("-k=", "-m=", "--deselect=")
+# Prefixes, not exact tokens: argparse also accepts a short option's value attached (`-mslow`).
+_SELECTOR_PREFIXES: tuple[str, ...] = ("-k", "-m", "--deselect")
 _NODE_ID_RE = re.compile(r"^\S+\.py::\S+$")
 
 
@@ -171,7 +171,21 @@ def _split_segments(tokens: list[str]) -> tuple[list[list[str]], list[str]]:
 
 
 def _is_selector_flag(token: str) -> bool:
-    return token in _SELECTOR_TOKENS or token.startswith(_SELECTOR_PREFIXES)
+    return token.startswith(_SELECTOR_PREFIXES)
+
+
+def _is_pytest_invocation(token: str) -> bool:
+    return token.rsplit("/", 1)[-1] == "pytest"
+
+
+def _pytest_arguments(segment: list[str]) -> list[str]:
+    # Tokens before the pytest invocation belong to the interpreter or wrapper (the `-m` in
+    # `bin/venv-python -m pytest` is Python's module flag, not a marker selector). With no
+    # recognisable invocation token the whole segment is scanned, as before.
+    for index, token in enumerate(segment):
+        if _is_pytest_invocation(token):
+            return segment[index + 1 :]
+    return segment
 
 
 def _classify_arm(cmd: str) -> tuple[str, tuple[str, ...]]:
@@ -188,7 +202,7 @@ def _classify_arm(cmd: str) -> tuple[str, tuple[str, ...]]:
     segment = segments[0]
     if segment and segment[0] == "!":
         return GRAMMAR_NEGATED_SEGMENT, ()
-    if any(_is_selector_flag(token) for token in segment):
+    if any(_is_selector_flag(token) for token in _pytest_arguments(segment)):
         return GRAMMAR_SELECTOR_FLAG, ()
 
     node_ids = tuple(token for token in segment if _NODE_ID_RE.match(token))
