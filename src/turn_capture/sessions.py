@@ -199,7 +199,7 @@ def _segment_closes(ctx: Ctx, stream: Stream, diag: Counter[str]) -> list[dict[s
             rows.append(
                 _row(ctx, anchor, stream, ext, "close", anchor.ts, anchor.line, None, **_close_outcome(turns[-1], diag))
             )
-            if boundary.ts is not None and boundary.ts < anchor.ts:
+            if boundary.ts is not None and anchor.ts is not None and boundary.ts < anchor.ts:
                 diag["resume_before_close"] += 1
         start = boundary.line
     return rows
@@ -338,10 +338,9 @@ def build_agents(parsed: ParsedTree, ctx: Ctx, diag: Counter[str] | None = None)
         error = None
         if res.body.get("is_error") is True:
             error = scrub_text(text_of(res.body.get("content"))).text[:2000]
-        ext = role_ref(spawn.close_rec.uuid, spawn.close_block, "agent_close")
+        closing = res.rec
+        ext = role_ref(closing.uuid, spawn.close_block, "agent_close")
         rows.append(
-            _agent_row(
-                ctx, spawn, child, ext, "close", spawn.close_rec, outcome="failed" if failed else "success", error=error
-            )
+            _agent_row(ctx, spawn, child, ext, "close", closing, outcome="failed" if failed else "success", error=error)
         )
     return rows
