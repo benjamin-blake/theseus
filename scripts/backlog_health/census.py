@@ -115,10 +115,10 @@ def _is_unsafe(cmd: str) -> bool:
     return any(p.search(cmd) for p in _UNSAFE_PATTERNS)
 
 
-def _is_malshaped(cmd: str) -> bool:
+def _is_malshaped(cmd: str, *, cap_length: bool = True) -> bool:
     if "\n" in cmd:
         return True
-    if len(cmd) > _MAX_SHAPE_LEN:
+    if cap_length and len(cmd) > _MAX_SHAPE_LEN:
         return True
     if "python -c" in cmd and "'python -c'" not in cmd:
         return True
@@ -176,10 +176,12 @@ def pytest_node_exists(root: Path, rel_path: str, node: Optional[str]) -> bool:
     return True
 
 
-def classify_command(acceptance: Optional[str], *, repo_root: Path = ROOT) -> str:
+def classify_command(acceptance: Optional[str], *, repo_root: Path = ROOT, cap_length: bool = True) -> str:
     """Classify one rec's acceptance command into one of the five BUCKETS -- pure, never
     executes the command itself. Order matters: an empty/prose command is never also flagged
-    unsafe; an unsafe command is never also probed for a missing pytest node."""
+    unsafe; an unsafe command is never also probed for a missing pytest node. cap_length=False
+    lifts only the _MAX_SHAPE_LEN check, for a caller that will never execute the command (the
+    trailer gate's junit route, rec-4384); every other shape check still applies."""
     stripped = (acceptance or "").strip()
     if is_prose(stripped):
         return PROSE_ONLY
@@ -190,7 +192,7 @@ def classify_command(acceptance: Optional[str], *, repo_root: Path = ROOT) -> st
         path, node = target
         if not pytest_node_exists(repo_root, path, node):
             return EXPECTED_FAIL_MISSING_NODE
-    if _is_malshaped(stripped):
+    if _is_malshaped(stripped, cap_length=cap_length):
         return UNPROBEABLE_SHAPE
     return PROBEABLE
 

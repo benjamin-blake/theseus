@@ -247,6 +247,21 @@ class TestJunitRouting:
         entries = census(["rec-1"], rows=rows)
         assert entries[0]["route"] == ROUTE_STATIC
 
+    def test_long_node_id_list_routes_to_junit_not_out_of_grammar(self) -> None:
+        cmd = "bin/venv-python -m pytest " + " ".join([_REAL_NODE] * 7) + " -q"
+        assert len(cmd) > census_mod._MAX_SHAPE_LEN
+        entries = census(["rec-1"], rows=[{"id": "rec-1", "acceptance": cmd}])
+        assert entries[0]["bucket"] == census_mod.PROBEABLE
+        assert entries[0]["route"] == ROUTE_JUNIT
+
+    def test_long_command_off_the_junit_route_keeps_the_length_cap(self) -> None:
+        cmd = "grep -q X tests/f.py && pytest " + " ".join([_REAL_NODE] * 7)
+        assert len(cmd) > census_mod._MAX_SHAPE_LEN
+        entries = census(["rec-1"], rows=[{"id": "rec-1", "acceptance": cmd}])
+        assert entries[0]["bucket"] == census_mod.UNPROBEABLE_SHAPE
+        assert entries[0]["route"] == ROUTE_STATIC
+        assert verdict_for(entries[0]["bucket"], None) == OUT_OF_GRAMMAR
+
     def test_bare_pytest_path_stays_static(self) -> None:
         rows = [{"id": "rec-1", "acceptance": "pytest tests/x.py"}]
         entries = census(["rec-1"], rows=rows)
