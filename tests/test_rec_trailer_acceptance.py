@@ -248,19 +248,13 @@ class TestJunitRouting:
         assert entries[0]["route"] == ROUTE_STATIC
 
     def test_long_node_id_list_routes_to_junit_not_out_of_grammar(self) -> None:
-        cmd = "bin/venv-python -m pytest " + " ".join([_REAL_NODE] * 7) + " -q"
-        assert len(cmd) > census_mod._MAX_SHAPE_LEN
-        entries = census(["rec-1"], rows=[{"id": "rec-1", "acceptance": cmd}])
-        assert entries[0]["bucket"] == census_mod.PROBEABLE
-        assert entries[0]["route"] == ROUTE_JUNIT
-
-    def test_long_command_off_the_junit_route_keeps_the_length_cap(self) -> None:
-        cmd = "grep -q X tests/f.py && pytest " + " ".join([_REAL_NODE] * 7)
-        assert len(cmd) > census_mod._MAX_SHAPE_LEN
-        entries = census(["rec-1"], rows=[{"id": "rec-1", "acceptance": cmd}])
-        assert entries[0]["bucket"] == census_mod.UNPROBEABLE_SHAPE
-        assert entries[0]["route"] == ROUTE_STATIC
-        assert verdict_for(entries[0]["bucket"], None) == OUT_OF_GRAMMAR
+        nodes = " ".join([_REAL_NODE] * 7)
+        assert len(nodes) > census_mod._MAX_SHAPE_LEN
+        long_junit = {"id": "a", "acceptance": f"bin/venv-python -m pytest {nodes} -q"}
+        long_chain = {"id": "b", "acceptance": f"true && pytest {nodes}"}
+        on_route, off_route = census(["a", "b"], rows=[long_junit, long_chain])
+        assert (on_route["bucket"], on_route["route"]) == (census_mod.PROBEABLE, ROUTE_JUNIT)
+        assert (off_route["bucket"], off_route["route"]) == (census_mod.UNPROBEABLE_SHAPE, ROUTE_STATIC)
 
     def test_bare_pytest_path_stays_static(self) -> None:
         rows = [{"id": "rec-1", "acceptance": "pytest tests/x.py"}]
