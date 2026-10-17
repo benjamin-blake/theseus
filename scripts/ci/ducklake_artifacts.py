@@ -408,14 +408,12 @@ def fetch_reviewed(
     pointer = _read_pointer(s3_client, bucket, artifact_sha)
     if pointer is not None:
         candidate = pointer.get("artifact_sha")
-        valid = (
+        if not isinstance(candidate, str) or not (
             pointer.get("schema") == 1
-            and isinstance(candidate, str)
             and len(candidate) == 40
             and all(c in "0123456789abcdef" for c in candidate)
             and candidate != artifact_sha
-        )
-        if not valid or not isinstance(candidate, str):
+        ):
             raise DucklakeArtifactError(
                 f"DUCKLAKE_FETCH_BAD_POINTER: lambda-packages/{artifact_sha}/superseded-by.json is malformed "
                 f"or self-referencing: {pointer!r}"
