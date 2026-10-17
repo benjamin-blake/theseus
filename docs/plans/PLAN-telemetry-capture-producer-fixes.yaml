@@ -156,7 +156,8 @@ scope:
   purpose: >-
     R7 qualified in place (a Class C contract amendment; the build merge still needs Benjamin's word): the final-usage
     clause becomes "a model_call is emitted once its turn is closed (a
-    later boundary, its stream's completion evidence, a resume boundary or a recorded finalization cut); it carries its
+    later boundary, its stream's completion evidence, a resume boundary or a recorded finalization cut, which treats the
+    tree as final); it carries its
     owner record's usage and declares in usage_final whether that usage is final and in usage_source whether a sync
     spawn result supplied it; a non-final row stays non-final until a parser_version bump re-parses it"; the emission
     set of the tree itself includes one close per root resume boundary (SC-1), so a resume records no finalization cut;
@@ -264,8 +265,19 @@ scope:
   action: Create
   purpose: >-
     test_r7_declares_usage_final_and_resume_segment_closes and test_agents_background_outcome_follows_the_notice: the
-    amended texts carry their rule tokens and amendment_log entries (a new module, since test_contract_amendments.py is
-    at 451 SLOC).
+    amended texts carry their rule tokens and amendment_log entries, and the R7 node asserts the phrase "declares in
+    usage_final whether that usage is final" (a new module, since test_contract_amendments.py is at 451 SLOC).
+- file: tests/telemetry/test_contract_amendments.py
+  action: Modify
+  purpose: >-
+    SANCTIONED ASSERTION CHANGE (amendment 2026-10-17, raised by the build):
+    test_parser_v3_cut_rules_are_declared_in_the_envelope's R7 phrase narrows to its surviving clause "a recorded
+    finalization cut, which treats the tree as final)", because the envelope scope row replaces R7's final-usage clause;
+    the dropped "carries final usage" wording is superseded by usage_final, which
+    test_capture_v4_contract_notes.py::test_r7_declares_usage_final_and_resume_segment_closes pins. The phrase is in the
+    envelope scope row's pinned R7 clause, which the build's text must equal. The module is the graduated check
+    telemetry-contract-risk-amendments, and the node keeps its property (the envelope declares the finalization-cut
+    rules); every other assertion is unchanged and no node is added (the module is at 451 SLOC).
 - file: tests/turn_capture/test_real_transcript_conformance.py
   action: Modify
   purpose: >-
@@ -522,7 +534,7 @@ acceptance_criteria:
 - >-
   The golden corpus is regenerated at parser_version 4 with the registry bumped, the resume schedules and every graduated
   turn-capture check still pass, and real transcripts agree with an independent raw walk on every new model_call column
-  and on harness_session_key, the PR recording which classes were present (VP 6, VP 7, VP 8); the checkout columns are
+  and on harness_session_key, the PR recording which classes were present (VP 6, VP 15, VP 7, VP 8); the checkout columns are
   proven on a real session after merge (VP 13).
 - The amended contracts carry the new rules and the c8 smoke lands every new column on the live smoke writer (VP 9, VP 12).
 - The five bundled recs read closed after the merge and rec-4407 owns the last-segment residual (VP 14).
@@ -615,28 +627,20 @@ verification_plan:
     tests/turn_capture/test_record_turn.py::test_new_cases_are_built_from_their_builders
     tests/turn_capture/test_record_turn.py::test_rows_use_only_caller_known_columns
     tests/turn_capture/test_sessions.py::test_close_row_per_finalization_with_transcript_outcome
-    tests/telemetry/test_parser_version_registry.py -q && bin/venv-python -m pytest tests/telemetry_verify
-    tests/telemetry/test_derived_layer_reconciliation.py -m "not integration" -q
-  expected: >-
-    Exit 0, every node passes, the golden harness's header check, golden reconcile, oracle agreement and mutation nodes
-    included.
+    tests/telemetry/test_parser_version_registry.py -q
+  expected: Exit 0, every node passes.
   fix_if: >-
     Regenerate expected_rows from record_turn only after the behaviour tests pass; a schedule failure is a purity defect
     in a new rule (most likely a resume row or segment close reading a record after its bound), never a test to relax.
-    A golden harness failure against an authored value is resolved by re-deriving it by hand from the formula, never by
-    copying verb or oracle output. An oracle-versus-verb disagreement with no authored value behind it, or any golden
-    harness file other than the two derived_golden files needing a change (scripts/telemetry_verify/**,
-    tests/telemetry_verify/**, tests/fixtures/telemetry_golden_chain.py, tests/telemetry/test_derived_layer_reconciliation.py),
-    means stop and escalate to the coordinator, never an inline edit.
   hermetic: true
   graduation: waive
   graduation_waiver_reason: >-
     Its nodes are already graduated standing checks (turn-capture-golden-corpus, turn-capture-r7-incremental-equals-full,
     turn-capture-finalize-resume-emits-each-row-once, turn-capture-close-row-per-finalization,
-    telemetry-parser-version-registry and the golden harness's own rows), except
+    telemetry-parser-version-registry), except
     test_new_cases_are_built_from_their_builders, an existing fast-tier corpus-registration node whose failure the
     golden-corpus check also surfaces. Its red state comes from the regenerated corpus and the sanctioned changes, not
-    from a new behaviour.
+    from a new behaviour. The golden harness suite is step 15 (amendment 2026-10-17).
 - step: 7
   phase: pre-deploy
   action: Every golden case loads into a local DuckLake with the column-additions projection and every FK resolves.
@@ -767,6 +771,32 @@ verification_plan:
   expected: The first five read status closed, each naming this merge; rec-4407 reads open.
   fix_if: A rec stayed open; check the trailer and the ci.yml closure job's run; close it through the portal with its acceptance evidence.
   hermetic: false
+- step: 15
+  phase: pre-deploy
+  action: >-
+    The golden harness at v4 -- the re-authored derived_golden files reconcile, the oracle agrees with the verbs, and
+    the header check and mutation evidence pass (moved out of step 6 by the 2026-10-17 amendment).
+  command: >-
+    bin/venv-python -m pytest tests/telemetry_verify tests/telemetry/test_derived_layer_reconciliation.py -m "not
+    integration" -q
+  expected: >-
+    Exit 0, every node passes, the golden harness's header check, golden reconcile, oracle agreement and mutation nodes
+    included.
+  fix_if: >-
+    A golden harness failure against an authored value is resolved by re-deriving it by hand from the formula, never by
+    copying verb or oracle output. An oracle-versus-verb disagreement with no authored value behind it, or any golden
+    harness file other than the two derived_golden files needing a change (scripts/telemetry_verify/**,
+    tests/telemetry_verify/**, tests/fixtures/telemetry_golden_chain.py, tests/telemetry/test_derived_layer_reconciliation.py),
+    means stop and escalate to the coordinator, never an inline edit.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: >-
+    Its nodes are the golden harness's graduated rows (telemetry-derived-layer-golden-reconcile, -mutation-evidence,
+    -oracle-agreement, -conflicts-and-generations, -delivery-independence, telemetry-verify-ledger-and-shape-classify,
+    telemetry-verify-oracle-matches-committed-cases), and the full tier runs them. Not hermetic for replay: a whole-module
+    run whose cost-dominant modules the fast tier's pytest_diff selects on this diff (exception (v)'s rationale), measured
+    at 155 s on the v3 tree and about 4 minutes on the build, above validate_vp_replay's 120 s MAX_AGGREGATE_SECONDS;
+    the contract names no cost carve-out yet (rec-4421).
 test_obligations:
 - source: src/turn_capture/usage.py
   behavior: usage_final, usage_source and the spawn-result correction (US-1..US-4).
@@ -888,7 +918,7 @@ context:
   210 resolved by typing every new fact (no JSON keys). RELATED 81, 95-97, 84, 61, 204, 167, 151, 181, 132 (keep the
   graduated turn-capture node ids resolving), 128, 125, 88, 118, 212, 184, 189. Decisions triaged: 171 of 171. Roadmap
   items intersected: 11; CONFLICT: 0; RELATED: 9.
-- 'gates: decision-scout=FLAGS_FOUND (1 WARN, 2 NOTE, resolved); plan-critique=REVISE r1-r5 (all fixed; extra confirming rounds decided with notice), r5 confirming check PROCEED (nit folded in)'
+- 'gates: decision-scout=FLAGS_FOUND (1 WARN, 2 NOTE, resolved); plan-critique=REVISE r1-r5 (all fixed; extra confirming rounds decided with notice), r5 confirming check PROCEED (nit folded in); amendment 2026-10-17 (raised by the build): the golden harness suite moves from VP 6 to a non-hermetic VP 15 (it exceeds the 120 s replay cap; VP 6 keeps its node selectors hermetic), the pinned R7 clause keeps "which treats the tree as final", and one R7 phrase in test_contract_amendments.py narrows to it; a1 REVISE (F1, F2 fixed; N1, N2 folded in), a2 PROCEED (nits A, B folded in)'
 - >-
   Direction: Benjamin approved the producer fixes thread (cmsg_012XgaFy8VaDQbxP5D8nC958MdLJawKLhVPEQqyXDX82iS), chose "A
   with typed columns, write the plan" (cmsg_012XgaFy8VaDQbxP5D8nC958587eB33Uj5AJ9MenjVzU5S) and asked for checks against
@@ -934,7 +964,7 @@ execution_steps:
   tests/telemetry/fixtures/derived_golden_state.yaml and scripts/telemetry_verify/derive.py); if not, STOP and tell
   the coordinator (it must merge first). Then read the merged tests/telemetry_verify/test_shape.py and test_ledger.py:
   if a node asserts a producer-derived outcome or count on a verification tree that v4 changes (for example
-  background_status_mismatch 3 on subagent_background_failed), escalate to the coordinator now rather than at VP 6.
+  background_status_mismatch 3 on subagent_background_failed), escalate to the coordinator now rather than at VP 15.
 - >-
   2. Rules PV-1..PV-4 (provenance.py, the pin hook). PV-1 line: "[session_start_log_turn] capture pin
   checkout=<v> base=<v> dirty=<v>", v a validated hex sha or unknown, dirty true|false|unknown; the parser accepts the
@@ -1015,7 +1045,7 @@ execution_steps:
   resumed cases, background closes, resume rows of trailing hook groups dropped -- hooks_resume_and_compact.json's
   rs3#0/resume is one) and confirm no other row changed; set the registry's v4 entry from the new golden_digest;
   re-author both derived_golden files by hand, with the restored close tie and idle_threshold session their scope row
-  names, and move an aligned trap only as its scope row allows; run step 6.
+  names, and move an aligned trap only as its scope row allows; run steps 6 and 15.
 - >-
   9. Execute the Verification Plan steps 7-12 (step 12 only once the precondition holds); loop until each passes; on an
   unrecoverable V3 failure stop and RCA (Decision 55).
