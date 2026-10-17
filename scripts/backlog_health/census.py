@@ -20,7 +20,9 @@ Buckets (measured at a702e438 over 1079 open recs -- see PLAN-backlog-health-det
                                    (rm -rf, sudo, curl, git push, ...). Never sent to probe.py.
   unprobeable_shape            -- a command outside the shapes above that this module cannot
                                    safely reason about (multi-line, a `python -c` one-liner, or
-                                   simply too long to trust a static read of).
+                                   simply too long to trust a static read of; the trailer gate
+                                   lifts only the length check for a junit-routed command, which
+                                   it never executes -- rec-4384).
   prose_only                   -- an empty acceptance field, or narrative text rather than a
                                    command ("N/A", "Manual review", ...).
 
