@@ -153,7 +153,9 @@ scope:
     seam; AlarmOutcome carries filed, updated, unchanged, rate_limited and declared counts and the per-class actions)
     turns each alarm class with a positive count into one scripts.rec_episode.run_episode call with over_threshold true
     (file when no open rec of the class exists, else update; never close), the class carried in the title ("telemetry
-    verification alarm: <class>") and context as finding_class=<class> and matched by sub_key on it; scope is the label
+    verification alarm: <class>") and context as finding_class=<class> and matched by sub_key on it as an exact
+    delimited token (finding_class=<class> followed by a space, a comma or the end of the context), never a substring,
+    so a class that prefixes another never updates its neighbour's rec; scope is the label
     the rec text carries (a commit SHA, a day, a window or a tree's root session ref), alarm_at the caller's own
     per-class map of last-call times, so the rate limit is per class within one caller's state (a tree's verify state;
     None disables it; a class called under ALARM_MIN_INTERVAL_S = 21,600 s ago is skipped and counted rate_limited),
@@ -200,7 +202,9 @@ scope:
     so an operator can run it from a session. Prints one counts-only line, GOLDEN_SMOKE trees=<n>
     expectations=<n> window_skipped=<n> reader_calls=<n> writer_calls=<n> elapsed_s=<n> max_response_bytes=<n>
     seam_skipped=<n> skew=<0 or 1> mismatches=<n>; on any mismatch (skew=0) it files one golden_replay_mismatch:<verb> alarm per verb, and on
-    any failure that stops the run (an unreachable writer or reader, a 5xx, a refused registration) one
+    any failure that stops the run (an unreachable writer or reader, a 5xx, a refused registration), after first
+    re-reading the two deploy records from S3 (independent of the failing call; a deploy-path diff against the
+    checkout there is skew=1, files nothing and exits 0, because a deploy that landed mid-run explains the failure), one
     golden_replay_error alarm, through alarms.raise_alarms (scope the commit SHA, file this module, acceptance the live
     re-run AWS_PROFILE=agent_platform bin/venv-python -m scripts.ducklake_smoke.lambda_telemetry_golden_gates
     --no-alarms --assert-zero-mismatches, which exits 0 only after a completed run at mismatches=0; unless --no-alarms),
@@ -218,7 +222,10 @@ scope:
   action: Create
   purpose: >-
     Triggers: workflow_run of deploy-ducklake-lambdas (types completed; the job runs only when it concluded success on
-    main, checking out workflow_run.head_sha), a daily schedule at an unused minute (checking out main, so a producer
+    main, checking out workflow_run.head_sha), a daily schedule in the every-N-hours shape '<minute> */24 * * *' at an
+    unused minute, which scripts/convergence_health/sensor_liveness.py's cron_period_seconds classifies as 86,400 s
+    (the plain 'M H * * *' daily shape raises there and would blind loop_liveness_stale for every peer) (checking out
+    main, so a producer
     or expectations change is replayed within a day and loop_liveness_stale's cadence and success legs cover the
     workflow), and workflow_dispatch; no push trigger, so a run never races a deploy started by the same commit;
     workflow_dispatch runs only on main (job if github.ref == 'refs/heads/main'); the checkout uses fetch-depth 0 for
@@ -281,7 +288,8 @@ scope:
 - file: tests/telemetry_verify/test_alarms.py
   action: Create
   purpose: >-
-    Mirror tests for alarms.py over a fake portal_caller and rows: test_one_episode_per_alarm_class,
+    Mirror tests for alarms.py over a fake portal_caller and rows: test_one_episode_per_alarm_class (including two
+    classes where one is a prefix of the other: each files its own rec),
     test_declared_classes_are_counted_never_filed, test_a_class_is_rate_limited_by_the_callers_map,
     test_rec_text_carries_counts_classes_and_scope_only and test_telemetry_verify_source_is_registered_and_projected
     (validate_source("telemetry_verify") passes, an unregistered neighbour raises, and both registry-sourced
@@ -316,8 +324,9 @@ scope:
     Workflow structure guard in the tests/test_security_detector_liveness_workflow.py style: exactly the three
     triggers (workflow_run with the conclusion and branch guard, schedule, workflow_dispatch) and no push trigger, the
     permissions block, the ci-branch role with the masked account-ID pattern, masked URL resolution, the module
-    command, timeout 30, the main-only dispatch guard, fetch-depth 0, the workflow name keying the taxonomy row, and no
-    terraform, deploy or workflow-dispatch step.
+    command, timeout 30, the main-only dispatch guard, fetch-depth 0, the workflow name keying the taxonomy row, the
+    cron classified by sensor_liveness.cron_period_seconds as 86,400 s, and no terraform, deploy or workflow-dispatch
+    step.
 bundled_recommendations: []
 followon_recs:
 - rec-4025
@@ -689,12 +698,13 @@ verification_plan:
   graduation: not-applicable
 - step: 17
   phase: post-deploy
-  action: The carrier and rec-4101 notes landed (read-back after the closure's portal updates).
+  action: The carrier, rec-4101 and rec-4411 notes landed (read-back after the closure's portal updates).
   command: >-
-    AWS_PROFILE=agent_platform bin/venv-python -c "from src.common.ducklake_reader_client import
-    make_reader,fetch_recs_by_ids;rs,missing=fetch_recs_by_ids(make_reader(profile='agent_platform'),['rec-4025','rec-4101']);
+    AWS_PROFILE=agent_platform bin/venv-python -c "import os;from src.common.ducklake_reader_client import
+    make_reader,fetch_recs_by_ids;rs,missing=fetch_recs_by_ids(make_reader(profile='agent_platform'),['rec-4025','rec-4101','rec-4411']);
     by={x['id']:x for x in rs};assert not missing and all(by[i]['status']=='open' for i in by),missing;
-    assert all('PLAN-telemetry-verification-verbs' in by[i]['context'] for i in by);print('NOTES_OK')"
+    assert all('PLAN-telemetry-verification-verbs' in by[i]['context'] for i in ('rec-4025','rec-4101'));
+    assert all(os.environ['MERGE_SHA'][:8] in by[i]['context'] for i in by);print('NOTES_OK')"
   expected: NOTES_OK.
   fix_if: A missing note means the closure's update_rec did not land; re-run it through the portal, never edit a cache.
   hermetic: false
@@ -886,7 +896,7 @@ context:
   (governed reader deploy), 83 (never a required check), 88 (egress of the tree and orphan reads). T2.52 c7 asks for the
   named_read response-size ceiling before raw-row extract verbs: the 6,000,000-byte envelope guard, max_rows 2000 and
   the 413 page-halving bound a page, and GOLDEN_SMOKE reports the largest response.
-- "gates: decision-scout=FLAGS_FOUND (resolved by the slice design); plan-critique=REVISE round 1 (J1-J12, M1-M12 fixed), REVISE round 2 (J1-J4, M1-M10 fixed), REVISE round 3 (J1, M1-M8 fixed)"
+- "gates: decision-scout=FLAGS_FOUND (resolved by the slice design); plan-critique=REVISE round 1 (J1-J12, M1-M12 fixed), REVISE round 2 (J1-J4, M1-M10 fixed), REVISE round 3 (J1, M1-M8 fixed), round 4 PROCEED (R4-N1 to R4-N3 applied, plus the liveness-classifiable daily cron shape the monitor plan's critique found)"
 - "ci-rca: none open (ci_rca_open returned 0 rows on 2026-10-17; rec-4372's DuckLake ZIP fix merged as #1536)."
 - >-
   Sequencing: build after the golden harness build merges and after PLAN-telemetry-column-additions' governed deploy is
@@ -981,9 +991,10 @@ execution_steps:
 - >-
   After merge: VP steps 13-16 against the deploy run and the replay run for the merge commit; then, through the portal,
   a context note on rec-4025 (naming PLAN-telemetry-verification-verbs, the merge SHA and the GOLDEN_SMOKE line) and on
-  rec-4101 (naming this plan and that the verification monitor plan closes it), then VP step 17; then an update_rec on
-  rec-4411 (get_rec_write_guidance() first) recording VP step 15's GOLDEN_SMOKE elapsed_s, reader_calls and
-  max_response_bytes as the growth baseline. On an unrecoverable V3 failure stop and RCA (Decision 55).
+  rec-4101 (naming this plan and that the verification monitor plan closes it), and an update_rec on rec-4411
+  (get_rec_write_guidance() first) recording VP step 15's GOLDEN_SMOKE elapsed_s, reader_calls and max_response_bytes
+  as the growth baseline, each note carrying the merge SHA; then VP step 17. On an unrecoverable V3 failure stop and
+  RCA (Decision 55).
 - "Report: what was implemented, each VP step's output (the GOLDEN_SMOKE line and step 16's counts verbatim), the rec-4411 baseline, and any finding filed."
 rollback: >-
   Revert the squash commit; the governed deploy then redeploys the reader without the three verbs and the projection
