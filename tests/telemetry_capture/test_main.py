@@ -391,3 +391,13 @@ def _run_verify_with(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> int:
 
     monkeypatch.setattr(verify, "run_verify", lambda *a, **k: _verify_result())
     return cli.main(["verify", "--tree", str(tmp_path / f"{SID}.jsonl")], out=lambda line: None)
+
+
+def test_every_alarm_class_has_a_defined_denominator() -> None:
+    from scripts.telemetry_capture import verify  # noqa: PLC0415
+
+    zero: dict[str, int] = {}
+    for cls in sorted(verify.ALARM_CLASSES):
+        assert not cli._denominator_met(cls, zero) or cls == "verify_incomplete", cls
+        counts = {cli.DENOMINATOR_OF.get(cls, "x"): 1, "rows_equal": 1, "ledger_records": 1, "stored_ledger_tested": 1}
+        assert cli._denominator_met(cls, counts), f"{cls} has no denominator rule"

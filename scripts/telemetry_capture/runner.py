@@ -232,7 +232,9 @@ def _verify_hook(
             by_day[today] = by_day.get(today, 0) + 1
             fresh["checks_by_day"] = dict(sorted(by_day.items())[-3:])
             fresh["scheduled_at"], fresh["next_attempt_at"] = now, now + verify_due.VERIFY_GUARD_S
-        state.save_verify_state(merge_verify_state(state.verify_state(), fresh, RUNNER))
+        merged = merge_verify_state(held, fresh, RUNNER)
+        if merged != held:
+            state.save_verify_state(merge_verify_state(state.verify_state(), fresh, RUNNER))
     except Exception as exc:  # noqa: BLE001 -- the check is an alarm, never a gate: the outcome stands
         record.pop("verify_due", None)
         record["verify_due_error"] = type(exc).__name__

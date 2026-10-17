@@ -586,3 +586,13 @@ def test_a_due_pass_schedules_the_check_and_counts_it(tmp_path: Path, monkeypatc
     assert held["next_attempt_at"] == pytest.approx(held["scheduled_at"] + runner.verify_due.VERIFY_GUARD_S)
     write(tmp_path, make_files(records(2)))
     assert run(tmp_path, Writer()).diag["verify_due"] is False, "the guard holds the next passes"
+
+
+def test_a_not_due_pass_that_changes_nothing_does_not_rewrite_the_state(tmp_path: Path) -> None:
+    write(tmp_path, make_files(records()))
+    writer = Writer()
+    run(tmp_path, writer)
+    st = state(tmp_path)
+    before = st.verify_file.stat().st_mtime_ns
+    assert run(tmp_path, writer).outcome == "no_rows"
+    assert st.verify_file.stat().st_mtime_ns == before

@@ -59,6 +59,8 @@ def verify_due(
 
 def _new_cost_state_record(cursor: Any, root_bytes: bytes, verify_state: Mapping[str, Any]) -> bool:
     """A cost-state record in the consumed root, not inherited, at a file line above both the covered and the held line."""
+    if b'"cost-state"' not in root_bytes:
+        return False
     lines = transcript.read_lines(root_bytes, cursor.lines_consumed.get(transcript.ROOT, 0))
     floor = max(verify_state.get("last_ledger_line", -1), verify_state.get("held_ledger_line", -1))
     skip = transcript.inherited_lines(lines)
