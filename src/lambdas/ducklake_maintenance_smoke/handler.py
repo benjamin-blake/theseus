@@ -4,8 +4,8 @@ Decision 81 clause 1, runtime artifacts 3 -> 4).
 CI-invokable smoke-safe sibling of ducklake_maintenance (src/lambdas/ducklake_maintenance/handler.py).
 Dispatch table is EXACTLY {merge, gc, breaker_probe, hot_merge, create_telemetry_tables}
 (Decision 216, amending Decision 143 clause 2) -- the four non-destructive, disposable-smoke-catalog
-cadences, sharing src/common/ducklake_maintenance.py with the admin function, plus the create-only
-owner-login telemetry DDL verb (src/lambdas/ducklake_maintenance_smoke/telemetry_actions.py).
+cadences, sharing src/common/ducklake_maintenance.py with the admin function, plus the owner-login telemetry DDL verb
+(create-if-absent and the Decision 222 additive leg) (src/lambdas/ducklake_maintenance_smoke/telemetry_actions.py).
 None of the admin function's production-destructive or operational verbs are reachable
 here: the boundary is the resource shape -- a separate Lambda + IAM execution role scoped to the
 smoke S3 prefix only -- not an in-handler guard an agent-authored codebase could edit out (Fable

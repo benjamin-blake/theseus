@@ -600,7 +600,8 @@ def test_create_telemetry_ownership_read_failure_names_the_class_only(capsys):
 
 def test_create_telemetry_response_shape():
     out, con, _report, _made = _run()
-    assert set(out) == {"ok", "tables", "created", "ownership", "elapsed_ms"}
+    assert set(out) == {"ok", "tables", "created", "added", "ownership", "elapsed_ms"}
+    assert out["added"] == []
     assert out["tables"] == sorted(NINE) and out["created"] == sorted(NINE[:2])
     assert out["ownership"] == {
         "foreign_owned": 0,
@@ -609,6 +610,13 @@ def test_create_telemetry_response_shape():
         "scoped_create_on_public": False,
     }
     assert con.sql[0] == "BEGIN TRANSACTION" and con.sql[-1] == "COMMIT"
+
+
+def test_create_telemetry_response_lists_added_columns():
+    added = ("telemetry_sessions.checkout_sha", "telemetry_observations.usage_final")
+    made = MagicMock(return_value=prov.CreateResult(NINE, (), added))
+    out, _con, _report, _made = _run(create=made)
+    assert out["added"] == sorted(added) and out["created"] == []
 
 
 def test_create_telemetry_handler_returns_500_runtime_never_raises():

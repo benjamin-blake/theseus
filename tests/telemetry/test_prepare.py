@@ -111,7 +111,15 @@ def test_compare_excluded_comes_from_projection() -> None:
     assert loaded["telemetry_transcripts"].rules.content is not None
     assert not loaded["telemetry_transcripts"].rules.exemptions
     sets = loaded["telemetry_observations"].rules
-    assert sets.at_most == {"reasoning_tokens": "tokens_output"} and sets.not_before["event_timestamp"] == "session_started_at"
+    assert (
+        sets.at_most
+        == {
+            "reasoning_tokens": "tokens_output",
+            "cache_creation_1h_tokens": "tokens_cache_creation",
+            "cache_creation_5m_tokens": "tokens_cache_creation",
+        }
+        and sets.not_before["event_timestamp"] == "session_started_at"
+    )
 
 
 def test_bundled_projection_refuses_inline_above_the_threshold() -> None:

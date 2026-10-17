@@ -475,3 +475,34 @@ class TestTokenClassesDisjoint:
             entries = [e for e in spec["amendment_log"] if "PLAN-telemetry-cache-token-totals" in e["summary"]]
             assert len(entries) == 1
             assert entries[0]["change_class"] == "field_add" and entries[0]["semantic_break"] is False
+
+
+def test_capture_provenance_and_usage_columns_are_nullable_and_ruled() -> None:
+    pattern_sha = r"^([0-9a-f]{40}|[0-9a-f]{64})$"
+    expected = {
+        "telemetry_sessions": {
+            "harness_session_key": ("string", {"pattern": r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"}),
+            "checkout_sha": ("string", {"pattern": pattern_sha}),
+            "checkout_base_sha": ("string", {"pattern": pattern_sha}),
+            "checkout_dirty": ("boolean", {}),
+        },
+        "telemetry_observations": {
+            "usage_final": ("boolean", {}),
+            "usage_source": ("string", {"accepted_values": {"values": ["record", "spawn_result"]}}),
+            "requested_model": ("string", {}),
+            "reasoning_effort": ("string", {"pattern": r"^[a-z][a-z0-9_-]{0,31}$"}),
+            "cache_creation_1h_tokens": ("bigint", {"at_most": "tokens_cache_creation"}),
+            "cache_creation_5m_tokens": ("bigint", {"at_most": "tokens_cache_creation"}),
+        },
+    }
+    for table, fields in expected.items():
+        raw = yaml.safe_load((_CONTRACTS_DIR / f"{table}.yaml").read_text(encoding="utf-8"))
+        assert raw["contract"]["contract_version"] == 2, table
+        for name, (iceberg_type, rules) in fields.items():
+            spec = raw["fields"][name]
+            assert spec["nullable"] is True and spec["iceberg_type"] == iceberg_type, name
+            assert spec["dq_intent"] == rules, name
+            assert spec["populated_by"] and spec["description"] and spec["semantics"], name
+        entries = [e for e in raw["amendment_log"] if "PLAN-telemetry-column-additions" in e["summary"]]
+        assert len(entries) == 1 and entries[0]["semantic_break"] is False, table
+        assert entries[0]["change_class"] == "field_add" and entries[0]["migration_story"], table

@@ -2,8 +2,9 @@
 
 The telemetry writer's scoped catalog login is DML-only (Decision 213 cl.3) and DuckLake's CREATE TABLE also creates a physical
 Postgres table, so the telemetry tables are created here, under this function's owner login, by the governed deploy pipeline's
-maintenance-smoke stage, before the telemetry gate. The verb is create-only (no drop, no re-ALTER, no row write) and reads
-nothing from the event: its meta schema is the function's env pin, and it refuses in code unless that is the smoke schema, so
+maintenance-smoke stage, before the telemetry gate. The verb is create-or-add-nullable-column (no drop, no rename or
+retype, no row write) (Decision 222, amending Decision 216 clause 2) and reads nothing from the event: its meta schema is
+the function's env pin, and it refuses in code unless that is the smoke schema, so
 this CI-reachable function cannot create tables in another catalog (its Postgres login is still the all-catalog owner; a
 smoke-only migrator login is slice 2c's, rec-4292). It proves the single-owner invariant before and after the DDL, and every
 failure after the env-pin check is a typed DuckLakeRuntimeError naming only the exception class, so the Function URL never
@@ -60,6 +61,7 @@ def action_create_telemetry_tables(_event: dict[str, Any], con: Any) -> dict[str
         "ok": True,
         "tables": sorted(created.tables),
         "created": sorted(created.created),
+        "added": sorted(created.added),
         "ownership": ownership,
         "elapsed_ms": round((time.perf_counter() - t0) * 1000.0, 2),
     }

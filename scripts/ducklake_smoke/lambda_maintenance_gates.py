@@ -266,6 +266,8 @@ def lambda_maintenance_create_telemetry(*, profile: str | None = None, region: s
         )
     if owned.get("scoped_create_on_schema") is not False or owned.get("scoped_create_on_public") is not False:
         raise core.SmokeTestFailure("MAINTENANCE_CREATE_TELEMETRY FAIL: the scoped login holds CREATE (Decision 216 cl.1)")
-    created = body.get("created")
+    created, added = body.get("created"), body.get("added")
+    if not isinstance(added, list) or not all(isinstance(a, str) for a in added):
+        raise core.SmokeTestFailure("MAINTENANCE_CREATE_TELEMETRY FAIL: the response did not list added columns")
     count = len(created) if isinstance(created, list) else 0
-    print(f"MAINTENANCE_CREATE_TELEMETRY OK created={count} foreign_owned=0 scoped_create=false")
+    print(f"MAINTENANCE_CREATE_TELEMETRY OK created={count} added={len(added)} foreign_owned=0 scoped_create=false")

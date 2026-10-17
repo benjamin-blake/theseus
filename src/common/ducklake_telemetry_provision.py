@@ -3,8 +3,10 @@
 DuckLake's CREATE TABLE also creates a physical Postgres table per table (ducklake_inlined_data_*), so DDL needs CREATE on the
 metadata schema, which the telemetry writer's scoped login never holds. The work is therefore split:
 - create_telemetry_tables runs under the catalog OWNER login (ducklake_maintenance_smoke's create_telemetry_tables verb, run by
-  the deploy pipeline): it creates and partitions only the ABSENT tables, writes no row, never drops, never re-ALTERs and never
-  sets inlining (Decision 107). A half-present SCD2 pair or a partition/column drift fails loud first and writes nothing.
+  the deploy pipeline): it creates and partitions the ABSENT tables and adds a declared, contract-optional (nullable, no
+  not-null or required_when rule) column that an existing EVENT table lacks (Decision 222, amending Decision 216 clauses 2 and
+  3). It writes no row, never drops, renames or retypes and never sets inlining (Decision 107). A half-present SCD2 pair, a
+  partition drift or any other column drift fails loud first and writes nothing.
 - provision_telemetry_catalog runs under the writer's scoped login and issues NO DDL: it refuses absent tables by name,
   re-checks drift, and seeds the two counter rows without ever lowering a value (the counter table keeps one write path).
 - ownership_report and session_can_create read pg_catalog through DuckLake's attached metadata database, to prove the single
@@ -45,6 +47,7 @@ _IDENTIFIER = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
 class CreateResult:
     tables: tuple[str, ...]
     created: tuple[str, ...]
+    added: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -143,29 +146,75 @@ def inspect_partitions(con: Any, existing: set[str], semantics: dict[str, Any]) 
     return {t: t not in drifted for t in present}
 
 
-def check_existing_tables(con: Any, existing: set[str], semantics: dict[str, Any]) -> tuple[str, ...]:
-    """Read-only: every pre-existing target table's live partitions and columns equal its declared spec.
-
-    Raises a loud DuckLakeRuntimeError naming the table and the drift, never a value, before anything is written.
-    """
+def _drift_problems(
+    con: Any, existing: set[str], semantics: dict[str, Any]
+) -> tuple[list[str], dict[str, tuple[set[str], set[str]]]]:
+    """(partition problems, physical -> (missing, extra) live-vs-declared column difference) for present target tables."""
     declared = _declared_columns(semantics)
     present = sorted(t for t in declared if t in existing)
     problems = [
         f"{d.physical}: partitions declared {list(d.declared)} live {list(d.live)}"
         for d in _partition_drifts(con, present, semantics)
     ]
+    diffs: dict[str, tuple[set[str], set[str]]] = {}
     for physical in present:
         live = _live_columns(con, physical)
         if live != declared[physical]:
-            problems.append(
-                f"{physical}: columns missing {sorted(declared[physical] - live)} extra {sorted(live - declared[physical])}"
-            )
+            diffs[physical] = (declared[physical] - live, live - declared[physical])
+    return problems, diffs
+
+
+def _refuse(problems: list[str]) -> None:
+    raise DuckLakeRuntimeError(
+        "provision_telemetry refuses pre-existing tables that drift from their declared spec "
+        f"(admin repair under Decision 204; nothing was written): {'; '.join(problems)}"
+    )
+
+
+def check_existing_tables(con: Any, existing: set[str], semantics: dict[str, Any]) -> tuple[str, ...]:
+    """Read-only: every pre-existing target table's live partitions and columns equal its declared spec.
+
+    Raises a loud DuckLakeRuntimeError naming the table and the drift, never a value, before anything is written.
+    """
+    problems, diffs = _drift_problems(con, existing, semantics)
+    problems += [f"{p}: columns missing {sorted(m)} extra {sorted(x)}" for p, (m, x) in diffs.items()]
     if problems:
-        raise DuckLakeRuntimeError(
-            "provision_telemetry refuses pre-existing tables that drift from their declared spec "
-            f"(admin repair under Decision 204; nothing was written): {'; '.join(problems)}"
-        )
-    return tuple(present)
+        _refuse(problems)
+    return tuple(sorted(t for t in _declared_columns(semantics) if t in existing))
+
+
+def _optional_additions(semantics: dict[str, Any], table: str, missing: set[str]) -> list[str] | None:
+    """The sorted columns of an event table that may be added (all contract-optional), or None when any may not."""
+    if table not in event_table_names(semantics):
+        return None
+    entry = semantics["ops_tables"][table]
+    event = EventTableSpec.from_projection(table, entry)
+    for name in missing:
+        col = entry["columns"][name]
+        if (
+            name in event.not_null
+            or name in _ALWAYS_NOT_NULL
+            or col.get("nullable") is not True
+            or "not_null" in col
+            or "required_when" in col
+        ):
+            return None
+    return sorted(missing)
+
+
+def _plan_additions(con: Any, existing: set[str], semantics: dict[str, Any]) -> list[tuple[str, str]]:
+    """The (table, column) additions the leg may make; every other drift raises before any DDL."""
+    problems, diffs = _drift_problems(con, existing, semantics)
+    additions: list[tuple[str, str]] = []
+    for physical, (missing, extra) in sorted(diffs.items()):
+        allowed = None if extra else _optional_additions(semantics, physical, missing)
+        if allowed is None:
+            problems.append(f"{physical}: columns missing {sorted(missing)} extra {sorted(extra)}")
+        else:
+            additions += [(physical, c) for c in allowed]
+    if problems:
+        _refuse(problems)
+    return additions
 
 
 def _seed_counter(con: Any, name: str, floor: int) -> None:
@@ -193,10 +242,18 @@ def _refuse_half_pairs(existing: set[str], semantics: dict[str, Any]) -> None:
 
 
 def create_telemetry_tables(con: Any, *, semantics: dict[str, Any]) -> CreateResult:
-    """Create and partition only the ABSENT telemetry tables (owner login). Writes no row; never drops or re-ALTERs."""
+    """Create the ABSENT telemetry tables and add declared optional columns an event table lacks (owner login).
+
+    Writes no row; never drops, renames or retypes (Decision 222).
+    """
     existing = existing_tables(con)
     _refuse_half_pairs(existing, semantics)
-    check_existing_tables(con, existing, semantics)
+    additions = _plan_additions(con, existing, semantics)
+    for table, column in additions:
+        sql_type = EventTableSpec.from_projection(table, semantics["ops_tables"][table]).columns[column]
+        con.execute(f"ALTER TABLE {CATALOG_ALIAS}.{table} ADD COLUMN {column} {sql_type}")
+    if additions:
+        check_existing_tables(con, existing, semantics)
 
     created: list[str] = []
     for name in event_table_names(semantics):
@@ -215,7 +272,7 @@ def create_telemetry_tables(con: Any, *, semantics: dict[str, Any]) -> CreateRes
     if ENTITY_COUNTERS_TABLE not in existing:
         create_control_table(con, table=ENTITY_COUNTERS_TABLE)
         created.append(ENTITY_COUNTERS_TABLE)
-    return CreateResult(target_tables(semantics), tuple(created))
+    return CreateResult(target_tables(semantics), tuple(created), tuple(f"{t}.{c}" for t, c in additions))
 
 
 def provision_telemetry_catalog(con: Any, *, semantics: dict[str, Any]) -> ProvisionResult:
