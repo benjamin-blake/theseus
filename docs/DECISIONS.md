@@ -2,6 +2,125 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 221: Recursive self-improvement is proven against a judge the loop cannot edit -- three metric layers, a frozen control arm, pre-registration and public receipts on the designed feedback loop (Decided)
+
+```yaml
+number: 221
+status: Decided
+decided_date: "2026-10-17"
+significance:
+  value: numbered_decision
+  justification: >-
+    Durable, reversal-relevant commitment on what proves the loop improves itself, apart from
+    Decision 220 by subject. Not a contract note: no journal table or contract exists yet. Not an
+    amendment_forms line: it spans Decisions 117, 196, 200 and staged rows.
+```
+
+**Status:** Decided
+**Date:** 2026-10-17
+**Warehouse ID:** dec-221 (per Decision 84 backfill)
+
+**Problem:** The designed feedback loop is introspective: its components measure this repository's own sessions (docs/plans/reports/REPORT-w2-feedback-loop-synthesis.md:352-361), product outcomes enter only at maturity (docs/PROJECT_CONTEXT.md, Recursive self-improvement model), small effects are unprovable at this session rate (docs/plans/reports/REPORT-w1-back-validation.md:610-612) and no frozen arm exists. A self-improvement claim on that evidence is unfalsifiable.
+
+**Intent:** The claim is governed recursive improvement of the operating process, its verifiers and the learned components the loop owns, with frontier models as replaceable inputs; the labs improve the model itself.
+
+**Decision:**
+1. **Three layers.** OUTCOME: coverage, freshness lag, accuracy on a sealed gold set, reconciliation against external totals, defect escape into the API. PROCESS: time to heal, unattended-fix rate, tokens and GB-seconds per verified merge, rework rate, autonomy rung; dollars derive at read and are never stored or published (Decisions 199 clause 1, 217 clause 4; docs/plans/reports/REPORT-w3-feedback-loop-staging.md:380-382, hereafter REPORT-w3). RECURSIVE: count and effect size of agent-authored changes to the loop itself (prompts, verifiers, contracts, routing) and whether each moved the other layers. OUTCOME enters an adopting repository as a user-authored Tier A north star with a failure_signal (Decisions 196 clause 7, 211 clause 5) whose detector takes a Goodhart register row.
+2. **Judge.** An independent probe with its own credentials computes OUTCOME. The gold set is sealed, refreshed only by a human and held out from training as well as editing. Once the probe exists its paths join Decision 117's boundary_patterns and Decision 185 clause 3's base-ref check; the released-version rule (T4.24 c3) keeps the loop off the kernel that judges it.
+3. **Control arm.** One project, one kernel (T4.24 c3); Decision 200's tenant and project ids never key an arm. Connectors hash into two arms per pre-registered epoch: one admits process improvements, one runs the epoch-start ref of its ontheloop/ artefacts and stamps, self-healing only. Arm and stamps are logged at admission in the loop journal, one ladder lane per arm (REPORT-w3:290, 611); difference-in-differences at the sampled rung (REPORT-w3:619).
+4. **Pre-registration.** Metrics, arm design and stopping rule are committed before a run, curves after; ROADMAP-SEMANTO S1.7-S1.8 hold the external-subject arm.
+5. **Public receipts.** The product site shows day-aggregate curves derived at read: a curated projection (Decision 111) of what the egress allow-list lets cross (Decision 209 clause 2(b); staged CD.51 unruled, REPORT-w3:423), never per-change receipts or commits; Decision 88's egress invariants bind every reader. Receipts carry no financial figure (Decision 101 point (d)): tokens and GB-seconds are published, dollars never (clause 1). Arm curves cross the allow-list only as a closed enum rec-4141 admits; until then clause 4's pre-registered protocol reports the arm comparison, never the live receipts.
+6. **Learned components.** The loop may own learned components, open-weight models in the LiteLLM lane fine-tuned on verified traces (training is not inference; Decision 205 clause 4 stands) and its routing policy. Only verified rows train; a retrain is a stamp bump back to read_all; the loop runs a released model, never the one in training; a run pins frontier versions or uses an operator-controlled open-weight model; the arms become two-by-two.
+7. **One mechanism each.** One ladder controller and transition log (REPORT-w3:627), one allow-list, one journal, one filer. Recursive aggregates are read-only views over the staged loop record journal, and back-validation stays the only proposer of a PROOF close (REPORT-w3:359). An init-attempt record, one row per attempt (Decision 207; fields in rec-4388), joins that journal; init determinism is the first probe metric. A clause leaning on a staged row (REPORT-w3:274-470) binds only at that row's ratification.
+8. **Open.** The receipts consumer is rec-4386, dependent on rec-4141; Decision 209 clause 5(i) is not amended.
+
+**Coverage:** none enforced today. Homes: cl.1 T4.24 c8; cl.2 T4.21; cl.3 T3.4 (CD.46) and rec-4388 (pinned ref); cl.4 S1.7 c1 (external-subject arm) and rec-4386 (product arm); cl.5 rec-4386; cl.6 T3.4 (CD.46); cl.7 rec-4388.
+
+**Rationale:** Recording the destination unbuilt follows Decision 197 clause 8, not frame-lock (Decision 75). Detail: docs/plans/reports/REPORT-showcase-product-and-rsi-proof.md:196-290.
+
+```yaml reversal-conditions
+decision: 221
+review_by: 2027-06-30
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: journal-ratified
+    kind: manual
+    description: "CD.47 (REPORT-w3) is ratified: confirm clause 7 binds as written."
+  - id: sampled-rung-exists
+    kind: manual
+    description: "A loop component reaches the sampled rung: start clause 3's arms or record why not."
+  - id: vendor-model-change
+    kind: manual
+    description: "A vendor model changes mid-run: void that run's curves or re-pin (clause 6)."
+  - id: product-abandoned
+    kind: manual
+    description: "Decision 220 is reversed or its product abandoned: re-decide clauses 3 and 5."
+```
+
+**Related:** Decisions 101, 117, 196, 197, 199, 200, 205, 207, 209, 211, 217, 220; T4.24; rec-4141, rec-4386, rec-4388.
+
+---
+
+## Decision 220: First showcase product -- a UK organisation graph over public money, a source ladder that stops at any bot gate, and the first otl init proving ground (amends Decision 209 clause 3(2)) (Decided)
+
+```yaml
+number: 220
+status: Decided
+decided_date: "2026-10-17"
+amends: [209]
+significance:
+  value: numbered_decision
+  justification: >-
+    Durable, reversal-relevant product-boundary commitment, apart from Decision 221 by subject:
+    it reverses on product and market facts. Not a contract note: no docs/contracts file owns a
+    product boundary. Not an amendment_forms line on Decision 209: only the instance touches
+    clause 3(2); the ladder, stop rule and proving ground have no prior owner.
+```
+
+**Status:** Decided
+**Date:** 2026-10-17
+**Warehouse ID:** dec-220 (per Decision 84 backfill)
+
+**Problem:** Decision 209 clause 3(2) names no showcase product, and nothing says which sources this operator's agents may pull from; the first instinct recorded was that agents can fill CAPTCHAs.
+
+**Intent:** Here the product is the platform's metadata source and proof population: it shows how the platform works and performs and proves governed recursive self-improvement in public (Decision 221); it is also the first otl init target and bootstrapping probe (the intended first real fixture for T4.24 c2) and a revenue hedge sold by scale (Decision 209 clause 1). It is a sanctioned bootstrapping exception to Decision 178's platform-only rule, bounded to that purpose and the selection rationale below; the product's own direction and growth live in its repository.
+
+**Decision:**
+1. **Instance.** Decision 209 clause 3(2)'s first showcase product is a UK organisation graph over public money: Companies House as the entity spine; Find a Tender and TED notices and awards; English council and NHS spend files; regulator registers linked to one supplier identity; full revision history. Entity resolution is the asset. It lives in the public products monorepo as a project under the operator's tenant (Decision 200 clause 1). Any public surface stays bound by Decision 101 point (d); its host is the product's own decision.
+2. **Source ladder.** Agents under this operator's loop take sources in tiers: one, mandated open data (OGL, non-adversarial); two, fragmented or semi-structured sources with some anti-bot friction, planning data only as a non-personal projection; three, adversarial sources, only after a legal review and only where receipts cannot be poisoned. Unprotected portals are crawled politely: robots.txt, rate limits, an identifiable agent string, a contact header.
+3. **Stop rule.** A CAPTCHA or equivalent bot gate is the publisher's explicit withdrawal of consent to automated access. The loop never solves or evades one: it stops and switches route (whitelisting, a licensed bulk extract under FOIA's dataset provisions, a partner, a bought feed). This reverses the instinct that agents may fill CAPTCHAs, because a loop optimising a signal its adversary controls converges on garbage; provider acceptable-use terms bar bypassing security controls, risking the sole inference lane (Decision 205 clause 4); the buyer is a compliance function; and an evasion patch is a workaround with no owned root cause (Decision 55). Legal exposure is the tier-three review's question, not settled here.
+4. **Proving ground.** The product repository is the first otl init target and a fourth adoption case beside Decision 211 clause 6's three, never one of them. It declines the house-style profile (211 clause 2) and is built and burned: code and history kept (211 clause 1), the ontheloop/ and .ontheloop/ roots deleted (211 clause 5), init re-run and its boundary map and verification registry diffed.
+5. **No dependency.** Its telemetry reaches the platform as evidence through the Decision 209 clause 2(b) allow-list, never as instruction; the platform never imports product code and its tests never need the product tree (Decision 212 clause 3).
+6. **Product inputs.** Product detail at docs/plans/reports/REPORT-showcase-product-and-rsi-proof.md:291-342 (sell-scale mechanics, hosting, data rules, source order, taste, legal terms, channels) is provisional input, not a ruling: at init the product repository adopts or supersedes it as its own Tier A north stars, each with a failure_signal (Decision 196 clause 7), or Tier C decisions, and keeps its day-one work items in its own store (Decision 211 clause 2; Decision 197 clause 1).
+7. **Open.** Trademark class coverage for a data service: rec-4385.
+
+**Coverage:** none enforced today. Homes: cl.1, 6 the product repository at init (T4.24 c8); cl.2-3 unenforced residual, owner rec-4387; cl.4 rec-4388; cl.5 .importlinter, owner rec-4391.
+
+**Rationale:** Chosen for compounding history nobody can backfill, a clean oracle (published totals) to judge self-healing against, mandated openly licensed data, small human-maintained incumbents, and a population giving the loop statistical power its own sessions lack: REPORT-showcase-product-and-rsi-proof.md:97-140. Rejected: an adversarial scraper (clause 3), a tenders bid pipeline (kept as the linkage layer), job-posting history, connectors as a service, brownfield-first (211 clause 6 stands): REPORT-showcase-product-and-rsi-proof.md:35-96, 131-140.
+
+```yaml reversal-conditions
+decision: 220
+review_by: 2027-06-30
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: first-paying-customer
+    kind: manual
+    description: "The product's first paying customer: the burn window closes; re-decide clause 4's build-and-burn."
+  - id: tier-one-gates-bots
+    kind: manual
+    description: "A tier-one source starts gating bots: re-place it on clause 2's ladder under clause 3."
+  - id: row-grain-chosen
+    kind: manual
+    description: "CD.51 k4 chooses a row grain: re-read clause 5 and Decision 221 clause 5."
+  - id: product-abandoned
+    kind: manual
+    description: "Product abandoned: re-home clause 3 unless rec-4387 has landed."
+```
+
+**Related:** Decisions 55, 101, 178, 196, 197, 200, 205, 209, 211, 212, 221; T4.24; CD.51 (staged); rec-4385, rec-4387, rec-4388, rec-4391.
+
+---
+
 ## Decision 218: The repository moves to otl-labs/ontheloop in one transfer-and-rename, and Decision 172's pre-stage playbook covers the owner half (amends Decisions 171, 172, 198) (Decided)
 
 ```yaml
@@ -588,6 +707,8 @@ conditions:
 ```
 
 **Related:** Decisions 57, 84, 101, 111, 127, 171, 178, 184, 194, 196, 197, 198, 199, 200, 205 (101, 178 and 184 clause 1 amended); T4.24; rec-3923 (superseded by this entry), rec-3624, rec-4141.
+
+> **Amended by Decision 220 (2026-10-17):** Clause 3(2)'s first showcase product is named: a UK organisation graph over public money, a project under the operator's tenant in the public products monorepo, importing released platform versions; any public surface stays bound by Decision 101 point (d). Its source ladder, bot-gate stop rule and otl init proving-ground role are Decision 220's.
 
 ---
 
@@ -2955,6 +3076,8 @@ significance:
 Theseus is the platform only; hosted products live in their own repositories and import it.
 
 > **Amended by Decision 209 (2026-09-28):** The Intent's "hosted products live in their own repositories" now reads: products live in the products monorepo matching their visibility -- open-code products in one public products monorepo, closed-code products (the trading product, Decision 198 clause 1) in the one private monorepo that also holds the paid control plane (Decision 209 clause 3). This repository stays platform-only; its examples/ tree holds small platform reference builds, never a product.
+
+> **Update (2026-10-17):** Decision 220 records one bounded bootstrapping exception to this Intent: the first showcase product's purpose here (the platform's metadata source and proof population), why it was chosen and its provisional init-handoff input (Decision 220 clause 6, superseded at otl init) live in this repository; the product's code, own direction and growth stay in its own repository.
 
 **Problem:**
 The repository carried three estates past their end of life: the first hosted product's code
@@ -7427,6 +7550,8 @@ to this numbered Decision).
 > everything else. See Decision 202 clause 3.
 
 > **Amended by Decision 209 (2026-09-28):** Point (f)'s deferred paid service offering is further discharged for boundary and architecture only: Decision 209 draws the paywall on organisational scale, a metadata-only managed control plane over a customer-owned data plane, and the repository topology. No commercial surface, pricing or terms is built, so the rest of that deferral stands; point (d) binds any public docs site.
+
+> **Update (2026-10-17):** Operator reading (2026-10-17): point (d)'s "performance figures", as Decision 198 restated it, means financial performance of any kind, not only investment performance. Non-financial curves -- coverage, freshness, accuracy, time to heal, autonomy rung, tokens and GB-seconds per verified merge -- are platform engineering and may be published (Decision 221 clause 5); financial figures of any kind are not published under point (d) as it stands. The operator intends to supersede this entry in full (rec-4389).
 
 **Problem:**
 The platform and its trading product were operating under purely internal identifiers (repo
