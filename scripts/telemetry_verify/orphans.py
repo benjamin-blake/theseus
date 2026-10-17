@@ -84,14 +84,14 @@ def orphan_counts(
     out = []
     for day in sorted(days):
         for join_id in sorted(j[0] for j in joins):
-            total, quiescent, pending = child_rows.get((day, join_id), [0, 0, 0])
+            total, n_quiescent, n_pending = child_rows.get((day, join_id), [0, 0, 0])
             out.append(
                 {
                     "day": day,
                     "join_id": join_id,
                     "child_rows": total,
-                    "orphans_quiescent": quiescent,
-                    "orphans_pending": pending,
+                    "orphans_quiescent": n_quiescent,
+                    "orphans_pending": n_pending,
                     "trees_quiescent": days[day]["trees_quiescent"],
                     "trees_pending": days[day]["trees_pending"],
                     "conflicted_keys": days[day]["conflicted_keys"],
