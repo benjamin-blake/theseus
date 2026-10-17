@@ -31,7 +31,8 @@ scope:
     unparseable head file is a reported failure, never a raise; otherwise registry.examined(<test files read>,
     unit="test_files"). Both the registered function and main(argv) print one "ADDED-SKIP path:line kind -- reason"
     line per judged added site, so a quarter of merges can be sampled. main(argv) accepts --base REF and --head REF
-    (head omitted = working tree) and exits 1 on any failure, else 0.
+    (base omitted = _common.status_diff_base(root), and None prints one SKIP line and exits 0; head omitted = working
+    tree) and exits 1 on any failure, else 0.
 - file: scripts/checks/hygiene/_manifest.py
   action: Modify
   purpose: >-
@@ -47,7 +48,7 @@ scope:
     decorators or calls, so this file adds no skip site of its own). Class TestAddedSkipsMustCiteOrDeclare: each site
     kind added without a rec token or env: label fails naming path:line; with either it passes. Class
     TestOnlyAddedSitesAreJudged: a site already on the base passes unchanged; a changed reason is judged as added; a
-    removed site passes; an importorskip whose only string is the module name fails as uncited; an untracked ("??")
+    removed site passes; an existing skip carried into a new file by a rename or decomposition is not judged; an importorskip whose only string is the module name fails as uncited; an untracked ("??")
     test file is judged like an added one; an added expectedFailure's failure names the pytest.mark.xfail conversion;
     one ADDED-SKIP line prints per judged site. Plus: an unparseable head file fails, an unreachable base skips, examined() counts files read,
     and main() exits 1 on a violation and 0 when clean.
@@ -64,9 +65,12 @@ scope:
     the third positional counts (the first is the module name, never a reason); an f-string contributes its constant
     parts. Its SCOPE is the enclosing test
     key ("func" or "Class::func") for a site on or inside a test, "Class" for a class-level site, and "*" for a
-    module-level site or one inside a fixture or helper. added_skip_sites(base_source, head_source) -> the head's
-    sites minus the base's (a multiset keyed by scope, kind and reason; base None for a new file), the single home both
-    checks use. applicable_skip_sites(source, key) -> the sites that apply to test key: its own scope, its class's and
+    module-level site or one inside a fixture or helper. added_skip_sites(files) -> {path: [SkipSite]} over every
+    changed test file at once (files maps path -> (base_source or None, head_source or None)), the single home both
+    checks use: per file, the head's sites minus the base's (a multiset keyed by scope, kind and reason), less any
+    site CARRIED from another file, meaning one that matches (scope, kind and reason) a site the same diff removed
+    from another changed or deleted test file. A decomposition or rename that moves an existing skip therefore adds
+    none. applicable_skip_sites(source, key) -> the sites that apply to test key: its own scope, its class's and
     the module's "*". test_functions(source) -> {key: node} for module-level test*
     functions and test* methods of top-level Test* classes. assertions(node) -> Counter of normalized ast.dump for
     every assert statement's test and every call whose callee name starts with "assert" or is raises, warns, approx or
@@ -82,10 +86,12 @@ scope:
     pure over injected (status, path) pairs and readers. Categories: assertion-removed (a pre-existing test, same key
     in a modified test file, whose assertion count fell; detail names a lost assertion); assertion-changed (an
     assertion lost while the count held or rose; detail names the lost assertion); test-removed (a key present at base
-    in a modified test file and absent at head whose bare name is added in no changed test file); test-moved-weaker
-    (that bare name added elsewhere in the diff with fewer assertions, or more applicable_skip_sites at its destination
-    than at its source, so a move into a file under a module-level skip counts); test-file-deleted (a deleted
-    tests/**/*.py file; detail its test-function count); skip-added (a site skip_sites finds in a modified
+    in a modified OR deleted test file and absent at head whose bare name is added in no changed test file);
+    test-moved-weaker (that bare name added elsewhere in the diff with a lost assertion -- assertions(base) minus
+    assertions(head) non-empty -- or more applicable_skip_sites at its destination than at its source, so a move into
+    a file under a module-level skip counts, including a move out of a deleted file); test-file-deleted (a deleted
+    tests/**/*.py file; detail the count of its tests not found at head, each of which is also its own test-removed
+    candidate); skip-added (a site skip_sites finds in a modified
     tests/**/*.py file at head that its base lacks, per added_skip_sites; node is the site's scope; detail its kind
     and reason); tolerance-widened (a
     tolerance keyword's absolute value rose); constant-changed (a module-level UPPER_CASE numeric constant whose value
@@ -101,7 +107,8 @@ scope:
     '  - {candidate: "[category] path::node", disposition: <label>, cite: "<reference>"}', then each of the contract's
     invariants.content.review_dispositions keys with its rule, read from the contract (no second copy); SKIPs via registry.skipped when status_diff_base is None; declares
     registry.examined(<changed .py files read>, unit="changed_files"). main(argv) accepts --base REF and --head REF
-    (head omitted = working tree), prints the same lines and always exits 0.
+    (base omitted = _common.status_diff_base(root), and None prints one SKIP line; head omitted = working tree),
+    prints the same lines and always exits 0.
 - file: scripts/checks/verification/_manifest.py
   action: Modify
   purpose: >-
@@ -120,8 +127,9 @@ scope:
     Mirror test. Class TestCandidates drives find_candidates with in-memory base/head sources: one positive case per
     category, including skip-added for a module-level pytestmark skip, a module-level importorskip and a fixture's
     pytest.skip added to a pre-existing file, test-moved-weaker for a moved test that gained a skip and for one moved
-    into a new file under a module-level pytestmark skip, and one merged Candidate for two sites in one scope; negatives
-    (an
+    into a new file under a module-level pytestmark skip, and one merged Candidate for two sites in one scope; out of a
+    deleted file, a moved test that gained a skip, one with a lost assertion, and one removed outright (test-removed);
+    an existing skip carried by a rename yields no skip-added; negatives (an
     added test, a strengthened assertion, a reformatted but equal assertion, an unchanged constant, a test moved with
     equal assertions and skips, a non-numeric constant) yield nothing. Class TestReportOnly: the
     registered function prints every candidate and the disposition keys and leaves failed empty. Plus the
@@ -144,8 +152,10 @@ scope:
     refactor and growth-safe-pin need a "<file>.py::<name>[::<name>]" token whose file exists in the working tree and
     whose last name is a def or class in it; planned-change needs "acceptance_criteria[N]" or "test_obligations[N]"
     with N a valid 0-based index in a resolved plan; retirement needs a path deleted in the diff, or a
-    "<file>.py::<name>" whose name is defined at the base and not in the working tree; owned-skip is valid only on a
-    skip-added candidate, or on a test-moved-weaker candidate whose assertion count held (only its skip sites rose),
+    "<file>.py::<name>" whose name is defined at the base and not in the working tree, and that is neither the
+    candidate's own path nor its own path::node (the contract asks for the deleted tested subject, not the test);
+    owned-skip is valid only on a skip-added candidate, or on a test-moved-weaker candidate with no lost assertion
+    (only its skip sites rose),
     and needs a rec-NNNN token or an "env: " label that appears in the reason of one of that candidate's added (or, for
     a moved test, gained) skip sites. No marker, waiver or grandfather. Then
     registry.examined(len(resolved), unit="declared_plans"). main() runs it against the working tree and exits 1 on
@@ -153,14 +163,17 @@ scope:
 - file: tests/checks/verification/test_validate_weakening_dispositions.py
   action: Create
   purpose: >-
-    Mirror test over an injected fixture repository built by fixtures inside this file (no new conftest.py; the
-    validate_graduation_completeness fixtures are the model). Class TestDispositionsRequired: on a diff that flips
-    implementation_declared, a candidate with no entry fails naming its key and plan; a duplicate, a stale, an unknown
-    disposition and a weakening entry each fail; for each of the five non-weakening dispositions an unresolvable cite
-    fails and a resolving cite passes; owned-skip passes on a skip-added candidate and on a test-moved-weaker one
-    that only gained a skip, and fails on any other category or on a moved test that also lost an assertion; two sites
-    in one scope need one entry; a complete, resolving record passes. Class TestImplementLegOnly: a diff with no flip is a no-op with examined(0) even when candidates exist; an
-    unreachable base skips.
+    Mirror test (the plan-obligations mirror path) over an injected git fixture repository built by fixtures inside
+    this file (a base commit, a plan flipping implementation_declared, test files and a contract copy; no new
+    conftest.py). Class TestDispositionsRequired: on a diff that flips implementation_declared, a candidate with no
+    entry fails naming its key and plan; a duplicate, a stale, an unknown disposition and a weakening entry each fail;
+    for each of the five non-weakening dispositions an unresolvable cite fails and a resolving cite passes; a
+    retirement cite naming the candidate's own path or path::node fails; owned-skip passes on a skip-added candidate
+    and on a test-moved-weaker one that only gained a skip, and fails on any other category or on a moved test with a
+    lost assertion; two sites in one scope need one entry; a complete, resolving record passes. Class
+    TestImplementLegOnly: a diff with no flip is a no-op with examined(0) even when candidates exist; an unreachable
+    base skips. Cases are parametrized over one fixture builder to stay under 500 SLOC; if it would still exceed it,
+    STOP and amend this plan's scope first (the contract's two-act procedure), never split it into an undeclared file.
 - file: scripts/checks/_common.py
   action: Modify
   purpose: >-
@@ -172,6 +185,16 @@ scope:
   purpose: >-
     New class TestStatusDiffBase: the push base wins; the merge-base is the fallback; None when neither resolves.
     test_get_status_aware_diff_full_pass stays green unchanged.
+- file: scripts/checks/hygiene/validate_root_scoped_diff_base.py
+  action: Modify
+  purpose: >-
+    Add "status_diff_base" to _TARGET_PRIMITIVES, so a root-taking caller that calls it bare is flagged like
+    push_context_base.
+- file: tests/checks/hygiene/test_validate_root_scoped_diff_base.py
+  action: Modify
+  purpose: >-
+    New TestScanFile::test_bare_status_diff_base_call_is_flagged; test_live_tree_reports_zero_violations stays green
+    (every new caller forwards root).
 - file: scripts/roadmap/plan_document.py
   action: Modify
   purpose: >-
@@ -373,9 +396,11 @@ verification_plan:
   graduation_check_id: plan-document-weakening-dispositions-schema
 - step: 12
   phase: pre-deploy
-  action: status_diff_base returns the push base, else the origin/main merge-base, else None.
-  command: bin/venv-python -m pytest tests/checks/_common/test_primitives.py::TestStatusDiffBase -q
-  expected: Exit 0, every node passes. Red before because status_diff_base does not exist.
+  action: status_diff_base returns the push base, else the origin/main merge-base, else None, and is a guarded primitive.
+  command: >-
+    bin/venv-python -m pytest tests/checks/_common/test_primitives.py::TestStatusDiffBase
+    tests/checks/hygiene/test_validate_root_scoped_diff_base.py::TestScanFile::test_bare_status_diff_base_call_is_flagged -q
+  expected: Exit 0, every node passes. Red before because status_diff_base does not exist and is not a guarded primitive.
   expected_literals: []
   fix_if: A case fails -> fix the extraction in scripts/checks/_common.py; get_status_aware_diff's own test must stay green.
   hermetic: true
@@ -425,10 +450,11 @@ verification_plan:
   graduation_waiver_reason: Invokes scripts.validate (recursion refusal); it is the handoff gate itself.
 - step: 17
   phase: post-deploy
-  action: rec-3357 superseded and rec-4413 open.
+  action: rec-3357 superseded; rec-4413 open with its widened re-measure context.
   command: >-
     bin/venv-python -c "from scripts.ops_data_portal import _fetch_rec_from_reader as f;a=f('rec-3357') or {};b=f('rec-4413')
-    or {};print(a.get('status'),b.get('status'));assert a.get('status')=='superseded' and b.get('status')=='open'"
+    or {};print(a.get('status'),b.get('status'));assert a.get('status')=='superseded' and b.get('status')=='open'
+    and 'validate_test_skip_citations' in (b.get('context') or '')"
   expected: Exit 0 and "superseded open" printed.
   fix_if: rec-3357 still open -> run APPROVED_REC_UPDATE; only the PR number and merge sha may vary.
   hermetic: false
@@ -478,6 +504,11 @@ test_obligations:
   verification_step: 12
   test_selector: tests/checks/_common/test_primitives.py::TestStatusDiffBase
   red_green_expectation: red before (status_diff_base absent), green after
+- source: scripts/checks/hygiene/validate_root_scoped_diff_base.py
+  behavior: A bare status_diff_base call inside a root-taking function is flagged.
+  verification_step: 12
+  test_selector: tests/checks/hygiene/test_validate_root_scoped_diff_base.py::TestScanFile::test_bare_status_diff_base_call_is_flagged
+  red_green_expectation: red before (status_diff_base is not a target primitive), green after
 - source: scripts/checks/hygiene/_manifest.py
   behavior: The new Entry is registered in --pre (tests/** gated) and the full tier.
   verification_step: 16
@@ -540,7 +571,8 @@ context:
   base reads at the diff's own ref (_common.status_diff_base); importorskip's module name is never a reason; graduated
   contract-shape pins (step 14). Measured since 2026-09-01: 10 of 527 merges added skip/xfail marks or calls and 17 added
   importorskip, only 3 into existing test files. Round 2 (REVISE): one Candidate per key, moved-test skip scope,
-  added_skip_sites, self-asserting step 7, step 12. OWNED_SKIP_APPROVAL_PENDING.
+  added_skip_sites, self-asserting step 7, step 12. Round 3 (REVISE): deleted files as move sources, carried skips,
+  own-path retirement cites refused, SLOC STOP rule for the dispositions test. OWNED_SKIP_APPROVAL_PENDING.
 - >-
   CI-RCA: rec-4372 (Critical, terraform-apply-sandbox) closed 2026-10-17 via #1536 (d7baf884). This plan touches no
   terraform, workflow or deploy path; its build starts on the coordinator's dispatch.
@@ -638,7 +670,7 @@ execution_steps:
             The DOMINANT form of weakening in practice, not one coverage row among peers. Narrowed from rec-3357: telling
             a corrected assertion or tolerance from a quietly loosened one is the test-oracle problem, which no
             deterministic check decides. validate_weakening_candidates (report-only, never fails) lists these syntactic
-            candidate in a diff -- a removed or changed assertion, a removed or weaker-moved test, a deleted test file, an
+            candidates in a diff -- a removed or changed assertion, a removed or weaker-moved test, a deleted test file, an
             added skip, a widened tolerance, a changed numeric constant -- code review gives each a disposition from
             review_dispositions above, raising High for a weakening or a missing one, and validate_weakening_dispositions
             makes recording every disposition, with a cite that resolves, mandatory on implement PRs. Whether a
