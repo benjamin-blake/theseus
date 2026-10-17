@@ -282,3 +282,104 @@ TRANSCRIPT_CONTENT_SQL = (
     "SELECT k.content, k.content_uri, k.content_sha256, k.content_bytes, k.content_omitted_reason, c.compared_versions "
     "FROM k CROSS JOIN c ORDER BY k.created_timestamp, k.content_uri"
 )
+
+
+# Verification verbs (telemetry slice 4, rec-4025). A tree is the rows sharing one (tenant_id, project_id, session_started_at)
+# key: every row of a tree carries the root's pin (Decision 199 cl.2), its tenant and its project.
+_TREE_KEY = "tenant_id, project_id, session_started_at"
+
+# session_tree_rows: the exact stored rows (raw: no retirement, no dedupe, every parser_version) of the tree holding
+# $session_id, the compared columns plus created_timestamp, never content or content_uri (representation-only columns). The
+# key resolves server-side inside the root's calendar-day partition; total_rows is the tree's row count on every page.
+_TREE_BRANCH = (
+    "SELECT '{table}' AS table_name, session_id, producer, event_id, parser_version, created_timestamp, "
+    "to_json(r) AS row_json "
+    "FROM (SELECT {{cmp_{name}}}, created_timestamp FROM {{{name}}} x JOIN tk USING (" + _TREE_KEY + ") WHERE {{scope}}) r"
+)
+TREE_ROWS_SQL = (
+    "WITH tk AS (SELECT DISTINCT "
+    + _TREE_KEY
+    + " FROM ("
+    + " UNION ALL ".join(
+        f"SELECT {_TREE_KEY} FROM {{{name}}} WHERE {{scope}} AND $session_id = session_id" for name in _PLACEHOLDER.values()
+    )
+    + ")), all_rows AS ("
+    + " UNION ALL ".join(_TREE_BRANCH.format(table=table, name=_PLACEHOLDER[table]) for table in _ALL_TABLES)
+    + "), roots AS (SELECT count(DISTINCT s.session_id) AS roots_in_tree FROM {sessions} s JOIN tk USING ("
+    + _TREE_KEY
+    + ") "
+    "WHERE {scope} AND s.parent_session_id IS NULL) "
+    "SELECT table_name, CAST(row_json AS VARCHAR) AS row_json, count(*) OVER () AS total_rows, "
+    "(SELECT roots_in_tree FROM roots) AS roots_in_tree FROM all_rows "
+    "ORDER BY table_name, session_id, producer, event_id, parser_version, created_timestamp, CAST(row_json AS VARCHAR) "
+    "LIMIT $max_rows OFFSET $offset"
+)
+
+# telemetry_orphan_counts: per (day, join) over R4/R5-deduped rows of real-purpose projects. {telemetry_joins} renders at
+# render time (never import) into two CTEs: jn (the join ids) and edges (one row per non-null child FK value with whether a
+# parent value exists among the live rows of the same tree key). A tree is quiescent when as_of exceeds its last event by more
+# than the idle threshold; an orphan in a pending tree may still be explained by a later flush.
+_LIVE = {SESSIONS: "s", OBSERVATIONS: "o", AGENTS: "a", TRANSCRIPTS: "t"}
+_REAL = "project_id IN (SELECT project_id FROM {projects} WHERE purpose = 'real')"
+_DAY = "strftime(timezone('UTC', tq.session_started_at), '%Y-%m-%d')"
+
+ORPHAN_COUNTS_SQL = compose(
+    _ALL_TABLES,
+    "{telemetry_joins}, tl AS (SELECT "
+    + _TREE_KEY
+    + ", max(event_timestamp) AS last_event_timestamp FROM ("
+    + " UNION ALL ".join(f"SELECT {_TREE_KEY}, event_timestamp FROM {k}" for k in _LIVE.values())
+    + ") GROUP BY "
+    + _TREE_KEY
+    + "), tq AS (SELECT tl.*, epoch(CAST($as_of AS TIMESTAMPTZ)) - epoch(tl.last_event_timestamp) "
+    "> {idle_seconds} AS quiescent FROM tl WHERE " + _REAL + "), "
+    "td AS (SELECT " + _DAY + " AS day, count(*) FILTER (WHERE quiescent) AS trees_quiescent, "
+    "count(*) FILTER (WHERE NOT quiescent) AS trees_pending FROM tq GROUP BY 1), "
+    "ca AS (SELECT " + _DAY + " AS day, e.join_id AS join_id, count(*) AS child_rows, "
+    "count(*) FILTER (WHERE NOT e.has_parent AND tq.quiescent) AS orphans_quiescent, "
+    "count(*) FILTER (WHERE NOT e.has_parent AND NOT tq.quiescent) AS orphans_pending "
+    "FROM edges e JOIN tq USING (" + _TREE_KEY + ") GROUP BY 1, 2), "
+    "sd AS (SELECT DISTINCT session_id, project_id, session_started_at FROM ("
+    + " UNION ALL ".join(
+        f"SELECT session_id, project_id, session_started_at FROM {{{_PLACEHOLDER[t]}}} WHERE {{scope}}" for t in _ALL_TABLES
+    )
+    + ")), cf AS (SELECT strftime(timezone('UTC', sd.session_started_at), '%Y-%m-%d') AS day, count(*) AS conflicted_keys "
+    "FROM conflicts JOIN sd USING (session_id) WHERE sd." + _REAL + " GROUP BY 1) "
+    "SELECT td.day AS day, jn.join_id AS join_id, coalesce(ca.child_rows, 0) AS child_rows, "
+    "coalesce(ca.orphans_quiescent, 0) AS orphans_quiescent, coalesce(ca.orphans_pending, 0) AS orphans_pending, "
+    "td.trees_quiescent AS trees_quiescent, td.trees_pending AS trees_pending, "
+    "coalesce(cf.conflicted_keys, 0) AS conflicted_keys FROM td CROSS JOIN jn "
+    "LEFT JOIN ca ON ca.day = td.day AND ca.join_id = jn.join_id LEFT JOIN cf ON cf.day = td.day ORDER BY td.day, jn.join_id",
+)
+
+# telemetry_root_sessions: one row per root session of a real-purpose project in the window, with the harness's own session key
+# and branch (each the first non-null value by event_timestamp, source_ordinal, event_id), the tree-wide last event and the
+# Decision 207 stamps. The verification monitor selects trees by last_event_timestamp, so it is the TREE's, not the root's.
+_FIRST = (
+    "min_by({c}, struct_pack(t := event_timestamp, o := coalesce(source_ordinal, -1), e := event_id)) "
+    "FILTER (WHERE {c} IS NOT NULL)"
+)
+ROOT_SESSIONS_SQL = compose(
+    _ALL_TABLES,
+    "rt AS (SELECT session_id, max(tenant_id) AS tenant_id, max(project_id) AS project_id, "
+    "min(session_started_at) AS session_started_at, max(parent_session_id) AS parent_session_id, "
+    + ", ".join(f"{_FIRST.format(c=c)} AS {c}" for c in ("entity_ref", "harness_session_key", "branch"))
+    + " FROM s GROUP BY session_id), "
+    "tl AS (SELECT "
+    + _TREE_KEY
+    + ", max(event_timestamp) AS last_event_timestamp FROM ("
+    + " UNION ALL ".join(f"SELECT {_TREE_KEY}, event_timestamp FROM {k}" for k in _LIVE.values())
+    + ") GROUP BY "
+    + _TREE_KEY
+    + ") "
+    "SELECT rt.session_id AS session_id, rt.entity_ref AS entity_ref, rt.harness_session_key AS harness_session_key, "
+    "rt.branch AS branch, rt.session_started_at AS session_started_at, tl.last_event_timestamp AS last_event_timestamp, "
+    + STAMPS_SELECT
+    + " FROM rt LEFT JOIN tl USING ("
+    + _TREE_KEY
+    + ") "
+    + STAMPS_JOIN.format(sid="rt.session_id")
+    + " WHERE rt.parent_session_id IS NULL AND rt."
+    + _REAL
+    + " ORDER BY rt.session_started_at, rt.session_id",
+)

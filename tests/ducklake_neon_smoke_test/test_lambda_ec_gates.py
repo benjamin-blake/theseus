@@ -295,7 +295,7 @@ def _json_resp(status, payload):
     return _Resp(status, payload, text=json.dumps(payload))
 
 
-def _reader_fake(*, health_tables=None, absent_rows=0, bad=None, probe=None, describe_flags=None):
+def _reader_fake(*, health_tables=None, absent_rows=0, bad=None, probe=None, describe_flags=None, window=None):
     """A consistent reader: ops reads and the write boundary as before, plus the telemetry slot's real answer shapes."""
     from src.common.ducklake_event_read_verbs import EVENT_READS  # noqa: PLC0415
 
@@ -314,10 +314,13 @@ def _reader_fake(*, health_tables=None, absent_rows=0, bad=None, probe=None, des
         if payload["verb"] == "telemetry_health_count":
             rows = [{"table_name": t, "record_count": 0, "meta_schema": "ducklake_smoke"} for t in health_tables or _TABLES]
             return _json_resp(200, {"rows": rows, "row_count": len(rows)})
-        if "MARKER" in payload["params"]["session_id"]:
+        params = payload["params"]
+        if "MARKER" in params.get("session_id", "") or params.get("max_rows") == 0:
             return bad or _json_resp(
                 400, {"ok": False, "error_type": "named_read_input", "error": "session_id is not canonical"}
             )
+        if payload["verb"] in ("telemetry_orphan_counts", "telemetry_root_sessions"):
+            return window or _json_resp(200, {"ok": True, "rows": [], "row_count": 0})
         return _json_resp(200, {"rows": [], "row_count": absent_rows})
 
     return fake_invoke
@@ -382,6 +385,65 @@ def test_telemetry_read_checks_fail_on_each_other_regression(monkeypatch):
     _failing(monkeypatch, "describe does not list", describe_flags={"sessions_window": True})
     _failing(monkeypatch, "all four tables", health_tables=_TABLES[:2])
     _failing(monkeypatch, "absent session_id returned rows", absent_rows=2)
+
+
+def test_telemetry_read_checks_cover_the_verification_verbs(monkeypatch):
+    planted = "PLANTED-ROW-VALUE-7731"
+    seen: list[str] = []
+    base = _reader_fake()
+
+    def recording(url, payload, **kw):
+        if payload["action"] == "named_read":
+            seen.append(payload["verb"])
+        return base(url, payload, **kw)
+
+    monkeypatch.setattr(core, "_function_url", lambda role: f"https://{role}")
+    monkeypatch.setattr(core, "_sigv4_invoke", recording)
+    from scripts.ducklake_smoke import lambda_ec_gates  # noqa: PLC0415
+
+    lambda_ec_gates._telemetry_read_checks(profile=None, region="eu-west-2")
+    assert seen.count("session_tree_rows") == 3 and {"telemetry_orphan_counts", "telemetry_root_sessions"} <= set(seen)
+
+    echoing = _json_resp(400, {"ok": False, "error_type": "named_read_input", "error": "not-a-session-id-MARKER"})
+    for kwargs, match in (
+        ({"absent_rows": 2}, "absent session_id returned rows"),
+        ({"bad": _json_resp(500, {"error_type": "unmapped", "rows": [{"x": planted}]})}, "must answer 400"),
+        ({"bad": echoing}, "malformed session_id"),
+        ({"window": _json_resp(500, {"ok": False, "rows": [{"x": planted}]})}, "did not answer over today's window"),
+        ({"window": _json_resp(200, {"ok": False, "rows": [{"x": planted}]})}, "did not answer over today's window"),
+    ):
+        _patch_reader(monkeypatch, **kwargs)
+        with pytest.raises(core.SmokeTestFailure, match=match) as raised:
+            lambda_ec_gates._telemetry_read_checks(profile=None, region="eu-west-2")
+        assert planted not in str(raised.value)
+
+
+def test_verification_verb_checks_fail_when_the_tree_verb_misbehaves(monkeypatch):
+    from scripts.ducklake_smoke import lambda_ec_gates  # noqa: PLC0415
+
+    base = _reader_fake()
+    monkeypatch.setattr(core, "_function_url", lambda role: f"https://{role}")
+
+    def wrap(handler):
+        monkeypatch.setattr(
+            core, "_sigv4_invoke", lambda url, payload, **kw: handler(url, payload, **kw) or base(url, payload, **kw)
+        )
+
+    def tree_has_rows(url, payload, **kw):
+        params = payload.get("params") or {}
+        if payload.get("verb") == "session_tree_rows" and params.get("max_rows") == 5 and "MARKER" not in params["session_id"]:
+            return _json_resp(200, {"ok": True, "rows": [{}], "row_count": 1})
+        return None
+
+    def zero_rows_accepted(url, payload, **kw):
+        if payload.get("verb") == "session_tree_rows" and (payload.get("params") or {}).get("max_rows") == 0:
+            return _json_resp(200, {"ok": True, "rows": [], "row_count": 0})
+        return None
+
+    for handler, match in ((tree_has_rows, "did not answer zero rows"), (zero_rows_accepted, "max_rows of 0")):
+        wrap(handler)
+        with pytest.raises(core.SmokeTestFailure, match=match):
+            lambda_ec_gates._telemetry_read_checks(profile=None, region="eu-west-2")
 
 
 def _warm_reuse_invoker():

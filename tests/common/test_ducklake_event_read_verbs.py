@@ -333,6 +333,8 @@ def test_verb_fields_match_event_verb_output_columns() -> None:
             "as_of": "2026-09-26T12:00:00+00:00",
             "day_from": "2026-09-25",
             "day_to": "2026-09-25",
+            "offset": 0,
+            "max_rows": 10,
         }
         if entry.data.get("response") == "content":
             rows = _seeded_content_rows(con, session)

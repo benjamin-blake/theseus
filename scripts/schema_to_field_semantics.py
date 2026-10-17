@@ -298,6 +298,31 @@ def _project_contract_table(
     return entry
 
 
+def _telemetry_joins() -> list[dict[str, str]]:
+    """Every docs/contracts/_joins.yaml join between two telemetry_* tables, child side by the contract's cardinality.
+
+    Module-local on purpose: the deploy's reconcile-gate job runs this generator with pyyaml and pydantic only, so it cannot
+    import scripts.telemetry_verify (whose loader reads the same contract independently; a parity test pins the two).
+    """
+    joins = yaml.safe_load((_CONTRACTS_DIR / "_joins.yaml").read_text(encoding="utf-8"))["joins"]
+    out: list[dict[str, str]] = []
+    for join_id, spec in joins.items():
+        source, target = spec["from"].split(".", 1), spec["to"].split(".", 1)
+        if not (source[0].startswith("telemetry_") and target[0].startswith("telemetry_")):
+            continue
+        child, parent = (target, source) if spec["cardinality"] == "one_to_many" else (source, target)
+        out.append(
+            {
+                "join_id": join_id,
+                "child_table": child[0],
+                "child_column": child[1],
+                "parent_table": parent[0],
+                "parent_column": parent[1],
+            }
+        )
+    return sorted(out, key=lambda j: j["join_id"])
+
+
 def generate(*, include_prose: bool = False) -> dict[str, Any]:
     """Build the full field_semantics document from contracts + sidecar.
 
@@ -370,6 +395,7 @@ def generate(*, include_prose: bool = False) -> dict[str, Any]:
         _enforce_reconcile_pending_subset(table_id, ops_entry, declared_columns, write_mode)
 
     doc["ops_tables"] = ops_tables
+    doc["telemetry_joins"] = _telemetry_joins()
     validate_projection_partitions(doc)
     return doc
 

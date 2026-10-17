@@ -15,6 +15,7 @@ from src.common.ducklake_event_reads import EventRead
 
 IDLE_THRESHOLD_SECONDS = 86400
 MAX_WINDOW_DAYS = 7
+MAX_TREE_ROWS = 2000
 
 # REPORT-w1-friction-classifier.md section 2 (friction-k1 (a), friction-k2 (a)): rules are data, one row per rule.
 FRICTION_RULES: Mapping[str, Any] = {
@@ -171,6 +172,50 @@ EVENT_READS: dict[str, EventRead] = {
                 "parser_version), as standard base64 pages of at most 3 MiB: loop while offset + length < content_bytes, "
                 "concatenate the decoded pages, then check the length and SHA-256 against the row. Storage omitted carries "
                 "no data. " + _SMOKE_ONLY
+            ),
+        ),
+        EventRead(
+            verb="session_tree_rows",
+            tables=_ALL,
+            sql=sql.TREE_ROWS_SQL,
+            params=("session_id", "offset", "max_rows"),
+            binding="tree",
+            int_params=("offset", "max_rows"),
+            agent_facing=False,
+            description=(
+                "Verification only. Every stored row of the one tree holding a root session (the rows sharing its tenant, "
+                "project and session pin) in all four telemetry tables, any parser_version, no dedupe: table_name, the row "
+                "as JSON (compared columns plus created_timestamp, never content or content_uri), total_rows and "
+                f"roots_in_tree, paged by offset and max_rows (at most {MAX_TREE_ROWS}). " + _SMOKE_ONLY
+            ),
+        ),
+        EventRead(
+            verb="telemetry_orphan_counts",
+            tables=_ALL,
+            sql=sql.ORPHAN_COUNTS_SQL,
+            params=("day_from", "day_to", "as_of"),
+            binding="window",
+            max_window_days=MAX_WINDOW_DAYS,
+            data=_IDLE,
+            agent_facing=False,
+            description=(
+                "Verification only. Per UTC day and telemetry join of real-purpose projects: child rows, orphaned child rows "
+                "split by whether their tree is quiescent past the idle threshold at as_of, the quiescent and pending tree "
+                f"counts and the conflicted grain-key count, over at most {MAX_WINDOW_DAYS} days. " + _SMOKE_ONLY
+            ),
+        ),
+        EventRead(
+            verb="telemetry_root_sessions",
+            tables=_ALL,
+            sql=sql.ROOT_SESSIONS_SQL,
+            params=("day_from", "day_to"),
+            binding="window",
+            max_window_days=MAX_WINDOW_DAYS,
+            agent_facing=False,
+            description=(
+                "Verification only. One row per root session of a real-purpose project over at most "
+                f"{MAX_WINDOW_DAYS} UTC days: session_id, entity_ref, harness_session_key, branch, session_started_at, the "
+                "tree's last event and the Decision 207 stamps. " + _SMOKE_ONLY
             ),
         ),
         EventRead(

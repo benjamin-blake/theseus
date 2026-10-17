@@ -17,6 +17,7 @@ _ALLOWED_MODULES = {
     "src.common.ducklake_event_reads",
     "src.common.ducklake_event_read_verbs",
     "src.common.ducklake_reader_client",
+    "scripts.rec_episode",
 }
 _FORBIDDEN = (
     "duckdb",
@@ -53,7 +54,17 @@ def _violations(modules: set[str]) -> list[str]:
 
 def test_oracle_has_no_direct_reader_sql_duckdb_streams_or_tests_import() -> None:
     files = sorted(_PACKAGE.glob("*.py"))
-    assert {f.name for f in files} >= {"dedupe.py", "derive.py", "ledger.py", "shape.py", "joins.py", "__init__.py"}
+    assert {f.name for f in files} >= {
+        "dedupe.py",
+        "derive.py",
+        "ledger.py",
+        "shape.py",
+        "joins.py",
+        "orphans.py",
+        "rows.py",
+        "alarms.py",
+        "__init__.py",
+    }
     for path in files:
         found = _imported_modules(ast.parse(path.read_text(encoding="utf-8"), filename=str(path)))
         assert _violations(found) == [], path.name

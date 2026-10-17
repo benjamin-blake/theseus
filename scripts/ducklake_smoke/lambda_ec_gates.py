@@ -196,6 +196,36 @@ _TELEMETRY_TABLES = {"telemetry_sessions", "telemetry_observations", "telemetry_
 _CATALOG_MISSING_CLASSES = {"CatalogException", "BinderException"}
 
 
+def _verification_verb_checks(call: Any, fail: Any) -> None:
+    """The three verification verbs (rec-4025): an absent tree answers none, bad inputs answer 400 without an echo, and the
+    window verbs answer over today. Failure text names the condition and counts only, never a response body."""
+
+    def named(verb: str, params: dict) -> Any:
+        return call({"action": "named_read", "verb": verb, "params": params})
+
+    tree = {"session_id": _ABSENT_SESSION, "offset": 0, "max_rows": 5}
+    absent = named("session_tree_rows", tree)
+    if absent.status_code != 200 or absent.json().get("row_count") != 0:
+        fail("session_tree_rows on an absent session did not answer zero rows", f"status={absent.status_code}")
+    for label, params, marker in (
+        ("a malformed session_id", {**tree, "session_id": _MALFORMED_MARKER}, _MALFORMED_MARKER),
+        ("a max_rows of 0", {**tree, "max_rows": 0}, None),
+    ):
+        refused = named("session_tree_rows", params)
+        if refused.status_code != 400 or "named_read_input" not in refused.text or (marker and marker in refused.text):
+            fail(f"session_tree_rows with {label} must answer 400 named_read_input without echoing it", refused.status_code)
+    today = datetime.now(timezone.utc)
+    window: dict[str, object] = {"day_from": today.date().isoformat(), "day_to": today.date().isoformat()}
+    calls: tuple[tuple[str, dict[str, object]], ...] = (
+        ("telemetry_orphan_counts", {**window, "as_of": today.isoformat()}),
+        ("telemetry_root_sessions", window),
+    )
+    for verb, params in calls:
+        answered = named(verb, params)
+        if answered.status_code != 200 or not answered.json().get("ok"):
+            fail(f"{verb} did not answer over today's window", f"status={answered.status_code}")
+
+
 def _telemetry_read_checks(*, profile: str | None, region: str) -> None:
     """The reader's telemetry slot (rec-4291): describe, the health verb, an absent and a malformed session, and isolation."""
     from src.common.ducklake_event_read_verbs import EVENT_READS  # noqa: PLC0415
@@ -237,6 +267,7 @@ def _telemetry_read_checks(*, profile: str | None, region: str) -> None:
     )
     if bad.status_code != 400 or _MALFORMED_MARKER in bad.text or "named_read_input" not in bad.text:
         fail("a malformed session_id must answer 400 named_read_input without echoing the value", bad.status_code)
+    _verification_verb_checks(call, fail)
     probe = call(
         {
             "action": "query_ops",
