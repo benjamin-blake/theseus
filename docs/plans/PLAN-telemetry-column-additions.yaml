@@ -80,8 +80,12 @@ scope:
     test_create_tables_refuses_an_extra_live_column_before_any_ddl,
     test_create_tables_adds_no_column_to_a_dimension_or_counter_table,
     test_create_tables_adds_nothing_when_live_equals_declared and
-    test_provision_still_refuses_a_missing_nullable_column. Existing nodes are unchanged (the graduated
-    test_create_tables_never_re_alters_existing still holds: equal columns issue no ALTER).
+    test_provision_still_refuses_a_missing_nullable_column. Fixtures pinned: every refusal node ALSO removes one
+    tolerated nullable column from an event table, so the refusal is proven to fire before that column's ALTER, and
+    asserts no ALTER or CREATE statement was recorded; the dimension/counter node removes a nullable column from
+    ops_tenants' history table (with an event table also missing one) and asserts the same loud refusal and no DDL.
+    Existing nodes are unchanged (the graduated test_create_tables_never_re_alters_existing still holds: equal columns
+    issue no ALTER).
 - file: tests/test_ducklake_maintenance_smoke_handler.py
   action: Modify
   purpose: >-
@@ -91,7 +95,8 @@ scope:
 - file: tests/ducklake_neon_smoke_test/test_lambda_maintenance_gates.py
   action: Modify
   purpose: >-
-    New nodes test_create_telemetry_gate_prints_added_count and test_create_telemetry_gate_fails_without_an_added_list.
+    New nodes test_create_telemetry_gate_prints_added_count (fed real-shaped "<table>.<column>" names, asserting none
+    of them appears in stdout) and test_create_telemetry_gate_fails_without_an_added_list.
     SANCTIONED ASSERTION CHANGE: test_create_telemetry_gate_passes_on_a_clean_report's exact OK line gains "added=<m>",
     and test_create_telemetry_missing_created_prints_zero's fixture gains an "added" list.
 - file: tests/common/test_ducklake_telemetry_column_add_integration.py
@@ -108,9 +113,10 @@ scope:
   action: Modify
   purpose: >-
     New Postgres 16 integration node test_owner_adds_a_missing_nullable_column_and_the_scoped_login_still_writes: the
-    owner creates from the reduced projection, the scoped login appends, the owner's create with the full projection
-    adds the columns, the scoped login provisions and appends a row carrying them, and the ownership report stays
-    (0, True, False, False).
+    owner creates from the reduced projection; a scoped connection is opened and appends (the warm writer); the owner's
+    create with the full projection adds the columns; that SAME scoped connection, never re-attached, then provisions
+    and appends a row carrying them (the deploy ordering makes a writer container that attached before the ALTER the
+    common case), a fresh scoped connection does the same, and the ownership report stays (0, True, False, False).
 - file: tests/checks/contracts/test_telemetry_event_journal_contracts.py
   action: Modify
   purpose: >-
@@ -120,13 +126,21 @@ scope:
 - file: tests/checks/contracts/test_write_time_enforcement_conformance.py
   action: Modify
   purpose: >-
-    Touched ONLY if the derived adapter test needs rule-clean values for the new ruled columns (a valid sha, effort,
-    usage_source or a cache split no larger than tokens_cache_creation in the clean telemetry_sessions and
-    telemetry_observations records); no rule is skipped or excluded.
+    The rule-clean model_call scenario gains cache_creation_1h_tokens and cache_creation_5m_tokens no larger than its
+    tokens_cache_creation (the at_most breaker needs a row carrying both columns, and exercised == expected fails
+    otherwise), and the clean records gain a valid checkout sha, harness_session_key, reasoning_effort and usage_source
+    where the derived adapter test needs one to break each new rule; no rule is skipped or excluded.
+- file: tests/telemetry/test_prepare.py
+  action: Modify
+  purpose: >-
+    SANCTIONED ASSERTION CHANGE (the projection grows): the exact at_most map over the contract-derived specs (:114)
+    gains cache_creation_1h_tokens and cache_creation_5m_tokens, both mapping to tokens_cache_creation;
+    reasoning_tokens -> tokens_output and the not_before assertion are unchanged.
 - file: docs/DECISIONS.md
   action: Modify
   purpose: >-
-    NEW numbered Decision N (origin/main max + 1 at build time; 219 expected, 218 is on main), amends [216], at most
+    NEW numbered Decision N (origin/main max + 1 at build time; 222 at plan time: 220 and 221 are on main and 219 is
+    reserved by PLAN-platform-iam-personal-release's approved text), amends [216], at most
     6,144 bytes, content pinned in execution step 8; dated trailing-bracket annotations on Decision 216 and Decision
     143 naming it (Decision 177 dialect; neither entry's text is rewritten).
 - file: docs/decisions-index.json
@@ -142,6 +156,7 @@ scope:
     ids; the trailing --- separator; the dated annotations on 216 and 143.
 bundled_recommendations: []
 followon_recs: []
+closes_criteria: []
 infrastructure_dependencies:
 - >-
   No Terraform, no IAM change, no role SQL change and no admin step. The maintenance-smoke function already connects as
@@ -440,9 +455,14 @@ context:
   Two existing assertions change (strengthening, listed in scope): the graduated test_create_telemetry_response_shape
   gains the added key, and the gate tests' exact OK line gains added=<m>.
 - >-
-  Related-work check (open ci_rca rec-4372, DUCKLAKE_ZIP_MISMATCH on the sandbox apply): deferred, logged here. This
-  plan touches no terraform root, apply workflow or ZIP builder and shares no failure category; the governed Lambda
-  deploy (deploy-ducklake-lambdas.yml) is a different workflow from the sandbox apply.
+  Column freeze: these ten are the complete set of columns parser_version 4 emits, so the producer plan needs no second
+  column add. The other facts the design inputs named are dropped from v4, not stored in a bag: per_turn_effort (equal
+  to effort on every observed record), service_tier (standard on every observed record; no price under the fixed
+  allowance) and the CLI version (on every record; no consumer yet). Each would be its own field_add if a consumer
+  appears.
+- >-
+  No bundled recs: rec-4354 and rec-4359 (and rec-4025's inputs) close through PLAN-telemetry-capture-producer-fixes,
+  whose acceptance nodes are producer-side. No unresolved ci_rca rec at finalization (rec-4372 closed by #1536).
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
@@ -477,7 +497,8 @@ execution_steps:
   "true when the source recorded the call as finished (Claude Code: the response record carries a stop_reason) or a
   final source replaced the record's usage (usage_source spawn_result); false marks the four classes as a lower bound,
   a snapshot taken while the response was still streaming (rec-4354), so a sum over such rows undercounts. NULL when the
-  producer does not say (claude_code before parser_version 4). Set on model_call points only."; populated_by "the
+  producer does not say (claude_code before parser_version 4). Set on model_call points only (not write-enforced; the
+  producer's tests pin it)."; populated_by "the
   producer, at the model_call point event."; dq_intent {}. usage_source (str/string) -- description "Where this
   model_call's token classes came from: record | spawn_result."; semantics "record: the call's own source record.
   spawn_result: a sync sub-agent's last call whose own record was not final, taken from the parent's spawn result, which
@@ -493,7 +514,9 @@ execution_steps:
   cache_creation_1h_tokens and cache_creation_5m_tokens (int/bigint) -- description "Provider-reported cache-write tokens
   of this model_call with a 1-hour (resp. 5-minute) cache lifetime: a subset of tokens_cache_creation, never a fifth
   billing class."; semantics "Cache writes are priced by lifetime, so cost at read needs the split. NULL when the
-  provider did not report it; never a local estimate."; dq_intent {at_most: tokens_cache_creation}. Each contract gains
+  provider did not report it; never a local estimate. The pair's sum is at most tokens_cache_creation; only each
+  column's own bound is write-enforced (the row-rule grammar has no sum leg), a declared residual the producer's tests
+  pin."; dq_intent {at_most: tokens_cache_creation}. Each contract gains
   one contract-level amendment_log entry {date: <build day>, semantic_break: false, change_class: field_add, summary
   naming this plan and the columns, migration_story: "Nullable additions: every stored row stays valid and reads NULL;
   no producer emits them before PLAN-telemetry-capture-producer-fixes; the smoke tables gain them through Decision N's
@@ -515,7 +538,8 @@ execution_steps:
   5. Run step 8; add rule-clean values in test_write_time_enforcement_conformance.py only if the derived adapter test
   asks for them.
 - >-
-  6. Write Decision N into docs/DECISIONS.md in decision-entry.yaml's required-marker shape (the **Status:** and
+  6. Rebase onto origin/main first (DECISIONS.md and decisions-index.json move on main), then write Decision N into
+  docs/DECISIONS.md in decision-entry.yaml's required-marker shape (the **Status:** and
   **Date:** markers, the fenced metadata envelope, Problem, Decision, Rationale, Coverage, the reversal-conditions
   stanza, Related and the trailing --- block separator), N = origin/main max + 1. Title "## Decision N: The smoke
   catalog's owner-login table step may add a declared nullable column an existing telemetry table lacks (amends
@@ -569,7 +593,10 @@ execution_steps:
 - 'Report: what was implemented, verification results, the deploy run, and the go-ahead for the producer plan.'
 work_areas: []
 rollback: >-
-  The additions are forward-only on the smoke catalog. Reverting the contract fields after the deploy makes the live
+  If the live owner step FAILS (reversal condition ducklake-alter-breaks-table), the tables never gained the columns
+  and every append against the new projection answers 500: revert the whole PR in a new PR, contract fields included
+  (safe, because live == the old declared set), and STOP for RCA. If it SUCCEEDED, the additions are forward-only on
+  the smoke catalog. Reverting the contract fields after the deploy makes the live
   tables carry undeclared columns, which reds both the owner step and the telemetry gate, and no column is ever dropped
   (Decision 55). So a rollback reverts only the code edits (provision, verb, gate) in a new PR and keeps the contract
   fields; with the columns already present the reverted create finds no drift. Decision N stays in DECISIONS.md and is
