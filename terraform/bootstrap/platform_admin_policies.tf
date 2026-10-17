@@ -216,12 +216,18 @@ resource "aws_iam_role_policy" "platform_admin_ops" {
     }
 
     precondition {
-      # Self-access guard: AdminOps must still carry the IAMFull statement (the grant that lets
-      # PlatformAdmin manage IAM at all, import included). Checked via a plain substring search
-      # (never the byte-size measure above, which this file's other precondition already owns --
-      # personal-policies-carry-byte-preconditions asserts exactly one such measure per file).
-      condition     = strcontains(local.platform_admin_ops_policy_json, "\"Sid\":\"IAMFull\"")
-      error_message = "PlatformAdmin AdminOps no longer carries the IAMFull statement -- this is the self-access grant that lets PlatformAdmin manage IAM at all."
+      # Self-access guard: AdminOps must still carry an unconditioned Allow of the IAMFull statement
+      # (the grant that lets PlatformAdmin manage IAM at all, import included). Checked by parsing
+      # the policy local itself, never the byte-size measure above, which this file's other
+      # precondition already owns -- personal-policies-carry-byte-preconditions asserts exactly one
+      # such measure per file.
+      condition = anytrue([
+        for s in jsondecode(local.platform_admin_ops_policy_json).Statement :
+        try(s.Sid, "") == "IAMFull" && s.Effect == "Allow" && !can(s.Condition)
+        && contains(flatten([try(s.Action, [])]), "iam:*")
+        && contains(flatten([try(s.Resource, [])]), "*")
+      ])
+      error_message = "PlatformAdmin AdminOps no longer has an unconditioned Allow of iam:* on * in the IAMFull statement -- this is the self-access grant that lets PlatformAdmin manage IAM at all."
     }
   }
 }
