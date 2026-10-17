@@ -15,8 +15,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from scripts.telemetry_capture import responses, switch
-from scripts.telemetry_capture.state import LOST, TAIL_MISMATCH, CaptureState, Loaded, state_dir
+from scripts.telemetry_capture import responses, switch, verify_due
+from scripts.telemetry_capture.state import (
+    LOST,
+    RUNNER,
+    TAIL_MISMATCH,
+    CaptureState,
+    Loaded,
+    merge_verify_state,
+    state_dir,
+)
 from scripts.telemetry_capture.transport import (
     MAX_INVOKE_BODY_BYTES,
     MAX_ROWS_PER_REQUEST,
@@ -195,6 +203,41 @@ class _Sender:
                 raise _Stop("stopped", f"status_{status}" if status else "transport")
 
 
+def _verify_hook(
+    state: CaptureState, record: dict[str, Any], cursor: Any, root: bytes, event: str, final: bool, outcome: str
+) -> None:
+    """Decide whether the in-session source check is due after this pass and schedule it; never changes the outcome.
+
+    Runs under the pass lock, after the cursor is persisted. The runner owns sent_passes, checks_by_day, the producer
+    fingerprint, producer_changed, scheduled_at and the scheduling next_attempt_at; the check owns the rest (state.py).
+    """
+    if final:
+        return
+    try:
+        now = time.time()
+        held = state.verify_state()
+        fresh = dict(held)
+        if outcome == "sent":
+            fresh["sent_passes"] = int(held.get("sent_passes") or 0) + 1
+            fingerprint = verify_due.producer_fingerprint()
+            if held.get("producer_fingerprint") is None:
+                fresh["producer_fingerprint"] = fingerprint
+            elif held["producer_fingerprint"] != fingerprint:
+                fresh["producer_changed"] = True
+        due = verify_due.verify_due(cursor, root, fresh, event=event, final=final, outcome=outcome, now=now)
+        record["verify_due"] = due
+        if due:
+            by_day = dict(fresh.get("checks_by_day") or {})
+            today = verify_due.utc_day(now)
+            by_day[today] = by_day.get(today, 0) + 1
+            fresh["checks_by_day"] = dict(sorted(by_day.items())[-3:])
+            fresh["scheduled_at"], fresh["next_attempt_at"] = now, now + verify_due.VERIFY_GUARD_S
+        state.save_verify_state(merge_verify_state(state.verify_state(), fresh, RUNNER))
+    except Exception as exc:  # noqa: BLE001 -- the check is an alarm, never a gate: the outcome stands
+        record.pop("verify_due", None)
+        record["verify_due_error"] = type(exc).__name__
+
+
 def _finish(state: CaptureState, record: dict[str, Any], outcome: str, diag: Counter) -> PassResult:
     record.update(outcome=outcome, diag=dict(sorted(diag.items())))
     state.append_diagnostic(record)
@@ -246,8 +289,8 @@ def _locked_pass(
     rows = sum(len(rows) for _, rows in result.batches)
     record["rows"] = {table: len(rows) for table, rows in result.batches}
     if not rows:
-        if result.next_cursor is not None:
-            _persist(state, result.next_cursor, root, loaded, diag)
+        if result.next_cursor is not None and _persist(state, result.next_cursor, root, loaded, diag):
+            _verify_hook(state, record, result.next_cursor, root, event, final, "no_rows")
         return _finish(state, record, "no_rows", diag)
     conflict = "grain_conflict_after_cursor_loss" if loaded.status in (LOST, TAIL_MISMATCH) else "grain_conflict"
     sender: _Sender | None = None
@@ -268,14 +311,16 @@ def _locked_pass(
             record["halt"] = stop.halt
         return _finish(state, record, stop.outcome, diag)
     record["requests"] = sender.requests
-    if result.next_cursor is not None:
-        _persist(state, result.next_cursor, root, loaded, diag)
+    if result.next_cursor is not None and _persist(state, result.next_cursor, root, loaded, diag):
+        _verify_hook(state, record, result.next_cursor, root, event, final, "sent")
     return _finish(state, record, "sent", diag)
 
 
-def _persist(state: CaptureState, cursor: Any, root: bytes, loaded: Loaded, diag: Counter) -> None:
+def _persist(state: CaptureState, cursor: Any, root: bytes, loaded: Loaded, diag: Counter) -> bool:
     if not state.save_cursor(cursor, root, loaded):
         diag["cursor_regression"] += 1
+        return False
+    return True
 
 
 def run_pass(

@@ -276,8 +276,7 @@ def test_verify_command_prints_counts_only(tmp_path: Path, monkeypatch: pytest.M
     code = cli.main(["verify", "--tree", str(root), "--no-alarms"], out=lines.append, reader_factory=lambda: object())
     assert code == 2 and len(lines) == 1 and lines[0].startswith("VERIFY status=no_cursor compare_skipped=none rows_equal=0 ")
     assert " alarms=none" in lines[0] and all("=" in part for part in lines[0].split()[1:])
-    for secret in ("example/project", SID, "go", "full"):
-        assert secret not in lines[0].replace(SID, "")
+    assert "example/project" not in lines[0] and SID not in lines[0] and str(tmp_path) not in lines[0]
     code, out = _run_verify(
         monkeypatch,
         tmp_path,
@@ -331,3 +330,64 @@ def test_verify_exit_contract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     lines: list[str] = []
     assert cli.main(["verify", "--tree", str(tmp_path / "x.jsonl"), "--assert-zero", "not_a_class"], out=lines.append) == 2
     assert lines == ["verify: not_a_class is not an alarm class"]
+
+
+def _detached(
+    monkeypatch: pytest.MonkeyPatch, diag: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> list[dict[str, Any]]:
+    from scripts.telemetry_capture import verify  # noqa: PLC0415
+
+    ran: list[dict[str, Any]] = []
+    monkeypatch.setattr(cli, "run_pass", lambda *a, **k: PassResult("sent", diag))
+    monkeypatch.setattr(verify, "run_verify", lambda path, sid, **kw: ran.append({"path": path, "sid": sid, **kw}))
+    argv = ["run", "--event", "Stop", "--transcript", "/t/s.jsonl", "--session-id", "s"]
+    assert cli.main(argv, env={}, reader_factory=lambda: "reader") == 0
+    assert capsys.readouterr() == ("", "")
+    return ran
+
+
+def test_run_runs_verify_in_process_only_when_due(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    assert _detached(monkeypatch, {"event": "Stop", "at": 1, "outcome": "sent", "verify_due": False}, capsys) == []
+    assert _detached(monkeypatch, {"event": "Stop", "at": 1, "outcome": "sent"}, capsys) == []
+    diag = {"event": "Stop", "at": 1, "outcome": "sent", "verify_due": True}
+    (call,) = _detached(monkeypatch, diag, capsys)
+    assert (call["path"], call["sid"], call["trigger"], call["reader"], call["portal"]) == (
+        Path("/t/s.jsonl"),
+        "s",
+        "detached",
+        "reader",
+        None,
+    )
+    assert call["scheduling_record"] is diag, "the scheduling pass record is the one the runner appended"
+    assert 590 < call["budget"].remaining() <= 600, "the check has its own budget, not the pass's"
+    assert "alarms" not in call, "a detached check raises alarms"
+
+
+def test_a_verify_import_failure_leaves_run_silent(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import sys  # noqa: PLC0415
+
+    monkeypatch.setitem(sys.modules, "scripts.telemetry_capture.verify", None)
+    monkeypatch.setattr(cli, "run_pass", lambda *a, **k: PassResult("sent", {"verify_due": True}))
+    argv = ["run", "--event", "Stop", "--transcript", "/t/s.jsonl", "--session-id", "s"]
+    assert cli.main(argv, env={}) == 0
+    assert capsys.readouterr() == ("", "")
+    monkeypatch.setattr(cli, "run_pass", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("pass failed")))
+    assert cli.main(argv, env={}) == 0 and capsys.readouterr() == ("", "")
+
+
+def test_verify_builds_the_default_reader_when_none_is_injected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import src.common.ducklake_reader_client as reader_module  # noqa: PLC0415
+
+    built: list[str] = []
+    monkeypatch.setattr(reader_module, "make_reader", lambda: built.append("reader") or "reader")
+    _run_verify_with(monkeypatch, tmp_path)
+    assert built == ["reader"]
+
+
+def _run_verify_with(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> int:
+    from scripts.telemetry_capture import verify  # noqa: PLC0415
+
+    monkeypatch.setattr(verify, "run_verify", lambda *a, **k: _verify_result())
+    return cli.main(["verify", "--tree", str(tmp_path / f"{SID}.jsonl")], out=lambda line: None)

@@ -179,3 +179,16 @@ def test_a_key_held_by_two_stored_rows_is_classified(same_event_id: bool) -> Non
         assert counts["race_duplicate_rows"] == int(same_event_id) and counts["duplicate_ref_rows"] == int(not same_event_id)
         assert counts["key_mismatch"] == 0 and counts["column_mismatch"] == 0, "the survivor is the expected derivation"
         assert result.survivors[(OBSERVATIONS, original["external_ref"])]["event_id"] == original["event_id"]
+
+
+def test_unparseable_inputs_are_mismatches_never_crashes() -> None:
+    assert compare._normal("metadata", "VARCHAR", "{not json") == "{not json"
+    assert compare._normal("metadata", "VARCHAR", '{"a": 1}') == {"a": 1}
+    assert compare._normal("cost_usd_reported", "DOUBLE", 1) == 1.0 and compare._normal("x", "BIGINT", None) is None
+    stored = _stored()
+    del stored[OBSERVATIONS][0]["tenant_id"]
+    result = _compare(stored)
+    assert result.classes()["key_mismatch"] >= 1, "a stored row without its tenant cannot be keyed"
+    bad_time = _stored()
+    bad_time[SESSIONS][0]["session_started_at"] = "not a time"
+    assert _compare(bad_time).classes()["key_mismatch"] >= 1

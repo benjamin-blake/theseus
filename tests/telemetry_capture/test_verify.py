@@ -408,14 +408,46 @@ def test_malformed_lines_keep_one_index_space(tmp_path: Path) -> None:
     )
 
 
-def test_a_pending_record_is_held_not_covered(tmp_path: Path) -> None:
-    tree = ledger_tree(tmp_path)
-    result = tree.run()
-    assert result.completed
-    state = tree.state.verify_state()
-    assert state["held_ledger_line"] >= 0 and (
-        "last_ledger_line" not in state or state["last_ledger_line"] <= state["held_ledger_line"]
+def _background_files() -> dict[str, str]:
+    from tests.fixtures.turn_capture_corpus import (  # noqa: PLC0415
+        assistant,
+        child,
+        text_block,
+        tool_result,
+        tool_use_block,
     )
+
+    launch = tool_use_block("tuA", "Agent", {"description": "d", "prompt": "p", "run_in_background": True})
+    led = {"inputTokens": 20, "outputTokens": 40, "cacheReadInputTokens": 60, "cacheCreationInputTokens": 80}
+    root = [
+        prompt("u1", 1, "p1", "go"),
+        assistant("a1", 2, "m1", [launch]),
+        tool_result("r1", 3, "tuA", "launched", pid="p1", tur={"agentId": "bg", "isAsync": True, "status": "async_launched"}),
+        {"type": "cost-state", "modelUsage": {"claude-test-1": led}},
+        prompt("u2", 20, "p2", "again"),
+    ]
+    kid = [child(prompt("c1", 4, "p1", "task"), "bg"), child(assistant("c2", 6, "mc", [text_block("work")]), "bg")]
+    return make_files(root, {"bg": kid})
+
+
+def test_a_pending_record_is_held_not_covered(tmp_path: Path) -> None:
+    files = _background_files()
+    cost_line = next(i for i, line in enumerate(files[f"{SID}.jsonl"].split("\n")) if "cost-state" in line)
+    tree = build(tmp_path, files, final=False)
+    result = tree.run()
+    assert result.completed, result.status
+    assert {cls for _, _, cls in result.stored_models} == {"stored_ledger_not_compared"}
+    state = tree.state.verify_state()
+    assert state["held_ledger_line"] == cost_line and "last_ledger_line" not in state, "a pending record is held, not covered"
+    cursor = tree.state.cursor_on_disk()
+    assert cursor is not None
+    root = tree.path.read_bytes()
+    args = {"event": "Stop", "final": False, "outcome": "sent", "now": NOW + 1}
+    assert not verify_due.verify_due(cursor, root, {**state, "sent_passes": 3}, **args), "held: the next passes are not due"
+
+    closed = build(tmp_path / "closed", files, final=True)
+    done = closed.run()
+    assert done.completed and closed.state.verify_state()["last_ledger_line"] == cost_line
 
 
 def _plant(tree: Tree, table: str, column: str, value: Any, index: int = 0) -> None:
@@ -514,3 +546,119 @@ def test_acceptance_is_the_verify_command_for_the_class() -> None:
         ok, why = lint_acceptance_command(command, require_decidable=True)
         assert ok, (cls, why)
     assert time.time() > 0
+
+
+def test_budget_exhaustion_is_a_counted_token(tmp_path: Path) -> None:
+    short = corpus(tmp_path / "short")
+    result = short.run(budget=Budget.start(100))
+    assert result.status == "budget_exhausted" and short.reader.calls == [], "a reader call needs 180 s of budget"
+    assert short.state.verify_state()["incomplete_streak"] == 1
+    none = corpus(tmp_path / "none")
+    assert none.run(budget=Budget.start(0)).status == "budget_exhausted"
+
+
+def test_a_tree_announcing_too_many_rows_stops_after_its_first_page(tmp_path: Path) -> None:
+    tree = corpus(tmp_path)
+    tree.reader.totals = [verify.MAX_TREE_PAGES * verify.PAGE_ROWS + 1]
+    result = tree.run()
+    assert result.completed and result.compare_skipped == "tree_too_large"
+    assert len([c for c in tree.reader.calls if c[0] == "session_tree_rows"]) == 1
+
+
+def test_credentials_are_resolved_the_way_the_writer_client_does(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys  # noqa: PLC0415
+    import types  # noqa: PLC0415
+
+    class Creds:
+        def get_frozen_credentials(self) -> None:
+            return None
+
+    answers: list[Any] = [Creds(), None, RuntimeError("no profile")]
+
+    class Session:
+        def __init__(self, profile_name: str) -> None:
+            self.profile_name = profile_name
+
+        def get_credentials(self) -> Any:
+            answer = answers.pop(0)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+    monkeypatch.setitem(sys.modules, "boto3", types.SimpleNamespace(Session=Session))
+    assert [verify.credentials_available() for _ in range(3)] == [True, False, False]
+
+
+def _forked_ledger_files() -> dict[str, str]:
+    from tests.fixtures.turn_capture_corpus import assistant, text_block  # noqa: PLC0415
+
+    led = {"inputTokens": 10, "outputTokens": 20, "cacheReadInputTokens": 30, "cacheCreationInputTokens": 40}
+    root = [
+        {**prompt("u0", 1, "p0", "copied"), "forkedFrom": {"sessionId": "x"}},
+        {**assistant("a0", 2, "m0", [text_block("copied")]), "forkedFrom": {"sessionId": "x"}},
+        prompt("u1", 3, "p1", "own"),
+        assistant("a1", 4, "m1", [text_block("own")]),
+        {"type": "cost-state", "modelUsage": {"claude-test-1": led}},
+        prompt("u2", 10, "p2", "again"),
+    ]
+    return make_files(root)
+
+
+def test_a_model_with_a_fork_copied_call_is_not_compared_and_its_alarm_is_declared(tmp_path: Path) -> None:
+    tree = build(tmp_path, _forked_ledger_files(), final=True)
+    result = tree.run()
+    assert result.completed
+    classes = {m: c for _, m, c in result.stored_models}
+    assert classes == {"claude-test-1": "stored_ledger_not_compared"}
+    assert result.counts.get("ledger_fork_unmeasured", 0) == 1 and result.counts.get("ledger_input_class_mismatch", 0) == 0
+    assert tree.portal.calls == [], "how a fork's cost-state counts copied calls is unmeasured: declared, never filed"
+
+
+def test_a_sidecar_changed_after_the_cursor_pinned_it_is_a_counted_token(tmp_path: Path) -> None:
+    tree = corpus(tmp_path, "sidecar_present.json")
+    sidecars = sorted((tmp_path / SID / "tool-results").glob("*"))
+    assert sidecars, "the case carries a sidecar the cursor pins present"
+    sidecars[0].write_text("changed after the pass", encoding="utf-8")
+    result = tree.run()
+    assert result.status == "sidecar_mutated" and tree.reader.calls == []
+    assert tree.state.verify_state()["incomplete_streak"] == 1
+
+
+def test_a_load_error_a_busy_lock_a_failing_portal_and_a_dropped_write_are_all_silent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    load = corpus(tmp_path / "load")
+    monkeypatch.setattr(CaptureState, "load_cursor", lambda self, root: 1 / 0)
+    assert load.run().status == "verify_error:ZeroDivisionError"
+    monkeypatch.undo()
+
+    busy = corpus(tmp_path / "busy")
+    held: list[Any] = []
+
+    def take(verb: str, params: dict[str, Any]) -> None:
+        if verb == "session_tree_rows":
+            held.append(busy.state.acquire(0.0))
+
+    busy.reader.hook = take
+    result = busy.run()
+    held[0].release()
+    assert result.status == "busy" and busy.verify_records() == [], (
+        "a pass holds the lock: the check yields and writes nothing"
+    )
+
+    portal = corpus(tmp_path / "portal")
+    _plant(portal, "telemetry_sessions", "branch", "changed")
+    portal.portal = lambda action, fields: 1 / 0  # type: ignore[assignment]
+    result = portal.run()
+    assert result.completed and result.counts["alarm_error:ZeroDivisionError"] == 1
+
+    dropped = corpus(tmp_path / "dropped")
+    monkeypatch.setattr(CaptureState, "save_verify_state", lambda self, state: (_ for _ in ()).throw(OSError("disk")))
+    result = dropped.run()
+    assert result.completed, "a dropped final write never changes the verdict"
+    assert "settled_at" not in dropped.state.verify_state() and "root_session_id" not in dropped.state.verify_state()
+    monkeypatch.undo()
+
+    broken = corpus(tmp_path / "broken")
+    monkeypatch.setattr(verify._Check, "run", lambda self: 1 / 0)
+    assert broken.run().status == "verify_error:ZeroDivisionError"

@@ -97,11 +97,18 @@ def _instant(value: Any) -> datetime:
     return stamp.replace(microsecond=stamp.microsecond // 1000 * 1000)
 
 
+class _Unparseable:
+    """A timestamp that does not parse: equal to nothing, itself included, so the column reads as a mismatch."""
+
+
 def _normal(column: str, sql_type: str, value: Any) -> Any:
     if value is None:
         return None
     if sql_type == _TIMESTAMPS:
-        return _instant(value)
+        try:
+            return _instant(value)
+        except (ValueError, TypeError):
+            return _Unparseable()
     if column in JSON_COLUMNS and isinstance(value, str):
         try:
             return json.loads(value)
@@ -116,9 +123,7 @@ def _same(left: Any, right: Any) -> bool:
     return type(left) is type(right) and left == right
 
 
-def _expected_event_id(table: str, stored: Mapping[str, Any], expected: Mapping[str, Any] | None) -> str | None:
-    if expected is None:
-        return None
+def _expected_event_id(table: str, stored: Mapping[str, Any], expected: Mapping[str, Any]) -> str | None:
     try:
         return derive_event_id(
             table, stored["tenant_id"], stored["project_id"], expected["external_ref"], _instant(expected["event_timestamp"])

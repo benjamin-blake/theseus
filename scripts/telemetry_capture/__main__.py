@@ -73,9 +73,15 @@ def _state(tree: Path) -> CaptureState:
     return CaptureState(state_dir(tree, tree.stem))
 
 
-def _cmd_run(args: argparse.Namespace, env: Mapping[str, str], repo_root: Path, factory: ClientFactory) -> int:
+def _cmd_run(
+    args: argparse.Namespace,
+    env: Mapping[str, str],
+    repo_root: Path,
+    factory: ClientFactory,
+    reader_factory: Callable[[], Any] | None = None,
+) -> int:
     try:
-        run_pass(
+        result = run_pass(
             Path(args.transcript),
             args.session_id,
             args.event,
@@ -86,9 +92,30 @@ def _cmd_run(args: argparse.Namespace, env: Mapping[str, str], repo_root: Path, 
             client_factory=factory,
             lock_wait=args.lock_wait,
         )
+        if result.diag.get("verify_due") is True:
+            _run_check(args, result, reader_factory)
     except Exception:  # noqa: BLE001 -- the detached runner is silent on every path
         pass
     return 0
+
+
+def _run_check(args: argparse.Namespace, result: Any, reader_factory: Callable[[], Any] | None) -> None:
+    """The in-session source check, in this already-detached process; imported here so an import failure changes nothing."""
+    from scripts.telemetry_capture import verify  # noqa: PLC0415
+
+    if reader_factory is None:
+        from src.common.ducklake_reader_client import make_reader  # noqa: PLC0415
+
+        reader_factory = make_reader
+    verify.run_verify(
+        Path(args.transcript),
+        args.session_id,
+        trigger="detached",
+        scheduling_record=result.diag,
+        reader=reader_factory(),
+        portal=None,
+        budget=Budget.start(verify.VERIFY_BUDGET_S),
+    )
 
 
 def _cmd_pass(args: argparse.Namespace, env: Mapping[str, str], repo_root: Path, factory: ClientFactory, out: Callable) -> int:
@@ -318,7 +345,7 @@ def main(
     args = _parser().parse_args(argv)
     environ = dict(os.environ) if env is None else env
     if args.cmd == "run":
-        return _cmd_run(args, environ, repo_root, client_factory)
+        return _cmd_run(args, environ, repo_root, client_factory, reader_factory)
     if args.cmd == "pass":
         return _cmd_pass(args, environ, repo_root, client_factory, out)
     if args.cmd == "status":

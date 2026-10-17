@@ -145,6 +145,11 @@ def test_producer_fingerprint_covers_the_emitting_code(tmp_path: Path, monkeypat
     )
     semantics = semantics.replace("columns: {}", "columns: {x: 1}")
     assert fingerprint() == base, "a non-telemetry block never moves it"
+    (tmp_path / vd._FIELD_SEMANTICS).unlink()
+    files["src/turn_capture/parse.py"] = "A = 1\n"
+    (tmp_path / "src" / "telemetry" / "identity.py").unlink()
+    vd.producer_fingerprint.cache_clear()
+    assert vd.producer_fingerprint() != base, "an unreadable file is part of the fingerprint, never an exception"
     vd.producer_fingerprint.cache_clear()
 
 
