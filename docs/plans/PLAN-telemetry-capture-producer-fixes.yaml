@@ -1,0 +1,867 @@
+schema_version: 5
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: telemetry-capture-producer-fixes
+intent: >-
+  One parser_version bump (3 -> 4) of the claude_code transcript producer fixing the defects the slice 4 verification
+  review found, so slice 4 (rec-4025) can join, reconcile and trust captured sessions: (1) each session row records the
+  harness session id and the checkout the segment ran; (2) model_calls record the requested model, reasoning effort and
+  the 1h/5m cache-write split; (3) rec-4354, partial sub-agent usage is flagged non-final and a sync sub-agent's last
+  call takes the spawn result's final usage; (4) rec-4358, a background sub-agent's outcome follows its completion
+  notice; (5) rec-4359, the capture switch is read from main; (6) rec-4382, every segment before a resume gets its close
+  row. Every value is a typed column from PLAN-telemetry-column-additions, derived from the transcript alone (envelope
+  R7). Telemetry is the learning signal for the recursive self-improvement loop (PROJECT_CONTEXT); wrong tokens,
+  outcomes or missing closes would teach it the wrong lessons.
+plan_type: IMPLEMENTATION
+verification_tier: V3
+plan_path: docs/plans/PLAN-telemetry-capture-producer-fixes.yaml
+phase: >-
+  T3.20 (agent-turn telemetry capture): producer correctness fixes from the slice 4 review, approved by Benjamin on
+  2026-10-17. Closes no exit criterion (c3 is slice 4's orphan monitor; c6 and c7 are outside capture correctness).
+  Precondition: PLAN-telemetry-column-additions is merged AND its governed deploy run is green (the writer refuses
+  undeclared columns with a sticky halt). V3 because the build proves the new rows against the live smoke-catalog
+  writer; nothing here is Lambda-packaged and nothing deploys.
+scope:
+- file: src/turn_capture/provenance.py
+  action: Create
+  purpose: >-
+    Session provenance, pure (stdlib and src.turn_capture only). pin_facts(att) parses the SessionStart pin hook's
+    stderr line (rule PV-1) into (checkout_sha, checkout_base_sha, checkout_dirty), each None for "unknown" or absent;
+    open_provenance(stream) reads the LAST pin attachment before the stream's first prompt record (PV-2);
+    resume_provenance(stream, resume_rec) reads the pin attachment inside that resume's hook group (PV-3);
+    harness_session_key(stream, bound) reads the first remote_session_change attachment at or before the open row's bound
+    and returns its url's last path segment when it matches ^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$, else None (PV-4). Each
+    miss is counted in the pass diagnostics (rule DG-1).
+- file: src/turn_capture/usage.py
+  action: Create
+  purpose: >-
+    model_call usage columns, pure: usage_columns(resp, spawn_usage, diag) returns the four token classes,
+    reasoning_tokens, cache_creation_1h_tokens, cache_creation_5m_tokens, requested_model, reasoning_effort, usage_final
+    and usage_source per rules US-1..US-4, moving the existing token/reasoning extraction out of observations.py
+    unchanged in meaning.
+- file: src/turn_capture/streams.py
+  action: Modify
+  purpose: >-
+    Background spawns (rule BN-1): Spawn gains notices (every later root record that is a <task-notification> naming the
+    agent, in file order) and completed_at_boundary; notice_status(rec) parses the notice's <status> token
+    ([a-z_]{1,32}, else None). A background spawn in the ROOT stream with no notice before a later root
+    SessionStart:resume boundary is complete at that boundary (close_rec stays None). Sync spawns and child-stream spawns
+    are unchanged. Stays under 500 SLOC.
+- file: src/turn_capture/sessions.py
+  action: Modify
+  purpose: >-
+    SESSION_COLUMNS gains harness_session_key, checkout_sha, checkout_base_sha, checkout_dirty. Open rows carry PV-2 and
+    PV-4 values; resume rows carry PV-3 values and are due only once their hook group has ended (rule SC-3); one close
+    row per root resume boundary for the segment before it (SC-1, SC-2); background agent close rows one per notice with
+    the BN-2 outcome mapping; rec-4309's counter (DG-1). build_sessions and build_agents take the pass diag Counter.
+- file: src/turn_capture/observations.py
+  action: Modify
+  purpose: >-
+    OBSERVATION_COLUMNS gains usage_final, usage_source, requested_model, reasoning_effort, cache_creation_1h_tokens,
+    cache_creation_5m_tokens; the model_call row takes its usage columns from usage.usage_columns, passing the sync spawn
+    result's usage for the child stream that spawn owns (US-3). No other row changes.
+- file: src/turn_capture/record_turn.py
+  action: Modify
+  purpose: >-
+    PARSER_VERSION 4, PRODUCER_VERSION "turn-capture-4"; _build_all passes the diag Counter to build_sessions and
+    build_agents. Cut logic is unchanged: a resume boundary records no finalization cut (SC-1 derives the close from the
+    tree), so the cursor's cuts grow only at SessionEnd passes.
+- file: .claude/hooks/session_start_log_turn.sh
+  action: Modify
+  purpose: >-
+    Rule PV-1: prints ONE stderr line "[session_start_log_turn] capture pin checkout=<HEAD|unknown> base=<merge-base of
+    HEAD and origin/main|unknown> dirty=<true|false|unknown>" for the repository two levels above the script, each git
+    call bounded by timeout 5 and validated (^[0-9a-f]{40}([0-9a-f]{24})?$) before printing; dirty from git status
+    --porcelain --untracked-files=no. Reads no stdin, writes no file, prints nothing on stdout, exits 0 on every path
+    (git absent, not a repository, a timeout).
+- file: scripts/telemetry_capture/switch.py
+  action: Modify
+  purpose: >-
+    Rule SW-3 (rec-4359): switch_state(repo_root) -> (enabled, source) reads config/telemetry/capture.yaml from
+    git show origin/main:<path>, then main:<path>, then the working tree, the first that resolves (subprocess, stdlib,
+    2 s timeout; a timeout or error falls through; a ref that resolves with a malformed file is OFF, never a fallback).
+    switch_enabled and capture_mode keep their signatures and use it; OTL_TURN_CAPTURE=off, GITHUB_ACTIONS and the SW-2
+    smoke override keep their precedence. Still stdlib and yaml only.
+- file: scripts/telemetry_capture/runner.py
+  action: Modify
+  purpose: >-
+    Each pass's diagnostics line records switch_source (origin_main | main | working_tree), so a session that fell back
+    to its own checkout is visible (DG-1). No other behaviour changes.
+- file: scripts/telemetry_capture/transport.py
+  action: Modify
+  purpose: >-
+    make_client keeps no_credentials for an absent credential (get_credentials() None) and reports credential_error when
+    the profile, STS or credential chain raised (rec-4382's open cause: a SessionEnd pass in a cloud container), both
+    fixed tokens, neither carrying a message.
+- file: scripts/telemetry_capture/smoke.py
+  action: Modify
+  purpose: >-
+    The c8 synthetic tree gains a pin attachment carrying synthetic checkout facts, a remote_session_change attachment,
+    requestedModel, effort and a cache_creation split on its assistant records, and a sync sub-agent whose last call has
+    no stop_reason with a matching spawn-result usage, so the live read-back proves the writer accepts every new column.
+    Counts only, as today.
+- file: config/telemetry/parser_versions.yaml
+  action: Modify
+  purpose: >-
+    claude_code current 4; history entry v4 (date, the new golden_digest, full_output_cap_bytes 8388608,
+    signature_prefixes [hook, gate, precommit], reason naming this plan and the six fixes). Past entries untouched.
+- file: config/telemetry/capture.yaml
+  action: Modify
+  purpose: >-
+    Header comment only: the switch is read from origin/main, then main, then this checkout; setting enabled false on
+    main reaches a running session at its next fetch of main or its next SessionStart; OTL_TURN_CAPTURE=off stays the
+    per-session stop; hook and producer code still come from each session's checkout. enabled: true is unchanged.
+- file: docs/contracts/telemetry_sessions.yaml
+  action: Modify
+  purpose: >-
+    Governance notes (Class A, semantic_break true, the build merge needs Benjamin's word): governance_notes and the
+    outcome, event_timestamp, source_ordinal and external_ref field notes gain the segment-close rule (SC-1, SC-2: one
+    close per root resume boundary for a segment holding an assistant-bearing turn, the same anchor a finalization cut
+    there would give, so one close per segment end); the resume row's due rule (SC-3) on event_kind; the four new fields'
+    claude_code population (PV-1..PV-4); and the declared residual that a cloud session's LAST segment closes only
+    through a SessionEnd pass that reaches the writer, which today stops on credential_error or no_credentials
+    (rec-4382), so it reads running then abandoned. Contract-level amendment_log entry.
+- file: docs/contracts/telemetry_agents.yaml
+  action: Modify
+  purpose: >-
+    Governance notes (Class A): a claude_code background run's close rows are one per completion notice, outcome per
+    BN-2 (completed -> success, timeout -> timeout, any other token or none -> failed with error
+    "notice_status:<token|absent>"); a background run whose root resumed before any notice has no close row (reads
+    running then abandoned); outcome's "Stored once, on the close row" is qualified for runs with several notices (the
+    reader takes the latest). Amendment_log entries.
+- file: docs/contracts/telemetry-event-envelope.yaml
+  action: Modify
+  purpose: >-
+    R7 qualified in place (Class A): the final-usage clause becomes "a model_call is emitted once its turn is closed (a
+    later boundary, its stream's completion evidence, a resume boundary or a recorded finalization cut); it carries its
+    owner record's usage and declares in usage_final whether that usage is final and in usage_source whether a sync
+    spawn result supplied it; a non-final row stays non-final until a parser_version bump re-parses it"; the emission
+    set of the tree itself includes one close per root resume boundary (SC-1), so a resume records no finalization cut;
+    every emitted column, the provenance columns included, is a function of the source records (the checkout reaches
+    the tree only through the pin hook's recorded line). Amendment_log entry.
+- file: docs/contracts/ports.yaml
+  action: Modify
+  purpose: >-
+    SA-02's assumption text extends to the switch and pin hook's remote named origin with a default branch main, the
+    remote_session_change attachment's url shape and the <task-notification> <status> token (scout NOTE on Decision 211);
+    amendment_log entry. No new port.
+- file: tests/turn_capture/test_provenance.py
+  action: Create
+  purpose: Mirror test for provenance.py (PV-1..PV-4, DG-1 counters), including malformed, unknown and absent facts.
+- file: tests/turn_capture/test_usage.py
+  action: Create
+  purpose: Mirror test for usage.py (US-1..US-4), including the spawn_result mismatch and the missing-field cases.
+- file: tests/turn_capture/test_streams.py
+  action: Modify
+  purpose: >-
+    New nodes test_background_spawn_collects_every_notice_in_order and
+    test_background_spawn_completes_at_a_later_resume_boundary (root only; a child-stream spawn does not).
+- file: tests/turn_capture/test_sessions.py
+  action: Modify
+  purpose: >-
+    rec-4358's acceptance node test_background_spawn_outcome_follows_notice_status (completed, timeout, failed, killed, an
+    unknown token, an absent tag, a repeated notice); rec-4309's test_unmatched_api_error_kind_is_counted; new
+    test_resume_boundary_derives_the_previous_segment_close, test_a_segment_without_an_assistant_turn_gets_no_close,
+    test_resume_row_is_due_once_its_hook_group_ends and test_open_and_resume_rows_carry_their_segment_provenance.
+    Existing nodes keep their assertions (test_resume_and_compact_rows_wait_for_the_open_marker still holds: its first
+    segment has no assistant turn).
+- file: tests/turn_capture/test_observations.py
+  action: Modify
+  purpose: >-
+    rec-4354's acceptance nodes test_subagent_final_call_without_stop_reason_takes_spawn_result_usage and
+    test_non_final_usage_is_marked_and_counted, plus test_model_call_records_requested_model_effort_and_cache_split.
+- file: tests/turn_capture/test_record_turn.py
+  action: Modify
+  purpose: >-
+    New test_segment_closes_need_no_finalization_cut (a resumed tree's non-final pass emits the segment close and the
+    cursor's cuts stay empty; a v3 cursor is reset and re-emits it). SANCTIONED ASSERTION CHANGES (graduated
+    turn-capture-r7-incremental-equals-full and turn-capture-golden-corpus nodes; each keeps or tightens its property):
+    test_finalize_equals_virtual_prompt_at_eof counts as "closes" only the finalization's own close (anchored on the
+    last root uuid+timestamp record) and keeps one per root open, because derived segment closes are now in both the
+    live and the final set; test_finalize_then_grow_through_resume_re_emits_nothing's fresh full parse now equals
+    old_keys | new_keys (the first close is a derived segment close of the full tree too, so the "- {first_close}" term
+    goes); test_finalization_cuts_are_recorded_once_and_survive_a_reset pins PRODUCER_VERSION "turn-capture-4" and
+    PARSER_VERSION 4.
+- file: tests/hooks/test_session_start_log_turn.py
+  action: Modify
+  purpose: >-
+    SANCTIONED ASSERTION CHANGE: the fixed-line tests now match "[session_start_log_turn] capture pin checkout=... base=...
+    dirty=..." (unknown outside a repository) and test_the_hook_reads_no_stdin_and_runs_no_pass pins the new command
+    lines; every other property (one stderr line, empty stdout, exit 0 for every source, no file written, no stdin read)
+    is unchanged. New test_pin_line_carries_checkout_facts_from_git (a temp repository with an origin/main ref: HEAD,
+    base and dirty true/false).
+- file: tests/telemetry_capture/test_switch.py
+  action: Modify
+  purpose: >-
+    rec-4359's acceptance node test_switch_follows_main_not_the_session_checkout (temp repository: origin/main enabled
+    true with the working tree false reads on; origin/main false with the working tree true reads off), plus
+    test_switch_falls_back_to_local_main_then_the_working_tree and test_switch_read_failure_never_raises (timeout,
+    no git). Existing nodes run against non-git temp roots and keep passing through the working-tree fallback.
+- file: tests/telemetry_capture/test_runner.py
+  action: Modify
+  purpose: >-
+    rec-4382's acceptance node test_first_stop_pass_after_resume_closes_the_previous_segment (a tree finalized by
+    nothing, then resumed: the first non-final pass sends the previous segment's close row and persists no new cut) and
+    test_diagnostics_record_the_switch_source.
+- file: tests/telemetry_capture/test_transport.py
+  action: Modify
+  purpose: >-
+    New test_credential_chain_error_is_its_own_token; SANCTIONED ASSERTION CHANGE: test_make_client_without_credentials_is_unavailable's
+    raising-chain case now expects credential_error (the None case still expects no_credentials).
+- file: tests/telemetry_capture/test_smoke.py
+  action: Modify
+  purpose: The synthetic tree carries the new facts and record_turn builds a row for every new column from it.
+- file: tests/telemetry/test_parser_version_registry.py
+  action: Modify
+  purpose: CASES gains the new golden cases after the existing ones.
+- file: tests/telemetry/test_contract_amendments.py
+  action: Modify
+  purpose: >-
+    New nodes test_r7_declares_usage_final_and_resume_segment_closes and test_agents_background_outcome_follows_the_notice:
+    the amended texts carry their rule tokens and amendment_log entries.
+- file: tests/turn_capture/test_real_transcript_conformance.py
+  action: Modify
+  purpose: >-
+    Integration (local only). SANCTIONED ASSERTION CHANGES: the drift dashboard counts null stop_reason over EVERY
+    stream file, split root vs sub-agent (rec-4354 option c); the independent raw walk applies the US-3 correction from
+    the raw parent spawn result before comparing output token sums, and counts one expected close per root resume
+    boundary whose segment holds an assistant record. New coverage assertions (the silent-failure checks of DG-2, from
+    raw records independently of the producer): every root open row has harness_session_key when its tree holds a
+    remote_session_change attachment; requested_model and reasoning_effort are set on exactly the model_calls whose
+    owner record carries requestedModel and effort; usage_final is false on exactly the model_calls whose owner record
+    has no stop_reason (after correction); every background agent with a notice has a close whose outcome matches BN-2.
+- file: tests/turn_capture/test_real_transcript_schedules.py
+  action: Modify
+  purpose: >-
+    Touched only if its close-row assertion needs the derived segment closes in the full parse; its property (each row
+    once, the union covers the full parse) is unchanged.
+- file: tests/turn_capture/test_capture_ducklake_integration.py
+  action: Modify
+  purpose: >-
+    Touched only if a golden case's new columns need the loaded projection asserted; the FK and round-trip properties
+    are unchanged.
+- file: tests/fixtures/turn_capture_corpus.py
+  action: Modify
+  purpose: >-
+    assistant() gains stop_reason (default "end_turn", so every existing builder output is unchanged); helpers for a pin
+    attachment with stderr facts, a remote_session_change attachment and a task notice with a status.
+- file: tests/fixtures/turn_capture_v4_cases.py
+  action: Create
+  purpose: >-
+    Builders for the five new golden cases. Synthetic values only (Decision 101): checkout shas are low-entropy repeats
+    ("1" * 40, "2" * 40) so detect-secrets never flags them; session_<id> values are invented.
+- file: tests/fixtures/turn_capture/golden/index.json
+  action: Modify
+  purpose: Lists the five new cases after the existing 35.
+- file: tests/fixtures/turn_capture/golden/subagent_usage_final_and_spawn_correction.json
+  action: Create
+  purpose: >-
+    A sync child whose last call has stop_reason null and a matching spawn result (corrected, usage_source
+    spawn_result), a second sync child whose spawn result's input classes differ (kept, usage_final false), and a
+    mid-stream child call with stop_reason null (usage_final false).
+- file: tests/fixtures/turn_capture/golden/background_notice_statuses.json
+  action: Create
+  purpose: >-
+    Background children with notices completed, timeout, failed, killed, an unknown token and no status tag, and one
+    child notified twice (two close rows).
+- file: tests/fixtures/turn_capture/golden/resume_segment_closes.json
+  action: Create
+  purpose: >-
+    A root with two resume boundaries: a segment ending mid-tool (close cancelled), a segment ending cleanly (success), a
+    segment with no assistant turn (no close), and a background child spawned before a resume with no notice (rows
+    emitted at the boundary, no agent close).
+- file: tests/fixtures/turn_capture/golden/session_provenance_facts.json
+  action: Create
+  purpose: >-
+    Startup and resume pin lines with different HEADs, one with base=unknown, one pin line from an old hook (no facts);
+    remote_session_change attachments in the root and a sub-agent file, and one whose url does not match.
+- file: tests/fixtures/turn_capture/golden/model_call_request_fields.json
+  action: Create
+  purpose: >-
+    Assistant records with requestedModel, effort and a cache_creation split, one record without them, and one with an
+    effort value failing the pattern (column left NULL, counted).
+- file: tests/fixtures/turn_capture/golden/pin_first_record_without_uuid.json
+  action: Modify
+  purpose: expected_rows regenerated at v4 (every one of the 35 existing cases; each listed below).
+- file: tests/fixtures/turn_capture/golden/multiblock_response_interleaved_tool_results.json
+  action: Modify
+  purpose: expected_rows regenerated at v4.
+- file: tests/fixtures/turn_capture/golden/meta_and_companion_records.json
+  action: Modify
+  purpose: expected_rows regenerated at v4.
+- file: tests/fixtures/turn_capture/golden/tool_result_error.json
+  action: Modify
+  purpose: expected_rows regenerated at v4.
+- file: tests/fixtures/turn_capture/golden/tool_result_interrupted.json
+  action: Modify
+  purpose: expected_rows regenerated at v4.
+- file: tests/fixtures/turn_capture/golden/hook_blocked_tool_call.json
+  action: Modify
+  purpose: expected_rows regenerated at v4.
+- file: tests/fixtures/turn_capture/golden/sidecar_present.json
+  action: Modify
+  purpose: expected_rows regenerated at v4.
+- file: tests/fixtures/turn_capture/golden/sidecar_absent.json
+  action: Modify
+  purpose: expected_rows regenerated at v4.
+- file: tests/fixtures/turn_capture/golden/subagent_sync.json
+  action: Modify
+  purpose: expected_rows regenerated at v4.
+- file: tests/fixtures/turn_capture/golden/subagent_background_with_completion.json
+  action: Modify
+  purpose: expected_rows regenerated at v4.
+- file: tests/fixtures/turn_capture/golden/subagent_background_without_completion.json
+  action: Modify
+  purpose: expected_rows regenerated at v4.
+- file: tests/fixtures/turn_capture/golden/nested_subagent_depth2.json
+  action: Modify
+  purpose: expected_rows regenerated at v4.
+- file: tests/fixtures/turn_capture/golden/hooks_resume_and_compact.json
+  action: Modify
+  purpose: expected_rows regenerated at v4.
+- file: tests/fixtures/turn_capture/golden/empty_thinking_and_image_blocks.json
+  action: Modify
+  purpose: expected_rows regenerated at v4.
+- file: tests/fixtures/turn_capture/golden/orphan_tool_result.json
+  action: Modify
+  purpose: expected_rows regenerated at v4.
+- file: tests/fixtures/turn_capture/golden/unknown_record_and_attachment_types.json
+  action: Modify
+  purpose: expected_rows regenerated at v4.
+- file: tests/fixtures/turn_capture/golden/trailing_partial_line.json
+  action: Modify
+  purpose: expected_rows regenerated at v4.
+- file: tests/fixtures/turn_capture/golden/malformed_line.json
+  action: Modify
+  purpose: expected_rows regenerated at v4.
+- file: tests/fixtures/turn_capture/golden/large_tool_result_over_64k.json
+  action: Modify
+  purpose: expected_rows regenerated at v4.
+- file: tests/fixtures/turn_capture/golden/observed_real_shapes.json
+  action: Modify
+  purpose: expected_rows regenerated at v4.
+- file: tests/fixtures/turn_capture/golden/secrets.json
+  action: Modify
+  purpose: expected_rows regenerated at v4.
+- file: tests/fixtures/turn_capture/golden/hooks_before_first_record.json
+  action: Modify
+  purpose: expected_rows regenerated at v4.
+- file: tests/fixtures/turn_capture/golden/mcp_overflow_saved_output.json
+  action: Modify
+  purpose: expected_rows regenerated at v4.
+- file: tests/fixtures/turn_capture/golden/full_output_omitted_over_cap.json
+  action: Modify
+  purpose: expected_rows regenerated at v4.
+- file: tests/fixtures/turn_capture/golden/reasoning_visibility_forms.json
+  action: Modify
+  purpose: expected_rows regenerated at v4.
+- file: tests/fixtures/turn_capture/golden/gate_and_precommit_markers.json
+  action: Modify
+  purpose: expected_rows regenerated at v4.
+- file: tests/fixtures/turn_capture/golden/close_cancelled_mid_stream.json
+  action: Modify
+  purpose: expected_rows regenerated at v4.
+- file: tests/fixtures/turn_capture/golden/close_cancelled_running_tool.json
+  action: Modify
+  purpose: expected_rows regenerated at v4.
+- file: tests/fixtures/turn_capture/golden/close_failed_api_error.json
+  action: Modify
+  purpose: expected_rows regenerated at v4.
+- file: tests/fixtures/turn_capture/golden/resume_after_interrupt.json
+  action: Modify
+  purpose: expected_rows regenerated at v4.
+- file: tests/fixtures/turn_capture/golden/fork_branch_copied_head.json
+  action: Modify
+  purpose: expected_rows regenerated at v4.
+- file: tests/fixtures/turn_capture/golden/fork_session_copied_head.json
+  action: Modify
+  purpose: expected_rows regenerated at v4.
+- file: tests/fixtures/turn_capture/golden/fork_session_nested.json
+  action: Modify
+  purpose: expected_rows regenerated at v4.
+- file: tests/fixtures/turn_capture/golden/hook_command_names.json
+  action: Modify
+  purpose: expected_rows regenerated at v4.
+- file: tests/fixtures/turn_capture/golden/no_reply_session.json
+  action: Modify
+  purpose: expected_rows regenerated at v4 (still empty, rule D-1).
+bundled_recommendations:
+- rec-4354
+- rec-4358
+- rec-4359
+- rec-4382
+- rec-4309
+followon_recs: []
+infrastructure_dependencies:
+- >-
+  Precondition: PLAN-telemetry-column-additions merged and its deploy-ducklake-lambdas run green (its VP 10-12), so the
+  live writer declares the ten columns. Merging this plan earlier would make every rebased session's v4 rows draw a 422
+  schema_gate, a sticky halt of that session's capture.
+- >-
+  No Terraform, IAM, Lambda or workflow change; nothing here is Lambda-packaged (src/turn_capture is excluded from the
+  data-pipeline bundle, registry check turn-capture-excluded-from-data-pipeline), so the merge deploys nothing. The code
+  reaches each session at its next rebase or new session (the hooks load from the checkout; only the switch now follows
+  main).
+- >-
+  The build session's own capture runs v4 from its working tree before the merge, against the live writer; that is the
+  intended pre-merge live proof (VP 12), and it is why the precondition above is checked first.
+acceptance_criteria:
+- >-
+  rec-4354: a sync sub-agent's non-final last call takes the spawn result's usage on an exact input-class match; every
+  other model_call without a stop_reason carries usage_final false and is counted (VP 1).
+- >-
+  rec-4358: a background run's close outcome follows its notice status inside the accepted outcome set, one close per
+  notice; no notice, no close (VP 2).
+- >-
+  rec-4382: the first pass after a resume sends the previous segment's close row with no finalization cut, and a
+  segment without an assistant turn gets none (VP 3).
+- >-
+  Open and resume rows carry harness_session_key and the checkout facts from the transcript alone, and model_calls carry
+  requested_model, reasoning_effort and the cache-write split (VP 4, VP 1).
+- >-
+  rec-4359: the switch follows origin/main, then main, then the checkout, and every pass records which it read (VP 5).
+- >-
+  The golden corpus is regenerated at parser_version 4 with the registry bumped, the resume schedules and every graduated
+  turn-capture check still pass, and real transcripts agree with an independent raw walk on every new column (VP 6,
+  VP 7, VP 8).
+- The amended contracts carry the new rules and the build's live smoke lands every new column on the smoke writer (VP 9, VP 12).
+- The five bundled recs read closed after the merge (VP 14).
+verification_plan:
+- step: 1
+  phase: pre-deploy
+  action: rec-4354 and the request fields -- partial usage is flagged, a sync last call is corrected only on an exact match.
+  command: >-
+    bin/venv-python -m pytest
+    tests/turn_capture/test_observations.py::test_subagent_final_call_without_stop_reason_takes_spawn_result_usage
+    tests/turn_capture/test_observations.py::test_non_final_usage_is_marked_and_counted
+    tests/turn_capture/test_observations.py::test_model_call_records_requested_model_effort_and_cache_split -q
+  expected: Exit 0, every node passes. Red before because the nodes are absent.
+  fix_if: A partial row reads final, a mismatched spawn result was applied, or a request field is missing.
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: turn-capture-usage-final
+- step: 2
+  phase: pre-deploy
+  action: rec-4358 and rec-4309 -- background outcomes follow the notice, one close per notice; dropped failure reasons are counted.
+  command: >-
+    bin/venv-python -m pytest tests/turn_capture/test_sessions.py::test_background_spawn_outcome_follows_notice_status
+    tests/turn_capture/test_sessions.py::test_unmatched_api_error_kind_is_counted
+    tests/turn_capture/test_streams.py::test_background_spawn_collects_every_notice_in_order
+    tests/turn_capture/test_streams.py::test_background_spawn_completes_at_a_later_resume_boundary -q
+  expected: Exit 0, every node passes. Red before because the nodes are absent.
+  fix_if: A non-completed notice reads success, a notice is lost, or a child-stream spawn completes at a root boundary.
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: turn-capture-background-notice-outcome
+- step: 3
+  phase: pre-deploy
+  action: rec-4382 -- every segment before a resume gets its close, derived from the tree, with no new cut.
+  command: >-
+    bin/venv-python -m pytest tests/turn_capture/test_sessions.py::test_resume_boundary_derives_the_previous_segment_close
+    tests/turn_capture/test_sessions.py::test_a_segment_without_an_assistant_turn_gets_no_close
+    tests/turn_capture/test_sessions.py::test_resume_row_is_due_once_its_hook_group_ends
+    tests/turn_capture/test_record_turn.py::test_segment_closes_need_no_finalization_cut
+    tests/telemetry_capture/test_runner.py::test_first_stop_pass_after_resume_closes_the_previous_segment -q
+  expected: Exit 0, every node passes. Red before because the nodes are absent.
+  fix_if: A close is missing, anchored elsewhere than the last uuid+timestamp record before the boundary, or a cut was recorded.
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: turn-capture-resume-segment-close
+- step: 4
+  phase: pre-deploy
+  action: Session provenance comes from the transcript only -- the pin line, its parse, and the open and resume rows.
+  command: >-
+    bin/venv-python -m pytest tests/turn_capture/test_provenance.py
+    tests/turn_capture/test_sessions.py::test_open_and_resume_rows_carry_their_segment_provenance
+    tests/hooks/test_session_start_log_turn.py::test_pin_line_carries_checkout_facts_from_git -q
+  expected: Exit 0, every node passes. Red before because the module, its test and the nodes are absent.
+  fix_if: A fact is read from anywhere but the pin attachment or remote_session_change, or a malformed value is stored.
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: turn-capture-session-provenance
+- step: 5
+  phase: pre-deploy
+  action: rec-4359 and the credential split -- the switch follows main and every pass says which copy it read.
+  command: >-
+    bin/venv-python -m pytest tests/telemetry_capture/test_switch.py::test_switch_follows_main_not_the_session_checkout
+    tests/telemetry_capture/test_switch.py::test_switch_falls_back_to_local_main_then_the_working_tree
+    tests/telemetry_capture/test_switch.py::test_switch_read_failure_never_raises
+    tests/telemetry_capture/test_runner.py::test_diagnostics_record_the_switch_source
+    tests/telemetry_capture/test_transport.py::test_credential_chain_error_is_its_own_token -q
+  expected: Exit 0, every node passes. Red before because the nodes are absent.
+  fix_if: The working tree wins over a resolvable main, a read error raises, or the source is missing from diagnostics.
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: capture-switch-reads-main
+- step: 6
+  phase: pre-deploy
+  action: >-
+    The golden corpus at v4 and the registry -- every case matches, the bump is recorded, and the resume schedules
+    and incremental-equals-full properties still hold over every case.
+  command: >-
+    bin/venv-python -m pytest tests/turn_capture/test_record_turn.py::test_golden_cases_match_expected_rows
+    tests/turn_capture/test_record_turn.py::test_finalize_resume_schedules_emit_each_row_once
+    tests/turn_capture/test_record_turn.py::test_incremental_equals_full_at_every_line_cut
+    tests/turn_capture/test_record_turn.py::test_finalize_equals_virtual_prompt_at_eof
+    tests/turn_capture/test_record_turn.py::test_finalize_then_grow_through_resume_re_emits_nothing
+    tests/turn_capture/test_record_turn.py::test_rows_use_only_caller_known_columns
+    tests/turn_capture/test_sessions.py::test_close_row_per_finalization_with_transcript_outcome
+    tests/telemetry/test_parser_version_registry.py -q
+  expected: Exit 0, every node passes.
+  fix_if: >-
+    Regenerate expected_rows from record_turn only after the behaviour tests pass; a schedule failure is a purity defect
+    in a new rule (most likely a resume row or segment close reading a record after its bound), never a test to relax.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: >-
+    Every node here is already a graduated standing check (turn-capture-golden-corpus, turn-capture-r7-incremental-equals-full,
+    turn-capture-finalize-resume-emits-each-row-once, turn-capture-close-row-per-finalization,
+    telemetry-parser-version-registry); they pass before and after, so they cannot graduate again.
+- step: 7
+  phase: pre-deploy
+  action: Every golden case loads into a local DuckLake with the column-additions projection and every FK resolves.
+  command: >-
+    bin/venv-python -m pytest tests/turn_capture/test_capture_ducklake_integration.py -m integration -q -rs 2>&1 | tee
+    "${TMPDIR:-/tmp}/capture_ducklake.log" && ! grep -Eq "[0-9]+ (skipped|failed|error)" "${TMPDIR:-/tmp}/capture_ducklake.log"
+    && grep -Eq "[0-9]+ passed" "${TMPDIR:-/tmp}/capture_ducklake.log"
+  expected: Exit 0 with every node passing and none skipped; the log goes in the PR description.
+  fix_if: A new column fails the kernel's type or rule check; fix the producer value, never the rule.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: Needs the pinned ducklake extension download (network), which no CI tier provides until rec-4071.
+- step: 8
+  phase: pre-deploy
+  action: >-
+    On this session's real transcript tree (and any others on the machine), an independent raw walk agrees with the
+    producer on every new column, the dashboard counts null stop_reason per stream, and finalizing at every resume
+    boundary emits each row once.
+  command: >-
+    bin/venv-python -m pytest tests/turn_capture/test_real_transcript_conformance.py
+    tests/turn_capture/test_real_transcript_schedules.py -m integration -q -s
+  expected: >-
+    Exit 0; the dashboard prints the per-stream null stop_reason counts (root vs sub-agent) and the coverage counts;
+    counts only, no transcript content. The PR description records the counts. Run in a session with at least one real
+    sub-agent and, when available, a resumed tree; an absent class is reported as unproven, never as a pass.
+  fix_if: >-
+    A coverage assertion fails: the producer missed a value the raw records carry (a silent failure); fix the rule.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: Needs this machine's real transcripts, which no CI tier has.
+- step: 9
+  phase: pre-deploy
+  action: The amended contract texts carry the new rules and every contract edit passes the drift gate.
+  command: >-
+    bin/venv-python -m pytest tests/telemetry/test_contract_amendments.py::test_r7_declares_usage_final_and_resume_segment_closes
+    tests/telemetry/test_contract_amendments.py::test_agents_background_outcome_follows_the_notice tests/telemetry_capture/test_switch.py::test_the_committed_switch_is_on_and_still_guarded tests/telemetry_capture/test_smoke.py::test_synthetic_tree_builds_every_new_column -q && bin/venv-python -c
+    "from scripts.checks.contracts.validate_contract_drift import validate_contract_drift as v;f=[];v(f);assert not f,
+    f;print('CONTRACTS_OK')" && bin/venv-python -c "from scripts.checks.contracts.validate_ports_contract import
+    validate_ports_contract as v;f=[];v(f);assert not f, f;print('PORTS_OK')"
+  expected: Both nodes pass, then CONTRACTS_OK and PORTS_OK.
+  fix_if: Fix the amendment_log shape or the text the node names.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: >-
+    A one-time text check of the amended contracts plus two standing validators already in scripts.validate.
+- step: 10
+  phase: pre-deploy
+  action: Each changed module reaches 100% coverage from its mapped test; lint and imports are clean.
+  command: >-
+    bin/venv-python -m scripts.test_coverage_checker --check-tests --check-coverage --files src/turn_capture/provenance.py
+    src/turn_capture/usage.py src/turn_capture/streams.py src/turn_capture/sessions.py src/turn_capture/observations.py
+    src/turn_capture/record_turn.py scripts/telemetry_capture/switch.py scripts/telemetry_capture/runner.py
+    scripts/telemetry_capture/transport.py scripts/telemetry_capture/smoke.py && bin/venv-python -m ruff check
+    src/turn_capture scripts/telemetry_capture tests/turn_capture tests/telemetry_capture tests/hooks tests/fixtures &&
+    .venv/bin/lint-imports
+  expected: Exit 0 from all three.
+  fix_if: Cover the new branches in the mapped tests; fix lint at its source.
+  hermetic: false
+  graduation: not-applicable
+- step: 11
+  phase: pre-deploy
+  action: Fast tier, then the full tier before handoff.
+  command: bin/venv-python -m scripts.validate --pre && bin/venv-python -m scripts.validate
+  expected: Exit 0 on a completed full run; a timeout is not a pass (handoff_policy).
+  fix_if: Fix the named check; never skip or weaken one.
+  hermetic: false
+  graduation: not-applicable
+- step: 12
+  phase: pre-deploy
+  action: >-
+    Live proof against the smoke-catalog writer (after the precondition holds): the c8 smoke with the v4 synthetic tree,
+    then this session's own capture read back.
+  command: >-
+    bin/venv-python -m scripts.telemetry_capture.smoke && T="$(ls -t ~/.claude/projects/*/*.jsonl | head -1)" &&
+    bin/venv-python -m scripts.telemetry_capture probe --tree "$T" --require telemetry_observations,telemetry_transcripts,telemetry_sessions
+  expected: >-
+    The smoke ends "PC_SMOKE PASS" (every table read back at the built counts, replay inserts 0); the probe exits 0 with
+    this session's rows above zero and no halt recorded. Counts only.
+  fix_if: >-
+    A 422 schema_gate: the precondition does not hold (stop; never clear the halt and retry). Any other failure: STOP
+    and RCA (Decision 55).
+  hermetic: false
+  graduation: not-applicable
+- step: 13
+  phase: post-deploy
+  action: >-
+    After the merge, a session on the merged main captures at v4: in a fresh or rebased session, record_turn over its own
+    tree shows the new columns populated.
+  command: >-
+    T="$(ls -t ~/.claude/projects/*/*.jsonl | head -1)" && bin/venv-python -c "import sys; from pathlib import Path;
+    from src.turn_capture.transcript import FsTree, project_ref_pin; from src.turn_capture.record_turn import
+    record_turn, PARSER_VERSION; t=FsTree(Path(sys.argv[1])); r=record_turn(t, None, project_ref=project_ref_pin(t) or
+    'ontheloop'); s=[x for x in r.sessions if x['event_kind']=='open']; m=[x for x in r.observations if
+    x['observation_type']=='model_call']; print('v', PARSER_VERSION, 'open_with_key', sum(1 for x in s if
+    x.get('harness_session_key')), 'open_with_checkout', sum(1 for x in s if x.get('checkout_sha')), 'calls', len(m),
+    'with_requested_model', sum(1 for x in m if x.get('requested_model')), 'not_final', sum(1 for x in m if
+    x.get('usage_final') is False)); assert PARSER_VERSION == 4 and s and all(x.get('harness_session_key') for x in s if
+    x['entity_ref']==t.session_id) and all(x.get('requested_model') for x in m)" "$T"
+  expected: >-
+    Prints the counts with parser 4; the root open row has harness_session_key and every model_call has requested_model.
+    The checkout count is reported (zero only if this session's checkout predates the new pin hook).
+  fix_if: A count is zero where the raw tree carries the field (a silent failure); file a rec and fix forward.
+  hermetic: false
+- step: 14
+  phase: post-deploy
+  action: The bundled recs closed through the squash-merge Resolves trailer.
+  command: mcp__ducklake-reads__recs_by_ids ids=rec-4354,rec-4358,rec-4359,rec-4382,rec-4309
+  expected: All five read status closed, each naming this merge.
+  fix_if: A rec stayed open; check the trailer and the ci.yml closure job's run; close it through the portal with its acceptance evidence.
+  hermetic: false
+test_obligations:
+- source: src/turn_capture/usage.py
+  behavior: usage_final, usage_source and the spawn-result correction (US-1..US-4).
+  verification_step: 1
+  test_selector: tests/turn_capture/test_observations.py::test_subagent_final_call_without_stop_reason_takes_spawn_result_usage
+  red_green_expectation: red before (node and module absent), green after
+- source: src/turn_capture/observations.py
+  behavior: The model_call row carries every new usage and request column.
+  verification_step: 1
+  test_selector: tests/turn_capture/test_observations.py::test_model_call_records_requested_model_effort_and_cache_split
+  red_green_expectation: red before (node absent), green after
+- source: src/turn_capture/streams.py
+  behavior: Every notice is collected and a root background spawn completes at a later resume boundary.
+  verification_step: 2
+  test_selector: tests/turn_capture/test_streams.py::test_background_spawn_completes_at_a_later_resume_boundary
+  red_green_expectation: red before (node absent), green after
+- source: src/turn_capture/sessions.py
+  behavior: Background outcomes follow the notice status.
+  verification_step: 2
+  test_selector: tests/turn_capture/test_sessions.py::test_background_spawn_outcome_follows_notice_status
+  red_green_expectation: red before (node absent; every background close reads success), green after
+- source: src/turn_capture/sessions.py
+  behavior: The segment before each resume boundary gets its close.
+  verification_step: 3
+  test_selector: tests/turn_capture/test_sessions.py::test_resume_boundary_derives_the_previous_segment_close
+  red_green_expectation: red before (node absent; no close without a final pass), green after
+- source: src/turn_capture/record_turn.py
+  behavior: Segment closes need no finalization cut and the version is 4.
+  verification_step: 3
+  test_selector: tests/turn_capture/test_record_turn.py::test_segment_closes_need_no_finalization_cut
+  red_green_expectation: red before (node absent), green after
+- source: scripts/telemetry_capture/runner.py
+  behavior: The first pass after a resume sends the previous segment's close; diagnostics name the switch source.
+  verification_step: 3
+  test_selector: tests/telemetry_capture/test_runner.py::test_first_stop_pass_after_resume_closes_the_previous_segment
+  red_green_expectation: red before (node absent), green after
+- source: src/turn_capture/provenance.py
+  behavior: PV-1..PV-4 parse and select provenance from the transcript only.
+  verification_step: 4
+  test_selector: tests/turn_capture/test_provenance.py
+  red_green_expectation: red before (module and test absent), green after
+- source: .claude/hooks/session_start_log_turn.sh
+  behavior: The pin line carries HEAD, base and dirty, unknown when unresolvable, with every other hook property kept.
+  verification_step: 4
+  test_selector: tests/hooks/test_session_start_log_turn.py::test_pin_line_carries_checkout_facts_from_git
+  red_green_expectation: red before (node absent; the line carries no facts), green after
+- source: scripts/telemetry_capture/switch.py
+  behavior: The switch follows origin/main, then main, then the working tree.
+  verification_step: 5
+  test_selector: tests/telemetry_capture/test_switch.py::test_switch_follows_main_not_the_session_checkout
+  red_green_expectation: red before (node absent; the working tree wins), green after
+- source: scripts/telemetry_capture/transport.py
+  behavior: A raising credential chain reports credential_error, an absent credential no_credentials.
+  verification_step: 5
+  test_selector: tests/telemetry_capture/test_transport.py::test_credential_chain_error_is_its_own_token
+  red_green_expectation: red before (node absent), green after
+- source: scripts/telemetry_capture/smoke.py
+  behavior: The synthetic tree builds a row for every new column.
+  verification_step: 9
+  test_selector: tests/telemetry_capture/test_smoke.py::test_synthetic_tree_builds_every_new_column
+  red_green_expectation: red before (the tree carries no new facts), green after
+- source: config/telemetry/parser_versions.yaml
+  behavior: v4 is recorded with the regenerated corpus digest.
+  verification_step: 6
+  test_selector: tests/telemetry/test_parser_version_registry.py::test_registry_matches_producer
+  red_green_expectation: red after the producer bump until the entry lands, green after
+- source: config/telemetry/capture.yaml
+  behavior: Header comment only; the committed switch stays on and guarded.
+  verification_step: 9
+  test_selector: tests/telemetry_capture/test_switch.py::test_the_committed_switch_is_on_and_still_guarded
+  waiver_reason: Comment-only edit; the existing node already pins the file's only behaviour (enabled true) and stays green.
+- source: docs/contracts/telemetry_sessions.yaml
+  behavior: The segment-close, resume-due and provenance rules are declared.
+  verification_step: 9
+  test_selector: tests/telemetry/test_contract_amendments.py::test_r7_declares_usage_final_and_resume_segment_closes
+  red_green_expectation: red before (node absent), green after
+- source: docs/contracts/telemetry-event-envelope.yaml
+  behavior: R7 declares usage_final and the tree-derived segment closes.
+  verification_step: 9
+  test_selector: tests/telemetry/test_contract_amendments.py::test_r7_declares_usage_final_and_resume_segment_closes
+  red_green_expectation: red before (node absent), green after
+- source: docs/contracts/telemetry_agents.yaml
+  behavior: The background outcome rule is declared.
+  verification_step: 9
+  test_selector: tests/telemetry/test_contract_amendments.py::test_agents_background_outcome_follows_the_notice
+  red_green_expectation: red before (node absent), green after
+- source: docs/contracts/ports.yaml
+  behavior: SA-02 names the new structural assumptions and the ports validator passes.
+  verification_step: 9
+  command: bin/venv-python -c "from scripts.checks.contracts.validate_ports_contract import validate_ports_contract as v;f=[];v(f);assert not f, f;print('PORTS_OK')"
+  waiver_reason: Prose extension of an existing assumption row; the standing ports validator is its only mechanical check.
+constraints:
+- >-
+  Purity (envelope R7): every new column is a function of the transcript tree alone. No git, environment or clock read
+  in src/turn_capture; the checkout enters only through the pin hook's recorded stderr line, the session key only
+  through remote_session_change. A row emitted at a cut and built differently later is a defect here, never a test to
+  relax.
+- >-
+  Typed columns only (Benjamin, 2026-10-17): no new key is added to any metadata JSON bag; a value failing its column's
+  pattern is stored NULL and counted, never sent to be refused (a refusal halts the session's capture).
+- >-
+  Graduated checks (turn-capture-*, telemetry-parser-version-registry) keep resolving and are never weakened; the only
+  assertion changes are the sanctioned ones in scope, each keeping or tightening its property.
+- >-
+  Outcomes stay inside the write-enforced telemetry_agents set (success, failed, timeout, throttled); no accepted value
+  is added (Decision 210 cl.4).
+- >-
+  Files near the 500-SLOC limit (streams.py 404, observations.py 384) take new logic in new modules; never a budget raise
+  (Decision 128).
+- >-
+  Public repository (Decision 101): fixtures use synthetic, low-entropy ids and shas; the conformance and probe steps
+  print counts only.
+- No rescue agents or workaround loops (Decision 55); a failed live step stops for RCA.
+context:
+- >-
+  Decision-scout: FLAGS_FOUND (run over both plans). CITE 199, 207, 210, 216, 143, 213, 126, 79, 177, 101. WARN 216
+  resolved in PLAN-telemetry-column-additions (new Decision); NOTE 211 resolved by the ports.yaml SA-02 extension; NOTE
+  210 resolved by typing every new fact (no JSON keys). RELATED 81, 95-97, 84, 61, 204, 167, 151, 181, 132 (keep the
+  graduated turn-capture node ids resolving), 128, 125, 88, 118, 212, 184, 189. Decisions triaged: 171 of 171. Roadmap
+  items intersected: 11; CONFLICT: 0; RELATED: 9.
+- 'gates: decision-scout=FLAGS_FOUND (1 WARN, 2 NOTE, resolved); plan-critique=PENDING'
+- >-
+  Direction: Benjamin approved the producer fixes thread (cmsg_012XgaFy8VaDQbxP5D8nC958MdLJawKLhVPEQqyXDX82iS), chose "A
+  with typed columns, write the plan" (cmsg_012XgaFy8VaDQbxP5D8nC958587eB33Uj5AJ9MenjVzU5S) and asked for checks against
+  silent failure (rule DG-2 below). The build merge needs his word (Class A contract notes).
+- >-
+  Inputs: /mnt/project-files/capture-producer-fixes/ (ADVICE.md is the Fable consult: Q3 derived closes, Q4 usage rules,
+  Q5 notice mapping, Q6 switch order); /mnt/project-files/telemetry-slice4/ADVICE.md findings 1-5; the measured facts
+  in that folder's step6b-presentation.md.
+- >-
+  rec-4382 deviation, deliberate: the rec suggested recording a finalization cut at each resume; this plan derives the
+  same close row from the tree instead (same anchor and identity, so a SessionEnd cut for the segment dedupes), because
+  each cut adds a full re-parse to every later pass (~1 s per cut on a 20,000-line tree; rec-4306).
+- >-
+  Silent-failure checks (DG-2): before merge, VP 8's raw-walk coverage assertions on real trees; at write time, the
+  column rules from PLAN-telemetry-column-additions; across sessions, slice 4's daily monitor (rec-4025) gets these
+  expected values through the coordinator -- share of v4 root open rows with harness_session_key NULL (expect ~0), share
+  of v4 open/resume rows with checkout_sha NULL (falls as checkouts rebase), background closes whose error is
+  notice_status:absent or an unknown token (expect 0), root resume rows with no close row before them (expect 0), per-model
+  output tokens against the cost-state ledger explained by usage_final false rows, and sessions captured against the
+  harness session lists (catches a switch that silently reads off).
+- >-
+  Golden ownership: the slice 4 golden harness plan may add cases under tests/fixtures/turn_capture/golden/ encoding v3
+  behaviour first. If any are on main at build time, this build regenerates them too under a scope amendment PR (the
+  amendment precedent), coordinated through the coordinator; the expectations file that plan owns is updated by its
+  owner.
+- >-
+  Related-work check (open ci_rca rec-4372, DUCKLAKE_ZIP_MISMATCH on the sandbox apply): deferred, logged here. No
+  Lambda-packaged file, terraform root, apply workflow or ZIP builder is touched and no failure category is shared.
+pre_implementation_checklist:
+- Branch confirmed not on main
+- docs/PROJECT_CONTEXT.md read
+- envelope R7, telemetry_sessions governance_notes and telemetry_agents outcome read
+- PLAN-telemetry-column-additions merged and its deploy run green (read its VP 10-12 result first)
+- All files in scope located and readable
+- Acceptance criteria understood and verifiable
+execution_steps:
+- >-
+  1. Precondition: confirm PLAN-telemetry-column-additions is on main and its deploy-ducklake-lambdas run on the merge
+  commit concluded success (mcp__github__actions_list); rebase this branch onto main. If either fails, STOP and tell the
+  coordinator.
+- >-
+  2. Rules PV-1..PV-4 (provenance.py, the pin hook). PV-1 line: "[session_start_log_turn] capture pin
+  checkout=<v> base=<v> dirty=<v>", v a validated hex sha or unknown, dirty true|false|unknown; the parser accepts the
+  facts only from a hook attachment whose hookEvent is SessionStart and whose command's script stem is
+  session_start_log_turn (transcript.PIN_SCRIPT_STEM), matching
+  checkout=([0-9a-f]{40}([0-9a-f]{24})?|unknown) base=(same) dirty=(true|false|unknown); anything else yields three
+  NULLs and pin_without_checkout. PV-2 open row: the LAST such attachment before the stream's first prompt record
+  (stable: the open row is due only after that prompt's turn closed). PV-3 resume row: the such attachment inside that
+  resume's hook group (from the group's first attachment to the next user or assistant record). PV-4
+  harness_session_key: the FIRST remote_session_change attachment at or before the open row's bound (sessions._open_bound),
+  the url's last path segment, kept only when it matches the column pattern (else NULL, harness_session_key_unparsed);
+  none at all -> NULL and harness_session_key_absent. Every stream's open row gets PV-4 (sub-agent files carry the
+  attachment too); only open and resume rows carry PV-2/PV-3; sub-agent streams have no pin attachment, so their
+  checkout columns stay NULL without a counter.
+- >-
+  3. Rules US-1..US-4 (usage.py; observations.py calls it). US-1: the four classes, reasoning_tokens and
+  cache_creation_1h_tokens/_5m_tokens (usage.cache_creation.ephemeral_1h_input_tokens / ephemeral_5m_input_tokens, int
+  or NULL) come from the owner record's usage exactly as today. US-2: requested_model = owner.requestedModel (string or
+  NULL); reasoning_effort = owner.effort when it matches ^[a-z][a-z0-9_-]{0,31}$ (else NULL, effort_unparsed). US-3: for
+  the child stream of a SYNC spawn, the last response of its FIRST turn whose owner has no string stop_reason and is not
+  isAbortedMidStream takes the parent's close_result.use_result["usage"] when that is a dict whose input_tokens,
+  cache_read_input_tokens and cache_creation_input_tokens equal the record's: output_tokens, reasoning tokens
+  (output_tokens_details.thinking_tokens) and the cache split are taken from it, usage_source spawn_result, usage_final
+  true, spawn_result_corrected; a mismatch keeps the record (spawn_result_mismatch). Never for background spawns or any
+  other call. US-4: otherwise usage_source record and usage_final = (owner stop_reason is a string); false counts
+  usage_not_final:root or :subagent. reasoning_visibility keeps its rule over the (possibly corrected) tokens.
+- >-
+  4. Rules BN-1..BN-2 (streams.py, sessions.py build_agents). BN-1 as the streams scope row. BN-2: a background spawn
+  writes one close row per notice (anchor that notice record, block 0, external_ref role_ref(uuid, 0, "agent_close")),
+  outcome completed -> success, timeout -> timeout, any other token -> failed with error "notice_status:<token>", no
+  status tag -> failed with error "notice_status:absent" (counted notice_status:<token> / notice_status_absent); a spawn
+  completed at a resume boundary writes no close (background_completed_at_resume). Sync spawns keep today's outcome rule.
+- >-
+  5. Rules SC-1..SC-3 (sessions.py). SC-1: for each root resume boundary b (Stream.resumes, in order), the segment is the
+  root records after the previous boundary (or the start) and before b; when it holds a turn with an assistant record,
+  one close row: anchor = the last root record before b with a uuid and a parseable timestamp (the existing close-anchor
+  rule, bounded by b), external_ref role_ref(anchor uuid, 0, "close"), event_timestamp and source_ordinal from the
+  anchor, outcome per C-3 over the segment's last turn; else none (segment_close_skipped). SC-2: the eof close at a
+  final pass is unchanged; identical keys dedupe; a resume record stamped earlier than the previous close's anchor is
+  counted resume_before_close (a reader-ordering residual, not changed here). SC-3: a resume row is due once its hook
+  group has ended (a later user or assistant record in the stream), and it carries PV-3's facts and execution_attempt as
+  today. rec-4309: failure_reason_dropped when an API error kind fails the identifier check.
+- >-
+  6. switch.py, runner.py (switch_source), transport.py (credential_error), smoke.py, capture.yaml header, the pin hook,
+  record_turn.py (version and diag plumbing). Rule DG-1, the per-pass diagnostics counters (local, CaptureResult and the
+  runner's diagnostics line): pin_without_checkout, checkout_base_unknown, harness_session_key_absent,
+  harness_session_key_unparsed, effort_unparsed, usage_not_final:root, usage_not_final:subagent, spawn_result_corrected,
+  spawn_result_mismatch, notice_status:<token>, notice_status_absent, background_completed_at_resume,
+  segment_close_skipped, resume_before_close, failure_reason_dropped, credential_error, switch_source.
+- >-
+  7. Contracts: the four contract notes as their scope rows pin, each with an amendment_log entry dated the build day;
+  ports.yaml SA-02. Run step 9.
+- >-
+  8. Tests and fixtures: the scope rows' new nodes and the sanctioned assertion changes; corpus builders; the five new
+  golden cases. Run steps 1-5 until green BEFORE regenerating any expected_rows; then regenerate every case's
+  expected_rows from record_turn, review the diff by kind (new columns on every model_call and on open/resume rows,
+  segment closes on resumed cases, background closes, changed due times for resume rows) and confirm no other row
+  changed; set the registry's v4 entry from the new golden_digest; run step 6.
+- >-
+  9. Execute the Verification Plan steps 7-12 (step 12 only once the precondition holds); loop until each passes; on an
+  unrecoverable V3 failure stop and RCA (Decision 55).
+- >-
+  10. Send the coordinator the DG-2 expected values for slice 4's monitor plan (if not already recorded there) and the
+  list of golden cases this build regenerated.
+- >-
+  11. Open the PR (body: the six fixes, the DG-2 checks, VP 7/8/12 logs and counts, the contract notes for Benjamin's
+  word). Merge only after code review PROCEED, CI green and Benjamin's own word on the contract notes (fetch his message
+  before merging). Squash-merge with "Resolves: rec-4354, rec-4358, rec-4359, rec-4382, rec-4309" in the commit body.
+- 12. Run steps 13 and 14.
+- 'Report: what was implemented, verification results (counts), and the residuals: the last segment of a cloud session still closes only through a working SessionEnd pass (rec-4382 cause unconfirmed; credential_error now distinguishes it).'
+work_areas: []
+rollback: >-
+  Revert in a new PR and bump parser_version to 5 with the v3 behaviour, never back to 3 (the registry is append-only
+  and a v4 row is superseded only by a later version, envelope R5). The ten columns stay (PLAN-telemetry-column-additions
+  rollback). The pin hook and switch revert with the code; sessions pick the revert up at their next rebase, and the
+  switch's origin/main read means setting enabled false on main stops capture in running sessions at their next fetch.
