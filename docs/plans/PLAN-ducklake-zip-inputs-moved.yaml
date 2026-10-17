@@ -38,8 +38,10 @@ scope:
     verdict is {"verdict": "moved" | "unattributed", "inputs": [...], "reason": str}; for a moved function zip, inputs
     lists its differing entry paths (plus any moved tooling path); for a moved layer, its moved input or tooling
     paths. Otherwise unattributed, naming the first entry that blocked attribution or saying only the container bytes
-    differ. A reference whose schema differs from the current one, or that lacks an artifact, is unattributed for
-    every artifact (fail closed); a change to the record format bumps schema. Iterates DUCKLAKE_ARTIFACT_NAMES' order.
+    differ. A reference whose schema differs from the current one, or that lacks an artifact the current record
+    carries, is unattributed for every artifact (fail closed); a change to the record format bumps schema. Attribution
+    iterates the artifacts the current record carries, in DUCKLAKE_ARTIFACT_NAMES' order (the push path always records
+    all seven; VP step 3's replay records four).
 - file: scripts/ci/ducklake_artifacts.py
   action: Modify
   purpose: >-
@@ -88,7 +90,8 @@ scope:
   purpose: >-
     Comments only, no step, expression or body change: the apply-sandbox build_ducklake step comment describes the
     moved-inputs verdict, the merge-sha key and the pre-existing-pointer refusal; the speculative-plan build step
-    comment says upload-only also writes inputs.json; the gated-apply fetch step comment says fetch follows the pointer.
+    comment says upload-only also writes inputs.json; the gated-apply fetch step comment says fetch follows the pointer and that on that route identity rests on push-time
+    attribution, not the PR-time assert.
     The comments must not contain the literal mismatch sentinel (registry shard ducklake-build-assert-single-copy
     requires zero occurrences in the workflows).
 - file: tests/fixtures/ducklake_artifact_fakes.py
@@ -110,22 +113,25 @@ scope:
 - file: tests/test_ducklake_attribution.py
   action: Create
   purpose: >-
-    Push-path and fetch behaviour of scripts/ci/ducklake_artifacts.py beyond the two filed nodes, over the shared fakes.
-    Fail-closed nodes (each raises DUCKLAKE_ZIP_MISMATCH with no upload): test_push_same_inputs_different_bytes_fails_closed,
-    test_push_mismatch_without_inputs_record_fails_closed, test_push_layer_mismatch_without_moved_input_fails_closed,
-    test_push_partly_attributed_mismatch_fails_closed, test_push_unset_merge_sha_fails_closed,
-    test_push_inputs_record_not_describing_reference_fails_closed, test_push_schema_mismatch_fails_closed,
-    test_push_malformed_inputs_record_fails_closed (any exception in record or attribution collapses to the sentinel),
-    test_push_identical_with_preexisting_pointer_fails_closed (also a 403-shaped pointer read),
-    test_push_non_verbatim_entry_fails_closed (same blob, non-verbatim bytes on one side), and
-    test_push_merge_sha_equals_artifact_sha_fails_closed. Every push-path node pins or clears GITHUB_SHA with
-    monkeypatch (CI sets it). Fetch nodes:
-    test_fetch_follows_pointer_one_hop, test_fetch_bad_pointer_fails_closed (malformed, self-referencing, a 403-shaped
-    error) and test_fetch_pointer_target_missing_fails_closed, each failing before any copy. test_main_upload_only_writes_inputs_record
-    (the build subprocess is exactly scripts.build_lambda --ducklake-only --profile "" --bucket <bucket> with no
-    --skip-upload, the record lands at lambda-packages/<artifact_sha>/inputs.json after it, assert_and_upload is never
-    called, and a record upload failure exits 1). test_upload_only_branch_invokes_artifacts_module (the action.yml
-    wiring).
+    Push-path and fetch behaviour of scripts/ci/ducklake_artifacts.py beyond the two filed nodes, over the shared
+    fakes. Fail-closed nodes (each raises DUCKLAKE_ZIP_MISMATCH with no upload AND asserts the message's final
+    not-attributed line names its own reason: no inputs record; record not describing the reference; schema mismatch;
+    merge sha unset or equal to artifact_sha; the blocking entry path for same-inputs, partly attributed and
+    non-verbatim; the layer's unmoved input; the pre-existing-pointer node asserts its distinct pointer-refusal text,
+    so each node proves the branch it is named for and is red on today's source):
+    test_push_same_inputs_different_bytes_fails_closed, test_push_mismatch_without_inputs_record_fails_closed,
+    test_push_layer_mismatch_without_moved_input_fails_closed, test_push_partly_attributed_mismatch_fails_closed,
+    test_push_unset_merge_sha_fails_closed, test_push_inputs_record_not_describing_reference_fails_closed,
+    test_push_schema_mismatch_fails_closed, test_push_malformed_inputs_record_fails_closed (any exception in record or
+    attribution collapses to the sentinel), test_push_identical_with_preexisting_pointer_fails_closed (also a
+    403-shaped pointer read), test_push_non_verbatim_entry_fails_closed (same blob, non-verbatim bytes on one side),
+    and test_push_merge_sha_equals_artifact_sha_fails_closed. Every push-path node pins or clears GITHUB_SHA with
+    monkeypatch (CI sets it). Fetch nodes: test_fetch_follows_pointer_one_hop, test_fetch_bad_pointer_fails_closed
+    (malformed, self-referencing, a 403-shaped error) and test_fetch_pointer_target_missing_fails_closed, each failing
+    before any copy. test_main_upload_only_writes_inputs_record (the build subprocess is exactly scripts.build_lambda
+    --ducklake-only --profile "" --bucket <bucket> with no --skip-upload, the record lands at
+    lambda-packages/<artifact_sha>/inputs.json after it, assert_and_upload is never called, and a record upload
+    failure exits 1). test_upload_only_branch_invokes_artifacts_module (the action.yml wiring).
 - file: tests/test_ducklake_inputs.py
   action: Create
   purpose: >-
@@ -206,10 +212,11 @@ verification_plan:
     tests/test_ducklake_attribution.py::test_push_malformed_inputs_record_fails_closed
     tests/test_ducklake_attribution.py::test_push_identical_with_preexisting_pointer_fails_closed
     tests/test_ducklake_attribution.py::test_push_non_verbatim_entry_fails_closed
+    tests/test_ducklake_attribution.py::test_push_merge_sha_equals_artifact_sha_fails_closed
     tests/test_ducklake_attribution.py::test_fetch_follows_pointer_one_hop
     tests/test_ducklake_attribution.py::test_fetch_bad_pointer_fails_closed
     tests/test_ducklake_attribution.py::test_fetch_pointer_target_missing_fails_closed -q
-  expected: Exit 0, 14 passed. Red before, because the nodes do not exist; written first, the acceptance node fails on DUCKLAKE_ZIP_MISMATCH.
+  expected: Exit 0, 15 passed. Red before, because the nodes do not exist; written first, the acceptance node fails on DUCKLAKE_ZIP_MISMATCH.
   expected_literals: []
   fix_if: A raise on the moved case, an upload on any fail-closed case, or a zip written under the PR head prefix -> fix ducklake_artifacts.py or ducklake_inputs.py, never loosen a test.
   hermetic: true
@@ -447,7 +454,7 @@ context:
   Decision-scout: FLAGS_FOUND -- WARN 154 (Update line names the pointer and new basis; taxonomy joins scope), WARN 48
   (V3, live VP 7-8), NOTE 181 (existing tests unchanged). CITE: 77, 158, 125, 126, 183, 162, 83, 55, 128, 132, 177,
   186. Decisions triaged: 171 of 171. Roadmap items intersected: 5; CONFLICT: 0; RELATED: 5.
-- "gates: decision-scout=FLAGS_FOUND (WARN 154, WARN 48, NOTE 181 resolved as above); plan-critique=REVISE r1-r3 (all findings fixed), PENDING r4"
+- "gates: decision-scout=FLAGS_FOUND (WARN 154, WARN 48, NOTE 181 resolved as above); plan-critique=REVISE r1-r4 (all findings fixed; r4 confirming round escalated), PENDING"
 - >-
   Incident (verified; rec-4372's narrative swaps the PR numbers): #1519 (head bae45827) planned 12:38Z; #1520 merged
   12:59Z editing src/common/ducklake_handler_errors.py; #1519 merged 13:08Z unre-planned; run 38905586484 failed closed.
@@ -474,8 +481,8 @@ context:
   Transition: a terraform/personal PR planned before this merge has no inputs.json (a moved input still fails closed);
   push to it or update its branch from main before merging, since a re-run reuses the old test-merge commit.
 - >-
-  Residuals (Decision 55): a moved entry leaves that artifact's container bytes unchecked; a tooling or version.yaml
-  move attributes every differing artifact (layers included) wholesale, so an untracked layer input (CDN binary, new
+  Residuals (Decision 55): a moved entry leaves that artifact's container bytes unchecked; a tooling move attributes every
+  differing artifact wholesale and a version.yaml move every differing layer, so an untracked layer input (CDN binary, new
   wheel) stays fail-closed only without one; during an approval wait the pointer and per-sha zips stay writable by the
   PR-context planner role (as zips are today); a stale saved plan.bin stays with rec-3957/rec-3568. Live proof: rec-4381.
 - >-
