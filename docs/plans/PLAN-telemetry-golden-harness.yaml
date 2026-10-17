@@ -49,7 +49,12 @@ scope:
     the verb's VERB_FIELDS columns (src/common/ducklake_reader_client.py) including the three stamps (generations,
     conflicted_grain_keys, derivation_conflicted). Governed data it shares with the reader, declared in its module
     docstring: IDLE_THRESHOLD_SECONDS and FRICTION_RULES from src/common/ducklake_event_read_verbs.py (the rules are data;
-    the matcher is this module's own) and VERB_FIELDS (output column names only).
+    the matcher is this module's own) and VERB_FIELDS (output column names only). Columns no Class A formula defines
+    (model_call_count, usage_missing_count, label_counts, unmapped_count, cost_source) follow the rule source named in
+    the module docstring for each: the verb's EVENT_READS description, the FRICTION_RULES data and the committed
+    derivation_cases.yaml (c15) and friction_vectors.yaml expectations. The docstring also declares the residual:
+    agreement with the verbs proves the SQL implements the same reading of the contract text, not that the formula is
+    right.
 - file: scripts/telemetry_verify/ledger.py
   action: Create
   purpose: >-
@@ -106,8 +111,10 @@ scope:
 - file: tests/telemetry_verify/test_shape.py
   action: Create
   purpose: >-
-    Mirror tests for shape.py. Node test_nonfinal_calls_are_counted_at_every_position plus nodes for the spawn-usage leg,
-    background statuses, sidecar pins and Stop hook summaries, each over the verification trees and hand-built variants.
+    Mirror tests for shape.py, each over the verification trees and hand-built variants:
+    test_nonfinal_calls_are_counted_at_every_position, test_spawn_usage_is_compared_with_the_childs_last_call,
+    test_background_notice_status_is_read_and_compared, test_pinned_absent_sidecars_now_present_are_found and
+    test_stop_hook_summaries_are_counted.
 - file: tests/telemetry_verify/test_real_transcript_checks.py
   action: Create
   purpose: >-
@@ -132,17 +139,24 @@ scope:
     src.common.ducklake_event_reads.execute. Restates the seven foreign-key pairs of
     tests/turn_capture/test_capture_ducklake_integration.py's FKS (never imported from a test module) and holds back
     transcript rows above the inline threshold exactly as that module does (the kernel facade has no blob route).
-- file: tests/telemetry/fixtures/derived_golden.yaml
+- file: tests/telemetry/fixtures/derived_golden_state.yaml
   action: Create
   purpose: >-
-    The hand-authored expectations file (shape and authoring rule in execution_steps[2]): a parser_version header, then
-    per tree the pass kind, and per expectation the verb, session selector, params and the asserted subset of output
-    columns, each with a one-line why naming the contract formula input it follows.
+    Hand-authored expectations for the state verbs (session_state_and_duration, agent_run_state_and_duration,
+    sessions_window, sessions_window_all_purposes); shape and authoring rule in execution_steps[2]. A residual-class file
+    under Decision 166 (500 effective lines, 2,000-character lines, enforced in --pre by validate_structural_size_limits):
+    one flow-mapping line per expectation with its why inline.
+- file: tests/telemetry/fixtures/derived_golden_rollups.yaml
+  action: Create
+  purpose: >-
+    Hand-authored expectations for the roll-up verbs (agent_run_token_rollup, session_process_event_rollup,
+    session_friction_rollup, model_call_cost_estimate), same shape, header and size rule as the state file. Together the
+    two files are the one expectations set every engine asserts.
 - file: tests/telemetry/test_derived_layer_reconciliation.py
   action: Create
   purpose: >-
     rec-4025's acceptance module. Module-level pytest.importorskip("duckdb"), not integration-marked except the local
-    DuckLake node. Nodes in execution_steps[7], including rec-4025's acceptance node test_golden_fixtures_reconcile.
+    DuckLake node. Nodes in execution_steps[6], including rec-4025's acceptance node test_golden_fixtures_reconcile.
 - file: docs/contracts/file-router.yaml
   action: Modify
   purpose: >-
@@ -161,9 +175,9 @@ acceptance_criteria:
   src/common/ducklake_event_read_sql.py, src/turn_capture/streams.py, src/turn_capture/observations.py or a tests module
   (the AST boundary node, VP step 2).
 - >-
-  For every tree with expectations in derived_golden.yaml, the chain (record_turn, append_events, catalog, reader verb)
-  and the oracle over the stored rows both equal the hand-authored values, and the file's parser_version header equals
-  PARSER_VERSION (test_golden_fixtures_reconcile, VP step 4).
+  For every tree with expectations in the two derived_golden files, the chain (record_turn, append_events, catalog,
+  reader verb) and the oracle over the stored rows both equal the hand-authored values, and each file's parser_version
+  header equals PARSER_VERSION (test_golden_fixtures_reconcile, VP step 4).
 - >-
   For every producer golden tree (iterated over case_names(), never a literal count) and every verification tree, at both
   pass kinds where the tree finalizes: the verb output equals the oracle output for every emitted session and every
@@ -171,33 +185,34 @@ acceptance_criteria:
   survivors equal the emitted rows; no grain key is conflicted; and each session has exactly one generation, at
   PARSER_VERSION (VP step 5).
 - >-
-  Mutation evidence: each of the four planted verb-SQL defects in execution_steps[7] makes the reconciliation report at
+  Mutation evidence: each of the four planted verb-SQL defects in execution_steps[6] makes the reconciliation report at
   least one mismatch, over inputs that can expose it (an as_of exactly at the idle threshold; a shared-observation_id
   model_call pair), so the harness is shown to discriminate (VP step 6).
 - >-
   Replay and delivery cannot move a derived value: an identical re-send inserts 0 rows; reversed batch order and
-  incremental Stop-pass delivery at every prompt cut leave every verb output unchanged; and a delivery three days late
-  (append_events now = event time plus three days) leaves every verb output equal to the on-time baseline (now = event
-  time plus one second) (VP step 7).
+  incremental Stop-pass delivery at every prompt cut from the tree's fork boundary on (fork_boundary(files), the
+  producer's K-1 rule; earlier cuts on a forked tree halt by design) leave every verb output unchanged; and a delivery
+  three days late (append_events now = event time plus three days) leaves every verb output equal to the on-time baseline
+  (now = event time plus one second) (VP step 7).
 - >-
   A differing re-send is refused (GrainConflictError) and writes nothing; a stored conflicting pair is reported in every
   verb's stamps and identically by the oracle; a directly inserted claude_code plus litellm model_call pair sharing one
   observation_id is counted once by verbs and oracle alike; re-appending a tree at PARSER_VERSION + 1 leaves only the new
-  generation live, and a sessions-only bump retires the other tables' rows in both (VP step 7).
+  generation live, and a sessions-only bump retires the other tables' rows in both (VP step 8).
 - >-
   The ledger check classifies every model of every cost-state cut on the verification trees and unit vectors into the
   documented finding classes, alarms only on the alarm classes, and excludes everything after the cut (VP step 3).
 - >-
   The shape checks count non-final calls by stream kind and position, compare sync spawn usage with the child's last
-  call, read background notice statuses, find pinned-absent sidecars that now exist and count Stop hook summaries (VP
-  step 3).
-- The same expectations pass on a local DuckLake catalog, run before handoff (VP step 8).
+  call, read background notice statuses, find pinned-absent sidecars that now exist and count Stop hook summaries, one
+  node each (VP step 3).
+- The same expectations pass on a local DuckLake catalog, run before handoff (VP step 9).
 - >-
   The real-transcript checks run on the implementing session's own tree and report counts, or LEDGER_UNPROVEN when no
-  tree holds a cost-state record (VP step 9).
+  tree holds a cost-state record (VP step 10).
 - >-
-  Every scripts/telemetry_verify module is at 100% line coverage from its mirror tests (VP step 10), and
-  docs/contracts/file-router.yaml routes scripts/telemetry_verify/ (VP step 11).
+  Every scripts/telemetry_verify module is at 100% line coverage from its mirror tests (VP step 11), and
+  docs/contracts/file-router.yaml routes scripts/telemetry_verify/ (VP step 12).
 verification_plan:
 - step: 1
   phase: pre-deploy
@@ -244,8 +259,12 @@ verification_plan:
   action: The ledger and shape checks classify every documented case.
   command: >-
     bin/venv-python -m pytest tests/telemetry_verify/test_ledger.py::test_cut_bounded_reconciliation_classifies_every_model
-    tests/telemetry_verify/test_shape.py::test_nonfinal_calls_are_counted_at_every_position -q
-  expected: Exit 0, both nodes pass. Red before because they are absent.
+    tests/telemetry_verify/test_shape.py::test_nonfinal_calls_are_counted_at_every_position
+    tests/telemetry_verify/test_shape.py::test_spawn_usage_is_compared_with_the_childs_last_call
+    tests/telemetry_verify/test_shape.py::test_background_notice_status_is_read_and_compared
+    tests/telemetry_verify/test_shape.py::test_pinned_absent_sidecars_now_present_are_found
+    tests/telemetry_verify/test_shape.py::test_stop_hook_summaries_are_counted -q
+  expected: Exit 0, all six nodes pass. Red before because they are absent.
   expected_literals: []
   fix_if: >-
     A misclassified model or a miscounted call means the walk differs from execution_steps[4] or [5]; fix the walk, never
@@ -264,7 +283,7 @@ verification_plan:
     When the verb and the oracle agree with each other but not with the authored value, re-derive the value by hand from
     the formula before changing anything. When the verb alone disagrees, that is a reader defect: stop, file it through the
     portal (out-of-scope bug, never an inline fix to src/) and escalate to the coordinator. Never copy a value from either
-    output into derived_golden.yaml. A header mismatch means PARSER_VERSION moved: re-author per execution_steps[2].
+    output into a derived_golden file. A header mismatch means PARSER_VERSION moved: re-author per constraints[0].
   hermetic: false
   graduation: graduate
   graduation_check_id: telemetry-derived-layer-golden-reconcile
@@ -296,23 +315,34 @@ verification_plan:
   graduation_check_id: telemetry-derived-layer-mutation-evidence
 - step: 7
   phase: pre-deploy
-  action: Replay, order and late delivery, conflicts, the R5c pair and generation retirement.
+  action: Replay, batch order, incremental Stop-pass delivery and late delivery leave every derived value unchanged.
   command: >-
     bin/venv-python -m pytest
     tests/telemetry/test_derived_layer_reconciliation.py::test_replay_order_and_late_delivery_leave_derived_values_unchanged
-    tests/telemetry/test_derived_layer_reconciliation.py::test_conflicts_are_reported_and_generations_retire -q
-  expected: Exit 0, both nodes pass.
+    -q
+  expected: Exit 0. Red before because the node is absent.
   fix_if: >-
-    A derived value that moves under replay, order or late delivery is a reader or kernel defect: file it and escalate.
-    A conflict the stamps miss, or an R5c pair counted twice, is resolved as step 4 says.
+    A CursorError on a cut before a forked tree's fork boundary is the producer's declared K-1 halting case
+    (tests/fixtures/turn_capture_corpus.py fork_boundary), not a defect: start that tree's cuts at the boundary. Any
+    other derived value that moves under replay, order or late delivery is a reader or kernel defect: file it and
+    escalate.
   hermetic: false
-  graduation: waive
-  graduation_waiver_reason: >-
-    The kernel's own replay and grain-conflict guarantees already stand as registry rows
-    (telemetry-append-events-replay-noop, telemetry-grain-enforced-at-write), and the derived-value half of these
-    properties is guarded by the graduated agreement and mutation nodes (steps 5 and 6); a third row per property would
-    add no independent signal. The full tier (pre-handoff and on main) runs both nodes.
+  graduation: graduate
+  graduation_check_id: telemetry-derived-layer-delivery-independence
 - step: 8
+  phase: pre-deploy
+  action: Conflicts are reported, the R5c pair is counted once, and generations retire.
+  command: >-
+    bin/venv-python -m pytest
+    tests/telemetry/test_derived_layer_reconciliation.py::test_conflicts_are_reported_and_generations_retire -q
+  expected: Exit 0. Red before because the node is absent.
+  fix_if: >-
+    A conflict the stamps miss, an R5c pair counted twice, or a retired generation still counted is resolved as step 4
+    says.
+  hermetic: false
+  graduation: graduate
+  graduation_check_id: telemetry-derived-layer-conflicts-and-generations
+- step: 9
   phase: pre-deploy
   action: The same expectations on a local DuckLake catalog (partitioned, inlining off, UTC).
   command: >-
@@ -323,8 +353,12 @@ verification_plan:
     A DuckLake-only failure (in-memory green) is an engine difference: report it with the failing tree and verb, file it
     through the portal and escalate; never relax the expectation for one engine.
   hermetic: false
-  graduation: not-applicable
-- step: 9
+  graduation: waive
+  graduation_waiver_reason: >-
+    Integration-marked: it needs a network INSTALL of the ducklake extension, and no CI tier runs integration nodes
+    until rec-4071 provisions the extension; the deployed-engine leg (the verification verbs plan's deploy smoke) is the
+    standing real-DuckLake guard.
+- step: 10
   phase: pre-deploy
   action: >-
     The check library over this session's own real transcript tree (counts only). Run it after the session has resumed at
@@ -338,13 +372,16 @@ verification_plan:
     coordinator; never add a declared class to silence it. A shape the vocabulary does not name (for example a new record
     type) is reported the same way.
   hermetic: false
-  graduation: not-applicable
-- step: 10
+  graduation: waive
+  graduation_waiver_reason: >-
+    It reads the live session's own transcript trees under ~/.claude/projects, which exist in no CI tier; the in-session
+    source check plan runs the same library on real trees in production.
+- step: 11
   phase: pre-deploy
   action: >-
     Every new module is fully covered by its mirror tests. Run pytest-cov directly: the coverage checker's source-to-test
     map does not reach scripts/ subpackages outside its allow-list, so it would report scripts/telemetry_verify as skipped
-    (the gap is open rec-3617).
+    (mapping owner rec-2641, annotated 2026-10-17 to name this package; the misleading skip message is rec-3617).
   command: >-
     bin/venv-python -m pytest tests/telemetry_verify -m "not integration" --cov=scripts/telemetry_verify
     --cov-report=term-missing --cov-fail-under=100 -q
@@ -355,8 +392,8 @@ verification_plan:
   graduation_waiver_reason: >-
     A whole-directory coverage run of this plan's own new tests needing pytest-cov, which the venv-less fast tier lacks; a
     standing row would re-implement the repository coverage policy for one package, whose mechanical gap (scripts/
-    subpackages outside the checker's map) is owned by rec-3617.
-- step: 11
+    subpackages outside the checker's map) is owned by rec-2641.
+- step: 12
   phase: pre-deploy
   action: The new package is routed for discovery.
   command: grep -c "scripts/telemetry_verify/" docs/contracts/file-router.yaml
@@ -368,7 +405,7 @@ verification_plan:
   graduation_waiver_reason: >-
     validate_placement already guards every route's target resolution in both tiers; the row's presence is a one-time
     bookkeeping fact, not a behaviour that can regress silently.
-- step: 12
+- step: 13
   phase: pre-deploy
   action: Lint and run the full tier on the committed, clean tree before the push, as the handoff policy requires.
   command: >-
@@ -404,6 +441,26 @@ test_obligations:
   verification_step: 3
   test_selector: tests/telemetry_verify/test_shape.py::test_nonfinal_calls_are_counted_at_every_position
   red_green_expectation: red before (node and module absent), green after
+- source: scripts/telemetry_verify/shape.py
+  behavior: Each sync spawn's usage is compared with its child's last call and classified.
+  verification_step: 3
+  test_selector: tests/telemetry_verify/test_shape.py::test_spawn_usage_is_compared_with_the_childs_last_call
+  red_green_expectation: red before (node absent), green after
+- source: scripts/telemetry_verify/shape.py
+  behavior: Background notice statuses are read and compared with the given close outcomes.
+  verification_step: 3
+  test_selector: tests/telemetry_verify/test_shape.py::test_background_notice_status_is_read_and_compared
+  red_green_expectation: red before (node absent), green after
+- source: scripts/telemetry_verify/shape.py
+  behavior: Sidecars pinned absent in a cursor that now exist are found.
+  verification_step: 3
+  test_selector: tests/telemetry_verify/test_shape.py::test_pinned_absent_sidecars_now_present_are_found
+  red_green_expectation: red before (node absent), green after
+- source: scripts/telemetry_verify/shape.py
+  behavior: The root's Stop hook summaries and their hookCount are counted.
+  verification_step: 3
+  test_selector: tests/telemetry_verify/test_shape.py::test_stop_hook_summaries_are_counted
+  red_green_expectation: red before (node absent), green after
 - source: scripts/telemetry_verify/__init__.py
   behavior: The facade exposes the four modules' public surface.
   verification_step: 2
@@ -416,33 +473,41 @@ test_obligations:
   verification_step: 4
   test_selector: tests/telemetry/test_derived_layer_reconciliation.py::test_golden_fixtures_reconcile
   waiver_reason: >-
-    A shared test helper, exercised end to end by the step 4 to step 8 nodes; it has no behaviour outside them.
+    A shared test helper, exercised end to end by the step 4 to step 9 nodes; it has no behaviour outside them.
 - source: tests/fixtures/telemetry_verification_trees.py
   behavior: The trap trees reproduce the measured transcript shapes.
   verification_step: 3
   test_selector: tests/telemetry_verify/test_shape.py::test_nonfinal_calls_are_counted_at_every_position
   waiver_reason: >-
-    A shared test helper whose trees are asserted by the step 3 to step 7 nodes; it has no behaviour of its own.
-- source: tests/telemetry/fixtures/derived_golden.yaml
-  behavior: The hand-authored derived values for the authored trees.
+    A shared test helper whose trees are asserted by the step 3 to step 8 nodes; it has no behaviour of its own.
+- source: tests/telemetry/fixtures/derived_golden_state.yaml
+  behavior: The hand-authored state-verb values for the authored trees.
+  verification_step: 4
+  test_selector: tests/telemetry/test_derived_layer_reconciliation.py::test_golden_fixtures_reconcile
+  red_green_expectation: red before (file and node absent), green after
+- source: tests/telemetry/fixtures/derived_golden_rollups.yaml
+  behavior: The hand-authored roll-up values for the authored trees.
   verification_step: 4
   test_selector: tests/telemetry/test_derived_layer_reconciliation.py::test_golden_fixtures_reconcile
   red_green_expectation: red before (file and node absent), green after
 - source: docs/contracts/file-router.yaml
   behavior: The new package is routed for discovery.
-  verification_step: 11
+  verification_step: 12
   command: grep -c "scripts/telemetry_verify/" docs/contracts/file-router.yaml
   red_green_expectation: count 0 before, 1 or more after
 constraints:
 - >-
-  Authoring order and basis for derived_golden.yaml. Its values are the contract formula applied to the rows the CURRENT
+  Authoring order and basis for the two derived_golden files. Their values are the contract formula applied to the rows the CURRENT
   producer (PARSER_VERSION in src/turn_capture/record_turn.py) emits for the tree; for a trap tree that reproduces a
   known producer defect, the value follows the emitted rows (for example output_tokens 8, background outcome success)
   and the expectation carries known_defect naming the owner rec (rec-4354, rec-4358), while the transcript truth is
   asserted by shape.py's and ledger.py's declared classes. Reading record_turn's emitted rows is reading the formula's
-  input and is allowed; reading a verb's or the oracle's output is not. The file is committed in its own commit before
-  any dedupe, derive or chain code is written, and the report names that commit's SHA, so the authoring order is
-  auditable. Values are never copied from verb or oracle output and never edited to make a run pass; a disagreement is
+  input and is allowed; reading a verb's or the oracle's output is not. Both files are committed in their own commit
+  before any dedupe, derive or chain code is written, and the report names that commit's SHA, so the authoring order is
+  auditable. Size (Decision 166, residual class): each file stays under 500 effective lines and 2,000-character lines,
+  enforced in --pre by validate_structural_size_limits; one flow-mapping line per expectation, why inline; if one file
+  would still pass 450 effective lines, split it again by tree into a third file named for its trees before the
+  authoring commit, and list the split in the report; a limit raise is never the fix. Values are never copied from verb or oracle output and never edited to make a run pass; a disagreement is
   resolved by re-deriving by hand (VP step 4 fix_if). Re-authoring rule: a plan that bumps PARSER_VERSION and changes a
   tree's emitted rows re-authors the affected expectations by hand in its own PR, citing itself in each changed
   entry's why, and moves the header; the header check fails until it does.
@@ -452,7 +517,8 @@ constraints:
   here. No change to tests/fixtures/turn_capture/golden/, config/telemetry/parser_versions.yaml or any existing test
   module; the verification trees live in tests/fixtures/telemetry_verification_trees.py.
 - >-
-  scripts/telemetry_verify DIRECT imports (AST-checked, VP step 2): the standard library, src.turn_capture.transcript
+  scripts/telemetry_verify DIRECT imports (AST-checked, VP step 2): the standard library, the package's own modules
+  (scripts.telemetry_verify.*), src.turn_capture.transcript
   (tree access and raw lines), src.common.ducklake_event_reads (compared_columns), src.common.ducklake_event_read_verbs
   (IDLE_THRESHOLD_SECONDS, FRICTION_RULES) and src.common.ducklake_reader_client (VERB_FIELDS); never duckdb,
   src.common.ducklake_event_read_sql, src.turn_capture.streams, src.turn_capture.observations or anything under tests/.
@@ -481,7 +547,7 @@ context:
   contract is the rule source), 84 (I-3 the oracle never reads a catalog). Flags (205, 100, 61, 95) bind the verification
   monitor and in-session check plans and are resolved there. Report summary:
   /mnt/project-files/telemetry-slice4/decision-scout-report.md.
-- "gates: decision-scout=FLAGS_FOUND (4 flags, resolved by the slice design); plan-critique=REVISE round 1 (J1-J8, M1-M5, R1-R2 fixed)"
+- "gates: decision-scout=FLAGS_FOUND (4 flags, resolved by the slice design); plan-critique=REVISE round 1 (J1-J8, M1-M5, R1-R2 fixed), REVISE round 2 (J1-J12, M1 fixed)"
 - >-
   Design inputs: /mnt/project-files/telemetry-slice4/step6b-presentation.md (approved), plan-ADVICE.md (Fable consult on
   F1-F8: F8 (c) one expectations file, three engines; this plan delivers the in-memory and local DuckLake legs, the
@@ -504,8 +570,8 @@ context:
   No Lambda-packaged path, Terraform, IAM, contract field or Decision text changes (scripts/ and tests/ only;
   compute_affected_artifacts is empty for every scope file). Data-model walk not owed: no table, field or write path.
 - >-
-  Coverage gate gap: scripts/test_coverage_checker.py's map_source_to_test returns None for scripts/telemetry_verify (open
-  rec-3617), so VP step 10 runs pytest-cov directly. The corpus builder assistant() hard-codes stop_reason end_turn and
+  Coverage gate gap: scripts/test_coverage_checker.py's map_source_to_test returns None for scripts/telemetry_verify
+  (mapping owner rec-2641, annotated 2026-10-17; skip-message rec-3617), so VP step 11 runs pytest-cov directly. The corpus builder assistant() hard-codes stop_reason end_turn and
   puts extra keyword arguments on the record, so the trap trees edit message.stop_reason and message.usage after building.
 pre_implementation_checklist:
 - Branch confirmed not on main and rebased on origin/main; VP step 1 passes
@@ -524,7 +590,8 @@ execution_steps:
   tests/fixtures/telemetry_verification_trees.py, using the corpus builders (assistant, tool_result, hook, attachment,
   child, make_files), editing message.stop_reason and message.usage after building where a tree needs them. Trees: (a)
   subagent_nonfinal_midstream: a root that spawns one sync sub-agent whose toolUseResult carries usage equal to the
-  child's last call's FINAL usage; the child makes three calls: one single-line final call, one mid-stream two-line call
+  child's last call's FINAL usage; the child makes three calls: one single-line complete call (stop_reason set), one
+  mid-stream two-line call
   (thinking plus tool_use) whose lines carry stop_reason null and output_tokens 4, and a final two-line handback call with
   stop_reason null and output_tokens 8 where the spawn usage says 768. (b) subagent_background_failed: a background spawn
   whose <task-notification> carries <status>failed</status> (status values other than completed are inferred from Claude
@@ -535,11 +602,12 @@ execution_steps:
   the ledger; then a SessionStart:resume hook group and a turn 2 whose calls lie after the cut. Each tree's docstring
   names the measurement it reproduces (planning-facts.md).
 - >-
-  tests/telemetry/fixtures/derived_golden.yaml, authored by hand per constraints[0] and committed on its own before any
-  dedupe, derive or chain code. Shape: a header comment stating the authoring rule; parser_version (the integer the
-  values were authored against); trees: a list of {tree: "corpus:<golden case file>" or "verification:<tree name>", pass:
-  final or stop, why, expect: [{verb, session: root or "agent:<agentId>", params, rows: [asserted subset of columns],
-  why, known_defect (optional rec id)}]}. as_of rule for every state verb (session_state_and_duration,
+  tests/telemetry/fixtures/derived_golden_state.yaml and derived_golden_rollups.yaml, authored by hand per
+  constraints[0] and committed together on their own before any dedupe, derive or chain code. Shape of each: a header
+  comment stating the authoring rule; parser_version (the integer the values were authored against); trees: a list of
+  {tree: "corpus:<golden case file>" or "verification:<tree name>", pass: final or stop, why, expect: [one flow-mapping
+  line per expectation: {verb, session: root or "agent:<agentId>" (absent for the window verbs), params, rows: [asserted
+  subset of columns], why, known_defect (optional rec id)}]}. as_of rule for every state verb (session_state_and_duration,
   agent_run_state_and_duration, sessions_window): two absolute ISO values, one inside and one beyond the 24 h idle
   threshold of the tree's last event, and on at least two authored trees a third value exactly at last event plus
   86,400 s (the contract says the idle time must EXCEED the threshold, so that value reads running; telemetry_sessions.yaml:157,
@@ -547,7 +615,8 @@ execution_steps:
   resume_after_interrupt, close_cancelled_mid_stream, close_cancelled_running_tool, close_failed_api_error, subagent_sync,
   subagent_background_with_completion, subagent_background_without_completion, nested_subagent_depth2,
   fork_session_nested, multiblock_response_interleaved_tool_results, gate_and_precommit_markers, hook_blocked_tool_call,
-  tool_result_error, sidecar_present, no_reply_session, and the three verification trees, at pass final and, for at least
+  tool_result_error, sidecar_present, no_reply_session (it emits no row in any table, so its expectation is an empty
+  sessions_window_all_purposes answer over its day), and the three verification trees, at pass final and, for at least
   hooks_resume_and_compact and subagent_background_with_completion, also at pass stop.
 - >-
   dedupe.py and derive.py, then test_dedupe.py, test_derive.py and test_package_boundary.py (VP step 2). The oracle takes
@@ -581,7 +650,7 @@ execution_steps:
   tests/fixtures/telemetry_golden_chain.py and tests/telemetry/test_derived_layer_reconciliation.py. Every append passes
   an explicit now: the baseline is the batch's latest event time plus one second (inside the writer's 300 s skew), so
   late delivery has an on-time baseline to differ from. Nodes: test_golden_fixtures_reconcile (rec-4025's acceptance
-  node; also asserts the derived_golden.yaml header equals PARSER_VERSION; VP step 4);
+  node; also asserts both derived_golden headers equal PARSER_VERSION; VP step 4);
   test_every_tree_agrees_with_the_oracle_and_holds_invariants (every tree from case_names() plus every verification tree,
   each emitted session, every session-bound verb at the as_of rule's values, verb output equal to oracle output; the
   seven FK pairs resolve for finalized trees; survivors equal emitted rows; no conflicted key; one generation at
@@ -592,26 +661,30 @@ execution_steps:
   "(event_kind = 'close') DESC" replaced by ASC; the R5c collapse removed (o AS SELECT * FROM o_ev); the idle comparison
   ">" replaced by ">="; VP step 6); test_replay_order_and_late_delivery_leave_derived_values_unchanged (every batch twice
   inserts 0 the second time; reversed batch and row order; Stop passes at every prompt cut then the final pass, using
-  tests/fixtures/turn_capture_real.PrefixTree or an equivalent prefix of the root file; now = event time plus three
-  days against the baseline; VP step 7); test_conflicts_are_reported_and_generations_retire (a differing re-send raises
+  tests/fixtures/turn_capture_real.PrefixTree or an equivalent prefix of the root file, starting at
+  turn_capture_corpus.fork_boundary(files) on a forked tree (earlier cuts halt with CursorError by the producer's K-1
+  rule); now = event time plus three days against the baseline; VP step 7); test_conflicts_are_reported_and_generations_retire (a differing re-send raises
   GrainConflictError and inserts nothing; a conflicting pair inserted directly with telemetry_read_db.insert_rows is
   reported by every verb's stamps and by the oracle; the R5c pair is counted once; a full PARSER_VERSION + 1 re-append
-  leaves one generation; a sessions-only bump retires the other tables' rows in verbs and oracle alike; VP step 7); and
+  leaves one generation; a sessions-only bump retires the other tables' rows in verbs and oracle alike; VP step 8); and
   test_golden_fixtures_reconcile_on_local_ducklake (integration-marked; the step 4 expectations on open_local_lake; VP
-  step 8).
+  step 9).
 - >-
-  tests/telemetry_verify/test_real_transcript_checks.py (VP step 9), then docs/contracts/file-router.yaml (VP step 11).
-- Execute VP steps 1-11; loop until each passes.
+  tests/telemetry_verify/test_real_transcript_checks.py (VP step 10), then docs/contracts/file-router.yaml (VP step 12).
+- Execute VP steps 1-12; loop until each passes.
 - Code review (the code-review skill in a fresh context); fix every blocking finding.
 - >-
   Closure (implement skill Commit Flows; docs/contracts/git-ops.yaml), each outcome reported separately: the readiness
-  check; set implementation_declared true; rebase on origin/main; VP step 12 (the full tier) on the committed, clean
+  check; set implementation_declared true; rebase on origin/main; VP step 13 (the full tier) on the committed, clean
   tree, then scripts.checks.validation_result --verify-head; the postflight evidence file and scripts.session.postflight
-  --evidence; push; PR; CI green on the head. No Resolves trailer (rec-4025 stays open for the later slice 4 plans; update
-  its context through the portal with the merge SHA and what this plan delivered). Merge on code review PROCEED and
-  green CI under the standing rule (no deploy, IAM, spend, contract or Decision text).
+  --evidence; push; PR; CI green on the head. No Resolves trailer: rec-4025 stays open for the later slice 4 plans.
+  After the merge, update rec-4025 through the portal: a context note with the merge SHA and what this plan delivered,
+  and its acceptance re-pointed to tests/telemetry_verify/test_monitor.py::test_monitor_reports_rederivation_orphan_and_completeness_counts
+  (the node the verification monitor plan creates), so the acceptance holds only at the closing commit (the Decision 201
+  precedent). Merge on code review PROCEED and green CI under the standing rule (no deploy, IAM, spend, contract or
+  Decision text).
 - >-
-  'Report: what was implemented, the SHA of the derived_golden.yaml commit, each VP step''s output (step 9''s count lines
+  'Report: what was implemented, the SHA of the derived_golden authoring commit, each VP step''s output (step 10''s count lines
   verbatim), every reader or producer finding the harness surfaced and the rec it was filed as.'
 rollback: >-
   Revert the squash commit. Nothing outside scripts/telemetry_verify/, tests/ and one file-router row changes; no stored
