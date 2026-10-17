@@ -18,39 +18,60 @@ phase: >-
 scope:
 - file: terraform/bootstrap/platform_admin_policies.tf
   action: Modify
-  purpose: >-
-    aws_iam_role_policy.platform_admin_ops' self-access precondition (today strcontains of "\"Sid\":\"IAMFull\"" at
-    :223) becomes a parsed check: anytrue over jsondecode(local.platform_admin_ops_policy_json).Statement of a
-    statement with try(s.Sid, "") == "IAMFull", s.Effect == "Allow", !can(s.Condition), "iam:*" in
-    flatten([try(s.Action, [])]) and "*" in flatten([try(s.Resource, [])]). Its comment is rewritten to say it checks
-    the grant itself (keep the line starting "# Self-access guard" and the note that it avoids the byte-size measure
-    form); its error_message says the IAMFull grant is missing or no longer an unconditioned Allow of iam:* on *, and
-    keeps the phrase "self-access grant". The local, every statement and the size precondition are unchanged; the
-    file must still hold exactly one length(jsonencode(jsondecode(local. occurrence.
+  purpose: |-
+    aws_iam_role_policy.platform_admin_ops' self-access precondition (today strcontains of "\"Sid\":\"IAMFull\"" at :223)
+    gets exactly this condition (verified with terraform console against the real local):
+      condition = anytrue([
+        for s in jsondecode(local.platform_admin_ops_policy_json).Statement :
+        try(s.Sid, "") == "IAMFull" && s.Effect == "Allow" && !can(s.Condition)
+        && contains(flatten([try(s.Action, [])]), "iam:*")
+        && contains(flatten([try(s.Resource, [])]), "*")
+      ])
+    Its comment keeps the first line "# Self-access guard" and says the guard checks the grant itself and avoids the
+    byte-size measure form. Its error_message starts "PlatformAdmin AdminOps", says the IAMFull statement is missing or
+    no longer an unconditioned Allow of iam:* on *, and keeps the phrase "self-access grant" (step 11 matches on both).
+    The local, every statement and the size precondition are unchanged; the file still holds exactly one
+    length(jsonencode(jsondecode(local. occurrence.
 - file: terraform/bootstrap/platform_admin_data_policies.tf
   action: Modify
-  purpose: >-
+  purpose: |-
     aws_iam_role_policy.platform_admin_bootstrap_state's self-access precondition (today two strcontains at :249-252)
-    becomes a parsed check: alltrue over the map {"arn:aws:s3:::agent-platform-bootstrap-tfstate" = ["s3:ListBucket"],
-    "arn:aws:s3:::agent-platform-bootstrap-tfstate/*" = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]} that some
-    statement of jsondecode(local.platform_admin_bootstrap_state_policy_json).Statement is an unconditioned Allow
-    (s.Effect == "Allow", !can(s.Condition)) whose flatten([try(s.Resource, [])]) contains the ARN and whose
-    flatten([try(s.Action, [])]) contains every listed verb (the S3 backend's verbs; DeleteObject because main.tf sets
-    use_lockfile = true). Comment rewritten likewise (keep "# Self-access guard"); error_message keeps the phrase
-    "self-access grant". No other line of the file changes (rec-4347's sibling planning thread may touch other lines
-    of this file; neither change overlaps the other's hunks).
+    gets exactly this condition (verified with terraform console against the real local; the verbs are the S3
+    backend's, DeleteObject because main.tf sets use_lockfile = true):
+      condition = alltrue([
+        for arn, actions in {
+          "arn:aws:s3:::agent-platform-bootstrap-tfstate"   = ["s3:ListBucket"]
+          "arn:aws:s3:::agent-platform-bootstrap-tfstate/*" = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+          } : anytrue([
+            for s in jsondecode(local.platform_admin_bootstrap_state_policy_json).Statement :
+            s.Effect == "Allow" && !can(s.Condition)
+            && contains(flatten([try(s.Resource, [])]), arn)
+            && alltrue([for a in actions : contains(flatten([try(s.Action, [])]), a)])
+        ])
+      ])
+    (this is terraform fmt's own layout). Its comment keeps the first line "# Self-access guard", says the guard checks
+    the grant itself and avoids the byte-size measure form, and drops today's claim that the byte-precondition shard
+    owns "exactly one such measure per file" (that shard does not scan this file, which carries three measures, one
+    per policy). Its error_message starts "PlatformAdmin BootstrapStateProvisioning" and keeps the phrase "self-access
+    grant". No other line of the file changes.
 - file: tests/checks/iam_tf/test_platform_iam_bootstrap_adoption.py
   action: Modify
   purpose: >-
-    _protection_problems detects the parsed form on the COMMENT-STRIPPED precondition body (_strip_comments, so a
-    token in comment prose never satisfies it -- the rec-4145 class): AdminOps needs a precondition carrying
-    jsondecode(local.platform_admin_ops_policy_json).Statement, "IAMFull", "Allow" and "iam:*" and no strcontains(;
-    BootstrapStateProvisioning needs one carrying jsondecode(local.platform_admin_bootstrap_state_policy_json).Statement,
-    "Allow", the quoted bucket ARN, the quoted object ARN and the four verbs, and no strcontains(. Red cases, each a
-    positive assert any(...): the deleted IAMFull precondition (existing, anchor kept), the IAMFull precondition with
-    its "Allow" comparison removed (new), the bootstrap-state precondition with its bucket ARN corrupted (adapted from
-    the existing substring case), and the bootstrap-state precondition reverted to the strcontains form (new).
-    Module docstring updated to say the preconditions check the grant.
+    _protection_problems checks each self-access guard in two parts. CONDITION tokens are matched only in the
+    condition expression (the precondition body with comments stripped by _strip_comments and the error_message
+    attribute removed), each with its double quotes where it is a string, so neither comment prose (the rec-4145
+    class) nor error_message prose can satisfy them. AdminOps needs jsondecode(local.platform_admin_ops_policy_json).Statement,
+    "IAMFull", "Allow", "iam:*", "*" and can(s.Condition); BootstrapStateProvisioning needs
+    jsondecode(local.platform_admin_bootstrap_state_policy_json).Statement, "Allow", can(s.Condition), the quoted
+    bucket ARN, the quoted object ARN and the four quoted verbs; neither may contain strcontains(. ERROR_MESSAGE: each
+    guard's error_message contains its resource name ("PlatformAdmin AdminOps" / "PlatformAdmin
+    BootstrapStateProvisioning") and "self-access grant", so wording drift fails here, not in the ADMIN gate's
+    step 11. Red cases, each a positive assert any(...) after asserting the mutated text differs: the deleted IAMFull
+    precondition (existing, anchor kept); the IAMFull guard with its "Allow" comparison removed (new); the
+    bootstrap-state guard with its !can(s.Condition) clause removed (new); the bootstrap-state guard with its bucket
+    ARN corrupted (adapted from the existing substring case); the bootstrap-state guard reverted to the strcontains
+    form (new); the AdminOps error_message without "self-access grant" (new). Module docstring updated to say the
+    preconditions check the grant.
 bundled_recommendations:
 - rec-4346
 followon_recs: []
@@ -70,8 +91,9 @@ infrastructure_dependencies:
 acceptance_criteria:
 - Both self-access preconditions parse the policy local with jsondecode and neither uses strcontains; the rec's
   amended acceptance command holds.
-- The static guard class TestBootstrapOwnsPlatformIam passes and its four precondition red cases fail on the mutated
-  text.
+- The static guard class TestBootstrapOwnsPlatformIam passes and each of its six self-access red cases (deleted guard,
+  no Allow comparison, no Condition clause, corrupted bucket ARN, strcontains form restored, error_message without
+  "self-access grant") is detected.
 - personal-policies-carry-byte-preconditions stays green (one byte measure per file).
 - At the PR head the full bootstrap plan succeeds (both preconditions pass) and its resource changes equal those of
   the plan at the merge base; with IAMFull set to Deny, and separately with s3:PutObject removed from the state object
@@ -84,8 +106,8 @@ verification_plan:
   phase: pre-deploy
   action: the static guard recognises the parsed preconditions and catches each of its four precondition red cases
   command: bin/venv-python -m pytest tests/checks/iam_tf/test_platform_iam_bootstrap_adoption.py::TestBootstrapOwnsPlatformIam -q
-  expected: all tests in the class pass, including the two new red cases (Allow comparison removed; strcontains form
-    restored) and the adapted bucket-ARN case
+  expected: all tests in the class pass, including the four new red cases (Allow comparison removed, Condition clause
+    removed, strcontains form restored, error_message without "self-access grant") and the adapted bucket-ARN case
   fix_if: test_real_tree_is_clean fails -- the HCL and the detection disagree on a token (check the comment-stripped
     body); a red case passes -- its mutation no longer applies to the real text (assert the mutated text differs first)
   hermetic: true
@@ -262,14 +284,14 @@ verification_plan:
   action: POST-MERGE (ADMIN, read-only) -- the merged tree plans with both preconditions passing and the same counts as
     the PR head
   command: |-
-    test -n "$MERGE_SHA" && M="${TMPDIR:-/tmp}/rec-4346-post" && (umask 077 && mkdir -p "$M" && aws secretsmanager get-secret-value --secret-id agent-platform-terraform-personal-tfvars --profile agent_platform_admin --query SecretString --output text | grep -E '^[[:space:]]*(account_id|owner_email|platform_dev_external_id|platform_admin_external_id)[[:space:]]*=' > "$M/bootstrap.tfvars") && git fetch origin main && git merge-base --is-ancestor "$MERGE_SHA" origin/main && W="$M/wt" && git worktree add --detach "$W" "$MERGE_SHA" > /dev/null && { terraform -chdir="$W/terraform/bootstrap" init -input=false > /dev/null && terraform -chdir="$W/terraform/bootstrap" plan -input=false -lock=false -var-file="$M/bootstrap.tfvars" -out="$M/merged.tfplan" > /dev/null && terraform -chdir="$W/terraform/bootstrap" show -json "$M/merged.tfplan" > "$M/merged.json"; rc=$?; }; git worktree remove --force "$W"; test "${rc:-1}" -eq 0 && M="$M" bin/venv-python - <<'EOF'
+    test -n "$MERGE_SHA" && M="${TMPDIR:-/tmp}/rec-4346-post" && (umask 077 && mkdir -p "$M" && aws secretsmanager get-secret-value --secret-id agent-platform-terraform-personal-tfvars --profile agent_platform_admin --query SecretString --output text | grep -E '^[[:space:]]*(account_id|owner_email|platform_dev_external_id|platform_admin_external_id)[[:space:]]*=' > "$M/bootstrap.tfvars") && git fetch origin main && git merge-base --is-ancestor "$MERGE_SHA" origin/main && W="$M/wt" && git worktree add --detach "$W" "$MERGE_SHA" > /dev/null && { terraform -chdir="$W/terraform/bootstrap" init -input=false > /dev/null && terraform -chdir="$W/terraform/bootstrap" plan -input=false -lock=false -var-file="$M/bootstrap.tfvars" -out="$M/merged.tfplan" > /dev/null && terraform -chdir="$W/terraform/bootstrap" show -json "$M/merged.tfplan" > "$M/merged.json"; rc=$?; }; git worktree remove --force "$W"; test "${rc:-1}" -eq 0 && M="$M" bin/venv-python - <<'EOF' && counted=1
     import json, os
     m = os.environ["M"]
     rc = json.load(open(f"{m}/merged.json")).get("resource_changes", [])
     acts = [r["change"]["actions"] for r in rc if r["change"]["actions"] not in (["no-op"], ["read"])]
     print(json.dumps({"merged_add": sum("create" in a for a in acts), "merged_change": sum("update" in a for a in acts), "merged_destroy": sum("delete" in a for a in acts)}))
     EOF
-    rm -rf "$M"; git worktree prune; test "${rc:-1}" -eq 0 && test ! -e "$M" && echo "POST-MERGE PLAN DONE"
+    rm -rf "$M"; git worktree prune; test "${counted:-0}" -eq 1 && test ! -e "$M" && echo "POST-MERGE PLAN DONE"
   expected: one JSON line of counts equal to step 10's head counts (0/0/0 when live matches main), then POST-MERGE PLAN
     DONE; the plan exits 0, so both preconditions pass on the merged tree. Post the JSON line as a counts-only comment on
     the merged PR naming MERGE_SHA; that comment is this plan's behavioural acceptance record.
@@ -281,7 +303,7 @@ verification_plan:
   phase: post-deploy
   action: rec-4346 is closed by the squash commit's Resolves trailer
   command: bin/venv-python -c "from src.common.ducklake_reader_client import fetch_recs_by_ids, make_reader; rows, missing
-    = fetch_recs_by_ids(make_reader(profile='agent_platform_admin'), ['rec-4346']); assert not missing and rows[0]['status']
+    = fetch_recs_by_ids(make_reader(profile='agent_platform'), ['rec-4346']); assert not missing and rows[0]['status']
     == 'closed', 'rec-4346 is not closed'; print('REC-4346 CLOSED')"
   expected: REC-4346 CLOSED
   fix_if: still open -- read ci.yml's trailer-acceptance-evaluate and trailer-closure job logs on the merge commit; a fails
@@ -291,20 +313,26 @@ verification_plan:
 test_obligations:
 - source: terraform/bootstrap/platform_admin_policies.tf
   behavior: AdminOps' self-access precondition parses the policy and requires an unconditioned Allow of iam:* on * in
-    the IAMFull statement; the static guard rejects a missing guard, a guard without the Allow comparison and the
-    substring form, and the live negative control proves the guard fires against the real root.
+    the IAMFull statement; the static guard requires the Allow, Condition, iam:* and * tokens in the condition
+    expression and the resource name plus "self-access grant" in the error_message, and rejects a missing guard, a
+    guard without the Allow comparison and an error_message without "self-access grant"; the live negative control
+    proves the guard fires against the real root.
   verification_step: 1
   test_selector: tests/checks/iam_tf/test_platform_iam_bootstrap_adoption.py::TestBootstrapOwnsPlatformIam
   red_green_expectation: red before -- with the new detection, test_real_tree_is_clean fails on origin/main's strcontains
-    guard; green after the HCL change. Live red (step 11) on the neutered IAMFull statement.
+    guard; green after the HCL change. Red cases -- deleted guard, Allow comparison removed, error_message without
+    "self-access grant". Live red (step 11) on the IAMFull statement set to Deny.
 - source: terraform/bootstrap/platform_admin_data_policies.tf
   behavior: BootstrapStateProvisioning's self-access precondition parses the policy and requires the bucket ARN with
     s3:ListBucket and the object ARN with GetObject, PutObject and DeleteObject in unconditioned Allow statements; the
-    static guard rejects a corrupted ARN and the substring form, and the live negative control proves the guard fires.
+    static guard requires the Allow, Condition, quoted ARN and quoted verb tokens in the condition expression and the
+    resource name plus "self-access grant" in the error_message, and rejects a guard without the Condition clause, a
+    corrupted ARN and the substring form; the live negative control proves the guard fires.
   verification_step: 1
   test_selector: tests/checks/iam_tf/test_platform_iam_bootstrap_adoption.py::TestBootstrapOwnsPlatformIam
   red_green_expectation: red before -- with the new detection, test_real_tree_is_clean fails on origin/main's strcontains
-    guard; green after the HCL change. Live red (step 11) on the state object statement without s3:PutObject.
+    guard; green after the HCL change. Red cases -- Condition clause removed, bucket ARN corrupted, strcontains form
+    restored. Live red (step 11) on the state object statement without s3:PutObject.
 constraints:
 - No IAM grant, policy statement, policy local, resource or import block changes; the change is confined to the two
   self-access precondition blocks (condition, comment, error_message) and the static test.
@@ -312,7 +340,9 @@ constraints:
   plans are read-only with -lock=false.
 - Public repo (Decision 101) -- no account ids, ARNs carrying an account id, or ExternalIds in commits, PR text,
   comments or evidence; plan files and JSON stay in the scratch directory and are deleted in the step that makes them.
-- Keep exactly one length(jsonencode(jsondecode(local. measure per policy file (personal-policies-carry-byte-preconditions).
+- Keep one length(jsonencode(jsondecode(local. byte measure per policy; personal-policies-carry-byte-preconditions
+  requires exactly one per file in platform_admin_policies.tf (the data file carries three, one per policy, and that
+  shard does not scan it).
 - Every behaviour-changing edit carries a test that fails without it; never skip, disable or quarantine a test.
 - No rescue agents or workaround loops (Decision 55).
 context:
@@ -324,9 +354,10 @@ context:
 - 'Rec acceptance amended 2026-10-17 16:45Z through the ops portal under that approval (it counted the word
   "whitespace"); new oracle = step 2''s command without the echo. Decision 201 keys the closure verdict to the
   acceptance text current at the merge sha.'
-- 'Overlap: rec-4347 (sibling planning thread) concerns locals in terraform/bootstrap; it may touch
-  platform_admin_data_policies.tf lines far from :244-253. No terraform/personal file is in scope, so no overlap with
-  the personal-release build.'
+- 'Overlap: none. The sibling rec-4347 was declined on 2026-10-17 (not reproducible), and no terraform/personal file
+  is in scope, so nothing overlaps the personal-release build.'
+- 'Follow-on (not a deferred half): rec-4399 asks deploy-paths.yaml pre_merge_live_plan clause 3 to name this plan''s
+  substitute (live negative control plus a read-only post-merge plan) for zero-resource-diff changes.'
 - 'ci_rca deferral: rec-4372 (Critical, terraform-apply-sandbox DuckLake ZIP mismatch) is open and shares no file,
   Decision or failure category with this plan; Benjamin approved planning this side item in parallel on 2026-10-17.
   Its fix is PLAN-ducklake-zip-inputs-moved (#1529). The build starts once the project''s CI-halt rule allows.'
@@ -339,8 +370,9 @@ context:
   and steps 10-11''s counts-only evidence on the PR for the current head. The PR edits safety guards only; if the
   diff ever changes a policy statement, grant or resource, it becomes an always-ask IAM change and waits for his word.'
 - 'Decision 181 (content invariant): the graduated class TestBootstrapOwnsPlatformIam is rewritten, never loosened --
-  the new detection is red on origin/main''s substring guards, adds red cases (no Allow comparison; strcontains form
-  restored) and keeps the deleted-guard and corrupted-ARN cases; the class node id stays stable for the
+  the new detection is red on origin/main''s substring guards, adds four red cases (no Allow comparison; no Condition
+  clause; strcontains form restored; error_message without "self-access grant") and keeps the deleted-guard and
+  corrupted-ARN cases; the class node id stays stable for the
   platform-iam-bootstrap-owns-roles-and-policies registry row (Decision 132). No step graduates (Decision 189).'
 - 'Decision-scout verdict + CITE list: NO_FLAGS; CITE Decision 126, Decision 48, Decision 201, Decision 189, Decision
   181. Decisions triaged: 171 of 171. Roadmap items intersected: 1; CONFLICT: 0; RELATED: 1'
