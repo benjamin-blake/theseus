@@ -50,7 +50,11 @@ scope:
     the verb's VERB_FIELDS columns (src/common/ducklake_reader_client.py) including the three stamps (generations,
     conflicted_grain_keys, derivation_conflicted). Governed data it shares with the reader, declared in its module
     docstring: IDLE_THRESHOLD_SECONDS and FRICTION_RULES from src/common/ducklake_event_read_verbs.py (the rules are data;
-    the matcher is this module's own) and VERB_FIELDS (output column names only). Columns no Class A formula defines
+    the matcher is this module's own), VERB_FIELDS (output column names only) and EVENT_READS[verb].tables (the stamp
+    scope: a verb's generations, conflicted_grain_keys and derivation_conflicted cover only the tables it composes, four
+    for the state and window verbs, sessions and observations for the four roll-up verbs; no contract text states this,
+    so the registry is its rule source). duration_seconds (an int whose formula yields a fractional total_seconds())
+    is truncated toward zero to whole seconds, the declared convention until rec-4405 puts it in the contracts. Columns no Class A formula defines
     (model_call_count, usage_missing_count, label_counts, unmapped_count, cost_source) follow the rule source named in
     the module docstring for each: the verb's EVENT_READS description, the FRICTION_RULES data and the committed
     derivation_cases.yaml (c15) and friction_vectors.yaml expectations. The docstring also declares the residual:
@@ -95,7 +99,7 @@ scope:
   purpose: >-
     AST boundary node test_oracle_has_no_direct_reader_sql_duckdb_streams_or_tests_import, in the style of
     tests/telemetry/test_package_boundary.py: every scripts/telemetry_verify module's DIRECT runtime imports are the
-    standard library or the allow-list in constraints[2]; never duckdb, src.common.ducklake_event_read_sql,
+    standard library or the allow-list in constraints[3]; never duckdb, src.common.ducklake_event_read_sql,
     src.turn_capture.streams, src.turn_capture.observations or a tests module. Direct imports only, because the allowed
     data modules themselves import the SQL module (the oracle's independence is its own code, not its import closure);
     never an .importlinter forbidden contract, which checks the transitive closure.
@@ -142,7 +146,8 @@ scope:
   purpose: >-
     Shared helper (never a test_ module): the slice 4 trap trees, built at runtime with the producer corpus builders in
     tests/fixtures/turn_capture_corpus.py, kept OUT of the producer golden corpus so its parser_versions.yaml golden
-    digest does not move. Trees in execution_steps[1].
+    digest does not move. Trees in execution_steps[1]; each names the producer parser_version 4 case it lines up with
+    (constraints[1]).
 - file: tests/fixtures/telemetry_golden_chain.py
   action: Create
   purpose: >-
@@ -177,12 +182,14 @@ scope:
   action: Modify
   purpose: >-
     Add the telemetry-verify route (targets [scripts/telemetry_verify/]) after the telemetry-capture route, with an
-    additive amendment_log entry. The file is at 500 of 500 effective lines (Decision 166), so compact the oldest
-    amendment_log entries to one line each to pay for the addition (the PLAN-telemetry-blob-route precedent).
+    additive amendment_log entry. The file is at 500 of 500 effective lines (Decision 166), so compact multi-line
+    amendment_log entries (today the 2026-09-21 to 2026-09-26 entries) to one line each to pay for the addition, keeping
+    every entry's date, change_class and summary (the PLAN-telemetry-blob-route precedent).
 bundled_recommendations: []
 followon_recs:
 - rec-4025
 - rec-4392
+- rec-4405
 infrastructure_dependencies: []
 acceptance_criteria:
 - >-
@@ -272,7 +279,7 @@ verification_plan:
     A disagreement with a committed expectation means the oracle misreads the contract formula; re-read the formula and fix
     the oracle. Never edit derivation_cases.yaml, dedupe_vectors.yaml or friction_vectors.yaml to match the oracle; if a
     committed expectation itself contradicts its contract formula, stop and escalate to the coordinator. A boundary
-    failure means a module imports what constraints[2] forbids; remove the import, never widen the allow-list. A header
+    failure means a module imports what constraints[3] forbids; remove the import, never widen the allow-list. A header
     mismatch means PARSER_VERSION moved without re-authoring (constraints[0]). A missing join means the loader misreads
     _joins.yaml's direction; fix the loader, never the contract.
   hermetic: true
@@ -300,9 +307,11 @@ verification_plan:
   phase: pre-deploy
   action: The chain and the oracle both equal the hand-authored expectations (rec-4025's acceptance node).
   command: >-
-    bin/venv-python -m pytest tests/telemetry/test_derived_layer_reconciliation.py::test_golden_fixtures_reconcile -q &&
-    test -d tests/telemetry/fixtures
-  expected: Exit 0. Red before because the module is absent.
+    bin/venv-python -m pytest tests/telemetry/test_derived_layer_reconciliation.py::test_golden_fixtures_reconcile -q
+  expected: >-
+    Exit 0. Red before because the module is absent. Steps 4 to 8 graduate as test_selector rows (one pytest node
+    each), the only slot whose venv-less differential treats the duckdb importorskip's "found no collectors" as a skip
+    (scripts/verification_graduation.py, rec-2655).
   fix_if: >-
     When the verb and the oracle agree with each other but not with the authored value, re-derive the value by hand from
     the formula before changing anything. When the verb alone disagrees, that is a reader defect: stop, file it through the
@@ -448,7 +457,8 @@ verification_plan:
   command: >-
     AWS_PROFILE=agent_platform bin/venv-python -c "from src.common.ducklake_reader_client import make_reader;
     r={x['id']:x for x in make_reader().named('recs_by_ids',ids='rec-4025,rec-4392')}; a=r['rec-4025'];
-    assert a['status']=='open',a['status']; assert 'tests/telemetry_verify/test_monitor.py' in a['acceptance'] and
+    assert a['status']=='open',a['status']; assert a['file']=='tests/telemetry_verify/test_monitor.py',a['file'];
+    assert 'tests/telemetry_verify/test_monitor.py' in a['acceptance'] and
     'test_golden_fixtures_reconcile' not in a['acceptance'],a['acceptance']; assert 'PLAN-telemetry-golden-harness' in
     a['context']; b=r['rec-4392']; assert b['status']=='open' and not b.get('dependencies'),b.get('dependencies');
     print('CARRIERS_OK')"
@@ -521,8 +531,8 @@ test_obligations:
   verification_step: 2
   test_selector: tests/telemetry_verify/test_dedupe.py::test_oracle_matches_every_dedupe_vector
   waiver_reason: >-
-    Re-exports only, with no logic of its own; every step 2 and step 3 node imports through it, and the coverage gate
-    excludes __init__.py by rule.
+    Re-exports only, with no logic of its own; every step 2 and step 3 node imports through it, so VP step 11's
+    pytest-cov run covers it fully on import.
 - source: tests/fixtures/telemetry_golden_chain.py
   behavior: A tree's batches land through the real kernel and every verb runs over them.
   verification_step: 4
@@ -565,7 +575,22 @@ constraints:
   authoring commit, and list the split in the report; a limit raise is never the fix. Values are never copied from verb or oracle output and never edited to make a run pass; a disagreement is
   resolved by re-deriving by hand (VP step 4 fix_if). Re-authoring rule: a plan that bumps PARSER_VERSION and changes a
   tree's emitted rows re-authors the affected expectations by hand in its own PR, citing itself in each changed
-  entry's why, and moves the header; the header check fails until it does.
+  entry's why, and moves the header; the header check fails until it does (the producer fixes plan, approved
+  2026-10-17, is the first such plan; the coordinator sequences the two merges). Integer conversion: a fractional
+  duration is truncated toward zero to whole seconds, the convention the hand author and the oracle both follow until
+  rec-4405 states it in the contracts.
+- >-
+  Producer fixes alignment (relayed 2026-10-17 from the capture producer fixes planning thread). That plan's build moves
+  PARSER_VERSION to 4, regenerates the producer golden corpus and adds five cases (subagent_usage_final_and_spawn_correction,
+  background_notice_statuses, resume_segment_closes, session_provenance_facts, model_call_request_fields). If this
+  plan's build merges first, that build owns re-authoring both derived_golden files at parser_version 4 by hand under
+  constraints[0] (the header check in VP step 2 fails its PR until it does), and it may move a trap tree's builder into
+  the producer corpus as the aligned case named in execution_steps[1]; when it does, it re-points the expectation from
+  verification:<tree> to corpus:<case> and deletes the trap builder, so each raw shape has one home. Shapes it changes
+  at parser_version 4 (a close row at each root resume boundary; resume rows emitted once their hook group ends; a
+  background child with no notice before a later root resume completes there; killed, failed or unknown notices read
+  as failed) are that plan's to re-author; this plan authors only the current producer's values and writes nothing for
+  parser_version 4.
 - >-
   No change under src/ (producer, kernel, reader, writer) and no change to the reader's SQL; a reader defect the harness
   finds is filed through the portal and escalated to the coordinator (scope escalation rule; Decision 59), never fixed
@@ -578,8 +603,9 @@ constraints:
   (IDLE_THRESHOLD_SECONDS, FRICTION_RULES) and src.common.ducklake_reader_client (VERB_FIELDS); never duckdb,
   src.common.ducklake_event_read_sql, src.turn_capture.streams, src.turn_capture.observations or anything under tests/.
   The allowed data modules import the SQL module themselves; that is accepted because the oracle uses only their data.
-  Pure functions over passed-in data, joins.py's read of docs/contracts/_joins.yaml excepted: no network, no catalog
-  read, no file write (Decision 84 I-3).
+  Pure functions over passed-in data, with two declared file reads: joins.py's read of docs/contracts/_joins.yaml, and
+  dedupe.py's default compared-column set, which compared_columns(table) reads from the field_semantics projection;
+  no network, no catalog read, no file write (Decision 84 I-3).
 - >-
   Nothing prints transcript content or a row value beyond counts, model names and finding classes (this repository and
   its CI logs are public; Decision 101).
@@ -590,6 +616,10 @@ constraints:
   Two stdlib dedupe implementations exist until rec-4392 lands (tests/fixtures/telemetry_dedupe_reference.py, test-only,
   and scripts/telemetry_verify/dedupe.py, production); both are checked against dedupe_vectors.yaml, and this plan does
   not touch the fixture.
+- >-
+  Runtime: the full tier runs each test under a 120 s timeout with coverage and xdist (scripts/checks/_scaffolding.py),
+  so the whole-corpus nodes (VP steps 5 and 7) are parametrized per tree (a file::node selector still selects every
+  parameter) and each parameter stays well inside 120 s; the report gives the module's measured wall time.
 - >-
   SLOC (Decision 128): every new Python file in scope, the test module and both helpers included, stays under 500 SLOC;
   if one would not, split it within its own directory (a scripts/telemetry_verify submodule behind the facade, or a
@@ -603,7 +633,7 @@ context:
   contract is the rule source), 84 (I-3 the oracle never reads a catalog). Flags (205, 100, 61, 95) bind the verification
   monitor and in-session check plans and are resolved there. Report summary:
   /mnt/project-files/telemetry-slice4/decision-scout-report.md.
-- "gates: decision-scout=FLAGS_FOUND (4 flags, resolved by the slice design); plan-critique=REVISE round 1 (J1-J8, M1-M5, R1-R2 fixed), REVISE round 2 (J1-J12, M1 fixed), REVISE round 3 (J1-J7, M1-M2 fixed; J3 refines round 1's J3 fix, which did not require a non-terminal session, so it is a completion of that fix, not an oscillation)"
+- "gates: decision-scout=FLAGS_FOUND (4 flags, resolved by the slice design); plan-critique=REVISE round 1 (J1-J8, M1-M5, R1-R2 fixed), REVISE round 2 (J1-J12, M1 fixed), REVISE round 3 (J1-J7, M1-M2 fixed; J3 refines round 1's J3 fix, which did not require a non-terminal session, so it is a completion of that fix, not an oscillation); confirming round 4 REVISE (J1-J6, I6, M1-M4 fixed), escalated to Benjamin on card cmsg_012XgaFy8VaDQbxP5D8nC95848fJs4dgfPLzb5iusDQAku with one more round recommended"
 - >-
   Design inputs: /mnt/project-files/telemetry-slice4/step6b-presentation.md (approved), plan-ADVICE.md (Fable consult on
   F1-F8: F8 (c) one expectations file, three engines; this plan delivers the in-memory and local DuckLake legs, the
@@ -649,14 +679,24 @@ execution_steps:
   child's last call's FINAL usage; the child makes three calls: one single-line complete call (stop_reason set), one
   mid-stream two-line call
   (thinking plus tool_use) whose lines carry stop_reason null and output_tokens 4, and a final two-line handback call with
-  stop_reason null and output_tokens 8 where the spawn usage says 768. (b) subagent_background_failed: a background spawn
-  whose <task-notification> carries <status>failed</status> (status values other than completed are inferred from Claude
-  Code's notice format, not observed). (c) resume_with_cost_state: turn 1 on the main model (records carry
-  requestedModel claude-test-1[1m], message.model claude-test-1), a sync sub-agent on claude-sub-1 with one non-final
-  call, then a cost-state record whose modelUsage holds the main model's exact prefix sums on input, cache read and
-  cache creation with output 12 above the transcript sum, the sub-agent model exact, and claude-haiku-aux present only in
-  the ledger; then a SessionStart:resume hook group and a turn 2 whose calls lie after the cut. Each tree's docstring
-  names the measurement it reproduces (planning-facts.md).
+  stop_reason null and output_tokens 8 where the spawn usage says 768. (b) subagent_background_failed: three background
+  spawns whose <task-notification> notices carry <status>failed</status>, <status>killed</status> and an unrecognised
+  token <status>unrecognised_status</status> (status values other than completed are inferred from Claude Code's notice
+  format, not observed); shape.py reports background_status_mismatch 3, and each child's close reads success at the
+  current producer (known_defect rec-4358). (c) resume_with_cost_state, reproducing ledger measurement 2 of
+  planning-facts.md: turn 1 on the main model (records carry requestedModel claude-test-1[1m], message.model
+  claude-test-1); a sync sub-agent on the MAIN model (same requestedModel) with one mid-stream non-final call; a second
+  sync sub-agent on claude-sub-1 whose calls are all complete; then a cost-state record in the measured shape
+  ({type: cost-state, sessionId, totalCostUSD, modelUsage: {<requestedModel>: {inputTokens, outputTokens,
+  thinkingTokens, cacheReadInputTokens, cacheCreationInputTokens, webSearchRequests, costUSD}}}, the keys this
+  session's own resumed transcript carries, planning-facts.md) holding: claude-test-1[1m] equal to the prefix sums
+  (root plus both sub-agents) on input, cache read and cache creation and 12 above it on output; claude-sub-1 exact on
+  all four classes; claude-haiku-aux present only in the ledger. Then a SessionStart:resume hook group and a turn 2
+  whose calls lie after the cut. Expected classes: claude-test-1[1m] ledger_output_residual_nonfinal (shortfall 12,
+  one non-final call), claude-sub-1 ledger_exact, claude-haiku-aux ledger_auxiliary_only. Each tree's docstring names
+  the measurement it reproduces and the producer fixes plan's parser_version 4 golden case it lines up with (a:
+  subagent_usage_final_and_spawn_correction, b: background_notice_statuses, c: resume_segment_closes), per
+  constraints[1].
 - >-
   tests/telemetry/fixtures/derived_golden_state.yaml and derived_golden_rollups.yaml, authored by hand per
   constraints[0] and committed together on their own before any dedupe, derive or chain code. Shape of each: a header
@@ -693,7 +733,8 @@ execution_steps:
   SessionStart:compact, PreCompact or PostCompact hook attachment before the cut, compared as a bound, because the
   compaction call has no assistant record [inferred]); ledger_bounded_background (declared: a background spawn before
   the cut with no completion notice before it, so the child's records may straddle the cut; that model is compared as a
-  bound); and the alarm classes ledger_input_class_mismatch, ledger_output_residual_unexplained (output short with no
+  bound); ledger_unavailable (declared: a cost-state record with no modelUsage map, as in the corpus case
+  meta_and_companion_records, counted and never compared); and the alarm classes ledger_input_class_mismatch, ledger_output_residual_unexplained (output short with no
   non-final call), ledger_output_excess and ledger_model_unexplained (a non-auxiliary ledger-only model, or a transcript
   model absent from the ledger). Each cost-state record is reconciled against the prefix before its own line (the
   cumulative reading, the declared expectation, measured only on single-record sessions); the result carries the
@@ -716,9 +757,10 @@ execution_steps:
   each emitted session, every session-bound verb at the as_of rule's values, verb output equal to oracle output; every
   telemetry join from joins.py resolves for finalized trees; survivors equal emitted rows; no conflicted key; one generation at
   PARSER_VERSION; VP step 5); test_harness_detects_planted_verb_defects (monkeypatch the EVENT_READS entry's sql for four
-  mutations, each run over the authored trees plus two discriminating inputs, the exact-threshold as_of on the two
-  non-terminal sessions the as_of rule names and a directly inserted claude_code plus litellm model_call pair sharing
-  one observation_id, and assert the reconciliation reports at
+  mutations, each run over the authored trees plus three discriminating inputs: the exact-threshold as_of on the two
+  non-terminal sessions the as_of rule names (the idle mutation), a directly inserted claude_code plus litellm
+  model_call pair sharing one observation_id (the R5c mutation), and hooks_resume_and_compact at pass final, whose close
+  and resume rows tie on event_timestamp and source_ordinal (the tie-order mutation; the only such tie in the corpus); and assert the reconciliation reports at
   least one mismatch for each: the token rollup's sum(tokens_output) replaced by max(tokens_output); the state tie order
   "(event_kind = 'close') DESC" replaced by ASC; the R5c collapse removed (o AS SELECT * FROM o_ev); the idle comparison
   ">" replaced by ">="; VP step 6); test_replay_order_and_late_delivery_leave_derived_values_unchanged (every batch twice
@@ -727,10 +769,11 @@ execution_steps:
   tests/fixtures/turn_capture_real.PrefixTree or an equivalent prefix of the root file (earlier cuts on a forked tree
   halt with CursorError by the producer's K-1 rule, as the producer's own schedule test does); now = event time plus
   three days against the baseline; VP step 7); test_conflicts_are_reported_and_generations_retire (a differing re-send raises
-  GrainConflictError and inserts nothing; a conflicting pair inserted directly with telemetry_read_db.insert_rows, the
-  two rows carrying distinct created_timestamps (the derivation_cases.yaml c10 precedent), is reported by every verb's
-  stamps and by the oracle's, and for that session only the three stamps are compared (Decision 207 leaves the
-  survivor unspecified); the R5c pair is counted once; a full PARSER_VERSION + 1 re-append
+  GrainConflictError and inserts nothing; a conflicting telemetry_sessions pair inserted directly with
+  telemetry_read_db.insert_rows, the two rows carrying distinct created_timestamps (the derivation_cases.yaml c10
+  precedent), is reported by every verb's stamps and by the oracle's, and for that session only the three stamps are
+  compared (Decision 207 leaves the survivor unspecified); a conflicting telemetry_transcripts pair is reported only by
+  the verbs that compose transcripts (the state and window verbs), per the declared stamp scope; the R5c pair is counted once; a full PARSER_VERSION + 1 re-append
   leaves one generation; a sessions-only bump retires the other tables' rows in verbs and oracle alike; VP step 8); and
   test_golden_fixtures_reconcile_on_local_ducklake (integration-marked; the step 4 expectations on open_local_lake; VP
   step 9).
@@ -744,8 +787,8 @@ execution_steps:
   check; set implementation_declared true; rebase on origin/main; VP step 13 (the full tier) on the committed, clean
   tree, then scripts.checks.validation_result --verify-head; the postflight evidence file and scripts.session.postflight
   --evidence; push; PR; CI green on the head. No Resolves trailer: rec-4025 stays open for the later slice 4 plans.
-  After the merge, update rec-4025 through the portal: a context note with the merge SHA and what this plan delivered,
-  and its acceptance re-pointed to tests/telemetry_verify/test_monitor.py::test_monitor_reports_rederivation_orphan_and_completeness_counts
+  After the merge, update rec-4025 through the portal in one call: a context note with the merge SHA and what this plan
+  delivered, its file set to tests/telemetry_verify/test_monitor.py, and its acceptance re-pointed to tests/telemetry_verify/test_monitor.py::test_monitor_reports_rederivation_orphan_and_completeness_counts
   (the node the verification monitor plan creates), so the acceptance holds only at the closing commit (the Decision 201
   precedent); then VP step 14. Merge on code review PROCEED and green CI under the standing rule (no deploy, IAM, spend,
   contract or Decision text).
