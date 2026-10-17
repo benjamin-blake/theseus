@@ -33,15 +33,15 @@ scope:
     function zip, when every differing entry is attributed, where an entry present in both zips is attributed only
     when it has an input on BOTH sides and the two blob ids differ; an entry only in the current zip only when it has
     an input there AND either the manifest blob moved or the path lies under a directory include of the current
-    manifest; and an entry only in the reference only when it had an input there AND either the manifest blob moved or
-    the path is no longer tracked in the current checkout. A present entry lacking an input is never attributed. A
-    verdict is {"verdict": "moved" | "unattributed", "inputs": [...], "reason": str}; for a moved function zip, inputs
-    lists its differing entry paths (plus any moved tooling path); for a moved layer, its moved input or tooling
-    paths. Otherwise unattributed, naming the first entry that blocked attribution or saying only the container bytes
-    differ. A reference whose schema differs from the current one, or that lacks an artifact the current record
-    carries, is unattributed for every artifact (fail closed); a change to the record format bumps schema. Attribution
-    iterates the artifacts the current record carries, in DUCKLAKE_ARTIFACT_NAMES' order (the push path always records
-    all seven; VP step 3's replay records four).
+    manifest; and an entry only in the reference only when it had an input there AND either the current manifest no
+    longer packages the path or the path is no longer tracked in the current checkout. A present entry lacking an
+    input is never attributed. A verdict is {"verdict": "moved" | "unattributed", "inputs": [...], "reason": str}; for
+    a moved function zip, inputs lists its differing entry paths (plus any moved tooling path); for a moved layer, its
+    moved input or tooling paths. Otherwise unattributed, naming the first entry that blocked attribution or saying
+    only the container bytes differ. A reference whose schema differs from the current one, or that lacks an artifact
+    the current record carries, is unattributed for every artifact (fail closed); a change to the record format bumps
+    schema. Attribution iterates the artifacts the current record carries, in DUCKLAKE_ARTIFACT_NAMES' order (the push
+    path always records all seven; VP step 3's replay records four).
 - file: scripts/ci/ducklake_artifacts.py
   action: Modify
   purpose: >-
@@ -54,27 +54,27 @@ scope:
     equal: first read lambda-packages/<artifact_sha>/superseded-by.json with the absence predicate in (3); present or
     unreadable -> fail closed (only the moved branch may create a pointer); absent -> unchanged (re-upload fixed and
     per-sha keys, DUCKLAKE_ZIP_IDEMPOTENT_OK). Any mismatch: read lambda-packages/<artifact_sha>/inputs.json, check
-    that its md5 for every artifact equals the md5 of the reference zip just read (else it does not describe the
-    reference: fail closed), compute the current record from the local build and checkout, and attribute every
-    mismatched artifact. All moved: print DUCKLAKE_ZIP_INPUTS_MOVED naming each artifact and its moved inputs, upload
-    all seven zips to the fixed key and to lambda-packages/<merge sha>/ (the merge sha from (2)), upload the current
-    record as lambda-packages/<merge sha>/inputs.json, then write lambda-packages/<artifact_sha>/superseded-by.json as
-    JSON {"schema": 1, "artifact_sha": <merge sha>, "reason": "DUCKLAKE_ZIP_INPUTS_MOVED", "moved": {<artifact>:
-    [paths]}}; never write any zip under lambda-packages/<artifact_sha>/. Otherwise, or when inputs.json is missing,
-    or the merge sha is unset or equals artifact_sha, or any exception arises while reading or parsing inputs.json,
-    computing the current record (a git failure, an unreadable rebuilt zip) or attributing (malformed record
-    internals): raise DUCKLAKE_ZIP_MISMATCH exactly as today (first line unchanged, then the entry diff, then one last
-    line saying why it was not attributed), with no upload. (3) fetch_reviewed first reads
-    lambda-packages/<artifact_sha>/superseded-by.json. It is absent only when the error carries the botocore
-    ClientError response shape with Error.Code NoSuchKey or 404 (read duck-typed from exc.response, so no botocore
-    import is added); every fetch call site assumes the apply role, which holds s3:ListBucket on the bucket
-    (terraform/bootstrap/github_ci_apply_reads.tf DataLakeBucketManage), so a missing key is a 404, and a 403 or any
-    other error fails closed. Absent -> unchanged; present, schema 1, and naming a 40-hex artifact_sha other than
-    artifact_sha -> fetch and copy from that sha's prefix instead, one hop only, printing both shas in
-    DUCKLAKE_FETCH_OK; malformed, unreadable for any other reason, or self-referencing -> DucklakeArtifactError before
-    any copy. The missing-object all-or-nothing check is unchanged. (4) rec-4198: _zip_entry_diff catches any
-    Exception for the diagnostic only, so it can never replace DUCKLAKE_ZIP_MISMATCH. Module docstring updated. Stays
-    under 500 SLOC (238 at planning).
+    that its md5 for every artifact equals the md5 of the reference zip just read and that its entries map equals the
+    entries read from that zip (else it does not describe the reference: fail closed), compute the current record from
+    the local build and checkout, and attribute every mismatched artifact. All moved: print DUCKLAKE_ZIP_INPUTS_MOVED
+    naming each artifact and its moved inputs, upload all seven zips to the fixed key and to lambda-packages/<merge
+    sha>/ (the merge sha from (2)), upload the current record as lambda-packages/<merge sha>/inputs.json, then write
+    lambda-packages/<artifact_sha>/superseded-by.json as JSON {"schema": 1, "artifact_sha": <merge sha>, "reason":
+    "DUCKLAKE_ZIP_INPUTS_MOVED", "moved": {<artifact>: [paths]}}; never write any zip under
+    lambda-packages/<artifact_sha>/. Otherwise, or when inputs.json is missing, or the merge sha is unset or equals
+    artifact_sha, or any exception arises while reading or parsing inputs.json, computing the current record (a git
+    failure, an unreadable rebuilt zip) or attributing (malformed record internals): raise DUCKLAKE_ZIP_MISMATCH
+    exactly as today (first line unchanged, then the entry diff, then one last line saying why it was not attributed),
+    with no upload. (3) fetch_reviewed first reads lambda-packages/<artifact_sha>/superseded-by.json. It is absent
+    only when the error carries the botocore ClientError response shape with Error.Code NoSuchKey or 404 (read
+    duck-typed from exc.response, so no botocore import is added); every fetch call site assumes the apply role, which
+    holds s3:ListBucket on the bucket (terraform/bootstrap/github_ci_apply_reads.tf DataLakeBucketManage), so a
+    missing key is a 404, and a 403 or any other error fails closed. Absent -> unchanged; present, schema 1, and
+    naming a 40-hex artifact_sha other than artifact_sha -> fetch and copy from that sha's prefix instead, one hop
+    only, printing both shas in DUCKLAKE_FETCH_OK; malformed, unreadable for any other reason, or self-referencing ->
+    DucklakeArtifactError before any copy. The missing-object all-or-nothing check is unchanged. (4) rec-4198:
+    _zip_entry_diff catches any Exception for the diagnostic only, so it can never replace DUCKLAKE_ZIP_MISMATCH.
+    Module docstring updated. Stays under 500 SLOC (238 at planning).
 - file: .github/actions/build-ducklake-artifacts/action.yml
   action: Modify
   purpose: >-
@@ -137,7 +137,8 @@ scope:
   purpose: >-
     Unit tests for scripts/ci/ducklake_inputs.py over a temporary git repo: blob ids match git, untracked entries get no
     input, tooling blobs are recorded, and the attribution matrix (tooling moved; function entry moved, unchanged,
-    untracked, present on one side only with and without a manifest move or directory include, a tracked entry whose blob
+    untracked, present on one side only with and without a manifest move or directory include (and a reference-only entry the
+    current manifest still packages: unattributed), a tracked entry whose blob
     is unchanged but whose bytes are not a verbatim copy on one side (unattributed); layer input moved and unchanged;
     container-only difference; schema mismatch),
     keeping the new module at 100% line coverage.
@@ -189,7 +190,7 @@ acceptance_criteria:
 - >-
   The PR speculative-plan job still builds and dual-writes all nine zips through build_lambda and then writes
   inputs.json, with no change to the composite action's inline body size.
-- Decision 154 carries the approved dated Update line and environment-taxonomy.yaml the approved sentence.
+- Decision 154 carries the approved dated Update line and environment-taxonomy.yaml the approved sentence (VP step 9).
 - >-
   On the first terraform/personal PR after the merge, its speculative plan writes an inputs.json that describes its
   zips, and its merge's push run gets past the zip check (live, read-only).
@@ -216,7 +217,7 @@ verification_plan:
     tests/test_ducklake_attribution.py::test_fetch_follows_pointer_one_hop
     tests/test_ducklake_attribution.py::test_fetch_bad_pointer_fails_closed
     tests/test_ducklake_attribution.py::test_fetch_pointer_target_missing_fails_closed -q
-  expected: Exit 0, 15 passed. Red before, because the nodes do not exist; written first, the acceptance node fails on DUCKLAKE_ZIP_MISMATCH.
+  expected: Exit 0; every selected node passes (15 nodes; more items if any is parametrized). Red before, because the nodes do not exist; written first, the acceptance node fails on DUCKLAKE_ZIP_MISMATCH.
   expected_literals: []
   fix_if: A raise on the moved case, an upload on any fail-closed case, or a zip written under the PR head prefix -> fix ducklake_artifacts.py or ducklake_inputs.py, never loosen a test.
   hermetic: true
@@ -379,6 +380,32 @@ verification_plan:
     for another reason (a later commit already moved the record) -> confirm from that push run's log instead. If the
     record's marker field names differ, adapt the read without weakening the two predicates.
   hermetic: false
+- step: 9
+  phase: pre-deploy
+  action: The two approved texts landed verbatim (date only may vary) and the earlier 50-minute figure did not.
+  command: |-
+    PYTHONPATH=. bin/venv-python - <<'EOF'
+    import re, sys, yaml
+    from pathlib import Path
+    plan = yaml.safe_load(Path("docs/plans/PLAN-ducklake-zip-inputs-moved.yaml").read_text())
+    rows = {r["file"]: r["purpose"] for r in plan["scope"]}
+    line = rows["docs/DECISIONS.md"].split("APPROVED LINE:", 1)[1].strip()
+    sentence = rows["docs/contracts/environment-taxonomy.yaml"].split("APPROVED SENTENCE:", 1)[1].strip()
+    dec = Path("docs/DECISIONS.md").read_text()
+    pattern = "^" + re.escape(line).replace(re.escape("(2026-10-17)"), r"\(\d{4}-\d{2}-\d{2}\)") + "$"
+    norm = lambda x: " ".join(x.split())
+    tax = yaml.safe_load(Path("docs/contracts/environment-taxonomy.yaml").read_text())["conformance"]["ducklake_detail"]
+    ok = (len(re.findall(pattern, dec, re.M)) == 1 and "about 50 minutes" not in dec and norm(sentence) in norm(tax))
+    print("decision line", len(re.findall(pattern, dec, re.M)), "taxonomy", norm(sentence) in norm(tax))
+    sys.exit(0 if ok else 1)
+    EOF
+  expected: Exit 0; "decision line 1 taxonomy True" printed.
+  fix_if: Any mismatch -> correct the landed text to the APPROVED text (in the folded YAML scalar, wrap only at spaces, never after a hyphen); never edit the APPROVED text in this plan without the operator's word.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: >-
+    A one-time landing check of approved prose, not a standing invariant; Decision 177's append-only convention keeps
+    the landed line from changing afterwards.
 test_obligations:
 - source: scripts/ci/ducklake_inputs.py
   behavior: An input record names each packaged entry's git blob and each layer's tracked inputs; attribution says moved only when every difference traces to a moved input.
@@ -454,7 +481,7 @@ context:
   Decision-scout: FLAGS_FOUND -- WARN 154 (Update line names the pointer and new basis; taxonomy joins scope), WARN 48
   (V3, live VP 7-8), NOTE 181 (existing tests unchanged). CITE: 77, 158, 125, 126, 183, 162, 83, 55, 128, 132, 177,
   186. Decisions triaged: 171 of 171. Roadmap items intersected: 5; CONFLICT: 0; RELATED: 5.
-- "gates: decision-scout=FLAGS_FOUND (WARN 154, WARN 48, NOTE 181 resolved as above); plan-critique=REVISE r1-r4 (all findings fixed; r4 confirming round escalated), PENDING"
+- "gates: decision-scout=FLAGS_FOUND (WARN 154, WARN 48, NOTE 181 resolved as above); plan-critique=PROCEED after 5 rounds (REVISE r1-r4, all fixed; r5 PROCEED, its non-blocking N1-N5 folded in); round 5 on the escalation card's recommended option"
 - >-
   Incident (verified; rec-4372's narrative swaps the PR numbers): #1519 (head bae45827) planned 12:38Z; #1520 merged
   12:59Z editing src/common/ducklake_handler_errors.py; #1519 merged 13:08Z unre-planned; run 38905586484 failed closed.
@@ -484,7 +511,8 @@ context:
   Residuals (Decision 55): a moved entry leaves that artifact's container bytes unchecked; a tooling move attributes every
   differing artifact wholesale and a version.yaml move every differing layer, so an untracked layer input (CDN binary, new
   wheel) stays fail-closed only without one; during an approval wait the pointer and per-sha zips stay writable by the
-  PR-context planner role (as zips are today); a stale saved plan.bin stays with rec-3957/rec-3568. Live proof: rec-4381.
+  PR-context planner role (as zips are today), and the merge prefix is also written by same-tree rebuilds
+  (deploy-ducklake-lambdas.yml's GITHUB_SHA namespace, a dispatch at that HEAD); a stale saved plan.bin stays with rec-3957/rec-3568. Live proof: rec-4381.
 - >-
   Sequencing: rec-4248 edits the same fetch_reviewed and the reconcile.yml fetch comments (stale here: they cite the
   PR-time assert); the pointer must survive it.
@@ -503,7 +531,10 @@ execution_steps:
 - 'scripts/ci/ducklake_inputs.py: record and attribution as scoped.'
 - 'scripts/ci/ducklake_artifacts.py: upload-only mode, the attributed push path, the pointer-following fetch and the rec-4198 guard, as scoped.'
 - 'action.yml: the one-line upload-only repoint and the description; the workflow comments.'
-- Add the graduated registry shard; append the approved Decision 154 Update line verbatim.
+- >-
+  Add the graduated registry shard; append the approved Decision 154 Update line and make the environment-taxonomy.yaml
+  ducklake_detail sentence and amendment_log edits, each verbatim from the plan's APPROVED texts (date only may vary);
+  run VP step 9.
 - Execute VP steps 1-3; loop until pass; never weaken an assertion; on an unexplained step 3 result STOP and RCA (Decision 55).
 - >-
   Code review via a fresh code-review subagent; fix every blocking finding and rerun VP steps 1-3.
