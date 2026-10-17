@@ -56,7 +56,15 @@ scope:
     purpose: This plan artefact.
 bundled_recommendations: [rec-4403]
 followon_recs: [rec-4410]
-infrastructure_dependencies: []
+infrastructure_dependencies:
+  - >-
+    LAMBDA-DEPLOY DEFERRED (CD.16 / Decision 79), per-artifact reasoned disposition:
+    scripts.lambda_manifest.compute_affected_artifacts(<this plan's scope>) returns {'data-pipeline':
+    ['docs/ROADMAP-PLATFORM.yaml']} because the roadmap is a packaged asset of the active data-pipeline artifact
+    (src/lambdas/data-pipeline/manifest.yaml). No build, deploy or smoke-test is owed: the edit is asset-only criteria and
+    related_decisions bookkeeping with no packaged code change, and the asset refreshes with the artifact's next governed
+    deploy. V2 stands, following PLAN-brownfield-adoption-port-conformance.yaml and PLAN-showcase-product-and-rsi-proof.yaml.
+    No other scope file is Lambda-packaged; no .tf file is in scope.
 acceptance_criteria:
   - >-
     Decision NNN is in docs/DECISIONS.md with the verbatim approved text of execution step 3 (only NNN and DATE
@@ -83,7 +91,7 @@ verification_plan:
       Precondition: the branch is on current main, PLAN-project-region-single-source (rec-4067) is merged and its build
       has landed the files the region row names, and the registry does not exist yet.
     command: >-
-      git fetch origin main --quiet && git merge-base --is-ancestor origin/main HEAD && test -f docs/plans/PLAN-project-region-single-source.yaml && test -f config/aws-region && test -f .github/actions/aws-region/action.yml && grep -rqs "validate_project_region" scripts/checks && test ! -e docs/contracts/project-configuration.yaml && echo PRECONDITION_OK
+      git fetch origin main --quiet && git merge-base --is-ancestor origin/main HEAD && test -f docs/plans/PLAN-project-region-single-source.yaml && test -f config/aws-region && test -f .github/actions/aws-region/action.yml && grep -rqs "validate_project_region" scripts/checks && grep -q config/aws-region terraform/bootstrap/CLAUDE.md && grep -q config/aws-region terraform/github/CLAUDE.md && test ! -e docs/contracts/project-configuration.yaml && echo PRECONDITION_OK
     expected: Prints PRECONDITION_OK.
     fix_if: >-
       A missing region file, action or check means rec-4067's build has not merged: stop and wait (the handoff's start
@@ -192,7 +200,8 @@ verification_plan:
     expected: >-
       Exit 0 and the marker; no per-entry cap failure (the entry measured 5,996 bytes at plan time with NNN and DATE as
       placeholders, about 6,010 after substitution, cap 6,144); a WARN-only amendment-delta line for Decision 212 is
-      expected and accepted (its span already exceeds the cap; rec-3243's accretion signal never fails).
+      expected and accepted (212 measures 6,105 bytes on main; the Amended-by note takes it over the cap, and rec-3243's
+      accretion signal never fails).
     fix_if: A size failure means wording was added -- restore the verbatim text; an index failure means bin/venv-python -m scripts.decisions_index --write was not re-run.
     hermetic: true
     expected_literals:
@@ -269,10 +278,10 @@ test_obligations:
     test_selector: tests/checks/contracts/test_validate_project_configuration.py::test_rejects_secret_row_in_tracked_home
     red_green_expectation: Red before -- the test module and the check do not exist (pytest exit 4). Green after.
   - source: scripts/checks/contracts/_manifest.py
-    behavior: The new Entry resolves to the registered validate_project_configuration callable.
+    behavior: The new Entry resolves to the registered validate_project_configuration callable and sits in both tier sequences.
     verification_step: 5
-    test_selector: tests/checks/contracts/test__manifest.py
-    red_green_expectation: Red before -- once the module lands without the Entry, registry.resolve has no manifest row to match. Green after.
+    test_selector: tests/checks/contracts/test_validate_project_configuration.py::test_entry_resolves_and_is_sequenced
+    red_green_expectation: Red before -- the node does not exist (pytest exit 4), and with the module but no Entry registry.resolve raises UnknownCheckError. Green after.
   - source: docs/contracts/project-configuration.yaml
     behavior: The real registry satisfies every validate_project_configuration rule.
     verification_step: 2
@@ -333,6 +342,7 @@ context:
   - "Decisions triaged: 171 of 171"
   - "Roadmap items intersected: 6; CONFLICT: 0; RELATED: 5"
   - "Related-work check (rec-4372 open critical at plan time): logged deferral -- rec-4372's fix merged (#1536) before this plan was written; this plan touches no file, Decision or failure category of rec-4372, and Benjamin approved planning threads running in parallel (2026-10-17)."
+  - "Critique round 1 (REVISE, F1-F7, approved text untouched): pre_globs widened to the import closure, data-pipeline asset-only deferral, manifest obligation relinked, rule (g) per home, VP 1 runs once, VP 1 checks the runbook edits, VP 9 wording."
   - "gates: decision-scout=FLAGS_FOUND after 1 round; plan-critique=PENDING"
 pre_implementation_checklist:
   - Branch confirmed not on main
@@ -637,23 +647,35 @@ execution_steps:
     variable or one matching ^OTL_[A-Z0-9_]+$; exports match ^[A-Z][A-Z0-9_]*$; (f) every reader is an existing
     repository path or an owning item that resolves (validate_ports_contract's resolver: tier item, item:criterion,
     rec-NNNN, dec-NNN); (g) this_repository is null or carries status in open|resolved|accepted, an owning_item that
-    resolves (accepted needs a dec-NNN), and a current_home that is null with a non-empty note or an existing path; a
-    resolved row's current_home equals the path of its local home; (h) enforcement is "advisory" or a registered
+    resolves (accepted needs a dec-NNN), and a current_home that is null with a non-empty note or an existing
+    repository path; a resolved row's current_home matches its local home, using the check's own map platform_file ->
+    ontheloop/platform.yaml and clone_file -> .ontheloop/config.yaml: a resolved project row names
+    ontheloop/platform.yaml, which must exist; a resolved machine row names .ontheloop/config.yaml, whose existence is
+    not checked (it is gitignored, so a CI checkout never has it); a resolved secret or private row has a null
+    current_home and a note naming its home (its homes are outside the working tree); (h) enforcement is "advisory" or a registered
     check name (registry.all_checks()); (i) every semantics key names a row field or a top-level key; (j)
     ambient_trigger exists and names docs/contracts/project-configuration.yaml. Load errors append a failure and
     declare registry.skipped; a clean pass prints one PASS line and declares registry.examined(<rows>, unit="settings").
   - >-
     Register it in scripts/checks/contracts/_manifest.py beside validate_ports_contract: pre=True, pre_globs covering
     docs/contracts/project-configuration.yaml, docs/contracts/ports.yaml, scripts/CLAUDE.md, docs/ROADMAP-PLATFORM.yaml,
-    docs/DECISIONS.md, docs/DECISIONS_ARCHIVE.md and the check's own module, full_segment="full_after_lint". Add the
+    docs/DECISIONS.md, docs/DECISIONS_ARCHIVE.md and the check's whole import closure, mirroring validate_ports_contract's
+    Entry (scripts/checks/contracts/**, scripts/checks/_common.py, scripts/checks/registry.py,
+    scripts/platform_roadmap*.py, scripts/decisions_md.py, scripts/contract_rules.py, plus any further module
+    validate_pre_glob_closure names), full_segment="full_after_lint". Add the
     ci_rca_taxonomy row and the file-router route (topic project-configuration, targets
     [docs/contracts/project-configuration.yaml], a one-line description citing the Decision) with its amendment_log entry.
   - >-
     Create tests/checks/contracts/test_validate_project_configuration.py: one real-tree positive and one negative
     fixture per rule (a)-(j), each in a tmp_path copy of the contract with ports.yaml, the roadmap and DECISIONS.md
-    available, including the two named nodes test_rejects_secret_row_in_tracked_home and
-    test_rejects_ambient_trigger_without_contract_pointer.
-  - Execute the Verification Plan -- run each step; loop until pass; on an unrecoverable failure stop and RCA (Decision 55).
+    available, including the named nodes test_rejects_secret_row_in_tracked_home and
+    test_rejects_ambient_trigger_without_contract_pointer, plus test_entry_resolves_and_is_sequenced, which asserts
+    registry.resolve("validate_project_configuration") is the module's function and that the name is in
+    registry.pre_sequence() and registry.full_sequence() (red before the Entry exists).
+  - >-
+    Execute VP steps 2-13 -- run each step; loop until pass; on an unrecoverable failure stop and RCA (Decision 55). VP
+    step 1 is the pre-build gate and runs once, before any edit (its absence test is false after the build by design);
+    steps 14 and 15 run after the merge.
   - >-
     Write the graduated steps' registry shards (steps 3, 4, 7, 8, 10) under config/agent/verification_registry/entries/,
     then run the full tier (VP step 13) before pushing.
