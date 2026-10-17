@@ -1,4 +1,4 @@
-"""Standing guard for the one-state-per-applier rule (Decision 222, rec-3838,
+"""Standing guard for the one-state-per-applier rule (Decision 223, rec-3838,
 PLAN-platform-iam-personal-release): terraform/personal declares no PlatformDev/PlatformAdmin
 IAM.
 

@@ -60,7 +60,7 @@ def test_admin_procedure_has_self_access_isolation_step() -> None:
 
 
 def test_split_apply_step_excludes_platform_iam() -> None:
-    """PLAN-platform-iam-personal-release (Decision 222): the SPLIT-APPLY step no longer names
+    """PLAN-platform-iam-personal-release (Decision 223): the SPLIT-APPLY step no longer names
     PlatformDev/PlatformAdmin IAM as its trigger -- that IAM now lives in terraform/bootstrap and
     changes through this loop with no split and no -target -- and the PRE-APPLY, self-access
     isolation and POST-APPLY steps survive in order around it."""
