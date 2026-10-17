@@ -22,15 +22,16 @@ scope:
   purpose: >-
     Registered check validate_test_skip_citations. Its base ref is _common.status_diff_base(root), the ref
     get_status_aware_diff diffs against (Decision 159: no second resolver); None -> registry.skipped("diff base
-    unreachable"). Sites come from the shared _weakening_ast.skip_sites (one definition for both checks). For every
-    added or modified tests/**/*.py file in the diff, the head file's sites minus the base file's sites (a multiset
-    keyed by scope, kind and reason) are the ADDED sites; each must carry a token matching \brec-\d+\b anywhere in its
-    reason, or a reason starting with "env: " (an environment guard). No waiver, marker or grandfather (Decision 163
+    unreachable"). Its ADDED sites come from the shared _weakening_ast.added_skip_sites (one definition for both
+    checks), taken for every added, untracked ("??") or modified tests/**/*.py file in the diff; each must carry a token
+    matching \brec-\d+\b anywhere in its reason, or a reason starting with "env: " (an environment guard). No waiver, marker or grandfather (Decision 163
     point 1); sites already on the base ref are never re-judged. One failure per violation naming path:line, the site
-    kind and the fix (cite a rec filed through the ops portal, or label a real environment guard "env: <condition>").
-    An unparseable head file is a reported failure, never a raise; otherwise registry.examined(<test files read>,
-    unit="test_files"). main(argv) accepts --base REF and --head REF (head omitted = working tree) and exits 1 on any
-    failure, else 0.
+    kind and the fix (cite a rec filed through the ops portal, or label a real environment guard "env: <condition>";
+    for an added unittest expectedFailure, which takes no reason, convert it to pytest.mark.xfail(reason=...)). An
+    unparseable head file is a reported failure, never a raise; otherwise registry.examined(<test files read>,
+    unit="test_files"). Both the registered function and main(argv) print one "ADDED-SKIP path:line kind -- reason"
+    line per judged added site, so a quarter of merges can be sampled. main(argv) accepts --base REF and --head REF
+    (head omitted = working tree) and exits 1 on any failure, else 0.
 - file: scripts/checks/hygiene/_manifest.py
   action: Modify
   purpose: >-
@@ -46,7 +47,9 @@ scope:
     decorators or calls, so this file adds no skip site of its own). Class TestAddedSkipsMustCiteOrDeclare: each site
     kind added without a rec token or env: label fails naming path:line; with either it passes. Class
     TestOnlyAddedSitesAreJudged: a site already on the base passes unchanged; a changed reason is judged as added; a
-    removed site passes; an importorskip whose only string is the module name fails as uncited. Plus: an unparseable head file fails, an unreachable base skips, examined() counts files read,
+    removed site passes; an importorskip whose only string is the module name fails as uncited; an untracked ("??")
+    test file is judged like an added one; an added expectedFailure's failure names the pytest.mark.xfail conversion;
+    one ADDED-SKIP line prints per judged site. Plus: an unparseable head file fails, an unreachable base skips, examined() counts files read,
     and main() exits 1 on a violation and 0 when clean.
 - file: scripts/checks/_weakening_ast.py
   action: Create
@@ -56,11 +59,15 @@ scope:
     is a skip, skipif or xfail mark in any position (decorator, module- or class-level pytestmark,
     pytest.param(..., marks=...)); a unittest skip, skipIf, skipUnless or expectedFailure decorator; or a pytest.skip,
     pytest.xfail or pytest.importorskip call anywhere. Its REASON is the reason= keyword, else the first positional
-    string (the second for skipif, xfail, skipIf and skipUnless, whose first is the condition), plus msg= for
-    pytest.skip and pytest.xfail calls; for pytest.importorskip only reason= or the third positional counts (the first
-    is the module name, never a reason); an f-string contributes its constant parts. Its SCOPE is the enclosing test
+    string (the second for the skipif and xfail marks and the skipIf and skipUnless decorators, whose first is the
+    condition; the pytest.skip and pytest.xfail calls take the reason first); for pytest.importorskip only reason= or
+    the third positional counts (the first is the module name, never a reason); an f-string contributes its constant
+    parts. Its SCOPE is the enclosing test
     key ("func" or "Class::func") for a site on or inside a test, "Class" for a class-level site, and "*" for a
-    module-level site or one inside a fixture or helper. test_functions(source) -> {key: node} for module-level test*
+    module-level site or one inside a fixture or helper. added_skip_sites(base_source, head_source) -> the head's
+    sites minus the base's (a multiset keyed by scope, kind and reason; base None for a new file), the single home both
+    checks use. applicable_skip_sites(source, key) -> the sites that apply to test key: its own scope, its class's and
+    the module's "*". test_functions(source) -> {key: node} for module-level test*
     functions and test* methods of top-level Test* classes. assertions(node) -> Counter of normalized ast.dump for
     every assert statement's test and every call whose callee name starts with "assert" or is raises, warns, approx or
     isclose, with a display string (first source line) per element. tolerances(node) -> numeric-literal values of the
@@ -76,15 +83,17 @@ scope:
     in a modified test file, whose assertion count fell; detail names a lost assertion); assertion-changed (an
     assertion lost while the count held or rose; detail names the lost assertion); test-removed (a key present at base
     in a modified test file and absent at head whose bare name is added in no changed test file); test-moved-weaker
-    (that bare name added elsewhere in the diff with fewer assertions or more skip sites); test-file-deleted (a deleted
+    (that bare name added elsewhere in the diff with fewer assertions, or more applicable_skip_sites at its destination
+    than at its source, so a move into a file under a module-level skip counts); test-file-deleted (a deleted
     tests/**/*.py file; detail its test-function count); skip-added (a site skip_sites finds in a modified
-    tests/**/*.py file at head that its base lacks, by validate_test_skip_citations' multiset; node is the site's
-    scope; detail its kind and reason); tolerance-widened (a
+    tests/**/*.py file at head that its base lacks, per added_skip_sites; node is the site's scope; detail its kind
+    and reason); tolerance-widened (a
     tolerance keyword's absolute value rose); constant-changed (a module-level UPPER_CASE numeric constant whose value
     changed in a modified scripts/**/*.py or src/**/*.py file; detail old -> new). node is the test key, a class name,
     the constant name, or "*" (a deleted file, or a module-level or fixture skip); key(candidate) ->
-    "[category] path::node", the disposition key. Details are cut
-    to 160 characters.
+    "[category] path::node", the disposition key. find_candidates returns exactly one Candidate per key: items
+    sharing a key (two skips in one scope, two widened tolerances in one test) merge, their details joined with "; "
+    and cut to 160 characters.
     The registered function reads the diff through _common.get_status_aware_diff and base contents at
     _common.status_diff_base(root), the same ref, head from the working tree, over every changed file (not only
     implement-leg diffs: code review runs before implementation_declared flips); prints per item one
@@ -103,13 +112,16 @@ scope:
   purpose: >-
     Mirror test, class TestWeakeningAst: each helper's contract, including every skip-site position and scope (module
     and class pytestmark, pytest.param marks, a fixture's pytest.skip, importorskip's reason= and third positional but
-    never its module name), unparseable source, unary minus and bool exclusion.
+    never its module name), added_skip_sites' multiset and applicable_skip_sites' three scopes, unparseable source,
+    unary minus and bool exclusion.
 - file: tests/checks/verification/test_validate_weakening_candidates.py
   action: Create
   purpose: >-
     Mirror test. Class TestCandidates drives find_candidates with in-memory base/head sources: one positive case per
     category, including skip-added for a module-level pytestmark skip, a module-level importorskip and a fixture's
-    pytest.skip added to a pre-existing file, and test-moved-weaker for a moved test that gained a skip; negatives (an
+    pytest.skip added to a pre-existing file, test-moved-weaker for a moved test that gained a skip and for one moved
+    into a new file under a module-level pytestmark skip, and one merged Candidate for two sites in one scope; negatives
+    (an
     added test, a strengthened assertion, a reformatted but equal assertion, an unchanged constant, a test moved with
     equal assertions and skips, a non-numeric constant) yield nothing. Class TestReportOnly: the
     registered function prints every candidate and the disposition keys and leaves failed empty. Plus the
@@ -133,8 +145,9 @@ scope:
     whose last name is a def or class in it; planned-change needs "acceptance_criteria[N]" or "test_obligations[N]"
     with N a valid 0-based index in a resolved plan; retirement needs a path deleted in the diff, or a
     "<file>.py::<name>" whose name is defined at the base and not in the working tree; owned-skip is valid only on a
-    skip-added candidate and needs a rec-NNNN token or an "env: " label that appears in the reason of one of that
-    candidate's added sites. No marker, waiver or grandfather. Then
+    skip-added candidate, or on a test-moved-weaker candidate whose assertion count held (only its skip sites rose),
+    and needs a rec-NNNN token or an "env: " label that appears in the reason of one of that candidate's added (or, for
+    a moved test, gained) skip sites. No marker, waiver or grandfather. Then
     registry.examined(len(resolved), unit="declared_plans"). main() runs it against the working tree and exits 1 on
     any failure, else 0.
 - file: tests/checks/verification/test_validate_weakening_dispositions.py
@@ -144,8 +157,9 @@ scope:
     validate_graduation_completeness fixtures are the model). Class TestDispositionsRequired: on a diff that flips
     implementation_declared, a candidate with no entry fails naming its key and plan; a duplicate, a stale, an unknown
     disposition and a weakening entry each fail; for each of the five non-weakening dispositions an unresolvable cite
-    fails and a resolving cite passes; owned-skip on a candidate that is not skip-added fails; a complete, resolving
-    record passes. Class TestImplementLegOnly: a diff with no flip is a no-op with examined(0) even when candidates exist; an
+    fails and a resolving cite passes; owned-skip passes on a skip-added candidate and on a test-moved-weaker one
+    that only gained a skip, and fails on any other category or on a moved test that also lost an assertion; two sites
+    in one scope need one entry; a complete, resolving record passes. Class TestImplementLegOnly: a diff with no flip is a no-op with examined(0) even when candidates exist; an
     unreachable base skips.
 - file: scripts/checks/_common.py
   action: Modify
@@ -301,12 +315,13 @@ verification_plan:
   phase: pre-deploy
   action: Replay real history -- three known candidates and one clean control.
   command: >-
-    bin/venv-python -m scripts.checks.verification.validate_weakening_candidates --base 8107c227^ --head 8107c227 &&
-    bin/venv-python -m scripts.checks.verification.validate_weakening_candidates --base 2bb9846d^ --head 2bb9846d &&
-    bin/venv-python -m scripts.checks.verification.validate_weakening_candidates --base f44647cb^ --head f44647cb &&
-    bin/venv-python -m scripts.checks.verification.validate_weakening_candidates --base 72fb926e^ --head 72fb926e
+    bash -c 'M=scripts.checks.verification.validate_weakening_candidates;
+    bin/venv-python -m $M --base 8107c227^ --head 8107c227 | grep -q "CANDIDATE \[assertion-changed\] .*TestDataLakeLifecycleGoverned::test_rule_status_is_enabled" &&
+    bin/venv-python -m $M --base 2bb9846d^ --head 2bb9846d | grep -q "CANDIDATE \[constant-changed\] .*::NON_TEST_BUDGET_SECONDS" &&
+    bin/venv-python -m $M --base f44647cb^ --head f44647cb | grep -q "CANDIDATE \[test-removed\] .*test_blob_root_only_on_the_writer" &&
+    ! bin/venv-python -m $M --base 72fb926e^ --head 72fb926e | grep -q "^CANDIDATE"'
   expected: >-
-    Exit 0. Run 1 lists an assertion-changed item for TestDataLakeLifecycleGoverned::test_rule_status_is_enabled; run 2
+    Exit 0 (each grep asserts its item; the control asserts none). Run 1 lists an assertion-changed item for TestDataLakeLifecycleGoverned::test_rule_status_is_enabled; run 2
     a constant-changed item for NON_TEST_BUDGET_SECONDS 240.0 -> 270.0; run 3 a test-removed item for
     test_blob_root_only_on_the_writer; run 4 lists no CANDIDATE line.
   fix_if: A known item is missing or the control lists one -> fix find_candidates; never change the commits.
@@ -358,6 +373,16 @@ verification_plan:
   graduation_check_id: plan-document-weakening-dispositions-schema
 - step: 12
   phase: pre-deploy
+  action: status_diff_base returns the push base, else the origin/main merge-base, else None.
+  command: bin/venv-python -m pytest tests/checks/_common/test_primitives.py::TestStatusDiffBase -q
+  expected: Exit 0, every node passes. Red before because status_diff_base does not exist.
+  expected_literals: []
+  fix_if: A case fails -> fix the extraction in scripts/checks/_common.py; get_status_aware_diff's own test must stay green.
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: common-status-diff-base
+- step: 13
+  phase: pre-deploy
   action: Contract and skill pins.
   command: bin/venv-python -m pytest tests/test_scope_boundary_contract.py -q
   expected: Exit 0, every node passes.
@@ -365,8 +390,8 @@ verification_plan:
   fix_if: A pin fails -> the contract or skill text differs from the approved text; restore the text, never the pin.
   hermetic: false
   graduation: waive
-  graduation_waiver_reason: Whole-file re-run of a scope-modified test file (hermetic rule v); steps 13 and 14 graduate the new pins.
-- step: 13
+  graduation_waiver_reason: Whole-file re-run of a scope-modified test file (hermetic rule v); steps 14 and 15 graduate the new pins.
+- step: 14
   phase: pre-deploy
   action: The code-review skill carries the disposition bullet and output section.
   command: bin/venv-python -m pytest tests/test_scope_boundary_contract.py::TestProseSurfacesPointAtContract::test_code_review_skill_requires_weakening_dispositions -q
@@ -376,7 +401,7 @@ verification_plan:
   hermetic: true
   graduation: graduate
   graduation_check_id: code-review-weakening-dispositions
-- step: 14
+- step: 15
   phase: pre-deploy
   action: >-
     The contract's new shape is pinned: both mechanical rows and their enforcers, the rec-4413 residual, the six
@@ -388,7 +413,7 @@ verification_plan:
   hermetic: true
   graduation: graduate
   graduation_check_id: scope-boundary-weakening-surfacing-shape
-- step: 15
+- step: 16
   phase: pre-deploy
   action: Full validation before handoff (prose budget, manifests, pre_glob closure, accounting, coverage).
   command: bin/venv-python -m scripts.validate
@@ -398,7 +423,7 @@ verification_plan:
   hermetic: false
   graduation: waive
   graduation_waiver_reason: Invokes scripts.validate (recursion refusal); it is the handoff gate itself.
-- step: 16
+- step: 17
   phase: post-deploy
   action: rec-3357 superseded and rec-4413 open.
   command: >-
@@ -438,32 +463,31 @@ test_obligations:
 - source: docs/contracts/implement-scope-boundary.yaml
   behavior: >-
     The CONTENT map carries the two new mechanical rows and the narrowed rec-4413 residual, review_dispositions carries
-    the five keys with their cite forms, and permitted_field_edits includes weakening_dispositions.
-  verification_step: 14
+    the six keys (the five non-weakening ones with their cite forms), and permitted_field_edits includes
+    weakening_dispositions.
+  verification_step: 15
   test_selector: tests/test_scope_boundary_contract.py::TestWeakeningSurfacingContract
   red_green_expectation: red before (the new pins fail on the unamended contract), green after
 - source: config/ci_rca_taxonomy.yaml
   behavior: Each of the three new checks maps to a failure category.
-  verification_step: 15
+  verification_step: 16
   command: bin/venv-python -m scripts.validate
-  waiver_reason: validate_ci_rca_taxonomy fails on a registered check with no taxonomy row; step 15 runs it.
+  waiver_reason: validate_ci_rca_taxonomy fails on a registered check with no taxonomy row; step 16 runs it.
 - source: scripts/checks/_common.py
   behavior: status_diff_base returns the push base, else the origin/main merge-base, else None.
-  verification_step: 15
-  command: bin/venv-python -m scripts.validate
-  waiver_reason: >-
-    A three-line extraction under test by tests/checks/_common/test_primitives.py::TestStatusDiffBase, which the full
-    tier runs; get_status_aware_diff's own test proves behaviour is unchanged.
+  verification_step: 12
+  test_selector: tests/checks/_common/test_primitives.py::TestStatusDiffBase
+  red_green_expectation: red before (status_diff_base absent), green after
 - source: scripts/checks/hygiene/_manifest.py
   behavior: The new Entry is registered in --pre (tests/** gated) and the full tier.
-  verification_step: 15
+  verification_step: 16
   command: bin/venv-python -m scripts.validate
   waiver_reason: >-
     Registration is a literal; the manifest grammar, mirror-manifest and pre_glob_closure checks in the full tier
     prove it, and step 3 proves the check runs.
 - source: scripts/checks/verification/_manifest.py
   behavior: The two new Entries are registered ungated in --pre and in the full tier.
-  verification_step: 15
+  verification_step: 16
   command: bin/venv-python -m scripts.validate
   waiver_reason: >-
     Registration is a literal; the manifest grammar and mirror-manifest checks in the full tier prove it, and step 7
@@ -472,7 +496,7 @@ test_obligations:
   behavior: >-
     The Testing dimension requires a disposition per weakening candidate and raises High for a weakening, and the
     report returns the dispositions in the fixed line format.
-  verification_step: 13
+  verification_step: 14
   test_selector: tests/test_scope_boundary_contract.py::TestProseSurfacesPointAtContract::test_code_review_skill_requires_weakening_dispositions
   red_green_expectation: red before (node absent), green after
 constraints:
@@ -515,7 +539,8 @@ context:
   Critique round 1 (REVISE): one shared skip-site finder, so skip-added lists every skip added to an existing test file;
   base reads at the diff's own ref (_common.status_diff_base); importorskip's module name is never a reason; graduated
   contract-shape pins (step 14). Measured since 2026-09-01: 10 of 527 merges added skip/xfail marks or calls and 17 added
-  importorskip, only 3 into existing test files. OWNED_SKIP_APPROVAL_PENDING.
+  importorskip, only 3 into existing test files. Round 2 (REVISE): one Candidate per key, moved-test skip scope,
+  added_skip_sites, self-asserting step 7, step 12. OWNED_SKIP_APPROVAL_PENDING.
 - >-
   CI-RCA: rec-4372 (Critical, terraform-apply-sandbox) closed 2026-10-17 via #1536 (d7baf884). This plan touches no
   terraform, workflow or deploy path; its build starts on the coordinator's dispatch.
@@ -533,9 +558,7 @@ context:
   Design v2: code review was this residual's named backstop since #1002 but never checked it (Decision 163 point 2),
   so dispositions are recorded mechanically. Load estimate since 2026-09-01: about 13 builds a week, median 2 entries,
   largest about 47 (#1452).
-- >-
-  Gotcha: both new mirror tests hold skip decorators and calls only as string fixtures; a real decorator in either
-  file is an added skip site and reds step 3.
+- "Gotcha: the new mirror tests hold skip decorators and calls only as string fixtures; a real one reds step 3."
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
@@ -556,21 +579,21 @@ execution_steps:
             check closes it. This is the SOLE residual row in this map.
   If .claude/skills/code-review/SKILL.md changed on main after 07383b51, apply APPROVED_SKILL's seven edits to it
   anyway and keep main's other changes; otherwise the result must match the sha256 in context.
-- Write the red tests first (steps 1, 4, 5, 6, 9, 10, 11, 13, 14 nodes) and confirm each fails for the stated reason.
+- Write the red tests first (steps 1, 4, 5, 6, 9, 10, 11, 12, 14, 15 nodes) and confirm each fails for the stated reason.
 - _common.status_diff_base, scripts/checks/_weakening_ast.py, validate_weakening_candidates.py, plan_document.py's field, validate_weakening_dispositions.py, then validate_test_skip_citations.py, as scoped.
-- Manifest Entries and taxonomy rows; the graduated registry shards (steps 1, 4, 6, 9, 11, 13, 14) per the Verification Graduation walk.
+- Manifest Entries and taxonomy rows; the graduated registry shards (steps 1, 4, 6, 9, 11, 12, 14, 15) per the Verification Graduation walk.
 - Land the approved contract and skill texts verbatim and update tests/test_scope_boundary_contract.py.
-- Execute VP steps 1-14; loop until pass; never weaken an assertion.
+- Execute VP steps 1-15; loop until pass; never weaken an assertion.
 - >-
   Code review via a fresh code-review subagent (it runs the new report on this diff and dispositions each item); fix
-  blocking findings and rerun steps 1-14; copy its Weakening Dispositions lines into this plan's weakening_dispositions
+  blocking findings and rerun steps 1-15; copy its Weakening Dispositions lines into this plan's weakening_dispositions
   (none expected: this diff only adds assertions).
 - >-
   Closure (implement skill Commit Flows; docs/contracts/git-ops.yaml): readiness, implementation_declared true, rebase,
-  VP step 15 on the committed clean tree, postflight evidence, PR, subscribe; squash-merge on code review PROCEED and
+  VP step 16 on the committed clean tree, postflight evidence, PR, subscribe; squash-merge on code review PROCEED and
   green CI with an explicit commit message carrying no Resolves trailer (rec-3357's acceptance grep stays non-zero by
   design).
-- 'After merge, run APPROVED_REC_UPDATE (variance: PR number and merge sha only), then VP step 16.'
+- 'After merge, run APPROVED_REC_UPDATE (variance: PR number and merge sha only), then VP step 17.'
 - 'Report: what was implemented and the verification results.'
 - |-
   docs/contracts/implement-scope-boundary.yaml -- APPROVED_CONTRACT, land verbatim (allowed variance: the amendment_log
@@ -581,7 +604,7 @@ execution_steps:
         planned-change: "The plan changes this behaviour; cite its acceptance_criteria[N] or test_obligations[N]."
         retirement: "The tested subject is deleted in the same diff; cite the deleted path or file.py::name."
         growth-safe-pin: "An exact pin became a growth-safe invariant (tests/CLAUDE.md test-count coupling); cite it as file.py::name."
-        owned-skip: "A skip added to an existing test file that cites a rec or carries an env: label; cite that rec-NNNN or env: label."
+        owned-skip: "A skip added to an existing test file, or gained by a test moved out of one, that cites a rec or carries an env: label; cite that rec-NNNN or env: label."
         weakening: "None of the above. Restore the check, or route it to a recommendation via the ops portal; never inline."
   (b) Insert these two rows directly before the residual row:
         - surface: "a skip/xfail/importorskip site added in tests/** with neither a rec citation nor an env: label"
@@ -593,8 +616,8 @@ execution_steps:
             pytest.xfail or pytest.importorskip call) must cite a rec-NNNN in its reason, routing the weakening to a
             recommendation as this invariant requires, or label itself an environment guard with an "env: " prefix.
             The check proves the token's presence only; whether the rec is real and the env label honest is judged in
-            code review, where validate_weakening_candidates lists every skip added to an existing test file or carried
-            by a test moved out of one; a skip in a new test file is judged by this check alone.
+            code review, where validate_weakening_candidates lists every skip added to an existing test file or gained
+            by a test moved out of one; any other skip in a new test file is judged by this check alone.
         - surface: "a weakening candidate on an implement PR with no recorded disposition, one recorded as weakening, or one whose cite resolves to nothing"
           status: mechanical
           enforced_by: validate_weakening_dispositions
@@ -614,7 +637,7 @@ execution_steps:
           note: >-
             The DOMINANT form of weakening in practice, not one coverage row among peers. Narrowed from rec-3357: telling
             a corrected assertion or tolerance from a quietly loosened one is the test-oracle problem, which no
-            deterministic check decides. validate_weakening_candidates (report-only, never fails) lists every syntactic
+            deterministic check decides. validate_weakening_candidates (report-only, never fails) lists these syntactic
             candidate in a diff -- a removed or changed assertion, a removed or weaker-moved test, a deleted test file, an
             added skip, a widened tolerance, a changed numeric constant -- code review gives each a disposition from
             review_dispositions above, raising High for a weakening or a missing one, and validate_weakening_dispositions
