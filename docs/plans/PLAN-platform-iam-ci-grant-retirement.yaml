@@ -228,6 +228,15 @@ verification_plan:
     hermetic: false
     graduation: waive
     graduation_waiver_reason: validate --pre is the PR gate itself (Decision 73); a registry row would recurse (vp-red-before recursion_refusal).
+  - step: 22
+    phase: pre-deploy
+    action: full tier before commit and handoff (handoff_policy)
+    command: bin/venv-python -m scripts.validate
+    expected: exit 0
+    fix_if: fix the named failure in scope; RCA per Decision 55; a timeout is blocked -- rerun from the start
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: Same recursion_refusal as step 6 (a registry row would invoke scripts.validate).
   - step: 7
     phase: pre-deploy
     action: rec-4049's re-grounded acceptance routes to the junit source, so the Resolves trailer can close it
@@ -258,7 +267,7 @@ verification_plan:
     phase: pre-deploy
     action: PRE-MERGE GATE (ADMIN) -- a read-only bootstrap plan at the CI-green PR head shows exactly two in-place updates that remove exactly the three grants and add nothing
     command: |-
-      test -n "$PR_HEAD_SHA" && W="${TMPDIR:-/tmp}/ci-grant-retirement-wt" && M="${TMPDIR:-/tmp}/ci-grant-retirement" && mkdir -p "$M" && git fetch origin "$PR_HEAD_SHA" && git worktree add --detach "$W" "$PR_HEAD_SHA" && cp terraform/bootstrap/terraform.bootstrap.tfvars "$W/terraform/bootstrap/" && R=$(tr -d '[:space:]' < "$W/config/aws-region") && AWS_REGION="$R" terraform -chdir="$W/terraform/bootstrap" init -input=false > /dev/null && AWS_REGION="$R" terraform -chdir="$W/terraform/bootstrap" plan -input=false -lock=false -var-file=terraform.bootstrap.tfvars -out="$M/pr.tfplan" > /dev/null && terraform -chdir="$W/terraform/bootstrap" show -json "$M/pr.tfplan" > "$M/pr.json"; rc=$?; rm -f "$M/pr.tfplan" "$W/terraform/bootstrap/terraform.bootstrap.tfvars"; git worktree remove --force "$W"; test $rc -eq 0 && M="$M" bin/venv-python - <<'EOF'
+      test -n "$PR_HEAD_SHA" && W="${TMPDIR:-/tmp}/ci-grant-retirement-wt" && M="${TMPDIR:-/tmp}/ci-grant-retirement" && mkdir -p "$M" && git fetch origin "$PR_HEAD_SHA" && git worktree add --detach "$W" "$PR_HEAD_SHA" && cp terraform/bootstrap/terraform.bootstrap.tfvars "$W/terraform/bootstrap/" && R=$(tr -d '[:space:]' < "$W/config/aws-region") && terraform -chdir="$W/terraform/bootstrap" init -input=false -backend-config="region=$R" > /dev/null && terraform -chdir="$W/terraform/bootstrap" plan -input=false -lock=false -var-file=terraform.bootstrap.tfvars -out="$M/pr.tfplan" > /dev/null && terraform -chdir="$W/terraform/bootstrap" show -json "$M/pr.tfplan" > "$M/pr.json"; rc=$?; rm -f "$M/pr.tfplan" "$W/terraform/bootstrap/terraform.bootstrap.tfvars"; git worktree remove --force "$W"; test $rc -eq 0 && M="$M" bin/venv-python - <<'EOF'
       import json, os, sys
       m = os.environ["M"]
       rc = json.load(open(f"{m}/pr.json")).get("resource_changes", [])
@@ -291,8 +300,7 @@ verification_plan:
     fix_if: >-
       any other address or action -- live bootstrap drifted, or another bootstrap change merged: STOP and
       resolve with Benjamin; a removal missing or an addition -- the HCL is wrong, fix it in this PR and
-      re-run; a missing config/aws-region -- rec-4067's build has not merged, which this build waits for
-      (handoff). Any new PR head re-runs this step.
+      re-run. Any new PR head re-runs this step.
     hermetic: false
     graduation: not-applicable
   - step: 11
@@ -334,7 +342,7 @@ verification_plan:
     phase: post-deploy
     action: ADMIN -- plan terraform/bootstrap from merged main into a saved plan and PRESENT it to Benjamin (counts and Sid:role names only)
     command: |-
-      test -n "$MERGE_SHA" && git fetch origin main && git checkout --detach origin/main && git merge-base --is-ancestor "$MERGE_SHA" HEAD && R=$(tr -d '[:space:]' < config/aws-region) && M="${TMPDIR:-/tmp}/ci-grant-retirement" && mkdir -p "$M" && AWS_REGION="$R" terraform -chdir=terraform/bootstrap init -input=false > /dev/null && AWS_REGION="$R" terraform -chdir=terraform/bootstrap plan -input=false -var-file=terraform.bootstrap.tfvars -out="$M/apply.tfplan" > /dev/null && terraform -chdir=terraform/bootstrap show -json "$M/apply.tfplan" | bin/venv-python -c "import json,sys; rc=json.load(sys.stdin).get('resource_changes',[]); mv={r['address']:r['change']['actions'] for r in rc if r['change']['actions'] not in (['no-op'],['read'])}; print(json.dumps(mv)); sys.exit('APPLY PLAN STOP') if mv!={'aws_iam_role_policy.github_ci_apply':['update'],'aws_iam_policy.github_ci_apply_reads':['update']} else print('APPLY PLAN READY -- 0 to add, 2 to change, 0 to destroy; present to Benjamin')"
+      test -n "$MERGE_SHA" && git fetch origin main && git checkout --detach origin/main && git merge-base --is-ancestor "$MERGE_SHA" HEAD && R=$(tr -d '[:space:]' < config/aws-region) && M="${TMPDIR:-/tmp}/ci-grant-retirement" && mkdir -p "$M" && terraform -chdir=terraform/bootstrap init -input=false -reconfigure -backend-config="region=$R" > /dev/null && terraform -chdir=terraform/bootstrap plan -input=false -var-file=terraform.bootstrap.tfvars -out="$M/apply.tfplan" > /dev/null && terraform -chdir=terraform/bootstrap show -json "$M/apply.tfplan" | bin/venv-python -c "import json,sys; rc=json.load(sys.stdin).get('resource_changes',[]); mv={r['address']:r['change']['actions'] for r in rc if r['change']['actions'] not in (['no-op'],['read'])}; print(json.dumps(mv)); sys.exit('APPLY PLAN STOP') if mv!={'aws_iam_role_policy.github_ci_apply':['update'],'aws_iam_policy.github_ci_apply_reads':['update']} else print('APPLY PLAN READY -- 0 to add, 2 to change, 0 to destroy; present to Benjamin')"
     expected: >-
       APPLY PLAN READY with exactly the two updates. Present to Benjamin in the thread: the two addresses,
       the three removed grants (step 10's JSON shape), the merged sha, and the exact apply command of step
@@ -347,7 +355,7 @@ verification_plan:
     phase: post-deploy
     action: ADMIN (human-directed) -- on Benjamin's word, apply exactly the presented saved plan
     command: |-
-      M="${TMPDIR:-/tmp}/ci-grant-retirement" && test -s "$M/apply.tfplan" && AWS_REGION=$(tr -d '[:space:]' < config/aws-region) terraform -chdir=terraform/bootstrap apply -input=false "$M/apply.tfplan" > /dev/null; rc=$?; rm -f "$M/apply.tfplan"; test $rc -eq 0 && echo "BOOTSTRAP APPLIED (2 changed)"
+      M="${TMPDIR:-/tmp}/ci-grant-retirement" && test -s "$M/apply.tfplan" && terraform -chdir=terraform/bootstrap apply -input=false "$M/apply.tfplan" > /dev/null; rc=$?; rm -f "$M/apply.tfplan"; test $rc -eq 0 && echo "BOOTSTRAP APPLIED (2 changed)"
     expected: BOOTSTRAP APPLIED; the plan file is deleted whatever the outcome. No platform-security alert is expected (the detector watches the two platform roles, the boundary and its own policy, not the apply role's policies)
     fix_if: an apply error -- do not retry blind; re-plan (step 15), present again and RCA (Decision 55). A stale-plan error -- re-run step 15 and get Benjamin's word again
     hermetic: false
@@ -355,7 +363,7 @@ verification_plan:
     phase: post-deploy
     action: ADMIN -- a bootstrap plan of merged main now shows no changes
     command: |-
-      AWS_REGION=$(tr -d '[:space:]' < config/aws-region) terraform -chdir=terraform/bootstrap plan -input=false -lock=false -var-file=terraform.bootstrap.tfvars -detailed-exitcode > /dev/null && echo "BOOTSTRAP CONVERGED (no changes)"
+      terraform -chdir=terraform/bootstrap plan -input=false -lock=false -var-file=terraform.bootstrap.tfvars -detailed-exitcode > /dev/null && echo "BOOTSTRAP CONVERGED (no changes)"
     expected: exit 0 and the marker
     fix_if: >-
       exit 2 -- the apply did not land or something else drifted: STOP and RCA with Benjamin
@@ -474,7 +482,7 @@ context:
   - "Live facts (2026-10-17/18, read-only): terraform/personal state holds no aws_iam_role* for either role and no aws_iam_role data source; no workflow or scripts/ci file calls IAM on them; a bootstrap plan of exactly this edit showed two in-place updates and no other drift; a dry run of the edit failed only the exact-set pin under validate --pre."
   - "The read prune satisfies github_ci_apply_reads.tf's RETIREMENT ORDERING RULE: the forget converged (#1540) before this PR."
   - "rec-4049's original acceptance (three negated greps) classifies unprobeable_shape under Decision 201's trailer gate and would be left open; the build re-grounds it with update_rec (after get_rec_write_guidance) to step 1's three pytest node ids before merge."
-  - "Sequencing: start after the rec-4067 build ('Build region single source') merges -- it removes the backend regions and adds config/aws-region, which steps 10 and 15-17 read. rec-4403's build also inserts a Decision: take the next free number at build time and re-check it on rebase. rec-3902 (org-transfer OIDC pre-stage) later edits oidc.tf's trust locals and bootstrap github_ci_apply.tf: no overlap with these statements, but no other bootstrap change may merge between this PR's merge and step 16, or step 15 shows its diff too."
+  - "Sequencing: the rec-4067 build merged (#1562, 1c4c3834) -- backends name no region and config/aws-region holds it; steps 10 and 15 pass it at init as -backend-config region, the documented hand-run form (terraform/bootstrap/CLAUDE.md). rec-4403's build also inserts a Decision: take the next free number at build time and re-check it on rebase. rec-3902 (org-transfer OIDC pre-stage) later edits oidc.tf's trust locals and bootstrap github_ci_apply.tf: no overlap with these statements, but no other bootstrap change may merge between this PR's merge and step 16, or step 15 shows its diff too."
   - "Rollback: revert the PR, then a human-directed bootstrap apply restores the three grants. Decision 223's own rollback (re-import into terraform/personal) needs the read quartet restored first (PLAN-platform-iam-personal-release rollback)."
   - "V3 resolution: the counts-only pre-merge gate comment posted on the PR for the current $PR_HEAD_SHA (steps 8-12) substitutes for the pre-merge post-deploy evidence the implement V3 Merge Gate and the code-review V3 check require; the behavioural acceptance (Decision 48) is the post-merge walk (steps 13-21: CI apply, human-directed bootstrap apply, live simulate, drift run); its evidence is a counts-only comment on the merged PR naming the applied sha (CloudWatch history ages out and is not the record)."
   - "Decision-scout verdict + CITE list: FLAGS_FOUND (one NOTE on Decision 180: re-narrow only through a numbered Decision that elects (a)'s response ahead of its trigger -- adopted); CITE 223, 167, 176, 179, 177, 144, 129, 126, 202, 181, 166, 201. Decisions triaged: 175 of 175. Roadmap items intersected: 5; CONFLICT: 0; RELATED: 5. Evidence: /mnt/project-files/rec-4049/scout-report.md"
@@ -486,7 +494,6 @@ pre_implementation_checklist:
   - docs/PROJECT_CONTEXT.md read
   - Decisions 180, 202 and 223 sections only (docs/DECISIONS.md), plus the Decision 177 amendment dialect
   - All files in scope located and readable
-  - rec-4067's build merged (config/aws-region exists on main)
   - Acceptance criteria understood and verifiable
 execution_steps:
   - "Step 8 first (ENVIRONMENT CHECK)."
@@ -618,7 +625,7 @@ execution_steps:
       IAM grant on either role (Decision NNN)".
   - "Regenerate docs/decisions-index.json (bin/venv-python -m scripts.decisions_index --write)."
   - "rec-4049: call get_rec_write_guidance(), then update_rec its acceptance to step 1's command (the three pytest node ids) and run step 7. rec-3358: update_rec appends one context note -- 'Decision NNN (rec-4049): if this rec's bootstrap plan runs as a CI identity, add that identity's policies to tests/checks/iam_tf/test_platform_role_metadata_admin_scope.py's scan and grant its reads in its own plan' -- so the Decision's Coverage residual has its owner."
-  - "Run pre-deploy steps 1-7; full tier (bin/venv-python -m scripts.validate) to exit 0; commit; open the PR with the ADMIN walk in its description; squash body carries `Resolves: rec-4049`."
+  - "Run pre-deploy steps 1-7 and 22 (full tier to exit 0); commit; open the PR with the ADMIN walk in its description; squash body carries `Resolves: rec-4049`."
   - "ADMIN: steps 9-12 against the CI-green head (PR_NUMBER, PR_HEAD_SHA); post the counts-only pre-merge comment, shape: 'PRE-MERGE GATE at <PR_HEAD_SHA>: bootstrap 0/2/0, removed IAMRoleMetadataWrite:PlatformDev, IAMRolesRead:PlatformDev, IAMRolesRead:PlatformAdmin, added 0; personal speculative 0/1/0 guard PASS; record green, nothing pending'. Code review PROCEED; merge on Benjamin's word in the thread (IAM and Decision text)."
   - "After merge: steps 13-14, then 15 (present), 16 only on Benjamin's word on the exact command, then 17-21. Arm send_later for step 20 if no drift run has happened yet."
   - Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)
