@@ -170,10 +170,11 @@ def _root_end(
     idle = _idle_state(last, as_of) == "abandoned"
     stands = (
         tip is not None
+        and producer_close is not None
         and tip["event_kind"] == "close"
         and (turn_open is None or (turn_open["event_timestamp"], _ordinal(turn_open)) <= _close_key(producer_close)[:2])
     )
-    if stands:
+    if stands and tip is not None:
         state: Any = tip.get("outcome")
         outcome: Any = tip.get("outcome")
     elif own_close is not None and own_close.get("outcome") is not None:
