@@ -11,9 +11,7 @@ import yaml
 _ROOT = Path(__file__).resolve().parents[3]
 _DECISIONS = (_ROOT / "docs" / "DECISIONS.md").read_text(encoding="utf-8")
 _CONTRACTS = _ROOT / "docs" / "contracts"
-# Decision 210 carries dated annotations (Decision 151 sanctions them; decision-entry.yaml meters baseline-entry growth as a WARN, not a fail):
-# 6144 plus the 2026-10-18 coverage Update (PLAN-telemetry-verification-monitor).
-_DECISION_CAP_BYTES = 7168
+_DECISION_CAP_BYTES = 6144
 
 
 def _norm(text: str) -> str:

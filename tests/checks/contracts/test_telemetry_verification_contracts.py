@@ -59,9 +59,8 @@ def test_decision_210_coverage_names_the_discharged_residual() -> None:
     section = norm(text[start : text.index("\n## Decision ", start + 10)])
     assert "Update (2026-10-18)" in section
     update = section[section.index("Update (2026-10-18)") :]
-    assert "rec-4101 residual is now enforced" in update and "telemetry_orphan_counts" in update
+    assert "rec-4101 residual is enforced" in update and "telemetry_orphan_counts" in update
     assert "telemetry-verification workflow" in update and COVERAGE_REC in update and "No clause changes" in update
-    assert "rec-4063 and rec-4121 item 4 are unchanged" in update
     assert section.index("Amendment 2026-10-15") < section.index("Update (2026-10-18)")
 
 

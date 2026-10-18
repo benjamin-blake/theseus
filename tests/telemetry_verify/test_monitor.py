@@ -14,7 +14,7 @@ from src.common import ducklake_event_reads as ev
 from src.common.ducklake_reader_client import VERB_FIELDS, ReaderInvokeError, ResponseTooLargeError
 from tests.fixtures import telemetry_golden_chain as g
 
-duckdb = pytest.importorskip("duckdb")
+duckdb = pytest.importorskip("duckdb", reason="env: duckdb is not installed in the fast tier")
 
 QUIET_DAY = "2026-01-02"
 AS_OF = datetime(2026, 1, 4, tzinfo=timezone.utc)

@@ -850,18 +850,17 @@ conditions:
 
 **Related:** Decision 207, 81 cl.5 and cl.8 (amended), 84 I-2, 103, 55, 199, 184 cl.2, 100, 181 cl.2, 163, 70, T1.6; CD.12 refined, not amended -- its ops single-source choice is deferred to rec-4158, telemetry's source is its Class A contract (already so under Decision 199), and its FK-pre-commit discipline is narrowed to write-decidable references (references across independent producers stay DQ, already so under Decision 199 / R3); CD.12's ratification reconciles with this Decision.
 
-[Amendment 2026-10-04, rec-4158: cl.3's ops choice is made -- for the ops tables the single source is the owning Class A
-contract (docs/contracts/ops_recommendations.yaml), field_semantics.yaml its generated projection; ops.yaml and the CD.12
-Pydantic models are DQ-side artefacts, never a write-time rule source. Older rows: a rule binds rows created on or after its
-exclude_before and any column a write changes; no date moves later. An exemption names its owning rec, except a
-repository_state rule, which no write can ever decide, names the producer that enforces it. Detail:
-data-modeling-standard.yaml, rule write-time-enforcement.]
+[Amendment 2026-10-04, rec-4158: cl.3's ops choice is made -- the ops tables' single source is the owning Class A contract
+(ops_recommendations.yaml), field_semantics.yaml its projection; ops.yaml and the CD.12 models are DQ-side,
+never a rule source. A rule binds rows created on or after its exclude_before and any column a write changes; no date moves
+later. An exemption names its owning rec, except a repository_state rule (no write can decide it), naming its enforcing
+producer. Detail: data-modeling-standard.yaml.]
 
 [Amendment 2026-10-15, rec-4158: the writer-conformance residual is closed for row-local rules on every writer verb
-(validate_write_time_enforcement_conformance); a declared rule is enforced, so the enforced key is retired; value removal
-and new exemptions ratchet. Detail: data-modeling-standard.yaml, rule write-time-enforcement.]
+(validate_write_time_enforcement_conformance); a declared rule is enforced, so the enforced key is retired; value removal and
+new exemptions ratchet. Detail: data-modeling-standard.yaml.]
 
-> **Update (2026-10-18):** the Coverage line's DQ-side rec-4101 residual is now enforced as tree-scoped parent existence by the reader's telemetry_orphan_counts verb and the daily telemetry-verification workflow (PLAN-telemetry-verification-monitor), not by the T1.6 substrate, for trees whose root started within 28 days of their quiet day; the residuals T3.20 c3's prefix and the two contract notes name are rec-4439's, including trees older than that; rec-4063 and rec-4121 item 4 are unchanged. No clause changes.
+> **Update (2026-10-18):** the Coverage line's rec-4101 residual is enforced by telemetry_orphan_counts and telemetry-verification workflow; rec-4439 owns the rest. No clause changes.
 
 ---
 
@@ -9724,7 +9723,7 @@ state authority.
 > routed to the operator as a possible unrecorded supersession, not resolved here.
 
 > **Update (2026-10-04):** (rec-4158, Decision 210 cl.3) for ops_recommendations the canonical field-semantic and write-time
-> rule authority is the owning Class A contract (docs/contracts/ops_recommendations.yaml). `config/agent/data_quality/ops.yaml`'s
+> rule authority is the owning Class A contract (ops_recommendations.yaml). `config/agent/data_quality/ops.yaml`'s
 > write_time flags are a transitional, parity-checked copy (validate_ops_rule_source) until rec-4158 plan C retires them; its DQ
 > checks stay until T1.6 c7 retires the file, and the description/semantics text Decision 66 guidance reads moves to the contract
 > under T2.29 c7.

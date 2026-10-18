@@ -10,12 +10,16 @@ import json
 import math
 from collections import Counter
 from datetime import datetime
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence, cast
 
 from scripts.telemetry_verify.dedupe import parse_timestamp
 from src.common.ducklake_reader_client import VERB_FIELDS
 
 STAMP_COLUMNS = ("generations", "conflicted_grain_keys", "derivation_conflicted")
+
+
+def _fields(verb: str) -> Sequence[str]:
+    return cast(Sequence[str], VERB_FIELDS[verb])
 
 
 def _plain(value: Any) -> Any:
@@ -71,7 +75,7 @@ def compare_session(
         return ["<rows>"]
     out: set[str] = set()
     for deployed, derived in zip(deployed_rows, derived_rows):
-        out.update(compare_row(VERB_FIELDS[verb], deployed, derived))
+        out.update(compare_row(_fields(verb), deployed, derived))
     return sorted(out)
 
 
@@ -90,7 +94,7 @@ def compare_window(
             seen[root] == 2
             and root in deployed
             and root in derived
-            and not compare_row(VERB_FIELDS["sessions_window"], deployed[root], derived[root])
+            and not compare_row(_fields("sessions_window"), deployed[root], derived[root])
         ):
             agreeing += 1
     return agreeing, compared

@@ -13,7 +13,7 @@ from src.common import ducklake_event_reads as ev
 from src.common.ducklake_event_read_verbs import IDLE_THRESHOLD_SECONDS
 from tests.fixtures import telemetry_golden_chain as g
 
-duckdb = pytest.importorskip("duckdb")
+duckdb = pytest.importorskip("duckdb", reason="env: duckdb is not installed in the fast tier")
 
 TREES = ["corpus:subagent_sync", "corpus:resume_after_interrupt"]
 DAY = {"day_from": "2026-01-01", "day_to": "2026-01-01"}
