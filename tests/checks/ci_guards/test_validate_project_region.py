@@ -259,12 +259,11 @@ def test_r5_env_aws_default_region(tmp_path: Path) -> None:
     assert any("R5" in f for f in failed)
 
 
-class TestRealTree:
-    def test_real_tree_passes(self) -> None:
-        failed: list[str] = []
-        validate_project_region(failed)
-        assert failed == [], failed
-        assert _examined() > 0
+def test_real_tree_passes() -> None:
+    failed: list[str] = []
+    validate_project_region(failed)
+    assert failed == [], failed
+    assert _examined() > 0
 
 
 class TestBranchCoverage:
