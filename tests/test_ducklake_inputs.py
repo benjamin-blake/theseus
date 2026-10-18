@@ -442,20 +442,35 @@ def test_record_inputs_is_pure_no_git_mutation(tmp_path: Path, method: str) -> N
 
 
 def test_live_proof_capture_matches_contract() -> None:
+    """rec-4381 VP steps 7-8, replayed against the captured evidence rather than against S3.
+
+    `inputs_record` is the real, verbatim schema-1 record uploaded for PR #1540's head;
+    `recomputed_zip_md5s` was independently hashed from the same-named zips at capture time (never
+    copied from `inputs_record`), so the md5 comparison below is a genuine two-source check, not
+    the fixture agreeing with itself. `convergence_record_at_merge` mirrors the real
+    convergence/personal/sandbox.json shape (scripts/ci/ducklake_artifacts.py); the reached/blocked
+    derivation below is the same formula VP step 8 runs live, replayed here against the captured
+    raw fields instead of a live S3 read.
+    """
     capture = json.loads(_LIVE_PROOF_FIXTURE.read_text())
 
     inputs_record = capture["inputs_record"]
     assert inputs_record["schema"] == SCHEMA
 
-    want_md5s = {name: inputs_record["artifacts"][name]["md5"] for name in DUCKLAKE_ARTIFACT_NAMES}
-    got_md5s = {name: capture["captured_zip_md5s"][name] for name in DUCKLAKE_ARTIFACT_NAMES}
-    assert got_md5s == want_md5s
+    declared_md5s = {name: inputs_record["artifacts"][name]["md5"] for name in DUCKLAKE_ARTIFACT_NAMES}
+    recomputed_md5s = {name: capture["recomputed_zip_md5s"][name] for name in DUCKLAKE_ARTIFACT_NAMES}
+    assert recomputed_md5s == declared_md5s
 
-    outcome = capture["merge_outcome"]
-    assert outcome["reached"] is True
-    assert outcome["blocked"] is False
+    record = capture["convergence_record_at_merge"]
+    merge_sha = capture["merge_sha"]
+    infra = record.get("infra_error") or {}
+    reached = (record.get("status") == "green" and record.get("commit_sha") == merge_sha) or (
+        record.get("pending_gated") or {}
+    ).get("commit_sha") == merge_sha
+    blocked = infra.get("commit_sha") == merge_sha and infra.get("failed_step") == "build_ducklake"
+    assert reached is True
+    assert blocked is False
 
-    if outcome["path"] == "inputs-moved":
-        assert outcome["superseded_by_pointer"] is not None
-    else:
-        assert outcome["path"] == "identical"
+    superseded = capture["superseded_by_record"]
+    if superseded is not None:
+        assert superseded["artifact_sha"]
