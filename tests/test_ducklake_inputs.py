@@ -5,12 +5,16 @@ plumbing rather than a mocked one -- no network, no S3.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
+from scripts.ci.ducklake_artifacts import DUCKLAKE_ARTIFACT_NAMES
 from scripts.ci.ducklake_inputs import LAYER_INPUT, SCHEMA, attribute, record_inputs
 from tests.fixtures.ducklake_artifact_fakes import _git_commit_all, _git_init, _zip_bytes
+
+_LIVE_PROOF_FIXTURE = Path(__file__).parent / "fixtures" / "ducklake_zip_inputs_live_proof.json"
 
 
 def _write_writer_fixture(repo: Path, foo_content: str, *, extra_includes: list[str] | None = None) -> None:
@@ -429,3 +433,29 @@ def test_record_inputs_is_pure_no_git_mutation(tmp_path: Path, method: str) -> N
     first = record_inputs(packages_dir, ["ducklake-writer.zip"], repo)
     second = record_inputs(packages_dir, ["ducklake-writer.zip"], repo)
     assert first == second
+
+
+# ---------------------------------------------------------------------------
+# rec-4381: the live proof captured from the first terraform/personal PR whose speculative plan
+# ran after PLAN-ducklake-zip-inputs-moved (#1536) merged (PLAN-platform-iam-personal-release, #1540).
+# ---------------------------------------------------------------------------
+
+
+def test_live_proof_capture_matches_contract() -> None:
+    capture = json.loads(_LIVE_PROOF_FIXTURE.read_text())
+
+    inputs_record = capture["inputs_record"]
+    assert inputs_record["schema"] == SCHEMA
+
+    want_md5s = {name: inputs_record["artifacts"][name]["md5"] for name in DUCKLAKE_ARTIFACT_NAMES}
+    got_md5s = {name: capture["captured_zip_md5s"][name] for name in DUCKLAKE_ARTIFACT_NAMES}
+    assert got_md5s == want_md5s
+
+    outcome = capture["merge_outcome"]
+    assert outcome["reached"] is True
+    assert outcome["blocked"] is False
+
+    if outcome["path"] == "inputs-moved":
+        assert outcome["superseded_by_pointer"] is not None
+    else:
+        assert outcome["path"] == "identical"
