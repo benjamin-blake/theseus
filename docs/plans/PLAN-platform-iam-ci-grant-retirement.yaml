@@ -34,7 +34,8 @@ scope:
     purpose: >-
       IAMRolesRead drops the two role/PlatformDev and role/PlatformAdmin lines. One comment line beside the
       RETIREMENT ORDERING RULE records that the two roles' ARNs were pruned under it by rec-4049 after
-      terraform/personal's forget converged (2026-10-17, #1540). No other Sid changes.
+      terraform/personal's forget converged (2026-10-17, #1540); the Sid's header comment "branch, pr, plan,
+      drift, platform, ducklake roles" drops "platform". No other Sid changes.
   - file: terraform/personal/oidc.tf
     action: Modify
     purpose: >-
@@ -64,12 +65,25 @@ scope:
       IAMRoleMetadataWrite; PlatformAdmin added to bootstrap IAMRolesRead; PlatformDev added to oidc.tf
       IAMPlatformRolesRead; an iam: statement with Resource role/* in oidc_pipeline_roles.tf; a scanned
       file emptied (fail-closed). Negative control: a non-iam statement with Resource "*" is not flagged.
-      Module docstring names Decision NNN. Stays well under 500 SLOC (88 today).
+      HARDENING (fail closed; none of these shapes is in an iam: statement today, so no false positive):
+      scalar Action or Resource strings as well as lists; Sid-less jsonencode statements; a `statement {}`
+      block with no effect counts as Allow (the provider default); a NotResource / not_resources or
+      NotAction / not_actions key in a statement carrying an iam: action is itself a problem; so is an iam:
+      statement whose Resource is not a string literal after substituting ${var.account_id} and
+      ${var.aws_region}; role names match case-insensitively (IAM role names are case-insensitive,
+      platform_security_alarms.tf). Reuse the existing parsers where they fit
+      (scripts/checks/iam_tf/_read_coverage.py, tests/checks/iam_tf/_platform_security_hcl.py) rather than a
+      third. Extra red cases: scalar Resource naming PlatformDev; a Sid-less statement; an effect-less
+      `statement {}`; a NotResource statement; a lower-case "platformdev". The module names the five CI
+      policy files by path (its fail-closed list), which is what makes --pre select it (step 24). Module
+      docstring names Decision NNN. Stays well under 500 SLOC (88 today).
   - file: tests/checks/iam_tf/test_platform_iam_admin_root_only.py
     action: Modify
     purpose: >-
       Docstring only: its example of an unrelated mention ("a literal role ARN in oidc.tf's
-      IAMPlatformRolesRead") no longer exists; replace it with "a comment" alone. No code change.
+      IAMPlatformRolesRead") no longer exists; it becomes "a comment, such as oidc.tf's note that the two
+      roles are bootstrap-owned". KEEP an oidc.tf mention: it is the prose-mention edge that makes --pre
+      select this Decision 223 guard for oidc.tf edits (step 24 asserts it). No code change.
   - file: docs/contracts/iam-simulate-fixture.yaml
     action: Modify
     purpose: >-
@@ -93,7 +107,9 @@ scope:
     purpose: >-
       APPROVED TEXT (execution steps). admin_out_of_band.procedure's SPLIT-APPLY step: the
       parenthetical "(Decision 180 clauses 2-3 are permanent)" (it wraps across two lines) becomes "(Decision
-      180 clause 3 and Decision NNN clause 1)"; clause 2's PlatformDev grant is what this plan retires. One
+      143 clause 1, Decision 180 clause 3 and Decision NNN clause 1)"; clause 2's PlatformDev grant is what this
+      plan retires, and Decision 143 clause 1 (worst-verb scoping) governs the step's remaining triggers, such
+      as trust beyond branch and pr (a citation fix to the approved text under the 2026-10-17 rule). One
       amendment_log entry (newest first; prose_improvement, semantic_break false) naming rec-4049.
   - file: terraform/bootstrap/platform_security_alarms.tf
     action: Modify
@@ -109,7 +125,7 @@ scope:
       (no 144 edge: the 180->144 waiver keeps 144's body untouched). Append the three dated forward-pointer
       Updates to Decisions 180, 202 and 223, each after its entry's last line before the separator (after
       the rec-4067 build's Update on 202), Decision 177 blockquote_update form. No existing clause text
-      changes. Dry run on origin/main ee6e1102: entry 5,674 B; conformance, supersession, currency and
+      changes. Dry run on origin/main ee6e1102: entry 5,946 B (validate_decisions_size's measure, about 198 B of headroom); conformance, supersession, currency and
       index-freshness PASS; size WARN only (202 and 223 grow past 6,144 B, amendment-delta tier).
   - file: docs/decisions-index.json
     action: Modify
@@ -149,6 +165,17 @@ verification_plan:
     expected_literals: []
     graduation: waive
     graduation_waiver_reason: The nodes are standing suite tests that pytest_diff and the full tier already run on every PR; a registry row would re-run the same nodes.
+  - step: 24
+    phase: pre-deploy
+    action: under --pre, an edit to any of the five CI policy files selects the guard, and an oidc.tf edit still selects the Decision 223 guard
+    command: |-
+      bin/venv-python -c "import sys; from scripts.checks.deps.affected_tests import derive_affected_tests as d; G='tests/checks/iam_tf/test_platform_role_metadata_admin_scope.py'; R='tests/checks/iam_tf/test_platform_iam_admin_root_only.py'; fs=['terraform/personal/oidc.tf','terraform/personal/oidc_ci_roles.tf','terraform/personal/oidc_pipeline_roles.tf','terraform/bootstrap/github_ci_apply_policy.tf','terraform/bootstrap/github_ci_apply_reads.tf']; sel={f: set(d([('M',f)])['selected']) for f in fs}; bad=[f for f in fs if G not in sel[f]]+(['oidc.tf no longer selects the Decision 223 guard'] if R not in sel['terraform/personal/oidc.tf'] else []); sys.exit('NOT SELECTED: '+str(bad)) if bad else print('GUARDS SELECTED ON ALL FIVE')"
+    expected: prints the marker; red before (today oidc_ci_roles.tf, oidc_pipeline_roles.tf, oidc.tf and github_ci_apply_reads.tf do not select the metadata guard), green after
+    fix_if: a file not selected -- the guard module must name that file's path (its fail-closed list does); oidc.tf losing the Decision 223 guard -- restore the oidc.tf mention in that module's docstring
+    hermetic: true
+    expected_literals: ["GUARDS SELECTED ON ALL FIVE"]
+    graduation: waive
+    graduation_waiver_reason: A landing check of the --pre selection edges; the guard module's fail-closed file list (red-cased in step 1) is what keeps them, so a registry row would re-check the same edges.
   - step: 2
     phase: pre-deploy
     action: no CI policy file names either platform role ARN (rec-4049's original text check, in a decidable form)
@@ -212,7 +239,7 @@ verification_plan:
     phase: pre-deploy
     action: the two stale "until rec-4049" / "clauses 2-3 are permanent" citations are replaced with the approved text
     command: |-
-      bin/venv-python -c "import sys,yaml; d=yaml.safe_load(open('docs/contracts/deploy-paths.yaml')); st=[x for x in d['admin_out_of_band']['procedure']['steps'] if x.startswith('SPLIT-APPLY')]; a=open('terraform/bootstrap/platform_security_alarms.tf').read(); bad=[m for m,c in [('not exactly one SPLIT-APPLY step',len(st)!=1),('old citation kept',bool(st) and 'clauses 2-3 are permanent' in st[0]),('approved citation absent',bool(st) and '(Decision 180 clause 3 and Decision ' not in st[0]),('alarm comment still says until rec-4049','until rec-4049' in a)] if c]; sys.exit('; '.join(bad)) if bad else print('STALE CITATIONS REPLACED')"
+      bin/venv-python -c "import sys,yaml; d=yaml.safe_load(open('docs/contracts/deploy-paths.yaml')); st=[x for x in d['admin_out_of_band']['procedure']['steps'] if x.startswith('SPLIT-APPLY')]; a=open('terraform/bootstrap/platform_security_alarms.tf').read(); bad=[m for m,c in [('not exactly one SPLIT-APPLY step',len(st)!=1),('old citation kept',bool(st) and 'clauses 2-3 are permanent' in st[0]),('approved citation absent',bool(st) and '(Decision 143 clause 1, Decision 180 clause 3 and Decision ' not in st[0]),('alarm comment still says until rec-4049','until rec-4049' in a)] if c]; sys.exit('; '.join(bad)) if bad else print('STALE CITATIONS REPLACED')"
     expected: prints the marker; red before (both stale texts present), green after
     fix_if: restore the approved text
     hermetic: true
@@ -324,10 +351,10 @@ verification_plan:
     graduation: not-applicable
   - step: 13
     phase: post-deploy
-    action: CI applies the planner narrowing at merge and the record is green at the merge commit
+    action: CI applies the planner narrowing at merge and the record is green at the merge commit or a later one
     command: |-
-      test -n "$MERGE_SHA" && bin/venv-python -c "import json,os,subprocess; r=json.loads(subprocess.run(['aws','s3','cp','s3://agent-platform-data-lake/convergence/personal/sandbox.json','-','--profile','agent_platform_admin'],check=True,capture_output=True,text=True).stdout); bad=[k for k in ('pending_gated','pending_codification','infra_error') if k in r]; assert r.get('status')=='green' and r.get('commit_sha')==os.environ['MERGE_SHA'] and not bad, (r.get('status'), r.get('commit_sha')==os.environ['MERGE_SHA'], bad); print('PERSONAL CONVERGED GREEN at the merge commit -- run '+str(r.get('run_url')))"
-    expected: status green at MERGE_SHA, no pending marker; prints the public run URL for the evidence comment
+      test -n "$MERGE_SHA" && git fetch origin main && bin/venv-python -c "import json,os,subprocess; r=json.loads(subprocess.run(['aws','s3','cp','s3://agent-platform-data-lake/convergence/personal/sandbox.json','-','--profile','agent_platform_admin'],check=True,capture_output=True,text=True).stdout); bad=[k for k in ('pending_gated','pending_codification','infra_error') if k in r]; sha=r.get('commit_sha') or ''; desc=bool(sha) and subprocess.run(['git','merge-base','--is-ancestor',os.environ['MERGE_SHA'],sha]).returncode==0; assert r.get('status')=='green' and desc and not bad, (r.get('status'), desc, bad); print('PERSONAL CONVERGED GREEN at or after the merge commit -- run '+str(r.get('run_url')))"
+    expected: status green at MERGE_SHA or a descendant on main, no pending marker; prints the public run URL for the evidence comment
     fix_if: red -- follow deploy-paths.yaml's reconcile row and RCA (Decision 55); do not start the bootstrap apply while the record is red
     hermetic: false
   - step: 14
@@ -340,33 +367,60 @@ verification_plan:
     hermetic: false
   - step: 15
     phase: post-deploy
-    action: ADMIN -- plan terraform/bootstrap from merged main into a saved plan and PRESENT it to Benjamin (counts and Sid:role names only)
+    action: ADMIN -- in a throwaway worktree of merged main, plan terraform/bootstrap into a saved plan, check its grant content, and PRESENT it to Benjamin
     command: |-
-      test -n "$MERGE_SHA" && git fetch origin main && git checkout --detach origin/main && git merge-base --is-ancestor "$MERGE_SHA" HEAD && R=$(tr -d '[:space:]' < config/aws-region) && M="${TMPDIR:-/tmp}/ci-grant-retirement" && mkdir -p "$M" && terraform -chdir=terraform/bootstrap init -input=false -reconfigure -backend-config="region=$R" > /dev/null && terraform -chdir=terraform/bootstrap plan -input=false -var-file=terraform.bootstrap.tfvars -out="$M/apply.tfplan" > /dev/null && terraform -chdir=terraform/bootstrap show -json "$M/apply.tfplan" | bin/venv-python -c "import json,sys; rc=json.load(sys.stdin).get('resource_changes',[]); mv={r['address']:r['change']['actions'] for r in rc if r['change']['actions'] not in (['no-op'],['read'])}; print(json.dumps(mv)); sys.exit('APPLY PLAN STOP') if mv!={'aws_iam_role_policy.github_ci_apply':['update'],'aws_iam_policy.github_ci_apply_reads':['update']} else print('APPLY PLAN READY -- 0 to add, 2 to change, 0 to destroy; present to Benjamin')"
+      test -n "$MERGE_SHA" && W="${TMPDIR:-/tmp}/ci-grant-retirement-main" && M="${TMPDIR:-/tmp}/ci-grant-retirement" && mkdir -p "$M" && git fetch origin main && git merge-base --is-ancestor "$MERGE_SHA" origin/main && git diff --quiet "$MERGE_SHA" origin/main -- terraform/bootstrap && git worktree add --detach "$W" origin/main && cp terraform/bootstrap/terraform.bootstrap.tfvars "$W/terraform/bootstrap/" && R=$(tr -d '[:space:]' < "$W/config/aws-region") && terraform -chdir="$W/terraform/bootstrap" init -input=false -backend-config="region=$R" > /dev/null && terraform -chdir="$W/terraform/bootstrap" plan -input=false -var-file=terraform.bootstrap.tfvars -out="$M/apply.tfplan" > /dev/null && terraform -chdir="$W/terraform/bootstrap" show -json "$M/apply.tfplan" > "$M/apply.json" && M="$M" bin/venv-python - <<'EOF'
+      import json, os, sys
+      m = os.environ["M"]
+      rc = json.load(open(f"{m}/apply.json")).get("resource_changes", [])
+      os.remove(f"{m}/apply.json")
+      moving = {r["address"]: r["change"]["actions"] for r in rc if r["change"]["actions"] not in (["no-op"], ["read"])}
+      def grants(doc):
+          out = set()
+          for s in json.loads(doc)["Statement"]:
+              res = s.get("Resource"); res = [res] if isinstance(res, str) else res
+              out |= {(s.get("Sid"), x.rsplit(":", 1)[-1]) for x in res}
+          return out
+      removed, added = set(), set()
+      for r in rc:
+          if r["address"] in moving:
+              b, a = grants(r["change"]["before"]["policy"]), grants(r["change"]["after"]["policy"])
+              removed |= b - a; added |= a - b
+      want_moving = {"aws_iam_role_policy.github_ci_apply": ["update"], "aws_iam_policy.github_ci_apply_reads": ["update"]}
+      want_removed = {("IAMRoleMetadataWrite", "role/PlatformDev"), ("IAMRolesRead", "role/PlatformDev"), ("IAMRolesRead", "role/PlatformAdmin")}
+      print(json.dumps({"updates": sorted(moving), "removed": sorted(f"{s}:{t}" for s, t in removed), "added": len(added)}))
+      good = moving == want_moving and removed == want_removed and not added
+      print("APPLY PLAN READY -- 0 to add, 2 to change, 0 to destroy; exactly the three grants removed; present to Benjamin") if good else sys.exit("APPLY PLAN STOP")
+      EOF
     expected: >-
-      APPLY PLAN READY with exactly the two updates. Present to Benjamin in the thread: the two addresses,
-      the three removed grants (step 10's JSON shape), the merged sha, and the exact apply command of step
-      16. Wait for his word on that command (an approval is his own message about this apply; verify it by
-      id). The saved plan stays in scratch until step 16 or is deleted.
+      the merged sha is on main with no later terraform/bootstrap change, then one JSON line of addresses and
+      Sid:role names (the same shape as step 10) and APPLY PLAN READY. Present to Benjamin in the thread: the
+      JSON line, the merged sha and the exact command of step 16, and wait for his word on that command (his
+      own message about this apply; verify it by id). The saved plan stays in scratch for step 16; the
+      worktree stays until step 21.
     fix_if: >-
-      any other diff -- another bootstrap change merged or live drifted: STOP, delete the plan file and resolve with Benjamin
+      a later bootstrap change on main (the git diff leg fails) or any other diff -- STOP, delete the plan file
+      and resolve with Benjamin; never apply a plan this step did not pass
     hermetic: false
   - step: 16
     phase: post-deploy
     action: ADMIN (human-directed) -- on Benjamin's word, apply exactly the presented saved plan
     command: |-
-      M="${TMPDIR:-/tmp}/ci-grant-retirement" && test -s "$M/apply.tfplan" && terraform -chdir=terraform/bootstrap apply -input=false "$M/apply.tfplan" > /dev/null; rc=$?; rm -f "$M/apply.tfplan"; test $rc -eq 0 && echo "BOOTSTRAP APPLIED (2 changed)"
-    expected: BOOTSTRAP APPLIED; the plan file is deleted whatever the outcome. No platform-security alert is expected (the detector watches the two platform roles, the boundary and its own policy, not the apply role's policies)
+      W="${TMPDIR:-/tmp}/ci-grant-retirement-main" && M="${TMPDIR:-/tmp}/ci-grant-retirement" && test -s "$M/apply.tfplan" && terraform -chdir="$W/terraform/bootstrap" apply -input=false "$M/apply.tfplan" > /dev/null; rc=$?; rm -f "$M/apply.tfplan"; test $rc -eq 0 && echo "BOOTSTRAP APPLIED (2 changed)"
+    expected: >-
+      BOOTSTRAP APPLIED; the plan file is deleted whatever the outcome. No platform-security alert is expected
+      (the platform-role filter keys on the two role names and the boundary and detector-admin policy ARNs,
+      terraform/bootstrap/platform_security_alarms.tf; this apply writes the apply role's inline policy and a
+      version of its reads policy)
     fix_if: an apply error -- do not retry blind; re-plan (step 15), present again and RCA (Decision 55). A stale-plan error -- re-run step 15 and get Benjamin's word again
     hermetic: false
   - step: 17
     phase: post-deploy
     action: ADMIN -- a bootstrap plan of merged main now shows no changes
     command: |-
-      terraform -chdir=terraform/bootstrap plan -input=false -lock=false -var-file=terraform.bootstrap.tfvars -detailed-exitcode > /dev/null && echo "BOOTSTRAP CONVERGED (no changes)"
+      W="${TMPDIR:-/tmp}/ci-grant-retirement-main" && terraform -chdir="$W/terraform/bootstrap" plan -input=false -lock=false -var-file=terraform.bootstrap.tfvars -detailed-exitcode > /dev/null && echo "BOOTSTRAP CONVERGED (no changes)"
     expected: exit 0 and the marker
-    fix_if: >-
-      exit 2 -- the apply did not land or something else drifted: STOP and RCA with Benjamin
+    fix_if: exit 2 -- the apply did not land or something else drifted -- STOP and RCA with Benjamin
     hermetic: false
   - step: 18
     phase: post-deploy
@@ -407,15 +461,28 @@ verification_plan:
     fix_if: >-
       an AccessDenied on iam:GetRole -- something in terraform/personal still refresh-reads a platform role: STOP and RCA (restore the read only through a reviewed PR)
     hermetic: false
+  - step: 23
+    phase: post-deploy
+    action: rec-4049 is closed by the squash-merge trailer
+    command: |-
+      bin/venv-python -c "from src.common.ducklake_reader_client import fetch_recs_by_ids, make_reader; rows, missing = fetch_recs_by_ids(make_reader(profile='agent_platform_admin'), ['rec-4049']); assert not missing and rows[0]['status']=='closed', (missing, rows and rows[0]['status']); print('REC-4049 CLOSED')"
+    expected: REC-4049 CLOSED (read through the reader's recs_by_ids verb; Decision 215)
+    fix_if: >-
+      still open -- read ci.yml's trailer-closure job log at MERGE_SHA for rec-4049. An acceptance-verdict
+      refusal (fails, unmeasurable or out_of_grammar) means step 7 did not hold at merge: the only sanctioned
+      close is the printed close_proposed command from that log (git-ops.yaml trailer_acceptance_gate), never a
+      bare manual update_rec. A transport failure or merge-leg refusal allows the manual route in git-ops.yaml
+      resolves_trailer
+    hermetic: false
   - step: 21
     phase: post-deploy
-    action: CLEANUP and evidence -- remove scratch, then post the counts-only evidence comment on the merged PR
+    action: CLEANUP and evidence -- remove scratch and the worktree, then post the counts-only evidence comment on the merged PR
     command: |-
-      rm -rf "${TMPDIR:-/tmp}/ci-grant-retirement" terraform/bootstrap/terraform.bootstrap.tfvars && git worktree prune && test ! -e "${TMPDIR:-/tmp}/ci-grant-retirement" && test ! -e terraform/bootstrap/terraform.bootstrap.tfvars && echo "SCRATCH CLEARED"
+      W="${TMPDIR:-/tmp}/ci-grant-retirement-main"; git worktree remove --force "$W" 2>/dev/null; rm -rf "${TMPDIR:-/tmp}/ci-grant-retirement" terraform/bootstrap/terraform.bootstrap.tfvars && git worktree prune && test ! -e "$W" && test ! -e "${TMPDIR:-/tmp}/ci-grant-retirement" && test ! -e terraform/bootstrap/terraform.bootstrap.tfvars && echo "SCRATCH CLEARED"
     expected: >-
       SCRATCH CLEARED; then one comment on the merged PR, shape: 'POST-APPLY at <MERGE_SHA>: personal record green
       (run <URL>), planner clean; bootstrap applied on Benjamin's word (<date>), 2 changed, re-plan no changes;
-      simulate 0 mismatches; apply role clean (<N> documents); drift run <URL> green'
+      simulate 0 mismatches; apply role clean (<N> documents); drift run <URL> green; rec-4049 closed'
     fix_if: a path survives -- remove it by hand before ending the session
     hermetic: false
 test_obligations:
@@ -440,10 +507,10 @@ test_obligations:
     test_selector: tests/checks/iam_tf/test_platform_role_metadata_admin_scope.py::TestNoCIIamGrantOnPlatformRoles
     waiver_reason: The module is the verifier; its red cases drive the real predicate against mutated HCL (Decision 187), so a weakened predicate reddens a red case in step 1.
   - source: tests/checks/iam_tf/test_platform_iam_admin_root_only.py
-    behavior: Docstring-only edit; the guard's behaviour is unchanged.
-    verification_step: 6
-    command: bin/venv-python -m scripts.validate --pre
-    waiver_reason: A docstring carries no behaviour; the unchanged module keeps running in step 6's affected set.
+    behavior: The docstring keeps the oidc.tf mention that makes --pre select this guard for oidc.tf edits; no code change.
+    verification_step: 24
+    command: GUARDS SELECTED ON ALL FIVE
+    red_green_expectation: green before and after for the oidc.tf leg (the edit must not remove the edge); the step as a whole is red before because of the new module's edges
   - source: docs/contracts/iam-simulate-fixture.yaml
     behavior: The fixture expects implicitDeny for CI's metadata writes on PlatformDev and GetRole on both roles.
     verification_step: 3
@@ -483,7 +550,7 @@ context:
   - "The read prune satisfies github_ci_apply_reads.tf's RETIREMENT ORDERING RULE: the forget converged (#1540) before this PR."
   - "rec-4049's original acceptance (three negated greps) classifies unprobeable_shape under Decision 201's trailer gate and would be left open; the build re-grounds it with update_rec (after get_rec_write_guidance) to step 1's three pytest node ids before merge."
   - "Sequencing: the rec-4067 build merged (#1562, 1c4c3834) -- backends name no region and config/aws-region holds it; steps 10 and 15 pass it at init as -backend-config region, the documented hand-run form (terraform/bootstrap/CLAUDE.md). rec-4403's build also inserts a Decision: take the next free number at build time and re-check it on rebase. rec-3902 (org-transfer OIDC pre-stage) later edits oidc.tf's trust locals and bootstrap github_ci_apply.tf: no overlap with these statements, but no other bootstrap change may merge between this PR's merge and step 16, or step 15 shows its diff too."
-  - "Rollback: revert the PR, then a human-directed bootstrap apply restores the three grants. Decision 223's own rollback (re-import into terraform/personal) needs the read quartet restored first (PLAN-platform-iam-personal-release rollback)."
+  - "Rollback is forward-only for the record: a new PR restores the grants, fixture rows and test, and Decision NNN gains a dated Update recording the reversal (Decision 177; the entry is never deleted); a human-directed bootstrap apply then restores the apply role's two grants. Decision 223's own rollback (re-import into terraform/personal) needs the read quartet restored first (PLAN-platform-iam-personal-release rollback)."
   - "V3 resolution: the counts-only pre-merge gate comment posted on the PR for the current $PR_HEAD_SHA (steps 8-12) substitutes for the pre-merge post-deploy evidence the implement V3 Merge Gate and the code-review V3 check require; the behavioural acceptance (Decision 48) is the post-merge walk (steps 13-21: CI apply, human-directed bootstrap apply, live simulate, drift run); its evidence is a counts-only comment on the merged PR naming the applied sha (CloudWatch history ages out and is not the record)."
   - "Decision-scout verdict + CITE list: FLAGS_FOUND (one NOTE on Decision 180: re-narrow only through a numbered Decision that elects (a)'s response ahead of its trigger -- adopted); CITE 223, 167, 176, 179, 177, 144, 129, 126, 202, 181, 166, 201. Decisions triaged: 175 of 175. Roadmap items intersected: 5; CONFLICT: 0; RELATED: 5. Evidence: /mnt/project-files/rec-4049/scout-report.md"
   - "Fable consult (blind brief): /mnt/project-files/rec-4049/ADVICE.md -- numbered Decision, one PR, retire all five entries; its draft rule was false on landing (the planner reads the bootstrap-declared apply role) and was bound to the two named roles."
@@ -614,7 +681,7 @@ execution_steps:
   - |-
       APPROVED TEXT (same approval and variance). docs/contracts/deploy-paths.yaml -- in
       admin_out_of_band.procedure's SPLIT-APPLY step, replace (Decision 180 clauses 2-3 are permanent) -- it wraps across
-      two lines -- with (Decision 180 clause 3 and Decision NNN clause 1); add one amendment_log entry (newest first;
+      two lines -- with (Decision 143 clause 1, Decision 180 clause 3 and Decision NNN clause 1); add one amendment_log entry (newest first;
       prose_improvement, semantic_break false) naming rec-4049.
       Comments (wording shown at approval): github_ci_apply_policy.tf's rec-3327 / Decision 180 paragraph becomes
       "Decision NNN (rec-4049): the metadata class is role/agent-platform-* only. Once Decision 223 moved PlatformDev
@@ -625,14 +692,16 @@ execution_steps:
       IAM grant on either role (Decision NNN)".
   - "Regenerate docs/decisions-index.json (bin/venv-python -m scripts.decisions_index --write)."
   - "rec-4049: call get_rec_write_guidance(), then update_rec its acceptance to step 1's command (the three pytest node ids) and run step 7. rec-3358: update_rec appends one context note -- 'Decision NNN (rec-4049): if this rec's bootstrap plan runs as a CI identity, add that identity's policies to tests/checks/iam_tf/test_platform_role_metadata_admin_scope.py's scan and grant its reads in its own plan' -- so the Decision's Coverage residual has its owner."
-  - "Run pre-deploy steps 1-7 and 22 (full tier to exit 0); commit; open the PR with the ADMIN walk in its description; squash body carries `Resolves: rec-4049`."
+  - "Run pre-deploy steps 1-7, 24 and 22 (full tier to exit 0); record the plan's weakening_dispositions for every candidate validate_weakening_candidates lists (the exact-set pin's rename and narrowing are planned-change, citing acceptance_criteria[0]); commit; open the PR with the ADMIN walk in its description; squash body carries `Resolves: rec-4049`."
   - "ADMIN: steps 9-12 against the CI-green head (PR_NUMBER, PR_HEAD_SHA); post the counts-only pre-merge comment, shape: 'PRE-MERGE GATE at <PR_HEAD_SHA>: bootstrap 0/2/0, removed IAMRoleMetadataWrite:PlatformDev, IAMRolesRead:PlatformDev, IAMRolesRead:PlatformAdmin, added 0; personal speculative 0/1/0 guard PASS; record green, nothing pending'. Code review PROCEED; merge on Benjamin's word in the thread (IAM and Decision text)."
-  - "After merge: steps 13-14, then 15 (present), 16 only on Benjamin's word on the exact command, then 17-21. Arm send_later for step 20 if no drift run has happened yet."
+  - "After merge: steps 13-14, then 15 (present), 16 only on Benjamin's word on the exact command, then 17-20, 23 and 21. Arm send_later for step 20 if no drift run has happened yet."
   - Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)
   - "Report: what was implemented, verification results, the evidence comment link, and that rec-4049 closed"
 work_areas: []
 rollback: >-
-  Before merge: close the PR; nothing changed. After merge, before step 16: revert the PR through CI (the
-  planner grant returns via CI's apply); bootstrap is untouched. After step 16: revert the PR, then a
-  human-directed bootstrap apply restores the three grants (present the plan, Benjamin's word). Decision
-  223's own rollback (re-import the roles into terraform/personal) must restore the read quartet first.
+  Before merge: close the PR; nothing changed. After merge: a forward PR (never a revert that deletes the
+  ratified entry) restores the HCL grants, the fixture rows and the test, and appends a dated Update to
+  Decision NNN recording the reversal (Decision 177); CI re-applies the planner grant at its merge, and,
+  if step 16 has run, a human-directed bootstrap apply restores the apply role's two grants (present the
+  plan, Benjamin's word). Decision 223's own rollback (re-import the roles into terraform/personal) must
+  restore the read quartet first.
