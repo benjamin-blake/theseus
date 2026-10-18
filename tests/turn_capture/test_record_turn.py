@@ -58,6 +58,7 @@ from tests.fixtures.turn_capture_corpus import (
 from tests.fixtures.turn_capture_ducklake import load_specs
 from tests.fixtures.turn_capture_v3_cases import V3_BUILDERS, check_schedule, keyed
 from tests.fixtures.turn_capture_v4_cases import V4_BUILDERS
+from tests.fixtures.turn_capture_v5_cases import V5_BUILDERS
 
 SECRET_KINDS = ("aws_access", "aws_secret", "aws_session", "anthropic", "github", "github_pat", "bearer")
 
@@ -244,7 +245,7 @@ def test_finalize_then_grow_through_resume_re_emits_nothing() -> None:
     second = capture(after, first.next_cursor, final=True)
     old_keys, new_keys = set(keyed(first)), set(keyed(second))
     assert not old_keys & new_keys
-    assert ("telemetry_sessions", "rs1#0/resume") in new_keys and ("telemetry_observations", "a2#0/turn_close") in new_keys
+    assert ("telemetry_sessions", "rs1#0/resume") in new_keys and ("telemetry_observations", "late#0/turn_close") in new_keys
     assert not any(k[1] == "late#0/tool_call_close" for k in new_keys)
     first_close = ("telemetry_sessions", "a1#0/close")
     assert first_close in old_keys and keyed(first)[first_close]["event_kind"] == "close"
@@ -361,6 +362,7 @@ def test_new_cases_are_built_from_their_builders() -> None:
         "reasoning_visibility_forms.json": reasoning_forms_files,
         **V3_BUILDERS,
         **V4_BUILDERS,
+        **V5_BUILDERS,
     }
     for name, builder in builders.items():
         assert load_case(name)[0] == builder(), name
@@ -532,7 +534,7 @@ def test_finalization_cuts_are_recorded_once_and_survive_a_reset() -> None:
     stale = dataclasses.replace(first.next_cursor, parser_version=PARSER_VERSION - 1)
     re_emitted = capture(files, stale, final=True)
     assert [r["event_kind"] for r in re_emitted.sessions].count("close") == 1 and re_emitted.next_cursor.finalize_cuts == cuts
-    assert PRODUCER_VERSION == "turn-capture-4" and PARSER_VERSION == 4
+    assert PRODUCER_VERSION == "turn-capture-5" and PARSER_VERSION == 5
 
 
 def test_a_stream_with_no_assistant_reply_emits_no_row_in_any_table() -> None:

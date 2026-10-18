@@ -27,7 +27,8 @@ from src.turn_capture.streams import (
     is_api_error,
     notice_status,
 )
-from src.turn_capture.transcripts import Ctx, is_sentinel, text_of
+from src.turn_capture.transcripts import Ctx, text_of
+from src.turn_capture.witness import interrupted
 
 AGENT_TYPE = "claude-code-subagent"
 WORKFLOWS = ("orient", "plan", "implement", "develop-executor", "audit", "overseer")
@@ -111,10 +112,10 @@ def _workflow(stream: Stream) -> str:
 
 
 def _open_bound(stream: Stream) -> int | None:
-    """The last record line of the first closed assistant-bearing turn (the open row reads nothing later), else None."""
+    """Rule WT-9: the first closing event of the first closed assistant-bearing turn, else that turn's last record line."""
     for turn in stream.turns:
         if turn.closed and turn.last_assistant is not None:
-            return max(r.line for r in turn.recs)
+            return turn.closes[0].line if turn.closes else max(r.line for r in turn.recs)
     return None
 
 
@@ -123,23 +124,9 @@ def stream_due(stream: Stream) -> bool:
     return _open_bound(stream) is not None
 
 
-def _interrupted(turn: Turn) -> bool:
-    prompt = turn.prompts[-1] if turn.prompts else None
-    results = [r for r in turn.recs if r.kind == "tool_result"]
-    info = results[-1].data.get("toolUseResult") if results else None
-    last = turn.last_assistant
-    return (
-        (prompt is not None and is_sentinel(text_of(prompt.data["message"]["content"])))
-        or (bool(results) and results[-1].data.get("toolDenialKind") == "user-rejected")
-        or (isinstance(info, dict) and info.get("interrupted") is True)
-        or any(use.result is None for use in turn.tool_uses)
-        or (last is not None and last.data.get("isAbortedMidStream") is True)
-    )
-
-
 def _close_outcome(turn: Turn, diag: Counter[str]) -> dict[str, str]:
     """Rule C-3: cancelled when the last turn was interrupted, failed on an API-error record, else success."""
-    if _interrupted(turn):
+    if interrupted(turn):
         return {"outcome": "cancelled"}
     last = turn.last_assistant
     if last is not None and is_api_error(last.data):

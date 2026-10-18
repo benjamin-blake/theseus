@@ -117,6 +117,7 @@ fields:
       The node-kind discriminator: phase | step | turn | tool_call | process_event | model_call (Decision 95 collapse rule, extended with the T3.20 turn/tool_call kinds -- their field additions are realized: turn open and close carry sequence; tool_call open carries name, sequence and model, its close name, sequence, outcome, output_capture, output_bytes, output_sha256 and output_lines. The writer enforces each column's type, outcome and output_capture as required on a tool_call close with closed value sets, output_bytes, output_sha256 (hex pattern) and output_lines as required whenever output_capture names a readable output, all from this contract (Decision 210 cl.1)).
     semantics: >-
       Required discriminator. Open to accepted_values_extend for new node kinds, never silently narrowed. "span" is deliberately NOT a value (lexicon: use "observation").
+      TURN CLOSES (claude_code, parser_version 5): one close per usable Stop witness keyed on the witness record, an API-error record closes its own turn, and the boundary close is keyed on the turn's last uuid and timestamp record and emitted only when no usable closing event lies at or after the turn's last assistant record, each close keyed on the record that ends its window (a boundary close's timestamp now includes the turn's trailing records, such as Stop summaries and compaction groups before the next prompt, so turn open-to-close durations of re-emitted history shift). A turn's open row lands once its prompt is on disk.
     populated_by: the write boundary, per event_kind.
     dq_intent:
       not_null: true
@@ -124,6 +125,7 @@ fields:
         values: [phase, step, turn, tool_call, process_event, model_call]
         note: Open to accepted_values_extend, never silent narrowing.
     amendment_log:
+      - {date: "2026-10-18", semantic_break: true, change_class: governance_note_add, summary: "PLAN-telemetry-stop-turn-close (parser_version 5): turn closes per Stop witness, API-error self-close, boundary close rekeyed on the turn's last uuid and timestamp record, and the early turn open row.", migration_story: "Parser v5 re-parses every tree from the start; v4 rows are superseded by version, never rewritten."}
       - {date: "2026-10-14", semantic_break: true, change_class: governance_note_add, summary: "PLAN-telemetry-parser-v3 (slice 3b plan P-B): the realized turn/tool_call field set replaces the 'T3.20's build' residual."}
       - {date: "2026-09-24", semantic_break: true, change_class: accepted_values_extend, summary: "PLAN-telemetry-event-journal-contracts (Decision 199): extended accepted_values with turn and tool_call (T3.20's own field additions for those kinds are out of this plan's scope)."}
   name:
@@ -164,12 +166,13 @@ fields:
     nullable: true
     description: "Disposition of the node where applicable: success | error | blocked | interrupted."
     semantics: >-
-      Required on a tool_call's close row (the one kind with a mandatory terminal disposition in this model); optional elsewhere. Stored on each close row that observes it. An observation's current disposition, and the close its duration pairs with, is its latest close by event_timestamp, then source_ordinal, then event_id (the telemetry_sessions state ordering). A sub-agent's synthetic close at a finalization cut is not evidence that its agent run ended; the run's state is telemetry_agents'.
+      Required on a tool_call's close row (the one kind with a mandatory terminal disposition in this model); optional elsewhere. Stored on each close row that observes it. An observation's current disposition, and the close its duration pairs with, is its latest close by event_timestamp, then source_ordinal, then event_id (the telemetry_sessions state ordering). A sub-agent's synthetic close at a finalization cut is not evidence that its agent run ended; the run's state is telemetry_agents'. From parser_version 5 claude_code turn closes carry it (success | error | interrupted per rule WT-6; still optional at write, no new value and no required_when).
     populated_by: the write boundary, at close for span-shaped kinds.
     dq_intent:
       required_when: {event_kind: [close], observation_type: [tool_call]}
       accepted_values: {values: [success, error, blocked, interrupted]}
     amendment_log:
+      - {date: "2026-10-18", semantic_break: true, change_class: governance_note_add, summary: "PLAN-telemetry-stop-turn-close (parser_version 5): claude_code turn closes carry outcome (success | error | interrupted); optional at write, no value added, the writer unchanged (Decision 210).", migration_story: "Parser v5 re-parses every tree from the start; v4 turn closes without outcome are superseded by version, never rewritten."}
       - {date: "2026-10-14", semantic_break: true, change_class: governance_note_add, summary: "PLAN-telemetry-parser-v3 (slice 3b plan P-B): stored on each close row that observes it; the latest close is the current disposition (a re-anchored entity carries two closes). No outcome value is added."}
       - date: "2026-09-24"
         semantic_break: true
