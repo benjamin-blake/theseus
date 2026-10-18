@@ -861,6 +861,8 @@ data-modeling-standard.yaml, rule write-time-enforcement.]
 (validate_write_time_enforcement_conformance); a declared rule is enforced, so the enforced key is retired; value removal
 and new exemptions ratchet. Detail: data-modeling-standard.yaml, rule write-time-enforcement.]
 
+> **Update (2026-10-18):** the Coverage line's DQ-side rec-4101 residual is now enforced as tree-scoped parent existence by the reader's telemetry_orphan_counts verb and the daily telemetry-verification workflow (PLAN-telemetry-verification-monitor), not by the T1.6 substrate, for trees whose root started within 28 days of their quiet day; the residuals T3.20 c3's prefix and the two contract notes name are rec-4439's, including trees older than that; rec-4063 and rec-4121 item 4 are unchanged. No clause changes.
+
 ---
 
 ## Decision 209: Open-core paywall on organisational scale, never capability -- a multi-tenant, metadata-only control plane over a customer-owned data plane, and three monorepos placed by platform-vs-product and visibility (amends Decision 184 clause 1, Decision 178 and Decision 101 point (f)) (Decided)
