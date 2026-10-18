@@ -28,7 +28,7 @@ never_on_main: true              # no file edits while on main branch
 no_code_changes: true            # writes happen only inside dispatched /plan and /implement subagents
 meta_layer_not_tier: true        # composes the four-tier workflow (Decision 90); no fifth tier
 no_rescue_loops: true            # CI failures route to ci_rca + human escalation (Decision 55/72)
-halt_on_open_ci_rca: true        # halts new dispatch while any open source=ci_rca critical rec exists
+halt_on_open_ci_rca: true        # halts dispatch the red_overlap check blocks (Decision 226)
 ```
 
 ## Read-Nothing Router Discipline
@@ -108,9 +108,8 @@ artifact (transcript, output file, a re-dispatch to reproduce, or the original S
 prompt); escalate with the RCA findings (Decision 55, one level up). See
 `overseer-dispatch.yaml#executor_rca_feed`.
 
-**Halt-on-open-ci_rca (Decision 73):** before any new-slice dispatch, check `ci_rca_unresolved_recs`
-in the preflight cache; an open critical rec, or a null list (unavailable), halts dispatch -- never overridden, not even by
-proceed-with-notice.
+**Halt-on-open-ci_rca (Decision 226):** every dispatch first runs `scripts.ci_rca.red_overlap` (`--plan <plan>` for
+`/implement`, no arguments for `/plan`); a non-zero exit halts it -- never overridden, not even by proceed-with-notice.
 
 ## Division of Labor & Gate Ownership (Design B)
 
@@ -207,7 +206,7 @@ session. See `overseer-dispatch.yaml#model_namespace_note`.
   Never consumes the rec queue; IMPLEMENTATION only.
 - **Decision 55/72:** BLOCKED/FAILED twice never an inline patch/silent retry -- routes to
   `executor-rca` and escalates.
-- **Decision 73:** see Lifecycle and Gates -- halt-on-open-ci_rca is a hard dispatch block.
+- **Decision 226:** see Lifecycle and Gates -- the red_overlap verdict blocks dispatch.
 - **Decision 76:** the safety-net watchdog is the sole sanctioned trigger exception.
 - **Decision 90:** composes `/plan`/`/implement` as-is -- no new tier, plan type, or bypass.
 - **Decision 115/87:** ledger durable SoT precedent.

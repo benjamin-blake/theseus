@@ -75,6 +75,7 @@ from scripts.ops_portal.ci_rca_runtime import (  # noqa: F401
 )
 from scripts.ops_portal.ci_rca_schema import (  # noqa: F401
     _CI_RCA_VALID_MODES,
+    _PORTAL_OWNED_KEYS,
     CiRcaContext,
     CiRcaEvidenceDispute,
     _classify_schema_deficiency,
@@ -83,6 +84,7 @@ from scripts.ops_portal.ci_rca_schema import (  # noqa: F401
     _stamp_warn_mode_reject,
     _validate_ci_rca_context_v2,
     _validate_ci_rca_dispute,
+    apply_track_rules,
 )
 from scripts.ops_portal.cli import main
 from scripts.ops_portal.closure_gate import (  # noqa: F401
@@ -94,6 +96,7 @@ from scripts.ops_portal.closure_gate import (  # noqa: F401
     assert_acceptance_verdict,
     assert_closure_obligation,
     closure_stamps_applicable,
+    confirmed_track_stamp,
     parse_context_json,
 )
 from scripts.ops_portal.maintenance_ops import (  # noqa: F401
@@ -253,6 +256,8 @@ def file_rec(
     # Must run before gate_write so the human summary can satisfy the context min_length floor.
     if fields.get("source") == "ci_rca":
         if context_v2_json is not None:
+            for _owned in _PORTAL_OWNED_KEYS:
+                context_v2_json.pop(_owned, None)
             deficiencies = _validate_ci_rca_context_v2(context_v2_json)
             if deficiencies:
                 mode = get_ci_rca_strict_mode()
@@ -349,6 +354,14 @@ def file_rec(
                         head.rec_id,
                         head.rec_id,
                     )
+
+    if fields.get("source") == "ci_rca" and context_v2_json is not None:
+        apply_track_rules(
+            fields,
+            context_v2_json,
+            portal_regression=bool(context_v2_json.get("regression_of")),
+            mode=get_ci_rca_strict_mode(),
+        )
 
     _derive_computed_fields(fields)
 
@@ -483,6 +496,8 @@ def update_rec(
         "fixed_by_sha": closure_fix_sha,
     }
     closure_stamps = {k: v for k, v in closure_stamps.items() if v is not None}
+    if closure_fix_sha:
+        closure_stamps.update(confirmed_track_stamp(merged.get("source"), closure_fix_sha, ROOT))
     if closure_stamps:
         if not closure_stamps_applicable(merged.get("context_v2_json")):
             raise ValueError(

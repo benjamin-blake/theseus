@@ -16,6 +16,7 @@ contract:
     check: validate_ci_rca_lifecycle_projection
 
 amendment_log:
+  - {date: "2026-10-18", semantic_break: false, change_class: field_add, summary: "PLAN-red-main-recovery-policy (Decision 226): declared repair_track, repair_track_confirmed and workflow_tier in projection_fields; default_branch_disposition now points at red-main-recovery.yaml."}
   - date: "2026-09-25"
     semantic_break: true
     change_class: field_add
@@ -96,12 +97,13 @@ trigger_scope:
     hard-blocks the planning queue (L5) and pauses PR auto-merge (L6) until a forward-fix
     lands." Decision 73 point 2 sends the full tier to push-to-main and the hourly L8 drift
     canary -- both produce workflow_run events whose head_branch is main, which is exactly what
-    the gate above mechanises.
+    the gate above mechanises. Decision 226 amends that clause: see default_branch_disposition.
   default_branch_disposition: >-
-    A post-merge full-tier failure on main: ci-rca diagnoses and files the rec (Decision 72 +
-    Decision 73 point 3); the rec hard-blocks `/plan` (Decision 73 point 4) until a forward-fix
-    lands (Decision 55 RCA-first -- never auto-revert, never an inline workaround ahead of
-    review).
+    A post-merge full-tier failure on main: ci-rca diagnoses and files the rec (Decision 72 + Decision
+    73 point 3, as amended by Decision 226); recovery follows docs/contracts/red-main-recovery.yaml --
+    the track sets the priority, a Track A repair takes its fast_lane_repair procedure, a Track B
+    repair goes through /plan or a manual revert PR, and the plan-time block is red_overlap's verdict
+    (Decision 55 RCA-first: never auto-revert, never an inline workaround outside these routes).
   pr_branch_disposition: >-
     A PR-branch `--pre` (fast-tier) failure is UNCOVERED BY CONSTRUCTION, not by omission --
     though a workflow_run event IS emitted for it. ci-rca.yml subscribes to workflow_run on the
@@ -359,6 +361,9 @@ projection_fields:
     type: "Optional[str]"
     home: context_v2_json (CiRcaContext)
     authored_by: closer (free-text proof, supplied alongside closure_waiver_category)
+  repair_track: {type: "Optional[str]", enum: [test_defect, product_regression], home: context_v2_json (CiRcaContext), authored_by: agent}
+  repair_track_confirmed: {type: "Optional[str]", enum: [test_defect, product_regression], home: context_v2_json (CiRcaContext), authored_by: "portal (red-main-recovery.yaml confirmed_track)"}
+  workflow_tier: {type: "Optional[str]", home: context_v2_json (CiRcaContext), authored_by: "portal (the verified bundle's workflow_to_tier_resolution)"}
 
 # Decision 186: closure-time artifact obligation for escape-classified recs. Field semantics
 # route here (Decision 86/127); rationale and per-ruling evidence live in the Decision and in
@@ -447,7 +452,9 @@ procedure:
     row-level fields (e.g. title) that update_rec content-gates in the same call. Example (rec-2923,
     PLAN-ci-rca-abstention-and-citation step 6):
     `bin/venv-python -c "from scripts.ops_portal.ci_rca_lifecycle import correct_rec_context;
-    correct_rec_context('rec-2923', {...}, row_updates={'title': '...'})"`.
+    correct_rec_context('rec-2923', {...}, row_updates={'title': '...'})"`. It also drops a caller's
+    portal-owned keys, re-derives priority and refuses a preventive-deficient merge
+    (docs/contracts/red-main-recovery.yaml).
 
 # PLAN-ci-rca-adjudication-guard: this contract used to carry a second, hand-maintained
 # watched:/excluded: enumeration in parallel with config/ci_rca_taxonomy.yaml's own exhaustive
