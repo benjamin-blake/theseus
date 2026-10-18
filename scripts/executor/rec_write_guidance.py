@@ -152,7 +152,15 @@ def get_rec_write_guidance(
                 "recurrence_class": "str enum: novel | instance_of_known_pattern | regression.",
                 "prior_art_citation": "optional str. Shape-validated only (existence check deferred to Phase 2).",
                 "corrective_action": "str, 100-600 chars. The tactical fix that restores service.",
-                "preventive_action": "str, 100-800 chars. The systemic change that prevents recurrence.",
+                "repair_track": (
+                    "str enum: test_defect | product_regression. test_defect only when merged product behaviour "
+                    "is right and the corrective changes only tests/**; absent or unsure reads as "
+                    "product_regression; the portal derives priority from it (Decision 226)."
+                ),
+                "preventive_action": (
+                    "str, 100-800 chars; omit only for a Track A red -- repair_track test_defect on a CI-tier "
+                    "workflow with no regression (none owed, Decision 226); required otherwise."
+                ),
                 "evidence_bundle_ref": (
                     "optional object: {sha256: 64 hex chars, s3_uri: s3://..., upload_status: str}. "
                     "Shape-validated only (S3 existence check deferred to Phase 2)."

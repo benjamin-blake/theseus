@@ -212,3 +212,11 @@ class TestCiRcaUnobservedStepsGuidance:
 
         guidance = get_rec_write_guidance(source="ci_rca")
         assert "unobserved_steps_authoritative" not in guidance["context_v2_json"]["schema_fields"]
+
+
+def test_ci_rca_guidance_names_repair_track() -> None:
+    from scripts.executor.rec_write_guidance import get_rec_write_guidance
+
+    fields = get_rec_write_guidance(source="ci_rca")["context_v2_json"]["schema_fields"]
+    assert "test_defect" in fields["repair_track"] and "product_regression" in fields["repair_track"]
+    assert "omit only for a Track A red" in fields["preventive_action"]

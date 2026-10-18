@@ -47,7 +47,7 @@ When reading `logs/.preflight-report.json`, apply these conditionals:
 - **`data_quality.checks_defined == 0`** -- none defined; a plan touching data write paths should
   add YAML checks under `config/agent/data_quality/`. See scripts/data_quality_runner.py's module
   docstring.
-- **`ci_rca_unresolved_recs` non-empty** -- **HARD BLOCK** at commitment time. `/plan` cannot scope unrelated work while any unresolved ci-rca rec exists. Proceed only to scope work that satisfies one of the three Related-Work conditions (see Step 8) OR has a logged deferral rationale in the new plan's Context section. (Legacy: if the report only has `ci_rca_recs` and no `ci_rca_unresolved_recs`, treat all entries as HARD BLOCK.) Full triage surfacing and the SOFT PROMPT / HARD ALERT classification is `/orient`'s responsibility -- run `/orient` for the full ci-rca visibility layer.
+- **`ci_rca_unresolved_recs` non-empty** -- **HARD BLOCK** at commitment time for overlapping work only (Decision 226): the Step 8 Related-Work Check always runs `scripts.ci_rca.red_overlap`, which blocks work that overlaps a red, and every plan once a red is past its repair SLO. (Legacy: if the report only has `ci_rca_recs` and no `ci_rca_unresolved_recs`, treat all entries as HARD BLOCK.) Full triage surfacing and the SOFT PROMPT / HARD ALERT classification is `/orient`'s responsibility -- run `/orient` for the full ci-rca visibility layer.
 - **`ci_rca_likely_resolved_recs`, `ci_rca_liveness_alert`, `forward_fix_recursion_alert`** -- Full triage (SOFT PROMPT, HARD ALERT, forward-fix recursion) is surfaced by `/orient`. If still unresolved when `/plan` runs, apply the close or triage guidance from the orient skill.
 - **`budget_bypass_alert` non-null** -- **Informational.** Surface the bypass count and recent
   reasons as planning context. Repeated `--ignore-budget` use indicates fast-tier drift and likely
@@ -376,13 +376,9 @@ bin/venv-python -m scripts.roadmap.plan_document docs/plans/PLAN-{slug}.yaml
 
 **Platform compatibility:** commands must be Linux/bash-compatible (AGENTS.md `## Shell invocations`).
 
-## Related-Work Check (Workflow Step 8, when ci-rca recs are open)
+## Related-Work Check (Workflow Step 8)
 
-If `ci_rca_unresolved_recs` is non-empty when writing the PLAN file (or `ci_rca_recs` if the report predates the correlation field), confirm the plan satisfies at least one of the following conditions before committing. A plan failing all three must include a logged deferral rationale in its Context section; otherwise write is refused.
-
-1. **Same file**: the plan's Scope table includes the same file the ci-rca rec cites as `source_file`.
-2. **Same Decision Record**: the plan addresses the same Decision Record the ci-rca rec references (if any).
-3. **Same failure category**: the plan addresses the same failure category as the rec. Canonical categories: DQ check failure, schema verifier failure, validate.py false negative, terraform validate failure, pytest regression, mypy regression, prompt-compliance failure, V3 harness failure.
+When writing the PLAN file, always run `bin/venv-python -m scripts.ci_rca.red_overlap --plan docs/plans/PLAN-{slug}.yaml` (Decision 226; rules in `docs/contracts/red-main-recovery.yaml`). Exit 0: proceed and record its verdict line in Context. Exit 2 (unavailable): HARD BLOCK; proceed only if the human explicitly overrides (Decision 215). Exit 1: a plan that repairs the red bundles it (red_overlap then clears it); otherwise the plan must log a deferral rationale naming the blocking red in its Context section, or write is refused.
 
 ## Closure Obligation (Workflow Step 8, CONDITIONAL)
 

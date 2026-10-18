@@ -2,6 +2,101 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 226: Red-main recovery is priced by repair track, halts only overlapping work, runs to an SLO, and owes a preventive only for a recurring class (amends Decisions 72, 73 and 217) (Decided)
+
+```yaml
+number: 226
+status: Decided
+decided_date: "2026-10-18"
+amends: [72, 73, 217]
+significance:
+  value: numbered_decision
+  justification: >-
+    One recovery policy changes ratified clauses in three entries (72's fixed Critical, 73 cl.3-5,
+    217 cl.1's trigger). Not a contract note: docs/contracts/red-main-recovery.yaml holds the values
+    and field semantics, not whether a red halts work or owes a preventive. Not amendment_forms lines: an
+    annotation cannot change a ratified clause's meaning, and one policy spans three entries.
+```
+
+**Status:** Decided
+**Date:** 2026-10-18
+**Warehouse ID:** dec-226 (per Decision 84 backfill)
+
+**Problem:** Decision 73 merges optimistically and accepts a red main, then prices every red as a
+product regression: a Critical rec, a halt on all new plans and dispatch, and a mandatory
+preventive_action in a plan cycle. In the 61 days to 2026-10-18 main went red 39 times (38 filed
+Critical) at about 11 merges a day. rec-4427, a tests-only repair (#1556), still halted dispatch for
+its 11.7-hour red window and drew a preventive plan for a misread cause.
+
+**Decision:**
+1. **Two repair tracks.** Track A: the corrective changes only `tests/**` and leaves merged product
+   behaviour as it is. The ci-rca agent records that diagnosis as `repair_track`; code accepts it only
+   on a test-bearing workflow (the verified evidence bundle's CI tier) with no regression, and files
+   the red High. Every other red, an unaccepted A diagnosis included, is Track B, filed Critical. When
+   the fix lands, code stamps the confirmed track from the fix commit's diff; only that is tallied.
+2. **Fast lane for A**, with no plan cycle (an exception to Decision 72's /plan consumption).
+   Whichever session picks the red up opens a tests-only PR. It runs the failing tests, the fast
+   tier and the full tier (Decision 163), and code review disposes of every weakening candidate
+   (Decision 181). An A rec owes no preventive_action. A repair needing non-test code is Track B.
+3. **The halt narrows to overlap**: Decision 217 cl.1, pulled forward by its red-window-growth
+   condition. An unresolved red blocks a new plan or dispatch only when the work's affected set
+   overlaps the red's (Decision 135's channels), computed by `scripts/ci_rca/red_overlap.py`. An
+   undeterminable red, a selector fallback or a failed read blocks (Decision 215). An A red blocks
+   nothing inside its SLO, and a red never blocks the plan that bundles it as its
+   repair. Decision 73 cl.3's unbuilt L6 pause follows this rule.
+4. **Repair SLO.** A red is repaired within 4 hours of filing, agent-owned; past it, it blocks all
+   new plans and dispatch except a plan repairing an open red (Decision 73 cl.4) until it closes. Forward-fix stays the default. For B,
+   a manual revert PR of the culprit is permitted when the fix is not obvious, unless the culprit
+   touched `terraform/**` or a governed deploy path. The revert PR lands the Decision 186 closure
+   artifact itself. Automated revert stays excluded.
+5. **A preventive only for a recurring class.** preventive_action is owed only when at least two
+   source=ci_rca recs in the window share a class key computed in code from the verified bundle
+   (the failing check and its escape attribution). The key, window and threshold live in
+   red-main-recovery.yaml. When owed it is one class-level rec per key, never a red's corrective.
+   Until the tally lands (rec-4441, after rec-4428), Track B keeps a mandatory preventive_action.
+
+**Rationale:** Optimistic merge with post-merge testing pairs with cheap, time-bounded recovery:
+culprit-owned repair or rollback under an SLO, tree closure only where a red can mask work, and deep
+analysis reserved for recurring classes (Google TAP, Chromium sheriffing, LLVM revert-to-green, the
+SRE workbook). Falling back to Decision 73 cl.4 past the SLO keeps each change no worse than today.
+A build reaching handoff during a red still needs a green full tier (Decision 163). A revert PR
+appends to main like a forward-fix, so Decision 73's worktree objection binds only automated revert.
+Rejected: a heavier PR tier or a merge queue (neither lowers recovery cost); automated revert.
+
+**Coverage (Decision 181 cl.2):** the cl.1, cl.3 and cl.4 verdicts -- the tests
+docs/contracts/red-main-recovery.yaml names; priority is re-derived in file_rec and correct_rec_context.
+Instruction-enforced residuals: cl.2's fast-lane eligibility, dispositions and full-tier run
+(validate_handoff_full_tier reads plans only) (rec-4442); the /plan and overseer calls to red_overlap,
+cl.4's revert eligibility and direct update_rec writes of portal-owned keys (rec-4444). Past the SLO,
+preflight's likely-resolved split and Step 8's logged deferral still apply, as under Decision 73 cl.4
+today (rec-4444). cl.5: rec-4441. cl.3 inherits the selector's misses (rec-4429).
+
+```yaml reversal-conditions
+decision: 226
+review_by: 2027-04-30
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: track-a-misuse
+    kind: manual
+    description: "A confirmed Track A repair weakened a test, or more than two A diagnoses in 90 days confirm as B: re-decide cl.1-2."
+  - id: overlap-miss
+    kind: manual
+    description: "Work the overlap check cleared is masked by, or lands on, an open red: re-decide cl.3."
+  - id: slo-breach-rate
+    kind: manual
+    description: "More than half of the reds in 90 days breach the SLO: re-decide cl.4."
+  - id: slow-recurrence
+    kind: manual
+    description: "A class recurs just outside the window with no preventive owed: re-decide cl.5's window."
+  - id: promotion-lands
+    kind: manual
+    description: "SIT/PROD promotion (Decision 73 cl.5) goes live: re-decide the entry."
+```
+
+**Related:** Decision 72, 73, 217, 55, 90, 135, 142, 163, 181, 186, 210, 215.
+
+---
+
 ## Decision 225: CI identities hold no IAM grant on PlatformDev or PlatformAdmin (elects Decision 180 reversal condition (a)'s re-narrow ahead of its trigger; amends Decision 180 clauses 1-2) (Decided)
 
 ```yaml
@@ -568,6 +663,8 @@ conditions:
 
 **Related:** Decisions 73, 196, 205, 206 (amended), 135, 215, 177, 167, 197, 75, 211, 185, 86;
 CD.37.
+
+> **Amended by Decision 226 (2026-10-18):** Clause 1's overlap block is pulled forward to executor concurrency 1 by the red-window-growth condition (Decision 226 cl.3: rec-4427's 11.7-hour red window at about 11 merges a day), so the concurrency-raised trigger no longer gates clause 1, and past the repair SLO Decision 226 cl.4 restores the global plan and dispatch block; clauses 2-8 are unchanged.
 
 ---
 
@@ -9458,6 +9555,8 @@ Key elements:
 
 > **Amended by Decision 217 (2026-10-14):** Above executor concurrency 1, clause 4's plan-time block on an open ci-rca rec becomes an affected-set overlap block, and a red whose file set cannot be determined still blocks (Decision 217 clause 1); until then clause 4 stands unchanged. Textual conflicts route per Decision 217 clause 2.
 
+> **Amended by Decision 226 (2026-10-18):** Clause 3's fixed priority="critical" becomes track-derived (High for a tests-only repair on a CI-tier workflow), and a manual revert PR is a permitted Track B corrective outside terraform/** and governed deploy paths (automated revert stays excluded). Clause 3's L6 pause and clause 4's plan-time block become the red_overlap overlap block; clause 4 as written now applies only to a red past its repair SLO. Clause 5's rec -> plan -> implement recovery stands for Track B, with Track A on the fast lane (Decision 226 cl.1-4). This supersedes the Decision 217 line above for clause 4.
+
 ---
 
 ## Decision 72: RCA-as-Plan-Source for CI Merge Gate Failures (Decided)
@@ -9487,6 +9586,8 @@ Reuses the cc-scheduled-agents infrastructure (Decision 71) with a `workflow_run
 > `docs/contracts/ci-rca-lifecycle.yaml` trigger_scope, and is diagnosed and fixed by the
 > implementing agent directly (AGENTS.md `## Git-ops procedure` step 6), not via this Decision's
 > rec-filing path.
+
+> **Amended by Decision 226 (2026-10-18):** Priority is derived in code from the agent's repair_track: High for a tests-only repair on a CI-tier workflow, Critical otherwise and for every regression filing (Decision 226 cl.1). Consumption via /plan, or a cl.4 manual revert PR, stands for Track B; a Track A repair takes the fast lane with no plan cycle (cl.2).
 
 ---
 

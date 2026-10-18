@@ -169,7 +169,7 @@ one-line triggers below.
   SHAs.
 
 ## Merge protocol
-- **Post-merge full-tier failure on `main`**: ci-rca automatically files a `source=ci_rca`, `priority=critical` rec (forward-fix, never auto-revert). Do NOT manually patch until the rec is reviewed in `/plan` -- inline fixes reproduce the workaround anti-pattern (Decision 55, Decision 72).
+- **Post-merge full-tier failure on `main`**: ci-rca files a `source=ci_rca` rec, `priority=critical` unless tests-only (High, fast lane); else `/plan` or a manual revert PR (forward-fix, never auto-revert; no inline workaround -- Decision 226, `red-main-recovery.yaml`).
 - **PR-branch `--pre` failure**: per `docs/contracts/ci-rca-lifecycle.yaml` trigger_scope, no rec is filed and nothing gates -- ci-rca watches `main` only; diagnose and fix on the branch (Git-ops step 6).
 - Manual confirmation: if `validate.py` appears to skip tests, run `pytest` directly to confirm.
 
