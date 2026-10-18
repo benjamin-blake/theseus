@@ -57,9 +57,16 @@ scope:
       dialects: jsonencode Statement lists (Sid/Effect/Action/Resource) and `statement {}` blocks
       (sid/effect/actions/resources), over terraform/bootstrap/github_ci_apply_policy.tf and
       github_ci_apply_reads.tf (the apply role's two policies; the boundary is a ceiling and is not
-      scanned) and EVERY terraform/personal/*.tf file (all of it CI-applied). Fail-closed: the two
-      bootstrap files and terraform/personal/oidc.tf, oidc_ci_roles.tf and oidc_pipeline_roles.tf must
-      each yield at least one statement. Planning census: on the unedited tree the only iam: Allows matching
+      scanned) and EVERY terraform/personal/*.tf file (all of it CI-applied). Fail-closed by independent
+      count, per file and per dialect (tests/CLAUDE.md: derive the count, never a floor): the parsed
+      `statement {}` blocks must equal a raw count of `statement {` openings, and the parsed jsonencode
+      statements must equal a raw count of `Effect =` keys, both over comment-masked text; the two bootstrap
+      files and oidc.tf, oidc_ci_roles.tf and oidc_pipeline_roles.tf must each be present and non-empty.
+      ATTACHMENTS (fail closed): in the scanned files, any aws_iam_role_policy_attachment,
+      aws_iam_policy_attachment, *_exclusive attachment set or managed_policy_arns whose policy is not an
+      aws_iam_policy declared in a scanned file is a problem -- an AWS-managed ARN (arn:aws:iam::aws:policy/...)
+      such as IAMReadOnlyAccess would grant the read quartet on both roles through the boundary's iam:Get*
+      ceiling; today the only attachment is the apply role's own reads policy, which is allowed. Planning census: on the unedited tree the only iam: Allows matching
       either role are the five lines this plan removes. New class TestNoCIIamGrantOnPlatformRoles: the real tree has no leak. Red cases
       driving the real predicate on mutated text (Decision 187): PlatformDev re-added to
       IAMRoleMetadataWrite; PlatformAdmin added to bootstrap IAMRolesRead; PlatformDev added to oidc.tf
@@ -74,7 +81,9 @@ scope:
       platform_security_alarms.tf). Reuse the existing parsers where they fit
       (scripts/checks/iam_tf/_read_coverage.py, tests/checks/iam_tf/_platform_security_hcl.py) rather than a
       third. Extra red cases: scalar Resource naming PlatformDev; a Sid-less statement; an effect-less
-      `statement {}`; a NotResource statement; a lower-case "platformdev". The module names the five CI
+      `statement {}`; a NotResource statement; a lower-case "platformdev"; an AWS-managed policy attachment on
+      a CI role; one dialect made unparseable in oidc_ci_roles.tf while the file's other dialect still parses
+      (the per-dialect count must fail). The module names the five CI
       policy files by path (its fail-closed list), which is what makes --pre select it (step 24). Module
       docstring names Decision NNN. Stays well under 500 SLOC (88 today).
   - file: tests/checks/iam_tf/test_platform_iam_admin_root_only.py
@@ -300,26 +309,33 @@ verification_plan:
       rc = json.load(open(f"{m}/pr.json")).get("resource_changes", [])
       os.remove(f"{m}/pr.json")
       moving = {r["address"]: r["change"]["actions"] for r in rc if r["change"]["actions"] not in (["no-op"], ["read"])}
-      def grants(doc):
+      def rows(doc):
           out = set()
           for s in json.loads(doc)["Statement"]:
-              res = s.get("Resource"); res = [res] if isinstance(res, str) else res
-              out |= {(s.get("Sid"), x.rsplit(":", 1)[-1]) for x in res}
+              res = s.get("Resource"); res = [res] if isinstance(res, str) else list(res or [])
+              act = s.get("Action"); act = [act] if isinstance(act, str) else list(act or [])
+              rest = json.dumps({k: v for k, v in s.items() if k not in ("Sid", "Effect", "Action", "Resource")}, sort_keys=True)
+              out |= {(s.get("Sid"), s.get("Effect"), tuple(sorted(act)), x, rest) for x in res}
           return out
-      removed, added = set(), set()
+      removed, added, attrs = set(), set(), set()
       for r in rc:
           if r["address"] in moving:
-              b, a = grants(r["change"]["before"]["policy"]), grants(r["change"]["after"]["policy"])
-              removed |= b - a; added |= a - b
+              c = r["change"]; b, a = c["before"], c["after"]; unk = c.get("after_unknown") or {}
+              rb, ra = rows(b["policy"]), rows(a["policy"])
+              removed |= rb - ra; added |= ra - rb
+              attrs |= {f'{r["address"]}.{k}' for k in (set(b) | set(a)) - {"policy"} if not unk.get(k) and b.get(k) != a.get(k)}
+      removed_pairs = {(sid, res.rsplit(":", 1)[-1]) for sid, _, _, res, _ in removed}
       want_moving = {"aws_iam_role_policy.github_ci_apply": ["update"], "aws_iam_policy.github_ci_apply_reads": ["update"]}
       want_removed = {("IAMRoleMetadataWrite", "role/PlatformDev"), ("IAMRolesRead", "role/PlatformDev"), ("IAMRolesRead", "role/PlatformAdmin")}
-      print(json.dumps({"updates": sorted(moving), "removed": sorted(f"{s}:{t}" for s, t in removed), "added": len(added)}))
-      good = moving == want_moving and removed == want_removed and not added
+      print(json.dumps({"updates": sorted(moving), "removed": sorted(f"{s}:{t}" for s, t in removed_pairs), "removed_rows": len(removed), "added_rows": len(added), "other_attrs_changed": sorted(attrs)}))
+      good = moving == want_moving and removed_pairs == want_removed and len(removed) == 3 and not added and not attrs
       print("PRE-MERGE PLAN OK -- 0 to add, 2 to change, 0 to destroy; exactly the three grants removed") if good else sys.exit("PRE-MERGE PLAN STOP")
       EOF
     expected: >-
-      one JSON line of addresses and Sid:role names only (the two updates; removed IAMRoleMetadataWrite on
-      PlatformDev and IAMRolesRead on both roles; added 0), then PRE-MERGE PLAN OK. Nothing is applied;
+      one JSON line of addresses, Sid:role names and attribute names only (the two updates; removed
+      IAMRoleMetadataWrite on PlatformDev and IAMRolesRead on both roles; removed_rows 3; added_rows 0, so no
+      Sid, Effect, Action, Resource or Condition changed anywhere else in either policy; no other attribute of
+      either address changed), then PRE-MERGE PLAN OK. Nothing is applied;
       -lock=false keeps the read off the state lock; the plan file, its JSON and the worktree tfvars are
       deleted in this step. Post the JSON line and PR_HEAD_SHA on the PR (counts and names only, Decision 101).
       Planning-time dry run of exactly this edit (2026-10-18, origin/main 5f355f10): the same two updates and
@@ -369,35 +385,44 @@ verification_plan:
     phase: post-deploy
     action: ADMIN -- in a throwaway worktree of merged main, plan terraform/bootstrap into a saved plan, check its grant content, and PRESENT it to Benjamin
     command: |-
-      test -n "$MERGE_SHA" && W="${TMPDIR:-/tmp}/ci-grant-retirement-main" && M="${TMPDIR:-/tmp}/ci-grant-retirement" && mkdir -p "$M" && git fetch origin main && git merge-base --is-ancestor "$MERGE_SHA" origin/main && git diff --quiet "$MERGE_SHA" origin/main -- terraform/bootstrap && git worktree add --detach "$W" origin/main && cp terraform/bootstrap/terraform.bootstrap.tfvars "$W/terraform/bootstrap/" && R=$(tr -d '[:space:]' < "$W/config/aws-region") && terraform -chdir="$W/terraform/bootstrap" init -input=false -backend-config="region=$R" > /dev/null && terraform -chdir="$W/terraform/bootstrap" plan -input=false -var-file=terraform.bootstrap.tfvars -out="$M/apply.tfplan" > /dev/null && terraform -chdir="$W/terraform/bootstrap" show -json "$M/apply.tfplan" > "$M/apply.json" && M="$M" bin/venv-python - <<'EOF'
+      test -n "$MERGE_SHA" && W="${TMPDIR:-/tmp}/ci-grant-retirement-main" && M="${TMPDIR:-/tmp}/ci-grant-retirement" && { git worktree remove --force "$W" 2>/dev/null; git worktree prune; rm -f "$M/apply.tfplan" "$M/apply.json"; true; } && mkdir -p "$M" && { test -f terraform/bootstrap/terraform.bootstrap.tfvars || (umask 077 && aws secretsmanager get-secret-value --secret-id agent-platform-terraform-personal-tfvars --profile agent_platform_admin --query SecretString --output text | grep -E '^[[:space:]]*(account_id|owner_email|platform_dev_external_id|platform_admin_external_id|agent_service_account_user_name)[[:space:]]*=' > terraform/bootstrap/terraform.bootstrap.tfvars); } && test "$(grep -c -E '^[[:space:]]*(account_id|owner_email|platform_dev_external_id|platform_admin_external_id)[[:space:]]*=' terraform/bootstrap/terraform.bootstrap.tfvars)" -eq 4 && git fetch origin main && git merge-base --is-ancestor "$MERGE_SHA" origin/main && git diff --quiet "$MERGE_SHA" origin/main -- terraform/bootstrap && git worktree add --detach "$W" origin/main && cp terraform/bootstrap/terraform.bootstrap.tfvars "$W/terraform/bootstrap/" && R=$(tr -d '[:space:]' < "$W/config/aws-region") && terraform -chdir="$W/terraform/bootstrap" init -input=false -backend-config="region=$R" > /dev/null && terraform -chdir="$W/terraform/bootstrap" plan -input=false -var-file=terraform.bootstrap.tfvars -out="$M/apply.tfplan" > /dev/null && terraform -chdir="$W/terraform/bootstrap" show -json "$M/apply.tfplan" > "$M/apply.json" && M="$M" bin/venv-python - <<'EOF'
       import json, os, sys
       m = os.environ["M"]
       rc = json.load(open(f"{m}/apply.json")).get("resource_changes", [])
       os.remove(f"{m}/apply.json")
       moving = {r["address"]: r["change"]["actions"] for r in rc if r["change"]["actions"] not in (["no-op"], ["read"])}
-      def grants(doc):
+      def rows(doc):
           out = set()
           for s in json.loads(doc)["Statement"]:
-              res = s.get("Resource"); res = [res] if isinstance(res, str) else res
-              out |= {(s.get("Sid"), x.rsplit(":", 1)[-1]) for x in res}
+              res = s.get("Resource"); res = [res] if isinstance(res, str) else list(res or [])
+              act = s.get("Action"); act = [act] if isinstance(act, str) else list(act or [])
+              rest = json.dumps({k: v for k, v in s.items() if k not in ("Sid", "Effect", "Action", "Resource")}, sort_keys=True)
+              out |= {(s.get("Sid"), s.get("Effect"), tuple(sorted(act)), x, rest) for x in res}
           return out
-      removed, added = set(), set()
+      removed, added, attrs = set(), set(), set()
       for r in rc:
           if r["address"] in moving:
-              b, a = grants(r["change"]["before"]["policy"]), grants(r["change"]["after"]["policy"])
-              removed |= b - a; added |= a - b
+              c = r["change"]; b, a = c["before"], c["after"]; unk = c.get("after_unknown") or {}
+              rb, ra = rows(b["policy"]), rows(a["policy"])
+              removed |= rb - ra; added |= ra - rb
+              attrs |= {f'{r["address"]}.{k}' for k in (set(b) | set(a)) - {"policy"} if not unk.get(k) and b.get(k) != a.get(k)}
+      removed_pairs = {(sid, res.rsplit(":", 1)[-1]) for sid, _, _, res, _ in removed}
       want_moving = {"aws_iam_role_policy.github_ci_apply": ["update"], "aws_iam_policy.github_ci_apply_reads": ["update"]}
       want_removed = {("IAMRoleMetadataWrite", "role/PlatformDev"), ("IAMRolesRead", "role/PlatformDev"), ("IAMRolesRead", "role/PlatformAdmin")}
-      print(json.dumps({"updates": sorted(moving), "removed": sorted(f"{s}:{t}" for s, t in removed), "added": len(added)}))
-      good = moving == want_moving and removed == want_removed and not added
+      print(json.dumps({"updates": sorted(moving), "removed": sorted(f"{s}:{t}" for s, t in removed_pairs), "removed_rows": len(removed), "added_rows": len(added), "other_attrs_changed": sorted(attrs)}))
+      good = moving == want_moving and removed_pairs == want_removed and len(removed) == 3 and not added and not attrs
       print("APPLY PLAN READY -- 0 to add, 2 to change, 0 to destroy; exactly the three grants removed; present to Benjamin") if good else sys.exit("APPLY PLAN STOP")
       EOF
     expected: >-
-      the merged sha is on main with no later terraform/bootstrap change, then one JSON line of addresses and
-      Sid:role names (the same shape as step 10) and APPLY PLAN READY. Present to Benjamin in the thread: the
-      JSON line, the merged sha and the exact command of step 16, and wait for his word on that command (his
-      own message about this apply; verify it by id). The saved plan stays in scratch for step 16; the
-      worktree stays until step 21.
+      the merged sha is on main with no later terraform/bootstrap change, then one JSON line (the same shape and
+      the same lossless checks as step 10) and APPLY PLAN READY. Then PRESENT the human-readable saved plan,
+      `terraform -chdir="$W/terraform/bootstrap" show -no-color "$M/apply.tfplan" | sed -E 's/[0-9]{12}/<account-id>/g'`,
+      to Benjamin in the build's project thread (the ADMIN session's own channel, as
+      PLAN-platform-iam-bootstrap-adopt step 14 did), never in a PR, commit, rec or public channel (Decision 101),
+      together with the JSON line, the merged sha and the exact command of step 16. Wait for his word on that
+      command (his own message about this apply; verify it by id). The step is re-entrant: it clears its own
+      worktree and plan first and re-materialises step 9's tfvars if the container lost them. The saved plan
+      stays in scratch for step 16; the worktree stays until step 21.
     fix_if: >-
       a later bootstrap change on main (the git diff leg fails) or any other diff -- STOP, delete the plan file
       and resolve with Benjamin; never apply a plan this step did not pass
@@ -512,7 +537,7 @@ test_obligations:
     command: GUARDS SELECTED ON ALL FIVE
     red_green_expectation: green before and after for the oidc.tf leg (the edit must not remove the edge); the step as a whole is red before because of the new module's edges
   - source: docs/contracts/iam-simulate-fixture.yaml
-    behavior: The fixture expects implicitDeny for CI's metadata writes on PlatformDev and GetRole on both roles.
+    behavior: The fixture expects implicitDeny for CI's metadata writes and iam:GetRole on PlatformDev and iam:GetRolePolicy on PlatformAdmin.
     verification_step: 3
     command: 'FIXTURE NARROWED'
     red_green_expectation: red before, green after
@@ -541,7 +566,7 @@ constraints:
   - Every admin write needs Benjamin's word on the exact command (step 16). Read-only admin calls (plans, get/list) need none.
   - This PR carries IAM and Decision text, so it merges only on Benjamin's word in this build's thread, after code review PROCEED, green CI and the pre-merge evidence for the current head.
   - Never widen any CI grant; never loosen a test assertion (Decision 181); PlatformAdmin stays excluded (Decision 180 clause 3).
-  - Public repo (Decision 101) -- no account id, ARN, email or tfvars value in any committed file, commit, PR body, PR comment or rec. ADMIN steps print counts, addresses, Sid and role names only, with stderr suppressed where it embeds ARNs; plan files, plan JSON and tfvars copies are deleted in the step that makes them.
+  - Public repo (Decision 101) -- no account id, ARN, email or tfvars value in any committed file, commit, PR body, PR comment or rec. ADMIN steps print counts, addresses, Sid and role names only, with stderr suppressed where it embeds ARNs; plan JSON is deleted in the step that makes it; step 9's tfvars and step 15's saved plan and worktree persist by design and are deleted by step 21 at the latest, and on any STOP.
   - Approved text lands verbatim except NNN, DATE and PR numbers; meaning-preserving corrections only per the 2026-10-17 project rule, noted in thread and PR; anything else goes back to Benjamin.
   - Decompose, never raise, an SLOC budget (Decision 128). IMPLEMENTATION only (Decision 67). No rescue loops; an unrecoverable live failure stops for RCA (Decision 55).
 context:
@@ -550,7 +575,7 @@ context:
   - "The read prune satisfies github_ci_apply_reads.tf's RETIREMENT ORDERING RULE: the forget converged (#1540) before this PR."
   - "rec-4049's original acceptance (three negated greps) classifies unprobeable_shape under Decision 201's trailer gate and would be left open; the build re-grounds it with update_rec (after get_rec_write_guidance) to step 1's three pytest node ids before merge."
   - "Sequencing: the rec-4067 build merged (#1562, 1c4c3834) -- backends name no region and config/aws-region holds it; steps 10 and 15 pass it at init as -backend-config region, the documented hand-run form (terraform/bootstrap/CLAUDE.md). rec-4403's build also inserts a Decision: take the next free number at build time and re-check it on rebase. rec-3902 (org-transfer OIDC pre-stage) later edits oidc.tf's trust locals and bootstrap github_ci_apply.tf: no overlap with these statements, but no other bootstrap change may merge between this PR's merge and step 16, or step 15 shows its diff too."
-  - "Rollback is forward-only for the record: a new PR restores the grants, fixture rows and test, and Decision NNN gains a dated Update recording the reversal (Decision 177; the entry is never deleted); a human-directed bootstrap apply then restores the apply role's two grants. Decision 223's own rollback (re-import into terraform/personal) needs the read quartet restored first (PLAN-platform-iam-personal-release rollback)."
+  - "Rollback after merge is a re-decision: per Decision NNN's on_trigger it goes through /plan as a new numbered Decision amending NNN, and that PR restores the grants, fixture rows and guard (never a dated Update alone, never a loosened assertion without that authority, never a revert deleting the entry -- Decision 177); a human-directed bootstrap apply then restores the apply role's two grants. Decision 223's own rollback (re-import into terraform/personal) needs the read quartet restored first."
   - "V3 resolution: the counts-only pre-merge gate comment posted on the PR for the current $PR_HEAD_SHA (steps 8-12) substitutes for the pre-merge post-deploy evidence the implement V3 Merge Gate and the code-review V3 check require; the behavioural acceptance (Decision 48) is the post-merge walk (steps 13-21: CI apply, human-directed bootstrap apply, live simulate, drift run); its evidence is a counts-only comment on the merged PR naming the applied sha (CloudWatch history ages out and is not the record)."
   - "Decision-scout verdict + CITE list: FLAGS_FOUND (one NOTE on Decision 180: re-narrow only through a numbered Decision that elects (a)'s response ahead of its trigger -- adopted); CITE 223, 167, 176, 179, 177, 144, 129, 126, 202, 181, 166, 201. Decisions triaged: 175 of 175. Roadmap items intersected: 5; CONFLICT: 0; RELATED: 5. Evidence: /mnt/project-files/rec-4049/scout-report.md"
   - "Fable consult (blind brief): /mnt/project-files/rec-4049/ADVICE.md -- numbered Decision, one PR, retire all five entries; its draft rule was false on landing (the planner reads the bootstrap-declared apply role) and was bound to the two named roles."
@@ -695,13 +720,14 @@ execution_steps:
   - "Run pre-deploy steps 1-7, 24 and 22 (full tier to exit 0); record the plan's weakening_dispositions for every candidate validate_weakening_candidates lists (the exact-set pin's rename and narrowing are planned-change, citing acceptance_criteria[0]); commit; open the PR with the ADMIN walk in its description; squash body carries `Resolves: rec-4049`."
   - "ADMIN: steps 9-12 against the CI-green head (PR_NUMBER, PR_HEAD_SHA); post the counts-only pre-merge comment, shape: 'PRE-MERGE GATE at <PR_HEAD_SHA>: bootstrap 0/2/0, removed IAMRoleMetadataWrite:PlatformDev, IAMRolesRead:PlatformDev, IAMRolesRead:PlatformAdmin, added 0; personal speculative 0/1/0 guard PASS; record green, nothing pending'. Code review PROCEED; merge on Benjamin's word in the thread (IAM and Decision text)."
   - "After merge: steps 13-14, then 15 (present), 16 only on Benjamin's word on the exact command, then 17-20, 23 and 21. Arm send_later for step 20 if no drift run has happened yet."
+  - "If the session will end with step 16 not done (Benjamin unavailable, a STOP, a usage limit), first call get_rec_write_guidance() then file_rec a rec naming the pending human-directed bootstrap apply and steps 17-21 and 23 of this plan, so the live half has an owner after the trailer closes rec-4049; write RESUME.md in the project's rec-4049 folder."
   - Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)
   - "Report: what was implemented, verification results, the evidence comment link, and that rec-4049 closed"
 work_areas: []
 rollback: >-
-  Before merge: close the PR; nothing changed. After merge: a forward PR (never a revert that deletes the
-  ratified entry) restores the HCL grants, the fixture rows and the test, and appends a dated Update to
-  Decision NNN recording the reversal (Decision 177); CI re-applies the planner grant at its merge, and,
-  if step 16 has run, a human-directed bootstrap apply restores the apply role's two grants (present the
-  plan, Benjamin's word). Decision 223's own rollback (re-import the roles into terraform/personal) must
+  Before merge: close the PR; nothing changed. After merge, a reversal is a re-decision: per Decision NNN's
+  on_trigger it goes through /plan as a new numbered Decision amending NNN (never a dated Update alone, and
+  never a revert that deletes the ratified entry, Decision 177), whose PR restores the HCL grants, the
+  fixture rows and the guard; CI re-applies the planner grant at its merge, and, if step 16 has run, a
+  human-directed bootstrap apply restores the apply role's two grants (present the plan, Benjamin's word). Decision 223's own rollback (re-import the roles into terraform/personal) must
   restore the read quartet first.
