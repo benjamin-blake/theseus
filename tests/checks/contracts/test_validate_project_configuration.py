@@ -90,6 +90,11 @@ def test_missing_contract_file_fails(tmp_path: Path, capsys: pytest.CaptureFixtu
     _expect_failure(tmp_path, capsys, "project-configuration.yaml")
 
 
+def test_rejects_blank_basis(root: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _mutate(root, lambda d: _row(d, "clouds.aws.profile").update(basis=" "))
+    _expect_failure(root, capsys, "basis is blank")
+
+
 # (a) duplicate row ids
 def test_rejects_duplicate_setting_ids(root: Path, capsys: pytest.CaptureFixture[str]) -> None:
     _mutate(root, lambda d: d["settings"].append(dict(d["settings"][0])))
@@ -113,9 +118,19 @@ def test_rejects_undeclared_home_in_kind_homes(root: Path, capsys: pytest.Captur
     _expect_failure(root, capsys, "names undeclared home")
 
 
+def test_rejects_kind_homes_secret_naming_tracked_home(root: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _mutate(root, lambda d: d["kind_homes"]["secret"]["local"].append("clone_file"))
+    _expect_failure(root, capsys, "kind_homes.secret.local names tracked/in-tree home")
+
+
 def test_rejects_home_not_allowed_for_kind(root: Path, capsys: pytest.CaptureFixture[str]) -> None:
     _mutate(root, lambda d: _row(d, "clouds.aws.profile")["homes"].update(local="platform_file"))
     _expect_failure(root, capsys, "is not allowed for kind")
+
+
+def test_rejects_row_home_not_a_declared_home(root: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _mutate(root, lambda d: _row(d, "clouds.aws.profile")["homes"].update(local="nonexistent_home"))
+    _expect_failure(root, capsys, "is not a declared home")
 
 
 def _add_vendor_store_without_citation(d: dict[str, Any]) -> None:
@@ -141,6 +156,11 @@ def test_rejects_undeclared_port_adapter_pair(root: Path, capsys: pytest.Capture
 def test_rejects_malformed_applies_when(root: Path, capsys: pytest.CaptureFixture[str]) -> None:
     _mutate(root, lambda d: _row(d, "clouds.aws.region").update(applies_when={"weird": "shape"}))
     _expect_failure(root, capsys, "is neither always, {port, adapter} nor {cloud}")
+
+
+def test_rejects_undeclared_cloud_in_applies_when(root: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _mutate(root, lambda d: _row(d, "clouds.aws.region").update(applies_when={"cloud": "gcp"}, id="clouds.gcp.region"))
+    _expect_failure(root, capsys, "applies_when cloud 'gcp' is not declared")
 
 
 def test_rejects_port_adapter_id_on_always_row(root: Path, capsys: pytest.CaptureFixture[str]) -> None:
