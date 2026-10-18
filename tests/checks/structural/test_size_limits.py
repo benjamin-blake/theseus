@@ -462,6 +462,15 @@ class TestLiveTreeFreezeState:
     def test_live_registry_is_escape_clean(self) -> None:
         assert escape_violations(_classify.load_registry()) == []
 
+    def test_secrets_baseline_is_classified_generated(self) -> None:
+        """rec-4381: .secrets.baseline (detect-secrets' own output, no do-not-edit banner) was
+        added to generated_pinned when its first size growth crossed the residual class's
+        500-effective-line default -- pin the membership so a later revert isn't caught only by
+        the full-tier gate re-growing past that line."""
+        reg = _classify.load_registry()
+        assert ".secrets.baseline" in (reg.get("generated_pinned") or [])
+        assert _classify.classify_path(".secrets.baseline") == "generated"
+
     def test_dec114_fails_and_dec147_passes_for_the_platform_deferral(self) -> None:
         """authorized_by means "which Decision authorizes deferring THIS EXACT path"; dec-114
         writes the bare filename and _expand_ancestor_candidates generates no ancestor for a

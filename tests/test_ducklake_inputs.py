@@ -5,12 +5,16 @@ plumbing rather than a mocked one -- no network, no S3.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
+from scripts.ci.ducklake_artifacts import DUCKLAKE_ARTIFACT_NAMES
 from scripts.ci.ducklake_inputs import LAYER_INPUT, SCHEMA, attribute, record_inputs
 from tests.fixtures.ducklake_artifact_fakes import _git_commit_all, _git_init, _zip_bytes
+
+_LIVE_PROOF_FIXTURE = Path(__file__).parent / "fixtures" / "ducklake_zip_inputs_live_proof.json"
 
 
 def _write_writer_fixture(repo: Path, foo_content: str, *, extra_includes: list[str] | None = None) -> None:
@@ -429,3 +433,44 @@ def test_record_inputs_is_pure_no_git_mutation(tmp_path: Path, method: str) -> N
     first = record_inputs(packages_dir, ["ducklake-writer.zip"], repo)
     second = record_inputs(packages_dir, ["ducklake-writer.zip"], repo)
     assert first == second
+
+
+# ---------------------------------------------------------------------------
+# rec-4381: the live proof captured from the first terraform/personal PR whose speculative plan
+# ran after PLAN-ducklake-zip-inputs-moved (#1536) merged (PLAN-platform-iam-personal-release, #1540).
+# ---------------------------------------------------------------------------
+
+
+def test_live_proof_capture_matches_contract() -> None:
+    """rec-4381 VP steps 7-8, replayed against the captured evidence rather than against S3.
+
+    `inputs_record` is the real, verbatim schema-1 record uploaded for PR #1540's head;
+    `recomputed_zip_md5s` was independently hashed from the same-named zips at capture time (never
+    copied from `inputs_record`), so the md5 comparison below is a genuine two-source check, not
+    the fixture agreeing with itself. `convergence_record_at_merge` mirrors the real
+    convergence/personal/sandbox.json shape (scripts/ci/ducklake_artifacts.py); the reached/blocked
+    derivation below is the same formula VP step 8 runs live, replayed here against the captured
+    raw fields instead of a live S3 read.
+    """
+    capture = json.loads(_LIVE_PROOF_FIXTURE.read_text())
+
+    inputs_record = capture["inputs_record"]
+    assert inputs_record["schema"] == SCHEMA
+
+    declared_md5s = {name: inputs_record["artifacts"][name]["md5"] for name in DUCKLAKE_ARTIFACT_NAMES}
+    recomputed_md5s = {name: capture["recomputed_zip_md5s"][name] for name in DUCKLAKE_ARTIFACT_NAMES}
+    assert recomputed_md5s == declared_md5s
+
+    record = capture["convergence_record_at_merge"]
+    merge_sha = capture["merge_sha"]
+    infra = record.get("infra_error") or {}
+    reached = (record.get("status") == "green" and record.get("commit_sha") == merge_sha) or (
+        record.get("pending_gated") or {}
+    ).get("commit_sha") == merge_sha
+    blocked = infra.get("commit_sha") == merge_sha and infra.get("failed_step") == "build_ducklake"
+    assert reached is True
+    assert blocked is False
+
+    superseded = capture["superseded_by_record"]
+    if superseded is not None:
+        assert superseded["artifact_sha"]
