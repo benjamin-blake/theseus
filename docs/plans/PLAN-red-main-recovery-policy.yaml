@@ -41,19 +41,19 @@ scope:
   purpose: >-
     Step 4: add "repair_track" to the JSON object and the APPROVED_CI_RCA_STEP4 paragraph after the unobserved_steps
     paragraph, and Step 4's "All of the following fields are required:" becomes "All of the following fields are
-    required, except preventive_action when repair_track is test_defect:". Step 5: the --priority line becomes "--priority Critical \" with the APPROVED_CI_RCA_STEP5 sentence under
+    required, except preventive_action for a Track A red (Decision 225):". Step 5: the --priority line becomes "--priority Critical \" with the APPROVED_CI_RCA_STEP5 sentence under
     the Requirements list. Hard Rules: the "--priority Critical (capital C)" rule gains the clause that the portal
     re-derives priority from repair_track. The literal "--priority Critical" stays (tests/test_ci_rca_prompt_contract.py
     pins it). The Hard Rules sentence "The human reviews and acts on it via `/plan`." becomes "A session acts on it via
-    `/plan`, or the fast lane for a test_defect red (Decision 225)."; "autonomous fix" stays.
+    `/plan`, or the fast lane for a red the portal files High (Decision 225)."; "autonomous fix" stays.
 - file: scripts/executor/rec_write_guidance.py
   action: Modify
   purpose: >-
     The ci_rca schema_fields guidance gains a "repair_track" entry ("str enum: test_defect | product_regression.
     test_defect only when merged product behaviour is right and the corrective changes only tests/**; absent or unsure
     reads as product_regression; the portal derives priority from it (Decision 225).") and the "preventive_action"
-    entry becomes "str, 100-800 chars; omit when repair_track is test_defect (none owed, Decision 225); required
-    otherwise."
+    entry becomes "str, 100-800 chars; omit only for a Track A red -- repair_track test_defect on a CI-tier workflow
+    with no regression (none owed, Decision 225); required otherwise."
 - file: scripts/ops_portal/ci_rca_schema.py
   action: Modify
   purpose: >-
@@ -61,20 +61,22 @@ scope:
     pattern ^(test_defect|product_regression)$ (repair_track agent-authored; repair_track_confirmed stamped at fix
     time, never agent-authored, mirroring the fixed_by_sha comment block), and workflow_tier, Optional[str]=None with
     no pattern (portal-derived from the verified bundle's workflow_to_tier_resolution, never agent-authored).
-    preventive_action becomes Optional[str]=None keeping min_length=100/max_length=800, and a model validator raises
-    "preventive_action is required unless repair_track is test_defect" when it is None and repair_track !=
-    "test_defect". Two new pure functions: is_track_a(context) -> bool, true only when repair_track == "test_defect",
+    preventive_action becomes Optional[str]=None keeping min_length=100/max_length=800, with no model validator (the
+    model cannot see workflow_tier, which the cross-check stamps after validation). Three new pure functions:
+    preventive_deficiency(context) -> list[str], ["preventive_action is required unless the red is Track A
+    (is_track_a)"] when preventive_action is absent and not is_track_a(context), else []; is_track_a(context) -> bool, true only when repair_track == "test_defect",
     regression_of is unset and workflow_tier == "CI" (the taxonomy tier of the CI and Main Canary workflows); and
     derive_ci_rca_priority(context) -> str, "High" when is_track_a(context) else "Critical". No schema_version
-    ceiling raise.
+    ceiling raise. A test_defect diagnosis that fails is_track_a is Track B: Critical, and it owes preventive_action.
 - file: scripts/ops_data_portal.py
   action: Modify
   purpose: >-
     file_rec: for every source=ci_rca write carrying context_v2_json, first pop the portal-owned keys workflow_tier
     and repair_track_confirmed from the caller's context (a caller can never supply them); then, immediately after
     the existing _run_ci_rca_cross_check(context_v2_json) call (so the verified bundle's workflow_tier is stamped),
-    set fields["priority"] = derive_ci_rca_priority(context_v2_json) before the write (legacy no-context ci_rca
-    writes are unchanged). The
+    set fields["priority"] = derive_ci_rca_priority(context_v2_json) and apply preventive_deficiency(context_v2_json)
+    with the existing CI_RCA_STRICT_MODE handling (strict raises; warn logs and stamps the warn_mode_reject tag
+    schema_preventive_required) before the write (legacy no-context ci_rca writes are unchanged). The
     function lives in the ops_portal submodule; the facade gains only the call (Decision 124). update_rec: when closure_fix_sha is supplied, closure_stamps.update(confirmed_track_stamp(merged.get("source"),
     closure_fix_sha, ROOT)) before the existing stamp merge, so repair_track_confirmed rides the same context blob. Net growth stays inside the 500-SLOC limit (466 SLOC at planning).
 - file: scripts/ops_portal/closure_gate.py
@@ -96,13 +98,14 @@ scope:
     correct_rec_context drops the portal-owned keys workflow_tier, repair_track_confirmed and regression_of from
     context_updates (a caller can never set them; the stored values stay), then re-derives priority: after merging it sets
     row_updates["priority"] = derive_ci_rca_priority(merged), overriding a caller's priority, so a re-tracked red
-    changes priority in the same write.
+    changes priority in the same write; it refuses, writing nothing, when preventive_deficiency(merged) is non-empty
+    (a re-track to Track B must supply preventive_action).
 - file: tests/test_ci_rca_lifecycle_correct_rec_context.py
   action: Modify
   purpose: >-
     New tests in TestCorrectRecContext: test_retrack_rederives_priority (correcting repair_track from test_defect to
-    product_regression with a preventive_action writes priority Critical in the same write, and a caller-passed
-    priority in row_updates does not survive) and test_retrack_cannot_inject_workflow_tier (context_updates carrying
+    product_regression with a preventive_action writes priority Critical in the same write, a caller-passed priority
+    in row_updates does not survive, and the same re-track without a preventive_action is refused) and test_retrack_cannot_inject_workflow_tier (context_updates carrying
     "workflow_tier": "CI", repair_track_confirmed, or "regression_of": null on a regression filing writes none of
     them and stays Critical).
 - file: scripts/ops_portal/ci_rca_runtime.py
@@ -140,7 +143,8 @@ scope:
   purpose: >-
     Pins, read from the files. TestDecisionEntry: the Decision 225 header and its five bold clause labels exist;
     Decisions 72, 73 and 217 each carry an "Amended by Decision 225" line; the hour count in cl.4's "within N hours"
-    equals recovery_policy.slo_hours. TestContractPolicy: red-main-recovery.yaml loads as a ratified Class D contract
+    equals recovery_policy.slo_hours; cl.1 says code accepts the A diagnosis "only" on the bundle's CI tier with no
+    regression and cl.2 is "Fast lane for A", matching the contract's is_track_a wording. TestContractPolicy: red-main-recovery.yaml loads as a ratified Class D contract
     whose agent_surface names it; recovery_policy carries decision 225, a positive int slo_hours, test_path_prefix
     and bookkeeping_prefixes equal to closure_gate's constants, halt.rules naming rules 0-6 in order, the preventive
     window_days and threshold, and a coverage map whose every selector names an existing test file and whose residual
@@ -160,8 +164,9 @@ scope:
   action: Create
   purpose: >-
     A new file (test_ci_rca_schema.py is at 425 SLOC and test_ci_rca_runtime.py at 436). Class TestRepairTrack: both
-    track fields accept the two values and reject others; preventive_action may be omitted only when repair_track is
-    test_defect (absent track and product_regression both raise without it); is_track_a and derive_ci_rca_priority
+    track fields accept the two values and reject others; the model accepts a missing preventive_action;
+    preventive_deficiency is empty only for a Track A context or one carrying preventive_action (a test_defect context
+    on workflow_tier "unknown", or with regression_of, is deficient without it); is_track_a and derive_ci_rca_priority
     are true/High only for test_defect with no regression_of and workflow_tier "CI". Class TestWorkflowTierStamp
     (drives _run_ci_rca_cross_check with bundle fixtures built in this file, never imported from a test module): a
     verified bundle with workflow_to_tier_resolution "CI" stamps workflow_tier "CI"; one with "unknown" (what
@@ -170,7 +175,8 @@ scope:
     file_rec on a source=ci_rca write with context_v2_json writes High for test_defect with a bundle-stamped
     workflow_tier CI, and Critical for product_regression, an absent track, a regression_of filing, test_defect with
     workflow_tier "unknown" or absent, and test_defect whose caller supplied "workflow_tier": "CI" with no bundle (the
-    key is stripped), whatever priority was passed; a legacy ci_rca write without context_v2_json keeps its passed
+    key is stripped), whatever priority was passed; a Critical write without preventive_action carries the
+    schema_preventive_required warn tag (warn mode) and raises in strict mode; a legacy ci_rca write without context_v2_json keeps its passed
     priority; update_rec with closure_fix_sha on a ci_rca rec stamps repair_track_confirmed (confirmed_repair_track
     monkeypatched). Keep the file under 500 SLOC.
 - file: tests/ops_data_portal/test_closure_gate.py
@@ -200,8 +206,8 @@ scope:
   action: Modify
   purpose: >-
     New class TestRepairTrackInstructions: the agent text names "repair_track" with both values, says "--priority
-    High" applies to test_defect, says preventive_action is omitted for test_defect, and names the fast lane in the
-    Hard Rules; the existing "--priority Critical" and "autonomous fix" pins stay.
+    High" applies only to a Track A red, says preventive_action is omitted only for a Track A red, and names the fast
+    lane for a red the portal files High in the Hard Rules; the existing "--priority Critical" and "autonomous fix" pins stay.
 - file: tests/test_rec_write_guidance.py
   action: Modify
   purpose: >-
@@ -210,9 +216,10 @@ scope:
 - file: docs/contracts/ci-rca-lifecycle.yaml
   action: Modify
   purpose: >-
-    Only two edits (the file is at 488 of the 500 effective lines its structural size class allows, so the policy
+    Only three edits (the file is at 488 of the 500 effective lines its structural size class allows, so the policy
     itself lives in the new red-main-recovery.yaml): trigger_scope.default_branch_disposition becomes
-    APPROVED_DISPOSITION, and one flow-style amendment_log line {date, semantic_break: false, change_class:
+    APPROVED_DISPOSITION; trigger_scope.narrowing_authority's quotation of Decision 73 point 3 gains the closing
+    sentence "Decision 225 amends that clause: see default_branch_disposition."; and one flow-style amendment_log line {date, semantic_break: false, change_class:
     governance_note_add, summary} names this plan, Decision 225 and the new contract. No other change.
 - file: docs/contracts/ops_recommendations.yaml
   action: Modify
@@ -308,11 +315,12 @@ acceptance_criteria:
   test_defect, regression_of is unset and the verified bundle stamped workflow_tier CI, else Critical, whatever
   priority was passed.
 - >-
-  CiRcaContext accepts repair_track and repair_track_confirmed (two values each) and requires preventive_action unless
-  repair_track is test_defect.
+  CiRcaContext accepts repair_track and repair_track_confirmed (two values each); file_rec and correct_rec_context
+  require preventive_action unless the red is Track A (is_track_a).
 - >-
   Stamping fixed_by_sha (update_rec closure_fix_sha or stamp_fixed_by_sha) also stamps repair_track_confirmed from the
-  fix commit's diff: test_defect for a tests-only commit, product_regression otherwise, unset when unresolvable.
+  fix commit's diff, ignoring plan and registry bookkeeping: test_defect for a tests-only commit, product_regression
+  otherwise, unset when unresolvable or when only bookkeeping changed.
 - >-
   scripts.ci_rca.red_overlap exits 1 for a red past the SLO, an undeterminable red file set, a selector fallback or an
   overlapping affected set; exits 0 for disjoint work, an in-SLO Track A red and a red the plan bundles; exits 2 when a
@@ -474,8 +482,8 @@ verification_plan:
 test_obligations:
 - source: scripts/ops_portal/ci_rca_schema.py
   behavior: >-
-    The track fields take only the two values; preventive_action is optional only for test_defect; is_track_a needs
-    test_defect, no regression_of and workflow_tier CI; priority is High only then.
+    The track fields take only the two values; is_track_a needs test_defect, no regression_of and workflow_tier CI;
+    priority is High and preventive_action optional only then.
   verification_step: 1
   test_selector: tests/ops_data_portal/test_ci_rca_repair_track.py::TestRepairTrack
   red_green_expectation: red before (file absent), green after
@@ -581,7 +589,7 @@ test_obligations:
   test_selector: tests/session/preflight/test_correlation.py::TestRedOverlapPointer
   red_green_expectation: red before (class absent), green after
 - source: .claude/agents/scheduled/ci-rca.md
-  behavior: The agent records repair_track, files High for test_defect, and omits preventive_action for test_defect.
+  behavior: The agent records repair_track and passes High and omits preventive_action only for a Track A red.
   verification_step: 7
   test_selector: tests/test_ci_rca_prompt_contract.py::TestRepairTrackInstructions
   red_green_expectation: red before (class absent), green after
@@ -614,7 +622,7 @@ constraints:
 - No rescue agents or workaround loops (Decision 55).
 context:
 - "Decision-scout verdict: FLAGS_FOUND (Decisions triaged: 175 of 175; Roadmap items intersected: 16; CONFLICT: 1; RELATED: 14). CITE: 72, 73, 217, 135, 215, 142, 177, 167, 128."
-- "gates: decision-scout=FLAGS_FOUND; plan-critique=REVISE rounds 1-3 (10, 9 and 10 findings, all fixed), REVISE on the round 4 confirming round (4 findings, all fixed; one more round taken with notice, none recurring) -> pending"
+- "gates: decision-scout=FLAGS_FOUND; plan-critique=REVISE rounds 1-3 (10, 9 and 10 findings, all fixed), REVISE on round 4 (4 findings) and round 5 (2 findings), all fixed, none recurring; further rounds taken with notice -> pending"
 - >-
   Approval: Benjamin's "go" (2026-10-18, rec-4427 thread) covers writing this plan; the Decision text and the
   AGENTS.md bullet are always-ask (Decision ratification, public surface), so the build merge needs his word on the
@@ -691,10 +699,10 @@ execution_steps:
 
   **Decision:**
   1. **Two repair tracks.** Track A: the corrective changes only `tests/**` and leaves merged product
-     behaviour as it is. Track B: everything else. The ci-rca agent records `repair_track`; absent or
-     unsure reads as B. Code derives priority: High for an A diagnosis on a test-bearing workflow (the
-     verified evidence bundle's CI tier) with no regression, otherwise Critical. When the fix lands,
-     code stamps the confirmed track from the fix commit's diff; only that value is ever tallied.
+     behaviour as it is. The ci-rca agent records that diagnosis as `repair_track`; code accepts it only
+     on a test-bearing workflow (the verified evidence bundle's CI tier) with no regression, and files
+     the red High. Every other red, an unaccepted A diagnosis included, is Track B, filed Critical. When
+     the fix lands, code stamps the confirmed track from the fix commit's diff; only that is tallied.
   2. **Fast lane for A**, with no plan cycle (an exception to Decision 72's /plan consumption).
      Whichever session picks the red up opens a tests-only PR. It runs the failing tests, the fast
      tier and the full tier (Decision 163), and code review disposes of every weakening candidate
@@ -702,8 +710,8 @@ execution_steps:
   3. **The halt narrows to overlap**: Decision 217 cl.1, pulled forward by its red-window-growth
      condition. An unresolved red blocks a new plan or dispatch only when the work's affected set
      overlaps the red's (Decision 135's channels), computed by `scripts/ci_rca/red_overlap.py`. An
-     undeterminable red, a selector fallback or a failed read blocks (Decision 215). A red filed High
-     under cl.1 blocks nothing inside its SLO, and a red never blocks the plan that bundles it as its
+     undeterminable red, a selector fallback or a failed read blocks (Decision 215). An A red blocks
+     nothing inside its SLO, and a red never blocks the plan that bundles it as its
      repair. Decision 73 cl.3's unbuilt L6 pause follows this rule.
   4. **Repair SLO.** A red is repaired within 4 hours of filing, agent-owned; past it, it blocks all
      new plans and dispatch except a plan repairing an open red (Decision 73 cl.4) until it closes. Forward-fix stays the default. For B,
@@ -758,17 +766,17 @@ execution_steps:
   APPROVED_ANNOTATIONS (one line each; DATE = the build's merge date):
   72: > **Amended by Decision 225 (DATE):** Priority is derived in code from the agent's repair_track: High for a tests-only repair on a CI-tier workflow, Critical otherwise and for every regression filing (Decision 225 cl.1). Consumption via /plan, or a cl.4 manual revert PR, stands for Track B; a Track A repair takes the fast lane with no plan cycle (cl.2).
   73: > **Amended by Decision 225 (DATE):** Clause 3's fixed priority="critical" becomes track-derived (High for a tests-only repair on a CI-tier workflow), and a manual revert PR is a permitted Track B corrective outside terraform/** and governed deploy paths (automated revert stays excluded). Clause 3's L6 pause and clause 4's plan-time block become the red_overlap overlap block; clause 4 as written now applies only to a red past its repair SLO. Clause 5's rec -> plan -> implement recovery stands for Track B, with Track A on the fast lane (Decision 225 cl.1-4). This supersedes the Decision 217 line above for clause 4.
-  217: > **Amended by Decision 225 (DATE):** Clause 1's overlap block is pulled forward to executor concurrency 1 by the red-window-growth condition (Decision 225 cl.3: rec-4427's 11.7-hour red window at about 11 merges a day), so the concurrency-raised trigger no longer gates clause 1; clauses 2-8 are unchanged.
+  217: > **Amended by Decision 225 (DATE):** Clause 1's overlap block is pulled forward to executor concurrency 1 by the red-window-growth condition (Decision 225 cl.3: rec-4427's 11.7-hour red window at about 11 merges a day), so the concurrency-raised trigger no longer gates clause 1, and past the repair SLO Decision 225 cl.4 restores the global plan and dispatch block; clauses 2-8 are unchanged.
 - |-
   APPROVED_AGENTS_BULLET (replaces the whole AGENTS.md Merge protocol bullet that starts "Post-merge full-tier failure on `main`"):
   - **Post-merge full-tier failure on `main`**: ci-rca files a `source=ci_rca` rec, `priority=critical` unless tests-only (High, fast lane); else `/plan` or a manual revert PR (forward-fix, never auto-revert; no inline workaround -- Decision 225, `red-main-recovery.yaml`).
 - |-
-  APPROVED_CI_RCA_STEP4 (a new paragraph after Step 4's unobserved_steps paragraph; also add "repair_track": "<test_defect|product_regression>" to the JSON object after recurrence_class, and change the preventive_action line's comment to "<100-800 chars: systemic change that prevents recurrence; omit for test_defect>"):
-  `repair_track` is your diagnosis of the repair: `test_defect` only when the evidence shows the merged product behaviour is right and the corrective changes nothing outside `tests/**` (a stale expected value, a missing test under a coverage floor); otherwise `product_regression`. When unsure, write `product_regression`. Omit `preventive_action` for `test_defect`: none is owed (Decision 225). For `product_regression` it stays required.
+  APPROVED_CI_RCA_STEP4 (a new paragraph after Step 4's unobserved_steps paragraph; also add "repair_track": "<test_defect|product_regression>" to the JSON object after recurrence_class, and change the preventive_action line's comment to "<100-800 chars: systemic change that prevents recurrence; omit only for a Track A red>"):
+  `repair_track` is your diagnosis of the repair: `test_defect` only when the evidence shows the merged product behaviour is right and the corrective changes nothing outside `tests/**` (a stale expected value, a missing test under a coverage floor); otherwise `product_regression`. When unsure, write `product_regression`. The portal treats the red as Track A only when `repair_track` is `test_defect`, the bundle's `workflow_to_tier_resolution` is `CI` and this is not a regression filing (Decision 225); omit `preventive_action` only then, since none is owed. Otherwise it stays required.
 - |-
   APPROVED_CI_RCA_STEP5 (a new Requirements bullet before the --file bullet; the command block keeps "--priority Critical \"):
-  - **--priority**: `Critical`, or `High` when `repair_track` is `test_defect`. The portal re-derives it in code from `repair_track` and `regression_of` (Decision 225), so a passed value never overrides the rule.
-  The Hard Rules "--priority Critical (capital C)" paragraph gains one sentence: "Pass --priority High instead when repair_track is test_defect; either way the portal re-derives priority (Decision 225)."
+  - **--priority**: `Critical`, or `High` for a Track A red (Step 4). The portal re-derives it in code from `repair_track`, `regression_of` and the bundle's workflow tier (Decision 225), so a passed value never overrides the rule.
+  The Hard Rules "--priority Critical (capital C)" paragraph gains one sentence: "Pass --priority High instead for a Track A red; either way the portal re-derives priority (Decision 225)."
 - |-
   APPROVED_RED_OVERLAP (scripts/ci_rca/red_overlap.py):
   Inputs. (a) One reader call, named("preflight_signal_rows", followon_ids=""), the complete read model preflight
@@ -836,10 +844,11 @@ execution_steps:
         diagnosis counts only through is_track_a (scripts/ops_portal/ci_rca_schema.py): repair_track
         test_defect, regression_of unset, and workflow_tier "CI" from the verified bundle (the CI and
         Main Canary workflows). Then priority is High and the red blocks nothing inside its SLO. No
-        preventive_action is owed; repaired through procedure.fast_lane_repair.
+        preventive_action is owed (preventive_deficiency); repaired through procedure.fast_lane_repair. A
+        test_defect diagnosis that fails is_track_a is Track B.
       product_regression: >-
-        Track B. Every other corrective, and the reading of an absent or unsure repair_track. Priority
-        Critical. Repaired through /plan, or through a manual revert PR of the culprit merge when the
+        Track B. Every other red: an absent, unsure or product_regression repair_track, and a test_defect
+        diagnosis that fails is_track_a. Priority Critical. Repaired through /plan, or through a manual revert PR of the culprit merge when the
         fix is not obvious and the culprit touched neither terraform/** nor a governed deploy path
         (docs/contracts/deploy-paths.yaml); the revert PR also lands the Decision 186 closure artifact
         (for example a test pinning the culprit's failure), since the revert alone changes no artifact
@@ -974,9 +983,11 @@ execution_steps:
 - >-
   Merge HOLD: squash-merge only on code review PROCEED, green CI, and Benjamin's own message approving the three
   always-ask texts (Decision ratification, public surface, Class A contract) -- verify the approval by fetching his
-  message before merging. If the merge lands on a later date than the one stamped, re-stamp DATE/YYYY-MM-DD in a final
-  commit first. After the merge, confirm main-validate's full tier is green at the merge sha (a red there is a new red
-  under the policy this plan lands), then run VP step 11.
+  message before merging. Right before merging, re-check the next free Decision number against origin/main; if it
+  moved, or the merge lands on a later date than the one stamped, fix the number or re-stamp DATE/YYYY-MM-DD in a
+  final commit, then re-run the full tier and --verify-head on that head before pushing (per-push evidence). After the merge, confirm main-validate's full tier is green at the merge sha (a red there is a new red
+  under the policy this plan lands), confirm dec-225 reached ops_decisions (the ducklake-reads decision_by_id verb,
+  after the post-merge backfill), then run VP step 11.
 - >-
   Report, each item separately: what was implemented and the Decision number used; the readiness result; the
   validator verdicts (VP 1-10 and --verify-head); the postflight evidence; the code-review verdict; the push, PR and
