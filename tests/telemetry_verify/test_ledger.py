@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from scripts.telemetry_verify import ledger
@@ -209,3 +210,44 @@ def test_a_record_without_a_message_has_no_model_key_and_a_repeated_spawn_counts
     ]
     files = make_files(root, {"k1": [child(assistant("k1a", 2.5, "mk", [text_block("work")]), "k1")]})
     assert _classes(files) == {"claude-test-1": "ledger_exact"}
+
+
+def test_prefix_calls_are_the_counted_responses() -> None:
+    tool = tool_use_block("tuA", "Agent", {"description": "d", "prompt": "p"})
+    nested = tool_use_block("tuB", "Task", {"description": "d", "prompt": "p"})
+    root = [
+        prompt("u1", 1, "p1", "go"),
+        assistant("a1", 2, "m1", [tool]),
+        assistant("s1", 2.5, "ms", [text_block("x")], model="<synthetic>"),
+        tool_result("r1", 5, "tuA", "done", pid="p1", tur={"agentId": "k1", "isAsync": False, "status": "completed"}),
+        assistant("a2", 6, "m2", [text_block("open last turn")]),
+        {
+            "type": "cost-state",
+            "modelUsage": {
+                "claude-test-1": dict(
+                    _LED, inputTokens=40, outputTokens=80, cacheReadInputTokens=120, cacheCreationInputTokens=160
+                )
+            },
+        },
+        assistant("a3", 7, "m3", [text_block("after the cut")]),
+    ]
+    first = [
+        child(assistant("k1a", 3, "mk1", [nested]), "k1"),
+        child(tool_result("k1r", 4, "tuB", "ok", pid="p1", tur={"agentId": "k2", "isAsync": False}), "k1"),
+    ]
+    second = [child(assistant("k2a", 3.5, "mk2", [text_block("deep")]), "k2")]
+    files = make_files(root, {"k1": first, "k2": second})
+    files[f"{SID}.jsonl"] = "not json\n" + files[f"{SID}.jsonl"]
+    tree = mem_tree(files)
+    (finding,) = ledger.reconcile_ledger(tree)
+    calls = ledger.prefix_calls(tree, finding.cut_line)
+    assert sorted(calls) == ["claude-test-1"]
+    assert sorted(message for _, _, message in calls["claude-test-1"]) == ["m1", "m2", "mk1", "mk2"]
+    streams = {message: stream for stream, _, message in calls["claude-test-1"]}
+    assert streams == {"m1": "root", "m2": "root", "mk1": "k1", "mk2": "k2"}
+    summed = {name: len(calls["claude-test-1"]) * _OUT[ledger.USAGE_KEYS[name]] for name in ledger.CLASSES}
+    assert summed == finding.transcript, "one counted response per listed call"
+    lines = {message: line for stream, line, message in calls["claude-test-1"] if stream == "root"}
+    raw = files[f"{SID}.jsonl"].split("\n")
+    assert [json.loads(raw[lines[m]])["message"]["id"] for m in ("m1", "m2")] == ["m1", "m2"], "FILE line numbers"
+    assert ledger.file_line(tree, finding.cut_line) == raw.index(next(r for r in raw if "cost-state" in r))

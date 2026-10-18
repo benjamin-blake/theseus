@@ -20,6 +20,7 @@ from scripts.telemetry_verify.joins import load_telemetry_joins  # noqa: E402
 from src.common import ducklake_event_reads as ev  # noqa: E402
 from src.common.ducklake_event_read_verbs import IDLE_THRESHOLD_SECONDS  # noqa: E402
 from src.telemetry.append import append_events  # noqa: E402
+from src.turn_capture.record_turn import PARSER_VERSION  # noqa: E402
 from tests.fixtures import telemetry_golden_chain as chain  # noqa: E402
 from tests.fixtures import telemetry_read_db as db  # noqa: E402
 from tests.fixtures.turn_capture_corpus import PROJECT, TENANT, case_names  # noqa: E402
@@ -234,7 +235,7 @@ def test_root_sessions_carry_join_keys_and_stamps_for_real_projects_only() -> No
         tree_last = max(r["event_timestamp"] for t in chain.TABLES for r in rows[t])
         assert chain.canonical(root["last_event_timestamp"]) == chain.canonical(tree_last)
         assert (root["generations"], root["conflicted_grain_keys"], root["derivation_conflicted"]) == (
-            [{"producer": "claude_code", "parser_version": 3}],
+            [{"producer": "claude_code", "parser_version": PARSER_VERSION}],
             [],
             False,
         )

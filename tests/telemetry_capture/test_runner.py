@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -494,3 +495,101 @@ def test_the_default_factory_builds_the_production_client(monkeypatch: pytest.Mo
     budget = Budget.start(1.0)
     assert runner.default_client_factory({"A": "1"}, None, budget, sleep=print, rng=float) == "client"
     assert seen == [({"A": "1"}, None, budget, {"sleep": print, "rng": float})]
+
+
+def _hook_state(tmp_path: Path) -> dict[str, Any]:
+    return state(tmp_path).verify_state()
+
+
+def test_verify_due_never_changes_the_pass_outcome(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    outcomes = []
+    for index, due in enumerate((False, True, "raise")):
+        root = tmp_path / str(index)
+        root.mkdir()
+        write(root, make_files(records()))
+        if due == "raise":
+            monkeypatch.setattr(runner.verify_due, "verify_due", lambda *a, **k: 1 / 0)
+        else:
+            monkeypatch.setattr(runner.verify_due, "verify_due", lambda *a, _d=due, **k: _d)
+        writer = Writer()
+        result = run(root, writer)
+        outcomes.append((result.outcome, len(writer.appends()), state(root).cursor_on_disk()))
+        monkeypatch.undo()
+    assert outcomes[0] == outcomes[1] == outcomes[2], "a due, not-due or failing check leaves the pass as it was"
+    assert outcomes[0][0] == "sent"
+
+
+def test_verify_due_is_recorded_only_after_a_persisted_non_final_pass(tmp_path: Path) -> None:
+    write(tmp_path, make_files(records()))
+    writer = Writer()
+    first = run(tmp_path, writer)
+    assert first.outcome == "sent" and first.diag["verify_due"] is False
+    assert state(tmp_path).diagnostics()[-1]["verify_due"] is False
+    assert _hook_state(tmp_path)["sent_passes"] == 1
+    again = run(tmp_path, writer)
+    assert again.outcome == "no_rows" and again.diag["verify_due"] is False
+    assert _hook_state(tmp_path)["sent_passes"] == 1, "only a sent pass advances the counter"
+    final = run(tmp_path, writer, final=True)
+    assert final.outcome == "sent" and "verify_due" not in final.diag and _hook_state(tmp_path)["sent_passes"] == 1
+    stopped = tmp_path / "stopped"
+    stopped.mkdir()
+    write(stopped, make_files(records()))
+    failing = Writer()
+    failing.answers = [(500, {"ok": False})]
+    result = run(stopped, failing)
+    assert result.outcome == "stopped" and "verify_due" not in result.diag and _hook_state(stopped) == {}
+    deferred = tmp_path / "deferred"
+    deferred.mkdir()
+    write(deferred, make_files(records()[1:]))
+    assert "verify_due" not in run(deferred, Writer()).diag
+
+
+def test_a_verify_due_error_leaves_the_outcome(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write(tmp_path, make_files(records()))
+    monkeypatch.setattr(runner.verify_due, "producer_fingerprint", lambda: 1 / 0)
+    result = run(tmp_path, Writer())
+    assert (
+        result.outcome == "sent" and result.diag["verify_due_error"] == "ZeroDivisionError" and "verify_due" not in result.diag
+    )
+    line = state(tmp_path).diagnostics()[-1]
+    assert line["outcome"] == "sent" and line["verify_due_error"] == "ZeroDivisionError"
+    assert state(tmp_path).cursor_on_disk() is not None
+
+
+def test_sent_passes_record_the_producer_fingerprint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write(tmp_path, make_files(records()))
+    writer = Writer()
+    monkeypatch.setattr(runner.verify_due, "producer_fingerprint", lambda: "aaa")
+    run(tmp_path, writer)
+    assert _hook_state(tmp_path)["producer_fingerprint"] == "aaa" and "producer_changed" not in _hook_state(tmp_path)
+    write(tmp_path, make_files(records(2)))
+    monkeypatch.setattr(runner.verify_due, "producer_fingerprint", lambda: "bbb")
+    run(tmp_path, writer)
+    held = _hook_state(tmp_path)
+    assert held["producer_fingerprint"] == "aaa" and held["producer_changed"] is True and held["sent_passes"] == 2
+    write(tmp_path, make_files(records(3)))
+    monkeypatch.setattr(runner.verify_due, "producer_fingerprint", lambda: "aaa")
+    run(tmp_path, writer)
+    assert _hook_state(tmp_path)["producer_changed"] is True, "sticky once a sent pass's fingerprint differs"
+
+
+def test_a_due_pass_schedules_the_check_and_counts_it(tmp_path: Path) -> None:
+    write(tmp_path, make_files(records()))
+    state(tmp_path).save_verify_state({"sent_passes": runner.verify_due.VERIFY_FIRST_SENT_PASS - 1, "settled_at": 1.0})
+    before = time.time()
+    result = run(tmp_path, Writer())
+    held = _hook_state(tmp_path)
+    assert result.diag["verify_due"] is True and held["sent_passes"] == runner.verify_due.VERIFY_FIRST_SENT_PASS
+    assert held["checks_by_day"] == {runner.verify_due.utc_day(before): 1}
+    assert before <= held["scheduled_at"] <= time.time() and held["settled_at"] == 1.0
+    assert held["next_attempt_at"] == pytest.approx(held["scheduled_at"] + runner.verify_due.VERIFY_GUARD_S)
+    write(tmp_path, make_files(records(2)))
+    assert run(tmp_path, Writer()).diag["verify_due"] is False, "the guard holds the next passes"
+
+
+def test_a_not_due_pass_that_changes_nothing_does_not_rewrite_the_state(tmp_path: Path) -> None:
+    write(tmp_path, make_files(records()))
+    writer = Writer()
+    run(tmp_path, writer)
+    before = state(tmp_path).verify_file.stat().st_mtime_ns
+    assert run(tmp_path, writer).outcome == "no_rows" and state(tmp_path).verify_file.stat().st_mtime_ns == before

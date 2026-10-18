@@ -236,3 +236,168 @@ def test_detach_runner_starts_a_fully_detached_module_run(monkeypatch: pytest.Mo
     assert seen["stdin"] == seen["stdout"] == seen["stderr"] == subprocess.DEVNULL
     package.detach_runner("m.x", [], tmp_path)
     assert seen["env"] is None
+
+
+def _verify_result(**over: Any) -> Any:
+    from scripts.telemetry_capture import verify  # noqa: PLC0415
+
+    base: dict[str, Any] = {
+        "status": "completed",
+        "trigger": "operator",
+        "counts": {"rows_equal": 4, "ledger_records": 1, "stored_ledger_tested": 1, "root_calls": 2, "sync_spawns": 1},
+        "reader_calls": 2,
+        "elapsed_s": 1,
+    }
+    return verify.VerifyResult(**{**base, **over})
+
+
+def _run_verify(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, result: Any, *flags: str) -> tuple[int, list[str]]:
+    from scripts.telemetry_capture import verify  # noqa: PLC0415
+
+    seen: list[dict[str, Any]] = []
+
+    def fake(path: Path, session_id: str, **kw: Any) -> Any:
+        seen.append({"path": path, "session_id": session_id, **kw})
+        return result
+
+    monkeypatch.setattr(verify, "run_verify", fake)
+    lines: list[str] = []
+    code = cli.main(
+        ["verify", "--tree", str(tmp_path / f"{SID}.jsonl"), *flags], out=lines.append, reader_factory=lambda: object()
+    )
+    assert seen and seen[0]["trigger"] == "operator" and seen[0]["scheduling_record"] is None and seen[0]["portal"] is None
+    assert seen[0]["alarms"] is ("--no-alarms" not in flags) and seen[0]["session_id"] == SID
+    return code, lines
+
+
+def test_verify_command_prints_counts_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tree(tmp_path)
+    lines: list[str] = []
+    code = cli.main(["verify", "--tree", str(root), "--no-alarms"], out=lines.append, reader_factory=lambda: object())
+    assert code == 2 and len(lines) == 1 and lines[0].startswith("VERIFY status=no_cursor compare_skipped=none rows_equal=0 ")
+    assert " alarms=none" in lines[0] and all("=" in part for part in lines[0].split()[1:])
+    assert "example/project" not in lines[0] and SID not in lines[0] and str(tmp_path) not in lines[0]
+    code, out = _run_verify(
+        monkeypatch,
+        tmp_path,
+        _verify_result(compare_skipped="root_not_due", alarms=["column_mismatch", "ledger_output_excess"]),
+        "--no-alarms",
+    )
+    assert code == 1 and len(out) == 1
+    fields = dict(part.split("=", 1) for part in out[0].split()[1:])
+    assert list(fields)[:2] == ["status", "compare_skipped"] and fields["alarms"] == "column_mismatch,ledger_output_excess"
+    assert {"rows_equal", "missing_in_store", "r7_boundary_divergence", "reader_calls", "elapsed_s"} <= set(fields)
+    assert all(value.isdigit() for key, value in fields.items() if key not in ("status", "compare_skipped", "alarms"))
+
+
+def test_verify_exit_contract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def code(result: Any, *flags: str) -> int:
+        return _run_verify(monkeypatch, tmp_path, result, *flags)[0]
+
+    assert code(_verify_result()) == 0
+    assert code(_verify_result(alarms=["column_mismatch"])) == 1
+    assert code(_verify_result(status="tree_moved")) == 2 and code(_verify_result(status="verify_error:ValueError")) == 2
+    ok = _verify_result()
+    assert code(ok, "--assert-zero", "column_mismatch") == 0 and code(ok, "--assert-zero", "ledger_output_excess") == 0
+    assert code(ok, "--assert-zero", "stored_ledger_input_class_mismatch") == 0
+    assert code(ok, "--assert-zero", "nonfinal_root_call") == 0 and code(ok, "--assert-zero", "spawn_usage_mismatch") == 0
+    assert code(ok, "--assert-zero", "verify_incomplete") == 0, "any completed check is its own denominator"
+    positive = _verify_result(counts={**ok.counts, "column_mismatch": 2}, alarms=["column_mismatch"])
+    assert code(positive, "--assert-zero", "column_mismatch") == 1
+    assert code(positive, "--assert-zero", "key_mismatch") == 0, "another class is judged on its own count"
+    skipped = _verify_result(status="no_credentials")
+    assert code(skipped, "--assert-zero", "column_mismatch") == 2
+    bare = {"rows_equal": 0, "root_checked": 0}
+    assert code(_verify_result(counts=bare, compare_skipped="tree_collision"), "--assert-zero", "column_mismatch") == 2
+    assert code(_verify_result(counts={**ok.counts, "ledger_records": 0}), "--assert-zero", "ledger_input_class_mismatch") == 2
+    assert (
+        code(_verify_result(counts={**ok.counts, "stored_ledger_tested": 0}), "--assert-zero", "stored_ledger_bound_exceeded")
+        == 2
+    )
+    assert code(_verify_result(counts={**ok.counts, "sync_spawns": 0}), "--assert-zero", "spawn_usage_mismatch") == 2
+    assert code(_verify_result(counts={**ok.counts, "root_calls": 0}), "--assert-zero", "nonfinal_root_call") == 2
+    assert (
+        code(_verify_result(counts={**ok.counts, "pinned_absent": 0}), "--assert-zero", "sidecar_pinned_absent_present") == 2
+    )
+    assert (
+        code(_verify_result(counts={**ok.counts, "pinned_absent": 1}), "--assert-zero", "sidecar_pinned_absent_present") == 0
+    )
+    assert code(_verify_result(counts={**ok.counts, "root_checked": 0}), "--assert-zero", "root_absent") == 2
+    masked = _verify_result(counts={**ok.counts, "r7_boundary_divergence": 1})
+    assert code(masked, "--assert-zero", "column_mismatch") == 2, (
+        "a tree whose compare classes were declared away is never green"
+    )
+    lines: list[str] = []
+    assert cli.main(["verify", "--tree", str(tmp_path / "x.jsonl"), "--assert-zero", "not_a_class"], out=lines.append) == 2
+    assert lines == ["verify: not_a_class is not an alarm class"]
+
+
+def _detached(
+    monkeypatch: pytest.MonkeyPatch, diag: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> list[dict[str, Any]]:
+    from scripts.telemetry_capture import verify  # noqa: PLC0415
+
+    ran: list[dict[str, Any]] = []
+    monkeypatch.setattr(cli, "run_pass", lambda *a, **k: PassResult("sent", diag))
+    monkeypatch.setattr(verify, "run_verify", lambda path, sid, **kw: ran.append({"path": path, "sid": sid, **kw}))
+    argv = ["run", "--event", "Stop", "--transcript", "/t/s.jsonl", "--session-id", "s"]
+    assert cli.main(argv, env={}, reader_factory=lambda: "reader") == 0
+    assert capsys.readouterr() == ("", "")
+    return ran
+
+
+def test_run_runs_verify_in_process_only_when_due(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    assert _detached(monkeypatch, {"event": "Stop", "at": 1, "outcome": "sent", "verify_due": False}, capsys) == []
+    assert _detached(monkeypatch, {"event": "Stop", "at": 1, "outcome": "sent"}, capsys) == []
+    diag = {"event": "Stop", "at": 1, "outcome": "sent", "verify_due": True}
+    (call,) = _detached(monkeypatch, diag, capsys)
+    assert (call["path"], call["sid"], call["trigger"], call["reader"], call["portal"]) == (
+        Path("/t/s.jsonl"),
+        "s",
+        "detached",
+        "reader",
+        None,
+    )
+    assert call["scheduling_record"] is diag, "the scheduling pass record is the one the runner appended"
+    assert 590 < call["budget"].remaining() <= 600, "the check has its own budget, not the pass's"
+    assert "alarms" not in call, "a detached check raises alarms"
+
+
+def test_a_verify_import_failure_leaves_run_silent(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import sys  # noqa: PLC0415
+
+    monkeypatch.setitem(sys.modules, "scripts.telemetry_capture.verify", None)
+    monkeypatch.setattr(cli, "run_pass", lambda *a, **k: PassResult("sent", {"verify_due": True}))
+    argv = ["run", "--event", "Stop", "--transcript", "/t/s.jsonl", "--session-id", "s"]
+    assert cli.main(argv, env={}) == 0
+    assert capsys.readouterr() == ("", "")
+    monkeypatch.setattr(cli, "run_pass", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("pass failed")))
+    assert cli.main(argv, env={}) == 0 and capsys.readouterr() == ("", "")
+
+
+def test_verify_builds_the_default_reader_when_none_is_injected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import src.common.ducklake_reader_client as reader_module  # noqa: PLC0415
+
+    built: list[str] = []
+    monkeypatch.setattr(reader_module, "make_reader", lambda: built.append("reader") or "reader")
+    _run_verify_with(monkeypatch, tmp_path)
+    assert built == ["reader"]
+
+
+def _run_verify_with(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> int:
+    from scripts.telemetry_capture import verify  # noqa: PLC0415
+
+    monkeypatch.setattr(verify, "run_verify", lambda *a, **k: _verify_result())
+    return cli.main(["verify", "--tree", str(tmp_path / f"{SID}.jsonl")], out=lambda line: None)
+
+
+def test_every_alarm_class_has_a_defined_denominator() -> None:
+    from scripts.telemetry_capture import verify  # noqa: PLC0415
+
+    zero: dict[str, int] = {}
+    for cls in sorted(verify.ALARM_CLASSES):
+        assert not cli._denominator_met(cls, zero) or cls == "verify_incomplete", cls
+        counts = {cli.DENOMINATOR_OF.get(cls, "x"): 1, "rows_equal": 1, "ledger_records": 1, "stored_ledger_tested": 1}
+        assert cli._denominator_met(cls, counts), f"{cls} has no denominator rule"
