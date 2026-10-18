@@ -160,8 +160,7 @@ def _scan_terraform_tree(pinned_region: str | None, violations: list[str]) -> in
                 continue
             for m in _REGION_RE.finditer(line):
                 violations.append(
-                    f"{rel}:{lineno}: R3 region id '{m.group(0)}' found "
-                    "(only the pinned aws_region default may hold one)."
+                    f"{rel}:{lineno}: R3 region id '{m.group(0)}' found (only the pinned aws_region default may hold one)."
                 )
 
         _check_backend_region(rel, text, violations)

@@ -51,36 +51,39 @@ def _base_tree(root: Path, region: str = "eu-west-2") -> None:
     _write(root, "terraform/personal/variables.tf", _GOOD_PERSONAL_VARIABLES)
 
 
-def _run(root: Path) -> tuple[list[str], int]:
+def _run(root: Path) -> list[str]:
     with patch(_ROOT_PATCH_TARGET, root):
         failed: list[str] = []
-        from scripts.checks import registry
-
         validate_project_region(failed)
-        declaration = registry._CURRENT_DECLARATION
-        examined = declaration.count if declaration and declaration.kind == "examined" else 0
-    return failed, examined
+    return failed
+
+
+def _examined() -> int:
+    from scripts.checks import registry
+
+    declaration = registry._CURRENT_DECLARATION
+    return declaration.count if declaration and declaration.kind == "examined" else 0
 
 
 def test_compliant_tree_passes(tmp_path: Path) -> None:
     _base_tree(tmp_path)
     _write(tmp_path, ".github/workflows/w.yml", _GOOD_WORKFLOW)
-    failed, examined = _run(tmp_path)
+    failed = _run(tmp_path)
     assert failed == []
-    assert examined > 0
+    assert _examined() > 0
 
 
 def test_r1_empty_region_file(tmp_path: Path) -> None:
     _base_tree(tmp_path)
     _write(tmp_path, "config/aws-region", "")
-    failed, _ = _run(tmp_path)
+    failed = _run(tmp_path)
     assert any("R1" in f for f in failed)
 
 
 def test_r1_invalid_region_file(tmp_path: Path) -> None:
     _base_tree(tmp_path)
     _write(tmp_path, "config/aws-region", "not-a-region\n")
-    failed, _ = _run(tmp_path)
+    failed = _run(tmp_path)
     assert any("R1" in f for f in failed)
 
 
@@ -88,18 +91,15 @@ def test_r2_literal_in_signin_with(tmp_path: Path) -> None:
     _base_tree(tmp_path)
     wf = _GOOD_WORKFLOW.replace("${{ env.AWS_REGION }}", "eu-west-2")
     _write(tmp_path, ".github/workflows/w.yml", wf)
-    failed, _ = _run(tmp_path)
+    failed = _run(tmp_path)
     assert any("R2" in f for f in failed)
 
 
 def test_r2_literal_in_run_body(tmp_path: Path) -> None:
     _base_tree(tmp_path)
-    wf = (
-        "name: fixture\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n"
-        "      - run: echo eu-west-2\n"
-    )
+    wf = "name: fixture\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo eu-west-2\n"
     _write(tmp_path, ".github/workflows/w.yml", wf)
-    failed, _ = _run(tmp_path)
+    failed = _run(tmp_path)
     assert any("R2" in f for f in failed)
 
 
@@ -107,7 +107,7 @@ def test_r2_az_id(tmp_path: Path) -> None:
     _base_tree(tmp_path)
     wf = "name: fixture\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo eu-west-2a\n"
     _write(tmp_path, ".github/workflows/w.yml", wf)
-    failed, _ = _run(tmp_path)
+    failed = _run(tmp_path)
     assert any("R2" in f for f in failed)
 
 
@@ -115,14 +115,14 @@ def test_r2_comment_holding_region_id(tmp_path: Path) -> None:
     _base_tree(tmp_path)
     wf = "# region eu-west-2 default\nname: fixture\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps: []\n"
     _write(tmp_path, ".github/workflows/w.yml", wf)
-    failed, _ = _run(tmp_path)
+    failed = _run(tmp_path)
     assert any("R2" in f for f in failed)
 
 
 def test_r2_non_workflow_github_file(tmp_path: Path) -> None:
     _base_tree(tmp_path)
     _write(tmp_path, ".github/CODEOWNERS", "# eu-west-2 is our region\n")
-    failed, _ = _run(tmp_path)
+    failed = _run(tmp_path)
     assert any("R2" in f for f in failed)
 
 
@@ -133,14 +133,14 @@ def test_r3_backend_s3_region_line(tmp_path: Path) -> None:
         "terraform/bootstrap/main.tf",
         'terraform {\n  backend "s3" {\n    bucket = "x"\n    region = "eu-west-2"\n  }\n}\n',
     )
-    failed, _ = _run(tmp_path)
+    failed = _run(tmp_path)
     assert any("R3" in f and "backend" in f for f in failed)
 
 
 def test_r3_backend_hcl_region_line(tmp_path: Path) -> None:
     _base_tree(tmp_path)
     _write(tmp_path, "terraform/personal/backend-sandbox.hcl", 'bucket = "x"\nregion = "eu-west-2"\n')
-    failed, _ = _run(tmp_path)
+    failed = _run(tmp_path)
     assert any("R3" in f and "backend" in f for f in failed)
 
 
@@ -151,14 +151,14 @@ def test_r3_default_differs_from_file(tmp_path: Path) -> None:
         "terraform/bootstrap/variables.tf",
         'variable "aws_region" {\n  default = "us-east-1"\n}\n',
     )
-    failed, _ = _run(tmp_path)
+    failed = _run(tmp_path)
     assert any("R3" in f and "differs from" in f for f in failed)
 
 
 def test_r3_hcl_comment_holding_region_id(tmp_path: Path) -> None:
     _base_tree(tmp_path)
     _write(tmp_path, "terraform/personal/notes.tf", "# historical region: eu-west-2\n")
-    failed, _ = _run(tmp_path)
+    failed = _run(tmp_path)
     assert any("R3" in f for f in failed)
 
 
@@ -169,7 +169,7 @@ def test_r3_neon_id_stays_green(tmp_path: Path) -> None:
         "terraform/personal/neon.tf",
         'variable "neon_region_id" {\n  default = "aws-eu-west-2"\n}\n',
     )
-    failed, _ = _run(tmp_path)
+    failed = _run(tmp_path)
     assert failed == []
 
 
@@ -184,7 +184,7 @@ def test_r4_unwired_signin(tmp_path: Path) -> None:
         "          aws-region: ${{ env.AWS_REGION }}\n"
     )
     _write(tmp_path, ".github/workflows/w.yml", wf)
-    failed, _ = _run(tmp_path)
+    failed = _run(tmp_path)
     assert any("R4" in f for f in failed)
 
 
@@ -200,7 +200,7 @@ def test_r4_region_step_before_checkout(tmp_path: Path) -> None:
         "          aws-region: ${{ env.AWS_REGION }}\n"
     )
     _write(tmp_path, ".github/workflows/w.yml", wf)
-    failed, _ = _run(tmp_path)
+    failed = _run(tmp_path)
     assert any("R4" in f for f in failed)
 
 
@@ -218,7 +218,7 @@ def test_r4_preceding_checkout_carries_ref(tmp_path: Path) -> None:
         "          aws-region: ${{ env.AWS_REGION }}\n"
     )
     _write(tmp_path, ".github/workflows/w.yml", wf)
-    failed, _ = _run(tmp_path)
+    failed = _run(tmp_path)
     assert any("R4" in f for f in failed)
 
 
@@ -244,7 +244,7 @@ def test_r4_needs_output_job_does_not_run_action(tmp_path: Path) -> None:
         "          aws-region: ${{ needs.resolve-target.outputs.aws_region }}\n"
     )
     _write(tmp_path, ".github/workflows/w.yml", wf)
-    failed, _ = _run(tmp_path)
+    failed = _run(tmp_path)
     assert any("R4" in f for f in failed)
 
 
@@ -255,17 +255,13 @@ def test_r5_env_aws_default_region(tmp_path: Path) -> None:
         "jobs:\n  a:\n    runs-on: ubuntu-latest\n    steps: []\n"
     )
     _write(tmp_path, ".github/workflows/w.yml", wf)
-    failed, _ = _run(tmp_path)
+    failed = _run(tmp_path)
     assert any("R5" in f for f in failed)
 
 
 class TestRealTree:
     def test_real_tree_passes(self) -> None:
         failed: list[str] = []
-        from scripts.checks import registry
-
         validate_project_region(failed)
-        declaration = registry._CURRENT_DECLARATION
-        examined = declaration.count if declaration and declaration.kind == "examined" else 0
         assert failed == [], failed
-        assert examined > 0
+        assert _examined() > 0

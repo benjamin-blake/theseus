@@ -142,4 +142,4 @@ class TestBuildDucklakeFallback:
         region_input = manifest["inputs"]["region"]
         assert "default" not in region_input
         step = manifest["runs"]["steps"][0]
-        assert step["env"]["REGION"] == '${{ inputs.region || env.AWS_REGION }}'
+        assert step["env"]["REGION"] == "${{ inputs.region || env.AWS_REGION }}"

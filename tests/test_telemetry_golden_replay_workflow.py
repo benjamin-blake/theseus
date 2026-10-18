@@ -48,12 +48,28 @@ def test_permissions_role_masking_and_checkout() -> None:
     assert job["timeout-minutes"] == 30 and len(_doc()["jobs"]) == 1
     assert _doc()["concurrency"] == {"group": "telemetry-golden-replay", "cancel-in-progress": False}
     steps = _steps()
-    checkout = next(s for s in steps if str(s.get("uses", "")).startswith("actions/checkout"))
+    checkout = next(
+        s
+        for s in steps
+        if str(s.get("uses", "")).startswith("actions/checkout")
+        and "workflow_run.head_sha" in str(s.get("with", {}).get("ref", ""))
+    )
     assert checkout["with"]["fetch-depth"] == 0 and "workflow_run.head_sha" in checkout["with"]["ref"]
     (assume,) = [s for s in steps if str(s.get("uses", "")).startswith("aws-actions/configure-aws-credentials")]
     assert assume["with"]["role-to-assume"].endswith("role/agent-platform-github-ci-branch")
     assert assume["env"] == {"MASK_AWS_ROLE_ID_ACCOUNT_PART": "${{ secrets.AWS_ROLE_ID_ACCOUNT_PART }}"}
     assert "role-session-name" not in assume["with"]
+
+    # rec-4067: a default-ref checkout + the aws-region action run BEFORE the head_sha checkout,
+    # since that checkout's commit may predate config/aws-region (as in ci-rca.yml).
+    step0, step1, step2 = steps[0], steps[1], steps[2]
+    step0_with = step0.get("with", {})
+    assert str(step0.get("uses", "")).startswith("actions/checkout")
+    assert "ref" not in step0_with and "path" not in step0_with
+    assert step1.get("uses") == "./.github/actions/aws-region"
+    assert str(step2.get("uses", "")).startswith("actions/checkout") and "workflow_run.head_sha" in str(step2["with"]["ref"])
+    assert step2["with"]["fetch-depth"] == 0
+    assert assume["with"]["aws-region"] == "${{ env.AWS_REGION }}"
 
 
 def test_function_urls_are_resolved_masked_and_the_module_is_run() -> None:
