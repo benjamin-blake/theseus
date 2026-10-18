@@ -283,4 +283,19 @@ ENTRIES: tuple[Entry, ...] = (
         ),
         full_segment="full_after_lint",
     ),
+    Entry(
+        name="validate_project_region",
+        module="scripts.checks.ci_guards.validate_project_region",
+        attr="validate_project_region",
+        pre=True,
+        pre_globs=(
+            ".github/**",
+            "terraform/**",
+            "config/aws-region",
+            "scripts/checks/ci_guards/validate_project_region.py",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ),
+        full_segment="full_after_lint",
+    ),
 )

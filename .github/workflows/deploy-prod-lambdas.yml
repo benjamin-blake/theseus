@@ -88,11 +88,10 @@ jobs:
       id-token: write  # OIDC token minting for assume-role
       contents: read
 
-    env:
-      AWS_DEFAULT_REGION: eu-west-2
-
     steps:
       - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/aws-region
 
       - name: Configure AWS credentials (OIDC -- merged deploy role, main only)
         # T2.49 / DEP-12 (Decision 144): repointed from the retired prod-only deploy role to the
@@ -108,7 +107,7 @@ jobs:
           MASK_AWS_ROLE_ID_ACCOUNT_PART: ${{ secrets.AWS_ROLE_ID_ACCOUNT_PART }}
         with:
           role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/agent-platform-github-ci-deploy
-          aws-region: eu-west-2
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Classify assume-role outcome (scope the tolerance to the genuinely-absent role)
         # Decision 55 false-green guard: continue-on-error above must NOT silently swallow a
@@ -166,11 +165,10 @@ jobs:
       id-token: write  # OIDC token minting for assume-role
       contents: read
 
-    env:
-      AWS_DEFAULT_REGION: eu-west-2
-
     steps:
       - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/aws-region
 
       - name: Configure AWS credentials (OIDC -- github_ci_branch role, prod-class invoke)
         uses: aws-actions/configure-aws-credentials@v6
@@ -178,7 +176,7 @@ jobs:
           MASK_AWS_ROLE_ID_ACCOUNT_PART: ${{ secrets.AWS_ROLE_ID_ACCOUNT_PART }}
         with:
           role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/agent-platform-github-ci-branch
-          aws-region: eu-west-2
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Assert deploy-record freshness (source_git_sha == github.sha)
         # False-green guard (Decision 55): a skipped/partial/stale deploy must not let the smoke
@@ -190,7 +188,7 @@ jobs:
         run: |
           set -euo pipefail
           for fn in agent-platform-scheduled-agent-dispatcher agent-platform-findings-processor; do
-            RECORD=$(aws s3 cp "s3://agent-platform-data-lake/deploy-records/prod/${fn}.json" - --region eu-west-2)
+            RECORD=$(aws s3 cp "s3://agent-platform-data-lake/deploy-records/prod/${fn}.json" - --region "$AWS_REGION")
             ACTUAL_SHA=$(printf '%s' "$RECORD" | python3 -c "import json,sys; print(json.load(sys.stdin).get('source_git_sha') or '')")
             if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
               echo "::error::DEPLOY_RECORD_STALE ${fn}: source_git_sha=${ACTUAL_SHA} != github.sha=${EXPECTED_SHA} -- a stale or skipped deploy cannot report smoke-green (Decision 55 false-green guard)." >&2
@@ -203,7 +201,7 @@ jobs:
         run: |
           set -euo pipefail
           aws lambda invoke --function-name agent-platform-scheduled-agent-dispatcher \
-            --payload '{}' --cli-binary-format raw-in-base64-out --region eu-west-2 out-dispatcher.json
+            --payload '{}' --cli-binary-format raw-in-base64-out --region "$AWS_REGION" out-dispatcher.json
           cat out-dispatcher.json
           python3 -c "import json; d=json.load(open('out-dispatcher.json')); assert d.get('status') == 'disabled', d"
           echo "OK scheduled-agent-dispatcher smoke: status=disabled"
@@ -212,7 +210,7 @@ jobs:
         run: |
           set -euo pipefail
           aws lambda invoke --function-name agent-platform-findings-processor \
-            --payload '{}' --cli-binary-format raw-in-base64-out --region eu-west-2 out-findings.json
+            --payload '{}' --cli-binary-format raw-in-base64-out --region "$AWS_REGION" out-findings.json
           cat out-findings.json
           python3 -c "import json; d=json.load(open('out-findings.json')); assert d.get('skipped_comparison') is True, d"
           echo "OK findings-processor smoke: skipped_comparison=true"

@@ -62,8 +62,11 @@ aws s3api put-public-access-block \
 ### 2. Initialise
 
 ```bash
-terraform -chdir=terraform/bootstrap init
+terraform -chdir=terraform/bootstrap init \
+  -backend-config="region=$(tr -d '[:space:]' < config/aws-region)"
 ```
+
+The backend block names no region (rec-4067): init takes it from config/aws-region, the project's one region, and later plan and apply runs reuse it. A `.terraform` directory initialised before that change needs this init run once before its next plan or apply.
 
 ### 3. Prepare variables
 

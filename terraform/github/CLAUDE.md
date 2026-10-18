@@ -38,8 +38,10 @@ export GITHUB_TOKEN=$(aws secretsmanager get-secret-value \
 REVIEWER_ID=$(gh api /user --jq .id)   # run as the reviewer account
 #    Or use the GitHub MCP get_me tool in Claude Code on the web.
 
-# 3. Initialise (uses the S3 backend in agent-platform-data-lake).
-terraform -chdir=terraform/github init
+# 3. Initialise (S3 backend in agent-platform-data-lake; the region comes from config/aws-region, rec-4067).
+#    A .terraform directory initialised before rec-4067 needs this init once before its next plan or apply.
+terraform -chdir=terraform/github init \
+  -backend-config="region=$(tr -d '[:space:]' < config/aws-region)"
 
 # 4. Plan -- review carefully before applying.
 #    STOP if plan shows any destroy/replace of github_repository, any unintended

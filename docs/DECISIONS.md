@@ -1348,6 +1348,8 @@ Roadmap refs: rec-4044, rec-4049, rec-4067.
 > PLAN-heartbeat-canary-plan-time-grant.
 >
 > **Update (2026-10-17):** Clause 6's "Decision 180 clause 6 is not re-decided" is overtaken: Decision 223 adopts that alternative, placing PlatformDev, PlatformAdmin and their inline policies in terraform/bootstrap. This entry's trail, grant, name family and region rule are unchanged.
+>
+> **Update (2026-10-18):** clause 4's declared residuals are closed (rec-4067). config/aws-region holds the project region; workflow jobs read it through .github/actions/aws-region, which fails closed on an empty or invalid value and exports AWS_REGION and AWS_DEFAULT_REGION, and every sign-in takes aws-region from it. No backend block or backend file names a region: the S3 backend reads AWS_REGION, or a -backend-config region set at init from the file. validate_project_region fails any other AWS region id in .github/ YAML or terraform/ HCL, and either aws_region default that differs from the file. Unenforced, outside clause 4: Python, config and runbook region defaults and the Neon region id (rec-4404). PLAN-project-region-single-source.
 
 ---
 
