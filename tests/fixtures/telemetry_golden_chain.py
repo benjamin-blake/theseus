@@ -117,8 +117,26 @@ def specs() -> dict[str, Any]:
     return load_specs()
 
 
-def append_batches(con: Any, result: CaptureResult, *, now: datetime | None = None, reverse: bool = False) -> dict[str, int]:
+def register_project(con: Any, index: int) -> tuple[str, str]:
+    """Mint and register one real-purpose project (tenant TENANT) with a project_ref without a reserved prefix.
+
+    Trees that share a root ref and pin (17 of the 19 expectation trees) land in one catalog only under distinct projects.
+    """
+    project_id, project_ref = f"01BX5ZZKBKACTAV9WEVGE{index:05d}", f"example/project-{index}"
+    db.insert_projects(con, [{"project_id": project_id, "tenant_id": TENANT, "project_ref": project_ref, "purpose": "real"}])
+    return project_id, project_ref
+
+
+def append_batches(
+    con: Any,
+    result: CaptureResult,
+    *,
+    now: datetime | None = None,
+    reverse: bool = False,
+    project: tuple[str, str] | None = None,
+) -> dict[str, int]:
     """Append every non-empty batch in write order (reversed on request, rows too); inserted counts per table."""
+    project_id = PROJECT if project is None else project[0]
     moment = now if now is not None else latest_event(result) + timedelta(seconds=1)
     batches = list(reversed(result.batches)) if reverse else result.batches
     inserted: dict[str, int] = {}
@@ -126,10 +144,30 @@ def append_batches(con: Any, result: CaptureResult, *, now: datetime | None = No
         if rows:
             rows = list(reversed(rows)) if reverse else rows
             done = append_events(
-                con, specs()[table], copy.deepcopy(rows), tenant_id=TENANT, project_id=PROJECT, catalog=db.ALIAS, now=moment
+                con, specs()[table], copy.deepcopy(rows), tenant_id=TENANT, project_id=project_id, catalog=db.ALIAS, now=moment
             )
             inserted[table] = done.inserted
     return inserted
+
+
+def load_world(con: Any, trees: list[str] | None = None) -> dict[str, tuple[str, str]]:
+    """Every expectation tree (or *trees*) in its final pass, each under its own registered project: tree -> project."""
+    names = trees if trees is not None else sorted({e["tree"] for e in expectation_trees()})
+    world = {}
+    for index, name in enumerate(names, 1):
+        world[name] = register_project(con, index)
+        append_batches(con, hold_back(emit(name, True)), project=world[name])
+    return world
+
+
+def clone_row(con: Any, table: str, project_id: str, replace: dict[str, Any], *, where: str = "TRUE") -> None:
+    """Insert a copy of one stored row of *project_id* (the first by event_timestamp) with the replaced columns."""
+    sets = ", ".join(f"? AS {column}" for column in replace)
+    sql = (
+        f"INSERT INTO {db.ALIAS}.{table} SELECT * REPLACE ({sets}) FROM {db.ALIAS}.{table} "
+        f"WHERE project_id = ? AND {where} ORDER BY event_timestamp LIMIT 1"
+    )
+    con.execute(sql, [*replace.values(), project_id])
 
 
 def stored_rows(con: Any) -> dict[str, list[dict[str, Any]]]:
