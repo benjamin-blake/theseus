@@ -4,11 +4,11 @@ handoff_policy:
   timeout_disposition: blocked
 slug: merge-race-attestation
 intent: >-
-  Close the semantic merge race behind rec-4427 (and rec-4372's class): when the PR tier selects a test it does not
-  run (a heavy-dependency deferral or affected-set cap residue), the PR must prove that a Decision 163 local full-tier
-  run covered the tree actually being merged, with no heavy dependency and no budget change in the fast tier
-  (Benjamin, 2026-10-18). It is a per-PR proof of which tree the full tier saw, not a merge lock, so a green PR gate
-  means the merged code was verified.
+  Close the semantic merge race behind rec-4427 (and rec-4372's class): when the PR tier defers a selected test on a
+  heavy dependency, the PR must prove that a Decision 163 local full-tier run covered the tree actually being merged,
+  with no heavy dependency and no budget change in the fast tier (Benjamin, 2026-10-18). It is a per-PR proof of which
+  tree the full tier saw, not a merge lock: a green PR gate then means the deferred tests were covered on the
+  merge-ref tree, within the residuals the context names.
 plan_type: IMPLEMENTATION
 verification_tier: V2
 plan_path: docs/plans/PLAN-merge-race-attestation.yaml
@@ -16,18 +16,19 @@ phase: >-
   Soft-warn exception category ci_rca: the preventive Benjamin approved on 2026-10-18
   (cmsg_012XgaFy8VaDQbxP5D8nC9582aMXdziyBaRT37TC9eFAia, "go" to step 3 of
   cmsg_012XgaFy8VaDQbxP5D8nC9586gEaMGN1gZkPQkvRphdSBx; "write the plan",
-  cmsg_012XgaFy8VaDQbxP5D8nC958LjGjUQiANWAGvxQqUe2Sbc) after rec-4427 closed on its corrective (#1556). Names no
-  tier_item, so the Tier Item Freshness Gate is skipped; closes no exit criterion.
+  cmsg_012XgaFy8VaDQbxP5D8nC958LjGjUQiANWAGvxQqUe2Sbc; the heavy-dependency narrowing notified in
+  cmsg_012XgaFy8VaDQbxP5D8nC958XWXFcpnEx6FZYgsFV1HVKy). Names no tier_item, so the Tier Item Freshness Gate is
+  skipped; closes no exit criterion.
 scope:
 - file: scripts/checks/verification/validate_deferred_test_attestation.py
   action: Create
   purpose: >-
-    The PR-tier check. In a pull_request run of a non-bot PR that is not Decision 203 exempt-only and whose tier
-    deferred a selected test (the _pytest_diff deferral map of this run, or the cap residue recomputed in-process
-    from the same diff --pre used), require the PR head commit's Full-Tier-Attestation trailer to name the head tree,
-    to list every deferred heavy dependency, and to cover the merge-ref tree: equal to it, or (deferred set known)
-    no deferred module reached by the diff between them per the repo's own affected-set derivation. Rule vocabulary
-    DEFERRAL_ATTEST_RULES; no override of any kind.
+    The PR-tier check. In a pull_request run of a non-bot PR that is not Decision 203 exempt-only and whose
+    _pytest_diff deferral map (written earlier in the same run) defers a selected test, require the PR head commit's
+    Full-Tier-Attestation trailer to name the head tree, to list every deferred heavy dependency, and to cover the
+    merge-ref tree: equal to it, or (deferral map known, delta at most 75 entries) no deferred module reached by the
+    diff between them per the repo's own affected-set derivation. Rule vocabulary DEFERRAL_ATTEST_RULES; no override
+    of any kind.
 - file: scripts/checks/verification/_manifest.py
   action: Modify
   purpose: >-
@@ -38,14 +39,14 @@ scope:
   purpose: >-
     The attestation trailer vocabulary in one cohesive module both sides import: ATTESTATION_TRAILER, Attestation,
     format/parse/read_attestation, and stamp_head(rule), which amends HEAD's message with the trailer (tree
-    unchanged) when verify-head's rule is ok (result=pass) or failed_run (result=fail), and stamps nothing otherwise.
-    Imports no validation_result code, so there is no cycle.
+    unchanged) when verify-head's rule is ok (result=pass) or failed_run (result=fail), refuses on main/master or a
+    dirty index or worktree, and names every outcome. Imports no validation_result code, so there is no cycle.
 - file: scripts/checks/validation_result.py
   action: Modify
   purpose: >-
     --stamp becomes a modifier of --verify-head (valid only with it): after verify_head(), call
-    attestation_trailer.stamp_head(rule) and print its outcome; --verify-head alone stays read-only and the exit
-    code stays --verify-head's.
+    attestation_trailer.stamp_head(rule) and print its outcome; exit 0 only when verify-head is ok and the stamp is
+    on HEAD. --verify-head alone is unchanged and read-only.
 - file: scripts/session/postflight.py
   action: Modify
   purpose: run_verify_head's argv gains --stamp, so the --auto handoff stays in step with git-ops handoff_sequence.
@@ -54,11 +55,11 @@ scope:
   purpose: >-
     handoff_sequence.description, push_pr_ci_merge_flow.steps and rebase_phase_distinction.commit_flow_time name
     `--verify-head --stamp`; a handoff_sequence.deferral_attestation clause (trailer grammar, scope and skips, rules
-    list equal to DEFERRAL_ATTEST_RULES, identity posture, no override); enforcement_coverage gains one mechanical
-    row and five residual rows; referenced_repo_paths gains the two new modules; contract_version 8 -> 9 with a new
-    amendment_log entry. Stays at or under its current 490 effective lines (Decision 166 contracts class, limit 500)
-    by compacting the existing amendment_log entries into single-line flow mappings, the class's declared relief
-    valve, with every entry's parsed value unchanged.
+    list equal to DEFERRAL_ATTEST_RULES, the 75-entry delta bound, identity posture, no override); enforcement_coverage
+    gains one mechanical row and five residual rows; referenced_repo_paths gains the two new modules; contract_version
+    8 -> 9 with a new amendment_log entry. Stays at or under its current 490 effective lines (Decision 166 contracts
+    class, limit 500) by compacting the existing amendment_log entries into single-line flow mappings, the class's
+    declared relief valve, with every entry's parsed value unchanged.
 - file: config/ci_rca_taxonomy.yaml
   action: Modify
   purpose: "Registration row: validate_deferred_test_attestation: code_regression."
@@ -73,28 +74,37 @@ scope:
   purpose: >-
     The one-full-tier rule paragraph's "followed by `--verify-head`" becomes "followed by `--verify-head --stamp`"
     (S3 is measured-only, Decision 127).
+- file: tests/fixtures/attestation_repos.py
+  action: Create
+  purpose: >-
+    Shared builder for temporary git repos (signing off, a base, an attested head carrying the trailer, a main-moved
+    commit, refs/remotes/origin/main, a `git merge --no-ff` merge commit checked out as HEAD, evidence files) used by
+    both new test modules, so neither duplicates it or nears the 500-SLOC limit.
 - file: tests/checks/verification/test_validate_deferred_test_attestation.py
   action: Create
   purpose: >-
-    Every rule against real temporary git repos with a merge commit checked out; contract parity (rules list and the
-    three handoff surfaces); the validate.py --pre input tripwire.
+    Every rule against fixture repos; contract parity (rules list, the 75-entry bound and the three handoff surfaces).
 - file: tests/checks/verification/test__manifest.py
   action: Modify
   purpose: Pin the entry as pre-only, ungated and absent from the full tier.
 - file: tests/checks/test_attestation_trailer.py
   action: Create
-  purpose: Mirror test of the trailer module (stamp, idempotence, stale replacement, refusal, failed_run, parse, read).
+  purpose: >-
+    Mirror test of the trailer module: stamp, idempotence, stale replacement, refusals (unattested rule, main, dirty
+    tree), amend failure, failed_run, parse and read.
 - file: tests/checks/test_validation_result.py
   action: Modify
   purpose: >-
-    TestStampCli only (the file is at 442 of 500 SLOC): --stamp with --verify-head calls stamp_head and keeps the
-    exit code; --stamp alone is a usage error.
+    TestStampCli only (the file is at 442 of 500 SLOC): --stamp with --verify-head calls stamp_head and exits 0 only
+    when both succeed; --stamp alone is a usage error.
 - file: tests/session/postflight/test_auto.py
   action: Modify
   purpose: TestVerifyHeadSeam pins the --stamp argv.
 - file: tests/test_workflow_skill_antidrift.py
   action: Modify
-  purpose: The Commit Flow assertion requires the verify-head line to carry --stamp, still before git push.
+  purpose: >-
+    The Commit Flow assertion requires the verify-head line to carry --stamp, still before git push; closure item 4
+    and implement.md's one-full-tier paragraph name `--verify-head --stamp`.
 bundled_recommendations: []
 followon_recs:
 - rec-4451
@@ -103,16 +113,16 @@ followon_recs:
 infrastructure_dependencies: []
 acceptance_criteria:
 - >-
-  In a pull_request run of a non-bot, non-exempt-only PR whose tier deferred a test, the check fails when the head
-  commit carries no Full-Tier-Attestation trailer, when the trailer names a tree other than the head's, when a
-  deferred heavy dependency is absent from its heavy_deps, and when main moved between the attested tree and the
-  merge-ref tree in a way the affected-set derivation says reaches a deferred module; it passes when the attested
-  tree equals the merge tree or main's movement reaches no deferred module.
+  In a pull_request run of a non-bot, non-exempt-only PR whose deferral map defers a test, the check fails when the
+  head commit carries no Full-Tier-Attestation trailer, when the trailer names a tree other than the head's, when a
+  deferred heavy dependency is absent from its heavy_deps, when main moved by more than 75 delta entries since the
+  attested tree, and when main's smaller movement reaches a deferred module per the affected-set derivation; it passes
+  when the attested tree equals the merge tree or main's movement reaches no deferred module.
 - >-
-  Unknown deferral state (deferral map missing or unreadable, or a derivation fallback) requires an exact tree match;
-  a run that deferred nothing is a vacuous pass; a non-pull_request run, a bot-authored PR and a PR whose every
-  changed path is in Decision 203's exempt set are declared skips; a result=fail attestation passes with a printed
-  warning (identity gate, Decision 203). The selection manifest file is never read.
+  A missing or unreadable deferral map requires an exact tree match; a run whose map defers nothing is a vacuous pass
+  with no derivation; a non-pull_request run, a bot-authored PR and a PR whose every changed path is in Decision 203's
+  exempt set are declared skips; a result=fail attestation passes with a printed warning (identity gate, Decision
+  203). The selection manifest is never read and the PR's own selection is never recomputed.
 - >-
   Replayed on PR #1554's real head (d8319764) with its real CI base (5f355f10) and its four duckdb deferrals, a
   stamped head fails with base_moved_affects_deferred naming tests/common/test_ducklake_event_verification_verbs.py;
@@ -120,17 +130,18 @@ acceptance_criteria:
 - >-
   `bin/venv-python -m scripts.checks.validation_result --verify-head --stamp` amends HEAD with one trailer naming
   HEAD's tree, the run's result and the importable excluded heavy dependencies, leaves the tree byte-identical
-  (Decision 203's push gate still passes), is idempotent, replaces a stale trailer, stamps nothing when the evidence
-  does not attest HEAD, and exits exactly as --verify-head does.
+  (Decision 203's push gate still passes), is idempotent, replaces a stale trailer, refuses on main/master and on a
+  dirty index or worktree, names a failed amend, and exits 0 only when verify-head is ok and the stamp is on HEAD.
 - >-
   git-ops.yaml's handoff_sequence.description, push_pr_ci_merge_flow.steps and
-  rebase_phase_distinction.commit_flow_time, the implement skill's Commit Flow and postflight --auto all name
-  `--verify-head --stamp` (asserted by tests); the contract's deferral_attestation rules list equals the module's
-  DEFERRAL_ATTEST_RULES; git-ops.yaml stays at or under 490 effective lines with every pre-existing amendment_log
-  entry parsing to the same value; the skill stays within its prose budget.
+  rebase_phase_distinction.commit_flow_time, the implement skill's Commit Flow and closure item 4, implement.md and
+  postflight --auto all name `--verify-head --stamp` (asserted by tests); the contract's deferral_attestation rules
+  list equals DEFERRAL_ATTEST_RULES; git-ops.yaml stays at or under 490 effective lines with every pre-existing
+  amendment_log entry parsing to the same value; the skill stays within its prose budget.
 - >-
-  The fast tier gains no dependency and no budget change; the check's in-process derivations add well under one
-  second to the non-test half once --pre has built the import graph (Decision 208), measured.
+  The fast tier gains no dependency and no budget change. The check runs a derivation only when the map defers a
+  test and the merge tree differs from the attested tree (7 of 40 sampled PRs); measured warm 2.9s on #1554's 41-entry
+  CI-base delta and bounded by the 75-entry limit at about 8s, under 3% of Decision 208's 270s non-test budget.
 verification_plan:
 - step: 1
   phase: pre-deploy
@@ -167,11 +178,11 @@ verification_plan:
 - step: 3
   phase: pre-deploy
   action: >-
-    Every other rule: scope skips (non-PR, bot, exempt-only), vacuous pass, missing/stale attestation, heavy deps,
-    failed-run warning, unresolvable head, non-merge checkout, cap residue as deferred, unknown state requiring an
-    exact tree, corrupt artifacts never raising, the default derivation on this repository; contract parity of the
-    rules list and of the three git-ops handoff surfaces naming `--verify-head --stamp`; the tripwire that pins the
-    recompute's inputs to validate.py's --pre construction.
+    Every other rule: scope skips (non-PR, bot, exempt-only), vacuous pass without a derivation, missing/stale
+    attestation, heavy deps, failed-run warning, unresolvable head, non-merge checkout, unknown map requiring an exact
+    tree, the 75-entry delta bound, corrupt artifacts never raising, the default derivation on this repository; and
+    contract parity of the rules list, the bound and the three git-ops handoff surfaces naming `--verify-head
+    --stamp`.
   command: >-
     bin/venv-python -m pytest tests/checks/verification/test_validate_deferred_test_attestation.py::TestScope
     tests/checks/verification/test_validate_deferred_test_attestation.py::TestAttestation
@@ -180,8 +191,8 @@ verification_plan:
   expected: Exit 0, all collected nodes pass. Red before (pytest exit 4).
   fix_if: >-
     Fix the rule the failing node names; never relax an assertion. A parity failure means git-ops.yaml and the module
-    drifted: the module is the source for the rules list, and the contract names the stamped command verbatim. A
-    tripwire failure means validate.py's --pre derivation input changed: update the recompute to match it.
+    drifted: the module is the source for the rules list and the bound, and the contract names the stamped command
+    verbatim.
   hermetic: true
   graduation: waive
   graduation_waiver_reason: >-
@@ -195,23 +206,24 @@ verification_plan:
     tests/checks/test_attestation_trailer.py::TestStamp::test_stamp_amends_head_with_attestation_keeping_tree -q
   expected: Exit 0, 1 passed. Red before (pytest exit 4).
   fix_if: >-
-    The tree differs after the amend: the amend picked up index or worktree content (stamp only from the clean tree
-    the evidence attests). The trailer is missing: interpret-trailers output was not passed to commit -F.
+    The tree differs after the amend: the clean-tree refusal did not run before the amend. The trailer is missing:
+    interpret-trailers output was not passed to commit -F.
   hermetic: true
   graduation: graduate
   graduation_check_id: validation-result-stamp-keeps-tree
 - step: 5
   phase: pre-deploy
   action: >-
-    The rest of the stamp surface: refusal, failed_run, idempotence, stale replacement, parse and read; the
-    --verify-head --stamp CLI; the postflight argv.
+    The rest of the stamp surface: refusals (unattested rule, main/master, dirty tree), a failed amend, failed_run,
+    idempotence, stale replacement, parse and read; the --verify-head --stamp CLI and its exit codes; the postflight
+    argv.
   command: >-
     bin/venv-python -m pytest tests/checks/test_attestation_trailer.py tests/checks/test_validation_result.py::TestStampCli
     tests/session/postflight/test_auto.py::TestVerifyHeadSeam -q
   expected: >-
     Exit 0, all collected nodes pass. Red before: the new module and class are absent (pytest exit 4) and
     TestVerifyHeadSeam::test_passes_through_zero fails on the argv without --stamp.
-  fix_if: Fix the stamp rule or argv the failing node names.
+  fix_if: Fix the stamp rule, exit code or argv the failing node names.
   hermetic: false
   graduation: waive
   graduation_waiver_reason: >-
@@ -220,20 +232,22 @@ verification_plan:
 - step: 6
   phase: pre-deploy
   action: >-
-    Registration, skill ordering and the taxonomy row are wired; git-ops.yaml and the skill stay inside their size
-    budgets.
+    Registration, skill and command wording and the taxonomy row are wired; git-ops.yaml and the skill stay inside
+    their size budgets.
   command: >-
     bin/venv-python -m pytest
     tests/checks/verification/test__manifest.py::TestVerificationManifest::test_deferred_test_attestation_runs_pre_only_and_ungated
     tests/test_workflow_skill_antidrift.py::test_handoff_full_tier_runs_after_commit_and_rebase
+    tests/test_workflow_skill_antidrift.py::test_implement_surfaces_name_the_stamped_verify_head
     tests/checks/ci_guards/test_validate_ci_rca_taxonomy_accounting.py::TestCiRcaTaxonomyAccountingDeclaration::test_real_tree_is_recorded_enforced
     -q && bin/venv-python -c "from pathlib import Path; from scripts.checks.structural._classify import
     effective_lines; n = effective_lines(Path('docs/contracts/git-ops.yaml').read_text(encoding='utf-8')); s =
     Path('.claude/skills/implement/SKILL.md').stat().st_size; print('git-ops effective', n, 'skill bytes', s); assert
     n <= 490, n; assert s <= 35402, s"
   expected: >-
-    Exit 0: 3 passed, then one line with git-ops effective lines at or under 490 and the skill at or under 35402
-    bytes. Red before: the manifest node is absent and the antidrift node fails (no --stamp on the verify-head line).
+    Exit 0: 4 passed, then one line with git-ops effective lines at or under 490 and the skill at or under 35402
+    bytes. Red before: the manifest and wording nodes are absent and the ordering node fails (no --stamp on the
+    verify-head line).
   fix_if: >-
     The taxonomy node fails naming the new check: the function_to_category row is missing. git-ops over 490: compact
     more amendment_log entries; never split the file or raise its budget. Skill over budget (another merge spent the
@@ -259,24 +273,33 @@ verification_plan:
     The assertion fails: a compacted entry was reworded or re-ordered; restore its text exactly. Run this before the
     merge only (on main, origin/main already carries the new entry).
   hermetic: false
-  graduation: not-applicable
+  graduation: waive
+  graduation_waiver_reason: >-
+    It compares the branch against origin/main as it stands before the merge, a transient repo state: after the merge
+    origin/main already carries the new entry, so a standing row would fail by construction.
 - step: 8
   phase: pre-deploy
   action: >-
-    Measure the check's added fast-tier cost (Decision 208 non-test half): with the import graph built once, time the
-    module's default derivation helper on a real PR-sized delta and on a 40-file delta.
+    Measure the check's real fast-tier cost (Decision 208 non-test half) on #1554's actual CI-base delta
+    (064802ca..5f355f10, 41 entries) and on a delta at the 75-entry bound taken from recent main history, with the
+    import graph already built as --pre leaves it.
   command: >-
-    bin/venv-python -c "import time; from scripts.checks import _common; from scripts.checks.verification import
-    validate_deferred_test_attestation as m; root = _common.ROOT; m._affected_by([('M', 'scripts/checks/_common.py')],
-    root); t = time.monotonic(); m._affected_by([('M', 'src/turn_capture/record_turn.py'), ('M',
-    'config/telemetry/parser_versions.yaml')], root); m._affected_by([('M', str(q.relative_to(root))) for q in
-    sorted((root / 'scripts' / 'checks').glob('*.py'))][:40], root); d = time.monotonic() - t; print(f'two warm
-    derivations: {d:.3f}s'); assert d < 1.0, d"
+    bin/venv-python -c "import subprocess, time; from scripts.checks import _common; from
+    scripts.checks.verification import validate_deferred_test_attestation as m; root = _common.ROOT; e = lambda a, b:
+    [(ln.split('\t')[0][:1], ln.split('\t')[1]) for ln in subprocess.run(['git', 'diff', '--name-status',
+    '--no-renames', a, b], capture_output=True, text=True, check=True, cwd=root).stdout.splitlines() if '\t' in ln];
+    m._affected_by([('M', 'scripts/checks/_common.py')], root); big = e('origin/main~10', 'origin/main')[:m.DELTA_ENTRY_LIMIT]; out = []
+    ; [(t0 := time.monotonic(), m._affected_by(x, root), out.append((len(x), round(time.monotonic() - t0, 2)))) for x in
+    (e('064802ca0cc9918e59e7a273ed63e0159dfb297b', '5f355f10b98473a98b47a1d70d30bdffd0b7c350'), big)]; print('warm
+    derivations (entries, seconds):', out); assert all(s < 27.0 for _, s in out), out"
   expected: >-
-    Exit 0 printing the warm cost, measured at planning time at about 0.02s per derivation once the graph is cached.
+    Exit 0 printing two (entries, seconds) pairs. Measured at planning time on this container: about 2.9s for the
+    41-entry #1554 delta and about 8s near the bound (63 entries took 6.6s, 125 took 12.9s). The 27s assertion is the
+    10%-of-270s ceiling, a loose guard for slower hardware, not the expected cost.
   fix_if: >-
-    Over 1s: the helper builds a fresh graph (a root or argument that misses dependency_graph's lru_cache); pass the
-    same root --pre used. Never add a cache that outlives the run (Decision 135).
+    Over the ceiling: the helper builds a fresh graph (a root that misses dependency_graph's lru_cache); pass the same
+    root --pre used. Never add a cache that outlives the run (Decision 135). Lower DELTA_ENTRY_LIMIT only with a
+    measured reason recorded in git-ops.yaml.
   hermetic: false
   graduation: not-applicable
 - step: 9
@@ -305,10 +328,8 @@ verification_plan:
     refs/replay/pr1554; exit $rc
   expected: >-
     Exit 0 and two lines: "5f355f10 base_moved_affects_deferred True", then "064802ca attested_tree False". Measured
-    at planning time with an equivalent replay of the rule: the CI-base merge (41 changed files) reaches all four
-    deferred modules; the attested-base merge tree equals the head tree. The replay's get_changed_files leg diffs
-    against today's origin/main tip (the worktree shares refs), so its cap residue is larger than CI's; the
-    heavy-dependency overlap decides the verdict either way.
+    at planning time with an equivalent replay of the rule: the CI-base merge (41 delta entries, under the bound)
+    reaches all four deferred modules; the attested-base merge tree equals the head tree.
   fix_if: >-
     The 5f355f10 line reads base_moved_unaffected: the derivation ran against the planning repo instead of root, or
     the delta is diffed the wrong way round. The 064802ca line is not attested_tree: the merge-ref tree is not read
@@ -322,21 +343,22 @@ verification_plan:
     `--verify-head --stamp`, whose trailer must name HEAD's tree with result=pass.
   command: >-
     bin/venv-python -m ruff check scripts/checks/verification/validate_deferred_test_attestation.py
-    scripts/checks/attestation_trailer.py scripts/checks/validation_result.py scripts/session/postflight.py &&
-    bin/venv-python -m scripts.validate && bin/venv-python -m scripts.checks.validation_result --verify-head --stamp &&
-    git log -1 --format='%(trailers:key=Full-Tier-Attestation,valueonly)' HEAD | grep -q "tree=$(git rev-parse
-    'HEAD^{tree}') result=pass"
+    scripts/checks/attestation_trailer.py scripts/checks/validation_result.py scripts/session/postflight.py
+    tests/fixtures/attestation_repos.py && bin/venv-python -m scripts.validate && bin/venv-python -m
+    scripts.checks.validation_result --verify-head --stamp && git log -1
+    --format='%(trailers:key=Full-Tier-Attestation,valueonly)' HEAD | grep -q "tree=$(git rev-parse 'HEAD^{tree}')
+    result=pass"
   expected: >-
-    ruff exit 0, the full tier ends "All checks passed." exit 0, the CLI prints ok then stamped (or already_stamped),
-    and the grep matches.
+    ruff exit 0, the full tier ends "All checks passed." exit 0, the CLI prints ok then stamped (or already_stamped)
+    and exits 0, and the grep matches.
   fix_if: Any failure -- fix at root, commit, rebase and rerun the full tier from the start (handoff_policy).
   hermetic: false
   graduation: not-applicable
 - step: 11
   phase: post-deploy
   action: >-
-    After the squash merge: (a) the check is in the merged --pre sequence; (b) the implementing PR's final
-    pr-validate job log shows the check's header and a verdict line.
+    After the squash merge: (a) the check is in the merged --pre sequence; (b), reported as its own outcome, the
+    implementing PR's final pr-validate job log shows the check's header and a verdict line.
   command: >-
     R=$(git rev-parse --show-toplevel) && W=$(mktemp -d) && git fetch -q origin main && git worktree add -q --detach
     "$W" origin/main && (cd "$W" && "$R/bin/venv-python" -c "from scripts.checks import registry; names = [s.name for s
@@ -344,9 +366,9 @@ verification_plan:
     print('pre-sequence position', names.index('validate_deferred_test_attestation'))"); rc=$?; git worktree remove
     --force "$W"; exit $rc
   expected: >-
-    (a) Exit 0 printing the position. (b) Sub-step, an MCP read (AGENTS.md: no gh CLI): mcp__github__actions_list for
-    ci.yml runs on the implementing PR's final head sha, then mcp__github__get_job_logs for its pr-validate job; the
-    log contains the literal line "=== Deferred-test attestation ===" followed by a line naming one of
+    (a) Exit 0 printing the position. (b) An MCP read (AGENTS.md: no gh CLI): mcp__github__actions_list for ci.yml
+    runs on the implementing PR's final head sha, then mcp__github__get_job_logs for its pr-validate job; the log
+    contains the literal line "=== Deferred-test attestation ===" followed by a line naming one of
     DEFERRAL_ATTEST_RULES.
   fix_if: >-
     Absent from the sequence on main: the manifest entry did not merge. Header absent from the PR log: the check did
@@ -354,7 +376,7 @@ verification_plan:
   hermetic: false
 test_obligations:
 - source: scripts/checks/verification/validate_deferred_test_attestation.py
-  behavior: A merge-ref tree no attested full-tier run covered fails whenever the PR tier deferred a test.
+  behavior: A merge-ref tree no attested full-tier run covered fails whenever the PR tier deferred a heavy test.
   verification_step: 1
   test_selector: >-
     tests/checks/verification/test_validate_deferred_test_attestation.py::TestMergeRace::test_main_commit_touching_a_deferred_test_fails
@@ -371,7 +393,7 @@ test_obligations:
   test_selector: tests/checks/test_attestation_trailer.py::TestStamp::test_stamp_amends_head_with_attestation_keeping_tree
   red_green_expectation: red before (node absent), green after
 - source: scripts/checks/validation_result.py
-  behavior: --verify-head --stamp stamps through stamp_head and keeps --verify-head's exit code.
+  behavior: --verify-head --stamp stamps through stamp_head and exits 0 only when both succeed.
   verification_step: 5
   test_selector: tests/checks/test_validation_result.py::TestStampCli
   red_green_expectation: red before (class absent), green after
@@ -382,7 +404,7 @@ test_obligations:
   red_green_expectation: red before (argv lacks --stamp), green after
 - source: docs/contracts/git-ops.yaml
   behavior: >-
-    The contract's rules list equals DEFERRAL_ATTEST_RULES and its three handoff surfaces name
+    The contract's rules list and delta bound equal the module's, and its three handoff surfaces name
     `--verify-head --stamp`.
   verification_step: 3
   test_selector: tests/checks/verification/test_validate_deferred_test_attestation.py::TestContract
@@ -404,11 +426,10 @@ constraints:
   re-implemented). The check does not read branching_topology.agent_branch_prefixes, so it adds no consumer of that
   fact (its reversal trigger (c)).
 - >-
-  Decision 135: the selection manifest file is never read; the cap residue is recomputed in-process from the inputs
-  --pre derives from (get_status_aware_diff without its untracked "??" leg, which is empty in a fresh CI checkout and
-  would otherwise pick up files the test run left behind, plus get_changed_files) through the lru_cached graph --pre
-  already built in this run; nothing persists across runs. The deferral map read is the one this run's pytest_diff
-  wrote.
+  Decision 135: the selection manifest is never read and the PR's own selection is never recomputed. The one
+  derivation the check runs is over the base-moved delta (attested tree -> merge tree), only when the deferral map
+  defers a test, through the lru_cached graph --pre already built, bounded by DELTA_ENTRY_LIMIT = 75 entries; above
+  it the rule is base_moved_large_delta. Nothing persists across runs.
 - >-
   git-ops.yaml stays at or under 490 effective lines through amendment_log compaction only (Decision 166 contracts
   relief valve); never split it or raise its budget. The skill edit is the two "--stamp" tokens.
@@ -432,19 +453,17 @@ context:
   added the test; pr-validate deferred it (duckdb), so the combination merged unvalidated. rec-4372 was the same
   class through the apply-time ZIP assert (fixed by #1536's input attribution).
 - >-
-  Base rate (40 merged agent PRs #1523-#1562, pr-validate logs): 17 deferred tests (13 duckdb, 8 cap residue); 8 of
-  those were behind main at CI time. Replay of this rule: 5 of the 8 fail (#1554, #1551, #1537, #1536, #1535), 3
-  pass; strict tree equality would fail all 8.
+  Base rate (40 merged agent PRs #1523-#1562, pr-validate logs): 13 deferred a heavy-dependency test, 7 of them while
+  behind main at CI time. Replay of this rule: 4 of the 7 fail (#1554, #1551, #1537, #1536), 3 pass; strict tree
+  equality would fail all 7. Derivation cost, warm: 0.1-0.13s per delta entry (2.9s for #1554's 41 entries).
 - >-
   Residuals and owners. rec-4451: main moving after the pr-validate merge ref (the same replay on the merged trees
-  fails 4 of 6 deferring PRs); a merge-time re-check of every PR, or a Decision amending 83 and 217 cl.1-2. rec-4452:
-  skipped bot-authored PRs (dependabot; the Decision 217 cl.3 executor App, keeping Decision 163 point 3) and Decision
-  203 exempt-only PRs (an audits/ file selects a module-level duckdb test). rec-4453: tests that skip at run time on
-  an excluded dependency never reach the deferral map. rec-4087: result=fail passes. rec-4085: CI cannot verify an
+  fails 3 more); a merge-time re-check of every PR, or a Decision amending 83 and 217 cl.1-2. rec-4452: bot-authored
+  PRs (dependabot; the Decision 217 cl.3 executor App, keeping Decision 163 point 3), Decision 203 exempt-only PRs,
+  and affected-set cap residue (needs a second full derivation per PR, 3-20s). rec-4453: tests that skip at run time
+  on an excluded dependency never reach the deferral map. rec-4087: result=fail passes. rec-4085: CI cannot verify an
   agent-written trailer. Inherited: selection recall gaps (rec-4429), merge on red via the admin bypass (rec-4080).
-- >-
-  Identity, not verdict: a result=fail attestation passes with a warning, like Decision 203's push gate; refusing it
-  needs rec-4087's inherited-red release (Decision 83 non-wedging).
+  Operator-authored PRs share the agents' identity and are in scope; Benjamin works through agent sessions only.
 - >-
   Trailer, not PR body: a trailer travels atomically with the pushed head, and a GitHub update-branch merge commit
   carries none, so it fails as missing_attestation; a PR body is read from the event payload and goes stale on edit.
@@ -474,67 +493,69 @@ execution_steps:
   --format=%(trailers:key=Full-Tier-Attestation,valueonly,separator=%x0A) <rev>`, last non-empty value wins, None on
   any git error or parse failure.
 - >-
-  attestation_trailer.py: stamp_head(rule, *, cwd=None) -> str. rule ok -> result pass, failed_run -> result fail,
-  any other rule -> "not_stamped" with no amend. heavy_deps = sorted importable names from
-  scripts.checks._pytest_diff._excluded_heavy_import_names() (lazy import inside the function; find_spec is not None,
-  the inverse of the predicate that defers them). Target already on HEAD -> "already_stamped". Else pipe `git log -1
-  --format=%B HEAD` through `git interpret-trailers --if-exists replace --trailer "Full-Tier-Attestation: <value>"`
-  into `git commit --amend --allow-empty -F -` (cwd defaults to _common.ROOT; the user's signing config untouched; no
-  --no-verify), then require HEAD^{tree} unchanged -> "stamped" else "tree_changed". validation_result.main():
-  --stamp is valid only with --verify-head (parser.error otherwise); print verify-head's rule, then stamp_head(rule);
-  return --verify-head's exit code unchanged.
+  attestation_trailer.py: STAMP_RULES and stamp_head(rule, *, cwd=None) -> str, in this order: rule not ok or
+  failed_run -> "not_stamped"; current branch main or master -> "on_main" (the postflight run_pre_commit_sanity
+  precedent; the subprocess amend bypasses never_on_main.py); `git status --porcelain` non-empty -> "dirty_tree";
+  heavy_deps = sorted importable names from scripts.checks._pytest_diff._excluded_heavy_import_names() (lazy import;
+  find_spec is not None, the inverse of the predicate that defers them); target already on HEAD ->
+  "already_stamped"; else pipe `git log -1 --format=%B HEAD` through `git interpret-trailers --if-exists replace
+  --trailer "Full-Tier-Attestation: <value>"` into `git commit --amend --allow-empty -F -` (cwd defaults to
+  _common.ROOT; the user's signing config untouched; no --no-verify): non-zero -> "amend_failed"; HEAD^{tree} changed
+  -> "tree_changed"; else "stamped". validation_result.main(): --stamp is valid only with --verify-head
+  (parser.error otherwise); print verify-head's rule, then stamp_head(rule); exit 0 only when the rule is ok and the
+  stamp outcome is stamped or already_stamped.
 - >-
   validate_deferred_test_attestation.py: a pure evaluate(*, root=None, environ=None, affected_by=None) ->
   Verdict(rule, deferred, detail, warning), plus the @registry.register wrapper that prints the "=== Deferred-test
   attestation ===" header, the verdict and, on failure, the remediation ("rebase onto origin/main, run the full tier,
   `--verify-head --stamp`, push --force-with-lease"), and declares registry.skipped / examined / failure_detail; a
-  failing rule appends the constant label "Deferred-test attestation". DEFERRAL_ATTEST_RULES in evaluation order:
-  not_pull_request, bot_authored, exempt_only (skips); unresolvable_head, not_merge_ref (fails); nothing_deferred
-  (vacuous pass); missing_attestation, stale_attestation, dependency_not_attested (fails); attested_tree (pass);
-  base_moved_unknown_deferrals, base_moved_affects_deferred (fails); base_moved_unaffected (pass).
+  failing rule appends the constant label "Deferred-test attestation". DELTA_ENTRY_LIMIT = 75. DEFERRAL_ATTEST_RULES
+  in evaluation order: not_pull_request, bot_authored (skips); unresolvable_head, not_merge_ref (fails); exempt_only
+  (skip); nothing_deferred (vacuous pass); missing_attestation, stale_attestation, dependency_not_attested (fails);
+  attested_tree (pass); base_moved_unknown_deferrals, base_moved_large_delta, base_moved_affects_deferred (fails);
+  base_moved_unaffected (pass).
 - >-
   Evaluation detail (every git call with cwd=root): GITHUB_EVENT_NAME must be pull_request. Payload from
-  GITHUB_EVENT_PATH: pull_request.user.type == "Bot" -> bot_authored. PR entries = _common.get_status_aware_diff(root)
-  minus its "??" entries, plus get_changed_files(root) as status "M" (validate.py's --pre construction). Every entry
-  path exempt under scripts.session.handoff_evidence's base-ref clause (_base_ref_clause / _is_exempt, imported
-  lazily; an unreadable clause exempts nothing) -> exempt_only. pull_request.head.sha unreadable ->
-  unresolvable_head; `git rev-parse HEAD^2` must equal it, else not_merge_ref. D = the deferral map's `deferred`
-  mapping (file -> missing dep; missing, unparseable or not a mapping -> unknown) plus the manifest["deferred"] cap
-  residue of the stdout-suppressed derive_affected_tests(pr_entries, repo_root=root) (its fallback -> unknown). D
-  empty and known -> nothing_deferred. Then the trailer rules in order, recording result=fail as the verdict's
+  GITHUB_EVENT_PATH: pull_request.user.type == "Bot" -> bot_authored; pull_request.head.sha unreadable ->
+  unresolvable_head; `git rev-parse HEAD^2` must equal it, else not_merge_ref. Every path of `git diff --name-only
+  --no-renames HEAD^1 HEAD` exempt under scripts.session.handoff_evidence's base-ref clause (_base_ref_clause /
+  _is_exempt, imported lazily; an unreadable clause exempts nothing) -> exempt_only. D = the deferral map's
+  `deferred` mapping (file -> missing dep); missing, unparseable or not a mapping -> unknown. D empty and known ->
+  nothing_deferred, with no derivation. Then the trailer rules in order, recording result=fail as the verdict's
   warning. Merge tree = HEAD^{tree}; equal to the attested tree -> attested_tree. Else unknown D ->
-  base_moved_unknown_deferrals. Else entries from `git diff --name-status --no-renames <attested> <merge>` go to
-  affected_by (default _affected_by: stdout-suppressed derive_affected_tests(entries, repo_root=root), selected plus
-  its manifest's deferred, a fallback counting as reaching all of D); overlap -> base_moved_affects_deferred with the
-  overlap and `git log --oneline -10 <head>..HEAD^1` in detail; else base_moved_unaffected.
+  base_moved_unknown_deferrals. Else entries from `git diff --name-status --no-renames <attested> <merge>`; more than
+  DELTA_ENTRY_LIMIT -> base_moved_large_delta; else affected_by(entries, root) (default _affected_by:
+  stdout-suppressed derive_affected_tests(entries, repo_root=root), selected plus its manifest's deferred, a fallback
+  counting as reaching all of D); overlap with D -> base_moved_affects_deferred with the overlap and `git log
+  --oneline -10 <head>..HEAD^1` in detail; else base_moved_unaffected.
 - >-
   _manifest.py: the Entry with a comment naming its placement reasons. config/ci_rca_taxonomy.yaml: the row.
   postflight.py: run_verify_head's argv gains "--stamp"; update its docstring and run_auto's sequence line.
 - >-
   git-ops.yaml: compact the amendment_log entries to single-line flow mappings first (parsed values unchanged; VP 7),
-  then the edits named in its scope row. The deferral_attestation clause lists DEFERRAL_ATTEST_RULES verbatim.
-  enforcement_coverage rows: {surface: "pr-validate run whose tier deferred a test", status: mechanical, enforced_by:
+  then the edits named in its scope row. The deferral_attestation clause lists DEFERRAL_ATTEST_RULES verbatim and
+  states DELTA_ENTRY_LIMIT with its measured basis. enforcement_coverage rows: {surface: "pr-validate run whose
+  tier deferred a heavy-dependency test", status: mechanical, enforced_by:
   "tests/checks/verification/test_validate_deferred_test_attestation.py::TestMergeRace"}; residual rows for "main
   moving after the pr-validate merge ref (CI-green -> merge window)" (residual_owner rec-4451), "bot-authored and
-  Decision 203 exempt-only PRs" (rec-4452), "tests that skip at run time on an excluded dependency, invisible to the
-  deferral map" (rec-4453), "a result=fail attestation" (rec-4087) and "an agent-written attestation CI cannot
-  independently verify" (rec-4085).
+  Decision 203 exempt-only PRs, and affected-set cap residue" (rec-4452), "tests that skip at run time on an excluded
+  dependency, invisible to the deferral map" (rec-4453), "a result=fail attestation" (rec-4087) and "an
+  agent-written attestation CI cannot independently verify" (rec-4085).
 - >-
-  SKILL.md, implement.md and the antidrift test as scoped; the antidrift test asserts `--verify-head --stamp` on the
-  Commit Flow line and keeps the commit < rebase < full tier < verify-head < push order. TestContract also carries
-  the tripwire: validate.py's --pre block still builds its derivation input from get_status_aware_diff() and
-  get_changed_files(), so a change there fails a named test instead of silently diverging from the recompute.
+  SKILL.md, implement.md and the antidrift test as scoped: test_handoff_full_tier_runs_after_commit_and_rebase asserts
+  `--verify-head --stamp` on the Commit Flow line and keeps the commit < rebase < full tier < verify-head < push
+  order; the new test_implement_surfaces_name_the_stamped_verify_head asserts closure item 4 and implement.md's
+  one-full-tier paragraph name `--verify-head --stamp`.
 - >-
-  Tests: temporary repos (commit.gpgsign=false in the repo config) with a base, an attested head carrying the trailer,
-  a main-moved commit, refs/remotes/origin/main at the base, and a `git merge --no-ff` merge commit checked out as
-  HEAD; the deferral map under <root>/logs/debug; environ and the payload file injected; affected_by injected, except
-  one test that exercises _affected_by against this repository's own tree (an edited test file selects itself).
-  Shared repo-building helpers stay local to each test module (no cross-test imports).
+  Tests: both new modules build repos through tests/fixtures/attestation_repos.py (commit.gpgsign=false in the repo
+  config); the deferral map under <root>/logs/debug; environ and the payload file injected; affected_by injected,
+  except one test that exercises _affected_by against this repository's own tree (an edited test file selects
+  itself). No cross-test imports.
 - Execute Verification Plan steps 1-10 -- loop until pass; on an unrecoverable failure stop and RCA (Decision 55).
 - >-
   Closure sequence (implement skill), each outcome reported on its own: code-review gate; github_readiness;
   implementation_declared true; rebase; retrospective evidence; VP step 10 (full tier, then --verify-head --stamp);
-  push; PR; CI by subscription; squash merge; VP step 11.
+  push; PR; CI by subscription; squash merge; VP step 11 (a) and (b).
 - 'Report: what was implemented and the verification results.'
 work_areas: []
 rollback: >-
