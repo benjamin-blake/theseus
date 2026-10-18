@@ -11,8 +11,8 @@
 #   - regex spans (%...%) use only the CloudWatch Logs regex subset -- no parentheses, so the
 #     case-insensitive roleName match is character classes with top-level alternation. IAM role
 #     names are case-insensitive in API calls, so an exact-case match is evadable.
-# Alerts are never filtered by actor (Decision 202): sanctioned CI metadata writes on PlatformDev
-# email too, until rec-4049 lands.
+# Alerts are never filtered by actor (Decision 202): no CI identity holds an IAM grant on either
+# role (Decision 225).
 locals {
   platform_security_alerts_topic_arn = "arn:aws:sns:${var.aws_region}:${var.account_id}:agent-platform-alerts"
 
