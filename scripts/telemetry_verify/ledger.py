@@ -17,7 +17,7 @@ finding carries the record's index so a mismatch on a later record is visible as
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Iterator
 
 from src.turn_capture.transcript import ROOT, TranscriptTree, read_lines
 
@@ -88,22 +88,33 @@ def model_key(record: dict[str, Any]) -> str | None:
     return key if isinstance(key, str) and key != "<synthetic>" else None
 
 
-def last_responses(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The last assistant record per message.id, synthetic and API-error records excluded."""
-    last: dict[str, dict[str, Any]] = {}
+def _keyed_responses(records: list[dict[str, Any]]) -> list[tuple[int, str, dict[str, Any]]]:
+    """(index, message id, record) of the last assistant record per message.id, synthetic and API-error records excluded."""
+    last: dict[str, tuple[int, dict[str, Any]]] = {}
     for index, record in enumerate(records):
         message = record.get("message")
         if record.get("type") != "assistant" or not isinstance(message, dict) or record.get("isApiErrorMessage"):
             continue
         if model_key(record) is None or not isinstance(message.get("usage"), dict):
             continue
-        last[str(message.get("id") or f"line-{index}")] = record
-    return list(last.values())
+        last[str(message.get("id") or f"line-{index}")] = (index, record)
+    return [(index, key, record) for key, (index, record) in last.items()]
+
+
+def last_responses(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The last assistant record per message.id, synthetic and API-error records excluded."""
+    return [record for _, _, record in _keyed_responses(records)]
+
+
+def _load(tree: TranscriptTree, key: str) -> tuple[list[dict[str, Any]], list[int]]:
+    """(the parsed records of a stream, the file line number of each): malformed lines are skipped in both."""
+    raw = tree.read(key)
+    items = [] if raw is None else [line for line in read_lines(raw) if line.data is not None]
+    return [item.data for item in items if item.data is not None], [item.line for item in items]
 
 
 def read_stream(tree: TranscriptTree, key: str) -> list[dict[str, Any]]:
-    raw = tree.read(key)
-    return [] if raw is None else [line.data for line in read_lines(raw) if line.data is not None]
+    return _load(tree, key)[0]
 
 
 def find_spawns(records: list[dict[str, Any]]) -> list[tuple[int, str, bool]]:
@@ -151,11 +162,10 @@ def _add(prefix: _Prefix, records: list[dict[str, Any]]) -> set[str]:
     return models
 
 
-def _prefix(tree: TranscriptTree, root: list[dict[str, Any]], cut: int) -> _Prefix:
-    before = root[:cut]
-    prefix = _Prefix(compaction=_compaction(before))
-    _add(prefix, before)
-    noticed = _noticed(before)
+def _included(
+    tree: TranscriptTree, before: list[dict[str, Any]]
+) -> Iterator[tuple[str, bool, list[dict[str, Any]], list[int]]]:
+    """(agent id, is_async, records, file lines) of each sub-agent stream spawned before the cut, nested ones included."""
     pending = [(agent, is_async) for _, agent, is_async in find_spawns(before)]
     included: set[str] = set()
     while pending:
@@ -163,12 +173,48 @@ def _prefix(tree: TranscriptTree, root: list[dict[str, Any]], cut: int) -> _Pref
         if agent in included:
             continue
         included.add(agent)
-        records = read_stream(tree, agent)
+        records, lines = _load(tree, agent)
+        yield agent, is_async, records, lines
+        pending += [(nested, nested_async) for _, nested, nested_async in find_spawns(records)]
+
+
+def _prefix(tree: TranscriptTree, root: list[dict[str, Any]], cut: int) -> _Prefix:
+    before = root[:cut]
+    prefix = _Prefix(compaction=_compaction(before))
+    _add(prefix, before)
+    noticed = _noticed(before)
+    for agent, is_async, records, _ in _included(tree, before):
         models = _add(prefix, records)
         if is_async and agent not in noticed:
             prefix.background_models |= models
-        pending += [(nested, nested_async) for _, nested, nested_async in find_spawns(records)]
     return prefix
+
+
+def prefix_calls(tree: TranscriptTree, cut_line: int) -> dict[str, list[tuple[str, int, str]]]:
+    """Per model key, the (stream key, file line, message id) of each response the cost-state prefix at cut_line counts.
+
+    cut_line is the position in the parsed root stream, as Finding.cut_line. The walk is the one _prefix sums, so a call
+    listed here is exactly a call the ledger leg counted; the line is the last record of the response, as a FILE line number.
+    """
+    root, root_lines = _load(tree, ROOT)
+    before = root[:cut_line]
+    out: dict[str, list[tuple[str, int, str]]] = {}
+
+    def collect(key: str, records: list[dict[str, Any]], lines: list[int]) -> None:
+        for index, message_id, record in _keyed_responses(records):
+            model = model_key(record)
+            assert model is not None
+            out.setdefault(model, []).append((key, lines[index], message_id))
+
+    collect(ROOT, before, root_lines)
+    for agent, _, records, lines in _included(tree, before):
+        collect(agent, records, lines)
+    return out
+
+
+def file_line(tree: TranscriptTree, cut_line: int) -> int:
+    """The file line number of the parsed root record at *cut_line* (Finding.cut_line is a position among parsed records)."""
+    return _load(tree, ROOT)[1][cut_line]
 
 
 def _ledger_totals(entry: Any) -> dict[str, int]:

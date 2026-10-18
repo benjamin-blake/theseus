@@ -15,18 +15,27 @@ import contextlib
 import copy
 import dataclasses
 import functools
+import json
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
 import yaml
 
+from scripts.telemetry_capture import state as st
+from scripts.telemetry_capture import verify
+from scripts.telemetry_capture.state import CaptureState, state_dir
+from scripts.telemetry_capture.transport import Budget
 from scripts.telemetry_verify import derive
 from scripts.telemetry_verify.joins import load_telemetry_joins
 from src.common import ducklake_event_reads as ev
-from src.telemetry.append import append_events
+from src.common.ducklake_reader_client import ResponseTooLargeError
+from src.telemetry.append import append_events, prepare_batch
 from src.turn_capture.record_turn import CaptureResult, record_turn
+from src.turn_capture.transcript import FsTree
 from tests.fixtures import telemetry_read_db as db
+from tests.fixtures import telemetry_verification_trees as trees
 from tests.fixtures import telemetry_verification_trees as verification
 from tests.fixtures.turn_capture_corpus import PROJECT, PROJECT_REF, SID, TENANT, case_cap, load_case, mem_tree
 from tests.fixtures.turn_capture_ducklake import load_specs
@@ -76,9 +85,19 @@ def record(tree: str, files: dict[str, str], cursor: Any, final: bool) -> Captur
         return record_turn(mem_tree(files), cursor, project_ref=PROJECT_REF, session_final=final)
 
 
-def hold_back(result: CaptureResult) -> CaptureResult:
-    """The result without payloads above the inline threshold (they ride the blob route in production)."""
-    kept = [r for r in result.transcripts if not ("content" in r and r["content_bytes"] > HELD_BACK_BYTES)]
+def hold_back(result: CaptureResult, *, store_held_back_as_blob: bool = False) -> CaptureResult:
+    """The result without payloads above the inline threshold (they ride the blob route in production).
+
+    With store_held_back_as_blob each such row is kept the way the writer's blob route stores it: content null, a synthetic
+    content_uri, content_sha256 and content_bytes as emitted, so a verify over the chain sees every emitted row stored.
+    """
+    held = [r for r in result.transcripts if "content" in r and r["content_bytes"] > HELD_BACK_BYTES]
+    kept = [r for r in result.transcripts if r not in held]
+    if store_held_back_as_blob:
+        kept += [
+            {**{k: v for k, v in r.items() if k != "content"}, "content_uri": f"blob://synthetic/{r['content_sha256']}"}
+            for r in held
+        ]
     return dataclasses.replace(result, transcripts=kept)
 
 
@@ -237,12 +256,12 @@ def combined_expectations(tree: str, final: bool) -> list[dict[str, Any]]:
 
 @contextlib.contextmanager
 def loaded(
-    tree: str, final: bool = True, kind: str = "memory", tmp_path: Path | None = None
+    tree: str, final: bool = True, kind: str = "memory", tmp_path: Path | None = None, *, store_held_back_as_blob: bool = False
 ) -> Iterator[tuple[Any, dict[str, list[dict[str, Any]]], dict[str, str]]]:
     """A catalog holding one tree's batches: (connection, stored rows, selector -> session_id)."""
     con = open_catalog(kind, tmp_path)
     try:
-        append_batches(con, hold_back(emit(tree, final)))
+        append_batches(con, hold_back(emit(tree, final), store_held_back_as_blob=store_held_back_as_blob))
         rows = stored_rows(con)
         yield con, rows, session_ids(rows)
     finally:
@@ -262,3 +281,130 @@ def unresolved_joins(con: Any) -> list[str]:
     return [
         join_id for join_id, child, column, parent, key in load_telemetry_joins() if dangling(con, child, column, parent, key)
     ]
+
+
+# --- on-disk captured trees, an in-memory reader and a fake portal for the in-session verify tests ---
+
+NOW = 1_800_000_000.0
+ROOT_ID = "01HZZZZZZZZZZZZZZZZZZZZZZZ"
+VERIFY_SPECS = load_specs()
+
+
+class Portal:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    def __call__(self, action: str, fields: dict[str, Any]) -> str:
+        self.calls.append((action, fields))
+        return "rec-9000"
+
+    def classes(self) -> list[str]:
+        return sorted(c[1]["title"].rsplit(": ", 1)[1] for c in self.calls if c[0] == "file")
+
+
+def _iso(value: Any) -> str:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    raise TypeError(type(value).__name__)
+
+
+def captured_rows(result: CaptureResult, **tweak: Any) -> dict[str, list[dict[str, Any]]]:
+    out = {}
+    for table, rows in result.batches:
+        if rows:
+            out[table] = prepare_batch(VERIFY_SPECS[table], copy.deepcopy(rows), tenant_id=TENANT, project_id=PROJECT).rows
+    return out
+
+
+class Reader:
+    """The reader's named() contract over stored rows, plus current_state() for the rec lookup."""
+
+    def __init__(self, stored: dict[str, list[dict[str, Any]]], *, root: bool = True, roots_in_tree: int = 1) -> None:
+        self.entries = [
+            (table, json.dumps({k: v for k, v in row.items() if k not in ("content", "content_uri")}, default=_iso))
+            for table, rows in sorted(stored.items())
+            for row in rows
+        ]
+        self.root, self.roots_in_tree = root, roots_in_tree
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.hook: Any = None
+        self.too_large = False
+        self.error: Exception | None = None
+        self.totals: list[int] | None = None
+
+    def current_state(self, table: str, **kw: Any) -> list[dict[str, Any]]:
+        return []
+
+    def named(self, verb: str, **params: Any) -> list[dict[str, Any]]:
+        self.calls.append((verb, params))
+        if self.error is not None:
+            raise self.error
+        if self.hook is not None:
+            self.hook(verb, params)
+        if verb == "telemetry_root_sessions":
+            return [{"session_id": ROOT_ID, "entity_ref": SID}] if self.root else []
+        if self.too_large and params["max_rows"] > 1:
+            raise ResponseTooLargeError("named_read", "too big", {})
+        start, size = params["offset"], params["max_rows"]
+        total = self.totals.pop(0) if self.totals else len(self.entries)
+        return [
+            {"table_name": t, "row_json": j, "total_rows": total, "roots_in_tree": self.roots_in_tree}
+            for t, j in self.entries[start : start + size]
+        ]
+
+
+@dataclass
+class Tree:
+    path: Path
+    state: CaptureState
+    result: CaptureResult
+    reader: Reader
+    portal: Portal
+
+    def scheduling(self) -> dict[str, Any]:
+        return [r for r in self.state.diagnostics() if r.get("event") != "verify"][-1]
+
+    def run(self, **kw: Any) -> verify.VerifyResult:
+        args: dict[str, Any] = {
+            "trigger": "detached",
+            "scheduling_record": self.scheduling(),
+            "reader": self.reader,
+            "portal": self.portal,
+            "budget": Budget.start(600),
+            "now": NOW,
+            "credentials": lambda: True,
+            "lock_wait_s": 0.0,
+        }
+        return verify.run_verify(self.path, SID, **{**args, **kw})
+
+    def verify_records(self) -> list[dict[str, Any]]:
+        return [r for r in self.state.diagnostics() if r.get("event") == "verify"]
+
+
+def build(tmp_path: Path, files: dict[str, str], *, final: bool = False, case: str | None = None, **reader_kw: Any) -> Tree:
+    for rel, body in files.items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(body, encoding="utf-8")
+    path = tmp_path / f"{SID}.jsonl"
+
+    def capture() -> CaptureResult:
+        return record_turn(FsTree(path), None, project_ref=PROJECT_REF, session_final=final)
+
+    if case is not None:
+        with case_cap(case):
+            result = capture()
+    else:
+        result = capture()
+    assert result.next_cursor is not None
+    state = CaptureState(state_dir(path, SID))
+    state.save_cursor(result.next_cursor, path.read_bytes(), st.Loaded(None, st.LOST))
+    state.append_diagnostic({"event": "Stop", "final": False, "at": int(NOW) - 5, "outcome": "sent"})
+    return Tree(path, state, result, Reader(captured_rows(result), **reader_kw), Portal())
+
+
+def corpus(tmp_path: Path, name: str = "subagent_sync.json", *, final: bool = True, **kw: Any) -> Tree:
+    return build(tmp_path, load_case(name)[0], case=name, final=final, **kw)
+
+
+def ledger_tree(tmp_path: Path, **kw: Any) -> Tree:
+    return build(tmp_path, trees.resume_with_cost_state(), **kw)

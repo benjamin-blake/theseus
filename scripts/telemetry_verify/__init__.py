@@ -4,6 +4,7 @@ docstring; the facade re-exports the public surface and holds no logic.
 """
 
 from scripts.telemetry_verify.alarms import ALARM_MIN_INTERVAL_S, ALARM_SOURCE, AlarmOutcome, raise_alarms
+from scripts.telemetry_verify.compare import CompareResult, TableCounts, compare_tree
 from scripts.telemetry_verify.dedupe import (
     collapse_events,
     collapse_model_calls,
@@ -30,6 +31,7 @@ from scripts.telemetry_verify.derive import (
 from scripts.telemetry_verify.joins import JOINS_PATH, load_telemetry_joins
 from scripts.telemetry_verify.orphans import orphan_counts
 from scripts.telemetry_verify.rows import TreeMovedError, decode_rows, read_tree
+from scripts.telemetry_verify.stored_ledger import ModelRefs, RecordInput, StoredLedgerResult, reconcile
 
 __all__ = [
     "ALARM_MIN_INTERVAL_S",
@@ -38,12 +40,18 @@ __all__ = [
     "ROLLUP_VERBS",
     "STATE_VERBS",
     "AlarmOutcome",
+    "CompareResult",
+    "ModelRefs",
+    "RecordInput",
     "Scope",
+    "StoredLedgerResult",
+    "TableCounts",
     "TreeMovedError",
     "agent_run_state_and_duration",
     "agent_run_token_rollup",
     "collapse_events",
     "collapse_model_calls",
+    "compare_tree",
     "compute_generations",
     "conflicted_grain_keys",
     "decode_rows",
@@ -55,6 +63,7 @@ __all__ = [
     "parse_timestamp",
     "raise_alarms",
     "read_tree",
+    "reconcile",
     "resolve_table",
     "retire",
     "session_friction_rollup",

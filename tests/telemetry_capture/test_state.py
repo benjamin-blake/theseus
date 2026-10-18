@@ -118,3 +118,41 @@ def test_a_failed_write_leaves_no_temp_file(tmp_path: Path, monkeypatch) -> None
     else:
         raise AssertionError("the write must fail")
     assert list(state.dir.iterdir()) == []
+
+
+def test_verify_state_round_trips_and_a_malformed_file_reads_empty(tmp_path: Path) -> None:
+    state = CaptureState(tmp_path / "d")
+    assert state.verify_state() == {}
+    saved = {"sent_passes": 4, "checks_by_day": {"2026-10-17": 1}, "alarm_at": {"column_mismatch": 1.5}}
+    state.save_verify_state(saved)
+    assert state.verify_state() == saved and state.verify_file.parent == state.dir
+    state.verify_file.write_text("{")
+    assert state.verify_state() == {}
+    state.verify_file.write_text("[1]")
+    assert state.verify_state() == {}
+    assert not list(state.dir.glob(".verify.json.*")), "every write is a temp file plus replace"
+
+
+def test_verify_state_fields_are_merged_by_owner() -> None:
+    current = {"sent_passes": 9, "last_ledger_line": 5, "next_attempt_at": 100, "alarm_at": {"a": 1}}
+    runner = {"sent_passes": 10, "last_ledger_line": 99, "scheduled_at": 7, "next_attempt_at": 200}
+    merged = st.merge_verify_state(current, runner, st.RUNNER)
+    assert merged == {
+        "sent_passes": 10,
+        "last_ledger_line": 5,
+        "scheduled_at": 7,
+        "next_attempt_at": 200,
+        "alarm_at": {"a": 1},
+    }
+    check = {"sent_passes": 0, "last_ledger_line": 8, "next_attempt_at": None, "alarm_at": {"a": 2}}
+    merged = st.merge_verify_state(merged, check, st.CHECK)
+    assert merged == {"sent_passes": 10, "last_ledger_line": 8, "scheduled_at": 7, "alarm_at": {"a": 2}}
+    operator = {"settled_at": 1, "root_session_id": "S", "alarm_at": {"b": 3}, "next_attempt_at": 5}
+    merged = st.merge_verify_state(merged, operator, st.OPERATOR)
+    assert merged == {
+        "sent_passes": 10,
+        "last_ledger_line": 8,
+        "scheduled_at": 7,
+        "root_session_id": "S",
+        "alarm_at": {"b": 3},
+    }
