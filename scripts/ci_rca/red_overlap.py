@@ -122,7 +122,7 @@ def _likely_resolved_ids(report_path: Path) -> set[str]:
         return set()
     if not isinstance(report, dict) or report.get("recs_read_status") != "ok":
         return set()
-    return {(r.get("id") if isinstance(r, dict) else str(r)) for r in report.get("ci_rca_likely_resolved_recs") or []}
+    return {str(r.get("id") if isinstance(r, dict) else r) for r in report.get("ci_rca_likely_resolved_recs") or []}
 
 
 def _work_from_plan(plan_path: Path) -> tuple[list[tuple[str, str]], list[str]]:
