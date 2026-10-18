@@ -43,10 +43,11 @@ jobs:
       id-token: write  # OIDC token minting for assume-role
       contents: read
 
-    env:
-      AWS_DEFAULT_REGION: eu-west-2
-
     steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/aws-region
+
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
@@ -58,14 +59,14 @@ jobs:
           MASK_AWS_ROLE_ID_ACCOUNT_PART: ${{ secrets.AWS_ROLE_ID_ACCOUNT_PART }}
         with:
           role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/agent-platform-github-ci-branch
-          aws-region: eu-west-2
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Resolve DuckLake serving Function URLs
         # Same resolution as deploy-ducklake-lambdas' smoke job: the URLs come from the AWS API and are masked (Decision 101).
         run: |
           set -euo pipefail
           for role in writer reader telemetry_writer; do
-            URL=$(aws lambda get-function-url-config --function-name "agent-platform-ducklake-${role//_/-}" --region eu-west-2 --query FunctionUrl --output text)
+            URL=$(aws lambda get-function-url-config --function-name "agent-platform-ducklake-${role//_/-}" --region "$AWS_REGION" --query FunctionUrl --output text)
             if [ -z "$URL" ] || [ "$URL" = "None" ]; then
               echo "::error::Could not resolve the ${role} Function URL via get-function-url-config." >&2
               exit 1

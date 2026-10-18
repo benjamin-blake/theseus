@@ -115,11 +115,10 @@ jobs:
       id-token: write  # OIDC token minting for assume-role
       contents: read
 
-    env:
-      AWS_DEFAULT_REGION: eu-west-2
-
     steps:
       - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/aws-region
 
       - name: Configure AWS credentials (OIDC -- merged deploy role, main only)
         # T2.49 / DEP-12 (Decision 144): repointed from the retired ducklake-only deploy role to
@@ -135,7 +134,7 @@ jobs:
           MASK_AWS_ROLE_ID_ACCOUNT_PART: ${{ secrets.AWS_ROLE_ID_ACCOUNT_PART }}
         with:
           role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/agent-platform-github-ci-deploy
-          aws-region: eu-west-2
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Classify assume-role outcome (scope the tolerance to the genuinely-absent role)
         # Decision 55 false-green guard: continue-on-error above must NOT silently swallow a
@@ -194,11 +193,10 @@ jobs:
       id-token: write  # OIDC token minting for assume-role
       contents: read
 
-    env:
-      AWS_DEFAULT_REGION: eu-west-2
-
     steps:
       - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/aws-region
 
       - name: Configure AWS credentials (OIDC -- github_ci_branch role, DuckLake maintenance-smoke invoke)
         uses: aws-actions/configure-aws-credentials@v6
@@ -206,7 +204,7 @@ jobs:
           MASK_AWS_ROLE_ID_ACCOUNT_PART: ${{ secrets.AWS_ROLE_ID_ACCOUNT_PART }}
         with:
           role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/agent-platform-github-ci-branch
-          aws-region: eu-west-2
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Assert deploy-record freshness (source_git_sha == github.sha, maintenance functions only)
         # False-green guard (Decision 55): a skipped/partial/stale deploy must not let the smoke
@@ -218,7 +216,7 @@ jobs:
         run: |
           set -euo pipefail
           for fn in agent-platform-ducklake-maintenance agent-platform-ducklake-maintenance-smoke; do
-            RECORD=$(aws s3 cp "s3://agent-platform-data-lake/deploy-records/ducklake/${fn}.json" - --region eu-west-2)
+            RECORD=$(aws s3 cp "s3://agent-platform-data-lake/deploy-records/ducklake/${fn}.json" - --region "$AWS_REGION")
             ACTUAL_SHA=$(printf '%s' "$RECORD" | python3 -c "import json,sys; print(json.load(sys.stdin).get('source_git_sha') or '')")
             if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
               echo "::error::DEPLOY_RECORD_STALE ${fn}: source_git_sha=${ACTUAL_SHA} != github.sha=${EXPECTED_SHA} -- a stale or skipped deploy cannot report smoke-green (Decision 55 false-green guard)." >&2
@@ -230,7 +228,7 @@ jobs:
       - name: Resolve DuckLake maintenance-smoke Function URL
         run: |
           set -euo pipefail
-          URL=$(aws lambda get-function-url-config --function-name "agent-platform-ducklake-maintenance-smoke" --region eu-west-2 --query FunctionUrl --output text)
+          URL=$(aws lambda get-function-url-config --function-name "agent-platform-ducklake-maintenance-smoke" --region "$AWS_REGION" --query FunctionUrl --output text)
           if [ -z "$URL" ] || [ "$URL" = "None" ]; then
             echo "::error::Could not resolve the maintenance-smoke Function URL via get-function-url-config." >&2
             exit 1
@@ -303,11 +301,10 @@ jobs:
       id-token: write  # OIDC token minting for assume-role
       contents: read
 
-    env:
-      AWS_DEFAULT_REGION: eu-west-2
-
     steps:
       - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/aws-region
 
       - name: Configure AWS credentials (OIDC -- merged deploy role, main only)
         # Same bootstrap-window tolerance as deploy-maintenance, scoped by the SAME
@@ -319,7 +316,7 @@ jobs:
           MASK_AWS_ROLE_ID_ACCOUNT_PART: ${{ secrets.AWS_ROLE_ID_ACCOUNT_PART }}
         with:
           role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/agent-platform-github-ci-deploy
-          aws-region: eu-west-2
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Classify assume-role outcome (scope the tolerance to the genuinely-absent role)
         if: steps.oidc_deploy.outcome != 'success'
@@ -365,11 +362,10 @@ jobs:
       id-token: write  # OIDC token minting for assume-role
       contents: read
 
-    env:
-      AWS_DEFAULT_REGION: eu-west-2
-
     steps:
       - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/aws-region
 
       - name: Configure AWS credentials (OIDC -- github_ci_branch role, DuckLake writer+reader invoke)
         uses: aws-actions/configure-aws-credentials@v6
@@ -377,7 +373,7 @@ jobs:
           MASK_AWS_ROLE_ID_ACCOUNT_PART: ${{ secrets.AWS_ROLE_ID_ACCOUNT_PART }}
         with:
           role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/agent-platform-github-ci-branch
-          aws-region: eu-west-2
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Assert deploy-record freshness (source_git_sha == github.sha, serving functions only)
         # False-green guard (Decision 55), narrowed to THIS leg's own function set (writer,
@@ -387,7 +383,7 @@ jobs:
         run: |
           set -euo pipefail
           for fn in agent-platform-ducklake-writer agent-platform-ducklake-reader agent-platform-ducklake-catalog-dr agent-platform-ducklake-telemetry-writer; do
-            RECORD=$(aws s3 cp "s3://agent-platform-data-lake/deploy-records/ducklake/${fn}.json" - --region eu-west-2)
+            RECORD=$(aws s3 cp "s3://agent-platform-data-lake/deploy-records/ducklake/${fn}.json" - --region "$AWS_REGION")
             ACTUAL_SHA=$(printf '%s' "$RECORD" | python3 -c "import json,sys; print(json.load(sys.stdin).get('source_git_sha') or '')")
             if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
               echo "::error::DEPLOY_RECORD_STALE ${fn}: source_git_sha=${ACTUAL_SHA} != github.sha=${EXPECTED_SHA} -- a stale or skipped deploy cannot report smoke-green (Decision 55 false-green guard)." >&2
@@ -407,7 +403,7 @@ jobs:
         run: |
           set -euo pipefail
           for role in writer reader telemetry_writer; do
-            URL=$(aws lambda get-function-url-config --function-name "agent-platform-ducklake-${role//_/-}" --region eu-west-2 --query FunctionUrl --output text)
+            URL=$(aws lambda get-function-url-config --function-name "agent-platform-ducklake-${role//_/-}" --region "$AWS_REGION" --query FunctionUrl --output text)
             if [ -z "$URL" ] || [ "$URL" = "None" ]; then
               echo "::error::Could not resolve the ${role} Function URL via get-function-url-config." >&2
               exit 1

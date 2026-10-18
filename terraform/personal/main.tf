@@ -39,9 +39,11 @@ terraform {
   }
   # S3 backend with native state locking (use_lockfile). The data-lake bucket was bootstrapped
   # under the prior local backend, so the chicken-and-egg that motivated "local" no longer holds.
-  # Partial config: bucket/key/region/encrypt come from -backend-config=backend-sandbox.hcl so this
-  # block stays account-agnostic and a future backend-production.hcl is a pure config addition.
-  # One-time migration: terraform init -migrate-state -backend-config=backend-sandbox.hcl.
+  # Partial config: bucket/key/encrypt come from -backend-config=backend-sandbox.hcl, and the
+  # region from AWS_REGION in CI or a -backend-config region from config/aws-region at hand-run
+  # init (rec-4067); this block stays account-agnostic and a future backend-production.hcl is a
+  # pure config addition.
+  # One-time migration: terraform init -migrate-state -backend-config=backend-sandbox.hcl -backend-config="region=$(tr -d '[:space:]' < config/aws-region)".
   backend "s3" {
     use_lockfile = true
   }

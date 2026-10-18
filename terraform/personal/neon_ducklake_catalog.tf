@@ -26,7 +26,7 @@
 #   1. Create the Neon provider API key secret out-of-band (plaintext; human-run; NOT Terraform-managed
 #      -- Terraform-managing the key the provider reads would create a provider->resource cycle):
 #        aws secretsmanager create-secret --name neon-api-key \
-#          --secret-string '<neon-api-key>' --region eu-west-2 --profile agent_platform_admin
+#          --secret-string '<neon-api-key>' --region "$(tr -d '[:space:]' < config/aws-region)" --profile agent_platform_admin
 #   2. Grant the CI apply role secretsmanager rights on the two secret ARNs (oidc.tf,
 #      aws_iam_role_policy.github_ci_apply) and apply JUST that statement manually (IAM-sensitive ->
 #      the guard fail-closes, so it cannot auto-apply):

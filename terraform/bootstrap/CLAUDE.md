@@ -21,7 +21,6 @@ time, using the `agent_platform_admin` profile (PlatformAdmin, `iam:*`).
 
 - Terraform 1.10+ (`cat config/terraform-version`)
 - AWS credentials for the `agent_platform_admin` profile (PlatformAdmin, `iam:*`).
-- The bootstrap S3 state bucket must exist (see One-time provisioning below).
 - `account_id`, `owner_email`, `platform_dev_external_id` and `platform_admin_external_id`
   (sensitive, no default) via `-var` or a gitignored tfvars file; recovery:
   `docs/contracts/terraform-cc-web-operations.yaml`.
@@ -33,8 +32,6 @@ time, using the `agent_platform_admin` profile (PlatformAdmin, `iam:*`).
 The bootstrap state bucket must exist before `terraform init` can succeed. Create it once:
 
 ```bash
-ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text --profile agent_platform_admin)
-
 aws s3api create-bucket \
   --bucket agent-platform-bootstrap-tfstate \
   --region eu-west-2 \
@@ -62,8 +59,11 @@ aws s3api put-public-access-block \
 ### 2. Initialise
 
 ```bash
-terraform -chdir=terraform/bootstrap init
+terraform -chdir=terraform/bootstrap init \
+  -backend-config="region=$(tr -d '[:space:]' < config/aws-region)"
 ```
+
+Region and re-init rule: `docs/contracts/terraform-cc-web-operations.yaml` `provider_init_and_mirror.backend_region`.
 
 ### 3. Prepare variables
 

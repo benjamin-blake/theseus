@@ -64,7 +64,7 @@ variable "agent_service_account_user_name" {
 # ---------------------------------------------------------------------------
 
 variable "neon_region_id" {
-  description = "Neon region_id for the DuckLake catalog project. Default aws-eu-west-2 (Neon AWS Europe/London) co-locates with the eu-west-2 data lake. Verified against Neon's supported-regions list at implementation time."
+  description = "Neon region_id for the DuckLake catalog project. Default aws-eu-west-2 (Neon AWS Europe/London) co-locates with the data lake in the project region. Verified against Neon's supported-regions list at implementation time."
   type        = string
   default     = "aws-eu-west-2"
 }
