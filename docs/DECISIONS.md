@@ -2,6 +2,60 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 224: One home per kind of user-set configuration -- project settings in ontheloop/platform.yaml, secret values never tracked and resolved by name, per-clone choices in .ontheloop/, one registry (amends Decision 211 clause 5 and Decision 212 clause 8) (Decided)
+
+```yaml
+number: 224
+status: Decided
+decided_date: "2026-10-18"
+amends: [211, 212]
+significance:
+  value: numbered_decision
+  justification: >-
+    Durable, reversal-relevant product commitment binding otl init and every later setting, widening
+    Decision 211 clause 5 and Decision 212 clause 8. Not a contract note:
+    docs/contracts/project-configuration.yaml carries the rows, never the rule.
+    Not amendment_forms: it amends two entries, and the kinds, homes and precedence clear the bar alone.
+```
+
+**Status:** Decided
+**Date:** 2026-10-18
+**Warehouse ID:** dec-224 (per Decision 84 backfill)
+
+**Problem:** A user who runs `otl init` needs one predictable place to set the platform's configuration, and nothing names one. Decision 212 clause 8's `ontheloop/platform.yaml` names the adapter per port only, and T4.24 c2 says only "by environment-variable convention". This repository spreads its own settings over about ten homes with no registry, among them committed config files, about 90 ad hoc environment variables, tfvars from Secrets Manager and hand-set GitHub secrets and variables (rec-4403).
+
+**Intent:** A setting's kind tells a user and an agent where it lives. Local is the default, and moving a port to the cloud is an edit to one tracked file, not a second install.
+
+**Decision:**
+1. Kinds. Every user-set setting is one kind: project (not secret, shared by everyone on the repository), secret (a credential), private (not a credential, but never published from a public repository: an account id, an email, an ExternalId) or machine (one clone's own choice: a profile name, a path override). Not configuration, so no row: runtime state (Decision 211 clause 5), values CI or a vendor runtime sets on its own, values a deploy writes for the runtime to discover, and platform-owned version pins (Decision 99's pattern).
+2. Homes. project: the tracked `ontheloop/platform.yaml`, each setting under the adapter that reads it, or under `clouds.<vendor>` when one cloud's adapters share it (the AWS region is `clouds.aws.region`), or under `project` when no adapter reads it. machine: the gitignored, per-clone `.ontheloop/config.yaml`. secret and private: never in a tracked file, a log, telemetry or a file under the working tree; platform.yaml names the variable and the secrets port resolves it by name -- locally from the process environment, then a user-level env file outside the working tree that `otl init` creates with names only and mode 0600; in CI from GitHub Actions secrets; in the cloud by runtime fetch (secret-material-handling.yaml). A credential Decision 206 clause 2 governs keeps that clause's homes and is never read by On The Loop code.
+3. Precedence. A project or machine setting resolves from a command-line flag, then its declared `OTL_` override variable, then `.ontheloop/config.yaml`, then platform.yaml, then the built-in default; only a row that declares an override variable has one. Vendor variables such as AWS_REGION are exported from the resolved value, never read as input; `otl doctor` warns when an ambient one disagrees.
+4. Local first. `otl init` writes every port on its local adapter, or its supported default where ports.yaml registers none, and no clouds block. Choosing a cloud adapter is an edit to platform.yaml that adds the adapter's settings and the names of its secrets, checked by `otl doctor` (Decision 212 clause 8). A setting is required only when its row's adapter or cloud is selected.
+5. One file for CI and cloud too. CI jobs read platform.yaml through one shared read step (PLAN-project-region-single-source's pattern); cloud functions get non-secret settings as deploy-time parameters written from it. A GitHub repository variable is never a project setting's home; it may carry a deploy output or GitHub-side gating.
+6. One registry. `docs/contracts/project-configuration.yaml` is the sole registry: one row per setting with its kind, home per substrate, variables, readers, who sets it, defaults and where this repository holds it today. A change that adds or moves a setting updates its row.
+7. This repository adopts it too. Its settings move to these homes once T4.24 creates `ontheloop/`, the region first (config/aws-region, rec-4067); until then each row records the current home.
+
+**Options considered:** One file for everything -- rejected: secrets cannot be tracked. Twelve-factor environment variables for everything -- kept at the process edge only. A gitignored `.env` in the repository -- rejected: agents read the working tree, and init characterises code with no credentials (Decision 211 clause 3). GitHub repository variables -- rejected: CI-only, withheld from fork pull requests, set by hand. The OS keychain -- deferred: absent in containers and CI.
+
+**Coverage (Decision 181 cl.2):** the registry's shape, kinds and homes, and that no secret or private row names a tracked home -- validate_project_configuration; clauses 2-5 in otl init, otl doctor and CI -- T4.24 c15; clauses 5 and 7 here -- T4.24 c16, the region's read step meanwhile -- validate_project_region. Advisory residuals, owner rec-4410: clause 5's cloud half and clause 6's "updates its row".
+
+```yaml reversal-conditions
+decision: 224
+review_by: 2027-06-30
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: environment-cannot-carry-secrets
+    kind: manual
+    description: "A supported substrate cannot deliver secret values by variable name: re-decide clause 2's secret home."
+  - id: platform-file-hotspot
+    kind: manual
+    description: "ontheloop/platform.yaml becomes a merge-conflict or review hotspot: re-decide one tracked file versus one per port."
+```
+
+**Related:** Decisions 99, 101, 173, 181, 184, 196, 197, 200, 202, 206, 211, 212, 217, 220; T4.23, T4.24, T4.27; rec-4067, rec-4403.
+
+---
+
 ## Decision 222: The smoke catalog's owner-login table step may add a declared nullable column an existing telemetry table lacks (amends Decision 216 clauses 2 and 3) (Decided)
 
 ```yaml
@@ -699,6 +753,8 @@ conditions:
 
 **Related:** Decisions 78, 81, 84, 184, 185, 197, 199, 200, 205, 206, 209, 211; T4.1, T4.2, T4.19, T4.20, T4.22-T4.24, T4.27.
 
+> **Amended by Decision 224 (2026-10-18):** Clause 8's `ontheloop/platform.yaml` also holds every project setting, under the adapter that reads it or a `clouds.<vendor>` block, and names the variable of every secret and private setting without holding its value; docs/contracts/project-configuration.yaml registers each setting.
+
 ---
 
 ## Decision 211: Brownfield adoption model -- otl init attaches to the code and its history, replaces only the change process and builds the verification plane; the house style is an optional profile and autonomy is earned by coverage (Decided)
@@ -747,6 +803,8 @@ conditions:
 ```
 
 **Related:** Decisions 93, 181, 184, 196, 197, 206, 209, 212; T3.4, T4.4, T4.22-T4.24; docs/contracts/vp-red-before.yaml.
+
+> **Amended by Decision 224 (2026-10-18):** Clause 5's gitignored `.ontheloop/` also holds `.ontheloop/config.yaml`, one clone's machine settings (Decision 224 clause 2); it holds no secret or private value.
 
 ---
 
