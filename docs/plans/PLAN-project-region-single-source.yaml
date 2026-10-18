@@ -219,17 +219,17 @@ scope:
 - file: terraform/bootstrap/CLAUDE.md
   action: Modify
   purpose: |-
-    "### 2. Initialise": the one-line command block is replaced by APPROVED TEXT (verbatim, no variance):
+    Amended 2026-10-18 to fit config/prose_budgets.yaml (meaning-preserving, Benjamin's 2026-10-17 rule): the approved command lands verbatim; the approved explanatory paragraph moves verbatim, generalised to the three roots, to the cc-web contract's backend_region, and a one-line pointer replaces it. Budget offsets (meaning-preserving deletions): the Prerequisites bullet '- The bootstrap S3 state bucket must exist (see One-time provisioning below).' (step 1 says the same) and the unused 'ACCOUNT_ID=$(aws sts get-caller-identity ...)' line plus the blank line after it in step 1's bash block (nothing reads ACCOUNT_ID). "### 2. Initialise": the one-line command block is replaced by the text below (verbatim, no variance):
     ```bash
     terraform -chdir=terraform/bootstrap init \
       -backend-config="region=$(tr -d '[:space:]' < config/aws-region)"
     ```
 
-    The backend block names no region (rec-4067): init takes it from config/aws-region, the project's one region, and later plan and apply runs reuse it. A `.terraform` directory initialised before that change needs this init run once before its next plan or apply.
+    Region and re-init rule: `docs/contracts/terraform-cc-web-operations.yaml` `backend_region`.
 - file: terraform/github/CLAUDE.md
   action: Modify
   purpose: |-
-    "Apply runbook" step 3: the comment line and the init command are replaced by APPROVED TEXT (verbatim inside the existing bash block, no variance):
+    Budget offset (amended 2026-10-18, meaning-preserving deletion): delete the '**NEVER auto-apply.** This module ...' paragraph under '## tf-gated-apply Environment' and the blank line before it; the '## NEVER auto-apply this module' section states the same rule, and build PR #1534 deletes the same paragraph. "Apply runbook" step 3: the comment line and the init command are replaced by APPROVED TEXT (verbatim inside the existing bash block, no variance):
     # 3. Initialise (S3 backend in agent-platform-data-lake; the region comes from config/aws-region, rec-4067).
     #    A .terraform directory initialised before rec-4067 needs this init once before its next plan or apply.
     terraform -chdir=terraform/github init \
@@ -239,8 +239,19 @@ scope:
   purpose: 'tfvars_and_remote_state_recovery.state_location becomes APPROVED TEXT (verbatim, folded-scalar wrapping may vary):
     State: `s3://agent-platform-data-lake/tfstate/personal/sandbox/terraform.tfstate` (region from `config/aws-region`), wired
     via `terraform -chdir=terraform/personal init -backend-config=backend-sandbox.hcl -backend-config="region=$(tr -d ''[:space:]''
-    < config/aws-region)"`. Also: config/aws-region joins referenced_repo_paths (sorted), and one amendment_log entry (prose_improvement,
-    newest first) records the repoint with rec-4067.'
+    < config/aws-region)"`. Also: provider_init_and_mirror gains backend_region, after ci_delegation_still_authoritative,
+    holding RELOCATED TEXT (verbatim, folded-scalar wrapping may vary): No S3 backend block or backend file names a region
+    (rec-4067): a hand-run init of terraform/bootstrap, terraform/github or terraform/personal takes it from config/aws-region,
+    the project''s one region, via `-backend-config="region=$(tr -d ''[:space:]'' < config/aws-region)"`, and later plan and
+    apply runs reuse it; CI init reads AWS_REGION from the sign-in. A `.terraform` directory initialised before that change
+    needs this init run once before its next plan or apply. End of relocated text. config/aws-region joins referenced_repo_paths
+    (sorted), and one amendment_log entry (prose_improvement, newest first) records the repoint and backend_region with rec-4067.'
+- file: config/prose_budgets.yaml
+  action: Modify
+  purpose: 'Added by amendment 2026-10-18. Ratchet DOWN (never raise) terraform/bootstrap/CLAUDE.md and terraform/github/CLAUDE.md
+    to their measured bytes after the edits (planning-time simulation on main 76de6ca8: 5110 and 5078 against 5151 and 5253;
+    re-measure). A decrease needs no raise marker (validate_prose_budget_raises). If either file still measures over its current
+    budget, STOP and send the planning thread the numbers: never raise.'
 - file: docs/DECISIONS.md
   action: Modify
   purpose: 'Decision 202 gains one dated Update paragraph after its last existing Update paragraph (after any pointer the
@@ -335,7 +346,8 @@ verification_plan:
   command: AWS_REGION=$(tr -d '[:space:]' < config/aws-region) AWS_DEFAULT_REGION=$(tr -d '[:space:]' < config/aws-region)
     bin/venv-python -m scripts.validate --pre && bin/venv-python -m scripts.validate
   expected: 'Both tiers exit 0. validate_structural_size_limits reports reconcile.yml at 536 and terraform-apply-sandbox.yml
-    at 550 or below. A full-tier timeout is blocked, not passed (handoff_policy): resume and re-run it from the start.'
+    at 550 or below, and the full tier''s validate_prose_limits passes with the two CLAUDE.md budgets ratcheted down. A full-tier
+    timeout is blocked, not passed (handoff_policy): resume and re-run it from the start.'
   fix_if: 'A size failure means a workflow grew past its shape in scope: rework to the scoped shape or STOP and escalate (decompose,
     never raise). Any other failure: fix the cause in scope; an out-of-scope fix goes back to the planning thread.'
   hermetic: false
@@ -353,8 +365,8 @@ verification_plan:
     run_terraform_creds_free run terraform fmt -check on every root.'
 - step: 6
   phase: pre-deploy
-  action: 'The approved texts landed verbatim (Decision 202: only the date varies; the three runbook and contract texts: no
-    variance beyond YAML folding).'
+  action: 'The approved texts landed verbatim (Decision 202: only the date varies; the runbook texts and the two contract
+    texts, state_location and the relocated backend_region: no variance beyond YAML folding).'
   command: |-
     PYTHONPATH=. bin/venv-python - <<'EOF'
     import re, sys, yaml
@@ -370,10 +382,11 @@ verification_plan:
     boot = rows["terraform/bootstrap/CLAUDE.md"].split("no variance):\n", 1)[1]
     gh = rows["terraform/github/CLAUDE.md"].split("no variance):\n", 1)[1]
     cc = rows["docs/contracts/terraform-cc-web-operations.yaml"].split("may vary): ", 1)[1].split(" Also: ", 1)[0]
+    br = rows["docs/contracts/terraform-cc-web-operations.yaml"].split("RELOCATED TEXT (verbatim, folded-scalar wrapping may vary): ", 1)[1].split(" End of relocated text.", 1)[0]
     b_ok = norm(boot) in norm(Path("terraform/bootstrap/CLAUDE.md").read_text())
     g_ok = norm(gh) in norm(Path("terraform/github/CLAUDE.md").read_text())
     c = yaml.safe_load(Path("docs/contracts/terraform-cc-web-operations.yaml").read_text())
-    c_ok = norm(cc) == norm(c["tfvars_and_remote_state_recovery"]["state_location"])
+    c_ok = norm(cc) == norm(c["tfvars_and_remote_state_recovery"]["state_location"]) and norm(br) == norm(c["provider_init_and_mirror"]["backend_region"])
     print("decision", d_ok, "bootstrap", b_ok, "github", g_ok, "contract", c_ok)
     sys.exit(0 if d_ok and b_ok and g_ok and c_ok else 1)
     EOF
@@ -677,6 +690,11 @@ test_obligations:
   verification_step: 4
   command: bin/venv-python -m scripts.validate --pre
   red_green_expectation: red if DECISIONS.md changes a projected field without regeneration, green after
+- source: config/prose_budgets.yaml
+  behavior: The two CLAUDE.md budgets ratchet down to the edited files' sizes; validate_prose_limits stays green.
+  verification_step: 4
+  command: bin/venv-python -m scripts.validate
+  red_green_expectation: red if the runbook edits outgrow a budget, green after the offsets and the ratchet
 - source: scripts/checks/ci_guards/_manifest.py
   behavior: The new check is dispatched in both tiers and classified for ci-rca.
   verification_step: 4
@@ -712,7 +730,7 @@ context:
   defaults stay guard-pinned mirrors; rec-4404). CITE: 202, 181, 162, 170, 169, 126, 77, 177. Decisions triaged: 171 of 171.
   Roadmap items intersected: 10; CONFLICT: 0; RELATED: 10.'
 - 'gates: decision-scout=FLAGS_FOUND (resolved as above); plan-critique=PROCEED after 4 rounds (r4 on the escalation card''s
-  option); golden replay amendment PROCEED (Sonnet: Opus usage limit)'
+  option); golden replay amendment PROCEED (Sonnet: Opus limit); prose-budget amendment critique pending'
 - 'Approval: Benjamin in the planning thread, 2026-10-17: fork 2 at 17:03Z ("I agree with your recommendation for 2"); forks
   1, 3 and the APPROVED texts at 17:15Z ("I agree with your recommendations"); 17:20Z he acknowledged the restatement that
   this is "write the plan" with the wording verbatim. Variance: the date only. Fact-check: fact-check.md.'
