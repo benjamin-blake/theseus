@@ -76,7 +76,13 @@ scope:
       dynamic statement exists (file() appears only for non-policy config values). APPLY ROLE UNIVERSE: any
       aws_iam_role_policy, attachment or *_exclusive resource in ANY terraform/bootstrap file whose role is
       aws_iam_role.github_ci_apply (or the literal name agent-platform-github-ci-apply), other than
-      aws_iam_role_policy.github_ci_apply and aws_iam_role_policy_attachment.github_ci_apply_reads, is a problem. Planning census: on the unedited tree the only iam: Allows matching
+      aws_iam_role_policy.github_ci_apply and aws_iam_role_policy_attachment.github_ci_apply_reads, is a problem,
+      and so is an inline_policy block or a managed_policy_arns argument on any terraform/bootstrap aws_iam_role
+      whose name resolves to agent-platform-github-ci-apply; "whose role is" resolves aws_iam_policy_attachment's
+      roles list and local/var indirection the way the Decision 223 guard does (_resolve and _list_elements in
+      tests/checks/iam_tf/test_platform_iam_admin_root_only.py). Red case: managed_policy_arns =
+      ["arn:aws:iam::aws:policy/IAMReadOnlyAccess"] on aws_iam_role.github_ci_apply. The ATTACHMENTS failure
+      message says the way out for a harmless AWS-managed attachment is a reviewed edit to this guard. Planning census: on the unedited tree the only iam: Allows matching
       either role are the five lines this plan removes. New class TestNoCIIamGrantOnPlatformRoles: the real tree has no leak. Red cases
       driving the real predicate on mutated text (Decision 187): PlatformDev re-added to
       IAMRoleMetadataWrite; PlatformAdmin added to bootstrap IAMRolesRead; PlatformDev added to oidc.tf
@@ -155,7 +161,7 @@ scope:
     action: Modify
     purpose: >-
       APPROVED TEXT (execution steps). Insert Decision NNN (the next free number at build
-      time; 224 today) above the newest entry, verbatim except NNN and DATE; envelope amends exactly [180]
+      time; 224 today) at the top of the corpus, above the first entry, verbatim except NNN and DATE; envelope amends exactly [180]
       (no 144 edge: the 180->144 waiver keeps 144's body untouched). Append the three dated forward-pointer
       Updates to Decisions 180, 202 and 223, each after its entry's last line before the separator (after
       the rec-4067 build's Update on 202), Decision 177 blockquote_update form. No existing clause text
@@ -220,7 +226,7 @@ verification_plan:
     hermetic: true
     expected_literals: ["NO CI PLATFORM ROLE ARNS"]
     graduation: waive
-    graduation_waiver_reason: Strictly weaker than step 1's standing guard, which pins the same files structurally; kept as the human-readable form of rec-4049's original acceptance.
+    graduation_waiver_reason: A landing check of rec-4049's original text acceptance (it also counts comment mentions, which the guard ignores); the structural invariant is step 1's standing guard.
   - step: 3
     phase: pre-deploy
     action: the simulate fixture expects the narrowed surface and still passes its shape check
@@ -312,7 +318,7 @@ verification_plan:
     action: ENVIRONMENT CHECK -- the implementing session checks its own credentials before assuming any post-merge hand-off (run first)
     command: aws sts get-caller-identity --profile agent_platform_admin --query Arn --output text 2>/dev/null | grep -q 'assumed-role/PlatformAdmin/' && echo ADMIN_CHAIN_OK || echo ADMIN_CHAIN_ABSENT
     expected: ADMIN_CHAIN_OK -- this project runs in the ADMIN environment, so the build session runs steps 9-12 and the post-deploy walk itself; exits 0 on both branches (it routes, it does not gate); prints no account id
-    fix_if: ADMIN_CHAIN_ABSENT -- the PR waits at CI-green, steps 9-12 and 15-21 go to an ADMIN session, and the merge is held until the pre-merge evidence is on the PR
+    fix_if: ADMIN_CHAIN_ABSENT -- the PR waits at CI-green, steps 7, 9-21 and 23 (every step using the agent_platform_admin profile) go to an ADMIN session, and the merge is held until the pre-merge evidence is on the PR
     hermetic: false
     graduation: not-applicable
   - step: 9
@@ -410,7 +416,7 @@ verification_plan:
     phase: post-deploy
     action: ADMIN -- in a throwaway worktree of merged main, plan terraform/bootstrap into a saved plan, check its grant content, and PRESENT it to Benjamin
     command: |-
-      test -n "$MERGE_SHA" && W="${TMPDIR:-/tmp}/ci-grant-retirement-main" && M="${TMPDIR:-/tmp}/ci-grant-retirement" && { git worktree remove --force "$W" 2>/dev/null; git worktree prune; rm -f "$M/apply.tfplan" "$M/apply.json"; true; } && mkdir -p "$M" && { test -f terraform/bootstrap/terraform.bootstrap.tfvars || (umask 077 && aws secretsmanager get-secret-value --secret-id agent-platform-terraform-personal-tfvars --profile agent_platform_admin --query SecretString --output text | grep -E '^[[:space:]]*(account_id|owner_email|platform_dev_external_id|platform_admin_external_id|agent_service_account_user_name)[[:space:]]*=' > terraform/bootstrap/terraform.bootstrap.tfvars); } && test "$(grep -c -E '^[[:space:]]*(account_id|owner_email|platform_dev_external_id|platform_admin_external_id)[[:space:]]*=' terraform/bootstrap/terraform.bootstrap.tfvars)" -eq 4 && git fetch origin main && git merge-base --is-ancestor "$MERGE_SHA" origin/main && git diff --quiet "$MERGE_SHA" origin/main -- terraform/bootstrap && git worktree add --detach "$W" origin/main && cp terraform/bootstrap/terraform.bootstrap.tfvars "$W/terraform/bootstrap/" && R=$(tr -d '[:space:]' < "$W/config/aws-region") && terraform -chdir="$W/terraform/bootstrap" init -input=false -backend-config="region=$R" > /dev/null && terraform -chdir="$W/terraform/bootstrap" plan -input=false -var-file=terraform.bootstrap.tfvars -out="$M/apply.tfplan" > /dev/null && terraform -chdir="$W/terraform/bootstrap" show -json "$M/apply.tfplan" > "$M/apply.json" && M="$M" bin/venv-python - <<'EOF'
+      test -n "$MERGE_SHA" && W="${TMPDIR:-/tmp}/ci-grant-retirement-main" && M="${TMPDIR:-/tmp}/ci-grant-retirement" && { git worktree remove --force "$W" 2>/dev/null; git worktree prune; rm -f "$M/apply.tfplan" "$M/apply.json"; true; } && mkdir -p "$M" && { test -f terraform/bootstrap/terraform.bootstrap.tfvars || (umask 077 && aws secretsmanager get-secret-value --secret-id agent-platform-terraform-personal-tfvars --profile agent_platform_admin --query SecretString --output text | grep -E '^[[:space:]]*(account_id|owner_email|platform_dev_external_id|platform_admin_external_id|agent_service_account_user_name)[[:space:]]*=' > terraform/bootstrap/terraform.bootstrap.tfvars); } && test "$(grep -c -E '^[[:space:]]*(account_id|owner_email|platform_dev_external_id|platform_admin_external_id)[[:space:]]*=' terraform/bootstrap/terraform.bootstrap.tfvars)" -eq 4 && git fetch origin main && git merge-base --is-ancestor "$MERGE_SHA" origin/main && git diff --quiet "$MERGE_SHA" origin/main -- terraform/bootstrap && bin/venv-python -c "import json,subprocess; r=json.loads(subprocess.run(['aws','s3','cp','s3://agent-platform-data-lake/convergence/personal/sandbox.json','-','--profile','agent_platform_admin'],check=True,capture_output=True,text=True).stdout); bad=[k for k in ('pending_gated','pending_codification','infra_error') if k in r]; assert r.get('status')=='green' and not bad, ('personal record not drained', r.get('status'), bad)" && git worktree add --detach "$W" origin/main && cp terraform/bootstrap/terraform.bootstrap.tfvars "$W/terraform/bootstrap/" && R=$(tr -d '[:space:]' < "$W/config/aws-region") && terraform -chdir="$W/terraform/bootstrap" init -input=false -backend-config="region=$R" > /dev/null && terraform -chdir="$W/terraform/bootstrap" plan -input=false -lock=false -var-file=terraform.bootstrap.tfvars -out="$M/apply.tfplan" > /dev/null && terraform -chdir="$W/terraform/bootstrap" show -json "$M/apply.tfplan" > "$M/apply.json" && M="$M" bin/venv-python - <<'EOF'
       import json, os, sys
       m = os.environ["M"]
       rc = json.load(open(f"{m}/apply.json")).get("resource_changes", [])
@@ -610,7 +616,7 @@ context:
   - "Decision-scout verdict + CITE list: FLAGS_FOUND (one NOTE on Decision 180: re-narrow only through a numbered Decision that elects (a)'s response ahead of its trigger -- adopted); CITE 223, 167, 176, 179, 177, 144, 129, 126, 202, 181, 166, 201. Decisions triaged: 175 of 175. Roadmap items intersected: 5; CONFLICT: 0; RELATED: 5. Evidence: /mnt/project-files/rec-4049/scout-report.md"
   - "Fable consult (blind brief): /mnt/project-files/rec-4049/ADVICE.md -- numbered Decision, one PR, retire all five entries; its draft rule was false on landing (the planner reads the bootstrap-declared apply role) and was bound to the two named roles."
   - "Approval: Benjamin said 'write the plan' in the planning thread on 2026-10-18, approving the numbered-Decision route and the exact text in the APPROVED TEXT execution steps (variance: NNN, DATE, PR numbers). The bootstrap apply (step 16) and the PR merge each still need his own word."
-  - "gates: decision-scout=FLAGS_FOUND (NOTE, resolved by the numbered Decision); plan-critique=PENDING"
+  - "gates: decision-scout=FLAGS_FOUND (NOTE, resolved by the numbered Decision); plan-critique=PROCEED after 4 round(s); round 4 autonomous (its non-blocking findings applied after it)"
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
