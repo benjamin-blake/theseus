@@ -195,6 +195,22 @@ ENTRIES: tuple[Entry, ...] = (
         full_segment="full_after_lint",
     ),
     Entry(
+        name="validate_weakening_candidates",
+        module="scripts.checks.verification.validate_weakening_candidates",
+        attr="validate_weakening_candidates",
+        pre=True,
+        pre_globs=None,
+        full_segment="full_after_lint",
+    ),
+    Entry(
+        name="validate_weakening_dispositions",
+        module="scripts.checks.verification.validate_weakening_dispositions",
+        attr="validate_weakening_dispositions",
+        pre=True,
+        pre_globs=None,
+        full_segment="full_after_lint",
+    ),
+    Entry(
         name="validate_admin_root_premerge_gate",
         module="scripts.checks.verification.validate_admin_root_premerge_gate",
         attr="validate_admin_root_premerge_gate",

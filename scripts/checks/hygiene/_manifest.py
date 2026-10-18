@@ -120,6 +120,20 @@ ENTRIES: tuple[Entry, ...] = (
         full_segment="full_after_lint",
     ),
     Entry(
+        name="validate_test_skip_citations",
+        module="scripts.checks.hygiene.validate_test_skip_citations",
+        attr="validate_test_skip_citations",
+        pre=True,
+        pre_globs=(
+            "tests/**/*.py",
+            "scripts/checks/hygiene/validate_test_skip_citations.py",
+            "scripts/checks/_weakening_ast.py",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ),
+        full_segment="full_after_lint",
+    ),
+    Entry(
         name="validate_episode_lookup_projection",
         module="scripts.checks.hygiene.validate_episode_lookup_projection",
         attr="validate_episode_lookup_projection",

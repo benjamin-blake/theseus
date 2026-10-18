@@ -18,7 +18,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from scripts.roadmap.plan_document import PlanDocument, load, validate_paths
+from scripts.roadmap.plan_document import PlanDocument, WeakeningDisposition, load, validate_paths
 from tests.fixtures.plan_document_helpers import REPO_ROOT, _base, _mutate
 
 
@@ -346,3 +346,54 @@ class TestFallbackReevaluation:
         assert len(paths) >= 300
         failures = validate_paths(paths)
         assert not failures, f"historical plan(s) invalidated by the new field: {[(p.name, e[:80]) for p, e in failures[:3]]}"
+
+
+class TestWeakeningDispositions:
+    """PLAN-test-weakening-surfacing (rec-3357): weakening_dispositions is an additive optional
+    field recording validate_weakening_dispositions' implement-PR-leg obligation."""
+
+    def _entry(self, **overrides: object) -> dict:
+        base = {
+            "candidate": "[assertion-removed] tests/t.py::test_a",
+            "disposition": "refactor",
+            "cite": "scripts/checks/foo.py::kept_fn",
+        }
+        base.update(overrides)
+        return base
+
+    def test_valid_entry_parses(self) -> None:
+        d = _mutate(weakening_dispositions=[self._entry()])
+        doc = PlanDocument.model_validate(d)
+        assert len(doc.weakening_dispositions) == 1
+        assert isinstance(doc.weakening_dispositions[0], WeakeningDisposition)
+        assert doc.weakening_dispositions[0].disposition == "refactor"
+
+    def test_field_defaults_to_empty(self) -> None:
+        doc = PlanDocument.model_validate(_base())
+        assert doc.weakening_dispositions == []
+
+    def test_unknown_disposition_rejected(self) -> None:
+        d = _mutate(weakening_dispositions=[self._entry(disposition="bogus")])
+        with pytest.raises(ValidationError):
+            PlanDocument.model_validate(d)
+
+    def test_malformed_candidate_key_rejected(self) -> None:
+        d = _mutate(weakening_dispositions=[self._entry(candidate="not-a-valid-key")])
+        with pytest.raises(ValidationError):
+            PlanDocument.model_validate(d)
+
+    def test_empty_cite_rejected(self) -> None:
+        d = _mutate(weakening_dispositions=[self._entry(cite="")])
+        with pytest.raises(ValidationError):
+            PlanDocument.model_validate(d)
+
+    def test_extra_key_rejected(self) -> None:
+        d = _mutate(weakening_dispositions=[self._entry(note="x")])
+        with pytest.raises(ValidationError):
+            PlanDocument.model_validate(d)
+
+    def test_weakening_disposition_itself_is_accepted_by_schema(self) -> None:
+        """The schema permits recording "weakening" (the check, not the schema, blocks it)."""
+        d = _mutate(weakening_dispositions=[self._entry(disposition="weakening")])
+        doc = PlanDocument.model_validate(d)
+        assert doc.weakening_dispositions[0].disposition == "weakening"

@@ -1,5 +1,5 @@
 ---
-description: "Use when: code review, quality check, review my code, check for issues, after implementing a feature. Performs a full repository code review and returns a structured findings report to the caller. The caller (.claude/commands/implement.md or the invoking agent) writes findings to logs/.recommendations-log.jsonl. Does not edit files directly."
+description: "Use when: code review, quality check, review my code, check for issues, after implementing a feature. Performs a full repository code review and returns a structured findings report to the caller. Does not edit files directly."
 name: code-review
 ---
 
@@ -88,7 +88,9 @@ Any finding that claims a command or validation gate fails must include the exac
 - **Fixtures and mocking** — Are mocks used appropriately?
 - **Test obligations** — Raise High when a behavior change lacks executed obligation evidence, an
   asserting test, or a deterministic-limit waiver.
-- **Mock Exhaustion (postflight.py)** — If `scripts/executor/postflight.py` is modified, verify that `subprocess.run` calls match the `MagicMock` side-effect counts in `tests/test_executor_postflight.py` (see Check 2 in `scripts/validate.py`).
+- **Weakening candidates** -- Disposition each `bin/venv-python -m scripts.checks.verification.validate_weakening_candidates`
+  item per `implement-scope-boundary.yaml` `review_dispositions`; High if `weakening` or missing.
+- **Mock Exhaustion (postflight.py)** — If `scripts/executor/postflight.py` is modified, apply the mock-exhaustion rule in `tests/CLAUDE.md`.
 
 ### 4. Maintainability and Scalability
 
@@ -102,7 +104,6 @@ Any finding that claims a command or validation gate fails must include the exac
 ### 5. Infrastructure and DevOps
 
 - **Terraform** — State managed safely? Resources tagged consistently? Variables documented?
-- **Docker** — Dockerfile optimised for layer caching? Images minimal? Health checks defined?
 - **CI/CD** — Are pipelines defined? Do they run linting, type checking, and tests?
 - **Environment parity** — Does local dev setup match production closely enough?
 
@@ -208,6 +209,10 @@ Structure your report exactly as follows:
 ### Test Completeness
 [Modules lacking coverage, test quality observations]
 
+### Weakening Dispositions
+[Each candidate's stub from validate_weakening_candidates, filled in; the caller copies them to the plan's
+`weakening_dispositions`.]
+
 ### Verdict
 Deterministic rule: REVISE iff any Critical or High finding, else PROCEED.
 Verdict: PROCEED | REVISE
@@ -227,6 +232,6 @@ FINDINGS:
 ...
 ```
 
-Do not write to any file. Do not edit any file. Return the findings block to the caller and stop.
+Do not write or edit any file. Return the findings block to the caller and stop.
 
-**The caller MUST use `bin/venv-python -m scripts.ops_data_portal` to file each finding. Never append to `logs/.recommendations-log.jsonl` directly.** This ensures writer-allocated ids and persistence via the closed DuckLake writer boundary (Decision 84).
+**The caller MUST use `bin/venv-python -m scripts.ops_data_portal` to file each finding.** This ensures writer-allocated ids and persistence via the closed DuckLake writer boundary (Decision 84).
