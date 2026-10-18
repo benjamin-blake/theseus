@@ -184,6 +184,11 @@ def _is_signin(step: Any) -> bool:
     return isinstance(uses, str) and uses.startswith(_SIGNIN_PREFIX)
 
 
+def _jobs(data: Any) -> dict[str, Any]:
+    jobs = data.get("jobs") if isinstance(data, dict) else None
+    return jobs if isinstance(jobs, dict) else {}
+
+
 def _steps(container: Any) -> list[Any]:
     steps = container.get("steps") if isinstance(container, dict) else None
     return steps if isinstance(steps, list) else []
@@ -269,7 +274,7 @@ def _scan_workflow_wiring(violations: list[str]) -> int:
             continue
 
         _check_env_dict(rel, "workflow", data.get("env"), violations)
-        jobs = data.get("jobs") if isinstance(data.get("jobs"), dict) else {}
+        jobs = _jobs(data)
         for job_id, job in jobs.items():
             if not isinstance(job, dict):
                 continue

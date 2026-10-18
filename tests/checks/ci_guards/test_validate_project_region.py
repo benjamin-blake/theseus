@@ -265,3 +265,155 @@ class TestRealTree:
         validate_project_region(failed)
         assert failed == [], failed
         assert _examined() > 0
+
+
+class TestBranchCoverage:
+    """Exercises the defensive/early-return branches the main red-case tests don't reach."""
+
+    def test_no_github_or_terraform_tree_at_all(self, tmp_path: Path) -> None:
+        _write(tmp_path, "config/aws-region", "eu-west-2\n")
+        failed = _run(tmp_path)
+        assert failed == []
+        assert _examined() == 0
+
+    def test_r1_missing_region_file(self, tmp_path: Path) -> None:
+        (tmp_path / "terraform" / "bootstrap").mkdir(parents=True)
+        (tmp_path / "terraform" / "bootstrap" / "variables.tf").write_text(_GOOD_BOOTSTRAP_VARIABLES, encoding="utf-8")
+        (tmp_path / "terraform" / "personal").mkdir(parents=True)
+        (tmp_path / "terraform" / "personal" / "variables.tf").write_text(_GOOD_PERSONAL_VARIABLES, encoding="utf-8")
+        failed = _run(tmp_path)
+        assert any("R1" in f and "missing" in f for f in failed)
+
+    def test_pinned_file_with_no_aws_region_variable_block(self, tmp_path: Path) -> None:
+        _write(tmp_path, "config/aws-region", "eu-west-2\n")
+        _write(tmp_path, "terraform/bootstrap/variables.tf", 'variable "other" {\n  default = "x"\n}\n')
+        _write(tmp_path, "terraform/personal/variables.tf", _GOOD_PERSONAL_VARIABLES)
+        failed = _run(tmp_path)
+        assert failed == []
+
+    def test_pinned_file_with_no_default_in_block(self, tmp_path: Path) -> None:
+        _write(tmp_path, "config/aws-region", "eu-west-2\n")
+        _write(tmp_path, "terraform/bootstrap/variables.tf", 'variable "aws_region" {\n  type = string\n}\n')
+        _write(tmp_path, "terraform/personal/variables.tf", _GOOD_PERSONAL_VARIABLES)
+        failed = _run(tmp_path)
+        assert failed == []
+
+    def test_needs_output_job_has_no_outputs_key(self, tmp_path: Path) -> None:
+        _base_tree(tmp_path)
+        wf = (
+            "name: fixture\non: push\njobs:\n"
+            "  resolve-target:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            "      - run: echo hi\n"
+            "  consumer:\n"
+            "    needs: resolve-target\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            "      - uses: aws-actions/configure-aws-credentials@v6\n"
+            "        with:\n"
+            "          role-to-assume: arn:aws:iam::1:role/x\n"
+            "          aws-region: ${{ needs.resolve-target.outputs.aws_region }}\n"
+        )
+        _write(tmp_path, ".github/workflows/w.yml", wf)
+        failed = _run(tmp_path)
+        assert any("R4" in f for f in failed)
+
+    def test_needs_output_value_does_not_match_steps_pattern(self, tmp_path: Path) -> None:
+        _base_tree(tmp_path)
+        wf = (
+            "name: fixture\non: push\njobs:\n"
+            "  resolve-target:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    outputs:\n"
+            "      aws_region: not-a-steps-expression\n"
+            "    steps:\n"
+            "      - run: echo hi\n"
+            "  consumer:\n"
+            "    needs: resolve-target\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            "      - uses: aws-actions/configure-aws-credentials@v6\n"
+            "        with:\n"
+            "          role-to-assume: arn:aws:iam::1:role/x\n"
+            "          aws-region: ${{ needs.resolve-target.outputs.aws_region }}\n"
+        )
+        _write(tmp_path, ".github/workflows/w.yml", wf)
+        failed = _run(tmp_path)
+        assert any("R4" in f for f in failed)
+
+    def test_needs_list_absent_entirely(self, tmp_path: Path) -> None:
+        _base_tree(tmp_path)
+        wf = (
+            "name: fixture\non: push\njobs:\n"
+            "  consumer:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            "      - uses: aws-actions/configure-aws-credentials@v6\n"
+            "        with:\n"
+            "          role-to-assume: arn:aws:iam::1:role/x\n"
+            "          aws-region: ${{ needs.resolve-target.outputs.aws_region }}\n"
+        )
+        _write(tmp_path, ".github/workflows/w.yml", wf)
+        failed = _run(tmp_path)
+        assert any("R4" in f for f in failed)
+
+    def test_needed_job_id_not_in_needs_list(self, tmp_path: Path) -> None:
+        _base_tree(tmp_path)
+        wf = (
+            "name: fixture\non: push\njobs:\n"
+            "  resolve-target:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    outputs:\n"
+            "      aws_region: ${{ steps.region.outputs.aws_region }}\n"
+            "    steps:\n"
+            "      - uses: ./.github/actions/aws-region\n"
+            "        id: region\n"
+            "  other-job:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            "      - run: echo hi\n"
+            "  consumer:\n"
+            "    needs: other-job\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            "      - uses: aws-actions/configure-aws-credentials@v6\n"
+            "        with:\n"
+            "          role-to-assume: arn:aws:iam::1:role/x\n"
+            "          aws-region: ${{ needs.resolve-target.outputs.aws_region }}\n"
+        )
+        _write(tmp_path, ".github/workflows/w.yml", wf)
+        failed = _run(tmp_path)
+        assert any("R4" in f for f in failed)
+
+    def test_signin_with_no_aws_region_key(self, tmp_path: Path) -> None:
+        _base_tree(tmp_path)
+        wf = (
+            "name: fixture\non: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n"
+            "      - uses: actions/checkout@v7\n"
+            "      - uses: ./.github/actions/aws-region\n"
+            "      - uses: aws-actions/configure-aws-credentials@v6\n"
+            "        with:\n"
+            "          role-to-assume: arn:aws:iam::1:role/x\n"
+        )
+        _write(tmp_path, ".github/workflows/w.yml", wf)
+        failed = _run(tmp_path)
+        assert any("R4" in f for f in failed)
+
+    def test_unparseable_workflow_yaml(self, tmp_path: Path) -> None:
+        _base_tree(tmp_path)
+        _write(tmp_path, ".github/workflows/w.yml", "jobs:\n  a: [unclosed\n")
+        failed = _run(tmp_path)
+        assert any("unparseable" in f for f in failed)
+
+    def test_workflow_yaml_is_not_a_mapping(self, tmp_path: Path) -> None:
+        _base_tree(tmp_path)
+        _write(tmp_path, ".github/workflows/w.yml", "- just\n- a\n- list\n")
+        failed = _run(tmp_path)
+        assert failed == []
+
+    def test_job_value_is_not_a_mapping(self, tmp_path: Path) -> None:
+        _base_tree(tmp_path)
+        _write(tmp_path, ".github/workflows/w.yml", "name: fixture\non: push\njobs:\n  a: not-a-mapping\n")
+        failed = _run(tmp_path)
+        assert failed == []
