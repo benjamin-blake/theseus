@@ -161,7 +161,8 @@ def _key_mismatches(table: str, stored: Mapping[str, Any], expected: Mapping[str
                     )
                 )
         except (IdentityError, KeyError, ValueError, TypeError):
-            want = object()
+            wrong += 1
+            continue
         wrong += not _same(want, stored.get(column))
     return wrong
 

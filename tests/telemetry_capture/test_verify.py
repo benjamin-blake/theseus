@@ -19,15 +19,15 @@ from scripts.telemetry_capture.transport import Budget
 from scripts.telemetry_verify.alarms import raise_alarms
 from src.turn_capture.record_turn import PARSER_VERSION, CaptureResult
 from tests.fixtures import telemetry_verification_trees as trees
-from tests.fixtures.telemetry_verify_harness import (
+from tests.fixtures.telemetry_golden_chain import (
     NOW,
     ROOT_ID,
     Portal,
     Tree,
     build,
+    captured_rows,
     corpus,
     ledger_tree,
-    stored_rows,
 )
 from tests.fixtures.turn_capture_corpus import SID, make_files, prompt
 
@@ -35,7 +35,7 @@ from tests.fixtures.turn_capture_corpus import SID, make_files, prompt
 def test_a_clean_tree_completes_with_every_row_equal(tmp_path: Path) -> None:
     tree = corpus(tmp_path)
     result = tree.run()
-    stored = sum(len(rows) for rows in stored_rows(tree.result).values())
+    stored = sum(len(rows) for rows in captured_rows(tree.result).values())
     assert result.completed and result.compare_skipped == "none" and result.alarms == []
     assert result.counts["rows_equal"] == stored and result.counts["root_checked"] == 1
     assert tree.portal.calls == [] and result.reader_calls == 2
