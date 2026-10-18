@@ -78,9 +78,12 @@ scope:
     _derive_computed_fields (so regression_of is visible), set fields["priority"] =
     derive_ci_rca_priority(context_v2_json) and apply preventive_deficiency(context_v2_json): when the deficiency
     exists only because this call's file_regression_record set regression_of (the agent could not see the regression),
-    log and stamp the warn_mode_reject tag schema_preventive_required in both modes, never raising, so a red is never
-    left unfiled; otherwise use the existing CI_RCA_STRICT_MODE handling (strict raises; warn logs and stamps the same
-    tag). Legacy no-context ci_rca writes are unchanged. The
+    log and stamp the reason preventive_required through _stamp_warn_mode_reject in both modes, never raising, so a
+    red is never left unfiled, and in strict mode set that marker's mode_at_write to "strict" (the real mode);
+    otherwise use the existing CI_RCA_STRICT_MODE handling (strict raises; warn logs and stamps preventive_required).
+    The reason carries no "schema" prefix, so back_validate_ci_rca's marker read counts the rec non-conformant
+    (scripts/ops_portal/ci_rca_runtime.py drops schema* tags because it recomputes schema deficiencies, and the model
+    no longer reports this one). Legacy no-context ci_rca writes are unchanged. The
     function lives in the ops_portal submodule; the facade gains only the call (Decision 124). update_rec: when closure_fix_sha is supplied, closure_stamps.update(confirmed_track_stamp(merged.get("source"),
     closure_fix_sha, ROOT)) before the existing stamp merge, so repair_track_confirmed rides the same context blob. Net growth stays inside the 500-SLOC limit (466 SLOC at planning).
 - file: scripts/ops_portal/closure_gate.py
@@ -137,7 +140,8 @@ scope:
     path blocks and names it; disjoint sets clear; an unparseable created_timestamp blocks as slo_breached unless the
     plan bundles an open red; a test_defect red on a non-CI workflow_tier is not exempt; a red
     the plan bundles clears; a plan bundling one red is not globally blocked by another red past its SLO),
-    TestInputs (a reader exception -> exit 2; six open reds are all evaluated; an unparseable context_v2_json is not
+    TestInputs (a reader exception -> exit 2; no arguments evaluates an empty work set, blocking only on rules 1 and
+    3; six open reds are all evaluated; an unparseable context_v2_json is not
     Track A; an id the report lists as
     likely_resolved does not block; a missing or not-ok report excludes nothing; a closed red is ignored), TestCli (--plan reads scope with Create->A, Modify->M, Delete->D; --files; JSON shape; exit codes) and
     TestPolicySource (slo_hours comes from the contract: a monkeypatched contract value changes the verdict; a
@@ -157,7 +161,8 @@ scope:
     procedure.fast_lane_repair exists; ci-rca-lifecycle.yaml's default_branch_disposition names red-main-recovery.yaml;
     ops_recommendations.yaml's priority derivation names derive_ci_rca_priority and Decision 225 with realized still
     false; implement-scope-boundary.yaml's validate_weakening_dispositions row note names the fast lane and rec-4442 and
-    the CONTENT map keeps one residual row; file-router.yaml routes red-main-recovery. TestProseSurfacesPointAtTheCheck:
+    the CONTENT map keeps one residual row; file-router.yaml routes red-main-recovery; git-ops.yaml's FALLBACK
+    sentence and residual (i), and ci-rca-lifecycle.yaml's manual_route, admit the fast-lane repair by name. TestProseSurfacesPointAtTheCheck:
     AGENTS.md's Merge protocol, the planning skill, the overseer skill, .claude/commands/overseer.md, overseer-dispatch
     never_overrides and .claude/commands/orient.md each name red_overlap or Decision 225; .claude/skills/orient/SKILL.md
     says "they block overlapping work" and not "they block other work"; and none still says "/plan
@@ -180,10 +185,13 @@ scope:
     workflow_tier CI, and Critical for product_regression, an absent track, a regression_of filing, test_defect with
     workflow_tier "unknown" or absent, and test_defect whose caller supplied "workflow_tier": "CI" with no bundle (the
     key is stripped), whatever priority was passed; a Critical write without preventive_action carries the
-    schema_preventive_required warn tag (warn mode) and raises in strict mode; through the real closed-head path
+    preventive_required warn tag (warn mode) and raises in strict mode; through the real closed-head path
     (closed_head_of_chain patched to return a closed head and classify_closed_head to "regression"), a test_defect
     context on workflow_tier CI with no preventive_action files Critical with the tag and does not raise even in
-    strict mode; a legacy ci_rca write without context_v2_json keeps its passed priority; update_rec with closure_fix_sha on a ci_rca rec stamps repair_track_confirmed (confirmed_repair_track
+    strict mode, with mode_at_write "strict"; back_validate_ci_rca classifies a warn-mode rec tagged
+    preventive_required as non-conformant; update_rec with closure_fix_sha on a non-ci_rca rec carrying
+    context_v2_json writes no repair_track_confirmed; a legacy ci_rca write without context_v2_json keeps its passed
+    priority; update_rec with closure_fix_sha on a ci_rca rec stamps repair_track_confirmed (confirmed_repair_track
     monkeypatched). Keep the file under 500 SLOC.
 - file: tests/ops_data_portal/test_ci_rca_close_then_recur.py
   action: Modify
@@ -232,14 +240,18 @@ scope:
 - file: docs/contracts/ci-rca-lifecycle.yaml
   action: Modify
   purpose: >-
-    Only four edits (the file is at 488 of the 500 effective lines its structural size class allows, so the policy
+    Six edits (the file is at 488 of the 500 effective lines its structural size class allows, so the policy
     itself lives in the new red-main-recovery.yaml): projection_fields gains three flow-style lines, repair_track
     {type: "Optional[str]", enum: [test_defect, product_regression], home: context_v2_json (CiRcaContext), authored_by:
     agent}, repair_track_confirmed {same type and enum, authored_by: "portal (red-main-recovery.yaml confirmed_track)"}
     and workflow_tier {type: "Optional[str]", home: context_v2_json (CiRcaContext), authored_by: "portal (the verified
     bundle's workflow_to_tier_resolution)"}, so validate_ci_rca_lifecycle_projection enforces their enum parity; trigger_scope.default_branch_disposition becomes
     APPROVED_DISPOSITION; trigger_scope.narrowing_authority's quotation of Decision 73 point 3 gains the closing
-    sentence "Decision 225 amends that clause: see default_branch_disposition."; and one flow-style amendment_log line {date, semantic_break: false, change_class:
+    sentence "Decision 225 amends that clause: see default_branch_disposition."; closure_dependency.manual_route's
+    "sanctioned only after a transport failure or the merge-leg gate's own refusal" gains ", or for a Decision 225
+    fast-lane repair (red-main-recovery.yaml)" on the same line; procedure.correct_rec_context's folded text gains
+    "It also drops a caller's portal-owned keys, re-derives priority and refuses a preventive-deficient merge
+    (docs/contracts/red-main-recovery.yaml)." on its last line; and one flow-style amendment_log line {date, semantic_break: false, change_class:
     field_add, summary} names this plan, Decision 225 and the new contract. About 494 of 500 lines after. No other
     change.
 - file: docs/contracts/ops_recommendations.yaml
@@ -263,8 +275,18 @@ scope:
   action: Modify
   purpose: >-
     One route (topic red-main-recovery, targets [docs/contracts/red-main-recovery.yaml, scripts/ci_rca/red_overlap.py],
-    a one-line description naming Decision 225) in alphabetical position, plus one flow-style amendment_log line in the
+    a one-line description naming Decision 225) directly after the project-configuration route, plus one flow-style amendment_log line in the
     file's shape (the project-configuration route precedent, 9f7aaa4f).
+- file: docs/contracts/git-ops.yaml
+  action: Modify
+  purpose: >-
+    Class D (490 of 500 effective lines). resolves_trailer's FALLBACK sentence, after "a transport failure or a
+    MERGE-LEG refusal above", gains ", or to close a Decision 225 fast-lane repair once its acceptance command has been
+    run by hand at the merge sha (docs/contracts/red-main-recovery.yaml procedure.fast_lane_repair)"; trailer_acceptance_gate
+    residual (i)'s "two live non-trailer instruction surfaces" becomes "three" and adds
+    "docs/contracts/red-main-recovery.yaml::procedure.fast_lane_repair". contract_version 8 -> 9 and one flow-style
+    amendment_log line (semantic_break: true, change_class: governance_note_add) naming this plan and Decision 225. At
+    most +3 effective lines.
 - file: docs/contracts/implement-scope-boundary.yaml
   action: Modify
   purpose: >-
@@ -296,8 +318,9 @@ scope:
   action: Modify
   purpose: >-
     Step 6's "Apply the halt-on-open-ci_rca gate before dispatching any new slice." becomes "Apply the
-    halt-on-open-ci_rca gate (scripts.ci_rca.red_overlap, Decision 225) before dispatching any /implement slice; a
-    /plan slice meets it at its own Step 8." No other change.
+    halt-on-open-ci_rca gate (scripts.ci_rca.red_overlap, Decision 225) before every dispatch: --plan <plan> for an
+    /implement slice, no arguments for a /plan slice (the global rules only; its Step 8 then checks overlap)." No other
+    change.
 - file: .claude/skills/planning/SKILL.md
   action: Modify
   purpose: >-
@@ -569,6 +592,11 @@ test_obligations:
   verification_step: 6
   test_selector: tests/ci_rca/test_recovery_policy_surfaces.py::TestContractPolicy
   red_green_expectation: red before (file absent), green after
+- source: docs/contracts/git-ops.yaml
+  behavior: The FALLBACK sentence and residual (i) admit the Decision 225 fast-lane repair.
+  verification_step: 6
+  test_selector: tests/ci_rca/test_recovery_policy_surfaces.py::TestContractPolicy
+  red_green_expectation: red before (file absent), green after
 - source: docs/contracts/file-router.yaml
   behavior: The red-main-recovery route exists and targets the contract and the evaluator.
   verification_step: 6
@@ -647,7 +675,7 @@ constraints:
 - No rescue agents or workaround loops (Decision 55).
 context:
 - "Decision-scout verdict: FLAGS_FOUND (Decisions triaged: 175 of 175; Roadmap items intersected: 16; CONFLICT: 1; RELATED: 14). CITE: 72, 73, 217, 135, 215, 142, 177, 167, 128."
-- "gates: decision-scout=FLAGS_FOUND; plan-critique=REVISE rounds 1-3 (10, 9 and 10 findings, all fixed), REVISE on round 4 (4 findings), round 5 (2) and round 6 (5), all fixed; further rounds taken with notice -> pending"
+- "gates: decision-scout=FLAGS_FOUND; plan-critique=REVISE rounds 1-3 (10, 9 and 10 findings, all fixed), REVISE on round 4 (4 findings), round 5 (2), round 6 (5) and round 7 (5), all fixed; further rounds taken with notice -> pending"
 - >-
   Approval: Benjamin's "go" (2026-10-18, rec-4427 thread) covers writing this plan; the Decision text and the
   AGENTS.md bullet are always-ask (Decision ratification, public surface), so the build merge needs his word on the
@@ -820,7 +848,9 @@ execution_steps:
   recovery_policy.slo_hours from docs/contracts/red-main-recovery.yaml via yaml.safe_load at call time; missing or not
   a positive int -> exit 2.
   (d) Work paths: --plan PATH reads scope[].file with action Create -> "A", Modify -> "M", Delete -> "D", and the
-  plan's bundled_recommendations; --files PATH... uses "M" for each and bundles nothing.
+  plan's bundled_recommendations; --files PATH... uses "M" for each and bundles nothing; with neither, the work set
+  is empty, so only the global rules (1 slo_breached, 3 undeterminable) can block -- the overseer's /plan-dispatch
+  form.
   evaluate(reds, work_entries, bundled_ids, now, slo_hours, selector=derive_affected_tests) is pure and returns the
   verdict dict (bundled_ids: the plan's bundled_recommendations, empty for --files).
   Per red, the first matching rule wins: (0) the red's id is in the plan's bundled_recommendations -> clear
@@ -914,7 +944,7 @@ execution_steps:
         - "5 overlap: the work's and the red's affected sets (paths, selected and deferred; Decision 135 channels) intersect -> blocked, naming the shared paths."
         - "6 disjoint: otherwise clear."
       exit_codes: "0 clear, 1 blocked, 2 unavailable (callers treat 2 as an UNAVAILABLE block the human may override)"
-      callers: "/plan Step 8 Related-Work Check (always run); the overseer before an /implement dispatch"
+      callers: "/plan Step 8 Related-Work Check (always run); the overseer before every dispatch (--plan for /implement, no arguments for /plan)"
       merge_pause: "Decision 73 cl.3's L6 pause is unbuilt; when built it applies this same rule."
     slo_clock: >-
       From the rec's created_timestamp. A build that reaches handoff during a red still needs a green
@@ -947,7 +977,9 @@ execution_steps:
       plan: (1) confirm from the evidence that merged product behaviour is right, and derive the
       expectation from its source of truth, never a pinned copy; (2) change only tests/** on the
       harness branch; (3) run the failing node ids, bin/venv-python -m scripts.validate --pre, and the
-      full tier with scripts.checks.validation_result --verify-head on the rebased head; (4) run the
+      full tier with scripts.checks.validation_result --verify-head on the rebased head (if it fails
+      only on another open red's tests, that red is not this lane's to fix: follow the implement
+      skill's go/no-go and wait for that red's repair or the human's word); (4) run the
       code-review skill on the diff and record its weakening-candidate dispositions in the PR body
       (instruction-enforced: validate_weakening_dispositions reads plans only, rec-4442); (5) after
       the merge, run the rec's acceptance command at the merge sha and quote its output in the
@@ -978,9 +1010,9 @@ execution_steps:
     unreadable, or past its repair SLO) is never proceed-with-notice-eligible -- the halt stays a hard
     block even for a low-stakes-looking dispatch decision."
 - |-
-  APPROVED_OVERSEER_HALT (replaces the "Halt-on-open-ci_rca (Decision 73)" paragraph in .claude/skills/overseer/SKILL.md; 240 bytes against the old 246):
-  **Halt-on-open-ci_rca (Decision 225):** an `/implement` dispatch first runs `scripts.ci_rca.red_overlap --plan <plan>`
-  (a `/plan` meets it at its Step 8); a non-zero exit halts dispatch -- never overridden, not even by proceed-with-notice.
+  APPROVED_OVERSEER_HALT (replaces the "Halt-on-open-ci_rca (Decision 73)" paragraph in .claude/skills/overseer/SKILL.md; about 244 bytes against the old 246):
+  **Halt-on-open-ci_rca (Decision 225):** every dispatch first runs `scripts.ci_rca.red_overlap` (`--plan <plan>` for
+  `/implement`, no arguments for `/plan`); a non-zero exit halts it -- never overridden, not even by proceed-with-notice.
 - |-
   APPROVED_PLANNING_BULLET (replaces the planning skill's Preflight Constraints "ci_rca_unresolved_recs non-empty" bullet):
   - **`ci_rca_unresolved_recs` non-empty** -- **HARD BLOCK** at commitment time for overlapping work only (Decision 225): the Step 8 Related-Work Check always runs `scripts.ci_rca.red_overlap`, which blocks work that overlaps a red, and every plan once a red is past its repair SLO. (Legacy: if the report only has `ci_rca_recs` and no `ci_rca_unresolved_recs`, treat all entries as HARD BLOCK.) Full triage surfacing and the SOFT PROMPT / HARD ALERT classification is `/orient`'s responsibility -- run `/orient` for the full ci-rca visibility layer.
@@ -995,7 +1027,10 @@ execution_steps:
 - >-
   Execute VP steps 1-9 -- run each step in order and loop until it passes; on an unrecoverable failure stop and RCA
   (Decision 55). Step 10 runs in CLOSURE (c); step 11 runs before the Report.
-- Write the graduated steps' registry shards (steps 1-7) under config/agent/verification_registry/entries/.
+- >-
+  Write the graduated steps' registry shards (steps 1-7) under config/agent/verification_registry/entries/; steps
+  2, 3 and 5-7 run several selectors in one command, so their shards use the command_exit_zero slot (test_selector
+  takes one node id).
 - Code review via a fresh code-review subagent; fix every blocking finding and re-run VP steps 1-9.
 - >-
   CLOSURE -- separate facts, in order (a)-(e) (implement skill Commit Flows; docs/contracts/git-ops.yaml), each reported
