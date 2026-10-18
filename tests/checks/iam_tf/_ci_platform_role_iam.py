@@ -238,3 +238,190 @@ def independent_jsonencode_counts(text: str) -> tuple[int, int]:
     raw_json = len(re.findall(r"\bEffect\s*=", masked))
     parsed_json = len(_jsonencode_statement_blocks(text))
     return parsed_json, raw_json
+
+
+# ---------------------------------------------------------------------------
+# ATTACHMENTS, POLICY SOURCES, APPLY ROLE UNIVERSE (plan scope: the three structural leak
+# classes beyond direct Allow-statement scanning -- an AWS-managed attachment or an unsanctioned
+# policy source can re-grant the read quartet through the boundary's iam:Get* ceiling without
+# ever appearing as a literal Allow statement in the scanned files).
+# ---------------------------------------------------------------------------
+
+_APPLY_ROLE_ADDR = "aws_iam_role.github_ci_apply"
+_APPLY_ROLE_ALLOWED_TARGETS = frozenset(
+    {"aws_iam_role_policy.github_ci_apply", "aws_iam_role_policy_attachment.github_ci_apply_reads"}
+)
+
+
+def _all_resource_blocks(text: str) -> list[tuple[str, str, str, str]]:
+    """Every (kind, type, name, body) of a resource/data block, comments ignored."""
+    out: list[tuple[str, str, str, str]] = []
+    for m in re.finditer(r'\b(resource|data)\s+"([\w-]+)"\s+"([\w-]+)"\s*\{', _strip_comments(text)):
+        out.append((m.group(1), m.group(2), m.group(3), _block_body(text, m.end() - 1)))
+    return out
+
+
+def _list_elements(raw: str) -> list[str]:
+    """Top-level comma-separated elements of a `[...]` list literal; [] if not a bracketed list."""
+    m = re.fullmatch(r"\[(.*)\]", raw, re.S)
+    if m is None:
+        return []
+    inner = m.group(1)
+    depth = 0
+    elems: list[str] = []
+    cur = ""
+    for ch in inner:
+        if ch in "[{(":
+            depth += 1
+        elif ch in "]})":
+            depth -= 1
+        if ch == "," and depth == 0:
+            elems.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    if cur.strip():
+        elems.append(cur)
+    return [e.strip() for e in elems]
+
+
+def _declared_iam_policy_names(joined: str) -> set[str]:
+    return {m.group(1) for m in re.finditer(r'resource\s+"aws_iam_policy"\s+"(\w+)"', _strip_comments(joined))}
+
+
+def _resolves_to_declared_policy(expr: str, declared: set[str]) -> bool:
+    expr = expr.strip()
+    m = re.fullmatch(r'"\$\{\s*aws_iam_policy\.(\w+)\.arn\s*\}"', expr) or re.fullmatch(r"aws_iam_policy\.(\w+)\.arn", expr)
+    return m is not None and m.group(1) in declared
+
+
+def attachment_problems(texts: dict[str, str]) -> list[str]:
+    """ATTACHMENTS (fail closed): every policy-attachment-shaped resource in the scanned files
+    must point at an aws_iam_policy declared in one of those same scanned files -- an AWS-managed
+    ARN (e.g. IAMReadOnlyAccess) or any other unscanned policy is a problem."""
+    joined = "\n\n".join(texts.values())
+    declared = _declared_iam_policy_names(joined)
+    problems: list[str] = []
+    for kind, rtype, rname, body in _all_resource_blocks(joined):
+        if kind != "resource":
+            continue
+        addr = f"{rtype}.{rname}"
+        if rtype in ("aws_iam_role_policy_attachment", "aws_iam_policy_attachment"):
+            raw = _attr_raw(body, "policy_arn")
+            if raw is not None and not _resolves_to_declared_policy(raw, declared):
+                problems.append(f"{addr}: policy_arn {raw!r} does not resolve to a scanned aws_iam_policy")
+        elif rtype == "aws_iam_role_policy_attachments_exclusive":
+            for elem in _list_elements(_attr_raw(body, "policy_arns") or "[]"):
+                if not _resolves_to_declared_policy(elem, declared):
+                    problems.append(f"{addr}: policy_arns element {elem!r} does not resolve to a scanned aws_iam_policy")
+        elif rtype == "aws_iam_role":
+            for elem in _list_elements(_attr_raw(body, "managed_policy_arns") or "[]"):
+                if not _resolves_to_declared_policy(elem, declared):
+                    problems.append(
+                        f"{addr}: managed_policy_arns element {elem!r} does not resolve to a scanned aws_iam_policy"
+                    )
+    return problems
+
+
+def _declared_policy_document_names(joined: str) -> set[str]:
+    return {m.group(1) for m in re.finditer(r'data\s+"aws_iam_policy_document"\s+"(\w+)"', _strip_comments(joined))}
+
+
+def _locals_holding_jsonencode(joined: str) -> set[str]:
+    out: set[str] = set()
+    for m in re.finditer(r"\blocals\s*\{", _mask(joined)):
+        body = _block_body(joined, m.end() - 1)
+        out |= {em.group(1) for em in re.finditer(r"^\s*(\w+)\s*=\s*jsonencode\(", _strip_comments(body), re.M)}
+    return out
+
+
+def _is_sanctioned_policy_source(expr: str, declared_docs: set[str], jsonencode_locals: set[str]) -> bool:
+    expr = expr.strip()
+    if re.match(r"^jsonencode\s*\(", expr):
+        return True
+    m = re.fullmatch(r"local\.(\w+)", expr) or re.fullmatch(r'"\$\{\s*local\.(\w+)\s*\}"', expr)
+    if m is not None:
+        return m.group(1) in jsonencode_locals
+    m = re.fullmatch(r"data\.aws_iam_policy_document\.(\w+)\.json", expr) or re.fullmatch(
+        r'"\$\{\s*data\.aws_iam_policy_document\.(\w+)\.json\s*\}"', expr
+    )
+    if m is not None:
+        return m.group(1) in declared_docs
+    return False
+
+
+def policy_source_problems(texts: dict[str, str]) -> list[str]:
+    """POLICY SOURCES (fail closed): every policy source in the scanned files must resolve to a
+    jsonencode literal, a local holding one, or a declared aws_iam_policy_document -- a
+    data "aws_iam_policy", a heredoc, file()/templatefile(), or a dynamic "statement" block is a
+    problem."""
+    joined = "\n\n".join(texts.values())
+    declared_docs = _declared_policy_document_names(joined)
+    jsonencode_locals = _locals_holding_jsonencode(joined)
+    problems: list[str] = []
+    if re.search(r'\bdynamic\s+"statement"', _strip_comments(joined)):
+        problems.append('a dynamic "statement" block exists in a scanned file')
+    for kind, rtype, rname, body in _all_resource_blocks(joined):
+        addr = f"{kind}.{rtype}.{rname}"
+        if kind == "resource" and rtype in ("aws_iam_role_policy", "aws_iam_policy"):
+            raw = _attr_raw(body, "policy")
+            if raw is not None and not _is_sanctioned_policy_source(raw, declared_docs, jsonencode_locals):
+                problems.append(f"{addr}: policy source {raw[:80]!r} is not a sanctioned form")
+        if kind == "resource" and rtype == "aws_iam_role":
+            if re.search(r"^\s*inline_policy\s*\{", _strip_comments(body), re.M):
+                problems.append(f"{addr}: declares an inline_policy block")
+        if kind == "data" and rtype == "aws_iam_policy_document":
+            for attr in ("source_policy_documents", "override_policy_documents"):
+                raw = _attr_raw(body, attr)
+                if raw is None:
+                    continue
+                for elem in _list_elements(raw):
+                    if not _is_sanctioned_policy_source(elem, declared_docs, jsonencode_locals):
+                        problems.append(f"{addr}.{attr}: element {elem!r} is not a sanctioned form")
+    return problems
+
+
+def _is_apply_role_ref(expr: str) -> bool:
+    expr = expr.strip()
+    if re.fullmatch(r'"agent-platform-github-ci-apply"', expr):
+        return True
+    return re.fullmatch(r'"\$\{\s*aws_iam_role\.github_ci_apply\.(name|id|arn)\s*\}"', expr) is not None or (
+        re.fullmatch(r"aws_iam_role\.github_ci_apply\.(name|id|arn)", expr) is not None
+    )
+
+
+def apply_role_universe_problems(bootstrap_dir_texts: dict[str, str]) -> list[str]:
+    """APPLY ROLE UNIVERSE (fail closed): no aws_iam_role_policy, attachment or *_exclusive
+    resource anywhere in terraform/bootstrap targets the apply role other than the two allowed
+    addresses, and the apply role's own declaration carries no inline_policy block or
+    managed_policy_arns argument."""
+    joined = "\n\n".join(bootstrap_dir_texts.values())
+    problems: list[str] = []
+    for kind, rtype, rname, body in _all_resource_blocks(joined):
+        if kind != "resource":
+            continue
+        addr = f"{rtype}.{rname}"
+        if rtype in ("aws_iam_role_policy", "aws_iam_role_policy_attachment"):
+            raw = _attr_raw(body, "role")
+            if raw is not None and _is_apply_role_ref(raw) and addr not in _APPLY_ROLE_ALLOWED_TARGETS:
+                problems.append(f"{addr}: targets the apply role outside the allowed pair")
+        elif rtype in ("aws_iam_role_policies_exclusive", "aws_iam_role_policy_attachments_exclusive"):
+            raw = _attr_raw(body, "role_name")
+            if raw is not None and _is_apply_role_ref(raw):
+                problems.append(f"{addr} ({rtype}): targets the apply role")
+        elif rtype == "aws_iam_role" and addr == _APPLY_ROLE_ADDR:
+            if re.search(r"^\s*inline_policy\s*\{", _strip_comments(body), re.M):
+                problems.append(f"{addr}: declares an inline_policy block on the apply role")
+            if _attr_raw(body, "managed_policy_arns") is not None:
+                problems.append(f"{addr}: declares managed_policy_arns on the apply role")
+    return problems
+
+
+def structural_grant_surface_problems(scanned_texts: dict[str, str], bootstrap_dir_texts: dict[str, str]) -> list[str]:
+    """ATTACHMENTS + POLICY SOURCES over the scanned files, plus APPLY ROLE UNIVERSE over the
+    whole terraform/bootstrap directory."""
+    return [
+        *attachment_problems(scanned_texts),
+        *policy_source_problems(scanned_texts),
+        *apply_role_universe_problems(bootstrap_dir_texts),
+    ]

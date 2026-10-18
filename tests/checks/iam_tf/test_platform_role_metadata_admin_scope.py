@@ -19,14 +19,19 @@ import re
 from pathlib import Path
 
 from tests.checks.iam_tf._ci_platform_role_iam import (
+    apply_role_universe_problems,
+    attachment_problems,
     ci_platform_role_iam_leaks,
     independent_jsonencode_counts,
     independent_statement_counts,
+    policy_source_problems,
+    structural_grant_surface_problems,
 )
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_POLICY_FILE = _REPO_ROOT / "terraform" / "bootstrap" / "github_ci_apply_policy.tf"
-_READS_FILE = _REPO_ROOT / "terraform" / "bootstrap" / "github_ci_apply_reads.tf"
+_BOOTSTRAP_DIR = _REPO_ROOT / "terraform" / "bootstrap"
+_POLICY_FILE = _BOOTSTRAP_DIR / "github_ci_apply_policy.tf"
+_READS_FILE = _BOOTSTRAP_DIR / "github_ci_apply_reads.tf"
 _PERSONAL_DIR = _REPO_ROOT / "terraform" / "personal"
 _ACCOUNT_ID = "123456789012"
 _AWS_REGION = "eu-west-2"
@@ -77,6 +82,10 @@ def _scanned_texts() -> dict[str, str]:
     for f in sorted(_PERSONAL_DIR.glob(_SCANNED_PERSONAL_GLOB)):
         texts[str(f.relative_to(_REPO_ROOT))] = f.read_text(encoding="utf-8")
     return texts
+
+
+def _bootstrap_dir_texts() -> dict[str, str]:
+    return {f.name: f.read_text(encoding="utf-8") for f in sorted(_BOOTSTRAP_DIR.glob("*.tf"))}
 
 
 class TestIAMRoleMetadataWriteScope:
@@ -335,3 +344,115 @@ class TestNoCIIamGrantOnPlatformRoles:
         )
         leaks = ci_platform_role_iam_leaks(texts)
         assert any(role == "PlatformDev" for _, _, role in leaks)
+
+
+class TestStructuralGrantSurface:
+    """ATTACHMENTS, POLICY SOURCES and APPLY ROLE UNIVERSE -- the structural leak classes that
+    can re-grant the read quartet without ever appearing as a literal Allow statement."""
+
+    def test_real_tree_has_no_structural_leak(self) -> None:
+        assert structural_grant_surface_problems(_scanned_texts(), _bootstrap_dir_texts()) == []
+
+    def test_managed_policy_arns_attachment_on_apply_role_is_detected(self) -> None:
+        texts = dict(_bootstrap_dir_texts())
+        texts["github_ci_apply.tf"] = texts["github_ci_apply.tf"].replace(
+            'resource "aws_iam_role" "github_ci_apply" {',
+            'resource "aws_iam_role" "github_ci_apply" {\n'
+            '  managed_policy_arns = ["arn:aws:iam::aws:policy/IAMReadOnlyAccess"]',
+            1,
+        )
+        problems = attachment_problems({"github_ci_apply.tf": texts["github_ci_apply.tf"]})
+        assert any("managed_policy_arns" in p for p in problems)
+        assert any("managed_policy_arns" in p for p in apply_role_universe_problems(texts))
+
+    def test_role_policy_attachment_of_unscanned_policy_is_detected(self) -> None:
+        texts = dict(_scanned_texts())
+        texts["terraform/personal/oidc_pipeline_roles.tf"] += (
+            '\n\nresource "aws_iam_role_policy_attachment" "sneaky" {\n'
+            '  role       = "agent-platform-github-ci-apply"\n'
+            '  policy_arn = "arn:aws:iam::aws:policy/IAMReadOnlyAccess"\n'
+            "}\n"
+        )
+        assert any("policy_arn" in p for p in attachment_problems(texts))
+
+    def test_declared_policy_attachment_is_not_flagged(self) -> None:
+        texts = {
+            "fine.tf": (
+                'resource "aws_iam_policy" "fine_policy" {\n'
+                '  name   = "fine"\n'
+                "  policy = jsonencode({})\n"
+                "}\n\n"
+                'resource "aws_iam_role_policy_attachment" "fine" {\n'
+                '  role       = "some-role"\n'
+                "  policy_arn = aws_iam_policy.fine_policy.arn\n"
+                "}\n"
+            )
+        }
+        assert attachment_problems(texts) == []
+
+    def test_data_aws_iam_policy_in_source_policy_documents_is_detected(self) -> None:
+        texts = dict(_scanned_texts())
+        texts["terraform/personal/oidc_pipeline_roles.tf"] += (
+            '\n\ndata "aws_iam_policy" "sneaky" {\n'
+            '  arn = "arn:aws:iam::aws:policy/IAMReadOnlyAccess"\n'
+            "}\n\n"
+            'data "aws_iam_policy_document" "sneaky_doc" {\n'
+            "  source_policy_documents = [data.aws_iam_policy.sneaky.policy]\n"
+            "  statement {\n"
+            '    sid       = "Fine"\n'
+            '    effect    = "Allow"\n'
+            '    actions   = ["s3:ListAllMyBuckets"]\n'
+            '    resources = ["*"]\n'
+            "  }\n}\n"
+        )
+        problems = policy_source_problems(texts)
+        assert any("sneaky_doc" in p for p in problems)
+
+    def test_heredoc_policy_source_is_detected(self) -> None:
+        texts = dict(_scanned_texts())
+        texts["terraform/bootstrap/github_ci_apply_policy.tf"] += (
+            '\n\nresource "aws_iam_role_policy" "sneaky" {\n'
+            '  name = "sneaky"\n'
+            '  role = "agent-platform-github-ci-apply"\n'
+            "  policy = <<-EOT\n"
+            "  {}\n"
+            "  EOT\n"
+            "}\n"
+        )
+        assert any("sneaky" in p for p in policy_source_problems(texts))
+
+    def test_dynamic_statement_block_is_detected(self) -> None:
+        texts = dict(_scanned_texts())
+        texts["terraform/personal/oidc_pipeline_roles.tf"] += (
+            '\n\ndata "aws_iam_policy_document" "sneaky" {\n'
+            '  dynamic "statement" {\n'
+            "    for_each = []\n"
+            "    content {\n"
+            '      sid = "x"\n'
+            "    }\n"
+            "  }\n}\n"
+        )
+        assert any("dynamic" in p for p in policy_source_problems(texts))
+
+    def test_second_inline_policy_on_apply_role_in_main_tf_is_detected(self) -> None:
+        texts = dict(_bootstrap_dir_texts())
+        texts["main.tf"] += (
+            '\n\nresource "aws_iam_role_policy" "sneaky_second" {\n'
+            '  name   = "sneaky"\n'
+            "  role   = aws_iam_role.github_ci_apply.name\n"
+            "  policy = jsonencode({})\n"
+            "}\n"
+        )
+        problems = apply_role_universe_problems(texts)
+        assert any("aws_iam_role_policy.sneaky_second" in p for p in problems)
+
+    def test_exclusive_resource_naming_apply_role_is_detected(self) -> None:
+        texts = dict(_bootstrap_dir_texts())
+        texts["main.tf"] += (
+            '\n\nresource "aws_iam_role_policies_exclusive" "sneaky" {\n'
+            '  role_name    = "agent-platform-github-ci-apply"\n'
+            "  policy_names = []\n"
+            "}\n"
+        )
+        problems = apply_role_universe_problems(texts)
+        assert any("aws_iam_role_policies_exclusive.sneaky" in p for p in problems)
