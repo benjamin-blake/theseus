@@ -134,6 +134,26 @@ class TestPromotedGateClosures:
         assert not self._covered(name, "terraform/personal/main.tf")
 
 
+class TestRoadmapArchiveGlobs:
+    """Decision 227: both roadmap-reading contracts checks rerun on a diff touching only the archive or
+    only the hydration module their load() import closure now reaches."""
+
+    _NAMES = ("validate_ports_contract", "validate_project_configuration")
+
+    @staticmethod
+    def _globs(name: str) -> tuple[str, ...]:
+        return next(e for e in _manifest.ENTRIES if e.name == name).pre_globs or ()
+
+    @pytest.mark.parametrize("name", _NAMES)
+    @pytest.mark.parametrize("path", ["docs/ROADMAP-PLATFORM-ARCHIVE.yaml", "scripts/roadmap/roadmap_archive.py"])
+    def test_an_archive_only_diff_matches_the_gate(self, name: str, path: str) -> None:
+        assert any(fnmatch(path, glob) for glob in self._globs(name))
+
+    @pytest.mark.parametrize("name", _NAMES)
+    def test_an_unrelated_roadmap_package_path_is_not_matched(self, name: str) -> None:
+        assert not any(fnmatch("scripts/roadmap/plan_audit.py", glob) for glob in self._globs(name))
+
+
 class TestPortalDriftPromotedUngated:
     """Promoted into --pre WITHOUT globs, deliberately. Every answer_loci path it resolves comes
     OUT of EVALUATION-PROMPTS.yaml at run time and may name any path in the repo, so no static
