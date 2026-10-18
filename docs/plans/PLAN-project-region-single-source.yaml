@@ -388,10 +388,10 @@ verification_plan:
     b_ok = norm(boot) in norm(Path("terraform/bootstrap/CLAUDE.md").read_text())
     g_ok = norm(gh) in norm(Path("terraform/github/CLAUDE.md").read_text())
     c = yaml.safe_load(Path("docs/contracts/terraform-cc-web-operations.yaml").read_text())
-    c_ok = norm(cc) == norm(c["tfvars_and_remote_state_recovery"]["state_location"]) and norm(br) == norm(c["provider_init_and_mirror"]["backend_region"])
+    c_ok = norm(cc) == norm(c["tfvars_and_remote_state_recovery"]["state_location"]) and norm(br) == norm((c.get("provider_init_and_mirror") or {}).get("backend_region", ""))
     bt = Path("terraform/bootstrap/CLAUDE.md").read_text()
     gt = Path("terraform/github/CLAUDE.md").read_text()
-    o_ok = "ACCOUNT_ID" not in bt and "The backend block names no region" not in bt and "**NEVER auto-apply.**" not in gt and "## NEVER auto-apply this module" in gt and "initialised before rec-4067" not in gt
+    o_ok = "ACCOUNT_ID" not in bt and "The bootstrap S3 state bucket must exist" not in bt and "The backend block names no region" not in bt and "**NEVER auto-apply.**" not in gt and "## NEVER auto-apply this module" in gt and "initialised before rec-4067" not in gt
     bud = yaml.safe_load(Path("config/prose_budgets.yaml").read_text())["S2"]
     p_ok = bud["terraform/bootstrap/CLAUDE.md"] == len(bt.encode()) and len(gt.encode()) <= bud["terraform/github/CLAUDE.md"]
     print("decision", d_ok, "bootstrap", b_ok, "github", g_ok, "contract", c_ok, "offsets", o_ok, "budgets", p_ok)
@@ -688,8 +688,8 @@ test_obligations:
   test_selector: tests/checks/ci_guards/test_validate_project_region.py::test_real_tree_passes
   red_green_expectation: red before (backend region lines, description literal), green after
 - source: docs/contracts/terraform-cc-web-operations.yaml
-  behavior: Its referenced_repo_paths exist and its state_location names the region source; validate_terraform_cc_web_operations
-    reads it.
+  behavior: Its referenced_repo_paths exist (validate_terraform_cc_web_operations, both tiers); the state_location and backend_region
+    texts are asserted by verification step 6.
   verification_step: 4
   command: bin/venv-python -m scripts.validate --pre
   red_green_expectation: red if config/aws-region is listed but absent or a listed path is missing; green after
@@ -702,9 +702,11 @@ test_obligations:
 - source: config/prose_budgets.yaml
   behavior: terraform/bootstrap/CLAUDE.md's budget equals its edited size; terraform/github/CLAUDE.md stays within its unchanged
     budget.
-  verification_step: 6
-  command: config/prose_budgets.yaml
-  red_green_expectation: red until the bootstrap budget is ratcheted to the measured size, green after
+  verification_step: 4
+  command: bin/venv-python -m scripts.validate --pre
+  waiver_reason: 'A data-only ratchet: validate_prose_limits and validate_prose_budget_raises in the fast tier are its standing
+    guards (no raise, every file within budget), and verification step 6''s budgets field asserts the one-time bootstrap equality
+    and the github fit.'
 - source: scripts/checks/ci_guards/_manifest.py
   behavior: The new check is dispatched in both tiers and classified for ci-rca.
   verification_step: 4
@@ -741,10 +743,11 @@ context:
   defaults stay guard-pinned mirrors; rec-4404). CITE: 202, 181, 162, 170, 169, 126, 77, 177. Decisions triaged: 171 of 171.
   Roadmap items intersected: 10; CONFLICT: 0; RELATED: 10.'
 - 'gates: decision-scout=FLAGS_FOUND (resolved as above); plan-critique=PROCEED after 4 rounds (r4 on the escalation card''s
-  option); golden replay amendment PROCEED (Sonnet: Opus limit); prose-budget amendment r1 REVISE, fixed; r2 pending'
+  option); golden replay amendment PROCEED (Sonnet: Opus limit); prose-budget amendment PROCEED r2 (r1 REVISE, fixed)'
 - 'Approval: Benjamin in the planning thread, 2026-10-17: fork 2 at 17:03Z ("I agree with your recommendation for 2"); forks
   1, 3 and the APPROVED texts at 17:15Z ("I agree with your recommendations"); 17:20Z he acknowledged the restatement that
-  this is "write the plan" with the wording verbatim. Variance: the date, plus the 2026-10-18 relocation (proposed-text.md).'
+  this is "write the plan" with the wording verbatim. Variance: the date, plus the 2026-10-18 relocation and three deletions
+  (proposed-text.md).'
 - 'fork: where the region lives | chosen: committed config/aws-region (Fable ADVICE Q2; a repository variable reaches CI only,
   is not passed to fork PR runs, is undocumented for Dependabot runs and needs a hand-set GitHub setting the drifted terraform/github
   root cannot own, rec-3136) | class: asked | precedent: Benjamin 2026-10-17 | precedent_kind: answered-fork | reversible:
