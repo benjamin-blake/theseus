@@ -283,8 +283,7 @@ def _handle_bare_attribute(node: ast.Attribute, imports: _Imports, add_fn) -> No
         add_fn(node, kind, "")
 
 
-def _handle_raise(node: ast.Raise, imports: _Imports, add_fn) -> None:
-    exc = node.exc
+def _handle_raise(node: ast.Raise, exc: ast.expr, imports: _Imports, add_fn) -> None:
     call = exc if isinstance(exc, ast.Call) else None
     func_expr = call.func if call is not None else exc
     chain = _dotted_chain(func_expr)
@@ -317,7 +316,7 @@ def skip_sites(source: str) -> list[SkipSite]:
     sites: list[SkipSite] = []
     seen: set[int] = set()
 
-    def add(node: ast.AST, kind: str, reason: str, line: int | None = None) -> None:
+    def add(node: ast.expr | ast.stmt, kind: str, reason: str, line: int | None = None) -> None:
         key = id(node)
         if key in seen:
             return
@@ -330,7 +329,7 @@ def skip_sites(source: str) -> list[SkipSite]:
         elif isinstance(node, ast.Attribute):
             _handle_bare_attribute(node, imports, add)
         elif isinstance(node, ast.Raise) and node.exc is not None:
-            _handle_raise(node, imports, add)
+            _handle_raise(node, node.exc, imports, add)
         elif isinstance(node, ast.Assign):
             for cand in _mark_candidates_in(node.value):
                 _record_if_mark(cand, imports, add)

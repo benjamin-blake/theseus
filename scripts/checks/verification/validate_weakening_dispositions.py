@@ -188,14 +188,14 @@ def run_check(
 
     for candidate in candidates:
         key = candidate.key()
-        entries = recorded.get(key)
-        if not entries:
+        matched_entries = recorded.get(key)
+        if not matched_entries:
             failed.append(
                 f"weakening-dispositions: candidate {key!r} has no recorded disposition -- copy code review's "
                 "filled-in stub into the plan's weakening_dispositions"
             )
             continue
-        disposition, cite = entries[0]
+        disposition, cite = matched_entries[0]
         if disposition not in review_dispositions:
             failed.append(f"weakening-dispositions: candidate {key!r} has unknown disposition {disposition!r}")
             continue
