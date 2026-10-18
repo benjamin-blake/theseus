@@ -401,3 +401,31 @@ def test_every_alarm_class_has_a_defined_denominator() -> None:
         assert not cli._denominator_met(cls, zero) or cls == "verify_incomplete", cls
         counts = {cli.DENOMINATOR_OF.get(cls, "x"): 1, "rows_equal": 1, "ledger_records": 1, "stored_ledger_tested": 1}
         assert cli._denominator_met(cls, counts), f"{cls} has no denominator rule"
+
+
+def test_run_builds_the_event_wait_and_passes_the_lock_wait(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    seen: list[dict[str, Any]] = []
+
+    def fake(path, session_id, event, **kw):
+        seen.append({"event": event, **kw})
+        return PassResult("sent", {})
+
+    monkeypatch.setattr(cli, "run_pass", fake)
+    ticks = [0.0]
+
+    def clock() -> float:
+        ticks[0] += 10.0
+        return ticks[0]
+
+    base = ["run", "--transcript", str(tmp_path / "s.jsonl"), "--session-id", "s", "--lock-wait", "120"]
+    assert cli.main([*base, "--event", "Stop"], env={}, clock=clock, sleep=lambda s: None) == 0
+    assert (
+        cli.main([*base, "--event", "UserPromptSubmit", "--prompt-id", "p1"], env={}, clock=clock, sleep=lambda s: None) == 0
+    )
+    assert cli.main([*base, "--event", "StopFailure"], env={}, clock=clock, sleep=lambda s: None) == 0
+    stop, prompt_call, failure = seen
+    assert stop["lock_wait"] == prompt_call["lock_wait"] == failure["lock_wait"] == 120.0
+    assert (
+        stop["wait"]() == "witness_wait_timeout" and prompt_call["wait"]() == "prompt_wait_timeout" and failure["wait"] is None
+    )
+    assert 750 < stop["budget"].remaining() <= 755 and 725 < prompt_call["budget"].remaining() <= 730

@@ -27,10 +27,12 @@ from tests.fixtures.turn_capture_corpus import (
     hook,
     make_files,
     prompt,
+    stop_summary,
     task_notice,
     text_block,
     tool_result,
     tool_use_block,
+    witness,
 )
 from tests.fixtures.turn_capture_v3_cases import (
     fork_branch_copied_head_files,
@@ -429,3 +431,52 @@ def test_background_spawn_completes_at_a_later_resume_boundary() -> None:
     inner = next(sp for sp in deep.spawns if sp.agent_id == "g1")
     assert not inner.complete and not inner.completed_at_boundary
     assert tree.streams[ROOT].resume_ends == {tree.streams[ROOT].resumes[0].line: tree.streams[ROOT].recs[-1].line}
+
+
+def framed(root, final=False, frontier=True):
+    return parse_tree(MemTree(make_files(root)), None, final, frontier=frontier)
+
+
+def test_the_frontier_withholds_an_open_turns_tail_only_when_asked() -> None:
+    root = [
+        prompt("u1", 1, "p1", "go"),
+        assistant("a1", 2, "m1", [text_block("k")]),
+        witness("w1", 3),
+        stop_summary("s1", 3.1),
+        hook("late", 3.2, "Notification", command="bash ./x.sh"),
+    ]
+    kept = framed(root)
+    turn = kept.streams[ROOT].turns[0]
+    assert [r.uuid for r in turn.closes] == ["w1"] and turn.closed and not turn.bounded
+    assert [r.uuid for r in kept.streams[ROOT].recs][-1] == "w1" and kept.diag["frontier_withheld"] == 2
+    assert [h.uuid for h in kept.streams[ROOT].hooks] == ["w1"]
+    whole = framed(root, frontier=False)
+    assert len(whole.streams[ROOT].recs) == 5 and "frontier_withheld" not in whole.diag
+    assert framed(root, final=True).streams[ROOT].turns[0].bounded
+
+
+def test_nothing_is_withheld_without_an_open_last_turn_or_a_tail() -> None:
+    assert framed([hook("h0", 0.5, "SessionStart:startup")]).streams[ROOT].turns == []
+    resumed = [
+        prompt("u1", 1, "p1", "go"),
+        assistant("a1", 2, "m1", [text_block("k")]),
+        hook("rs", 3, "SessionStart:resume", command="bash ./r.sh"),
+        hook("rs2", 3.5, "SessionStart:resume", command="bash ./r.sh"),
+    ]
+    bounded = framed(resumed)
+    assert bounded.streams[ROOT].turns[0].bounded and "frontier_withheld" not in bounded.diag
+    tail = framed([prompt("u1", 1, "p1", "go"), assistant("a1", 2, "m1", [text_block("k")]), witness("w1", 3)])
+    assert "frontier_withheld" not in tail.diag and tail.streams[ROOT].turns[0].closes
+
+
+def test_witness_counters_survive_the_frontier_cut() -> None:
+    pending = [
+        prompt("u1", 1, "p1", "go"),
+        assistant("a1", 2, "m1", [tool_use_block("t1", "Bash", {"command": "ls"})]),
+        witness("w1", 3),
+        tool_result("r1", 4, "t1", "out", pid="p1"),
+    ]
+    cut = framed([witness("w0", 0.5), *pending])
+    assert cut.diag["witness_not_at_rest"] == 1 and cut.diag["witness_outside_turn"] == 1
+    assert cut.diag["frontier_withheld"] == 3 and cut.streams[ROOT].turns[0].closes == []
+    assert not cut.streams[ROOT].turns[0].closed

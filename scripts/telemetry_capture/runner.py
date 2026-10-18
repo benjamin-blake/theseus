@@ -260,8 +260,9 @@ def _locked_pass(
     detach_below: float | None,
     sleep: Callable[[float], None],
     rng: Callable[[], float],
+    waited: Counter[str],
 ) -> PassResult:
-    diag: Counter[str] = Counter()
+    diag: Counter[str] = Counter(waited)
     diag[f"switch_source:{switch_source or 'none'}"] += 1
     record: dict[str, Any] = {"event": event, "final": final, "at": int(time.time())}
     if state.halt() is not None:
@@ -350,8 +351,13 @@ def run_pass(
     detach_below: float | None = None,
     sleep: Callable[[float], None] = time.sleep,
     rng: Callable[[], float] = random.random,
+    wait: Callable[[], str] | None = None,
 ) -> PassResult:
-    """RN-1..RN-8. "off" before any state is touched; "busy" when another pass holds the tree's lock."""
+    """RN-1..RN-8. "off" before any state is touched; "busy" when another pass holds the tree's lock.
+
+    *wait* (rule RW-1, opt-in) runs after the switch and smoke checks and before the lock; its token is counted in the pass's
+    diagnostics and a timeout still runs the pass.
+    """
     mode, switch_source = switch.switch_mode(env, repo_root)
     if mode == switch.OFF:
         return PassResult("off")
@@ -359,8 +365,15 @@ def run_pass(
     smoke_ref = switch.smoke_ref(env) if mode == switch.SMOKE else None
     if smoke_ref is not None and project_ref_pin(SnapshotTree(root_file)) != smoke_ref:
         return PassResult("off", {"smoke_pin_mismatch": 1})
+    waited: Counter[str] = Counter()
+    if wait is not None:
+        waited[wait()] += 1
     state = CaptureState(state_dir(root_file, session_id))
-    lock = state.acquire(min(lock_wait, budget.remaining()), sleep=sleep)
+    lock = state.acquire(0.0, sleep=sleep)
+    if lock is None and lock_wait > 0:
+        lock = state.acquire(min(lock_wait, budget.remaining()), sleep=sleep)
+        if lock is not None:
+            waited["lock_waited"] += 1
     if lock is None:
         return PassResult("busy")
     try:
@@ -377,6 +390,7 @@ def run_pass(
             detach_below=detach_below,
             sleep=sleep,
             rng=rng,
+            waited=waited,
         )
     finally:
         lock.release()
