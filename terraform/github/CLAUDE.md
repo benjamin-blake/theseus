@@ -38,8 +38,8 @@ export GITHUB_TOKEN=$(aws secretsmanager get-secret-value \
 REVIEWER_ID=$(gh api /user --jq .id)   # run as the reviewer account
 #    Or use the GitHub MCP get_me tool in Claude Code on the web.
 
-# 3. Initialise (S3 backend in agent-platform-data-lake; the region comes from config/aws-region, rec-4067).
-#    A .terraform directory initialised before rec-4067 needs this init once before its next plan or apply.
+# 3. Initialise (S3 backend in agent-platform-data-lake; region and re-init rule: see
+#    docs/contracts/terraform-cc-web-operations.yaml backend_region).
 terraform -chdir=terraform/github init \
   -backend-config="region=$(tr -d '[:space:]' < config/aws-region)"
 
@@ -75,12 +75,6 @@ Key constraints:
   protected branches (main). No custom branch policies.
 - The reviewer user ID is passed via `gated_apply_reviewer_user_ids` at apply time; it is
   **never** committed with a literal default.
-
-**NEVER auto-apply.** This module (`terraform/github/**`) is excluded from
-`terraform-apply-sandbox.yml`'s path filter (`terraform/personal/**`) and must never be
-added to any auto-apply workflow. The `terraform_apply_guard.py` is AWS-IAM-only and cannot
-inspect `github_*` resource diffs; an ungated branch-protection change could lock out the
-push-to-main flow the CD pipeline depends on.
 
 ## Lockout recovery
 
