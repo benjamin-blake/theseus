@@ -7,9 +7,9 @@ aws_iam_role_policy, aws_iam_role_policy_attachment, aws_iam_policy_attachment (
 list), aws_iam_role_policies_exclusive or aws_iam_role_policy_attachments_exclusive targeting
 either -- by resource reference, data-source indirection or a local/variable whose literal value
 names the role. The literal check is keyed ONLY on those resources' `role` / `roles` / `name` /
-`name_prefix` / `role_name` arguments, so an unrelated mention elsewhere (a literal role ARN in
-oidc.tf's IAMPlatformRolesRead, a comment, or a log/event pattern such as a Decision 202 metric
-filter) cannot false-positive. Each of the seven relocated addresses must carry exactly one
+`name_prefix` / `role_name` arguments, so an unrelated mention elsewhere (a comment, such as
+oidc.tf's note that the two roles are bootstrap-owned, or a log/event pattern such as a
+Decision 202 metric filter) cannot false-positive. Each of the seven relocated addresses must carry exactly one
 `removed` block with `lifecycle { destroy = false }` in terraform/personal.
 """
 

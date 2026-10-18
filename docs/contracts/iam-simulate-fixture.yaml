@@ -55,6 +55,7 @@ contract:
     check: validate_iam_simulate_fixture_shape
 
 amendment_log:
+  - {date: "2026-10-18", semantic_break: false, change_class: field_add, summary: "rec-4049 (Decision 225): the four platformdev-* rows flip to implicitDeny (CI holds no IAM grant on PlatformDev), two new negative rows (platformdev-get-role-negative, platformadmin-get-role-policy-negative) added, and the two PlatformAdmin negatives' by_design shortened to one line each."}
   - {date: "2026-10-09", semantic_break: false, change_class: correction, summary: "PLAN-url-only-invoke-guard follow-up: the url-only-event-source-mapping-denied row now targets the bare '*' (CreateEventSourceMapping has no IAM resource type, so the Deny's Resource '*' is what the simulator must match); scripts/ci/iam_simulate.py accepts only that bare wildcard target."}
   - {date: "2026-10-09", semantic_break: false, change_class: field_add, summary: "PLAN-url-only-invoke-guard (Decision 213): six url-only rows record the boundary's URL-only Denies for the writer, reader and telemetry writer; a bool required_context_keys value is now sent as a boolean ContextKeyType by scripts/ci/iam_simulate.py. Structural budget raised 600 to 650 under Decision 213 cl.6."}
   - date: "2026-09-13"
@@ -653,48 +654,55 @@ triples:
       every role create, so iam:CreateRole at role/agent-platform-* structurally requires iam:TagRole
       at the SAME prefix.
 
-  # -- Decision 180 / rec-3327: PlatformDev joins the metadata-write scope class. All four --
-  # -- IAMRoleMetadataWrite verbs must reach PlatformDev; NONE may reach PlatformAdmin. --
+  # -- Decision 225 (rec-4049): CI holds no IAM grant on either platform role. --
   - id: platformdev-tag-role
     verb: "iam:TagRole"
     target_arn_template: "arn:aws:iam::${account_id}:role/PlatformDev"
-    expected_decision: allowed
-    why: "Decision 180 clause 1/2: the enumerated non-prefixed metadata risk class now includes PlatformDev."
+    expected_decision: implicitDeny
+    by_design: "Decision 225 clause 1: a CI metadata write on PlatformDev is a GRANT LEAK."
+    why: "Decision 225 narrowed IAMRoleMetadataWrite off PlatformDev."
   - id: platformdev-untag-role
     verb: "iam:UntagRole"
     target_arn_template: "arn:aws:iam::${account_id}:role/PlatformDev"
-    expected_decision: allowed
-    why: "Decision 180 clause 2: tag-drift reconcile on PlatformDev."
+    expected_decision: implicitDeny
+    by_design: "Decision 225 clause 1: a CI metadata write on PlatformDev is a GRANT LEAK."
+    why: "Decision 225 narrowed IAMRoleMetadataWrite off PlatformDev."
   - id: platformdev-update-role
     verb: "iam:UpdateRole"
     target_arn_template: "arn:aws:iam::${account_id}:role/PlatformDev"
-    expected_decision: allowed
-    why: "Decision 180 clause 2: max_session_duration edits on PlatformDev."
+    expected_decision: implicitDeny
+    by_design: "Decision 225 clause 1: a CI metadata write on PlatformDev is a GRANT LEAK."
+    why: "Decision 225 narrowed IAMRoleMetadataWrite off PlatformDev."
   - id: platformdev-update-role-description
     verb: "iam:UpdateRoleDescription"
     target_arn_template: "arn:aws:iam::${account_id}:role/PlatformDev"
-    expected_decision: allowed
-    why: "rec-3327's headline verb -- the gap this Decision closes."
+    expected_decision: implicitDeny
+    by_design: "Decision 225 clause 1: a CI metadata write on PlatformDev is a GRANT LEAK."
+    why: "Decision 225 narrowed IAMRoleMetadataWrite off PlatformDev."
+  - id: platformdev-get-role-negative
+    verb: "iam:GetRole"
+    target_arn_template: "arn:aws:iam::${account_id}:role/PlatformDev"
+    expected_decision: implicitDeny
+    by_design: "Decision 225 clause 1: CI reads neither role."
+    why: "Proves the metadata class reaches neither platform role."
+  - id: platformadmin-get-role-policy-negative
+    verb: "iam:GetRolePolicy"
+    target_arn_template: "arn:aws:iam::${account_id}:role/PlatformAdmin"
+    expected_decision: implicitDeny
+    by_design: "Decision 225 clause 1: CI reads neither role."
+    why: "Proves the metadata class reaches neither platform role."
   - id: platformadmin-update-role-description-negative
     verb: "iam:UpdateRoleDescription"
     target_arn_template: "arn:aws:iam::${account_id}:role/PlatformAdmin"
     expected_decision: implicitDeny
-    by_design: >-
-      Decision 180 clause 3: PlatformAdmin is PERMANENTLY excluded from every CI-writable Resource
-      pattern in this policy. It carries no boundary by design (it must remain able to amend the
-      boundary), and IAMRoleMetadataWrite carries no boundary Condition, so a matched PlatformAdmin
-      would become CI-mutable. IF THIS TRIPLE EVER RETURNS allowed, TREAT IT AS A GRANT LEAK AND A
-      SECURITY REGRESSION, never a fixture error.
-    why: "The load-bearing negative for Decision 180 -- proves the enumeration did not widen past PlatformDev."
+    by_design: "Decision 180 clause 3: allowed is a GRANT LEAK and a security regression."
+    why: "Proves the metadata class reaches neither platform role."
   - id: platformadmin-update-role-negative
     verb: "iam:UpdateRole"
     target_arn_template: "arn:aws:iam::${account_id}:role/PlatformAdmin"
     expected_decision: implicitDeny
-    by_design: >-
-      Second PlatformAdmin negative, same proof as platformadmin-update-role-description-negative
-      above for a different one of the four metadata verbs. A mismatch here is a GRANT LEAK, not a
-      fixture error.
-    why: "Confirms the PlatformAdmin exclusion holds across more than one of the four metadata verbs."
+    by_design: "Decision 180 clause 3: allowed is a GRANT LEAK and a security regression."
+    why: "Proves the metadata class reaches neither platform role."
 
   # -- Decision 213: URL-only invoke guard. The boundary Denies hold for the CI apply role, which carries the boundary. --
   - id: url-only-direct-invoke-denied

@@ -2,6 +2,98 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 225: CI identities hold no IAM grant on PlatformDev or PlatformAdmin (elects Decision 180 reversal condition (a)'s re-narrow ahead of its trigger; amends Decision 180 clauses 1-2) (Decided)
+
+```yaml
+number: 225
+status: Decided
+decided_date: "2026-10-18"
+amends: [180]
+significance:
+  value: numbered_decision
+  justification: >-
+    Elects a ratified entry's reversal response before its literal trigger (the Decision 176
+    clause 2 shape; Decision 179 clause 2 also elected a condition early) and adds a standing rule
+    with a guard and reversal conditions. A dated Update on Decision 180 alone is rejected: its Problem already refused
+    amendment_forms for this scope class, and docs/contracts/iam-simulate-fixture.yaml records
+    expected decisions but cannot re-decide a grant.
+```
+
+**Status:** Decided
+**Date:** 2026-10-18
+**Warehouse ID:** dec-225 (per Decision 84 backfill)
+
+**Problem:** rec-4049. Decision 223 moved PlatformDev and PlatformAdmin to terraform/bootstrap; the
+forget applied on 2026-10-17 and neither role is in terraform/personal state. Three CI grants still
+named them: IAMRoleMetadataWrite's PlatformDev entry (four metadata verbs, Decision 180 clauses 1-2)
+and the IAM read quartet on both roles, in the apply role's IAMRolesRead and the planner's
+IAMPlatformRolesRead. None has a consumer: no CI-applied root declares either role and no workflow
+calls IAM on them. The reads are not inert: iam:GetRole returns each role's trust document, with its
+sts:ExternalId condition, and iam:GetRolePolicy returns PlatformAdmin's AdminOps text. Decision 180's
+reversal condition (a), "PlatformDev leaves terraform management", has not fired as written:
+PlatformDev is Terraform-managed in terraform/bootstrap, and Decision 223 clause 3 left the ruling to
+rec-4049's plan.
+
+**Decision:**
+1. **Rule.** No CI identity (the apply, planner, branch, pr and deploy roles) holds an `iam:` Allow,
+   write or read, whose Resource matches PlatformDev or PlatformAdmin.
+2. **Amends Decision 180 clauses 1-2.** The metadata risk class is `role/agent-platform-*` plus the
+   enumerated boundary-carrying non-prefixed roles that a CI-applied root declares. That set is empty
+   today, so IAMRoleMetadataWrite's Resource is `role/agent-platform-*` alone, and clause 2's four
+   verbs no longer reach PlatformDev. Clause 3 (PlatformAdmin permanently excluded) and clause 4 (the
+   boundary, not the name, decides coverage) stand; this clause adds only that the enumeration lists
+   roles a CI-applied root declares.
+3. **Reversal condition (a): ruled by election, not reinterpretation.** (a) is not declared fired.
+   Its response, the re-narrow, is elected ahead of the trigger, as Decision 176 clause 2 did: the
+   grant's purpose, CI reconciling PlatformDev's metadata in terraform/personal (Decision 180's
+   Problem and clause 6), ended with Decision 223. Condition (b) is untouched.
+4. **Reads retire now.** Both roles leave IAMRolesRead and IAMPlatformRolesRead under the RETIREMENT
+   ORDERING RULE in terraform/bootstrap/github_ci_apply_reads.tf, since the forget (standing in for
+   the rule's destroy) has applied. If rec-3358's scheduled bootstrap plan runs as a CI identity, it
+   gets its reads in its own plan, never by keeping these.
+5. **Guard.** tests/checks/iam_tf/test_platform_role_metadata_admin_scope.py pins the Resource to
+   exactly {role/agent-platform-*}, keeps the PlatformAdmin negative, and fails any Allow statement,
+   in every terraform/personal file (all of it CI-applied) or the apply role's two policy files in
+   terraform/bootstrap, that carries an `iam:` action on a Resource matching either role; the
+   boundary is a ceiling, not a grant, and is not scanned. docs/contracts/iam-simulate-fixture.yaml
+   expects implicitDeny for the four verbs on PlatformDev, iam:GetRole on PlatformDev and
+   iam:GetRolePolicy on PlatformAdmin; its two PlatformAdmin negatives stand.
+6. **Delivery.** CI applies terraform/personal's planner change at merge. The apply role's two
+   policies live in terraform/bootstrap, which CI never applies (Decision 126; the T2.23 self-grant
+   break), so that half is a human-directed admin apply of merged code.
+
+**Rationale:** Least privilege is measured against consumers, not names. A grant whose only consumer
+left with Decision 223 is standing authority with nothing behind it, and the read quartet exposed
+trust documents and admin policy text to CI principals. Retiring both closes the loose ends Decision
+223's Coverage assigns to rec-4049.
+
+**Coverage (Decision 181 cl.2):** clauses 1-2 in HCL -- the clause 5 guard, in the full tier and when
+--pre selects it; live -- the apply role by the post-apply simulate whenever a bootstrap apply changes
+its grant surface, and both CI roles once by rec-4049's post-merge policy reads; a CI identity declared
+in terraform/bootstrap other than the apply role (such as a rec-3358 bootstrap planner) -- unenforced
+residual owned by rec-3358.
+
+```yaml reversal-conditions
+decision: 225
+review_by: 2027-04-30
+on_trigger: "re-decide via /plan; update or re-arm this stanza"
+conditions:
+  - id: ci-root-declares-platform-role
+    kind: manual
+    description: "A CI-applied root again declares either role (Decision 223 rollback): re-decide clause 1 with that rollback; the read quartet returns in the same PR, before any plan runs."
+  - id: bootstrap-plan-under-ci-identity
+    kind: manual
+    description: "rec-3358's scheduled bootstrap plan runs as a CI identity: grant its reads in its own plan and Decision, scoped to that identity, never by re-adding them here."
+  - id: non-prefixed-role-in-ci-root
+    kind: manual
+    description: "A CI-applied root declares a boundary-carrying non-prefixed role: re-arm clause 2's enumeration for that role, never for one terraform/bootstrap owns."
+```
+
+**Related:** Decisions 180 (amended), 223, 202, 144, 126, 143, 176, 179, 177, 181; rec-4049, rec-3358,
+rec-4043.
+
+---
+
 ## Decision 224: One home per kind of user-set configuration -- project settings in ontheloop/platform.yaml, secret values never tracked and resolved by name, per-clone choices in .ontheloop/, one registry (amends Decision 211 clause 5 and Decision 212 clause 8) (Decided)
 
 ```yaml
@@ -199,6 +291,8 @@ conditions:
 
 **Related:** Decisions 180, 183 (amended), 98, 113, 126, 144, 181, 202; rec-3838, rec-4044;
 PLAN-platform-iam-bootstrap-adopt, PLAN-platform-iam-personal-release.
+
+> **Update (2026-10-18):** The Coverage loose ends rec-4049 owned (CI's read quartet on both roles and its metadata grant on PlatformDev) are retired by Decision 225, which also makes clause 3's deferred reversal (a) ruling.
 
 ---
 
@@ -1409,6 +1503,8 @@ Roadmap refs: rec-4044, rec-4049, rec-4067.
 > **Update (2026-10-17):** Clause 6's "Decision 180 clause 6 is not re-decided" is overtaken: Decision 223 adopts that alternative, placing PlatformDev, PlatformAdmin and their inline policies in terraform/bootstrap. This entry's trail, grant, name family and region rule are unchanged.
 >
 > **Update (2026-10-18):** clause 4's declared residuals are closed (rec-4067). config/aws-region holds the project region; workflow jobs read it through .github/actions/aws-region, which fails closed on an empty or invalid value and exports AWS_REGION and AWS_DEFAULT_REGION, and every sign-in takes aws-region from it. No backend block or backend file names a region: the S3 backend reads AWS_REGION, or a -backend-config region set at init from the file. validate_project_region fails any other AWS region id in .github/ YAML or terraform/ HCL, and either aws_region default that differs from the file. Unenforced, outside clause 4: Python, config and runbook region defaults and the Neon region id (rec-4404). PLAN-project-region-single-source.
+>
+> **Update (2026-10-18):** Clause 6's "email until rec-4049 lands" is discharged by Decision 225: CI holds no IAM grant on PlatformDev, so the platform-role alarm has no sanctioned CI source. Alerts stay unfiltered by actor.
 
 ---
 
@@ -3166,6 +3262,8 @@ grant), Decision 113 (the two-principal split clause 3's exclusion depends on), 
 docs/contracts/iam-simulate-fixture.yaml (the PlatformDev/PlatformAdmin rows this Decision licenses).
 
 > **Update (2026-10-17):** Clause 6's rejected alternative is adopted in full by Decision 223: PlatformDev, PlatformAdmin and their five inline policies are owned by terraform/bootstrap, and terraform/personal holds only their `destroy = false` removed blocks (rec-3838). Clauses 1-5 stand in text; Decision 144 clause 3 is preserved. Reversal condition (a) is not adjudicated there (PlatformDev stays Terraform-managed, clause 4's premise); rec-4049's plan does that.
+>
+> **Update (2026-10-18):** Decision 225 re-narrows IAMRoleMetadataWrite to role/agent-platform-* and retires CI's read quartet on PlatformDev and PlatformAdmin (rec-4049). Clauses 1-2 are amended: the enumeration lists only boundary-carrying non-prefixed roles a CI-applied root declares, none today. Reversal condition (a) is not declared fired (PlatformDev stays Terraform-managed in terraform/bootstrap); its response is elected ahead of the trigger. Clauses 3-5 and condition (b) stand.
 
 ---
 

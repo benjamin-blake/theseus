@@ -178,8 +178,9 @@ data "aws_iam_policy_document" "ci_full_refresh_read" {
   }
 
   statement {
-    # IAM read-quartet on the platform roles (codified in platform_roles.tf). Decision 35/98:
-    # enumerated literal ARNs, never a wildcard.
+    # IAM read-quartet on the agent-platform-* execution roles terraform/personal manages. Decision 35/98:
+    # enumerated literal ARNs, never a wildcard. PlatformDev and PlatformAdmin are bootstrap-owned and never
+    # CI-readable (Decision 225).
     sid    = "IAMPlatformRolesRead"
     effect = "Allow"
     actions = [
@@ -189,8 +190,6 @@ data "aws_iam_policy_document" "ci_full_refresh_read" {
       "iam:ListAttachedRolePolicies"
     ]
     resources = [
-      "arn:aws:iam::${var.account_id}:role/PlatformDev",
-      "arn:aws:iam::${var.account_id}:role/PlatformAdmin",
       "arn:aws:iam::${var.account_id}:role/agent-platform-ducklake-catalog-dr",
       "arn:aws:iam::${var.account_id}:role/agent-platform-ducklake-writer",
       "arn:aws:iam::${var.account_id}:role/agent-platform-ducklake-reader",
