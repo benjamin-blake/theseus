@@ -31,9 +31,11 @@ scope:
 - file: AGENTS.md
   action: Modify
   purpose: >-
-    Replace the Merge protocol's "Post-merge full-tier failure on main" bullet with APPROVED_AGENTS_BULLET. The root
-    ambient load set has about 21 bytes of prose-budget headroom (config/prose_budgets.yaml S1), so the new bullet must
-    not be longer than the old one by more than that; no other AGENTS.md line changes.
+    Replace the Merge protocol's "Post-merge full-tier failure on main" bullet with APPROVED_AGENTS_BULLET (271 bytes
+    against the old 291; the root ambient load set had 10 bytes of headroom at planning, config/prose_budgets.yaml
+    S1). It keeps the literals "forward-fix, never auto-revert", "source=ci_rca" and "priority=critical" that
+    tests/test_pr_ci_red_protocol_contract.py and the agents-md-contradiction-resolved registry shard pin. No other
+    AGENTS.md line changes.
 - file: .claude/agents/scheduled/ci-rca.md
   action: Modify
   purpose: >-
@@ -41,7 +43,8 @@ scope:
     paragraph. Step 5: the --priority line becomes "--priority Critical \" with the APPROVED_CI_RCA_STEP5 sentence under
     the Requirements list. Hard Rules: the "--priority Critical (capital C)" rule gains the clause that the portal
     re-derives priority from repair_track. The literal "--priority Critical" stays (tests/test_ci_rca_prompt_contract.py
-    pins it).
+    pins it). The Hard Rules sentence "The human reviews and acts on it via `/plan`." becomes "A session acts on it via
+    `/plan`, or the fast lane for a test_defect red (Decision 224)."; "autonomous fix" stays.
 - file: scripts/executor/rec_write_guidance.py
   action: Modify
   purpose: >-
@@ -66,9 +69,11 @@ scope:
 - file: scripts/ops_data_portal.py
   action: Modify
   purpose: >-
-    file_rec: immediately after the existing _run_ci_rca_cross_check(context_v2_json) call (so the verified bundle's
-    workflow_tier is already stamped), set fields["priority"] = derive_ci_rca_priority(context_v2_json) for every
-    source=ci_rca write carrying context_v2_json, before the write (legacy no-context ci_rca writes are unchanged). The
+    file_rec: for every source=ci_rca write carrying context_v2_json, first pop the portal-owned keys workflow_tier
+    and repair_track_confirmed from the caller's context (a caller can never supply them); then, immediately after
+    the existing _run_ci_rca_cross_check(context_v2_json) call (so the verified bundle's workflow_tier is stamped),
+    set fields["priority"] = derive_ci_rca_priority(context_v2_json) before the write (legacy no-context ci_rca
+    writes are unchanged). The
     function lives in the ops_portal submodule; the facade gains only the call (Decision 124). update_rec: when the closure_stamps carry fixed_by_sha and the merged record's source is ci_rca, also
     stamp repair_track_confirmed = confirmed_repair_track(closure_fix_sha, ROOT) into the same context blob when it is
     not None. Net growth stays inside the 500-SLOC limit (466 SLOC at planning).
@@ -84,18 +89,21 @@ scope:
   purpose: >-
     stamp_fixed_by_sha also stamps ctx["repair_track_confirmed"] = confirmed_repair_track(fixed_by_sha, ROOT) when it
     is not None, in the same update_rec write (the ci.yml trailer-closure path and the manual route both reach it).
+    correct_rec_context re-derives priority: after merging context_updates it sets row_updates["priority"] =
+    derive_ci_rca_priority(merged), overriding a caller's priority, so a re-tracked red changes priority in the same
+    write.
+- file: tests/test_ci_rca_lifecycle_correct_rec_context.py
+  action: Modify
+  purpose: >-
+    New test TestCorrectRecContext::test_retrack_rederives_priority: correcting repair_track from test_defect to
+    product_regression with a preventive_action writes priority Critical in the same write, and a caller-passed
+    priority in row_updates does not survive.
 - file: scripts/ops_portal/ci_rca_runtime.py
   action: Modify
   purpose: >-
     _run_ci_rca_cross_check: next to the existing fingerprint/failure_category stamps from the verified bundle, stamp
     context_v2_json["workflow_tier"] = bundle["workflow_to_tier_resolution"] when present. A rec filed with no
     verified bundle carries no workflow_tier, so is_track_a is false for it (fail closed). No other change (403 SLOC).
-- file: tests/ops_data_portal/test_ci_rca_runtime.py
-  action: Modify
-  purpose: >-
-    New class TestWorkflowTierStamp: a verified bundle with workflow_to_tier_resolution "CI" stamps workflow_tier
-    "CI"; a "not_a_gate" bundle stamps that value; an absent bundle stamps nothing. Uses the file's existing bundle
-    fixtures.
 - file: scripts/ci_rca/red_overlap.py
   action: Create
   purpose: >-
@@ -124,47 +132,61 @@ scope:
     preventive window_days and threshold, and procedure.fast_lane_repair; ops_recommendations.yaml's priority
     derivation names derive_ci_rca_priority and Decision 224 with realized still false; implement-scope-boundary.yaml's
     validate_weakening_dispositions row note names the fast lane and rec-4442); TestProseSurfacesPointAtTheCheck (AGENTS.md's Merge protocol, the planning
-    skill, the overseer skill, overseer-dispatch never_overrides and .claude/commands/orient.md each name red_overlap
-    or Decision 224, and none still says "/plan cannot scope unrelated work" or "an open critical rec, or a null list").
-- file: tests/ops_data_portal/test_ci_rca_schema.py
-  action: Modify
+    skill, the overseer skill, .claude/commands/overseer.md, overseer-dispatch never_overrides and
+    .claude/commands/orient.md each name red_overlap or Decision 224, and none still says "/plan cannot scope
+    unrelated work", "an open critical rec, or a null list", "halt-on-open-ci_rca is a hard dispatch block" or
+    "before dispatching any new slice"; AGENTS.md still carries the three literals the pr-ci-red contract pins).
+- file: tests/ops_data_portal/test_ci_rca_repair_track.py
+  action: Create
   purpose: >-
-    New class TestRepairTrack: both fields accept the two values and reject others; preventive_action may be omitted
-    only when repair_track is test_defect (absent track and product_regression both raise without it); is_track_a
-    and derive_ci_rca_priority are true/High only for test_defect with no regression_of and workflow_tier "CI".
+    A new file (test_ci_rca_schema.py is at 425 SLOC and test_ci_rca_runtime.py at 436). Class TestRepairTrack: both
+    track fields accept the two values and reject others; preventive_action may be omitted only when repair_track is
+    test_defect (absent track and product_regression both raise without it); is_track_a and derive_ci_rca_priority
+    are true/High only for test_defect with no regression_of and workflow_tier "CI". Class TestWorkflowTierStamp
+    (drives _run_ci_rca_cross_check with bundle fixtures built in this file, never imported from a test module): a
+    verified bundle with workflow_to_tier_resolution "CI" stamps workflow_tier "CI"; one with "unknown" (what
+    resolve_workflow_tier returns for not_a_gate workflows) stamps "unknown"; an absent bundle stamps nothing.
 - file: tests/ops_data_portal/test_rec_write.py
   action: Modify
   purpose: >-
-    New class TestCiRcaPriorityDerivation: file_rec on a source=ci_rca write with context_v2_json writes High for
-    test_defect with workflow_tier CI, and Critical for product_regression, an absent track, a regression_of filing,
-    and test_defect with a non-CI or absent workflow_tier, whatever --priority was passed; a legacy ci_rca write without context_v2_json keeps its passed priority. Uses the file's existing
-    writer/reader fakes.
+    New class TestCiRcaPortalDerivations, using the file's existing writer/reader fakes. file_rec on a source=ci_rca
+    write with context_v2_json writes High for test_defect with a bundle-stamped workflow_tier CI, and Critical for
+    product_regression, an absent track, a regression_of filing, test_defect with workflow_tier "unknown" or absent,
+    and test_defect whose caller supplied "workflow_tier": "CI" with no bundle (the key is stripped), whatever
+    --priority was passed; a legacy ci_rca write without context_v2_json keeps its passed priority. update_rec with
+    closure_fix_sha on a ci_rca rec stamps repair_track_confirmed (confirmed_repair_track monkeypatched).
 - file: tests/ops_data_portal/test_closure_gate.py
   action: Modify
   purpose: >-
     New class TestConfirmedRepairTrack over an injected git fixture repository: a tests-only commit -> test_defect; a
-    commit touching scripts/ and tests/ -> product_regression; an unresolvable sha -> None. Plus one test each that
-    update_rec with closure_fix_sha, and stamp_fixed_by_sha, write repair_track_confirmed into the context blob (fakes
-    as the file already uses).
+    commit touching scripts/ and tests/ -> product_regression; an unresolvable sha -> None; and stamp_fixed_by_sha
+    writes repair_track_confirmed into the context blob in the same update_rec call (fakes as the file already uses).
 - file: scripts/preflight/ci_rca_signals.py
   action: Modify
   purpose: >-
     print_ci_rca_recs: both "[HARD BLOCK] /plan cannot scope unrelated work while these recs ..." lines become
     "[HARD BLOCK] overlapping work blocks, and all new work once a red is past its SLO: run
-    bin/venv-python -m scripts.ci_rca.red_overlap --plan <plan> (Decision 224)." No other change (481 SLOC at planning).
+    bin/venv-python -m scripts.ci_rca.red_overlap --plan <plan> (Decision 224)." (each may wrap to two lines under
+    the 127-character limit), and the abstention-review advisory's "triaged under Decision 73 L5 into a hard block"
+    becomes "triaged under Decisions 73 and 224 into an overlap block". No other change (481 SLOC at planning; at
+    most +3).
 - file: tests/session/preflight/test_correlation.py
   action: Modify
   purpose: >-
-    The existing HARD BLOCK render tests additionally assert "scripts.ci_rca.red_overlap" in the output and
-    "cannot scope unrelated work" absent, for the correlation and the backward-compatible paths.
+    New class TestRedOverlapPointer: the HARD BLOCK render, on both the correlation and the backward-compatible
+    paths, carries "scripts.ci_rca.red_overlap" and no longer says "cannot scope unrelated work"; the abstention
+    advisory names Decision 224.
 - file: tests/test_ci_rca_prompt_contract.py
   action: Modify
   purpose: >-
-    New tests: the agent text names "repair_track" with both values, says "--priority High" applies to test_defect,
-    and says preventive_action is omitted for test_defect; the existing "--priority Critical" pin stays.
+    New class TestRepairTrackInstructions: the agent text names "repair_track" with both values, says "--priority
+    High" applies to test_defect, says preventive_action is omitted for test_defect, and names the fast lane in the
+    Hard Rules; the existing "--priority Critical" and "autonomous fix" pins stay.
 - file: tests/test_rec_write_guidance.py
   action: Modify
-  purpose: New test that the ci_rca guidance names repair_track and the test_defect exemption for preventive_action.
+  purpose: >-
+    New module-level test test_ci_rca_guidance_names_repair_track: the ci_rca guidance names repair_track with both
+    values and the test_defect exemption for preventive_action.
 - file: docs/contracts/ci-rca-lifecycle.yaml
   action: Modify
   purpose: >-
@@ -197,9 +219,17 @@ scope:
   action: Modify
   purpose: >-
     The Behavioural Invariants comment on halt_on_open_ci_rca becomes "# halts dispatch the red_overlap check blocks
-    (Decision 224)" (key and value unchanged), and the "Halt-on-open-ci_rca (Decision 73)" paragraph becomes
-    APPROVED_OVERSEER_HALT. The file has 2 bytes of prose-budget headroom (12719 of 12721), so the edit must be net
-    zero or shorter; trim the new paragraph, never raise the budget.
+    (Decision 224)" (key and value unchanged), the "Halt-on-open-ci_rca (Decision 73)" paragraph becomes
+    APPROVED_OVERSEER_HALT, and the decisions-list line "- **Decision 73:** see Lifecycle and Gates --
+    halt-on-open-ci_rca is a hard dispatch block." becomes "- **Decision 224:** see Lifecycle and Gates -- the
+    red_overlap verdict blocks dispatch.". The file has 2 bytes of prose-budget headroom (12719 of 12721); the three
+    edits are about 15 bytes shorter in total. Never raise the budget.
+- file: .claude/commands/overseer.md
+  action: Modify
+  purpose: >-
+    Step 6's "Apply the halt-on-open-ci_rca gate before dispatching any new slice." becomes "Apply the
+    halt-on-open-ci_rca gate (scripts.ci_rca.red_overlap, Decision 224) before dispatching any /implement slice; a
+    /plan slice meets it at its own Step 8." No other change.
 - file: .claude/skills/planning/SKILL.md
   action: Modify
   purpose: >-
@@ -228,6 +258,8 @@ acceptance_criteria:
 - >-
   DECISIONS.md carries Decision 224 exactly as APPROVED_DECISION (number re-checked), under the 6144-byte per-entry
   cap, and Decisions 72, 73 and 217 each end with their APPROVED_ANNOTATIONS line; decisions-index.json is fresh.
+  TestDecisionEntry pins the header, the five clause labels and the annotations; the verbatim text is checked at code
+  review against APPROVED_DECISION.
 - >-
   A source=ci_rca file_rec carrying context_v2_json is written with priority High exactly when repair_track is
   test_defect, regression_of is unset and the verified bundle stamped workflow_tier CI, else Critical, whatever
@@ -240,12 +272,12 @@ acceptance_criteria:
   fix commit's diff: test_defect for a tests-only commit, product_regression otherwise, unset when unresolvable.
 - >-
   scripts.ci_rca.red_overlap exits 1 for a red past the SLO, an undeterminable red file set, a selector fallback or an
-  overlapping affected set; exits 0 for disjoint work and for an in-SLO test_defect red; exits 2 when the report or a
-  read is unavailable; reads slo_hours from the contract.
+  overlapping affected set; exits 0 for disjoint work, an in-SLO Track A red and a red the plan bundles; exits 2 when a
+  read is unavailable; prints one JSON line; reads slo_hours from the contract and the open reds uncapped.
 - >-
   Every prose surface that stated the old halt (AGENTS.md, the planning, overseer and orient skills, orient.md,
-  overseer-dispatch never_overrides, the preflight print, ci-rca-lifecycle trigger_scope) states the Decision 224
-  rule, within its prose budget.
+  overseer.md, overseer-dispatch never_overrides, the preflight print, ci-rca-lifecycle trigger_scope) states the
+  Decision 224 rule within its prose budget, and AGENTS.md keeps the three literals the pr-ci-red contract pins.
 - >-
   ops_recommendations.yaml declares the ci_rca priority rule in its priority derivation with realized false, and the
   generated field_semantics.yaml is byte-identical (no Lambda artifact changes).
@@ -253,9 +285,9 @@ acceptance_criteria:
 verification_plan:
 - step: 1
   phase: pre-deploy
-  action: The schema takes the two track fields and makes preventive_action conditional; priority derives from the track.
-  command: bin/venv-python -m pytest tests/ops_data_portal/test_ci_rca_schema.py::TestRepairTrack -q
-  expected: Exit 0, every node passes. Red before because the class does not exist.
+  action: The schema takes the track fields and makes preventive_action conditional; is_track_a and priority follow the predicate.
+  command: bin/venv-python -m pytest tests/ops_data_portal/test_ci_rca_repair_track.py::TestRepairTrack -q
+  expected: Exit 0, every node passes. Red before because the file does not exist.
   expected_literals: []
   fix_if: A product_regression context validates without preventive_action -> fix the model validator, never the test.
   hermetic: true
@@ -263,23 +295,31 @@ verification_plan:
   graduation_check_id: ci-rca-repair-track-schema
 - step: 2
   phase: pre-deploy
-  action: file_rec writes the derived priority for source=ci_rca writes carrying context_v2_json.
+  action: >-
+    The cross-check stamps workflow_tier from the verified bundle; file_rec strips caller-supplied portal keys and
+    writes the derived priority; update_rec stamps the confirmed track.
   command: >-
-    bin/venv-python -m pytest tests/ops_data_portal/test_rec_write.py::TestCiRcaPriorityDerivation
-    tests/ops_data_portal/test_ci_rca_runtime.py::TestWorkflowTierStamp -q
-  expected: Exit 0, every node passes. Red before because the classes do not exist.
+    bin/venv-python -m pytest tests/ops_data_portal/test_ci_rca_repair_track.py::TestWorkflowTierStamp
+    tests/ops_data_portal/test_rec_write.py::TestCiRcaPortalDerivations -q
+  expected: Exit 0, every node passes. Red before because the file and the class do not exist.
   expected_literals: []
-  fix_if: A passed --priority survives on a context-carrying write -> move the derivation after any caller override.
+  fix_if: >-
+    A caller-supplied workflow_tier yields High -> pop the portal-owned keys before the cross-check; a passed
+    --priority survives -> derive after the cross-check.
   hermetic: true
   graduation: graduate
   graduation_check_id: ci-rca-priority-derived-from-track
 - step: 3
   phase: pre-deploy
-  action: The confirmed track is computed from the fix commit and stamped at both fixed_by_sha sites.
-  command: bin/venv-python -m pytest tests/ops_data_portal/test_closure_gate.py::TestConfirmedRepairTrack -q
-  expected: Exit 0, every node passes. Red before because the class does not exist.
+  action: The confirmed track is computed from the fix commit; stamp_fixed_by_sha stamps it; a re-track re-derives priority.
+  command: >-
+    bin/venv-python -m pytest tests/ops_data_portal/test_closure_gate.py::TestConfirmedRepairTrack
+    tests/test_ci_rca_lifecycle_correct_rec_context.py::TestCorrectRecContext::test_retrack_rederives_priority -q
+  expected: Exit 0, every node passes. Red before because the class and the node do not exist.
   expected_literals: []
-  fix_if: A mixed commit reads test_defect -> the prefix test must hold for every changed path, not any.
+  fix_if: >-
+    A mixed commit reads test_defect -> the prefix test must hold for every changed path; a re-tracked row stays High
+    -> correct_rec_context must set the derived priority in row_updates.
   hermetic: true
   graduation: graduate
   graduation_check_id: ci-rca-confirmed-repair-track
@@ -289,57 +329,62 @@ verification_plan:
   command: bin/venv-python -m pytest tests/ci_rca/test_red_overlap.py::TestEvaluate -q
   expected: Exit 0, every node passes. Red before because the file does not exist.
   expected_literals: []
-  fix_if: An in-SLO test_defect red past its SLO clears -> the SLO rule must run before the track exemption.
+  fix_if: A test_defect red past its SLO clears -> the SLO rule must run before the track exemption.
   hermetic: true
   graduation: graduate
   graduation_check_id: red-overlap-ordered-rules
 - step: 5
   phase: pre-deploy
-  action: The CLI fails closed on missing or unreadable inputs and reads policy values from the contract.
+  action: The CLI fails closed on unreadable inputs, prints one JSON line, and reads the SLO from the contract.
   command: >-
     bin/venv-python -m pytest tests/ci_rca/test_red_overlap.py::TestInputs tests/ci_rca/test_red_overlap.py::TestCli
     tests/ci_rca/test_red_overlap.py::TestPolicySource -q
   expected: Exit 0, every node passes. Red before because the file does not exist.
   expected_literals: []
-  fix_if: An unavailable read exits 0 -> it must exit 2, and callers treat 2 as blocked.
+  fix_if: An unavailable read exits 0, or a selector banner reaches stdout -> exit 2, and redirect the selector's stdout.
   hermetic: true
   graduation: graduate
   graduation_check_id: red-overlap-fails-closed
 - step: 6
   phase: pre-deploy
-  action: The Decision entry, the contract policy and every prose surface carry the new rule and drop the old one.
-  command: bin/venv-python -m pytest tests/ci_rca/test_recovery_policy_surfaces.py -q
+  action: The Decision entry, the contracts and every prose surface carry the new rule and drop the old one.
+  command: >-
+    bin/venv-python -m pytest tests/ci_rca/test_recovery_policy_surfaces.py::TestDecisionEntry
+    tests/ci_rca/test_recovery_policy_surfaces.py::TestContractPolicy
+    tests/ci_rca/test_recovery_policy_surfaces.py::TestProseSurfacesPointAtTheCheck -q
   expected: Exit 0, every node passes. Red before because the file does not exist.
   expected_literals: []
   fix_if: A surface still states the global halt -> rewrite it to the approved text, never relax the pin.
   hermetic: true
-  graduation: not-applicable
+  graduation: graduate
+  graduation_check_id: red-main-recovery-surfaces
 - step: 7
   phase: pre-deploy
   action: The preflight render, the ci-rca prompt and the guidance carry the new rule.
   command: >-
-    bin/venv-python -m pytest tests/session/preflight/test_correlation.py tests/test_ci_rca_prompt_contract.py
-    tests/test_rec_write_guidance.py -q
-  expected: Exit 0, every node passes.
+    bin/venv-python -m pytest tests/session/preflight/test_correlation.py::TestRedOverlapPointer
+    tests/test_ci_rca_prompt_contract.py::TestRepairTrackInstructions
+    tests/test_rec_write_guidance.py::test_ci_rca_guidance_names_repair_track -q
+  expected: Exit 0, every node passes. Red before because the classes and the node do not exist.
   expected_literals: []
   fix_if: The --priority Critical pin fails -> keep that literal in Step 5 alongside the High clause.
-  hermetic: false
-  graduation: waive
-  graduation_waiver_reason: >-
-    Whole-file re-runs of test files this plan modifies (hermetic rule (v)); they sit in every --pre affected set that
-    touches these surfaces, and steps 1-6 graduate the behaviour.
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: red-main-recovery-agent-surfaces
 - step: 8
   phase: pre-deploy
-  action: The live tree's red_overlap verdict runs end to end against this plan's own scope.
+  action: The live red_overlap verdict runs end to end against this plan's own scope.
   command: bin/venv-python -m scripts.ci_rca.red_overlap --plan docs/plans/PLAN-red-main-recovery-policy.yaml; echo "exit=$?"
-  expected: One JSON verdict line, then exit=0 (no unresolved red) or exit=1 naming the blocking red and rule; never a traceback.
+  expected: >-
+    Exactly one JSON line on stdout, then exit=0 (no blocking red), exit=1 naming the blocking red and rule, or exit=2
+    with verdict unavailable when the reader or credentials are absent; never a traceback.
   expected_literals: []
-  fix_if: A traceback or a non-JSON line -> fix the CLI's input handling.
+  fix_if: A traceback or a second stdout line -> fix the CLI's input handling or the stdout redirect.
   hermetic: false
   graduation: not-applicable
 - step: 9
   phase: pre-deploy
-  action: The decision corpus, contracts, prose budgets and the rest of the fast tier pass.
+  action: The decision corpus, the generated Lambda projection, contracts, prose budgets and the rest of the fast tier pass.
   command: >-
     bin/venv-python -m scripts.decisions_index --check && bin/venv-python -m scripts.schema_to_field_semantics --check
     && bin/venv-python -m scripts.validate --pre
@@ -369,19 +414,28 @@ verification_plan:
     ids='rec-4441,rec-4442'); print(sorted((x['id'], x['status']) for x in r))"
   expected: Both ids listed with status open.
   expected_literals: []
-  fix_if: A rec is missing -> it was filed at planning; read the plan's followon_recs and re-check the ids.
+  fix_if: A rec is missing -> it was filed at planning; re-check the ids in followon_recs.
   hermetic: false
   graduation: not-applicable
 test_obligations:
 - source: scripts/ops_portal/ci_rca_schema.py
-  behavior: The track fields take only the two values; preventive_action is optional only for test_defect; is_track_a needs test_defect, no regression_of and workflow_tier CI; priority is High only then.
+  behavior: >-
+    The track fields take only the two values; preventive_action is optional only for test_defect; is_track_a needs
+    test_defect, no regression_of and workflow_tier CI; priority is High only then.
   verification_step: 1
-  test_selector: tests/ops_data_portal/test_ci_rca_schema.py::TestRepairTrack
-  red_green_expectation: red before (class absent), green after
-- source: scripts/ops_data_portal.py
-  behavior: file_rec writes the derived priority for context-carrying ci_rca writes; update_rec stamps the confirmed track with closure_fix_sha.
+  test_selector: tests/ops_data_portal/test_ci_rca_repair_track.py::TestRepairTrack
+  red_green_expectation: red before (file absent), green after
+- source: scripts/ops_portal/ci_rca_runtime.py
+  behavior: The cross-check stamps workflow_tier from the verified bundle, and nothing without one.
   verification_step: 2
-  test_selector: tests/ops_data_portal/test_rec_write.py::TestCiRcaPriorityDerivation
+  test_selector: tests/ops_data_portal/test_ci_rca_repair_track.py::TestWorkflowTierStamp
+  red_green_expectation: red before (file absent), green after
+- source: scripts/ops_data_portal.py
+  behavior: >-
+    file_rec strips caller-supplied portal keys and writes the derived priority for context-carrying ci_rca writes;
+    update_rec stamps the confirmed track with closure_fix_sha.
+  verification_step: 2
+  test_selector: tests/ops_data_portal/test_rec_write.py::TestCiRcaPortalDerivations
   red_green_expectation: red before (class absent), green after
 - source: scripts/ops_portal/closure_gate.py
   behavior: confirmed_repair_track reads test_defect only when every changed path is under tests/, and None when the sha is unresolvable.
@@ -389,50 +443,62 @@ test_obligations:
   test_selector: tests/ops_data_portal/test_closure_gate.py::TestConfirmedRepairTrack
   red_green_expectation: red before (class absent), green after
 - source: scripts/ops_portal/ci_rca_lifecycle.py
-  behavior: stamp_fixed_by_sha also stamps repair_track_confirmed.
+  behavior: correct_rec_context re-derives priority on a re-track, and stamp_fixed_by_sha stamps repair_track_confirmed.
   verification_step: 3
-  test_selector: tests/ops_data_portal/test_closure_gate.py::TestConfirmedRepairTrack
-  red_green_expectation: red before (class absent), green after
-- source: scripts/ops_portal/ci_rca_runtime.py
-  behavior: The cross-check stamps workflow_tier from the verified bundle and nothing without one.
-  verification_step: 2
-  test_selector: tests/ops_data_portal/test_ci_rca_runtime.py::TestWorkflowTierStamp
-  red_green_expectation: red before (class absent), green after
+  test_selector: tests/test_ci_rca_lifecycle_correct_rec_context.py::TestCorrectRecContext::test_retrack_rederives_priority
+  red_green_expectation: red before (node absent), green after
+- source: scripts/ci_rca/red_overlap.py
+  behavior: The ordered rules, including the bundled-red, SLO and Track A rules.
+  verification_step: 4
+  test_selector: tests/ci_rca/test_red_overlap.py::TestEvaluate
+  red_green_expectation: red before (file absent), green after
+- source: scripts/ci_rca/red_overlap.py
+  behavior: The fail-closed inputs, the single-line stdout, the exit codes and the contract-sourced SLO.
+  verification_step: 5
+  test_selector: tests/ci_rca/test_red_overlap.py::TestCli
+  red_green_expectation: red before (file absent), green after
+- source: docs/contracts/ci-rca-lifecycle.yaml
+  behavior: recovery_policy carries the values the code reads, the fast-lane procedure exists, and the track fields declare their enums.
+  verification_step: 6
+  test_selector: tests/ci_rca/test_recovery_policy_surfaces.py::TestContractPolicy
+  red_green_expectation: red before (file absent), green after
 - source: docs/contracts/ops_recommendations.yaml
   behavior: The priority derivation declares the ci_rca track rule and stays unrealized.
   verification_step: 6
   test_selector: tests/ci_rca/test_recovery_policy_surfaces.py::TestContractPolicy
   red_green_expectation: red before (file absent), green after
 - source: docs/contracts/implement-scope-boundary.yaml
-  behavior: The dispositions row note names the planless fast lane and its owning rec, with one residual row kept.
+  behavior: The dispositions row note names the planless fast lane and its owning rec, and the map keeps one residual row.
   verification_step: 6
   test_selector: tests/ci_rca/test_recovery_policy_surfaces.py::TestContractPolicy
   red_green_expectation: red before (file absent), green after
-- source: scripts/ci_rca/red_overlap.py
-  behavior: The ordered rules, the fail-closed inputs, the exit codes and the contract-sourced policy values.
-  verification_step: 4
-  test_selector: tests/ci_rca/test_red_overlap.py::TestEvaluate
-  red_green_expectation: red before (file absent), green after
-- source: docs/contracts/ci-rca-lifecycle.yaml
-  behavior: recovery_policy carries the values red_overlap reads, the fast-lane procedure exists, and the two track fields declare their enums.
+- source: docs/contracts/overseer-dispatch.yaml
+  behavior: never_overrides names the red_overlap verdict instead of an open critical rec.
   verification_step: 6
-  test_selector: tests/ci_rca/test_recovery_policy_surfaces.py::TestContractPolicy
+  test_selector: tests/ci_rca/test_recovery_policy_surfaces.py::TestProseSurfacesPointAtTheCheck
   red_green_expectation: red before (file absent), green after
+- source: docs/decisions-index.json
+  behavior: The generated index matches DECISIONS.md after Decision 224 lands.
+  verification_step: 9
+  command: bin/venv-python -m scripts.decisions_index --check
+  waiver_reason: >-
+    Generated by scripts.decisions_index --write and never hand-edited; validate_decisions_index_freshness (both
+    tiers) and step 9's --check fail on any drift from DECISIONS.md.
 - source: scripts/preflight/ci_rca_signals.py
   behavior: The HARD BLOCK render points at red_overlap and no longer says /plan cannot scope unrelated work.
   verification_step: 7
-  test_selector: tests/session/preflight/test_correlation.py
-  red_green_expectation: red before (the new assertions fail on the old wording), green after
+  test_selector: tests/session/preflight/test_correlation.py::TestRedOverlapPointer
+  red_green_expectation: red before (class absent), green after
 - source: .claude/agents/scheduled/ci-rca.md
   behavior: The agent records repair_track, files High for test_defect, and omits preventive_action for test_defect.
   verification_step: 7
-  test_selector: tests/test_ci_rca_prompt_contract.py
-  red_green_expectation: red before (the new tests fail on the old prompt), green after
+  test_selector: tests/test_ci_rca_prompt_contract.py::TestRepairTrackInstructions
+  red_green_expectation: red before (class absent), green after
 - source: scripts/executor/rec_write_guidance.py
   behavior: The ci_rca guidance names repair_track and the test_defect exemption for preventive_action.
   verification_step: 7
-  test_selector: tests/test_rec_write_guidance.py
-  red_green_expectation: red before (the new test fails on the old guidance), green after
+  test_selector: tests/test_rec_write_guidance.py::test_ci_rca_guidance_names_repair_track
+  red_green_expectation: red before (node absent), green after
 constraints:
 - >-
   Decision 55: the ci-rca agent still never fixes anything; priority, the confirmed track, and the overlap and SLO
@@ -457,11 +523,11 @@ constraints:
 - No rescue agents or workaround loops (Decision 55).
 context:
 - "Decision-scout verdict: FLAGS_FOUND (Decisions triaged: 175 of 175; Roadmap items intersected: 16; CONFLICT: 1; RELATED: 14). CITE: 72, 73, 217, 135, 215, 142, 177, 167, 128."
-- "gates: decision-scout=FLAGS_FOUND; plan-critique=CRITIQUE after N round(s)"
+- "gates: decision-scout=FLAGS_FOUND; plan-critique=REVISE (round 1: 10 findings, all fixed) -> pending"
 - >-
   Approval: Benjamin's "go" (2026-10-18, rec-4427 thread) covers writing this plan; the Decision text and the
   AGENTS.md bullet are always-ask (Decision ratification, public surface), so the build merge needs his word on the
-  text in this plan. SLO value: 4 hours, recommended and pending Benjamin's card answer in this thread; a different answer changes only recovery_policy.slo_hours and APPROVED_DECISION cl.4's number.
+  text in this plan. SLO value: 4 hours, Benjamin's card answer in this thread (2026-10-18, cmsg_012XgaFy8VaDQbxP5D8nC958K1DgEEAr4M6Tzr6WYeD7hU).
 - >-
   Evidence (verified 2026-10-18): 39 source=ci_rca recs since 2026-08-18, 38 Critical; 37 of 38 classified rows carry
   escape_class=no-edge, so a class tally on today's attribution would mark nearly every red recurring. That is why cl.5's
@@ -536,8 +602,8 @@ execution_steps:
      unsure reads as B. Code derives priority: High for an A diagnosis on a test-bearing workflow (the
      verified evidence bundle's CI tier) with no regression, otherwise Critical. When the fix lands,
      code stamps the confirmed track from the fix commit's diff; only that value is ever tallied.
-  2. **Fast lane for A**, an explicit exception to Decision 90's plan-then-implement flow. Whichever
-     session picks the red up opens a tests-only PR with no plan. It runs the failing tests, the fast
+  2. **Fast lane for A**, with no plan cycle (an exception to Decision 72's /plan consumption).
+     Whichever session picks the red up opens a tests-only PR. It runs the failing tests, the fast
      tier and the full tier (Decision 163), and code review disposes of every weakening candidate
      (Decision 181). An A rec owes no preventive_action. A repair needing non-test code is Track B.
   3. **The halt narrows to overlap**: Decision 217 cl.1, pulled forward by its red-window-growth
@@ -564,7 +630,7 @@ execution_steps:
   heavier PR tier or a merge queue (neither lowers recovery cost); automated revert.
 
   **Coverage (Decision 181 cl.2):** cl.1, cl.3 and cl.4 -- fast-tier tests named in the contract's
-  recovery_policy. cl.2's fast-lane eligibility and weakening dispositions on a planless PR are
+  recovery_policy; priority is re-derived on every ci_rca context write (file_rec, correct_rec_context). cl.2's fast-lane eligibility and weakening dispositions on a planless PR are
   instruction-enforced: residual, rec-4442. cl.5: rec-4441. cl.3 inherits the selector's misses
   (rec-4429).
 
@@ -590,15 +656,15 @@ execution_steps:
       description: "SIT/PROD promotion (Decision 73 cl.5) goes live: re-decide the entry."
   ```
 
-  **Related:** Decision 72, 73, 217, 55, 90, 135, 163, 181, 186, 210, 215.
+  **Related:** Decision 72, 73, 217, 55, 90, 135, 142, 163, 181, 186, 210, 215.
 - |-
   APPROVED_ANNOTATIONS (one line each; DATE = the build's merge date):
-  72: > **Amended by Decision 224 (DATE):** Priority is derived in code from the agent's repair_track: High for a tests-only repair, Critical otherwise and for every regression filing (Decision 224 cl.1). Consumption via /plan stands for Track B; a Track A repair takes the fast lane with no plan cycle (cl.2).
-  73: > **Amended by Decision 224 (DATE):** Clause 3's fixed priority="critical" becomes track-derived (High for a tests-only repair), and a manual revert PR is a permitted Track B corrective outside terraform/** and governed deploy paths (automated revert stays excluded). Clause 3's L6 pause and clause 4's plan-time block become the red_overlap overlap block; clause 4 as written now applies only to a red past its repair SLO. Clause 5's rec -> plan -> implement recovery stands for Track B, with Track A on the fast lane (Decision 224 cl.1-4). This supersedes the Decision 217 line above for clause 4.
+  72: > **Amended by Decision 224 (DATE):** Priority is derived in code from the agent's repair_track: High for a tests-only repair on a CI-tier workflow, Critical otherwise and for every regression filing (Decision 224 cl.1). Consumption via /plan stands for Track B; a Track A repair takes the fast lane with no plan cycle (cl.2).
+  73: > **Amended by Decision 224 (DATE):** Clause 3's fixed priority="critical" becomes track-derived (High for a tests-only repair on a CI-tier workflow), and a manual revert PR is a permitted Track B corrective outside terraform/** and governed deploy paths (automated revert stays excluded). Clause 3's L6 pause and clause 4's plan-time block become the red_overlap overlap block; clause 4 as written now applies only to a red past its repair SLO. Clause 5's rec -> plan -> implement recovery stands for Track B, with Track A on the fast lane (Decision 224 cl.1-4). This supersedes the Decision 217 line above for clause 4.
   217: > **Amended by Decision 224 (DATE):** Clause 1's overlap block is pulled forward to executor concurrency 1 by the red-window-growth condition (Decision 224 cl.3: rec-4427's 11.7-hour red window at about 11 merges a day), so the concurrency-raised trigger no longer gates clause 1; clauses 2-8 are unchanged.
 - |-
   APPROVED_AGENTS_BULLET (replaces the whole AGENTS.md Merge protocol bullet that starts "Post-merge full-tier failure on `main`"):
-  - **Post-merge full-tier failure on `main`**: ci-rca files a `source=ci_rca` rec. A tests-only repair takes the fast lane; any other fix goes through `/plan` or a manual revert PR -- never auto-revert, never an inline workaround (Decision 224; `ci-rca-lifecycle.yaml` recovery_policy).
+  - **Post-merge full-tier failure on `main`**: ci-rca files a `source=ci_rca` rec, `priority=critical` unless tests-only (High, fast lane); else `/plan` or a manual revert PR (forward-fix, never auto-revert; no inline workaround -- Decision 224, `ci-rca-lifecycle.yaml`).
 - |-
   APPROVED_CI_RCA_STEP4 (a new paragraph after Step 4's unobserved_steps paragraph; also add "repair_track": "<test_defect|product_regression>" to the JSON object after recurrence_class, and change the preventive_action line's comment to "<100-800 chars: systemic change that prevents recurrence; omit for test_defect>"):
   `repair_track` is your diagnosis of the repair: `test_defect` only when the evidence shows the merged product behaviour is right and the corrective changes nothing outside `tests/**` (a stale expected value, a missing test under a coverage floor); otherwise `product_regression`. When unsure, write `product_regression`. Omit `preventive_action` for `test_defect`: none is owed (Decision 224). For `product_regression` it stays required.
@@ -617,10 +683,11 @@ execution_steps:
   likely-resolved split today's HARD BLOCK honours); otherwise nothing is dropped (fail closed). (c)
   recovery_policy.slo_hours from docs/contracts/ci-rca-lifecycle.yaml via yaml.safe_load at call time; missing or not
   a positive int -> exit 2.
-  (d) Work paths: --plan PATH reads scope[].file with action Create -> "A", Modify -> "M", Delete -> "D"; --files
-  PATH... uses "M" for each.
+  (d) Work paths: --plan PATH reads scope[].file with action Create -> "A", Modify -> "M", Delete -> "D", and the
+  plan's bundled_recommendations; --files PATH... uses "M" for each and bundles nothing.
   evaluate(reds, work_entries, now, slo_hours, selector=derive_affected_tests) is pure and returns the verdict dict.
-  Per red, the first matching rule wins: (1) created_timestamp unparseable -> blocked "undeterminable"; age in hours
+  Per red, the first matching rule wins: (0) the red's id is in the plan's bundled_recommendations -> clear
+  "repairs_this_red" (the plan is that red's repair, so overlap is expected); (1) created_timestamp unparseable -> blocked "undeterminable"; age in hours
   >= slo_hours -> blocked "slo_breached", whatever the track or overlap. (2) is_track_a(context_v2_json)
   (scripts/ops_portal/ci_rca_schema.py) -> clear "track_a_in_slo". (3) red_files = {file} | {nodeid.split("::")[0] for each affected_nodeid}, empties dropped; empty
   -> blocked "undeterminable". (4) Run the selector over the work entries and over [("M", f) for f in red_files];
@@ -629,8 +696,10 @@ execution_steps:
   (sorted, at most 20). (6) Otherwise clear "disjoint". The overall verdict is "blocked" when any red is blocked, else
   "clear" (no reds -> clear).
   Output: one JSON object on stdout, {"verdict", "slo_hours", "reds": [{"id", "rule", "track", "age_hours",
-  "shared"}]}; exit 0 clear, 1 blocked, 2 unavailable. The reader client is constructed lazily and injectable for
-  tests (src.common.ducklake_reader_client.make_reader); no other network.
+  "shared"}]}; exit 0 clear, 1 blocked, 2 unavailable. stdout carries that one line only: the selector's own banners
+  (derive_affected_tests prints its cap and fallback notices) run under contextlib.redirect_stdout(sys.stderr). The
+  reader client is constructed lazily and injectable for tests (src.common.ducklake_reader_client.make_reader); no
+  other network.
 - |-
   APPROVED_RECOVERY_POLICY (a new top-level block in docs/contracts/ci-rca-lifecycle.yaml, after closure_obligation):
   # Decision 224: red-main recovery. The values code reads and their meaning live here; the
@@ -697,7 +766,9 @@ execution_steps:
     validate_weakening_dispositions reads plans only, rec-4442); (5) after the merge, close
     the rec by closure_dependency.manual_route with --closure-artifact pytest:<repaired node id> and
     --closure-fix-sha <merge sha>. If the repair needs a non-test file, stop: the red is Track B --
-    correct repair_track with correct_rec_context and plan it.
+    call correct_rec_context with context_updates {"repair_track": "product_regression",
+    "preventive_action": "<100-800 chars>"} (correct_rec_context re-derives priority, so the row
+    becomes Critical) and plan it.
 - |-
   APPROVED_PRIORITY_NOTE (docs/contracts/ops_recommendations.yaml, fields.priority.derivation.source_rules):
   source_rules:
@@ -729,10 +800,10 @@ execution_steps:
   (a `/plan` meets it at its Step 8); a non-zero exit halts dispatch -- never overridden, not even by proceed-with-notice.
 - |-
   APPROVED_PLANNING_BULLET (replaces the planning skill's Preflight Constraints "ci_rca_unresolved_recs non-empty" bullet):
-  - **`ci_rca_unresolved_recs` non-empty** -- **HARD BLOCK** at commitment time for overlapping work only (Decision 224): the Step 8 Related-Work Check runs `scripts.ci_rca.red_overlap`, which blocks work that overlaps a red, and every plan once a red is past its repair SLO. (Legacy: if the report only has `ci_rca_recs` and no `ci_rca_unresolved_recs`, treat all entries as HARD BLOCK.) Full triage surfacing and the SOFT PROMPT / HARD ALERT classification is `/orient`'s responsibility -- run `/orient` for the full ci-rca visibility layer.
+  - **`ci_rca_unresolved_recs` non-empty** -- **HARD BLOCK** at commitment time for overlapping work only (Decision 224): the Step 8 Related-Work Check always runs `scripts.ci_rca.red_overlap`, which blocks work that overlaps a red, and every plan once a red is past its repair SLO. (Legacy: if the report only has `ci_rca_recs` and no `ci_rca_unresolved_recs`, treat all entries as HARD BLOCK.) Full triage surfacing and the SOFT PROMPT / HARD ALERT classification is `/orient`'s responsibility -- run `/orient` for the full ci-rca visibility layer.
 - |-
   APPROVED_RELATED_WORK (replaces the Related-Work Check's opening paragraph; the three numbered conditions stay):
-  If `ci_rca_unresolved_recs` is non-empty when writing the PLAN file, run `bin/venv-python -m scripts.ci_rca.red_overlap --plan docs/plans/PLAN-{slug}.yaml` (Decision 224). Exit 0: proceed and record its verdict line in Context. Exit 1 or 2: confirm the plan satisfies at least one of the following conditions before committing. A plan failing all three must include a logged deferral rationale in its Context section; otherwise write is refused.
+  When writing the PLAN file, always run `bin/venv-python -m scripts.ci_rca.red_overlap --plan docs/plans/PLAN-{slug}.yaml` (Decision 224; it reads the live open reds, not the cached report). Exit 0: proceed and record its verdict line in Context. Exit 2 (unavailable): HARD BLOCK; proceed only if the human explicitly overrides (Decision 215). Exit 1: confirm the plan satisfies at least one of the following conditions before committing. A plan failing all three must include a logged deferral rationale in its Context section; otherwise write is refused.
 - >-
   Code: ci_rca_schema.py (fields, validator, derive_ci_rca_priority), closure_gate.py (confirmed_repair_track),
   ops_data_portal.py (file_rec priority, update_rec stamp), ci_rca_lifecycle.py (stamp_fixed_by_sha stamp),
