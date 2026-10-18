@@ -66,7 +66,17 @@ scope:
       aws_iam_policy_attachment, *_exclusive attachment set or managed_policy_arns whose policy is not an
       aws_iam_policy declared in a scanned file is a problem -- an AWS-managed ARN (arn:aws:iam::aws:policy/...)
       such as IAMReadOnlyAccess would grant the read quartet on both roles through the boundary's iam:Get*
-      ceiling; today the only attachment is the apply role's own reads policy, which is allowed. Planning census: on the unedited tree the only iam: Allows matching
+      ceiling; today the only attachment is the apply role's own reads policy, which is allowed.
+      POLICY SOURCES (fail closed): in the scanned files, every `policy =` on aws_iam_role_policy and
+      aws_iam_policy, every aws_iam_role inline_policy, and every source_policy_documents /
+      override_policy_documents element must resolve to a jsonencode literal, a local holding one, or a
+      data "aws_iam_policy_document" declared in a scanned file; anything else (a data "aws_iam_policy" such as
+      IAMReadOnlyAccess, a heredoc, file() or templatefile()) is a problem, and so is any `dynamic "statement"`
+      block. Planning census: every policy source in the scanned files is one of the allowed forms and no
+      dynamic statement exists (file() appears only for non-policy config values). APPLY ROLE UNIVERSE: any
+      aws_iam_role_policy, attachment or *_exclusive resource in ANY terraform/bootstrap file whose role is
+      aws_iam_role.github_ci_apply (or the literal name agent-platform-github-ci-apply), other than
+      aws_iam_role_policy.github_ci_apply and aws_iam_role_policy_attachment.github_ci_apply_reads, is a problem. Planning census: on the unedited tree the only iam: Allows matching
       either role are the five lines this plan removes. New class TestNoCIIamGrantOnPlatformRoles: the real tree has no leak. Red cases
       driving the real predicate on mutated text (Decision 187): PlatformDev re-added to
       IAMRoleMetadataWrite; PlatformAdmin added to bootstrap IAMRolesRead; PlatformDev added to oidc.tf
@@ -74,8 +84,11 @@ scope:
       file emptied (fail-closed). Negative control: a non-iam statement with Resource "*" is not flagged.
       HARDENING (fail closed; none of these shapes is in an iam: statement today, so no false positive):
       scalar Action or Resource strings as well as lists; Sid-less jsonencode statements; a `statement {}`
-      block with no effect counts as Allow (the provider default); a NotResource / not_resources or
-      NotAction / not_actions key in a statement carrying an iam: action is itself a problem; so is an iam:
+      block with no effect counts as Allow (the provider default); any Allow carrying NotAction / not_actions is a
+      problem whatever its list (NotAction = ["s3:*"] grants every iam: verb), and so is a NotResource /
+      not_resources key in a statement carrying an iam: action; actions are case-folded before the iam: test,
+      and an action pattern whose case-folded fnmatch covers an iam: verb ("*", "i*", "IAM:Get*") counts as
+      iam; so is an iam:
       statement whose Resource is not a string literal after substituting ${var.account_id} and
       ${var.aws_region}; role names match case-insensitively (IAM role names are case-insensitive,
       platform_security_alarms.tf). Reuse the existing parsers where they fit
@@ -83,15 +96,27 @@ scope:
       third. Extra red cases: scalar Resource naming PlatformDev; a Sid-less statement; an effect-less
       `statement {}`; a NotResource statement; a lower-case "platformdev"; an AWS-managed policy attachment on
       a CI role; one dialect made unparseable in oidc_ci_roles.tf while the file's other dialect still parses
-      (the per-dialect count must fail). The module names the five CI
+      (the per-dialect count must fail); IAMReadOnlyAccess composed into github_ci_planner's
+      source_policy_documents through a data "aws_iam_policy"; a heredoc JSON statement granting iam:GetRole on
+      role/PlatformDev; a dynamic "statement" block; NotAction = ["s3:*"] on an Allow; "IAM:GetRole" on
+      role/PlatformDev; a second inline policy on the apply role declared in terraform/bootstrap/main.tf. The module names the five CI
       policy files by path (its fail-closed list), which is what makes --pre select it (step 24). Module
-      docstring names Decision NNN. Stays well under 500 SLOC (88 today).
+      docstring names Decision NNN. The predicate and parsers live in the new helper module (next row); the test
+      module stays under 500 SLOC (88 today).
+  - file: tests/checks/iam_tf/_ci_platform_role_iam.py
+    action: Create
+    purpose: >-
+      Helper module (the _platform_security_hcl.py precedent) holding the pure predicate and its parsers, so the
+      test module stays under the 500-SLOC limit with about 18 red cases (Decision 128: decompose, never raise).
+      The test module keeps the scanned-file list as literal paths (that is what makes --pre select it, step 24)
+      and every assertion and red case; the helper holds only parsing and matching.
   - file: tests/checks/iam_tf/test_platform_iam_admin_root_only.py
     action: Modify
     purpose: >-
       Docstring only: its example of an unrelated mention ("a literal role ARN in oidc.tf's
-      IAMPlatformRolesRead") no longer exists; it becomes "a comment, such as oidc.tf's note that the two
-      roles are bootstrap-owned". KEEP an oidc.tf mention: it is the prose-mention edge that makes --pre
+      IAMPlatformRolesRead") no longer exists; the parenthetical "(a literal role ARN in oidc.tf's
+      IAMPlatformRolesRead, a comment, or a log/event pattern ...)" becomes "(a comment, such as oidc.tf's note
+      that the two roles are bootstrap-owned, or a log/event pattern ...)". KEEP an oidc.tf mention: it is the prose-mention edge that makes --pre
       select this Decision 223 guard for oidc.tf edits (step 24 asserts it). No code change.
   - file: docs/contracts/iam-simulate-fixture.yaml
     action: Modify
@@ -184,7 +209,7 @@ verification_plan:
     hermetic: true
     expected_literals: ["GUARDS SELECTED ON ALL FIVE"]
     graduation: waive
-    graduation_waiver_reason: A landing check of the --pre selection edges; the guard module's fail-closed file list (red-cased in step 1) is what keeps them, so a registry row would re-check the same edges.
+    graduation_waiver_reason: A landing check of the --pre selection edges. The five metadata-guard edges are kept by the guard module's literal file list (red-cased in step 1); the oidc.tf edge to the Decision 223 guard rests on a docstring mention nothing pins, and losing it only narrows --pre, which Decision 223's Coverage already scopes as when --pre selects it.
   - step: 2
     phase: pre-deploy
     action: no CI policy file names either platform role ARN (rec-4049's original text check, in a decidable form)
@@ -266,7 +291,7 @@ verification_plan:
     graduation_waiver_reason: validate --pre is the PR gate itself (Decision 73); a registry row would recurse (vp-red-before recursion_refusal).
   - step: 22
     phase: pre-deploy
-    action: full tier before commit and handoff (handoff_policy)
+    action: full tier on the committed, rebased, clean tree before push (handoff_policy; CLOSURE (c))
     command: bin/venv-python -m scripts.validate
     expected: exit 0
     fix_if: fix the named failure in scope; RCA per Decision 55; a timeout is blocked -- rerun from the start
@@ -531,6 +556,11 @@ test_obligations:
     verification_step: 1
     test_selector: tests/checks/iam_tf/test_platform_role_metadata_admin_scope.py::TestNoCIIamGrantOnPlatformRoles
     waiver_reason: The module is the verifier; its red cases drive the real predicate against mutated HCL (Decision 187), so a weakened predicate reddens a red case in step 1.
+  - source: tests/checks/iam_tf/_ci_platform_role_iam.py
+    behavior: The predicate parses both dialects, counts statements independently and flags every leak shape the red cases name.
+    verification_step: 1
+    test_selector: tests/checks/iam_tf/test_platform_role_metadata_admin_scope.py::TestNoCIIamGrantOnPlatformRoles
+    waiver_reason: The helper is the predicate the guard's red cases drive against mutated HCL (Decision 187); a weakened helper reddens a red case in step 1.
   - source: tests/checks/iam_tf/test_platform_iam_admin_root_only.py
     behavior: The docstring keeps the oidc.tf mention that makes --pre select this guard for oidc.tf edits; no code change.
     verification_step: 24
@@ -717,7 +747,17 @@ execution_steps:
       IAM grant on either role (Decision NNN)".
   - "Regenerate docs/decisions-index.json (bin/venv-python -m scripts.decisions_index --write)."
   - "rec-4049: call get_rec_write_guidance(), then update_rec its acceptance to step 1's command (the three pytest node ids) and run step 7. rec-3358: update_rec appends one context note -- 'Decision NNN (rec-4049): if this rec's bootstrap plan runs as a CI identity, add that identity's policies to tests/checks/iam_tf/test_platform_role_metadata_admin_scope.py's scan and grant its reads in its own plan' -- so the Decision's Coverage residual has its owner."
-  - "Run pre-deploy steps 1-7, 24 and 22 (full tier to exit 0); record the plan's weakening_dispositions for every candidate validate_weakening_candidates lists (the exact-set pin's rename and narrowing are planned-change, citing acceptance_criteria[0]); commit; open the PR with the ADMIN walk in its description; squash body carries `Resolves: rec-4049`."
+  - "Run pre-deploy steps 1-7 and 24 on the working tree; then record the plan's weakening_dispositions for every candidate validate_weakening_candidates lists (the exact-set pin's rename and narrowing are planned-change, citing acceptance_criteria[0])."
+  - >-
+    CLOSURE -- separate facts, in order (a)-(e) (implement skill Commit Flows; docs/contracts/git-ops.yaml
+    handoff_sequence), each reported on its own. (a) READINESS: bin/venv-python -m scripts.session.github_readiness
+    (unknown is never PASS). (b) Set implementation_declared to true, commit, git fetch origin main and git rebase
+    origin/main (STOP on conflict; re-check the next free Decision number and that the entry stays under 6,144 B
+    after the rebase). (c) VP step 22 (the full tier) on the committed, rebased, clean tree, then bin/venv-python -m
+    scripts.checks.validation_result --verify-head. (d) Write a scratchpad JSON holding exactly the
+    scripts.session.postflight_evidence.CATEGORIES keys, then bin/venv-python -m scripts.session.postflight
+    --evidence that file. (e) Push, open the PR with the ADMIN walk in its description and Resolves: rec-4049 in
+    the body, request Benjamin's review, subscribe to its activity.
   - "ADMIN: steps 9-12 against the CI-green head (PR_NUMBER, PR_HEAD_SHA); post the counts-only pre-merge comment, shape: 'PRE-MERGE GATE at <PR_HEAD_SHA>: bootstrap 0/2/0, removed IAMRoleMetadataWrite:PlatformDev, IAMRolesRead:PlatformDev, IAMRolesRead:PlatformAdmin, added 0; personal speculative 0/1/0 guard PASS; record green, nothing pending'. Code review PROCEED; merge on Benjamin's word in the thread (IAM and Decision text)."
   - "After merge: steps 13-14, then 15 (present), 16 only on Benjamin's word on the exact command, then 17-20, 23 and 21. Arm send_later for step 20 if no drift run has happened yet."
   - "If the session will end with step 16 not done (Benjamin unavailable, a STOP, a usage limit), first call get_rec_write_guidance() then file_rec a rec naming the pending human-directed bootstrap apply and steps 17-21 and 23 of this plan, so the live half has an owner after the trailer closes rec-4049; write RESUME.md in the project's rec-4049 folder."
