@@ -573,15 +573,14 @@ def test_sent_passes_record_the_producer_fingerprint(tmp_path: Path, monkeypatch
     assert _hook_state(tmp_path)["producer_changed"] is True, "sticky once a sent pass's fingerprint differs"
 
 
-def test_a_due_pass_schedules_the_check_and_counts_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_due_pass_schedules_the_check_and_counts_it(tmp_path: Path) -> None:
     write(tmp_path, make_files(records()))
     state(tmp_path).save_verify_state({"sent_passes": runner.verify_due.VERIFY_FIRST_SENT_PASS - 1, "settled_at": 1.0})
     before = time.time()
     result = run(tmp_path, Writer())
     held = _hook_state(tmp_path)
     assert result.diag["verify_due"] is True and held["sent_passes"] == runner.verify_due.VERIFY_FIRST_SENT_PASS
-    today = runner.verify_due.utc_day(before)
-    assert held["checks_by_day"] == {today: 1}
+    assert held["checks_by_day"] == {runner.verify_due.utc_day(before): 1}
     assert before <= held["scheduled_at"] <= time.time() and held["settled_at"] == 1.0
     assert held["next_attempt_at"] == pytest.approx(held["scheduled_at"] + runner.verify_due.VERIFY_GUARD_S)
     write(tmp_path, make_files(records(2)))
@@ -592,7 +591,5 @@ def test_a_not_due_pass_that_changes_nothing_does_not_rewrite_the_state(tmp_path
     write(tmp_path, make_files(records()))
     writer = Writer()
     run(tmp_path, writer)
-    st = state(tmp_path)
-    before = st.verify_file.stat().st_mtime_ns
-    assert run(tmp_path, writer).outcome == "no_rows"
-    assert st.verify_file.stat().st_mtime_ns == before
+    before = state(tmp_path).verify_file.stat().st_mtime_ns
+    assert run(tmp_path, writer).outcome == "no_rows" and state(tmp_path).verify_file.stat().st_mtime_ns == before

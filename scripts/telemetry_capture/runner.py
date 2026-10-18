@@ -291,8 +291,7 @@ def _locked_pass(
     rows = sum(len(rows) for _, rows in result.batches)
     record["rows"] = {table: len(rows) for table, rows in result.batches}
     if not rows:
-        if result.next_cursor is not None and _persist(state, result.next_cursor, root, loaded, diag):
-            _verify_hook(state, record, result.next_cursor, root, event, final, "no_rows")
+        _persist_and_hook(state, record, result.next_cursor, root, loaded, diag, (event, final, "no_rows"))
         return _finish(state, record, "no_rows", diag)
     conflict = "grain_conflict_after_cursor_loss" if loaded.status in (LOST, TAIL_MISMATCH) else "grain_conflict"
     sender: _Sender | None = None
@@ -313,9 +312,21 @@ def _locked_pass(
             record["halt"] = stop.halt
         return _finish(state, record, stop.outcome, diag)
     record["requests"] = sender.requests
-    if result.next_cursor is not None and _persist(state, result.next_cursor, root, loaded, diag):
-        _verify_hook(state, record, result.next_cursor, root, event, final, "sent")
+    _persist_and_hook(state, record, result.next_cursor, root, loaded, diag, (event, final, "sent"))
     return _finish(state, record, "sent", diag)
+
+
+def _persist_and_hook(
+    state: CaptureState,
+    record: dict[str, Any],
+    cursor: Any,
+    root: bytes,
+    loaded: Loaded,
+    diag: Counter,
+    pass_kind: tuple[str, bool, str],
+) -> None:
+    if cursor is not None and _persist(state, cursor, root, loaded, diag):
+        _verify_hook(state, record, cursor, root, *pass_kind)
 
 
 def _persist(state: CaptureState, cursor: Any, root: bytes, loaded: Loaded, diag: Counter) -> bool:
