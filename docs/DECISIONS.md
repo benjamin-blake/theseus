@@ -2,6 +2,56 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 227: Retired roadmap tier_items move to docs/ROADMAP-PLATFORM-ARCHIVE.yaml behind dependency-resolving stubs -- lifecycle archival, Decision 147's named valve (amends Decision 114 and Decision 147) (Decided)
+
+```yaml
+number: 227
+status: Decided
+decided_date: "2026-10-18"
+amends: [114, 147]
+significance:
+  value: numbered_decision
+  justification: >-
+    Durable, reversal-relevant change to the roadmap's storage shape: a second roadmap file, its size
+    authorization, and an amendment to Decision 114's single-file clause and Decision 147's single-file norm.
+    Not a contract note: docs/contracts/tier-item-lifecycle.yaml carries the archival walk, never the choice of
+    shape (Decision 176). Not amendment_forms: it amends two entries and authorizes a new path.
+```
+
+**Status:** Decided
+**Date:** 2026-10-18
+**Warehouse ID:** dec-227 (per Decision 84 backfill)
+
+**Problem:** docs/ROADMAP-PLATFORM.yaml sits inside the check_roadmap_regrowth escalation band below its Decision 114 ceiling, and Decision 147's compact form is already applied to every retired record, so it frees nothing more. Decision 147's reversal conditions and Decision 197 clause 8 leave two valves: lifecycle archival or a consciously-cited raise. The operator declined the raise.
+
+**Decision:**
+1. Archive. docs/ROADMAP-PLATFORM-ARCHIVE.yaml holds the full records of retired (status complete or reserved) tier_items, moved byte-for-byte out of docs/ROADMAP-PLATFORM.yaml. It is one file, never split per tier (Decision 197 clause 8). Candidate decisions and every non-retired item stay in the live file.
+2. Stubs. Each archived item keeps a stub in its original place in the live file: the record's own id, tier, name, depends_on, status and completed_at lines (intent instead of completed_at for a reserved item) plus `archived: true`. No id is removed or reordered, so the live file alone still resolves dependencies, eligibility and the tier-id set.
+3. One loader. scripts.platform_roadmap_state.load hydrates every stub from the archive before schema validation, so each RoadmapDocument consumer sees every record where it was. A stub that differs from its record, a record without a stub, or a stub without a record fails the load and validate_platform_roadmap. Raw readers of retired content hydrate through scripts.roadmap.roadmap_archive.
+4. Which and when. An item whose content a live test or registry record reads stays live, declared with its pin in docs/contracts/tier-item-lifecycle.yaml archival_exceptions (Decision 146's still-cited rule). Archival runs in operator-disposed waves or in the edit that retires an item, and un-archiving moves a record back to its stub's place, dropping the stub and the archive entry in the same edit. Archival itself is not enforced (residual, rec-4458).
+5. Size. docs/ROADMAP-PLATFORM-ARCHIVE.yaml defers in config/structural_size_budgets.yaml to validate_platform_roadmap, which applies the unchanged Decision 114 ceiling to each file on its own. This amends Decision 114's "retained as a single file" and Decision 147's single-file norm (point 4) for retired content only. The live file's ceiling is unchanged and no per-tier split is admitted.
+
+**Options considered:** A consciously-cited temporary raise (the Decision 145 precedent) -- declined by the operator. A third in-place trim into retired exit_criteria -- rejected: Decision 147's reversal clause forbids another ad hoc trim, and validate_platform_roadmap resolves those criteria for met_by and closes_criteria. A per-tier split -- forbidden (Decisions 114, 197 clause 8). Stubs with id and status only -- rejected: raw readers and agents would reassemble records, the N-file cost Decision 114 names. One-line flow stubs -- rejected: line-joining gameability (rec-3028).
+
+**Coverage (Decision 181 cl.2):** clauses 1-3 and 5 -- validate_platform_roadmap (stub and archive integrity, both ceilings, criterion (ii) over edited archive records) and check_roadmap_regrowth (archived records, a report-only observation); the archive's whole-file absence phrases -- the graduated roadmap-archive-absence-guards record; clause 4's pins -- archival_exceptions; clause 4's when and future absence guards -- advisory residuals, owner rec-4458.
+
+```yaml reversal-conditions
+decision: 227
+review_by: 2027-06-30
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: archived-records-reassembled
+    kind: manual
+    description: "Agents or checks keep needing retired records the stubs omit: re-decide the stub fields or archival itself."
+  - id: live-ceiling-breach-after-archival
+    kind: manual
+    description: "docs/ROADMAP-PLATFORM.yaml nears its ceiling again with retired content archived: the live non-retired set needs the structural fix (Decision 197's work-item migration)."
+```
+
+**Related:** Decisions 84, 86, 110, 114, 128, 136, 145, 146, 147, 149, 166, 176, 177, 181, 189, 197; rec-3960, rec-4131, rec-4458, rec-3028.
+
+---
+
 ## Decision 226: Red-main recovery is priced by repair track, halts only overlapping work, runs to an SLO, and owes a preventive only for a recurring class (amends Decisions 72, 73 and 217) (Decided)
 
 ```yaml
@@ -5389,6 +5439,8 @@ This Decision is the structural mechanism Decision 145's own reversal conditions
 
 [Amendment 2026-09-25: point 4's compact form is now staged at completion by docs/contracts/tier-item-lifecycle.yaml#completion_compaction, and PLAN-roadmap-terminal-compaction re-applied it (extended to resolved open_questions and closed known_gaps) after terminal regrowth re-consumed the headroom this Decision restored; this pass is norm re-application, the structural fix is overdue and owned by rec-3960.]
 
+> **Amended by Decision 227 (2026-10-18):** Point 4's single-file norm now holds for non-retired content only: lifecycle archival, this entry's first reversal valve, moves retired tier_items to docs/ROADMAP-PLATFORM-ARCHIVE.yaml behind dependency-resolving stubs. The compact form still applies to every retired record, in either file.
+
 ---
 
 ## Decision 146: DECISIONS.md is the canonical decision corpus, not an open-decisions-only file; fully-superseded entries move to the archive (retitles the stale "# Open Decisions" H1; reconciles the drifted archival policy to Decision-84-era reality) (Decided)
@@ -7415,6 +7467,8 @@ promote-prose-to-enum precedent this migration follows for OQ/KG), Decision 84 (
 ops_decisions authoring/sync authority), Decision 86 (extend the machine-parseable schema, not
 prose), Decision 93 (deferred_post_mvp fail-loud lifecycle-status precedent), Decision 110 (ratified
 CD.13 -- the agent-first structured-data exemplar this decision preserves).
+
+> **Amended by Decision 227 (2026-10-18):** "The file is retained as a single file" now holds for the live roadmap's non-retired content only: retired tier_items move to docs/ROADMAP-PLATFORM-ARCHIVE.yaml behind dependency-resolving stubs, and the 10,000-line ceiling applies to each file on its own. A per-tier split stays rejected.
 
 ---
 
