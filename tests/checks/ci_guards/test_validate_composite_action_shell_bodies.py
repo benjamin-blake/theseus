@@ -149,7 +149,7 @@ class TestR2TestCovers:
 
 
 class TestScanRepositoryRealTree:
-    """Against the LIVE repo tree -- the universe of output-declaring actions is exactly three."""
+    """Against the LIVE repo tree -- the universe of output-declaring actions is exactly four."""
 
     def test_known_r1_violators_present(self) -> None:
         scan = scan_repository()
