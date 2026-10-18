@@ -4,8 +4,8 @@ Strings only: nothing here runs SQL, reads a file or can raise at import. Placeh
 {idle_seconds}, {rules}, ...) are SQL text rendered server-side by src.common.ducklake_event_reads; every caller value reaches
 the statement as a bound named parameter ($session_id, $as_of, $part_from, $part_to, $meta_schema), never as text.
 
-One rule, one copy: the R4/R5 dedupe, the conflict report and the session/agent-run state rule are each written once here and
-shared by every verb that needs them (a named verb is a serving leaf and never calls another verb).
+One rule, one copy: the R4/R5 dedupe, the conflict report, the session/agent-run state rule and the root turn rule (SE-1..SE-3)
+are each written once here and shared by every verb that needs them (a named verb never calls another verb).
 """
 
 from __future__ import annotations
@@ -88,7 +88,8 @@ _IDLE = "epoch(CAST($as_of AS TIMESTAMPTZ)) - epoch(l.last_event_timestamp) > {i
 
 # Session and agent-run state, written once (telemetry_sessions.yaml state / duration_seconds; telemetry_agents.yaml duration).
 # ROOT: the latest lifecycle row (annotate excluded) by event_timestamp, source_ordinal (NULL first), close last on a tie, then
-# event_id; running unless it is a close, abandoned when not terminal and idle past the threshold.
+# event_id; the root state, outcome and duration are read through ROOT_TURN_CTES (SE-1..SE-3, Decision 224): a producer close
+# stands only while no turn opened after it, else the latest turn's close outcome, else running / abandoned by idleness.
 # SUB-AGENT: its agent-run pair.
 STATE_CTES = (
     "sess AS (SELECT session_id, max(parent_session_id) AS parent_session_id, max(project_id) AS project_id, "
@@ -120,22 +121,58 @@ STATE_CTES = (
     "ORDER BY opened_at DESC NULLS LAST, agent_run_id DESC) = 1)"
 )
 
+# SE-1..SE-3 (telemetry_sessions.yaml state / duration_seconds): the root turn evidence, composed only into the three
+# session-state verbs. Every ordering is event_timestamp, coalesce(source_ordinal, -1), event_id, latest last.
+_TURN_LATEST = (
+    "QUALIFY row_number() OVER (PARTITION BY {k}session_id ORDER BY {k}event_timestamp DESC, "
+    "coalesce({k}source_ordinal, -1) DESC, {k}event_id DESC) = 1"
+)
+ROOT_TURN_CTES = (
+    "t_open AS (SELECT session_id, observation_id, event_timestamp, coalesce(source_ordinal, -1) AS ord FROM o "
+    "WHERE observation_type = 'turn' AND event_kind = 'open' " + _TURN_LATEST.format(k="") + "), "
+    "t_close AS (SELECT c.session_id AS session_id, c.outcome AS outcome FROM o c JOIN t_open ON "
+    "t_open.session_id = c.session_id AND t_open.observation_id = c.observation_id "
+    "WHERE c.observation_type = 'turn' AND c.event_kind = 'close' " + _TURN_LATEST.format(k="c.") + "), "
+    "t_any AS (SELECT session_id, event_timestamp FROM o WHERE observation_type = 'turn' AND event_kind = 'close' "
+    + _TURN_LATEST.format(k="")
+    + "), "
+    "pc AS (SELECT session_id, event_timestamp, coalesce(source_ordinal, -1) AS ord FROM s WHERE event_kind = 'close' "
+    + _TURN_LATEST.format(k="")
+    + ")"
+)
+
+# The producer close stands only while no turn opened after it (not after: a tie keeps the close).
+_PRODUCER_CLOSE_STANDS = (
+    "(lc.event_kind = 'close' AND (t_open.session_id IS NULL OR t_open.event_timestamp < pc.event_timestamp "
+    "OR (t_open.event_timestamp = pc.event_timestamp AND t_open.ord <= pc.ord)))"
+)
+_TURN_AT_REST = "(t_close.session_id IS NOT NULL AND t_close.outcome IS NOT NULL)"
+_TURN_OUTCOME = (
+    "CASE t_close.outcome WHEN 'success' THEN 'success' WHEN 'error' THEN 'failed' WHEN 'interrupted' THEN 'cancelled' "
+    "WHEN 'blocked' THEN 'failed' END"
+)
+
 _STATE_SELECT = (
     "SELECT sess.session_id AS session_id, sess.parent_session_id AS parent_session_id, sess.project_id AS project_id, "
     "sess.session_started_at AS session_started_at, "
-    "CASE WHEN sess.parent_session_id IS NULL THEN CASE WHEN lc.event_kind = 'close' THEN lc.outcome "
+    f"CASE WHEN sess.parent_session_id IS NULL THEN CASE WHEN {_PRODUCER_CLOSE_STANDS} THEN lc.outcome "
+    f"WHEN {_TURN_AT_REST} AND {_IDLE} THEN {_TURN_OUTCOME} WHEN {_TURN_AT_REST} THEN 'running' "
     f"WHEN {_IDLE} THEN 'abandoned' ELSE 'running' END "
     f"WHEN child.session_id IS NULL THEN CASE WHEN {_IDLE} THEN 'abandoned' ELSE 'running' END "
     "ELSE child.state END AS state, "
-    "CASE WHEN sess.parent_session_id IS NULL THEN CASE WHEN lc.event_kind = 'close' THEN lc.outcome END "
+    f"CASE WHEN sess.parent_session_id IS NULL THEN CASE WHEN {_PRODUCER_CLOSE_STANDS} THEN lc.outcome "
+    f"WHEN {_TURN_AT_REST} AND {_IDLE} THEN {_TURN_OUTCOME} END "
     "ELSE child.run_outcome END AS outcome, "
-    "CASE WHEN sess.parent_session_id IS NULL THEN CASE WHEN cl.event_timestamp IS NOT NULL "
-    "THEN CAST(trunc(epoch(cl.event_timestamp) - epoch(sess.session_started_at)) AS BIGINT) END "
+    "CASE WHEN sess.parent_session_id IS NULL THEN CASE WHEN greatest(pc.event_timestamp, t_any.event_timestamp) IS NOT NULL "
+    "THEN CAST(trunc(epoch(greatest(pc.event_timestamp, t_any.event_timestamp)) - epoch(sess.session_started_at)) "
+    "AS BIGINT) END "
     "ELSE child.duration_seconds END AS duration_seconds, "
     "l.last_event_timestamp AS last_event_timestamp, CAST($as_of AS TIMESTAMPTZ) AS as_of, "
     "CAST({idle_seconds} AS BIGINT) AS idle_threshold_seconds, "
     f"{STAMPS_SELECT} "
-    "FROM sess LEFT JOIN lc ON lc.session_id = sess.session_id LEFT JOIN cl ON cl.session_id = sess.session_id "
+    "FROM sess LEFT JOIN lc ON lc.session_id = sess.session_id LEFT JOIN pc ON pc.session_id = sess.session_id "
+    "LEFT JOIN t_open ON t_open.session_id = sess.session_id LEFT JOIN t_close ON t_close.session_id = sess.session_id "
+    "LEFT JOIN t_any ON t_any.session_id = sess.session_id "
     "LEFT JOIN last_ev l ON l.session_id = sess.session_id LEFT JOIN child ON child.session_id = sess.session_id "
     + STAMPS_JOIN.format(sid="sess.session_id")
 )
@@ -143,16 +180,18 @@ _STATE_SELECT = (
 _ALL_TABLES = (SESSIONS, OBSERVATIONS, AGENTS, TRANSCRIPTS)
 _ORDER_WINDOW = " ORDER BY sess.session_started_at, sess.session_id"
 
-SESSION_STATE_SQL = compose(_ALL_TABLES, STATE_CTES + " " + _STATE_SELECT + _ORDER_WINDOW)
+_ROOT_STATE_CTES = STATE_CTES + ", " + ROOT_TURN_CTES
+
+SESSION_STATE_SQL = compose(_ALL_TABLES, _ROOT_STATE_CTES + " " + _STATE_SELECT + _ORDER_WINDOW)
 
 # A window answers root sessions only; the real-purpose variant excludes drill and synthetic projects structurally (a join on
 # the shared project purpose marker), not through an opt-in parameter.
 SESSIONS_WINDOW_ALL_SQL = compose(
-    _ALL_TABLES, STATE_CTES + " " + _STATE_SELECT + " WHERE sess.parent_session_id IS NULL" + _ORDER_WINDOW
+    _ALL_TABLES, _ROOT_STATE_CTES + " " + _STATE_SELECT + " WHERE sess.parent_session_id IS NULL" + _ORDER_WINDOW
 )
 SESSIONS_WINDOW_SQL = compose(
     _ALL_TABLES,
-    STATE_CTES
+    _ROOT_STATE_CTES
     + " "
     + _STATE_SELECT
     + " WHERE sess.parent_session_id IS NULL AND sess.project_id IN (SELECT project_id FROM {projects} WHERE purpose = 'real')"

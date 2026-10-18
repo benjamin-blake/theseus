@@ -506,3 +506,10 @@ def test_capture_provenance_and_usage_columns_are_nullable_and_ruled() -> None:
         entries = [e for e in raw["amendment_log"] if "PLAN-telemetry-column-additions" in e["summary"]]
         assert len(entries) == 1 and entries[0]["semantic_break"] is False, table
         assert entries[0]["change_class"] == "field_add" and entries[0]["migration_story"], table
+
+
+def test_duration_seconds_declares_truncation_toward_zero() -> None:
+    for name in ("telemetry_sessions", "telemetry_agents"):
+        field = _resolved(name)["duration_seconds"]
+        assert "truncate toward zero to whole seconds" in _norm(field.derivation["formula"]), name
+        assert "truncated toward zero to whole seconds" in _norm(field.semantics), name
