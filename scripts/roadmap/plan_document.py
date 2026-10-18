@@ -202,6 +202,17 @@ class FallbackReevaluation(BaseModel):
         return v
 
 
+_WEAKENING_CANDIDATE_RE = re.compile(r"^\[[a-z-]+\] \S+::\S+$")
+
+
+class WeakeningDisposition(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    candidate: str = Field(pattern=_WEAKENING_CANDIDATE_RE.pattern)
+    disposition: Literal["refactor", "planned-change", "retirement", "growth-safe-pin", "owned-skip", "weakening"]
+    cite: str = Field(min_length=1)
+
+
 class PlanDocument(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -230,6 +241,7 @@ class PlanDocument(BaseModel):
     handoff_policy: HandoffPolicy | None = None
     fallback_reevaluation: FallbackReevaluation | None = None
     implementation_declared: bool = False
+    weakening_dispositions: list[WeakeningDisposition] = Field(default_factory=list)
 
     @field_validator("schema_version")
     @classmethod

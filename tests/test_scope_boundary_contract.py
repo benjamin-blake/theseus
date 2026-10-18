@@ -13,6 +13,7 @@ deviation trigger branch (b)).
 from __future__ import annotations
 
 import re
+import typing
 from pathlib import Path
 from typing import Any
 
@@ -20,11 +21,13 @@ import yaml
 
 from scripts.checks.verification import validate_scope_boundary as _check_module
 from scripts.decisions_md import iter_decision_sections
+from scripts.roadmap.plan_document import WeakeningDisposition
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CONTRACT_PATH = REPO_ROOT / "docs" / "contracts" / "implement-scope-boundary.yaml"
 AGENTS_PATH = REPO_ROOT / "AGENTS.md"
 SKILL_PATH = REPO_ROOT / ".claude" / "skills" / "implement" / "SKILL.md"
+CODE_REVIEW_SKILL_PATH = REPO_ROOT / ".claude" / "skills" / "code-review" / "SKILL.md"
 FILE_ROUTER_PATH = REPO_ROOT / "docs" / "contracts" / "file-router.yaml"
 DECISIONS_PATH = REPO_ROOT / "docs" / "DECISIONS.md"
 
@@ -229,6 +232,27 @@ class TestProseSurfacesPointAtContract:
         for token in ("file_rec", "ops_data_portal", "--file-rec"):
             assert token not in section
 
+    def test_code_review_skill_requires_weakening_dispositions(self) -> None:
+        """PLAN-test-weakening-surfacing: the Testing section's Weakening candidates bullet and
+        the Output Format's Weakening Dispositions section, asserted on the bullet alone (since
+        "High" already appears elsewhere in the Testing section)."""
+        text = CODE_REVIEW_SKILL_PATH.read_text(encoding="utf-8")
+        i = text.find("### 3. Testing")
+        assert i >= 0
+        section = re.split(r"\n#{2,3} ", text[i:], maxsplit=1)[0]
+        bullet_match = re.search(r"- \*\*Weakening candidates\*\*.*?(?=\n- |\Z)", section, re.DOTALL)
+        assert bullet_match, "the Weakening candidates bullet is missing from the Testing section"
+        bullet = bullet_match.group(0)
+        assert "scripts.checks.verification.validate_weakening_candidates" in bullet
+        assert "review_dispositions" in bullet
+        assert "High" in bullet
+
+        output_format_idx = text.find("### Test Completeness")
+        assert output_format_idx >= 0
+        tail = text[output_format_idx:]
+        assert "### Weakening Dispositions" in tail
+        assert "weakening_dispositions" in tail
+
 
 class TestFileRouterRegistration:
     def test_route_topic_equals_subject(self) -> None:
@@ -286,3 +310,72 @@ class TestTriSurfaceStopDispositionIdentity:
 
     def test_check_module_failure_guidance_carries_same_disposition(self) -> None:
         assert _check_module._STOP_DISPOSITION == _STOP_DISPOSITION
+
+
+class TestWeakeningSurfacingContract:
+    """PLAN-test-weakening-surfacing (rec-3357, Decision 181 point 2): the two new MECHANICAL
+    rows, the narrowed rec-4413 residual, review_dispositions, the plan-schema Literal pin, and
+    permitted_field_edits."""
+
+    def test_added_skip_row_is_mechanical(self) -> None:
+        doc = _load_contract()
+        rows = doc["invariants"]["content"]["enforcement_coverage"]
+        row = next(r for r in rows if r.get("enforced_by") == "validate_test_skip_citations")
+        assert row["status"] == "mechanical"
+
+    def test_recorded_disposition_row_is_mechanical(self) -> None:
+        doc = _load_contract()
+        rows = doc["invariants"]["content"]["enforcement_coverage"]
+        row = next(r for r in rows if r.get("enforced_by") == "validate_weakening_dispositions")
+        assert row["status"] == "mechanical"
+
+    def test_single_residual_row_owned_by_rec_4413(self) -> None:
+        doc = _load_contract()
+        rows = doc["invariants"]["content"]["enforcement_coverage"]
+        residual_rows = [r for r in rows if r.get("status") != "mechanical"]
+        assert len(residual_rows) == 1
+        residual = residual_rows[0]
+        assert residual["residual_owner"] == "rec-4413"
+        note = residual["note"]
+        assert "DOMINANT" in note
+        assert "validate_weakening_candidates" in note
+        assert "validate_weakening_dispositions" in note
+        assert "test-oracle" in note
+        assert "review_dispositions" in note
+
+    def test_review_dispositions_has_exactly_six_keys_with_cite_forms(self) -> None:
+        doc = _load_contract()
+        review_dispositions = doc["invariants"]["content"]["review_dispositions"]
+        assert set(review_dispositions) == {
+            "refactor",
+            "planned-change",
+            "retirement",
+            "growth-safe-pin",
+            "owned-skip",
+            "weakening",
+        }
+        for key in ("refactor", "planned-change", "retirement", "growth-safe-pin", "owned-skip"):
+            assert "cite" in review_dispositions[key].lower()
+
+    def test_permitted_field_edits_includes_weakening_dispositions(self) -> None:
+        doc = _load_contract()
+        row = doc["sanction_rows"]["implementing_plan_bookkeeping"]
+        assert "weakening_dispositions" in row["permitted_field_edits"]
+
+    def test_plan_schema_literal_equals_contract_keys(self) -> None:
+        doc = _load_contract()
+        contract_keys = set(doc["invariants"]["content"]["review_dispositions"])
+        annotation = WeakeningDisposition.model_fields["disposition"].annotation
+        literal_values = set(typing.get_args(annotation))
+        assert literal_values == contract_keys
+
+    def test_ineligible_cites_rec_4413_and_still_rec_3357(self) -> None:
+        doc = _load_contract()
+        ineligible = doc["sanction_row_eligibility"]["ineligible"]
+        assert "rec-4413" in ineligible
+        assert "rec-3357" in ineligible
+
+    def test_exactly_one_amendment_log_entry_names_this_plan(self) -> None:
+        doc = _load_contract()
+        entries = [e for e in doc["amendment_log"] if "test-weakening-surfacing" in (e.get("summary") or "")]
+        assert len(entries) == 1
