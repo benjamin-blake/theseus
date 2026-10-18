@@ -158,21 +158,24 @@ class TestNoCIIamGrantOnPlatformRoles:
 
     def test_platformdev_readded_to_iam_role_metadata_write_is_detected(self) -> None:
         texts = dict(_scanned_texts())
-        texts["terraform/bootstrap/github_ci_apply_policy.tf"] = texts[
-            "terraform/bootstrap/github_ci_apply_policy.tf"
-        ].replace(
-            'Resource = [\n          "arn:aws:iam::${var.account_id}:role/agent-platform-*",\n        ]\n      },\n      {\n        # In-budget CreateRole',
-            'Resource = [\n          "arn:aws:iam::${var.account_id}:role/agent-platform-*",\n          "arn:aws:iam::${var.account_id}:role/PlatformDev",\n        ]\n      },\n      {\n        # In-budget CreateRole',
-            1,
+        policy_file = "terraform/bootstrap/github_ci_apply_policy.tf"
+        old = (
+            'Resource = [\n          "arn:aws:iam::${var.account_id}:role/agent-platform-*",\n'
+            "        ]\n      },\n      {\n        # In-budget CreateRole"
         )
+        new = (
+            'Resource = [\n          "arn:aws:iam::${var.account_id}:role/agent-platform-*",\n'
+            '          "arn:aws:iam::${var.account_id}:role/PlatformDev",\n'
+            "        ]\n      },\n      {\n        # In-budget CreateRole"
+        )
+        texts[policy_file] = texts[policy_file].replace(old, new, 1)
         leaks = ci_platform_role_iam_leaks(texts)
         assert any(role == "PlatformDev" for _, _, role in leaks)
 
     def test_platformadmin_added_to_bootstrap_iamrolesread_is_detected(self) -> None:
         texts = dict(_scanned_texts())
-        texts["terraform/bootstrap/github_ci_apply_reads.tf"] = texts[
-            "terraform/bootstrap/github_ci_apply_reads.tf"
-        ].replace(
+        reads_file = "terraform/bootstrap/github_ci_apply_reads.tf"
+        texts[reads_file] = texts[reads_file].replace(
             '"arn:aws:iam::${var.account_id}:role/agent-platform-github-ci-deploy",\n',
             '"arn:aws:iam::${var.account_id}:role/agent-platform-github-ci-deploy",\n'
             '          "arn:aws:iam::${var.account_id}:role/PlatformAdmin",\n',

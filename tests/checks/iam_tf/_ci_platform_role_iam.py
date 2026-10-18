@@ -103,7 +103,12 @@ def _parse_jsonencode_statement(block: str) -> _Statement:
     s.sid = sm.group(1) if sm is not None else None
     em = re.search(r'Effect\s*=\s*"([^"]*)"', stripped)
     s.effect = em.group(1) if em is not None else "Allow"
-    for attr, target in (("Action", "actions"), ("NotAction", "not_actions"), ("Resource", "resources"), ("NotResource", "not_resources")):
+    for attr, target in (
+        ("Action", "actions"),
+        ("NotAction", "not_actions"),
+        ("Resource", "resources"),
+        ("NotResource", "not_resources"),
+    ):
         am = re.search(rf"{attr}\s*=\s*(\[(?:[^][]|\[[^]]*\])*\]|\"(?:[^\"\\\\]|\\\\.)*\")", stripped, re.S)
         if am is not None:
             setattr(s, target, _list_or_scalar(am.group(1)))
@@ -186,9 +191,9 @@ def statement_leaks(stmt: _Statement) -> list[str]:
     if stmt.not_resources:
         # Any NotResource on an iam-granting Allow is itself the leak shape -- it cannot be
         # proven to exclude either platform role.
-        return [n for n in _PLATFORM_ROLE_NAMES]
+        return list(_PLATFORM_ROLE_NAMES)
     if stmt.resources_unresolved:
-        return [n for n in _PLATFORM_ROLE_NAMES]
+        return list(_PLATFORM_ROLE_NAMES)
     hits: list[str] = []
     for role_name in _PLATFORM_ROLE_NAMES:
         for pattern in stmt.resources:
