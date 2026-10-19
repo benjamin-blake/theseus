@@ -29,8 +29,9 @@ scope:
     the deadline fault without calling call(); otherwise a daemon threading.Timer(fire_after) callback sets a fired flag,
     calls on_fire(), then calls con.interrupt() again every RESEND_INTERVAL_S until a done Event is set (DuckDB 1.5.4
     drops an interrupt that arrives before execution starts and honours one only between tasks, so a single send can be
-    lost; verified at plan critique). The done Event is set, then the timer cancelled, in a finally on every path
-    (Lambda freezes threads between invocations). An exception from call() whose class is InterruptException (module
+    lost; verified at plan critique), checking the done Event immediately before each send. The done Event is set, the
+    timer cancelled and joined (timeout 2 * RESEND_INTERVAL_S) in a finally on every path, so no callback thread
+    outlives the call into the next invocation (Lambda freezes threads between invocations). An exception from call() whose class is InterruptException (module
     _duckdb or duckdb, matched by name like the handler's caller-input classes) is raised as TypedFault(504,
     READ_DEADLINE_ERROR_TYPE, "reader_deadline") from it only when the flag is set; any other exception, and an
     InterruptException without the flag, propagates unchanged. runner(remaining_ms, caller_ms, on_fire) returns a
@@ -110,7 +111,7 @@ scope:
   purpose: >-
     Mirror test of the new module, with fake connections whose execute blocks until interrupt() is called:
     test_deadline_interrupts_and_answers_typed_504 (TypedFault 504, error_type and reason, on_fire called, timer
-    cancelled and the done Event set), test_interrupt_is_resent_until_the_call_returns (a fake that ignores every
+    cancelled, the done Event set and the timer thread no longer alive when run returns), test_interrupt_is_resent_until_the_call_returns (a fake that ignores every
     interrupt sent before its execute starts still answers the 504), test_spent_deadline_answers_504_without_running_the_call,
     test_runner_reads_remaining_time_when_invoked (a remaining-time callable that falls between building the runner and
     invoking it), test_unflagged_interrupt_is_not_a_deadline, test_other_errors_pass_through_and_cancel_the_timer,
@@ -169,8 +170,9 @@ infrastructure_dependencies:
   (step 8 proves it), so the new 504 is unreachable there; it takes the client change at its next governed deploy.
 acceptance_criteria:
 - >-
-  The telemetry slot runs DuckDB at 8 threads with serial catalog scans; open_connection and the ops slot keep 1 thread
-  (VP 2).
+  The telemetry slot runs DuckDB at 8 threads with serial catalog scans (VP 2, VP 3); open_connection and the ops slot
+  keep 1 thread (the existing SET threads=1 nodes in tests/common/test_ducklake_runtime.py, unchanged, in the tiers VP
+  10 runs).
 - >-
   An event-journal read still running at the deadline is interrupted (re-sent until it lands) and answers 504
   read_deadline_exceeded through the handler; a deadline already spent answers 504 without running the query; an
@@ -556,20 +558,20 @@ context:
   and step 8; NOTE 88 reopen discipline: constraint 3; SPIRIT 155: the deadline is scoped to event verbs). CITE 55, 155,
   125/126, 128, 199. RELATED 143, 191, 107, 82, 84, 215, 214, 140, 118, 212, 163/189, 99. Decisions triaged: 180 of 180.
   Roadmap items intersected: 7; CONFLICT: 0; RELATED: 7. Report: /mnt/project-files/telemetry-read-latency/decision-scout-report.md.
-- 'gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)'
+- >-
+  gates: decision-scout=FLAGS_FOUND; plan-critique=PROCEED after 3 round(s) (r1 and r2 REVISE, every finding fixed; r3
+  PROCEED, its optional notes N1-N4 folded in: timer join, AC 1's ops-side evidence, the rec-4474 note prefix; N2 is
+  the existing decompose rule)
 - 'Related-work check: scripts.ci_rca.red_overlap verdict clear (no open red, SLO 4 h) at plan time.'
 - >-
   Direction: Benjamin's "write the plan" (cmsg_012XgaFy8VaDQbxP5D8nC958RMEmw3SWgD5fQMSU5zBGYv) confirmed the Step 6b
   presentation (/mnt/project-files/telemetry-read-latency/step6b-presentation.md) and its decided-with-notice forks.
 - >-
-  Evidence: /mnt/project-files/telemetry-read-latency/FINDINGS.md (cold cost about 0.135 s per file, 120 s holds about
-  850 cold files; local threads 1 vs 8: 40.7 s vs 7.9 s) and the reader log of 2026-10-19 (a timeout reset the
-  container: the next request's connect_ms 11,170, connect_reused false). Independent review:
-  /mnt/project-files/telemetry-read-latency/ADVICE.md.
+  Evidence: /mnt/project-files/telemetry-read-latency/FINDINGS.md (about 0.135 s per cold file; threads 1 vs 8 locally
+  40.7 s vs 7.9 s), the 2026-10-19 reader log (a timeout reset the container) and ADVICE.md (Fable review).
 - >-
-  DuckDB 1.5.4 interrupt facts (plan critique round 1): an interrupt sent before execution starts is dropped, and one
-  sent during bind or planning lands only when they finish; hence the re-send loop, the spent-deadline short circuit,
-  and step 13's late_ms readout as the evidence for the 10 s margin.
+  DuckDB 1.5.4 drops an interrupt sent before execution starts and holds one sent during bind or planning (critique
+  round 1): hence the re-send loop, the spent-deadline short circuit and step 13's late_ms readout.
 - >-
   Decision 199 cl.1 reversal derived-read-too-costly: the timeout comes from file fan-out on uncompacted tables, not
   derivation cost (old and new SQL compute in about 1.2 s locally); step 12's numbers are the evidence either way.
@@ -579,9 +581,8 @@ context:
   (scripts/telemetry_verify/monitor.py) counts any non-413 failure, this 504 included, as a transient unread day; that
   stays as is.
 - >-
-  rec-2879 was re-grounded at planning time (its acceptance named the renamed src/common/iceberg_reader.py and passed
-  vacuously): acceptance now runs step 7's command; its file field stays stale because the portal cannot update it
-  (rec-3047).
+  rec-2879's acceptance was re-grounded at planning time to step 7's command (it named the renamed iceberg_reader.py
+  and passed vacuously); its file field stays stale (the portal cannot update it, rec-3047).
 - >-
   Overlap: slice 2c planning (rec-4292) may later move event verbs to a separate telemetry reader; this plan's
   deadline module is reader-agnostic so it moves with them. If a 2c build touching ducklake_event_reads.py merges
@@ -620,6 +621,7 @@ execution_steps:
   the standing rule once code review is PROCEED and CI is green, only after the coordinator clears the DuckLake deploy
   slot (one deploy at a time); squash with "Resolves: rec-2879" in the commit body (Decision 201).
 - >-
-  Post-deploy: steps 11-13; append (never replace) a dated note with the step 12 and 13 lines to rec-4474's existing
-  context through the portal (read it, then --update-rec with the old context plus the note), then step 14.
+  Post-deploy: steps 11-13; append (never replace) a note prefixed "[<build day> PLAN-telemetry-cold-read-deadline]"
+  with the step 12 and 13 lines to rec-4474's existing context through the portal (read it, then --update-rec with the
+  old context plus the note), then step 14.
 - 'Report: what was implemented, verification results, the measured cold numbers'
