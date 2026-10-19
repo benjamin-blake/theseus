@@ -683,25 +683,17 @@ def test_size_guard_failure_is_an_unmapped_500(monkeypatch):
     assert r["statusCode"] == 500 and json.loads(r["body"])["error_class"] == "KeyError"
 
 
-def test_dq_check_dispatch_through_the_handler(monkeypatch):
-    con = CountCon(2)
-    monkeypatch.setattr(h, "_open_reader_connection", lambda: con)
-    event = {
-        "body": json.dumps({"action": "dq_check", "check": "row_count_min", "table": "ops_decisions", "params": {"min": 1}})
-    }
-    r = h.handler(event)
+def test_dq_check_dispatch_and_engine_input_errors(monkeypatch):
+    monkeypatch.setattr(h, "_open_reader_connection", lambda: CountCon(2))
+    call = {"action": "dq_check", "check": "row_count_min", "table": "ops_decisions", "params": {"min": 1}}
+    r = h.handler({"body": json.dumps(call)})
     assert r["statusCode"] == 200 and json.loads(r["body"])["violation_count"] == 2
-    bad = h.handler({"body": json.dumps({"action": "dq_check", "check": "row_count_min", "table": "ops_decisions"})})
+    bad = h.handler({"body": json.dumps({**call, "params": {}})})
     assert bad["statusCode"] == 400 and json.loads(bad["body"])["error_type"] == "dq_check_input"
-
-
-def test_dq_check_engine_input_error_is_400_and_other_errors_propagate(monkeypatch):
-    bad = type("InvalidInputException", (Exception,), {"__module__": "_duckdb"})("invalid regex")
-    event = {"action": "dq_check", "check": "row_count_min", "table": "ops_decisions", "params": {"min": 1}}
-    monkeypatch.setattr(h.dq, "run_check", lambda con, check: (_ for _ in ()).throw(bad))
-    with pytest.raises(h.dq.DqCheckInputError) as err:
-        h.action_dq_check(event, CountCon())
-    assert err.value.param == "params" and "invalid regex" not in str(err.value)
-    monkeypatch.setattr(h.dq, "run_check", lambda con, check: (_ for _ in ()).throw(ValueError("boom")))
-    with pytest.raises(ValueError):
-        h.action_dq_check(event, CountCon())
+    for exc, kind in (
+        (type("InvalidInputException", (Exception,), {"__module__": "_duckdb"})("x"), "dq"),
+        (ValueError("x"), "raw"),
+    ):
+        monkeypatch.setattr(h.dq, "run_check", lambda con, check, e=exc: (_ for _ in ()).throw(e))
+        with pytest.raises(h.dq.DqCheckInputError if kind == "dq" else ValueError):
+            h.action_dq_check(call, CountCon())

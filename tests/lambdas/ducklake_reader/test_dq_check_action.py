@@ -50,7 +50,12 @@ def test_refused_dq_check_is_400_before_any_connection(monkeypatch: pytest.Monke
     monkeypatch.setattr(h, "_open_reader_connection", lambda: opened.append(1) or CountCon())
     refused_marker = "REFUSED-VALUE-9f2"
     status, body = _call(
-        {"action": "dq_check", "check": "pattern", "table": "ops_recommendations", "params": {"column": refused_marker, "value": "x"}}
+        {
+            "action": "dq_check",
+            "check": "pattern",
+            "table": "ops_recommendations",
+            "params": {"column": refused_marker, "value": "x"},
+        }
     )
     assert status == 400 and body["error_type"] == "dq_check_input"
     assert body["check"] == "pattern" and body["param"] == "column"

@@ -245,7 +245,7 @@ def validate(payload: dict[str, Any]) -> ValidatedCheck:
     history_only = kind == "unique" and normalised["projection"] == "history"
     if not history_only and table_spec.current_table is None:
         raise DqCheckInputError(kind, "table", "has no current projection")
-    return ValidatedCheck(kind, table, normalised)
+    return ValidatedCheck(kind, str(table), normalised)
 
 
 def row_predicate(kind: str, table: str, column: str, params: dict[str, Any]) -> tuple[str, list[Any]]:
