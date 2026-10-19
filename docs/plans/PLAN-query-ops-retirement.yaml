@@ -23,7 +23,7 @@ scope:
       PR A. Reader-only module (imported by the reader handler alone; never re-exported by the ducklake_runtime facade, so
       no other bundle gains a file). A DQ_KINDS registry of twelve check kinds: row_count_min, recency_hours, not_null,
       accepted_values, min_length, pattern, array_element_format, not_before, min_value, unique (columns list, projection
-      current|history), history_not_ahead_of_current, key_absent. Each kind owns its SQL template and returns one integer
+      current|history, exclude_before applied before grouping as today), history_not_ahead_of_current, key_absent. Each kind owns its SQL template and returns one integer
       violation count, never row data. The seven row-level kinds (not_null, accepted_values, min_length, pattern,
       array_element_format, not_before, min_value) build their WHERE clause through one public row_predicate(kind, table,
       column, params) returning (sql_fragment, binds), so the count template and the real-DuckLake integration test share
@@ -86,7 +86,9 @@ scope:
     purpose: >-
       PR A. Coverage-mapped home of the new module (no duckdb; a fake connection): every kind renders exactly one
       statement whose values are binds; refusals name the parameter and run no SQL; refused tables match the generic-read
-      refusal set; check_version moves with the template only; test_whitespace_class_equals_isspace proves the class
+      refusal set; check_version moves with the template only; test_contracts_name_every_kind (every DQ_KINDS key appears in the reader
+      contract's verbs.dq_check payload_schema_ref and in read-engine.yaml's read_surface.dq_check, and no other kind does);
+      test_whitespace_class_equals_isspace proves the class
       equals str.isspace over every code point (the successor of the census's exhaustive proof). 100% coverage of the
       module.
   - file: tests/test_ducklake_dq_checks_duckdb.py
@@ -99,16 +101,15 @@ scope:
       null-element and empty arrays, the minimum lengths 1/10/80 and the date-gated counts) against
       src/row_rules/rules.check_row; test_kinds_match_the_sql_they_replace, with the replaced SQL frozen as literal oracle
       strings so the proof survives PR B: equal counts for the one-to-one kinds (not_null, accepted_values, unique over
-      current and over history for ulid, key_absent, pattern on an anchored regex, min_value, and the 0/1 flags of
+      current (with and without exclude_before) and over history for ulid, key_absent, pattern on an anchored regex, min_value, and the 0/1 flags of
       row_count_min and recency_hours), and for the two NOT EXISTS expressions the new kinds replace (composite history
       uniqueness and history-ahead-of-current) zero/non-zero agreement on every fixture plus one pinned stricter case
       (current empty, a history duplicate) where the old SQL reads 0 and the new kind reads 1.
   - file: tests/lambdas/ducklake_reader/test_dq_check_action.py
     action: Create
     purpose: >-
-      PR A: dispatch and response shape; 400 before any connection; ops slot only, never the telemetry slot (the successor
-      of test_query_ops_runs_on_the_ops_slot_only). PR B: test_no_reader_action_accepts_caller_sql (query_ops absent from
-      _ACTIONS and no action function reads a sql key, by AST).
+      PR A: dispatch and response shape; 400 before any connection. PR B: test_no_reader_action_accepts_caller_sql
+      (query_ops absent from _ACTIONS and no action function reads a sql key, by AST).
   - file: tests/test_ducklake_reader_handler.py
     action: Modify
     purpose: >-
@@ -160,7 +161,9 @@ scope:
     purpose: >-
       PR B. _execute_check_ducklake calls reader.dq_check; a response check_version that differs from the local
       ducklake_dq_checks.check_version(kind) is UNAVAILABLE ("deployed reader not at this code"), never a silent pass and
-      never a data FAIL; transient reader errors stay UNAVAILABLE and other errors ERROR; relationships stays SKIP.
+      never a data FAIL; transient reader errors stay UNAVAILABLE and other errors ERROR; relationships stays SKIP. Declared
+      residual, owned by T1.6 c5 (persistent-unavailability alarm): a deployed reader stuck behind the repository leaves the
+      skewed kinds DEGRADED without an alarm; the deploy smoke's check_version assertion makes the stuck deploy itself red.
       _query_ops_rows is deleted; apply_backend_routing keeps only the clause-8 append.
   - file: scripts/data_quality_runner.py
     action: Modify
@@ -196,7 +199,9 @@ scope:
       ops.yaml expression copies retire); enforcement_ready values unchanged.
   - file: config/agent/data_quality/decisions/ops_decisions.yaml
     action: Modify
-    purpose: PR B. Prose only - the id current_test names the typed pattern test in place of the expression; enforcement_ready unchanged.
+    purpose: >-
+      PR B. Prose only: the id current_test names the typed pattern test in place of the expression, and the line saying
+      Phase 5 enforces an expression check names a typed check; enforcement_ready unchanged.
   - file: config/agent/data_quality/decisions/ops_execution_plans.yaml
     action: Modify
     purpose: >-
@@ -258,7 +263,10 @@ scope:
       asserts neither the facade nor ducklake_reads carries them.
   - file: tests/lambdas/ducklake_reader/test_event_routing.py
     action: Modify
-    purpose: PR B. test_query_ops_runs_on_the_ops_slot_only is deleted (successor test_dq_check_runs_on_the_ops_slot_only).
+    purpose: >-
+      PR A: test_dq_check_runs_on_the_ops_slot_only, beside the test it succeeds and on the same wiring fixture (no
+      cross-test import). PR B: test_query_ops_runs_on_the_ops_slot_only is deleted, and the module docstring stops saying
+      "query_ops included".
   - file: tests/lambdas/ducklake_reader/test_control_table_refusal.py
     action: Modify
     purpose: >-
@@ -279,12 +287,6 @@ scope:
   - file: tests/checks/contracts/test_write_time_enforcement_conformance.py
     action: Modify
     purpose: The reader's action roster gains dq_check (PR A) and loses query_ops (PR B).
-  - file: tests/test_agent_sdk_mcp_server.py
-    action: Modify
-    purpose: >-
-      PR B. TestReadOnlySurface::test_query_method_is_never_invoked_by_the_projection is deleted with DuckLakeReader.query
-      (retirement; successor test_ducklake_reader_has_no_caller_sql_method); the class selector agent-verb-surface-is-read-only
-      still resolves; the docstring stops naming query().
   - file: docs/contracts/storage-substrate.yaml
     action: Modify
     purpose: >-
@@ -376,8 +378,9 @@ verification_plan:
       bin/venv-python -m pytest tests/test_ducklake_dq_checks.py::test_every_kind_renders_one_bound_statement
       tests/test_ducklake_dq_checks.py::test_refusals_name_the_parameter_before_any_sql
       tests/test_ducklake_dq_checks.py::test_refused_tables_match_the_generic_read_refusals
-      tests/test_ducklake_dq_checks.py::test_check_version_moves_with_the_template_only -q
-    expected: Exit 0, four nodes pass. Red before because the file is absent.
+      tests/test_ducklake_dq_checks.py::test_check_version_moves_with_the_template_only
+      tests/test_ducklake_dq_checks.py::test_contracts_name_every_kind -q
+    expected: Exit 0, five nodes pass. Red before because the file is absent.
     expected_literals: []
     fix_if: A value appears in rendered SQL text, a refusal echoes the value or touches the connection, or a refused table set differs from _require_ops_table's.
     hermetic: true
@@ -406,7 +409,7 @@ verification_plan:
     command: >-
       bin/venv-python -m pytest tests/lambdas/ducklake_reader/test_dq_check_action.py::test_dq_check_answers_count_and_check_version
       tests/lambdas/ducklake_reader/test_dq_check_action.py::test_refused_dq_check_is_400_before_any_connection
-      tests/lambdas/ducklake_reader/test_dq_check_action.py::test_dq_check_runs_on_the_ops_slot_only
+      tests/lambdas/ducklake_reader/test_event_routing.py::test_dq_check_runs_on_the_ops_slot_only
       tests/test_ducklake_reader_handler.py::test_dq_check_dispatch_through_the_handler -q
     expected: Exit 0, four nodes pass. Red before because they are absent.
     expected_literals: []
@@ -458,7 +461,7 @@ verification_plan:
     fix_if: The verb or its typed error is undocumented.
     hermetic: true
     graduation: waive
-    graduation_waiver_reason: One-time documentation presence; the contract drift gate and code review own the contract's standing correctness.
+    graduation_waiver_reason: One-time documentation presence of the typed 400; step 1's graduated test_contracts_name_every_kind keeps the kind vocabulary and the two contracts in step from then on.
   - step: 8
     phase: pre-deploy
     action: PR A lint and the full tier on the committed, clean tree before the push (handoff policy).
@@ -493,8 +496,8 @@ verification_plan:
       origin/main's runner minus the two retired ops_recommendations expression tests, which must be PASS there, and no
       check is ERROR or UNAVAILABLE. The worktree is removed afterwards.
     command: >-
-      git fetch origin main --quiet && W="$(mktemp -d)/main" && git worktree add -q "$W" origin/main && (cd "$W" && AWS_PROFILE=agent_platform "$OLDPWD/bin/venv-python" -m scripts.data_quality_runner > /dev/null); AWS_PROFILE=agent_platform bin/venv-python -m scripts.data_quality_runner > /dev/null; bin/venv-python -c "import json,sys,collections as C;a=json.load(open(sys.argv[1]))['checks'];b=json.load(open(sys.argv[2]))['checks'];R={('ops_recommendations','context'),('ops_recommendations','created_timestamp')};ret=[x for x in a if x['test']=='expression' and (x['table'],x['column']) in R];assert len(ret)==2 and all(x['verdict']=='PASS' for x in ret),ret;k=lambda xs:C.Counter((x['table'],x['column'],x['verdict']) for x in xs);old=k([x for x in a if x not in ret]);new=k(b);assert old==new,(old-new,new-old);assert not any(x['verdict'] in ('ERROR','UNAVAILABLE') for x in b);print('DQ_PARITY_OK',len(b))" "$W/logs/debug/dq-latest.json" logs/debug/dq-latest.json; R=$?; git worktree remove --force "$W"; test $R -eq 0
-    expected: DQ_PARITY_OK with the new run's check count. Report the line.
+      git fetch origin main --quiet && W="$(mktemp -d)/main" && git worktree add -q "$W" origin/main && (cd "$W" && AWS_PROFILE=agent_platform "$OLDPWD/bin/venv-python" -m scripts.data_quality_runner > /dev/null); AWS_PROFILE=agent_platform bin/venv-python -m scripts.data_quality_runner > /dev/null; bin/venv-python -c "import json,sys,collections as C;a=json.load(open(sys.argv[1]))['checks'];b=json.load(open(sys.argv[2]))['checks'];R={('ops_recommendations','context'),('ops_recommendations','created_timestamp')};ret=[x for x in a if x['test']=='expression' and (x['table'],x['column']) in R];assert len(ret)==2 and all(x['verdict']=='PASS' for x in ret),ret;k=lambda xs:C.Counter((x['table'],x['column'],x['verdict']) for x in xs);old=k([x for x in a if x not in ret]);new=k(b);assert old==new,(old-new,new-old);assert not any(x['verdict'] in ('ERROR','UNAVAILABLE') for x in b);print('DQ_PARITY_OK',json.load(open(sys.argv[2]))['verdict'],len(b))" "$W/logs/debug/dq-latest.json" logs/debug/dq-latest.json; R=$?; git worktree remove --force "$W"; test $R -eq 0
+    expected: DQ_PARITY_OK with the new run's verdict and check count. Report the line; its verdict is $STEP11_VERDICT for step 24.
     fix_if: >-
       A differing verdict: find the check that moved. A new kind stricter than its expression (the pinned empty-current
       case) finding a real violation is a STOP and a report, never a loosening; a violator under a contract rule is a STOP
@@ -655,8 +658,8 @@ verification_plan:
       ERROR or UNAVAILABLE check. Read with mcp__github__actions_list (workflow ci.yml, head_sha $MERGE_SHA_B, job
       main-validate) and get_job_logs into $MAIN_VALIDATE_LOG.
     command: >-
-      test -s "$MAIN_VALIDATE_LOG" && grep -E "Data Quality: [A-Z_]+" "$MAIN_VALIDATE_LOG" && grep -qE "Errors: 0  Skipped: [0-9]+  Unavailable: 0" "$MAIN_VALIDATE_LOG" && echo MAIN_DQ_OK
-    expected: One Data Quality line carrying step 11's verdict, then MAIN_DQ_OK; the job concluded success.
+      test -s "$MAIN_VALIDATE_LOG" && test -n "$STEP11_VERDICT" && grep -E "Data Quality: $STEP11_VERDICT\b" "$MAIN_VALIDATE_LOG" && grep -qE "Errors: 0  Skipped: [0-9]+  Unavailable: 0" "$MAIN_VALIDATE_LOG" && echo MAIN_DQ_OK
+    expected: The Data Quality line carrying step 11's verdict, then MAIN_DQ_OK; the job concluded success.
     fix_if: A different verdict or any errored or unavailable check; RCA per Decision 55.
     hermetic: false
   - step: 25
@@ -667,6 +670,17 @@ verification_plan:
     expected: RECS_OK.
     fix_if: A note missing; re-file it through the portal.
     hermetic: false
+  - step: 26
+    phase: pre-deploy
+    action: >-
+      PR B, before merge: the real-DuckLake integration test (excluded from every tier by its marker) agrees row for row
+      with the writer's engine through row_predicate.
+    command: bin/venv-python -m pytest -m integration tests/common/test_ducklake_write_rules_integration.py::test_the_census_sql_and_the_engine_agree_row_for_row -q
+    expected: Exit 0, one node passes (it ran in this container at plan time, 2026-10-19).
+    fix_if: A disagreement between row_predicate and check_row on a real catalog; the fixture failing to load the extension is an environment fault to report, never a skip.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: An existing node edited with its claim unchanged; the integration marker keeps it out of every tier, so this step is its pre-merge run and step 2's graduated in-memory port is the standing guard.
 test_obligations:
   - source: src/common/ducklake_dq_checks.py
     behavior: Requests are validated before any SQL and values are only ever bound.
@@ -836,7 +850,7 @@ context:
     Decision-scout: NO_FLAGS. Decisions triaged: 180 of 180. Roadmap items intersected: 16; CONFLICT: 0; RELATED: 14.
     CITE 84, 81, 91, 79, 125, 126, 118, 143, 181, 210, 136, 176, 177, 128. RELATED 55, 62, 65, 88, 212, 101, 73, 226, 115,
     168, 189. Report: /mnt/project-files/query-ops-retirement/decision-scout-report.md.
-  - "gates: decision-scout=NO_FLAGS; plan-critique=PENDING"
+  - "gates: decision-scout=NO_FLAGS; plan-critique=PROCEED after 3 round(s) (r1 and r2 REVISE, fixed; r3 PROCEED, its implementation notes folded in)"
   - >-
     Why two PRs: main-validate runs the DQ runner against the live reader on every push to main, in parallel with the
     reader deploy. Callers move only after their verbs are deployed (PR A); removing query_ops in PR B cannot race, because
@@ -873,11 +887,11 @@ pre_implementation_checklist:
   - The Slice 2c and cold-read-deadline builds checked for overlap with handler.py, the manifests, the client and lambda_ec_gates.py
 execution_steps:
   - "PR A: src/common/ducklake_dq_checks.py with tests/test_ducklake_dq_checks.py and tests/test_ducklake_dq_checks_duckdb.py (steps 1-2 red, then green)."
-  - "PR A: handler action, pre-connection validation and 400 mapping; FakeCon to tests/fixtures/ducklake_reader_fakes.py; tests/lambdas/ducklake_reader/test_dq_check_action.py and the handler dispatch test (step 3)."
+  - "PR A: handler action, pre-connection validation and 400 mapping; FakeCon to tests/fixtures/ducklake_reader_fakes.py; tests/lambdas/ducklake_reader/test_dq_check_action.py, the ops-slot test in test_event_routing.py and the handler dispatch test (step 3)."
   - "PR A: both manifests and the bundle test (step 6); DuckLakeReader.dq_check and its tests (step 4); dq_check_gate wired into lambda_reader and its tests (step 5); the reader and read-engine contracts (step 7); the conformance roster gains dq_check."
   - "PR A: code review in a fresh context; fix every blocking finding. Closure per the implement skill's Commit Flows: step 8 on the committed clean tree, push, PR, CI green; implementation_declared stays unset. Merge under the standing rule once code review is PROCEED and CI is green; the coordinator sequences the DuckLake deploy. Then steps 9 and 10."
-  - "PR B: models, compile, execute, runner and census move to dq_check requests; the ops.yaml rewrite; their tests (steps 13-15, 20); the integration test repointed at row_predicate; then steps 11 and 12 against PR A's deployed reader. Stop on any parity difference."
-  - "PR B: delete query_ops, query_current, assert_read_only_sql and DuckLakeReader.query with their tests; retired_actions_gate and its tests; the routing, control-table, dedupe, MCP, facade, contract-pin and conformance test edits (steps 16-17)."
+  - "PR B: models, compile, execute, runner and census move to dq_check requests; the ops.yaml rewrite; their tests (steps 13-15, 20); the integration test repointed at row_predicate (step 26); then steps 11 and 12 against PR A's deployed reader. Stop on any parity difference."
+  - "PR B: delete query_ops, query_current, assert_read_only_sql and DuckLakeReader.query with their tests; retired_actions_gate and its tests; the routing, control-table, dedupe, facade, contract-pin and conformance test edits (steps 16-17)."
   - "PR B: contracts (ducklake_reader.yaml, read-engine.yaml, storage-substrate.yaml, ops_entity_counters.yaml); git mv of the four registry shards (step 18); the Decision 84 note (step 19)."
   - "PR B: code review in a fresh context; fix every blocking finding. Closure: weakening_dispositions for every deleted test or assertion and the two retired ops.yaml tests, implementation_declared true, step 21 on the committed clean tree, push, PR, CI green. Ask Benjamin for his word on the Decision 84 note (rule-forced confirmation), then merge on PROCEED and green CI. Then steps 22-24."
   - "After PR B merges: through scripts.ops_data_portal (get_rec_write_guidance first; fetch each rec just before update_rec and prepend to its full context, naming the merge commit's short SHA and this slug) add a dated note to rec-4292 that the query_ops residual is retired, and mark rec-2100, rec-753 and rec-629 superseded with the reason. Then step 25."
