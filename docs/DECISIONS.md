@@ -2,6 +2,101 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 231: Persona evaluation is an offline lane -- a persona run is the unit of record, graded by code, real outcomes and blind operator ratings and never by an LLM, on point-in-time inputs (amends Decision 221 clauses 2 and 7) (Decided)
+
+```yaml
+number: 231
+status: Decided
+decided_date: "2026-10-19"
+amends: [221]
+significance:
+  value: numbered_decision
+  justification: >-
+    One position spans Decision 221 cl.2 and cl.7, T4.14 and the capture recs rec-4433..rec-4436:
+    the unit, grader, input and spend rules of persona evaluation. Not a contract note: no eval
+    contract exists, and telemetry_agents.yaml owns capture fields, not a grader. Not
+    amendment_forms: an annotation on 221 cannot bar an LLM grader or re-scope T4.14.
+```
+
+**Status:** Decided
+**Date:** 2026-10-19
+**Warehouse ID:** dec-231 (per Decision 84 backfill)
+
+**Problem:** A persona or skill edit ships unmeasured: T4.14 targets the frozen executor's
+prompts (Decision 67) behind T4.2, the live feedback loop has no persona-run unit, and nothing
+bars an LLM grader or a fixture this PUBLIC repository already published.
+
+**Decision:**
+1. **Offline lane, run records.** Persona evaluation is a lane apart from the live feedback loop,
+   by offline replay or by shadow runs beside live work (not Decision 229 cl.4's dual-run stage,
+   which has its own flag). Its unit of record is one persona run, never a whole work item and
+   never a concurrency limit: runs may execute in parallel at any concurrency. A shadow run never
+   binds live work (the coordinator consumes only the incumbent's hand-back), never files a rec
+   and never writes through the portal. Each record names its model; an ensemble (several models
+   on one input at a pinned SHA) is one record per arm, and cross-model agreement may label a
+   point settled or contested, but agreement is not truth and the human gate stays. No run is
+   dropped or sampled at write (Decision 210's validity rules still apply); records are one kind
+   in the one loop record journal, each grader takes a Goodhart register row (staged CD.47,
+   CD.46), and there is no second journal, register or filer (Decision 221 cl.7).
+2. **Grader.** A grade comes from deterministic code checks, real-outcome replay and the
+   operator's blind adjudication (attribution revealed only after marking), never from an LLM
+   judge: Decision 59's deterministic checks, with Decision 55's bar on LLM judgement extended
+   from recovery to this lane's grading. It grades outcomes, never trajectories (Decision 206 cl.4); raw
+   reasoning is captured, never graded. A persona with no such grader is not evaluated.
+3. **Faithful, sealed inputs.** A replay is point-in-time: snapshotted inputs, no live AWS in
+   the agent step, rec state through an as_of read on the named reader verbs (rec-4504) inside
+   Decision 84's boundary, never a local cache. The sealed set (Decision 221 cl.2) is sourced
+   apart from this PUBLIC repository; the grader and sealed set are read-isolated from the run
+   under test by IAM and network (Decision 143), never lexically. The grader's paths join
+   Decision 117's boundary_patterns once built, and a candidate harness edit lands only through
+   the governed change process, never as an executor-authored diff (Decision 185 cl.3).
+4. **Roster and spend.** The doing personas are plan_agent, plan_critic, implement_agent,
+   code_reviewer and decision_scout; the judgment personas, whose output steers later work, are
+   the advice consult and CI-RCA, and their high leverage and low volume can justify a more
+   capable model selection or an ensemble, which does not transfer to the doing personas. Eval
+   spend is measured on offline_eval_llm_tokens (rec-4436), never in loop_llm_tokens, and adds no
+   budget: an operator-initiated replay or shadow outside the loop is never capped, while a
+   shadow arm beside a loop-dispatched run stays under Decision 217 cl.4's per-rec and per-day
+   API-lane caps (an eval arm, not 217's subscription-lane shadow dollars). The operator starts
+   every eval run and enables every shadow arm. The lane is post-MVP: T4.14 is parked deferred_post_mvp.
+
+**Rationale:** Reinforcement learning with the harness -- skills, CLAUDE.md layers, hooks,
+persona contracts -- as the parameters instead of model weights, which train only under Decision
+221 cl.6's learned-components path: reward hacking (the register), a train/test split (the sealed
+set), noisy reward (a defect in 1 of k runs is noise), credit assignment ('confounded' by
+default). Prior art: Harness^2 (arXiv 2610.14224; its code is Apache-2.0); its adopted ideas are
+T4.14 c7.
+
+**Options considered:** An LLM judge, blind LLM selection or LLM pairwise judging -- rejected:
+Decision 55, and the score does not reproduce. A lexical grader guard -- rejected: in a Harness^2
+validation run a networked agent downloaded its task's public rubric (Harness^2's docs/EXPERIMENTS.md).
+Editable guardrails as a security boundary -- rejected: the loop could edit its own judge
+(Decision 221 cl.2). A new eval budget -- rejected: operator initiation and the loop's caps bound it.
+
+```yaml reversal-conditions
+decision: 231
+review_by: 2027-06-30
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: grader-insufficient
+    kind: manual
+    description: "A persona's grader cannot tell a known-worse definition from the incumbent: that persona waits; re-decide clause 2 only if every target waits."
+  - id: vendor-model-change
+    kind: manual
+    description: "A vendor model version changes mid-comparison: void its curves or re-pin, as Decision 221 does."
+  - id: eval-spend-unabsorbed
+    kind: manual
+    description: "Uncapped eval spend outside the loop outgrows what the operator absorbs: re-decide clause 4's no-cap rule."
+```
+
+**Coverage (Decision 181 cl.2):** none enforced today. Homes: T4.14 c4 (cl.1); c5, c8, c9 (cl.2);
+c1, c10 (cl.3); c6 (cl.4); the parked status -- validate_platform_roadmap.
+
+**Related:** Decisions 55, 59, 67, 84, 93, 117, 143, 185, 189, 201, 205, 206, 207, 210, 217, 221,
+224, 229; rec-4028, rec-4433..rec-4436.
+
+---
+
 ## Decision 229: Persona-first migration -- each persona ships as its own item to an interim coordinator before any loop host, personas never invoke personas, the operator only launches compute-plane personas, and T4.15 becomes implement_agent on Fargate (amends Decision 217 clause 8 and Decision 205 clauses 1 and 6) (Decided)
 
 ```yaml
@@ -660,6 +755,8 @@ conditions:
 ```
 
 **Related:** Decisions 101, 117, 196, 197, 199, 200, 205, 207, 209, 211, 217, 220; T4.24; rec-4141, rec-4386, rec-4388.
+
+> **Amended by Decision 231 (2026-10-19):** Clause 2 extends to the offline persona-evaluation lane (T4.14): its grader is deterministic code, real-outcome replay and the operator's blind adjudication, never an LLM judge, read-isolated with its sealed set from the run under test by IAM and network, never lexically, its paths joining boundary_patterns like the probe's, and that sealed set is sourced apart from this PUBLIC repository. Clause 7's one loop record journal and one register take the lane's records and grader rows; no second mechanism is built.
 
 ---
 
