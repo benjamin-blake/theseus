@@ -405,3 +405,10 @@ def test_reader_bundle_carries_the_transcript_content_modules():
     ):
         assert module in reader, f"ducklake_reader must bundle {module}"
     assert "src/common/ducklake_event_content.py" in set(manifests["data-pipeline"].excludes)
+
+
+def test_reader_bundle_carries_the_dq_check_module():
+    manifests = load_all()
+    module = "src/common/ducklake_dq_checks.py"
+    assert module in set(manifests["ducklake_reader"].includes)
+    assert module in set(manifests["data-pipeline"].excludes)

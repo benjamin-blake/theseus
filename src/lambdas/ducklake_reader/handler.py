@@ -11,6 +11,7 @@ Actions:
   read_ops_current     -- production: current projection of an ops_* table (optional single-key filter).
   read_ops_history     -- production: append-history rows of an ops_* table.
   query_ops            -- production: a read-only SELECT over an ops_* current projection (pushdown).
+  dq_check             -- production: one closed data-quality check over an ops_* table, returning a violation count only.
   describe             -- production: per-verb parameter schema for every NAMED_READS and EVENT_READS entry (agent-facing).
 
 PRODUCTION OPS PATH (T2.19 / Decision 81): the reader is the SOLE read authority for the ops_*
@@ -26,6 +27,7 @@ import time
 from typing import Any, Callable
 
 from src.common import ducklake_connect_probe as probe
+from src.common import ducklake_dq_checks as dq
 from src.common import ducklake_event_reads as ev
 from src.common import ducklake_handler_errors as handler_errors
 from src.common import ducklake_runtime as rt
@@ -233,6 +235,25 @@ def action_query_ops(event: dict[str, Any], con: Any) -> dict[str, Any]:
     return {"ok": True, "table": table, "rows": _json_safe(rows), "row_count": len(rows)}
 
 
+def action_dq_check(event: dict[str, Any], con: Any) -> dict[str, Any]:
+    """Production: run one closed DQ check kind (server-owned SQL, bound values) and return its violation count only."""
+    check = dq.validate(event)
+    try:
+        count = dq.run_check(con, check)
+    except Exception as exc:
+        # The dead-connection check stays first so the reopen-once path is unchanged.
+        if rt.is_dead_connection_error(exc) or not _is_caller_input_error(exc):
+            raise
+        raise dq.DqCheckInputError(check.kind, "params", "was refused by the engine (pattern or column type)") from exc
+    return {
+        "ok": True,
+        "check": check.kind,
+        "table": check.table,
+        "violation_count": count,
+        "check_version": dq.check_version(check.kind),
+    }
+
+
 def action_reset_warm_connection(event: dict[str, Any], _con: Any) -> dict[str, Any]:
     """Test-only: drop the per-container warm connection so the NEXT invocation reconnects cold (D2 VP).
 
@@ -288,6 +309,7 @@ _ACTIONS: dict[str, Callable[[dict[str, Any], Any], dict[str, Any]]] = {
     "read_ops_history": action_read_ops_history,
     "named_read": action_named_read,
     "query_ops": action_query_ops,
+    "dq_check": action_dq_check,
     "connect_probe": action_connect_probe,
     "reset_warm_connection": action_reset_warm_connection,
     "describe": action_describe,
@@ -352,6 +374,8 @@ def _handle(payload: dict[str, Any], meta: dict[str, Any], remaining_ms: Callabl
     try:
         if action in _CONNECTIONLESS_ACTIONS:
             return _response(200, fn(payload, None))
+        if action == "dq_check":
+            dq.validate(payload)  # a refused request opens nothing
         # Warm-reuse acquisition (D2): the connection is kept open for the next invocation (NOT closed
         # in a finally). A dead session (Neon scale-to-zero) surfaces as a connection error from the
         # action; reads are idempotent, so reopen ONCE and retry -- the reopen never leaks a 5xx for
@@ -387,6 +411,10 @@ def _handle(payload: dict[str, Any], meta: dict[str, Any], remaining_ms: Callabl
                 "error_class": exc.error_class,
                 "error": handler_errors.redact(str(exc)),
             },
+        )
+    except dq.DqCheckInputError as exc:
+        return _response(
+            400, {"ok": False, "error_type": "dq_check_input", "check": exc.check, "param": exc.param, "reason": exc.reason}
         )
     except rt.VersionMismatchError as exc:
         return _response(500, {"ok": False, "error_type": "version_mismatch", "error": str(exc)})

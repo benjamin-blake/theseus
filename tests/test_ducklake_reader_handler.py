@@ -12,24 +12,9 @@ import src.lambdas.ducklake_reader.handler as h
 from src.common import ducklake_runtime as rt
 from src.common.ducklake_event_read_verbs import EVENT_READS
 from src.common.ducklake_version import pinned_duckdb_version
+from tests.fixtures.ducklake_reader_fakes import CountCon, FakeCon
 
 pytestmark = pytest.mark.unit
-
-
-class FakeCon:
-    def __init__(self):
-        self.executed: list[tuple[str, object]] = []
-        self.closed = False
-
-    def execute(self, sql, params=None):
-        self.executed.append((sql, params))
-        return self
-
-    def fetchall(self):  # liveness-probe support (D2 warm-connection cache)
-        return []
-
-    def close(self):
-        self.closed = True
 
 
 @pytest.fixture(autouse=True)
@@ -696,3 +681,27 @@ def test_size_guard_failure_is_an_unmapped_500(monkeypatch):
     monkeypatch.setattr(h, "_guard_response_size", lambda *a, **k: (_ for _ in ()).throw(KeyError("guard")))
     r = h.handler({"action": "describe"})
     assert r["statusCode"] == 500 and json.loads(r["body"])["error_class"] == "KeyError"
+
+
+def test_dq_check_dispatch_through_the_handler(monkeypatch):
+    con = CountCon(2)
+    monkeypatch.setattr(h, "_open_reader_connection", lambda: con)
+    event = {
+        "body": json.dumps({"action": "dq_check", "check": "row_count_min", "table": "ops_decisions", "params": {"min": 1}})
+    }
+    r = h.handler(event)
+    assert r["statusCode"] == 200 and json.loads(r["body"])["violation_count"] == 2
+    bad = h.handler({"body": json.dumps({"action": "dq_check", "check": "row_count_min", "table": "ops_decisions"})})
+    assert bad["statusCode"] == 400 and json.loads(bad["body"])["error_type"] == "dq_check_input"
+
+
+def test_dq_check_engine_input_error_is_400_and_other_errors_propagate(monkeypatch):
+    bad = type("InvalidInputException", (Exception,), {"__module__": "_duckdb"})("invalid regex")
+    event = {"action": "dq_check", "check": "row_count_min", "table": "ops_decisions", "params": {"min": 1}}
+    monkeypatch.setattr(h.dq, "run_check", lambda con, check: (_ for _ in ()).throw(bad))
+    with pytest.raises(h.dq.DqCheckInputError) as err:
+        h.action_dq_check(event, CountCon())
+    assert err.value.param == "params" and "invalid regex" not in str(err.value)
+    monkeypatch.setattr(h.dq, "run_check", lambda con, check: (_ for _ in ()).throw(ValueError("boom")))
+    with pytest.raises(ValueError):
+        h.action_dq_check(event, CountCon())

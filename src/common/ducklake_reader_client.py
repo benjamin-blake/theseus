@@ -513,6 +513,14 @@ class DuckLakeReader:
         body = self._invoke({"action": "query_ops", "table": table, "sql": sql, "params": list(params)})
         return list(body.get("rows", []))
 
+    def dq_check(self, check: str, table: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Run one closed data-quality check on the reader; returns {check, table, violation_count, check_version, ...}.
+
+        The reader owns the SQL (Decision 84 I-3): the caller names a kind from its fixed vocabulary and binds params.
+        Raises on any non-200 answer (Decision 55); a typed 400 dq_check_input names the refused parameter.
+        """
+        return self._invoke({"action": "dq_check", "check": check, "table": table, "params": params or {}})
+
 
 _MAX_RECS_BY_IDS = 50
 
