@@ -27,6 +27,7 @@ phase: >-
   pipeline); PR "catalog awareness" changes capture, the read clients, golden replay and the two scheduled telemetry
   workflows, flips implementation_declared, and is proven against the live smoke writer, the shared reader and the
   deployed telemetry reader. No Lambda redeploy (no deploy-ducklake-lambdas trigger path is touched).
+closes_criteria: []
 scope:
 - file: terraform/personal/ducklake_telemetry_writer.tf
   action: Modify
@@ -80,8 +81,11 @@ scope:
     grain_conflict_after_catalog_reset. (3) A sent pass persists the cursor with describe's catalog; a no-rows pass (no
     describe) keeps the loaded catalog. (4) The verify scheduling step treats a catalog_reset pass as due (scheduled_at
     = now, a RUNNER field) unless the tree's daily check cap is reached, so a check re-derives the session id and the
-    ledger floors in the new catalog before verify_due reads the stale floors again (ST-6). The module and RN-5
-    docstrings stop naming the smoke catalog. Not on the coverage checker's map (no grandfathered home), so its tests
+    ledger floors in the new catalog before verify_due reads the stale floors again (ST-6). (5) A catalog reset in a pass
+    with detach_below set (only the in-hook SessionEnd pass, .claude/hooks/session_end_log_turn.py:69-84) returns
+    short_budget right after describe, before the resend record_turn and without persisting, so the hook detaches the
+    final pass with its own 600 s budget instead of letting the whole-tree resend run out of the hook's 50 s and stop
+    with nothing detached. The module and RN-5 docstrings stop naming the smoke catalog. Not on the coverage checker's map (no grandfathered home), so its tests
     may live in a sibling module. Stays under 500 SLOC (356 today).
 - file: src/turn_capture/record_turn.py
   action: Modify
@@ -111,34 +115,44 @@ scope:
     goes to the event reader when verb is in EVENT_VERBS, else ops; describe() is ops.describe() on the shared route,
     else the ops rows that are not event verbs merged with the event reader's describe(); binding() is the event
     reader's on the telemetry route and None on the shared route; catalog and event_function are properties; every
-    other attribute (current_state, latest_snapshot, query) delegates to ops. make_routed_reader(profile=None, ops=None):
-    ducklake_smoke routes events to the ops reader (the shared reader), ducklake_telemetry to TelemetryReader.
+    other attribute (current_state, latest_snapshot, query) delegates to ops. make_routed_reader(profile=None, ops=None,
+    ops_verbs=None): ducklake_smoke routes events to the ops reader (the shared reader), ducklake_telemetry to
+    TelemetryReader; ops_verbs, when given, is a describe the caller already fetched from ops, and the routed describe
+    uses it instead of calling ops.describe() again.
 - file: scripts/telemetry_capture/__main__.py
   action: Modify
   purpose: >-
     PR catalog awareness: _run_check and _cmd_verify build read_route.make_routed_reader() when no reader_factory is
-    injected (replacing make_reader). The routed reader is lazy, so an unresolvable catalog surfaces inside run_verify's
-    guarded path (verify.py _step_load) as the counted, non-benign status verify_error:TelemetryCatalogUnresolved: the
-    detached check records it, backs off and adds to incomplete_streak, so verify_incomplete fires as for any failing
-    check; _cmd_run's blanket except never sees it.
+    injected (replacing make_reader). The routed reader is lazy, so an unresolvable catalog surfaces inside run_verify
+    (verify.py _Check.run, before the tree lock) as the counted, non-benign status verify_error:TelemetryCatalogUnresolved:
+    the detached check records it, backs off and adds to incomplete_streak, so verify_incomplete fires as for any
+    failing check; _cmd_run's blanket except never sees it.
 - file: scripts/telemetry_capture/verify.py
   action: Modify
   purpose: >-
-    PR catalog awareness. (1) _load gains the catalog_skip token beside parser_version_skip: when the reader carries a
-    catalog (getattr(raw_reader, "catalog", None), the routed reader's) and the tree's recorded catalog (Loaded.catalog)
-    differs, the check stops with catalog_skip, so a check never reads a tree in the catalog it was not sent to;
-    PER_TREE_SKIPS gains catalog_skip. (2) Rule ST-6: _load takes its verify state through
+    PR catalog awareness. (1) _Check.run resolves the reader's catalog once, before the tree lock and only when
+    self.credentials() is true (getattr(raw_reader, "catalog", None), the routed reader's): a failure there is the
+    counted status verify_error:TelemetryCatalogUnresolved and no lock is taken; without credentials nothing is resolved
+    (no SSM call), the transcript legs run as today and the check ends with the benign no_credentials in _read_stored, so
+    expired credentials never become a non-benign streak. No SSM call happens inside the lock window. (2) _load gains the
+    catalog_skip token beside parser_version_skip: when that resolved catalog is set and the tree's recorded catalog
+    (Loaded.catalog) differs, the check stops with catalog_skip, so a check never reads a tree in the catalog it was not
+    sent to; PER_TREE_SKIPS gains catalog_skip. (3) Rule ST-6: _load takes its verify state through
     state.verify_view(verify_state, Loaded.catalog), so after an RN-9 reset the cached root_session_id (minted from
     catalog-scoped tenant and project ids, Decision 199 cl.3) is never used and _root_session_id re-derives it from the
-    reader's catalog, and last_ledger_line and held_ledger_line restart at -1; _write records verify_catalog (CHECK
-    owner only) and, when the view dropped them, sends None for each CATALOG_KEYED field the check did not re-derive
-    (merge_verify_state clears it). An operator check uses the view too but leaves verify_catalog and the floors to the
-    next detached check, which therefore still sees the change. About ten lines; stays under 500 SLOC (474 today).
+    reader's catalog, and last_ledger_line and held_ledger_line restart at -1. _write records verify_catalog (CHECK owner
+    only) and, when the view dropped them, puts None for each CATALOG_KEYED field the check did not re-derive; its
+    filter that drops None values before merge_verify_state (:410) keeps those None entries (only for CATALOG_KEYED
+    fields the view dropped), so the merge clears them. An operator check uses the view too but leaves verify_catalog and
+    the floors to the next detached check, which therefore still sees the change. About fifteen lines inside the 26-line
+    headroom; stays under 500 SLOC (474 today).
 - file: scripts/agent_sdk/mcp_server.py
   action: Modify
   purpose: >-
     PR catalog awareness: create_server's default path builds the ops reader (make_reader) and its describe stays
-    fail-loud as today; then read_route.make_routed_reader(ops=ops) and its describe(). If that describe raises
+    fail-loud as today; then read_route.make_routed_reader(ops=ops, ops_verbs=<that first describe>) and its describe(),
+    which never calls ops.describe() a second time (so a transient failure there cannot drop the event tools the shared
+    reader serves on the smoke route). If that describe raises
     (catalog resolution, the event reader's URL or its describe), the server serves the ops tools only (the ops
     describe's rows that are not event verbs), writes one stderr line naming the failure class (never a URL or value)
     and serves no event tool; otherwise the tool list is the routed reader's merged describe and every tool calls the
@@ -176,14 +190,16 @@ scope:
 - file: scripts/ducklake_smoke/lambda_telemetry_golden_gates.py
   action: Modify
   purpose: >-
-    PR catalog awareness. Env gains catalog: str. live_env reads read_route.resolve_catalog(profile) (a
-    TelemetryCatalogUnresolved becomes ReplayStop("catalog_unresolved") raised from None) and builds the reader with
-    read_route.make_routed_reader(profile); _resolve_urls is unchanged. main builds the live env under its ReplayStop
-    handling: a ReplayStop while building it prints only GOLDEN_STOP class=<kind>, files golden_replay_error unless
-    --no-alarms and returns 1 (no skew re-read: no env exists). Replay.start asserts, before any register call:
-    describe's catalog.meta_schema equals Env.catalog with the RN-5 pairing, else ReplayStop("writer_catalog_mismatch");
-    every telemetry_health_count row's meta_schema equals it, else ReplayStop("reader_catalog_mismatch"); and on the
-    ducklake_telemetry route the reader's binding() meta_schema equals it too, else reader_catalog_mismatch. The
+    PR catalog awareness. Env gains catalog: str. live_env builds the reader with
+    read_route.make_routed_reader(profile) and takes Env.catalog from that reader's catalog property, so the catalog
+    resolves once (a TelemetryCatalogUnresolved becomes ReplayStop("catalog_unresolved") raised from None); _resolve_urls
+    is unchanged. main builds the live env under its ReplayStop handling: a ReplayStop while building it prints only
+    GOLDEN_STOP class=<kind>, files golden_replay_error unless --no-alarms and returns 1 (no skew re-read: no env
+    exists). _Run.start asserts, before any register call: describe's catalog.meta_schema equals Env.catalog with the
+    RN-5 pairing, else ReplayStop("writer_catalog_mismatch"); telemetry_health_count answers one row for each of the
+    four event tables and every row's meta_schema equals it (zero or missing rows never pass), else
+    ReplayStop("reader_catalog_mismatch"); and on the ducklake_telemetry route the reader's binding() meta_schema equals
+    it too, else reader_catalog_mismatch. The
     deploy-record pair becomes (the routed reader's event_function, agent-platform-ducklake-telemetry-writer). Output
     stays counts and class names only. Stays under 500 SLOC (355 today).
 - file: .github/workflows/telemetry-golden-replay.yml
@@ -218,13 +234,15 @@ scope:
 - file: tests/fixtures/telemetry_capture_writer.py
   action: Create
   purpose: >-
-    The fake writer test_runner.py defines today, moved here (fixtures are exempt from the cross-test import guard) and
-    parametrised by meta_schema and data_path_is_smoke, so test_runner.py and test_runner_catalog.py share it.
+    The fake writer and the pass helpers test_runner.py defines today (Writer, factory, write, repo, records, run, state
+    and the constants they read: REF, PIN, URL, ON), moved here unchanged except that Writer is parametrised by
+    meta_schema and data_path_is_smoke (fixtures are exempt from the cross-test import guard), so test_runner.py and
+    test_runner_catalog.py share them without importing each other.
 - file: tests/telemetry_capture/test_runner.py
   action: Modify
   purpose: >-
-    Imports the fake writer from tests/fixtures/telemetry_capture_writer.py (net SLOC falls from 499);
-    test_describe_mismatch_stops_without_halting keeps its node and asserts the smoke pairing.
+    Imports the writer and the pass helpers from tests/fixtures/telemetry_capture_writer.py (net SLOC falls from 499 by
+    about 120); test_describe_mismatch_stops_without_halting keeps its node and asserts the smoke pairing.
 - file: tests/telemetry_capture/test_runner_catalog.py
   action: Create
   purpose: >-
@@ -232,8 +250,11 @@ scope:
     catalog), test_a_mispaired_describe_stops_without_halting, test_a_pass_records_the_catalog_describe_answered,
     test_a_catalog_change_resends_the_whole_tree_keeping_pins (every row of a finalized and continued tree is re-sent
     once, the cursor is persisted with the new catalog, a second pass sends nothing),
-    test_a_conflict_after_a_catalog_reset_halts_with_its_own_reason, test_a_no_rows_pass_keeps_the_recorded_catalog and
-    test_a_catalog_reset_pass_schedules_a_check (scheduled_at set on the reset pass; not past the daily cap).
+    test_a_conflict_after_a_catalog_reset_halts_with_its_own_reason, test_a_no_rows_pass_keeps_the_recorded_catalog,
+    test_a_catalog_reset_pass_schedules_a_check (scheduled_at set on the reset pass; not past the daily cap) and
+    test_a_catalog_reset_under_a_detach_budget_detaches (with detach_below set, a reset pass returns short_budget after
+    describe, sends nothing, persists nothing and leaves the recorded catalog; with detach_below None the same pass
+    re-sends the tree).
 - file: tests/telemetry_capture/test_smoke.py
   action: Modify
   purpose: The fake describe carries catalog.meta_schema ducklake_smoke with data_path_is_smoke true.
@@ -260,8 +281,10 @@ scope:
   action: Create
   purpose: >-
     test_catalog_resolves_env_then_ssm_and_refuses_unknown_values (boto3 faked; the error names the source, never the
-    value, and has no __cause__ or __context__), test_event_verbs_route_by_the_deploy_output,
-    test_describe_merges_ops_rows_with_the_event_readers_rows, test_ops_reads_always_use_the_ops_reader,
+    value, and has no __cause__ or __context__), test_event_verbs_route_by_the_deploy_output (the only node that routes
+    an event verb on the smoke route, so PLAN-telemetry-production-flip edits only it when that route stops serving
+    events), test_describe_merges_ops_rows_with_the_event_readers_rows (on the ducklake_telemetry route),
+    test_ops_reads_always_use_the_ops_reader,
     test_routed_reader_resolves_lazily (construction makes no SSM or network call; the first use raises
     TelemetryCatalogUnresolved), test_telemetry_reader_url_resolution_order (env, SSM, API, loud failure),
     test_telemetry_reader_binding_reads_its_describe, test_event_verb_set_equals_the_registry and
@@ -285,12 +308,16 @@ scope:
     ledger floors without verify_catalog, the tree's state is recorded ducklake_telemetry and the reader's
     telemetry_root_sessions answers the production id: session_tree_rows is called with the production id only, no
     missing_in_store finding, verify.json then holds verify_catalog ducklake_telemetry, the production id and floors
-    re-derived from this check alone; an operator check in the same state leaves verify_catalog absent).
+    re-derived from this check alone, the floors cleared when this check derived none; an operator check in the same
+    state leaves verify_catalog absent) and test_the_catalog_resolves_before_the_lock_and_only_with_credentials (without
+    credentials no resolution is attempted and the status is no_credentials with the transcript legs counted; with
+    credentials a failing resolution is verify_error:TelemetryCatalogUnresolved and the tree lock is never taken).
 - file: tests/test_agent_sdk_mcp_server.py
   action: Modify
   purpose: >-
-    NEW TestCreateServer::test_default_reader_is_the_routed_reader (an event tool and an ops tool reach their own fake
-    readers through the merged describe) and TestCreateServer::test_ops_tools_survive_an_unavailable_event_reader
+    NEW TestCreateServer::test_default_reader_is_the_routed_reader (on the ducklake_telemetry route, an event tool and an
+    ops tool reach their own fake readers through the merged describe, and the ops reader's describe is called exactly
+    once at startup) and TestCreateServer::test_ops_tools_survive_an_unavailable_event_reader
     (catalog resolution, the event reader's URL and its describe each raise in turn: the ops tools are served, no event
     tool is, and one stderr line names the class).
 - file: tests/telemetry_verify/test_main.py
@@ -327,8 +354,8 @@ scope:
   purpose: >-
     Fakes carry the catalog in describe and in telemetry_health_count rows and a binding on the telemetry route. NEW
     test_catalog_mismatches_stop_before_any_registration (parametrised: a writer catalog other than the deploy output, a
-    mis-paired data path, a health row in another catalog, a telemetry-route binding in another catalog; each stops with
-    its class before register_tenant), test_deploy_records_follow_the_routed_reader and
+    mis-paired data path, a health row in another catalog, zero health rows, a missing event table, a telemetry-route
+    binding in another catalog; each stops with its class before register_tenant), test_deploy_records_follow_the_routed_reader and
     test_an_unresolved_catalog_stops_with_a_class_only_line (main returns 1, prints only GOLDEN_STOP
     class=catalog_unresolved, files golden_replay_error, no traceback);
     test_live_env_resolves_urls_and_reads_deploy_records sets DUCKLAKE_TELEMETRY_CATALOG and patches
@@ -373,7 +400,9 @@ acceptance_criteria:
 - >-
   Capture accepts the writer's describe only for a known catalog with its paired data path (RN-5), records the catalog
   each tree was sent to, and re-sends the whole tree with its pins kept when the writer's catalog changes (RN-9), with
-  no halt; the in-session check never reads a tree with a session id or ledger floors cached under another catalog
+  no halt except a grain conflict (grain_conflict_after_catalog_reset, reachable on a flip rollback); a reset in the
+  in-hook SessionEnd pass detaches to the final pass's own budget; the in-session check never reads a tree with a
+  session id or ledger floors cached under another catalog
   (ST-6); with the writer on ducklake_smoke nothing changes for live sessions.
 - >-
   Every telemetry read client (MCP tools, monitor, completeness, in-session check, preflight gauge, golden replay)
@@ -419,9 +448,12 @@ verification_plan:
   phase: pre-deploy
   action: PR deploy output. Lint, Terraform format and the full tier before its commit.
   command: >-
-    bin/venv-python -m ruff check tests/checks/iam_tf && bin/venv-python -m ruff format --check tests/checks/iam_tf &&
-    terraform -chdir=terraform/personal fmt -check && bin/venv-python -m scripts.validate
-  expected: ruff and fmt exit 0, then the full tier ends with "All checks passed." and exit 0.
+    bin/venv-python -m ruff check tests/checks/iam_tf && bin/venv-python -m ruff format --check tests/checks/iam_tf && {
+    ! command -v terraform >/dev/null || terraform -chdir=terraform/personal fmt -check; } && bin/venv-python -m
+    scripts.validate
+  expected: >-
+    ruff exits 0, fmt exits 0 where a terraform binary exists (the DEV container has none; CI's terraform-validate runs
+    fmt), then the full tier ends with "All checks passed." and exit 0.
   fix_if: Fix at root and rerun the full tier from the start (handoff_policy).
   hermetic: false
   graduation: not-applicable
@@ -467,14 +499,15 @@ verification_plan:
 - step: 7
   phase: pre-deploy
   action: >-
-    PR catalog awareness. Capture records the writer's catalog, re-sends the whole tree when it changes and schedules
-    a check on that pass.
+    PR catalog awareness. Capture records the writer's catalog, re-sends the whole tree when it changes (detaching
+    first under the SessionEnd hook's budget) and schedules a check on that pass.
   command: >-
     bin/venv-python -m pytest tests/telemetry_capture/test_runner_catalog.py::test_a_pass_records_the_catalog_describe_answered
     tests/telemetry_capture/test_runner_catalog.py::test_a_catalog_change_resends_the_whole_tree_keeping_pins
     tests/telemetry_capture/test_runner_catalog.py::test_a_conflict_after_a_catalog_reset_halts_with_its_own_reason
     tests/telemetry_capture/test_runner_catalog.py::test_a_no_rows_pass_keeps_the_recorded_catalog
     tests/telemetry_capture/test_runner_catalog.py::test_a_catalog_reset_pass_schedules_a_check
+    tests/telemetry_capture/test_runner_catalog.py::test_a_catalog_reset_under_a_detach_budget_detaches
     tests/telemetry_capture/test_state.py::test_state_records_the_catalog_and_reads_absent_as_smoke
     tests/turn_capture/test_record_turn.py::test_resend_tree_re_emits_every_row_keeping_pins_and_cuts -q
   expected: Exit 0. Red before because the module and nodes are absent.
@@ -485,11 +518,12 @@ verification_plan:
 - step: 8
   phase: pre-deploy
   action: >-
-    PR catalog awareness. The in-session check skips a tree sent to another catalog and never uses a session id or
-    ledger floors cached under another catalog.
+    PR catalog awareness. The in-session check resolves the catalog before its lock and only with credentials, skips a
+    tree sent to another catalog and never uses a session id or ledger floors cached under another catalog.
   command: >-
     bin/venv-python -m pytest tests/telemetry_capture/test_verify_catalog.py::test_a_tree_recorded_in_another_catalog_is_skipped
     tests/telemetry_capture/test_verify_catalog.py::test_a_catalog_reset_never_reads_a_cached_session_from_the_old_catalog
+    tests/telemetry_capture/test_verify_catalog.py::test_the_catalog_resolves_before_the_lock_and_only_with_credentials
     tests/telemetry_capture/test_state.py::test_verify_view_drops_catalog_keyed_fields_on_a_catalog_change -q
   expected: Exit 0. Red before because the module and node are absent.
   fix_if: >-
@@ -538,31 +572,33 @@ verification_plan:
   graduation_check_id: telemetry-read-clients-use-the-route
 - step: 11
   phase: pre-deploy
-  action: PR catalog awareness. Golden replay asserts its catalog before any registration.
+  action: >-
+    PR catalog awareness. Golden replay asserts its catalog before any registration and reports an unresolved catalog
+    as one class-only line (the Decision 101 public-log guard).
   command: >-
     bin/venv-python -m pytest
-    tests/ducklake_neon_smoke_test/test_lambda_telemetry_golden_gates.py::test_catalog_mismatches_stop_before_any_registration -q
-  expected: Exit 0, every parametrised case passes. Red before because the node is absent.
-  fix_if: The assertion must run before register_tenant; fix start(), never the fakes' catalog.
+    tests/ducklake_neon_smoke_test/test_lambda_telemetry_golden_gates.py::test_catalog_mismatches_stop_before_any_registration
+    tests/ducklake_neon_smoke_test/test_lambda_telemetry_golden_gates.py::test_an_unresolved_catalog_stops_with_a_class_only_line -q
+  expected: Exit 0, every case passes. Red before because the nodes are absent.
+  fix_if: >-
+    The assertion must run before register_tenant (fix _Run.start, never the fakes' catalog); the live env is built
+    inside main's ReplayStop handling and never prints the source value.
   hermetic: false
   graduation: graduate
   graduation_check_id: golden-replay-asserts-catalog-before-registration
 - step: 12
   phase: pre-deploy
-  action: >-
-    PR catalog awareness. Golden replay reads the routed reader's deploy record and reports an unresolved catalog as one
-    class-only line.
+  action: PR catalog awareness. Golden replay reads the routed reader's deploy record and builds its live env through it.
   command: >-
     bin/venv-python -m pytest
     tests/ducklake_neon_smoke_test/test_lambda_telemetry_golden_gates.py::test_deploy_records_follow_the_routed_reader
-    tests/ducklake_neon_smoke_test/test_lambda_telemetry_golden_gates.py::test_an_unresolved_catalog_stops_with_a_class_only_line
     tests/ducklake_neon_smoke_test/test_lambda_telemetry_golden_gates.py::test_live_env_resolves_urls_and_reads_deploy_records -q
-  expected: Exit 0, three passed. Red before because two nodes are absent.
-  fix_if: Build the live env inside main's ReplayStop handling; never print the source value.
+  expected: Exit 0, two passed. Red before because one node is absent and the other patches the new route.
+  fix_if: Read the deploy record of the routed reader's event_function; keep live_env's URL exports.
   hermetic: false
   graduation: waive
   graduation_waiver_reason: >-
-    Wiring nodes over the same module as step 11: step 11's entry guards the catalog assertion and
+    Wiring nodes over the same module as step 11: step 11's entry guards the catalog assertion and the class-only stop,
     telemetry-golden-replay-over-fakes guards the replay, the full tier runs the whole file, and a third entry over one
     module adds no independent signal.
 - step: 13
@@ -611,8 +647,11 @@ verification_plan:
   action: >-
     PR catalog awareness merged: in this live cloud session, after checking out main and ending one turn, a Stop pass
     after the merge time (MERGE_TS, epoch seconds, set before the command) sent to smoke under the new RN-5 and recorded
-    the catalog; the in-session check completes through the routed reader; golden replay passes with its catalog
-    assertion; the routed client reaches the deployed telemetry reader.
+    the catalog. The in-session check completes through the routed reader with compare_skipped=producer_modified, which
+    is expected for this tree (this session edited record_turn.py, so the runner set producer_changed and the compare is
+    skipped for the rest of the tree's life); the routed event reads are proven by the golden replay leg, which reads
+    every session verb through the routed reader with its catalog assertion; the routed client then reaches the deployed
+    telemetry reader.
   command: >-
     test -n "$MERGE_TS" && export MERGE_TS && export TREE="$(ls -t "$HOME"/.claude/projects/*/*.jsonl | head -1)" &&
     bin/venv-python -c "import json,os,pathlib;t=pathlib.Path(os.environ['TREE']);d=t.parent/t.stem/'telemetry-capture';
@@ -620,14 +659,15 @@ verification_plan:
     r=[json.loads(x) for x in (d/'diagnostics.jsonl').read_text().splitlines() if x.strip()];r=[x for x in r if
     x.get('at',0)>=int(os.environ['MERGE_TS'])];assert any(x.get('outcome')=='sent' for x in r), 'no sent pass';
     assert not any('describe_mismatch' in (x.get('diag') or {}) for x in r), 'describe_mismatch';print('CAPTURE_SMOKE_OK',len(r))"
-    && AWS_PROFILE=agent_platform bin/venv-python -m scripts.telemetry_capture verify --tree "$TREE" --no-alarms &&
+    && out="$(AWS_PROFILE=agent_platform bin/venv-python -m scripts.telemetry_capture verify --tree "$TREE" --no-alarms)" &&
+    echo "$out" && echo "$out" | grep -q "VERIFY status=completed compare_skipped=producer_modified" &&
     AWS_PROFILE=agent_platform bin/venv-python -m scripts.ducklake_smoke.lambda_telemetry_golden_gates --no-alarms
     --assert-zero-mismatches && AWS_PROFILE=agent_platform bin/venv-python -c "from scripts.telemetry_capture.read_route
     import TelemetryReader;v=TelemetryReader().describe();assert 'session_tree_rows' in v and 'transcript_content' not in
     v;print('TELEMETRY_READER_ROUTE_OK')"
   expected: >-
-    CAPTURE_SMOKE_OK, VERIFY status=completed, GOLDEN_SMOKE ... skew=0 mismatches=0 with exit 0, then
-    TELEMETRY_READER_ROUTE_OK.
+    CAPTURE_SMOKE_OK, a VERIFY line with status=completed compare_skipped=producer_modified, GOLDEN_SMOKE ... skew=0
+    mismatches=0 with exit 0, then TELEMETRY_READER_ROUTE_OK.
   fix_if: >-
     A describe_mismatch on smoke means RN-5 reads the wrong field: revert and fix before the flip. A telemetry reader
     resolution failure means its SSM parameter or PlatformDev's invoke is missing: report it to the reader-and-twin
@@ -751,7 +791,7 @@ context:
   Decision-scout: FLAGS_FOUND, dispositioned (/mnt/project-files/telemetry-slice2c/decision-scout-report-reads.md,
   first pass decision-scout-report.md). CITE 207, 212, 213, 215, 224, 228, 199, 84, 101. Decisions triaged: 180 of 180.
   Roadmap items intersected: 13; CONFLICT: 0; RELATED: 12.
-- 'gates: decision-scout=FLAGS_FOUND (dispositioned); plan-critique=REVISE after 2 rounds (round 3 of 3 pending)'
+- 'gates: decision-scout=FLAGS_FOUND (dispositioned); plan-critique=REVISE after 3 rounds (confirming round pending)'
 - 'ci_rca red_overlap (2026-10-19, round 3): {"verdict": "clear", "slo_hours": 4, "reds": []}'
 - >-
   Direction: Benjamin's "write the plan" (cmsg_012XgaFy8VaDQbxP5D8nC958BtcmGWkGnzJuQRx3VaxZyU) on the slice 2c split
@@ -759,8 +799,9 @@ context:
   deployed writer's describe and reads route by a Terraform-written deploy output, so the flip is one apply with no
   capture blackout. Evidence: /mnt/project-files/telemetry-slice2c/ (planning-facts.md, ADVICE.md Q8, ADVICE-reads.md).
 - >-
-  Closes no criterion, as earlier T2.36 follow-ons did (append-inline, stop-turn-close, in-session-source-check,
-  read-side-session-end); c2 is PLAN-telemetry-production-flip's.
+  Closes no criterion (closes_criteria is empty), as earlier T2.36 follow-ons did; c2 is PLAN-telemetry-production-flip's.
+  rec-4292 is the five slice 2c plans' carrier, bundled and closed by PLAN-telemetry-production-flip; this plan
+  discharges that plan's ledger row L27 (re-point RN-5 when the writer rebinds production).
 - >-
   Decision B = the numbered Decision PLAN-telemetry-reader-and-smoke-twin ratifies (smoke twin proofs, the telemetry
   reader identity, no production content, read-side tenancy). Fixed names: catalog ducklake_telemetry,
@@ -768,12 +809,12 @@ context:
 - >-
   Decided with notice: the deploy output takes no project-configuration row (not_configuration.deploy_output, Decision
   224 cl.1) and DUCKLAKE_TELEMETRY_CATALOG is its override, as DUCKLAKE_READER_URL is the reader URL's; a catalog change
-  re-sends the whole tree (ADVICE Q8; Decision 207 no-ops identical rows and a new catalog sees every row first); the
-  in-session check's cached session id and ledger floors are keyed by catalog (ST-6) rather than cleared by the runner,
-  because the runner does not own them.
+  re-sends the whole tree (ADVICE Q8; Decision 207); the check's cached session id and ledger floors are keyed by
+  catalog (ST-6), because the runner does not own them.
 - >-
-  Known effects: editing record_turn.py changes the producer fingerprint, so the in-session check skips its compare
-  once (producer_modified) for trees in flight at the merge; an MCP server started before the flip keeps its routing
+  Known effects: editing record_turn.py changes the producer fingerprint, so for every tree in flight at the merge the
+  runner sets producer_changed and the in-session check skips its compare (producer_modified) for the rest of that
+  tree's life; trees started after the merge compare as usual. An MCP server started before the flip keeps its routing
   until the session restarts. At the flip every live session re-sends its whole tree on its first post-flip pass
   against the writer's reserved concurrency of 5 (429s and OCC retries stop the pass and the next one resumes); a tree
   too large for one 600 s budget re-sends from scratch each pass, as a lost cursor does today. A session whose checkout

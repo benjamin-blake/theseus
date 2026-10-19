@@ -105,7 +105,10 @@ scope:
     verb outside SERVED_VERBS answers 400 {error_type: unknown_verb, served} before any connection and never echoes the
     caller's verb; otherwise ev.acquirer_for("named_read", payload, _no_ops_slot, EXTENSION_DIRECTORY,
     pin=ev.require_production_pin, dsn_secret_id=TELEMETRY_DSN_SECRET_ID, read_only=True), whose pin check and params
-    validation run before any connection; rows from ev.execute with ev.event_read_version). _no_ops_slot raises: this
+    validation run before any connection; rows from ev.execute(con, verb=..., params=..., limit=payload's limit) with
+    ev.event_read_version: limit passes through, accepted for the three paginable served verbs (sessions_window,
+    sessions_window_all_purposes, model_call_cost_estimate) and answered 500 runtime (ev.execute's DuckLakeRuntimeError)
+    on any other, the shared reader's shape). _no_ops_slot raises: this
     function has no ops slot. Any other action answers 400 with the sorted action list and never echoes the action.
     Deadline wiring copied from the shared reader as PLAN-telemetry-cold-read-deadline merged it: handler() passes
     getattr(context, "get_remaining_time_in_millis", None) into _handle (the Lambda context is read only here, Decision
@@ -125,11 +128,12 @@ scope:
   purpose: >-
     PR 1. artifact ducklake-telemetry-reader.zip, functions [agent-platform-ducklake-telemetry-reader], the handler,
     includes = the handler's import closure: the module-scope closure --check-bundles proves (ducklake_runtime and its
-    closure, ducklake_event_reads, ducklake_read_deadline.py, which ducklake_event_reads imports at module scope once
-    PLAN-telemetry-cold-read-deadline merged, ducklake_event_read_sql, ducklake_handler_errors, ducklake_metrics,
-    src/row_rules, src/telemetry identity and timestamps, field_semantics.yaml and version.yaml assets) plus the
-    function-local imports the bundle check cannot see (ducklake_event_read_verbs via _event_reads, ducklake_named_reads
-    via _described_params, scripts/__init__.py and scripts/aws_profile.py via rt.fetch_dsn), and NEVER ducklake_event_content.py,
+    closure, ducklake_named_reads among it, which ducklake_runtime imports at module scope, ducklake_event_reads,
+    ducklake_read_deadline.py, which ducklake_event_reads imports at module scope once PLAN-telemetry-cold-read-deadline
+    merged, ducklake_event_read_verbs, which the handler imports at module scope for SERVED_VERBS,
+    ducklake_event_read_sql, ducklake_handler_errors, ducklake_metrics, src/row_rules, src/telemetry identity and
+    timestamps, field_semantics.yaml and version.yaml assets) plus the function-local imports the bundle check cannot
+    see (scripts/__init__.py and scripts/aws_profile.py via rt.fetch_dsn), and NEVER ducklake_event_content.py,
     ducklake_telemetry_blobstore.py, src/telemetry/blobs.py or src/telemetry/request.py (the structural half of "no
     content served"); config [], runtime_config [/agent-platform/ducklake/telemetry_reader_url], status active, notes
     citing Decision N+1.
@@ -169,6 +173,14 @@ scope:
     PR 1. Builds ducklake-telemetry-reader.zip from its manifest, adds it to the artifacts tuple, the progress lines and
     the --ducklake-only help text (seven zips + three layers). update_lambda_functions is untouched in PR 1: the deploy
     map entry lands in PR 2, after the gated apply has created the function.
+- file: scripts/ci/ducklake_artifacts.py
+  action: Modify
+  purpose: >-
+    PR 1, docstrings only: the module docstring's zip counts (line 8's build output, line 41's "nine built zips") and
+    upload_only's (line 261, "all nine zips, including the two outside DUCKLAKE_ARTIFACT_NAMES") move to ten zips with
+    three outside the tuple, ducklake-telemetry-reader.zip joining line 11-12's list beside
+    ducklake-maintenance-smoke.zip and ducklake-telemetry-writer.zip. DUCKLAKE_ARTIFACT_NAMES and every code path are
+    unchanged.
 - file: docs/contracts/build-lambda.yaml
   action: Modify
   purpose: >-
@@ -186,7 +198,11 @@ scope:
     response_too_large (413) and read_deadline_exceeded (504, named_read: an event read still running at the deadline,
     the Lambda's remaining time at the attempt's start minus 10 s or the caller's deadline_ms if earlier, is
     interrupted; {error_type, reason: reader_deadline, request_id, action}; never retried; narrow the window), with
-    named_read's payload_schema_ref naming the optional deadline_ms (a positive integer of milliseconds, per attempt);
+    named_read's payload_schema_ref {action: "named_read", verb, params?, limit?, deadline_ms?} naming the optional
+    limit (a server-side integer LIMIT accepted only for a paginable verb; on any other verb a 500 runtime answer,
+    ducklake_reader.yaml's named_read wording) and the optional deadline_ms (a positive integer of milliseconds, per
+    attempt), and a 500 runtime row (non-object params, or limit on a non-paginable verb) beside version_mismatch
+    (500);
     audit_invariants: no caller SQL and no ops verb (Decision 84 I-3); the served set is EVENT_READS minus
     transcript_content and no content module is bundled (Decision N+1 cl.3, rec-4481); a SELECT-only login on
     ducklake_telemetry with a READ_ONLY attach (Decision N); S3 Get and List on the production telemetry data prefix
@@ -227,8 +243,11 @@ scope:
     waits on the twin's gates; deploys telemetry-writer and telemetry-reader; output deployed). NEW telemetry-smoke
     (needs [deploy-telemetry, smoke]; if !cancelled() and deploy-telemetry deployed; freshness for both; URL loop for
     telemetry_writer, telemetry_reader and reader; --lambda-telemetry against the writer, unchanged until
-    PLAN-telemetry-production-flip makes it light; then --lambda-telemetry-reader). The header's job description is rewritten for nine jobs. No
-    trigger path, role or permission changes.
+    PLAN-telemetry-production-flip makes it light; then --lambda-telemetry-reader). The header's job description is
+    rewritten for nine jobs and says that deploy-telemetry's implicit success() covers its whole upstream chain, so a
+    red maintenance gate (maintenance-smoke) also blocks the production telemetry deploy, which today deploys in
+    deploy-serving independent of it; intended: production telemetry never deploys past a red owner step. No trigger
+    path, role or permission changes.
 - file: config/composite_action_body_baseline.yaml
   action: Modify
   purpose: >-
@@ -250,8 +269,9 @@ scope:
   purpose: >-
     PR 2. deploy_code's recovery text names the serving set (writer, reader, catalog-dr) and the telemetry set
     (telemetry-writer, telemetry-reader) the reconcile gate refuses, and the ungated twin; deploy_code.status counts
-    eight DuckLake Lambdas and 10 functions under the merged deploy role (today "six" and "8"); an amendment_log row.
-    No channel or role semantics change.
+    eight DuckLake Lambdas and 10 functions under the merged deploy role (today "six" and "8"), and states that a red
+    maintenance gate blocks the production telemetry deploy (intended); an amendment_log row. No channel or role
+    semantics change.
 - file: scripts/convergence_health/code_drift.py
   action: Modify
   purpose: >-
@@ -304,13 +324,15 @@ scope:
     never runs, the slot is marked for the catalog probe); test_reopen_once_runs_under_the_deadline (remaining time above
     the margin on the first attempt, whose query raises the dead-session error, and below it on the second: the slot
     reopens, then 504); test_describe_and_attach_check_run_without_a_deadline (both answer 200 under a context already
-    past the margin).
+    past the margin). The list is a floor: the file covers every handler branch at 100% from its mapped test (the
+    bad-body 400, version_mismatch 500, runtime 500 and limit passthrough included).
 - file: tests/lambdas/ducklake_telemetry_reader/test_packaging.py
   action: Create
   purpose: >-
     PR 1. test_manifest_bundles_the_event_reads_and_no_content_module (handler, the event-read modules, assets,
-    src/common/ducklake_read_deadline.py and the function-local imports --check-bundles cannot prove -- scripts/__init__.py,
-    scripts/aws_profile.py, src/common/ducklake_event_read_verbs.py and src/common/ducklake_named_reads.py -- present;
+    src/common/ducklake_read_deadline.py, the function-local imports --check-bundles cannot prove (scripts/__init__.py
+    and scripts/aws_profile.py) and, pinned explicitly, src/common/ducklake_event_read_verbs.py and
+    src/common/ducklake_named_reads.py present;
     ducklake_event_content, ducklake_telemetry_blobstore, src/telemetry/blobs.py and request.py absent);
     test_data_pipeline_excludes_the_package; test_handler_module_affects_only_this_artifact.
 - file: tests/common/test_ducklake_event_reads.py
@@ -400,7 +422,11 @@ scope:
     to the old path and repoints it the same way.
 - file: tests/test_build_lambda.py
   action: Modify
-  purpose: PR 1. The artifact counts move from 9 to 10 (seven function zips + three layers), each count's comment updated.
+  purpose: >-
+    PR 1. The artifact counts move from 9 to 10 (seven function zips + three layers) at :73 and :99, each count's
+    comment updated; test_run_ducklake_build_skip_upload, test_run_ducklake_build_upload_and_deploy and
+    test_run_ducklake_build_bucket_missing_exits each gain a seventh fake zip in their build_ducklake_function_package
+    side_effect lists (planned-change).
 - file: tests/lambdas/ducklake_telemetry_writer/test_packaging.py
   action: Modify
   purpose: >-
@@ -682,7 +708,8 @@ verification_plan:
     tests/checks/iam_tf/test_telemetry_reader_and_twin_pins.py tests/checks/iam_tf/test_telemetry_writer_invoke_grants.py
     tests/checks/iam_tf/test_ducklake_writer_error_alarms.py tests/checks/iam_tf/test_telemetry_infra_pins.py
     tests/verify_ci_workflow/test_ducklake_row_rules_wiring.py tests/test_coverage_checker/test_coverage_checker_map.py
-    tests/lambda_manifest -q && diff <(git show origin/main:tests/common/test_ducklake_event_reads.py | grep -oE
+    tests/test_ducklake_artifacts.py tests/lambda_manifest -q && test ! -e tests/common/test_ducklake_event_reads.py &&
+    diff <(git show origin/main:tests/common/test_ducklake_event_reads.py | grep -oE
     '^def test_[A-Za-z0-9_]+' | sort) <(cat tests/common/ducklake_event_reads/test_binding.py
     tests/common/ducklake_event_reads/test_describe.py tests/common/ducklake_event_reads/test_routing.py | grep -oE
     '^def test_[A-Za-z0-9_]+' | sort) && test -z "$(git grep -l 'tests/common/test_ducklake_event_reads.py' -- config
@@ -691,8 +718,8 @@ verification_plan:
     src/lambdas/ducklake_telemetry_reader/handler.py && bin/venv-python -m scripts.lambda_manifest --check-bundles &&
     bin/venv-python -m scripts.validate --pre
   expected: >-
-    Every test passes, SPLIT_PRESERVES_NODES (origin/main carries the cold-read build's nodes, so both sides match, and
-    no file outside docs/plans still names the old path),
+    Every test passes, SPLIT_PRESERVES_NODES (the old file is gone, origin/main carries the cold-read build's nodes, so
+    both sides match, and no file outside docs/plans still names the old path),
     both files at 100% from their mapped tests, every bundle resolves, and the fast tier exits 0 (Decision size,
     decisions index, scope, registry admission).
   fix_if: Any failure; fix the cause, never a pin.
@@ -915,6 +942,11 @@ test_obligations:
   verification_step: 6
   command: bin/venv-python -m scripts.validate --pre
   waiver_reason: Prose only; validate_deploy_channel_conformance checks the .tf files themselves and the drift validator checks the amendment row.
+- source: scripts/ci/ducklake_artifacts.py
+  behavior: Docstrings only; the artifact tuple and every code path are unchanged.
+  verification_step: 6
+  test_selector: tests/test_ducklake_artifacts.py
+  waiver_reason: A docstring-only edit; the module's existing tests (run whole in step 6) prove its behaviour did not move.
 - source: docs/contracts/build-lambda.yaml
   behavior: The artifact list and the deploy map name the new zip and both new functions, equal to build_lambda_config.
   verification_step: 9
@@ -1078,7 +1110,8 @@ context:
 - "Carrier rec-4292; split, names and Decision boundaries: /mnt/project-files/telemetry-slice2c/ (step6b-presentation.md, ADVICE.md, ADVICE-reads.md); Benjamin's write-the-plan cmsg_012XgaFy8VaDQbxP5D8nC958BtcmGWkGnzJuQRx3VaxZyU and golden-replay card answer (tagged synthetic in production). The coordinator split the earlier single plan into this one and PLAN-telemetry-production-maintenance (2026-10-19)."
 - "Order: docs/plans/PLAN-telemetry-production-catalog.yaml (Decision N, logins, catalog, bootstrap fence and boundary names, admin session) -> this plan -> docs/plans/PLAN-telemetry-production-maintenance.yaml (maintenance and alarms, closes c5, cites Decision N+1) -> PLAN-telemetry-catalog-aware-capture -> PLAN-telemetry-production-flip (flip, light writer gate, shared-reader slot retirement)."
 - "Decision-scout: FLAGS_FOUND, dispositioned (/mnt/project-files/telemetry-slice2c/decision-scout-report.md and decision-scout-report-reads.md). CITE 213, 81, 91, 126, 143, 84, 200, 209, 88, 214, 191, 192, 207, 222, 144, 223, 79, 125, 212, 167, 177. Decisions triaged: 180 of 180. Roadmap items intersected: 13; CONFLICT: 0; RELATED: 12."
-- "gates: decision-scout=FLAGS_FOUND (dispositioned); plan-critique=PENDING"
+- "gates: decision-scout=FLAGS_FOUND (dispositioned); plan-critique=PROCEED after 3 rounds (round 3 nits folded in)"
+- "Decision 79, data-pipeline: affected only through its manifest's excludes edit (src/lambdas/data-pipeline/manifest.yaml gains the telemetry reader package); the zip is unchanged and deploy-prod-lambdas.yml does not trigger on manifest edits (its paths are src/data/handlers/**, a fixed scripts list and config/lambda/data-pipeline/**), so it owes no deploy. The DuckLake artifacts deploy through the governed channel (deploy-ducklake-lambdas.yml)."
 - "Scout dispositions here: 181 (a) the twin's blob readback uses the shared reader's smoke slot until PLAN-telemetry-production-flip retires that slot, with rec-4481 owning any later content read; (b) the light gate's checks are PLAN-telemetry-production-flip's; (c) cl.5 is authorized here and built by PLAN-telemetry-production-maintenance. 216 is PLAN-telemetry-production-catalog's. 223: PlatformDev's invoke and IAMRolesRead come from PLAN-telemetry-production-catalog's bootstrap apply."
 - "Live facts: the shared reader opens its telemetry slot on the shared DSN behind require_smoke_pin; describe returns no catalog binding today; core._function_url resolves DUCKLAKE_<ROLE>_URL then a terraform output; adding a DuckLake function touches build-lambda.yaml, build_lambda_config, build_lambda, the drift sensor, environment-taxonomy and the workflow's legs, freshness and URL loops."
 - "Graduation split: PR 2 flips implementation_declared, so only steps 11 and 13 (nodes and registry rows new in PR 2) graduate; steps 1-5's nodes land in PR 1, which adds their registry rows and waives the steps (validate_graduation_completeness's implement leg reads only the flipping PR's new rows; the PLAN-telemetry-transcript-content PR A precedent)."
@@ -1090,7 +1123,7 @@ context:
 - "Parallel threads touching shared files: CI write narrowing (oidc_ci_roles.tf), query_ops retirement (shared reader). The second to land rebases."
 - "PLAN-telemetry-cold-read-deadline (rec-4474, plan merged at ff51756d): its build is expected to merge first and this plan's build rebases onto it. telemetry_acquirer and test_telemetry_acquirer_defaults_are_byte_identical then reproduce its merged opener (threads 8, serial catalog scans) and interrupted-slot catalog probe, the telemetry reader manifest includes src/common/ducklake_read_deadline.py, and the handler wires ev.deadline_guard so cold production window reads end in a typed 504 instead of a timeout. If its build has not merged, this plan's build waits for it rather than carrying the wiring itself."
 - "Test split (Decision 128): tests/common/test_ducklake_event_reads.py is 392 SLOC on origin/main; with the cold-read build's six nodes and this plan's three it would cross 500, so PR 1 moves it to the concern-split package tests/common/ducklake_event_reads/ (the src/common/ducklake_reader_client.py precedent) before adding nodes, repointing four registry entries."
-- "Red-overlap (scripts.ci_rca.red_overlap, 2026-10-19, re-run after critique round 2): {\"verdict\": \"clear\", \"slo_hours\": 4, \"reds\": []}"
+- "Red-overlap (scripts.ci_rca.red_overlap, 2026-10-19, re-run after critique round 3): {\"verdict\": \"clear\", \"slo_hours\": 4, \"reds\": []}"
 pre_implementation_checklist:
 - Branch confirmed not on main; harness branch only.
 - docs/PROJECT_CONTEXT.md read; only Decisions 81, 91, 143, 199, 200, 209, 213, 216 and Decision N read in full.
@@ -1107,9 +1140,11 @@ execution_steps:
   planner IAMRolesRead entries for both new roles). Reuse each one that exists unchanged; add only what is absent. If a
   name this plan needs is missing and is not one of this plan's rows (for example IAMRolesRead), stop and send it to
   the coordinator (scope escalation rule); a missing read_only keyword is that case. Read the `key: value` lines
-  reader_read_only_attach and reader_read_only_attach_stage from
-  /mnt/project-files/telemetry-slice2c/ADMIN-SESSION-RECORD.md: reader_read_only_attach: accepted continues; any other
-  value, or either key absent, stops the build and returns this plan to planning (AC2, the contract invariant, attach_check, the gate's red case and VP
+  reader_read_only_attach, reader_read_only_attach_stage, login_ducklake_telemetry_writer_connection_limit and
+  login_ducklake_telemetry_reader_connection_limit from /mnt/project-files/telemetry-slice2c/ADMIN-SESSION-RECORD.md:
+  reader_read_only_attach: accepted with the two limits at 20 and 10 continues; any other value, or any of the four
+  keys absent, stops the build and returns this plan to planning (the limits size the twin's fan-out and the reader's
+  reserved concurrency) (AC2, the contract invariant, attach_check, the gate's red case and VP
   step 16 all require the READ_ONLY attach). Confirm PLAN-telemetry-cold-read-deadline's build is merged
   (src/common/ducklake_read_deadline.py exists and ducklake_event_reads defines TELEMETRY_THREADS and deadline_guard)
   and rebase onto it; if it has not merged, wait for it and tell the coordinator, never carry its wiring here.
@@ -1174,7 +1209,7 @@ execution_steps:
      binds the production telemetry catalog.
   3. Content tier (amends Decision 199 cl.5). Production serves no transcript content until a named consumer
      needs it; content then gets a dedicated reader with an access log (rec-4481), by a later Decision.
-  4. Tenancy (annotates Decision 200 cl.2). In a single-tenant data plane (Decision 209 cl.2(c)) read-side
+  4. Tenancy (amends Decision 200 cl.2). In a single-tenant data plane (Decision 209 cl.2(c)) read-side
      tenancy is the function and principal boundary: no tenant predicate is built into the read verbs.
   5. Maintenance (re-grounds T2.36 c5). merge_ops every 6 hours and guarded weekly gc_ops (G1-G4, Decision 188)
      run on ducklake_telemetry before its first event row; telemetry-catalog maintenance metrics carry a

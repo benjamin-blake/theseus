@@ -37,7 +37,9 @@ scope:
   purpose: >-
     PR 1. NEW catalog_dimensions(meta_schema) -> {"MetaSchema": meta_schema} for a valid identifier other than
     rt.META_SCHEMA, else None (the ops series stays undimensioned: T2.18 c2 and rec-3870 read it). NEW CATALOG_METRICS,
-    the closed set a non-ops catalog emits (cardinality bound): MaintenanceBreakerTrip, GcReferencedMissing,
+    the closed set merge_ops, gc_ops and the breaker sink emit for a non-ops catalog (cardinality bound; control_health's
+    existing per-schema StatsIndexValid, FileColumnStatsIdxScan and FileColumnStatsSeqScan, already dimensioned by
+    MetaSchema, are outside it and unchanged): MaintenanceBreakerTrip, GcReferencedMissing,
     GcDeletedSnapshots, GcDeferredFiles, MergeOpsPassFailed, MergeOpsTablesCount, MergeOpsFilesAfterTotal,
     MergeOpsDurationMs and CatalogFileColumnStatsRows (the seven alarm inputs, G4 drain pressure and rec-4218's
     merge-duration trigger).
@@ -56,9 +58,11 @@ scope:
   action: Modify
   purpose: >-
     PR 1. _report_stats_index also emits CatalogFileColumnStatsRows with MetaSchema=<schema> for the production
-    telemetry catalog only (rt.TELEMETRY_PROD_META_SCHEMA, when enumerated), from index_status.stats_rows_est; a None
-    estimate emits nothing; failures stay report-only (class and SQLSTATE). catalog_stats' undimensioned emissions and
-    the ops and smoke schemas' metrics are unchanged.
+    telemetry catalog only (rt.TELEMETRY_PROD_META_SCHEMA, when enumerated), from index_status.stats_rows_est, called
+    inside the existing cursor block after the index report in its own try/except: a failure there emits nothing, adds
+    growth_error {error_class, sqlstate} to the report and never reaches the outer except, which emits StatsIndexValid=0
+    for ducklake_ops on any exception inside its try (health_actions.py:81-93); a None estimate emits nothing.
+    catalog_stats' undimensioned emissions and the ops and smoke schemas' metrics are unchanged.
 - file: src/common/ducklake_catalog_index_status.py
   action: Modify
   purpose: >-
@@ -75,7 +79,7 @@ scope:
     (DuckLakeMaintenance MergeOpsFilesAfterTotal, MergeOpsDurationMs and CatalogFileColumnStatsRows; DuckLakeTelemetryWriter
     OccRetryCount and CommitLatencyMs), never the undimensioned series, which mixes in twin gate traffic once PR 1
     deploys; trigger 2 (a telemetry merge_ops pass above half its 900 s timeout) is watched by the
-    ducklake-telemetry-merge-duration alarm; trigger 3 (stats rows growing week over week for three weeks despite
+    ducklake-telemetry-merge-duration alarm (MergeOpsDurationMs excludes the pass's ATTACH, about 21 s at p95; accepted); trigger 3 (stats rows growing week over week for three weeks despite
     merge) counts only weeks starting at least SNAPSHOT_RETAIN_DAYS + 7 = 37 days after the first production event
     row, because superseded files' stats rows rise by construction through the 30-37-day retention ramp. Exactly three
     triggers and their numbers stay as recorded. amendment_log rows.
@@ -90,11 +94,19 @@ scope:
     ops series, G4 headroom (weekly dead files about 7 x D against G4_MAX_DELETE_FILES 20,000: above about 2,850 files a
     day every pass drains partially, Decision 193) and how Neon storage growth is detected (the stats-rows alarm on the
     dominant catalog table and egress driver, Decision 88 cl.1(iii)); no compute cap is claimed for storage (Decision
-    214 cl.3 caps compute, and its Terraform limit is still pending under rec-4220). amendment_log rows.
+    214 cl.3 caps compute, and its Terraform limit is still pending under rec-4220). Size budget
+    (validate_structural_size_limits, contracts class 500 effective lines, no roster entry): 434 today and about 490
+    after PLAN-telemetry-production-catalog, so this plan adds at most 10: the schedule names edit the four existing
+    lines in place, the payload, metric and control_health notes are single lines, the new audit invariant is one line,
+    and one amendment_log entry in PR 2 covers both PRs (PR 1 changes no description or semantics field, so
+    check_amendment_for_diff asks for none there; the PR 2 entry's change_class and semantic_break are consistent with
+    it). If the fast tier still reports the file over 500, compress the prose of the rows this plan touches; never a
+    budget raise (Decision 128).
 - file: terraform/personal/ducklake_maintenance_telemetry.tf
   action: Create
   purpose: >-
-    PR 2 (Decision N+1 cl.5, from PLAN-telemetry-reader-and-smoke-twin). On the admin maintenance function, with no IAM
+    PR 2 (Decision N+1 cl.5, from PLAN-telemetry-reader-and-smoke-twin; its header comment cites the number execution
+    step 1 resolves). On the admin maintenance function, with no IAM
     change (PLAN-telemetry-production-catalog granted the prefix). locals: telemetry_data_files_per_day,
     telemetry_stats_rows_per_day and telemetry_commit_latency_p95_ms_7d (literals from MEASUREMENT.md, execution step 6),
     telemetry_stats_retention_days = 37 (SNAPSHOT_RETAIN_DAYS 30 + 7: a superseded file's stats rows persist until the
@@ -113,15 +125,17 @@ scope:
     (MergeOpsPassFailed Maximum >= 1 per hour, notBreaching), ducklake-telemetry-merge-liveness (MergeOpsTablesCount
     SampleCount < 1 over two 6-hour periods, breaching: it is in ALARM from creation until the first :50 pass, the ops
     gc-liveness precedent), ducklake-telemetry-merge-duration (MergeOpsDurationMs Maximum above
-    telemetry_merge_duration_threshold_ms on one 6-hour period, notBreaching), ducklake-telemetry-files-after-merge
+    telemetry_merge_duration_threshold_ms on one 6-hour period, notBreaching; MergeOpsDurationMs starts after ATTACH,
+    discovery and classification, handler.py:361 and 418, so it under-reads a pass by about a cold ATTACH, about 21 s at
+    p95: accepted against the 450 s threshold, and the writer-contract trigger text says so), ducklake-telemetry-files-after-merge
     (MergeOpsFilesAfterTotal Maximum above telemetry_files_after_merge_threshold on two consecutive 6-hour periods) and
     ducklake-telemetry-catalog-stats-rows (CatalogFileColumnStatsRows Maximum above telemetry_stats_rows_threshold on
     four consecutive 6-hour periods).
 - file: terraform/personal/ducklake_telemetry_writer.tf
   action: Modify
   purpose: >-
-    PR 2. Alarms ducklake-telemetry-writer-occ (OccRetryCount Maximum >= 3 in an hour: two attempts short of the OCC
-    budget of 5) and ducklake-telemetry-writer-commit-latency (CommitLatencyMs p95 above ceil(2 *
+    PR 2. Alarms ducklake-telemetry-writer-occ (OccRetryCount Maximum >= 3 in an hour: an OccRetryCount of 3 is the
+    fourth of OCC_MAX_ATTEMPTS = 5, one attempt short of exhaustion, ducklake_writes.py:49) and ducklake-telemetry-writer-commit-latency (CommitLatencyMs p95 above ceil(2 *
     local.telemetry_commit_latency_p95_ms_7d / 1000) * 1000 for three consecutive hours), both on namespace
     DuckLakeTelemetryWriter with dimension MetaSchema = local.ducklake_telemetry_prod_meta_schema and treat_missing_data
     notBreaching, so they stay quiet until PLAN-telemetry-production-flip and never see the twin. Decision 214 cl.4 names
@@ -171,7 +185,9 @@ scope:
 - file: tests/lambdas/ducklake_maintenance/test_health_actions.py
   action: Modify
   purpose: >-
-    PR 1. NEW test_control_health_emits_growth_for_the_telemetry_catalog and test_growth_estimate_none_emits_nothing;
+    PR 1. NEW test_control_health_emits_growth_for_the_telemetry_catalog, test_growth_estimate_none_emits_nothing and
+    test_growth_estimate_failure_leaves_stats_index_valid_untouched (stats_rows_est raising: StatsIndexValid stays 1 for
+    every schema, no growth metric, growth_error carries class and SQLSTATE only);
     test_report_emits_three_metrics_per_schema_with_the_metaschema_dimension keeps len(emitted) == 6 (its fixture
     enumerates ops and smoke only, which emit no growth metric).
 - file: tests/common/test_ducklake_catalog_index_status.py
@@ -193,7 +209,9 @@ scope:
     measured inputs positive integers). Module-level nodes: test_admin_cadence_minutes_are_distinct (all five
     admin-function rules across both .tf files); test_dr_dump_precedes_the_telemetry_gc;
     test_liveness_alarms_treat_missing_data_as_breaching_within_the_period_cap;
-    test_alarm_descriptions_pin_no_threshold; test_committed_telemetry_dry_run_licenses_the_gc_enablement (fixture: ok,
+    test_alarm_descriptions_pin_no_threshold (over the ten alarms this plan adds only; existing alarms such as
+    ducklake-telemetry-writer-errors and the ops liveness alarms keep their own wording and are not read);
+    test_committed_telemetry_dry_run_licenses_the_gc_enablement (fixture: ok,
     dry_run, referenced_missing 0, unsized_candidates 0, the nine telemetry tables present, live_bytes > 0);
     test_ops_alarms_stay_undimensioned (the three ops alarms in ducklake_maintenance.tf carry no dimensions).
 - file: tests/checks/contracts/test_telemetry_writer_ingestion_shape.py
@@ -230,8 +248,9 @@ followon_recs:
 infrastructure_dependencies:
 - >-
   Pre-build: PLAN-telemetry-reader-and-smoke-twin's PR 1 is merged (Decision N+1 on main). Pre-merge (PR 1): that
-  plan's PR 2 is merged with its VP steps 15 and 16 green (the nine-job deploy topology and the twin's gate traffic,
-  which step 9 reads, exist only from then);
+  plan's PR 2 is merged with its VP 15 (the nine-job merge run, with the twin and reader gates green) and VP 16 (the
+  reader gate as PlatformDev) green; the nine-job run and the twin's gate traffic that step 9 reads exist only from
+  then;
   PLAN-telemetry-production-catalog's admin session created and seeded ducklake_telemetry, granted the admin
   maintenance role the ducklake-telemetry/ prefix, and recorded MEASUREMENT.md with D_files_per_day (D),
   R_stats_rows_per_day (R), window_start/window_end (the 7-day window) and commit_latency_p95_ms_7d. That plan no longer runs merge_ops
@@ -240,16 +259,18 @@ infrastructure_dependencies:
   Post-merge (PR 1): code only; the governed channel redeploys ducklake_maintenance, ducklake_maintenance_smoke, the
   telemetry writer and the twin. No Terraform change.
 - >-
-  Between PR 1 and PR 2: one read-only gc_ops dry_run on ducklake_telemetry by Benjamin (or an ADMIN-container agent at
-  his direction), on PR 1's deployed code, so its metrics land only in the MetaSchema series.
+  Between PR 1 and PR 2: one read-only gc_ops dry_run on ducklake_telemetry, invoked by Benjamin himself (Decision 81
+  cl.6: no agent invokes ducklake_maintenance outside its carved-out verbs, and gc_ops has no carve-out; the ops
+  precedent is PLAN-gc-ops-baseline-gate-and-schedule-enable), on PR 1's deployed code, so its metrics land only in the
+  MetaSchema series.
 - >-
   Post-merge (PR 2): rules, targets, Lambda permissions and alarms are non-IAM on existing roles and auto-apply under
   the guard; if the guard routes the Lambda permissions to the gated Environment, Benjamin approves it.
 acceptance_criteria:
 - >-
   T2.36:c5: merge_ops (every 6 hours) and guarded gc_ops (weekly, G1-G4, licensed by the committed dry-run baseline)
-  run on the production telemetry catalog ducklake_telemetry before its first event row; a non-ops catalog's
-  maintenance metrics carry MetaSchema and only CATALOG_METRICS names, while the ops series stays undimensioned and
+  run on the production telemetry catalog ducklake_telemetry before its first event row; merge_ops, gc_ops and breaker
+  emissions for a non-ops catalog carry MetaSchema and only CATALOG_METRICS names, while the ops series stays undimensioned and
   receives no telemetry datapoint; breach, liveness, merge-failure, merge-duration and the two growth alarms
   (thresholds from MEASUREMENT.md by the stated formulas) exist, plus the writer's OCC and latency alarms on its
   production series, and rec-4218's ingestion triggers read the production MetaSchema series; the
@@ -369,21 +390,25 @@ verification_plan:
     After the next :30 ops merge pass following the deploy, the ops series is continuous: an undimensioned
     MergeOpsTablesCount datapoint and no MetaSchema=ducklake_ops datapoint (PR 1 rewires the ops emission path, and the
     ops series has no merge-failure alarm to catch a regression). The implementer saves the run's jobs JSON to
-    DEPLOY_JOBS_JSON and exports DEPLOY_DONE_AT (the deploy-maintenance job's completion, ISO-8601 UTC).
+    DEPLOY_JOBS_JSON (GitHub MCP list_workflow_jobs for the run on PR 1's merge commit) and exports MERGE_SHA (that
+    commit) and DEPLOY_DONE_AT (the deploy-maintenance job's completion, ISO-8601 UTC).
   command: >-
     bin/venv-python -c "import json,os;j=json.load(open(os.environ['DEPLOY_JOBS_JSON']));
-    jobs={x['name']:x.get('conclusion') for x in (j.get('jobs') if isinstance(j,dict) else j)};
+    jl=j.get('jobs') if isinstance(j,dict) else j;jobs={x['name']:x.get('conclusion') for x in jl};
     want={'deploy-maintenance','maintenance-smoke','reconcile-gate','deploy-serving','smoke','deploy-telemetry-twin','telemetry-twin-smoke','deploy-telemetry','telemetry-smoke'};
+    assert {x.get('head_sha') for x in jl}=={os.environ['MERGE_SHA']},'jobs JSON is not the merge commit run';
     assert set(jobs)==want and all(jobs[w]=='success' for w in want),jobs;print('DEPLOY_OK')" && AWS_PROFILE=agent_platform
-    bin/venv-python -c "import boto3,datetime as d;cw=boto3.client('cloudwatch',region_name='eu-west-2');now=d.datetime.now(d.timezone.utc);
-    p=cw.get_metric_statistics(Namespace='DuckLakeTelemetryWriter',MetricName='CommitLatencyMs',Dimensions=[{'Name':'MetaSchema','Value':'ducklake_smoke'}],StartTime=now-d.timedelta(hours=6),EndTime=now,Period=3600,Statistics=['SampleCount'])['Datapoints'];
+    bin/venv-python -c "import boto3,os,datetime as d;cw=boto3.client('cloudwatch',region_name='eu-west-2');now=d.datetime.now(d.timezone.utc);
+    a=d.datetime.fromisoformat(os.environ['DEPLOY_DONE_AT'])-d.timedelta(hours=1);
+    p=cw.get_metric_statistics(Namespace='DuckLakeTelemetryWriter',MetricName='CommitLatencyMs',Dimensions=[{'Name':'MetaSchema','Value':'ducklake_smoke'}],StartTime=a,EndTime=now,Period=3600,Statistics=['SampleCount'])['Datapoints'];
     assert p,p;print('SMOKE_SERIES_OK',len(p))" && AWS_PROFILE=agent_platform bin/venv-python -c "import
     boto3,os,datetime as d;cw=boto3.client('cloudwatch',region_name='eu-west-2');a=d.datetime.fromisoformat(os.environ['DEPLOY_DONE_AT']);
     now=d.datetime.now(d.timezone.utc);q=lambda dm:cw.get_metric_statistics(Namespace='DuckLakeMaintenance',MetricName='MergeOpsTablesCount',Dimensions=dm,StartTime=a,EndTime=now,Period=3600,Statistics=['SampleCount'])['Datapoints'];
     o=q([]);x=q([{'Name':'MetaSchema','Value':'ducklake_ops'}]);assert o and not x,(o,x);print('OPS_SERIES_CONTINUOUS',len(o))"
   expected: DEPLOY_OK, SMOKE_SERIES_OK with at least one datapoint, then OPS_SERIES_CONTINUOUS with at least one datapoint.
   fix_if: >-
-    A job is red or skipped (RCA); no MetaSchema=ducklake_smoke datapoint (the EMF change did not deploy, or the twin gate
+    The jobs JSON names another commit (fetch the merge commit's run); a job is red or skipped (RCA); no
+    MetaSchema=ducklake_smoke datapoint since an hour before the deploy finished (the EMF change did not deploy, or the twin gate
     wrote no append); no undimensioned ops datapoint since the deploy (run it again after the next :30 pass; still none
     means PR 1 broke the ops emission: stop and RCA before the dry run); or a MetaSchema=ducklake_ops datapoint
     (catalog_dimensions dimensioned the ops catalog: stop and RCA, the T2.18 alarm and rec-3870 read the undimensioned
@@ -404,7 +429,8 @@ verification_plan:
 - step: 11
   phase: post-deploy
   action: >-
-    After PR 2: the first scheduled telemetry merge pass ran green and the ten alarms exist and are not in ALARM
+    After PR 2, run at least 30 minutes after the first :50 telemetry merge pass (the ops gc-liveness alarm left ALARM
+    about 21 minutes after its pass, rec-3870): that pass ran green and the ten alarms exist and are not in ALARM
     (merge-liveness has left the ALARM it holds from creation; gc-liveness may hold it until the first Sunday pass).
   command: >-
     AWS_PROFILE=agent_platform bin/venv-python -c "import boto3,datetime as d;cw=boto3.client('cloudwatch',region_name='eu-west-2');
@@ -426,12 +452,17 @@ verification_plan:
   phase: post-deploy
   action: PR 3 bookkeeping is on main.
   command: >-
-    git fetch origin main --quiet && git show origin/main:docs/ROADMAP-PLATFORM.yaml | bin/venv-python -c "import
-    sys,yaml;d=yaml.safe_load(sys.stdin);it=next(i for i in d['tier_items'] if i['id']=='T2.36');c=next(c for c in
+    git fetch origin main --quiet && git show origin/main:docs/DECISIONS.md > "${TMPDIR:-/tmp}/c5-dec.md" && git show
+    origin/main:docs/ROADMAP-PLATFORM.yaml | C5_DEC="${TMPDIR:-/tmp}/c5-dec.md" bin/venv-python -c "import
+    os,re,sys,yaml;n=re.search(r'^## Decision (\d+): Production telemetry is proved by a smoke canary',open(os.environ['C5_DEC'],encoding='utf-8').read(),re.M).group(1);
+    d=yaml.safe_load(sys.stdin);it=next(i for i in d['tier_items'] if i['id']=='T2.36');c=next(c for c in
     it['exit_criteria'] if c['id']=='c5');assert c['status']=='met' and c.get('met_by')=='telemetry-production-maintenance'
-    and 'PLAN-telemetry-production-maintenance' in c['text'],c;print('C5_MET')"
-  expected: C5_MET.
-  fix_if: The bookkeeping PR is unmerged, the met_by token is wrong, or the re-grounding prefix is missing; fix the PR.
+    and 'PLAN-telemetry-production-maintenance' in c['text'] and '(Decision '+n+' cl.5)' in c['text'] and 'N+1' not in
+    c['text'],c;print('C5_MET',n)"
+  expected: C5_MET and the resolved Decision number.
+  fix_if: >-
+    The bookkeeping PR is unmerged, the met_by token is wrong, the re-grounding prefix is missing, or it still carries
+    the N+1 placeholder instead of the resolved number; fix the PR.
 test_obligations:
 - source: src/lambdas/ducklake_telemetry_writer/telemetry_log.py
   behavior: A MetaSchema set is added beside the undimensioned one on the append metrics only.
@@ -439,19 +470,39 @@ test_obligations:
   test_selector: tests/lambdas/ducklake_telemetry_writer/test_telemetry_log.py::test_emf_adds_a_meta_schema_series_beside_the_undimensioned_one
   red_green_expectation: red before (node absent), green after
 - source: src/lambdas/ducklake_maintenance/_shared.py
-  behavior: Only a non-ops catalog gets the MetaSchema dimension, within the closed metric set.
+  behavior: Only a non-ops catalog gets the MetaSchema dimension.
   verification_step: 3
   test_selector: tests/lambdas/ducklake_maintenance/test__shared.py::test_catalog_dimensions_keep_the_ops_series_undimensioned
   red_green_expectation: red before (node absent), green after
+- source: src/lambdas/ducklake_maintenance/_shared.py
+  behavior: CATALOG_METRICS is the closed set of the alarm inputs, G4 drain pressure and the merge-duration trigger.
+  verification_step: 1
+  test_selector: tests/lambdas/ducklake_maintenance/test__shared.py::test_catalog_metrics_is_the_closed_alarm_input_set
+  red_green_expectation: red before (node absent), green after
 - source: src/lambdas/ducklake_maintenance/handler.py
-  behavior: merge_ops, gc_ops and the breaker trip emit through the re-bound catalog sink; ops calls are unchanged.
+  behavior: merge_ops on a telemetry catalog emits only CATALOG_METRICS names, each with MetaSchema; ops calls are unchanged.
   verification_step: 1
   test_selector: tests/lambdas/ducklake_maintenance/handler/test_operational_actions.py::test_merge_ops_on_a_telemetry_catalog_dimensions_every_metric
+  red_green_expectation: red before (node absent), green after
+- source: src/lambdas/ducklake_maintenance/handler.py
+  behavior: gc_ops on a telemetry catalog passes the catalog-bound sink as metric_sink.
+  verification_step: 1
+  test_selector: tests/lambdas/ducklake_maintenance/handler/test_gc_action.py::test_gc_ops_on_a_telemetry_catalog_passes_a_catalog_bound_sink
+  red_green_expectation: red before (node absent), green after
+- source: src/lambdas/ducklake_maintenance/handler.py
+  behavior: The breaker trip is emitted through the sink of the payload's catalog (ops when absent or invalid).
+  verification_step: 1
+  test_selector: tests/lambdas/ducklake_maintenance/handler/test_operational_actions.py::test_breaker_trip_is_dimensioned_by_catalog
   red_green_expectation: red before (node absent), green after
 - source: src/lambdas/ducklake_maintenance/health_actions.py
   behavior: control_health emits growth for the telemetry catalog only and stays report-only.
   verification_step: 1
   test_selector: tests/lambdas/ducklake_maintenance/test_health_actions.py::test_control_health_emits_growth_for_the_telemetry_catalog
+  red_green_expectation: red before (node absent), green after
+- source: src/lambdas/ducklake_maintenance/health_actions.py
+  behavior: A growth-estimate failure never changes StatsIndexValid for any schema.
+  verification_step: 1
+  test_selector: tests/lambdas/ducklake_maintenance/test_health_actions.py::test_growth_estimate_failure_leaves_stats_index_valid_untouched
   red_green_expectation: red before (node absent), green after
 - source: src/common/ducklake_catalog_index_status.py
   behavior: stats_rows_est issues one SELECT over pg_catalog and returns None when unanalysed.
@@ -536,7 +587,9 @@ constraints:
   whole figure in the ask: 13 new custom-metric series (9 maintenance names for the telemetry catalog, OccRetryCount and
   CommitLatencyMs for ducklake_smoke and ducklake_telemetry; MergeOpsDurationMs is already among the 9) at about 0.30 USD
   each and 10 standard alarms at 0.10 USD (8 maintenance, 2 writer), about 4.90 USD a month at list price, plus a few
-  Lambda minutes a week. PR 2 adds no spend beyond that figure and
+  Lambda minutes a week and Neon compute for the :50 telemetry merge: four more catalog wakes a day, each 20 minutes
+  after the :30 ops merge and so past the endpoint's 300 s scale-to-zero (rec-4220 owns the compute cap); small, but
+  named in the ask. PR 2 adds no spend beyond that figure and
   merges under the standing rule (its body cites his word on PR 1), unless the guard routes its Lambda permissions to
   the gated Environment, which he approves. PR 3 is bookkeeping. No IAM and no Decision text in this plan.
 - >-
@@ -557,21 +610,21 @@ constraints:
   One DuckLake deploy or apply at a time; the coordinator sequences this plan's merges against other telemetry builds.
 context:
 - "Carrier rec-4292; split and names: /mnt/project-files/telemetry-slice2c/ (step6b-presentation.md, ADVICE.md Q6-Q7). The coordinator split the earlier single plan into PLAN-telemetry-reader-and-smoke-twin and this one (2026-10-19). rec-4292's 422 blob_not_verified alarm item moves to rec-4482, this plan's follow-on, now widened: the writer rejection metric by error type, plus the telemetry writer's warm wall time EMF with a cold-start flag and its p95 alarm (Decision 214 cl.4's signal, unmeasured for this writer today)."
-- "Order: docs/plans/PLAN-telemetry-production-catalog.yaml -> docs/plans/PLAN-telemetry-reader-and-smoke-twin.yaml (Decision N+1, the twin and the telemetry reader) -> this plan (its build may start once that plan's PR 1 merges, since it cites Decision N+1 cl.5; its PR 1 merges only after that plan's PR 2 merged with VP 15 and 16 green, since step 9 reads the nine-job run and the twin's gate traffic) -> PLAN-telemetry-catalog-aware-capture -> PLAN-telemetry-production-flip."
+- "Order: docs/plans/PLAN-telemetry-production-catalog.yaml -> docs/plans/PLAN-telemetry-reader-and-smoke-twin.yaml (Decision N+1, the twin and the telemetry reader) -> this plan (its build may start once that plan's PR 1 merges, since it cites Decision N+1 cl.5; its PR 1 merges only after that plan's PR 2 merged with its VP 15 (the nine-job merge run, twin and reader gates green) and VP 16 (the reader gate as PlatformDev) green, since step 9 reads the nine-job run and the twin's gate traffic) -> PLAN-telemetry-catalog-aware-capture -> PLAN-telemetry-production-flip."
 - "Decision-scout: FLAGS_FOUND, dispositioned (/mnt/project-files/telemetry-slice2c/decision-scout-report.md and decision-scout-report-reads.md). CITE 88, 188, 191, 192, 193, 214, 181, 213, 79, 177. Decisions triaged: 180 of 180. Roadmap items intersected: 13; CONFLICT: 0; RELATED: 12."
-- "gates: decision-scout=FLAGS_FOUND (dispositioned); plan-critique=PENDING"
-- "Scout dispositions here: 188 (gc_ops licensed by a committed dry-run baseline from the seeded catalog, never an empty-catalog exemption); 181 (c) c5 re-grounded as Decision N+1 cl.5 authorizes, with per-surface coverage; T2.18 [CITE] (the telemetry catalog emits only its own series and only CATALOG_METRICS names); 143 (no admin merge on smoke: merge duration is watched through MergeOpsDurationMs, rec-4218's trigger)."
+- "gates: decision-scout=FLAGS_FOUND (dispositioned); plan-critique=REVISE after 3 rounds (confirming round pending)"
+- "Scout dispositions here: 188 (gc_ops licensed by a committed dry-run baseline from the seeded catalog, never an empty-catalog exemption); 181 (c) c5 re-grounded as Decision N+1 cl.5 authorizes, with per-surface coverage; T2.18 [CITE] (merge_ops, gc_ops and breaker emissions for the telemetry catalog go only to its own series and only under CATALOG_METRICS names); 143 (no admin merge on smoke: merge duration is watched through MergeOpsDurationMs, rec-4218's trigger)."
 - "Decision 79: compute_affected_artifacts(scope) = ducklake_maintenance, ducklake_maintenance_smoke (bundles ducklake_catalog_index_status.py), ducklake_telemetry_writer (deployed to the writer and the twin) and data-pipeline (only through docs/ROADMAP-PLATFORM.yaml, an asset; it owes no deploy). The three DuckLake artifacts redeploy through the governed channel on PR 1's merge; step 9 checks the run."
 - "Thresholds: files-after-merge = 7 x D; catalog-stats-rows = 2 x (SNAPSHOT_RETAIN_DAYS 30 + 7) x R, because superseded files' stats rows persist until the weekly GC expires snapshots past retention, so the steady state is about 37 x R plus live rows and k = 2 fires only on runaway growth; a rate alarm was rejected because CloudWatch metric math has no time shift for a week-over-week comparison and a 6-hour DIFF swings with every weekly GC. A level alarm will fire on legitimate volume growth: that is the re-measure trigger (Decision N+1's growth-alarm-recurs)."
 - "rec-4218 triggers (PLAN-telemetry-production-catalog's ingestion_shape block): PR 2 points them at the MetaSchema=ducklake_telemetry series, alarms trigger 2 (merge pass above 450 s, half the 900 s timeout, one 0.10 USD alarm) and qualifies trigger 3 for the 30-37-day retention ramp, during which stats rows grow by construction."
 - "G4 headroom: weekly dead files are about 7 x D (about 11,000 at the measured 1,600 files a day) against G4_MAX_DELETE_FILES 20,000; above about 2,850 files a day every pass drains partially (Decision 193), visible as GcDeferredFiles."
 - "Graduation split: PR 2 flips implementation_declared, so only steps 6 and 7 (nodes and registry rows new in PR 2) graduate; steps 2 and 3's nodes land in PR 1, which adds their registry rows and waives the steps; PR 3 is bookkeeping after the flip (the PLAN-telemetry-transcript-content PR A precedent)."
 - "Live facts: merge scope classifies all nine telemetry tables; the admin function is a reserved-concurrency-1 singleton with merge :30, control_health :15, gc Sun 03:45, DR dump Sun 03:00 and now telemetry merge :50 and gc Sun 04:05; OCC_MAX_ATTEMPTS = 5; tests patch h._emit_maintenance_metric, which the re-bound sink keeps."
-- "Red-overlap (scripts.ci_rca.red_overlap, 2026-10-19, re-run after critique round 2): {\"verdict\": \"clear\", \"slo_hours\": 4, \"reds\": []}"
+- "Red-overlap (scripts.ci_rca.red_overlap, 2026-10-19, re-run after critique round 3): {\"verdict\": \"clear\", \"slo_hours\": 4, \"reds\": []}"
 pre_implementation_checklist:
 - Branch confirmed not on main; harness branch only.
 - docs/PROJECT_CONTEXT.md read; only Decisions 88, 188, 191, 192, 193, 214 and Decision N+1 read in full.
-- PLAN-telemetry-reader-and-smoke-twin's PR 1 merged before the build, and its PR 2 merged with VP 15 and 16 green before this plan's PR 1 merges; MEASUREMENT.md present with D_files_per_day, R_stats_rows_per_day, window_start, window_end and commit_latency_p95_ms_7d (PLAN-telemetry-production-catalog's key names).
+- PLAN-telemetry-reader-and-smoke-twin's PR 1 merged before the build, and its PR 2 merged with its VP 15 (nine-job merge run, twin and reader gates) and VP 16 (PlatformDev reader gate) green before this plan's PR 1 merges; MEASUREMENT.md present with D_files_per_day, R_stats_rows_per_day, window_start, window_end and commit_latency_p95_ms_7d (PLAN-telemetry-production-catalog's key names).
 - All files in scope located and readable; acceptance criteria understood and verifiable.
 execution_steps:
 - >-
@@ -582,7 +635,11 @@ execution_steps:
   (D_files_per_day, R_stats_rows_per_day, window_start, window_end, commit_latency_p95_ms_7d) and the ingestion_shape
   block in ducklake_telemetry_writer.yaml. Reuse names unchanged
   (rt.TELEMETRY_PROD_META_SCHEMA, local.ducklake_telemetry_data_path, local.ducklake_telemetry_prod_meta_schema). A
-  missing name that is not one of this plan's rows goes to the coordinator (scope escalation rule).
+  missing name that is not one of this plan's rows goes to the coordinator (scope escalation rule). Resolve Decision
+  N+1: read the number of the Decision headed "Production telemetry is proved by a smoke canary and read through its
+  own reader" from origin/main's docs/DECISIONS.md; every committed citation this plan writes (the ROADMAP c5 prefix,
+  the .tf header comment, both contracts' rows) uses that number, never the N+1 placeholder (VP step 12 asserts the
+  prefix).
 - >-
   2. PR 1, code: telemetry_log's [MetaSchema] set; _shared catalog_dimensions and CATALOG_METRICS; the handler's
   _catalog_sink over its own _emit_maintenance_metric and the merge_ops, gc_ops and breaker emissions; stats_rows_est and
@@ -591,16 +648,18 @@ execution_steps:
   3. Run VP steps 1-3, weakening dispositions, code review via a fresh code-review subagent (fix every blocking finding
   and re-run), then VP step 4 (full tier). Open PR 1 and ask Benjamin for his word on the spend figure in the
   constraints (the whole plan's). implementation_declared stays unset in PR 1 (PR 2 flips it); PR 1 adds the registry
-  rows for steps 2 and 3. Merge on his word, and only once PLAN-telemetry-reader-and-smoke-twin's PR 2 is
-  merged with its VP steps 15 and 16 green; record DEPLOY_DONE_AT and run VP step 9 after the next :30 ops merge pass.
+  rows for steps 2 and 3. Merge on his word, and only once PLAN-telemetry-reader-and-smoke-twin's PR 2 is merged
+  with its VP 15 (the nine-job merge run, twin and reader gates green) and VP 16 (the reader gate as PlatformDev)
+  green; record MERGE_SHA and DEPLOY_DONE_AT and run VP step 9 after the next :30 ops merge pass.
 - >-
   4. Confirm before the dry run that no telemetry datapoint exists in the undimensioned ops series (PR 1 is the first
   code that can touch the telemetry catalog's maintenance; PLAN-telemetry-production-catalog runs none).
 - >-
-  5. Dry run: ask Benjamin (or an ADMIN-container agent at his direction) to invoke the read-only
+  5. Dry run: ask Benjamin to invoke, himself, the read-only
   {"action":"gc_ops","data_path":<the telemetry data path>,"meta_schema":"ducklake_telemetry","dry_run":true} on the
-  admin function outside the Sunday ops window and record the counts-only body under
-  /mnt/project-files/telemetry-slice2c/; run VP step 10. A 500, referenced_missing above 0, unsized_candidates above 0
+  admin function outside the Sunday ops window (Decision 81 cl.6: gc_ops has no agent carve-out, so no agent invokes
+  it; the PLAN-gc-ops-baseline-gate-and-schedule-enable precedent) and to share the counts-only body, which the
+  implementer records under /mnt/project-files/telemetry-slice2c/; run VP step 10. A 500, referenced_missing above 0, unsized_candidates above 0
   or live_bytes of 0 stops the plan for RCA (Decision 55), never a disabled rule or a relaxed test.
 - >-
   6. Thresholds (literals in PR 2's locals, each commented with MEASUREMENT.md, its window and the formula; never
@@ -620,7 +679,8 @@ execution_steps:
   citing Benjamin's
   word on PR 1 and merge under the standing rule (or after his gated approval if the guard routes the permissions).
 - >-
-  9. After PR 2's merge and the first scheduled telemetry merge (within 6 hours), run VP step 11. Both liveness alarms
+  9. After PR 2's merge and the first scheduled telemetry merge (within 6 hours), wait at least 30 minutes after that
+  :50 pass, then run VP step 11. Both liveness alarms
   treat missing data as breaching, so they page from creation: ducklake-telemetry-merge-liveness is in ALARM until the
   first :50 pass and ducklake-telemetry-gc-liveness until the first Sunday 04:05 pass (the ops gc-liveness precedent:
   ALARM 09-15, OK 09-20, rec-3870). The PR 2 body says so before merge; VP step 11 requires merge-liveness OK and does
