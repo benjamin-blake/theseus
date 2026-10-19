@@ -39,7 +39,9 @@ scope:
 - file: src/common/ducklake_event_reads.py
   action: Modify
   purpose: >-
-    (1) TELEMETRY_THREADS = 8 beside TELEMETRY_MEMORY_LIMIT; _telemetry_opener runs SET threads to it and SET
+    Imports ducklake_read_deadline at module scope (unlike its function-local reader-only imports), so the staged-bundle
+    handler import check (scripts.lambda_manifest --check-bundles) proves the manifest include. (1) TELEMETRY_THREADS =
+    8 beside TELEMETRY_MEMORY_LIMIT; _telemetry_opener runs SET threads to it and SET
     pg_use_ctid_scan=false after the memory_limit statement: the extra threads parallelise Parquet I/O only, and catalog
     scans keep today's serial single-connection shape (the postgres extension opens extra Neon connections beyond its
     pool for parallel ctid scans; Decision 88 budget). open_connection and the ops slot keep threads=1. (2) An optional
@@ -93,7 +95,8 @@ scope:
   purpose: >-
     Class B. named_read: payload_schema_ref names the optional deadline_ms (event verbs only, a positive integer of
     milliseconds, applied per query attempt); response_codes gain 504 read_deadline_exceeded and the 400 row names
-    deadline_ms; typed_errors gain read_deadline_exceeded ("an event-journal verb still running at the reader's
+    deadline_ms, the 500 row and the runtime typed_error name deadline_ms on a non-event verb beside limit on a
+    non-paginable verb; typed_errors gain read_deadline_exceeded ("an event-journal verb still running at the reader's
     deadline, the Lambda's remaining time when the attempt starts minus 10 s or the caller's deadline_ms if earlier, is
     interrupted: 504 {error_type, reason: reader_deadline, request_id, action}; never retried; narrow the window"). The
     no-502 invariant is amended: a deadline answers 504; process-level failures (an interrupt that overruns the margin,
@@ -117,7 +120,9 @@ scope:
     DuckDB and a range query that runs well over 10 s uninterrupted:
     test_real_duckdb_interrupt_answers_504_and_the_connection_survives (a short fire_after: TypedFault 504, then SELECT 1
     answers on the same connection), test_real_duckdb_early_interrupt_is_resent (fire_after 0.0001: the 504 arrives
-    within 2 s) and test_real_duckdb_spent_deadline_never_runs_the_query (fire_after 0: the 504 without executing).
+    within 2 s), test_real_duckdb_spent_deadline_never_runs_the_query (fire_after 0: the 504 without executing) and
+    test_real_duckdb_accepts_the_telemetry_slot_settings (LOAD postgres, then the opener's SET threads and SET
+    pg_use_ctid_scan statements built from ducklake_event_reads' constants, read back with current_setting).
 - file: tests/common/test_ducklake_event_reads.py
   action: Modify
   purpose: >-
@@ -132,10 +137,12 @@ scope:
 - file: tests/lambdas/ducklake_reader/test_event_routing.py
   action: Modify
   purpose: >-
-    Through the real handler with the existing wiring fixture and a fake context whose remaining time is under the
-    margin: test_event_verb_past_its_deadline_answers_504 (body shape, status 504, the ops slot untouched),
+    Through the real handler with the existing wiring fixture and fake contexts: test_event_verb_past_its_deadline_answers_504
+    (remaining time under the margin: body shape, status 504, the ops slot untouched),
     test_ops_verbs_run_without_a_deadline (an ops read under the same context answers 200) and
-    test_reopen_once_runs_under_the_deadline (a dead telemetry session reopens, then the second attempt answers 504).
+    test_reopen_once_runs_under_the_deadline (a remaining-time callable above the margin on the first attempt, whose
+    query raises the fixture's dead-session error, and below it on the second: the slot reopens, then the second attempt
+    answers 504).
 - file: tests/common/ducklake_reader_client/test_reader_deadline.py
   action: Create
   purpose: >-
@@ -223,17 +230,21 @@ verification_plan:
   graduation_check_id: ducklake-reader-telemetry-slot-wiring
 - step: 3
   phase: pre-deploy
-  action: Real DuckDB (the pinned 1.5.4) honours the interrupt, re-sent when the first send is lost, and the connection survives.
+  action: >-
+    Real DuckDB (the pinned 1.5.4) honours the interrupt, re-sent when the first send is lost, the connection survives,
+    and the telemetry slot's setting names exist.
   command: >-
     out=$(bin/venv-python -m pytest
     tests/common/test_ducklake_read_deadline.py::test_real_duckdb_interrupt_answers_504_and_the_connection_survives
     tests/common/test_ducklake_read_deadline.py::test_real_duckdb_early_interrupt_is_resent
-    tests/common/test_ducklake_read_deadline.py::test_real_duckdb_spent_deadline_never_runs_the_query -q -rs 2>&1);
-    echo "$out"; echo "$out" | grep -Eq "^3 passed"
-  expected: The pytest output, ending in a summary of 3 passed and none skipped; exit 0.
+    tests/common/test_ducklake_read_deadline.py::test_real_duckdb_spent_deadline_never_runs_the_query
+    tests/common/test_ducklake_read_deadline.py::test_real_duckdb_accepts_the_telemetry_slot_settings -q -rs 2>&1);
+    echo "$out"; echo "$out" | grep -Eq "^4 passed"
+  expected: The pytest output, ending in a summary of 4 passed and none skipped; exit 0.
   fix_if: >-
     A skip fails this step: duckdb is missing from the venv, so run bin/venv-python -m pip install -r requirements.txt
-    first. A failure means the pinned DuckDB's interrupt semantics differ: stop and RCA (Decision 99).
+    first; a settings-node skip means the postgres extension is not cached, so run INSTALL postgres once. A failure
+    means the pinned DuckDB's interrupt semantics or a setting name differ: stop and RCA (Decision 99).
   hermetic: false
   graduation: waive
   graduation_waiver_reason: >-
@@ -365,6 +376,8 @@ verification_plan:
             if rep:
                 break
             time.sleep(10)
+        else:
+            raise SystemExit(f"no REPORT line for {rid} after 3 minutes: report it, never guess")
         lo, hi = min(e["timestamp"] for e in ev), max(e["timestamp"] for e in ev)
         body = L.get_log_events(logGroupName=G, logStreamName=ev[0]["logStreamName"], startTime=lo, endTime=hi + 1, startFromHead=True)["events"]
         inv = [json.loads(e["message"]) for e in body if '"ducklake_invocation"' in e["message"]][-1]
@@ -416,6 +429,8 @@ verification_plan:
             if any(e["message"].startswith("REPORT") for e in ev):
                 break
             time.sleep(10)
+        else:
+            raise SystemExit(f"no REPORT line for {rid} after 3 minutes: report it, never guess")
         lo, hi = min(e["timestamp"] for e in ev), max(e["timestamp"] for e in ev)
         body = L.get_log_events(logGroupName=G, logStreamName=ev[0]["logStreamName"], startTime=lo, endTime=hi + 1, startFromHead=True)["events"]
         return ev[0]["logStreamName"], [json.loads(e["message"]) for e in body if '"ducklake_invocation"' in e["message"]][-1]
@@ -596,8 +611,14 @@ execution_steps:
 - Write the tests in the scope rows; register the four graduate steps' checks under their graduation_check_id.
 - 'Execute Verification Plan steps 1-10; loop until pass; on an unrecoverable failure stop and RCA (Decision 55).'
 - >-
-  Open the PR with the squash body's trailer "Resolves: rec-2879"; merge under the standing rule once code review is
-  PROCEED and CI is green, only after the coordinator clears the DuckLake deploy slot.
+  Closure (implement skill Commit Flows; docs/contracts/git-ops.yaml), each outcome reported separately: the readiness
+  check (scripts.session.github_readiness); the coverage diagnostic; set implementation_declared true; rebase on
+  origin/main; step 10's full tier on the committed, clean tree, then scripts.checks.validation_result --verify-head;
+  the postflight evidence file and scripts.session.postflight --evidence; push; PR (body: the three changes, the
+  measured expectations, the data-pipeline deferral note, "Resolves: rec-2879"); CI green on the head. Before merging,
+  read rec-2879 with the recs_by_ids verb and confirm its acceptance (step 7's command) passes on the head. Merge under
+  the standing rule once code review is PROCEED and CI is green, only after the coordinator clears the DuckLake deploy
+  slot (one deploy at a time); squash with "Resolves: rec-2879" in the commit body (Decision 201).
 - >-
   Post-deploy: steps 11-13; append (never replace) a dated note with the step 12 and 13 lines to rec-4474's existing
   context through the portal (read it, then --update-rec with the old context plus the note), then step 14.
