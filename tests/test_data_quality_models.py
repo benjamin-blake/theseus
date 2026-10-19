@@ -1,4 +1,4 @@
-from scripts.data_quality_models import Check, CheckResult, RunResult
+from scripts.data_quality_models import Check, CheckResult, RunResult, dq_request
 
 
 def test_check_dataclass():
@@ -84,3 +84,13 @@ def test_graduation_guard_unenforced_fail_not_in_passed_count():
     rr = RunResult(results=[CheckResult(c, "UNENFORCED_FAIL")], verdict="PASS")
     assert rr.passed == 0
     assert rr.unenforced_fail == 1
+
+
+def test_dq_request_is_the_closed_request_a_check_sends():
+    c = Check("ops_recommendations", "title", "not_null", "not_null", "desc", params={"column": "title"})
+    assert dq_request(c) == {
+        "action": "dq_check",
+        "check": "not_null",
+        "table": "ops_recommendations",
+        "params": {"column": "title"},
+    }
