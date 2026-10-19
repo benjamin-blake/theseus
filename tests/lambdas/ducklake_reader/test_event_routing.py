@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 import src.lambdas.ducklake_reader.handler as h
+from src.common import ducklake_dq_checks as dq
 from src.common import ducklake_runtime as rt
 from src.telemetry.identity import derive_entity_key
 
@@ -114,6 +115,16 @@ def test_query_ops_runs_on_the_ops_slot_only(wiring: dict[str, Any], monkeypatch
     )
     assert status == 200 and seen == [wiring["ops_con"]]
     assert wiring["telemetry_opened"] == 0
+
+
+def test_dq_check_runs_on_the_ops_slot_only(wiring: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[Any] = []
+    monkeypatch.setattr(dq, "run_check", lambda con, check: seen.append(con) or 0)
+    status, body = _call(
+        {"action": "dq_check", "check": "row_count_min", "table": "ops_recommendations", "params": {"min": 1}}
+    )
+    assert status == 200 and body["violation_count"] == 0
+    assert seen == [wiring["ops_con"]] and wiring["telemetry_opened"] == 0
 
 
 def test_smoke_pin_refusal_happens_before_any_connect(wiring: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:

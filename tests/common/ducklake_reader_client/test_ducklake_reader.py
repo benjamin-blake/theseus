@@ -190,6 +190,26 @@ def test_ducklake_reader_query_raises_on_error(monkeypatch):
         ir.DuckLakeReader().query("ops_recommendations", "SELECT 1 FROM {tbl}")
 
 
+def test_ducklake_reader_dq_check_sends_the_structured_request(monkeypatch):
+    captured: dict = {}
+    ir = _patch_dl_invoke(monkeypatch, _FakeResp(payload={"ok": True, "violation_count": 2, "check_version": "v"}), captured)
+    body = ir.DuckLakeReader().dq_check("not_null", "ops_recommendations", {"column": "title"})
+    import json as _json
+
+    sent = _json.loads(captured["body"])
+    assert sent == {"action": "dq_check", "check": "not_null", "table": "ops_recommendations", "params": {"column": "title"}}
+    assert "sql" not in sent and body["violation_count"] == 2
+    ir.DuckLakeReader().dq_check("row_count_min", "ops_decisions")
+    assert _json.loads(captured["body"])["params"] == {}
+
+
+def test_ducklake_reader_dq_check_raises_on_error(monkeypatch):
+    captured: dict = {}
+    ir = _patch_dl_invoke(monkeypatch, _FakeResp(status_code=400, text="{}"), captured)
+    with pytest.raises(ir.ReaderInvokeError):
+        ir.DuckLakeReader().dq_check("not_null", "ops_recommendations", {"column": "title"})
+
+
 def test_ducklake_reader_latest_snapshot_is_none():
     import src.common.ducklake_reader_client as ir
 

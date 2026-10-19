@@ -284,6 +284,59 @@ def _telemetry_read_checks(*, profile: str | None, region: str) -> None:
     print("TELEMETRY_READS_OK")
 
 
+_DQ_GATE_REQUESTS: dict[str, tuple[str, dict[str, Any]]] = {
+    "row_count_min": ("ops_recommendations", {"min": 1}),
+    "recency_hours": ("ops_recommendations", {"column": "last_updated_timestamp", "hours": 168}),
+    "not_null": ("ops_recommendations", {"column": "title", "exclude_before": "2026-05-01"}),
+    "accepted_values": ("ops_recommendations", {"column": "status", "values": ["open", "closed"]}),
+    "min_length": ("ops_recommendations", {"column": "context", "value": 80, "exclude_before": "2026-05-01"}),
+    "pattern": ("ops_decisions", {"column": "id", "value": "^dec-[0-9]+$"}),
+    "array_element_format": ("ops_recommendations", {"column": "tags", "pattern": "^[a-z][a-z0-9-]*$"}),
+    "not_before": ("ops_recommendations", {"column": "last_updated_timestamp", "value": "created_timestamp"}),
+    "min_value": ("ops_priority_queue", {"column": "rank", "value": 1}),
+    "unique": ("ops_execution_plans", {"columns": ["rec_id", "revision"], "projection": "history"}),
+    "history_not_ahead_of_current": ("ops_execution_plans", {"column": "revision"}),
+    "key_absent": ("ops_recommendations", {"column": "id", "value": "rec-0"}),
+}
+_UNKNOWN_COLUMN_MARKER = "no_such_column_marker"
+
+
+def dq_check_gate(*, profile: str | None = None, region: str = "eu-west-2") -> None:
+    """The reader's dq_check action: every kind answers a counts-only 200 stamped with the repository's check_version, a
+    telemetry table and an unknown column each answer a typed 400 that names the parameter and not the value. Failure text
+    names the condition only, never a response body; the success line carries no counts."""
+    from src.common import ducklake_dq_checks as dq  # noqa: PLC0415
+
+    url = core._function_url("reader")
+
+    def call(check: str, table: str, params: dict[str, Any]) -> Any:
+        payload = {"action": "dq_check", "check": check, "table": table, "params": params}
+        return core._sigv4_invoke(url, payload, profile=profile, region=region)
+
+    def fail(reason: str) -> None:
+        raise core.SmokeTestFailure(f"DQ_CHECK FAIL: {reason}")
+
+    if set(_DQ_GATE_REQUESTS) != set(dq.DQ_KINDS):
+        fail("the gate's request table does not cover exactly the repository's kinds")
+    for kind, (table, params) in _DQ_GATE_REQUESTS.items():
+        answered = call(kind, table, params)
+        body = answered.json() if answered.status_code == 200 else {}
+        count = body.get("violation_count")
+        if answered.status_code != 200 or isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            fail(f"{kind} did not answer 200 with an integer violation_count (status {answered.status_code})")
+        if body.get("check_version") != dq.check_version(kind):
+            fail(f"{kind} answered a check_version that differs from the repository's (deployed reader not at this code)")
+        if "rows" in body:
+            fail(f"{kind} answered row data")
+    refused = call("not_null", "telemetry_sessions", {"column": "session_id"})
+    if refused.status_code != 400 or "dq_check_input" not in refused.text or '"table"' not in refused.text:
+        fail("a dq_check on a telemetry table must answer 400 dq_check_input naming the table parameter")
+    unknown = call("not_null", "ops_recommendations", {"column": _UNKNOWN_COLUMN_MARKER})
+    if unknown.status_code != 400 or "dq_check_input" not in unknown.text or _UNKNOWN_COLUMN_MARKER in unknown.text:
+        fail("an unknown column must answer 400 dq_check_input naming the column parameter without echoing it")
+    print(f"DQ_CHECK_OK kinds={len(_DQ_GATE_REQUESTS)}")
+
+
 def lambda_reader(*, profile: str | None = None, region: str = "eu-west-2") -> None:
     """EC1/boundary: reader returns current rows; the read role cannot write (closed boundary); the telemetry reads answer."""
     read_body = core._ok_json(
@@ -298,6 +351,7 @@ def lambda_reader(*, profile: str | None = None, region: str = "eu-west-2") -> N
         raise core.SmokeTestFailure(f"READER FAIL: read={read_body} write_probe={probe}")
     print(f"READER OK rows={read_body['row_count']} write_denied=true")
     _telemetry_read_checks(profile=profile, region=region)
+    dq_check_gate(profile=profile, region=region)
 
 
 def _warm_reuse_probe(role: str, *, profile: str | None, region: str, attempts: int = 6) -> dict:
