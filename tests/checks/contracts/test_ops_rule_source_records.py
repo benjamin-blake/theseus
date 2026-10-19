@@ -123,7 +123,7 @@ def test_roadmap_is_regrounded() -> None:
     assert "Annotated metadata" not in t16["name"] and "declared rules" in t16["name"]
     assert "Class A contracts' declared rules" in t16["intent"]
     assert "Annotated" not in t16["decomposition_hints"]["atomic_plans"][2]
-    c7 = next(c for c in t16["exit_criteria"] if c.startswith("[Deferred phase]"))
+    c7 = next(c["text"] for c in t16["exit_criteria"] if c["text"].startswith("[Deferred phase]"))
     assert "Annotated" not in c7 and "scripts/contract_rules.py" in c7
     t229 = items["T2.29"]
     assert "ops_recommendations Class A contract" in t229["intent"] and "validate_ops_rule_source" in t229["intent"]
