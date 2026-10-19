@@ -69,6 +69,7 @@ def test_session_state_and_close_identity_declared() -> None:
         "parent_session_id", "event_kind", "event_timestamp", "source_ordinal", "event_id", "outcome",
         "telemetry_agents.session_id", "telemetry_agents.event_kind", "telemetry_agents.event_timestamp",
         "telemetry_agents.outcome", "telemetry_observations.session_id", "telemetry_observations.event_timestamp",
+        "telemetry_observations.observation_type", "telemetry_observations.outcome", "telemetry_observations.event_id",
         "telemetry_transcripts.session_id", "telemetry_transcripts.event_timestamp",
     ):  # fmt: skip
         assert column in derivation["inputs"], column
@@ -78,7 +79,7 @@ def test_session_state_and_close_identity_declared() -> None:
         in semantics
     )
     assert "after each producer's own r5 dedupe" in semantics and "annotate rows are excluded" in semantics
-    assert "running unless the latest row is a close" in semantics
+    assert "no turn opened after it" in semantics and "stopped mid-turn" in semantics
     assert "idle threshold" in semantics and "24 h" in semantics and "owned by 2b" in semantics
     assert "named-read registry" in semantics and "makes the session running again and nothing is stored" in semantics
     assert "agent-run open/close pair" in semantics and "timeout or throttled -> failed" in semantics

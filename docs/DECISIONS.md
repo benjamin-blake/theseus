@@ -2,6 +2,78 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 228: A telemetry session's end is read from its turns -- idle at rest reads the last turn's outcome, idle mid-turn reads abandoned, and a producer close row is optional evidence (amends Decision 199 clause 1) (Decided)
+
+```yaml
+number: 228
+status: Decided
+decided_date: "2026-10-18"
+amends: [199]
+significance:
+  value: numbered_decision
+  justification: >-
+    Redefines terminal and abandoned for a root session, Decision 199 cl.1's read-derived state, whose
+    2026-10-16 update requires a numbered Decision for later clause-1 changes; a telemetry_sessions.yaml
+    note (considered) cannot also bind the producer's turn evidence and the reader's verbs.
+```
+
+**Status:** Decided
+**Date:** 2026-10-18
+**Warehouse ID:** dec-228 (per Decision 84 backfill)
+
+**Problem:** rec-4407. A cloud session's producer close row cannot be sent (Claude Code stops its egress
+proxy before SessionEnd hooks; a reclaimed container runs none), and any session can resume, so 0 of 28
+root sessions read terminal on 2026-10-15..16 and state and duration were unusable.
+
+**Decision:**
+1. A ROOT session's state is read from its own evidence in order: a producer close that is the latest
+   lifecycle row with no turn opened after it gives its stored outcome; else a latest turn with a close and
+   an outcome is at rest and, idle past the governed threshold, reads that outcome (error -> failed,
+   interrupted -> cancelled), else running; else a latest turn with an open and no close stopped mid-turn
+   and reads abandoned past the threshold, else running; else (no outcome-bearing turn close and no open
+   turn) it reads abandoned past the threshold, else running. A later turn or resume makes the session
+   running again; nothing is stored. A turn continued after a Stop (a blocking Stop hook, a wake) already
+   has a close; if it dies before its next Stop it reads that close's outcome, not abandoned, a residual
+   slice 4 measures (rec-4025).
+2. duration_seconds is the later of the latest producer close and the latest close of any root turn, minus
+   session_started_at, truncated toward zero; sub-agent sessions keep their agent-run rule.
+3. A producer close row is optional evidence: no reader rule requires it; the producer's obligation is
+   turn evidence, an open row once the prompt is on disk and a close with outcome at each Stop
+   (PLAN-telemetry-stop-turn-close).
+4. The idle threshold stays the reader registry's one governed value (24 h), so a finished session reads
+   running for that long; a shorter at-rest threshold is a later Decision.
+
+**Rationale:** End events fired at teardown are unreliable for clients that can vanish; sessionization
+practice derives the end from inactivity, and abandoned now means stopped mid-turn before the turn's first
+close. Rejected: a producer close at every Stop (reads a session closed while its next turn runs, one
+lifecycle row per Stop); relying on an upstream SessionEnd fix (a VM can stop with no hook).
+
+**Coverage (Decision 181 cl.2):** the rule -- derivation_cases.yaml through
+tests/common/test_ducklake_event_read_verbs.py (full tier) and the oracle (tests/telemetry_verify,
+graduated); the deployed reader -- the golden replay against derived_golden_state.yaml; the producer
+evidence -- turn-capture-witness-closes; real sessions -- slice 4's monitor (rec-4025), a residual until it
+lands.
+
+```yaml reversal-conditions
+decision: 228
+review_by: 2027-04-30
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: resume-after-threshold
+    kind: manual
+    description: "Slice 4 finds at-rest sessions resuming after the threshold often enough that terminal readings mislead: re-decide clause 4."
+  - id: turn-evidence-lost
+    kind: manual
+    description: "Claude Code stops recording the Stop witness and turn closes stop landing: re-decide clause 1."
+  - id: upstream-session-end
+    kind: manual
+    description: "Claude Code runs SessionEnd hooks with egress in cloud sessions: review clause 3."
+```
+
+**Related:** Decisions 199 (amended), 207, 210, 212, 84, 101, 181, 177.
+
+---
+
 ## Decision 227: Retired roadmap tier_items move to docs/ROADMAP-PLATFORM-ARCHIVE.yaml behind dependency-resolving stubs -- lifecycle archival, Decision 147's named valve (amends Decision 114 and Decision 147) (Decided)
 
 ```yaml
@@ -1801,6 +1873,9 @@ conditions:
 > **Update (2026-10-04):** clause 5's content is the model-visible payload, the full persisted tool output is its own bounded tool_output row, and a full output above the 8 MiB cap is a typed omission row (content_omitted_reason). Detail: telemetry_transcripts.yaml (PLAN-telemetry-write-conformance). This is the last clause-5 annotation: a further change to the content tier goes to a numbered Decision (decision-entry.yaml intent_accretion_note).
 
 > **Update (2026-10-16):** clause 1 bounds derivations, not verbs: a window verb (sessions_window; operator ruling reader-k2 (a), 2026-10-04) is a bounded window of per-session derivations, each reading only its own session's calendar-day partition, capped per verb in the reader registry. Detail: telemetry_sessions.yaml WINDOW VERBS. Last clause-1 note; later ones need a numbered Decision.
+
+
+[Amendment 2026-10-18, Decision 228: clause 1's root session state and duration read from turn evidence; a producer close is optional evidence.]
 
 ---
 
