@@ -397,14 +397,18 @@ _NON_ROW_WRITING: dict[str, dict[str, str]] = {
         ).split(),
         "read or probe: the reader holds no write grant",
     ),
-    "src/lambdas/ducklake_maintenance/handler.py": dict.fromkeys(
-        (
-            "catalog_reinit restore_drill merge_ops gc_ops catalog_stats reconcile_columns "
-            "clone_catalog control_health reconcile_partitions rewrite_partition_layout "
-            "provision_telemetry_login ensure_catalog_indexes"
-        ).split(),
-        "maintenance: moves or removes files, writes no caller row",
-    ),
+    "src/lambdas/ducklake_maintenance/handler.py": {
+        **dict.fromkeys(
+            (
+                "catalog_reinit restore_drill merge_ops gc_ops catalog_stats reconcile_columns "
+                "clone_catalog control_health reconcile_partitions rewrite_partition_layout "
+                "provision_telemetry_login ensure_catalog_indexes"
+            ).split(),
+            "maintenance: moves or removes files, writes no caller row",
+        ),
+        "provision_catalog_owner": "provisioning: owner role and ownership, no row",
+        "provision_telemetry_catalog": "provisioning: tables and counter seeds, no caller row",
+    },
     "src/lambdas/ducklake_maintenance_smoke/handler.py": dict.fromkeys(
         "merge gc hot_merge breaker_probe create_telemetry_tables".split(),
         "disposable ducklake_smoke catalog maintenance or provisioning, no caller row",

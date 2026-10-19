@@ -54,10 +54,11 @@ def test_telemetry_writer_manifest_bundles_the_kernel_and_modules() -> None:
 
 
 def test_new_common_modules_affect_only_the_telemetry_writer() -> None:
-    """Corrected, not loosened (Decision 181): provision and txn also ship in maintenance-smoke (the owner verb)."""
-    both = ["ducklake_maintenance_smoke", "ducklake_telemetry_writer"]
-    assert sorted(compute_affected_artifacts(["src/common/ducklake_telemetry_provision.py"])) == both
-    assert sorted(compute_affected_artifacts(["src/common/ducklake_telemetry_txn.py"])) == both
+    """Corrected, not loosened (Decision 181): provision and txn also ship in maintenance-smoke (the owner verb) and, since
+    Decision 230, in ducklake_maintenance (catalog_actions creates the production telemetry tables)."""
+    three = ["ducklake_maintenance", "ducklake_maintenance_smoke", "ducklake_telemetry_writer"]
+    assert sorted(compute_affected_artifacts(["src/common/ducklake_telemetry_provision.py"])) == three
+    assert sorted(compute_affected_artifacts(["src/common/ducklake_telemetry_txn.py"])) == three
     assert sorted(compute_affected_artifacts(["src/common/ducklake_telemetry_registration.py"])) == [
         "ducklake_telemetry_writer"
     ]

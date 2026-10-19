@@ -31,6 +31,16 @@ contract:
     check: validate_data_model_standard
 
 amendment_log:
+  - date: "2026-10-19"
+    semantic_break: false
+    change_class: governance_note_add
+    summary: >-
+      PLAN-telemetry-production-catalog (Decision 230, rec-4218, rec-4292, Class D): tables.telemetry_tables gains the structured
+      ingestion_shape block (per_request_commit, with its basis, rejected alternatives, three reversal triggers and the writer
+      sizing) and the production_column_set block, the one home of both; the writer contract only points here. No status, note or
+      table entry changed.
+    migration_story: >-
+      Records measured facts and a column rule; no table is added, removed or re-typed.
   - date: "2026-10-15"
     semantic_break: true
     change_class: governance_note_add
@@ -315,3 +325,31 @@ tables:
       - telemetry_observations
       - telemetry_transcripts
       - telemetry_agents
+    ingestion_shape:
+      shape: per_request_commit
+      rec: rec-4218
+      basis: >-
+        Smoke 2026-10-15..18: append_telemetry 181-502 requests a day, OccRetryCount never above 1 per request, CommitLatencyMs
+        p50 572-855 ms, 4 data files per commit, never compacted; the 7-day figures are in
+        /mnt/project-files/telemetry-slice2c/MEASUREMENT.md (counts only).
+      rejected_alternatives:
+        - "an S3 landing zone is staging under Decision 84 I-4"
+        - "inlining stays off (Decision 107)"
+      reversal_triggers:
+        - {id: files_per_day, threshold: "data files a day on ducklake_telemetry above merge_ops' measured fold rate", alternative_then: "producer batching, or inlining with a scheduled flush, never staging"}
+        - {id: merge_pass_duration, threshold: "a telemetry merge_ops pass above 450 s (half its 900 s timeout)", alternative_then: "producer batching, or inlining with a scheduled flush, never staging"}
+        - {id: stats_rows_growth, threshold: "ducklake_file_column_stats rows for ducklake_telemetry growing week over week for three weeks despite merge", alternative_then: "producer batching, or inlining with a scheduled flush, never staging"}
+      writer_sizing:
+        reserved_concurrency: 5
+        connection_limit: 10
+        resize_when: "Throttles > 0 or OccRetryCount p95 >= 2 over 7 days"
+    production_column_set:
+      rec: rec-4292
+      rule: >-
+        ducklake_telemetry is created with the current typed column set of every telemetry table, every telemetry_observations
+        model_call column included (cache_creation_1h_tokens and cache_creation_5m_tokens are typed by Decision 222). A later
+        column reaches production only through the owner-login provision_telemetry_catalog re-run (Decision 222 cl.3); rec-4316's
+        CI migrator is not designed here.
+      typed_by_decision_222: [cache_creation_1h_tokens, cache_creation_5m_tokens]
+      metadata_only: [prefix_hash]
+      metadata_only_until: "a verb proves the query"

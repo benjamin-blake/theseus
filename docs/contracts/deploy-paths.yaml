@@ -29,6 +29,14 @@ contract:
     agent_surface: AGENTS.md
 
 amendment_log:
+  - date: "2026-10-19"
+    semantic_break: false
+    change_class: field_add
+    summary: >-
+      PLAN-telemetry-production-catalog (Decision 230): admin_out_of_band.scoped_login_provisioning generalises to the closed
+      four-login table with three more rerun triggers, and the new admin_out_of_band.production_catalog_provisioning indexes the
+      carve-out for provision_catalog_owner and provision_telemetry_catalog (two independent human-directed sittings and the
+      smoke switch's rollback), the one home of the procedure.
   - date: "2026-10-18"
     semantic_break: false
     change_class: prose_improvement
@@ -262,8 +270,9 @@ admin_out_of_band:
   scoped_login_provisioning:
     description: >-
       Decision 213 cl.5's narrow carve-out (amends Decision 126 and, for this verb only, Decision 81
-      cl.6): an ADMIN-container agent may write the telemetry writer's scoped-login secret value and
-      invoke ducklake_maintenance's provision_telemetry_login only under explicit human direction
+      cl.6; Decision 230 cl.3 widens it to one login per catalog binding): an ADMIN-container agent may
+      write a closed-table login's secret value ($LOGIN is one of the four names in catalog_logins.py's
+      LOGINS) and invoke ducklake_maintenance's provision_telemetry_login only under explicit human direction
       (never self-directed), presenting each mutation and executing it only after the human accepts.
       The password is never displayed, logged or written to disk; no step prints a host, DSN or
       password. This is the one home for the procedure (agent-led procedures are procedure blocks in the
@@ -271,17 +280,64 @@ admin_out_of_band:
       egress, so the migration, the password set and the reach check all run inside the maintenance Lambda.
     procedure:
       mutation_1_write_secret: |-
-        AWS_DEFAULT_REGION=eu-west-2 bin/venv-python -c "import json,secrets,boto3;from src.common import ducklake_runtime as rt;o=rt.fetch_dsn(profile='agent_platform_admin');v={'host':o['host'],'dbname':o['dbname'],'sslmode':'require','username':'ducklake_telemetry_writer'};v['pass'+'word']=secrets.token_urlsafe(32);boto3.Session(profile_name='agent_platform_admin',region_name='eu-west-2').client('secretsmanager').put_secret_value(SecretId='agent-platform-ducklake-telemetry-writer-dsn',SecretString=json.dumps(v));print('SECRET_WRITTEN')"
+        AWS_DEFAULT_REGION=eu-west-2 LOGIN=$LOGIN bin/venv-python -c "import json,os,secrets,boto3;from src.common import ducklake_runtime as rt;from src.lambdas.ducklake_maintenance import catalog_logins as cl;o=rt.fetch_dsn(profile='agent_platform_admin');L=os.environ['LOGIN'];v={'host':o['host'],'dbname':o['dbname'],'sslmode':'require','username':L};v['pass'+'word']=secrets.token_urlsafe(32);boto3.Session(profile_name='agent_platform_admin',region_name='eu-west-2').client('secretsmanager').put_secret_value(SecretId=cl.LOGINS[L].secret_id,SecretString=json.dumps(v));print('SECRET_WRITTEN',L)"
       mutation_2_invoke: |-
-        P="${TMPDIR:-/tmp}/provision.json" && AWS_MAX_ATTEMPTS=1 aws lambda invoke --profile agent_platform_admin --region eu-west-2 --cli-read-timeout 300 --function-name agent-platform-ducklake-maintenance --cli-binary-format raw-in-base64-out --payload '{"action":"provision_telemetry_login","confirm":"ducklake_telemetry_writer"}' "$P" > /dev/null
+        P="${TMPDIR:-/tmp}/provision.json" && AWS_MAX_ATTEMPTS=1 aws lambda invoke --profile agent_platform_admin --region eu-west-2 --cli-read-timeout 300 --function-name agent-platform-ducklake-maintenance --cli-binary-format raw-in-base64-out --payload '{"action":"provision_telemetry_login","confirm":"'$LOGIN'"}' "$P" > /dev/null
       check_result: |-
-        bin/venv-python -c "import json,sys,hashlib;r=json.load(open(sys.argv[1]));assert 'body' in r, 'FunctionError '+str(r.get('errorType'));b=json.loads(r['body']);print('PROVISION',r['statusCode'],b.get('error_type'),b.get('scope'),'neon_superuser_member=',b.get('owner_is_neon_superuser_member'));assert r['statusCode']==200 and b['ok'] is True, 'provision refused';sha=hashlib.sha256(open('src/lambdas/ducklake_maintenance/ducklake_telemetry_writer_role.sql','rb').read()).hexdigest();assert b.get('migration_sha256')==sha, 'deployed SQL differs from the merged file';assert b['metadata_readable'] is True and b['scope']=={'smoke_usage':True,'ops_usage':False,'smoke_create':False,'ops_create':False,'public_create':False,'database_create':False,'connection_limit':10};print('SCOPED_LOGIN_OK')" "$P"
+        LOGIN=$LOGIN bin/venv-python -c "import json,os,sys;from src.lambdas.ducklake_maintenance import catalog_logins as cl;L=os.environ['LOGIN'];r=json.load(open(sys.argv[1]));assert 'body' in r, 'FunctionError '+str(r.get('errorType'));b=json.loads(r['body']);print('PROVISION',r['statusCode'],b.get('error_type'),b.get('scope'),b.get('read_only_attach'),'neon_superuser_member=',b.get('owner_is_neon_superuser_member'));assert r['statusCode']==200 and b['ok'] is True, 'provision refused';assert b.get('migration_sha256')==cl.template_sha256(L), 'deployed SQL differs from the merged file';assert b['metadata_readable'] is True and b['scope']==cl.LOGINS[L].expected_scope;print('SCOPED_LOGIN_OK',L)" "$P"
       reruns: >-
         Quarterly rotation repeats mutation 1, mutation 2 and the check. The RDS swap repeats them after
         the maintenance function points at the RDS catalog, so mutation 1 copies the RDS host and dbname
         (it reads them from the owner DSN secret). A failed check names its cause in the response
         (error_type / error carry only a class and SQLSTATE); a re-run is idempotent but happens only on
-        the human's word.
+        the human's word. Three more triggers (Decision 230): after any catalog_reinit of ducklake_smoke,
+        provision_catalog_owner(ducklake_smoke) and then every smoke login; after a DR restore, both owner verbs and then
+        the logins; after a DuckLake extension bump, provision_catalog_owner for both catalogs (it re-owns any relation
+        an extension migration created under the owner login), the logins, and the writer-grant re-measure (Decision 230
+        measured-grants-drift).
+  production_catalog_provisioning:
+    description: >-
+      Decision 230 cl.4's carve-out (amends Decision 126 and, for these verbs, Decision 81 cl.6) and the one home of the
+      procedure that creates the production telemetry catalog (ducklake_telemetry) and moves ducklake_smoke to its owner
+      role. An ADMIN-container agent (actor admin_agent) may write a login's secret and invoke provision_catalog_owner,
+      provision_telemetry_catalog and provision_telemetry_login only under explicit human direction, presenting each
+      mutation and running it only after the human accepts; catalog_stats and ensure_catalog_indexes stay actor operator
+      and are never agent-invoked (the agent records their counts-only results). Two independent sittings, either first.
+      No step prints a host, DSN, password or ARN; no step runs merge_ops or gc_ops on ducklake_telemetry
+      (PLAN-telemetry-production-maintenance owns them once its MetaSchema series are live).
+    record_file: /mnt/project-files/telemetry-slice2c/ADMIN-SESSION-RECORD.md
+    measurement_file: /mnt/project-files/telemetry-slice2c/MEASUREMENT.md
+    record_format: "one 'key: value' line per key, ISO-8601 UTC timestamps, counts and booleans only; a STOP on any step ends the sitting"
+    record_keys: [bootstrap_applied_sha, bootstrap_plan_updates, simulate_triples, simulate_mismatches, production_catalog_tables, production_catalog_created, production_catalog_counters, production_catalog_owner, production_catalog_provisioned_at, login_ducklake_telemetry_writer_prod_connection_limit, login_ducklake_telemetry_reader_connection_limit, reader_read_only_attach_stage, reader_read_only_attach, stats_index_valid_ducklake_telemetry, smoke_adopted_relations_reowned, login_ducklake_smoke_maintainer_connection_limit, maintainer_current_user, switch_applied_sha, smoke_rerun_relations_reowned, login_ducklake_telemetry_writer_connection_limit, smoke_writer_narrowed_at, live_proof_run_conclusion]
+    measurement_keys: [measured_at, window_start, window_end, smoke_capture_since, smoke_age_days, catalog_metadata_bytes, file_column_stats_rows_est, telemetry_data_files, telemetry_data_files_by_table, append_requests_7d, append_requests_per_day, files_per_commit, D_files_per_day, D_crosscheck_files_per_day, R_stats_rows_per_day, R_crosscheck_stats_rows_per_day, occ_retry_p95_7d, commit_latency_p50_ms_7d, commit_latency_p95_ms_7d, neon_storage_bytes, neon_data_transfer_bytes_7d, telemetry_attach_cold_ms]
+    invoke: |-
+      P="${TMPDIR:-/tmp}/out.json" && AWS_MAX_ATTEMPTS=1 aws lambda invoke --profile agent_platform_admin --region eu-west-2 --cli-read-timeout 900 --function-name agent-platform-ducklake-maintenance --cli-binary-format raw-in-base64-out --payload '<PAYLOAD>' "$P" > /dev/null
+    login_steps_ref: "scoped_login_provisioning above (mutation_1, mutation_2, check_result with LOGIN set); a scope mismatch or a refused read_only_attach is a STOP, never widened"
+    sitting_1:
+      needs: "PR 1 merged and deployed"
+      steps:
+        - {id: bootstrap_apply_and_simulate, actor: admin_agent, command: "terraform/bootstrap apply at the merge sha (terraform/CLAUDE.md runbook), then bin/venv-python -m scripts.ci.iam_simulate --profile agent_platform_admin --fixture docs/contracts/iam-simulate-fixture.yaml", check: "plan shows the four updates only; BOOTSTRAP_LIVE_OK; record bootstrap_applied_sha, bootstrap_plan_updates, simulate_triples, simulate_mismatches (0)"}
+        - {id: measurement, actor: operator, command: 'invoke with PAYLOAD={"action":"catalog_stats","meta_schema":"ducklake_smoke","ops_table_filter":"telemetry_%"} (emits nothing for a non-ops schema), the operator hands the agent the counts-only body', check: "the agent writes every measurement_keys line before any create; MEASUREMENT_OK; no identifier in the file"}
+        - {id: provision_telemetry_catalog, actor: admin_agent, command: 'invoke with PAYLOAD={"action":"provision_telemetry_catalog","meta_schema":"ducklake_telemetry","data_path":"s3://agent-platform-data-lake/ducklake-telemetry/","confirm":"ducklake_telemetry"}', check: "PRODUCTION_CATALOG_OK: nine tables, two counters, foreign_owned 0, schema_owner ducklake_telemetry_owner held through membership; record production_catalog_* keys"}
+        - {id: provision_writer_prod_login, actor: admin_agent, command: "login_steps_ref with LOGIN=ducklake_telemetry_writer_prod", check: "LOGIN_OK; record its connection limit (10)"}
+        - {id: provision_reader_login, actor: admin_agent, command: "login_steps_ref with LOGIN=ducklake_telemetry_reader", check: "LOGIN_OK and read_only_attach accepted (else write reader_read_only_attach: refused and STOP); record reader_read_only_attach"}
+        - {id: ensure_catalog_indexes, actor: operator, command: 'invoke with PAYLOAD={"action":"ensure_catalog_indexes","confirm":"ducklake_file_column_stats"}, run by the operator who hands the agent the ducklake_telemetry entry', check: "ok and valid_after true; the agent reads the next control_health StatsIndexValid (agent_platform_admin) and records stats_index_valid_ducklake_telemetry"}
+    sitting_2:
+      needs: "PR 1 merged and deployed and the switch PR CI-green; deploys held by the coordinator from adopt_smoke to release_hold, with the operator's word on the switch PR already given so the hold spans only its merge and apply"
+      steps:
+        - {id: adopt_smoke, actor: admin_agent, command: 'invoke with PAYLOAD={"action":"provision_catalog_owner","meta_schema":"ducklake_smoke","confirm":"ducklake_smoke","mode":"adopt"}', check: "SMOKE_OWNER_OK: member_inherit and member_set true; record smoke_adopted_relations_reowned; 55P03 or 40P01 rolled back whole, re-run"}
+        - {id: maintainer_login, actor: admin_agent, command: "login_steps_ref with LOGIN=ducklake_smoke_maintainer", check: "MAINTAINER_LOGIN_OK: scope current_user is ducklake_smoke_owner, proven before the switch merges; record maintainer_current_user and its connection limit"}
+        - {id: merge_switch_pr, actor: admin_agent, command: "mcp__github__merge_pull_request(squash) on the switch PR (exactly terraform/personal/ducklake_maintenance_smoke.tf), then wait for its terraform apply", check: "apply green and test_maintenance_smoke_reads_only_the_smoke_maintainer_secret passes; record switch_applied_sha"}
+        - {id: clean_owner_rerun, actor: admin_agent, command: 'invoke with PAYLOAD={"action":"provision_catalog_owner","meta_schema":"ducklake_smoke","confirm":"ducklake_smoke","mode":"adopt"}', check: "SMOKE_STILL_CLEAN: relations_reowned 0, schema_adopted false; record smoke_rerun_relations_reowned"}
+        - {id: narrow_smoke_writer, actor: admin_agent, command: "login_steps_ref with LOGIN=ducklake_telemetry_writer, then at once bin/venv-python -m scripts.ducklake_neon_smoke_test --lambda-telemetry as PlatformDev", check: "SMOKE_WRITER_NARROWED then NARROWED_WRITER_LIVE_OK; record smoke_writer_narrowed_at and its connection limit (20)"}
+        - {id: release_hold, actor: coordinator, command: "release the deploy hold", check: "only after NARROWED_WRITER_LIVE_OK is recorded"}
+        - {id: live_proof_deploy, actor: coordinator, command: "dispatch one deploy-ducklake-lambdas run", check: "SWITCH_LIVE_OK: the five maintenance-smoke gates and the telemetry gate pass; record live_proof_run_conclusion"}
+      rollback:
+        - {id: keep_hold, actor: coordinator, command: "re-impose or keep the deploy hold", check: "no DuckLake deploy runs until release"}
+        - {id: revert_switch_pr, actor: admin_agent, command: "revert the switch PR (terraform-only; its apply restores the shared credential)", check: "apply green"}
+        - {id: release_mode, actor: admin_agent, command: 'invoke with PAYLOAD={"action":"provision_catalog_owner","meta_schema":"ducklake_smoke","confirm":"ducklake_smoke","mode":"release"}', check: "ok; schema_released true; the role and its memberships stay"}
+        - {id: green_deploy_run, actor: coordinator, command: "dispatch one deploy-ducklake-lambdas run", check: "MAINTENANCE_MERGE OK, MAINTENANCE_GC OK, MAINTENANCE_BREAKER OK, MAINTENANCE_HOT_MERGE OK and MAINTENANCE_CREATE_TELEMETRY OK, all five green"}
+        - {id: release_hold_after_rollback, actor: coordinator, command: "release the deploy hold", check: "only after green_deploy_run; escalate the cause (53300 re-sizes forward, a privilege gap is owner-role-refused)"}
   pre_merge_live_plan:
     description: >-
       Standing rule (incident #1316, fixed by #1323) for any plan whose scope changes a non-Markdown

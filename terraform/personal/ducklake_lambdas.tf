@@ -49,6 +49,13 @@ locals {
 
   # Telemetry writer function name; declared here so the pin guard's locals parse sees it.
   ducklake_telemetry_writer_function = "agent-platform-ducklake-telemetry-writer"
+
+  # Production telemetry catalog (Decision 230): a sibling of ducklake/, never inside it, so the ops catalog's
+  # catalog-wide orphan cleanup never sees telemetry Parquet. The smoke pins above are unchanged until the flip.
+  ducklake_telemetry_data_prefix      = "ducklake-telemetry"
+  ducklake_telemetry_data_path        = "s3://${aws_s3_bucket.data_lake.bucket}/ducklake-telemetry/"
+  ducklake_telemetry_prod_meta_schema = "ducklake_telemetry"
+  ducklake_telemetry_reader_function  = "agent-platform-ducklake-telemetry-reader"
 }
 
 # ---------------------------------------------------------------------------
