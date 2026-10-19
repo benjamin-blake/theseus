@@ -2,6 +2,97 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 229: Persona-first migration -- each persona ships as its own item to an interim coordinator before any loop host, personas never invoke personas, the operator only launches compute-plane personas, and T4.15 becomes implement_agent on Fargate (amends Decision 217 clause 8 and Decision 205 clauses 1 and 6) (Decided)
+
+```yaml
+number: 229
+status: Decided
+decided_date: "2026-10-19"
+amends: [205, 217]
+significance:
+  value: numbered_decision
+  justification: >-
+    One delivery position spans Decisions 205 cl.1/cl.6 and 217 cl.8, CD.27's ESB-04
+    precondition, T4.15 and T4.2's shape, and adds launch-identity and hub-and-spoke rules. Not a
+    contract note: ports.yaml can hold the coupling, not the choice to ship ahead of the host. Not
+    amendment_forms: an annotation cannot re-scope T4.15. Sequencing routes to roadmap rows.
+```
+
+**Status:** Decided
+**Date:** 2026-10-19
+**Warehouse ID:** dec-229 (per Decision 84 backfill)
+
+**Problem:** T4.2 is one XL item behind T4.1 and T4.15, so no persona serves anyone before the loop
+host, and the in-session gates it would replace let a branch editing .claude/skills/code-review
+review its own edit. T4.15's decision_scout-vehicle spike was abandoned, unrecorded, once only
+Fargate and Actions met the criteria (GitHub-run planning or implementation trips its anti-abuse
+terms: Decision 205 cl.6's split).
+
+**Decision:**
+1. **Incremental delivery.** Each of T4.2's five personas ships as its own item, consumable by
+   interactive CC-web sessions and the /overseer before any loop host exists; no MVP persona item
+   depends on T4.1 or T4.22. Those sessions are the interim coordinator: each run is one human-gated
+   persona step on an operator-chosen work item (a rec today) -- plan_agent drafting its plan, every
+   later step on that approved IMPLEMENTATION plan -- never fed from the rec queue, bounded by its
+   contract's budgets (T4.10a c1), awaited event-driven (subscribe_pr_activity), with no loop-policy
+   value in session text. Interim reading, pending rec-4478: Decision 67's freeze binds STRATEGIC
+   plans and the autonomous queue consumer. The loop definition and its two engines (Decision 185
+   cl.1) are unchanged.
+2. **Hub and spoke.** Personas never invoke personas. The coordinator -- the interim one now, a
+   Decision 185 engine later -- dispatches each persona independently. The plan file on its draft
+   plan PR, verified by the scout and critique verdicts and approved and merged by the human, is the
+   sole planning-to-implementation handoff. An implementation persona in trouble escalates to the
+   coordinator, which may route to planning, never to the planning persona (as the overseer's author
+   never runs a gate inline).
+3. **Compute plane.** plan_agent and implement_agent (Decision 205 cl.6) start through the
+   persona_compute_host port under the operator's AWS identity, PlatformDev as launcher only:
+   ecs:RunTask plus iam:PassRole to a separate executor task role, so the executor never holds the
+   shared key (T4.2 c15). That grant is a terraform/bootstrap admin-only apply (Decision 223 cl.2)
+   made before T4.15's first live run. The non-bypass executor App pushes the output PR through file_pr
+   (Decisions 185 cl.3, 217 cl.3), a T4.15 prerequisite; the operator identity never does, which
+   would bypass the base-ref leash. Actions never dispatches a compute-plane persona (the rejected
+   option below); the loop host later becomes the port's second caller. T4.15 keeps its id and becomes
+   implement_agent on Fargate: its first live run is the long_running_container confirmation that
+   Decision 205 cl.6 and CD.27's ESB-04 precondition owe it, with implement_agent as the live vehicle,
+   so ESB-04, ESB-06 and ESB-01 still discharge against T4.15; the ASL-subset launch path and the host's identities defer to T4.1.
+4. **Umbrella and strangler.** T4.2 stays an umbrella: it completes when its children and the loop
+   host behind its kept T4.1 edge complete. That is sequencing; CD.17's trigger text stands until
+   rec-4478's plan disposes of it. No child inherits the T4.1 or T4.15 edge. A verdict persona
+   replaces its in-session gate by add, dual-run (advisory while the in-session subagent gates;
+   CD.12 alarm-not-gate), flip, remove; a per-persona flag rolls back, the in-session subagent is
+   the outage fallback, and the self-review gap closes at flip. The scout runs on a draft plan PR
+   and re-runs when its scout-input fingerprint (T4.32 c4) changes, so every head SHA is covered by
+   a scout verdict over an identical scout-input fingerprint (Decision 217 cl.8); plan-critique runs
+   from ready_for_review on the head SHA. T4.25's post-MVP scope re-enters MVP as those flips.
+
+**Options considered:** A GitHub workflow_dispatch front door -- rejected: an extra hop, and the IAM
+question moves to an OIDC role. A planning persona that starts its own implementation persona --
+rejected: an unverified handoff.
+
+```yaml reversal-conditions
+decision: 229
+review_by: 2027-04-30
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: session-start-ungovernable
+    kind: manual
+    description: "Session-originated Fargate starts prove ungovernable on IAM or cost: adopt the rejected GitHub-event front door."
+  - id: actions-terms-flag
+    kind: manual
+    description: "Decision 205's actions-policy condition fires: re-decide cl.4's verdict-persona flips with it."
+```
+
+**Coverage (Decision 181 cl.2):** cl.1's edge rule -- validate_roadmap_liveness (T4.1, T4.9a, T4.2 are toxic)
+and validate_platform_roadmap (T4.22 is deferred, Decision 93); cl.1's run bounds once
+PlatformDev can RunTask -- residual (T4.15 c12-c13, rec-4479); cl.2 -- T4.10a c8, residual until
+built; Actions dispatching no compute-plane persona -- T4.32 c1's check, residual until built; the
+App-only push -- residual (T4.15 c14); the interim operator-bypass merge -- residual (rec-2827); the coupling -- validate_ports_contract (PC-08); cl.4's strangler order -- the
+child criteria; the self-review gap -- rec-4476.
+
+**Related:** Decisions 67, 90, 93, 184, 185, 197, 206, 212, 223; CD.17, CD.27; rec-4043, rec-4478.
+
+---
+
 ## Decision 228: A telemetry session's end is read from its turns -- idle at rest reads the last turn's outcome, idle mid-turn reads abandoned, and a producer close row is optional evidence (amends Decision 199 clause 1) (Decided)
 
 ```yaml
@@ -788,6 +879,8 @@ CD.37.
 
 > **Amended by Decision 226 (2026-10-18):** Clause 1's overlap block is pulled forward to executor concurrency 1 by the red-window-growth condition (Decision 226 cl.3: rec-4427's 11.7-hour red window at about 11 merges a day), so the concurrency-raised trigger no longer gates clause 1, and past the repair SLO Decision 226 cl.4 restores the global plan and dispatch block; clauses 2-8 are unchanged.
 
+> **Amended by Decision 229 (2026-10-19):** Clause 8's T4.25 c1 pointer and its Coverage home (cl.8 T4.25) are now T4.30's flip (T4.25 is reserved); its pre-merge scout means every plan PR head SHA is covered by a scout verdict over an identical scout-input fingerprint (T4.32 c4); never sampled.
+
 ---
 
 ## Decision 216: One owner per DuckLake metadata schema -- scoped catalog logins never hold CREATE, and telemetry tables are created under the owner login, by CI on the disposable smoke catalog (amends Decision 143 clause 2 and Decision 213 clause 3) (Decided)
@@ -1483,6 +1576,8 @@ conditions:
 **Related:** Decisions 72, 77, 122, 164, 173; rec-3386.
 
 > **Amended by Decision 217 (2026-10-14):** The executor App is ONE non-bypass App with persona carried as metadata; per-persona Apps wait on a measured rate-limit breach (Decision 217 clause 3). Above executor concurrency 1, clause 1's eligible list gains a push-to-main decision-scout pass that audits merged Tier C entries against Tier A and files a rec on a hit; the pre-merge scout on every plan PR is unchanged (Decision 217 clause 8).
+
+> **Amended by Decision 229 (2026-10-19):** Clause 6's compute plane is reached before any loop host: plan_agent and implement_agent start through the persona_compute_host port under the operator's AWS identity, PlatformDev as launcher only, and T4.15 becomes the implement_agent-on-Fargate item whose first live run is the long_running_container confirmation (Decision 229 cl.3), its live vehicle implement_agent (T4.15 c3's workspace-mutating leg); plan_agent's mid-loop kill (T4.31 c1) is a post-confirmation conformance leg, not a CD.27 ratification precondition. Clause 1's scout runs on a draft plan PR and re-runs when the plan's scout-input fingerprint changes; plan-critique runs from ready_for_review, each on the head SHA (Decision 229 cl.4).
 
 ---
 
@@ -8871,6 +8966,8 @@ Tier responsibilities:
 **Supersedes:** Decision 42 (Three-Tier Workflow Architecture). Supersedes Decision 42's framing; Decision 42's body is preserved intact with its status annotated "Superseded by Decision 90".
 
 **Related:** Decision 42 (superseded here), Decision 67 (executor + STRATEGIC freeze; the current operational constraint), Decision 76 (.claude/ as the canonical interactive layer).
+
+> **Update (2026-10-19):** Decision 229 cl.1 reads the freeze above, as an interim reading pending rec-4478, as binding STRATEGIC plans and the autonomous queue consumer: before any loop host, an interactive session or the /overseer may dispatch one human-gated persona step on an operator-chosen work item (a rec today) -- plan_agent drafting its plan, every later step on that approved IMPLEMENTATION plan -- never from the rec queue.
 
 ---
 
