@@ -163,7 +163,7 @@ _RANGE = "SELECT count(*) FROM range(100000000000) a, range(1000) b"
 
 
 def _duckdb() -> Any:
-    return pytest.importorskip("duckdb")
+    return pytest.importorskip("duckdb", reason="env: duckdb is not installed in the fast tier")
 
 
 def test_real_duckdb_interrupt_answers_504_and_the_connection_survives() -> None:
