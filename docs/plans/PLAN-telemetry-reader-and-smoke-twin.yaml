@@ -49,9 +49,10 @@ scope:
     Get/Put and prefix-conditioned List on local.ducklake_smoke_data_prefix, Get/Put and prefix-conditioned List on
     telemetry-blobs/${local.ducklake_smoke_meta_schema}/, PutMetricData on DuckLakeTelemetryWriter); no Delete anywhere
     and no production prefix. Function: same handler, s3_key lambda-packages/ducklake-telemetry-writer.zip, the
-    writer's layers, timeout and memory, reserved_concurrent_executions = 5 (the gate's fan-out needs four concurrent
-    containers; the smoke login's CONNECTION LIMIT is shared with the writer until PLAN-telemetry-production-flip moves the writer to its
-    production login, and the deploy jobs never run the two gate sequences together), env TELEMETRY_META_SCHEMA =
+    writer's layers, timeout and memory, reserved_concurrent_executions = 5 (a literal: the gate's fan-out needs four
+    concurrent containers; the smoke writer login is shared with the writer until PLAN-telemetry-production-flip, so
+    PLAN-telemetry-production-catalog raises it to CONNECTION LIMIT 20 = 2 x (5 + 5); test-pinned against LOGINS),
+    env TELEMETRY_META_SCHEMA =
     local.ducklake_smoke_meta_schema, TELEMETRY_DATA_PATH = local.ducklake_smoke_data_path, TELEMETRY_BLOB_ROOT =
     local.ducklake_telemetry_smoke_blob_root, TELEMETRY_DSN_SECRET_ID = the smoke secret's name, the extension and
     field-semantics paths; lifecycle ignore_changes = [source_code_hash] (Decision 125/126 conformance). AWS_IAM
@@ -69,9 +70,10 @@ scope:
     GetBucketLocation with s3:prefix ${local.ducklake_telemetry_data_prefix}/* only). No PutObject, DeleteObject,
     blob-root statement, shared-DSN statement or metrics statement. Function: handler
     src.lambdas.ducklake_telemetry_reader.handler.handler, s3_key lambda-packages/ducklake-telemetry-reader.zip, the
-    deps and extensions layers, timeout 120, memory 1024, reserved_concurrent_executions = half the reader login's
-    CONNECTION LIMIT set by the production catalog plan's role SQL (the writer's two-sessions-per-container rule,
-    Decision 213 cl.3), env TELEMETRY_META_SCHEMA
+    deps and extensions layers, timeout 120, memory 1024, reserved_concurrent_executions = 5 (a literal: one telemetry
+    slot and no ops slot per container, against the reader login's CONNECTION LIMIT 10 in
+    PLAN-telemetry-production-catalog's LOGINS table, keeping the 2 x reserved-concurrency headroom recorded at
+    ducklake_telemetry_writer_role.sql:19; test-pinned), env TELEMETRY_META_SCHEMA
     = local.ducklake_telemetry_prod_meta_schema, TELEMETRY_DATA_PATH = local.ducklake_telemetry_data_path,
     TELEMETRY_DSN_SECRET_ID = the reader secret's name, DUCKLAKE_EXTENSION_DIRECTORY and DUCKLAKE_FIELD_SEMANTICS_PATH;
     no TELEMETRY_BLOB_ROOT, no DUCKLAKE_DATA_PATH or DUCKLAKE_META_SCHEMA; lifecycle ignore_changes =
@@ -95,17 +97,22 @@ scope:
     PR 1. The telemetry reader handler (Decision N+1 cl.2-3), under 300 SLOC. SERVED_VERBS = the EVENT_READS names
     minus transcript_content, a module constant derived from src.common.ducklake_event_read_verbs. Actions, exactly:
     describe (connectionless: {ok, function: "telemetry_reader", catalog: {meta_schema, data_path_is_smoke}, verbs:
-    ev.describe_all() filtered to SERVED_VERBS}); attach_check ({ok, meta_schema, data_path_is_smoke, catalog_login --
-    the DSN secret's username only --, read_only: true, connect_ms, reused}); named_read (a verb outside SERVED_VERBS
-    answers 400 {error_type: unknown_verb, served} and never echoes the caller's verb; params are validated before any
-    connection by the acquirer; rows from ev.execute with ev.event_read_version). Any other action answers 400 with the
-    sorted action list and never echoes the action. Every connecting action first passes ev.require_production_pin,
-    then binds the telemetry slot through ev.acquirer_for(..., pin=ev.require_production_pin,
-    dsn_secret_id=TELEMETRY_DSN_SECRET_ID, read_only=True) with an ops acquirer that raises (this function has no ops
-    slot). Error mapping copied in shape from the shared reader: 400 named_read_input, 413 response_too_large (the
-    same 6,000,000-byte envelope guard), 500 version_mismatch and runtime, handler_errors.terminal for 500 unmapped and
-    503 catalog_unavailable, reopen-once on a dead connection, one log_invocation line ("telemetry_reader") per
-    request. It imports nothing from src.lambdas.ducklake_reader and never imports ducklake_event_content.
+    ev.describe_all() filtered to SERVED_VERBS}); attach_check (ev.require_production_pin, then the slot from
+    ev.telemetry_acquirer(meta_schema, data_path, EXTENSION_DIRECTORY, dsn_secret_id=TELEMETRY_DSN_SECRET_ID,
+    read_only=True); body {ok, meta_schema, data_path_is_smoke, catalog_login -- the DSN secret's username only --,
+    read_only, connect_ms, reused}, where read_only is OBSERVED from the live connection, SELECT readonly FROM
+    duckdb_databases() WHERE database_name = rt.TELEMETRY_CATALOG_ALIAS, never echoed from the flag); named_read (a
+    verb outside SERVED_VERBS answers 400 {error_type: unknown_verb, served} before any connection and never echoes the
+    caller's verb; otherwise ev.acquirer_for("named_read", payload, _no_ops_slot, EXTENSION_DIRECTORY,
+    pin=ev.require_production_pin, dsn_secret_id=TELEMETRY_DSN_SECRET_ID, read_only=True), whose pin check and params
+    validation run before any connection; rows from ev.execute with ev.event_read_version). _no_ops_slot raises: this
+    function has no ops slot. Any other action answers 400 with the sorted action list and never echoes the action.
+    Error mapping copied in shape from the shared reader: 400 named_read_input, 413 response_too_large (the same
+    6,000,000-byte envelope guard), 500 version_mismatch and runtime, handler_errors.terminal for 500 unmapped and 503
+    catalog_unavailable, reopen-once on a dead connection, one log_invocation line ("telemetry_reader") per request.
+    It imports nothing from src.lambdas.ducklake_reader and never imports ducklake_event_content. Until
+    PLAN-telemetry-production-flip rewrites them, the served verbs' descriptions still say they read the smoke catalog
+    (the flip owns that text).
 - file: src/lambdas/ducklake_telemetry_reader/manifest.yaml
   action: Create
   purpose: >-
@@ -130,11 +137,16 @@ scope:
   purpose: >-
     PR 1. Behaviour-preserving for the shared reader. NEW require_production_pin() -> (meta_schema, data_path):
     refuses (rt.DuckLakeRuntimeError naming the two variables, never a value) unless TELEMETRY_META_SCHEMA equals
-    rt.TELEMETRY_PROD_META_SCHEMA and TELEMETRY_DATA_PATH equals the production telemetry data path constant the
-    production catalog plan added to ducklake_runtime (trailing-slash insensitive). acquirer_for gains keyword-only
-    pin (default require_smoke_pin), dsn_secret_id (default None = the shared DSN, today's behaviour) and read_only
-    (default False); _telemetry_opener passes them to rt.fetch_dsn and rt.open_connection. require_smoke_pin and every
-    default are unchanged, so the shared reader's calls and its tests are untouched. Stays under 500 SLOC.
+    rt.TELEMETRY_PROD_META_SCHEMA and TELEMETRY_DATA_PATH equals the production telemetry data path constant
+    PLAN-telemetry-production-catalog added to ducklake_runtime (trailing-slash insensitive). NEW public
+    telemetry_acquirer(meta_schema, data_path, extension_directory, *, dsn_secret_id=None, read_only=False) -> the
+    acquire(force_reopen=False) callable that today's event-verb branch of acquirer_for builds inline (the opener over
+    rt.fetch_dsn and rt.open_connection, then rt.get_warm_connection on TELEMETRY_SLOT under TELEMETRY_CATALOG_ALIAS);
+    dsn_secret_id None keeps the shared DSN. acquirer_for gains keyword-only pin (default require_smoke_pin),
+    dsn_secret_id (default None) and read_only (default False); its event-verb branch keeps its order (pin, then
+    bind_values, before any connection) and returns telemetry_acquirer(...) with those values, and every other action
+    still returns the caller's ops acquirer. With the defaults the shared reader's calls are byte-identical (a node
+    proves it). require_smoke_pin is unchanged. Stays under 500 SLOC.
 - file: src/common/ducklake_runtime.py
   action: Modify
   purpose: >-
@@ -175,7 +187,8 @@ scope:
   action: Modify
   purpose: >-
     PR 1. conformance.ducklake_detail names eight DuckLake Lambdas and the two new .tf files, each carrying lifecycle
-    ignore_changes = [source_code_hash]. Prose only; no classification changes.
+    ignore_changes = [source_code_hash]; an amendment_log row (Class D, prose_improvement). No classification
+    changes.
 - file: scripts/build_lambda_config.py
   action: Modify
   purpose: >-
@@ -184,10 +197,12 @@ scope:
 - file: .github/workflows/deploy-ducklake-lambdas.yml
   action: Modify
   purpose: >-
-    PR 2. Nine jobs. deploy-maintenance unchanged (builds and uploads every artifact). NEW deploy-telemetry-twin
+    PR 2. Nine jobs; the header's role description says the merged deploy role covers all 10 functions (the eight
+    DuckLake and two prod; today "all 8"). deploy-maintenance unchanged (builds and uploads every artifact). NEW deploy-telemetry-twin
     (needs deploy-maintenance; if its deployed output; the merged deploy role with the same scoped assume-role
     tolerance; --ducklake-deploy-only for the twin only; output deployed). NEW telemetry-twin-smoke (needs
-    [deploy-telemetry-twin, maintenance-smoke]; if !cancelled() and the twin deployed; github_ci_branch; freshness loop
+    [deploy-telemetry-twin, maintenance-smoke, deploy-serving]; if !cancelled() and the twin deployed, so it runs after
+    the owner step and never against a mid-update shared reader, whose smoke slot its blob read-back uses; github_ci_branch; freshness loop
     for the twin; URL loop for telemetry_writer_smoke and reader; --lambda-telemetry-smoke). deploy-serving deploys
     writer, reader and catalog-dr (telemetry-writer leaves it); smoke needs [deploy-serving, maintenance-smoke,
     telemetry-twin-smoke] with its condition unchanged (ordering only, so two jobs never write the smoke catalog
@@ -213,13 +228,14 @@ scope:
   purpose: >-
     PR 2. governed_jobs entries for deploy-telemetry-twin, telemetry-twin-smoke, deploy-telemetry and telemetry-smoke
     (each naming its own unique critical step and a new ACTIONS_DEPLOY_DUCKLAKE_LAMBDAS_* diagnostic id); the smoke
-    entry's critical step stays valid.
+    entry's critical step stays valid; an amendment_log row (Class D, field_add).
 - file: docs/contracts/deploy-paths.yaml
   action: Modify
   purpose: >-
     PR 2. deploy_code's recovery text names the serving set (writer, reader, catalog-dr) and the telemetry set
-    (telemetry-writer, telemetry-reader) the reconcile gate refuses, and the ungated twin; amendment_log row. No channel
-    or role semantics change.
+    (telemetry-writer, telemetry-reader) the reconcile gate refuses, and the ungated twin; deploy_code.status counts
+    eight DuckLake Lambdas and 10 functions under the merged deploy role (today "six" and "8"); an amendment_log row.
+    No channel or role semantics change.
 - file: scripts/convergence_health/code_drift.py
   action: Modify
   purpose: >-
@@ -228,11 +244,15 @@ scope:
 - file: scripts/ducklake_smoke/lambda_telemetry_gates.py
   action: Modify
   purpose: >-
-    PR 2. lambda_telemetry keeps its signature and behaviour (role telemetry_writer, the production-named function).
-    NEW lambda_telemetry_smoke(*, profile, region) runs the identical sequence against role telemetry_writer_smoke and
-    function agent-platform-ducklake-telemetry-writer-smoke (the URL from core._function_url, the DryRun denial on the
-    twin's name), printing LAMBDA_TELEMETRY OK with target=twin. A private _run(role, function_name, label) carries
-    the shared body. Stays under 500 SLOC.
+    PR 2. One private body, _run(*, role: str, function_name: str, label: str, profile: str | None, region: str) ->
+    None, runs today's whole sequence (unsigned, describe, attach, unknown action, DryRun denial on function_name,
+    provision, measurements, tenant, project fan-out, probe, self-only, then the append and blob vectors) against
+    core._function_url(role). lambda_telemetry(*, profile, region) keeps its signature and calls _run(role="telemetry_writer",
+    function_name="agent-platform-ducklake-telemetry-writer", label="writer") and prints exactly today's success line;
+    NEW lambda_telemetry_smoke(*, profile, region) calls _run(role="telemetry_writer_smoke",
+    function_name="agent-platform-ducklake-telemetry-writer-smoke", label="twin") and prints the same line with
+    " target=twin" appended. label is "writer" or "twin" only. PLAN-telemetry-production-flip builds its light
+    production gate on this interface. Stays under 500 SLOC.
 - file: scripts/ducklake_smoke/lambda_telemetry_reader_gates.py
   action: Create
   purpose: >-
@@ -260,9 +280,10 @@ scope:
     test_describe_lists_only_served_verbs_and_the_binding; test_named_read_of_an_unserved_verb_is_400_before_any_connect
     (transcript_content, an ops verb, a hostile string: the body never echoes it, no acquire happens);
     test_query_ops_and_unknown_actions_are_400_without_echo; test_production_pin_refusal_happens_before_any_connect;
-    test_acquire_uses_the_reader_secret_and_a_read_only_attach; test_attach_check_reports_login_and_read_only;
-    test_named_read_input_is_400; test_dead_connection_reopens_once; test_unmapped_and_catalog_unavailable_are_typed;
-    test_response_size_guard_is_413; test_one_invocation_line_per_request.
+    test_acquire_uses_the_reader_secret_and_a_read_only_attach; test_attach_check_reports_read_only_from_the_live_catalog
+    (a fake duckdb_databases() row with readonly false makes the body say false); test_named_read_input_is_400;
+    test_dead_connection_reopens_once; test_unmapped_and_catalog_unavailable_are_typed; test_response_size_guard_is_413;
+    test_one_invocation_line_per_request.
 - file: tests/lambdas/ducklake_telemetry_reader/test_packaging.py
   action: Create
   purpose: >-
@@ -272,15 +293,23 @@ scope:
 - file: tests/common/test_ducklake_event_reads.py
   action: Modify
   purpose: >-
-    PR 1. NEW test_acquirer_takes_a_declared_pin_secret_and_read_only_attach,
-    test_require_production_pin_refuses_smoke_ops_and_unset and test_acquirer_defaults_are_the_shared_readers_behaviour;
-    every existing node unchanged.
+    PR 1. NEW test_telemetry_acquirer_defaults_are_byte_identical (acquirer_for with no new keyword calls
+    rt.fetch_dsn with no argument, rt.open_connection without read_only, and get_warm_connection with the same slot,
+    alias and keys as before), test_acquirer_takes_a_declared_pin_secret_and_read_only_attach and
+    test_require_production_pin_refuses_smoke_ops_and_unset; every existing node unchanged, including
+    test_acquirer_routes_only_event_verbs_to_the_telemetry_slot.
 - file: tests/common/test_ducklake_runtime.py
   action: Modify
   purpose: PR 1. NEW test_open_connection_read_only_adds_the_attach_option (and the default omits it).
 - file: tests/test_build_lambda.py
   action: Modify
   purpose: PR 1. The artifact counts move from 9 to 10 (seven function zips + three layers), each count's comment updated.
+- file: tests/lambdas/ducklake_telemetry_writer/test_packaging.py
+  action: Modify
+  purpose: >-
+    PR 1. test_telemetry_writer_manifest_bundles_the_kernel_and_modules's functions assertion becomes
+    [agent-platform-ducklake-telemetry-writer, agent-platform-ducklake-telemetry-writer-smoke] (planned-change: the twin
+    deploys the same zip); registry telemetry-writer-packaging keeps the node id.
 - file: tests/test_ducklake_handler_errors.py
   action: Modify
   purpose: >-
@@ -294,8 +323,11 @@ scope:
     test_twin_is_pinned_to_the_smoke_catalog_and_login (env names ducklake_smoke locals only, the smoke secret only, no
     ducklake/ or ducklake-telemetry/ prefix, no Delete), test_reader_reads_only_the_production_telemetry_data_prefix
     (Get and prefix-conditioned List on the telemetry data prefix only; no Put, Delete, blob-root, shared-DSN or
-    metrics statement), test_reader_env_is_pinned_to_production_with_no_blob_root, and
-    test_new_functions_carry_the_boundary_and_ignore_changes.
+    metrics statement), test_reader_env_is_pinned_to_production_with_no_blob_root,
+    test_new_functions_carry_the_boundary_and_ignore_changes, and test_reserved_concurrency_fits_the_login_limits
+    (2 x the reader's literal <= LOGINS["ducklake_telemetry_reader"].connection_limit and 2 x (writer + twin literals)
+    <= LOGINS["ducklake_telemetry_writer"].connection_limit, importing PLAN-telemetry-production-catalog's
+    src/lambdas/ducklake_maintenance/catalog_logins.py).
 - file: tests/checks/iam_tf/test_telemetry_writer_invoke_grants.py
   action: Modify
   purpose: >-
@@ -329,9 +361,12 @@ scope:
     telemetry-twin-smoke) and (deploy-telemetry, telemetry-smoke); every mapped function is deployed by exactly one of
     the four legs; URL roles in every job map to deploy-map functions; the telemetry and twin URLs are resolved before
     their gates; NEW test_production_telemetry_deploy_waits_on_the_twin_gate (deploy-telemetry needs
-    telemetry-twin-smoke with a success-only condition, telemetry-twin-smoke runs --lambda-telemetry-smoke, and
-    deploy-serving needs neither); the create-telemetry step stays last in maintenance-smoke; smoke's needs become the
-    three-job set.
+    telemetry-twin-smoke with a success-only condition; telemetry-twin-smoke runs --lambda-telemetry-smoke and needs
+    deploy-serving under !cancelled(); telemetry-smoke runs --lambda-telemetry-reader after its URL is resolved; and
+    deploy-serving needs neither); NEW test_every_writer_gate_job_runs_after_maintenance_smoke (every job whose steps run
+    --lambda-telemetry or --lambda-telemetry-smoke has maintenance-smoke among its transitive needs, so the Decision 216
+    owner step always has its turn first); the create-telemetry step stays last in maintenance-smoke; smoke's needs
+    become the three-job set (planned-change).
 - file: tests/ducklake_neon_smoke_test/test_lambda_telemetry_gates.py
   action: Modify
   purpose: >-
@@ -360,7 +395,15 @@ scope:
   purpose: Graduated check for step 4 (test_selector).
 - file: config/agent/verification_registry/entries/telemetry-twin-gates-production-deploy.yaml
   action: Create
-  purpose: Graduated check for step 8 (test_selector).
+  purpose: Graduated check for step 11 (test_selector).
+- file: config/agent/verification_registry/entries/telemetry-acquirer-binding.yaml
+  action: Create
+  purpose: Graduated check for step 5 (test_selector).
+- file: config/agent/verification_registry/entries/telemetry-owner-provisioning-wiring.yaml
+  action: Modify
+  purpose: >-
+    PR 2. check_spec.command gains test_every_writer_gate_job_runs_after_maintenance_smoke beside its two existing nodes
+    (the Decision 216 ordering guard follows the writer gates into their new jobs).
 bundled_recommendations: []
 followon_recs:
 - rec-4481
@@ -370,8 +413,10 @@ infrastructure_dependencies:
   Pre-merge (PR 1): PLAN-telemetry-production-catalog's build is merged and its admin session is recorded under /mnt/project-files/telemetry-slice2c/:
   the bootstrap apply that names both new functions in the three Decision 213 boundary denies, the Decision 202 trail
   selectors, PlatformDev's URL-only invoke on the telemetry reader and the apply and planner IAMRolesRead lists; the
-  reader login provisioned against its secret container; the production catalog created and seeded. Without the
-  boundary entry the gated apply below must not be approved (Decision 213 cl.1).
+  reader login provisioned against its secret container; the production catalog created and seeded; and the smoke
+  writer login re-provisioned at CONNECTION LIMIT 20, with both limits (smoke writer 20, reader 10) recorded in
+  /mnt/project-files/telemetry-slice2c/ADMIN-SESSION-RECORD.md. Without the boundary entry the gated apply below must
+  not be approved (Decision 213 cl.1); without the raised limit the twin's fan-out can exhaust the shared smoke login.
 - >-
   Post-merge (PR 1): the saved plan creates two roles and two Function URLs, so the guard routes it to the
   tf-gated-apply Environment; Benjamin approves it. IAM and functions exist before any code deploy names them
@@ -440,15 +485,15 @@ verification_plan:
   - 1 passed
 - step: 5
   phase: pre-deploy
-  action: The event-read acquirer takes a declared pin, secret and read-only attach, with the shared reader's defaults unchanged.
-  command: bin/venv-python -m pytest tests/common/test_ducklake_event_reads.py::test_acquirer_takes_a_declared_pin_secret_and_read_only_attach tests/common/test_ducklake_event_reads.py::test_acquirer_defaults_are_the_shared_readers_behaviour -q
+  action: >-
+    telemetry_acquirer binds a declared secret and a read-only attach, and with no new keyword the shared reader's
+    acquire path is byte-identical.
+  command: bin/venv-python -m pytest tests/common/test_ducklake_event_reads.py::test_telemetry_acquirer_defaults_are_byte_identical tests/common/test_ducklake_event_reads.py::test_acquirer_takes_a_declared_pin_secret_and_read_only_attach -q
   expected: Exit 0, two tests passed.
   fix_if: A default changed or the keywords are not threaded to fetch_dsn and open_connection; restore the defaults.
   hermetic: true
-  graduation: waive
-  graduation_waiver_reason: >-
-    Steps 1 and 3 graduate the reader's binding at the handler and IAM layers; this acquirer node is a mechanism test
-    whose standing guard is the shared reader's existing graduated routing checks plus step 1.
+  graduation: graduate
+  graduation_check_id: telemetry-acquirer-binding
   expected_literals:
   - 2 passed
 - step: 6
@@ -457,18 +502,43 @@ verification_plan:
   command: >-
     bin/venv-python -m pytest tests/lambdas/ducklake_telemetry_reader tests/common/test_ducklake_event_reads.py
     tests/common/test_ducklake_runtime.py tests/test_build_lambda.py tests/test_ducklake_handler_errors.py
-    tests/checks/iam_tf/test_telemetry_reader_and_twin_pins.py tests/checks/iam_tf/test_telemetry_writer_invoke_grants.py
-    tests/checks/iam_tf/test_ducklake_writer_error_alarms.py tests/checks/iam_tf/test_telemetry_infra_pins.py
-    tests/verify_ci_workflow/test_ducklake_row_rules_wiring.py tests/lambda_manifest -q && bin/venv-python -m
-    scripts.lambda_manifest --check-bundles && bin/venv-python -m scripts.validate --pre
+    tests/lambdas/ducklake_telemetry_writer/test_packaging.py tests/checks/iam_tf/test_telemetry_reader_and_twin_pins.py
+    tests/checks/iam_tf/test_telemetry_writer_invoke_grants.py tests/checks/iam_tf/test_ducklake_writer_error_alarms.py
+    tests/checks/iam_tf/test_telemetry_infra_pins.py tests/verify_ci_workflow/test_ducklake_row_rules_wiring.py
+    tests/lambda_manifest -q && bin/venv-python -m scripts.lambda_manifest --check-bundles && bin/venv-python -m
+    scripts.validate --pre
   expected: Every test passes, every bundle resolves, and the fast tier exits 0 (Decision size, decisions index, scope).
   fix_if: Any failure; fix the cause, never a pin.
   hermetic: false
   graduation: waive
   graduation_waiver_reason: >-
     Whole-file re-runs of this plan's own test files plus scripts.validate, which is refused as a graduated check
-    (recursion); the graduated nodes in steps 1-4 are the standing guards.
+    (recursion); the graduated nodes in steps 1-5 are the standing guards.
 - step: 7
+  phase: pre-deploy
+  action: PR 1's full tier passes before its commit (handoff_policy).
+  command: bin/venv-python -m scripts.validate
+  expected: Exit 0 on the full tier, run to completion from the start.
+  fix_if: Any failure or a timeout (the timeout disposition is blocked; resume and rerun from the start).
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: >-
+    scripts.validate is refused as a graduated check (recursion); this is the handoff policy's full-tier run.
+- step: 8
+  phase: pre-deploy
+  action: Decision N+1 and its four annotations are on the branch.
+  command: >-
+    bin/venv-python -c "t=open('docs/DECISIONS.md',encoding='utf-8').read();assert t.count('Production telemetry is
+    proved by a smoke canary and read through its own reader')==1;assert t.count('PLAN-telemetry-reader-and-smoke-twin
+    (Decision ')==4;print('DECISION_N1_PRESENT')"
+  expected: DECISION_N1_PRESENT.
+  fix_if: The header or an annotation is missing or duplicated; re-apply execution steps 4 and 5.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: >-
+    A one-time presence check; afterwards the decisions validators (entry conformance, size, index freshness) guard the
+    entry and a standing grep would add nothing.
+- step: 9
   phase: pre-deploy
   action: PR 2's test files and the fast tier pass.
   command: >-
@@ -482,19 +552,47 @@ verification_plan:
   hermetic: false
   graduation: waive
   graduation_waiver_reason: >-
-    Whole-file re-runs plus scripts.validate (refused as a graduated check); steps 8 and 9 graduate the behaviour.
-- step: 8
+    Whole-file re-runs plus scripts.validate (refused as a graduated check); step 11 graduates the deploy ordering and
+    step 12's node joins the existing telemetry-owner-provisioning-wiring entry.
+- step: 10
   phase: pre-deploy
-  action: The production telemetry deploy waits on the twin's gate.
+  action: PR 2's full tier passes before its commit (handoff_policy).
+  command: bin/venv-python -m scripts.validate
+  expected: Exit 0 on the full tier, run to completion from the start.
+  fix_if: Any failure or a timeout (resume and rerun from the start).
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: >-
+    scripts.validate is refused as a graduated check (recursion); this is the handoff policy's full-tier run.
+- step: 11
+  phase: pre-deploy
+  action: >-
+    The production telemetry deploy waits on the twin's gate, the twin's gate waits on the serving deploy, and
+    telemetry-smoke runs the reader gate.
   command: bin/venv-python -m pytest tests/verify_ci_workflow/test_ducklake_deploy_map_wiring.py::test_production_telemetry_deploy_waits_on_the_twin_gate -q
   expected: Exit 0, one test passed.
-  fix_if: deploy-telemetry runs without the twin's success, or deploy-serving waits on it; fix the needs and conditions.
+  fix_if: >-
+    deploy-telemetry runs without the twin's success, the twin gate can overlap a serving deploy, the reader gate is
+    missing, or deploy-serving waits on the twin; fix the needs and conditions.
   hermetic: true
   graduation: graduate
   graduation_check_id: telemetry-twin-gates-production-deploy
   expected_literals:
   - 1 passed
-- step: 9
+- step: 12
+  phase: pre-deploy
+  action: Every job running a telemetry writer gate runs after the owner step (Decision 216 cl.2 ordering).
+  command: bin/venv-python -m pytest tests/verify_ci_workflow/test_ducklake_deploy_map_wiring.py::test_every_writer_gate_job_runs_after_maintenance_smoke -q
+  expected: Exit 0, one test passed.
+  fix_if: A job running --lambda-telemetry or --lambda-telemetry-smoke does not reach maintenance-smoke through its needs; add it.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: >-
+    The node joins the existing graduated entry telemetry-owner-provisioning-wiring (this plan's scope edits its
+    command); a second entry for the same guard would duplicate it.
+  expected_literals:
+  - 1 passed
+- step: 13
   phase: pre-deploy
   action: The telemetry reader's deploy gate passes on a consistent fake and fails each red case.
   command: bin/venv-python -m pytest tests/ducklake_neon_smoke_test/test_lambda_telemetry_reader_gates.py::test_happy_path_prints_the_fixed_line -q
@@ -503,61 +601,65 @@ verification_plan:
   hermetic: true
   graduation: waive
   graduation_waiver_reason: >-
-    A gate's own fake-client test; the live gate in step 12 and the deploy workflow are its standing exercise, and
-    test_ducklake_deploy_map_wiring (step 8) pins that the gate runs.
+    A gate's own fake-client test; step 11's graduated node pins that telemetry-smoke runs the gate on every deploy,
+    and step 16 runs it live as PlatformDev.
   expected_literals:
   - 1 passed
-- step: 10
+- step: 14
   phase: post-deploy
   action: >-
     After PR 1's gated apply: both functions and their errors alarms exist (their SSM URL parameters resolve as
-    PlatformDev), and the deploy run
-    on PR 1's merge commit concluded success for its five jobs with the shared reader's gates green. The implementer
+    PlatformDev), and the deploy run on PR 1's merge commit concluded success for exactly its five jobs. The implementer
     saves that run's jobs JSON (GitHub MCP actions_list) to DEPLOY_JOBS_JSON.
   command: >-
     for p in telemetry_writer_smoke_url telemetry_reader_url; do aws ssm get-parameter --profile agent_platform --region
     eu-west-2 --name "/agent-platform/ducklake/$p" --query Parameter.Name --output text || exit 1; done && test "$(aws
     cloudwatch describe-alarms --profile agent_platform --region eu-west-2 --alarm-names
     ducklake-telemetry-writer-smoke-errors ducklake-telemetry-reader-errors --query 'length(MetricAlarms)' --output
-    text)" = 2 && test -s
-    "$DEPLOY_JOBS_JSON" && bin/venv-python -c "import json,os;j=json.load(open(os.environ['DEPLOY_JOBS_JSON']));
+    text)" = 2 && test -s "$DEPLOY_JOBS_JSON" && bin/venv-python -c "import json,os;j=json.load(open(os.environ['DEPLOY_JOBS_JSON']));
     jobs={x['name']:x.get('conclusion') for x in (j.get('jobs') if isinstance(j,dict) else j)};
-    want=['deploy-maintenance','maintenance-smoke','reconcile-gate','deploy-serving','smoke'];
-    assert all(any(n.startswith(w) and c=='success' for n,c in jobs.items()) for w in want),jobs;print('PR1_DEPLOY_OK')"
+    want={'deploy-maintenance','maintenance-smoke','reconcile-gate','deploy-serving','smoke'};
+    assert set(jobs)==want and all(jobs[w]=='success' for w in want),jobs;print('PR1_DEPLOY_OK')"
   expected: Both parameter names print, both errors alarms exist, then PR1_DEPLOY_OK.
   fix_if: A parameter is missing (the gated apply did not run or failed) or a job is red; RCA, never re-run into green.
-- step: 11
+- step: 15
   phase: post-deploy
   action: >-
-    PR 2's merge run: all nine jobs concluded success, the twin's and the telemetry functions' records are fresh, and
-    the twin and reader gates printed their success lines. The implementer saves the jobs JSON to DEPLOY_JOBS_JSON and
-    the telemetry-twin-smoke and telemetry-smoke job logs to TWIN_LOG and TELEMETRY_LOG, and exports RUN_SHA.
+    PR 2's merge run: exactly the nine jobs concluded success, the twin's and the telemetry functions' records are
+    fresh, and the twin and reader gates printed their success lines. The implementer saves the jobs JSON to
+    DEPLOY_JOBS_JSON and the telemetry-twin-smoke and telemetry-smoke job logs to TWIN_LOG and TELEMETRY_LOG, and exports
+    RUN_SHA.
   command: >-
     bin/venv-python -c "import json,os;j=json.load(open(os.environ['DEPLOY_JOBS_JSON']));
     jobs={x['name']:x.get('conclusion') for x in (j.get('jobs') if isinstance(j,dict) else j)};
-    want=['deploy-maintenance','maintenance-smoke','reconcile-gate','deploy-serving','smoke','deploy-telemetry-twin','telemetry-twin-smoke','deploy-telemetry','telemetry-smoke'];
-    assert all(any(n.startswith(w) and c=='success' for n,c in jobs.items()) for w in want),jobs;print('NINE_JOBS_OK')"
+    want={'deploy-maintenance','maintenance-smoke','reconcile-gate','deploy-serving','smoke','deploy-telemetry-twin','telemetry-twin-smoke','deploy-telemetry','telemetry-smoke'};
+    assert set(jobs)==want and all(jobs[w]=='success' for w in want),jobs;print('NINE_JOBS_OK')"
     && grep -q "OK agent-platform-ducklake-telemetry-writer-smoke deploy record fresh: $RUN_SHA" "$TWIN_LOG" && grep -qF
-    'LAMBDA_TELEMETRY OK' "$TWIN_LOG" && grep -q "OK agent-platform-ducklake-telemetry-reader deploy record fresh:
-    $RUN_SHA" "$TELEMETRY_LOG" && grep -qF 'LAMBDA_TELEMETRY_READER OK' "$TELEMETRY_LOG" && echo TWIN_AND_READER_GREEN
+    'direct_invoke=denied target=twin' "$TWIN_LOG" && grep -q "OK agent-platform-ducklake-telemetry-reader deploy record
+    fresh: $RUN_SHA" "$TELEMETRY_LOG" && grep -qF 'LAMBDA_TELEMETRY_READER OK' "$TELEMETRY_LOG" && echo TWIN_AND_READER_GREEN
   expected: NINE_JOBS_OK then TWIN_AND_READER_GREEN.
-  fix_if: A job is red or skipped, or a gate line is missing; RCA (Decision 55).
-- step: 12
+  fix_if: A job is red, skipped or missing, or a gate line is missing; RCA (Decision 55).
+- step: 16
   phase: post-deploy
-  action: The telemetry reader gate passes as PlatformDev from a session (the second principal class).
+  action: The telemetry reader gate passes as PlatformDev from a session (the second principal class), with read_only observed true.
   command: >-
     DUCKLAKE_TELEMETRY_READER_URL=$(aws ssm get-parameter --profile agent_platform --region eu-west-2 --name
     /agent-platform/ducklake/telemetry_reader_url --query Parameter.Value --output text) AWS_PROFILE=agent_platform
     bin/venv-python -m scripts.ducklake_neon_smoke_test --lambda-telemetry-reader > "${TMPDIR:-/tmp}/tr-gate.out" 2>&1
     && grep -qF 'LAMBDA_TELEMETRY_READER OK' "${TMPDIR:-/tmp}/tr-gate.out" && echo READER_GATE_PLATFORMDEV_OK
   expected: Exit 0 and READER_GATE_PLATFORMDEV_OK.
-  fix_if: 403 (PlatformDev's invoke from the production catalog plan's bootstrap apply is missing) or a check fails; RCA.
+  fix_if: 403 (PlatformDev's invoke from PLAN-telemetry-production-catalog's bootstrap apply is missing) or a check fails; RCA.
 test_obligations:
 - source: src/lambdas/ducklake_telemetry_reader/handler.py
   behavior: Serves exactly the event verbs minus transcript_content; refuses everything else before any connection.
   verification_step: 1
   test_selector: tests/lambdas/ducklake_telemetry_reader/test_handler.py::test_served_verbs_exclude_transcript_content_and_every_ops_verb
   red_green_expectation: red before (node absent), green after
+- source: src/lambdas/ducklake_telemetry_reader/__init__.py
+  behavior: Package marker; the handler imports from the staged bundle.
+  verification_step: 6
+  command: bin/venv-python -m scripts.lambda_manifest --check-bundles
+  waiver_reason: An empty package marker has no behaviour; the bundle check's handler import proves the package resolves.
 - source: src/lambdas/ducklake_telemetry_reader/manifest.yaml
   behavior: Bundles the event-read closure and no content module.
   verification_step: 2
@@ -584,9 +686,9 @@ test_obligations:
   test_selector: tests/checks/iam_tf/test_telemetry_writer_invoke_grants.py
   red_green_expectation: red before (the parametrised cases fail on the absent grants), green after
 - source: src/common/ducklake_event_reads.py
-  behavior: The acquirer takes a declared pin, secret and read-only attach; the shared reader's defaults are unchanged.
+  behavior: telemetry_acquirer binds a declared secret and read-only attach; acquirer_for's defaults are byte-identical.
   verification_step: 5
-  test_selector: tests/common/test_ducklake_event_reads.py::test_acquirer_takes_a_declared_pin_secret_and_read_only_attach
+  test_selector: tests/common/test_ducklake_event_reads.py::test_telemetry_acquirer_defaults_are_byte_identical
   red_green_expectation: red before (node absent), green after
 - source: src/common/ducklake_runtime.py
   behavior: read_only adds READ_ONLY to the ATTACH and the default omits it.
@@ -606,68 +708,118 @@ test_obligations:
 - source: src/lambdas/ducklake_telemetry_writer/manifest.yaml
   behavior: Lists the twin as a second function of the same zip.
   verification_step: 6
-  command: bin/venv-python -m scripts.lambda_manifest --check-bundles
-  waiver_reason: The functions list is informational (scripts/lambda_manifest.py); the bundle check proves the zip unchanged.
+  test_selector: tests/lambdas/ducklake_telemetry_writer/test_packaging.py::test_telemetry_writer_manifest_bundles_the_kernel_and_modules
+  red_green_expectation: red before (the functions assertion names both functions), green after
 - source: docs/contracts/ducklake_telemetry_reader.yaml
   behavior: Declares the terminal answers every serving contract must.
   verification_step: 6
   test_selector: tests/test_ducklake_handler_errors.py::test_serving_contracts_declare_the_terminal_answers
   red_green_expectation: red before (the new parameter fails on the absent file), green after
+- source: docs/contracts/ducklake_telemetry_writer.yaml
+  behavior: Names the smoke twin in its audit invariants.
+  verification_step: 6
+  command: bin/venv-python -m scripts.validate --pre
+  waiver_reason: Prose invariant; the contract schema and drift validators in the fast tier are its guard.
+- source: docs/contracts/environment-taxonomy.yaml
+  behavior: The conformance detail names eight DuckLake Lambdas.
+  verification_step: 6
+  command: bin/venv-python -m scripts.validate --pre
+  waiver_reason: Prose only; validate_deploy_channel_conformance checks the .tf files themselves and the drift validator checks the amendment row.
 - source: docs/contracts/build-lambda.yaml
   behavior: The artifact list and the deploy map name the new zip and both new functions, equal to build_lambda_config.
-  verification_step: 7
+  verification_step: 9
   test_selector: tests/test_build_lambda_config.py
   red_green_expectation: red before (anti-drift fails until both sides move), green after
 - source: scripts/build_lambda_config.py
   behavior: The deploy map deploys both new functions.
-  verification_step: 7
+  verification_step: 9
   test_selector: tests/build_lambda_deploy/test_update_functions.py
   red_green_expectation: red before (the count of 16 fails), green after
 - source: .github/workflows/deploy-ducklake-lambdas.yml
   behavior: The twin deploys first and gates the production telemetry deploy; every function is deployed and checked once.
-  verification_step: 8
+  verification_step: 11
   test_selector: tests/verify_ci_workflow/test_ducklake_deploy_map_wiring.py::test_production_telemetry_deploy_waits_on_the_twin_gate
   red_green_expectation: red before (node absent), green after
 - source: config/composite_action_body_baseline.yaml
   behavior: Every new run body is at or under its baseline.
-  verification_step: 7
+  verification_step: 9
   command: bin/venv-python -m scripts.validate --pre
   waiver_reason: The baseline is data the R3-workflow leg of validate_composite_action_shell_bodies reads; that leg is its test.
 - source: config/agent/verification_registry/entries/ducklake-deploy-job-topology.yaml
   behavior: The exact nine-job set and the telemetry deploy's needs.
-  verification_step: 7
+  verification_step: 9
+  command: bin/venv-python -m scripts.validate --pre
+  waiver_reason: A registry entry is its own check; validate_verification_registry's differential admission runs it.
+- source: config/agent/verification_registry/entries/telemetry-owner-provisioning-wiring.yaml
+  behavior: The Decision 216 ordering guard covers every writer gate job.
+  verification_step: 9
+  command: bin/venv-python -m scripts.validate --pre
+  waiver_reason: A registry entry is its own check; validate_verification_registry's differential admission runs it.
+- source: config/agent/verification_registry/entries/telemetry-reader-served-verbs.yaml
+  behavior: Graduates step 1.
+  verification_step: 6
+  command: bin/venv-python -m scripts.validate --pre
+  waiver_reason: A registry entry is its own check; validate_verification_registry's differential admission runs it.
+- source: config/agent/verification_registry/entries/telemetry-reader-no-content-bundle.yaml
+  behavior: Graduates step 2.
+  verification_step: 6
+  command: bin/venv-python -m scripts.validate --pre
+  waiver_reason: A registry entry is its own check; validate_verification_registry's differential admission runs it.
+- source: config/agent/verification_registry/entries/telemetry-reader-iam-fence.yaml
+  behavior: Graduates step 3.
+  verification_step: 6
+  command: bin/venv-python -m scripts.validate --pre
+  waiver_reason: A registry entry is its own check; validate_verification_registry's differential admission runs it.
+- source: config/agent/verification_registry/entries/telemetry-writer-smoke-twin-pins.yaml
+  behavior: Graduates step 4.
+  verification_step: 6
+  command: bin/venv-python -m scripts.validate --pre
+  waiver_reason: A registry entry is its own check; validate_verification_registry's differential admission runs it.
+- source: config/agent/verification_registry/entries/telemetry-acquirer-binding.yaml
+  behavior: Graduates step 5.
+  verification_step: 6
+  command: bin/venv-python -m scripts.validate --pre
+  waiver_reason: A registry entry is its own check; validate_verification_registry's differential admission runs it.
+- source: config/agent/verification_registry/entries/telemetry-twin-gates-production-deploy.yaml
+  behavior: Graduates step 11.
+  verification_step: 9
   command: bin/venv-python -m scripts.validate --pre
   waiver_reason: A registry entry is its own check; validate_verification_registry's differential admission runs it.
 - source: docs/contracts/github-actions-evidence.yaml
   behavior: Each new governed job names one unique critical step.
-  verification_step: 7
+  verification_step: 9
   command: bin/venv-python -m scripts.validate --pre
   waiver_reason: validate_actions_evidence reads the contract against the workflow; it is the contract's test.
+- source: docs/contracts/deploy-paths.yaml
+  behavior: The deploy_code text names the serving, telemetry and twin sets and the current counts.
+  verification_step: 9
+  command: bin/venv-python -m scripts.validate --pre
+  waiver_reason: Prose only; the contract drift validator checks the amendment row.
 - source: scripts/convergence_health/code_drift.py
   behavior: The telemetry reader's source directory is watched.
-  verification_step: 7
+  verification_step: 9
   test_selector: tests/convergence_health/code_drift/test_ducklake.py::TestDetectDucklakeCodeDrift::test_telemetry_reader_source_directory_is_watched
   red_green_expectation: red before (node absent), green after
 - source: scripts/ducklake_smoke/lambda_telemetry_gates.py
-  behavior: The twin gate runs the full sequence against the twin; the writer gate is unchanged.
-  verification_step: 7
+  behavior: The twin gate runs the full sequence against the twin; the writer gate's line and target are unchanged.
+  verification_step: 9
   test_selector: tests/ducklake_neon_smoke_test/test_lambda_telemetry_gates.py::test_twin_gate_targets_the_twin_function
   red_green_expectation: red before (node absent), green after
 - source: scripts/ducklake_smoke/lambda_telemetry_reader_gates.py
-  behavior: The reader gate proves binding, login, read-only, the served set and URL-only.
-  verification_step: 9
+  behavior: The reader gate proves binding, login, observed read-only, the served set and URL-only.
+  verification_step: 13
   test_selector: tests/ducklake_neon_smoke_test/test_lambda_telemetry_reader_gates.py::test_happy_path_prints_the_fixed_line
   red_green_expectation: red before (node absent), green after
 - source: scripts/ducklake_neon_smoke_test.py
   behavior: The two new flags dispatch their gates.
-  verification_step: 7
+  verification_step: 9
   test_selector: tests/ducklake_neon_smoke_test/test_main_dispatch.py
   red_green_expectation: red before (the new dispatch nodes fail), green after
 - source: docs/DECISIONS.md
-  behavior: Decision N+1 conforms (envelope, size cap, annotations).
-  verification_step: 6
-  command: bin/venv-python -m scripts.validate --pre
-  waiver_reason: The decisions validators (entry conformance, size, index freshness) are the Decision's tests.
+  behavior: Decision N+1 conforms (envelope, size cap) and its four annotations are present.
+  verification_step: 8
+  command: assert t.count('PLAN-telemetry-reader-and-smoke-twin
+  waiver_reason: The decisions validators (entry conformance, size, index freshness) are the Decision's standing tests; step 8 proves presence.
 - source: docs/decisions-index.json
   behavior: The generated index stays fresh.
   verification_step: 6
@@ -705,13 +857,16 @@ context:
 - "Scout dispositions here: 181 (a) the twin's blob readback uses the shared reader's smoke slot until PLAN-telemetry-production-flip retires that slot, with rec-4481 owning any later content read; (b) the light gate's checks are PLAN-telemetry-production-flip's; (c) cl.5 is authorized here and built by PLAN-telemetry-production-maintenance. 216 is PLAN-telemetry-production-catalog's. 223: PlatformDev's invoke and IAMRolesRead come from PLAN-telemetry-production-catalog's bootstrap apply."
 - "Live facts: the shared reader opens its telemetry slot on the shared DSN behind require_smoke_pin; describe returns no catalog binding today; core._function_url resolves DUCKLAKE_<ROLE>_URL then a terraform output; adding a DuckLake function touches build-lambda.yaml, build_lambda_config, build_lambda, the drift sensor, environment-taxonomy and the workflow's legs, freshness and URL loops."
 - "Twin, not canary: scripts/ducklake_smoke/canary.py already names the ephemeral layer canaries, so files, jobs and flags say twin; the Decision's title keeps canary."
+- "Closes no criterion by design: an enabling slice of in-progress T2.36, like PLAN-telemetry-append-inline, PLAN-telemetry-stop-turn-close, PLAN-telemetry-in-session-source-check and PLAN-telemetry-read-side-session-end; c5 closes in PLAN-telemetry-production-maintenance and c2 in PLAN-telemetry-production-flip."
+- "Login sizing: two catalog sessions per container (ducklake_telemetry_writer_role.sql:19); PLAN-telemetry-production-catalog's LOGINS table sets the reader login to 10 and raises the shared smoke writer login to 20 = 2 x (writer 5 + twin 5) for the twin-to-flip window, recorded in ADMIN-SESSION-RECORD.md; the pins test reads LOGINS."
+- "Until PLAN-telemetry-production-flip rewrites them, require_smoke_pin's message and the served verbs' descriptions still say smoke only; the telemetry reader serves those descriptions unchanged (the flip owns the text). The flip's light production gate builds on lambda_telemetry_gates._run(role, function_name, label)."
 - "Followons: rec-4481 (content reader with access log, cl.3's trigger owner); rec-4480 (github_ci_branch agent/* trust split, since this plan grants it invoke on two new functions)."
 - "Parallel threads touching shared files: CI write narrowing (oidc_ci_roles.tf), query_ops retirement (shared reader). The second to land rebases."
-- "Red-overlap (scripts.ci_rca.red_overlap, 2026-10-19): {\"verdict\": \"clear\", \"slo_hours\": 4, \"reds\": []}"
+- "Red-overlap (scripts.ci_rca.red_overlap, 2026-10-19, re-run after critique round 1): {\"verdict\": \"clear\", \"slo_hours\": 4, \"reds\": []}"
 pre_implementation_checklist:
 - Branch confirmed not on main; harness branch only.
 - docs/PROJECT_CONTEXT.md read; only Decisions 81, 91, 143, 199, 200, 209, 213, 216 and Decision N read in full.
-- PLAN-telemetry-production-catalog merged and its admin-session record present under /mnt/project-files/telemetry-slice2c/ (bootstrap apply, reader login, catalog created and seeded).
+- PLAN-telemetry-production-catalog merged and /mnt/project-files/telemetry-slice2c/ADMIN-SESSION-RECORD.md present (bootstrap apply, reader login at CONNECTION LIMIT 10, smoke writer login at CONNECTION LIMIT 20, catalog created and seeded).
 - All files in scope located and readable; acceptance criteria understood and verifiable.
 execution_steps:
 - >-
@@ -821,21 +976,24 @@ execution_steps:
   5. Annotations (Decision 177 dialect, one bracketed line appended to each entry, entry text untouched):
   Decision 81 "[Amendment DATE, PLAN-telemetry-reader-and-smoke-twin (Decision NNN cl.6): runtime artifacts add the
   smoke telemetry writer twin and the telemetry reader; the closed read boundary is two readers.]"; Decision 91
-  "[Amendment DATE, Decision NNN cl.6: the telemetry reader serves its own verb set, the event verbs minus
-  transcript_content.]"; Decision 199 "[Amendment DATE, Decision NNN cl.3: production serves no transcript content until
-  a named consumer needs it (rec-4481).]"; Decision 200 "[Amendment DATE, Decision NNN cl.4: in a single-tenant data
-  plane read-side tenancy is the function and principal boundary; reopens when a data plane holds a second tenant.]".
+  "[Amendment DATE, PLAN-telemetry-reader-and-smoke-twin (Decision NNN cl.6): the telemetry reader serves its own verb
+  set, the event verbs minus transcript_content.]"; Decision 199 "[Amendment DATE, PLAN-telemetry-reader-and-smoke-twin
+  (Decision NNN cl.3): production serves no transcript content until a named consumer needs it (rec-4481).]"; Decision
+  200 "[Amendment DATE, PLAN-telemetry-reader-and-smoke-twin (Decision NNN cl.4): in a single-tenant data plane
+  read-side tenancy is the function and principal boundary; reopens when a data plane holds a second tenant.]". Each
+  annotation carries the slug and "(Decision ", so VP step 8 counts exactly four.
 - >-
-  6. Run VP steps 1-6; run validate_weakening_candidates and record a weakening_dispositions entry (planned-change or
-  growth-safe-pin, citing an acceptance_criteria index) for every candidate; code review via a fresh code-review
-  subagent, fixing every blocking finding and re-running steps 1-6; full tier (bin/venv-python -m scripts.validate)
-  exit 0 before the commit. Open PR 1 and ask Benjamin for his word on the Decision and IAM, naming the gated apply
-  he will approve and the precondition record. Merge on his word; after his gated approval, run VP step 10.
+  6. Run VP steps 1-6 and 8; run validate_weakening_candidates and record a weakening_dispositions entry
+  (planned-change or growth-safe-pin, citing an acceptance_criteria index) for every candidate; code review via a fresh
+  code-review subagent, fixing every blocking finding and re-running those steps; then VP step 7 (full tier) exit 0
+  before the commit. Open PR 1 and ask Benjamin for his word on the Decision and IAM, naming the gated apply he will
+  approve and ADMIN-SESSION-RECORD.md as the precondition. Merge on his word; after his gated approval, run VP step 14.
 - >-
-  7. PR 2 (only after VP step 10 passes): build_lambda_config and build-lambda.yaml's deploy map; the workflow's nine-job
-  topology; the R3 baseline, job-topology registry entry, evidence contract and deploy-paths text; code_drift; the twin
-  gate in lambda_telemetry_gates.py, the new lambda_telemetry_reader_gates.py and the two flags; their tests. Run VP steps
-  7-9, weakening dispositions, code review and the full tier; merge under the standing rule; run VP steps 11 and 12.
+  7. PR 2 (only after VP step 14 passes): build_lambda_config and build-lambda.yaml's deploy map; the workflow's nine-job
+  topology and header counts; the R3 baseline, the job-topology and owner-provisioning-wiring registry entries, the
+  evidence contract and deploy-paths text; code_drift; the twin gate in lambda_telemetry_gates.py, the new
+  lambda_telemetry_reader_gates.py and the two flags; their tests. Run VP steps 9 and 11-13, weakening dispositions,
+  code review, then VP step 10 (full tier); merge under the standing rule; run VP steps 15 and 16.
 - 'Report: what was implemented, every VP result and the gated-apply evidence; then hand PLAN-telemetry-production-maintenance (which cites Decision N+1) to the coordinator.'
 rollback: >-
   PR 2: revert the PR; the deploy workflow returns to five jobs and the new functions keep their last code. PR 1: a

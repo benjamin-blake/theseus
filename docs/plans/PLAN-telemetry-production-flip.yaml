@@ -5,42 +5,41 @@ handoff_policy:
 slug: telemetry-production-flip
 intent: >-
   Telemetry slice 2c's last plan (rec-4292): real session capture moves from the disposable smoke catalog to the
-  production telemetry catalog, and the shared reader stops serving telemetry. The existing writer flips to
-  ducklake_telemetry behind a light deploy gate together with the capture switch, so capture and every read client
-  (routed by PLAN-telemetry-catalog-aware-capture) move at once; once production capture, golden replay, the monitor and
-  the preflight gauge are proven, the shared reader drops its telemetry slot, env and blob grant, so production
-  telemetry is read only through its own reader identity. Telemetry is the learning signal for recursive
-  self-improvement (PROJECT_CONTEXT); this makes it real production data, verified on the production catalog.
+  production telemetry catalog, and the shared reader stops serving telemetry. One Terraform change moves the writer's
+  catalog pin, so the writer's env, grants and login secret and the catalog deploy output change in one apply; capture
+  and every read client follow them (PLAN-telemetry-catalog-aware-capture), with no blackout window. A light production
+  deploy gate replaces the heavy vectors on the production writer. Once production capture, golden replay, the monitor
+  and the preflight gauge are proven, the shared reader stops serving event verbs and then loses its telemetry env and
+  blob grant, so production telemetry is read only through its own reader identity. Telemetry is the learning signal
+  for recursive self-improvement (PROJECT_CONTEXT); this makes it real production data, verified on the production
+  catalog.
 plan_type: IMPLEMENTATION
 verification_tier: V3
 plan_path: docs/plans/PLAN-telemetry-production-flip.yaml
 phase: >-
   T2.36 (telemetry re-lands on DuckLake), follow-on mode; closes T2.36:c2 (every emit transits the telemetry writer,
-  now on production). c1 is PLAN-telemetry-production-catalog's, c5 PLAN-telemetry-production-maintenance's; c3 (met
-  on smoke only) is re-verified on production here. Built after PLAN-telemetry-catalog-aware-capture. V3: two ordered
-  PRs. PR "flip" applies terraform/personal (the writer role's env, secret and S3 grants) and moves the capture switch;
-  PR "cleanup" redeploys the shared reader and the telemetry reader through deploy-ducklake-lambdas.yml (Decision 126)
-  and applies terraform/personal (the shared reader loses its telemetry env and blob grant).
+  now on production). c1 is PLAN-telemetry-production-catalog's, c5 PLAN-telemetry-production-maintenance's; c3 (met on
+  smoke only) is re-verified on production here. Built after PLAN-telemetry-catalog-aware-capture. V3: four ordered PRs.
+  PR "flip" applies terraform/personal (the writer's env, inline policy and the catalog deploy output); PR "cleanup"
+  redeploys the shared reader, the telemetry reader and the telemetry writer code through deploy-ducklake-lambdas.yml
+  (Decision 126); PR "narrow" applies terraform/personal (the shared reader's env and inline policy); PR "bookkeeping"
+  flips c2 and resolves rec-4292.
 closes_criteria:
 - T2.36:c2
 scope:
-- file: config/telemetry/capture.yaml
-  action: Modify
-  purpose: >-
-    PR flip: `catalog: ducklake_telemetry` (the key PLAN-telemetry-catalog-aware-capture added); `enabled: true` is
-    untouched.
 - file: terraform/personal/ducklake_lambdas.tf
   action: Modify
   purpose: >-
-    PR flip: ducklake_telemetry_meta_schema = "ducklake_telemetry" (the pin moves with Decision A, so the blob root local
-    follows) and its comment names Decision A instead of "until a Decision moves it (slice 2c)". Every reference to
-    local.ducklake_telemetry_meta_schema or local.ducklake_telemetry_blob_root that is NOT the production writer or the
-    telemetry reader is re-pointed to smoke-valued locals (the shared reader's TELEMETRY_META_SCHEMA and
-    TELEMETRY_BLOB_ROOT env and its TelemetryBlobRead resource; any smoke binding PLAN-telemetry-reader-and-smoke-twin left on
-    the pin local), so the shared reader's applied values do not change in this PR. PR cleanup: the shared reader loses
-    TELEMETRY_META_SCHEMA, TELEMETRY_DATA_PATH and TELEMETRY_BLOB_ROOT and the TelemetryBlobRead statement;
-    S3DataReadOnly and S3ListDataPrefix keep the production and smoke data prefixes (the T2.17 ops gates and rollback,
-    Decision 78 cl.7).
+    PR flip: ducklake_telemetry_meta_schema = "ducklake_telemetry" (the pin moves with Decision A; the blob root local and
+    the catalog deploy output follow) and its comment names Decision A instead of "until a Decision moves it (slice 2c)".
+    The shared reader's TELEMETRY_META_SCHEMA and TELEMETRY_BLOB_ROOT env and its TelemetryBlobRead resource are
+    re-pointed to local.ducklake_smoke_meta_schema and local.ducklake_telemetry_smoke_blob_root (the locals
+    PLAN-telemetry-reader-and-smoke-twin added), so the shared reader's applied values do not change in this PR; any
+    other reference to the moving locals that is not the production writer is re-pointed the same way. PR narrow: the
+    shared reader loses TELEMETRY_META_SCHEMA, TELEMETRY_DATA_PATH and TELEMETRY_BLOB_ROOT and the TelemetryBlobRead
+    statement; S3DataReadOnly and S3ListDataPrefix keep the production and smoke data prefixes (the T2.17 ops gates and
+    rollback, Decision 78 cl.7). The reader role's description stays as it is (rec-4292 item 5's choice: a role
+    attribute update leaves the apply budget).
 - file: terraform/personal/ducklake_telemetry_writer.tf
   action: Modify
   purpose: >-
@@ -50,76 +49,140 @@ scope:
     resource PLAN-telemetry-production-catalog declared); the role policy's TelemetryDsnRead names that secret only,
     TelemetryCatalogDataReadWrite and TelemetryCatalogDataList name the ducklake-telemetry/ prefix only,
     TelemetryBlobReadWrite and TelemetryBlobList name telemetry-blobs/ducklake_telemetry/ only; still no Delete action.
-    reserved_concurrent_executions stays 5; its comment names the re-size trigger the production catalog plan recorded
-    instead of "slice 2c re-sizes it". Function name, URL, SSM parameter and alarms are unchanged, so capture's cached
-    writer URL stays valid.
+    aws_ssm_parameter.ducklake_telemetry_catalog follows the moved local unedited. The header comment says the function
+    binds the production catalog; the role's description attribute is left stale on purpose, with a comment beside it
+    saying so (an aws_iam_role update is outside in_budget_resource_types and would route the flip to tf-gated-apply).
+    reserved_concurrent_executions stays 5; its comment names the re-size trigger PLAN-telemetry-production-catalog
+    recorded. Function name, URL parameter and alarms are unchanged, so capture's cached writer URL stays valid.
 - file: scripts/ducklake_smoke/lambda_telemetry_gates.py
   action: Modify
   purpose: >-
     PR flip: NEW lambda_telemetry_production(*, profile, region), the light production gate on core._function_url
     ("telemetry_writer"): unsigned 403, describe (catalog.meta_schema ducklake_telemetry, data_path_is_smoke false),
     attach_check against the decoy (meta_schema ducklake_telemetry, data_path_is_smoke false, catalog_login
-    ducklake_telemetry_writer_prod), unknown action 400, the Decision 213 DryRun direct-invoke denial, provision_telemetry
-    twice (nine stable tables; Decision 222 cl.3: a production column add stays an admin step, so drift reds here until
-    the operator runs it), the measurement lines, register_tenant self twice (stable ULID, created false on the repeat),
-    telemetry_probe (production binding, the scoped production login, can_create false per Decision 216 cl.1, nine
-    present and partitioned tables, counters at or above their table counts) and the self-only refusal. It registers no
-    project and runs no append, blob or auto-registration vector. The checks reuse the expected-binding parameter
-    PLAN-telemetry-reader-and-smoke-twin threaded through _check_describe, _check_attach and _check_probe; any of them
-    left smoke-only gains it here. Prints LAMBDA_TELEMETRY_PRODUCTION OK. lambda_telemetry (the heavy gate, now the smoke
-    twin's) is unchanged.
+    ducklake_telemetry_writer_prod), unknown action 400, the Decision 213 DryRun direct-invoke denial,
+    provision_telemetry twice (nine stable tables; Decision 222 cl.3: a production column add stays an admin step, so
+    drift reds here until the operator runs it), the measurement lines, register_tenant self twice (stable ULID, created
+    false on the repeat), telemetry_probe (production binding, the production login, can_create false per Decision 216
+    cl.1, nine present and partitioned tables, counters at or above their table counts) and the self-only refusal. It
+    registers no project and runs no append, blob or auto-registration vector. _check_describe, _check_attach and
+    _check_probe take the expected binding (meta_schema, smoke flag, login) as a keyword whose default is today's smoke
+    binding, so lambda_telemetry_smoke is unchanged. The heavy public entry lambda_telemetry (role telemetry_writer) is
+    retired: the heavy vectors run only through lambda_telemetry_smoke against the twin. Prints LAMBDA_TELEMETRY_PRODUCTION
+    OK. Stays under 500 SLOC.
 - file: scripts/ducklake_neon_smoke_test.py
   action: Modify
   purpose: >-
-    PR flip: flag --lambda-telemetry-production dispatching lambda_telemetry_gates.lambda_telemetry_production. PR
-    cleanup: flag --lambda-telemetry-reader-reads dispatching lambda_ec_gates.lambda_telemetry_reader_reads. Both beside
-    the existing telemetry flags, with dispatch-table entries.
+    PR flip: --lambda-telemetry-production dispatches lambda_telemetry_gates.lambda_telemetry_production and the
+    --lambda-telemetry flag, its _LAMBDA_GATES entry and re-export are removed (the heavy vectors against the production
+    writer are retired; --lambda-telemetry-smoke stays).
 - file: .github/workflows/deploy-ducklake-lambdas.yml
   action: Modify
   purpose: >-
-    PR flip: the step that gates the production writer (the smoke job's --lambda-telemetry step today, or the step
-    PLAN-telemetry-reader-and-smoke-twin moved it to beside the deploy-telemetry job) runs --lambda-telemetry-production
-    (named "Smoke test -- lambda-telemetry-production (telemetry writer light production gate)"); the
-    telemetry-twin-smoke job keeps the heavy --lambda-telemetry gate. PR cleanup: the step that runs
-    PLAN-telemetry-reader-and-smoke-twin's telemetry-reader gate also runs --lambda-telemetry-reader-reads after it (same
-    job, after the telemetry reader URL is resolved). No role,
-    permission, trigger-path or job-topology change.
+    PR flip: the telemetry-smoke job's --lambda-telemetry step becomes --lambda-telemetry-production (named "Smoke test --
+    lambda-telemetry-production (telemetry writer light production gate)"); telemetry-twin-smoke keeps
+    --lambda-telemetry-smoke. No other job, role, permission, trigger path or topology changes.
 - file: config/composite_action_body_baseline.yaml
   action: Modify
   purpose: >-
-    r3_workflows: the renamed telemetry step's key replaces smoke-test-lambda-telemetry-telemetry-writer-url-only-proof
-    (one-line body), and any step whose body line count changes in either PR gets its new count, so
-    validate_composite_action_shell_bodies' R3-workflow leg passes.
+    PR flip: r3_workflows: the renamed telemetry-smoke step's key replaces the --lambda-telemetry step's key (one-line
+    body), so validate_composite_action_shell_bodies' R3-workflow leg passes.
 - file: docs/contracts/ducklake_telemetry_writer.yaml
   action: Modify
   purpose: >-
     PR flip (Class B, provisional_v0): the header comment, description and write_path say the function is env-pinned to
-    the production telemetry catalog (ducklake_telemetry, Decision A) on the production scoped login, the smoke twin
-    (PLAN-telemetry-reader-and-smoke-twin) holding the smoke binding and the disposable proofs (Decision B);
-    provisional_v0.rationale and surfacing_note say production traffic starts at the flip, so the production_invocations
-    re-ratification trigger now counts; an amendment_log entry (semantic_break true: the bound catalog changes).
+    the production telemetry catalog (ducklake_telemetry, Decision A) on the production scoped login, with the smoke twin
+    (PLAN-telemetry-reader-and-smoke-twin) holding the smoke binding and the disposable proofs (Decision B). The
+    claim-check invariant's "the CI role's bucket-wide S3 write is a named residual owned by rec-4292" becomes the
+    fence Decision A put in the permissions boundary (only the telemetry writer roles put to the blob root, only
+    maintenance deletes and never by version, PlatformAdmin break-glass). Two operator lines join the audit invariants
+    (rec-4292's 2026-10-15 items): an operator write under the blob prefix must be a checksum-signed PUT under a
+    begin_blobs grant or it pages, and the integrity repair path is a PlatformAdmin inspection that deletes the faulty
+    object version, after which the producer's next begin_blobs grants a fresh upload. provisional_v0.rationale and
+    surfacing_note say production traffic starts at the flip, so production_invocations now counts, and that the
+    telemetry project's coordinator surfaces the re-ratification to Benjamin when the writer's RequestCount since the
+    flip reaches 500 (about one to three days). An amendment_log entry (semantic_break true: the bound catalog changes).
+- file: config/agent/verification_registry/entries/telemetry-writer-smoke-gate.yaml
+  action: Modify
+  purpose: >-
+    PR flip: guard_symbol lambda_telemetry becomes lambda_telemetry_smoke and check_spec.command gains
+    tests/verify_ci_workflow/test_ducklake_deploy_map_wiring.py::test_no_job_runs_heavy_vectors_against_the_production_writer
+    (absent on origin/main, so the differential admission gate admits the edit).
+- file: config/agent/verification_registry/entries/telemetry-reader-blob-grant-pins.yaml
+  action: Modify
+  purpose: >-
+    PR flip: check_spec.command replaces test_telemetry_pins_target_the_smoke_catalog with
+    test_telemetry_pin_targets_the_production_catalog and replaces the moved shared-reader nodes with
+    tests/checks/iam_tf/test_telemetry_shared_reader_pins.py::test_shared_reader_telemetry_env_stays_on_smoke_until_narrowed.
+    PR narrow: that node becomes test_shared_reader_carries_no_telemetry_state. Each new node is absent on origin/main
+    when its PR opens.
+- file: tests/checks/iam_tf/test_telemetry_infra_pins.py
+  action: Modify
+  purpose: >-
+    PR flip: the module docstring and _PIN_MOVE_HINT name Decision A; test_telemetry_pins_target_the_smoke_catalog
+    becomes test_telemetry_pin_targets_the_production_catalog (rec-4292's acceptance node: the pin local is
+    ducklake_telemetry and the writer binds it with the production data path and secret); test_writer_blob_grant_shape
+    and test_telemetry_writer_reads_only_its_scoped_login read the production prefix, blob root and secret; the
+    shared-reader predicates and their red cases (the reader halves of the pin and blob-root tests,
+    test_reader_blob_grant_is_get_object_on_the_blob_prefix) move to test_telemetry_shared_reader_pins.py, so this file
+    shrinks from 492 SLOC.
+- file: tests/checks/iam_tf/test_telemetry_shared_reader_pins.py
+  action: Create
+  purpose: >-
+    PR flip: the moved shared-reader predicates plus NEW test_shared_reader_telemetry_env_stays_on_smoke_until_narrowed
+    (its TELEMETRY_* env and TelemetryBlobRead name the smoke-valued locals, never the moving pin local), each with a red
+    case on synthetic HCL (helpers from tests/fixtures/terraform_hcl_blocks). PR narrow: NEW
+    test_shared_reader_carries_no_telemetry_state (no TELEMETRY_* env, no telemetry-blobs statement, data prefixes
+    unchanged) replaces the stays-on-smoke node.
+- file: tests/ducklake_neon_smoke_test/test_lambda_telemetry_production_gate.py
+  action: Create
+  purpose: >-
+    PR flip, a fake writer recording every action: test_production_gate_expects_the_production_binding (a smoke binding
+    or the smoke login fails), test_production_gate_keeps_the_denial_and_can_create_checks (a DryRun success or
+    can_create true fails) and test_production_gate_runs_no_append_or_registration_vector (no register_project,
+    append_telemetry or begin_blobs). Its own module so test_lambda_telemetry_gates.py stays under 500 SLOC.
+- file: tests/ducklake_neon_smoke_test/test_lambda_telemetry_gates.py
+  action: Modify
+  purpose: >-
+    PR flip: every call of lambda_telemetry() moves to lambda_telemetry_smoke() (same sequence, the twin's role), so the
+    heavy-gate nodes, including test_happy_path_prints_fixed_line and test_blob_vectors_run_after_the_append_vectors,
+    keep their names; the twin plan's test_writer_gate_is_unchanged is removed with the entry it guarded.
+- file: tests/ducklake_neon_smoke_test/test_main_dispatch.py
+  action: Modify
+  purpose: >-
+    PR flip: NEW test_main_lambda_telemetry_production_dispatch and test_main_lambda_telemetry_flag_is_retired;
+    test_main_lambda_telemetry_dispatch is replaced by them.
+- file: tests/verify_ci_workflow/test_ducklake_deploy_map_wiring.py
+  action: Modify
+  purpose: >-
+    PR flip: NEW test_no_job_runs_heavy_vectors_against_the_production_writer (no step in any .github/workflows file runs
+    the bare --lambda-telemetry flag, --lambda-telemetry-smoke runs only in telemetry-twin-smoke) and
+    test_telemetry_smoke_runs_the_production_gate (after the telemetry_writer URL is resolved); the telemetry URL-order
+    test follows the new flag.
 - file: src/lambdas/ducklake_reader/handler.py
   action: Modify
   purpose: >-
-    PR cleanup: the shared reader stops serving event verbs. action_named_read serves NAMED_READS only (rt.named_read
-    and rt.read_version); action_describe returns rt.describe_named_reads(); the per-request acquirer is the ops
-    acquirer (ev.acquirer_for removed); the module imports nothing from ducklake_event_reads, so an event verb name
-    answers 400 like any unregistered verb before any connection opens. query_ops (or the dq_check verb that replaces
-    it), the ops actions and the reopen-once path are not touched: the "Retire query_ops raw SQL" plan adds dq_check and
-    deletes action_query_ops in this file, and whichever lands second rebases.
+    PR cleanup: the shared reader stops serving event verbs. action_named_read serves NAMED_READS only
+    (rt.named_read and rt.read_version), so an event verb name gets today's answer for any unregistered verb (500
+    runtime, after the ops connection, never the telemetry slot); action_describe returns rt.describe_named_reads(); the
+    per-request acquirer is the ops acquirer (ev.acquirer_for removed); _is_caller_input_error drops
+    ev.EventReadInputError; the module imports nothing from ducklake_event_reads. query_ops (or the dq_check verb that
+    replaces it), the ops actions and the reopen-once path are not touched: the "Retire query_ops raw SQL" plan adds
+    dq_check and deletes action_query_ops in this file, and whichever lands second rebases.
 - file: src/lambdas/ducklake_reader/manifest.yaml
   action: Modify
   purpose: >-
     PR cleanup: includes drop ducklake_event_reads.py, ducklake_event_read_sql.py, ducklake_event_read_verbs.py,
     ducklake_event_content.py, ducklake_telemetry_blobstore.py and every src/telemetry module only they import (proven
-    by --check-bundles); notes say the shared reader holds no telemetry state since slice 2c's cleanup and production
-    telemetry is read through agent-platform-ducklake-telemetry-reader (Decision B).
+    by --check-bundles); notes say the shared reader holds no telemetry state after slice 2c and production telemetry is
+    read through agent-platform-ducklake-telemetry-reader (Decision B).
 - file: src/common/ducklake_event_reads.py
   action: Modify
   purpose: >-
-    PR cleanup: require_smoke_pin, TELEMETRY_SLOT_NOT_SMOKE and every smoke-pin branch are deleted; whatever binding
-    check PLAN-telemetry-reader-and-smoke-twin gave the telemetry reader stays its only pin check. The slot opener and routing the telemetry
-    reader uses are unchanged, and no function it calls changes signature.
+    PR cleanup: require_smoke_pin is deleted; acquirer_for's pin keyword (default require_smoke_pin since the twin plan)
+    becomes required, so its only caller, the telemetry reader, names require_production_pin; the module docstring stops
+    saying the reader handler is its only importer. The slot opener and the telemetry reader's call are otherwise
+    unchanged.
 - file: src/common/ducklake_event_read_verbs.py
   action: Modify
   purpose: >-
@@ -131,20 +194,23 @@ scope:
   action: Modify
   purpose: >-
     PR cleanup. _telemetry_read_checks (the shared reader's leg of --lambda-reader) now asserts describe lists no
-    event_journal row and a named_read of telemetry_health_count answers 400 before any rows. Its query_ops probe block
-    is the "Retire query_ops raw SQL" plan's to delete: left as it is if still present, absent if that build merged
-    first. NEW lambda_telemetry_reader_reads(*, profile, region) on core._function_url("telemetry_reader") runs the
-    checks the shared reader used to answer: describe lists every served event verb (EVENT_READS minus
-    transcript_content) as an event_journal row with its agent_facing flag and does not list transcript_content;
-    telemetry_health_count answers the four tables with meta_schema ducklake_telemetry; the absent and malformed
-    session_id cases; _verification_verb_checks unchanged. Prints TELEMETRY_READER_READS_OK.
+    event_journal row and a named_read of telemetry_health_count answers 500 runtime with no rows. Its query_ops probe
+    block is the "Retire query_ops raw SQL" plan's to delete: left as it is if present, absent if that build merged
+    first. _verification_verb_checks stays here unchanged and the telemetry reader gate imports it.
+- file: scripts/ducklake_smoke/lambda_telemetry_reader_gates.py
+  action: Modify
+  purpose: >-
+    PR cleanup: lambda_telemetry_reader (PLAN-telemetry-reader-and-smoke-twin's gate, run by --lambda-telemetry-reader
+    in telemetry-smoke) gains the checks the shared reader used to answer: the absent and malformed session_id cases on
+    session_state_and_duration and lambda_ec_gates._verification_verb_checks against the telemetry reader URL. Its
+    success line is unchanged.
 - file: scripts/ducklake_smoke/lambda_telemetry_blob_gates.py
   action: Modify
   purpose: >-
     PR cleanup: the transcript_content read-back (_read_page, _read_back, _check_readback) is retired, because no
     deployed reader serves content any more; rec-4481 owns re-adding a content read-back with a content reader (Decision
-    181 cl.1: a retired surface, not a weakened assertion). Every write, verify and fault vector the smoke twin runs stays;
-    blob presence keeps its writer-side proof through telemetry_probe's blob_objects.
+    181 cl.1: a retired surface, not a weakened assertion). Every write, verify and fault vector the smoke twin runs
+    stays; blob presence keeps its writer-side proof through telemetry_probe's blob_objects.
 - file: src/lambdas/ducklake_telemetry_writer/manifest.yaml
   action: Modify
   purpose: >-
@@ -153,20 +219,22 @@ scope:
 - file: docs/contracts/ducklake_reader.yaml
   action: Modify
   purpose: >-
-    PR cleanup (Class B reader contract): the event-journal invariant and the verification-verb invariant say the shared
-    reader serves no event verb and production telemetry is read through agent-platform-ducklake-telemetry-reader
-    (Decision B; read-side tenancy is that function and principal boundary, Decision 209 cl.2(c)), replacing the
-    smoke-pin refusal and "tenant-scoped reads" wording; from the declared residual line, only the TelemetryBlobRead
-    clause (the blob-object reach) is dropped, because the grant is gone. The query_ops residual lines are the "Retire
-    query_ops raw SQL" plan's to retire: left as they are if still present, already gone if that build merged first. An
+    PR cleanup (Class B). The event-journal invariant (served from the telemetry slot until slice 2c lifts the smoke pin
+    with tenant-scoped reads) and the verification-verb invariant say the event verbs are served by
+    agent-platform-ducklake-telemetry-reader (ducklake_telemetry_reader.yaml) and not by this function, which answers an
+    event verb name as an unregistered verb; their verb semantics stay as the reference for that function. The
+    transcript_content invariants gain a lead note that the verb is registered but served by no deployed function
+    (Decision B; rec-4481). From the declared residual, the TelemetryBlobRead widening is closed (the grant is gone); its
+    remaining query_ops text and the generic-read refusal's object-store sentence are the "Retire query_ops raw SQL"
+    plan's: already gone if that build merged first, otherwise their owner reads that plan instead of rec-4292. An
     amendment_log entry; earlier entries are history and stay verbatim.
 - file: docs/contracts/read-engine.yaml
   action: Modify
   purpose: >-
     PR cleanup: the event-verb lines say the verbs are served by the telemetry reader on the production telemetry catalog
-    (not "smoke catalog only until slice 2c"); from the residual line only the blob-object clause is dropped (the
-    query_ops part is the query_ops plan's, as in ducklake_reader.yaml); an amendment_log entry;
-    validate_read_engine_verbs' grouping is unchanged.
+    (not "smoke catalog only until slice 2c"); from the query_ops staging rationale only the telemetry-blobs sentence
+    goes, and its owner reads the "Retire query_ops raw SQL" plan instead of rec-4292 if that build has not merged; an
+    amendment_log entry; validate_read_engine_verbs' grouping is unchanged.
 - file: docs/contracts/ports.yaml
   action: Modify
   purpose: >-
@@ -177,34 +245,22 @@ scope:
   action: Modify
   purpose: >-
     PR cleanup: the smoke route is removed (the shared reader serves no event verb), so ducklake_telemetry routes to the
-    telemetry reader and ducklake_smoke raises a typed error saying no deployed reader serves it.
+    telemetry reader and a ducklake_smoke deploy output raises a typed error saying no deployed reader serves it.
 - file: scripts/telemetry_verify/completeness.py
   action: Modify
   purpose: >-
-    PR cleanup: PRODUCTION_FIRST_JUDGED_DAY becomes the first UTC day after the flip PR's merge (the first whole day of
-    production capture), with a comment naming the flip merge commit.
-- file: docs/ROADMAP-PLATFORM.yaml
-  action: Modify
-  purpose: >-
-    The cleanup PR's post-deploy bookkeeping commit (tier-item-lifecycle bookkeeping_walk): flip T2.36:c2 open -> met
-    with met_by telemetry-production-flip and add a dated progress_note (production capture live through the writer;
-    golden replay, the monitor and the gauge green on ducklake_telemetry; c3 re-verified on production). If c1 and c5
-    already read met, the item qualifies for completion and is surfaced to Benjamin for manual confirmation, never
-    auto-flipped.
-- file: config/agent/verification_registry/entries/telemetry-reader-blob-grant-pins.yaml
-  action: Modify
-  purpose: >-
-    PR flip: check_spec.command replaces test_telemetry_pins_target_the_smoke_catalog with
-    test_telemetry_pin_targets_the_production_catalog and the shared-reader pin node; PR cleanup: drops
-    test_reader_blob_grant_is_get_object_on_the_blob_prefix (the grant is gone) for
-    test_shared_reader_carries_no_telemetry_state. Each new node is absent on origin/main and passes at HEAD
-    (validate_verification_registry's differential admission gate).
+    PR cleanup: PRODUCTION_FIRST_JUDGED_DAY becomes the first UTC day after the flip's apply converged (the time VP step 6
+    records), with a comment naming the flip merge commit.
 - file: config/agent/verification_registry/entries/telemetry-reader-typed-faults.yaml
-  action: Modify
+  action: Delete
   purpose: >-
-    PR cleanup: drops the two shared-reader transcript_content nodes (test_transcript_content_through_the_handler,
-    test_blob_faults_answer_typed_through_the_handler; the surface is retired and rec-4481 owns its return); the two
-    handler-errors nodes stay.
+    PR cleanup: retired by git mv to entries/deprecated/ (Decision 181 cl.1): two of its four nodes guard the shared
+    reader's transcript_content path, which is retired (rec-4481 owns its return), and the remaining two pass on
+    origin/main, so a narrowed live entry would fail the differential admission gate.
+- file: config/agent/verification_registry/entries/deprecated/telemetry-reader-typed-faults.yaml
+  action: Create
+  purpose: >-
+    PR cleanup: the retired entry, unchanged, in the loader-excluded retirement subtree.
 - file: config/agent/verification_registry/entries/telemetry-reader-content-bundle.yaml
   action: Modify
   purpose: >-
@@ -216,52 +272,34 @@ scope:
     PR cleanup: drops test_readback_reassembles_on_a_consistent_reader and adds
     tests/ducklake_neon_smoke_test/test_lambda_telemetry_blob_gates.py::test_blob_vectors_read_nothing_through_a_reader;
     the other nodes stay.
-- file: tests/telemetry_capture/test_switch.py
+- file: config/agent/verification_registry/entries/telemetry-reader-smoke-covers-verification-verbs.yaml
   action: Modify
   purpose: >-
-    PR flip: test_the_committed_switch_is_on_and_still_guarded asserts {"enabled": True, "catalog": "ducklake_telemetry"}.
-- file: tests/checks/iam_tf/test_telemetry_infra_pins.py
-  action: Modify
-  purpose: >-
-    PR flip: the module docstring and _PIN_MOVE_HINT name Decision A; test_telemetry_pins_target_the_smoke_catalog
-    becomes test_telemetry_pin_targets_the_production_catalog (rec-4292's acceptance node: the pin local is
-    ducklake_telemetry, the writer binds it with the production data path and secret, the smoke twin keeps the smoke
-    binding PLAN-telemetry-reader-and-smoke-twin pinned); NEW test_shared_reader_telemetry_env_stays_on_smoke_until_cleanup;
-    test_writer_blob_grant_shape and test_telemetry_writer_reads_only_its_scoped_login read the production prefix,
-    blob root and secret; the red cases follow. PR cleanup: NEW test_shared_reader_carries_no_telemetry_state (no
-    TELEMETRY_* env, no telemetry-blobs statement, data prefixes unchanged) replaces the shared-reader pin and blob-grant
-    nodes.
-- file: tests/ducklake_neon_smoke_test/test_lambda_telemetry_gates.py
-  action: Modify
-  purpose: >-
-    PR flip: NEW test_production_gate_expects_the_production_binding,
-    test_production_gate_keeps_the_denial_and_can_create_checks and test_production_gate_runs_no_append_or_registration_vector
-    (a fake writer records every action: no register_project, append_telemetry or begin_blobs).
-- file: tests/verify_ci_workflow/test_ducklake_deploy_map_wiring.py
-  action: Modify
-  purpose: >-
-    PR flip: NEW test_smoke_job_runs_the_production_telemetry_gate (the smoke job's telemetry step runs
-    --lambda-telemetry-production after the telemetry_writer URL; the heavy flag runs only in the telemetry-twin-smoke job). PR
-    cleanup: NEW test_telemetry_reader_reads_run_after_its_url_is_resolved.
+    PR cleanup: the node moves to
+    tests/ducklake_neon_smoke_test/test_lambda_telemetry_reader_gates.py::test_reader_gate_covers_the_verification_verbs;
+    guard_symbol _verification_verb_checks stays.
 - file: tests/lambdas/ducklake_reader/test_event_routing.py
   action: Modify
   purpose: >-
     PR cleanup: the shared reader's telemetry-slot nodes (event binding, smoke-pin refusal, transcript_content and blob
-    faults through the handler) are deleted with the surface; NEW test_shared_reader_serves_no_event_verb (every
-    EVENT_READS name answers 400 and opens no connection) and test_shared_reader_describe_lists_no_event_row. The
-    query_ops nodes are the query_ops plan's (it also edits this file; the second to land rebases).
+    faults through the handler) are deleted with the surface; NEW
+    test_shared_reader_answers_an_event_verb_as_an_unregistered_verb (500 runtime, only the ops slot acquired, no
+    telemetry slot ever opened) and test_shared_reader_describe_lists_no_event_row. The query_ops nodes are the
+    query_ops plan's (it also edits this file; the second to land rebases).
 - file: tests/common/test_ducklake_event_reads.py
   action: Modify
   purpose: >-
     PR cleanup: test_refuses_unless_the_pin_is_the_smoke_catalog and the pin half of
-    test_validation_and_pin_refusal_precede_any_acquire are removed with require_smoke_pin; NEW
+    test_validation_and_pin_refusal_precede_any_acquire are removed with require_smoke_pin; the twin plan's
+    test_acquirer_defaults_are_the_shared_readers_behaviour becomes test_acquirer_requires_a_declared_pin; NEW
     test_no_smoke_pin_refusal_remains and test_event_verb_descriptions_name_the_production_telemetry_catalog (replacing
     the "smoke catalog" assertion in test_event_verbs_are_described_with_their_class_bounds_and_audience). The query_ops
     plan also edits this file; the second to land rebases.
 - file: tests/test_ducklake_reader_handler.py
   action: Modify
   purpose: >-
-    PR cleanup: test_action_describe_returns_named_reads_schema asserts the shared reader's verbs equal NAMED_READS only.
+    PR cleanup: test_action_describe_returns_named_reads_schema asserts the shared reader's verbs equal NAMED_READS only;
+    the edit is net non-positive in SLOC (495 today).
 - file: tests/lambda_manifest/test_bundle_checks.py
   action: Modify
   purpose: >-
@@ -270,9 +308,13 @@ scope:
 - file: tests/ducklake_neon_smoke_test/test_lambda_ec_gates.py
   action: Modify
   purpose: >-
-    PR cleanup: NEW test_shared_reader_checks_refuse_event_verbs and test_telemetry_reader_reads_cover_the_served_verbs;
-    test_telemetry_read_checks_cover_the_verification_verbs targets lambda_telemetry_reader_reads;
-    test_telemetry_read_checks_fail_when_query_ops_reaches_telemetry is the query_ops plan's (kept if present).
+    PR cleanup: NEW test_shared_reader_checks_refuse_event_verbs; test_telemetry_read_checks_cover_the_verification_verbs
+    is removed (its successor lives in the reader gate tests); test_telemetry_read_checks_fail_when_query_ops_reaches_telemetry
+    is the query_ops plan's (kept if present).
+- file: tests/ducklake_neon_smoke_test/test_lambda_telemetry_reader_gates.py
+  action: Modify
+  purpose: >-
+    PR cleanup: NEW test_reader_gate_covers_the_verification_verbs and test_reader_gate_refuses_a_malformed_session_without_echo.
 - file: tests/ducklake_neon_smoke_test/test_lambda_telemetry_blob_gates.py
   action: Modify
   purpose: >-
@@ -281,7 +323,7 @@ scope:
 - file: tests/telemetry_capture/test_read_route.py
   action: Modify
   purpose: >-
-    PR cleanup: test_event_verbs_route_by_the_switch_catalog becomes test_event_reads_have_no_smoke_route.
+    PR cleanup: test_event_verbs_route_by_the_deploy_output becomes test_event_reads_have_no_smoke_route.
 - file: tests/telemetry_verify/test_completeness.py
   action: Modify
   purpose: >-
@@ -290,36 +332,50 @@ scope:
   action: Create
   purpose: >-
     PR cleanup, the standing stale-reference guard (closure obligation): test_no_live_contract_text_names_rec_4292 (every
-    string in docs/contracts/*.yaml outside amendment_log and previous_versions, except a line that names query_ops,
-    which the query_ops plan retires), test_retired_smoke_read_surface_is_absent (no require_smoke_pin,
-    TELEMETRY_SLOT_NOT_SMOKE, telemetry_slot_not_smoke, _SMOKE_ONLY or "until slice 2c" under src/, scripts/,
-    terraform/ or .github/), test_reader_contract_routes_production_reads_to_the_telemetry_reader and
+    string in docs/contracts/*.yaml outside amendment_log and previous_versions), test_retired_smoke_read_surface_is_absent
+    (no require_smoke_pin, _SMOKE_ONLY or "until slice 2c" under src/, scripts/, terraform/ or .github/),
+    test_reader_contract_routes_production_reads_to_the_telemetry_reader and
     test_pc06_says_no_deployed_function_serves_content.
+- file: docs/ROADMAP-PLATFORM.yaml
+  action: Modify
+  purpose: >-
+    PR bookkeeping (tier-item-lifecycle bookkeeping_walk): flip T2.36:c2 open -> met with met_by telemetry-production-flip;
+    a dated re-grounding annotation on c3 (the gauge now reads the telemetry reader on ducklake_telemetry; met by
+    telemetry-reader-verbs stays); a dated progress_note (production capture live through the writer; golden replay, the
+    monitor and the gauge green on production). If c1 and c5 already read met, the item qualifies for completion: it is
+    surfaced to Benjamin for manual confirmation together with the intent's VTS-05 annotation (the owed cross-run
+    escape-rate query), never auto-flipped.
 bundled_recommendations:
 - rec-4292
 followon_recs:
 - rec-4481
 infrastructure_dependencies:
 - >-
-  Prerequisites (verified at build start, VP step 1): PLAN-telemetry-catalog-aware-capture built and its post-deploy
-  step passed (capture and read clients route by the switch catalog); PLAN-telemetry-production-catalog's admin session
-  done (the production writer login and its secret value; the bootstrap fence and boundary entries applied; Decision A
-  on main); PLAN-telemetry-reader-and-smoke-twin deployed (the smoke twin carries the heavy gate; the telemetry reader
-  is served; Decision B on main); PLAN-telemetry-production-maintenance built (T2.36:c5 met).
+  Prerequisites (verified at build start, VP step 1): PLAN-telemetry-catalog-aware-capture built (capture follows the
+  writer; reads route by /agent-platform/ducklake/telemetry_catalog); PLAN-telemetry-production-catalog's admin session
+  done (the production writer login and its secret value; the bootstrap fence and boundary entries applied; Decision
+  A); PLAN-telemetry-reader-and-smoke-twin deployed (telemetry-twin-smoke, deploy-telemetry and telemetry-smoke jobs on
+  main, the telemetry reader served; Decision B); PLAN-telemetry-production-maintenance built (T2.36:c5 met).
 - >-
-  PR flip, pre-merge: the speculative plan on the PR shows only the writer's env and inline-policy updates (in-budget,
-  auto-apply, T2.25 / Decision 92 point 5) and no change to the shared reader's applied values; anything routed to
-  tf-gated-apply waits for Benjamin's approval there. Benjamin's word is required before merge (IAM on the writer role,
-  the Class B writer contract). Post-merge: capture.yaml reaches sessions at their next fetch of main; until the apply
-  lands, describe answers the smoke catalog and capture passes stop with describe_mismatch (no halt, nothing persisted),
-  then resume against production and re-send each in-flight tree whole. No Lambda code deploys in this PR, so the
-  light gate runs from the session (VP step 6) and in the next deploy run.
+  PR flip, pre-merge: the speculative plan shows exactly three in-place updates
+  (aws_lambda_function.ducklake_telemetry_writer, aws_iam_role_policy.ducklake_telemetry_writer,
+  aws_ssm_parameter.ducklake_telemetry_catalog), nothing on the shared reader and a PASS predicted guard verdict (VP step
+  5). Benjamin's word is required before merge (IAM on the writer role, the Class B writer contract). Post-merge the one
+  apply moves writer, capture (describe) and reads (the deploy output) together; in-flight trees re-send whole to
+  production. The PR touches no deploy trigger path, so the light gate runs from the session (VP step 6) and in the
+  next deploy run.
 - >-
-  PR cleanup, after the flip's post-deploy steps pass: the merge triggers deploy-ducklake-lambdas (shared reader and
-  telemetry reader code) and a terraform/personal apply that removes the shared reader's telemetry env and blob grant
-  (a narrowing, in budget). Either order is safe: the new handler reads no telemetry env, and no client routes an event
-  verb to the shared reader once the switch reads ducklake_telemetry. Benjamin's word is required before merge (IAM,
-  reader contract semantics).
+  PR cleanup, after VP steps 6-9 pass: the merge triggers deploy-ducklake-lambdas (the shared reader, the telemetry
+  reader and the telemetry writer and twin, whose manifest notes change); no terraform. Benjamin's word is required
+  before merge (reader contract semantics).
+- >-
+  PR narrow, after VP step 14 passes (so the code deploy and the configuration apply never touch the shared reader at
+  once): the speculative plan shows exactly two in-place updates (aws_lambda_function.ducklake_reader,
+  aws_iam_role_policy.ducklake_reader) and a PASS verdict (VP step 16). Benjamin's word is required (IAM).
+- >-
+  PR bookkeeping touches docs/ROADMAP-PLATFORM.yaml, a manifest asset of the data-pipeline artifact
+  (compute_affected_artifacts): a data-only change; its zip refreshes at the next governed deploy of that artifact
+  (decoupled_build_pipeline), so no deploy step is owed here.
 - >-
   One DuckLake deploy or apply at a time (the coordinator sequences merges); no merge during the org-transfer freeze
   window.
@@ -335,26 +391,32 @@ acceptance_criteria:
   preflight gauge reads pass on ducklake_telemetry (T2.36:c3 re-verified in production).
 - >-
   The production writer's deploy gate keeps the Decision 213 direct-invoke denial and the Decision 216 can_create check
-  and writes no append, blob or project-registration row; ontheloop is registered on production.
+  and writes no append, blob or project-registration row, and no job runs heavy vectors against the production writer;
+  ontheloop is registered on production.
 - >-
-  After the cleanup the shared reader serves no event verb and holds no telemetry env or blob grant; production
-  telemetry is read only through the telemetry reader.
+  After the cleanup and narrow PRs the shared reader serves no event verb and holds no telemetry env or blob grant;
+  production telemetry is read only through the telemetry reader.
 - >-
-  The stale-reference guard passes (no live contract text names rec-4292 outside query_ops lines, no retired smoke read
-  surface remains), rec-4292 is closed by the cleanup PR's Resolves trailer, and T2.36:c2 reads met with met_by
-  telemetry-production-flip.
+  The stale-reference guard passes, every rec-4292 item has a home in the closure ledger, rec-4292 is closed by the
+  bookkeeping PR's Resolves trailer, and T2.36:c2 reads met with met_by telemetry-production-flip.
 verification_plan:
 - step: 1
   phase: pre-deploy
-  action: Prerequisites from the three earlier slice 2c plans are on main.
+  action: Prerequisites from the four earlier slice 2c plans are on main.
   command: >-
-    git fetch origin main --quiet && git show origin/main:config/telemetry/capture.yaml | grep -q '^catalog: ducklake_smoke$'
-    && test -f scripts/telemetry_capture/read_route.py && git show origin/main:docs/ROADMAP-PLATFORM.yaml >
-    "${TMPDIR:-/tmp}/roadmap_flip.yaml" && bin/venv-python -c "import os,yaml;d=yaml.safe_load(open(os.path.join(os.environ.get('TMPDIR','/tmp'),'roadmap_flip.yaml')));
+    git fetch origin main --quiet && git show origin/main:.github/workflows/deploy-ducklake-lambdas.yml | grep -E
+    '^  (telemetry-twin-smoke|deploy-telemetry|telemetry-smoke):' | wc -l | grep -qx 3 && git show
+    origin/main:scripts/telemetry_capture/read_route.py > /dev/null && test "$(aws ssm get-parameter --name
+    /agent-platform/ducklake/telemetry_catalog --profile agent_platform --query Parameter.Value --output text)" =
+    ducklake_smoke && aws ssm get-parameter --name /agent-platform/ducklake/telemetry_reader_url --profile agent_platform
+    --query Parameter.Name --output text && git show origin/main:docs/ROADMAP-PLATFORM.yaml > "${TMPDIR:-/tmp}/roadmap_flip.yaml"
+    && bin/venv-python -c "import os,yaml;d=yaml.safe_load(open(os.path.join(os.environ.get('TMPDIR','/tmp'),'roadmap_flip.yaml')));
     it=[i for i in d['tier_items'] if i['id']=='T2.36'][0];s={c['id']:c['status'] for c in it['exit_criteria']};print(s);
     assert s['c1']=='met' and s['c5']=='met', s;print('PREREQS_OK')"
-  expected: Main's switch carries catalog ducklake_smoke, the routing helper exists, T2.36 c1 and c5 read met, PREREQS_OK.
-  fix_if: Stop; this plan builds only after PLAN-telemetry-catalog-aware-capture and both earlier plans are done.
+  expected: >-
+    The three telemetry jobs and the routing helper are on main, the deploy output reads ducklake_smoke, the telemetry
+    reader's SSM parameter exists, T2.36 c1 and c5 read met, PREREQS_OK.
+  fix_if: Stop; this plan builds only after the four earlier slice 2c plans are done.
   hermetic: false
   graduation: not-applicable
 - step: 2
@@ -362,7 +424,7 @@ verification_plan:
   action: PR flip. The pin targets the production catalog and the shared reader's applied values stay on smoke.
   command: >-
     bin/venv-python -m pytest tests/checks/iam_tf/test_telemetry_infra_pins.py::test_telemetry_pin_targets_the_production_catalog
-    tests/checks/iam_tf/test_telemetry_infra_pins.py::test_shared_reader_telemetry_env_stays_on_smoke_until_cleanup -q
+    tests/checks/iam_tf/test_telemetry_shared_reader_pins.py::test_shared_reader_telemetry_env_stays_on_smoke_until_narrowed -q
   expected: Exit 0. Red before because the nodes are absent.
   fix_if: Fix the Terraform, never the guard; the shared reader must not follow the moved pin local.
   hermetic: true
@@ -370,50 +432,72 @@ verification_plan:
   graduation_check_id: telemetry-pin-targets-production
 - step: 3
   phase: pre-deploy
-  action: PR flip. The light production gate keeps the denial and can_create checks and writes no test rows.
+  action: >-
+    PR flip. The light production gate keeps the denial and can_create checks and writes no test rows; no job runs the
+    heavy vectors against the production writer; the new flag dispatches.
   command: >-
-    bin/venv-python -m pytest tests/ducklake_neon_smoke_test/test_lambda_telemetry_gates.py::test_production_gate_expects_the_production_binding
-    tests/ducklake_neon_smoke_test/test_lambda_telemetry_gates.py::test_production_gate_keeps_the_denial_and_can_create_checks
-    tests/ducklake_neon_smoke_test/test_lambda_telemetry_gates.py::test_production_gate_runs_no_append_or_registration_vector
-    tests/verify_ci_workflow/test_ducklake_deploy_map_wiring.py::test_smoke_job_runs_the_production_telemetry_gate -q
-  expected: Exit 0. Red before because the nodes are absent.
+    bin/venv-python -m pytest tests/ducklake_neon_smoke_test/test_lambda_telemetry_production_gate.py::test_production_gate_expects_the_production_binding
+    tests/ducklake_neon_smoke_test/test_lambda_telemetry_production_gate.py::test_production_gate_keeps_the_denial_and_can_create_checks
+    tests/ducklake_neon_smoke_test/test_lambda_telemetry_production_gate.py::test_production_gate_runs_no_append_or_registration_vector
+    tests/verify_ci_workflow/test_ducklake_deploy_map_wiring.py::test_no_job_runs_heavy_vectors_against_the_production_writer
+    tests/verify_ci_workflow/test_ducklake_deploy_map_wiring.py::test_telemetry_smoke_runs_the_production_gate
+    tests/ducklake_neon_smoke_test/test_main_dispatch.py::test_main_lambda_telemetry_production_dispatch
+    tests/ducklake_neon_smoke_test/test_main_dispatch.py::test_main_lambda_telemetry_flag_is_retired -q
+  expected: Exit 0. Red before because the module and nodes are absent.
   fix_if: Remove any write vector from the production gate; never drop the DryRun or can_create check.
   hermetic: true
   graduation: graduate
   graduation_check_id: telemetry-production-gate-is-light
 - step: 4
   phase: pre-deploy
-  action: PR flip. The committed switch reads ducklake_telemetry, Terraform is formatted, and the full tier passes.
+  action: PR flip. The touched suites, Terraform format and the full tier pass.
   command: >-
-    bin/venv-python -m pytest tests/telemetry_capture/test_switch.py::test_the_committed_switch_is_on_and_still_guarded
-    tests/checks/iam_tf/test_telemetry_infra_pins.py tests/ducklake_neon_smoke_test/test_lambda_telemetry_gates.py -q &&
-    terraform -chdir=terraform/personal fmt -check && bin/venv-python -m ruff check . && bin/venv-python -m scripts.validate
+    bin/venv-python -m pytest tests/checks/iam_tf/test_telemetry_infra_pins.py tests/checks/iam_tf/test_telemetry_shared_reader_pins.py
+    tests/ducklake_neon_smoke_test/test_lambda_telemetry_gates.py tests/ducklake_neon_smoke_test/test_lambda_telemetry_production_gate.py
+    tests/ducklake_neon_smoke_test/test_main_dispatch.py tests/verify_ci_workflow -q && terraform -chdir=terraform/personal
+    fmt -check && bin/venv-python -m ruff check . && bin/venv-python -m scripts.validate
   expected: The suites pass, fmt and ruff exit 0, then "All checks passed." and exit 0.
   fix_if: Fix at root and rerun the full tier from the start (handoff_policy).
   hermetic: false
   graduation: not-applicable
 - step: 5
   phase: pre-deploy
-  action: PR flip. The speculative plan touches only the writer's env and policy.
+  action: >-
+    PR flip. Before merge, the PR's speculative plan is exactly the three in-place updates. Save the "Terraform
+    Speculative Plan" PR comment body for the PR's final head (mcp__github__pull_request_read get_comments) to
+    $SPEC_PLAN_FILE and export PR_HEAD_SHA.
   command: >-
-    echo "Read the terraform-validate and speculative-plan checks on the flip PR (mcp__github__pull_request_read
-    get_check_runs); CI is the authoritative verifier (Decision 119)"
-  expected: >-
-    The speculative plan shows in-place updates to aws_lambda_function.ducklake_telemetry_writer (environment) and
-    aws_iam_role_policy.ducklake_telemetry_writer only; the shared reader's resources show no change.
-  fix_if: Any change on the shared reader means a reference still follows the pin local; re-point it to a smoke local.
+    test -s "$SPEC_PLAN_FILE" && test -n "$PR_HEAD_SHA" && bin/venv-python -c "import os,re;t=open(os.environ['SPEC_PLAN_FILE'],encoding='utf-8',errors='replace').read();
+    assert ('PR head SHA: '+chr(96)+os.environ['PR_HEAD_SHA']+chr(96)) in t, 'not the final head comment';m=re.search(r'Plan:
+    (\d+) to add, (\d+) to change, (\d+) to destroy',t);assert m and m.groups()==('0','3','0'), m and m.group(0);assert
+    'Predicted guard verdict: PASS' in t, 'not auto-apply';got={a:v for a,v in re.findall(r'# (\S+) (?:will|must) be
+    (created|updated in-place|destroyed|replaced|read during apply)',t) if not a.startswith('data.')};want={a:'updated
+    in-place' for a in ('aws_lambda_function.ducklake_telemetry_writer','aws_iam_role_policy.ducklake_telemetry_writer','aws_ssm_parameter.ducklake_telemetry_catalog')};
+    assert got==want, got;assert 'ducklake_reader' not in ' '.join(got), got;print('SPEC_PLAN_OK',m.group(0))"
+  expected: Exit 0 and SPEC_PLAN_OK with 0 to add, 3 to change, 0 to destroy and no shared-reader address.
+  fix_if: >-
+    Any shared-reader address means a reference still follows the pin local (re-point it to a smoke local); an
+    aws_iam_role address means the role description was edited (revert it); any other count is a stop to explain
+    before merging.
   hermetic: false
   graduation: not-applicable
 - step: 6
   phase: post-deploy
-  action: PR flip merged and applied. The light production gate passes against the flipped writer.
+  action: >-
+    PR flip merged and applied. The light production gate passes against the flipped writer, the deploy output reads
+    production, and the apply's convergence time is recorded for the production first judged day.
   command: >-
-    export DUCKLAKE_TELEMETRY_WRITER_URL=$(aws ssm get-parameter --name /agent-platform/ducklake/telemetry_writer_url
-    --profile agent_platform --query Parameter.Value --output text) && AWS_PROFILE=agent_platform bin/venv-python -m
-    scripts.ducklake_neon_smoke_test --lambda-telemetry-production
-  expected: LAMBDA_TELEMETRY_PRODUCTION OK, with TELEMETRY_PROVISION_OK, TELEMETRY_PROBE_OK and TELEMETRY_SELF_ONLY_OK.
+    test "$(aws ssm get-parameter --name /agent-platform/ducklake/telemetry_catalog --profile agent_platform --query
+    Parameter.Value --output text)" = ducklake_telemetry && aws lambda get-function-configuration --function-name
+    agent-platform-ducklake-telemetry-writer --profile agent_platform --query LastModified --output text | tee
+    "${TMPDIR:-/tmp}/flip_converged.txt" && export DUCKLAKE_TELEMETRY_WRITER_URL=$(aws ssm get-parameter --name
+    /agent-platform/ducklake/telemetry_writer_url --profile agent_platform --query Parameter.Value --output text) &&
+    AWS_PROFILE=agent_platform bin/venv-python -m scripts.ducklake_neon_smoke_test --lambda-telemetry-production
+  expected: >-
+    The deploy output reads ducklake_telemetry, the writer's LastModified is printed and saved, then
+    LAMBDA_TELEMETRY_PRODUCTION OK with TELEMETRY_PROVISION_OK, TELEMETRY_PROBE_OK and TELEMETRY_SELF_ONLY_OK.
   fix_if: >-
-    A smoke binding means the apply has not landed (check the terraform run); a drift refusal means a production column
+    A smoke binding means the apply has not landed (read the terraform run); a drift refusal means a production column
     add is owed (an admin step, Decision 222 cl.3); stop and report either.
   hermetic: false
   graduation: not-applicable
@@ -432,19 +516,22 @@ verification_plan:
 - step: 8
   phase: post-deploy
   action: >-
-    T2.36:c2 evidence. The implementing session's own tree reaches production through the writer after the flip (a
-    Stop pass has run since step 6), and no telemetry path has a staging writer.
+    T2.36:c2 evidence. After step 6, end one turn so this session's Stop hook runs a pass, then the implementing
+    session's own tree reads back from production through the writer, and no telemetry path has a staging writer.
   command: >-
-    TREE=$(ls -t "$HOME"/.claude/projects/*/*.jsonl | head -1) && AWS_PROFILE=agent_platform bin/venv-python -m
-    scripts.telemetry_capture probe --tree "$TREE" --require telemetry_sessions,telemetry_observations &&
-    AWS_PROFILE=agent_platform bin/venv-python -m scripts.telemetry_capture verify --tree "$TREE" --no-alarms && ! rg -n
-    "ops-outbox|put_object|upload_file" scripts/telemetry_capture src/turn_capture src/telemetry_client .claude/hooks
+    TREE=$(ls -t "$HOME"/.claude/projects/*/*.jsonl | head -1) && bin/venv-python -c "import json,os,pathlib;t=pathlib.Path(os.environ['TREE']);
+    s=json.loads((t.parent/t.stem/'telemetry-capture'/'state.json').read_text());assert s.get('catalog')=='ducklake_telemetry',
+    s.get('catalog');print('STATE_CATALOG_OK')" && AWS_PROFILE=agent_platform bin/venv-python -m scripts.telemetry_capture
+    probe --tree "$TREE" --require telemetry_sessions,telemetry_observations && AWS_PROFILE=agent_platform bin/venv-python
+    -m scripts.telemetry_capture verify --tree "$TREE" --no-alarms && ! rg -n "ops-outbox|put_object|upload_file"
+    scripts/telemetry_capture src/turn_capture src/telemetry_client .claude/hooks
   expected: >-
-    probe prints rows for both required tables (the writer now binds ducklake_telemetry, so these are production rows);
-    VERIFY status=completed; the rg finds nothing.
+    STATE_CATALOG_OK; probe prints rows for both required tables (the writer binds ducklake_telemetry, so these are
+    production rows); VERIFY status=completed; the rg finds nothing.
   fix_if: >-
-    No rows means capture is still stopping (read the tree's diagnostics for describe_mismatch or catalog_reset); a
-    grain-conflict halt means a re-send diverged: stop and report, never clear the halt blindly.
+    A smoke state catalog means no pass has sent since the flip (end another turn); no rows means capture is stopping
+    (read the tree's diagnostics for describe_mismatch); a grain-conflict halt means a re-send diverged: stop and report,
+    never clear the halt blindly.
   hermetic: false
   graduation: not-applicable
 - step: 9
@@ -456,19 +543,19 @@ verification_plan:
     && bin/venv-python -m scripts.session.preflight --health | grep -E "Telemetry store: pass on ducklake_telemetry"
   expected: GOLDEN_SMOKE ... skew=0 mismatches=0, a MONITOR line with exit 0, and the gauge line naming ducklake_telemetry.
   fix_if: >-
-    A reader_catalog_mismatch means the routed reader still serves smoke (check the switch on origin/main); a skew means
+    A reader_catalog_mismatch means the deploy output and the routed reader disagree (read the parameter); a skew means
     the deploy records predate this commit: rerun after the next deploy, never edit the expectations.
   hermetic: false
   graduation: not-applicable
 - step: 10
   phase: pre-deploy
-  action: PR cleanup. The shared reader serves no event verb and holds no telemetry state; the smoke pin is gone.
+  action: PR cleanup. The shared reader serves no event verb and opens no telemetry slot; the smoke pin is gone.
   command: >-
-    bin/venv-python -m pytest tests/lambdas/ducklake_reader/test_event_routing.py::test_shared_reader_serves_no_event_verb
+    bin/venv-python -m pytest tests/lambdas/ducklake_reader/test_event_routing.py::test_shared_reader_answers_an_event_verb_as_an_unregistered_verb
     tests/lambdas/ducklake_reader/test_event_routing.py::test_shared_reader_describe_lists_no_event_row
     tests/common/test_ducklake_event_reads.py::test_no_smoke_pin_refusal_remains
+    tests/common/test_ducklake_event_reads.py::test_acquirer_requires_a_declared_pin
     tests/common/test_ducklake_event_reads.py::test_event_verb_descriptions_name_the_production_telemetry_catalog
-    tests/checks/iam_tf/test_telemetry_infra_pins.py::test_shared_reader_carries_no_telemetry_state
     tests/lambda_manifest/test_bundle_checks.py::test_reader_bundle_carries_no_event_read_module -q &&
     bin/venv-python -m scripts.lambda_manifest --check-bundles
   expected: Exit 0 and the bundle check passes. Red before because the nodes are absent.
@@ -478,12 +565,14 @@ verification_plan:
   graduation_check_id: shared-reader-serves-no-telemetry
 - step: 11
   phase: pre-deploy
-  action: PR cleanup. The deploy gates check the shared reader's refusal and the telemetry reader's reads; no gate reads content.
+  action: >-
+    PR cleanup. The deploy gates check the shared reader's refusal and the telemetry reader's moved reads; no gate reads
+    content; reads have no smoke route.
   command: >-
     bin/venv-python -m pytest tests/ducklake_neon_smoke_test/test_lambda_ec_gates.py::test_shared_reader_checks_refuse_event_verbs
-    tests/ducklake_neon_smoke_test/test_lambda_ec_gates.py::test_telemetry_reader_reads_cover_the_served_verbs
+    tests/ducklake_neon_smoke_test/test_lambda_telemetry_reader_gates.py::test_reader_gate_covers_the_verification_verbs
+    tests/ducklake_neon_smoke_test/test_lambda_telemetry_reader_gates.py::test_reader_gate_refuses_a_malformed_session_without_echo
     tests/ducklake_neon_smoke_test/test_lambda_telemetry_blob_gates.py::test_blob_vectors_read_nothing_through_a_reader
-    tests/verify_ci_workflow/test_ducklake_deploy_map_wiring.py::test_telemetry_reader_reads_run_after_its_url_is_resolved
     tests/telemetry_capture/test_read_route.py::test_event_reads_have_no_smoke_route -q
   expected: Exit 0. Red before because the nodes are absent.
   fix_if: Fix the gate wiring; leave any query_ops probe block to the query_ops plan.
@@ -493,9 +582,9 @@ verification_plan:
 - step: 12
   phase: pre-deploy
   action: >-
-    PR cleanup, the stale-reference sweep (closure obligation): no live contract text names rec-4292 outside query_ops
-    lines, no retired smoke read surface remains, the reader contract routes production reads to the telemetry reader,
-    PC-06 says no deployed function serves content, and completeness has its production first day.
+    PR cleanup, the stale-reference sweep (closure obligation): no live contract text names rec-4292, no retired smoke
+    read surface remains, the reader contract routes production reads to the telemetry reader, PC-06 says no deployed
+    function serves content, and completeness has its production first day.
   command: >-
     bin/venv-python -m pytest tests/checks/contracts/test_telemetry_production_cutover.py::test_no_live_contract_text_names_rec_4292
     tests/checks/contracts/test_telemetry_production_cutover.py::test_retired_smoke_read_surface_is_absent
@@ -503,7 +592,7 @@ verification_plan:
     tests/checks/contracts/test_telemetry_production_cutover.py::test_pc06_says_no_deployed_function_serves_content
     tests/telemetry_verify/test_completeness.py::test_production_first_judged_day_follows_the_flip -q
   expected: Exit 0. Red before because the nodes are absent.
-  fix_if: Re-word the named line; amendment_log history is never rewritten.
+  fix_if: Re-word the named line or name its successor owner; amendment_log history is never rewritten.
   hermetic: true
   graduation: graduate
   graduation_check_id: telemetry-cutover-stale-reference-guard
@@ -511,95 +600,159 @@ verification_plan:
   phase: pre-deploy
   action: PR cleanup. Lint and the full tier.
   command: >-
-    bin/venv-python -m ruff check . && bin/venv-python -m ruff format --check . && terraform -chdir=terraform/personal
-    fmt -check && bin/venv-python -m scripts.validate
-  expected: ruff and fmt exit 0, then "All checks passed." and exit 0.
+    bin/venv-python -m ruff check . && bin/venv-python -m ruff format --check . && bin/venv-python -m scripts.validate
+  expected: ruff exits 0, then "All checks passed." and exit 0.
   fix_if: Fix at root and rerun the full tier from the start (handoff_policy).
   hermetic: false
   graduation: not-applicable
 - step: 14
   phase: post-deploy
   action: >-
-    PR cleanup deployed: the deploy run is green on the merge commit, the live shared reader refuses event verbs and the
-    live telemetry reader answers the moved checks.
+    PR cleanup deployed. Save the deploy-ducklake-lambdas runs on main after the merge (mcp__github__actions_list) as a
+    JSON list of {head_sha, conclusion} to $RUNS_FILE and export MERGE_SHA; then the live shared reader refuses event
+    verbs and the live telemetry reader answers the moved checks.
   command: >-
-    export DUCKLAKE_READER_URL=$(aws ssm get-parameter --name /agent-platform/ducklake/reader_url --profile agent_platform
-    --query Parameter.Value --output text) DUCKLAKE_TELEMETRY_READER_URL=$(aws ssm get-parameter --name
+    test -s "$RUNS_FILE" && bin/venv-python -c "import json,os;r=[x for x in json.load(open(os.environ['RUNS_FILE'])) if
+    x['head_sha']==os.environ['MERGE_SHA']];assert r and r[0]['conclusion']=='success', r;print('DEPLOY_RUN_OK')" && export
+    DUCKLAKE_READER_URL=$(aws ssm get-parameter --name /agent-platform/ducklake/reader_url --profile agent_platform --query
+    Parameter.Value --output text) DUCKLAKE_TELEMETRY_READER_URL=$(aws ssm get-parameter --name
     /agent-platform/ducklake/telemetry_reader_url --profile agent_platform --query Parameter.Value --output text) &&
     AWS_PROFILE=agent_platform bin/venv-python -m scripts.ducklake_neon_smoke_test --lambda-reader &&
-    AWS_PROFILE=agent_platform bin/venv-python -m scripts.ducklake_neon_smoke_test --lambda-telemetry-reader-reads
-  expected: READER OK and TELEMETRY_READS_OK from the shared reader's refusal leg, then TELEMETRY_READER_READS_OK.
-  fix_if: An event row on the shared reader means the old code is still deployed; read the deploy run, never revert the guard.
+    AWS_PROFILE=agent_platform bin/venv-python -m scripts.ducklake_neon_smoke_test --lambda-telemetry-reader
+  expected: >-
+    DEPLOY_RUN_OK, then READER OK with the shared reader's refusal leg passing, then the telemetry reader gate's success
+    line.
+  fix_if: >-
+    A failed or missing run means the deploy did not converge: read its log; an event row on the shared reader means old
+    code is still deployed. Never revert the guard; the narrow PR waits.
   hermetic: false
   graduation: not-applicable
 - step: 15
+  phase: pre-deploy
+  action: PR narrow. The shared reader holds no telemetry env or blob grant.
+  command: bin/venv-python -m pytest tests/checks/iam_tf/test_telemetry_shared_reader_pins.py::test_shared_reader_carries_no_telemetry_state -q
+  expected: Exit 0. Red before because the node is absent.
+  fix_if: Remove the remaining TELEMETRY_* env or telemetry-blobs statement; keep the data prefixes.
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: shared-reader-holds-no-telemetry-grant
+- step: 16
+  phase: pre-deploy
+  action: >-
+    PR narrow. The full tier passes, and before merge the speculative plan is exactly the two in-place updates on the
+    shared reader (saved as in step 5 to $SPEC_PLAN_FILE with PR_HEAD_SHA).
+  command: >-
+    terraform -chdir=terraform/personal fmt -check && bin/venv-python -m scripts.validate && test -s "$SPEC_PLAN_FILE" &&
+    bin/venv-python -c "import os,re;t=open(os.environ['SPEC_PLAN_FILE'],encoding='utf-8',errors='replace').read();assert
+    ('PR head SHA: '+chr(96)+os.environ['PR_HEAD_SHA']+chr(96)) in t;m=re.search(r'Plan: (\d+) to add, (\d+) to change,
+    (\d+) to destroy',t);assert m and m.groups()==('0','2','0'), m and m.group(0);assert 'Predicted guard verdict: PASS'
+    in t;got={a:v for a,v in re.findall(r'# (\S+) (?:will|must) be (created|updated in-place|destroyed|replaced|read
+    during apply)',t) if not a.startswith('data.')};assert got=={'aws_lambda_function.ducklake_reader':'updated
+    in-place','aws_iam_role_policy.ducklake_reader':'updated in-place'}, got;print('SPEC_PLAN_OK',m.group(0))"
+  expected: fmt exits 0, "All checks passed.", then SPEC_PLAN_OK with 0 to add, 2 to change, 0 to destroy.
+  fix_if: Any other address or count is a stop to explain before merging.
+  hermetic: false
+  graduation: not-applicable
+- step: 17
   phase: post-deploy
-  action: The bookkeeping commit landed (T2.36:c2 met by this plan) and rec-4292 is closed by the Resolves trailer.
+  action: PR narrow applied. The live shared reader carries no TELEMETRY_* variable and still passes its ops gate.
+  command: >-
+    aws lambda get-function-configuration --function-name agent-platform-ducklake-reader --profile agent_platform --query
+    'keys(Environment.Variables)' --output json | bin/venv-python -c "import json,sys;k=json.load(sys.stdin);assert not
+    [x for x in k if x.startswith('TELEMETRY_')], k;print('NO_TELEMETRY_ENV')" && AWS_PROFILE=agent_platform bin/venv-python
+    -m scripts.ducklake_neon_smoke_test --lambda-reader
+  expected: NO_TELEMETRY_ENV (variable names only are printed, never values), then READER OK.
+  fix_if: A TELEMETRY_ key means the apply has not landed; read the terraform run.
+  hermetic: false
+  graduation: not-applicable
+- step: 18
+  phase: post-deploy
+  action: >-
+    Before the bookkeeping PR: rec-4292's own acceptance passes, every closure-ledger row has a home, and the writer's
+    production request count since the flip is read for the re-ratification trigger.
+  command: >-
+    bin/venv-python -m pytest tests/checks/iam_tf/test_telemetry_infra_pins.py::test_telemetry_pin_targets_the_production_catalog
+    -q && grep -q ducklake-telemetry-writer-occ terraform/personal/ducklake_telemetry_writer.tf && aws cloudwatch
+    get-metric-statistics --profile agent_platform --namespace DuckLakeTelemetryWriter --metric-name RequestCount
+    --start-time "$(cat "${TMPDIR:-/tmp}/flip_converged.txt")" --end-time "$(date -u +%FT%TZ)" --period 86400 --statistics
+    Sum --query 'sum(Datapoints[].Sum)' --output text
+  expected: >-
+    The acceptance node passes and the OCC alarm is present; the summed request count prints (at 500 or above the reply
+    surfaces the writer contract's re-ratification to Benjamin).
+  fix_if: A failing acceptance means rec-4292 cannot close; fix it before the Resolves trailer.
+  hermetic: false
+  graduation: not-applicable
+- step: 19
+  phase: post-deploy
+  action: The bookkeeping PR landed (c2 met by this plan, c3 annotated) and rec-4292 is closed by its Resolves trailer.
   command: >-
     git fetch origin main --quiet && git show origin/main:docs/ROADMAP-PLATFORM.yaml > "${TMPDIR:-/tmp}/roadmap_flip.yaml"
     && bin/venv-python -c "import os,yaml;d=yaml.safe_load(open(os.path.join(os.environ.get('TMPDIR','/tmp'),'roadmap_flip.yaml')));
     it=[i for i in d['tier_items'] if i['id']=='T2.36'][0];c={x['id']:x for x in it['exit_criteria']};print(it['status'],{k:v['status'] for k,v in c.items()});
-    assert c['c2']['status']=='met' and c['c2'].get('met_by')=='telemetry-production-flip';print('C2_MET')" &&
-    bin/venv-python -c "from src.common.ducklake_reader_client import make_reader;r={x['id']:x for x in
-    make_reader().named('recs_by_ids',ids='rec-4292')};assert r['rec-4292']['status']=='closed',
+    assert c['c2']['status']=='met' and c['c2'].get('met_by')=='telemetry-production-flip';assert 'telemetry reader' in
+    c['c3']['text'];print('C2_MET')" && bin/venv-python -c "from src.common.ducklake_reader_client import make_reader;r={x['id']:x
+    for x in make_reader().named('recs_by_ids',ids='rec-4292')};assert r['rec-4292']['status']=='closed',
     r['rec-4292']['status'];print('REC_4292_CLOSED')"
   expected: >-
-    C2_MET then REC_4292_CLOSED; if every T2.36 criterion reads met, the reply to Benjamin surfaces the item for his
-    completion confirmation.
+    C2_MET then REC_4292_CLOSED; if every T2.36 criterion reads met, the reply surfaces the item and the VTS-05 query to
+    Benjamin for his completion confirmation.
   fix_if: >-
-    A missing flip means the bookkeeping commit did not land; an open rec-4292 means the squash body lacked "Resolves:
+    A missing flip means the bookkeeping PR did not land; an open rec-4292 means the squash body lacked "Resolves:
     rec-4292" or ci.yml's closure job failed: read it, fix, rerun.
   hermetic: false
   graduation: not-applicable
 test_obligations:
-- source: config/telemetry/capture.yaml
-  behavior: The committed switch names ducklake_telemetry and keeps capture on and guarded.
-  verification_step: 4
-  test_selector: tests/telemetry_capture/test_switch.py::test_the_committed_switch_is_on_and_still_guarded
-  red_green_expectation: red before the flip edit (asserts ducklake_telemetry), green after
 - source: terraform/personal/ducklake_lambdas.tf
   behavior: The pin local is production while the shared reader stays on smoke, then holds no telemetry state.
   verification_step: 2
-  test_selector: tests/checks/iam_tf/test_telemetry_infra_pins.py::test_shared_reader_telemetry_env_stays_on_smoke_until_cleanup
-  red_green_expectation: red before (node absent), green after
+  test_selector: tests/checks/iam_tf/test_telemetry_shared_reader_pins.py::test_shared_reader_telemetry_env_stays_on_smoke_until_narrowed
+  red_green_expectation: red before (module absent), green after
 - source: terraform/personal/ducklake_telemetry_writer.tf
   behavior: The writer binds the production catalog, data prefix, blob root and secret.
   verification_step: 2
   test_selector: tests/checks/iam_tf/test_telemetry_infra_pins.py::test_telemetry_pin_targets_the_production_catalog
   red_green_expectation: red before (node absent), green after
 - source: scripts/ducklake_smoke/lambda_telemetry_gates.py
-  behavior: The light production gate expects production and writes no test rows.
+  behavior: The light production gate expects production and writes no test rows; the heavy entry is retired.
   verification_step: 3
-  test_selector: tests/ducklake_neon_smoke_test/test_lambda_telemetry_gates.py::test_production_gate_runs_no_append_or_registration_vector
-  red_green_expectation: red before (node absent), green after
+  test_selector: tests/ducklake_neon_smoke_test/test_lambda_telemetry_production_gate.py::test_production_gate_runs_no_append_or_registration_vector
+  red_green_expectation: red before (module absent), green after
 - source: scripts/ducklake_neon_smoke_test.py
-  behavior: The new flags dispatch the production gate and the telemetry reader reads.
+  behavior: The production flag dispatches and the heavy production flag is retired.
   verification_step: 3
-  test_selector: tests/ducklake_neon_smoke_test/test_lambda_telemetry_gates.py::test_production_gate_expects_the_production_binding
+  test_selector: tests/ducklake_neon_smoke_test/test_main_dispatch.py::test_main_lambda_telemetry_production_dispatch
   red_green_expectation: red before (node absent), green after
 - source: .github/workflows/deploy-ducklake-lambdas.yml
-  behavior: The smoke job runs the production gate; the telemetry reader reads run after its URL.
+  behavior: telemetry-smoke runs the production gate and no job runs heavy vectors against the production writer.
   verification_step: 3
-  test_selector: tests/verify_ci_workflow/test_ducklake_deploy_map_wiring.py::test_smoke_job_runs_the_production_telemetry_gate
+  test_selector: tests/verify_ci_workflow/test_ducklake_deploy_map_wiring.py::test_no_job_runs_heavy_vectors_against_the_production_writer
   red_green_expectation: red before (node absent), green after
 - source: config/composite_action_body_baseline.yaml
-  behavior: The R3 baseline matches the renamed and changed step bodies.
+  behavior: The R3 baseline matches the renamed step body.
   verification_step: 4
   command: bin/venv-python -m scripts.validate
   waiver_reason: >-
     A baseline data file whose only guard is validate_composite_action_shell_bodies, run by the full tier in step 4; no
     unit test can add evidence beyond that check.
 - source: docs/contracts/ducklake_telemetry_writer.yaml
-  behavior: The writer contract states the production binding and the counting re-ratification trigger.
-  verification_step: 4
-  command: bin/venv-python -m scripts.validate
-  waiver_reason: >-
-    Class B prose plus its amendment_log entry; validate_contract_drift and the provisional_v0 trigger validator in the
-    full tier are the guards, and the binding itself is pinned by the Terraform node in step 2.
+  behavior: The writer contract states the production binding, the fence and the operator lines.
+  verification_step: 12
+  test_selector: tests/checks/contracts/test_telemetry_production_cutover.py::test_no_live_contract_text_names_rec_4292
+  red_green_expectation: red before (module absent), green after
+- source: config/agent/verification_registry/entries/telemetry-writer-smoke-gate.yaml
+  behavior: The registry guards the twin's heavy gate and the no-heavy-vectors rule.
+  verification_step: 3
+  test_selector: tests/verify_ci_workflow/test_ducklake_deploy_map_wiring.py::test_no_job_runs_heavy_vectors_against_the_production_writer
+  red_green_expectation: red before (node absent), green after
+- source: config/agent/verification_registry/entries/telemetry-reader-blob-grant-pins.yaml
+  behavior: The registry guards the production pin and the shared reader's telemetry state.
+  verification_step: 15
+  test_selector: tests/checks/iam_tf/test_telemetry_shared_reader_pins.py::test_shared_reader_carries_no_telemetry_state
+  red_green_expectation: red before (node absent), green after
 - source: src/lambdas/ducklake_reader/handler.py
-  behavior: The shared reader serves no event verb and opens no telemetry slot.
+  behavior: The shared reader answers an event verb as an unregistered verb and opens no telemetry slot.
   verification_step: 10
-  test_selector: tests/lambdas/ducklake_reader/test_event_routing.py::test_shared_reader_serves_no_event_verb
+  test_selector: tests/lambdas/ducklake_reader/test_event_routing.py::test_shared_reader_answers_an_event_verb_as_an_unregistered_verb
   red_green_expectation: red before (node absent), green after
 - source: src/lambdas/ducklake_reader/manifest.yaml
   behavior: The shared reader bundle carries no event-read module.
@@ -607,9 +760,9 @@ test_obligations:
   test_selector: tests/lambda_manifest/test_bundle_checks.py::test_reader_bundle_carries_no_event_read_module
   red_green_expectation: red before (node absent), green after
 - source: src/common/ducklake_event_reads.py
-  behavior: No smoke-pin refusal remains.
+  behavior: No smoke-pin refusal remains and the acquirer requires a declared pin.
   verification_step: 10
-  test_selector: tests/common/test_ducklake_event_reads.py::test_no_smoke_pin_refusal_remains
+  test_selector: tests/common/test_ducklake_event_reads.py::test_acquirer_requires_a_declared_pin
   red_green_expectation: red before (node absent), green after
 - source: src/common/ducklake_event_read_verbs.py
   behavior: Event verb descriptions name the production telemetry catalog.
@@ -617,9 +770,14 @@ test_obligations:
   test_selector: tests/common/test_ducklake_event_reads.py::test_event_verb_descriptions_name_the_production_telemetry_catalog
   red_green_expectation: red before (node absent), green after
 - source: scripts/ducklake_smoke/lambda_ec_gates.py
-  behavior: The shared reader leg asserts refusal; the telemetry reader leg covers the served verbs.
+  behavior: The shared reader leg asserts the event-verb refusal.
   verification_step: 11
-  test_selector: tests/ducklake_neon_smoke_test/test_lambda_ec_gates.py::test_telemetry_reader_reads_cover_the_served_verbs
+  test_selector: tests/ducklake_neon_smoke_test/test_lambda_ec_gates.py::test_shared_reader_checks_refuse_event_verbs
+  red_green_expectation: red before (node absent), green after
+- source: scripts/ducklake_smoke/lambda_telemetry_reader_gates.py
+  behavior: The telemetry reader gate covers the verification verbs and the malformed session case.
+  verification_step: 11
+  test_selector: tests/ducklake_neon_smoke_test/test_lambda_telemetry_reader_gates.py::test_reader_gate_covers_the_verification_verbs
   red_green_expectation: red before (node absent), green after
 - source: scripts/ducklake_smoke/lambda_telemetry_blob_gates.py
   behavior: No blob vector reads through a reader.
@@ -632,14 +790,14 @@ test_obligations:
   test_selector: tests/checks/contracts/test_telemetry_production_cutover.py::test_retired_smoke_read_surface_is_absent
   red_green_expectation: red before (module absent), green after
 - source: docs/contracts/ducklake_reader.yaml
-  behavior: Production reads route to the telemetry reader and only query_ops lines may still name rec-4292.
+  behavior: Production reads route to the telemetry reader and no live line names rec-4292.
   verification_step: 12
   test_selector: tests/checks/contracts/test_telemetry_production_cutover.py::test_reader_contract_routes_production_reads_to_the_telemetry_reader
   red_green_expectation: red before (module absent), green after
 - source: docs/contracts/read-engine.yaml
-  behavior: No live read-engine line names rec-4292 outside query_ops lines or a smoke-only deferral.
+  behavior: No live read-engine line names rec-4292 or a smoke-only deferral.
   verification_step: 12
-  test_selector: tests/checks/contracts/test_telemetry_production_cutover.py::test_no_live_contract_text_names_rec_4292
+  test_selector: tests/checks/contracts/test_telemetry_production_cutover.py::test_retired_smoke_read_surface_is_absent
   red_green_expectation: red before (module absent), green after
 - source: docs/contracts/ports.yaml
   behavior: PC-06 says no deployed function serves transcript content.
@@ -656,25 +814,14 @@ test_obligations:
   verification_step: 12
   test_selector: tests/telemetry_verify/test_completeness.py::test_production_first_judged_day_follows_the_flip
   red_green_expectation: red before (node absent), green after
-- source: docs/ROADMAP-PLATFORM.yaml
-  behavior: T2.36:c2 flips met with this plan as met_by.
-  verification_step: 15
-  command: git show origin/main:docs/ROADMAP-PLATFORM.yaml
-  waiver_reason: >-
-    Roadmap bookkeeping data in a post-deploy commit, guarded by validate_platform_roadmap's closes_criteria and
-    exit-criteria ledger checks in that commit's CI; step 15 reads the flip on main.
-- source: config/agent/verification_registry/entries/telemetry-reader-blob-grant-pins.yaml
-  behavior: The registry guards the production pin and the shared reader's empty telemetry state.
-  verification_step: 10
-  test_selector: tests/checks/iam_tf/test_telemetry_infra_pins.py::test_shared_reader_carries_no_telemetry_state
-  red_green_expectation: red before (node absent), green after
-- source: config/agent/verification_registry/entries/telemetry-reader-typed-faults.yaml
-  behavior: The registry no longer guards the retired shared-reader content path.
+- source: config/agent/verification_registry/entries/deprecated/telemetry-reader-typed-faults.yaml
+  behavior: The retired entry is kept in the loader-excluded subtree.
   verification_step: 13
   command: bin/venv-python -m scripts.validate
   waiver_reason: >-
-    A registry row edit whose admission and node-existence checks are validate_verification_registry in the full tier;
-    the retired nodes have no successor by design (rec-4481 owns content serving).
+    A git mv of a registry record into entries/deprecated/, which the loader excludes by construction; the registry
+    validators in the full tier are the only meaningful check, and the retired nodes have no successor by design
+    (rec-4481 owns content serving).
 - source: config/agent/verification_registry/entries/telemetry-reader-content-bundle.yaml
   behavior: The registry guards the inverse bundle invariant.
   verification_step: 10
@@ -685,10 +832,22 @@ test_obligations:
   verification_step: 11
   test_selector: tests/ducklake_neon_smoke_test/test_lambda_telemetry_blob_gates.py::test_blob_vectors_read_nothing_through_a_reader
   red_green_expectation: red before (node absent), green after
+- source: config/agent/verification_registry/entries/telemetry-reader-smoke-covers-verification-verbs.yaml
+  behavior: The registry guards the verification-verb coverage on the telemetry reader.
+  verification_step: 11
+  test_selector: tests/ducklake_neon_smoke_test/test_lambda_telemetry_reader_gates.py::test_reader_gate_covers_the_verification_verbs
+  red_green_expectation: red before (node absent), green after
+- source: docs/ROADMAP-PLATFORM.yaml
+  behavior: T2.36:c2 flips met with this plan as met_by and c3 carries the re-grounding annotation.
+  verification_step: 19
+  command: git show origin/main:docs/ROADMAP-PLATFORM.yaml
+  waiver_reason: >-
+    Roadmap bookkeeping data in its own PR, guarded by validate_platform_roadmap's closes_criteria and exit-criteria
+    ledger checks in that PR's CI; step 19 reads the flip on main.
 constraints:
 - No new Decision; the pin flip cites Decision A (PLAN-telemetry-production-catalog), the read identity and proof shape Decision B (PLAN-telemetry-reader-and-smoke-twin).
-- Two PRs in order (flip, cleanup); the cleanup PR waits for the flip's post-deploy steps 6-9.
-- Benjamin's word in the thread before each merge (IAM; the Class B writer and reader contracts).
+- Four PRs in order (flip, cleanup, narrow, bookkeeping); each waits for the previous one's post-deploy steps.
+- Benjamin's word in the thread before the flip, cleanup and narrow merges (IAM; the Class B writer and reader contracts); the bookkeeping PR merges on green CI.
 - query_ops, dq_check and the query_ops residual lines are the "Retire query_ops raw SQL" plan's; this plan neither changes nor describes them, and the second of the two builds to land rebases.
 - No account id, ARN, hostname, URL or secret in any file, log line or PR body (Decision 101); gate output stays counts and class names.
 - Production starts empty; no backfill and no dual write; smoke keeps its pre-flip rows (Decision A).
@@ -699,73 +858,104 @@ context:
   Decision-scout: FLAGS_FOUND, dispositioned (/mnt/project-files/telemetry-slice2c/decision-scout-report-reads.md,
   first pass decision-scout-report.md). CITE 213, 207, 200/209, 212, 181, 199, 228, 215, 216, 222, 84, 126, 101.
   Decisions triaged: 180 of 180. Roadmap items intersected: 13; CONFLICT: 0; RELATED: 12.
-- 'gates: decision-scout=FLAGS_FOUND (dispositioned); plan-critique=PENDING'
-- 'ci_rca red_overlap (2026-10-19): {"verdict": "clear", "slo_hours": 4, "reds": []}'
+- 'gates: decision-scout=FLAGS_FOUND (dispositioned); plan-critique=REVISE after 1 round (round 2 of 3 pending)'
+- 'ci_rca red_overlap (2026-10-19, round 2): {"verdict": "clear", "slo_hours": 4, "reds": []}'
 - >-
   Direction: Benjamin's "write the plan" (cmsg_012XgaFy8VaDQbxP5D8nC958BtcmGWkGnzJuQRx3VaxZyU) on the slice 2c split
-  and the revised read design; golden replay writes tagged synthetic trees into production (his card answer); the
-  coordinator split the cutover into PLAN-telemetry-catalog-aware-capture and this plan. Evidence:
-  /mnt/project-files/telemetry-slice2c/ (planning-facts.md, ADVICE.md Q8, ADVICE-reads.md).
+  and the revised read design; golden replay writes tagged synthetic trees into production (his card answer). Round 1
+  design change (coordinator, with notice to Benjamin): capture follows the writer's describe and reads route by a
+  Terraform deploy output, so the flip is one apply with no capture blackout. Evidence: /mnt/project-files/telemetry-slice2c/.
 - >-
   Decision A = the numbered Decision PLAN-telemetry-production-catalog ratifies (catalog, owners, logins, fence);
   Decision B = PLAN-telemetry-reader-and-smoke-twin's (smoke twin proofs, telemetry reader identity, no production
-  content, read-side tenancy); c5 is PLAN-telemetry-production-maintenance's. Fixed names: catalog ducklake_telemetry, data prefix ducklake-telemetry/, production
-  writer login ducklake_telemetry_writer_prod and its secret, agent-platform-ducklake-telemetry-reader.
+  content, read-side tenancy); c5 is PLAN-telemetry-production-maintenance's. Fixed names: catalog ducklake_telemetry,
+  data prefix ducklake-telemetry/, production writer login ducklake_telemetry_writer_prod and its secret,
+  agent-platform-ducklake-telemetry-reader, the deploy output /agent-platform/ducklake/telemetry_catalog.
 - >-
-  Decided with notice: the shared reader keeps its telemetry slot until production is proven (the rollback path), then
-  drops it; the production first judged day is set in the cleanup PR, once the flip day is known; the blob read-back
-  retires with the content tier (rec-4481 owns its return).
+  Decided with notice: the shared reader keeps its telemetry slot until production is proven (the rollback path),
+  then stops serving it, then loses its grants in a separate PR; the writer's and the reader's role descriptions stay
+  stale (rec-4292 item 5's choice, inside the apply budget); the blob read-back retires with the content tier
+  (rec-4481); the production first judged day follows the apply's convergence.
 - >-
   query_ops boundary (coordinator, 2026-10-19): the "Retire query_ops raw SQL" plan adds dq_check, deletes
-  action_query_ops, deletes the query_ops probe in lambda_ec_gates._telemetry_read_checks, edits test_event_routing.py
-  and test_ducklake_event_reads.py, and retires the query_ops residual lines in ducklake_reader.yaml. This plan drops
-  only the TelemetryBlobRead clause and the smoke-pin and tenant-scoped-reads lines; the guard ignores lines naming
-  query_ops. No rec id is needed for the residual.
+  action_query_ops and the query_ops probe in lambda_ec_gates._telemetry_read_checks, edits test_event_routing.py and
+  test_ducklake_event_reads.py, and retires the query_ops residual lines in ducklake_reader.yaml. This plan closes only
+  the TelemetryBlobRead widening and the smoke-pin and tenant-scoped-reads lines; where the query_ops lines still
+  exist when the cleanup lands, their owner reads that plan instead of rec-4292.
 - >-
-  rec-4292 closure: its items land in PLAN-telemetry-production-catalog, PLAN-telemetry-reader-and-smoke-twin,
-  PLAN-telemetry-production-maintenance and this plan; its 422 blob_not_verified warning-alarm item is re-homed to
-  rec-4482, and the closure note says so.
+  rec-4292 closure ledger: execution step 6 maps every item of rec-4292's context to its home; one item (the per-cold-
+  container telemetry ATTACH Neon egress line) had none at planning time and is reported to the coordinator.
 - >-
-  Other overlaps: the smoke maintenance and blob sweep plan and the CI write narrowing plan (oidc_ci_roles.tf,
-  untouched here). Status vocabulary (field_semantics.static.yaml pre_production, ops_tenants and
-  data-modeling-standard "until slice 2c") is PLAN-telemetry-production-catalog's provisioning record, not swept here.
+  Other overlaps: the smoke maintenance and blob sweep plan (rec-4209, rec-4033) and the CI write narrowing plan
+  (oidc_ci_roles.tf, untouched here). Status vocabulary (field_semantics.static.yaml pre_production, ops_tenants and
+  data-modeling-standard "until slice 2c") is PLAN-telemetry-production-catalog's provisioning record.
 pre_implementation_checklist:
 - Branch confirmed not on main (harness-assigned session branch)
 - docs/PROJECT_CONTEXT.md read
 - Decisions 207, 213, 216, 222 and Decisions A and B read (only the cited sections)
-- All prerequisite plans' post-deploy steps passed (VP step 1)
+- All prerequisite plans done (VP step 1)
 - All files in scope located and readable; SLOC headroom checked for the reader handler and the gate modules
 - Acceptance criteria understood and verifiable
 execution_steps:
 - >-
-  1. Run VP step 1. Rebase onto origin/main. Read PLAN-telemetry-reader-and-smoke-twin's merged gate parametrisation
-  (lambda_telemetry_gates.py, the telemetry-twin-smoke and deploy-telemetry jobs and the telemetry reader gate step), the production catalog plan's secret resource and locals, and the
-  query_ops plan's state on main (dq_check present or not), and use them verbatim.
+  1. Run VP step 1. Rebase onto origin/main. Read PLAN-telemetry-reader-and-smoke-twin's merged gate code
+  (lambda_telemetry_gates._run, lambda_telemetry_smoke, lambda_telemetry_reader_gates), its jobs and locals, the
+  production catalog plan's secret resource and locals, and the query_ops plan's state on main (dq_check present or
+  not), and use them verbatim.
 - >-
-  2. PR flip. Edit the pin local and re-point every non-production reference to smoke locals, the writer's env, secret
-  and policy, capture.yaml (catalog: ducklake_telemetry), the production gate and its flag, the smoke job step, the R3
-  baseline, the writer contract, the infra pins and the registry row. Run VP steps 2-5. Open the PR and ask Benjamin
-  for his word in the thread (IAM, Class B contract); merge only on it.
+  2. PR flip. Move the pin local and re-point the shared reader to the smoke locals; the writer's env, secret and
+  policy; the production gate, its flag and the telemetry-smoke step; retire lambda_telemetry and --lambda-telemetry;
+  the R3 baseline, the writer contract, the pins (with the split module), the gate tests and the registry rows. Run VP
+  steps 2-5 (step 5 on the final head). Ask Benjamin for his word in the thread (IAM, Class B contract); merge only on
+  it. Then run VP steps 6-9 in order; stop and report on any failure.
 - >-
-  3. After the flip applies, run VP steps 6-9 in order. Stop and report on any failure; the cleanup PR waits for all
-  four.
+  3. PR cleanup. Edit the shared reader handler and manifest, ducklake_event_reads.py, ducklake_event_read_verbs.py,
+  lambda_ec_gates.py, lambda_telemetry_reader_gates.py, lambda_telemetry_blob_gates.py, the writer manifest notes,
+  ducklake_reader.yaml, read-engine.yaml, ports.yaml PC-06, read_route.py (no smoke route), completeness.py
+  (PRODUCTION_FIRST_JUDGED_DAY = the first UTC day after step 6's recorded time), the registry rows (git mv the
+  typed-faults entry to entries/deprecated/), every test the scope names and the guard module. Run VP steps 10-13. Ask
+  Benjamin for his word; merge; run VP step 14.
 - >-
-  4. PR cleanup. Edit the shared reader handler and manifest, ducklake_event_reads.py, ducklake_event_read_verbs.py,
-  lambda_ec_gates.py, lambda_telemetry_blob_gates.py, the telemetry reader reads flag and step, ducklake_lambdas.tf
-  (drop the shared reader's telemetry env and blob grant), read_route.py (no smoke route), completeness.py
-  (PRODUCTION_FIRST_JUDGED_DAY = the first UTC day after the flip merge), the writer manifest notes,
-  ducklake_reader.yaml and read-engine.yaml (only the blob clause, smoke-pin and tenant-scoped-reads lines), ports.yaml
-  PC-06, the registry rows, every test the scope names and the new guard module. Run VP steps 10-13. Ask Benjamin for
-  his word; squash-merge with "Resolves: rec-4292" in the body and a closure note naming rec-4482 for the re-homed
-  422 warning-alarm item.
+  4. PR narrow. Drop the shared reader's TELEMETRY_* env and TelemetryBlobRead; the shared-reader pin node. Run VP
+  steps 15-16. Ask Benjamin for his word; merge; run VP step 17.
 - >-
-  5. Run VP step 14. Then the bookkeeping commit: flip T2.36:c2 met (met_by telemetry-production-flip) with a dated
-  progress_note; merge on green CI; run VP step 15. If every T2.36 criterion reads met, surface the item to Benjamin for
-  completion; never flip the item status yourself.
+  5. Run VP step 18. PR bookkeeping: flip T2.36:c2 met (met_by telemetry-production-flip), annotate c3 and add the dated
+  progress_note; the squash body carries "Resolves: rec-4292" and the closure ledger below. Merge on green CI; run VP
+  step 19. If every T2.36 criterion reads met, surface the item and the VTS-05 escape-rate query to Benjamin; never flip
+  the item status yourself.
+- >-
+  6. rec-4292 closure ledger (the bookkeeping PR body; the trailer waits while any row lacks a home).
+  2026-10-16 transcript-content items: (1) reader paging alarm on blob_integrity and blob_misconfigured: moot, no
+  content is served from production (Decision B), rec-4481 with a content reader; (2) tenant scoping in
+  transcript_content's resolve: moot for the same reason, read-side tenancy is the function boundary (Decision B,
+  annotation on Decision 200 cl.2), rec-4481; (3) the widened query_ops residual: this plan closes the TelemetryBlobRead
+  widening (cleanup and narrow), the query_ops remainder is the "Retire query_ops raw SQL" plan's; (4) the sweep-bug
+  runbook line (forbidden_or_missing, remove the delete marker): rec-4033's plan; (5) the reader role description:
+  recorded stale here, the same choice for the writer role. 2026-10-16 reader-verbs items: the smoke-pin refusal and
+  tenant-scoped reads (this plan, cleanup; Decision B), c3 on production (this plan, VP step 9 and the c3 annotation),
+  the query_ops object-store residual (the query_ops plan), the per-cold-container telemetry ATTACH Neon egress line
+  (no home at planning time: reported), the Decision 214 invariant (v) stats-index check on the telemetry schema
+  (PLAN-telemetry-production-catalog). 2026-10-15 blob-size-mismatch items: the 422 blob_not_verified warning alarm
+  (rec-4482), the operator checksum-signed PUT line and the integrity repair path (this plan, writer contract).
+  2026-10-15 cache-aware items: the 1-hour cache-write split (done, PLAN-telemetry-column-additions, Decision 222),
+  prefix_hash and the column-migration path (PLAN-telemetry-production-catalog; rec-4316 stays parked). 2026-10-14
+  items: the Decision 216 reversal-condition check and the production provisioning shape, owner group, smoke-only
+  owner login and production grants (PLAN-telemetry-production-catalog; rec-4297 there, rec-4300 stays open for the
+  restore rehearsal). 2026-10-12 scope: (1) the pin-flip Decision and production provisioning (Decision A and
+  PLAN-telemetry-production-catalog; the flip here); (2) the Decision 88 measurement before provisioning
+  (PLAN-telemetry-production-catalog) and the production re-measure (rec-4218's reversal triggers recorded there);
+  (3) writer alarms incl. the per-verb OCC alarm (PLAN-telemetry-production-maintenance); (4) tenant-registration
+  authority (PLAN-telemetry-production-catalog, rec-4207's identity record); (5) the smoke gate's production shape
+  (PLAN-telemetry-reader-and-smoke-twin and this plan's light gate); (6) the blob-root write fence
+  (PLAN-telemetry-production-catalog, Decision A); ordering recs: rec-4033 (its plan; may land after the flip),
+  rec-4218 (PLAN-telemetry-production-catalog), rec-4209 (the smoke maintenance plan), rec-4101 (closed); criteria c1,
+  c2, c5 (the production catalog plan, this plan, the maintenance plan). 2026-10-15 capture-hooks item, RN-5:
+  PLAN-telemetry-catalog-aware-capture. 2026-10-17 column-additions item, all ten columns at creation:
+  PLAN-telemetry-production-catalog.
 - 'Execute Verification Plan: run each step; loop until pass; on an unrecoverable V3 failure stop and RCA (Decision 55).'
 - 'Report: what was implemented in each PR, the verification results, and the T2.36 status for Benjamin.'
 rollback: >-
-  Before the cleanup PR: revert the flip PR (capture.yaml back to ducklake_smoke and the writer's Terraform back);
-  capture resets each tree to smoke (identical rows are no-ops there) and reads route back to the shared reader.
-  Production rows stay (append-only). After the cleanup PR: revert it first to restore the shared reader's slot and
-  the smoke route, then the flip PR.
+  Before the cleanup PR: revert the flip PR; one apply moves the writer and the deploy output back to smoke, capture
+  re-sends each tree to smoke (identical rows are no-ops there) and reads route back to the shared reader. Production
+  rows stay (append-only). After the cleanup or narrow PRs: revert them first, in reverse order, to restore the shared
+  reader's slot and grants, then the flip PR.
