@@ -31,6 +31,8 @@ from src.telemetry.timestamps import TimestampError, parse_iso8601_utc
 TELEMETRY_SLOT = "telemetry"
 TELEMETRY_MEMORY_LIMIT = "300MB"
 TELEMETRY_THREADS = 8
+TELEMETRY_TEMP_DIRECTORY = "/tmp/telemetry-spill"
+TELEMETRY_MAX_TEMP_SIZE = "300MB"
 KIND = "event_journal"
 CATALOG = "telemetry"
 
@@ -336,6 +338,8 @@ def _telemetry_opener(meta_schema: str, data_path: str, extension_directory: str
             alias=rt.TELEMETRY_CATALOG_ALIAS,
         )
         con.execute(f"SET memory_limit='{TELEMETRY_MEMORY_LIMIT}'")
+        con.execute(f"SET temp_directory='{TELEMETRY_TEMP_DIRECTORY}'")
+        con.execute(f"SET max_temp_directory_size='{TELEMETRY_MAX_TEMP_SIZE}'")
         con.execute(f"SET threads={TELEMETRY_THREADS}")
         con.execute("SET pg_use_ctid_scan=false")
         return con

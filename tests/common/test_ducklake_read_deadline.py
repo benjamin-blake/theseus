@@ -194,7 +194,20 @@ def test_real_duckdb_spent_deadline_never_runs_the_query() -> None:
 def test_real_duckdb_accepts_the_telemetry_slot_settings() -> None:
     con = _duckdb().connect()
     con.execute("LOAD postgres")
+    con.execute(f"SET temp_directory='{ev.TELEMETRY_TEMP_DIRECTORY}'")
+    con.execute(f"SET max_temp_directory_size='{ev.TELEMETRY_MAX_TEMP_SIZE}'")
     con.execute(f"SET threads={ev.TELEMETRY_THREADS}")
     con.execute("SET pg_use_ctid_scan=false")
     assert con.execute("SELECT current_setting('threads')").fetchone() == (ev.TELEMETRY_THREADS,)
     assert con.execute("SELECT current_setting('pg_use_ctid_scan')").fetchone() == (False,)
+
+
+def test_real_duckdb_spills_to_the_configured_directory(tmp_path: Path) -> None:
+    con = _duckdb().connect()
+    spill = tmp_path / "spill"
+    con.execute("SET memory_limit='150MB'")
+    con.execute(f"SET temp_directory='{spill}'")
+    con.execute("SET threads=4")
+    rows = con.execute("SELECT count(*) FROM (SELECT i, md5(i::VARCHAR) h FROM range(10000000) t(i) ORDER BY h)").fetchone()
+    assert rows == (10000000,)
+    assert any(spill.iterdir())

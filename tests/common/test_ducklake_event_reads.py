@@ -254,6 +254,8 @@ def test_telemetry_opener_sets_threads_and_serial_catalog_scans(monkeypatch: pyt
     ev._telemetry_opener(rt.SMOKE_META_SCHEMA, rt.SMOKE_DATA_PATH, "/e")()
     statements = [sql for sql, _ in con.calls]
     assert statements[0].startswith("SET memory_limit=") and statements[1:] == [
+        "SET temp_directory='/tmp/telemetry-spill'",
+        "SET max_temp_directory_size='300MB'",
         f"SET threads={ev.TELEMETRY_THREADS}",
         "SET pg_use_ctid_scan=false",
     ]
