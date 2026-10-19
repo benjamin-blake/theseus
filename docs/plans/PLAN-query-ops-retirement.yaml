@@ -114,7 +114,7 @@ scope:
     purpose: >-
       PR A: test_dq_check_dispatch_through_the_handler (200 and 400 through handler(), covering the handler's new lines;
       handler.py's coverage is measured from this file alone). FakeCon moves to tests/fixtures/ducklake_reader_fakes.py so
-      the file stays at or under 500 SLOC (495 today); move further shared helpers there if needed, never a budget raise.
+      the file stays at or under 500 SLOC (495 today), measured at PR A as well as PR B; move further shared helpers there if needed, never a budget raise.
       PR B: test_action_query_ops and test_action_query_ops_requires_sql are deleted;
       test_generic_reads_refuse_telemetry_and_registration_tables drops action_query_ops from its loop.
   - file: tests/fixtures/ducklake_reader_fakes.py
@@ -164,7 +164,10 @@ scope:
       _query_ops_rows is deleted; apply_backend_routing keeps only the clause-8 append.
   - file: scripts/data_quality_runner.py
     action: Modify
-    purpose: PR B. Re-exports trimmed to what still exists; --dry-run prints each check's dq_check request as JSON instead of SQL.
+    purpose: >-
+      PR B. Re-exports trimmed to what still exists; --dry-run prints each check's dq_check request as JSON instead of SQL.
+      The module docstring keeps the phrases tests/test_workflow_skill_antidrift.py pins ("Two-layer health picture",
+      "checks_defined > 0", "last_run.verdict == PASS").
   - file: scripts/contract_rule_census.py
     action: Modify
     purpose: >-
@@ -182,8 +185,23 @@ scope:
       Class A contract rules the writer enforces at write time and the census checks (context min_length 80 from
       2026-05-01; last_updated_timestamp not_before created_timestamp, ungated in the contract, so stricter than the
       YAML's 2026-05-01 copy); they retire from ops.yaml (Decision 210 cl.1-2: DQ owns what a write cannot; rec-4158: no
-      write-time test returns to a DQ file), with a refactor disposition naming the census rule as the surviving check.
+      write-time test returns to a DQ file), with a refactor disposition naming the writer's write-time row rule
+      (src/row_rules/rules.py check_row via ducklake_write_rules) as the standing successor and contract_rule_census as the
+      on-demand read-time proof over stored rows.
       Header comments name dq_check.
+  - file: config/agent/data_quality/decisions/ops_recommendations.yaml
+    action: Modify
+    purpose: >-
+      PR B. Prose only: the context and created_timestamp current_test lines name the writer's row rule as the check (the
+      ops.yaml expression copies retire); enforcement_ready values unchanged.
+  - file: config/agent/data_quality/decisions/ops_decisions.yaml
+    action: Modify
+    purpose: PR B. Prose only - the id current_test names the typed pattern test in place of the expression; enforcement_ready unchanged.
+  - file: config/agent/data_quality/decisions/ops_execution_plans.yaml
+    action: Modify
+    purpose: >-
+      PR B. Prose only: the rec_id decided_action and current_test name the unique (history) and
+      history_not_ahead_of_current tests in place of the two composite expressions; enforcement_ready unchanged.
   - file: src/common/ducklake_reads.py
     action: Modify
     purpose: PR B. query_current and assert_read_only_sql are deleted (their only caller was query_ops).
@@ -196,8 +214,10 @@ scope:
   - file: tests/test_data_quality_compile.py
     action: Modify
     purpose: >-
-      PR B. test_yaml_tests_compile_to_dq_kinds, test_expression_tests_are_refused, test_ops_yaml_declares_no_expression_test;
-      SQL-text tests of the deleted helpers retire.
+      PR B. test_yaml_tests_compile_to_dq_kinds, test_expression_tests_are_refused, test_ops_yaml_declares_no_expression_test,
+      test_ops_yaml_recommendations_tests_are_judged_one_way (ops.yaml's ops_recommendations tests stay within
+      {not_null, accepted_values}, the kinds validate_ops_rule_source's one-way leg judges, so a contract write-time kind such
+      as pattern cannot return there unjudged); SQL-text tests of the deleted helpers retire.
   - file: tests/test_data_quality_execute.py
     action: Modify
     purpose: >-
@@ -336,14 +356,17 @@ infrastructure_dependencies:
     LAMBDA-DEPLOY DEFERRED (CD.16 / Decision 79), per-artifact disposition: compute_affected_artifacts flags data-pipeline
     through src/common/ducklake_reader_client.py (its src/ wildcard). No build, deploy or smoke is owed: no data-pipeline
     handler calls dq_check or query(), and deploy-prod-lambdas.yml's path triggers exclude the file; the same disposition
-    as PLAN-telemetry-verification-verbs. The new dq module is excluded from that bundle in PR A.
+    as PLAN-telemetry-verification-verbs. The tool also flags docs/ROADMAP-PLATFORM.yaml (a packaged asset; this plan's
+    T1.6 rows refresh with the next governed deploy, nothing reads them at runtime) and src/lambdas/data-pipeline/manifest.yaml
+    (an exclude only); neither is a deploy-prod-lambdas.yml path trigger, so no deploy is owed. The new dq module is
+    excluded from that bundle in PR A.
 acceptance_criteria:
   - "The reader serves dq_check: twelve kinds, server-owned SQL, bound values, one violation count per call, check_version stamped; a refused request answers 400 dq_check_input naming the parameter without its value and opens no connection; control-class, telemetry_append and registration tables are refused; it binds the ops slot only (steps 1-6, 10)."
   - "Each one-to-one kind's count equals the SQL it replaces on the same data; the two kinds replacing NOT EXISTS expressions agree on zero/non-zero and are stricter in the pinned empty-current case; the six contract kinds agree row-for-row with the writer's rule engine over the census's full corpora (step 2)."
-  - "The DQ runner and the contract-rule census send no SQL: every check is a dq_check request; expression and the contract's write-time kinds stay unrecognised YAML test types; ops.yaml declares typed DQ-side tests only, and its two retired single-row tests survive as contract rules the census checks (steps 13-15, 20)."
+  - "The DQ runner and the contract-rule census send no SQL: every check is a dq_check request; expression and the contract's write-time kinds stay unrecognised YAML test types; ops.yaml declares typed DQ-side tests only; its two retired single-row tests survive as the writer's write-time row rules, with the census as the on-demand read-time proof (steps 13-15, 20)."
   - "Against the deployed reader, the new runner's per-(table, column) verdicts equal origin/main's minus the two retired tests, which were PASS there, and the census output is identical (steps 11, 12, 24)."
   - "query_ops, query_current, assert_read_only_sql and DuckLakeReader.query are gone; no reader action accepts caller SQL; the deployed reader answers query_ops with 400 unknown action (steps 16, 17, 23)."
-  - "Retired checks keep equal-strength successors: four registry shards retire to entries/deprecated/ with successors graduated by steps 3, 4, 15 and 16, and the contracts, Decision 84 note and T1.6 criteria record the retirement (steps 7, 18, 19)."
+  - "Retired checks keep equal-strength successors: four registry shards retire to entries/deprecated/ with successors graduated by steps 3, 4, 5, 15 and 16, and the contracts, Decision 84 note and T1.6 criteria record the retirement (steps 7, 18, 19)."
   - "T1.6:c6 is met: the dq_check verb family exists and raw query_ops / reader.query() over scripts/ no longer includes the DQ harness."
 verification_plan:
   - step: 1
@@ -470,7 +493,7 @@ verification_plan:
       origin/main's runner minus the two retired ops_recommendations expression tests, which must be PASS there, and no
       check is ERROR or UNAVAILABLE. The worktree is removed afterwards.
     command: >-
-      W="$(mktemp -d)/main" && git worktree add -q "$W" origin/main && (cd "$W" && AWS_PROFILE=agent_platform "$OLDPWD/bin/venv-python" -m scripts.data_quality_runner > /dev/null); AWS_PROFILE=agent_platform bin/venv-python -m scripts.data_quality_runner > /dev/null; bin/venv-python -c "import json,sys,collections as C;a=json.load(open(sys.argv[1]))['checks'];b=json.load(open(sys.argv[2]))['checks'];R={('ops_recommendations','context'),('ops_recommendations','created_timestamp')};ret=[x for x in a if x['test']=='expression' and (x['table'],x['column']) in R];assert len(ret)==2 and all(x['verdict']=='PASS' for x in ret),ret;k=lambda xs:C.Counter((x['table'],x['column'],x['verdict']) for x in xs);old=k([x for x in a if x not in ret]);new=k(b);assert old==new,(old-new,new-old);assert not any(x['verdict'] in ('ERROR','UNAVAILABLE') for x in b);print('DQ_PARITY_OK',len(b))" "$W/logs/debug/dq-latest.json" logs/debug/dq-latest.json; R=$?; git worktree remove --force "$W"; test $R -eq 0
+      git fetch origin main --quiet && W="$(mktemp -d)/main" && git worktree add -q "$W" origin/main && (cd "$W" && AWS_PROFILE=agent_platform "$OLDPWD/bin/venv-python" -m scripts.data_quality_runner > /dev/null); AWS_PROFILE=agent_platform bin/venv-python -m scripts.data_quality_runner > /dev/null; bin/venv-python -c "import json,sys,collections as C;a=json.load(open(sys.argv[1]))['checks'];b=json.load(open(sys.argv[2]))['checks'];R={('ops_recommendations','context'),('ops_recommendations','created_timestamp')};ret=[x for x in a if x['test']=='expression' and (x['table'],x['column']) in R];assert len(ret)==2 and all(x['verdict']=='PASS' for x in ret),ret;k=lambda xs:C.Counter((x['table'],x['column'],x['verdict']) for x in xs);old=k([x for x in a if x not in ret]);new=k(b);assert old==new,(old-new,new-old);assert not any(x['verdict'] in ('ERROR','UNAVAILABLE') for x in b);print('DQ_PARITY_OK',len(b))" "$W/logs/debug/dq-latest.json" logs/debug/dq-latest.json; R=$?; git worktree remove --force "$W"; test $R -eq 0
     expected: DQ_PARITY_OK with the new run's check count. Report the line.
     fix_if: >-
       A differing verdict: find the check that moved. A new kind stricter than its expression (the pinned empty-current
@@ -483,7 +506,7 @@ verification_plan:
     phase: pre-deploy
     action: PR B, before merge, against PR A's deployed reader, the census prints exactly what origin/main's census prints. The worktree is removed afterwards.
     command: >-
-      W="$(mktemp -d)/main" && git worktree add -q "$W" origin/main && (cd "$W" && AWS_PROFILE=agent_platform "$OLDPWD/bin/venv-python" -m scripts.contract_rule_census > "$W.before.txt"; echo "exit=$?" >> "$W.before.txt"); (AWS_PROFILE=agent_platform bin/venv-python -m scripts.contract_rule_census > "$W.after.txt"; echo "exit=$?" >> "$W.after.txt"); diff "$W.before.txt" "$W.after.txt" && tail -2 "$W.after.txt" && echo CENSUS_PARITY_OK; R=$?; git worktree remove --force "$W"; test $R -eq 0
+      git fetch origin main --quiet && W="$(mktemp -d)/main" && git worktree add -q "$W" origin/main && (cd "$W" && AWS_PROFILE=agent_platform "$OLDPWD/bin/venv-python" -m scripts.contract_rule_census > "$W.before.txt"; echo "exit=$?" >> "$W.before.txt"); (AWS_PROFILE=agent_platform bin/venv-python -m scripts.contract_rule_census > "$W.after.txt"; echo "exit=$?" >> "$W.after.txt"); diff "$W.before.txt" "$W.after.txt" && tail -2 "$W.after.txt" && echo CENSUS_PARITY_OK; R=$?; git worktree remove --force "$W"; test $R -eq 0
     expected: No diff, the SUMMARY and exit lines, then CENSUS_PARITY_OK.
     fix_if: Any per-rule line differs; the server predicate disagrees with the census predicate it replaced.
     hermetic: false
@@ -495,11 +518,12 @@ verification_plan:
       bin/venv-python -m pytest tests/test_data_quality_compile.py::test_yaml_tests_compile_to_dq_kinds
       tests/test_data_quality_compile.py::test_expression_tests_are_refused
       tests/test_data_quality_compile.py::test_ops_yaml_declares_no_expression_test
+      tests/test_data_quality_compile.py::test_ops_yaml_recommendations_tests_are_judged_one_way
       tests/test_data_quality_compile.py::test_former_write_time_only_types_now_raise
       tests/test_data_quality_runner.py::test_dry_run_prints_dq_check_requests -q
-    expected: Exit 0, every node passes. Red before because four nodes are absent.
+    expected: Exit 0, every node passes. Red before because five nodes are absent.
     expected_literals: []
-    fix_if: A compiled check carries SQL, a write-time kind compiles, or an enforced flag, severity or exclude_before date changed in the rewrite.
+    fix_if: A compiled check carries SQL, a write-time kind compiles, ops.yaml declares an ops_recommendations test kind the one-way leg does not judge, or an enforced flag, severity or exclude_before date changed in the rewrite.
     hermetic: true
     graduation: graduate
     graduation_check_id: dq-compile-to-kinds
@@ -551,8 +575,11 @@ verification_plan:
     phase: pre-deploy
     action: Stale-reference sweep for the retired surface across code, config, tests and the two contracts' verb maps.
     command: >-
-      bin/venv-python -c "import subprocess,yaml;import src.common.ducklake_reads as r;import src.common.ducklake_runtime as rt;from src.common.ducklake_reader_client import DuckLakeReader;import src.lambdas.ducklake_reader.handler as h;g=lambda p,*w:subprocess.run(['git','grep','-lE',p,'--',*w],capture_output=True,text=True).stdout.split();hits=g('query_ops|query_current|assert_read_only_sql','src','scripts','config/lambda','config/agent/data_quality','.github');assert hits==['scripts/ducklake_smoke/lambda_ec_gates.py'],hits;t=g(r'census\.(violation_condition|WHITESPACE_CLASS|_strip_len|_lit)\b|_query_ops_rows|to_ducklake_sql|query_current|assert_read_only_sql','tests');assert not t,t;assert 'query_ops' not in h._ACTIONS and not hasattr(r,'query_current') and not hasattr(r,'assert_read_only_sql') and not hasattr(rt,'query_current') and not hasattr(DuckLakeReader,'query');assert 'query_ops' not in yaml.safe_load(open('docs/contracts/ducklake_reader.yaml'))['verbs'];assert 'query_ops' not in yaml.safe_load(open('docs/contracts/read-engine.yaml'))['read_surface'];print('SWEEP_OK')"
-    expected: Exit 0 and the marker; the only code hit is the smoke gate's retired-action probe, and no test names a deleted helper.
+      bin/venv-python -c "import subprocess,yaml;import src.common.ducklake_reads as r;import src.common.ducklake_runtime as rt;from src.common.ducklake_reader_client import DuckLakeReader;import src.lambdas.ducklake_reader.handler as h;g=lambda p,*w:subprocess.run(['git','grep','-lE',p,'--',*w],capture_output=True,text=True).stdout.split();hits=g('query_ops|query_current|assert_read_only_sql','src','scripts','config/lambda','config/agent/data_quality','.github');assert hits==['scripts/ducklake_smoke/lambda_ec_gates.py'],hits;t=g(r'census\.(violation_condition|WHITESPACE_CLASS|_strip_len|_lit)\b|_query_ops_rows|to_ducklake_sql\(|\.query_current\(|\.assert_read_only_sql\(','tests');assert not t,t;assert 'query_ops' not in h._ACTIONS and not hasattr(r,'query_current') and not hasattr(r,'assert_read_only_sql') and not hasattr(rt,'query_current') and not hasattr(DuckLakeReader,'query');assert 'query_ops' not in yaml.safe_load(open('docs/contracts/ducklake_reader.yaml'))['verbs'];assert 'query_ops' not in yaml.safe_load(open('docs/contracts/read-engine.yaml'))['read_surface'];print('SWEEP_OK')"
+    expected: >-
+      Exit 0 and the marker. The only code hit is the smoke gate's retired-action probe; no test calls a deleted helper
+      (absence assertions such as test_facade_drops_the_caller_sql_helpers name the helpers as strings, never as calls,
+      so step 16 and this sweep are green on the same final tree).
     expected_literals: []
     fix_if: A live reference outside the retired-action probe, or a test still calling a deleted helper (integration-marked tests never run in the unit tier, so this sweep is their only pre-merge guard).
     hermetic: true
@@ -593,7 +620,10 @@ verification_plan:
     fix_if: An ops.yaml test stricter than the contract, a parity leg broken, or a test kind on ops_recommendations the one-way leg does not judge.
     hermetic: true
     graduation: waive
-    graduation_waiver_reason: validate_ops_rule_source is already a registered --pre check over ops.yaml; this run proves the rewrite keeps it green and fully covering.
+    graduation_waiver_reason: >-
+      validate_ops_rule_source is already a registered --pre check over ops.yaml (the green half), and step 13's graduated
+      test_ops_yaml_recommendations_tests_are_judged_one_way is the standing guard for the coverage half; this run proves both
+      on the rewritten file once.
   - step: 21
     phase: pre-deploy
     action: PR B lint and the full tier on the committed, clean tree before the push (handoff policy).
@@ -773,10 +803,25 @@ test_obligations:
     verification_step: 18
     command: test -f "$E/deprecated/$c.yaml"
     waiver_reason: A git mv destination with no behavior of its own; step 18 proves it exists, the live path is gone and no live shard or test names an old node.
+  - source: config/agent/data_quality/decisions/ops_recommendations.yaml
+    behavior: Prose names the surviving checks.
+    verification_step: 21
+    command: -m scripts.validate
+    waiver_reason: Prose-only fields no code reads (validate_dq_manifest_gate reads enforcement_ready, unchanged), kept in step with ops.yaml; step 21's full tier proves the manifest gate stays green.
+  - source: config/agent/data_quality/decisions/ops_decisions.yaml
+    behavior: Prose names the surviving checks.
+    verification_step: 21
+    command: -m scripts.validate
+    waiver_reason: Prose-only fields no code reads (validate_dq_manifest_gate reads enforcement_ready, unchanged), kept in step with ops.yaml; step 21's full tier proves the manifest gate stays green.
+  - source: config/agent/data_quality/decisions/ops_execution_plans.yaml
+    behavior: Prose names the surviving checks.
+    verification_step: 21
+    command: -m scripts.validate
+    waiver_reason: Prose-only fields no code reads (validate_dq_manifest_gate reads enforcement_ready, unchanged), kept in step with ops.yaml; step 21's full tier proves the manifest gate stays green.
 constraints:
   - "Two PRs, in order: PR B starts only after PR A's deploy run (step 9) and live check (step 10) are green; PR B merges only after steps 11 and 12 pass against PR A's deployed reader."
   - "No caller SQL anywhere on the new path: no kind accepts a SQL fragment, identifier text is never taken from a request except as a validated field-semantics column name, and values are always bound."
-  - "Behaviour-preserving for the DQ harness: every enforced flag, severity, exclude_before date and dq-latest.json test name of a surviving test is unchanged; the four typed rewrites are equal or stricter; the two retired ops.yaml tests survive as stricter-or-equal contract rules (Decision 181, Decision 210 cl.1-3)."
+  - "Behaviour-preserving for the DQ harness: every enforced flag, severity, exclude_before date and dq-latest.json test name of a surviving test is unchanged; the four typed rewrites are equal or stricter; the two retired ops.yaml tests survive as stricter-or-equal contract rules the writer enforces at write time (Decision 181, Decision 210 cl.1-3)."
   - "Counts only: no dq_check response, smoke line or log carries row data or a refused value (Decision 101)."
   - "SLOC: every touched file stays under 500 (tests/test_ducklake_reader_handler.py is at 495); decompose, never raise a budget (Decision 128)."
   - "Each deleted test or assertion gets a weakening_dispositions entry (retirement or refactor, citing the deleted subject or the successor node) on the PR that flips implementation_declared (Decision 181), including the two retired ops.yaml tests."
