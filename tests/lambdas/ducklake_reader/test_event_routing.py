@@ -262,3 +262,49 @@ def test_blob_faults_answer_typed_through_the_handler(wiring: dict[str, Any], mo
     _content_wiring(wiring, monkeypatch, [_object_row()], _BlobFake())
     status, body = _call(_content_request(offset=len(_BLOB_BYTES)))
     assert status == 400 and body["error_type"] == "named_read_input" and str(len(_BLOB_BYTES)) not in body["error"]
+
+
+class _Context:
+    aws_request_id = "req-deadline"
+
+    def __init__(self, remaining: Any) -> None:
+        self._remaining = remaining
+
+    def get_remaining_time_in_millis(self) -> float:
+        return self._remaining() if callable(self._remaining) else self._remaining
+
+
+def _call_with(payload: dict[str, Any], context: Any) -> tuple[int, dict[str, Any]]:
+    response = h.handler({"body": json.dumps(payload)}, context)
+    return response["statusCode"], json.loads(response["body"])
+
+
+_EVENT_READ = {"action": "named_read", "verb": "telemetry_health_count", "params": {}}
+
+
+def test_event_verb_past_its_deadline_answers_504(wiring: dict[str, Any]) -> None:
+    status, body = _call_with(_EVENT_READ, _Context(5_000))
+    assert status == 504
+    assert body == {
+        "ok": False,
+        "error_type": "read_deadline_exceeded",
+        "reason": "reader_deadline",
+        "request_id": "req-deadline",
+        "action": "named_read",
+    }
+    assert wiring["ops_opened"] == 0 and wiring["ops_con"].executed == []
+    assert _call_with(_EVENT_READ, _Context(600_000))[0] == 200
+
+
+def test_ops_verbs_run_without_a_deadline(wiring: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(rt, "named_read", lambda con, **kw: [{"n": 1}])
+    status, body = _call_with({"action": "named_read", "verb": "count_by_status", "params": {}}, _Context(5_000))
+    assert status == 200 and body["row_count"] == 1
+
+
+def test_reopen_once_runs_under_the_deadline(wiring: dict[str, Any]) -> None:
+    remaining = iter([600_000, 5_000])
+    wiring["telemetry_fail_first"] = True
+    status, body = _call_with(_EVENT_READ, _Context(lambda: next(remaining)))
+    assert status == 504 and body["error_type"] == "read_deadline_exceeded"
+    assert wiring["telemetry_opened"] == 2
