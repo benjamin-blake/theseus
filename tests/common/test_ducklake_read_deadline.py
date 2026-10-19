@@ -196,10 +196,8 @@ def test_real_duckdb_accepts_the_telemetry_slot_settings() -> None:
     con.execute("LOAD postgres")
     con.execute(f"SET temp_directory='{ev.TELEMETRY_TEMP_DIRECTORY}'")
     con.execute(f"SET max_temp_directory_size='{ev.TELEMETRY_MAX_TEMP_SIZE}'")
-    con.execute(f"SET threads={ev.TELEMETRY_THREADS}")
-    con.execute("SET pg_use_ctid_scan=false")
-    assert con.execute("SELECT current_setting('threads')").fetchone() == (ev.TELEMETRY_THREADS,)
-    assert con.execute("SELECT current_setting('pg_use_ctid_scan')").fetchone() == (False,)
+    assert con.execute("SELECT current_setting('temp_directory')").fetchone() == (ev.TELEMETRY_TEMP_DIRECTORY,)
+    assert con.execute("SELECT current_setting('max_temp_directory_size')").fetchone() is not None
 
 
 def test_real_duckdb_spills_to_the_configured_directory(tmp_path: Path) -> None:

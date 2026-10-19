@@ -247,7 +247,7 @@ def _telemetry_payload(**extra: Any) -> dict[str, Any]:
     return {"verb": "telemetry_health_count", "params": {}, **extra}
 
 
-def test_telemetry_opener_sets_threads_and_serial_catalog_scans(monkeypatch: pytest.MonkeyPatch, smoke_pin: None) -> None:
+def test_telemetry_opener_spills_to_tmp_and_leaves_threads_alone(monkeypatch: pytest.MonkeyPatch, smoke_pin: None) -> None:
     con = RecordingCon()
     monkeypatch.setattr(rt, "open_connection", lambda **kw: con)
     monkeypatch.setattr(rt, "fetch_dsn", lambda *a, **k: {})
@@ -256,10 +256,8 @@ def test_telemetry_opener_sets_threads_and_serial_catalog_scans(monkeypatch: pyt
     assert statements[0].startswith("SET memory_limit=") and statements[1:] == [
         "SET temp_directory='/tmp/telemetry-spill'",
         "SET max_temp_directory_size='300MB'",
-        f"SET threads={ev.TELEMETRY_THREADS}",
-        "SET pg_use_ctid_scan=false",
     ]
-    assert ev.TELEMETRY_THREADS == 8
+    assert not any("threads" in sql or "ctid" in sql for sql in statements)
 
 
 def test_deadline_ms_is_refused_before_any_attach(monkeypatch: pytest.MonkeyPatch, smoke_pin: None) -> None:
