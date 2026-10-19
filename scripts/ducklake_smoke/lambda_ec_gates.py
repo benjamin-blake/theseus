@@ -193,7 +193,6 @@ def lambda_churn_incontainer(*, profile: str | None = None, region: str = "eu-we
 _ABSENT_SESSION = "01ARZ3NDEKTSV4RRFFQ69G5FAV"  # a canonical ULID no real session derives to (2016 prefix)
 _MALFORMED_MARKER = "not-a-session-id-MARKER"
 _TELEMETRY_TABLES = {"telemetry_sessions", "telemetry_observations", "telemetry_transcripts", "telemetry_agents"}
-_CATALOG_MISSING_CLASSES = {"CatalogException", "BinderException"}
 
 
 def _verification_verb_checks(call: Any, fail: Any) -> None:
@@ -227,7 +226,7 @@ def _verification_verb_checks(call: Any, fail: Any) -> None:
 
 
 def _telemetry_read_checks(*, profile: str | None, region: str) -> None:
-    """The reader's telemetry slot (rec-4291): describe, the health verb, an absent and a malformed session, and isolation."""
+    """The reader's telemetry slot (rec-4291): describe, health, absent and malformed sessions, verification verbs."""
     from src.common.ducklake_event_read_verbs import EVENT_READS  # noqa: PLC0415
 
     url = core._function_url("reader")
@@ -268,19 +267,6 @@ def _telemetry_read_checks(*, profile: str | None, region: str) -> None:
     if bad.status_code != 400 or _MALFORMED_MARKER in bad.text or "named_read_input" not in bad.text:
         fail("a malformed session_id must answer 400 named_read_input without echoing the value", bad.status_code)
     _verification_verb_checks(call, fail)
-    probe = call(
-        {
-            "action": "query_ops",
-            "table": "ops_recommendations",
-            "sql": "SELECT count(*) FROM telemetry_catalog.telemetry_sessions",
-        }
-    )
-    probe_body = probe.json() if probe.status_code == 500 else {}
-    if probe_body.get("error_type") != "unmapped" or probe_body.get("error_class") not in _CATALOG_MISSING_CLASSES:
-        fail(
-            "query_ops must not reach the telemetry catalog (want HTTP 500, unmapped, a catalog error class)",
-            probe.status_code,
-        )
     print("TELEMETRY_READS_OK")
 
 
@@ -337,6 +323,19 @@ def dq_check_gate(*, profile: str | None = None, region: str = "eu-west-2") -> N
     print(f"DQ_CHECK_OK kinds={len(_DQ_GATE_REQUESTS)}")
 
 
+def retired_actions_gate(*, profile: str | None = None, region: str = "eu-west-2") -> None:
+    """query_ops is retired (Decision 84 I-3 follow-up): the reader answers 400 unknown action and lists no such action.
+    Failure text names the condition only, never a response body."""
+    answered = core._sigv4_invoke(core._function_url("reader"), {"action": "query_ops"}, profile=profile, region=region)
+    actions = answered.json().get("actions") if answered.status_code == 400 else None
+    if not isinstance(actions, list) or "query_ops" in actions or "dq_check" not in actions:
+        raise core.SmokeTestFailure(
+            "QUERY_OPS_RETIRED FAIL: query_ops must answer 400 unknown action with an action list that lacks it "
+            f"(status {answered.status_code})"
+        )
+    print("QUERY_OPS_RETIRED")
+
+
 def lambda_reader(*, profile: str | None = None, region: str = "eu-west-2") -> None:
     """EC1/boundary: reader returns current rows; the read role cannot write (closed boundary); the telemetry reads answer."""
     read_body = core._ok_json(
@@ -351,6 +350,7 @@ def lambda_reader(*, profile: str | None = None, region: str = "eu-west-2") -> N
         raise core.SmokeTestFailure(f"READER FAIL: read={read_body} write_probe={probe}")
     print(f"READER OK rows={read_body['row_count']} write_denied=true")
     _telemetry_read_checks(profile=profile, region=region)
+    retired_actions_gate(profile=profile, region=region)
     dq_check_gate(profile=profile, region=region)
 
 

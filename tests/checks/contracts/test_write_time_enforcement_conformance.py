@@ -393,7 +393,7 @@ _NON_ROW_WRITING: dict[str, dict[str, str]] = {
     "src/lambdas/ducklake_reader/handler.py": dict.fromkeys(
         (
             "attach_check read_current partition_prune_check write_probe read_ops_current "
-            "read_ops_history named_read query_ops dq_check connect_probe reset_warm_connection describe"
+            "read_ops_history named_read dq_check connect_probe reset_warm_connection describe"
         ).split(),
         "read or probe: the reader holds no write grant",
     ),

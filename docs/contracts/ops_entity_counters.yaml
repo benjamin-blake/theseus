@@ -10,7 +10,7 @@
 # (docs/contracts/data-modeling-standard.yaml write_modes.control): ONE physical table, no
 # history/current SCD2 pair, partitioned on its own key column (counter_name). Writer-internal:
 # read_boundary NONE, write_boundary WRITER_INTERNAL -- never reachable through the generic ops
-# read/write verbs. query_ops / named_read / read_ops_current / read_ops_history refuse it at the
+# read/write verbs. dq_check / named_read / read_ops_current / read_ops_history refuse it at the
 # reader boundary (src/lambdas/ducklake_reader/handler.py's _require_ops_table call sites and
 # src/common/ducklake_reads.py's named_read); write_ops / file_ops / update_ops refuse it via
 # src/common/ducklake_scd2_schema.py resolve_table_spec's directed raise on write_mode=control. It
@@ -152,7 +152,7 @@ governance_notes: >-
   contract: allocation stays writer-owned, inside the write transaction; only the counter
   table's SHAPE, GOVERNANCE and EXPOSURE change.
 audit_invariants:
-  - "Never reachable through query_ops, named_read, read_ops_current, or read_ops_history (read_boundary: none) -- registering this table for governance does not grant application read access (T2.26)."
+  - "Never reachable through dq_check, named_read, read_ops_current, or read_ops_history (read_boundary: none) -- registering this table for governance does not grant application read access (T2.26)."
   - "Never reachable through write_ops, file_ops, or update_ops (write_boundary: writer_internal) -- ducklake_scd2_schema.resolve_table_spec raises a directed SchemaGateError on write_mode=control before any of those verbs could fall through into the SCD2 branch against current_table=None."
   - "dq_scope: exempt -- there is no DQ-runner coverage for this table (no reachable read path); the ducklake_maintenance control_health verb (every 6h) is the health binding that substitutes for it, asserting row count, counter floor, and live-file ceiling as failing conditions (Decision 55), never a report."
   - "Row count invariant: exactly one row per writer-keyspace ops table (id_keyspace: writer in field_semantics contract_table_ops) PRESENT in the catalog under check -- a status-live table is always expected, a pre_production table only once its history table exists in that catalog; absent ones are reported in control_health's absent_tables, never silently dropped. Today production expects ops_recommendations only."
@@ -193,4 +193,13 @@ amendment_log:
       Declarations re-spelled only. No rule is added, removed or re-dated: the declared rule set, read through
       scripts.contract_rules, is identical before and after, and the generated field_semantics.yaml projection of
       this contract is unchanged.
+  - date: "2026-10-19"
+    semantic_break: false
+    change_class: prose_improvement
+    summary: >-
+      PLAN-query-ops-retirement PR B: the two lists of reader verbs that refuse this table name dq_check in place of the
+      retired query_ops. A pointer change only: the table stays unreachable through every reader verb.
+    migration_story: >-
+      No behaviour changes. The reader's dq_check refuses this table as it refused it through query_ops, covered by
+      tests/lambdas/ducklake_reader/test_control_table_refusal.py.
 previous_versions: []

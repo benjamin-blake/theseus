@@ -65,3 +65,17 @@ def test_refused_dq_check_is_400_before_any_connection(monkeypatch: pytest.Monke
     status, body = _call({"action": "dq_check", "check": "drop_table", "table": "ops_recommendations"})
     assert status == 400 and body["param"] == "check" and body["check"] == "drop_table"
     assert opened == []
+
+
+def test_no_reader_action_accepts_caller_sql() -> None:
+    import ast
+    import inspect
+
+    assert "query_ops" not in h._ACTIONS
+    for name, fn in h._ACTIONS.items():
+        for node in ast.walk(ast.parse(inspect.getsource(fn).lstrip())):
+            if isinstance(node, ast.Call) and getattr(node.func, "attr", "") == "get" and node.args:
+                first = node.args[0]
+                assert not (isinstance(first, ast.Constant) and first.value == "sql"), name
+            if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant):
+                assert node.slice.value != "sql", name

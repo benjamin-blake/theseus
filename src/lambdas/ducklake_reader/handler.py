@@ -10,7 +10,6 @@ Actions:
   partition_prune_check-- a single-key `current` lookup that touches <=1 bucket-partition.
   read_ops_current     -- production: current projection of an ops_* table (optional single-key filter).
   read_ops_history     -- production: append-history rows of an ops_* table.
-  query_ops            -- production: a read-only SELECT over an ops_* current projection (pushdown).
   dq_check             -- production: one closed data-quality check over an ops_* table, returning a violation count only.
   describe             -- production: per-verb parameter schema for every NAMED_READS and EVENT_READS entry (agent-facing).
 
@@ -220,21 +219,6 @@ def action_read_ops_history(event: dict[str, Any], con: Any) -> dict[str, Any]:
     return {"ok": True, "table": table, "rows": _json_safe(rows), "row_count": len(rows)}
 
 
-def action_query_ops(event: dict[str, Any], con: Any) -> dict[str, Any]:
-    """Production: run a read-only SELECT over an ops_* current projection. Use `{tbl}` for the table.
-
-    The SQL is caller-supplied (internal read paths: predicate pushdown). Only the current projection
-    is reachable; the read role is S3-read-only so the boundary holds even for an arbitrary SELECT.
-    """
-    table = event.get("table")
-    _require_ops_table(table)
-    sql = event.get("sql")
-    if not isinstance(sql, str) or not sql.strip():
-        raise rt.DuckLakeRuntimeError("query_ops requires a non-empty 'sql' string referencing {tbl}")
-    rows = rt.query_current(con, table=table, sql=sql, params=event.get("params") or [])
-    return {"ok": True, "table": table, "rows": _json_safe(rows), "row_count": len(rows)}
-
-
 def action_dq_check(event: dict[str, Any], con: Any) -> dict[str, Any]:
     """Production: run one closed DQ check kind (server-owned SQL, bound values) and return its violation count only."""
     check = dq.validate(event)
@@ -308,7 +292,6 @@ _ACTIONS: dict[str, Callable[[dict[str, Any], Any], dict[str, Any]]] = {
     "read_ops_current": action_read_ops_current,
     "read_ops_history": action_read_ops_history,
     "named_read": action_named_read,
-    "query_ops": action_query_ops,
     "dq_check": action_dq_check,
     "connect_probe": action_connect_probe,
     "reset_warm_connection": action_reset_warm_connection,

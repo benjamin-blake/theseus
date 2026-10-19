@@ -47,9 +47,7 @@ from src.common.ducklake_metrics import (  # noqa: F401 -- re-exported facade su
 )
 from src.common.ducklake_named_reads import read_version  # noqa: F401 -- re-exported for the reader handler's per-verb stamp
 from src.common.ducklake_reads import (  # noqa: F401 -- re-exported facade surface (PLAN-sloc-ducklake-layer)
-    assert_read_only_sql,
     named_read,
-    query_current,
     read_current,
     read_history,
 )
